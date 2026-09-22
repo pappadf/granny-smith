@@ -90,6 +90,31 @@ static void atc_flush(void) {
     g_atc_next = 0;
 }
 
+// Reset the file-scope translation caches that belong to one machine.
+//
+// Called from BOTH mmu_init and mmu_delete, and the init side is the one that
+// matters.  g_tlb_track*, g_last_user_crp and the ATC block cache are file
+// statics shared by every machine in the process, and mmu_delete only resets
+// them when the machine being destroyed is still the live one.  On
+// checkpoint.load the new machine is CONSTRUCTED BEFORE the old one is
+// destroyed (system.c), so that guard fails: the outgoing mmu_delete skips the
+// reset, and the incoming machine's first invalidate then walks the previous
+// machine's page-index list -- zeroing the wrong SoA entries and leaving its
+// own eagerly-installed identity entries live under an enabled PMMU.  Stale
+// indices can also point past a smaller machine's SoA arrays.  Resetting at
+// construction is ordering-independent, which the teardown-side reset is not.
+static void mmu_reset_global_caches(void) {
+    // A fresh machine must not inherit the previous instance's user-CRP
+    // snapshot.
+    g_last_user_crp = 0;
+    // overflow=true makes the first invalidate fall back to a full memset,
+    // matching the file-scope default.
+    g_tlb_track_count = 0;
+    g_tlb_track_overflow = true;
+    // Cached block descriptors belong to the old machine's tables.
+    atc_flush();
+}
+
 // Find the cached block covering logical_addr for this FC class, if any.
 // When TC.SRE=0 a single walk serves both FC classes (super and user share
 // the CRP), so the FC recorded at walk time doesn't restrict the hit.
@@ -512,6 +537,8 @@ mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_siz
     mmu->rom_phys_base = rom_phys_base;
     mmu->rom_region_end = rom_region_end;
     mmu->enabled = false;
+    mmu->tlb_was_enabled = false;
+    mmu_reset_global_caches();
 
     return mmu;
 }
@@ -522,17 +549,7 @@ void mmu_delete(mmu_state_t *mmu) {
         return;
     if (g_mmu == mmu) {
         g_mmu = NULL;
-        // Clear the user-CRP snapshot so a fresh machine doesn't inherit
-        // a stale CRP from the previous instance.
-        g_last_user_crp = 0;
-        // Reset TLB-tracker state. Stale indices from this machine could
-        // index past the next machine's smaller SoA arrays. Setting
-        // overflow=true also makes the first post-init invalidate fall
-        // back to a full memset (matches the file-scope default).
-        g_tlb_track_count = 0;
-        g_tlb_track_overflow = true;
-        // Cached block descriptors belong to this machine's tables too.
-        atc_flush();
+        mmu_reset_global_caches();
     }
     free(mmu);
 }
