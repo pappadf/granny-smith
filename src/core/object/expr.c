@@ -4,7 +4,14 @@
 // expr.c
 // Recursive-descent expression parser + evaluator. See expr.h.
 //
-// Grammar (tightest first; matches proposal-shell-expressions.md §2.3):
+// Grammar (tightest first; matches proposal-shell-expressions.md §2.3).
+//
+// NOTE the bitwise levels: `&`, `^` and `|` bind TIGHTER than the relational
+// and equality operators, which is the opposite of C.  That is deliberate --
+// C's order is a well-known trap, and `sr & 0x2000 == 0x2000` means
+// `(sr & 0x2000) == 0x2000` here and `sr & (0x2000 == 0x2000)` in C -- but
+// object-model.md and the proposal both described it as "as in C", which it
+// is not (08-core-infra F-10).
 //
 //   primary    := literal | path-or-call | '(' expr ')'
 //   postfix    := primary ( '.' IDENT | '[' expr ']' )*
@@ -15,7 +22,8 @@
 //   bitand     := shift  ('&'           shift)*
 //   bitxor     := bitand ('^'           bitand)*
 //   bitor      := bitxor ('|'           bitxor)*
-//   relational := bitor  (('<'|'<='|'>'|'>=') bitor)*
+//   range      := bitor  ('..'          bitor)?
+//   relational := range  (('<'|'<='|'>'|'>=') range)*
 //   equality   := relational (('=='|'!=') relational)*
 //   logand     := equality   ('&&' equality)*
 //   logor      := logand     ('||' logand)*
@@ -1340,10 +1348,24 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Mul / Add / Shift / Bitwise ============================================
 
-static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2, char *err) {
+// numeric_op reports a failure twice: as the returned V_ERROR, and through
+// the caller's `err` buffer, which the lexer turns into a position-tagged
+// diagnostic.  Only the non-numeric path used to write the buffer; the other
+// fourteen returns left it untouched, and all six callers then read
+// `err[0]` -- an uninitialised stack array.  So `${1/0}` reported whatever
+// was on the stack instead of "division by zero", and only sometimes.
+//
+// One macro now writes both, so they cannot disagree and cannot be forgotten.
+#define NUM_FAIL(msg)                                                                                                  \
+    do {                                                                                                               \
+        snprintf(err, err_size, "%s", (msg));                                                                          \
+        return val_err("%s", (msg));                                                                                   \
+    } while (0)
+
+static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2, char *err, size_t err_size) {
     num_kind_t k = promote_pair(classify_numeric(a), classify_numeric(b));
     if (k == NK_NONE) {
-        snprintf(err, 64, "non-numeric operand to '%c%s'", op, op2 ? (char[2]){op2, 0} : (char[1]){0});
+        snprintf(err, err_size, "non-numeric operand to '%c%s'", op, op2 ? (char[2]){op2, 0} : (char[1]){0});
         return val_err("non-numeric");
     }
     value_t pa = coerce_to(k, a);
@@ -1365,7 +1387,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             z = x / y;
             break;
@@ -1375,7 +1397,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
         default:
             value_free(&pa);
             value_free(&pb);
-            return val_err("bad op for float");
+            NUM_FAIL("bad op for float");
         }
         r = val_float(z);
     } else if (k == NK_INT) {
@@ -1394,13 +1416,13 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             // INT64_MIN / -1 overflows signed int (UB).
             if (x == INT64_MIN && y == -1) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("integer overflow in division");
+                NUM_FAIL("integer overflow in division");
             }
             z = x / y;
             break;
@@ -1408,12 +1430,12 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             if (x == INT64_MIN && y == -1) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("integer overflow in modulo");
+                NUM_FAIL("integer overflow in modulo");
             }
             z = x % y;
             break;
@@ -1430,7 +1452,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y < 0 || y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = (int64_t)((uint64_t)x << y); // avoid signed shift UB
             break;
@@ -1438,14 +1460,14 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y < 0 || y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = x >> y;
             break; // arithmetic shift on signed (proposal §2.3)
         default:
             value_free(&pa);
             value_free(&pb);
-            return val_err("bad op for int");
+            NUM_FAIL("bad op for int");
         }
         r = val_int(z);
     } else { // NK_UINT
@@ -1464,7 +1486,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             z = x / y;
             break;
@@ -1472,7 +1494,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             z = x % y;
             break;
@@ -1489,7 +1511,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = x << y;
             break;
@@ -1497,14 +1519,14 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = x >> y;
             break;
         default:
             value_free(&pa);
             value_free(&pb);
-            return val_err("bad op for uint");
+            NUM_FAIL("bad op for uint");
         }
         r = val_uint(0, z);
     }
@@ -1514,6 +1536,8 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
     err[0] = '\0';
     return r;
 }
+
+#undef NUM_FAIL
 
 static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
     value_t a = parse_unary(L, ctx);
@@ -1530,8 +1554,8 @@ static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, op, 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1603,8 +1627,8 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
             a = r;
             continue;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, op, 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1634,8 +1658,8 @@ static value_t parse_shift(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, op, op, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, op, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1662,8 +1686,8 @@ static value_t parse_bitand(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, '&', 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, '&', 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1689,8 +1713,8 @@ static value_t parse_bitxor(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, '^', 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, '^', 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1717,8 +1741,8 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, '|', 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, '|', 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1889,6 +1913,32 @@ static void skip_logand(lex_t *L, const expr_ctx_t *ctx) {
     memcpy(L->err, saved_msg, sizeof(L->err));
 }
 
+// The ternary's counterparts to skip_equality / skip_logand.
+//
+// "Skip" means what it means for `&&` and `||`: parse the branch, discard its
+// value, and suppress any error it raised.  It does NOT mean the branch goes
+// unevaluated -- a method call in it still runs, exactly as one in the
+// short-circuited side of `&&` still runs.  08-core-infra F-08 reads the
+// existing helpers as laziness; they are not, and the ternary now has parity
+// with them rather than a property the language does not offer.
+//
+// What this does fix is the guard idiom.  `${x != 0 ? 100/x : 0}` used to
+// evaluate 100/x whatever x was, and lex_error is sticky, so a division by
+// zero in the untaken branch failed the whole expression.
+static void skip_expr(lex_t *L, const expr_ctx_t *ctx);
+
+static void skip_ternary(lex_t *L, const expr_ctx_t *ctx) {
+    bool saved = L->err_set;
+    char saved_msg[sizeof(L->err)];
+    memcpy(saved_msg, L->err, sizeof(L->err));
+    L->err_set = false;
+    L->err[0] = '\0';
+    value_t v = parse_ternary(L, ctx);
+    value_free(&v);
+    L->err_set = saved;
+    memcpy(L->err, saved_msg, sizeof(L->err));
+}
+
 static value_t parse_logand(lex_t *L, const expr_ctx_t *ctx) {
     value_t a = parse_equality(L, ctx);
     if (L->err_set)
@@ -1955,9 +2005,19 @@ static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
     if (*L->p != '?')
         return c;
     L->p++;
-    bool truthy = !val_is_error(&c) && val_as_bool(&c);
+
     bool err = val_is_error(&c);
-    value_t t = parse_expr(L, ctx);
+    bool truthy = !err && val_as_bool(&c);
+
+    // Only the selected branch is evaluated for its value; the other is
+    // parsed and discarded, so the cursor still advances past it and its
+    // errors do not escape.  A failed condition discards both.
+    value_t t = val_none();
+    if (err || !truthy)
+        skip_expr(L, ctx);
+    else
+        t = parse_expr(L, ctx);
+
     lex_skip_ws(L);
     if (*L->p != ':') {
         value_free(&c);
@@ -1966,20 +2026,37 @@ static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
         return val_err("ternary");
     }
     L->p++;
-    value_t f = parse_ternary(L, ctx);
+
+    value_t f = val_none();
+    if (err || truthy)
+        skip_ternary(L, ctx);
+    else
+        f = parse_ternary(L, ctx);
+
     if (err) {
         value_free(&t);
         value_free(&f);
         return c; // error propagates
     }
+    value_free(&c);
     if (truthy) {
-        value_free(&c);
         value_free(&f);
         return t;
     }
-    value_free(&c);
     value_free(&t);
     return f;
+}
+
+static void skip_expr(lex_t *L, const expr_ctx_t *ctx) {
+    bool saved = L->err_set;
+    char saved_msg[sizeof(L->err)];
+    memcpy(saved_msg, L->err, sizeof(L->err));
+    L->err_set = false;
+    L->err[0] = '\0';
+    value_t v = parse_expr(L, ctx);
+    value_free(&v);
+    L->err_set = saved;
+    memcpy(L->err, saved_msg, sizeof(L->err));
 }
 
 static value_t parse_expr(lex_t *L, const expr_ctx_t *ctx) {
@@ -2285,6 +2362,7 @@ static void format_value_with_spec(const value_t *v, const char *spec, char **bu
 // expression body.
 static int find_format_colon(const char *body, size_t blen) {
     int depth = 0;
+    int ternary_depth = 0;
     bool in_str = false;
     int last = -1;
     for (size_t i = 0; i < blen; i++) {
@@ -2306,6 +2384,16 @@ static int find_format_colon(const char *body, size_t blen) {
             depth++;
         else if (c == ')' || c == ']' || c == '}')
             depth--;
+        else if (c == '?' && depth == 0)
+            // A ternary's ':' belongs to the ternary, not to a format spec.
+            // Without this the scanner took the rightmost top-level ':' and
+            // split `${a ? 1 : 2}` into the expression `a ? 1 ` and the spec
+            // ` 2`, so the expression then failed with "expected ':' in
+            // ternary" -- making the ternary and `${...}` mutually exclusive,
+            // though both are documented parts of the language (F-09).
+            ternary_depth++;
+        else if (c == ':' && depth == 0 && ternary_depth > 0)
+            ternary_depth--;
         else if (c == ':' && depth == 0)
             last = (int)i;
     }

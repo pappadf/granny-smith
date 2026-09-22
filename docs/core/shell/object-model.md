@@ -178,7 +178,13 @@ Both compile to the same `node_call` underneath.
 splices its formatted value. Inside expression mode, a bare path is a
 `node_get` (or, with a trailing call-form argument list, `node_call`);
 `$name` reads a binding; literals and operators work the way they do
-in C. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
+in C, **with one deliberate exception**: the bitwise operators `&`, `^` and
+`|` bind *tighter* than the comparisons, where C binds them looser. So
+`${machine.cpu.sr & 0x2000 == 0x2000}` means `(sr & 0x2000) == 0x2000` here
+and `sr & (0x2000 == 0x2000)` in C. C's order is a well-known trap and this
+is the friendlier reading; the full precedence table is in
+`proposal-shell-expressions.md` §2.3, and `expr.c`'s grammar comment is the
+authority in code. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
 strings/lists/bytes/maps, `none` never, and errors are not truth values —
 an error reaching a condition aborts.
 

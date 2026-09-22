@@ -560,6 +560,105 @@ TEST(test_spec_valid_forms_still_render) {
     }
 }
 
+// === Expression-language promises (08-core-infra F-07, F-08, F-09) =========
+
+// F-07.  numeric_op reported a failure twice -- as the returned V_ERROR and
+// through the caller's `err` buffer -- but only the non-numeric path wrote the
+// buffer.  The other fourteen returns left it untouched and all six callers
+// then read err[0], an uninitialised stack array, so ${1/0} reported whatever
+// was on the stack rather than "division by zero", and only sometimes.
+TEST(test_divide_by_zero_reports_its_reason) {
+    value_t v = eval("1/0");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+
+    // Through interpolation, where the lexer's message is what surfaces.
+    expr_ctx_t ctx = {0};
+    value_t w = expr_interpolate_string("${1/0}", &ctx);
+    ASSERT_TRUE(val_is_error(&w));
+    ASSERT_TRUE(w.err != NULL);
+    ASSERT_TRUE(strstr(w.err, "division by zero") != NULL);
+    value_free(&w);
+}
+
+TEST(test_shift_out_of_range_reports_its_reason) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1 << 999}", &ctx);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(v.err != NULL);
+    ASSERT_TRUE(strstr(v.err, "shift count") != NULL);
+    value_free(&v);
+}
+
+// F-08.  The canonical guard idiom: the untaken branch must not fail the
+// expression.  Both branches used to be evaluated and lex_error is sticky, so
+// the division ran even when x was zero.
+TEST(test_ternary_untaken_branch_does_not_fail_the_expression) {
+    bool ok = false;
+    value_t v = eval("0 != 0 ? 100/0 : 42");
+    ASSERT_TRUE(!val_is_error(&v));
+    ASSERT_EQ_INT((int)val_as_i64(&v, &ok), 42);
+    ASSERT_TRUE(ok);
+    value_free(&v);
+
+    // ...and the mirror image, so the fix is not "always take the false arm".
+    value_t w = eval("1 != 0 ? 42 : 100/0");
+    ASSERT_TRUE(!val_is_error(&w));
+    ASSERT_EQ_INT((int)val_as_i64(&w, &ok), 42);
+    value_free(&w);
+}
+
+TEST(test_ternary_still_selects_correctly) {
+    bool ok = false;
+    value_t a = eval("1 ? 10 : 20");
+    ASSERT_EQ_INT((int)val_as_i64(&a, &ok), 10);
+    value_free(&a);
+    value_t b = eval("0 ? 10 : 20");
+    ASSERT_EQ_INT((int)val_as_i64(&b, &ok), 20);
+    value_free(&b);
+    // Nested in the false arm, which parses right-associatively.
+    value_t c = eval("0 ? 1 : 0 ? 2 : 3");
+    ASSERT_EQ_INT((int)val_as_i64(&c, &ok), 3);
+    value_free(&c);
+}
+
+// F-09.  find_format_colon took the RIGHTMOST top-level ':' as the format-spec
+// separator without tracking '?', so `${a ? 1 : 2}` split into the expression
+// `a ? 1 ` and the spec ` 2`.  The ternary and ${...} -- both documented parts
+// of the language -- were mutually exclusive, with a confusing error.
+TEST(test_ternary_inside_interpolation) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1 ? 10 : 20}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "10") == 0);
+    value_free(&v);
+
+    value_t w = expr_interpolate_string("${0 ? 10 : 20}", &ctx);
+    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_TRUE(strcmp(w.s, "20") == 0);
+    value_free(&w);
+}
+
+// A ternary AND a format spec in one interpolation: the last ':' is the spec's
+// only once every '?' has been matched.
+TEST(test_ternary_and_format_spec_together) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1 ? 255 : 0:x}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "ff") == 0);
+    value_free(&v);
+}
+
+// The spec separator still works with no ternary present, so the '?' tracking
+// cannot pass by disabling specs.
+TEST(test_format_spec_without_ternary_unaffected) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${255:04x}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "00ff") == 0);
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
@@ -607,5 +706,12 @@ int main(void) {
     RUN(test_spec_width_is_clamped);
     RUN(test_spec_precision_is_clamped);
     RUN(test_spec_valid_forms_still_render);
+    RUN(test_divide_by_zero_reports_its_reason);
+    RUN(test_shift_out_of_range_reports_its_reason);
+    RUN(test_ternary_untaken_branch_does_not_fail_the_expression);
+    RUN(test_ternary_still_selects_correctly);
+    RUN(test_ternary_inside_interpolation);
+    RUN(test_ternary_and_format_spec_together);
+    RUN(test_format_spec_without_ternary_unaffected);
     return 0;
 }
