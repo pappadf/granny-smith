@@ -98,8 +98,24 @@ if (g_bus_error_instr_ptr)
 if (__builtin_expect(cpu->my_exception_pending, 0)) { ... }
 ```
 
-**If the faulting instruction must not complete**, do not add a second test —
-make a test that already exists carry the information. `ppc_run`'s fetch is the
+**Why not `break` or `goto`?** Not because jumping out is wrong in itself — it
+may well compile fine, and the theoretical objection (multiple exits inhibiting
+loop transforms) is weak here, since this loop is a 30k-instruction switch full
+of calls and memory clobbers that no loop transform was going to touch anyway.
+The real reason is narrower and harder to argue with: **none of the three
+mechanisms avoids the cost that matters.** `break`, `goto` and zeroing the
+counter differ only in what happens *after* you have decided to stop; each
+still needs something to make that decision, and the per-instruction cost is
+entirely in the **deciding**. What settles it is that the loop condition is
+evaluated every iteration regardless — so saying "stop" through it is free,
+while `break` needs a test that would not otherwise exist. If someone wants to
+revisit this, measure register pressure rather than control flow: that is what
+dominated every measurement behind this rule.
+
+**If the faulting instruction must not complete**, the two are NOT
+interchangeable — zeroing the counter lets the current iteration finish, so a
+faulting fetch would go on to execute garbage. Even then, do not add a second
+test: make a test that already exists carry the information. `ppc_run`'s fetch is the
 worked example: it returns false for an ISI and the loop already tests that, so
 a fetch bus error belongs in the same return value rather than in the extra
 `if (g_bus_error_pending) break;` that sits beside it today.
