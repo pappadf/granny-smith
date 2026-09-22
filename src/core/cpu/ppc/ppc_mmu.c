@@ -314,6 +314,13 @@ static inline uint8_t *phys_host(uint32_t pa) {
     return host ? host + (pa & PAGE_MASK) : NULL;
 }
 
+// True when the physical page holding a PTE group is host-writable.  Mirrors
+// the check mmu_write_physical_uint8 makes on the 68K side.
+static inline bool ppc_pte_page_writable(uint32_t pa) {
+    uint32_t pg = pa >> PAGE_SHIFT;
+    return pg < g_page_count && g_page_table[pg].host_base && g_page_table[pg].writable;
+}
+
 // Hashed page table search (601UM §6.9): SDR1 = HTABORG[0:15] |
 // HTABMASK[23:31]; hash1 = low 19 VSID bits XOR page index; PTEG PA =
 // ORG[0:6] || (ORG[7:15] | (hash[0:8] & MASK)) || hash[9:18] || 000000.
@@ -346,7 +353,17 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
             // R set even when protection denies (601UM §6.8.4); C only
             // when the store is permitted.  Suppressed for the
             // side-effect-free debug translate.
-            if (!nosideffect) {
+            // The R/C write-back goes straight through the host pointer, which
+            // phys_host resolves without consulting page_entry_t.writable.  A
+            // page table placed in ROM -- a guest bug, but a reachable one --
+            // therefore wrote into the ROM buffer, and that buffer is mirrored
+            // across the whole ROM window, so one stray byte poisons every
+            // later ROM read for the session, machine.rom.identify included.
+            // Update the in-memory PTE only when the page it lives on is
+            // actually writable; the translation itself still proceeds, since
+            // R/C are a hint to the OS, not a precondition.  (The 68K side has
+            // had the equivalent guard all along, in mmu_write_physical_uint8.)
+            if (!nosideffect && ppc_pte_page_writable(pteg)) {
                 uint32_t nlo = lo | 0x100u | ((store && allowed) ? 0x80u : 0u);
                 if (nlo != lo)
                     STORE_BE32(pte + 4, nlo);

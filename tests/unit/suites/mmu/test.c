@@ -25,12 +25,81 @@ static void cleanup(memory_map_t *mem, mmu_state_t *mmu) {
         memory_map_delete(mem);
 }
 
+// Load a 32-bit big-endian value from a buffer
+static uint32_t load_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
 // Store a 32-bit big-endian value into a buffer
 static void store_be32(uint8_t *p, uint32_t val) {
     p[0] = (uint8_t)(val >> 24);
     p[1] = (uint8_t)(val >> 16);
     p[2] = (uint8_t)(val >> 8);
     p[3] = (uint8_t)(val);
+}
+
+// ============================================================================
+// Test: the architectural U/M history-bit protocol
+// ============================================================================
+//
+// MC68030UM, descriptor field definitions.  U (bit 3): "automatically set by
+// the processor when a descriptor is accessed in which the U bit is clear ...
+// Updates of the U bit are performed before the MC68030 allows a page to be
+// accessed.  The processor never clears this bit" -- and it is set on EVERY
+// descriptor encountered, pointer tables included.  M (bit 4): "The MC68030
+// sets the M bit in the corresponding page descriptor before a write operation
+// to a page for which the M bit is zero ... The MC68030 never clears this bit."
+//
+// The walker used to read both and write neither, so a guest's VM saw every
+// dirty page as clean.  PTEST must NOT touch them (M68000PRM PTEST: it "alters
+// neither the used or modified bits of the translation tables nor the address
+// translation cache") -- the opposite of the 68040, whose PTEST does update
+// them, which is why the two walkers cannot share a default.
+TEST(test_um_history_bits) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // Two-level walk with 4KB pages: 8 bits level-A, 12 bits level-B.
+    uint32_t tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);
+    uint32_t level_a_base = 0x10000;
+    uint32_t level_b_base = 0x20000;
+    uint64_t crp = ((uint64_t)DESC_DT_TABLE4 << 32) | level_a_base;
+
+    // Both descriptors start with U and M clear.
+    store_be32(ram + level_a_base, level_b_base | DESC_DT_TABLE4);
+    store_be32(ram + level_b_base, 0x00080000 | DESC_DT_PAGE);
+
+    mmu->tc = tc;
+    mmu->crp = crp;
+    mmu->enabled = true;
+    mmu_invalidate_tlb(mmu);
+
+    // A READ sets U on the pointer table AND the page descriptor, and leaves M
+    // clear on both.
+    ASSERT_TRUE(mmu_handle_fault(mmu, 0x00000000, false, true));
+    ASSERT_TRUE((load_be32(ram + level_a_base) & (1u << 3)) != 0); // U on the table
+    ASSERT_TRUE((load_be32(ram + level_b_base) & (1u << 3)) != 0); // U on the page
+    ASSERT_TRUE((load_be32(ram + level_b_base) & (1u << 4)) == 0); // M still clear
+
+    // A WRITE sets M on the page descriptor only.
+    mmu_invalidate_tlb(mmu);
+    ASSERT_TRUE(mmu_handle_fault(mmu, 0x00000000, true, true));
+    ASSERT_TRUE((load_be32(ram + level_b_base) & (1u << 4)) != 0); // M now set
+    ASSERT_TRUE((load_be32(ram + level_a_base) & (1u << 4)) == 0); // never on a table
+
+    // PTEST must not disturb either bit.  Clear them, run a level-7 PTEST on a
+    // second page, and confirm the descriptors come back untouched.
+    store_be32(ram + level_a_base, level_b_base | DESC_DT_TABLE4);
+    store_be32(ram + level_b_base + 4, 0x00090000 | DESC_DT_PAGE);
+    mmu_invalidate_tlb(mmu);
+    uint16_t mmusr = mmu_test_address(mmu, 0x00001000, true, true, NULL);
+    ASSERT_TRUE((mmusr & MMUSR_I) == 0); // the walk succeeded
+    ASSERT_TRUE((load_be32(ram + level_a_base) & (1u << 3)) == 0); // U untouched
+    ASSERT_TRUE((load_be32(ram + level_b_base + 4) & (1u << 3)) == 0);
+    ASSERT_TRUE((load_be32(ram + level_b_base + 4) & (1u << 4)) == 0); // M untouched
+
+    cleanup(mem, mmu);
 }
 
 // ============================================================================
@@ -506,6 +575,7 @@ int main(void) {
     RUN(test_tlb_invalidation);
     RUN(test_two_level_translation);
     RUN(test_short_table_descriptor_with_wp_bit);
+    RUN(test_um_history_bits);
     RUN(test_invalid_descriptor_bus_error);
     RUN(test_transparent_translation);
     RUN(test_write_protection);

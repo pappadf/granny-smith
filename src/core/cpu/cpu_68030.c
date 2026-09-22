@@ -369,6 +369,17 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         bool write = (rw_bit == 0);
         uint32_t a_field = (ext >> 8) & 1u; // 1 = write descriptor addr to An
         uint32_t a_reg = (ext >> 5) & 7u;
+        uint32_t level = (ext >> 10) & 7u;
+        // M68000PRM PTEST, "Level field": "When this field contains 0, the A
+        // field and the register field must also be 0.  The instruction takes
+        // an F-line exception when the level field is 0 and the A field is not
+        // 0."  A level-0 PTEST searches only the ATC, so there is no "last
+        // descriptor searched" to hand back, which is why the encoding is
+        // illegal rather than merely useless.
+        if (level == 0 && a_field != 0) {
+            f_trap(cpu);
+            return;
+        }
         // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.30):
         //   1xxxx → immediate FC = bits 2:0
         //   01xxx → FC from data register Dn where n = bits 2:0
