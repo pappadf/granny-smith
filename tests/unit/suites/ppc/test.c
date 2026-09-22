@@ -390,6 +390,21 @@ static void test_power_arith(void) {
     step1_valid(e_xo(3, 4, 5, 0, 331, 0));
     CHECK_EQ(P->gpr[3], (uint32_t)-14);
     CHECK_EQ(P->mq, (uint32_t)-2); // remainder sign follows dividend
+    // div of INT64_MIN by -1: the quotient is unrepresentable, so the overflow
+    // has to be recognised BEFORE the divide -- the shipping emcc/wasm build's
+    // i64.div_s traps on this pair by specification rather than returning a
+    // wrong answer.  The dividend is also assembled through unsigned, because
+    // (int64_t)rA << 32 shifts into the sign bit for every rA >= $80000000,
+    // which the -100 case just above already exercises.  Both show up under
+    // MODE=sanitize; on native they are silent.
+    fresh();
+    P->gpr[4] = 0x80000000u; // rA||MQ = $8000000000000000
+    P->mq = 0;
+    P->gpr[5] = 0xFFFFFFFFu; // -1
+    step1_valid(e_xo(3, 4, 5, 1, 331, 0)); // divo
+    CHECK_EQ(P->gpr[3], 0x80000000u);
+    CHECK_EQ(P->mq, 0u);
+    CHECK(P->xer & PPC_XER_OV);
     // divs
     fresh();
     P->gpr[4] = (uint32_t)-100;

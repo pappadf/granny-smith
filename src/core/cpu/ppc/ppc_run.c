@@ -176,9 +176,20 @@ void ppc_do_mul(ppc_t *p, uint32_t iw) {
 // the same deterministic values are chosen.
 void ppc_do_div(ppc_t *p, uint32_t iw) {
     uint32_t a = p->gpr[PPC_RA(iw)], b = p->gpr[PPC_RB(iw)], r;
-    int64_t dd = ((int64_t)a << 32) | p->mq;
+    // Assemble the 64-bit dividend through unsigned.  (int64_t)a << 32 shifts
+    // into the sign bit for every rA >= $80000000 -- UB on its own, and hit by
+    // ordinary div, not just the overflow case below.
+    int64_t dd = (int64_t)(((uint64_t)a << 32) | p->mq);
     if (b == 0) {
         r = 0;
+        p->mq = 0;
+        if (PPC_OE(iw))
+            ppc_set_ov(p, 1);
+    } else if (dd == INT64_MIN && (int32_t)b == -1) {
+        // No representable quotient.  The C division is UB and the shipping
+        // wasm build's i64.div_s traps on it by specification, so the test has
+        // to precede the divide.  Result matches the quotient-overflow arm.
+        r = 0x80000000u;
         p->mq = 0;
         if (PPC_OE(iw))
             ppc_set_ov(p, 1);

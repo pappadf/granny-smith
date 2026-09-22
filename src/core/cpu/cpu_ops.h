@@ -512,13 +512,21 @@
     UPDATE_X_SHIFT(c);                                                                                                 \
     UPDATE_NZ_CLEAR_V(r);
 
+// Arithmetic shift left.  Both shift counts in the V term are masked to the
+// operand width: a count >= bits is reachable (DX & $3F yields 0-63, and
+// ASL.B #8 yields 8), which makes the inner >> c and the then-negative
+// (bits - c - 1) undefined.  The || short-circuits whenever d != 0, so the
+// UB is only reached with d == 0, where the accidental answer happens to be
+// correct -- latent rather than wrong.  Masking is a no-op for every count
+// below the width, so defined inputs are unaffected.
 #define ASHIFT_LEFT(bits, data, count, op)                                                                             \
     SHIFT_COMMON(bits, data, count, op);                                                                               \
     UPDATE_C_SHIFT_L(d, c);                                                                                            \
     UPDATE_X_SHIFT(c);                                                                                                 \
     UPDATE_N(r);                                                                                                       \
     UPDATE_Z(r);                                                                                                       \
-    CC_V = !r && d || (UINT(bits))((INT(bits))(1u << (bits - 1) & d) >> c ^ d) >> (bits - c - 1);
+    CC_V = !r && d ||                                                                                                  \
+           (UINT(bits))((INT(bits))(1u << (bits - 1) & d) >> (c & (bits - 1)) ^ d) >> ((bits - c - 1) & (bits - 1));
 
 #define LSHIFT_LEFT(bits, data, count, op)                                                                             \
     SHIFT_COMMON(bits, data, count, op);                                                                               \
@@ -570,11 +578,11 @@
     if (!divisor) {                                                                                                    \
         EXC_DIVIDE_BY_ZERO();                                                                                          \
     } else {                                                                                                           \
-        uint32_t quotient = DN / (uint16_t)divisor;                                                                    \
+        uint32_t quotient = dividend / (uint16_t)divisor;                                                              \
         if (quotient > UINT16_MAX) {                                                                                   \
             CC_V = CC_N = 1;                                                                                           \
         } else {                                                                                                       \
-            uint32_t remainder = DN % (uint16_t)divisor;                                                               \
+            uint32_t remainder = dividend % (uint16_t)divisor;                                                         \
             DX = (remainder << 16) | (quotient & 0xFFFF);                                                              \
             CC_N = quotient & 0x8000;                                                                                  \
             CC_Z = (quotient == 0);                                                                                    \
@@ -588,12 +596,17 @@
     CLEAR_NZVC();                                                                                                      \
     if (!divisor) {                                                                                                    \
         EXC_DIVIDE_BY_ZERO();                                                                                          \
+    } else if ((int16_t)divisor == -1 && dividend == INT32_MIN) {                                                      \
+        /* INT32_MIN / -1 has no representable quotient.  The C division is UB,                                        \
+         * and the shipping wasm build's i32.div_s traps on it by specification,                                       \
+         * so the test has to precede the divide rather than inspect its result. */                                    \
+        CC_V = CC_N = 1;                                                                                               \
     } else {                                                                                                           \
-        int32_t q = (INT(32))DN / (int16_t)divisor;                                                                    \
-        if (((int16_t)divisor == -1 && (INT(32))DN == INT32_MIN) || q > INT16_MAX || q < INT16_MIN) {                  \
+        int32_t q = dividend / (int16_t)divisor;                                                                       \
+        if (q > INT16_MAX || q < INT16_MIN) {                                                                          \
             CC_V = CC_N = 1;                                                                                           \
         } else {                                                                                                       \
-            int32_t remainder = (INT(32))DN % (int16_t)divisor;                                                        \
+            int32_t remainder = dividend % (int16_t)divisor;                                                           \
             DX = ((uint32_t)remainder << 16) | ((uint32_t)q & 0xFFFF);                                                 \
             CC_N = q & 0x8000;                                                                                         \
             CC_Z = (q == 0);                                                                                           \
@@ -1458,16 +1471,23 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         } else {                                                                                                       \
             if (_signed) {                                                                                             \
                 int64_t _dividend = _size64 ? (int64_t)(((uint64_t)D(_dr) << 32) | D(_dq)) : (int64_t)(int32_t)D(_dq); \
-                int64_t _q = _dividend / (int32_t)_divisor;                                                            \
-                int64_t _r = _dividend % (int32_t)_divisor;                                                            \
-                if (_q > INT32_MAX || _q < INT32_MIN) {                                                                \
+                /* INT64_MIN / -1 has no representable quotient.  The C division is UB,                                \
+                 * and the shipping wasm build's i64.div_s traps on it by specification,                               \
+                 * so the test must precede the divide -- inspecting _q cannot work. */                                \
+                if (_dividend == INT64_MIN && (int32_t)_divisor == -1) {                                               \
                     CC_V = CC_N = 1;                                                                                   \
                 } else {                                                                                               \
-                    D(_dq) = (uint32_t)_q;                                                                             \
-                    if (_dr != _dq)                                                                                    \
-                        D(_dr) = (uint32_t)_r;                                                                         \
-                    CC_N = (_q < 0);                                                                                   \
-                    CC_Z = (_q == 0);                                                                                  \
+                    int64_t _q = _dividend / (int32_t)_divisor;                                                        \
+                    int64_t _r = _dividend % (int32_t)_divisor;                                                        \
+                    if (_q > INT32_MAX || _q < INT32_MIN) {                                                            \
+                        CC_V = CC_N = 1;                                                                               \
+                    } else {                                                                                           \
+                        D(_dq) = (uint32_t)_q;                                                                         \
+                        if (_dr != _dq)                                                                                \
+                            D(_dr) = (uint32_t)_r;                                                                     \
+                        CC_N = (_q < 0);                                                                               \
+                        CC_Z = (_q == 0);                                                                              \
+                    }                                                                                                  \
                 }                                                                                                      \
             } else {                                                                                                   \
                 uint64_t _dividend = _size64 ? (((uint64_t)D(_dr) << 32) | D(_dq)) : (uint64_t)D(_dq);                 \

@@ -15,18 +15,42 @@
 #include <stdint.h>
 
 // === Macros ===
-// Aligned big-endian access: these cast the pointer, so `p` must be
-// naturally aligned for its width.  Right for register windows and RAM
-// reached through the memory map.  For on-disk and on-wire buffers read
-// at arbitrary offsets, use common.h's RD_BE*/WR_BE* instead, which are
-// byte-wise and carry no alignment requirement.
+// Big-endian access through a host pointer.  The guest may address any of
+// these at an odd byte, and the 68020+ and PowerPC cores both permit
+// misaligned data operands, so the access is expressed as a memcpy rather
+// than a pointer cast: casting is undefined for both alignment and strict
+// aliasing, and it is the C abstract machine imposing that requirement, not
+// the emulated hardware.  The compiler folds the memcpy away -- the emitted
+// code is byte-identical on aarch64 (gcc), x86-64 (clang) and wasm32 (emcc),
+// for every width, loads and stores; on wasm the only delta is that the
+// alignment hint becomes honest (p2align=0) instead of a false claim of
+// natural alignment.  For on-disk and on-wire buffers, common.h's
+// RD_BE*/WR_BE* remain the byte-wise spelling.
 #define LOAD_BE8(p)  (*(const uint8_t *)(p))
-#define LOAD_BE16(p) (__builtin_bswap16(*(const uint16_t *)(p)))
-#define LOAD_BE32(p) (__builtin_bswap32(*(const uint32_t *)(p)))
+#define LOAD_BE16(p) (__builtin_bswap16(memory_load_host16(p)))
+#define LOAD_BE32(p) (__builtin_bswap32(memory_load_host32(p)))
 
 #define STORE_BE8(p, v)  (*(uint8_t *)(p) = (uint8_t)(v))
-#define STORE_BE16(p, v) (*(uint16_t *)(p) = __builtin_bswap16((uint16_t)(v)))
-#define STORE_BE32(p, v) (*(uint32_t *)(p) = __builtin_bswap32((uint32_t)(v)))
+#define STORE_BE16(p, v) memory_store_host16((p), __builtin_bswap16((uint16_t)(v)))
+#define STORE_BE32(p, v) memory_store_host32((p), __builtin_bswap32((uint32_t)(v)))
+
+// Alignment-agnostic host-memory primitives behind the macros above.
+static inline uint16_t memory_load_host16(const void *p) {
+    uint16_t v;
+    __builtin_memcpy(&v, p, sizeof v);
+    return v;
+}
+static inline uint32_t memory_load_host32(const void *p) {
+    uint32_t v;
+    __builtin_memcpy(&v, p, sizeof v);
+    return v;
+}
+static inline void memory_store_host16(void *p, uint16_t v) {
+    __builtin_memcpy(p, &v, sizeof v);
+}
+static inline void memory_store_host32(void *p, uint32_t v) {
+    __builtin_memcpy(p, &v, sizeof v);
+}
 
 // === Type Definitions ===
 typedef struct memory_interface {
