@@ -45,6 +45,12 @@ LOG_USE_CATEGORY_NAME("scheduler");
 #define MAC_CPU_FREQUENCY 7833600.0
 #define MAX_EVENT_TYPES   64
 #define MAX_SANE_EVENTS   10000 // upper bound for event queue length sanity checks
+// Bounds for plain-data fields restored from a checkpoint.  Real machines use
+// a cpi of 1, 2, 4 or 10 (pdm, tnt, mac030/lisa, plus), so 255 is the same
+// ceiling scheduler.cpi already enforces on the writable attribute; the cycle
+// bound is the one the old assert used.
+#define MAX_SANE_CPI        255
+#define MAX_SANE_CPU_CYCLES (1ULL << 60)
 
 // Paced mode: hard cap on frame-units executed per host tick. A slow or
 // stalled host makes vbl_acc_error grow; without a cap, each oversized burst
@@ -704,6 +710,50 @@ uint64_t cmd_events(int argc, char *argv[]) {
 // ============================================================================
 
 // Create and initialize a scheduler instance, optionally restoring from checkpoint
+// Sanity-check the plain-data prefix a checkpoint just wrote into `s`.
+//
+// Everything `system_read_checkpoint_data` fills below is attacker-controlled:
+// a checkpoint is a file the user supplies -- `checkpoint --load <path>`, a
+// browser drag-and-drop, or the quick checkpoint written to OPFS every 15
+// seconds -- and the build-ID gate is not a defence, because the build ID sits
+// in the file and copies from any legitimate checkpoint.
+//
+// These checks were GS_ASSERT / GS_ASSERTF.  That was never a guard.
+// gs_assert_fail() prints, pauses the scheduler and RETURNS, so even in a
+// debug build execution continued into the operation the assert was standing
+// in front of; and GS_FAST -- the wasm release profile and MODE=fast --
+// compiles the call out entirely.  There was no build in which they protected
+// anything.
+//
+// The cpi case was a live crash rather than a latent one.  `cpi` sits inside
+// the restored prefix, and the next statement was
+// `total_instructions = cpu_cycles / cpi`.  On WebAssembly -- the shipping
+// target -- i64.div_u TRAPS when the divisor is zero, exactly as i32.div_s
+// traps on INT_MIN / -1 (the crash class fixed in 07-cpu-mmu A1-A3).  A
+// crafted checkpoint therefore killed the browser tab, with no log line in the
+// release build.  A zero cpi also poisons cpi_eff_x256, which two more divides
+// depend on (:449, :1564).
+//
+// Returns false with the checkpoint flagged; scheduler_init then falls back to
+// fresh-boot values so nothing runs on half-validated state in the window
+// before system_restore observes the error.
+static bool scheduler_restore_prefix_ok(const struct scheduler *s, checkpoint_t *checkpoint) {
+    const char *bad = NULL;
+    if (s->cpi == 0 || s->cpi > MAX_SANE_CPI)
+        bad = "cycles-per-instruction out of range";
+    else if (s->mode != schedule_paced && s->mode != schedule_unthrottled && s->mode != schedule_accelerated)
+        bad = "unrecognised pacing mode";
+    else if (s->cpu_cycles >= MAX_SANE_CPU_CYCLES)
+        bad = "cycle counter out of range";
+
+    if (!bad)
+        return true;
+
+    LOG(0, "Error: corrupt scheduler state in checkpoint (%s); refusing the restore", bad);
+    checkpoint_set_error(checkpoint);
+    return false;
+}
+
 struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkpoint) {
     GS_ASSERT(cpu != NULL);
     GS_ASSERT(cpu->run_sprint != NULL && cpu->is_stopped != NULL && cpu->poll_interrupt != NULL);
@@ -747,13 +797,21 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
         // accelerated; time spent at a lowered effective CPI makes it an
         // underestimate — acceptable for a display counter, and the reason
         // nothing derives timing from it.
-        GS_ASSERT(s->cpi > 0);
+        if (!scheduler_restore_prefix_ok(s, checkpoint)) {
+            // Put the whole prefix back to the fresh-boot values set above, so
+            // the divide below and every later derivation run on known-good
+            // numbers.  The checkpoint is already flagged; system_restore
+            // unwinds when it looks.
+            s->mode = schedule_paced;
+            s->cpu_cycles = 0;
+            s->cpi = CYCLES_PER_INSTR_DEFAULT;
+            s->speed_x256 = SPEED_X256_AUTO;
+            s->max_speed_x256 = SPEED_X256_MAX;
+        }
+
         s->total_instructions = s->cpu_cycles / s->cpi;
         s->sprint_total = 0;
         s->sprint_burndown = 0;
-
-        GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated);
-        GS_ASSERT(s->cpu_cycles < (1ULL << 60));
 
         // Checkpoints are build-ID-gated so the fields are always present,
         // but corrupt values must not poison the effective-CPI derivation.
@@ -765,16 +823,30 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
         // Save event data for deferred restoration (names must be resolved after device registration).
         system_read_checkpoint_data(checkpoint, &s->tmp_num_events, sizeof(s->tmp_num_events));
-        // Reject negative-decoded / absurdly-large counts on a corrupt checkpoint.
-        GS_ASSERTF(s->tmp_num_events <= MAX_SANE_EVENTS, "checkpoint claims %u pending events (cap %d)",
-                   s->tmp_num_events, MAX_SANE_EVENTS);
+        // An on-disk count drives the allocation below, so it is checked
+        // before it is used rather than asserted after.  MAX_SANE_EVENTS
+        // bounds the allocation at ~10k entries; the largest queue the corpus
+        // produces is orders of magnitude smaller.
+        if (s->tmp_num_events > MAX_SANE_EVENTS) {
+            LOG(0, "Error: checkpoint claims %u pending events (cap %d); refusing the restore", s->tmp_num_events,
+                MAX_SANE_EVENTS);
+            checkpoint_set_error(checkpoint);
+            s->tmp_num_events = 0;
+        }
         if (s->tmp_num_events == 0) {
             s->tmp_events = NULL;
         } else {
             s->tmp_events = (event_as_checkpoint_t *)malloc((size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
-            GS_ASSERT(s->tmp_events != NULL);
-            system_read_checkpoint_data(checkpoint, s->tmp_events,
-                                        (size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
+            if (!s->tmp_events) {
+                // The old GS_ASSERT here fell straight through to a read into
+                // a NULL pointer -- in every build, for the reason above.
+                LOG(0, "Error: out of memory restoring %u scheduler events", s->tmp_num_events);
+                checkpoint_set_error(checkpoint);
+                s->tmp_num_events = 0;
+            } else {
+                system_read_checkpoint_data(checkpoint, s->tmp_events,
+                                            (size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
+            }
         }
     } else {
         // Fresh boot

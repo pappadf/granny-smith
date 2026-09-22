@@ -164,6 +164,15 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
     g_cp_w[g_cp_slot] += size;
 }
 
+// The restore path flags a checkpoint it cannot trust instead of asserting on
+// it (08-core-infra F-05), so the stub records the call and the corruption
+// tests below assert on it.
+static int g_cp_errors;
+void checkpoint_set_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    g_cp_errors++;
+}
+
 // Object tree: the scheduler tolerates a NULL binding (object_new failure
 // path), so the whole surface stubs to no-ops.
 struct object *object_root(void) {
@@ -1038,6 +1047,133 @@ TEST(test_checkpoint_carries_no_host_timing) {
     scheduler_delete(b);
 }
 
+// === Corrupt-checkpoint restores (08-core-infra F-05) =======================
+//
+// `scheduler_init(cpu, checkpoint)` fills the whole plain-data prefix straight
+// from the file, so every field in it is attacker-controlled: a checkpoint is
+// a user-supplied file, and the build-ID gate is no defence because the ID
+// lives in the file and copies from any legitimate one.
+//
+// These three fields were guarded by GS_ASSERT / GS_ASSERTF, which is not a
+// guard at all -- gs_assert_fail() prints, pauses and RETURNS, so execution
+// continued into the guarded operation even in a debug build, and GS_FAST (the
+// wasm release profile) compiles it out entirely.
+//
+// Each test below writes a VALID stream, damages exactly one field, and
+// restores.  All three fail with the fix reverted -- verified by reverting it.
+//
+// How test_restore_refuses_zero_cpi fails is worth stating exactly, because
+// this suite and the shipping build differ.  HERE it aborts at the old
+// GS_ASSERT, because support/stub_assert.c's gs_assert_fail() calls abort().
+// The REAL gs_assert_fail() does not: it prints, pauses the scheduler and
+// returns, and under GS_FAST (the wasm release profile) it is not called at
+// all.  So in the build that ships, control reaches the next statement --
+// `total_instructions = cpu_cycles / cpi` -- with cpi == 0, which raises
+// SIGFPE on x86-64 and TRAPS on WebAssembly, i64.div_u being undefined for a
+// zero divisor.  That is the same crash class as INT_MIN / -1, fixed in
+// 07-cpu-mmu A1-A3.  The unit suite cannot demonstrate that trap; it
+// demonstrates that corrupt input reaches the arithmetic at all.
+
+// Locate a 4-byte little-endian value in the recorded prefix, insisting it
+// occurs exactly once so a test can never silently poison the wrong field.
+static size_t cp_find_unique_u32(uint32_t needle) {
+    uint8_t pat[4] = {(uint8_t)(needle), (uint8_t)(needle >> 8), (uint8_t)(needle >> 16), (uint8_t)(needle >> 24)};
+    size_t hit = (size_t)-1;
+    int n = 0;
+    for (size_t i = 0; i + 4 <= g_cp_w[0]; i++) {
+        if (memcmp(g_cp[0] + i, pat, 4) == 0) {
+            hit = i;
+            n++;
+        }
+    }
+    if (n != 1) {
+        fprintf(stderr, "[FAIL] expected one occurrence of %u in the scheduler stream, found %d\n", needle, n);
+        exit(1);
+    }
+    return hit;
+}
+
+static void cp_poke_u32(size_t off, uint32_t v) {
+    memcpy(g_cp[0] + off, &v, sizeof(v));
+}
+
+// Save a valid stream with a distinctive cpi, leaving the read cursor rewound.
+static void cp_save_valid(uint32_t cpi) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+    g_cp_slot = 0;
+    g_now = 1000.0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_set_cpi(a, cpi);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    ASSERT_TRUE(g_cp_w[0] > 0);
+    scheduler_delete(a);
+    g_cp_r = 0;
+}
+
+TEST(test_restore_refuses_zero_cpi) {
+    // 173 is arbitrary but distinctive: cp_find_unique_u32 proves it appears
+    // exactly once, so this poisons cpi and nothing else.
+    cp_save_valid(173);
+    cp_poke_u32(cp_find_unique_u32(173), 0);
+
+    g_cp_errors = 0;
+    // Without the fix this does not return: cpu_cycles / 0 raises SIGFPE here
+    // and traps on wasm.
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_unknown_mode) {
+    cp_save_valid(173);
+    // `mode` is the first member of struct scheduler, so it is the first four
+    // bytes of the prefix.  0x7FFFFFFF is no schedule_mode.
+    cp_poke_u32(0, 0x7FFFFFFFu);
+
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    // ...and the scheduler came back on a known-good mode rather than running
+    // on the value from the file.
+    ASSERT_EQ_INT((int)scheduler_get_mode(b), (int)schedule_paced);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_absurd_event_count) {
+    cp_save_valid(173);
+    // The save writes the prefix and then num_events; with an empty queue that
+    // count is the last four bytes of the stream.  An unchecked count drove
+    // malloc(count * sizeof(event_as_checkpoint_t)) directly.
+    //
+    // 50000 is chosen deliberately, and the first version of this test used
+    // 0xFFFFFFFF and was WRONG.  With a four-billion count the multiply makes
+    // an allocation this host cannot satisfy, malloc returns NULL, and the
+    // out-of-memory branch flags the checkpoint -- so the test passed with the
+    // COUNT CAP REMOVED, catching a different guard than the one it names.
+    // 50000 is over MAX_SANE_EVENTS (10000) but allocates about a megabyte, so
+    // malloc succeeds and only the cap can reject it.  Verified by removing
+    // the cap: this test then fails, and it is the only one that does.
+    //
+    // The four-billion case is not merely a big malloc, incidentally: on the
+    // 32-bit wasm heap `count * sizeof(event_as_checkpoint_t)` overflows
+    // size_t, and a count near 2^32/sizeof wraps to a handful of bytes -- a
+    // small allocation followed by a multi-gigabyte read into it.  The cap
+    // below is what stops that too, which is why it is a cap and not a
+    // malloc-result check.
+    ASSERT_TRUE(g_cp_w[0] >= 4);
+    cp_poke_u32(g_cp_w[0] - 4, 50000u);
+
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    scheduler_delete(b);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -1063,6 +1199,9 @@ int main(void) {
     RUN(test_last_event_ns_reports_the_furthest_pending);
     RUN(test_forget_source_drops_events_and_types);
     RUN(test_checkpoint_carries_no_host_timing);
+    RUN(test_restore_refuses_zero_cpi);
+    RUN(test_restore_refuses_unknown_mode);
+    RUN(test_restore_refuses_absurd_event_count);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }
