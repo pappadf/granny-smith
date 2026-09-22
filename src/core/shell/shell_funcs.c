@@ -17,6 +17,7 @@
 #include "shell_var.h"
 #include "value.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -180,11 +181,29 @@ int shell_func_define(const char *name, char **params, int n_params, script_bloc
         script_block_free(body);
         return -1;
     }
+    // Checked, and the partial entry unwound on failure.  These were stored
+    // unchecked and then strcmp'd at call time (shell_funcs.c's named-argument
+    // binding), so an OOM here turned into a NULL dereference at a distance --
+    // and on the 32-bit wasm heap OOM is not hypothetical (08-core-infra F-56).
     f->name = strdup(name);
     f->n_params = n_params;
     f->params = n_params > 0 ? (char **)calloc((size_t)n_params, sizeof(char *)) : NULL;
-    for (int i = 0; i < n_params; i++)
+    bool alloc_ok = (f->name != NULL) && (n_params == 0 || f->params != NULL);
+    for (int i = 0; alloc_ok && i < n_params; i++) {
         f->params[i] = strdup(params[i]);
+        if (!f->params[i])
+            alloc_ok = false;
+    }
+    if (!alloc_ok) {
+        for (int i = 0; i < n_params && f->params; i++)
+            free(f->params[i]);
+        free(f->params);
+        free(f->name);
+        free(f);
+        script_block_free(body);
+        snprintf(err_buf, err_size, "out of memory");
+        return -1;
+    }
     f->body = body;
     f->next = g_funcs;
     g_funcs = f;

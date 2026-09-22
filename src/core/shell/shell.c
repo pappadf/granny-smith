@@ -6,6 +6,7 @@
 
 #include "shell.h"
 
+#include "shell_singletons.h"
 #include "value_format.h"
 
 #include "alias.h"
@@ -360,7 +361,6 @@ int shell_init(void) {
     // Install the top-level object-root methods (assert, echo, cp,
     // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed
     // path-form parser can reach them.
-    extern void root_install_class(void);
     root_install_class();
 
     // Register process-singleton namespace objects that exist
@@ -374,17 +374,6 @@ int shell_init(void) {
     // doesn't run system_create at startup, so the path-form would
     // fail to resolve until the legacy `rom load` had already booted
     // a machine.
-    extern void rom_init(void);
-    extern void vrom_init(void);
-    extern void prom_init(void);
-    extern void machine_init(void);
-    extern void checkpoint_init(void);
-    extern void archive_init(void);
-    extern void mouse_class_register(void);
-    extern void screen_class_register(void);
-    extern void vfs_class_register(void);
-    extern void find_class_register(void);
-    extern void scsi_class_register(void);
     rom_init();
     vrom_init();
     prom_init();
@@ -408,7 +397,6 @@ int shell_init(void) {
     // for floppy images. system_create will later re-install with the
     // real cfg (root_install handles the cfg-change uninstall +
     // reinstall internally).
-    extern void root_install(struct config * cfg);
     root_install(NULL);
 
     // Latch the worker pthread for the thread-affinity guard. From now

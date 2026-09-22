@@ -347,7 +347,11 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         // come only from expression evaluation), but it is the shape that
         // makes an eighth kind break the bridge silently.
         vbuf_t inner = {0};
-        vbuf_appendf(&inner, "%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
+        if (v->range.step == 1 || v->range.step == 0)
+            vbuf_appendf(&inner, "%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
+        else
+            vbuf_appendf(&inner, "%lld..%lld step %lld", (long long)v->range.start, (long long)v->range.stop,
+                         (long long)v->range.step);
         if (mode_is_json(mode))
             append_json_string(out, inner.p ? inner.p : "");
         else

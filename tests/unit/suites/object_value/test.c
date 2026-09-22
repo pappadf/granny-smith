@@ -2,7 +2,9 @@
 // every object-model boundary.
 
 #include "test_assert.h"
+
 #include "value.h"
+#include <stdint.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -334,6 +336,40 @@ TEST(test_bytes_invariant_holds) {
     value_free(&src);
 }
 
+// === Lazy ranges (08-core-infra F-37, decision D-2) ========================
+//
+// range() used to materialise a V_LIST capped at 2^20 entries, which at
+// sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
+// heap -- to run a loop.  A range now carries three integers and never
+// allocates, so range(a,b) and a..b are the SAME value and the two spellings
+// stop having opposite safety properties.
+TEST(test_range_is_lazy_and_counts_correctly) {
+    value_t r = val_range(0, 10);
+    ASSERT_EQ_INT(V_RANGE, r.kind);
+    ASSERT_EQ_INT((int)val_range_count(&r), 10);
+    ASSERT_EQ_INT((int)r.range.step, 1);
+
+    value_t s = val_range_step(0, 10, 3); // 0, 3, 6, 9
+    ASSERT_EQ_INT((int)val_range_count(&s), 4);
+
+    value_t d = val_range_step(10, 0, -3); // 10, 7, 4, 1
+    ASSERT_EQ_INT((int)val_range_count(&d), 4);
+
+    value_t empty = val_range(5, 5);
+    ASSERT_EQ_INT((int)val_range_count(&empty), 0);
+    value_t backwards = val_range(5, 1); // positive step, stop < start
+    ASSERT_EQ_INT((int)val_range_count(&backwards), 0);
+}
+
+// The count is computed in uint64 so the full int64 span cannot overflow the
+// subtraction, which is undefined in int64 and was the narrower half of F-37's
+// overflow claim.
+TEST(test_range_count_does_not_overflow) {
+    value_t huge = val_range(INT64_MIN, INT64_MAX);
+    uint64_t n = val_range_count(&huge);
+    ASSERT_TRUE(n == (uint64_t)INT64_MAX + (uint64_t)INT64_MAX + 1u);
+}
+
 int main(void) {
     RUN(test_inline_free_is_noop);
     RUN(test_string_ownership);
@@ -350,5 +386,7 @@ int main(void) {
     RUN(test_parse_bool_vocabulary);
     RUN(test_parse_bool_is_case_sensitive_and_rejects_junk);
     RUN(test_bytes_invariant_holds);
+    RUN(test_range_is_lazy_and_counts_correctly);
+    RUN(test_range_count_does_not_overflow);
     return 0;
 }

@@ -896,6 +896,14 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
     // Skip the alloc entirely on an empty queue.
     event_as_checkpoint_t *events_to_save =
         num_events ? (event_as_checkpoint_t *)calloc(num_events, sizeof(event_as_checkpoint_t)) : NULL;
+    if (num_events && !events_to_save) {
+        // The write loop below indexed this unconditionally (F-56).  Flag the
+        // checkpoint rather than writing through NULL; the count is already on
+        // the stream, so the restore will refuse it as a short read.
+        LOG(0, "Error: out of memory saving %u scheduler events", num_events);
+        checkpoint_set_error(checkpoint);
+        return;
+    }
 
     event_t *e = scheduler->cpu_events;
     for (unsigned int i = 0; i < num_events; i++) {

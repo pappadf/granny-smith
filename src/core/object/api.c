@@ -440,7 +440,14 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     size_t pos = 0;
 
     if (!path || !*path) {
+        // `{"error": ...}`, like every sibling branch.  This one emitted the
+        // bare document `"empty path"`, so a JS caller doing
+        // `if (result.error)` got undefined and treated the failure as a
+        // successful string result -- while object-model.md promises JS
+        // callers see error SHAPES, never raw values (08-core-infra F-59).
+        buf_append(out_buf, out_size, &pos, "{\"error\":", 9);
         buf_append_jstring(out_buf, out_size, &pos, "empty path");
+        buf_append(out_buf, out_size, &pos, "}", 1);
         return -1;
     }
 

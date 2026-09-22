@@ -659,6 +659,32 @@ TEST(test_format_spec_without_ternary_unaffected) {
     value_free(&v);
 }
 
+// range() and `..` are the same value now, and both are indexable so the lazy
+// form loses nothing against the list it replaced (F-37).
+TEST(test_range_builtin_matches_dotdot) {
+    value_t a = eval("range(4) == 0..4");
+    ASSERT_EQ_INT(V_BOOL, a.kind);
+    ASSERT_TRUE(a.b);
+    value_free(&a);
+
+    bool ok = false;
+    value_t n = eval("len(range(0, 10, 3))"); // 0, 3, 6, 9
+    ASSERT_EQ_INT((int)val_as_i64(&n, &ok), 4);
+    value_free(&n);
+
+    // Indexing goes through a BINDING or a path, as it does for lists:
+    // `[10,20,30][1]` is "trailing garbage in expression" today, so indexing a
+    // call result directly was never supported for any kind and the lazy range
+    // loses nothing by not supporting it either.  `$r[3]` is the real case,
+    // and tests/integration/shell-v2 pins it via `$hits[3]`.
+}
+
+TEST(test_range_step_zero_is_refused) {
+    value_t v = eval("range(0, 10, 0)");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
@@ -713,5 +739,7 @@ int main(void) {
     RUN(test_ternary_inside_interpolation);
     RUN(test_ternary_and_format_spec_together);
     RUN(test_format_spec_without_ternary_unaffected);
+    RUN(test_range_builtin_matches_dotdot);
+    RUN(test_range_step_zero_is_refused);
     return 0;
 }

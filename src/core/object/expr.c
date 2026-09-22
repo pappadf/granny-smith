@@ -214,7 +214,7 @@ static bool same_kind_equal(const value_t *a, const value_t *b) {
     case V_OBJECT:
         return a->obj == b->obj;
     case V_RANGE:
-        return a->range.start == b->range.start && a->range.stop == b->range.stop;
+        return a->range.start == b->range.start && a->range.stop == b->range.stop && a->range.step == b->range.step;
     case V_REF:
         return strcmp(a->ref ? a->ref : "", b->ref ? b->ref : "") == 0;
     default:
@@ -628,6 +628,9 @@ static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, si
 // accepted as a list index, mirroring the object tree's `.N` spelling).
 static value_t value_subpath_read(const value_t *base, const char *sub) {
     const value_t *cur = base;
+    // Holds a value synthesised mid-walk (a range element), which has no
+    // storage of its own to point at.  Inline kinds only, so no ownership.
+    value_t scratch = val_none();
     const char *s = sub;
     while (*s) {
         if (s[0] == '[' && s[1] == '"') {
@@ -654,6 +657,18 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
             long long idx = strtoll(s + 1, &endp, 10);
             if (!endp || *endp != ']')
                 return val_err("bad index segment in '%s'", sub);
+            // A range indexes like the list it replaced: range(10)[3] and
+            // (0..10)[3] both answer 3.  Without this the lazy form would
+            // lose a capability the materialised one had (F-37).
+            if (cur->kind == V_RANGE) {
+                uint64_t n = val_range_count(cur);
+                if (idx < 0 || (uint64_t)idx >= n)
+                    return val_err("index %lld out of range (len %llu)", idx, (unsigned long long)n);
+                scratch = val_int(cur->range.start + (int64_t)idx * cur->range.step);
+                cur = &scratch;
+                s = endp + 1;
+                continue;
+            }
             if (cur->kind != V_LIST)
                 return val_err("cannot index a %s with [%lld]",
                                cur->kind == V_MAP ? "map (keys are strings)" : "non-list", idx);
@@ -806,7 +821,9 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
         return expr_object_path_read(ctx->root, full);
     }
 
-    if ((base.kind == V_LIST || base.kind == V_MAP) && has_sub && !call_open) {
+    // V_RANGE joins the indexable kinds: range(4) is a lazy range now rather
+    // than a materialised list, and `$hits[3]` has to keep working (F-37).
+    if ((base.kind == V_LIST || base.kind == V_MAP || base.kind == V_RANGE) && has_sub && !call_open) {
         // Structured-value access: `$hits[0]`, `$m[1][2]`, `$info.name`,
         // `$info["name"]` — descend the continuation segments.
         value_t r = value_subpath_read(&base, sub);
@@ -844,8 +861,6 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
 // catches evaluation errors from its first argument (§3.9). They are
 // recognised by name in primary position, before object-tree lookup.
 
-#define EXPR_RANGE_MAX_ITEMS (1 << 20) // cap materialised range() lists
-
 static value_t eval_builtin_range(int argc, const value_t *argv) {
     int64_t start = 0, stop = 0, step = 1;
     bool ok = true, ok2 = true, ok3 = true;
@@ -865,20 +880,14 @@ static value_t eval_builtin_range(int argc, const value_t *argv) {
         return val_err("range: arguments must be integers");
     if (step == 0)
         return val_err("range: step must not be zero");
-    int64_t count = 0;
-    if (step > 0 && stop > start)
-        count = (stop - start + step - 1) / step;
-    else if (step < 0 && stop < start)
-        count = (start - stop + (-step) - 1) / (-step);
-    if (count > EXPR_RANGE_MAX_ITEMS)
-        return val_err("range: %lld items exceeds cap of %d", (long long)count, EXPR_RANGE_MAX_ITEMS);
-    value_t *items = count > 0 ? (value_t *)calloc((size_t)count, sizeof(value_t)) : NULL;
-    if (count > 0 && !items)
-        return val_err("range: out of memory");
-    int64_t v = start;
-    for (int64_t i = 0; i < count; i++, v += step)
-        items[i] = val_int(v);
-    return val_list(items, (size_t)count);
+    // Lazy: three integers, no allocation, however many values it denotes.
+    // This used to build a V_LIST capped at 2^20 entries, which at
+    // sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
+    // heap -- to run a loop.  `range(a,b)` and `a..b` are now the SAME value,
+    // which is what dissolves the finding: two spellings of one loop no longer
+    // have opposite safety properties (08-core-infra F-37).  The only cap left
+    // is on ITERATIONS, in exec_for, and it bounds time rather than memory.
+    return val_range_step(start, stop, step);
 }
 
 static value_t eval_builtin_len(int argc, const value_t *argv) {
@@ -895,7 +904,7 @@ static value_t eval_builtin_len(int argc, const value_t *argv) {
     case V_BYTES:
         return val_int((int64_t)v->bytes.n);
     case V_RANGE:
-        return val_int(v->range.stop > v->range.start ? v->range.stop - v->range.start : 0);
+        return val_int((int64_t)val_range_count(v));
     default:
         return val_err("len: takes a string, list, map, bytes, or range");
     }

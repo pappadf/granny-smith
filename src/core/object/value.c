@@ -139,12 +139,36 @@ value_t val_ref(const char *path) {
     return v;
 }
 
-value_t val_range(int64_t start, int64_t stop) {
+value_t val_range_step(int64_t start, int64_t stop, int64_t step) {
     value_t v = {0};
     v.kind = V_RANGE;
     v.range.start = start;
     v.range.stop = stop;
+    v.range.step = step ? step : 1;
     return v;
+}
+
+value_t val_range(int64_t start, int64_t stop) {
+    return val_range_step(start, stop, 1);
+}
+
+uint64_t val_range_count(const value_t *v) {
+    if (!v || v->kind != V_RANGE)
+        return 0;
+    int64_t step = v->range.step ? v->range.step : 1;
+    // Compute the span in UINT64 so INT64_MIN..INT64_MAX cannot overflow the
+    // subtraction, which is undefined in int64.
+    if (step > 0) {
+        if (v->range.stop <= v->range.start)
+            return 0;
+        uint64_t span = (uint64_t)v->range.stop - (uint64_t)v->range.start;
+        return (span + (uint64_t)step - 1u) / (uint64_t)step;
+    }
+    if (v->range.stop >= v->range.start)
+        return 0;
+    uint64_t span = (uint64_t)v->range.start - (uint64_t)v->range.stop;
+    uint64_t mag = (uint64_t)(-(step + 1)) + 1u; // |step|, safe for INT64_MIN
+    return (span + mag - 1u) / mag;
 }
 
 bool val_is_heap(const value_t *v) {

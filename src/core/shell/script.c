@@ -1828,6 +1828,9 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
     }
 }
 
+// How many times a `for … in <range>` body may run.  See exec_for.
+#define FOR_RANGE_MAX_ITERATIONS (1u << 20)
+
 static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
@@ -1849,6 +1852,15 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     value_t saved = val_none();
     bool had = shell_binding_save_top(st->name, &saved);
 
+    // The one cap, and it bounds TIME rather than memory: a range denotes its
+    // values without allocating, so what needs limiting is how many times the
+    // body runs.  An uncapped loop hangs a headless script or CI, where
+    // g_interrupt below cannot reach it.  The largest `for … in a..b` in the
+    // corpus is 0..4096, so this is 256x headroom.
+    //
+    // Real collections are NOT capped: iterating a list, map or bytes walks
+    // data that already exists, and its size is whatever the machine already
+    // holds (08-core-infra F-37, decision D-2).
     size_t count = 0;
     if (iter.kind == V_LIST)
         count = iter.list.len;
@@ -1856,8 +1868,16 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         count = iter.map.len;
     else if (iter.kind == V_BYTES)
         count = iter.bytes.n;
-    else
-        count = iter.range.stop > iter.range.start ? (size_t)(iter.range.stop - iter.range.start) : 0;
+    else {
+        uint64_t n = val_range_count(&iter);
+        if (n > FOR_RANGE_MAX_ITERATIONS) {
+            exec_error(cx, st->line, "for: range of %llu exceeds the %llu-iteration cap", (unsigned long long)n,
+                       (unsigned long long)FOR_RANGE_MAX_ITERATIONS);
+            value_free(&iter);
+            return;
+        }
+        count = (size_t)n;
+    }
 
     for (size_t i = 0; i < count; i++) {
         if (g_interrupt) {
@@ -1874,7 +1894,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         else if (iter.kind == V_BYTES)
             item = val_uint(1, iter.bytes.p[i]);
         else
-            item = val_int(iter.range.start + (int64_t)i);
+            item = val_int(iter.range.start + (int64_t)i * iter.range.step);
         char err[160];
         if (shell_binding_let(st->name, item, err, sizeof(err)) < 0) {
             exec_error(cx, st->line, "%s", err);
@@ -1934,7 +1954,12 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
     }
     if (is_err)
         fprintf(stderr, "line %d: %s\n", st->line, v.err ? v.err : "error in assert predicate");
-    printf("ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
+    // stderr, with its predicate error.  These are one failure event and used
+    // to go to two streams, so a test log could interleave them in either
+    // order or split them across files -- and that output is exactly what a
+    // failure investigation reads (08-core-infra F-61).  Results go to stdout,
+    // diagnostics to stderr.
+    fprintf(stderr, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
     value_free(&v);
     cx->sig = SIG_ERROR;
 }

@@ -102,6 +102,7 @@ typedef struct value {
         struct {
             int64_t start;
             int64_t stop;
+            int64_t step; // never 0; 1 for the `a..b` form
         } range; // half-open [start, stop)
     };
 } value_t;
@@ -130,7 +131,21 @@ value_t val_map(struct value_entry *entries, size_t len); // takes ownership of 
 value_t val_obj(struct object *o);
 value_t val_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 value_t val_ref(const char *path); // node reference by path text (strdup'd)
-value_t val_range(int64_t start, int64_t stop); // half-open [start, stop)
+// Half-open [start, stop) with a stride.  `step` must not be 0.
+//
+// A range is LAZY: it carries three integers and never allocates, however
+// many values it denotes.  range() used to materialise a V_LIST instead,
+// capped at 2^20 entries -- which at sizeof(value_t) == 32 permitted a 32 MB
+// single calloc on the 32-bit wasm heap, to run a loop.  `for` over a real
+// collection legitimately walks a list that already exists; range() was the
+// only iterable that fabricated one (08-core-infra F-37).
+value_t val_range_step(int64_t start, int64_t stop, int64_t step);
+
+// Shorthand for step 1, the `a..b` spelling.
+value_t val_range(int64_t start, int64_t stop);
+
+// Number of values a range denotes, saturating rather than overflowing.
+uint64_t val_range_count(const value_t *v);
 
 // Convenience constants.
 #define V_NONE_VAL (val_none())

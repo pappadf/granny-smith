@@ -12,6 +12,7 @@
 #include "log.h"
 #include "system_config.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -175,6 +176,16 @@ void checkpoint_machine_set_root(const char *root) {
     }
 }
 
+// Undo a partial checkpoint_machine_set so a retry is possible.
+static void checkpoint_machine_forget_identity(void) {
+    free(g_machine_id);
+    free(g_machine_created);
+    free(g_machine_dir);
+    g_machine_id = NULL;
+    g_machine_created = NULL;
+    g_machine_dir = NULL;
+}
+
 int checkpoint_machine_set(const char *machine_id, const char *created) {
     if (!machine_id || !*machine_id || !created || !*created)
         return -1;
@@ -187,20 +198,35 @@ int checkpoint_machine_set(const char *machine_id, const char *created) {
             g_machine_created, machine_id, created);
         return -1;
     }
+    // Every failure below rolls the identity back.
+    //
+    // It used to assign the globals FIRST and then return -1 from four later
+    // points with them populated and g_machine_dir unset -- after which the
+    // "at most once per process" guard above rejected every subsequent call.
+    // So a transient OPFS mkdir failure left the process with no machine
+    // directory and no way to establish one: quick checkpoints and image
+    // deltas disabled for the session, behind a single level-1 log line, and
+    // the documented recovery is a page reload (08-core-infra F-47).
     g_machine_id = str_dup_local(machine_id);
     g_machine_created = str_dup_local(created);
-    if (!g_machine_id || !g_machine_created)
+    if (!g_machine_id || !g_machine_created) {
+        checkpoint_machine_forget_identity();
         return -1;
+    }
     // Ensure parent + machine dir exist.
     if (mkdir_p(machine_root()) != 0) {
         LOG(1, "checkpoint_machine_set: cannot create root %s", machine_root());
+        checkpoint_machine_forget_identity();
         return -1;
     }
     g_machine_dir = str_printf_local("%s/%s-%s", machine_root(), machine_id, created);
-    if (!g_machine_dir)
+    if (!g_machine_dir) {
+        checkpoint_machine_forget_identity();
         return -1;
+    }
     if (mkdir_p(g_machine_dir) != 0) {
         LOG(1, "checkpoint_machine_set: cannot create machine dir %s", g_machine_dir);
+        checkpoint_machine_forget_identity();
         return -1;
     }
     return 0;
@@ -226,6 +252,31 @@ const char *checkpoint_machine_id(void) {
 
 const char *checkpoint_machine_created(void) {
     return g_machine_created;
+}
+
+// A machine directory is `<16 hex>-<ISO-ish stamp>`, the shape
+// checkpoint_machine_set builds.  Anything else in the root belongs to
+// someone else.
+static bool is_machine_dir_name(const char *name) {
+    // 16 hex digits
+    size_t i = 0;
+    for (; i < 16; i++)
+        if (!isxdigit((unsigned char)name[i]))
+            return false;
+    if (name[i++] != '-')
+        return false;
+    // 8 digits, 'T', 6 digits, 'Z'
+    for (size_t k = 0; k < 8; k++, i++)
+        if (!isdigit((unsigned char)name[i]))
+            return false;
+    if (name[i++] != 'T')
+        return false;
+    for (size_t k = 0; k < 6; k++, i++)
+        if (!isdigit((unsigned char)name[i]))
+            return false;
+    if (name[i++] != 'Z')
+        return false;
+    return name[i] == '\0';
 }
 
 int checkpoint_machine_sweep_others(void) {
@@ -259,6 +310,21 @@ int checkpoint_machine_sweep_others(void) {
             continue;
         if (strcmp(name, want) == 0)
             continue; // current machine dir; keep
+        // Only entries that LOOK like a machine directory are swept.
+        //
+        // This used to rm_tree or unlink every entry whose name was not
+        // exactly `want`, including plain files at the top level.  The root is
+        // configurable (checkpoint_machine_set_root, a headless
+        // --checkpoint-dir, a shared test directory), so pointing it at a
+        // directory containing anything else lost all of it, silently, behind
+        // one level-2 log line per entry.  The code already recognised the
+        // danger -- it bails above rather than risk sweeping its own dir on a
+        // truncated key -- and this extends that caution to everything else
+        // (08-core-infra F-48).
+        if (!is_machine_dir_name(name)) {
+            LOG(2, "checkpoint_machine: leaving unrecognised entry %s alone", name);
+            continue;
+        }
         char *child = str_printf_local("%s/%s", root, name);
         if (!child)
             continue;
@@ -267,8 +333,6 @@ int checkpoint_machine_sweep_others(void) {
             LOG(2, "checkpoint_machine: sweeping orphan dir %s", child);
             rm_tree(child);
         } else {
-            // Stray top-level files (e.g. legacy <n>.checkpoint from older
-            // builds): drop them too.
             unlink(child);
         }
         free(child);
