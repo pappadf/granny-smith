@@ -139,11 +139,6 @@ int atalk_asp_session_max(void);
 bool atalk_asp_session_in_use(int index);
 bool atalk_asp_session_info(int index, atalk_session_info_t *out);
 
-// Record the AFP version a session negotiated at FPLogin, and read it back
-// when gating the 2.1-only commands.
-void atalk_asp_session_set_afp_version(uint16_t session_ref, const char *version);
-const char *atalk_asp_session_afp_version(uint16_t session_ref);
-
 // ASP Attention codes we raise (AFP_21_22 Table 1-7).
 #define ATALK_ATTN_SHUTDOWN   0x8000u // shutdown, no message
 #define ATALK_ATTN_SERVER_MSG 0x2000u // a server message is available

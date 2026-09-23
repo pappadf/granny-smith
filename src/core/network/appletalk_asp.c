@@ -85,7 +85,6 @@ struct asp_session {
     uint8_t sess_id; // the one-byte id on the wire, unique among live sessions
     uint8_t wss; // workstation session socket (OpenSess user byte 1)
     uint8_t client_node; // LLAP node of the workstation
-    char afp_version[24]; // negotiated at FPLogin ("" until then)
     uint64_t last_activity_ns; // guest time of the last packet from this client
     asp_write_t *write; // an SPWrite waiting for its WriteContinue
 };
@@ -212,22 +211,13 @@ bool atalk_asp_session_info(int index, atalk_session_info_t *out) {
     out->session_ref = s->sess_ref;
     out->client_node = s->client_node;
     out->socket = s->wss;
-    snprintf(out->afp_version, sizeof(out->afp_version), "%s", s->afp_version);
+    const char *ver =
+        (g_client && g_client->session_version) ? g_client->session_version(g_client_ctx, s->sess_ref) : NULL;
+    snprintf(out->afp_version, sizeof(out->afp_version), "%s", ver ? ver : "");
     out->open_forks = (g_client && g_client->open_forks) ? g_client->open_forks(g_client_ctx, s->sess_ref) : 0;
     uint64_t now = asp_now_ns();
     out->idle_ns = (now > s->last_activity_ns) ? (now - s->last_activity_ns) : 0;
     return true;
-}
-
-void atalk_asp_session_set_afp_version(uint16_t session_ref, const char *version) {
-    asp_session_t *s = asp_by_ref(session_ref);
-    if (s)
-        snprintf(s->afp_version, sizeof(s->afp_version), "%s", version ? version : "");
-}
-
-const char *atalk_asp_session_afp_version(uint16_t session_ref) {
-    asp_session_t *s = asp_by_ref(session_ref);
-    return s ? s->afp_version : NULL;
 }
 
 // Send an ASP Attention to one session.  The code travels in the ATP user

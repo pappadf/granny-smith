@@ -603,8 +603,12 @@ static uint32_t afp_asp_open_forks(void *ctx, uint16_t session_ref) {
 // (The comment in atalk_afp_set_enabled always said so; nothing did it until
 // ASP gained a client.)
 static bool afp_asp_open(void *ctx, uint16_t session_ref) {
-    (void)ctx, (void)session_ref;
-    return g_afp_enabled;
+    (void)ctx;
+    return afp_session_opened(session_ref);
+}
+static const char *afp_asp_version(void *ctx, uint16_t session_ref) {
+    (void)ctx;
+    return afp_session_version(session_ref);
 }
 static const asp_client_t k_afp_asp_client = {
     .on_open = afp_asp_open,
@@ -612,6 +616,7 @@ static const asp_client_t k_afp_asp_client = {
     .on_command = afp_asp_command,
     .get_status = afp_asp_status,
     .open_forks = afp_asp_open_forks,
+    .session_version = afp_asp_version,
 };
 
 void atalk_server_init(void) {
@@ -1295,17 +1300,76 @@ typedef struct {
 typedef uint32_t (*afp_command_handler_fn)(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
                                            int *out_len);
 
+// What a session must have done before a command is served (10-network C7).
+// The zero value is the common case, so the table names only the exceptions.
+typedef enum {
+    AFP_GATE_LOGIN = 0, // a logged-in session
+    AFP_GATE_SESSION, // any open session: FPLogin and FPLoginCont
+    AFP_GATE_21, // a session logged in at AFP 2.1: the 2.1 calls
+} afp_gate_t;
+
 typedef struct {
     uint8_t opcode;
     const char *name;
     afp_command_handler_fn handler;
+    afp_gate_t gate;
 } afp_command_handler_t;
+
+// === Sessions, at the AFP level ===============================================
+//
+// ASP owns the session -- its id, its node, its liveness; the server owns what
+// the session has done in AFP: whether it has logged in, and at which version.
+// A record is made when ASP opens the session (the client's on_open) and
+// dropped when it closes.  Commands used to be served to any session id,
+// logged in or not, including ids that never existed (10-network F-05).
+
+typedef enum { AFP_SESS_OPEN, AFP_SESS_LOGGED_IN } afp_sess_state_t;
+
+typedef struct {
+    bool in_use;
+    uint16_t ref;
+    afp_sess_state_t state;
+    char version[24]; // negotiated at FPLogin
+} afp_session_t;
+
+#define AFP_MAX_SESSIONS 8
+static afp_session_t g_afp_sessions[AFP_MAX_SESSIONS];
+
+static afp_session_t *afp_session(uint16_t ref) {
+    for (int i = 0; i < AFP_MAX_SESSIONS; i++)
+        if (g_afp_sessions[i].in_use && g_afp_sessions[i].ref == ref)
+            return &g_afp_sessions[i];
+    return NULL;
+}
+
+static void afp_session_release(uint16_t session_id);
+
+bool afp_session_opened(uint16_t session_ref) {
+    if (!g_afp_enabled)
+        return false; // a disabled server takes no new sessions
+    if (afp_session(session_ref))
+        return true;
+    for (int i = 0; i < AFP_MAX_SESSIONS; i++)
+        if (!g_afp_sessions[i].in_use) {
+            memset(&g_afp_sessions[i], 0, sizeof(g_afp_sessions[i]));
+            g_afp_sessions[i].in_use = true;
+            g_afp_sessions[i].ref = session_ref;
+            g_afp_sessions[i].state = AFP_SESS_OPEN;
+            return true;
+        }
+    return false;
+}
+
+const char *afp_session_version(uint16_t session_ref) {
+    afp_session_t *s = afp_session(session_ref);
+    return s ? s->version : NULL;
+}
 
 // True when this session negotiated AFP 2.1, which is what gates the 2.1
 // capability advertising as well as the 2.1 commands themselves.
 static bool afp_session_is_21(const afp_ctx_t *ctx) {
-    const char *ver = ctx ? atalk_asp_session_afp_version(ctx->session_id) : NULL;
-    return ver && strcmp(ver, "AFPVersion 2.1") == 0;
+    afp_session_t *s = ctx ? afp_session(ctx->session_id) : NULL;
+    return s && s->state == AFP_SESS_LOGGED_IN && strcmp(s->version, "AFPVersion 2.1") == 0;
 }
 
 // Resolve the (Volume ID, Directory ID, Pathname) triple every catalog call
@@ -1514,29 +1578,6 @@ static enum_snapshot_t *enum_snapshot_find(afp_ctx_t *ctx, vol_t *vol, uint32_t 
 // Server-level commands
 // ============================================================================
 
-// FPGetSrvrInfo (0x0F) — the reply the ASP GetStatus block carries.  Clients
-// normally read it out-of-band via SPGetStatus; serving the same bytes here
-// keeps the two paths from drifting.
-static uint32_t afp_cmd_get_srvr_info(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                      int *out_len) {
-    (void)ctx;
-    (void)in;
-    (void)in_len;
-    uint8_t *block = NULL;
-    size_t block_len = 0;
-    if (atalk_build_status_block(g_afp_server_object, "GrannySmith", &block, &block_len) != 0)
-        return AFPERR_MiscErr;
-    int n = (int)block_len;
-    if (n > out_max)
-        n = out_max;
-    memcpy(out, block, (size_t)n);
-    free(block);
-    if (out_len)
-        *out_len = n;
-    LOG(10, "AFP FPGetSrvrInfo: reply=%d", n);
-    return AFPERR_NoErr;
-}
-
 // FPGetSrvrParms (0x10) — server time plus the volume list.
 static uint32_t afp_cmd_get_srvr_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
                                        int *out_len) {
@@ -1692,9 +1733,13 @@ static uint32_t afp_cmd_login(afp_ctx_t *ctx, const uint8_t *in, int in_len, uin
         LOG(7, "AFP FPLogin: unsupported UAM → BadUAM");
         return AFPERR_BadUAM;
     }
-    atalk_asp_session_set_afp_version(ctx->session_id, ver);
     if (out_max < 2)
         return AFPERR_ParamErr;
+    afp_session_t *s = afp_session(ctx->session_id);
+    if (s) {
+        s->state = AFP_SESS_LOGGED_IN;
+        snprintf(s->version, sizeof(s->version), "%s", ver);
+    }
     WR_BE16(out, 0x0000); // guest login carries no user ID
     if (out_len)
         *out_len = 2;
@@ -1721,7 +1766,14 @@ static uint32_t afp_cmd_logout(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     (void)in_len;
     (void)out;
     (void)out_max;
-    afp_session_closed(ctx->session_id);
+    afp_session_release(ctx->session_id);
+    // Logged out: the session stays open, but serves nothing until it logs in
+    // again.  It used to keep its version and go on working (F-05).
+    afp_session_t *s = afp_session(ctx->session_id);
+    if (s) {
+        s->state = AFP_SESS_OPEN;
+        s->version[0] = '\0';
+    }
     if (out_len)
         *out_len = 0;
     LOG(2, "AFP FPLogout: session 0x%04X", ctx->session_id);
@@ -3975,58 +4027,57 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
 // ============================================================================
 
 static const afp_command_handler_t k_afp_command_handlers[] = {
-    {AFP_ByteRangeLock,   "FPByteRangeLock",   afp_cmd_byte_range_lock   },
-    {AFP_CloseVol,        "FPCloseVol",        afp_cmd_close_vol         },
-    {AFP_CloseDir,        "FPCloseDir",        afp_cmd_close_dir         },
-    {AFP_CloseFork,       "FPCloseFork",       afp_cmd_close_fork        },
-    {AFP_CopyFile,        "FPCopyFile",        afp_cmd_copy_file         },
-    {AFP_CreateDir,       "FPCreateDir",       afp_cmd_create_dir        },
-    {AFP_CreateFile,      "FPCreateFile",      afp_cmd_create_file       },
-    {AFP_Delete,          "FPDelete",          afp_cmd_delete            },
-    {AFP_Enumerate,       "FPEnumerate",       afp_cmd_enumerate         },
-    {AFP_Flush,           "FPFlush",           afp_cmd_flush             },
-    {AFP_FlushFork,       "FPFlushFork",       afp_cmd_flush_fork        },
-    {AFP_GetForkParms,    "FPGetForkParms",    afp_cmd_get_fork_parms    },
-    {AFP_GetSrvrInfo,     "FPGetSrvrInfo",     afp_cmd_get_srvr_info     },
-    {AFP_GetSrvrParms,    "FPGetSrvrParms",    afp_cmd_get_srvr_parms    },
-    {AFP_GetVolParms,     "FPGetVolParms",     afp_cmd_get_vol_parms     },
-    {AFP_Login,           "FPLogin",           afp_cmd_login             },
-    {AFP_LoginCont,       "FPLoginCont",       afp_cmd_login_cont        },
-    {AFP_Logout,          "FPLogout",          afp_cmd_logout            },
-    {AFP_MapID,           "FPMapID",           afp_cmd_map_id            },
-    {AFP_MapName,         "FPMapName",         afp_cmd_map_name          },
-    {AFP_MoveAndRename,   "FPMoveAndRename",   afp_cmd_move_and_rename   },
-    {AFP_OpenVol,         "FPOpenVol",         afp_cmd_open_vol          },
-    {AFP_OpenDir,         "FPOpenDir",         afp_cmd_open_dir          },
-    {AFP_OpenFork,        "FPOpenFork",        afp_cmd_open_fork         },
-    {AFP_Read,            "FPRead",            afp_cmd_read              },
-    {AFP_Rename,          "FPRename",          afp_cmd_rename            },
-    {AFP_SetDirParms,     "FPSetDirParms",     afp_cmd_set_dir_parms     },
-    {AFP_SetFileParms,    "FPSetFileParms",    afp_cmd_set_file_parms    },
-    {AFP_SetForkParms,    "FPSetForkParms",    afp_cmd_set_fork_parms    },
-    {AFP_SetVolParms,     "FPSetVolParms",     afp_cmd_set_vol_parms     },
-    {AFP_Write,           "FPWrite",           afp_cmd_write             },
+    {AFP_ByteRangeLock, "FPByteRangeLock", afp_cmd_byte_range_lock},
+    {AFP_CloseVol, "FPCloseVol", afp_cmd_close_vol},
+    {AFP_CloseDir, "FPCloseDir", afp_cmd_close_dir},
+    {AFP_CloseFork, "FPCloseFork", afp_cmd_close_fork},
+    {AFP_CopyFile, "FPCopyFile", afp_cmd_copy_file},
+    {AFP_CreateDir, "FPCreateDir", afp_cmd_create_dir},
+    {AFP_CreateFile, "FPCreateFile", afp_cmd_create_file},
+    {AFP_Delete, "FPDelete", afp_cmd_delete},
+    {AFP_Enumerate, "FPEnumerate", afp_cmd_enumerate},
+    {AFP_Flush, "FPFlush", afp_cmd_flush},
+    {AFP_FlushFork, "FPFlushFork", afp_cmd_flush_fork},
+    {AFP_GetForkParms, "FPGetForkParms", afp_cmd_get_fork_parms},
+    {AFP_GetSrvrParms, "FPGetSrvrParms", afp_cmd_get_srvr_parms},
+    {AFP_GetVolParms, "FPGetVolParms", afp_cmd_get_vol_parms},
+    {AFP_Login, "FPLogin", afp_cmd_login, AFP_GATE_SESSION},
+    {AFP_LoginCont, "FPLoginCont", afp_cmd_login_cont, AFP_GATE_SESSION},
+    {AFP_Logout, "FPLogout", afp_cmd_logout},
+    {AFP_MapID, "FPMapID", afp_cmd_map_id},
+    {AFP_MapName, "FPMapName", afp_cmd_map_name},
+    {AFP_MoveAndRename, "FPMoveAndRename", afp_cmd_move_and_rename},
+    {AFP_OpenVol, "FPOpenVol", afp_cmd_open_vol},
+    {AFP_OpenDir, "FPOpenDir", afp_cmd_open_dir},
+    {AFP_OpenFork, "FPOpenFork", afp_cmd_open_fork},
+    {AFP_Read, "FPRead", afp_cmd_read},
+    {AFP_Rename, "FPRename", afp_cmd_rename},
+    {AFP_SetDirParms, "FPSetDirParms", afp_cmd_set_dir_parms},
+    {AFP_SetFileParms, "FPSetFileParms", afp_cmd_set_file_parms},
+    {AFP_SetForkParms, "FPSetForkParms", afp_cmd_set_fork_parms},
+    {AFP_SetVolParms, "FPSetVolParms", afp_cmd_set_vol_parms},
+    {AFP_Write, "FPWrite", afp_cmd_write},
     {AFP_GetFileDirParms, "FPGetFileDirParms", afp_cmd_get_file_dir_parms},
     {AFP_SetFileDirParms, "FPSetFileDirParms", afp_cmd_set_file_dir_parms},
-    {AFP_ChangePassword,  "FPChangePassword",  afp_cmd_change_password   },
-    {AFP_GetUserInfo,     "FPGetUserInfo",     afp_cmd_get_user_info     },
-    {AFP_GetSrvrMsg,      "FPGetSrvrMsg",      afp_cmd_get_srvr_msg      },
-    {AFP_CreateID,        "FPCreateID",        afp_cmd_create_id         },
-    {AFP_DeleteID,        "FPDeleteID",        afp_cmd_delete_id         },
-    {AFP_ResolveID,       "FPResolveID",       afp_cmd_resolve_id        },
-    {AFP_ExchangeFiles,   "FPExchangeFiles",   afp_cmd_exchange_files    },
-    {AFP_CatSearch,       "FPCatSearch",       afp_cmd_cat_search        },
-    {AFP_OpenDT,          "FPOpenDT",          afp_cmd_open_dt           },
-    {AFP_CloseDT,         "FPCloseDT",         afp_cmd_close_dt          },
-    {AFP_GetIcon,         "FPGetIcon",         afp_cmd_get_icon          },
-    {AFP_GetIconInfo,     "FPGetIconInfo",     afp_cmd_get_icon_info     },
-    {AFP_AddAPPL,         "FPAddAPPL",         afp_cmd_add_appl          },
-    {AFP_RmvAPPL,         "FPRemoveAPPL",      afp_cmd_remove_appl       },
-    {AFP_GetAPPL,         "FPGetAPPL",         afp_cmd_get_appl          },
-    {AFP_AddComment,      "FPAddComment",      afp_cmd_add_comment       },
-    {AFP_RmvComment,      "FPRemoveComment",   afp_cmd_remove_comment    },
-    {AFP_GetComment,      "FPGetComment",      afp_cmd_get_comment       },
-    {AFP_AddIcon,         "FPAddIcon",         afp_cmd_add_icon          },
+    {AFP_ChangePassword, "FPChangePassword", afp_cmd_change_password},
+    {AFP_GetUserInfo, "FPGetUserInfo", afp_cmd_get_user_info},
+    {AFP_GetSrvrMsg, "FPGetSrvrMsg", afp_cmd_get_srvr_msg, AFP_GATE_21},
+    {AFP_CreateID, "FPCreateID", afp_cmd_create_id, AFP_GATE_21},
+    {AFP_DeleteID, "FPDeleteID", afp_cmd_delete_id, AFP_GATE_21},
+    {AFP_ResolveID, "FPResolveID", afp_cmd_resolve_id, AFP_GATE_21},
+    {AFP_ExchangeFiles, "FPExchangeFiles", afp_cmd_exchange_files, AFP_GATE_21},
+    {AFP_CatSearch, "FPCatSearch", afp_cmd_cat_search, AFP_GATE_21},
+    {AFP_OpenDT, "FPOpenDT", afp_cmd_open_dt},
+    {AFP_CloseDT, "FPCloseDT", afp_cmd_close_dt},
+    {AFP_GetIcon, "FPGetIcon", afp_cmd_get_icon},
+    {AFP_GetIconInfo, "FPGetIconInfo", afp_cmd_get_icon_info},
+    {AFP_AddAPPL, "FPAddAPPL", afp_cmd_add_appl},
+    {AFP_RmvAPPL, "FPRemoveAPPL", afp_cmd_remove_appl},
+    {AFP_GetAPPL, "FPGetAPPL", afp_cmd_get_appl},
+    {AFP_AddComment, "FPAddComment", afp_cmd_add_comment},
+    {AFP_RmvComment, "FPRemoveComment", afp_cmd_remove_comment},
+    {AFP_GetComment, "FPGetComment", afp_cmd_get_comment},
+    {AFP_AddIcon, "FPAddIcon", afp_cmd_add_icon},
 };
 
 static const afp_command_handler_t *afp_find_handler(uint8_t opcode) {
@@ -4038,10 +4089,6 @@ static const afp_command_handler_t *afp_find_handler(uint8_t opcode) {
 
 // The 2.1 calls are only legal once the session has negotiated 2.1; before
 // that the client must use its 2.0 fallbacks (AFP_21_22 result codes).
-static bool afp_opcode_is_21(uint8_t opcode) {
-    return opcode >= AFP_GetSrvrMsg && opcode <= AFP_CatSearch;
-}
-
 uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
                             int out_max, int *out_len) {
     if (out_len)
@@ -4056,13 +4103,20 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
         afp_count_result(AFPERR_CallNotSupported);
         return AFPERR_CallNotSupported;
     }
-    if (afp_opcode_is_21(opcode)) {
-        const char *ver = atalk_asp_session_afp_version(session_id);
-        if (!ver || strcmp(ver, "AFPVersion 2.1") != 0) {
-            LOG(2, "AFP %s: refused — session negotiated '%s'", handler->name, ver ? ver : "(none)");
-            afp_count_result(AFPERR_CallNotSupported);
-            return AFPERR_CallNotSupported;
-        }
+    // The gate: every command needs an open session, and all but FPLogin and
+    // FPLoginCont a logged-in one; the 2.1 calls need a 2.1 login.
+    afp_session_t *sess = afp_session(session_id);
+    uint32_t refused = AFPERR_NoErr;
+    if (!sess)
+        refused = AFPERR_SessClosed;
+    else if (handler->gate != AFP_GATE_SESSION && sess->state != AFP_SESS_LOGGED_IN)
+        refused = AFPERR_UserNotAuth;
+    else if (handler->gate == AFP_GATE_21 && strcmp(sess->version, "AFPVersion 2.1") != 0)
+        refused = AFPERR_CallNotSupported;
+    if (refused != AFPERR_NoErr) {
+        LOG(2, "AFP %s from session 0x%04X refused (0x%08X)", handler->name, session_id, refused);
+        afp_count_result(refused);
+        return refused;
     }
     afp_ctx_t ctx = {.session_id = session_id};
     LOG(10, "AFP >> %s (0x%02X) in_len=%d session=0x%04X", handler->name, opcode, in_len, session_id);
@@ -4077,12 +4131,20 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
 
 // Release everything a departing session owned.  Called from the ASP layer on
 // CloseSess and on tickle expiry (WP-8).
-void afp_session_closed(uint16_t session_id) {
+// Release what a session holds: its forks, snapshots and volume references.
+static void afp_session_release(uint16_t session_id) {
     afp_fork_close_session(session_id);
     enum_snapshots_drop_session(session_id);
     for (int i = 0; i < AFP_MAX_VOLUMES; i++)
         if (g_vols[i].in_use)
             vol_session_remove(&g_vols[i], session_id);
+}
+
+void afp_session_closed(uint16_t session_id) {
+    afp_session_release(session_id);
+    afp_session_t *s = afp_session(session_id);
+    if (s)
+        memset(s, 0, sizeof(*s));
 }
 
 uint32_t afp_session_open_forks(uint16_t session_id) {

@@ -10,6 +10,7 @@
 #ifndef AFP_SERVER_H
 #define AFP_SERVER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -17,9 +18,16 @@
 uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
                             int out_max, int *out_len);
 
+// A session opened (ASP's OpenSess): make its AFP record, not yet logged in.
+// False refuses it -- the server is disabled, or its table is full.
+bool afp_session_opened(uint16_t session_ref);
+
 // Release the forks, enumeration snapshots and volume references a departing
-// session held.
+// session held, and drop its record.
 void afp_session_closed(uint16_t session_id);
+
+// The AFP version a session logged in with ("" before FPLogin), or NULL.
+const char *afp_session_version(uint16_t session_ref);
 
 // Drop every reconstructible per-session cache.
 void afp_reset_transient_state(void);

@@ -31,8 +31,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-void stub_set_afp_version(const char *v);
-void stub_session_set(uint16_t ref, const char *v);
 int stub_attention_count(void);
 
 // AFP opcodes and result codes used by the tests (the server's private
@@ -48,7 +46,9 @@ int stub_attention_count(void);
 #define OP_FLUSH_FORK      0x0B
 #define OP_GET_SRVR_PARMS  0x10
 #define OP_GET_VOL_PARMS   0x11
+#define OP_GET_SRVR_INFO   0x0F
 #define OP_LOGIN           0x12
+#define OP_LOGOUT          0x14
 #define OP_MOVE_AND_RENAME 0x17
 #define OP_OPEN_VOL        0x18
 #define OP_OPEN_FORK       0x1A
@@ -77,6 +77,8 @@ int stub_attention_count(void);
 
 #define ERR_OK              0x00000000u
 #define ERR_ACCESS_DENIED   0xFFFFEC78u
+#define ERR_SESS_CLOSED     0xFFFFEC62u
+#define ERR_USER_NOT_AUTH   0xFFFFEC61u
 #define ERR_BITMAP          0xFFFFEC74u
 #define ERR_DENY_CONFLICT   0xFFFFEC72u
 #define ERR_DIR_NOT_EMPTY   0xFFFFEC71u
@@ -192,8 +194,16 @@ static void host_path(const char *rel, char *out, size_t cap) {
     snprintf(out, cap, "%s/%s", g_root, rel);
 }
 
-// Open a fresh share with a unique root, and log in so the 2.1 calls are
-// allowed.  Every test starts from this state.
+// Log SESSION in at `version` (FPLogin with no user authentication).
+static void login_as(const char *version) {
+    req_reset();
+    put_pstr(version);
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_LOGIN));
+}
+
+// Open a fresh share with a unique root, open a session as ASP would, and log
+// in at 2.1 so the 2.1 calls are allowed.  Every test starts from this state.
 static void fixture_up(const char *tag) {
     snprintf(g_root, sizeof(g_root), "/tmp/gs-afp-test-%d-%s", (int)getpid(), tag);
     rm_rf(g_root);
@@ -203,10 +213,12 @@ static void fixture_up(const char *tag) {
     int slot = atalk_afp_volume_find("TestVol");
     ASSERT_TRUE(slot >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(slot);
-    stub_set_afp_version("AFPVersion 2.1");
+    ASSERT_TRUE(afp_session_opened(SESSION));
+    login_as("AFPVersion 2.1");
 }
 
 static void fixture_down(void) {
+    afp_session_closed(SESSION);
     char err[192];
     atalk_afp_volume_remove("TestVol", err, sizeof(err));
     rm_rf(g_root);
@@ -1101,7 +1113,7 @@ TEST(server_message_round_trips_and_raises_an_attention) {
 
 TEST(afp_21_commands_are_refused_on_a_20_session) {
     fixture_up("gate21");
-    stub_set_afp_version("AFPVersion 2.0");
+    login_as("AFPVersion 2.0");
     req_vol_dir_path(g_vol_id, CNID_ROOT, "Doc");
     ASSERT_EQ_INT((int)ERR_NOT_SUPPORTED, (int)call(OP_CREATE_ID));
     req_reset();
@@ -1109,7 +1121,7 @@ TEST(afp_21_commands_are_refused_on_a_20_session) {
     put16(1);
     put16(1);
     ASSERT_EQ_INT((int)ERR_NOT_SUPPORTED, (int)call(OP_GET_SRVR_MSG));
-    stub_set_afp_version("AFPVersion 2.1");
+    login_as("AFPVersion 2.1");
     fixture_down();
 }
 
@@ -1129,7 +1141,7 @@ TEST(login_negotiates_a_known_version_and_uam) {
     put_pstr("AFPVersion 2.1");
     put_pstr("Cleartxt Passwrd");
     ASSERT_EQ_INT((int)0xFFFFEC76u, (int)call(OP_LOGIN)); // BadUAM
-    stub_set_afp_version("AFPVersion 2.1");
+    login_as("AFPVersion 2.1");
     fixture_down();
 }
 
@@ -2133,6 +2145,74 @@ TEST(fork_refnums_are_never_reused_while_held) {
     fixture_down();
 }
 
+// --- sessions and login (10-network C7, F-05) --------------------------------------
+
+static uint32_t call_as(uint16_t session, uint8_t opcode) {
+    g_reply_len = 0;
+    memset(g_reply, 0, sizeof(g_reply));
+    return afp_handle_command(session, opcode, g_req, g_req_len, g_reply, (int)sizeof(g_reply), &g_reply_len);
+}
+
+static void req_delete(const char *name) {
+    req_vol_dir_path(g_vol_id, CNID_ROOT, name);
+}
+
+// A command is served only to a session that is open and logged in.  Every
+// 2.0 command used to be served to any session id -- one that never opened,
+// or one that had logged out -- including FPDelete.
+TEST(commands_need_an_open_logged_in_session) {
+    fixture_up("gate");
+    write_file("keep.txt", "K");
+    char path[512];
+    host_path("keep.txt", path, sizeof path);
+    struct stat st;
+
+    // A session that never opened.
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_SESS_CLOSED, (int)call_as(0xBEEF, OP_DELETE));
+    ASSERT_EQ_INT(0, stat(path, &st));
+
+    // Open, not logged in: only FPLogin (and FPLoginCont) are served.
+    uint16_t other = 0x0033;
+    ASSERT_TRUE(afp_session_opened(other));
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_USER_NOT_AUTH, (int)call_as(other, OP_DELETE));
+    ASSERT_EQ_INT(0, stat(path, &st));
+    req_reset();
+    put_pstr("AFPVersion 2.0");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_LOGIN));
+
+    // Logged out: refused again (it used to keep working).
+    req_reset();
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_LOGOUT));
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_USER_NOT_AUTH, (int)call_as(other, OP_DELETE));
+    ASSERT_EQ_INT(0, stat(path, &st));
+    afp_session_closed(other);
+    ASSERT_TRUE(afp_session_version(other) == NULL);
+    fixture_down();
+}
+
+// FPGetSrvrInfo travels only on ASP GetStatus (appletalk_server.md §1.4); as a
+// command it was the payload of a session-free second channel (F-05).
+TEST(get_srvr_info_is_not_a_command) {
+    fixture_up("srvrinfo");
+    req_reset();
+    ASSERT_EQ_INT((int)ERR_NOT_SUPPORTED, (int)call(OP_GET_SRVR_INFO));
+    fixture_down();
+}
+
+// A disabled server takes no new sessions (ASP answers ServerBusy).
+TEST(a_disabled_server_takes_no_sessions) {
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_set_enabled(false, err, sizeof err));
+    ASSERT_TRUE(!afp_session_opened(0x0044));
+    ASSERT_EQ_INT(0, atalk_afp_set_enabled(true, err, sizeof err));
+    ASSERT_TRUE(afp_session_opened(0x0044));
+    afp_session_closed(0x0044);
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2174,6 +2254,9 @@ int main(void) {
     RUN(write_may_be_partial_and_reports_where_it_stopped);
     RUN(read_past_end_of_fork_is_eof);
     RUN(fork_refnums_are_never_reused_while_held);
+    RUN(commands_need_an_open_logged_in_session);
+    RUN(get_srvr_info_is_not_a_command);
+    RUN(a_disabled_server_takes_no_sessions);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

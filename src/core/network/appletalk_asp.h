@@ -32,8 +32,10 @@ typedef struct {
     // The service status block SPGetStatus returns (malloc'd; ASP frees it).
     // 0 on success.
     int (*get_status)(void *ctx, uint8_t **out, size_t *out_len);
-    // Forks a session holds, for the session view.
+    // Forks a session holds, and the AFP version it logged in with, for the
+    // session view.
     uint32_t (*open_forks)(void *ctx, uint16_t session_ref);
+    const char *(*session_version)(void *ctx, uint16_t session_ref);
 } asp_client_t;
 
 // Install the client (NULL removes it).  The AFP server does this from
