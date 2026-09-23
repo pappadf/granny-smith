@@ -405,20 +405,30 @@ static const int grp_step[] = {  8,   4,   4,   4,   2,   2,   1 };
 // accumulation: selector token t at ordinal position p contributes
 // (t + 1) << p to the total.  Returns the accumulated zero count.
 // *out_sel receives the first non-run selector (≥ 2) that ends the sub-loop.
+//
+// The run is bounded by the block it fills, and checked as it grows: every
+// token at position p adds at least 1 << p, so a run that has passed blk_cap
+// (at most 2^24) is rejected by p = 25 -- long before a shift could overflow.
+// This used to accumulate into a plain int with no bound on bit_pos; 32 tokens
+// of 0 summed to 2^31 - 1, the next `1 << 31` wrapped it to exactly -1, the
+// caller's `blk_len + run_len > blk_cap` was false for a negative length, and
+// memset(buf, fill, (size_t)-1) followed (09-storage F-01).
 static int consume_zero_run(arsenic_state *s, int first_tok, int *out_sel)
 {
-    int total   = 0;
-    int bit_pos = 0;
-    int tok     = first_tok;
+    uint64_t total = 0;
+    int      tok   = first_tok;
 
-    do {
-        total += (tok + 1) << bit_pos;
-        bit_pos++;
+    for (int bit_pos = 0;; bit_pos++) {
+        total += (uint64_t)(tok + 1) << bit_pos;
+        if (total > (uint64_t)s->blk_cap)
+            arsenic_abort(s, "sit15: zero run longer than the block");
         tok = ac_decode_sym(s, &s->m_sel);
-    } while (tok < 2);
+        if (tok >= 2)
+            break;
+    }
 
     *out_sel = tok;
-    return total;
+    return (int)total;
 }
 
 // Decode a complete block: selector loop → MTF → BWT prep.

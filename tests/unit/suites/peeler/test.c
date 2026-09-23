@@ -151,6 +151,30 @@ static void enc_block_footer_eos(ac_enc *e, arsenic_models *mm) {
     enc_field(e, &mm->primary, 32, 0);
 }
 
+// A zero run of length n, as the selector tokens that encode it: bijective
+// base 2, least significant digit first, digit d written as token d - 1.
+static void enc_zero_run(ac_enc *e, arsenic_models *mm, unsigned n) {
+    ASSERT_TRUE(n > 0);
+    while (n > 0) {
+        unsigned d = (n % 2 == 0) ? 2 : 1;
+        enc_sym(e, &mm->sel, (int)d - 1);
+        n = (n - d) / 2;
+    }
+}
+
+// A one-block stream whose block is a single zero run of length n.
+static uint8_t *make_zero_run_stream(unsigned n, size_t *len) {
+    ac_enc e;
+    arsenic_models mm;
+    enc_init(&e);
+    enc_header(&e, &mm, 0);
+    enc_block_header(&e, &mm, 0);
+    enc_zero_run(&e, &mm, n);
+    enc_sym(&e, &mm.sel, 10);
+    enc_block_footer_eos(&e, &mm);
+    return enc_finish(&e, len);
+}
+
 // ============================================================================
 // sit15
 // ============================================================================
@@ -178,6 +202,61 @@ TEST(test_sit15_encoder_round_trip) {
     ASSERT_EQ_INT(1, (int)out.size);
     ASSERT_EQ_INT(0x01, out.data[0]);
     peel_free(&out);
+    free(in);
+}
+
+// F-01: consume_zero_run accumulated (tok + 1) << bit_pos into a plain int with
+// no bound on bit_pos.  Thirty-two zero-run tokens of value 0 sum to
+// 2^0 + ... + 2^30 = 2^31 - 1, and the 32nd adds 1 << 31 -- signed overflow,
+// in practice INT_MIN -- leaving the total at exactly -1.  The caller's
+// `blk_len + run_len > blk_cap` check is false for a negative length, and
+// memset(buf, fill, (size_t)-1) follows.  The input must now be rejected.
+TEST(test_sit15_zero_run_cannot_overflow) {
+    ac_enc e;
+    arsenic_models mm;
+    enc_init(&e);
+    enc_header(&e, &mm, 0);
+    enc_block_header(&e, &mm, 0);
+    for (int i = 0; i < 32; i++)
+        enc_sym(&e, &mm.sel, 0);
+    enc_sym(&e, &mm.sel, 10);
+    enc_block_footer_eos(&e, &mm);
+    size_t len;
+    uint8_t *in = enc_finish(&e, &len);
+
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit15(in, len, 1, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(out.data == NULL);
+    peel_err_free(err);
+    free(in);
+}
+
+// The F-01 bound is exact: a legitimate run may fill the block (512 bytes at
+// block exponent 0) and must decode; one byte more must not.  Only 4 output
+// bytes are requested: the whole block is decoded before the first byte is
+// emitted, so that is enough to exercise the bound, and the final RLE stage
+// (4 identical bytes then a count) means 512 upstream zeros do not yield 512
+// output bytes anyway.  Guards an off-by-one in the bound itself -- `>=`
+// instead of `>` fails the first half.
+TEST(test_sit15_zero_run_bound_is_exact) {
+    size_t len;
+    uint8_t *in = make_zero_run_stream(512, &len);
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit15(in, len, 4, &err);
+    if (err)
+        fprintf(stderr, "  sit15: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(4, (int)out.size);
+    for (size_t i = 0; i < out.size; i++)
+        ASSERT_EQ_INT(0, out.data[i]); // MTF index 0 on a fresh table is 0x00
+    peel_free(&out);
+    free(in);
+
+    in = make_zero_run_stream(513, &len);
+    out = peel_sit15(in, len, 4, &err);
+    ASSERT_TRUE(err != NULL);
+    peel_err_free(err);
     free(in);
 }
 
@@ -209,6 +288,8 @@ TEST(test_peel_passes_unrecognised_input_through) {
 
 int main(void) {
     RUN(test_sit15_encoder_round_trip);
+    RUN(test_sit15_zero_run_cannot_overflow);
+    RUN(test_sit15_zero_run_bound_is_exact);
     RUN(test_peel_passes_unrecognised_input_through);
     fprintf(stderr, "All peeler tests passed\n");
     return 0;

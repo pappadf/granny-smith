@@ -32,8 +32,16 @@ EXEC_WRAPPER ?=
 # /opt/emsdk/node is a *directory* that precedes /usr/bin, and execvp stops at
 # it with "Permission denied" where a shell lookup skips it.
 EXEC_WRAPPER_BIN := $(if $(EXEC_WRAPPER),$(shell command -v $(EXEC_WRAPPER)))
-CFLAGS := -O0 -g -Wall -Wextra -I$(UNIT_ROOT)/support -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
+# Native builds run under ASan + UBSan, and UB aborts rather than printing and
+# carrying on.  Several peeler defects are small heap overruns (two bytes past
+# a malloc, F-02) that land in allocator padding and do not crash natively; a
+# test of one must fail on the unfixed code, and without a sanitizer it would
+# pass for the wrong reason.  Not under emcc: the wasm32 run is for 32-bit
+# arithmetic, and ASan there costs more than it finds.
+SANITIZE ?= $(if $(filter emcc%,$(notdir $(firstword $(CC)))),,-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+CFLAGS  := -O0 -g -Wall -Wextra $(SANITIZE) -I$(UNIT_ROOT)/support -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
 LDFLAGS ?=
+LDFLAGS += $(SANITIZE)
 
 PEELER_SRCS := $(PEELER_DIR)/lib/peeler.c \
                $(PEELER_DIR)/lib/err.c \
@@ -63,8 +71,12 @@ $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJ) $(LDFLAGS) -o $@
 
+# Leak detection is off until the decoders stop leaking on abort (09 A2, F-10..F-12):
+# every abort path through sit15/sit3/hqx leaks today, and LeakSanitizer is
+# the test that says so.  A2 turns it on.
+DETECT_LEAKS ?= 0
 run: $(TARGET)
-	@$(EXEC_WRAPPER_BIN) $(TARGET)
+	@ASAN_OPTIONS=detect_leaks=$(DETECT_LEAKS) $(EXEC_WRAPPER_BIN) $(TARGET)
 
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET)
