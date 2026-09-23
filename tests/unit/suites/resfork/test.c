@@ -606,6 +606,50 @@ TEST(test_dcmp_zero_pads_short_streams) {
     free(out);
 }
 
+// 09-storage F-21: actual_size is a 32-bit header field, and dcmp 0 sized its
+// buffer as `(size_t)actual_size + overrun` then zero-padded a short stream
+// out to actual_size.  With actual_size near 4 GiB that sum wraps when size_t
+// is 32 bits -- the shipping wasm build -- so a 16-byte malloc met a ~4 GiB
+// memset: a heap overflow from one resource.  (Natively it is a real 4 GiB
+// allocation and memset instead.)  Must be refused before allocating, on every
+// target; this suite runs under run-wasm32, where the unfixed code overflows.
+TEST(test_dcmp_huge_actual_size_is_refused) {
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, // signature, header length 18, v8
+        0xFF, 0xFF, 0xFF, 0xF0, // actual_size = 0xFFFFFFF0
+        0x40, 0x20, // var_ratio, overrun 0x20
+        0x00, 0x00, 0x00, 0x00, // dcmp 0, ctable
+        0xFF, // end of stream at once
+    };
+    size_t out_len = 0;
+    const char *err = NULL;
+    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    ASSERT_TRUE(out == NULL);
+    ASSERT_TRUE(err != NULL);
+}
+
+// The F-21 bound is exact: RSRC_DCMP_MAX_SIZE decodes (zero-padded), one
+// byte more does not.
+TEST(test_dcmp_size_bound_is_exact) {
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // actual_size set below
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+    };
+    uint32_t sizes[2] = {RSRC_DCMP_MAX_SIZE, RSRC_DCMP_MAX_SIZE + 1};
+    for (int i = 0; i < 2; i++) {
+        w_u32(payload + 8, sizes[i]);
+        size_t out_len = 0;
+        uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, NULL);
+        if (i == 0) {
+            ASSERT_TRUE(out != NULL);
+            ASSERT_TRUE(out_len == RSRC_DCMP_MAX_SIZE);
+            free(out);
+        } else {
+            ASSERT_TRUE(out == NULL);
+        }
+    }
+}
+
 int main(void) {
     RUN(test_parse_empty_fork);
     RUN(test_parse_two_types_multi_ids);
@@ -627,6 +671,8 @@ int main(void) {
     RUN(test_dcmp2_greggy_static_nonbitmapped);
     RUN(test_dcmp2_greggy_bitmapped);
     RUN(test_dcmp_zero_pads_short_streams);
+    RUN(test_dcmp_huge_actual_size_is_refused);
+    RUN(test_dcmp_size_bound_is_exact);
     fprintf(stderr, "All resfork tests passed.\n");
     return 0;
 }

@@ -40,6 +40,10 @@
 // formally documented anywhere).
 #define RSRC_DCMP_MAGIC 0xA89F6572u
 
+// Largest uncompressed size rsrc_dcmp_decompress accepts.  A resource fork's
+// data offsets are 24 bits, so nothing in one exceeds 16 MiB.
+#define RSRC_DCMP_MAX_SIZE (16u * 1024u * 1024u)
+
 // Quick test: returns true iff `bytes` begins with the compressed-
 // resource signature.  Cheap (4-byte comparison); safe to call on
 // arbitrarily short buffers.
