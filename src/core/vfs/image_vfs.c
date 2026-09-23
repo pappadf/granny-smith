@@ -466,14 +466,6 @@ void image_vfs_list(image_vfs_list_cb cb, void *user) {
     }
 }
 
-void image_vfs_reset(void) {
-    for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++) {
-        image_mount_t *m = &g_mounts[i];
-        if (m->in_use)
-            mount_destroy(m);
-    }
-}
-
 // ---- Partition-level FS state (lazy init) --------------------------------
 
 // Lazy-open the HFS filesystem for partition N (1-based).  Returns NULL if
@@ -549,7 +541,11 @@ static int parse_image_path(const char *path, image_path_t *out) {
     if (!*path)
         return 1; // mount root — list partitions
     // Copy to mutable buffer and split on '/'.
-    snprintf(out->buf, sizeof(out->buf), "%s", path);
+    // Refuse rather than truncate: a truncated path is a different path,
+    // and can name a real file the caller did not ask for.
+    int n = snprintf(out->buf, sizeof(out->buf), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(out->buf))
+        return -ENAMETOOLONG;
     // Trim trailing slash.
     size_t blen = strlen(out->buf);
     while (blen > 0 && out->buf[blen - 1] == '/')

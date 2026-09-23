@@ -63,7 +63,4 @@ typedef void (*image_vfs_list_cb)(const char *host_path, const char *format_name
                                   uint32_t refcount, bool busy, void *user);
 void image_vfs_list(image_vfs_list_cb cb, void *user);
 
-// Clear the entire cache.  Intended for tests that want a fresh state.
-void image_vfs_reset(void);
-
 #endif // IMAGE_VFS_H

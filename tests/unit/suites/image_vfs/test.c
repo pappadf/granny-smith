@@ -57,7 +57,6 @@ static char g_host_canon[PATH_MAX]; // the key image_vfs holds it under
 
 // Build the volume and its stand-in file, without mounting it.
 static void make_volume(const hfsb_file_t *files, int n) {
-    image_vfs_reset();
     g_writable[0] = 0;
     g_img_size = hfsb_build(g_img, sizeof(g_img), "Vol", files, n);
     ASSERT_TRUE(g_img_size > 0);
@@ -78,8 +77,10 @@ static image_mount_t *mount_volume(const hfsb_file_t *files, int n) {
     return m;
 }
 
+// Every test closes its handles first, so the unmount is immediate.
 static void unmount_volume(void) {
-    image_vfs_reset();
+    g_writable[0] = 0;
+    ASSERT_EQ_INT(0, image_vfs_unmount(g_host_canon));
     unlink(g_host);
 }
 
@@ -318,8 +319,29 @@ TEST(test_pending_unmount_completes_on_last_close) {
     image_mount_t *again = NULL;
     ASSERT_EQ_INT(-EBUSY, image_vfs_acquire_mount(g_host, &again));
     be->close(f);
-    ASSERT_EQ_INT(-ENOENT, image_vfs_unmount(g_host_canon)); // already gone
+    int rc = image_vfs_unmount(g_host_canon);
+    ASSERT_EQ_INT(-ENOENT, rc); // already gone
     ASSERT_EQ_INT(0, image_vfs_acquire_mount(g_host, &again));
+    unmount_volume();
+}
+
+// ---- Path length (F-44) -----------------------------------------------------
+
+// An in-image path longer than the resolver's buffer was truncated and
+// resolved anyway.  "/partition1/A", then slashes to past the buffer, then
+// "B" asks for B under A -- which, A being a file, does not exist -- but
+// truncated to its first 1023 bytes it is "A" and a run of trailing slashes,
+// which trim to A: the stat succeeded, for a file nobody asked for.
+TEST(test_overlong_path_is_refused_not_truncated) {
+    image_mount_t *m = mount_volume(one_file, 1);
+    const vfs_backend_t *be = vfs_image_backend();
+    static char path[1200];
+    strcpy(path, "/partition1/A");
+    size_t len = strlen(path);
+    memset(path + len, '/', sizeof(path) - len - 2);
+    strcpy(path + sizeof(path) - 2, "B");
+    vfs_stat_t st;
+    ASSERT_EQ_INT(-ENAMETOOLONG, be->stat(m, path, &st));
     unmount_volume();
 }
 
@@ -332,6 +354,7 @@ int main(void) {
     RUN(test_busy_exactly_while_open_writable);
     RUN(test_open_writable_before_first_mount_refuses);
     RUN(test_pending_unmount_completes_on_last_close);
+    RUN(test_overlong_path_is_refused_not_truncated);
     fprintf(stderr, "All image_vfs tests passed\n");
     return 0;
 }
