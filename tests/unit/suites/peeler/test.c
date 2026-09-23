@@ -412,18 +412,32 @@ static uint16_t crc16_arc(const uint8_t *p, size_t n) {
 }
 
 #define SIT5_TOP_SIZE 100
-#define SIT5_H2_SIZE  36 // flags2 .. the version-1 skip; the stored data follows
+#define SIT5_H2_SIZE  36 // flags2 .. the version-1 skip; fork info or data follows
+#define SIT5_RINFO    14 // resource-fork info block, when flags2 bit 0 is set
 
-// One stored (method 0) file in a StuffIt 5 archive, laid out per sit.md §5:
-// the 100-byte top header, header 1 (48 fixed bytes + the name), header 2,
-// then the data.  `h1_len` is written as given so a test can lie about it;
-// pass -1 for the true length.  `raw_len_override`, if nonzero, replaces the
-// raw length (0xFFFFFFFF is the skip marker).  Returns a malloc'd archive.
-static uint8_t *make_sit5(const char *name, const uint8_t *data, uint32_t dlen, int h1_len, uint32_t raw_len_override,
-                          size_t *out_len) {
-    size_t namelen = strlen(name);
+// One file in a StuffIt 5 archive, laid out per sit.md §5: the 100-byte top
+// header, header 1 (48 fixed bytes + the name), header 2, the resource-fork
+// info block if there is a resource fork, then the resource fork's bytes and
+// the data fork's.  Both forks are stored (method 0) unless r_algo says
+// otherwise.  Every length is written as given, so a test can lie in any of
+// them; the builder only ever writes inside the buffer it allocates.
+typedef struct {
+    const char *name;
+    const uint8_t *data;
+    uint32_t dlen;
+    int h1_len; // -1: the true length
+    uint32_t raw_len_override; // nonzero: replaces the data fork's raw length
+    bool rsrc; // flags2 bit 0
+    const uint8_t *rdata;
+    uint32_t rdlen; // resource bytes actually present
+    uint32_t r_raw_len, r_packed_len;
+    uint8_t r_algo;
+} sit5_spec;
+
+static uint8_t *build_sit5(const sit5_spec *sp, size_t *out_len) {
+    size_t namelen = strlen(sp->name);
     size_t true_h1 = 48 + namelen;
-    size_t total = SIT5_TOP_SIZE + true_h1 + SIT5_H2_SIZE + dlen + 64;
+    size_t total = SIT5_TOP_SIZE + true_h1 + SIT5_H2_SIZE + (sp->rsrc ? SIT5_RINFO : 0) + sp->rdlen + sp->dlen + 64;
     uint8_t *a = calloc(total, 1);
     ASSERT_TRUE(a != NULL);
 
@@ -435,25 +449,44 @@ static uint8_t *make_sit5(const char *name, const uint8_t *data, uint32_t dlen, 
     put32(a + 94, SIT5_TOP_SIZE); // first entry
 
     uint8_t *h1 = a + SIT5_TOP_SIZE;
-    uint16_t written_h1 = (uint16_t)(h1_len >= 0 ? h1_len : (int)true_h1);
+    uint16_t written_h1 = (uint16_t)(sp->h1_len >= 0 ? sp->h1_len : (int)true_h1);
     put32(h1 + 0, 0xA5A5A5A5u);
     h1[4] = 1; // version
     put16(h1 + 6, written_h1);
     put16(h1 + 30, (uint16_t)namelen);
-    put32(h1 + 34, raw_len_override ? raw_len_override : dlen);
-    put32(h1 + 38, dlen); // stored: packed == raw
-    put16(h1 + 42, crc16_arc(data, dlen));
-    memcpy(h1 + 48, name, namelen);
+    put32(h1 + 34, sp->raw_len_override ? sp->raw_len_override : sp->dlen);
+    put32(h1 + 38, sp->dlen); // stored: packed == raw
+    put16(h1 + 42, crc16_arc(sp->data, sp->dlen));
+    memcpy(h1 + 48, sp->name, namelen);
     // Header CRC over header 1 as written, with its own two bytes zeroed.
     size_t crc_len = written_h1 <= true_h1 ? written_h1 : true_h1;
     put16(h1 + 32, crc16_arc(h1, crc_len));
 
     uint8_t *h2 = h1 + true_h1;
+    put16(h2 + 0, sp->rsrc ? 1 : 0);
     memcpy(h2 + 4, "TEXT", 4);
     memcpy(h2 + 8, "ttxt", 4);
-    memcpy(h2 + SIT5_H2_SIZE, data, dlen);
+    uint8_t *p = h2 + SIT5_H2_SIZE;
+    if (sp->rsrc) {
+        put32(p + 0, sp->r_raw_len);
+        put32(p + 4, sp->r_packed_len);
+        put16(p + 8, sp->rdlen ? crc16_arc(sp->rdata, sp->rdlen) : 0);
+        p[12] = sp->r_algo;
+        p += SIT5_RINFO;
+        if (sp->rdlen)
+            memcpy(p, sp->rdata, sp->rdlen);
+        p += sp->rdlen;
+    }
+    memcpy(p, sp->data, sp->dlen);
     *out_len = total;
     return a;
+}
+
+// The common case: one stored data fork, no resource fork.
+static uint8_t *make_sit5(const char *name, const uint8_t *data, uint32_t dlen, int h1_len, uint32_t raw_len_override,
+                          size_t *out_len) {
+    sit5_spec sp = {.name = name, .data = data, .dlen = dlen, .h1_len = h1_len, .raw_len_override = raw_len_override};
+    return build_sit5(&sp, out_len);
 }
 
 // The builder is right: one stored file comes back byte for byte.
@@ -471,6 +504,65 @@ TEST(test_sit5_round_trip) {
     ASSERT_EQ_INT(6, (int)list.files[0].data_fork.size);
     ASSERT_TRUE(memcmp(list.files[0].data_fork.data, "peeler", 6) == 0);
     peel_file_list_free(&list);
+    free(a);
+}
+
+// The builder's resource-fork path is right: a stored resource fork comes back.
+TEST(test_sit5_round_trip_with_resource_fork) {
+    static const uint8_t data[] = "data";
+    static const uint8_t rsrc[] = "RSRC";
+    sit5_spec sp = {.name = "Both",
+                    .data = data,
+                    .dlen = 4,
+                    .h1_len = -1,
+                    .rsrc = true,
+                    .rdata = rsrc,
+                    .rdlen = 4,
+                    .r_raw_len = 4,
+                    .r_packed_len = 4};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    if (err)
+        fprintf(stderr, "  sit5: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(1, list.count);
+    ASSERT_EQ_INT(4, (int)list.files[0].data_fork.size);
+    ASSERT_TRUE(memcmp(list.files[0].data_fork.data, "data", 4) == 0);
+    ASSERT_EQ_INT(4, (int)list.files[0].resource_fork.size);
+    ASSERT_TRUE(memcmp(list.files[0].resource_fork.data, "RSRC", 4) == 0);
+    peel_file_list_free(&list);
+    free(a);
+}
+
+// F-15: a resource fork claiming 0xFFFFFFC0 packed bytes, in an archive of a
+// few hundred.  The data fork's start was computed as a pointer, resource
+// start + that length, and only the data fork was bounds-checked.  Natively
+// the pointer lands far past the end and the check rejects it, by accident.
+// On wasm32 it wraps back inside the buffer and the check passes: the unfixed
+// build decodes the resource fork straight off the end of the archive into
+// adjacent heap until it has its 4096 bytes, and only the fork CRC rejects it
+// ("fork CRC mismatch", observed under run-wasm32).  The assertion is on the
+// new check's own message, which neither unfixed target produces.
+TEST(test_sit5_resource_fork_extent_is_checked) {
+    static const uint8_t data[] = "data";
+    sit5_spec sp = {.name = "Big",
+                    .data = data,
+                    .dlen = 4,
+                    .h1_len = -1,
+                    .rsrc = true,
+                    .r_raw_len = 4096,
+                    .r_packed_len = 0xFFFFFFC0u,
+                    .r_algo = 1};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "fork data extends past archive end") != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
     free(a);
 }
 
@@ -618,6 +710,8 @@ int main(void) {
     RUN(test_cpt_nesting_cap_is_exact);
     RUN(test_cpt_folder_nesting_is_bounded);
     RUN(test_sit5_round_trip);
+    RUN(test_sit5_round_trip_with_resource_fork);
+    RUN(test_sit5_resource_fork_extent_is_checked);
     RUN(test_sit5_short_header_is_rejected);
     RUN(test_sit5_zero_length_skip_marker_cannot_loop);
     RUN(test_peel_passes_unrecognised_input_through);

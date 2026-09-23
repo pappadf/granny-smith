@@ -240,6 +240,29 @@ static void entry_list_free(sit_entry_list_t *list) {
 // Static Helpers — Path Construction
 // ============================================================================
 
+// Both StuffIt layouts store a resource fork and then a data fork end to end,
+// starting at archive offset `off` (sit.md § 4.5, § 5.5).  Check both extents
+// as offsets, wrap-safe, and return where the data fork starts.
+//
+// This used to form `data_ptr = rsrc_ptr + rclen` from an unvalidated 32-bit
+// length and then test `(data_ptr - blob) + dlen > blob_len`.  On a 64-bit
+// host a huge resource length pushes that far past the end and the test
+// rejects it -- by accident.  On wasm32 the pointer wraps back inside the
+// buffer, the test passes, and the resource fork is decoded with a ~4 GiB
+// length: a dropped .sit trapped the shipping build with "memory access out
+// of bounds" (09-storage F-15).  The resource fork's own extent was never
+// checked at all; only its end, as the data fork's start.
+static bool sit_forks_fit(size_t off, uint32_t rsrc_len, uint32_t data_len,
+                          size_t total, size_t *data_off) {
+    if (off > total || rsrc_len > total - off)
+        return false;
+    size_t d = off + rsrc_len;
+    if (data_len > total - d)
+        return false;
+    *data_off = d;
+    return true;
+}
+
 // Build "dir/name" into dst.  Either part may be empty.
 // sit.md § 5.7 "Iteration Rules" — paths are built by resolving parent_offset.
 static void build_path(char *dst, size_t cap, const char *dir, const char *name) {
@@ -688,14 +711,14 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         uint16_t dcrc  = rd16be(hdr + 102);
 
         // sit.md § 4.5 "Fork Data Layout" — rsrc first, then data
-        const uint8_t *rsrc_ptr = base + cursor + SIT_ENTRY_HDR_SIZE;
-        const uint8_t *data_ptr = rsrc_ptr + rclen;
-
-        // Bounds check
-        if ((size_t)(data_ptr - blob) + dclen > blob_len) {
+        size_t rsrc_off = (size_t)(base - blob) + cursor + SIT_ENTRY_HDR_SIZE;
+        size_t data_off;
+        if (!sit_forks_fit(rsrc_off, rclen, dclen, blob_len, &data_off)) {
             *err = make_err("SIT classic: fork data extends past archive end");
             return false;
         }
+        const uint8_t *rsrc_ptr = blob + rsrc_off;
+        const uint8_t *data_ptr = blob + data_off;
 
         // Add entry to the list
         sit_entry_t *ent = entry_list_push(entries, err);
@@ -722,7 +745,7 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         ent->has_rsrc = (rulen > 0);
 
         // Advance past both fork data regions
-        cursor = (uint32_t)((size_t)(data_ptr - base) + dclen);
+        cursor = (uint32_t)(data_off - (size_t)(base - blob) + dclen);
         if (depth == 0) done++;
     }
 
@@ -871,24 +894,26 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         // sit.md § 5.4 — version-dependent skip past header 2 prefix
         uint32_t skip_extra = (h1[4] == 1) ? 22 : 18;
         bool     rsrc_present = (flags2 & 0x01) != 0;
-        const uint8_t *after_prefix = h2 + 14 + skip_extra;
-        const uint8_t *payload_ptr  = after_prefix;
+        // Offsets from `blob`, not pointers: everything past header 2 is
+        // located by lengths the archive supplies (see sit_forks_fit).
+        size_t after_off   = (size_t)(h2 - blob) + 14 + skip_extra;
+        size_t payload_off = after_off;
 
         // sit.md § 5.4 — resource fork fields (conditional)
         uint32_t r_raw_len = 0, r_packed_len = 0;
         uint16_t r_crc     = 0;
         uint8_t  r_algo    = 0;
         if (rsrc_present) {
-            if ((size_t)(after_prefix - blob) + 14 > blob_len) {
+            if (after_off + 14 > blob_len) {
                 *err = make_err("SIT5: resource info past archive end");
                 return false;
             }
-            r_raw_len    = rd32be(after_prefix + 0);
-            r_packed_len = rd32be(after_prefix + 4);
-            r_crc        = rd16be(after_prefix + 8);
-            r_algo       = after_prefix[12];
-            uint8_t rpass = after_prefix[13];
-            payload_ptr  = after_prefix + 14 + rpass;
+            const uint8_t *ri = blob + after_off;
+            r_raw_len    = rd32be(ri + 0);
+            r_packed_len = rd32be(ri + 4);
+            r_crc        = rd16be(ri + 8);
+            r_algo       = ri[12];
+            payload_off  = after_off + 14 + ri[13]; // + the password blob
         }
 
         // sit.md § 5.3 — folder entries (flags bit 6)
@@ -920,7 +945,7 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
 
             // sit.md § 5.7 — add child count, advance into children
             remaining += child_count;
-            cursor = (uint32_t)(payload_ptr - base);
+            cursor = (uint32_t)(payload_off - (size_t)(base - blob));
             continue;
         }
 
@@ -950,12 +975,14 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         build_path(full_name, sizeof(full_name), ppath, namebuf);
 
         // sit.md § 5.5 "Fork Data Layout" — resource fork first, then data
-        const uint8_t *r_base = payload_ptr;
-        const uint8_t *d_base = payload_ptr + (rsrc_present ? r_packed_len : 0);
-        if ((size_t)(d_base - blob) + d_packed_len > blob_len) {
-            *err = make_err("SIT5: data fork extends past archive end");
+        size_t d_off;
+        if (!sit_forks_fit(payload_off, rsrc_present ? r_packed_len : 0,
+                           d_packed_len, blob_len, &d_off)) {
+            *err = make_err("SIT5: fork data extends past archive end");
             return false;
         }
+        const uint8_t *r_base = blob + payload_off;
+        const uint8_t *d_base = blob + d_off;
 
         // Add entry to the list
         sit_entry_t *ent = entry_list_push(entries, err);
@@ -985,7 +1012,7 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         }
 
         // Advance cursor past the fork data
-        cursor = (uint32_t)((size_t)(d_base - base) + d_packed_len);
+        cursor = (uint32_t)(d_off - (size_t)(base - blob) + d_packed_len);
         remaining--;
     }
 
