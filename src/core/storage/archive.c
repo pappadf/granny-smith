@@ -171,6 +171,15 @@ static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *fil
     if (!name[0])
         name = "untitled";
 
+    // The entry name comes from the archive.  Unchecked, "../x" -- or a Mac
+    // name containing '/', legal on HFS -- was written outside output_dir,
+    // with the directories created on the way (09-storage F-13).  peeler now
+    // builds names that cannot do this; this is the boundary, so check anyway.
+    if (!peel_path_is_confined(name)) {
+        fprintf(stderr, "archive: refusing entry '%s': it would land outside '%s'\n", name, ctx->output_dir);
+        return -1;
+    }
+
     if (ensure_dir_exists(ctx, name) != 0)
         return -1;
 

@@ -1110,6 +1110,126 @@ TEST(test_read_file_over_the_cap_is_refused) {
 }
 
 // ============================================================================
+// Track B: entry names cannot leave the output directory (F-13)
+// ============================================================================
+
+TEST(test_path_is_confined) {
+    static const char *ok[] = {"a", "a/b", "_..", "..:escape", "a/_./b", "...", "a.b/c..d"};
+    static const char *bad[] = {"", "/etc/passwd", "..", ".", "../x", "a/../b", "a/./b", "a//b", "a/", "a/.."};
+    for (size_t i = 0; i < sizeof(ok) / sizeof(ok[0]); i++)
+        ASSERT_TRUE(peel_path_is_confined(ok[i]));
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+        ASSERT_TRUE(!peel_path_is_confined(bad[i]));
+}
+
+// The first entry name a one-file archive yields, and whether it is confined.
+static void expect_single_name(const uint8_t *a, size_t len, const char *want) {
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    if (err)
+        fprintf(stderr, "  peel: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(1, list.count);
+    if (strcmp(list.files[0].meta.name, want) != 0)
+        fprintf(stderr, "  name: got '%s', want '%s'\n", list.files[0].meta.name, want);
+    ASSERT_TRUE(strcmp(list.files[0].meta.name, want) == 0);
+    ASSERT_TRUE(peel_path_is_confined(list.files[0].meta.name));
+    peel_file_list_free(&list);
+}
+
+// A Mac name may contain '/' (legal on HFS).  Passed through, "../escape" was
+// a traversal path to anything joining it under an output directory.  It
+// becomes ':', the macOS convention -- one component, not three.
+TEST(test_sit5_slash_in_a_name_cannot_escape) {
+    static const uint8_t data[] = "x";
+    size_t len;
+    uint8_t *a = make_sit5("../escape", data, 1, -1, 0, &len);
+    expect_single_name(a, len, "..:escape");
+    free(a);
+}
+
+// ".." is a legal Mac name too; as a path component it is traversal.
+TEST(test_sit5_dots_only_name_is_prefixed) {
+    static const uint8_t data[] = "x";
+    size_t len;
+    uint8_t *a = make_sit5("..", data, 1, -1, 0, &len);
+    expect_single_name(a, len, "_..");
+    free(a);
+}
+
+// The same through a folder, in Compact Pro: folder ".." holding file "x".
+TEST(test_cpt_dot_dot_folder_is_prefixed) {
+    uint8_t a[8 + 1 + 7 + 3 + 2 + 2 + 45 + 16] = {0};
+    a[0] = 0x01;
+    a[1] = 0x01;
+    put32(a + 4, 9); // one fork byte at 8, directory at 9
+    a[8] = 'x';
+    uint8_t *d = a + 9;
+    put16(d + 4, 2); // two entries: the folder and the file
+    uint8_t *e = d + 7;
+    e[0] = 0x80 | 2; // folder, 2-byte name
+    e[1] = '.';
+    e[2] = '.';
+    put16(e + 3, 1); // one entry below it
+    e += 5;
+    e[0] = 1; // file, 1-byte name
+    e[1] = 'x';
+    uint8_t *m = e + 2;
+    put32(m + 1, 8); // file_offset
+    put32(m + 33, 1); // data_uncomp
+    put32(m + 41, 1); // data_comp (plain RLE: the byte itself)
+    expect_single_name(a, sizeof(a), "_../x");
+}
+
+// BinHex and MacBinary carry one name each.  peel() treats them as wrappers
+// and passes the contents through unnamed, so the name is only exposed by
+// peel_hqx_file / peel_bin_file -- which is where it must be safe.
+TEST(test_hqx_slash_in_a_name_cannot_escape) {
+    char *txt = make_hqx("../x", "data!", "", false);
+    peel_err_t *err = NULL;
+    peel_file_t f = peel_hqx_file((const uint8_t *)txt, strlen(txt), &err);
+    ASSERT_TRUE(err == NULL);
+    if (strcmp(f.meta.name, "..:x") != 0)
+        fprintf(stderr, "  name: got '%s'\n", f.meta.name);
+    ASSERT_TRUE(strcmp(f.meta.name, "..:x") == 0);
+    ASSERT_TRUE(peel_path_is_confined(f.meta.name));
+    peel_free(&f.data_fork);
+    peel_free(&f.resource_fork);
+    free(txt);
+}
+
+// Classic StuffIt: a folder name of 64 bytes or more skipped the copy into
+// the folder stack but still pushed it, leaving that slot uninitialised stack
+// for the path builder to strlen.  It is now clamped to the 63 bytes the
+// 112-byte entry header can hold.  (Layout per sit.md §4: a 22-byte archive
+// header, then 112-byte entry headers; entry headers carry no CRC.)
+TEST(test_sit_classic_long_folder_name_is_clamped) {
+    uint8_t a[22 + 3 * 112 + 1] = {0};
+    memcpy(a, "SIT!", 4);
+    put16(a + 4, 1); // one top-level entry: the folder
+    put32(a + 6, sizeof(a));
+    memcpy(a + 10, "rLau", 4);
+    uint8_t *h = a + 22; // folder start, name length 70
+    h[0] = h[1] = 0x20;
+    h[2] = 70;
+    memset(h + 3, 'a', 63);
+    h += 112; // the file "f": stored data fork, one byte
+    h[2] = 1;
+    h[3] = 'f';
+    put32(h + 88, 1); // data uncompressed length
+    put32(h + 96, 1); // data compressed length
+    put16(h + 102, crc16_arc((const uint8_t *)"x", 1));
+    h[112] = 'x';
+    h += 113; // folder end
+    h[0] = h[1] = 0x21;
+
+    char want[80];
+    memset(want, 'a', 63);
+    memcpy(want + 63, "/f", 3);
+    expect_single_name(a, sizeof(a), want);
+}
+
+// ============================================================================
 // Garbage in, error out
 // ============================================================================
 
@@ -1172,6 +1292,12 @@ int main(void) {
     PRUN(test_cpt_fork_over_the_cap_is_refused);
     PRUN(test_hqx_fork_over_the_cap_is_refused);
     PRUN(test_read_file_over_the_cap_is_refused);
+    PRUN(test_path_is_confined);
+    PRUN(test_sit5_slash_in_a_name_cannot_escape);
+    PRUN(test_sit5_dots_only_name_is_prefixed);
+    PRUN(test_cpt_dot_dot_folder_is_prefixed);
+    PRUN(test_hqx_slash_in_a_name_cannot_escape);
+    PRUN(test_sit_classic_long_folder_name_is_clamped);
     PRUN(test_peel_passes_unrecognised_input_through);
     fprintf(stderr, "All peeler tests passed\n");
     return 0;

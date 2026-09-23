@@ -263,29 +263,20 @@ static bool sit_forks_fit(size_t off, uint32_t rsrc_len, uint32_t data_len,
     return true;
 }
 
-// Build "dir/name" into dst.  Either part may be empty.
+// Build "dir/name" into dst: `dir` is a path this parser already built (so
+// already safe), `name` one raw Mac name, appended as a sanitised component
+// (peel_append_segment).  Either part may be empty.
 // sit.md § 5.7 "Iteration Rules" — paths are built by resolving parent_offset.
 static void build_path(char *dst, size_t cap, const char *dir, const char *name) {
     if (!cap) return;
+    size_t p = 0;
     dst[0] = '\0';
     if (dir && dir[0]) {
-        size_t dl = strnlen(dir, cap - 1);
-        memcpy(dst, dir, dl);
-        size_t p = dl;
-        // Append separator
-        if (p < cap - 1)
-            dst[p++] = '/';
-        if (name) {
-            size_t nl = strnlen(name, cap - 1 - p);
-            if (nl) memcpy(dst + p, name, nl);
-            p += nl;
-        }
-        dst[p < cap ? p : cap - 1] = '\0';
-    } else if (name) {
-        size_t nl = strnlen(name, cap - 1);
-        memcpy(dst, name, nl);
-        dst[nl] = '\0';
+        p = strnlen(dir, cap - 1);
+        memcpy(dst, dir, p);
+        dst[p] = '\0';
     }
+    peel_append_segment(dst, cap, &p, (const uint8_t *)(name ? name : ""), name ? strlen(name) : 0);
 }
 
 // ============================================================================
@@ -660,8 +651,12 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         // The structural markers themselves do not increment `done`; the
         // outermost folder-end does (when depth pops back to 0).
         if (rm == SIT_FOLDER_START || dm == SIT_FOLDER_START) {
+            // Clamp, never skip: skipping the copy for a name of 64 bytes or
+            // more left dirs[depth] as uninitialised stack, which the path
+            // builder then read with strlen.
             uint8_t nlen = hdr[2];
-            if (depth < SIT_MAX_DEPTH && nlen < 64) {
+            if (nlen > 63) nlen = 63;
+            if (depth < SIT_MAX_DEPTH) {
                 memcpy(dirs[depth], hdr + 3, nlen);
                 dirs[depth][nlen] = '\0';
             }
@@ -693,20 +688,12 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         memcpy(fname, hdr + 3, nlen);
         fname[nlen] = '\0';
 
-        // Build full path from folder stack
+        // Build full path from folder stack, each name a sanitised component
         char path[512] = "";
         size_t p = 0;
-        for (int d = 0; d < depth; d++) {
-            size_t sl = strlen(dirs[d]);
-            if (p + sl + 1 >= sizeof(path)) break;
-            memcpy(path + p, dirs[d], sl);
-            p += sl;
-            path[p++] = '/';
-        }
-        // Append file name
-        size_t fl = strnlen(fname, sizeof(path) - 1 - p);
-        if (fl > 0) memcpy(path + p, fname, fl);
-        path[p + fl] = '\0';
+        for (int d = 0; d < depth && d < SIT_MAX_DEPTH; d++)
+            peel_append_segment(path, sizeof(path), &p, (const uint8_t *)dirs[d], strlen(dirs[d]));
+        peel_append_segment(path, sizeof(path), &p, (const uint8_t *)fname, strlen(fname));
 
         // sit.md § 4.3 — type at 66, creator at 70, finder flags at 74
         uint32_t ftype    = rd32be(hdr + 66);

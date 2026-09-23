@@ -47,7 +47,14 @@ void peel_free(peel_buf_t *buf);
 // Metadata for a single file extracted from an archive.
 // Fields are best-effort; zeroed when the format does not provide them.
 typedef struct {
-    char name[256]; // Original Mac filename (null-terminated)
+    // Relative path of the entry, '/' between folder levels -- or just the
+    // file's name, for single-file formats.  Each component is a Mac name made
+    // safe to write under a directory: a '/' inside a name (legal on HFS)
+    // becomes ':', the macOS convention, so it cannot create a separator;
+    // a component of only dots ('.', '..', legal Mac names) gets a '_' prefix;
+    // an empty one becomes '_'.  So peeler's own names always pass
+    // peel_path_is_confined -- but check anyway before writing (below).
+    char name[256];
     uint32_t mac_type; // Classic Mac file type  (e.g. 'TEXT')
     uint32_t mac_creator; // Classic Mac creator    (e.g. 'ttxt')
     uint16_t finder_flags; // Finder flags
@@ -91,6 +98,14 @@ peel_buf_t peel_buf_wrap(const void *src, size_t len);
 // Identify the outermost format without peeling.
 // Returns a short name ("hqx", "bin", "sit", "cpt") or NULL if unknown.
 const char *peel_detect(const uint8_t *src, size_t len);
+
+// === Writing extracted files ===
+
+// True if `path` is safe to write beneath an output directory: non-empty, not
+// absolute, and no component empty, "." or "..".  Anything that turns peeler
+// names into files must check this first -- archive extraction wrote
+// attacker-named paths outside its output directory (09-storage F-13).
+bool peel_path_is_confined(const char *path);
 
 // === Main Entry Points ===
 

@@ -412,8 +412,8 @@ static peel_file_t hqx_decode(const uint8_t *src, size_t len,
     if (nl > sizeof(file.meta.name) - 1) {
         nl = sizeof(file.meta.name) - 1;
     }
-    memcpy(file.meta.name, hdr.name, nl);
-    file.meta.name[nl] = '\0';
+    size_t np = 0; // one sanitised component (peel_append_segment)
+    peel_append_segment(file.meta.name, sizeof(file.meta.name), &np, (const uint8_t *)hdr.name, nl);
     file.meta.mac_type    = hdr.mac_type;
     file.meta.mac_creator = hdr.mac_creator;
 

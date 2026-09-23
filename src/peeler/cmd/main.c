@@ -98,6 +98,10 @@ static bool write_blob(const char *path, const uint8_t *data, size_t len) {
 // Write the data fork of a file to the output directory.
 static bool write_data_fork(const char *dir, const peel_file_t *f) {
     const char *name = f->meta.name[0] ? f->meta.name : "unnamed";
+    if (!peel_path_is_confined(name)) {
+        fprintf(stderr, "peeler: refusing entry '%s': it would land outside the output directory\n", name);
+        return false;
+    }
     char path[1024];
     if (!build_path(path, sizeof(path), dir, name)) {
         fprintf(stderr, "peeler: path too long for '%s'\n", name);
@@ -115,6 +119,10 @@ static bool write_data_fork(const char *dir, const peel_file_t *f) {
 // appledouble.md § "Writing & Updating Rules"
 static bool write_appledouble(const char *dir, const peel_file_t *f) {
     const char *name = f->meta.name[0] ? f->meta.name : "unnamed";
+    if (!peel_path_is_confined(name)) {
+        fprintf(stderr, "peeler: refusing entry '%s': it would land outside the output directory\n", name);
+        return false;
+    }
 
     // Build ._<name> sidecar path, inserting ._ before the filename
     // component (e.g. "dir/subdir/._file" not "dir/._ subdir/file").

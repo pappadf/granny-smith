@@ -672,17 +672,12 @@ static int cp_push_entry(cp_archive_t *ar, const cp_entry_t *e) {
 static void cp_join_path(char dst[256], const char *parent, const char *seg, size_t seg_len) {
     size_t dp = 0;
     dst[0] = '\0';
-    if (parent && parent[0]) {
-        size_t plen = strnlen(parent, 255);
-        memcpy(dst, parent, plen);
-        dp = plen;
-        // Append separator between parent directory and segment
-        if (dp < 255) dst[dp++] = '/';
+    if (parent && parent[0]) { // built by this walker, so already safe
+        dp = strnlen(parent, 255);
+        memcpy(dst, parent, dp);
+        dst[dp] = '\0';
     }
-    // Clamp segment length to remaining buffer space
-    if (seg_len > 255 - dp) seg_len = 255 - dp;
-    if (seg_len > 0) { memcpy(dst + dp, seg, seg_len); dp += seg_len; }
-    dst[dp] = '\0';
+    peel_append_segment(dst, 256, &dp, (const uint8_t *)seg, seg_len);
 }
 
 // Recursively parse directory entries from in-memory archive data.

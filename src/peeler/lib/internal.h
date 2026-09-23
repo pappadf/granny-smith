@@ -121,6 +121,18 @@ static inline uint32_t rd32be(const uint8_t *p) {
 #define PEEL_MAX_DIR_DEPTH 128                 // deepest folder nesting a walker follows
 
 // ============================================================================
+// Entry Names
+// ============================================================================
+
+// Append one Mac name (n raw bytes) to a path being built in dst[cap] at *pos,
+// preceded by '/' if *pos > 0, made safe as one path component (peeler.h,
+// peel_file_meta_t.name): '/' and NUL become ':', a dots-only name gets a '_'
+// prefix, an empty one becomes "_".  Truncates at cap; always terminates.
+// Every format builds its names through this, so no archive can smuggle a
+// separator or a traversal component into one (09-storage F-13).
+void peel_append_segment(char *dst, size_t cap, size_t *pos, const uint8_t *name, size_t n);
+
+// ============================================================================
 // Extent Checks
 // ============================================================================
 
