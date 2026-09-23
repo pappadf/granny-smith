@@ -5,6 +5,9 @@ TEST_HARNESS := isolated
 # transport (appletalk.c) is stubbed in stub_atalk.c so the suite can drive
 # afp_handle_command() directly, with no guest and no wire.
 EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
+              ../../../../src/core/network/afp_volume.c \
+              ../../../../src/core/network/afp_params.c \
+              ../../../../src/core/network/afp_enum.c \
               ../../../../src/core/network/afp_catalog.c \
               ../../../../src/core/network/afp_desktop.c \
               ../../../../src/core/network/afp_fork.c \
