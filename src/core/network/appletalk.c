@@ -636,6 +636,8 @@ static void llap_receive(void *ctx, const uint8_t *buf, size_t size) {
 #define DDP_NBP           DDP_TYPE_NBP
 #define DDP_ATP           DDP_TYPE_ATP
 #define DDP_AEP           DDP_TYPE_AEP
+#define AEP_ECHO_REQUEST  1
+#define AEP_ECHO_REPLY    2
 #define DDP_RTMP_REQUEST  DDP_TYPE_RTMP_REQUEST
 #define DDP_ZIP           DDP_TYPE_ZIP
 #define DDP_ADSP          DDP_TYPE_ADSP
@@ -1200,16 +1202,35 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         atp_in(ddp, buf, (int)len);
         break;
 
-    case DDP_AEP:
-        // AppleTalk Echo Protocol – reply by echoing payload
-        LOG(3, "AEP rx len=%zu – echoing", len);
-        {
-            ddp_header_t reply;
-            ddp_setup_reply(ddp, &reply);
-            reply.type = DDP_AEP; // ensure protocol type preserved
-            ddp_send(&reply, buf, (int)len);
+    case DDP_AEP: {
+        // AppleTalk Echo Protocol (Inside AppleTalk ch. 6): the Echoer listens
+        // on socket 4, discards a packet with no data, and answers an Echo
+        // Request (function 1) by sending it back with the function set to 2,
+        // Echo Reply.  It used to echo anything on any socket unchanged -- so a
+        // pinging client never saw a reply, only its own request coming back
+        // (10-network N-35).
+        if (ddp->dst_socket != 4) {
+            atalk_drop(ATALK_DROP_UNHANDLED, "AEP on socket %u", (unsigned)ddp->dst_socket);
+            break;
         }
+        if (len == 0) {
+            atalk_drop(ATALK_DROP_MALFORMED, "AEP packet with no data");
+            break;
+        }
+        if (buf[0] != AEP_ECHO_REQUEST) {
+            atalk_drop(ATALK_DROP_UNHANDLED, "AEP function %u", (unsigned)buf[0]);
+            break;
+        }
+        uint8_t echo[DDP_MAX_DATA_SIZE];
+        memcpy(echo, buf, len);
+        echo[0] = AEP_ECHO_REPLY;
+        ddp_header_t reply;
+        ddp_setup_reply(ddp, &reply);
+        reply.type = DDP_AEP;
+        LOG(3, "AEP: echoing %zu bytes", len);
+        ddp_send(&reply, echo, (int)len);
         break;
+    }
 
     case DDP_ADSP:
         // Reliable byte streams; the PPC Toolbox endpoint rides on these.
@@ -1292,12 +1313,15 @@ static const char *nbp_function_name(int function) {
     }
 }
 
+// The wire packs function and tuple count into one byte, four bits each.
+// They were `int : 4` bit-fields here, which gcc and clang make signed: a count
+// of 8..15 read back as -8..-1, so an inbound packet with eight or more tuples
+// was dropped whole and a reply carrying exactly eight said "8" and carried
+// none (10-network F-07).  The struct never touches the wire; plain bytes.
 typedef struct {
-
-    int function : 4;
-    int tuple_count : 4;
+    uint8_t function;
+    uint8_t tuple_count;
     uint8_t nbp_id;
-
 } nbp_header_t;
 
 typedef struct {

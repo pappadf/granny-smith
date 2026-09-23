@@ -416,6 +416,116 @@ TEST(every_discard_is_counted_by_reason) {
     link_delete();
 }
 
+// --- NBP with eight tuples (10-network F-07) ----------------------------------
+
+// Walk the tuples of an NBP packet at `p`; returns how many parse.
+static int nbp_count_tuples(const uint8_t *p, size_t len) {
+    size_t pos = 2;
+    int n = 0;
+    while (pos + 5 < len) {
+        pos += 5;
+        for (int field = 0; field < 3; field++) {
+            if (pos >= len)
+                return n;
+            pos += 1 + p[pos];
+        }
+        if (pos > len)
+            return n;
+        n++;
+    }
+    return n;
+}
+
+TEST(a_lookup_matching_eight_names_answers_with_eight_tuples) {
+    link_boot();
+    atalk_nbp_entry_t *entries[8];
+    char names[8][8];
+    for (int i = 0; i < 8; i++) {
+        snprintf(names[i], sizeof names[i], "Host %d", i);
+        atalk_nbp_service_desc_t desc = {.object = names[i], .type = "Eight", .socket = (unsigned)(200 + i)};
+        ASSERT_EQ_INT(0, atalk_nbp_register(&desc, &entries[i]));
+    }
+    uint8_t lkup[] = {0x21, 0x42, 0, 0, GUEST_NODE, 253, 0, 1, '=', 5, 'E', 'i', 'g', 'h', 't', 1, '*'};
+    guest_ddp(GUEST_NODE, 2, 253, 2, lkup, sizeof lkup);
+    guest_advance_to(link_now_ns() + 50e6);
+    size_t len = 0;
+    const uint8_t *reply = wire_last_ddp(GUEST_NODE, 2, &len);
+    ASSERT_TRUE(reply != NULL);
+    ASSERT_EQ_INT(0x38, reply[8]); // LkUp-Reply, eight tuples...
+    ASSERT_EQ_INT(8, nbp_count_tuples(reply + 8, len - 8)); // ...and it carries them
+    for (int i = 0; i < 8; i++)
+        ASSERT_EQ_INT(0, atalk_nbp_unregister(entries[i]));
+    link_delete();
+}
+
+static int g_lookup_results;
+static void count_lookup_result(void *ctx, const atalk_nbp_info_t *info) {
+    (void)ctx, (void)info;
+    g_lookup_results++;
+}
+
+TEST(a_lookup_reply_with_eight_tuples_delivers_all_eight) {
+    link_boot();
+    g_lookup_results = 0;
+    ASSERT_EQ_INT(0, atalk_nbp_lookup("=", "PPCToolBox", "*", 252, count_lookup_result, NULL));
+    // Our LkUp went out broadcast; find its NBP id.
+    size_t len = 0;
+    const uint8_t *req = wire_last_ddp(0xFF, 2, &len);
+    ASSERT_TRUE(req != NULL);
+    uint8_t nbp_id = req[9];
+
+    uint8_t reply[400];
+    size_t n = 0;
+    reply[n++] = 0x38; // LkUp-Reply, eight tuples
+    reply[n++] = nbp_id;
+    for (int i = 0; i < 8; i++) {
+        reply[n++] = 0;
+        reply[n++] = 0;
+        reply[n++] = GUEST_NODE;
+        reply[n++] = (uint8_t)(100 + i);
+        reply[n++] = 0;
+        char obj[8];
+        snprintf(obj, sizeof obj, "Mac %d", i);
+        const char *fields[3] = {obj, "PPCToolBox", "*"};
+        for (int f = 0; f < 3; f++) {
+            size_t l = strlen(fields[f]);
+            reply[n++] = (uint8_t)l;
+            memcpy(reply + n, fields[f], l);
+            n += l;
+        }
+    }
+    guest_ddp(GUEST_NODE, 252, 2, 2, reply, n);
+    ASSERT_EQ_INT(8, g_lookup_results);
+    atalk_nbp_lookup_cancel();
+    link_delete();
+}
+
+// AEP (Inside AppleTalk ch. 6): the Echoer on socket 4 turns an Echo Request
+// (function 1) round as an Echo Reply (function 2), data unchanged; anything
+// else is not for it (10-network N-35: it echoed everything, unchanged).
+TEST(the_echoer_answers_requests_on_socket_4_with_a_reply) {
+    link_boot();
+    uint8_t ping[] = {1, 'p', 'i', 'n', 'g'};
+    guest_ddp(GUEST_NODE, 4, 200, 4, ping, sizeof ping);
+    guest_advance_to(link_now_ns() + 30e6);
+    size_t len = 0;
+    const uint8_t *echo = wire_last_ddp(GUEST_NODE, 4, &len);
+    ASSERT_TRUE(echo != NULL);
+    ASSERT_EQ_INT((int)(8 + sizeof ping), (int)len);
+    ASSERT_EQ_INT(200, echo[5]); // back to the requesting socket
+    ASSERT_EQ_INT(2, echo[8]); // Echo Reply
+    ASSERT_EQ_INT(0, memcmp(echo + 9, ping + 1, sizeof ping - 1));
+
+    wire_clear();
+    uint8_t reply[] = {2, 'x'};
+    guest_ddp(GUEST_NODE, 4, 200, 4, reply, sizeof reply); // a reply is not echoed
+    guest_ddp(GUEST_NODE, 5, 200, 4, ping, sizeof ping); // nor anything off socket 4
+    guest_ddp(GUEST_NODE, 4, 200, 4, NULL, 0); // nor an empty packet
+    guest_advance_to(link_now_ns() + 30e6);
+    ASSERT_TRUE(wire_last_ddp(GUEST_NODE, 4, NULL) == NULL);
+    link_delete();
+}
+
 int main(void) {
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
     RUN(enq_for_our_node_is_acked_and_others_are_not);
@@ -430,6 +540,9 @@ int main(void) {
     RUN(a_successful_load_moves_the_stack_to_the_new_machine);
     RUN(a_malformed_ddp_frame_is_dropped_and_counted);
     RUN(every_discard_is_counted_by_reason);
+    RUN(a_lookup_matching_eight_names_answers_with_eight_tuples);
+    RUN(a_lookup_reply_with_eight_tuples_delivers_all_eight);
+    RUN(the_echoer_answers_requests_on_socket_4_with_a_reply);
     printf("[PASS] All atalk_link tests passed\n");
     return 0;
 }
