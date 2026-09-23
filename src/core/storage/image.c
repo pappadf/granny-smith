@@ -198,6 +198,10 @@ size_t disk_size(image_t *disk) {
     return disk->raw_size;
 }
 
+uint32_t disk_block_size(image_t *disk) {
+    return disk ? disk->block_size : 0;
+}
+
 // ============================================================================
 // Open writable images
 // ============================================================================
@@ -361,14 +365,22 @@ static void image_load_diskcopy_tags(image_t *image) {
     if (!f)
         return;
     uint8_t header[DISKCOPY_HEADER_SIZE];
-    if (fread(header, 1, sizeof(header), f) != sizeof(header)) {
+    struct stat st;
+    if (fread(header, 1, sizeof(header), f) != sizeof(header) || fstat(fileno(f), &st) != 0) {
         fclose(f);
         return;
     }
+    // Every value here is re-derived from this header and checked against
+    // this file, rather than trusted because detect_diskcopy checked it on
+    // an earlier open (09-storage F-50).  The sector count is the header's
+    // own: DiskCopy 4.2 sectors are 512 data bytes whatever geometry the
+    // image is opened with.  Bounding the tag section by the file bounds
+    // the allocation by the file.
     uint32_t data_size = read_be32(header + 0x40);
     uint32_t tag_size = read_be32(header + 0x44);
-    uint32_t count = (uint32_t)(image->raw_size / STORAGE_BLOCK_SIZE);
-    if (tag_size == 0 || count == 0 || (tag_size % count) != 0) {
+    uint32_t count = data_size / STORAGE_BLOCK_SIZE;
+    uint64_t end = (uint64_t)DISKCOPY_HEADER_SIZE + data_size + tag_size;
+    if (tag_size == 0 || count == 0 || (tag_size % count) != 0 || end > (uint64_t)st.st_size) {
         fclose(f);
         return; // no tags (or unexpected layout)
     }
@@ -377,7 +389,7 @@ static void image_load_diskcopy_tags(image_t *image) {
         fclose(f);
         return;
     }
-    if (fseek(f, (long)DISKCOPY_HEADER_SIZE + (long)data_size, SEEK_SET) != 0 ||
+    if (fseeko(f, (off_t)DISKCOPY_HEADER_SIZE + (off_t)data_size, SEEK_SET) != 0 ||
         fread(tags, 1, tag_size, f) != tag_size) {
         free(tags);
         fclose(f);
@@ -527,6 +539,18 @@ static uint8_t *acquire_resource_fork(const char *base_path, size_t *out_len) {
     return NULL;
 }
 
+// Read exactly `len` bytes at absolute offset `off`.  0 / -errno.
+static int read_at(FILE *f, uint64_t off, void *buf, size_t len) {
+    if (fseeko(f, (off_t)off, SEEK_SET) != 0)
+        return -EIO;
+    return fread(buf, 1, len, f) == len ? 0 : -EIO;
+}
+
+// ndif_read_fn over a host file.
+static int ndif_read_host(void *ctx, uint64_t off, void *buf, size_t n) {
+    return read_at((FILE *)ctx, off, buf, n);
+}
+
 // Decode an NDIF data fork (host file `base_path`, block map `map`) into a
 // freshly created scratch raw file `scratch`. 0 / -errno.
 static int materialize_ndif_host(const char *base_path, ndif_map_t *map, const char *scratch) {
@@ -539,46 +563,7 @@ static int materialize_ndif_host(const char *base_path, ndif_map_t *map, const c
         fclose(df);
         return e ? -e : -EIO;
     }
-    int rc = 0;
-    if (ftruncate(fileno(out), (off_t)map->sectors * 512) != 0) {
-        rc = -EIO;
-        goto done;
-    }
-    for (size_t i = 0; i < map->n_chunks; i++) {
-        ndif_chunk_t *c = &map->chunks[i];
-        if (c->type == NDIF_CHUNK_ZERO || c->count == 0)
-            continue; // ftruncate already zero-filled the gap
-        size_t need = (size_t)c->count * 512;
-        uint8_t *dbuf = (uint8_t *)malloc(need);
-        uint8_t *cbuf = c->length ? (uint8_t *)malloc(c->length) : NULL;
-        if (!dbuf || (c->length && !cbuf)) {
-            free(dbuf);
-            free(cbuf);
-            rc = -ENOMEM;
-            break;
-        }
-        size_t clen = 0;
-        if (c->length) {
-            if (fseek(df, (long)c->offset, SEEK_SET) != 0) {
-                free(dbuf);
-                free(cbuf);
-                rc = -EIO;
-                break;
-            }
-            clen = fread(cbuf, 1, c->length, df);
-        }
-        if (ndif_decode_chunk(c, cbuf, clen, dbuf, need) == 0) {
-            if (fseek(out, (long)c->sector * 512, SEEK_SET) != 0 || fwrite(dbuf, 1, need, out) != need)
-                rc = -EIO;
-        } else {
-            rc = -EINVAL;
-        }
-        free(dbuf);
-        free(cbuf);
-        if (rc != 0)
-            break;
-    }
-done:
+    int rc = ndif_materialize(map, ndif_read_host, df, out);
     fclose(df);
     if (fclose(out) != 0 && rc == 0)
         rc = -EIO;
@@ -634,13 +619,6 @@ static void image_scratch_path(const char *base_path, const char *tag, char *out
 // Largest chunk we will buffer whole for decompression.  Real writers emit
 // ~1 MB chunks; anything wildly larger means a corrupt map, not a big disk.
 #define UDIF_MAX_CHUNK_BYTES (64u * 1024u * 1024u)
-
-// Read exactly `len` bytes at absolute offset `off`.  0 / -errno.
-static int read_at(FILE *f, uint64_t off, void *buf, size_t len) {
-    if (fseeko(f, (off_t)off, SEEK_SET) != 0)
-        return -EIO;
-    return fread(buf, 1, len, f) == len ? 0 : -EIO;
-}
 
 // Fold `len` zero bytes into a running CRC-32 without allocating them.
 static uint32_t crc32_zeros(uint32_t crc, uint64_t len) {
@@ -730,7 +708,7 @@ static int materialize_udif_host(const char *base_path, const udif_trailer_t *tr
     }
 
     int rc = 0;
-    if (ftruncate(fileno(out), (off_t)(tr->sectors * 512)) != 0) {
+    if (ftruncate(fileno(out), (off_t)tr->sectors * 512) != 0) {
         rc = -EIO;
         goto done;
     }
@@ -741,7 +719,9 @@ static int materialize_udif_host(const char *base_path, const udif_trailer_t *tr
             udif_chunk_t *c = &t->chunks[j];
             // Absolute position is the table's base plus the chunk's own
             // sector, which restarts at 0 in every table.
-            if (t->base_sector + c->sector + c->count > tr->sectors) {
+            // Checked without an addition that could wrap (09-storage F-25).
+            if (c->count > tr->sectors || t->base_sector > tr->sectors - c->count ||
+                c->sector > tr->sectors - c->count - t->base_sector) {
                 rc = -EINVAL;
                 break;
             }
@@ -790,7 +770,7 @@ static char *resolve_udif_image(const char *base_path) {
     char scratch[PATH_MAX];
     image_scratch_path(base_path, "udif", scratch, sizeof(scratch));
     struct stat cached;
-    if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)(tr.sectors * 512))
+    if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)tr.sectors * 512)
         return dup_string(scratch); // already materialised
 
     // The block map lives in the XML plist the trailer points at.

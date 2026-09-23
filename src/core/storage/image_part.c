@@ -10,6 +10,11 @@
 #include <string.h>
 
 int image_read_bytes(image_t *img, uint64_t off, void *buf, size_t n) {
+    // The bounce buffer is one 512-byte block, and disk_read_data reads whole
+    // blocks of the image's own size; refuse any other geometry here rather
+    // than trip disk_read_data's alignment assert (09-storage F-49).
+    if (disk_block_size(img) != STORAGE_BLOCK_SIZE)
+        return -EINVAL;
     uint8_t *dst = buf;
     size_t done = 0;
     uint8_t blk[STORAGE_BLOCK_SIZE];

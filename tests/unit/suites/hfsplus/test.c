@@ -42,6 +42,11 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     return size;
 }
 
+uint32_t disk_block_size(image_t *disk) {
+    (void)disk;
+    return 512;
+}
+
 // ---- Big-endian writers ----------------------------------------------------
 
 static void w8(size_t off, uint8_t v) {

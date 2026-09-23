@@ -17,6 +17,7 @@
 #include "image_apm.h"
 #include "image_hfs.h"
 #include "image_ndif.h"
+#include "image_part.h"
 #include "image_ufs.h"
 #include "resource_fork.h"
 
@@ -308,10 +309,9 @@ static bool probe_bare_hfs(image_mount_t *m) {
     size_t img_size = disk_size(m->img);
     if (img_size < 1024 + 512)
         return false;
-    // disk_read_data wants 512-aligned offset + length; read the full
-    // MDB / Volume Header block and just inspect the signature.
+    // Read the full MDB / Volume Header block and just inspect the signature.
     uint8_t mdb[512];
-    if (disk_read_data(m->img, 1024, mdb, sizeof(mdb)) != sizeof(mdb))
+    if (image_read_bytes(m->img, 1024, mdb, sizeof(mdb)) != 0)
         return false;
     // "BD" = classic HFS (possibly an HFS+ wrapper), "H+"/"HX" = bare HFS+.
     // hfs_open handles all three; classify them all as APM_FS_HFS.
@@ -1467,52 +1467,30 @@ static int read_in_image_file(image_mount_t *m, const char *subpath, uint8_t **o
     return 0;
 }
 
-// Decode an NDIF file (data fork `df` open on the inner file, block map
-// `map`) into the already-sized scratch file `out`.  Returns true on success.
+// ndif_read_fn over an open in-image file: exactly `n` bytes at `off`.
+static int ndif_read_vfs(void *ctx, uint64_t off, void *buf, size_t n) {
+    size_t done = 0;
+    while (done < n) {
+        size_t got = 0;
+        int rc = img_read((vfs_file_t *)ctx, off + done, (uint8_t *)buf + done, n - done, &got);
+        if (rc != 0)
+            return rc;
+        if (got == 0)
+            return -EIO;
+        done += got;
+    }
+    return 0;
+}
+
+// Decode an NDIF file inside the mount (its data fork at `file_subpath`,
+// block map `map`) into the scratch file `out`.  Returns true on success.
 static bool write_ndif_to_scratch(image_mount_t *m, const char *file_subpath, ndif_map_t *map, FILE *out) {
-    if (ftruncate(fileno(out), (off_t)map->sectors * 512) != 0)
-        return false;
     vfs_file_t *df = NULL;
     if (img_open(m, file_subpath, &df) != 0)
         return false;
-    bool ok = true;
-    for (size_t i = 0; i < map->n_chunks && ok; i++) {
-        ndif_chunk_t *c = &map->chunks[i];
-        if (c->type == NDIF_CHUNK_ZERO || c->count == 0)
-            continue; // ftruncate already zero-filled the gap
-        size_t need = (size_t)c->count * 512;
-        uint8_t *dbuf = malloc(need);
-        uint8_t *cbuf = c->length ? malloc(c->length) : NULL;
-        if (!dbuf || (c->length && !cbuf)) {
-            free(dbuf);
-            free(cbuf);
-            ok = false;
-            break;
-        }
-        size_t clen = 0;
-        if (c->length) {
-            size_t off = 0;
-            while (off < c->length) {
-                size_t got = 0;
-                if (img_read(df, c->offset + off, cbuf + off, c->length - off, &got) != 0 || got == 0) {
-                    ok = false;
-                    break;
-                }
-                off += got;
-            }
-            clen = off;
-        }
-        if (ok && ndif_decode_chunk(c, cbuf, clen, dbuf, need) == 0) {
-            if (fseek(out, (long)c->sector * 512, SEEK_SET) != 0 || fwrite(dbuf, 1, need, out) != need)
-                ok = false;
-        } else {
-            ok = false;
-        }
-        free(dbuf);
-        free(cbuf);
-    }
+    int rc = ndif_materialize(map, ndif_read_vfs, df, out);
     img_close(df);
-    return ok;
+    return rc == 0;
 }
 
 // Copy the data fork of an inner (non-NDIF) file verbatim to the scratch

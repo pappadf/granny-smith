@@ -155,6 +155,10 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 // Get the size of the disk image in bytes
 size_t disk_size(image_t *disk);
 
+// Bytes per block the image was opened with (512 unless a geometry said
+// otherwise); disk_read_data/disk_write_data work in whole blocks of it.
+uint32_t disk_block_size(image_t *disk);
+
 // Save modified data to the underlying storage
 size_t image_save(image_t *image);
 

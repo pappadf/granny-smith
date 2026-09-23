@@ -270,6 +270,81 @@ TEST(ndif_decode_rejects_unsupported_type) {
     ASSERT_EQ_INT(-EINVAL, ndif_decode_chunk(&c, src, sizeof(src), dst, sizeof(dst)));
 }
 
+// ---- ndif_materialize --------------------------------------------------------
+
+// An in-memory data fork for ndif_materialize.
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+} mem_fork_t;
+
+static int mem_read(void *ctx, uint64_t off, void *buf, size_t n) {
+    const mem_fork_t *f = ctx;
+    if (off > f->len || n > f->len - off)
+        return -EIO;
+    memcpy(buf, f->data + off, n);
+    return 0;
+}
+
+// The whole image comes out right: ADC, COPY and ZERO chunks in place, in a
+// file pre-extended to the declared size.
+TEST(ndif_materialize_round_trip) {
+    uint8_t fork_data[2048];
+    size_t adc_len = adc_fill(fork_data, 0xCD, 512);
+    memset(fork_data + adc_len, 0x11, 512);
+    mem_fork_t df = {fork_data, adc_len + 512};
+
+    ndif_chunk_t chunks[] = {
+        {.sector = 0, .count = 1, .type = NDIF_CHUNK_ADC, .offset = 0, .length = (uint32_t)adc_len},
+        {.sector = 1, .count = 1, .type = NDIF_CHUNK_COPY, .offset = (uint32_t)adc_len, .length = 512},
+        {.sector = 2, .count = 2, .type = NDIF_CHUNK_ZERO},
+    };
+    ndif_map_t map = {.sectors = 4, .n_chunks = 3, .chunks = chunks};
+    FILE *out = tmpfile();
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(0, ndif_materialize(&map, mem_read, &df, out));
+
+    uint8_t img[4 * 512];
+    rewind(out);
+    ASSERT_EQ_INT(sizeof(img), fread(img, 1, sizeof(img), out));
+    ASSERT_EQ_INT(0, fgetc(out) == EOF ? 0 : 1); // exactly the declared size
+    for (int i = 0; i < 512; i++) {
+        ASSERT_EQ_INT(0xCD, img[i]);
+        ASSERT_EQ_INT(0x11, img[512 + i]);
+        ASSERT_EQ_INT(0, img[1024 + i]);
+        ASSERT_EQ_INT(0, img[1536 + i]);
+    }
+    fclose(out);
+}
+
+// A chunk that does not lie inside the declared image is refused, not
+// written wherever it points (F-23).
+TEST(ndif_materialize_refuses_a_chunk_outside_the_image) {
+    uint8_t fork_data[1024];
+    memset(fork_data, 0x22, sizeof(fork_data));
+    mem_fork_t df = {fork_data, sizeof(fork_data)};
+    ndif_chunk_t past_end = {.sector = 3, .count = 2, .type = NDIF_CHUNK_COPY, .offset = 0, .length = 1024};
+    ndif_map_t map = {.sectors = 4, .n_chunks = 1, .chunks = &past_end};
+    FILE *out = tmpfile();
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(-EINVAL, ndif_materialize(&map, mem_read, &df, out));
+    fclose(out);
+}
+
+// A compressed chunk is decoded in one buffer, so it has a size limit;
+// uncompressed chunks stream and do not.
+TEST(ndif_materialize_caps_a_compressed_chunk) {
+    uint8_t fork_data[16] = {0};
+    mem_fork_t df = {fork_data, sizeof(fork_data)};
+    uint32_t sectors = NDIF_MAX_CHUNK_BYTES / 512 + 1;
+    ndif_chunk_t big = {.sector = 0, .count = sectors, .type = NDIF_CHUNK_ADC, .offset = 0, .length = 16};
+    ndif_map_t map = {.sectors = sectors, .n_chunks = 1, .chunks = &big};
+    FILE *out = tmpfile();
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(-EFBIG, ndif_materialize(&map, mem_read, &df, out));
+    fclose(out);
+}
+
 int main(void) {
     RUN(adc_literal_run);
     RUN(adc_short_match_rle);
@@ -280,6 +355,9 @@ int main(void) {
     RUN(ndif_detect_false_on_plain_fork);
     RUN(ndif_decode_copy_zero_adc);
     RUN(ndif_decode_rejects_unsupported_type);
+    RUN(ndif_materialize_round_trip);
+    RUN(ndif_materialize_refuses_a_chunk_outside_the_image);
+    RUN(ndif_materialize_caps_a_compressed_chunk);
     fprintf(stderr, "All ndif tests passed.\n");
     return 0;
 }

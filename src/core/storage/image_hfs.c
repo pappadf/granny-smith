@@ -982,7 +982,7 @@ static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uin
         return NULL;
 
     uint8_t vh[512];
-    if (disk_read_data(img, partition_byte_offset + HFSP_VH_OFF_IN_VOL, vh, sizeof(vh)) != sizeof(vh))
+    if (image_read_bytes(img, partition_byte_offset + HFSP_VH_OFF_IN_VOL, vh, sizeof(vh)) != 0)
         return NULL;
     uint16_t sig = RD_BE16(vh + VH_OFF_SIG);
     if (sig != HFS_SIG_HP && sig != HFS_SIG_HX)
@@ -1068,7 +1068,7 @@ hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
     // Read the 512-byte block at volume+1024: a classic HFS MDB or an HFS+
     // Volume Header.  The signature word decides which parser to run.
     uint8_t hdr[512];
-    if (disk_read_data(img, partition_byte_offset + HFS_MDB_OFF_IN_VOL, hdr, sizeof(hdr)) != sizeof(hdr))
+    if (image_read_bytes(img, partition_byte_offset + HFS_MDB_OFF_IN_VOL, hdr, sizeof(hdr)) != 0)
         return NULL;
     uint16_t sig = RD_BE16(hdr + MDB_OFF_SIG);
 

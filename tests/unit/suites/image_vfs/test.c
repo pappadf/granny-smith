@@ -23,6 +23,8 @@
 static uint8_t g_img[IMG_CAP];
 static size_t g_img_size;
 static int g_token; // the image_t* handed out: an address, never dereferenced
+static uint32_t g_block_size = 512; // the geometry the "image" was opened with
+static int g_misaligned_reads; // reads the real disk_read_data would assert on
 
 image_t *image_open_readonly(const char *path) {
     (void)path;
@@ -35,8 +37,18 @@ size_t disk_size(image_t *img) {
     (void)img;
     return g_img_size;
 }
+uint32_t disk_block_size(image_t *img) {
+    (void)img;
+    return g_block_size;
+}
 size_t disk_read_data(image_t *img, size_t offset, uint8_t *buf, size_t size) {
     (void)img;
+    // The real one works in whole blocks of the image's own size and asserts
+    // on anything else -- an assert that returns, then reads on.
+    if (offset % g_block_size || size % g_block_size) {
+        g_misaligned_reads++;
+        return 0;
+    }
     if (offset > g_img_size || size > g_img_size - offset)
         return 0;
     memcpy(buf, g_img + offset, size);
@@ -345,6 +357,22 @@ TEST(test_overlong_path_is_refused_not_truncated) {
     unmount_volume();
 }
 
+// ---- Geometry (F-49) --------------------------------------------------------
+
+// An image opened with 532-byte blocks (a Lisa ProFile) has no partition map
+// or HFS volume in 512-byte terms.  It is refused as not an image, without
+// a single read disk_read_data would reject as misaligned.
+TEST(test_non_512_geometry_is_refused_cleanly) {
+    make_volume(one_file, 1);
+    g_block_size = 532;
+    g_misaligned_reads = 0;
+    image_mount_t *m = NULL;
+    ASSERT_EQ_INT(-ENOTDIR, image_vfs_acquire_mount(g_host, &m));
+    ASSERT_EQ_INT(0, g_misaligned_reads);
+    g_block_size = 512;
+    unlink(g_host);
+}
+
 int main(void) {
     RUN(test_reads_a_data_fork_and_a_resource);
     RUN(test_open_resource_survives_cache_pressure);
@@ -355,6 +383,7 @@ int main(void) {
     RUN(test_open_writable_before_first_mount_refuses);
     RUN(test_pending_unmount_completes_on_last_close);
     RUN(test_overlong_path_is_refused_not_truncated);
+    RUN(test_non_512_geometry_is_refused_cleanly);
     fprintf(stderr, "All image_vfs tests passed\n");
     return 0;
 }

@@ -24,7 +24,8 @@ static inline bool image_range_fits(uint64_t off, uint64_t n, uint64_t size) {
 }
 
 // Read n bytes at byte offset `off` of the image, bouncing through a block
-// buffer where the range is not block-aligned.  0, or -EIO on a short read.
+// buffer where the range is not block-aligned.  0, -EIO on a short read, or
+// -EINVAL for an image whose blocks are not 512 bytes (a Lisa ProFile).
 int image_read_bytes(image_t *img, uint64_t off, void *buf, size_t n);
 
 // Read n bytes at `off` within the partition of `part_size` bytes that starts

@@ -11,6 +11,7 @@
 
 #include "image.h"
 #include "image_apm.h"
+#include "image_part.h"
 #include "image_vfs.h"
 #include "object.h"
 #include "shell.h"
@@ -569,13 +570,13 @@ static value_t storage_method_probe(struct object *self, const member_t *m, int 
     size_t size = disk_size(img);
     uint8_t block[512];
     bool apm = false;
-    if (size >= 1024 && disk_read_data(img, 512, block, sizeof(block)) == sizeof(block))
+    if (size >= 1024 && image_read_bytes(img, 512, block, sizeof(block)) == 0)
         apm = image_apm_probe_magic(block);
     bool iso = false;
-    if (size >= 33280 && disk_read_data(img, 32768, block, sizeof(block)) == sizeof(block))
+    if (size >= 33280 && image_read_bytes(img, 32768, block, sizeof(block)) == 0)
         iso = (memcmp(block + 1, "CD001", 5) == 0);
     bool hfs = false;
-    if (!apm && size >= 1024 + 512 && disk_read_data(img, 1024, block, sizeof(block)) == sizeof(block))
+    if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0)
         hfs = (block[0] == 0x42 && block[1] == 0x44);
     if (apm && iso)
         printf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
