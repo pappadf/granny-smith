@@ -59,10 +59,18 @@ struct image_mount {
     partition_fs_t *parts_fs; // one per partition (n_partitions entries)
     uint32_t n_partitions;
     uint32_t refcount;
-    bool conflicted; // set when hd attach acquires the same file
+    bool unmounting; // unmount requested while handles were live
 };
 
 static image_mount_t g_mounts[IMAGE_VFS_MAX_MOUNTS];
+
+// A mount refuses service (-EBUSY) once an unmount is pending, and while the
+// emulator holds its file open writable: guest writes land in that image's
+// delta, which this read-only mount cannot see, so it would serve the stale
+// base.  Asked at every use, so an attach or detach needs no notification.
+static bool mount_busy(const image_mount_t *m) {
+    return m->unmounting || image_path_is_open_writable(m->host_path);
+}
 
 // ---- Resource-fork LRU cache ---------------------------------------------
 // Parsed resource maps are held here so repeated reads through the
@@ -355,12 +363,15 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
             }
         }
         if (m) {
-            if (m->conflicted)
+            if (mount_busy(m))
                 return -EBUSY;
             *out_mount = m;
             return 0;
         }
     }
+
+    if (image_path_is_open_writable(host_path))
+        return -EBUSY;
 
     m = find_free_slot();
     if (!m)
@@ -418,14 +429,21 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
     return 0;
 }
 
+// Drop a handle's reference; the last one out completes a pending unmount.
+static void mount_release(image_mount_t *m) {
+    if (!m || m->refcount == 0)
+        return;
+    if (--m->refcount == 0 && m->unmounting)
+        mount_destroy(m);
+}
+
 int image_vfs_unmount(const char *host_path) {
     image_mount_t *m = find_mount_by_path(host_path);
     if (!m)
         return -ENOENT;
     if (m->refcount > 0) {
-        // Mark conflicted so new ops fail, but don't tear down while
-        // handles are live.
-        m->conflicted = true;
+        // Refuse new ops; the last handle to close tears it down.
+        m->unmounting = true;
         return -EBUSY;
     }
     mount_destroy(m);
@@ -444,35 +462,7 @@ void image_vfs_list(image_vfs_list_cb cb, void *user) {
         // report UFS instead of HFS so `image list` stays informative.
         if (m->synthetic_apm && m->synthetic_part.fs_kind == APM_FS_UFS)
             fmt = "UFS";
-        cb(m->host_path, fmt, m->n_partitions, m->refcount, m->conflicted, user);
-    }
-}
-
-void image_vfs_notify_attached(const char *host_path) {
-    if (!host_path)
-        return;
-    // Canonicalise so a notify with `/foo/../bar/disk.img` matches the mount
-    // keyed on `/bar/disk.img`.
-    char canon[PATH_MAX];
-    canonicalise(host_path, canon, sizeof(canon));
-    image_mount_t *m = find_mount_by_path(canon);
-    if (m)
-        m->conflicted = true;
-}
-
-void image_vfs_notify_detached(const char *host_path) {
-    if (!host_path)
-        return;
-    char canon[PATH_MAX];
-    canonicalise(host_path, canon, sizeof(canon));
-    image_mount_t *m = find_mount_by_path(canon);
-    if (m && m->refcount == 0) {
-        // Simplest recovery: drop the cached mount entirely so the next
-        // acquire re-opens cleanly against the now-released file.
-        mount_destroy(m);
-    } else if (m) {
-        // Handles still live: keep the mount but clear the conflict.
-        m->conflicted = false;
+        cb(m->host_path, fmt, m->n_partitions, m->refcount, mount_busy(m), user);
     }
 }
 
@@ -780,7 +770,7 @@ static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
     image_mount_t *m = (image_mount_t *)ctx;
     if (!m || !out)
         return -EINVAL;
-    if (m->conflicted)
+    if (mount_busy(m))
         return -EBUSY;
     memset(out, 0, sizeof(*out));
     out->readonly = true;
@@ -918,7 +908,7 @@ static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
     image_mount_t *m = (image_mount_t *)ctx;
     if (!m || !out)
         return -EINVAL;
-    if (m->conflicted)
+    if (mount_busy(m))
         return -EBUSY;
 
     image_path_t ip;
@@ -1199,8 +1189,7 @@ static void img_closedir(vfs_dir_t *d) {
         hfs_closedir_iter(d->hfs_iter);
     if (d->ufs_iter)
         ufs_closedir_iter(d->ufs_iter);
-    if (d->mount && d->mount->refcount > 0)
-        d->mount->refcount--;
+    mount_release(d->mount);
     free(d);
 }
 
@@ -1209,7 +1198,7 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
     image_mount_t *m = (image_mount_t *)ctx;
     if (!m || !out)
         return -EINVAL;
-    if (m->conflicted)
+    if (mount_busy(m))
         return -EBUSY;
 
     image_path_t ip;
@@ -1338,7 +1327,7 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
 static int img_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nread) {
     if (!f || !buf)
         return -EINVAL;
-    if (f->mount && f->mount->conflicted)
+    if (f->mount && mount_busy(f->mount))
         return -EBUSY;
     if (f->kind == FILE_FINDER_INFO) {
         size_t got = 0;
@@ -1385,8 +1374,7 @@ static void img_close(vfs_file_t *f) {
     if (!f)
         return;
     rsrc_cache_unpin(f->rsrc_entry);
-    if (f->mount && f->mount->refcount > 0)
-        f->mount->refcount--;
+    mount_release(f->mount);
     free(f);
 }
 

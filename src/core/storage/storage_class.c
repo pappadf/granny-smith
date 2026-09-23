@@ -591,14 +591,14 @@ static value_t storage_method_probe(struct object *self, const member_t *m, int 
     return val_bool(true);
 }
 
-static void storage_list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool conflicted,
+static void storage_list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool busy,
                                    void *user) {
     bool *header_printed = (bool *)user;
     if (!*header_printed) {
         printf("PATH                                        FMT  PARTS  REFS  STATUS\n");
         *header_printed = true;
     }
-    printf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, conflicted ? "busy" : "ok");
+    printf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, busy ? "busy" : "ok");
 }
 
 // `storage.list_partitions()` — print the cached image-VFS mount table.
@@ -639,7 +639,7 @@ static value_t storage_method_unmount(struct object *self, const member_t *m, in
     if (rc == -ENOENT)
         printf("image unmount: not currently mounted: %s\n", path);
     else if (rc == -EBUSY)
-        printf("image unmount: %s has live handles; marked conflicted\n", path);
+        printf("image unmount: %s has live handles; refusing new access until they close\n", path);
     else
         printf("image unmount: %s: %s\n", path, strerror(-rc));
     return val_bool(false);

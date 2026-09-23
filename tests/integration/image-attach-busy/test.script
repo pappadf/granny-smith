@@ -1,0 +1,43 @@
+# Integration test: the image VFS refuses a file the emulator holds writable.
+# The runner cd's into tests/integration/; WORK_DIR is absolute.
+
+let dmg = "${$WORK_DIR}/fixture.dmg"
+let fd = "${$WORK_DIR}/floppy.dsk"
+let ro = "../../data/systems/System_6_0_8.dsk"
+let raw = "${$WORK_DIR}/hd.img"
+
+# Readable through the VFS while nothing holds them.
+assert vfs.list("${$dmg}/partition1") "the .dmg is not readable before attach"
+assert vfs.list("${$fd}/partition1") "the floppy is not readable before insert"
+
+# A hard disk attached writable: the mount made above now refuses.  The
+# image the SCSI disk opened is the decoded scratch copy of the .dmg, so a
+# key taken from the opened image would have protected the wrong file (F-41).
+machine.scsi.attach_hd "${$dmg}" 2
+assert !vfs.list("${$dmg}/partition1") "a writable hard disk is still served by the VFS"
+
+# A floppy inserted writable refuses the same way.  The floppy path never
+# notified anything, so the VFS served the base under the guest's writes
+# (F-40).
+machine.floppy.drive[0].insert "${$fd}" true
+assert !vfs.list("${$fd}/partition1") "a writable floppy is still served by the VFS"
+
+# Attached before the VFS ever mounted it.  The notification this replaced
+# was sent at attach time and found no mount to mark, so the first mount made
+# afterwards served the file as if nothing held it.
+machine.scsi.attach_hd "${$raw}" 3
+assert !vfs.list("${$raw}/partition1") "a disk attached before its first mount is served by the VFS"
+
+# machine.restart hands the media to the new machine and re-attaches them.
+# The re-attach notified with the opened image's path -- for the .dmg, its
+# decoded scratch copy -- so a .dmg mount made after the restart was served
+# (F-41).  Unmount first so no mount carries state across.
+storage.unmount "${$dmg}"
+machine.restart
+assert !vfs.list("${$dmg}/partition1") "a re-attached .dmg is served by the VFS after machine.restart"
+
+# A read-only insert leaves nothing the VFS cannot see: still served.
+machine.floppy.drive[1].insert "${$ro}"
+assert vfs.list("${$ro}/partition1") "a read-only floppy is refused by the VFS"
+
+quit

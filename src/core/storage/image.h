@@ -55,7 +55,9 @@ typedef struct image_geometry {
 // Image structure (exposed for performance-critical access in floppy controller)
 struct image {
     storage_t *storage; // Backing storage engine instance
-    char *filename; // Original filename provided by the user (base image)
+    char *filename; // Base image read: the caller's path, or its decoded NDIF/UDIF scratch copy
+    char *source_canon; // Writable only: canonical form of the path the caller named
+    struct image *next_writable; // Writable only: the open-writable list (image_path_is_open_writable)
     char *instance_path; // Stem for delta/journal: "<dir>/<id>" — NULL for read-only ghost mounts
     char *delta_path; // Path to delta file (<instance_path>.delta)
     char *journal_path; // Path to preimage journal (<instance_path>.journal)
@@ -124,6 +126,14 @@ const char *image_path(const image_t *image);
 
 // Close a disk image and release resources
 void image_close(image_t *image);
+
+// True while an image opened writable (image_create / image_open) from
+// `canonical_path` is still open.  The image VFS mounts files read-only, and
+// guest writes to a writable image land in its delta, so the VFS asks this
+// before serving a file and refuses with -EBUSY rather than serve the stale
+// base.  The key is the path the caller named, canonicalised with realpath()
+// (or taken as given when that fails), not a decoded scratch copy.
+bool image_path_is_open_writable(const char *canonical_path);
 
 // Write image metadata to checkpoint
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);

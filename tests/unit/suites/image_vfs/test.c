@@ -10,6 +10,7 @@
 #include "vfs.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,18 +43,33 @@ size_t disk_read_data(image_t *img, size_t offset, uint8_t *buf, size_t size) {
     return size;
 }
 
+// The canonical path image.c reports open writable, or "" for none.
+static char g_writable[PATH_MAX];
+
+bool image_path_is_open_writable(const char *canonical_path) {
+    return g_writable[0] && strcmp(canonical_path, g_writable) == 0;
+}
+
 // image_vfs keys mounts on the host path, which it canonicalises and stats,
 // so a real (empty) file stands in for the image; its bytes are never read.
 static char g_host[64];
+static char g_host_canon[PATH_MAX]; // the key image_vfs holds it under
 
-static image_mount_t *mount_volume(const hfsb_file_t *files, int n) {
+// Build the volume and its stand-in file, without mounting it.
+static void make_volume(const hfsb_file_t *files, int n) {
     image_vfs_reset();
+    g_writable[0] = 0;
     g_img_size = hfsb_build(g_img, sizeof(g_img), "Vol", files, n);
     ASSERT_TRUE(g_img_size > 0);
     strcpy(g_host, "/tmp/image_vfs_test_XXXXXX");
     int fd = mkstemp(g_host);
     ASSERT_TRUE(fd >= 0);
     close(fd);
+    ASSERT_TRUE(realpath(g_host, g_host_canon) != NULL);
+}
+
+static image_mount_t *mount_volume(const hfsb_file_t *files, int n) {
+    make_volume(files, n);
     image_mount_t *m = NULL;
     int rc = image_vfs_acquire_mount(g_host, &m);
     if (rc != 0)
@@ -239,12 +255,83 @@ TEST(test_huge_resource_fork_is_refused_before_allocating) {
     unmount_volume();
 }
 
+// ---- The emulator holding the file writable (F-39, F-40, F-41) -------------
+
+static const hfsb_file_t one_file[] = {
+    {.name = "A", .data = (const uint8_t *)"data", .data_len = 4}
+};
+
+// While image.c reports the file open writable -- an attached disk, whose
+// writes land in a delta this mount cannot see -- every call refuses with
+// -EBUSY, a handle opened earlier included.  Once it is no longer open, the
+// same mount serves again.  The flag this replaced was set on attach and
+// never cleared: the detach notification had no caller (F-39).
+TEST(test_busy_exactly_while_open_writable) {
+    image_mount_t *m = mount_volume(one_file, 1);
+    const vfs_backend_t *be = vfs_image_backend();
+    vfs_file_t *f = NULL;
+    ASSERT_EQ_INT(0, be->open(m, "/partition1/A", &f));
+
+    strcpy(g_writable, g_host_canon);
+    vfs_stat_t st;
+    char buf[8];
+    size_t got = 0;
+    vfs_dir_t *d = NULL;
+    image_mount_t *again = NULL;
+    ASSERT_EQ_INT(-EBUSY, be->stat(m, "/partition1/A", &st));
+    ASSERT_EQ_INT(-EBUSY, be->opendir(m, "/partition1", &d));
+    ASSERT_EQ_INT(-EBUSY, be->read(f, 0, buf, sizeof(buf), &got));
+    ASSERT_EQ_INT(-EBUSY, image_vfs_acquire_mount(g_host, &again));
+
+    g_writable[0] = 0;
+    ASSERT_EQ_INT(0, be->stat(m, "/partition1/A", &st));
+    ASSERT_EQ_INT(0, be->read(f, 0, buf, sizeof(buf), &got));
+    ASSERT_EQ_INT(4, (int)got);
+    ASSERT_EQ_INT(0, image_vfs_acquire_mount(g_host, &again));
+    ASSERT_TRUE(again == m);
+    be->close(f);
+    unmount_volume();
+}
+
+// A file attached before the VFS ever mounted it is refused on the first
+// acquire.  A notification sent at attach time found no mount to mark, so
+// the first mount after it was made -- and served -- as if nothing were open.
+TEST(test_open_writable_before_first_mount_refuses) {
+    make_volume(one_file, 1);
+    strcpy(g_writable, g_host_canon);
+    image_mount_t *m = NULL;
+    ASSERT_EQ_INT(-EBUSY, image_vfs_acquire_mount(g_host, &m));
+    g_writable[0] = 0;
+    ASSERT_EQ_INT(0, image_vfs_acquire_mount(g_host, &m));
+    unmount_volume();
+}
+
+// An unmount asked for while a handle is open refuses new calls, and the
+// last handle's close completes it.  It used to leave the mount in the table,
+// refusing everything, for the rest of the process.
+TEST(test_pending_unmount_completes_on_last_close) {
+    image_mount_t *m = mount_volume(one_file, 1);
+    const vfs_backend_t *be = vfs_image_backend();
+    vfs_file_t *f = NULL;
+    ASSERT_EQ_INT(0, be->open(m, "/partition1/A", &f));
+    ASSERT_EQ_INT(-EBUSY, image_vfs_unmount(g_host_canon));
+    image_mount_t *again = NULL;
+    ASSERT_EQ_INT(-EBUSY, image_vfs_acquire_mount(g_host, &again));
+    be->close(f);
+    ASSERT_EQ_INT(-ENOENT, image_vfs_unmount(g_host_canon)); // already gone
+    ASSERT_EQ_INT(0, image_vfs_acquire_mount(g_host, &again));
+    unmount_volume();
+}
+
 int main(void) {
     RUN(test_reads_a_data_fork_and_a_resource);
     RUN(test_open_resource_survives_cache_pressure);
     RUN(test_open_resource_directory_survives_cache_pressure);
     RUN(test_all_entries_pinned_refuses_a_ninth_fork);
     RUN(test_huge_resource_fork_is_refused_before_allocating);
+    RUN(test_busy_exactly_while_open_writable);
+    RUN(test_open_writable_before_first_mount_refuses);
+    RUN(test_pending_unmount_completes_on_last_close);
     fprintf(stderr, "All image_vfs tests passed\n");
     return 0;
 }

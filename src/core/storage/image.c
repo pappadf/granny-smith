@@ -198,9 +198,53 @@ size_t disk_size(image_t *disk) {
     return disk->raw_size;
 }
 
+// ============================================================================
+// Open writable images
+// ============================================================================
+
+// Every image opened writable and not yet closed, keyed on the canonical
+// path its caller named.  image_vfs asks image_path_is_open_writable() at the
+// point of use rather than being told on attach and detach, so there is no
+// notification for an attach or detach site to forget (09-storage F-39..F-41).
+static image_t *g_open_writable;
+
+static void image_canonicalise(const char *path, char *out, size_t cap);
+
+// Record a writable image under `base_path`.  An image whose path cannot be
+// recorded still works; the VFS just cannot see that it is open.
+static void writable_register(image_t *image, const char *base_path) {
+    char canon[PATH_MAX];
+    image_canonicalise(base_path, canon, sizeof(canon));
+    image->source_canon = dup_string(canon);
+    if (!image->source_canon)
+        return;
+    image->next_writable = g_open_writable;
+    g_open_writable = image;
+}
+
+static void writable_unregister(image_t *image) {
+    for (image_t **pp = &g_open_writable; *pp; pp = &(*pp)->next_writable) {
+        if (*pp == image) {
+            *pp = image->next_writable;
+            break;
+        }
+    }
+    free(image->source_canon);
+}
+
+bool image_path_is_open_writable(const char *canonical_path) {
+    if (!canonical_path)
+        return false;
+    for (const image_t *im = g_open_writable; im; im = im->next_writable)
+        if (strcmp(im->source_canon, canonical_path) == 0)
+            return true;
+    return false;
+}
+
 void image_close(image_t *image) {
     if (!image)
         return;
+    writable_unregister(image);
     if (image->storage)
         storage_delete(image->storage);
     free(image->tags);
@@ -959,6 +1003,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
         image_close(image);
         return NULL;
     }
+    writable_register(image, base_path);
     return image;
 }
 
@@ -1007,6 +1052,7 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
         image_close(image);
         return NULL;
     }
+    writable_register(image, base_path);
     return image;
 }
 

@@ -17,7 +17,6 @@
 #include "floppy.h"
 #include "host_input.h"
 #include "image.h"
-#include "image_vfs.h"
 #include "jmfb.h" // restored-record sense seeding on checkpoint load
 #include "keyboard.h"
 #include "log.h"
@@ -1063,9 +1062,6 @@ bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
 
     add_image(config, img);
     scsi_add_device(bus, scsi_id, best->vendor, best->product, best->revision, img, scsi_dev_hd, 512, false);
-    // Block the VFS auto-mount cache from serving reads on the same file
-    // while the emulator holds writable handles against it (§2.9).
-    image_vfs_notify_attached(filename);
     free(persistent_path);
     return true;
 }
@@ -1115,7 +1111,6 @@ bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
 
     add_image(config, img);
     scsi_add_device(bus, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
-    image_vfs_notify_attached(filename);
     free(persistent_path);
     return true;
 }
@@ -1195,7 +1190,6 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     add_image(cfg, slot->img);
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
-    image_vfs_notify_attached(image_get_filename(slot->img));
     return 0;
 }
 
