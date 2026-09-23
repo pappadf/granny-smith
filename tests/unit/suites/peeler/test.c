@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // Big-endian writers for the archive builders below.
 static void put16(uint8_t *p, uint16_t v) {
@@ -545,7 +546,7 @@ TEST(test_cpt_folder_nesting_is_bounded) {
 
 // ...while nesting up to the cap still parses -- folders are not files, so a
 // chain of empty folders yields an empty archive and no error -- and one level
-// past it does not.  The cap is exact: cpt.c's CP_MAX_DIR_DEPTH, 128, parse.
+// past it does not.  The cap is exact: PEEL_MAX_DIR_DEPTH (internal.h), 128, parse.
 // (A literal on purpose -- change the cap and this test makes you look.)
 TEST(test_cpt_nesting_cap_is_exact) {
     size_t len;
@@ -896,7 +897,8 @@ static const char hqx_alpha[] = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXY
 // crc16_ccitt) -- 6-bit encoded between colons after the preamble line.  No
 // byte of the fixtures is 0x90, so no RLE escaping is needed.  `bad_rsrc_crc`
 // corrupts only the resource fork's CRC.
-static char *make_hqx(const char *name, const char *data, const char *rsrc, bool bad_rsrc_crc) {
+static char *make_hqx_core(const char *name, const char *data, const char *rsrc, bool bad_rsrc_crc,
+                           uint32_t declared_dlen) {
     uint8_t bin[512];
     size_t n = 0;
     size_t nl = strlen(name), dl = strlen(data), rl = strlen(rsrc);
@@ -908,7 +910,7 @@ static char *make_hqx(const char *name, const char *data, const char *rsrc, bool
     n += 8;
     bin[n++] = 0;
     bin[n++] = 0; // Finder flags
-    put32(bin + n, (uint32_t)dl);
+    put32(bin + n, declared_dlen ? declared_dlen : (uint32_t)dl);
     n += 4;
     put32(bin + n, (uint32_t)rl);
     n += 4;
@@ -934,6 +936,15 @@ static char *make_hqx(const char *name, const char *data, const char *rsrc, bool
     txt[t++] = ':';
     txt[t] = '\0';
     return txt;
+}
+
+static char *make_hqx(const char *name, const char *data, const char *rsrc, bool bad_rsrc_crc) {
+    return make_hqx_core(name, data, rsrc, bad_rsrc_crc, 0);
+}
+
+// The same file, but its header declares a data fork of `declared` bytes.
+static char *make_hqx_lying(const char *name, const char *data, uint32_t declared) {
+    return make_hqx_core(name, data, "", false, declared);
 }
 
 // The builder is right: both forks come back.
@@ -982,6 +993,79 @@ TEST(test_sit3_abort_frees_its_output) {
 }
 
 // ============================================================================
+// A3: one cap on what an archive may declare (PEEL_MAX_FORK, internal.h)
+// ============================================================================
+//
+// F-08: each format allocated whatever size its header declared -- a few
+// hundred bytes of archive could ask for gigabytes.  Every format must now
+// refuse a declared fork over the cap before allocating, and say so; each
+// test asserts the cap's own message, because the unfixed code also failed
+// these inputs eventually -- after attempting the allocation.
+
+#define OVER_CAP 0x50000000u // 1.25 GiB, over PEEL_MAX_FORK's 1 GiB
+
+TEST(test_sit5_fork_over_the_cap_is_refused) {
+    static const uint8_t data[] = "x";
+    sit5_spec sp = {.name = "Big", .data = data, .dlen = 1, .h1_len = -1, .raw_len_override = OVER_CAP};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "over the 1024 MiB limit") != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
+TEST(test_cpt_fork_over_the_cap_is_refused) {
+    static const uint8_t four[] = {'a', 'b', 'c', 'd'};
+    size_t len;
+    uint8_t *a = make_cpt_data_fork(four, 4, OVER_CAP, false, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_cpt(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "over the 1024 MiB limit") != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
+// hqx declares its fork lengths in the header, and make_hqx writes the true
+// ones; this rewrites the data-fork length in the binary stream by building
+// it with a lying length directly.
+TEST(test_hqx_fork_over_the_cap_is_refused) {
+    char *txt = make_hqx_lying("Hi", "data!", OVER_CAP);
+    peel_err_t *err = NULL;
+    peel_file_t f = peel_hqx_file((const uint8_t *)txt, strlen(txt), &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "over the 1024 MiB limit") != NULL);
+    ASSERT_TRUE(f.data_fork.data == NULL);
+    peel_err_free(err);
+    free(txt);
+}
+
+// F-09: peel_read_file loads a whole file, with no bound.  A sparse file one
+// byte over PEEL_MAX_INPUT must be refused before anything is allocated.
+// Native only: under node, MEMFS would allocate the gigabyte for real.
+TEST(test_read_file_over_the_cap_is_refused) {
+#ifndef __EMSCRIPTEN__
+    char path[] = "/tmp/peeler-cap-XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_TRUE(fd >= 0);
+    ASSERT_TRUE(ftruncate(fd, (off_t)(1u << 30) + 1) == 0);
+    close(fd);
+    peel_err_t *err = NULL;
+    peel_buf_t b = peel_read_file(path, &err);
+    unlink(path);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "over the 1024 MiB limit") != NULL);
+    ASSERT_TRUE(b.data == NULL);
+    peel_err_free(err);
+#endif
+}
+
+// ============================================================================
 // Garbage in, error out
 // ============================================================================
 
@@ -1007,29 +1091,43 @@ TEST(test_peel_passes_unrecognised_input_through) {
     }
 }
 
+// PEELER_ONLY=<test name> runs one test alone -- how each fixture is checked
+// against unfixed code on its own, where an earlier failure would otherwise
+// stop the run first.
+#define PRUN(t)                                                                                                        \
+    do {                                                                                                               \
+        const char *only = getenv("PEELER_ONLY");                                                                      \
+        if (!only || strcmp(only, #t) == 0)                                                                            \
+            RUN(t);                                                                                                    \
+    } while (0)
+
 int main(void) {
-    RUN(test_sit15_encoder_round_trip);
-    RUN(test_sit15_zero_run_cannot_overflow);
-    RUN(test_sit15_zero_run_bound_is_exact);
-    RUN(test_sit13_dynamic_round_trip);
-    RUN(test_sit13_length_repeat_cannot_overrun);
-    RUN(test_sit13_negative_length_is_rejected);
-    RUN(test_cpt_lzh_round_trip);
-    RUN(test_cpt_lzh_zero_offset_is_rejected);
-    RUN(test_cpt_short_fork_is_rejected);
-    RUN(test_cpt_fork_extent_is_checked);
-    RUN(test_cpt_nesting_cap_is_exact);
-    RUN(test_cpt_folder_nesting_is_bounded);
-    RUN(test_sit5_round_trip);
-    RUN(test_sit5_round_trip_with_resource_fork);
-    RUN(test_sit5_lzw_literals_round_trip);
-    RUN(test_sit5_resource_fork_extent_is_checked);
-    RUN(test_sit5_short_header_is_rejected);
-    RUN(test_sit5_zero_length_skip_marker_cannot_loop);
-    RUN(test_hqx_round_trip);
-    RUN(test_hqx_resource_fork_failure_frees_the_data_fork);
-    RUN(test_sit3_abort_frees_its_output);
-    RUN(test_peel_passes_unrecognised_input_through);
+    PRUN(test_sit15_encoder_round_trip);
+    PRUN(test_sit15_zero_run_cannot_overflow);
+    PRUN(test_sit15_zero_run_bound_is_exact);
+    PRUN(test_sit13_dynamic_round_trip);
+    PRUN(test_sit13_length_repeat_cannot_overrun);
+    PRUN(test_sit13_negative_length_is_rejected);
+    PRUN(test_cpt_lzh_round_trip);
+    PRUN(test_cpt_lzh_zero_offset_is_rejected);
+    PRUN(test_cpt_short_fork_is_rejected);
+    PRUN(test_cpt_fork_extent_is_checked);
+    PRUN(test_cpt_nesting_cap_is_exact);
+    PRUN(test_cpt_folder_nesting_is_bounded);
+    PRUN(test_sit5_round_trip);
+    PRUN(test_sit5_round_trip_with_resource_fork);
+    PRUN(test_sit5_lzw_literals_round_trip);
+    PRUN(test_sit5_resource_fork_extent_is_checked);
+    PRUN(test_sit5_short_header_is_rejected);
+    PRUN(test_sit5_zero_length_skip_marker_cannot_loop);
+    PRUN(test_hqx_round_trip);
+    PRUN(test_hqx_resource_fork_failure_frees_the_data_fork);
+    PRUN(test_sit3_abort_frees_its_output);
+    PRUN(test_sit5_fork_over_the_cap_is_refused);
+    PRUN(test_cpt_fork_over_the_cap_is_refused);
+    PRUN(test_hqx_fork_over_the_cap_is_refused);
+    PRUN(test_read_file_over_the_cap_is_refused);
+    PRUN(test_peel_passes_unrecognised_input_through);
     fprintf(stderr, "All peeler tests passed\n");
     return 0;
 }

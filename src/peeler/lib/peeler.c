@@ -340,6 +340,14 @@ peel_buf_t peel_read_file(const char *path, peel_err_t **err) {
         fclose(fp);
         return (peel_buf_t){0};
     }
+    // Bounded like every size an archive declares (09-storage F-09): this
+    // loads the whole file, and archive.identify calls it on every probe.
+    if ((uint64_t)raw_size > PEEL_MAX_INPUT) {
+        *err = make_err("'%s' is %ld bytes, over the %u MiB limit", path, raw_size,
+                        (unsigned)(PEEL_MAX_INPUT >> 20));
+        fclose(fp);
+        return (peel_buf_t){0};
+    }
     size_t size = (size_t)raw_size;
 
     // Rewind and read the entire file

@@ -101,6 +101,22 @@ static inline uint32_t rd32be(const uint8_t *p) {
 }
 
 // ============================================================================
+// Limits -- the one place peeler's size and depth caps live
+// ============================================================================
+
+// Every format declares its output sizes in its own headers, and every
+// decoder used to allocate whatever a header said: a few hundred bytes of
+// .hqx could ask for a 4 GiB fork, and each format bounded it differently or
+// not at all (09-storage F-08, F-65).  These caps bound what an archive may
+// declare, stated once and enforced by every format.  They sit far above any
+// classic Mac file -- a CD-ROM image is ~700 MB -- and far below the 4 GiB a
+// 32-bit size_t can address, so no buffer built under them can overflow its
+// own length arithmetic (which is also what closes F-14).
+#define PEEL_MAX_FORK      ((uint64_t)1 << 30) // largest fork an archive may declare
+#define PEEL_MAX_INPUT     ((uint64_t)1 << 30) // largest file peel_read_file loads
+#define PEEL_MAX_DIR_DEPTH 128                 // deepest folder nesting a walker follows
+
+// ============================================================================
 // Extent Checks
 // ============================================================================
 

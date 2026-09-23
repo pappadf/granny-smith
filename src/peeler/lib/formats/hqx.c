@@ -336,6 +336,11 @@ static peel_buf_t hqx_read_fork(hqx_decoder_t *dec, uint32_t fork_len,
         return (peel_buf_t){0};
     }
 
+    if (fork_len > PEEL_MAX_FORK) {
+        decode_abort(dec->ctx, "BinHex: %s fork declares %u bytes, over the %u MiB limit",
+                     fork_name, fork_len, (unsigned)(PEEL_MAX_FORK >> 20));
+    }
+
     // Allocate and read fork content
     grow_buf_t gbuf;
     grow_init(&gbuf, fork_len, dec->ctx);

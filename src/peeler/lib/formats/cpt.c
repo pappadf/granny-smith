@@ -25,12 +25,6 @@
 #define CP_FLAG_DATA_LZH 0x0004
 #define CP_DIR_MARKER    0x80
 
-// Deepest folder nesting cp_walk_entries will follow.  Each level is one
-// recursive call carrying two 256-byte path buffers, bought by three bytes of
-// archive; unbounded, a 180 KB archive of empty folders overflowed the stack
-// (09-storage F-07).  Paths are joined into 256 bytes, so no real archive
-// nests anywhere near this.
-#define CP_MAX_DIR_DEPTH 128
 
 #define CP_WIN_SIZE   8192
 #define CP_WIN_MASK   (CP_WIN_SIZE - 1)
@@ -694,7 +688,11 @@ static void cp_join_path(char dst[256], const char *parent, const char *seg, siz
 static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
                            size_t *cursor, int remaining, const char *parent,
                            int depth) {
-    if (depth > CP_MAX_DIR_DEPTH) return -1;
+    // Each level is one recursive call carrying two 256-byte path buffers,
+    // bought by three bytes of archive; unbounded, a 180 KB archive of empty
+    // folders overflowed the stack (09-storage F-07).  Paths are joined into
+    // 256 bytes, so no real archive nests anywhere near the cap.
+    if (depth > PEEL_MAX_DIR_DEPTH) return -1;
     while (remaining > 0) {
         if (*cursor >= size) return -1;
 
@@ -795,6 +793,10 @@ static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len,
                                      size_t uncomp_len, bool use_lzh,
                                      decode_ctx_t *ctx) {
     // Set up the fork stream
+    if (uncomp_len > PEEL_MAX_FORK)
+        decode_abort(ctx, "fork declares %zu bytes, over the %u MiB limit", uncomp_len,
+                     (unsigned)(PEEL_MAX_FORK >> 20));
+
     // The caller has already checked this range, so a failure here is a bug;
     // it used to be ignored, leaving the source empty, and a fork decoded
     // from nothing was returned as if it were the file's.

@@ -465,6 +465,13 @@ static peel_buf_t decompress_fork(const sit_fork_info_t *fi, peel_err_t **err) {
     uint8_t  method     = fi->method;
     const uint8_t *src  = fi->data;
 
+    // Every method below allocates raw_len up front; bound it first.
+    if (raw_len > PEEL_MAX_FORK) {
+        *err = make_err("SIT: fork declares %u bytes, over the %u MiB limit",
+                        raw_len, (unsigned)(PEEL_MAX_FORK >> 20));
+        return (peel_buf_t){0};
+    }
+
     // sit.md § 10.A "Method 3" — delegated to sit3.c (static Huffman)
     if (method == 3) {
         peel_buf_t result = peel_sit3(src, packed_len, raw_len, err);

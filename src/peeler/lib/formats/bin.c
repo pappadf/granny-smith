@@ -173,8 +173,9 @@ static peel_file_t bin_decode(const uint8_t *src, size_t len,
     // Parse header metadata
     bin_header_t hdr = bin_parse_header(src);
 
-    // bin.md § 6.3 — bounds-check fork lengths
-    if (hdr.data_len > 0x7FFFFFFFu || hdr.rsrc_len > 0x7FFFFFFFu) {
+    // bin.md § 6.3 — bounds-check fork lengths, against the same limit as
+    // every other format (this used to be its own, 2 GiB).
+    if (hdr.data_len > PEEL_MAX_FORK || hdr.rsrc_len > PEEL_MAX_FORK) {
         decode_abort(ctx, "MacBinary: fork length exceeds maximum");
     }
 
