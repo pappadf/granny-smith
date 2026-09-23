@@ -47,14 +47,28 @@ void decode_abort(decode_ctx_t *ctx, const char *fmt, ...) {
 // ============================================================================
 
 void dctx_init(decode_ctx_t *ctx) {
+    ctx->owned = ctx->inline_owned;
+    ctx->cap_owned = DCTX_INLINE_OWNED;
     ctx->n_owned = 0;
     ctx->errmsg[0] = '\0';
 }
 
+// The registry grows: Compact Pro keeps every fork of an archive registered
+// until the whole archive has decoded, and a real archive has far more than
+// the inline slots -- a fixed 16 failed both corpus archives.
 static void dctx_register(decode_ctx_t *ctx, void *p) {
-    if (ctx->n_owned >= DCTX_MAX_OWNED) {
-        free(p);
-        decode_abort(ctx, "internal: more than %d live decoder allocations", DCTX_MAX_OWNED);
+    if (ctx->n_owned == ctx->cap_owned) {
+        int cap = ctx->cap_owned * 2;
+        void **grown = malloc((size_t)cap * sizeof(void *));
+        if (!grown) {
+            free(p);
+            decode_abort(ctx, "out of memory tracking decoder allocations");
+        }
+        memcpy(grown, ctx->owned, (size_t)ctx->n_owned * sizeof(void *));
+        if (ctx->owned != ctx->inline_owned)
+            free(ctx->owned);
+        ctx->owned = grown;
+        ctx->cap_owned = cap;
     }
     ctx->owned[ctx->n_owned++] = p;
 }
@@ -127,6 +141,10 @@ void *dctx_release(decode_ctx_t *ctx, void *p) {
 void dctx_cleanup(decode_ctx_t *ctx) {
     for (int i = 0; i < ctx->n_owned; i++)
         free(ctx->owned[i]);
+    if (ctx->owned != ctx->inline_owned)
+        free(ctx->owned);
+    ctx->owned = ctx->inline_owned;
+    ctx->cap_owned = DCTX_INLINE_OWNED;
     ctx->n_owned = 0;
 }
 

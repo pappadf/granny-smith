@@ -381,11 +381,15 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
             if (!cp_bits_avail(&lz->bits, 6)) return -1;
             unsigned lower6 = cp_bits_get(&lz->bits, 6);
 
-            unsigned offset = ((unsigned)off_sym << 6) | lower6; // 1-based
+            unsigned offset = ((unsigned)off_sym << 6) | lower6;
             unsigned mlen = (unsigned)mlen_sym;
-            // cpt.md § 6.5: offsets are 1-based.  Offset 0 used to copy the
-            // window byte about to be overwritten (09-storage F-16).
-            if (mlen == 0 || offset == 0) return -1;
+            // Offset 0 is legitimate and means a full window back (8192): the
+            // field is 13 bits, so 8192 cannot be written any other way, and
+            // `(wpos - 0) & CP_WIN_MASK` is exactly that slot.  Real Compact
+            // Pro 1.33 and 1.52 archives use it -- refusing it, as 09-storage
+            // F-16 prescribed on the strength of cpt.md's "1-based", broke
+            // both corpus archives.  A zero length is still an error.
+            if (mlen == 0) return -1;
 
             lz->blk_cost += 3;
 
@@ -982,6 +986,7 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
         dctx_release(&ctx, files[j].data_fork.data);
         dctx_release(&ctx, files[j].resource_fork.data);
     }
+    dctx_cleanup(&ctx);
     free(ar.entries);
     return (peel_file_list_t){.files = files, .count = file_count};
 }

@@ -276,6 +276,7 @@ peel_buf_t peel_bin(const uint8_t *src, size_t len, peel_err_t **err) {
     peel_file_t file = bin_decode(src, len, &ctx);
     dctx_release(&ctx, file.data_fork.data);
     dctx_release(&ctx, file.resource_fork.data);
+    dctx_cleanup(&ctx);
 
     // bin.md § 10.3 — apply fork selection heuristic
     peel_buf_t result;
@@ -310,5 +311,6 @@ peel_file_t peel_bin_file(const uint8_t *src, size_t len, peel_err_t **err) {
     peel_file_t file = bin_decode(src, len, &ctx);
     dctx_release(&ctx, file.data_fork.data);
     dctx_release(&ctx, file.resource_fork.data);
+    dctx_cleanup(&ctx);
     return file;
 }

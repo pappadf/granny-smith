@@ -600,15 +600,6 @@ static bool parse_header(arsenic_state *s)
     return true;
 }
 
-// Release the two block-level buffers.
-// sit15.md §11.2 "Memory Allocation" — releases blk_buf + lf_map.
-static void free_buffers(arsenic_state *s)
-{
-    dctx_free(s->ctx, s->blk_buf);
-    dctx_free(s->ctx, s->lf_map);
-    s->blk_buf = NULL;
-    s->lf_map  = NULL;
-}
 
 // ============================================================================
 // Entry Point (Internal)
@@ -662,8 +653,8 @@ peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
         out[i] = produce_byte(s);
 
     // Clean up decoder state; the output is the caller's now.
-    free_buffers(s);
-    dctx_free(&dctx, s);
+    dctx_release(&dctx, out);
+    dctx_cleanup(&dctx); // the decoder state and block buffers
 
-    return (peel_buf_t){.data = dctx_release(&dctx, out), .size = uncomp_len, .owned = true};
+    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
 }

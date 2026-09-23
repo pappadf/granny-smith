@@ -459,9 +459,9 @@ peel_buf_t peel_hqx(const uint8_t *src, size_t len, peel_err_t **err) {
 
     peel_file_t file = hqx_decode(src, len, &ctx);
 
-    // Return the data fork; free the resource fork
-    dctx_free(&ctx, file.resource_fork.data);
+    // Return the data fork; the resource fork is freed with the rest.
     dctx_release(&ctx, file.data_fork.data);
+    dctx_cleanup(&ctx);
     return file.data_fork;
 }
 
@@ -480,5 +480,6 @@ peel_file_t peel_hqx_file(const uint8_t *src, size_t len, peel_err_t **err) {
     peel_file_t file = hqx_decode(src, len, &ctx);
     dctx_release(&ctx, file.data_fork.data);
     dctx_release(&ctx, file.resource_fork.data);
+    dctx_cleanup(&ctx);
     return file;
 }

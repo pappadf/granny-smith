@@ -34,9 +34,10 @@ peel_err_t *make_err(const char *fmt, ...)
 // Jump-target context for deep-error abort in decompressors -- and the owner
 // of everything a decoder allocates while it is armed.
 //
-// A decoder allocates through dctx_* and registers each block here.  On
-// success it releases what it returns (dctx_release) and frees the rest; the
-// abort handler calls dctx_cleanup, which frees whatever is still registered.
+// A decoder allocates through dctx_* and registers each block here.  Both of
+// its exits call dctx_cleanup, which frees whatever is still registered: the
+// abort handler, and the success path after releasing (dctx_release) what it
+// returns.
 // So an abort can never leak, however deep it fires or whatever was in
 // flight -- which every decoder that longjmp'd used to (09-storage F-10,
 // F-11, F-12: sit15 its decoder state and ~80 MiB of block buffers, sit3 its
@@ -46,13 +47,14 @@ peel_err_t *make_err(const char *fmt, ...)
 // indeterminate value after longjmp unless it is volatile, so a handler that
 // frees `s` or `out` directly may free garbage.  The handler here reads only
 // the context, whose address has escaped into every callee.
-#define DCTX_MAX_OWNED 16
+#define DCTX_INLINE_OWNED 16
 
 typedef struct {
     jmp_buf jmp;
     char errmsg[256];
-    void *owned[DCTX_MAX_OWNED];
-    int n_owned;
+    void **owned; // inline_owned, or a heap array once that fills
+    int n_owned, cap_owned;
+    void *inline_owned[DCTX_INLINE_OWNED];
 } decode_ctx_t;
 
 // Arm a context: no owned blocks.  Call before setjmp.
@@ -76,7 +78,9 @@ void dctx_free(decode_ctx_t *ctx, void *p);
 // free.  Returns p.  NULL is a no-op.
 void *dctx_release(decode_ctx_t *ctx, void *p);
 
-// Free every block still registered.  The abort handler's one job.
+// Free every block still registered, and the registry itself.  Every exit
+// calls it: the abort handler, and the success path once it has released
+// what it returns.
 void dctx_cleanup(decode_ctx_t *ctx);
 
 // Format a message into ctx->errmsg and longjmp back to the setjmp site.

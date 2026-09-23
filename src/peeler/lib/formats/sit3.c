@@ -186,5 +186,7 @@ peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len,
     int root = m3_read_node(&bits, &tree);
     m3_decode(&bits, &tree, root, out, uncomp_len);
 
-    return (peel_buf_t){.data = dctx_release(&ctx, out), .size = uncomp_len, .owned = true};
+    dctx_release(&ctx, out);
+    dctx_cleanup(&ctx);
+    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
 }

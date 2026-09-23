@@ -307,6 +307,42 @@ static void m13w_dynamic_header(m13_writer *w) {
     m13w_bits(w, 0x08, 8);
 }
 
+// A length of -1 is legal: a decrement from the reset value 0 gives it, and
+// m13_build_canonical counts it as absent, like 0.  Real DropStuff 6 streams
+// open their distance-tree list with exactly that -- the fix for F-05 first
+// refused it, and the real corpus caught it.  Here the distance list is a
+// decrement then nine repeats of -1, and the stream must still decode.
+TEST(test_sit13_minus_one_is_an_absent_symbol) {
+    m13_writer w = {0};
+    m13w_dynamic_header(&w);
+    m13w_meta(&w, 31); // first tree as in the round trip: 'A' = 0, 'B' = 1
+    m13w_meta(&w, 36);
+    m13w_bits(&w, 53, 6);
+    m13w_meta(&w, 0);
+    m13w_meta(&w, 34);
+    m13w_bits(&w, 0, 1);
+    m13w_meta(&w, 31);
+    for (int i = 0; i < 3; i++) {
+        m13w_meta(&w, 36);
+        m13w_bits(&w, 63, 6);
+    }
+    m13w_meta(&w, 36);
+    m13w_bits(&w, 20, 6);
+    m13w_meta(&w, 33); // distance list: L = -1 ...
+    m13w_meta(&w, 35);
+    m13w_bits(&w, 6, 3); // ... and nine more -1       -> 10
+    m13w_bits(&w, 0, 1); // "A"
+    m13w_bits(&w, 0, 32);
+
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 1, &err);
+    if (err)
+        fprintf(stderr, "  sit13: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT('A', out.data[0]);
+    peel_free(&out);
+}
+
 // F-05: a length list that decrements to -2.  m13_build_canonical assigns
 // codes by walking lengths upward from -1; it never meets a -2, so it never
 // finishes (natively the shift in its loop is UB long before that).  Two
@@ -413,7 +449,7 @@ static uint8_t *make_cpt_data_fork(const uint8_t *fork, uint32_t fork_len, uint3
 // An MSB-first bit writer, as cp_bits reads (bytes enter the accumulator's
 // high end), for Compact Pro LZH streams.
 typedef struct {
-    uint8_t buf[512];
+    uint8_t buf[4096];
     size_t nbits;
 } cpt_writer;
 
@@ -476,22 +512,30 @@ TEST(test_cpt_lzh_round_trip) {
     free(a);
 }
 
-// F-16: match offsets are 1-based (cpt.md §6.5); offset 0 is invalid.  The
-// decoder accepted it and copied the window byte it was about to overwrite --
-// here the zero-filled window, so "A" + a 2-byte match at offset 0 came back
-// as "A\0\0", no error.  Must be refused.
-TEST(test_cpt_lzh_zero_offset_is_rejected) {
-    cpt_writer w = {0};
+// Offset 0 reaches a full window back (8192 bytes).  09-storage F-16 called it
+// invalid, on the strength of cpt.md's "offsets are 1-based", and this suite
+// once asserted that it was refused -- until the real corpus
+// (src/peeler/test/testfiles) showed both Compact Pro archives use it.  The
+// offset field is 13 bits, so 8192 cannot be written any other way, and
+// `(wpos - 0) & CP_WIN_MASK` is exactly that slot.  Here: 8192 literals
+// "ABAB...", then a 2-byte match at offset 0, which must repeat the first two.
+TEST(test_cpt_lzh_offset_zero_is_a_full_window_back) {
+    static cpt_writer w; // 8192 two-bit literals: ~2 KB of stream
+    memset(&w, 0, sizeof(w));
     cptw_tables(&w);
-    cptw_literal(&w, 'A');
+    for (int i = 0; i < 8192; i++)
+        cptw_literal(&w, (i & 1) ? 'B' : 'A');
     cptw_match(&w, 2, 0);
     size_t len;
-    uint8_t *a = make_cpt_data_fork(w.buf, (uint32_t)((w.nbits + 7) / 8), 3, true, &len);
+    uint8_t *a = make_cpt_data_fork(w.buf, (uint32_t)((w.nbits + 7) / 8), 8194, true, &len);
     peel_err_t *err = NULL;
     peel_file_list_t list = peel_cpt(a, len, &err);
-    ASSERT_TRUE(err != NULL);
-    ASSERT_EQ_INT(0, list.count);
-    peel_err_free(err);
+    if (err)
+        fprintf(stderr, "  cpt: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(8194, (int)list.files[0].data_fork.size);
+    ASSERT_TRUE(memcmp(list.files[0].data_fork.data + 8192, "AB", 2) == 0);
+    peel_file_list_free(&list);
     free(a);
 }
 
@@ -1107,9 +1151,10 @@ int main(void) {
     PRUN(test_sit15_zero_run_bound_is_exact);
     PRUN(test_sit13_dynamic_round_trip);
     PRUN(test_sit13_length_repeat_cannot_overrun);
+    PRUN(test_sit13_minus_one_is_an_absent_symbol);
     PRUN(test_sit13_negative_length_is_rejected);
     PRUN(test_cpt_lzh_round_trip);
-    PRUN(test_cpt_lzh_zero_offset_is_rejected);
+    PRUN(test_cpt_lzh_offset_zero_is_a_full_window_back);
     PRUN(test_cpt_short_fork_is_rejected);
     PRUN(test_cpt_fork_extent_is_checked);
     PRUN(test_cpt_nesting_cap_is_exact);

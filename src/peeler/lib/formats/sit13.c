@@ -358,9 +358,12 @@ static int m13_build_meta_tree(m13_hnode_t *pool, int *used) {
     return root;
 }
 
-// Longest code length the meta-code can produce by a direct set (command 30
-// sets 31); increment past it, or decrement below 0, is a length the
-// canonical builder cannot place.
+// The range of code lengths the canonical builder can place.  31 is the
+// longest a direct set produces (command 30).  -1 is legitimate: it is what a
+// decrement from the reset value 0 gives, m13_build_canonical starts at -1 so
+// that it counts as "absent" like 0, and real DropStuff 6 streams open a list
+// with exactly that.  Below -1 the builder never matches, which is F-05.
+#define M13_MIN_CODE_LEN (-1)
 #define M13_MAX_CODE_LEN 31
 
 // Decode a list of code lengths from the bitstream using the meta-code.
@@ -377,9 +380,9 @@ static int m13_build_meta_tree(m13_hnode_t *pool, int *used) {
 //     wrote 73 bytes past the end of the caller's stack array.  The spec
 //     requires the list to end exactly at nsym, so an overshoot is an error,
 //     not something to clamp.
-//   * Every emitted length is 0..M13_MAX_CODE_LEN.  Decrementing past -1
-//     produced a length m13_build_canonical never matches, so its outer
-//     loop never finished.
+//   * Every emitted length is M13_MIN_CODE_LEN..M13_MAX_CODE_LEN.
+//     Decrementing past -1 produced a length m13_build_canonical never
+//     matches, so its outer loop never finished.
 static int m13_decode_lengths(m13_hnode_t *pool, int meta_root,
                               m13_bitrd_t *br, int8_t *out, int nsym) {
     int len = 0;
@@ -406,7 +409,7 @@ static int m13_decode_lengths(m13_hnode_t *pool, int meta_root,
             emit = (int)m13_br_read(br, 6) + 11;  // (n + 10) + the normal emit
         }
 
-        if (len < 0 || len > M13_MAX_CODE_LEN)
+        if (len < M13_MIN_CODE_LEN || len > M13_MAX_CODE_LEN)
             return -1;
         if (emit > nsym - i)
             return -1;
