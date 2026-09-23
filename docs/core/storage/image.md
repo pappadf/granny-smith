@@ -61,7 +61,7 @@ static const char *pick_delta_dir(const char *path) {
 
 **Compressed image formats** — NDIF and UDIF
 
-Two Apple disk-image containers are decoded on open, before any of the above runs. `resolve_base_image()` tries each in turn and, on a hit, decodes the whole image once into a raw scratch file under the storage-cache directory (`GS_STORAGE_CACHE`, else `/tmp/gs-image-ro/`); everything downstream then sees an ordinary raw base. The scratch name is derived from the source path, size, and mtime, so repeated inserts reuse the decode and an edited source re-decodes.
+Two Apple disk-image containers are decoded on open, before any of the above runs. Every format an image file can be in is an entry in `image.c`'s `g_image_formats[]` table, in probe order: the containers (UDIF, then NDIF) decode to a raw scratch file, the first to succeed winning; then the layouts (DiskCopy 4.2, then raw) say where the disk data sits in the resulting file. `resolve_image()` walks the table. A decoded image lands once in a raw scratch file under the storage-cache directory (`GS_STORAGE_CACHE`, else `/tmp/gs-image-ro/`); everything downstream then sees an ordinary raw base. The cache (`image_scratch.h`) keys it on the source path, size, and mtime, so repeated inserts reuse the decode and an edited source re-decodes, and it reuses a file only once it has been sealed as a complete decode of that same source. A new container or layout is a new table entry.
 
 | | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) |
 |---|---|---|
@@ -81,9 +81,7 @@ UDIF specifics worth knowing before touching `image_udif.c`:
 
 The zlib decompressor both this and the PNG reader use is first-party (`inflate.c`); the core links no third-party C libraries.
 
-**Volatile image persistence** — `image_persist_volatile(const char *path)`
-
-When a disk image resides in volatile storage (`/tmp/` or `/fd/`), this function copies it to `/opfs/images/<hash>.img` (OPFS-backed, content-addressed via FNV-1a hash). This runs on the worker thread where OPFS is accessible. The `fd insert` and `hd attach` commands call this automatically before opening the image. Returns a persistent path that the caller must free.
+**Where images live** — the image layer opens the path it is given. It does not copy volatile media into persistent storage; the web app does that before attaching (see `docs/guide/web.md`, "Filesystem").
 
 **Reading/Writing image data**
 - **`disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size)`** and **`disk_write_data(...)`** enforce `disk->block_size` alignment (512 for flat disks, 532 for a ProFile) and forward to `storage_read_block` / `storage_write_block` in a loop.
@@ -92,7 +90,7 @@ When a disk image resides in volatile storage (`/tmp/` or `/fd/`), this function
 - **`image_tick_all(config_t *config)`** calls `storage_tick()` for each registered image. With the delta model, `storage_tick()` is a no-op (no consolidation needed).
 
 **Persisting changes / Exporting**
-- **`image_save(image_t *image)`** calls `storage_save_state()` to emit a dense raw image back to `image->filename`. DiskCopy sources cannot be exported back to `.dc42`.
+- **`image_export_to(image_t *image, const char *dest_path)`** calls `storage_save_state()` to write a dense raw copy (base + delta) to a new file. The base image is never written in place.
 
 **Creating blank floppy images**
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.

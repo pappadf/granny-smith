@@ -8,6 +8,7 @@
 // forks, missing-name (name_off == -1) records, and assorted corruption
 // scenarios that must produce a defined error rather than a crash.
 
+#include "macroman.h"
 #include "resource_fork.h"
 #include "rsrc_dcmp.h"
 #include "test_assert.h"
@@ -606,6 +607,145 @@ TEST(test_dcmp_zero_pads_short_streams) {
     free(out);
 }
 
+// 09-storage F-21: actual_size is a 32-bit header field, and dcmp 0 sized its
+// buffer as `(size_t)actual_size + overrun` then zero-padded a short stream
+// out to actual_size.  With actual_size near 4 GiB that sum wraps when size_t
+// is 32 bits -- the shipping wasm build -- so a 16-byte malloc met a ~4 GiB
+// memset: a heap overflow from one resource.  (Natively it is a real 4 GiB
+// allocation and memset instead.)  Must be refused before allocating, on every
+// target; this suite runs under run-wasm32, where the unfixed code overflows.
+TEST(test_dcmp_huge_actual_size_is_refused) {
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, // signature, header length 18, v8
+        0xFF, 0xFF, 0xFF, 0xF0, // actual_size = 0xFFFFFFF0
+        0x40, 0x20, // var_ratio, overrun 0x20
+        0x00, 0x00, 0x00, 0x00, // dcmp 0, ctable
+        0xFF, // end of stream at once
+    };
+    size_t out_len = 0;
+    const char *err = NULL;
+    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    ASSERT_TRUE(out == NULL);
+    ASSERT_TRUE(err != NULL);
+}
+
+// The F-21 bound is exact: RSRC_DCMP_MAX_SIZE decodes (zero-padded), one
+// byte more does not.
+TEST(test_dcmp_size_bound_is_exact) {
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // actual_size set below
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+    };
+    uint32_t sizes[2] = {RSRC_DCMP_MAX_SIZE, RSRC_DCMP_MAX_SIZE + 1};
+    for (int i = 0; i < 2; i++) {
+        w_u32(payload + 8, sizes[i]);
+        size_t out_len = 0;
+        uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, NULL);
+        if (i == 0) {
+            ASSERT_TRUE(out != NULL);
+            ASSERT_TRUE(out_len == RSRC_DCMP_MAX_SIZE);
+            free(out);
+        } else {
+            ASSERT_TRUE(out == NULL);
+        }
+    }
+}
+
+// ---- MacRoman round trip (09-storage F-60) ---------------------------------
+
+// Every MacRoman byte survives MacRoman -> UTF-8 -> MacRoman.  The inverse
+// used to be a 128-entry copy of the forward table in resource_fork.c,
+// which nothing checked against the original.
+TEST(test_macroman_round_trips_every_byte) {
+    for (int c = 1; c < 256; c++) { // 0 would end the UTF-8 string
+        uint8_t in = (uint8_t)c, back[4] = {0};
+        char utf8[8];
+        macroman_to_utf8(&in, 1, utf8, sizeof(utf8));
+        ASSERT_EQ_INT(1, macroman_from_utf8(utf8, back, sizeof(back)));
+        ASSERT_EQ_INT(c, back[0]);
+    }
+    uint8_t out[4];
+    ASSERT_EQ_INT(-EINVAL, macroman_from_utf8("\xE4\xB8\xAD", out, sizeof(out))); // U+4E2D: not MacRoman
+    ASSERT_EQ_INT(-EINVAL, macroman_from_utf8("abcde", out, 4)); // too long
+    ASSERT_EQ_INT(-EINVAL, macroman_from_utf8("\xC3", out, sizeof(out))); // cut-off sequence
+}
+
+// ---- Inflation on lookup (09-storage F-22) ----------------------------------
+
+// A dcmp 0 resource declaring `actual` bytes whose stream ends at once: it
+// inflates to `actual` zero bytes.  hdr[] is 19 bytes.
+static void dcmp0_zeros(uint8_t hdr[19], uint32_t actual) {
+    static const uint8_t base[19] = {0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0,   0,
+                                     0,    0,    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF};
+    memcpy(hdr, base, sizeof(base));
+    w_u32(hdr + 8, actual);
+}
+
+// A compressed resource is handed back inflated, and the same inflated copy
+// on every lookup.
+TEST(test_compressed_resource_inflates_on_lookup) {
+    uint8_t hdr[19];
+    dcmp0_zeros(hdr, 100);
+    static const uint8_t cc[1][4] = {
+        {'D', 'A', 'T', 'A'}
+    };
+    test_res_t res[] = {
+        {{'D', 'A', 'T', 'A'}, 1, -1, RFORK_ATTR_COMPRESSED, sizeof(hdr), hdr}
+    };
+    size_t counts[] = {1};
+    size_t len = 0;
+    uint8_t *fork = build_fork(res, 1, cc, counts, 1, NULL, &len);
+    rfork_t *rf = rfork_parse(fork, len, NULL);
+    ASSERT_TRUE(rf != NULL);
+    const uint8_t *b1 = NULL, *b2 = NULL;
+    size_t sz = 0;
+    ASSERT_EQ_INT(0, rfork_lookup(rf, cc[0], 1, &b1, &sz, NULL, NULL));
+    ASSERT_EQ_INT(100, (int)sz);
+    for (size_t i = 0; i < sz; i++)
+        ASSERT_EQ_INT(0, b1[i]);
+    ASSERT_EQ_INT(0, rfork_lookup(rf, cc[0], 1, &b2, &sz, NULL, NULL));
+    ASSERT_TRUE(b1 == b2);
+    rfork_free(rf);
+    free(fork);
+}
+
+// Parsing inflates nothing, and a fork holds at most RFORK_INFLATE_BUDGET
+// (64 MiB) inflated.  Five resources that each inflate to 16 MiB: the first
+// four fill the budget, the fifth comes back raw.  At parse time every one
+// used to be inflated, however many the map declared.
+TEST(test_inflation_is_budgeted_per_fork) {
+    uint8_t hdr[19];
+    dcmp0_zeros(hdr, 16u * 1024u * 1024u);
+    static const uint8_t cc[1][4] = {
+        {'D', 'A', 'T', 'A'}
+    };
+    test_res_t res[5] = {
+        {{'D', 'A', 'T', 'A'}, 1, -1, RFORK_ATTR_COMPRESSED, sizeof(hdr), hdr},
+        {{'D', 'A', 'T', 'A'}, 2, -1, RFORK_ATTR_COMPRESSED, sizeof(hdr), hdr},
+        {{'D', 'A', 'T', 'A'}, 3, -1, RFORK_ATTR_COMPRESSED, sizeof(hdr), hdr},
+        {{'D', 'A', 'T', 'A'}, 4, -1, RFORK_ATTR_COMPRESSED, sizeof(hdr), hdr},
+        {{'D', 'A', 'T', 'A'}, 5, -1, RFORK_ATTR_COMPRESSED, sizeof(hdr), hdr},
+    };
+    size_t counts[] = {5};
+    size_t len = 0;
+    uint8_t *fork = build_fork(res, 5, cc, counts, 1, NULL, &len);
+    rfork_t *rf = rfork_parse(fork, len, NULL);
+    ASSERT_TRUE(rf != NULL);
+    for (int i = 0; i < 5; i++) {
+        const uint8_t *b = NULL;
+        size_t sz = 0;
+        ASSERT_EQ_INT(0, rfork_lookup(rf, cc[0], (int16_t)(i + 1), &b, &sz, NULL, NULL));
+        if (i < 4) {
+            ASSERT_EQ_INT(16 * 1024 * 1024, (int)sz);
+        } else {
+            ASSERT_EQ_INT((int)sizeof(hdr), (int)sz); // over budget: the raw payload
+            ASSERT_TRUE(rsrc_dcmp_is_compressed(b, sz));
+        }
+    }
+    rfork_free(rf);
+    free(fork);
+}
+
 int main(void) {
     RUN(test_parse_empty_fork);
     RUN(test_parse_two_types_multi_ids);
@@ -627,6 +767,11 @@ int main(void) {
     RUN(test_dcmp2_greggy_static_nonbitmapped);
     RUN(test_dcmp2_greggy_bitmapped);
     RUN(test_dcmp_zero_pads_short_streams);
+    RUN(test_dcmp_huge_actual_size_is_refused);
+    RUN(test_dcmp_size_bound_is_exact);
+    RUN(test_macroman_round_trips_every_byte);
+    RUN(test_compressed_resource_inflates_on_lookup);
+    RUN(test_inflation_is_budgeted_per_fork);
     fprintf(stderr, "All resfork tests passed.\n");
     return 0;
 }

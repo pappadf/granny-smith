@@ -180,55 +180,10 @@ static const int predefined_dist_nsym[5] = {11, 13, 14, 11, 11};
 // Bitstream Reader — sit13.md § 3 "Bit-Level Conventions"
 // ============================================================================
 
-// Accumulator-based LSB-first bit reader.
-// sit13.md § 3.1 "Bit Order" — bits are consumed LSB-first within each byte.
-// Bytes are loaded one at a time into the low bits of the accumulator.
-typedef struct {
-    const uint8_t *src;
-    size_t         src_len;
-    size_t         pos;       // Next byte position to read
-    uint32_t       acc;       // Bit accumulator
-    int            avail;     // Valid bit count in acc
-} m13_bitrd_t;
-
-// Initialise the bit reader over a byte buffer.
-static void m13_br_init(m13_bitrd_t *r, const uint8_t *data, size_t len) {
-    r->src   = data;
-    r->src_len = len;
-    r->pos   = 0;
-    r->acc   = 0;
-    r->avail = 0;
-}
-
-// Ensure at least 25 valid bits in the accumulator.
-// sit13.md § 3.2 "Bitstream Reader" — refill while avail ≤ 24.
-static void m13_br_refill(m13_bitrd_t *r) {
-    while (r->avail <= 24 && r->pos < r->src_len) {
-        r->acc |= (uint32_t)r->src[r->pos++] << r->avail;
-        r->avail += 8;
-    }
-}
-
-// Consume and return the next n bits (0 ≤ n ≤ 24).
-static uint32_t m13_br_read(m13_bitrd_t *r, int n) {
-    if (n == 0) return 0;
-    // Refill accumulator before extracting
-    m13_br_refill(r);
-    uint32_t v = r->acc & ((1u << n) - 1);
-    r->acc >>= n;
-    r->avail -= n;
-    return v;
-}
-
-// Consume and return a single bit.
-static int m13_br_bit(m13_bitrd_t *r) {
-    // Refill accumulator before extracting
-    m13_br_refill(r);
-    int b = (int)(r->acc & 1u);
-    r->acc >>= 1;
-    r->avail -= 1;
-    return b;
-}
+// sit13.md § 3.1 "Bit Order" — bits are consumed LSB-first within each
+// byte: peeler's shared peel_lsb_t (internal.h).  Bits past the end of the
+// stream read as zeros, as this file's own reader did; the decode loops are
+// bounded by the output size.
 
 // ============================================================================
 // Pool-Allocated Huffman Decoding Tree
@@ -243,82 +198,23 @@ static int m13_br_bit(m13_bitrd_t *r) {
 // than pointers, so the entire tree is freed in one shot with the enclosing
 // state struct.  sit13.md § 12.3 "Pool-Based Node Allocation".
 
-// Maximum nodes across all trees combined (meta + first + second + dist).
-#define M13_POOL_CAP 2048
-
-// Sentinel: this node has no symbol (it is an internal/branch node).
-#define M13_NOSYM ((int16_t)-1)
-
-// A single node in the pool-allocated Huffman tree.
-typedef struct {
-    int16_t ch[2];  // Children: index into pool, or -1 if absent
-    int16_t sym;    // Leaf symbol value, or M13_NOSYM if internal
-} m13_hnode_t;
-
-// Allocate one new node from the pool and return its index.
-// sit13.md § 12.3 — pool of 2048 nodes is shared across all trees.
-static int m13_pool_alloc(m13_hnode_t *pool, int *used) {
-    int idx = (*used)++;
-    pool[idx].ch[0] = -1;
-    pool[idx].ch[1] = -1;
-    pool[idx].sym   = M13_NOSYM;
-    return idx;
-}
-
-// Insert a code of len bits (MSB-first in code) mapping to sym into
-// the tree rooted at root_idx.
-// sit13.md § 5.3 "Canonical Huffman Code Construction" — MSB-first tree
-// insertion.  Also used for direct-insertion of the fixed meta-code words
-// (sit13.md § 6.2 "The Meta-Code").
-static void m13_pool_insert(m13_hnode_t *pool, int *used,
-                            int root_idx, uint32_t code, int len, int sym) {
-    int cur = root_idx;
-    for (int bit = len - 1; bit >= 0; bit--) {
-        int b = (int)((code >> bit) & 1);
-        if (pool[cur].ch[b] < 0)
-            pool[cur].ch[b] = (int16_t)m13_pool_alloc(pool, used);
-        cur = pool[cur].ch[b];
-    }
-    pool[cur].sym = (int16_t)sym;
-}
-
-// Build a canonical Huffman tree from an array of code lengths.
-// Symbols of the same code length are assigned sequential codes in
-// ascending symbol order.  Length 0 (or negative) means the symbol is
-// absent and receives no code.  Returns the root index.
-static int m13_build_canonical(m13_hnode_t *pool, int *used,
-                               const int8_t *lengths, int nsym) {
-    int root = m13_pool_alloc(pool, used);
-    int code = 0, assigned = 0;
-    for (int len = -1; assigned < nsym; len++, code <<= 1) {
-        for (int s = 0; s < nsym; s++) {
-            if (lengths[s] == len) {
-                // Only insert symbols with positive code length
-                if (len > 0)
-                    m13_pool_insert(pool, used, root,
-                                    (uint32_t)code, len, s);
-                code++;
-                assigned++;
-            }
-        }
-    }
-    return root;
-}
+// All trees of a block (meta + first + second + dist) share one of peeler's
+// canonical-Huffman pools (internal.h), which bounds it: this file's own
+// allocator did not (09-storage F-04, F-59).
 
 // Walk the tree from root, reading one bit at a time until a leaf is
 // reached.  Returns the leaf's symbol value, or -1 on error.
 // sit13.md § 5.4 "Single-Symbol Tree Edge Case" — if the root IS a
 // leaf, return its symbol without consuming any bits (handled by caller).
-static int m13_huff_decode(m13_hnode_t *pool, int root, m13_bitrd_t *br) {
+static int m13_huff_decode(const peel_hpool_t *pool, int root, peel_lsb_t *br) {
     int cur = root;
-    while (pool[cur].sym == M13_NOSYM) {
-        int b = m13_br_bit(br);
-        cur = pool[cur].ch[b];
+    while (peel_huff_sym(pool, cur) == PEEL_HUFF_NOSYM) {
+        cur = peel_huff_child(pool, cur, (int)peel_lsb_get(br, 1));
         // Navigate to child; abort if tree is malformed
         if (cur < 0)
             return -1;
     }
-    return (int)pool[cur].sym;
+    return peel_huff_sym(pool, cur);
 }
 
 // ============================================================================
@@ -346,69 +242,85 @@ static const int m13_meta_lens[M13_META_SIZE] = {
     0xC, 0xC, 0xC, 0xC, 0xC, 0x5, 0x2, 0x2, 0x3, 0x4, 0x5};
 
 // Build the meta-code tree from the fixed word/length pairs.
-// Returns the root index in the pool.
+// Returns the root index in the pool, or -1 if the pool is full.
 // sit13.md § 6.2 "The Meta-Code" — 37 symbols with explicit (word, length)
 // pairs.  The meta-code tree uses direct codeword insertion, NOT the
 // canonical code construction procedure.
-static int m13_build_meta_tree(m13_hnode_t *pool, int *used) {
-    int root = m13_pool_alloc(pool, used);
-    for (int i = 0; i < M13_META_SIZE; i++)
-        m13_pool_insert(pool, used, root,
-                        m13_meta_words[i], m13_meta_lens[i], i);
+static int m13_build_meta_tree(peel_hpool_t *pool) {
+    int root = peel_huff_root(pool);
+    for (int i = 0; root >= 0 && i < M13_META_SIZE; i++)
+        if (peel_huff_insert(pool, root, m13_meta_words[i], m13_meta_lens[i], i) < 0)
+            root = -1;
     return root;
+}
+
+// The range of code lengths the canonical builder can place.  31 is the
+// longest a direct set produces (command 30).  -1 is legitimate: it is what a
+// decrement from the reset value 0 gives, m13_build_canonical starts at -1 so
+// that it counts as "absent" like 0, and real DropStuff 6 streams open a list
+// with exactly that.  Below -1 the builder never matches, which is F-05.
+#define M13_MIN_CODE_LEN (-1)
+#define M13_MAX_CODE_LEN 31
+
+// Build a canonical tree from lengths in M13_MIN_CODE_LEN..M13_MAX_CODE_LEN.
+// sit13.md § 5.3: codes go in ascending length, then ascending symbol, and
+// absent symbols (-1, 0) still consume a code value -- which the shared
+// builder does for any min_len below 1.  Returns the root, or -1.
+static int m13_build_canonical(peel_hpool_t *pool, const int8_t *lengths, int nsym) {
+    return peel_huff_build(pool, lengths, nsym, M13_MIN_CODE_LEN, M13_MAX_CODE_LEN);
 }
 
 // Decode a list of code lengths from the bitstream using the meta-code.
 // sit13.md § 6.3 "Meta-Code Symbols and Code-Length RLE" — commands
 // 0..30 set the length directly, 31 resets to 0, 32/33 increment/
 // decrement, and 34..36 are various repeat encodings.
-static void m13_decode_lengths(m13_hnode_t *pool, int meta_root,
-                               m13_bitrd_t *br, int8_t *out, int nsym) {
+//
+// Returns 0, or -1 on a malformed list.  Two bounds that were missing
+// (09-storage F-03, F-05):
+//
+//   * Every command's entry count is checked against the space left.  The
+//     loop was bounded by nsym but the repeats inside it were not: command
+//     36 emits up to 74 entries, so from index 320 of a 321-entry list it
+//     wrote 73 bytes past the end of the caller's stack array.  The spec
+//     requires the list to end exactly at nsym, so an overshoot is an error,
+//     not something to clamp.
+//   * Every emitted length is M13_MIN_CODE_LEN..M13_MAX_CODE_LEN.
+//     Decrementing past -1 produced a length m13_build_canonical never
+//     matches, so its outer loop never finished.
+static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root,
+                              peel_lsb_t *br, int8_t *out, int nsym) {
     int len = 0;
     int i = 0;
     while (i < nsym) {
+        // The meta-code is complete (its Kraft sum is exactly 1), so this
+        // walk always reaches a leaf and cmd is 0..36.
         int cmd = m13_huff_decode(pool, meta_root, br);
+        int emit = 1; // entries this command produces, per the spec's table
 
-        // Commands 0..30: set the current length to cmd + 1.
-        // Command 31: reset length to 0 (symbol absent).
-        // Command 32: increment length.
-        // Command 33: decrement length.
         if (cmd <= 30) {
-            len = cmd + 1;
+            len = cmd + 1;            // set the length directly
         } else if (cmd == 31) {
-            len = 0;
+            len = 0;                  // symbol absent
         } else if (cmd == 32) {
             len++;
         } else if (cmd == 33) {
             len--;
         } else if (cmd == 34) {
-            // Read 1 bit; if set, emit one extra entry before the
-            // normal per-iteration emit below.
-            if (m13_br_read(br, 1))
-                out[i++] = (int8_t)len;
-            out[i++] = (int8_t)len;
-            continue;
+            emit = 1 + (int)peel_lsb_get(br, 1);   // optional extra copy
         } else if (cmd == 35) {
-            // Read 3 bits → repeat count r; emit (r + 2) entries
-            // plus the normal per-iteration emit.
-            int reps = (int)m13_br_read(br, 3) + 2;
-            while (reps-- > 0)
-                out[i++] = (int8_t)len;
-            out[i++] = (int8_t)len;
-            continue;
-        } else if (cmd == 36) {
-            // Read 6 bits → repeat count r; emit (r + 10) entries
-            // plus the normal per-iteration emit.
-            int reps = (int)m13_br_read(br, 6) + 10;
-            while (reps-- > 0)
-                out[i++] = (int8_t)len;
-            out[i++] = (int8_t)len;
-            continue;
+            emit = (int)peel_lsb_get(br, 3) + 3;   // (n + 2) + the normal emit
+        } else {
+            emit = (int)peel_lsb_get(br, 6) + 11;  // (n + 10) + the normal emit
         }
 
-        // Normal emit for commands 0..33.
-        out[i++] = (int8_t)len;
+        if (len < M13_MIN_CODE_LEN || len > M13_MAX_CODE_LEN)
+            return -1;
+        if (emit > nsym - i)
+            return -1;
+        while (emit-- > 0)
+            out[i++] = (int8_t)len;
     }
+    return 0;
 }
 
 // ============================================================================
@@ -423,11 +335,10 @@ static void m13_decode_lengths(m13_hnode_t *pool, int meta_root,
 
 // Full decoder context for one method-13 stream.
 typedef struct {
-    m13_bitrd_t br;
+    peel_lsb_t br;
 
     // Node pool shared by all Huffman trees
-    m13_hnode_t pool[M13_POOL_CAP];
-    int         pool_used;
+    peel_hpool_t pool;
 
     // Root indices into pool for the three trees
     int root_first;
@@ -460,11 +371,11 @@ static int m13_setup(m13_state_t *st) {
     st->wpos       = 0;
     st->match_left = 0;
     st->match_from = 0;
-    st->pool_used  = 0;
+    peel_hpool_reset(&st->pool);
 
     // Read the single header byte.
     // sit13.md § 4.1: SET = bits 7..4, S = bit 3, K = bits 2..0.
-    uint32_t hdr = m13_br_read(&st->br, 8);
+    uint32_t hdr = peel_lsb_get(&st->br, 8);
     int set      = (int)(hdr >> 4);       // code set selector (0 = dynamic)
     bool shared  = (hdr >> 3) & 1;        // second tree == first tree?
     int dist_n   = (int)(hdr & 7) + 10;   // distance tree symbol count
@@ -472,49 +383,52 @@ static int m13_setup(m13_state_t *st) {
     if (set == 0) {
         // Dynamic mode: build meta-code tree, then decode all three trees.
         // sit13.md § 6 "Tree Serialization (Dynamic Mode)".
-        int meta_root = m13_build_meta_tree(st->pool, &st->pool_used);
+        int meta_root = m13_build_meta_tree(&st->pool);
+        if (meta_root < 0)
+            return -1;
 
         int8_t lengths[M13_SYM_COUNT];
 
         // First literal/length tree.
-        m13_decode_lengths(st->pool, meta_root, &st->br,
-                           lengths, M13_SYM_COUNT);
-        st->root_first = m13_build_canonical(st->pool, &st->pool_used,
-                                             lengths, M13_SYM_COUNT);
+        if (m13_decode_lengths(&st->pool, meta_root, &st->br,
+                               lengths, M13_SYM_COUNT) < 0)
+            return -1;
+        st->root_first = m13_build_canonical(&st->pool, lengths, M13_SYM_COUNT);
 
         // Second literal/length tree (or shared).
         // sit13.md § 6.1 "Tree Sharing".
         if (shared) {
             st->root_second = st->root_first;
         } else {
-            m13_decode_lengths(st->pool, meta_root, &st->br,
-                               lengths, M13_SYM_COUNT);
-            st->root_second = m13_build_canonical(st->pool, &st->pool_used,
-                                                  lengths, M13_SYM_COUNT);
+            if (m13_decode_lengths(&st->pool, meta_root, &st->br,
+                                   lengths, M13_SYM_COUNT) < 0)
+                return -1;
+            st->root_second = m13_build_canonical(&st->pool, lengths, M13_SYM_COUNT);
         }
 
         // Distance tree.
-        m13_decode_lengths(st->pool, meta_root, &st->br,
-                           lengths, dist_n);
-        st->root_dist = m13_build_canonical(st->pool, &st->pool_used,
-                                            lengths, dist_n);
+        if (m13_decode_lengths(&st->pool, meta_root, &st->br,
+                               lengths, dist_n) < 0)
+            return -1;
+        st->root_dist = m13_build_canonical(&st->pool, lengths, dist_n);
     } else if (set >= 1 && set <= 5) {
         // Predefined mode: build trees from static tables.
         // sit13.md § 7 "Predefined Trees (Sets 1–5)".
         int idx = set - 1;
-        st->root_first  = m13_build_canonical(st->pool, &st->pool_used,
-                                              predefined_first[idx],
+        st->root_first  = m13_build_canonical(&st->pool, predefined_first[idx],
                                               M13_SYM_COUNT);
-        st->root_second = m13_build_canonical(st->pool, &st->pool_used,
-                                              predefined_second[idx],
+        st->root_second = m13_build_canonical(&st->pool, predefined_second[idx],
                                               M13_SYM_COUNT);
-        st->root_dist   = m13_build_canonical(st->pool, &st->pool_used,
-                                              predefined_dist[idx],
+        st->root_dist   = m13_build_canonical(&st->pool, predefined_dist[idx],
                                               predefined_dist_nsym[idx]);
     } else {
         // sit13.md § 11 "Error Conditions" — invalid SET value.
         return -1;
     }
+
+    // A tree that did not fit the pool, or had a length out of range.
+    if (st->root_first < 0 || st->root_second < 0 || st->root_dist < 0)
+        return -1;
 
     // Start with the first literal/length tree active.
     // sit13.md § 9.1 "State".
@@ -543,13 +457,10 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         }
 
         // Decode next symbol from the active literal/length tree.
-        // sit13.md § 5.4 "Single-Symbol Tree Edge Case" — if the tree
-        // root is a leaf, return its symbol without reading bits.
-        int sym;
-        if (st->pool[st->root_active].sym != M13_NOSYM)
-            sym = (int)st->pool[st->root_active].sym;
-        else
-            sym = m13_huff_decode(st->pool, st->root_active, &st->br);
+        // sit13.md § 5.4 "Single-Symbol Tree Edge Case" — a root that is a
+        // leaf yields its symbol without reading bits, which
+        // m13_huff_decode does as it stands.
+        int sym = m13_huff_decode(&st->pool, st->root_active, &st->br);
 
         if (sym < 0)
             return -1;
@@ -573,9 +484,9 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         if (sym <= 317)
             mlen = sym - 253;
         else if (sym == 318)
-            mlen = (int)m13_br_read(&st->br, 10) + 65;
+            mlen = (int)peel_lsb_get(&st->br, 10) + 65;
         else if (sym == 319)
-            mlen = (int)m13_br_read(&st->br, 15) + 65;
+            mlen = (int)peel_lsb_get(&st->br, 15) + 65;
         else
             return -1;   // symbol 320 or higher is invalid
 
@@ -583,14 +494,14 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         // sit13.md § 5.2 "Distance Symbol Alphabet" — distance symbol
         // 0 means distance 1; other symbols d encode distance
         // 2^(d-1) + read_bits(d-1) + 1.
-        int dsym = m13_huff_decode(st->pool, st->root_dist, &st->br);
+        int dsym = m13_huff_decode(&st->pool, st->root_dist, &st->br);
         if (dsym < 0)
             return -1;
         int dist;
         if (dsym == 0)
             dist = 1;
         else
-            dist = (1 << (dsym - 1)) + (int)m13_br_read(&st->br, dsym - 1) + 1;
+            dist = (1 << (dsym - 1)) + (int)peel_lsb_get(&st->br, dsym - 1) + 1;
 
         // Stage the match for copying (may span multiple read calls)
         st->match_left = mlen;
@@ -636,7 +547,7 @@ peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
     }
 
     // Initialise bit reader over the compressed input
-    m13_br_init(&st->br, src, len);
+    peel_lsb_init(&st->br, src, len);
 
     // Parse header and build Huffman trees
     if (m13_setup(st) < 0) {

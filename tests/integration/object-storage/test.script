@@ -22,9 +22,10 @@ storage.images[0].filename
 assert storage.images[1].type == "fd_ds"
 storage.images[1].filename
 
-# storage.import — copy a small file to a chosen destination via the
-# legacy `cp` route, then verify storage.import without dst_path
-# falls back to the content-hash naming under /opfs/images/.
+# storage.import — copy a small file to a chosen destination.  The
+# destination is required: the core does not choose where media lives.
 echo "${storage.import("../../data/roms/plus-v3-4d1f8172.rom", "/tmp/imported_rom.bin")}"
+assert storage.path_exists("/tmp/imported_rom.bin") "storage.import did not copy"
+assert !storage.import("../../data/roms/plus-v3-4d1f8172.rom", "") "storage.import without a destination must fail"
 
 quit

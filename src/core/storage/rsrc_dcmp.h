@@ -5,10 +5,12 @@
 // Decompression for Apple System 7 compressed resources (the format
 // signalled by the 0xA89F6572 signature in the resource bytes).
 //
-// Supports the two stock Apple decompressors that ship with System 7
-// (and the two header layouts they pair with):
+// Supports three Apple decompressors (and the two header layouts they
+// pair with):
 //   - header version 8 + dcmp 0 — DonnBits (Donn Denman, 1990-1991)
 //   - header version 9 + dcmp 2 — GreggyBits (Greg Marriott, 1990-1991)
+//   - header version 9 + dcmp 3 — InstaCompOne (undocumented; see the
+//     dcmp 3 section of rsrc_dcmp.c for how its layout was established)
 //
 // Algorithms ported from Apple's open-sourced assembly in
 //   Patches/DeCompressDefProc.a + Patches/DeCompressCommon.A  (dcmp 0)
@@ -19,8 +21,8 @@
 // verbatim; the assembly's `Bsr` / `Bra` flow is rewritten as a plain
 // C switch.
 //
-// Other dcmp ids (1, 3, 7, 8, custom dcmps shipped in extensions) are
-// not implemented and produce an "unsupported dcmp" error so callers
+// Other dcmp ids (1, 7, 8, custom dcmps shipped in extensions), and dcmp 0
+// in a version-9 header, are not implemented and produce an "unsupported dcmp" error so callers
 // can fall through to the raw bytes rather than feed garbage to a
 // disassembler.
 
@@ -40,6 +42,10 @@
 // formally documented anywhere).
 #define RSRC_DCMP_MAGIC 0xA89F6572u
 
+// Largest uncompressed size rsrc_dcmp_decompress accepts.  A resource fork's
+// data offsets are 24 bits, so nothing in one exceeds 16 MiB.
+#define RSRC_DCMP_MAX_SIZE (16u * 1024u * 1024u)
+
 // Quick test: returns true iff `bytes` begins with the compressed-
 // resource signature.  Cheap (4-byte comparison); safe to call on
 // arbitrarily short buffers.
@@ -53,10 +59,13 @@ bool rsrc_dcmp_is_compressed(const uint8_t *bytes, size_t len);
 //
 // Failure modes (errmsg values):
 //   - "not compressed"          — magic doesn't match
-//   - "truncated header"        — header_length goes past the buffer
-//   - "unsupported version"     — only header version 8 is implemented
-//   - "unsupported dcmp"        — dcmp_id != 0 (no GreggyBits yet)
-//   - "corrupt stream"          — opcode walk fell off the input
+//   - "truncated header"        — header shorter than 18 bytes, or
+//                                 header_length goes past the buffer
+//   - "declared size too large" — actualSize above RSRC_DCMP_MAX_SIZE
+//   - "unsupported version"     — header version neither 8 nor 9
+//   - "unsupported dcmp"        — any (version, dcmp_id) pair other than
+//                                 (8, 0), (9, 2) and (9, 3)
+//   - "corrupt stream"          — the payload does not decode
 //   - "out of memory"
 uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, size_t *out_len, const char **errmsg);
 

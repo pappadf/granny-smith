@@ -37,6 +37,7 @@ typedef struct {
     size_t cap;
     size_t pos;
     int grow;
+    size_t max; // growable only: never grow past this
 } inflate_out_t;
 
 // Pull `need` bits (0..16), least-significant bit first.
@@ -105,9 +106,12 @@ static int inflate_push(inflate_out_t *o, uint8_t byte) {
     if (o->pos >= o->cap) {
         // A fixed-capacity caller stated the exact expected size: overflowing
         // it means the stream disagrees, which is an error rather than a clamp.
-        if (!o->grow)
+        if (!o->grow || o->cap >= o->max)
             return 0;
-        size_t new_cap = o->cap * 2;
+        // Doubling stops at `max`, the caller's ceiling (09-storage F-28):
+        // unbounded, a small stream of long runs asked for any size at all,
+        // and the doubling itself could wrap to 0.
+        size_t new_cap = o->cap > o->max / 2 ? o->max : o->cap * 2;
         uint8_t *grown = realloc(o->buf, new_cap);
         if (!grown)
             return 0;
@@ -245,10 +249,11 @@ static int inflate_stream(const uint8_t *data, size_t data_len, inflate_out_t *o
     return 0;
 }
 
-uint8_t *inflate_zlib_alloc(const uint8_t *data, size_t data_len, size_t *out_len) {
-    if (!data || !out_len)
+uint8_t *inflate_zlib_alloc(const uint8_t *data, size_t data_len, size_t out_max, size_t *out_len) {
+    if (!data || !out_len || out_max == 0)
         return NULL;
-    inflate_out_t o = {malloc(1 << 16), 1 << 16, 0, 1};
+    size_t cap = out_max < (1u << 16) ? out_max : (1u << 16);
+    inflate_out_t o = {malloc(cap), cap, 0, 1, out_max};
     if (!o.buf)
         return NULL;
     if (inflate_stream(data, data_len, &o) != 0) {
@@ -262,7 +267,7 @@ uint8_t *inflate_zlib_alloc(const uint8_t *data, size_t data_len, size_t *out_le
 long inflate_zlib(const uint8_t *data, size_t data_len, uint8_t *out, size_t out_cap) {
     if (!data || !out)
         return -1;
-    inflate_out_t o = {out, out_cap, 0, 0};
+    inflate_out_t o = {out, out_cap, 0, 0, out_cap};
     if (inflate_stream(data, data_len, &o) != 0)
         return -1;
     return (long)o.pos;

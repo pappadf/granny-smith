@@ -18,8 +18,10 @@
 //   block 3  "Hello" data fork
 
 #include "image_hfs.h"
+#include "image_part.h"
 #include "test_assert.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -38,6 +40,11 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
         return 0; // short read
     memcpy(buf, g_img + offset, size);
     return size;
+}
+
+uint32_t disk_block_size(image_t *disk) {
+    (void)disk;
+    return 512;
 }
 
 // ---- Big-endian writers ----------------------------------------------------
@@ -304,6 +311,27 @@ TEST(test_bad_signature_rejected) {
     ASSERT_TRUE(hfs_open(DUMMY, 0, IMG_SIZE) == NULL);
 }
 
+// ---- The shared partition reader (image_part.c) ---------------------------
+
+// A byte range that straddles a block boundary comes back exactly.
+TEST(test_read_bytes_unaligned) {
+    for (size_t i = 0; i < 1024; i++)
+        g_img[i] = (uint8_t)(i * 7);
+    uint8_t out[100];
+    ASSERT_EQ_INT(0, image_read_bytes(DUMMY, 470, out, sizeof(out)));
+    for (size_t i = 0; i < sizeof(out); i++)
+        ASSERT_EQ_INT((uint8_t)((470 + i) * 7), out[i]);
+}
+
+// A range whose end wraps past 2^64 is outside the partition.  HFS's copy
+// checked off + n > size, which the wrap slips past; UFS's did not (F-38).
+TEST(test_read_partition_refuses_a_wrapping_range) {
+    uint8_t out[100];
+    ASSERT_EQ_INT(-EIO, image_read_partition(DUMMY, 0, IMG_SIZE, UINT64_MAX - 9, out, sizeof(out)));
+    ASSERT_EQ_INT(-EIO, image_read_partition(DUMMY, 0, IMG_SIZE, IMG_SIZE - 99, out, sizeof(out)));
+    ASSERT_EQ_INT(0, image_read_partition(DUMMY, 0, IMG_SIZE, IMG_SIZE - 100, out, sizeof(out)));
+}
+
 int main(void) {
     RUN(test_open_and_volume_name);
     RUN(test_readdir_root);
@@ -311,6 +339,8 @@ int main(void) {
     RUN(test_lookup_nested_and_missing);
     RUN(test_hfsx_signature_accepted);
     RUN(test_bad_signature_rejected);
+    RUN(test_read_bytes_unaligned);
+    RUN(test_read_partition_refuses_a_wrapping_range);
     fprintf(stderr, "All hfsplus tests passed.\n");
     return 0;
 }

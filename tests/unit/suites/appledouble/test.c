@@ -183,6 +183,28 @@ TEST(parse_rejects_truncated_header) {
     free(buf);
 }
 
+// The header-only builder (for writers that stream the payloads) writes
+// exactly the header ad_build does, and needs only each entry's length.
+TEST(test_build_header_matches_build) {
+    static const uint8_t finder[AD_FINDER_INFO_SIZE] = {'T', 'E', 'X', 'T', 't', 't', 'x', 't'};
+    static const uint8_t rsrc[5] = {1, 2, 3, 4, 5};
+    ad_entry_t e[2] = {
+        {AD_ENTRY_FINDER, finder, sizeof(finder)},
+        {AD_ENTRY_RSRC,   rsrc,   sizeof(rsrc)  },
+    };
+    uint8_t *full = NULL;
+    size_t full_len = 0;
+    ASSERT_EQ_INT(0, ad_build(false, e, 2, &full, &full_len));
+
+    e[1].bytes = NULL; // streamed by the caller
+    uint8_t hdr[64];
+    long hl = ad_build_header(false, e, 2, hdr, sizeof(hdr));
+    ASSERT_EQ_INT(26 + 2 * 12, (int)hl);
+    ASSERT_TRUE(memcmp(hdr, full, (size_t)hl) == 0);
+    ASSERT_EQ_INT(-EINVAL, (int)ad_build_header(false, e, 2, hdr, (size_t)hl - 1)); // no room
+    free(full);
+}
+
 int main(void) {
     RUN(sidecar_roundtrip_rsrc_and_finder);
     RUN(sidecar_rsrc_only_when_finder_null);
@@ -194,6 +216,7 @@ int main(void) {
     RUN(detect_false_on_wrong_version);
     RUN(parse_rejects_out_of_bounds_entry);
     RUN(parse_rejects_truncated_header);
+    RUN(test_build_header_matches_build);
     fprintf(stderr, "All appledouble tests passed.\n");
     return 0;
 }

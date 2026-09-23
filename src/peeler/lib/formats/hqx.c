@@ -336,6 +336,11 @@ static peel_buf_t hqx_read_fork(hqx_decoder_t *dec, uint32_t fork_len,
         return (peel_buf_t){0};
     }
 
+    if (fork_len > PEEL_MAX_FORK) {
+        decode_abort(dec->ctx, "BinHex: %s fork declares %u bytes, over the %u MiB limit",
+                     fork_name, fork_len, (unsigned)(PEEL_MAX_FORK >> 20));
+    }
+
     // Allocate and read fork content
     grow_buf_t gbuf;
     grow_init(&gbuf, fork_len, dec->ctx);
@@ -407,8 +412,8 @@ static peel_file_t hqx_decode(const uint8_t *src, size_t len,
     if (nl > sizeof(file.meta.name) - 1) {
         nl = sizeof(file.meta.name) - 1;
     }
-    memcpy(file.meta.name, hdr.name, nl);
-    file.meta.name[nl] = '\0';
+    size_t np = 0; // one sanitised component (peel_append_segment)
+    peel_append_segment(file.meta.name, sizeof(file.meta.name), &np, (const uint8_t *)hdr.name, nl);
     file.meta.mac_type    = hdr.mac_type;
     file.meta.mac_creator = hdr.mac_creator;
 
@@ -440,19 +445,24 @@ bool hqx_detect(const uint8_t *src, size_t len) {
 peel_buf_t peel_hqx(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
 
-    // Use setjmp/longjmp for deep-error abort throughout the decode pipeline
+    // Use setjmp/longjmp for deep-error abort throughout the decode pipeline.
+    // Both forks stay owned by ctx until the whole file has decoded, so a
+    // resource fork that fails frees the data fork already decoded -- which
+    // used to leak (09-storage F-12).
     decode_ctx_t ctx;
+    dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {
+        dctx_cleanup(&ctx);
         *err = make_err("%s", ctx.errmsg);
         return (peel_buf_t){0};
     }
 
     peel_file_t file = hqx_decode(src, len, &ctx);
 
-    // Return the data fork; free the resource fork
-    peel_buf_t result = file.data_fork;
-    peel_free(&file.resource_fork);
-    return result;
+    // Return the data fork; the resource fork is freed with the rest.
+    dctx_release(&ctx, file.data_fork.data);
+    dctx_cleanup(&ctx);
+    return file.data_fork;
 }
 
 // Decode a BinHex 4.0 file and return both forks plus metadata.
@@ -460,10 +470,16 @@ peel_file_t peel_hqx_file(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
 
     decode_ctx_t ctx;
+    dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {
+        dctx_cleanup(&ctx);
         *err = make_err("%s", ctx.errmsg);
         return (peel_file_t){0};
     }
 
-    return hqx_decode(src, len, &ctx);
+    peel_file_t file = hqx_decode(src, len, &ctx);
+    dctx_release(&ctx, file.data_fork.data);
+    dctx_release(&ctx, file.resource_fork.data);
+    dctx_cleanup(&ctx);
+    return file;
 }

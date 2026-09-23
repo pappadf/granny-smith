@@ -91,7 +91,7 @@ The emulator-side wrapper lives at
 The top-level `Makefile` adds the peeler sources directly:
 
 ```makefile
-PEELER_DIR := third-party/peeler
+PEELER_DIR := src/peeler
 
 PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/err.c \
@@ -100,6 +100,7 @@ PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/formats/cpt.c \
               $(PEELER_DIR)/lib/formats/hqx.c \
               $(PEELER_DIR)/lib/formats/sit.c \
+              $(PEELER_DIR)/lib/formats/sit3.c \
               $(PEELER_DIR)/lib/formats/sit13.c \
               $(PEELER_DIR)/lib/formats/sit15.c
 ```

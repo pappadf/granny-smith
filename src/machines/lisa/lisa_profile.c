@@ -401,17 +401,14 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
         // Blank disk: an all-zero base+delta of the canonical 5 MB geometry.
         img = image_create_blank(PRO_DEFAULT_BLOCKS, geom);
     } else {
-        // Persist volatile (/tmp, /fd) images to OPFS so they survive a reload,
-        // then open base+delta: a writable mount gets a persistent delta under
-        // the per-machine checkpoint dir (pro_delta_dir, mirroring system.c's
+        // Open base+delta: a writable mount gets a persistent delta under the
+        // per-machine checkpoint dir (pro_delta_dir, mirroring system.c's
         // pick_delta_dir, so the delta shares state.checkpoint's lifetime and
         // gets cleaned with it), a read-only mount an ephemeral scratch delta.
-        // Either way the base is immutable.
-        char *persistent = image_persist_volatile(path);
-        const char *base = persistent ? persistent : path;
-        img = writable ? image_create_with_geometry(base, pro_delta_dir(base), geom)
-                       : image_open_readonly_with_geometry(base, geom);
-        free(persistent);
+        // Either way the base is immutable.  The path is used as given: where
+        // media lives is the frontend's choice (09-storage D-1).
+        img = writable ? image_create_with_geometry(path, pro_delta_dir(path), geom)
+                       : image_open_readonly_with_geometry(path, geom);
     }
     if (!img) {
         LOG(1, "attach: cannot open %s", path ? path : "(blank)");

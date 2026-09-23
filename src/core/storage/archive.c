@@ -8,14 +8,13 @@
 
 #include "archive.h"
 
-#include "appledouble.h"
 #include "log.h"
 #include "object.h"
 #include "peeler.h"
+#include "storage_util.h"
 #include "value.h"
 
 #include <errno.h>
-#include <libgen.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,87 +31,16 @@ typedef struct {
     int file_count;
 } archive_ctx_t;
 
-// mkdir -p: create `path` and any missing parents.  Returns 0 on success or
-// when the leaf already exists; -1 on any other error.
-static int mkdir_p(const char *path) {
-    if (!path || !*path)
-        return -1;
-    char tmp[1024];
-    size_t len = strlen(path);
-    if (len >= sizeof(tmp))
-        return -1;
-    memcpy(tmp, path, len + 1);
-    if (tmp[len - 1] == '/')
-        tmp[len - 1] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-                return -1;
-            *p = '/';
-        }
-    }
-    if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-        return -1;
-    return 0;
-}
-
-// Recursively create the directory chain leading to `path` under
-// ctx->output_dir. Last component is treated as a directory.
+// Create the directories leading to entry `path` under ctx->output_dir.
 static int ensure_dir_exists(const archive_ctx_t *ctx, const char *path) {
-    char *path_copy = strdup(path);
-    if (!path_copy)
+    char *full = gs_str_printf("%s/%s", ctx->output_dir, path);
+    if (!full)
         return -1;
-
-    char *dir = dirname(path_copy);
-    char full_path[1024];
-
-    if (snprintf(full_path, sizeof(full_path), "%s/%s", ctx->output_dir, dir) >= (int)sizeof(full_path)) {
-        fprintf(stderr, "archive: path too long\n");
-        free(path_copy);
-        return -1;
-    }
-    free(path_copy);
-
-    char *p = full_path;
-    if (*p == '/')
-        p++;
-
-    while ((p = strchr(p, '/'))) {
-        *p = '\0';
-        if (mkdir(full_path, 0755) != 0 && errno != EEXIST) {
-            fprintf(stderr, "archive: cannot create directory '%s': %s\n", full_path, strerror(errno));
-            *p = '/';
-            return -1;
-        }
-        *p = '/';
-        p++;
-    }
-
-    if (mkdir(full_path, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "archive: cannot create directory '%s': %s\n", full_path, strerror(errno));
-        return -1;
-    }
-
-    return 0;
-}
-
-// Synthesize the 32-byte Finder Info block (FInfo + FXInfo) from peeler's
-// best-effort metadata — type, creator, Finder flags (big-endian), rest zero.
-// Returns true if any field was set (i.e. worth persisting).
-static bool build_finder_info(const peel_file_meta_t *m, uint8_t out[32]) {
-    memset(out, 0, 32);
-    out[0] = (uint8_t)(m->mac_type >> 24);
-    out[1] = (uint8_t)(m->mac_type >> 16);
-    out[2] = (uint8_t)(m->mac_type >> 8);
-    out[3] = (uint8_t)m->mac_type;
-    out[4] = (uint8_t)(m->mac_creator >> 24);
-    out[5] = (uint8_t)(m->mac_creator >> 16);
-    out[6] = (uint8_t)(m->mac_creator >> 8);
-    out[7] = (uint8_t)m->mac_creator;
-    out[8] = (uint8_t)(m->finder_flags >> 8);
-    out[9] = (uint8_t)m->finder_flags;
-    return m->mac_type || m->mac_creator || m->finder_flags;
+    int rc = gs_mkdir_parents(full);
+    if (rc != 0)
+        fprintf(stderr, "archive: cannot create the directories for '%s': %s\n", full, strerror(-rc));
+    free(full);
+    return rc != 0 ? -1 : 0;
 }
 
 // Write an AppleDouble "._<name>" header sidecar next to the extracted data
@@ -123,16 +51,10 @@ static bool build_finder_info(const peel_file_meta_t *m, uint8_t out[32]) {
 // A file with neither a resource fork nor Finder Info gets no sidecar.
 // Returns 0 on success (including the no-sidecar case), -1 on write failure.
 static int write_ad_sidecar(const char *data_full_path, const peel_file_t *file) {
-    uint8_t finder[32];
-    bool finder_set = build_finder_info(&file->meta, finder);
-    if (file->resource_fork.size == 0 && !finder_set)
-        return 0; // data-only file: nothing to preserve
-
     uint8_t *hdr = NULL;
     size_t hdr_len = 0;
-    if (ad_build_sidecar(file->resource_fork.data, file->resource_fork.size, finder_set ? finder : NULL, &hdr,
-                         &hdr_len) != 0)
-        return 0;
+    if (peel_build_sidecar(file, &hdr, &hdr_len) != 0 || !hdr)
+        return 0; // a data-only file, or out of memory: no sidecar
 
     char sidecar[1024];
     const char *slash = strrchr(data_full_path, '/');
@@ -170,6 +92,15 @@ static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *fil
     const char *name = file->meta.name;
     if (!name[0])
         name = "untitled";
+
+    // The entry name comes from the archive.  Unchecked, "../x" -- or a Mac
+    // name containing '/', legal on HFS -- was written outside output_dir,
+    // with the directories created on the way (09-storage F-13).  peeler now
+    // builds names that cannot do this; this is the boundary, so check anyway.
+    if (!peel_path_is_confined(name)) {
+        fprintf(stderr, "archive: refusing entry '%s': it would land outside '%s'\n", name, ctx->output_dir);
+        return -1;
+    }
 
     if (ensure_dir_exists(ctx, name) != 0)
         return -1;
@@ -259,7 +190,7 @@ int archive_extract_file(const char *path, const char *out_dir) {
         .output_dir = (out_dir && *out_dir) ? out_dir : ".",
         .file_count = 0,
     };
-    if (mkdir_p(ctx.output_dir) != 0) {
+    if (gs_mkdir_p(ctx.output_dir) != 0) {
         fprintf(stderr, "archive: cannot create output directory '%s': %s\n", ctx.output_dir, strerror(errno));
         return -1;
     }

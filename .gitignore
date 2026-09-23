@@ -25,6 +25,7 @@ test-results/
 
 # ── Native unit-test build artifacts ─────────────────────────────
 tests/unit/build/
+tests/unit/build-wasm32/
 tests/unit/*.o
 tests/unit/c-tests
 

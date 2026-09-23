@@ -566,6 +566,129 @@ TEST(storage_save_state_short_base) {
     teardown_sandbox();
 }
 
+// ---- 64-bit offsets and the journal (09-storage F-29, F-30) ---------------
+
+// A block past 2 GiB of the delta is written and read back where it
+// belongs.  On wasm32 -- the shipping build -- the (long) seek wrapped at
+// 2 GiB and the block landed elsewhere with no error; natively long is 64
+// bits and this passes either way, so the wasm32 tier is what tests it.
+TEST(storage_block_past_2gib) {
+    setup_sandbox();
+    const uint64_t blocks = 6u * 1024u * 1024u; // 3 GiB, blank: no base file
+    storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+
+    const size_t far = 5u * 1000u * 1000u; // 2.56 GB in: past 2^31, inside 2^32
+    uint8_t block[STORAGE_BLOCK_SIZE], verify[STORAGE_BLOCK_SIZE];
+    fill_block(far, 0x5A, block);
+    ASSERT_OK(storage_write_block(storage, far * STORAGE_BLOCK_SIZE, block));
+    fill_block(0, 0x33, block);
+    ASSERT_OK(storage_write_block(storage, 0, block));
+
+    ASSERT_OK(storage_read_block(storage, far * STORAGE_BLOCK_SIZE, verify));
+    expect_block(far, 0x5A, verify);
+    ASSERT_OK(storage_read_block(storage, 0, verify));
+    expect_block(0, 0x33, verify);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// Leave a journal holding `good` valid preimage entries (for blocks 5, 6, ...)
+// and the storage closed.  Block 20 is committed too but never overwritten,
+// so a later write to it appends a fresh preimage.  Returns the size of one
+// journal entry.
+static long make_journal(int good) {
+    create_base_image(BASE_FILE, TEST_BLOCKS, 0xBB);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    uint8_t block[STORAGE_BLOCK_SIZE];
+    for (int i = 0; i < good; i++) {
+        fill_block(5 + i, 0x10, block);
+        ASSERT_OK(storage_write_block(storage, (5 + i) * STORAGE_BLOCK_SIZE, block));
+    }
+    fill_block(20, 0x10, block);
+    ASSERT_OK(storage_write_block(storage, 20 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_clear_rollback(storage)); // commit
+    for (int i = 0; i < good; i++) {
+        fill_block(5 + i, 0x40, block); // overwrite: preimages go to the journal
+        ASSERT_OK(storage_write_block(storage, (5 + i) * STORAGE_BLOCK_SIZE, block));
+    }
+    ASSERT_OK(storage_delete(storage));
+    return 4 + STORAGE_BLOCK_SIZE;
+}
+
+static long file_size(const char *path) {
+    struct stat st;
+    ASSERT_TRUE(stat(path, &st) == 0);
+    return (long)st.st_size;
+}
+
+// A journal entry naming a block the device does not have -- a damaged
+// journal, the crash-recovery case the file exists for -- ends the journal:
+// the entries before it still roll back, and it is cut off rather than
+// replayed at data_offset + lba * block_size, wherever that lands.
+TEST(storage_journal_entry_out_of_range_is_dropped) {
+    setup_sandbox();
+    long entry = make_journal(2);
+    ASSERT_EQ_INT(2 * entry, file_size(JOURNAL_FILE));
+    FILE *j = fopen(JOURNAL_FILE, "ab");
+    ASSERT_TRUE(j != NULL);
+    uint32_t lba = TEST_BLOCKS + 1000;
+    uint8_t data[STORAGE_BLOCK_SIZE] = {0};
+    ASSERT_TRUE(fwrite(&lba, sizeof(lba), 1, j) == 1 && fwrite(data, sizeof(data), 1, j) == 1);
+    fclose(j);
+    long delta_before = file_size(DELTA_FILE);
+
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    ASSERT_EQ_INT(2 * entry, file_size(JOURNAL_FILE)); // cut at the bad entry
+    ASSERT_OK(storage_apply_rollback(storage));
+    ASSERT_EQ_INT(delta_before, file_size(DELTA_FILE)); // nothing written past the data
+    uint8_t verify[STORAGE_BLOCK_SIZE];
+    for (int i = 0; i < 2; i++) {
+        ASSERT_OK(storage_read_block(storage, (5 + i) * STORAGE_BLOCK_SIZE, verify));
+        expect_block(5 + i, 0x10, verify); // the good entries rolled back
+    }
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// A journal cut off mid-entry (a crash during an append) keeps its whole
+// entries, and loses the fragment: the file is opened for appending, so a
+// fragment left in place would misalign every entry written after it.
+TEST(storage_journal_partial_tail_is_dropped) {
+    setup_sandbox();
+    long entry = make_journal(1);
+    FILE *j = fopen(JOURNAL_FILE, "ab");
+    ASSERT_TRUE(j != NULL);
+    uint32_t lba = 7;
+    ASSERT_TRUE(fwrite(&lba, sizeof(lba), 1, j) == 1 && fwrite("frag", 4, 1, j) == 1);
+    fclose(j);
+
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    ASSERT_EQ_INT(entry, file_size(JOURNAL_FILE));
+
+    // A new preimage lands on an entry boundary and rolls back with the rest.
+    uint8_t block[STORAGE_BLOCK_SIZE];
+    fill_block(20, 0x40, block);
+    ASSERT_OK(storage_write_block(storage, 20 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_EQ_INT(2 * entry, file_size(JOURNAL_FILE));
+    ASSERT_OK(storage_apply_rollback(storage));
+    uint8_t verify[STORAGE_BLOCK_SIZE];
+    ASSERT_OK(storage_read_block(storage, 5 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(5, 0x10, verify);
+    ASSERT_OK(storage_read_block(storage, 20 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(20, 0x10, verify);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 int main(void) {
     RUN(storage_invalid_arguments);
     RUN(storage_basic_read_write);
@@ -579,5 +702,8 @@ int main(void) {
     RUN(storage_save_state_runs_532);
     RUN(storage_save_state_no_base);
     RUN(storage_save_state_short_base);
+    RUN(storage_block_past_2gib);
+    RUN(storage_journal_entry_out_of_range_is_dropped);
+    RUN(storage_journal_partial_tail_is_dropped);
     return 0;
 }

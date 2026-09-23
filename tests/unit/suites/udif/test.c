@@ -123,10 +123,50 @@ TEST(inflate_alloc_form_matches) {
     size_t slen = 0;
     uint8_t *stream = zlib_stored(payload, sizeof(payload), &slen);
     size_t out_len = 0;
-    uint8_t *out = inflate_zlib_alloc(stream, slen, &out_len);
+    uint8_t *out = inflate_zlib_alloc(stream, slen, sizeof(payload), &out_len);
     ASSERT_TRUE(out != NULL);
     ASSERT_EQ_INT((int)sizeof(payload), (int)out_len);
     ASSERT_EQ_INT(0, memcmp(out, payload, sizeof(payload)));
+    free(out);
+    // One byte under what the stream decodes to: refused, not truncated.
+    ASSERT_TRUE(inflate_zlib_alloc(stream, slen, sizeof(payload) - 1, &out_len) == NULL);
+    free(stream);
+}
+
+// A zlib stream of `len` bytes of `byte` in stored blocks of at most 65535.
+static uint8_t *zlib_stored_run(uint8_t byte, size_t len, size_t *out_len) {
+    size_t blocks = (len + 65534) / 65535;
+    uint8_t *s = (uint8_t *)malloc(2 + blocks * 5 + len + 4);
+    size_t o = 0;
+    s[o++] = 0x78;
+    s[o++] = 0x01;
+    for (size_t left = len; left;) {
+        uint16_t n = left > 65535 ? 65535 : (uint16_t)left;
+        left -= n;
+        s[o++] = left ? 0x00 : 0x01; // BFINAL on the last, BTYPE=00
+        s[o++] = (uint8_t)n;
+        s[o++] = (uint8_t)(n >> 8);
+        s[o++] = (uint8_t)~n;
+        s[o++] = (uint8_t)(~n >> 8);
+        memset(s + o, byte, n);
+        o += n;
+    }
+    memset(s + o, 0, 4);
+    *out_len = o + 4;
+    return s;
+}
+
+// The growable sink stops at its ceiling across several doublings: 200 KB
+// of data against a 100 KB ceiling, then against its own size.
+TEST(inflate_alloc_stops_at_its_ceiling) {
+    size_t slen = 0;
+    uint8_t *stream = zlib_stored_run('x', 200000, &slen);
+    size_t out_len = 0;
+    ASSERT_TRUE(inflate_zlib_alloc(stream, slen, 100000, &out_len) == NULL);
+    uint8_t *out = inflate_zlib_alloc(stream, slen, 200000, &out_len);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(200000, (int)out_len);
+    ASSERT_TRUE(out[0] == 'x' && out[199999] == 'x');
     free(out);
     free(stream);
 }
@@ -251,6 +291,16 @@ TEST(udif_trailer_rejects_unsupported) {
     build_trailer(t);
     w_u64(t + KOLY_SECTORS, 0);
     ASSERT_EQ_INT(-EINVAL, udif_parse_trailer(t, sizeof(t), &tr));
+
+    // More sectors than storage can open: the scratch file is pre-extended
+    // to this size before anything is decoded (F-24).  2^32 - 1 is the
+    // largest accepted.
+    build_trailer(t);
+    w_u64(t + KOLY_SECTORS, (uint64_t)UINT32_MAX + 1);
+    ASSERT_EQ_INT(-EFBIG, udif_parse_trailer(t, sizeof(t), &tr));
+    build_trailer(t);
+    w_u64(t + KOLY_SECTORS, UINT32_MAX);
+    ASSERT_EQ_INT(0, udif_parse_trailer(t, sizeof(t), &tr));
 }
 
 // ---- 'mish' block map inside the property list -----------------------------
@@ -389,6 +439,16 @@ TEST(udif_parse_blkx_rejects_malformed) {
     ASSERT_EQ_INT(-EINVAL, rc);
     ASSERT_TRUE(m == NULL);
 
+    // The same, where sector + count wraps to a small number: the check was
+    // an addition, which the wrap passed (F-25).
+    const test_chunk_t wraps[] = {
+        {UDIF_CHUNK_RAW, UINT64_MAX, 1, 0, 512}
+    };
+    rc = 0;
+    m = parse_one_table(0, 8, wraps, 1, &rc);
+    ASSERT_EQ_INT(-EINVAL, rc);
+    ASSERT_TRUE(m == NULL);
+
     // A blob whose 'mish' magic is wrong must not be read as a table.
     const test_chunk_t ok[] = {
         {UDIF_CHUNK_ZERO, 0, 1, 0, 0}
@@ -511,6 +571,7 @@ int main(void) {
     RUN(inflate_fixed_huffman);
     RUN(inflate_dynamic_huffman);
     RUN(inflate_alloc_form_matches);
+    RUN(inflate_alloc_stops_at_its_ceiling);
     RUN(inflate_rejects_bad_headers);
     RUN(inflate_overflow_is_an_error_not_a_clamp);
     RUN(crc32_known_vector);

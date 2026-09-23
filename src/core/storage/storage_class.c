@@ -11,9 +11,11 @@
 
 #include "image.h"
 #include "image_apm.h"
+#include "image_part.h"
 #include "image_vfs.h"
 #include "object.h"
 #include "shell.h"
+#include "storage_util.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -164,30 +166,20 @@ static int storage_images_next(struct object *self, int prev_index) {
     return -1;
 }
 
-// `storage.import(host_path, dst_path?)` — copy `host_path` into the
-// emulator's persistent storage. When `dst_path` is empty (or absent
-// — second arg is optional), falls back to the content-hash path
-// produced by image_persist_volatile (/opfs/images/<hash>.img). When
-// `dst_path` is non-empty, the source is copied verbatim through the
-// VFS so paths like "/opfs/images/foo.img" can be picked explicitly.
+// `storage.import(host_path, dst_path)` — copy `host_path` to `dst_path`
+// through the VFS, e.g. into "/opfs/images/hd/foo.img".  The destination is
+// the caller's to choose: the core does not pick where media lives
+// (09-storage D-1; it used to fall back to /opfs/images/<hash>.img).
 //
-// Returns the resolved destination path as a V_STRING.
+// Returns the destination path as a V_STRING.
 static value_t storage_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
+    (void)argc;
     const char *host_path = argv[0].s;
-    const char *dst_path = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-
-    if (!dst_path) {
-        // Hash-named persistence — handles the drag-drop / volatile-
-        // path case and is idempotent on repeat imports.
-        char *resolved = image_persist_volatile(host_path);
-        if (!resolved)
-            return val_err("storage.import: failed to persist '%s'", host_path);
-        value_t v = val_str(resolved);
-        free(resolved);
-        return v;
-    }
+    const char *dst_path = argv[1].s;
+    if (!dst_path || !*dst_path)
+        return val_err("storage.import: a destination path is required");
 
     // Explicit destination — call shell_cp directly so VFS handling
     // stays in one place (no shell_dispatch).
@@ -198,11 +190,8 @@ static value_t storage_method_import(struct object *self, const member_t *m, int
 }
 
 static const arg_decl_t storage_import_args[] = {
-    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"},
-    {.name = "dst_path",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Destination path; empty → /opfs/images/<hash>.img"},
+    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"                                     },
+    {.name = "dst_path",  .kind = V_STRING, .doc = "Destination path (e.g. under /opfs/images/<category>/)"},
 };
 
 static const member_t storage_images_collection_members[] = {
@@ -357,33 +346,6 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
     return val_bool(system_hd_create(argv[0].s, size_str) == 0);
 }
 
-// Recursively remove a file or directory tree (best-effort). Returns 0 when
-// the path is gone afterwards, or a negative errno.
-static int storage_rm_tree(const char *path) {
-    DIR *dir = opendir(path);
-    if (!dir) {
-        if (unlink(path) == 0 || errno == ENOENT)
-            return 0;
-        return -errno;
-    }
-    struct dirent *e;
-    while ((e = readdir(dir)) != NULL) {
-        const char *name = e->d_name;
-        if (!name || strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-            continue;
-        char child[VFS_PATH_MAX];
-        if (snprintf(child, sizeof(child), "%s/%s", path, name) >= (int)sizeof(child))
-            continue;
-        struct stat st;
-        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
-            storage_rm_tree(child);
-        else
-            unlink(child);
-    }
-    closedir(dir);
-    return rmdir(path) == 0 || errno == ENOENT ? 0 : -errno;
-}
-
 // Paths storage.rm / storage.mv must never destroy: the filesystem root and
 // the OPFS mount root (all persisted browser state lives under /opfs — a
 // recursive rm there wipes every ROM, image and checkpoint). Tolerates a
@@ -409,7 +371,7 @@ static value_t storage_method_rm(struct object *self, const member_t *m, int arg
     const char *path = argv[0].s;
     if (storage_path_is_protected(path))
         return val_err("storage.rm: refusing to remove '%s'", path ? path : "(null)");
-    int rc = storage_rm_tree(path);
+    int rc = gs_rm_tree(path);
     if (rc < 0)
         return val_err("storage.rm: cannot remove '%s': %s", path, strerror(-rc));
     return val_bool(true);
@@ -448,7 +410,7 @@ static value_t storage_method_mv(struct object *self, const member_t *m, int arg
         return val_err("storage.mv: %s", err[0] ? err : "move failed");
     // The copy succeeded; if the source can't be fully removed the operation
     // is a copy, not a move — report that instead of pretending success.
-    int rc = storage_rm_tree(src);
+    int rc = gs_rm_tree(src);
     if (rc < 0)
         return val_err("storage.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
     return val_bool(true);
@@ -569,13 +531,13 @@ static value_t storage_method_probe(struct object *self, const member_t *m, int 
     size_t size = disk_size(img);
     uint8_t block[512];
     bool apm = false;
-    if (size >= 1024 && disk_read_data(img, 512, block, sizeof(block)) == sizeof(block))
+    if (size >= 1024 && image_read_bytes(img, 512, block, sizeof(block)) == 0)
         apm = image_apm_probe_magic(block);
     bool iso = false;
-    if (size >= 33280 && disk_read_data(img, 32768, block, sizeof(block)) == sizeof(block))
+    if (size >= 33280 && image_read_bytes(img, 32768, block, sizeof(block)) == 0)
         iso = (memcmp(block + 1, "CD001", 5) == 0);
     bool hfs = false;
-    if (!apm && size >= 1024 + 512 && disk_read_data(img, 1024, block, sizeof(block)) == sizeof(block))
+    if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0)
         hfs = (block[0] == 0x42 && block[1] == 0x44);
     if (apm && iso)
         printf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
@@ -591,14 +553,14 @@ static value_t storage_method_probe(struct object *self, const member_t *m, int 
     return val_bool(true);
 }
 
-static void storage_list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool conflicted,
+static void storage_list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool busy,
                                    void *user) {
     bool *header_printed = (bool *)user;
     if (!*header_printed) {
         printf("PATH                                        FMT  PARTS  REFS  STATUS\n");
         *header_printed = true;
     }
-    printf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, conflicted ? "busy" : "ok");
+    printf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, busy ? "busy" : "ok");
 }
 
 // `storage.list_partitions()` — print the cached image-VFS mount table.
@@ -639,7 +601,7 @@ static value_t storage_method_unmount(struct object *self, const member_t *m, in
     if (rc == -ENOENT)
         printf("image unmount: not currently mounted: %s\n", path);
     else if (rc == -EBUSY)
-        printf("image unmount: %s has live handles; marked conflicted\n", path);
+        printf("image unmount: %s has live handles; refusing new access until they close\n", path);
     else
         printf("image unmount: %s: %s\n", path, strerror(-rc));
     return val_bool(false);
@@ -777,7 +739,7 @@ static const arg_decl_t storage_partmap_args[] = {
 static const member_t storage_members[] = {
     {.kind = M_METHOD,
      .name = "import",
-     .doc = "Persist a host file under /images/ (implementation in progress)",
+     .doc = "Copy a host file to a destination path",
      .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}        },
     {.kind = M_METHOD,
      .name = "list_dir",

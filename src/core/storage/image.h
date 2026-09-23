@@ -55,7 +55,9 @@ typedef struct image_geometry {
 // Image structure (exposed for performance-critical access in floppy controller)
 struct image {
     storage_t *storage; // Backing storage engine instance
-    char *filename; // Original filename provided by the user (base image)
+    char *filename; // Base image read: the caller's path, or its decoded NDIF/UDIF scratch copy
+    char *source_canon; // Writable only: canonical form of the path the caller named
+    struct image *next_writable; // Writable only: the open-writable list (image_path_is_open_writable)
     char *instance_path; // Stem for delta/journal: "<dir>/<id>" — NULL for read-only ghost mounts
     char *delta_path; // Path to delta file (<instance_path>.delta)
     char *journal_path; // Path to preimage journal (<instance_path>.journal)
@@ -125,6 +127,14 @@ const char *image_path(const image_t *image);
 // Close a disk image and release resources
 void image_close(image_t *image);
 
+// True while an image opened writable (image_create / image_open) from
+// `canonical_path` is still open.  The image VFS mounts files read-only, and
+// guest writes to a writable image land in its delta, so the VFS asks this
+// before serving a file and refuses with -EBUSY rather than serve the stale
+// base.  The key is the path the caller named, canonicalised with realpath()
+// (or taken as given when that fails), not a decoded scratch copy.
+bool image_path_is_open_writable(const char *canonical_path);
+
 // Write image metadata to checkpoint
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);
 
@@ -145,8 +155,9 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 // Get the size of the disk image in bytes
 size_t disk_size(image_t *disk);
 
-// Save modified data to the underlying storage
-size_t image_save(image_t *image);
+// Bytes per block the image was opened with (512 unless a geometry said
+// otherwise); disk_read_data/disk_write_data work in whole blocks of it.
+uint32_t disk_block_size(image_t *disk);
 
 // Add an image to the config for tracking
 void add_image(config_t *sim, image_t *image);
@@ -179,11 +190,6 @@ int image_create_blank_profile(const char *filename, uint32_t block_count);
 // Export the full disk content (base + delta) of an open image to a new file.
 // Returns 0 on success, -1 on failure.
 int image_export_to(image_t *image, const char *dest_path);
-
-// If `path` is volatile (/tmp/ or /fd/), copy the file to /images/<hash>.img
-// and return the persistent path (caller must free).  If already persistent,
-// returns a copy of the original path.  Returns NULL on error.
-char *image_persist_volatile(const char *path);
 
 // Setup images from config
 extern void setup_images(config_t *config);

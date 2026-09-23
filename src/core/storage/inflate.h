@@ -28,9 +28,11 @@ extern const uint16_t deflate_dist_base[30];
 extern const uint8_t deflate_dist_extra[30];
 
 // Inflate a zlib stream into a freshly allocated buffer, for callers that do
-// not know the decompressed size up front (the PNG reader).  Returns malloc'd
-// output and sets *out_len, or NULL if the stream is truncated or malformed.
-uint8_t *inflate_zlib_alloc(const uint8_t *data, size_t data_len, size_t *out_len);
+// not know the decompressed size up front (the PNG reader).  The output may
+// not exceed `out_max` bytes -- the caller's bound on what a valid stream
+// decodes to.  Returns malloc'd output and sets *out_len, or NULL if the
+// stream is truncated, malformed, or larger than `out_max`.
+uint8_t *inflate_zlib_alloc(const uint8_t *data, size_t data_len, size_t out_max, size_t *out_len);
 
 // Inflate a zlib stream into a caller-supplied buffer, for callers that know
 // the exact expected size (a UDIF chunk covers a fixed sector run).  Returns

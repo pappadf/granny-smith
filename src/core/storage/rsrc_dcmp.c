@@ -1052,6 +1052,15 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
     if (hdr_len < 18 || hdr_len > compressed_len)
         FAIL("truncated header");
 
+    // Bound the declared size before anything is sized from it.  A resource
+    // fork's data offsets are 24-bit, so no fork -- and no resource in one --
+    // exceeds 16 MiB.  Unbounded, dcmp 0's `(size_t)actual_size + overrun`
+    // wrapped on wasm32 (32-bit size_t) and a 16-byte buffer met a ~4 GiB
+    // zero-padding memset: a heap overflow from one resource (09-storage
+    // F-21).  Natively it was a real 4 GiB allocation and memset instead.
+    if (actual_size > RSRC_DCMP_MAX_SIZE)
+        FAIL("declared size too large");
+
     // v8 puts dcmp_id at +14; v9 puts it at +12 (overlaying v8's
     // var_table_ratio + overrun fields — see the header docs at the
     // top of this file).
@@ -1137,11 +1146,9 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
 
     // Any other (dcmp_id, version) combo is currently unsupported.  This
     // includes dcmp 0 in a v9 wrapper (custom Donn variant) and the various
-    // third-party dcmp ids (1, 3, 7, 8, 0x10+) that ship in System file
-    // extensions.  The caller falls through to raw compressed bytes —
-    // .info still surfaces the compressed flag, and re.dump's disasm pass
-    // shows compressed-payload garbage in the .s file (with a header
-    // comment) but does not crash.
+    // other dcmp ids (1, 7, 8, 0x10+) that ship in System file extensions.  The caller falls through to raw compressed
+    // bytes — .info still surfaces the compressed flag, and re.dump's disasm pass shows compressed-payload garbage in
+    // the .s file (with a header comment) but does not crash.
     FAIL("unsupported dcmp");
 #undef FAIL
 }

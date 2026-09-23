@@ -17,7 +17,6 @@
 #include "floppy.h"
 #include "host_input.h"
 #include "image.h"
-#include "image_vfs.h"
 #include "jmfb.h" // restored-record sense seeding on checkpoint load
 #include "keyboard.h"
 #include "log.h"
@@ -484,22 +483,15 @@ void trigger_vbl(struct config *restrict config) {
 static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     bool writable = (writable_flag != 0); // default to writable unless explicitly 0
 
-    // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
-    char *persistent_path = image_persist_volatile(path);
-    if (persistent_path)
-        path = persistent_path;
-
     image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
     if (!disk) {
         printf("fd insert: failed to open disk image: %s\n", path);
-        free(persistent_path);
         return -1;
     }
 
     config_t *config = global_emulator;
     if (!config) {
         printf("fd insert: emulator config not initialized.\n");
-        free(persistent_path);
         return -1;
     }
 
@@ -518,14 +510,12 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     if (preferred < -1 || preferred >= FLOPPY_NUM_DRIVES) {
         printf("fd insert: no such floppy drive %d.\n", preferred);
         image_close(disk);
-        free(persistent_path);
         return -1;
     }
     if (preferred != -1) {
         if (preferred == 0 ? !d0_free : !d1_free) {
             printf("fd insert: floppy drive %d is already occupied.\n", preferred);
             image_close(disk);
-            free(persistent_path);
             return -1;
         }
     }
@@ -540,7 +530,6 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
         } else {
             printf("fd insert: both floppy drives are already occupied.\n");
             image_close(disk);
-            free(persistent_path);
             return -1;
         }
     }
@@ -548,29 +537,21 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     add_image(config, disk);
     sys_fd_insert(config, target, disk);
     printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
-    free(persistent_path);
     return 0;
 }
 
 // Probe a file to check if it's a valid floppy image (without inserting).
 // Returns 0 if valid floppy, 1 if not.
 int system_probe_floppy(const char *path) {
-    // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
-    char *persistent_path = image_persist_volatile(path);
-    if (persistent_path)
-        path = persistent_path;
-
     image_t *disk = image_open_readonly(path);
     if (!disk) {
         printf("%s: NOT a supported format\n", path);
-        free(persistent_path);
         return 1;
     }
 
     if (!image_is_floppy(disk->type)) {
         printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, disk->raw_size);
         image_close(disk);
-        free(persistent_path);
         return 1;
     }
 
@@ -586,7 +567,6 @@ int system_probe_floppy(const char *path) {
 
     printf("%s: Valid floppy image (%s)\n", path, type_str);
     image_close(disk);
-    free(persistent_path);
     return 0;
 }
 
@@ -1035,15 +1015,9 @@ bool add_scsi_drive(struct config *restrict config, const char *filename, int sc
 // them, reachable as `machine.scsi` and `machine.scsi2`.  Passing the bus
 // explicitly is what lets `machine.scsi2.attach_hd` mean what it says.
 bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
-    // Persist volatile images to OPFS
-    char *persistent_path = image_persist_volatile(filename);
-    if (persistent_path)
-        filename = persistent_path;
-
     image_t *img = image_create(filename, pick_delta_dir(filename));
     if (!img) {
         printf("Failed to open image: %s\n", filename);
-        free(persistent_path);
         return false;
     }
 
@@ -1054,7 +1028,6 @@ bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
     if (!best) {
         LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", filename);
         image_close(img);
-        free(persistent_path);
         return false;
     }
 
@@ -1063,10 +1036,6 @@ bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
 
     add_image(config, img);
     scsi_add_device(bus, scsi_id, best->vendor, best->product, best->revision, img, scsi_dev_hd, 512, false);
-    // Block the VFS auto-mount cache from serving reads on the same file
-    // while the emulator holds writable handles against it (§2.9).
-    image_vfs_notify_attached(filename);
-    free(persistent_path);
     return true;
 }
 
@@ -1077,16 +1046,10 @@ bool add_scsi_cdrom(struct config *restrict config, const char *filename, int sc
 
 // ...on a NAMED bus; see add_scsi_drive_on.
 bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
-    // Persist volatile images to OPFS
-    char *persistent_path = image_persist_volatile(filename);
-    if (persistent_path)
-        filename = persistent_path;
-
     // CD-ROM images are always opened read-only
     image_t *img = image_open_readonly(filename);
     if (!img) {
         printf("Failed to open CD-ROM image: %s\n", filename);
-        free(persistent_path);
         return false;
     }
 
@@ -1115,8 +1078,6 @@ bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
 
     add_image(config, img);
     scsi_add_device(bus, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
-    image_vfs_notify_attached(filename);
-    free(persistent_path);
     return true;
 }
 
@@ -1195,7 +1156,6 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     add_image(cfg, slot->img);
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
-    image_vfs_notify_attached(image_get_filename(slot->img));
     return 0;
 }
 

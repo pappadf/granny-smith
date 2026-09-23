@@ -50,16 +50,6 @@ void image_vfs_list(image_vfs_list_cb cb, void *user) {
     (void)user;
 }
 
-void image_vfs_notify_attached(const char *host_path) {
-    (void)host_path;
-}
-
-void image_vfs_notify_detached(const char *host_path) {
-    (void)host_path;
-}
-
-void image_vfs_reset(void) {}
-
 const struct vfs_backend *vfs_image_backend(void) {
     return NULL;
 }

@@ -87,6 +87,7 @@ PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
 
 # Peeler library sources
 PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
+              $(PEELER_DIR)/lib/appledouble.c \
               $(PEELER_DIR)/lib/err.c \
               $(PEELER_DIR)/lib/util.c \
               $(PEELER_DIR)/lib/formats/bin.c \

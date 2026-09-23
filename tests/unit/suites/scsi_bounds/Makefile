@@ -18,8 +18,10 @@ EXTRA_SRCS   := ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/storage_util.c \
+                ../../../../src/core/storage/image_scratch.c \
                 ../../../../src/core/storage/storage.c \
-                ../../../../src/core/storage/appledouble.c \
+                ../../../../src/peeler/lib/appledouble.c \
                 ../../../../src/core/storage/image_ndif.c \
                 ../../../../src/core/storage/image_udif.c \
                 ../../../../src/core/storage/inflate.c \

@@ -130,6 +130,14 @@ jobs:
         run: |
           make -C tests/unit run
 
+      # The parser and storage suites again, built with emcc and run under node:
+      # the shipping build is wasm32, where size_t and long are 32 bits, and a
+      # defect that only wraps at 32 bits is invisible to the native run above
+      # (09-WORK-ORDER.md §0.2). ~10 s.
+      - name: Run unit tests (wasm32)
+        run: |
+          make -C tests/unit run-wasm32
+
       # Integration and e2e tests require proprietary test data.
       #
       # §5.4 tiers: unit is seconds, matrix is the per-machine boot suites,

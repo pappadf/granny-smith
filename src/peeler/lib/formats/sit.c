@@ -114,9 +114,7 @@ typedef struct {
 // LZW decoder state.
 // sit.md § 9.3 "Dictionary Structure" — struct-of-arrays layout.
 typedef struct {
-    const uint8_t *src;        // Compressed bytestream
-    size_t         src_bytes;  // Length of compressed data
-    size_t         bit_pos;    // Current bit position in stream
+    peel_lsb_t     bits;       // Compressed bytestream, LE bit packing
 
     uint16_t prev_code[LZW_TABLE_CAP]; // Back-link to parent code
     uint8_t  suffix[LZW_TABLE_CAP];    // Byte appended at this entry
@@ -240,29 +238,43 @@ static void entry_list_free(sit_entry_list_t *list) {
 // Static Helpers — Path Construction
 // ============================================================================
 
-// Build "dir/name" into dst.  Either part may be empty.
+// Both StuffIt layouts store a resource fork and then a data fork end to end,
+// starting at archive offset `off` (sit.md § 4.5, § 5.5).  Check both extents
+// as offsets, wrap-safe, and return where the data fork starts.
+//
+// This used to form `data_ptr = rsrc_ptr + rclen` from an unvalidated 32-bit
+// length and then test `(data_ptr - blob) + dlen > blob_len`.  On a 64-bit
+// host a huge resource length pushes that far past the end and the test
+// rejects it -- by accident.  On wasm32 the pointer wraps back inside the
+// buffer, the test passes, and the resource fork is decoded with a ~4 GiB
+// length: a dropped .sit trapped the shipping build with "memory access out
+// of bounds" (09-storage F-15).  The resource fork's own extent was never
+// checked at all; only its end, as the data fork's start.
+static bool sit_forks_fit(size_t off, uint32_t rsrc_len, uint32_t data_len,
+                          size_t total, size_t *data_off) {
+    if (!peel_extent_fits(off, rsrc_len, total))
+        return false;
+    size_t d = off + rsrc_len; // inside the buffer, so no wrap
+    if (!peel_extent_fits(d, data_len, total))
+        return false;
+    *data_off = d;
+    return true;
+}
+
+// Build "dir/name" into dst: `dir` is a path this parser already built (so
+// already safe), `name` one raw Mac name, appended as a sanitised component
+// (peel_append_segment).  Either part may be empty.
 // sit.md § 5.7 "Iteration Rules" — paths are built by resolving parent_offset.
 static void build_path(char *dst, size_t cap, const char *dir, const char *name) {
     if (!cap) return;
+    size_t p = 0;
     dst[0] = '\0';
     if (dir && dir[0]) {
-        size_t dl = strnlen(dir, cap - 1);
-        memcpy(dst, dir, dl);
-        size_t p = dl;
-        // Append separator
-        if (p < cap - 1)
-            dst[p++] = '/';
-        if (name) {
-            size_t nl = strnlen(name, cap - 1 - p);
-            if (nl) memcpy(dst + p, name, nl);
-            p += nl;
-        }
-        dst[p < cap ? p : cap - 1] = '\0';
-    } else if (name) {
-        size_t nl = strnlen(name, cap - 1);
-        memcpy(dst, name, nl);
-        dst[nl] = '\0';
+        p = strnlen(dir, cap - 1);
+        memcpy(dst, dir, p);
+        dst[p] = '\0';
     }
+    peel_append_segment(dst, cap, &p, (const uint8_t *)(name ? name : ""), name ? strlen(name) : 0);
 }
 
 // ============================================================================
@@ -274,8 +286,7 @@ static void build_path(char *dst, size_t cap, const char *dir, const char *name)
 static lzw_state_t *lzw_create(const uint8_t *src, size_t src_bytes) {
     lzw_state_t *z = calloc(1, sizeof(*z));
     if (!z) return NULL;
-    z->src       = src;
-    z->src_bytes = src_bytes;
+    peel_lsb_init(&z->bits, src, src_bytes);
     z->code_bits = 9;
     z->tbl_next  = LZW_FIRST_NEW;
     z->prev      = -1;
@@ -289,21 +300,13 @@ static lzw_state_t *lzw_create(const uint8_t *src, size_t src_bytes) {
     return z;
 }
 
-// sit.md § 9.4 "Bit Packing" — read one code from the LE bitstream.
-// Returns -1 on input exhaustion.
+// sit.md § 9.4 "Bit Packing" — read one code from the LE bitstream, through
+// peeler's shared LSB-first reader.  Returns -1 once every input bit has
+// been read; a code that runs past the end reads its missing bits as zero.
 static int lzw_next_code(lzw_state_t *z) {
-    size_t byte_off = z->bit_pos >> 3;
-    if (byte_off >= z->src_bytes)
+    if (peel_lsb_at_end(&z->bits))
         return -1;
-    // Read up to 4 bytes starting at the byte boundary (little-endian)
-    uint32_t acc = 0;
-    size_t avail = z->src_bytes - byte_off;
-    if (avail > 4) avail = 4;
-    memcpy(&acc, z->src + byte_off, avail);
-    int shift = (int)(z->bit_pos & 7);
-    int mask  = (1 << z->code_bits) - 1;
-    int code  = (int)((acc >> shift) & (uint32_t)mask);
-    z->bit_pos += (size_t)z->code_bits;
+    int code = (int)peel_lsb_get(&z->bits, z->code_bits);
     z->block_count++;
     return code;
 }
@@ -369,8 +372,8 @@ static size_t lzw_decode(lzw_state_t *z, uint8_t *dst, size_t want) {
         // resets dictionary and skips remaining 8-code block
         if (code == LZW_CLEAR_CODE) {
             if (z->block_count & 7)
-                z->bit_pos += (size_t)(z->code_bits *
-                                       (8 - (z->block_count & 7)));
+                peel_lsb_skip(&z->bits, (size_t)(z->code_bits *
+                                                 (8 - (z->block_count & 7))));
             z->tbl_next    = LZW_FIRST_NEW;
             z->code_bits   = 9;
             z->prev        = -1;
@@ -437,6 +440,13 @@ static peel_buf_t decompress_fork(const sit_fork_info_t *fi, peel_err_t **err) {
     uint16_t expect_crc = fi->crc;
     uint8_t  method     = fi->method;
     const uint8_t *src  = fi->data;
+
+    // Every method below allocates raw_len up front; bound it first.
+    if (raw_len > PEEL_MAX_FORK) {
+        *err = make_err("SIT: fork declares %u bytes, over the %u MiB limit",
+                        raw_len, (unsigned)(PEEL_MAX_FORK >> 20));
+        return (peel_buf_t){0};
+    }
 
     // sit.md § 10.A "Method 3" — delegated to sit3.c (static Huffman)
     if (method == 3) {
@@ -626,8 +636,12 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         // The structural markers themselves do not increment `done`; the
         // outermost folder-end does (when depth pops back to 0).
         if (rm == SIT_FOLDER_START || dm == SIT_FOLDER_START) {
+            // Clamp, never skip: skipping the copy for a name of 64 bytes or
+            // more left dirs[depth] as uninitialised stack, which the path
+            // builder then read with strlen.
             uint8_t nlen = hdr[2];
-            if (depth < SIT_MAX_DEPTH && nlen < 64) {
+            if (nlen > 63) nlen = 63;
+            if (depth < SIT_MAX_DEPTH) {
                 memcpy(dirs[depth], hdr + 3, nlen);
                 dirs[depth][nlen] = '\0';
             }
@@ -659,20 +673,12 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         memcpy(fname, hdr + 3, nlen);
         fname[nlen] = '\0';
 
-        // Build full path from folder stack
+        // Build full path from folder stack, each name a sanitised component
         char path[512] = "";
         size_t p = 0;
-        for (int d = 0; d < depth; d++) {
-            size_t sl = strlen(dirs[d]);
-            if (p + sl + 1 >= sizeof(path)) break;
-            memcpy(path + p, dirs[d], sl);
-            p += sl;
-            path[p++] = '/';
-        }
-        // Append file name
-        size_t fl = strnlen(fname, sizeof(path) - 1 - p);
-        if (fl > 0) memcpy(path + p, fname, fl);
-        path[p + fl] = '\0';
+        for (int d = 0; d < depth && d < SIT_MAX_DEPTH; d++)
+            peel_append_segment(path, sizeof(path), &p, (const uint8_t *)dirs[d], strlen(dirs[d]));
+        peel_append_segment(path, sizeof(path), &p, (const uint8_t *)fname, strlen(fname));
 
         // sit.md § 4.3 — type at 66, creator at 70, finder flags at 74
         uint32_t ftype    = rd32be(hdr + 66);
@@ -688,14 +694,14 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         uint16_t dcrc  = rd16be(hdr + 102);
 
         // sit.md § 4.5 "Fork Data Layout" — rsrc first, then data
-        const uint8_t *rsrc_ptr = base + cursor + SIT_ENTRY_HDR_SIZE;
-        const uint8_t *data_ptr = rsrc_ptr + rclen;
-
-        // Bounds check
-        if ((size_t)(data_ptr - blob) + dclen > blob_len) {
+        size_t rsrc_off = (size_t)(base - blob) + cursor + SIT_ENTRY_HDR_SIZE;
+        size_t data_off;
+        if (!sit_forks_fit(rsrc_off, rclen, dclen, blob_len, &data_off)) {
             *err = make_err("SIT classic: fork data extends past archive end");
             return false;
         }
+        const uint8_t *rsrc_ptr = blob + rsrc_off;
+        const uint8_t *data_ptr = blob + data_off;
 
         // Add entry to the list
         sit_entry_t *ent = entry_list_push(entries, err);
@@ -722,7 +728,7 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         ent->has_rsrc = (rulen > 0);
 
         // Advance past both fork data regions
-        cursor = (uint32_t)((size_t)(data_ptr - base) + dclen);
+        cursor = (uint32_t)(data_off - (size_t)(base - blob) + dclen);
         if (depth == 0) done++;
     }
 
@@ -790,9 +796,22 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
             return false;
         }
 
-        uint16_t h1_len = rd16be(h1 + 6);
+        uint16_t h1_len  = rd16be(h1 + 6);
+        uint16_t namelen = rd16be(h1 + 30);
         if ((size_t)cursor + h1_len > avail) {
             *err = make_err("SIT5: header1 extends past archive end");
+            return false;
+        }
+        // sit.md § 5.3 — header 1 is 48 fixed bytes, then the name, then an
+        // optional comment, and h1_len is its whole extent.  Anything shorter
+        // is not a header.  Unchecked, the CRC step below zeroed bytes 32–33
+        // of a malloc(h1_len) -- a heap write past the end for h1_len < 34
+        // (09-storage F-02) -- and a skip marker with h1_len == 0 left the
+        // cursor where it was, forever (F-06).  With this bound in place the
+        // name read below cannot leave the header either.
+        if ((size_t)h1_len < 48 + (size_t)namelen) {
+            *err = make_err("SIT5: header1 length %u is shorter than its fixed fields and name",
+                            (unsigned)h1_len);
             return false;
         }
 
@@ -819,7 +838,6 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         uint32_t h2_off       = cursor + h1_len;
         uint8_t  flags        = h1[9];
         uint32_t parent_off   = rd32be(h1 + 26);
-        uint16_t namelen      = rd16be(h1 + 30);
         uint32_t d_raw_len    = rd32be(h1 + 34);
         uint32_t d_packed_len = rd32be(h1 + 38);
         uint16_t d_crc        = rd16be(h1 + 42);
@@ -828,9 +846,8 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         // Read entry name (starts at byte 48 of header 1)
         char namebuf[256];
         {
-            size_t cl = namelen;
+            size_t cl = namelen; // within header 1: h1_len >= 48 + namelen, above
             if (cl > sizeof(namebuf) - 1) cl = sizeof(namebuf) - 1;
-            if ((size_t)cursor + 48 + cl > avail) cl = avail - (size_t)cursor - 48;
             memcpy(namebuf, h1 + 48, cl);
             namebuf[cl] = '\0';
         }
@@ -860,24 +877,26 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         // sit.md § 5.4 — version-dependent skip past header 2 prefix
         uint32_t skip_extra = (h1[4] == 1) ? 22 : 18;
         bool     rsrc_present = (flags2 & 0x01) != 0;
-        const uint8_t *after_prefix = h2 + 14 + skip_extra;
-        const uint8_t *payload_ptr  = after_prefix;
+        // Offsets from `blob`, not pointers: everything past header 2 is
+        // located by lengths the archive supplies (see sit_forks_fit).
+        size_t after_off   = (size_t)(h2 - blob) + 14 + skip_extra;
+        size_t payload_off = after_off;
 
         // sit.md § 5.4 — resource fork fields (conditional)
         uint32_t r_raw_len = 0, r_packed_len = 0;
         uint16_t r_crc     = 0;
         uint8_t  r_algo    = 0;
         if (rsrc_present) {
-            if ((size_t)(after_prefix - blob) + 14 > blob_len) {
+            if (after_off + 14 > blob_len) {
                 *err = make_err("SIT5: resource info past archive end");
                 return false;
             }
-            r_raw_len    = rd32be(after_prefix + 0);
-            r_packed_len = rd32be(after_prefix + 4);
-            r_crc        = rd16be(after_prefix + 8);
-            r_algo       = after_prefix[12];
-            uint8_t rpass = after_prefix[13];
-            payload_ptr  = after_prefix + 14 + rpass;
+            const uint8_t *ri = blob + after_off;
+            r_raw_len    = rd32be(ri + 0);
+            r_packed_len = rd32be(ri + 4);
+            r_crc        = rd16be(ri + 8);
+            r_algo       = ri[12];
+            payload_off  = after_off + 14 + ri[13]; // + the password blob
         }
 
         // sit.md § 5.3 — folder entries (flags bit 6)
@@ -909,7 +928,7 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
 
             // sit.md § 5.7 — add child count, advance into children
             remaining += child_count;
-            cursor = (uint32_t)(payload_ptr - base);
+            cursor = (uint32_t)(payload_off - (size_t)(base - blob));
             continue;
         }
 
@@ -939,12 +958,14 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         build_path(full_name, sizeof(full_name), ppath, namebuf);
 
         // sit.md § 5.5 "Fork Data Layout" — resource fork first, then data
-        const uint8_t *r_base = payload_ptr;
-        const uint8_t *d_base = payload_ptr + (rsrc_present ? r_packed_len : 0);
-        if ((size_t)(d_base - blob) + d_packed_len > blob_len) {
-            *err = make_err("SIT5: data fork extends past archive end");
+        size_t d_off;
+        if (!sit_forks_fit(payload_off, rsrc_present ? r_packed_len : 0,
+                           d_packed_len, blob_len, &d_off)) {
+            *err = make_err("SIT5: fork data extends past archive end");
             return false;
         }
+        const uint8_t *r_base = blob + payload_off;
+        const uint8_t *d_base = blob + d_off;
 
         // Add entry to the list
         sit_entry_t *ent = entry_list_push(entries, err);
@@ -974,7 +995,7 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         }
 
         // Advance cursor past the fork data
-        cursor = (uint32_t)((size_t)(d_base - base) + d_packed_len);
+        cursor = (uint32_t)(d_off - (size_t)(base - blob) + d_packed_len);
         remaining--;
     }
 

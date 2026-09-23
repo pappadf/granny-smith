@@ -43,6 +43,112 @@ void decode_abort(decode_ctx_t *ctx, const char *fmt, ...) {
 }
 
 // ============================================================================
+// Decode-context allocation ownership (see decode_ctx_t in internal.h)
+// ============================================================================
+
+void dctx_init(decode_ctx_t *ctx) {
+    ctx->owned = ctx->inline_owned;
+    ctx->cap_owned = DCTX_INLINE_OWNED;
+    ctx->n_owned = 0;
+    ctx->errmsg[0] = '\0';
+}
+
+// The registry grows: Compact Pro keeps every fork of an archive registered
+// until the whole archive has decoded, and a real archive has far more than
+// the inline slots -- a fixed 16 failed both corpus archives.
+static void dctx_register(decode_ctx_t *ctx, void *p) {
+    if (ctx->n_owned == ctx->cap_owned) {
+        int cap = ctx->cap_owned * 2;
+        void **grown = malloc((size_t)cap * sizeof(void *));
+        if (!grown) {
+            free(p);
+            decode_abort(ctx, "out of memory tracking decoder allocations");
+        }
+        memcpy(grown, ctx->owned, (size_t)ctx->n_owned * sizeof(void *));
+        if (ctx->owned != ctx->inline_owned)
+            free(ctx->owned);
+        ctx->owned = grown;
+        ctx->cap_owned = cap;
+    }
+    ctx->owned[ctx->n_owned++] = p;
+}
+
+static int dctx_find(const decode_ctx_t *ctx, const void *p) {
+    for (int i = 0; i < ctx->n_owned; i++)
+        if (ctx->owned[i] == p)
+            return i;
+    return -1;
+}
+
+static void dctx_forget(decode_ctx_t *ctx, int i) {
+    ctx->owned[i] = ctx->owned[--ctx->n_owned];
+}
+
+void *dctx_malloc(decode_ctx_t *ctx, size_t size) {
+    void *p = malloc(size ? size : 1);
+    if (!p)
+        decode_abort(ctx, "out of memory allocating %zu bytes", size);
+    dctx_register(ctx, p);
+    return p;
+}
+
+void *dctx_calloc(decode_ctx_t *ctx, size_t n, size_t size) {
+    void *p = calloc(n ? n : 1, size ? size : 1);
+    if (!p)
+        decode_abort(ctx, "out of memory allocating %zu x %zu bytes", n, size);
+    dctx_register(ctx, p);
+    return p;
+}
+
+void *dctx_realloc(decode_ctx_t *ctx, void *p, size_t size) {
+    int i = p ? dctx_find(ctx, p) : -1;
+    void *q = realloc(p, size ? size : 1);
+    if (!q)
+        decode_abort(ctx, "out of memory reallocating to %zu bytes", size); // p still registered
+    if (i >= 0)
+        ctx->owned[i] = q;
+    else
+        dctx_register(ctx, q);
+    return q;
+}
+
+void dctx_rebind(decode_ctx_t *ctx, void *old, void *now) {
+    int i = dctx_find(ctx, old);
+    if (i >= 0)
+        ctx->owned[i] = now;
+    else
+        dctx_register(ctx, now);
+}
+
+void dctx_free(decode_ctx_t *ctx, void *p) {
+    if (!p)
+        return;
+    int i = dctx_find(ctx, p);
+    if (i >= 0)
+        dctx_forget(ctx, i);
+    free(p);
+}
+
+void *dctx_release(decode_ctx_t *ctx, void *p) {
+    if (p) {
+        int i = dctx_find(ctx, p);
+        if (i >= 0)
+            dctx_forget(ctx, i);
+    }
+    return p;
+}
+
+void dctx_cleanup(decode_ctx_t *ctx) {
+    for (int i = 0; i < ctx->n_owned; i++)
+        free(ctx->owned[i]);
+    if (ctx->owned != ctx->inline_owned)
+        free(ctx->owned);
+    ctx->owned = ctx->inline_owned;
+    ctx->cap_owned = DCTX_INLINE_OWNED;
+    ctx->n_owned = 0;
+}
+
+// ============================================================================
 // Operations (Public API)
 // ============================================================================
 

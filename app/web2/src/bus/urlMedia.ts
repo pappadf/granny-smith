@@ -5,12 +5,19 @@
 //
 // Each parameter value is fetched (relative paths resolve against the page
 // origin), staged to /tmp/url_<slot>, optionally archive-extracted via the
-// C-side `archive.extract`, then mounted into the machine.
+// C-side `archive.extract`, then persisted into /opfs/images/<category>/
+// the way an upload of that kind is (upload.ts persistAs) and mounted from
+// there.  The frontend owns where media lives; the core no longer copies
+// volatile paths into OPFS behind the caller's back (09-storage D-1).  A
+// file that does not validate as its slot's category is attached from /tmp
+// as before, with a warning that it will not survive a reload.
 
 import { gsEval, getModule, isModuleReady, applyCapabilities } from './emulator';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
+import type { MediaTypeId } from '@/lib/media';
+import { persistAs } from './upload';
 
 export interface UrlMediaParams {
   rom: string | null;
@@ -57,19 +64,27 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   const params = parseUrlMediaParams(rawParams);
   if (!hasUrlMedia(params)) return false;
 
+  // Slot -> the path to attach it from.  Fetches run in parallel; each
+  // resolves to its persisted path (or its /tmp staging path, or undefined
+  // when the fetch failed).
+  const paths = new Map<string, string | undefined>();
+  const provision = async (slot: string, url: string, category: MediaTypeId) => {
+    paths.set(slot, await fetchAndPersist(slot, url, category));
+  };
   const downloads: Array<Promise<void>> = [];
-  if (params.rom) downloads.push(fetchAndStage('rom', params.rom));
-  if (params.vrom) downloads.push(fetchAndStage('vrom', params.vrom));
-  for (const fd of params.floppies) downloads.push(fetchAndStage(fd.slot, fd.url));
-  for (const hd of params.hardDisks) downloads.push(fetchAndStage(hd.slot, hd.url));
-  if (params.cd) downloads.push(fetchAndStage('cd', params.cd));
+  if (params.rom) downloads.push(provision('rom', params.rom, 'rom'));
+  if (params.vrom) downloads.push(provision('vrom', params.vrom, 'vrom'));
+  for (const fd of params.floppies) downloads.push(provision(fd.slot, fd.url, 'fd'));
+  for (const hd of params.hardDisks) downloads.push(provision(hd.slot, hd.url, 'hd'));
+  if (params.cd) downloads.push(provision('cd', params.cd, 'cdrom'));
   await Promise.all(downloads);
 
   if (!params.rom) {
     // Without a ROM there's no machine to boot; insert floppies into the
     // existing machine if one is running (matches url-media.js:230-237).
     for (const fd of params.floppies) {
-      await gsEval('machine.floppy.drive[0].insert', [`/tmp/url_${fd.slot}`, true]);
+      const p = paths.get(fd.slot);
+      if (p) await gsEval('machine.floppy.drive[0].insert', [p, true]);
     }
     return false;
   }
@@ -77,8 +92,8 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // ROM-led boot. rom.identify tells us which models the image lights up;
   // prefer the URL's `model=` if it's in the compatible list, else pick the
   // first compatible model.
-  const tmpRomPath = '/tmp/url_rom';
-  const info = await romIdentify(tmpRomPath);
+  const romPath = paths.get('rom');
+  const info = romPath ? await romIdentify(romPath) : null;
   if (!info || !info.compatible?.length) {
     showNotification('Unrecognised ROM in URL params', 'error');
     return false;
@@ -90,22 +105,26 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   // One boot document: the core validates model/ram/rom together and
   // installs the ROM itself (proposal-named-args-boot-config §4).
-  await gsEval('machine.boot', { model: chosen, ram: ramKb, rom: tmpRomPath });
+  await gsEval('machine.boot', { model: chosen, ram: ramKb, rom: romPath });
 
   for (const fd of params.floppies) {
-    await gsEval('machine.floppy.drive[0].insert', [`/tmp/url_${fd.slot}`, true]);
+    const p = paths.get(fd.slot);
+    if (p) await gsEval('machine.floppy.drive[0].insert', [p, true]);
   }
   for (const hd of params.hardDisks) {
+    const p = paths.get(hd.slot);
+    if (!p) continue;
     if (profile?.hd_bus === 'profile') {
       // Lisa/XL: parallel-port ProFile, attached off the SCSI bus.
-      await gsEval('machine.hd.attach', [`/tmp/url_${hd.slot}`, true]);
+      await gsEval('machine.hd.attach', [p, true]);
     } else {
       const id = parseInt(hd.slot.replace('hd', ''), 10);
-      await gsEval('machine.scsi.attach_hd', [`/tmp/url_${hd.slot}`, id]);
+      await gsEval('machine.scsi.attach_hd', [p, id]);
     }
   }
-  if (params.cd) {
-    await gsEval('machine.scsi.attach_cdrom', ['/tmp/url_cd', 3]);
+  const cdPath = paths.get('cd');
+  if (cdPath) {
+    await gsEval('machine.scsi.attach_cdrom', [cdPath, 3]);
   }
 
   machine.model = chosen;
@@ -142,11 +161,31 @@ async function parseProfile(
   return r as { ram_default?: number; hd_bus?: string };
 }
 
+// Fetch a URL, stage it, and persist it as `category`.  Returns the path to
+// attach from: the persisted /opfs/images/<category>/ path, or the /tmp
+// staging path when the file does not validate as that category, or
+// undefined when the fetch failed.
+async function fetchAndPersist(
+  slot: string,
+  url: string,
+  category: MediaTypeId,
+): Promise<string | undefined> {
+  const staged = await fetchAndStage(slot, url);
+  if (!staged) return undefined;
+  const persisted = await persistAs(staged.path, staged.name, category);
+  if (persisted) return persisted;
+  showNotification(`${slot}: not recognised as ${category}; using it unsaved`, 'warning');
+  return staged.path;
+}
+
 // Fetch a URL and stage its bytes into /tmp/url_<slot>. Handles ZIP wrapping
 // transparently (extract the first file inside). For Mac-archive extensions
 // (sit/hqx/cpt/bin/sea) the C side does the extraction once the file is in
-// /tmp.
-async function fetchAndStage(slot: string, url: string): Promise<void> {
+// /tmp.  Returns the staged path and the name to store it under, or null.
+async function fetchAndStage(
+  slot: string,
+  url: string,
+): Promise<{ path: string; name: string } | null> {
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -158,14 +197,14 @@ async function fetchAndStage(slot: string, url: string): Promise<void> {
       const first = await unzipFirstFile(bytes);
       if (!first) {
         showNotification(`${slot}: zip is empty`, 'error');
-        return;
+        return null;
       }
       bytes = first.data;
     }
 
     const tmpPath = `/tmp/url_${slot}`;
     const mod = getModule();
-    if (!mod) return;
+    if (!mod) return null;
     try {
       mod.FS.unlink(tmpPath);
     } catch {
@@ -185,9 +224,10 @@ async function fetchAndStage(slot: string, url: string): Promise<void> {
     }
 
     showNotification(`${slot} downloaded${looksLikeZip ? ' (zip)' : ''}`, 'info');
-    void sanitizeName(fileName); // placeholder hook for future renaming
+    return { path: tmpPath, name: sanitizeName(fileName) || slot };
   } catch (e) {
     console.error(`[urlMedia] fetch ${slot} failed`, e);
     showNotification(`${slot} download failed`, 'error');
+    return null;
   }
 }

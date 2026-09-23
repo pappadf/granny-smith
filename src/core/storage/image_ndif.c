@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #define NDIF_SECTOR_SIZE 512u
 // 'bcem' resource, ID 128 (Aaru: NDIF_RESOURCE / NDIF_RESOURCEID).
@@ -184,4 +186,79 @@ int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_
     default:
         return -EINVAL; // KenCode / RLE / LZH / StuffIt not implemented
     }
+}
+
+// ---- Materialising a whole image ------------------------------------------
+
+// Uncompressed chunks are copied through in slices of this size, so they
+// are never buffered whole however many sectors they cover.
+#define NDIF_COPY_SLICE (64u * 1024u)
+
+// Seek to `sector` of `out` in off_t: a long is 32 bits on wasm32, and a
+// sector past 4 Mi (2 GiB) would overflow it.
+static int seek_sector(FILE *out, uint64_t sector) {
+    return fseeko(out, (off_t)sector * NDIF_SECTOR_SIZE, SEEK_SET) == 0 ? 0 : -EIO;
+}
+
+static int copy_chunk(const ndif_chunk_t *c, ndif_read_fn read, void *ctx, FILE *out) {
+    uint64_t remaining = (uint64_t)c->count * NDIF_SECTOR_SIZE;
+    if (c->length < remaining)
+        return -EINVAL; // the map promises more sectors than the fork holds
+    if (seek_sector(out, c->sector) != 0)
+        return -EIO;
+    uint8_t buf[NDIF_COPY_SLICE];
+    uint64_t src = c->offset;
+    while (remaining) {
+        size_t n = remaining < sizeof(buf) ? (size_t)remaining : sizeof(buf);
+        int rc = read(ctx, src, buf, n);
+        if (rc != 0)
+            return rc;
+        if (fwrite(buf, 1, n, out) != n)
+            return -EIO;
+        src += n;
+        remaining -= n;
+    }
+    return 0;
+}
+
+static int decode_chunk_to(const ndif_chunk_t *c, ndif_read_fn read, void *ctx, FILE *out) {
+    uint64_t need = (uint64_t)c->count * NDIF_SECTOR_SIZE;
+    if (need > NDIF_MAX_CHUNK_BYTES || c->length > NDIF_MAX_CHUNK_BYTES)
+        return -EFBIG;
+    uint8_t *cbuf = malloc(c->length ? c->length : 1);
+    uint8_t *dbuf = malloc((size_t)need);
+    int rc = 0;
+    if (!cbuf || !dbuf)
+        rc = -ENOMEM;
+    else if (c->length && (rc = read(ctx, c->offset, cbuf, c->length)) != 0)
+        ;
+    else if (ndif_decode_chunk(c, cbuf, c->length, dbuf, (size_t)need) != 0)
+        rc = -EINVAL;
+    else if (seek_sector(out, c->sector) != 0 || fwrite(dbuf, 1, (size_t)need, out) != need)
+        rc = -EIO;
+    free(cbuf);
+    free(dbuf);
+    return rc;
+}
+
+int ndif_materialize(const ndif_map_t *map, ndif_read_fn read, void *ctx, FILE *out) {
+    if (!map || !read || !out)
+        return -EINVAL;
+    // Pre-extend: zero-fill chunks, and any sectors no chunk covers, then
+    // need no writes.  sectors is 32 bits, so this is at most 2 TiB.
+    if (ftruncate(fileno(out), (off_t)map->sectors * NDIF_SECTOR_SIZE) != 0)
+        return -EIO;
+    for (size_t i = 0; i < map->n_chunks; i++) {
+        const ndif_chunk_t *c = &map->chunks[i];
+        if (c->type == NDIF_CHUNK_ZERO || c->count == 0)
+            continue;
+        // Every chunk stays inside the image the header declares; checked
+        // without an addition that could wrap (09-storage F-23).
+        if (c->count > map->sectors || c->sector > map->sectors - c->count)
+            return -EINVAL;
+        int rc = (c->type == NDIF_CHUNK_COPY) ? copy_chunk(c, read, ctx, out) : decode_chunk_to(c, read, ctx, out);
+        if (rc != 0)
+            return rc;
+    }
+    return 0;
 }

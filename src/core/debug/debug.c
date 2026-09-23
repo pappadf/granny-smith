@@ -1430,7 +1430,10 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     }
 
     size_t raw_size = 0;
-    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, &raw_size);
+    // At most 8-bit RGBA plus a filter byte per row, at dimensions already
+    // checked against the screen.
+    size_t raw_max = (size_t)height * (1 + (size_t)width * 4);
+    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, raw_max, &raw_size);
     free(idat_data);
     if (!raw_data) {
         printf("Error: Failed to decompress PNG..\n");
@@ -1591,7 +1594,10 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int ex
 
     // Decompress IDAT data (stored blocks only)
     size_t raw_size = 0;
-    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, &raw_size);
+    // At most 8-bit RGBA plus a filter byte per row, at dimensions already
+    // checked against the screen.
+    size_t raw_max = (size_t)height * (1 + (size_t)width * 4);
+    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, raw_max, &raw_size);
     free(idat_data);
 
     if (!raw_data) {

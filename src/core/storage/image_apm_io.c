@@ -23,13 +23,23 @@ apm_table_t *image_apm_parse(image_t *img, const char **errmsg) {
         return NULL;
     }
 
+    // A partition map is in 512-byte blocks; an image opened with another
+    // geometry (a Lisa ProFile's 532) has none, and disk_read_data would
+    // assert on the 512-based read below (09-storage F-49).
+    if (disk_block_size(img) != APM_BLOCK_SIZE) {
+        if (errmsg)
+            *errmsg = image_apm_err_read;
+        return NULL;
+    }
+
     // Read enough blocks to cover any plausible APM.  257 blocks = ~128KB
     // accommodates the largest partition map we will accept (256 entries
-    // + block 0).  Cap to the image size so small fixtures work.
+    // + block 0).  Cap to the image size so small fixtures work, in whole
+    // blocks: disk_read_data reads nothing else.
     size_t scan_bytes = (size_t)(256 + 1) * APM_BLOCK_SIZE;
     size_t img_size = disk_size(img);
     if (scan_bytes > img_size)
-        scan_bytes = img_size;
+        scan_bytes = img_size - img_size % APM_BLOCK_SIZE;
     if (scan_bytes < 2 * APM_BLOCK_SIZE) {
         if (errmsg)
             *errmsg = image_apm_err_read;

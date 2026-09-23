@@ -98,7 +98,8 @@ typedef struct {
 bool udif_detect(const uint8_t *trailer, size_t len);
 
 // Parse the 'koly' trailer.  Returns 0 and fills *out, or a negative errno:
-// -EINVAL for a bad or unsupported trailer, -ENOTSUP for a multi-segment image.
+// -EINVAL for a bad or unsupported trailer, -ENOTSUP for a multi-segment image,
+// -EFBIG for an image of more than 2^32 sectors (more than storage can open).
 int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out);
 
 // Parse the `blkx` block tables out of the XML property list.  Returns 0 and

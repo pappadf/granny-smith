@@ -119,6 +119,12 @@ int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out) 
     // The block map is mandatory; without it there is nothing to decode.
     if (out->xml_length == 0 || out->xml_length > UDIF_XML_MAX || out->sectors == 0)
         return -EINVAL;
+    // The decoded image is pre-extended to sectors * 512 before anything is
+    // decoded, so an unbounded count asks for an arbitrarily large scratch
+    // file (09-storage F-24).  Bound it by what the storage layer can open
+    // at all: 2^32 blocks.
+    if (out->sectors > UINT32_MAX)
+        return -EFBIG;
     return 0;
 }
 
@@ -243,8 +249,10 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
         chunks[nc].count = rd64(e + 16);
         chunks[nc].offset = rd64(e + 24);
         chunks[nc].length = rd64(e + 32);
-        // A chunk must stay inside the sector run its own table declares.
-        if (chunks[nc].sector + chunks[nc].count > t->sectors) {
+        // A chunk must stay inside the sector run its own table declares --
+        // checked without an addition that 64-bit values could wrap
+        // (09-storage F-25).
+        if (chunks[nc].count > t->sectors || chunks[nc].sector > t->sectors - chunks[nc].count) {
             free(chunks);
             return -EINVAL;
         }

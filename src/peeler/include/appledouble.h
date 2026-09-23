@@ -28,6 +28,11 @@
 // This codec is I/O-free: parse borrows slices from the caller's buffer (which
 // must outlive the returned ad_file_t, like rfork_parse); build returns a
 // freshly malloc'd buffer the caller frees.
+//
+// It lives in peeler, which writes the sidecars of extracted files and must
+// build on its own; the core (archive extraction, image fork acquisition,
+// the AFP server's metadata) includes it from here.  One writer, so every
+// sidecar has the same shape (09-storage F-61).
 
 #pragma once
 
@@ -103,6 +108,12 @@ int ad_parse(const uint8_t *buf, size_t len, ad_file_t *out);
 // buffer in `*out`/`*out_len` that the caller frees.  Returns -EINVAL on bad
 // arguments, -ENOMEM on allocation failure.
 int ad_build(bool applesingle, const ad_entry_t *entries, size_t n_entries, uint8_t **out, size_t *out_len);
+
+// Write just the header and entry table for `entries` into `out` (`cap`
+// bytes), with each entry's payload placed after the table in order -- for a
+// writer that streams the payloads itself (only each entry's `len` is read;
+// `bytes` may be NULL).  Returns the header length, or -EINVAL.
+long ad_build_header(bool applesingle, const ad_entry_t *entries, size_t n_entries, uint8_t *out, size_t cap);
 
 // Convenience for the common copy-out case: build an AppleDouble header sidecar
 // carrying Finder Info (entry 9, 32 bytes; omitted if `finder` is NULL) and the

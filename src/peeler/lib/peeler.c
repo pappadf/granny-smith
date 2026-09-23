@@ -5,6 +5,7 @@
 // Core library entry points: peel(), peel_path(), format detection, and
 // buffer/file-list lifecycle helpers.
 
+#include "appledouble.h"
 #include "internal.h"
 
 #include <errno.h>
@@ -340,6 +341,14 @@ peel_buf_t peel_read_file(const char *path, peel_err_t **err) {
         fclose(fp);
         return (peel_buf_t){0};
     }
+    // Bounded like every size an archive declares (09-storage F-09): this
+    // loads the whole file, and archive.identify calls it on every probe.
+    if ((uint64_t)raw_size > PEEL_MAX_INPUT) {
+        *err = make_err("'%s' is %ld bytes, over the %u MiB limit", path, raw_size,
+                        (unsigned)(PEEL_MAX_INPUT >> 20));
+        fclose(fp);
+        return (peel_buf_t){0};
+    }
     size_t size = (size_t)raw_size;
 
     // Rewind and read the entire file
@@ -390,4 +399,21 @@ peel_buf_t peel_buf_wrap(const void *src, size_t len) {
         .size = len,
         .owned = false,
     };
+}
+
+int peel_build_sidecar(const peel_file_t *f, uint8_t **out, size_t *out_len) {
+    if (!f || !out || !out_len)
+        return -EINVAL;
+    *out = NULL;
+    *out_len = 0;
+    // Finder info (FInfo + FXInfo): type, creator and flags big-endian at
+    // the front, the rest zero.  Included only when something is set.
+    uint8_t finder[AD_FINDER_INFO_SIZE] = {0};
+    wr32be(finder, f->meta.mac_type);
+    wr32be(finder + 4, f->meta.mac_creator);
+    wr16be(finder + 8, f->meta.finder_flags);
+    bool has_finder = f->meta.mac_type || f->meta.mac_creator || f->meta.finder_flags;
+    if (!has_finder && f->resource_fork.size == 0)
+        return 0; // a data-only file: nothing to preserve
+    return ad_build_sidecar(f->resource_fork.data, f->resource_fork.size, has_finder ? finder : NULL, out, out_len);
 }
