@@ -26,7 +26,7 @@ LOG_USE_CATEGORY_NAME("rtc");
 
 // Forward declaration — class descriptor is defined at the bottom of the
 // file but rtc_init / rtc_delete reference it.
-extern const class_desc_t rtc_class;
+static const class_desc_t rtc_class;
 
 // === Private Types ===
 // RTC state structure (opaque to callers)
@@ -56,7 +56,7 @@ struct rtc {
     bool extended;
 };
 
-extern const class_desc_t rtc_pram_class;
+static const class_desc_t rtc_pram_class;
 
 // diff between mac (1904) and unix (1970) epochs
 // precalculated using any online epoch converter
@@ -358,7 +358,10 @@ static void one_second_interrupt(void *source, uint64_t data) {
         via_input_c(rtc->via, 0, 1, 1);
     }
 
-    scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL);
+    // No self re-arm: the event is periodic, so the scheduler re-arms it at
+    // the SCHEDULED deadline rather than at this handler's dispatch time.
+    // That is drift-free -- re-arming from "now" accumulated every sprint's
+    // dispatch lateness into the guest's second (08-core-infra F-28).
 }
 
 // A property of the toolchain, not of any run: it belongs at compile time,
@@ -470,8 +473,8 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
         // from the scheduler's checkpointed event queue in scheduler_start().
         LOG(1, "rtc_init: restored from checkpoint");
     } else {
-        // Fresh boot: schedule periodic one-second interrupt
-        scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL);
+        // Fresh boot: arm the one-second interrupt ONCE, periodically.
+        scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL, true);
         LOG(1, "rtc_init: scheduled one-second interrupt");
     }
 
@@ -627,7 +630,7 @@ static const member_t rtc_members[] = {
      .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}            },
 };
 
-const class_desc_t rtc_class = {
+static const class_desc_t rtc_class = {
     .name = "rtc",
     .members = rtc_members,
     .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
@@ -799,7 +802,7 @@ static const member_t rtc_pram_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = rtc_pram_method_validate}                },
 };
 
-const class_desc_t rtc_pram_class = {
+static const class_desc_t rtc_pram_class = {
     .name = "pram",
     .members = rtc_pram_members,
     .n_members = sizeof(rtc_pram_members) / sizeof(rtc_pram_members[0]),

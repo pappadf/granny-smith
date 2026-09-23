@@ -3,7 +3,9 @@
 #include "object.h"
 #include "parse.h"
 #include "test_assert.h"
+
 #include "value.h"
+#include <stdint.h>
 
 #include <string.h>
 
@@ -235,6 +237,59 @@ TEST(test_reserved_other_rejected_as_literal) {
     value_free(&v);
 }
 
+// === One integer grammar (08-core-infra F-11, F-12) ========================
+
+// F-12.  strtoull saturates at ULLONG_MAX and sets ERANGE; unchecked, a typo
+// in an address literal became a plausible-looking wrong value rather than an
+// error.
+TEST(test_integer_literal_rejects_out_of_range) {
+    const char *p = "99999999999999999999";
+    value_t v = parse_integer_literal(&p);
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
+// The negation path was implementation-defined above INT64_MAX and undefined
+// for exactly 2^63 -- the one magnitude with no positive counterpart.
+TEST(test_integer_literal_negation_boundaries) {
+    bool ok = false;
+
+    const char *a = "-9223372036854775808"; // INT64_MIN, legal
+    value_t va = parse_integer_literal(&a);
+    ASSERT_TRUE(!val_is_error(&va));
+    ASSERT_TRUE(val_as_i64(&va, &ok) == INT64_MIN);
+    value_free(&va);
+
+    const char *b = "-9223372036854775809"; // one past, must be refused
+    value_t vb = parse_integer_literal(&b);
+    ASSERT_TRUE(val_is_error(&vb));
+    value_free(&vb);
+}
+
+// F-11's user-visible symptom: base-0 parsing made a leading zero octal in one
+// spelling of a path index and decimal in the other, so `devices.010` and
+// `devices[010]` selected different children of the same object.  One grammar
+// now, and it is decimal unless a prefix says otherwise.
+TEST(test_leading_zero_is_decimal_not_octal) {
+    bool ok = false;
+    const char *p = "010";
+    value_t v = parse_integer_literal(&p);
+    ASSERT_TRUE(!val_is_error(&v));
+    ASSERT_EQ_INT((int)val_as_i64(&v, &ok), 10); // not 8
+    value_free(&v);
+
+    // ...and the explicit bases still work, so this is not "ignore prefixes".
+    const char *h = "0x10";
+    value_t vh = parse_integer_literal(&h);
+    ASSERT_EQ_INT((int)val_as_i64(&vh, &ok), 16);
+    value_free(&vh);
+
+    const char *o = "0o10";
+    value_t vo = parse_integer_literal(&o);
+    ASSERT_EQ_INT((int)val_as_i64(&vo, &ok), 8);
+    value_free(&vo);
+}
+
 int main(void) {
     RUN(test_int_decimal);
     RUN(test_int_hex);
@@ -252,5 +307,8 @@ int main(void) {
     RUN(test_trailing_garbage);
     RUN(test_empty);
     RUN(test_reserved_other_rejected_as_literal);
+    RUN(test_integer_literal_rejects_out_of_range);
+    RUN(test_integer_literal_negation_boundaries);
+    RUN(test_leading_zero_is_decimal_not_octal);
     return 0;
 }

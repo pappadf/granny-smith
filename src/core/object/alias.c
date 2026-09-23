@@ -272,15 +272,9 @@ static bool list_acc_collect(const char *name, const char *path, alias_kind_t ki
     list_acc_t *acc = (list_acc_t *)ud;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s=%s%s", name, path, kind == ALIAS_BUILTIN ? " (built-in)" : "");
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 32;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(buf);
+    // The shared accumulator (F-15); this was the third of five copies.
+    if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(buf)))
+        return false;
     return true;
 }
 

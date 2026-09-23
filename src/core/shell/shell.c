@@ -6,6 +6,9 @@
 
 #include "shell.h"
 
+#include "shell_singletons.h"
+#include "value_format.h"
+
 #include "alias.h"
 #include "cmd_complete.h"
 #include "cpu.h"
@@ -66,70 +69,11 @@ bool shell_internal_dispatch_command(char *line, char *err_buf, size_t err_size)
 static void format_scalar_inline(const value_t *v) {
     if (!v)
         return;
-    switch (v->kind) {
-    case V_NONE:
-        // empty inline representation
-        break;
-    case V_BOOL:
-        printf("%s", v->b ? "true" : "false");
-        break;
-    case V_INT:
-        if (v->flags & VAL_HEX)
-            printf("0x%" PRIx64, (uint64_t)v->i);
-        else
-            printf("%" PRId64, v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            printf("0x%" PRIx64, v->u);
-        else
-            printf("%" PRIu64, v->u);
-        break;
-    case V_FLOAT:
-        printf("%g", v->f);
-        break;
-    case V_STRING:
-        printf("\"%s\"", v->s ? v->s : "");
-        break;
-    case V_BYTES: {
-        // Cap inline rendering so a 1 MiB bytes attribute doesn't print
-        // 2 MiB of hex. Past `bytes_cap` we annotate with "...N more".
-        size_t bytes_cap = 64;
-        size_t shown = v->bytes.n > bytes_cap ? bytes_cap : v->bytes.n;
-        printf("0x");
-        for (size_t i = 0; i < shown; i++)
-            printf("%02x", v->bytes.p[i]);
-        if (v->bytes.n > bytes_cap)
-            printf(" ...%zu more", v->bytes.n - bytes_cap);
-        break;
-    }
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            printf("\"%s\"", v->enm.table[v->enm.idx]);
-        else
-            printf("enum:%d", v->enm.idx);
-        break;
-    case V_LIST:
-        printf("<list:%zu>", v->list.len);
-        break;
-    case V_MAP:
-        printf("<map:%zu>", v->map.len);
-        break;
-    case V_OBJECT: {
-        const class_desc_t *cc = v->obj ? object_class(v->obj) : NULL;
-        printf("<%s>", cc && cc->name ? cc->name : "object");
-        break;
-    }
-    case V_ERROR:
-        printf("<error: %s>", v->err ? v->err : "");
-        break;
-    case V_REF:
-        printf("%s", v->ref ? v->ref : "");
-        break;
-    case V_RANGE:
-        printf("%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
-        break;
-    }
+    vbuf_t b = {0};
+    value_format(v, VFMT_INLINE, &b);
+    if (b.p)
+        fputs(b.p, stdout);
+    vbuf_free(&b);
 }
 
 // Print an object as a multi-line `name = value` table. Walks the
@@ -187,42 +131,7 @@ static void format_object_table(struct object *o) {
 // Render one cell of the object-list table into buf. Scalar kinds only;
 // structured kinds render as compact placeholders.
 static void format_cell(const value_t *v, char *buf, size_t buf_size) {
-    switch (v->kind) {
-    case V_NONE:
-        snprintf(buf, buf_size, "-");
-        break;
-    case V_BOOL:
-        snprintf(buf, buf_size, "%s", v->b ? "true" : "false");
-        break;
-    case V_INT:
-        snprintf(buf, buf_size, (v->flags & VAL_HEX) ? "0x%llx" : "%lld",
-                 (v->flags & VAL_HEX) ? (long long)(uint64_t)v->i : (long long)v->i);
-        break;
-    case V_UINT:
-        snprintf(buf, buf_size, (v->flags & VAL_HEX) ? "0x%llx" : "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        snprintf(buf, buf_size, "%g", v->f);
-        break;
-    case V_STRING:
-        snprintf(buf, buf_size, "%s", v->s ? v->s : "");
-        break;
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            snprintf(buf, buf_size, "%s", v->enm.table[v->enm.idx]);
-        else
-            snprintf(buf, buf_size, "enum:%d", v->enm.idx);
-        break;
-    case V_LIST:
-        snprintf(buf, buf_size, "<list:%zu>", v->list.len);
-        break;
-    case V_MAP:
-        snprintf(buf, buf_size, "<map:%zu>", v->map.len);
-        break;
-    default:
-        snprintf(buf, buf_size, "<%d>", (int)v->kind);
-        break;
-    }
+    value_format_into(v, VFMT_CELL, buf, buf_size);
 }
 
 #define TABLE_MAX_COLS 12
@@ -289,113 +198,43 @@ static bool try_print_object_table(const value_t *v) {
     return true;
 }
 
+// Top-level REPL result printing.
+//
+// The per-kind rendering is value_format's; what stays here is the
+// PRESENTATION this surface adds and no other does: a list of same-class
+// objects becomes an attribute table, a map becomes aligned `key : value`
+// rows, and a bare object becomes its attribute table.  Those are layout
+// decisions about a terminal, not renderings of a value.
+//
+// Scalars render in VFMT_REPL, which differs from the VFMT_TEXT that `${x}`
+// uses in exactly one respect: V_BYTES carries its `0x` and is never capped,
+// because asking for the value alone is asking for all of it.
 static void format_value_print(const value_t *v) {
     if (!v)
         return;
     switch (v->kind) {
     case V_NONE:
         break;
-    case V_BOOL:
-        printf("%s\n", v->b ? "true" : "false");
-        break;
-    case V_INT:
-        printf("%" PRId64 "\n", v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            printf("0x%" PRIx64 "\n", v->u);
-        else
-            printf("%" PRIu64 "\n", v->u);
-        break;
-    case V_FLOAT:
-        printf("%g\n", v->f);
-        break;
-    case V_STRING:
-        printf("%s\n", v->s ? v->s : "");
-        break;
-    case V_BYTES:
-        printf("0x");
-        for (size_t i = 0; i < v->bytes.n; i++)
-            printf("%02x", v->bytes.p[i]);
-        printf("\n");
-        break;
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            printf("%s\n", v->enm.table[v->enm.idx]);
-        else
-            printf("enum:%d\n", v->enm.idx);
-        break;
-    case V_LIST:
+
+    case V_LIST: {
         // A list of same-class objects renders as an attribute table.
         if (try_print_object_table(v))
             break;
-        // Expand list elements inline: [item1, item2, ...]. Strings are
-        // quoted, ints/uints printed in their natural base, objects use
-        // <class:name>, nested lists recurse via the size form.
-        printf("[");
+        putchar('[');
         for (size_t i = 0; i < v->list.len; i++) {
-            const value_t *e = &v->list.items[i];
             if (i)
-                printf(", ");
-            switch (e->kind) {
-            case V_NONE:
-                printf("null");
-                break;
-            case V_BOOL:
-                printf("%s", e->b ? "true" : "false");
-                break;
-            case V_INT:
-                printf("%" PRId64, e->i);
-                break;
-            case V_UINT:
-                if (e->flags & VAL_HEX)
-                    printf("0x%" PRIx64, e->u);
-                else
-                    printf("%" PRIu64, e->u);
-                break;
-            case V_FLOAT:
-                printf("%g", e->f);
-                break;
-            case V_STRING:
-                printf("\"%s\"", e->s ? e->s : "");
-                break;
-            case V_BYTES:
-                printf("<bytes:%zu>", e->bytes.n);
-                break;
-            case V_LIST:
-                printf("<list:%zu>", e->list.len);
-                break;
-            case V_MAP:
-                printf("<map:%zu>", e->map.len);
-                break;
-            case V_ENUM:
-                if (e->enm.table && (size_t)e->enm.idx < e->enm.n_table && e->enm.table[e->enm.idx])
-                    printf("\"%s\"", e->enm.table[e->enm.idx]);
-                else
-                    printf("enum:%d", e->enm.idx);
-                break;
-            case V_OBJECT: {
-                const class_desc_t *cc = e->obj ? object_class(e->obj) : NULL;
-                printf("<%s:%s>", cc && cc->name ? cc->name : "object",
-                       e->obj && object_name(e->obj) ? object_name(e->obj) : "");
-                break;
-            }
-            case V_ERROR:
-                printf("<error>");
-                break;
-            case V_REF:
-                printf("%s", e->ref ? e->ref : "");
-                break;
-            case V_RANGE:
-                printf("%lld..%lld", (long long)e->range.start, (long long)e->range.stop);
-                break;
-            }
+                fputs(", ", stdout);
+            // Elements compose into one line, so they render quoted and
+            // capped -- VFMT_INLINE, not the mode the container used.
+            format_scalar_inline(&v->list.items[i]);
         }
-        printf("]\n");
+        fputs("]\n", stdout);
         break;
+    }
+
     case V_MAP: {
-        // A map prints as aligned `key : value` rows; nested maps/lists
-        // show as compact placeholders (index in via map.key / map[i]).
+        // Aligned `key : value` rows; nested maps/lists show as compact
+        // placeholders (drill in via map.key / map[i]).
         int width = 0;
         for (size_t i = 0; i < v->map.len; i++) {
             const char *k = v->map.entries[i].key;
@@ -408,25 +247,32 @@ static void format_value_print(const value_t *v) {
         for (size_t i = 0; i < v->map.len; i++) {
             printf("%-*s : ", width, v->map.entries[i].key ? v->map.entries[i].key : "");
             format_scalar_inline(&v->map.entries[i].val);
-            printf("\n");
+            putchar('\n');
         }
         break;
     }
+
     case V_OBJECT:
-        // Bare-read of an object prints its attributes as a
-        // `name = value` table. Methods are skipped; child nodes show
-        // as placeholders (drill in by typing the dotted path).
+        // Bare-read of an object prints its attributes as a `name = value`
+        // table. Methods are skipped; child nodes show as placeholders.
         format_object_table(v->obj);
         break;
+
     case V_ERROR:
+        // The one kind that goes to stderr: results are stdout, diagnostics
+        // are stderr, and a script's captured output depends on the split.
         fprintf(stderr, "%s\n", v->err ? v->err : "(error)");
         break;
-    case V_REF:
-        printf("%s\n", v->ref ? v->ref : "");
+
+    default: {
+        vbuf_t b = {0};
+        value_format(v, VFMT_REPL, &b);
+        if (b.p)
+            fputs(b.p, stdout);
+        putchar('\n');
+        vbuf_free(&b);
         break;
-    case V_RANGE:
-        printf("%lld..%lld\n", (long long)v->range.start, (long long)v->range.stop);
-        break;
+    }
     }
 }
 
@@ -515,7 +361,6 @@ int shell_init(void) {
     // Install the top-level object-root methods (assert, echo, cp,
     // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed
     // path-form parser can reach them.
-    extern void root_install_class(void);
     root_install_class();
 
     // Register process-singleton namespace objects that exist
@@ -529,17 +374,6 @@ int shell_init(void) {
     // doesn't run system_create at startup, so the path-form would
     // fail to resolve until the legacy `rom load` had already booted
     // a machine.
-    extern void rom_init(void);
-    extern void vrom_init(void);
-    extern void prom_init(void);
-    extern void machine_init(void);
-    extern void checkpoint_init(void);
-    extern void archive_init(void);
-    extern void mouse_class_register(void);
-    extern void screen_class_register(void);
-    extern void vfs_class_register(void);
-    extern void find_class_register(void);
-    extern void scsi_class_register(void);
     rom_init();
     vrom_init();
     prom_init();
@@ -563,7 +397,6 @@ int shell_init(void) {
     // for floppy images. system_create will later re-install with the
     // real cfg (root_install handles the cfg-change uninstall +
     // reinstall internally).
-    extern void root_install(struct config * cfg);
     root_install(NULL);
 
     // Latch the worker pthread for the thread-affinity guard. From now

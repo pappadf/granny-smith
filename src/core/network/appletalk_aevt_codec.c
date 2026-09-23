@@ -388,7 +388,7 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
             const value_t *existing = &event->map.entries[i].val;
             if (existing->kind == V_MAP) {
                 for (size_t j = 0; j < existing->map.len; j++)
-                    val_map_put(attrs, existing->map.entries[j].key, value_copy(&existing->map.entries[j].val));
+                    val_map_put(attrs, existing->map.entries[j].key, value_dup(&existing->map.entries[j].val));
             }
         }
     }
@@ -403,7 +403,7 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
             placed = true;
             continue;
         }
-        val_map_put(out, k, value_copy(&event->map.entries[i].val));
+        val_map_put(out, k, value_dup(&event->map.entries[i].val));
     }
     if (!had_attrs || !placed)
         val_map_put(out, "attrs", merged);
@@ -1036,7 +1036,7 @@ value_t aevt_parse_text(const char *text, char *err, size_t err_len) {
     // Parameters sit at the top level of the event map (§6.1).
     if (body.kind == V_MAP) {
         for (size_t i = 0; i < body.map.len; i++)
-            val_map_put(ev, body.map.entries[i].key, value_copy(&body.map.entries[i].val));
+            val_map_put(ev, body.map.entries[i].key, value_dup(&body.map.entries[i].val));
     }
     value_free(&body);
     return val_map_finish(ev);

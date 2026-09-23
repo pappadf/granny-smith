@@ -82,6 +82,17 @@ value_t expr_eval(const char *src, const expr_ctx_t *ctx);
 // shell tokenizer.
 value_t expr_eval_at(const char **p, const expr_ctx_t *ctx);
 
+// Read `.ident` and `[expr]` path-continuation segments from *p, appending
+// their textual form to `out` (which already holds the head, or is empty for
+// a relative path).  Stops at the first character that cannot continue a
+// path; sets *call_open and consumes the '(' when a call follows.  Pass
+// call_open = NULL where a call form is not accepted.
+//
+// Exported so the shell's command/lvalue parser uses the same grammar the
+// expression parser does, rather than its own copy (08-core-infra F-38).
+bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, size_t out_size, bool *call_open,
+                             char *err_buf, size_t err_size);
+
 // Interpolate ${...} regions inside a string literal body. `src` is the
 // raw body of a "..." string with escapes already decoded. Returns a
 // V_STRING with all ${expr} regions replaced by their default-formatted

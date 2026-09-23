@@ -443,7 +443,7 @@ static const member_t prom_members[] = {
      .method = {.args = prom_path_arg, .nargs = 1, .result = V_MAP, .fn = prom_method_identify}},
 };
 
-const class_desc_t prom_class = {
+static const class_desc_t prom_class = {
     .name = "prom",
     .members = prom_members,
     .n_members = sizeof(prom_members) / sizeof(prom_members[0]),

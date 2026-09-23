@@ -92,13 +92,6 @@ bool vrom_card_resolvable(const char *card_id);
 // empty path.
 int vrom_set_path(const char *path);
 
-// === Lifecycle =============================================================
-//
-// vrom_init() creates the singleton `vrom` object node and attaches it under
-// the root; vrom_delete() detaches/frees it and clears the pending path and
-// the offer registry.  Both are idempotent.
-extern const struct class_desc vrom_class;
-
 void vrom_init(void);
 void vrom_delete(void);
 

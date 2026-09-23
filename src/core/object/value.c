@@ -71,16 +71,18 @@ value_t val_str(const char *s) {
 value_t val_bytes(const void *p, size_t n) {
     value_t v = {0};
     v.kind = V_BYTES;
+    v.bytes.n = 0;
+    v.bytes.p = NULL;
+    if (n == 0)
+        return v;
+    v.bytes.p = (uint8_t *)malloc(n);
+    if (!v.bytes.p)
+        return v; // length stays 0: p != NULL whenever n > 0, always
+    if (p)
+        memcpy(v.bytes.p, p, n);
+    else
+        memset(v.bytes.p, 0, n);
     v.bytes.n = n;
-    if (n > 0) {
-        v.bytes.p = (uint8_t *)malloc(n);
-        if (v.bytes.p && p)
-            memcpy(v.bytes.p, p, n);
-        else if (v.bytes.p)
-            memset(v.bytes.p, 0, n);
-    } else {
-        v.bytes.p = NULL;
-    }
     return v;
 }
 
@@ -137,12 +139,36 @@ value_t val_ref(const char *path) {
     return v;
 }
 
-value_t val_range(int64_t start, int64_t stop) {
+value_t val_range_step(int64_t start, int64_t stop, int64_t step) {
     value_t v = {0};
     v.kind = V_RANGE;
     v.range.start = start;
     v.range.stop = stop;
+    v.range.step = step ? step : 1;
     return v;
+}
+
+value_t val_range(int64_t start, int64_t stop) {
+    return val_range_step(start, stop, 1);
+}
+
+uint64_t val_range_count(const value_t *v) {
+    if (!v || v->kind != V_RANGE)
+        return 0;
+    int64_t step = v->range.step ? v->range.step : 1;
+    // Compute the span in UINT64 so INT64_MIN..INT64_MAX cannot overflow the
+    // subtraction, which is undefined in int64.
+    if (step > 0) {
+        if (v->range.stop <= v->range.start)
+            return 0;
+        uint64_t span = (uint64_t)v->range.stop - (uint64_t)v->range.start;
+        return (span + (uint64_t)step - 1u) / (uint64_t)step;
+    }
+    if (v->range.stop >= v->range.start)
+        return 0;
+    uint64_t span = (uint64_t)v->range.start - (uint64_t)v->range.stop;
+    uint64_t mag = (uint64_t)(-(step + 1)) + 1u; // |step|, safe for INT64_MIN
+    return (span + mag - 1u) / mag;
 }
 
 bool val_is_heap(const value_t *v) {
@@ -478,53 +504,20 @@ const char *val_as_str(const value_t *v) {
     return NULL;
 }
 
-value_t value_copy(const value_t *v) {
-    if (!v)
-        return val_none();
-    value_t r = *v;
-    switch (v->kind) {
-    case V_STRING:
-        r.s = xstrdup(v->s);
-        break;
-    case V_ERROR:
-        r.err = xstrdup(v->err);
-        break;
-    case V_REF:
-        r.ref = xstrdup(v->ref);
-        break;
-    case V_BYTES:
-        if (v->bytes.n > 0) {
-            r.bytes.p = (uint8_t *)malloc(v->bytes.n);
-            if (r.bytes.p)
-                memcpy(r.bytes.p, v->bytes.p, v->bytes.n);
+bool val_parse_bool(const char *s, bool *out) {
+    if (!s || !out)
+        return false;
+    static const char *const yes[] = {"true", "on", "yes", "1", NULL};
+    static const char *const no[] = {"false", "off", "no", "0", NULL};
+    for (int i = 0; yes[i]; i++)
+        if (strcmp(s, yes[i]) == 0) {
+            *out = true;
+            return true;
         }
-        break;
-    case V_LIST:
-        if (v->list.len > 0) {
-            r.list.items = (value_t *)malloc(v->list.len * sizeof(value_t));
-            if (r.list.items) {
-                for (size_t i = 0; i < v->list.len; i++)
-                    r.list.items[i] = value_copy(&v->list.items[i]);
-            } else {
-                r.list.len = 0;
-            }
+    for (int i = 0; no[i]; i++)
+        if (strcmp(s, no[i]) == 0) {
+            *out = false;
+            return true;
         }
-        break;
-    case V_MAP:
-        if (v->map.len > 0) {
-            r.map.entries = (struct value_entry *)calloc(v->map.len, sizeof(*r.map.entries));
-            if (r.map.entries) {
-                for (size_t i = 0; i < v->map.len; i++) {
-                    r.map.entries[i].key = xstrdup(v->map.entries[i].key);
-                    r.map.entries[i].val = value_copy(&v->map.entries[i].val);
-                }
-            } else {
-                r.map.len = 0;
-            }
-        }
-        break;
-    default:
-        break;
-    }
-    return r;
+    return false;
 }

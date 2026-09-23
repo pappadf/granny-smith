@@ -38,6 +38,7 @@ LDFLAGS ?=
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/rtc.c \
         $(EMU_ROOT)/core/object/object.c \
+        $(EMU_ROOT)/core/object/parse.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \
         $(UNIT_ROOT)/support/stub_machine_object.c \

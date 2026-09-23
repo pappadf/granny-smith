@@ -274,7 +274,7 @@ static const member_t keyboard_members[] = {
      .method = {.args = keyboard_raw_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_raw}    },
 };
 
-const class_desc_t keyboard_class = {
+static const class_desc_t keyboard_class = {
     .name = "keyboard",
     .members = keyboard_members,
     .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),

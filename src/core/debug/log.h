@@ -7,6 +7,8 @@
 #ifndef LOG_H
 #define LOG_H
 
+#include <stdbool.h>
+
 #include <stdarg.h>
 
 #ifdef __cplusplus
@@ -23,13 +25,37 @@ void log_init(void);
 // category's config; `spec` NULL/empty prints the named category's
 // config, otherwise it is a whitespace-delimited option string
 // (`"5"`, `"level=5 file=tmp/x.log stdout=off ts=on"`). Returns 0 on
-// success, -1 on allocation failure.
-int log_configure(const char *category, const char *spec);
 
 // Category management -------------------------------------------------------
 // Registers a category (or returns existing). On first creation, level = 0.
 // Returns NULL on OOM or invalid name.
 log_category_t *log_register_category(const char *name);
+
+// Create every category GS_LOG_CATEGORIES declares.  Called once from
+// setup_init so `debug.log` with no arguments lists the complete set rather
+// than only what has been hit so far (08-core-infra F-34).
+void log_register_manifest(void);
+
+// === Typed per-category configuration ===
+//
+// These replace log_configure(category, "level=5 stdout=off ..."), a flag
+// grammar inside a string that the framework could not validate and
+// completion could not offer (08-core-infra F-35).  Each takes the category
+// by name and validates it against the manifest, so a typo is rejected here
+// rather than silently creating a category that can never emit.
+//
+// All return 0 on success, -1 on an unknown category or a bad value.
+int log_set_category_level(const char *category, int level);
+int log_set_category_stdout(const char *category, bool on);
+int log_set_category_timestamp(const char *category, bool on);
+int log_set_category_show_pc(const char *category, bool on);
+int log_set_category_file(const char *category, const char *path); // NULL/"off" closes
+
+// Print one category's current settings.
+void log_print_category(const char *category);
+
+// One-line description from the manifest, or NULL for an unknown name.
+const char *log_category_description(const char *name);
 
 // Lookup by name (case-sensitive). Returns NULL when not found.
 log_category_t *log_get_category(const char *name);

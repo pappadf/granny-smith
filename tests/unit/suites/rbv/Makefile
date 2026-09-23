@@ -39,6 +39,7 @@ LDFLAGS ?=
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/machines/mdu/rbv.c \
         $(EMU_ROOT)/core/object/object.c \
+        $(EMU_ROOT)/core/object/parse.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \
         $(EMU_ROOT)/core/peripherals/irq_controller.c \

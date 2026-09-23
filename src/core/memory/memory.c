@@ -57,9 +57,9 @@ bool memory_addr_faults_when_unmapped(uint32_t addr) {
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // memory_map_init / memory_map_delete reference them.
-extern const class_desc_t memory_class;
-extern const class_desc_t mem_peek_class;
-extern const class_desc_t mem_poke_class;
+static const class_desc_t memory_class;
+static const class_desc_t mem_peek_class;
+static const class_desc_t mem_poke_class;
 
 #include <assert.h>
 #include <stdio.h>
@@ -131,8 +131,19 @@ uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown
 
 // Memory logpoint support: non-zero entries force the page through the slow
 // path even when the underlying page is plain RAM/ROM.  See memory.h.
-uint8_t *g_mem_logpoint_page_count = NULL;
-uint8_t *g_mem_logpoint_phys_page_count = NULL;
+// Per-page logpoint refcounts.  uint16_t, not uint8_t: the install side
+// saturated at 255 while the uninstall side decremented unconditionally, so
+// the counter stopped being a refcount the moment it saturated.  With 300
+// logpoints on one page, installs 256..300 did not increment, removing 255 of
+// them drove the count to 0, rebuild_soa_page() restored the direct mapping,
+// and the 45 SURVIVING logpoints on that page silently stopped firing.
+//
+// An extreme configuration, but a silent wrong answer in a debugger is the
+// worst failure mode a debugging tool has -- it makes you conclude the guest
+// never touched the address.  One extra byte per 4 KB of address space
+// (08-core-infra F-41).
+uint16_t *g_mem_logpoint_page_count = NULL;
+uint16_t *g_mem_logpoint_phys_page_count = NULL;
 // Armed-logpoint count (install calls minus uninstall calls).  Zero lets
 // every slow-path access skip logpoint_lookup with one load — the arrays
 // above are always allocated, so their NULL checks never short-circuit.
@@ -1080,8 +1091,10 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
         return;
     g_mem_logpoints_active++;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
-        if (g_mem_logpoint_page_count[p] < 0xFF)
+        if (g_mem_logpoint_page_count[p] < 0xFFFF)
             g_mem_logpoint_page_count[p]++;
+        else
+            GS_ASSERTF(false, "logpoint refcount saturated on page %u", p);
         // Zero the SoA entries to force slow path for this page
         if (g_supervisor_read)
             g_supervisor_read[p] = 0;
@@ -1116,8 +1129,10 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
         return;
     g_mem_logpoints_active++;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
-        if (g_mem_logpoint_phys_page_count[p] < 0xFF)
+        if (g_mem_logpoint_phys_page_count[p] < 0xFFFF)
             g_mem_logpoint_phys_page_count[p]++;
+        else
+            GS_ASSERTF(false, "logpoint phys refcount saturated on page %u", p);
     }
     // We can't cheaply enumerate which logical pages currently alias the
     // watched physical pages, so conservatively invalidate the entire SoA
@@ -1568,12 +1583,12 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     assert(g_supervisor_read && g_supervisor_write && g_user_read && g_user_write);
 
     // Memory logpoint reference-count array (zero = no logpoint on that page)
-    g_mem_logpoint_page_count = (uint8_t *)calloc(g_page_count, sizeof(uint8_t));
+    g_mem_logpoint_page_count = (uint16_t *)calloc(g_page_count, sizeof(uint16_t));
     assert(g_mem_logpoint_page_count);
 
     // Physical-page logpoint reference count.  Sized the same way as the
     // logical array so any physical page the guest can reach is coverable.
-    g_mem_logpoint_phys_page_count = (uint8_t *)calloc(g_page_count, sizeof(uint8_t));
+    g_mem_logpoint_phys_page_count = (uint16_t *)calloc(g_page_count, sizeof(uint16_t));
     assert(g_mem_logpoint_phys_page_count);
 
     // Default active pointers: supervisor mode
@@ -1905,6 +1920,7 @@ static const member_t memory_members[] = {
     {.kind = M_ATTR,
      .name = "ram_size",
      .flags = VAL_RO,
+     .doc = "Installed RAM in bytes, as the machine's memory map reports it",
      .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}},
     {.kind = M_ATTR,
      .name = "slowpath_count",
@@ -1919,6 +1935,7 @@ static const member_t memory_members[] = {
     {.kind = M_ATTR,
      .name = "rom_size",
      .flags = VAL_RO,
+     .doc = "Size in bytes of the loaded ROM image",
      .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}},
     {.kind = M_METHOD,
      .name = "read_cstring",
@@ -1934,7 +1951,7 @@ static const member_t memory_members[] = {
      .method = {.args = mem_translate_args, .nargs = 1, .result = V_STRING, .fn = method_mem_translate}},
 };
 
-const class_desc_t memory_class = {
+static const class_desc_t memory_class = {
     .name = "memory",
     .members = memory_members,
     .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
@@ -2026,7 +2043,7 @@ static const member_t mem_peek_members[] = {
      .method = {.args = mem_peek_bytes_args, .nargs = 2, .result = V_BYTES, .fn = method_mem_peek_bytes}},
 };
 
-const class_desc_t mem_peek_class = {
+static const class_desc_t mem_peek_class = {
     .name = "peek",
     .members = mem_peek_members,
     .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
@@ -2080,7 +2097,7 @@ static const member_t mem_poke_members[] = {
      .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_l}},
 };
 
-const class_desc_t mem_poke_class = {
+static const class_desc_t mem_poke_class = {
     .name = "poke",
     .members = mem_poke_members,
     .n_members = sizeof(mem_poke_members) / sizeof(mem_poke_members[0]),

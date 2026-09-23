@@ -91,15 +91,19 @@ bool system_is_initialized(void) {
     return test_get_active_context() != NULL;
 }
 
+struct event;
+
 // Scheduler stubs for mouse automation commands
-void scheduler_new_cpu_event(scheduler_t *sched, event_callback_t callback, void *source, uint64_t data,
-                             uint64_t cpu_cycles, uint64_t ns_delay) {
+struct event *scheduler_new_cpu_event_ex(scheduler_t *sched, event_callback_t callback, void *source, uint64_t data,
+                                         uint64_t cpu_cycles, uint64_t ns_delay, bool periodic) {
+    (void)periodic;
     (void)sched;
     (void)callback;
     (void)source;
     (void)data;
     (void)cpu_cycles;
     (void)ns_delay;
+    return 0;
 }
 
 void scheduler_new_event_type(scheduler_t *sched, const char *module, void *source, const char *name,

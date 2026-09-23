@@ -10,6 +10,8 @@
 
 #include "api.h"
 
+#include "value_format.h"
+
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -91,84 +93,26 @@ static void buf_append_jstring(char *buf, size_t size, size_t *pos, const char *
     buf_append(buf, size, pos, "\"", 1);
 }
 
+// The JS bridge's encoder, now a bridge onto the one renderer.
+//
+// VFMT_JSON_TAGGED reproduces the shapes this function used to build by hand
+// -- {"enum":…,"index":N}, {"object":…,"name":…}, {"error":…} -- because a
+// caller reading gsEval output has to discriminate those kinds.  It differs
+// from the VFMT_JSON that script text uses, and that difference is now
+// declared rather than, as expr.c's comment used to claim, an agreement that
+// happened not to hold (F-14).
+//
+// It also gains two cases this function never had: V_REF and V_RANGE fell
+// through the switch with no default, emitting NOTHING and producing a
+// malformed document rather than a wrong one.  Latent -- gs_eval resolves a
+// path, and those kinds come only from expression evaluation and shell
+// bindings -- but it is the shape that makes an eighth kind break the bridge
+// in silence.
 static void format_value_json(const value_t *v, char *buf, size_t size, size_t *pos) {
-    if (!v) {
-        buf_append(buf, size, pos, "null", 4);
-        return;
-    }
-    switch (v->kind) {
-    case V_NONE:
-        buf_append(buf, size, pos, "null", 4);
-        break;
-    case V_BOOL:
-        buf_append(buf, size, pos, v->b ? "true" : "false", v->b ? 4 : 5);
-        break;
-    case V_INT:
-        buf_appendf(buf, size, pos, "%" PRId64, v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            buf_appendf(buf, size, pos, "\"0x%" PRIx64 "\"", v->u);
-        else
-            buf_appendf(buf, size, pos, "%" PRIu64, v->u);
-        break;
-    case V_FLOAT:
-        buf_appendf(buf, size, pos, "%g", v->f);
-        break;
-    case V_STRING:
-        buf_append_jstring(buf, size, pos, v->s);
-        break;
-    case V_BYTES:
-        buf_append(buf, size, pos, "\"0x", 3);
-        for (size_t i = 0; i < v->bytes.n; i++)
-            buf_appendf(buf, size, pos, "%02x", v->bytes.p[i]);
-        buf_append(buf, size, pos, "\"", 1);
-        break;
-    case V_ENUM:
-        buf_append(buf, size, pos, "{\"enum\":", 8);
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            buf_append_jstring(buf, size, pos, v->enm.table[v->enm.idx]);
-        else
-            buf_append(buf, size, pos, "null", 4);
-        buf_appendf(buf, size, pos, ",\"index\":%d}", v->enm.idx);
-        break;
-    case V_LIST:
-        buf_append(buf, size, pos, "[", 1);
-        for (size_t i = 0; i < v->list.len; i++) {
-            if (i)
-                buf_append(buf, size, pos, ",", 1);
-            format_value_json(&v->list.items[i], buf, size, pos);
-        }
-        buf_append(buf, size, pos, "]", 1);
-        break;
-    case V_MAP:
-        buf_append(buf, size, pos, "{", 1);
-        for (size_t i = 0; i < v->map.len; i++) {
-            if (i)
-                buf_append(buf, size, pos, ",", 1);
-            buf_append_jstring(buf, size, pos, v->map.entries[i].key);
-            buf_append(buf, size, pos, ":", 1);
-            format_value_json(&v->map.entries[i].val, buf, size, pos);
-        }
-        buf_append(buf, size, pos, "}", 1);
-        break;
-    case V_OBJECT: {
-        const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
-        const char *cls_name = (cls && cls->name) ? cls->name : "object";
-        const char *o_name = v->obj ? object_name(v->obj) : NULL;
-        buf_append(buf, size, pos, "{\"object\":", 10);
-        buf_append_jstring(buf, size, pos, cls_name);
-        buf_append(buf, size, pos, ",\"name\":", 8);
-        buf_append_jstring(buf, size, pos, o_name ? o_name : "");
-        buf_append(buf, size, pos, "}", 1);
-        break;
-    }
-    case V_ERROR:
-        buf_append(buf, size, pos, "{\"error\":", 9);
-        buf_append_jstring(buf, size, pos, v->err ? v->err : "unknown");
-        buf_append(buf, size, pos, "}", 1);
-        break;
-    }
+    vbuf_t b = {0};
+    value_format(v, VFMT_JSON_TAGGED, &b);
+    buf_append(buf, size, pos, b.p ? b.p : "null", b.p ? b.len : 4);
+    vbuf_free(&b);
 }
 
 // === Minimal JSON-array parser for `args_json` ==============================
@@ -496,7 +440,14 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     size_t pos = 0;
 
     if (!path || !*path) {
+        // `{"error": ...}`, like every sibling branch.  This one emitted the
+        // bare document `"empty path"`, so a JS caller doing
+        // `if (result.error)` got undefined and treated the failure as a
+        // successful string result -- while object-model.md promises JS
+        // callers see error SHAPES, never raw values (08-core-infra F-59).
+        buf_append(out_buf, out_size, &pos, "{\"error\":", 9);
         buf_append_jstring(out_buf, out_size, &pos, "empty path");
+        buf_append(out_buf, out_size, &pos, "}", 1);
         return -1;
     }
 
@@ -553,7 +504,7 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     } else if (n.member && n.member->kind == M_ATTR && argc == 1) {
         // node_set takes ownership of its value; pass a copy so the
         // outer free_args() can still walk argv.
-        v = node_set(n, value_copy(&argv[0]));
+        v = node_set(n, value_dup(&argv[0]));
     } else if (argc > 0) {
         v = val_err("path '%s' does not accept %d arg(s)", path, argc);
     } else {

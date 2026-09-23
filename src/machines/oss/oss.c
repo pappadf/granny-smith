@@ -411,7 +411,7 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
 
     if (checkpoint) {
         // Mirrors oss_checkpoint: one blob, so the two halves cannot drift.
-        system_read_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface));
+        system_read_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
     }
 
     oss_attach_object(oss);
@@ -438,7 +438,7 @@ void oss_delete(oss_t *oss) {
 void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint) {
     if (!oss || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface));
+    system_write_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
 }
 
 // Returns the OSS memory interface.

@@ -454,6 +454,237 @@ TEST(test_map_equals_json_string) {
     value_free(&v);
 }
 
+// === Format-spec safety (08-core-infra F-01, F-02) =========================
+//
+// `${EXPR:FMT}` used to hand FMT to snprintf as the format string.  FMT is
+// user input -- a script line, a logpoint `message=`, a gsEval string -- and
+// integration scripts are the same language, so this was not a privileged
+// surface.  The spec is now parsed into a validated struct and the format
+// snprintf receives is rebuilt from it.
+//
+// Each test below asserts the value still renders (in its default form),
+// because the contract on a spec that cannot be honoured is to fall back, not
+// to error and not to guess.
+
+// The arbitrary-WRITE primitive.  %n was rejected only when it was the last
+// character, so "%n%d" selected the 'd' branch and executed %n, writing
+// through a pointer taken off the varargs area.
+TEST(test_spec_percent_n_is_refused) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%n%d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "1") == 0);
+    value_free(&v);
+
+    value_t w = expr_interpolate_string("${1:%n}", &ctx);
+    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_TRUE(strcmp(w.s, "1") == 0);
+    value_free(&w);
+}
+
+// The arbitrary-READ primitive: a second conversion consumes varargs that
+// were never passed.  "%s%d" passed a long long where %s expects a pointer.
+TEST(test_spec_second_conversion_is_refused) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%s%d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "1") == 0);
+    value_free(&v);
+}
+
+// '*' takes its width from varargs.
+TEST(test_spec_star_width_is_refused) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%*d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "1") == 0);
+    value_free(&v);
+}
+
+// F-02: ${1:0500d} set width 500 against a 160-byte scratch buffer, snprintf
+// returned 500, and 500 bytes were copied out of it -- a 340-byte stack
+// overread landing in a string the caller prints or returns to JS.  The field
+// is clamped, so the result is bounded and correct rather than truncated
+// garbage.
+TEST(test_spec_width_is_clamped) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:0500d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(v.s != NULL);
+    ASSERT_EQ_INT((int)strlen(v.s), 64); // SPEC_MAX_FIELD, not 500
+    ASSERT_EQ_INT((int)v.s[63], (int)'1'); // still the value, right-aligned
+    ASSERT_EQ_INT((int)v.s[0], (int)'0'); // zero-padded as asked
+    value_free(&v);
+
+    // The %-prefixed spelling of the same thing.
+    value_t w = expr_interpolate_string("${1:%0500d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_EQ_INT((int)strlen(w.s), 64);
+    value_free(&w);
+}
+
+// A precision is equally attacker-controlled and equally clamped.
+TEST(test_spec_precision_is_clamped) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%.400f}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(v.s != NULL);
+    ASSERT_TRUE(strlen(v.s) <= 159); // inside the scratch buffer either way
+    value_free(&v);
+}
+
+// The specs that were always legal must keep working, so the parser cannot
+// pass the tests above by rejecting everything.
+TEST(test_spec_valid_forms_still_render) {
+    expr_ctx_t ctx = {0};
+    struct {
+        const char *src;
+        const char *want;
+    } cases[] = {
+        {"${255:%x}",    "ff"  },
+        {"${255:%04X}",  "00FF"},
+        {"${5:%-3d}|",   "5  |"},
+        {"${5:%3d}|",    "  5|"},
+        {"${42:d}",      "42"  },
+        {"${255:04x}",   "00ff"},
+        {"${\"hi\":%s}", "hi"  },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        value_t v = expr_interpolate_string(cases[i].src, &ctx);
+        if (v.kind != V_STRING || strcmp(v.s, cases[i].want) != 0) {
+            fprintf(stderr, "[FAIL] spec %s -> \"%s\", expected \"%s\"\n", cases[i].src,
+                    v.kind == V_STRING ? v.s : "<not a string>", cases[i].want);
+            exit(1);
+        }
+        value_free(&v);
+    }
+}
+
+// === Expression-language promises (08-core-infra F-07, F-08, F-09) =========
+
+// F-07.  numeric_op reported a failure twice -- as the returned V_ERROR and
+// through the caller's `err` buffer -- but only the non-numeric path wrote the
+// buffer.  The other fourteen returns left it untouched and all six callers
+// then read err[0], an uninitialised stack array, so ${1/0} reported whatever
+// was on the stack rather than "division by zero", and only sometimes.
+TEST(test_divide_by_zero_reports_its_reason) {
+    value_t v = eval("1/0");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+
+    // Through interpolation, where the lexer's message is what surfaces.
+    expr_ctx_t ctx = {0};
+    value_t w = expr_interpolate_string("${1/0}", &ctx);
+    ASSERT_TRUE(val_is_error(&w));
+    ASSERT_TRUE(w.err != NULL);
+    ASSERT_TRUE(strstr(w.err, "division by zero") != NULL);
+    value_free(&w);
+}
+
+TEST(test_shift_out_of_range_reports_its_reason) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1 << 999}", &ctx);
+    ASSERT_TRUE(val_is_error(&v));
+    ASSERT_TRUE(v.err != NULL);
+    ASSERT_TRUE(strstr(v.err, "shift count") != NULL);
+    value_free(&v);
+}
+
+// F-08.  The canonical guard idiom: the untaken branch must not fail the
+// expression.  Both branches used to be evaluated and lex_error is sticky, so
+// the division ran even when x was zero.
+TEST(test_ternary_untaken_branch_does_not_fail_the_expression) {
+    bool ok = false;
+    value_t v = eval("0 != 0 ? 100/0 : 42");
+    ASSERT_TRUE(!val_is_error(&v));
+    ASSERT_EQ_INT((int)val_as_i64(&v, &ok), 42);
+    ASSERT_TRUE(ok);
+    value_free(&v);
+
+    // ...and the mirror image, so the fix is not "always take the false arm".
+    value_t w = eval("1 != 0 ? 42 : 100/0");
+    ASSERT_TRUE(!val_is_error(&w));
+    ASSERT_EQ_INT((int)val_as_i64(&w, &ok), 42);
+    value_free(&w);
+}
+
+TEST(test_ternary_still_selects_correctly) {
+    bool ok = false;
+    value_t a = eval("1 ? 10 : 20");
+    ASSERT_EQ_INT((int)val_as_i64(&a, &ok), 10);
+    value_free(&a);
+    value_t b = eval("0 ? 10 : 20");
+    ASSERT_EQ_INT((int)val_as_i64(&b, &ok), 20);
+    value_free(&b);
+    // Nested in the false arm, which parses right-associatively.
+    value_t c = eval("0 ? 1 : 0 ? 2 : 3");
+    ASSERT_EQ_INT((int)val_as_i64(&c, &ok), 3);
+    value_free(&c);
+}
+
+// F-09.  find_format_colon took the RIGHTMOST top-level ':' as the format-spec
+// separator without tracking '?', so `${a ? 1 : 2}` split into the expression
+// `a ? 1 ` and the spec ` 2`.  The ternary and ${...} -- both documented parts
+// of the language -- were mutually exclusive, with a confusing error.
+TEST(test_ternary_inside_interpolation) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1 ? 10 : 20}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "10") == 0);
+    value_free(&v);
+
+    value_t w = expr_interpolate_string("${0 ? 10 : 20}", &ctx);
+    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_TRUE(strcmp(w.s, "20") == 0);
+    value_free(&w);
+}
+
+// A ternary AND a format spec in one interpolation: the last ':' is the spec's
+// only once every '?' has been matched.
+TEST(test_ternary_and_format_spec_together) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1 ? 255 : 0:x}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "ff") == 0);
+    value_free(&v);
+}
+
+// The spec separator still works with no ternary present, so the '?' tracking
+// cannot pass by disabling specs.
+TEST(test_format_spec_without_ternary_unaffected) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${255:04x}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "00ff") == 0);
+    value_free(&v);
+}
+
+// range() and `..` are the same value now, and both are indexable so the lazy
+// form loses nothing against the list it replaced (F-37).
+TEST(test_range_builtin_matches_dotdot) {
+    value_t a = eval("range(4) == 0..4");
+    ASSERT_EQ_INT(V_BOOL, a.kind);
+    ASSERT_TRUE(a.b);
+    value_free(&a);
+
+    bool ok = false;
+    value_t n = eval("len(range(0, 10, 3))"); // 0, 3, 6, 9
+    ASSERT_EQ_INT((int)val_as_i64(&n, &ok), 4);
+    value_free(&n);
+
+    // Indexing goes through a BINDING or a path, as it does for lists:
+    // `[10,20,30][1]` is "trailing garbage in expression" today, so indexing a
+    // call result directly was never supported for any kind and the lazy range
+    // loses nothing by not supporting it either.  `$r[3]` is the real case,
+    // and tests/integration/shell-v2 pins it via `$hits[3]`.
+}
+
+TEST(test_range_step_zero_is_refused) {
+    value_t v = eval("range(0, 10, 0)");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
@@ -495,5 +726,20 @@ int main(void) {
     RUN(test_map_len_and_arithmetic);
     RUN(test_map_interpolates_as_json);
     RUN(test_map_equals_json_string);
+    RUN(test_spec_percent_n_is_refused);
+    RUN(test_spec_second_conversion_is_refused);
+    RUN(test_spec_star_width_is_refused);
+    RUN(test_spec_width_is_clamped);
+    RUN(test_spec_precision_is_clamped);
+    RUN(test_spec_valid_forms_still_render);
+    RUN(test_divide_by_zero_reports_its_reason);
+    RUN(test_shift_out_of_range_reports_its_reason);
+    RUN(test_ternary_untaken_branch_does_not_fail_the_expression);
+    RUN(test_ternary_still_selects_correctly);
+    RUN(test_ternary_inside_interpolation);
+    RUN(test_ternary_and_format_spec_together);
+    RUN(test_format_spec_without_ternary_unaffected);
+    RUN(test_range_builtin_matches_dotdot);
+    RUN(test_range_step_zero_is_refused);
     return 0;
 }

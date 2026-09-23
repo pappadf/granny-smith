@@ -49,14 +49,18 @@ static uint8_t s_buf[2][65536];
 static size_t s_w[2], s_r;
 static int s_slot; // which buffer a save writes into
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(s_w[s_slot] + size <= sizeof(s_buf[0]));
     memcpy(s_buf[s_slot] + s_w[s_slot], data, size);
     s_w[s_slot] += size;
 }
 
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(s_r + size <= s_w[0]);
     memcpy(data, s_buf[0] + s_r, size);
@@ -78,8 +82,9 @@ void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const ch
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;
 }
-event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)s, (void)cb, (void)src, (void)data, (void)cycles, (void)ns;
     return NULL;
 }

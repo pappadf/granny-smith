@@ -66,29 +66,31 @@ typedef struct {
     value_t *items;
     size_t len;
     size_t cap;
+    bool oom; // set when a push failed; the list must not be returned short
 } string_list_acc_t;
 
-// Append `name` as a V_STRING. Returns false on allocation failure;
-// callers fall through to val_list() with what's been accumulated.
+// Append `name` as a V_STRING through the shared accumulator.
+//
+// This was one of five near-identical {items, len, cap} doublers -- root.c,
+// meta.c, alias.c, an inline one in object.c and another in debug.c -- beside
+// val_list_push, which already existed and which object.c's copy already
+// used.  Each copy had its own OOM behaviour, and four of the five DISCARDED
+// the failure, so an allocation failure silently truncated the returned list
+// instead of erroring: objects(), attributes(), methods(), meta.children and
+// meta.indices would report a short list as if it were complete, which the
+// inspector then renders as "these are all the members".  A truncated schema
+// is worse than an error because the caller cannot tell (F-15, F-63).
 static bool string_list_push(string_list_acc_t *acc, const char *name) {
     if (!name)
         return true;
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 16;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(name);
-    return true;
+    return val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name));
 }
 
 static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
     (void)parent;
     string_list_acc_t *acc = (string_list_acc_t *)ud;
-    string_list_push(acc, object_name(child));
+    if (!string_list_push(acc, object_name(child)))
+        acc->oom = true; // reported by the caller; see string_list_push
 }
 
 static value_t method_root_objects(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -102,9 +104,16 @@ static value_t method_root_objects(struct object *self, const member_t *m, int a
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_CHILD)
-                string_list_push(&acc, cls->members[i].name);
+                if (!string_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
     }
     object_each_attached(target, each_attached_collect, &acc);
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
     return val_list(acc.items, acc.len);
 }
 
@@ -119,7 +128,14 @@ static value_t method_root_attributes(struct object *self, const member_t *m, in
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_ATTR)
-                string_list_push(&acc, cls->members[i].name);
+                if (!string_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }
@@ -135,7 +151,14 @@ static value_t method_root_methods(struct object *self, const member_t *m, int a
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_METHOD)
-                string_list_push(&acc, cls->members[i].name);
+                if (!string_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }
@@ -314,8 +337,14 @@ static int g_stub_count = 0;
 static struct config *g_installed_cfg = NULL;
 
 static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
-    if (g_stub_count >= MAX_STUBS)
+    if (g_stub_count >= MAX_STUBS) {
+        // Two callers discard this result (storage.images, shell.alias), so an
+        // exhausted table made a whole subtree quietly absent -- which reads
+        // as a missing feature, not a resource limit.  The class-validation
+        // failure a few lines below already prints; this one did not (F-62).
+        fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS, name ? name : "(unnamed)");
         return NULL;
+    }
     char err[200];
     if (!object_validate_class(cls, err, sizeof(err))) {
         fprintf(stderr, "root: class '%s' invalid: %s\n", cls->name ? cls->name : "?", err);
@@ -417,9 +446,17 @@ void root_uninstall(void) {
     // teardown. Only the cfg-scoped storage.images entry array is freed
     // here.
     storage_object_classes_teardown();
-    // Restore the namespace-only root class so a fresh object_root()
-    // call after uninstall doesn't surface stale members.
-    object_root_set_class(NULL);
+    // The root method table is NOT reverted here, deliberately.
+    //
+    // It used to be, and that was a process-scoped global being undone by a
+    // cfg-scoped teardown: after system_destroy -- a headless quit,
+    // machine.boot's teardown, or a failed restore -- `echo`, `objects`,
+    // `attributes`, `methods`, `help`, `time` and `quit` all stopped
+    // resolving until a new machine existed.  The comment that stood here
+    // feared "stale members", but the stale things are the STUBS, and the loop
+    // above already detached them.  emu_root_class_real is a static descriptor
+    // whose members take a path and walk the tree; not one of them holds or
+    // dereferences a cfg, so there is nothing about it to go stale (F-16).
     // Aliases (built-in and user) survive machine teardown: they store
     // path text and re-resolve per access (shell v2 §3.5), so a
     // reference like `alias d = machine.floppy.drive[0]` tracks the

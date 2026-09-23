@@ -59,7 +59,7 @@ typedef enum {
 
 #define ADSP_NO_DEADLINE UINT64_MAX
 
-const char *const ADSP_STATE_NAMES[] = {"closed", "listening", "opening", "established", "open"};
+const char *const ADSP_STATE_NAMES[] = {"closed", "listening", "opening", "established", "open", NULL};
 
 // ============================================================================
 // Type Definitions
@@ -1200,10 +1200,10 @@ typedef struct {
 static adsp_slot_data_t g_adsp_conn_data[ADSP_MAX_CONNECTIONS];
 static struct object *g_adsp_conn_objs[ADSP_MAX_CONNECTIONS];
 
-extern const class_desc_t adsp_class;
-extern const class_desc_t adsp_conns_class;
-extern const class_desc_t adsp_conn_class;
-extern const class_desc_t adsp_stats_class;
+static const class_desc_t adsp_class;
+static const class_desc_t adsp_conns_class;
+static const class_desc_t adsp_conn_class;
+static const class_desc_t adsp_stats_class;
 
 static adsp_conn_t *adsp_obj_conn(struct object *self) {
     const adsp_slot_data_t *d = (const adsp_slot_data_t *)object_data(self);
@@ -1337,7 +1337,7 @@ static const member_t adsp_conn_members[] = {
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 
-const class_desc_t adsp_conn_class = {
+static const class_desc_t adsp_conn_class = {
     .name = "adsp_connection",
     .members = adsp_conn_members,
     .n_members = ARRAY_LEN(adsp_conn_members),
@@ -1390,7 +1390,7 @@ static const member_t adsp_conns_members[] = {
                .next = adsp_conns_next}},
 };
 
-const class_desc_t adsp_conns_class = {
+static const class_desc_t adsp_conns_class = {
     .name = "adsp_connections",
     .members = adsp_conns_members,
     .n_members = ARRAY_LEN(adsp_conns_members),
@@ -1430,7 +1430,7 @@ static const member_t adsp_stats_members[] = {
     ADSP_STAT_MEMBER(timeouts, "Connection ends torn down by the connection timer"),
 };
 
-const class_desc_t adsp_stats_class = {
+static const class_desc_t adsp_stats_class = {
     .name = "adsp_stats",
     .members = adsp_stats_members,
     .n_members = ARRAY_LEN(adsp_stats_members),
@@ -1454,7 +1454,7 @@ static const member_t adsp_members[] = {
      .attr = {.type = V_UINT, .width = 2, .get = adsp_attr_max_data}},
 };
 
-const class_desc_t adsp_class = {
+static const class_desc_t adsp_class = {
     .name = "adsp",
     .members = adsp_members,
     .n_members = ARRAY_LEN(adsp_members),

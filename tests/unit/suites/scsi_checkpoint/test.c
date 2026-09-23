@@ -47,14 +47,18 @@ static void cp_reset(void) {
     s_cp_w = s_cp_r = 0;
 }
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(s_cp_w + size <= sizeof(s_cp_buf));
     memcpy(s_cp_buf + s_cp_w, data, size);
     s_cp_w += size;
 }
 
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(s_cp_r + size <= s_cp_w);
     memcpy(data, s_cp_buf + s_cp_r, size);
@@ -111,8 +115,9 @@ uint64_t scheduler_cpu_cycles(struct scheduler *restrict s) {
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;
 }
-event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)s, (void)cb, (void)src, (void)data, (void)cycles, (void)ns;
     return NULL;
 }

@@ -98,8 +98,39 @@ bool has_event(struct scheduler *restrict scheduler, event_callback_t callback);
 double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callback_t callback);
 
 // Schedule a new CPU event to fire after the specified cycles or nanoseconds
-event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
-                                 uint64_t data, uint64_t cycles, uint64_t ns);
+// Arm an event.  Exactly one of `cycles` / `ns` must be non-zero; the other
+// unit is derived.  The (callback, source) pair must already be registered
+// with scheduler_new_event_type.
+//
+// An optional SEVENTH argument makes the event periodic: it re-arms itself
+// inside the scheduler at timestamp + the interval it was armed with, until
+// something cancels it.
+//
+//     scheduler_new_cpu_event(s, cb, dev, 0, 0, ns);        // one-shot
+//     scheduler_new_cpu_event(s, cb, dev, 0, 0, ns, true);  // every ns
+//
+// There is no separate periodic API and no handle type, deliberately.  The
+// units question is already answered here -- a scheduler_periodic_arm() would
+// have to duplicate the cycles/ns handling or pick one and be wrong for half
+// its callers -- and cancellation is already answered too: remove_event() and
+// scheduler_forget_source() cancel a periodic exactly as they cancel a
+// one-shot, so a repeating event adds no second lifetime to get wrong
+// (08-core-infra F-28).
+//
+// The interval is the initial delay, and the next deadline is computed from
+// the SCHEDULED time rather than from the dispatch time, so a periodic does
+// not drift -- which a handler re-arming itself from "now" does.
+//
+// A handler MAY cancel its own event: the next occurrence is inserted before
+// the callback runs, so remove_event() from inside the handler finds it.
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
+                                    uint64_t data, uint64_t cycles, uint64_t ns, bool periodic);
+
+#define SCHED_EV_SELECT_7(_1, _2, _3, _4, _5, _6, _7, NAME, ...) NAME
+#define SCHED_EV_PERIODIC(s, cb, src, d, cyc, ns, per)                                                                 \
+    scheduler_new_cpu_event_ex((s), (cb), (src), (d), (cyc), (ns), (per))
+#define SCHED_EV_ONESHOT(s, cb, src, d, cyc, ns) scheduler_new_cpu_event_ex((s), (cb), (src), (d), (cyc), (ns), false)
+#define scheduler_new_cpu_event(...)             SCHED_EV_SELECT_7(__VA_ARGS__, SCHED_EV_PERIODIC, SCHED_EV_ONESHOT)(__VA_ARGS__)
 
 // Remove all events matching the given callback (and optionally source) from the queue
 // Drop every queued event and the event-type registration held for `source`.
@@ -214,8 +245,5 @@ uint64_t cpu_instr_count(void);
 
 // Reconcile sprint counters (called from IRQ handlers to stabilize accounting)
 void cpu_reschedule(void);
-
-// `events` argv handler — typed `info_events` calls this directly.
-uint64_t cmd_events(int argc, char *argv[]);
 
 #endif // SCHEDULE_H

@@ -26,10 +26,12 @@
 #include "scheduler.h"
 #include "script.h"
 #include "shell.h"
+
 #include "shell_internal.h"
 #include "shell_var.h"
 #include "system.h"
 #include "value.h"
+#include "value_format.h"
 
 // === Attribute getters ====================================================
 
@@ -62,18 +64,13 @@ typedef struct {
     size_t cap;
 } str_list_t;
 
+// The shared accumulator (F-15); this was the fourth of five copies, and the
+// one the report does not list.
 static bool str_list_push(str_list_t *acc, const char *s) {
     if (!s)
         return true;
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 16;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(s);
+    if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(s)))
+        return false;
     return true;
 }
 
@@ -95,31 +92,13 @@ static value_t shell_get_aliases(struct object *self, const member_t *m) {
 // `shell.vars` — list of "name=value" strings. Iteration walks the
 // internal table; for V_STRING entries the value is rendered verbatim,
 // other kinds emit their JSON-ish formatter shape.
+// `shell.vars` renders each entry as `name=value`.  This was an EIGHTH
+// per-kind formatter -- 08-core-infra F-39 counts seven and misses it -- with
+// its own cruder default (`<%d>` for every kind it did not name, including
+// objects and errors) and its own habit of ignoring VAL_HEX.  It is a table
+// cell by any other name, so it is one now.
 static void format_value_compact(const value_t *v, char *buf, size_t buf_size) {
-    if (!v) {
-        snprintf(buf, buf_size, "");
-        return;
-    }
-    switch (v->kind) {
-    case V_STRING:
-        snprintf(buf, buf_size, "%s", v->s ? v->s : "");
-        break;
-    case V_BOOL:
-        snprintf(buf, buf_size, "%s", v->b ? "true" : "false");
-        break;
-    case V_INT:
-        snprintf(buf, buf_size, "%lld", (long long)v->i);
-        break;
-    case V_UINT:
-        snprintf(buf, buf_size, "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        snprintf(buf, buf_size, "%g", v->f);
-        break;
-    default:
-        snprintf(buf, buf_size, "<%d>", (int)v->kind);
-        break;
-    }
+    value_format_into(v, VFMT_CELL, buf, buf_size);
 }
 
 // The variable table is private to shell_var.c; iterate via the

@@ -143,8 +143,8 @@ struct av_singer {
     double adv_floor; // running noise-floor estimate (RMS counts)
 };
 
-extern const class_desc_t av_audioin_class;
-extern const class_desc_t av_audioin_capture_class;
+static const class_desc_t av_audioin_class;
+static const class_desc_t av_audioin_capture_class;
 
 static void singer_frame_event(void *source, uint64_t data);
 
@@ -993,7 +993,7 @@ static const member_t av_audioin_members[] = {
             "speakers (browser) so an audience hears what the guest was fed", .method = {.args = ain_load_args, .nargs = 1, .result = V_UINT, .fn = ain_method_inject}},
 };
 
-const class_desc_t av_audioin_class = {
+static const class_desc_t av_audioin_class = {
     .name = "audioin",
     .members = av_audioin_members,
     .n_members = sizeof(av_audioin_members) / sizeof(av_audioin_members[0]),
@@ -1087,7 +1087,7 @@ static const member_t ain_capture_members[] = {
      .method = {.args = ain_cap_stop_args, .nargs = 1, .result = V_UINT, .fn = ain_cap_method_stop}},
 };
 
-const class_desc_t av_audioin_capture_class = {
+static const class_desc_t av_audioin_capture_class = {
     .name = "capture",
     .members = ain_capture_members,
     .n_members = sizeof(ain_capture_members) / sizeof(ain_capture_members[0]),

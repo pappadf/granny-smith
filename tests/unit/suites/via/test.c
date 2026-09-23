@@ -83,8 +83,9 @@ void scheduler_new_event_type(scheduler_t *sch, const char *source_name, void *s
     (void)event_name;
     (void)callback;
 }
-event_t *scheduler_new_cpu_event(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)sch;
     (void)data;
     (void)ns;

@@ -50,8 +50,9 @@ static void *s_cb_src;
 static uint64_t s_period_ns;
 static int s_cancels;
 
-event_t *scheduler_new_cpu_event(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)sch;
     (void)data;
     (void)cycles;

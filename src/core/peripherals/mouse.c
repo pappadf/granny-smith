@@ -255,7 +255,7 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
 static value_t mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    bool down = (argc >= 1) ? argv[0].b : true;
+    bool down = (argc >= 1 && argv[0].kind == V_BOOL) ? argv[0].b : true;
     const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
     if ((argc >= 2) && !mouse_mode_char(&argv[1]))
@@ -282,11 +282,17 @@ static const arg_decl_t mouse_move_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"default\" (per-platform), \"global\" (Toolbox MTemp), \"hw\" (raw quadrature), or \"aux\" (A/UX MAE)"},
 };
+// `mouse.click()` with no arguments is a press, so the slot has a real default
+// rather than obj_arg_unset -- and having one is what makes `mouse.click(mode=
+// "hw")` callable at all (it used to fail with "missing argument 'down'").
+static const value_t mouse_click_def_down = {.kind = V_BOOL, .width = 1, .b = true};
+
 static const arg_decl_t mouse_click_args[] = {
     {.name = "down",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "true = press, false = release (default true)"                                                 },
+     .default_value = &mouse_click_def_down,
+     .doc = "true = press, false = release (default true)"},
     {.name = "mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -311,7 +317,7 @@ static const member_t mouse_members[] = {
      .method = {.args = mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_trace}},
 };
 
-const class_desc_t mouse_class = {
+static const class_desc_t mouse_class = {
     .name = "mouse",
     .members = mouse_members,
     .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
@@ -333,13 +339,5 @@ void mouse_class_register(void) {
         object_set_label(s_mouse_object, "Mouse");
         object_set_order(s_mouse_object, 20);
         object_attach(adb_bus_object(), s_mouse_object);
-    }
-}
-
-void mouse_class_unregister(void) {
-    if (s_mouse_object) {
-        object_detach(s_mouse_object);
-        object_delete(s_mouse_object);
-        s_mouse_object = NULL;
     }
 }

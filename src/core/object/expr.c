@@ -4,7 +4,14 @@
 // expr.c
 // Recursive-descent expression parser + evaluator. See expr.h.
 //
-// Grammar (tightest first; matches proposal-shell-expressions.md §2.3):
+// Grammar (tightest first; matches proposal-shell-expressions.md §2.3).
+//
+// NOTE the bitwise levels: `&`, `^` and `|` bind TIGHTER than the relational
+// and equality operators, which is the opposite of C.  That is deliberate --
+// C's order is a well-known trap, and `sr & 0x2000 == 0x2000` means
+// `(sr & 0x2000) == 0x2000` here and `sr & (0x2000 == 0x2000)` in C -- but
+// object-model.md and the proposal both described it as "as in C", which it
+// is not (08-core-infra F-10).
 //
 //   primary    := literal | path-or-call | '(' expr ')'
 //   postfix    := primary ( '.' IDENT | '[' expr ']' )*
@@ -15,7 +22,8 @@
 //   bitand     := shift  ('&'           shift)*
 //   bitxor     := bitand ('^'           bitand)*
 //   bitor      := bitxor ('|'           bitxor)*
-//   relational := bitor  (('<'|'<='|'>'|'>=') bitor)*
+//   range      := bitor  ('..'          bitor)?
+//   relational := range  (('<'|'<='|'>'|'>=') range)*
 //   equality   := relational (('=='|'!=') relational)*
 //   logand     := equality   ('&&' equality)*
 //   logor      := logand     ('||' logand)*
@@ -23,6 +31,8 @@
 //   expr       := ternary
 
 #include "expr.h"
+
+#include "value_format.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -204,7 +214,7 @@ static bool same_kind_equal(const value_t *a, const value_t *b) {
     case V_OBJECT:
         return a->obj == b->obj;
     case V_RANGE:
-        return a->range.start == b->range.start && a->range.stop == b->range.stop;
+        return a->range.start == b->range.start && a->range.stop == b->range.stop && a->range.step == b->range.step;
     case V_REF:
         return strcmp(a->ref ? a->ref : "", b->ref ? b->ref : "") == 0;
     default:
@@ -306,16 +316,94 @@ static bool append_index_segment(const value_t *idx, char *buf, size_t buf_size,
 
 // Read an identifier starting at L->p, copying into buf. Returns true
 // on success, advancing L->p.
+// Read an identifier, FAILING rather than truncating when it does not fit.
+//
+// This used to copy buf_size-1 characters, keep advancing the cursor, and
+// discard the overflow -- then resolve the truncated name.  A 70-character
+// binding name became a 63-character lookup, which resolves to a DIFFERENT
+// binding when one happens to share the prefix rather than erroring.  Real
+// member names are short, so this is theoretical for paths a human types; a
+// generated script or a long machine.nubus.slot[N].card... path can reach the
+// 64-byte sub-path buffers (08-core-infra F-58).
 static bool lex_read_ident(lex_t *L, char *buf, size_t buf_size) {
     if (!isalpha((unsigned char)*L->p) && *L->p != '_')
         return false;
     size_t i = 0;
     while (*L->p && (isalnum((unsigned char)*L->p) || *L->p == '_')) {
-        if (i + 1 < buf_size)
-            buf[i++] = *L->p;
+        if (i + 1 >= buf_size) {
+            lex_error(L, "identifier too long (max %zu)", buf_size - 1);
+            return false;
+        }
+        buf[i++] = *L->p;
         L->p++;
     }
     buf[i] = '\0';
+    return true;
+}
+
+// Read `.ident` and `[expr]` continuation segments from *p, appending their
+// textual form to `out`, which already holds the head (or is empty for a
+// relative path).  Stops at the first character that cannot continue a path.
+// Sets *call_open and consumes the '(' when a call follows.
+//
+// ONE implementation.  script.c had its own -- scan_path_continuation plus
+// resolve_path_head_ex -- reimplementing identifier scanning, `.seg` and
+// `[expr]` appending, the `"`/`\` rejection for map keys and the
+// V_REF/V_OBJECT binding dance.  Any grammar change had to land twice, and
+// they had already drifted: this one accepts a numeric `.N` segment and
+// script.c's required ident_char after the dot, which agreed only because
+// isalnum happens to include digits.  Buffer sizes differed too, so the
+// longest usable path depended on which surface you typed it on
+// (08-core-infra F-38).
+bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, size_t out_size, bool *call_open,
+                             char *err_buf, size_t err_size) {
+    if (call_open)
+        *call_open = false;
+    size_t pi = strlen(out);
+    while (**p) {
+        if ((*p)[0] == '.' && (isalnum((unsigned char)(*p)[1]) || (*p)[1] == '_')) {
+            const char *q = *p + 1;
+            const char *start = q;
+            while (isalnum((unsigned char)*q) || *q == '_')
+                q++;
+            // snprintf truncates; the length check below is what turns that
+            // into a refusal rather than a silently shortened path (F-58).
+            int n = snprintf(out + pi, out_size - pi, ".%.*s", (int)(q - start), start);
+            if (n < 0 || (size_t)n >= out_size - pi) {
+                snprintf(err_buf, err_size, "path too long");
+                return false;
+            }
+            pi += (size_t)n;
+            *p = q;
+        } else if ((*p)[0] == '[') {
+            const char *q = *p + 1;
+            value_t idx = expr_eval_at(&q, ctx);
+            if (val_is_error(&idx)) {
+                snprintf(err_buf, err_size, "%s", idx.err ? idx.err : "bad index");
+                value_free(&idx);
+                return false;
+            }
+            while (*q && isspace((unsigned char)*q))
+                q++;
+            if (*q != ']') {
+                value_free(&idx);
+                snprintf(err_buf, err_size, "expected ']'");
+                return false;
+            }
+            q++;
+            bool ok = append_index_segment(&idx, out, out_size, &pi, err_buf, err_size);
+            value_free(&idx);
+            if (!ok)
+                return false;
+            *p = q;
+        } else if ((*p)[0] == '(' && call_open) {
+            (*p)++;
+            *call_open = true;
+            return true;
+        } else {
+            break;
+        }
+    }
     return true;
 }
 
@@ -330,73 +418,24 @@ static bool lex_read_ident(lex_t *L, char *buf, size_t buf_size) {
 // path_buf must be at least 256 bytes.
 static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
     *call_open = false;
-    size_t pi = 0;
     char ident[64];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
         lex_error(L, "expected identifier");
         return false;
     }
-    int n = snprintf(path_buf + pi, path_size - pi, "%s", ident);
-    if (n < 0 || (size_t)n >= path_size - pi) {
+    int n = snprintf(path_buf, path_size, "%s", ident);
+    if (n < 0 || (size_t)n >= path_size) {
         lex_error(L, "path too long");
         return false;
     }
-    pi += (size_t)n;
-
-    while (*L->p) {
-        if (*L->p == '.') {
-            // peek: only consume if followed by an ident character (a
-            // bare `.` followed by space/operator is not a path '.')
-            if (!(isalpha((unsigned char)L->p[1]) || L->p[1] == '_'))
-                break;
-            L->p++; // consume '.'
-            if (!lex_read_ident(L, ident, sizeof(ident))) {
-                lex_error(L, "expected identifier after '.'");
-                return false;
-            }
-            n = snprintf(path_buf + pi, path_size - pi, ".%s", ident);
-            if (n < 0 || (size_t)n >= path_size - pi) {
-                lex_error(L, "path too long");
-                return false;
-            }
-            pi += (size_t)n;
-        } else if (*L->p == '[') {
-            // Index: evaluate inner expression; integers address indexed
-            // children / list slots, strings address map keys.
-            L->p++;
-            value_t idx = parse_expr(L, ctx);
-            if (L->err_set) {
-                value_free(&idx);
-                return false;
-            }
-            if (val_is_error(&idx)) {
-                lex_error(L, "%s", idx.err ? idx.err : "bad index");
-                value_free(&idx);
-                return false;
-            }
-            lex_skip_ws(L);
-            if (*L->p != ']') {
-                value_free(&idx);
-                lex_error(L, "expected ']'");
-                return false;
-            }
-            L->p++;
-            char err[128];
-            bool ok = append_index_segment(&idx, path_buf, path_size, &pi, err, sizeof(err));
-            value_free(&idx);
-            if (!ok) {
-                lex_error(L, "%s", err);
-                return false;
-            }
-        } else if (*L->p == '(') {
-            L->p++;
-            *call_open = true;
-            return true;
-        } else {
-            break;
-        }
-    }
-    return true;
+    // The head is this function's own business; everything after it is the
+    // shared grammar (F-38).
+    char err[160];
+    err[0] = '\0';
+    if (expr_read_path_segments(&L->p, ctx, path_buf, path_size, call_open, err, sizeof(err)))
+        return true;
+    lex_error(L, "%s", err[0] ? err : "bad path");
+    return false;
 }
 
 // A parsed `name=expr` argument inside a call-args list: heap-owned
@@ -571,66 +610,13 @@ static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
 // (leading '.' included for non-empty paths) and detect an opening `(`.
 // Mirrors read_path_segments but produces a *relative* path.
 static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, size_t sub_size, bool *call_open) {
-    *call_open = false;
-    size_t pi = 0;
     sub_buf[0] = '\0';
-    char ident[64];
-    while (*L->p) {
-        if (*L->p == '.') {
-            if (!(isalpha((unsigned char)L->p[1]) || L->p[1] == '_' || isdigit((unsigned char)L->p[1])))
-                break;
-            L->p++;
-            if (isdigit((unsigned char)L->p[0])) {
-                // numeric segment (indexed child spelled `.N`)
-                size_t k = 0;
-                while (isdigit((unsigned char)*L->p) && k + 2 < sizeof(ident))
-                    ident[k++] = *L->p++;
-                ident[k] = '\0';
-            } else if (!lex_read_ident(L, ident, sizeof(ident))) {
-                lex_error(L, "expected identifier after '.'");
-                return false;
-            }
-            int n = snprintf(sub_buf + pi, sub_size - pi, ".%s", ident);
-            if (n < 0 || (size_t)n >= sub_size - pi) {
-                lex_error(L, "path too long");
-                return false;
-            }
-            pi += (size_t)n;
-        } else if (*L->p == '[') {
-            L->p++;
-            value_t idx = parse_expr(L, ctx);
-            if (L->err_set) {
-                value_free(&idx);
-                return false;
-            }
-            if (val_is_error(&idx)) {
-                lex_error(L, "%s", idx.err ? idx.err : "bad index");
-                value_free(&idx);
-                return false;
-            }
-            lex_skip_ws(L);
-            if (*L->p != ']') {
-                value_free(&idx);
-                lex_error(L, "expected ']'");
-                return false;
-            }
-            L->p++;
-            char err[128];
-            bool ok = append_index_segment(&idx, sub_buf, sub_size, &pi, err, sizeof(err));
-            value_free(&idx);
-            if (!ok) {
-                lex_error(L, "%s", err);
-                return false;
-            }
-        } else if (*L->p == '(') {
-            L->p++;
-            *call_open = true;
-            return true;
-        } else {
-            break;
-        }
-    }
-    return true;
+    char err[160];
+    err[0] = '\0';
+    if (expr_read_path_segments(&L->p, ctx, sub_buf, sub_size, call_open, err, sizeof(err)))
+        return true;
+    lex_error(L, "%s", err[0] ? err : "bad path");
+    return false;
 }
 
 // === Structured-value path access (V_MAP / V_LIST, shell v2) ================
@@ -642,6 +628,9 @@ static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, si
 // accepted as a list index, mirroring the object tree's `.N` spelling).
 static value_t value_subpath_read(const value_t *base, const char *sub) {
     const value_t *cur = base;
+    // Holds a value synthesised mid-walk (a range element), which has no
+    // storage of its own to point at.  Inline kinds only, so no ownership.
+    value_t scratch = val_none();
     const char *s = sub;
     while (*s) {
         if (s[0] == '[' && s[1] == '"') {
@@ -668,6 +657,18 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
             long long idx = strtoll(s + 1, &endp, 10);
             if (!endp || *endp != ']')
                 return val_err("bad index segment in '%s'", sub);
+            // A range indexes like the list it replaced: range(10)[3] and
+            // (0..10)[3] both answer 3.  Without this the lazy form would
+            // lose a capability the materialised one had (F-37).
+            if (cur->kind == V_RANGE) {
+                uint64_t n = val_range_count(cur);
+                if (idx < 0 || (uint64_t)idx >= n)
+                    return val_err("index %lld out of range (len %llu)", idx, (unsigned long long)n);
+                scratch = val_int(cur->range.start + (int64_t)idx * cur->range.step);
+                cur = &scratch;
+                s = endp + 1;
+                continue;
+            }
             if (cur->kind != V_LIST)
                 return val_err("cannot index a %s with [%lld]",
                                cur->kind == V_MAP ? "map (keys are strings)" : "non-list", idx);
@@ -820,7 +821,9 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
         return expr_object_path_read(ctx->root, full);
     }
 
-    if ((base.kind == V_LIST || base.kind == V_MAP) && has_sub && !call_open) {
+    // V_RANGE joins the indexable kinds: range(4) is a lazy range now rather
+    // than a materialised list, and `$hits[3]` has to keep working (F-37).
+    if ((base.kind == V_LIST || base.kind == V_MAP || base.kind == V_RANGE) && has_sub && !call_open) {
         // Structured-value access: `$hits[0]`, `$m[1][2]`, `$info.name`,
         // `$info["name"]` — descend the continuation segments.
         value_t r = value_subpath_read(&base, sub);
@@ -858,8 +861,6 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
 // catches evaluation errors from its first argument (§3.9). They are
 // recognised by name in primary position, before object-tree lookup.
 
-#define EXPR_RANGE_MAX_ITEMS (1 << 20) // cap materialised range() lists
-
 static value_t eval_builtin_range(int argc, const value_t *argv) {
     int64_t start = 0, stop = 0, step = 1;
     bool ok = true, ok2 = true, ok3 = true;
@@ -879,20 +880,14 @@ static value_t eval_builtin_range(int argc, const value_t *argv) {
         return val_err("range: arguments must be integers");
     if (step == 0)
         return val_err("range: step must not be zero");
-    int64_t count = 0;
-    if (step > 0 && stop > start)
-        count = (stop - start + step - 1) / step;
-    else if (step < 0 && stop < start)
-        count = (start - stop + (-step) - 1) / (-step);
-    if (count > EXPR_RANGE_MAX_ITEMS)
-        return val_err("range: %lld items exceeds cap of %d", (long long)count, EXPR_RANGE_MAX_ITEMS);
-    value_t *items = count > 0 ? (value_t *)calloc((size_t)count, sizeof(value_t)) : NULL;
-    if (count > 0 && !items)
-        return val_err("range: out of memory");
-    int64_t v = start;
-    for (int64_t i = 0; i < count; i++, v += step)
-        items[i] = val_int(v);
-    return val_list(items, (size_t)count);
+    // Lazy: three integers, no allocation, however many values it denotes.
+    // This used to build a V_LIST capped at 2^20 entries, which at
+    // sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
+    // heap -- to run a loop.  `range(a,b)` and `a..b` are now the SAME value,
+    // which is what dissolves the finding: two spellings of one loop no longer
+    // have opposite safety properties (08-core-infra F-37).  The only cap left
+    // is on ITERATIONS, in exec_for, and it bounds time rather than memory.
+    return val_range_step(start, stop, step);
 }
 
 static value_t eval_builtin_len(int argc, const value_t *argv) {
@@ -909,7 +904,7 @@ static value_t eval_builtin_len(int argc, const value_t *argv) {
     case V_BYTES:
         return val_int((int64_t)v->bytes.n);
     case V_RANGE:
-        return val_int(v->range.stop > v->range.start ? v->range.stop - v->range.start : 0);
+        return val_int((int64_t)val_range_count(v));
     default:
         return val_err("len: takes a string, list, map, bytes, or range");
     }
@@ -1338,10 +1333,24 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Mul / Add / Shift / Bitwise ============================================
 
-static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2, char *err) {
+// numeric_op reports a failure twice: as the returned V_ERROR, and through
+// the caller's `err` buffer, which the lexer turns into a position-tagged
+// diagnostic.  Only the non-numeric path used to write the buffer; the other
+// fourteen returns left it untouched, and all six callers then read
+// `err[0]` -- an uninitialised stack array.  So `${1/0}` reported whatever
+// was on the stack instead of "division by zero", and only sometimes.
+//
+// One macro now writes both, so they cannot disagree and cannot be forgotten.
+#define NUM_FAIL(msg)                                                                                                  \
+    do {                                                                                                               \
+        snprintf(err, err_size, "%s", (msg));                                                                          \
+        return val_err("%s", (msg));                                                                                   \
+    } while (0)
+
+static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2, char *err, size_t err_size) {
     num_kind_t k = promote_pair(classify_numeric(a), classify_numeric(b));
     if (k == NK_NONE) {
-        snprintf(err, 64, "non-numeric operand to '%c%s'", op, op2 ? (char[2]){op2, 0} : (char[1]){0});
+        snprintf(err, err_size, "non-numeric operand to '%c%s'", op, op2 ? (char[2]){op2, 0} : (char[1]){0});
         return val_err("non-numeric");
     }
     value_t pa = coerce_to(k, a);
@@ -1363,7 +1372,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             z = x / y;
             break;
@@ -1373,7 +1382,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
         default:
             value_free(&pa);
             value_free(&pb);
-            return val_err("bad op for float");
+            NUM_FAIL("bad op for float");
         }
         r = val_float(z);
     } else if (k == NK_INT) {
@@ -1392,13 +1401,13 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             // INT64_MIN / -1 overflows signed int (UB).
             if (x == INT64_MIN && y == -1) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("integer overflow in division");
+                NUM_FAIL("integer overflow in division");
             }
             z = x / y;
             break;
@@ -1406,12 +1415,12 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             if (x == INT64_MIN && y == -1) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("integer overflow in modulo");
+                NUM_FAIL("integer overflow in modulo");
             }
             z = x % y;
             break;
@@ -1428,7 +1437,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y < 0 || y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = (int64_t)((uint64_t)x << y); // avoid signed shift UB
             break;
@@ -1436,14 +1445,14 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y < 0 || y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = x >> y;
             break; // arithmetic shift on signed (proposal §2.3)
         default:
             value_free(&pa);
             value_free(&pb);
-            return val_err("bad op for int");
+            NUM_FAIL("bad op for int");
         }
         r = val_int(z);
     } else { // NK_UINT
@@ -1462,7 +1471,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             z = x / y;
             break;
@@ -1470,7 +1479,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y == 0) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("division by zero");
+                NUM_FAIL("division by zero");
             }
             z = x % y;
             break;
@@ -1487,7 +1496,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = x << y;
             break;
@@ -1495,14 +1504,14 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             if (y >= 64) {
                 value_free(&pa);
                 value_free(&pb);
-                return val_err("shift count out of range");
+                NUM_FAIL("shift count out of range");
             }
             z = x >> y;
             break;
         default:
             value_free(&pa);
             value_free(&pb);
-            return val_err("bad op for uint");
+            NUM_FAIL("bad op for uint");
         }
         r = val_uint(0, z);
     }
@@ -1512,6 +1521,8 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
     err[0] = '\0';
     return r;
 }
+
+#undef NUM_FAIL
 
 static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
     value_t a = parse_unary(L, ctx);
@@ -1528,8 +1539,8 @@ static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, op, 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1601,8 +1612,8 @@ static value_t parse_add(lex_t *L, const expr_ctx_t *ctx) {
             a = r;
             continue;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, op, 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, op, 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1632,8 +1643,8 @@ static value_t parse_shift(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, op, op, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, op, op, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1660,8 +1671,8 @@ static value_t parse_bitand(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, '&', 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, '&', 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1687,8 +1698,8 @@ static value_t parse_bitxor(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, '^', 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, '^', 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1715,8 +1726,8 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
             value_free(&a);
             return b;
         }
-        char err[64];
-        value_t r = numeric_op(&a, &b, '|', 0, err);
+        char err[64] = "";
+        value_t r = numeric_op(&a, &b, '|', 0, err, sizeof(err));
         value_free(&a);
         value_free(&b);
         if (val_is_error(&r) && err[0])
@@ -1887,6 +1898,32 @@ static void skip_logand(lex_t *L, const expr_ctx_t *ctx) {
     memcpy(L->err, saved_msg, sizeof(L->err));
 }
 
+// The ternary's counterparts to skip_equality / skip_logand.
+//
+// "Skip" means what it means for `&&` and `||`: parse the branch, discard its
+// value, and suppress any error it raised.  It does NOT mean the branch goes
+// unevaluated -- a method call in it still runs, exactly as one in the
+// short-circuited side of `&&` still runs.  08-core-infra F-08 reads the
+// existing helpers as laziness; they are not, and the ternary now has parity
+// with them rather than a property the language does not offer.
+//
+// What this does fix is the guard idiom.  `${x != 0 ? 100/x : 0}` used to
+// evaluate 100/x whatever x was, and lex_error is sticky, so a division by
+// zero in the untaken branch failed the whole expression.
+static void skip_expr(lex_t *L, const expr_ctx_t *ctx);
+
+static void skip_ternary(lex_t *L, const expr_ctx_t *ctx) {
+    bool saved = L->err_set;
+    char saved_msg[sizeof(L->err)];
+    memcpy(saved_msg, L->err, sizeof(L->err));
+    L->err_set = false;
+    L->err[0] = '\0';
+    value_t v = parse_ternary(L, ctx);
+    value_free(&v);
+    L->err_set = saved;
+    memcpy(L->err, saved_msg, sizeof(L->err));
+}
+
 static value_t parse_logand(lex_t *L, const expr_ctx_t *ctx) {
     value_t a = parse_equality(L, ctx);
     if (L->err_set)
@@ -1953,9 +1990,19 @@ static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
     if (*L->p != '?')
         return c;
     L->p++;
-    bool truthy = !val_is_error(&c) && val_as_bool(&c);
+
     bool err = val_is_error(&c);
-    value_t t = parse_expr(L, ctx);
+    bool truthy = !err && val_as_bool(&c);
+
+    // Only the selected branch is evaluated for its value; the other is
+    // parsed and discarded, so the cursor still advances past it and its
+    // errors do not escape.  A failed condition discards both.
+    value_t t = val_none();
+    if (err || !truthy)
+        skip_expr(L, ctx);
+    else
+        t = parse_expr(L, ctx);
+
     lex_skip_ws(L);
     if (*L->p != ':') {
         value_free(&c);
@@ -1964,20 +2011,37 @@ static value_t parse_ternary(lex_t *L, const expr_ctx_t *ctx) {
         return val_err("ternary");
     }
     L->p++;
-    value_t f = parse_ternary(L, ctx);
+
+    value_t f = val_none();
+    if (err || truthy)
+        skip_ternary(L, ctx);
+    else
+        f = parse_ternary(L, ctx);
+
     if (err) {
         value_free(&t);
         value_free(&f);
         return c; // error propagates
     }
+    value_free(&c);
     if (truthy) {
-        value_free(&c);
         value_free(&f);
         return t;
     }
-    value_free(&c);
     value_free(&t);
     return f;
+}
+
+static void skip_expr(lex_t *L, const expr_ctx_t *ctx) {
+    bool saved = L->err_set;
+    char saved_msg[sizeof(L->err)];
+    memcpy(saved_msg, L->err, sizeof(L->err));
+    L->err_set = false;
+    L->err[0] = '\0';
+    value_t v = parse_expr(L, ctx);
+    value_free(&v);
+    L->err_set = saved;
+    memcpy(L->err, saved_msg, sizeof(L->err));
 }
 
 static value_t parse_expr(lex_t *L, const expr_ctx_t *ctx) {
@@ -2037,189 +2101,39 @@ static void buf_append(char **buf, size_t *len, size_t *cap, const char *s, size
     (*buf)[*len] = '\0';
 }
 
+// snprintf reports the length it WOULD have written, so appending `n` bytes
+// out of a fixed scratch buffer reads past the end of it whenever the value
+// did not fit.  Every site that appends an snprintf result goes through here.
+//
+// The easiest trigger is not a format spec at all: `<error: %s>` rendered into
+// a 64-byte buffer overreads for any error message longer than about 54
+// characters, with no `${...:FMT}` involved (F-02).
+static void buf_append_formatted(char **buf, size_t *len, size_t *cap, const char *tmp, size_t tmp_size, int n) {
+    if (n <= 0)
+        return;
+    size_t take = (size_t)n;
+    if (take >= tmp_size)
+        take = tmp_size - 1;
+    buf_append(buf, len, cap, tmp, take);
+}
+
+// Both formatters below are now thin bridges onto the one renderer in
+// value_format.c.  They keep expr.c's (char**, len, cap) buffer shape, whose
+// growth semantics vbuf_t reproduces exactly, so no caller changes.
+static void vbuf_bridge(const value_t *v, value_format_mode_t mode, char **buf, size_t *len, size_t *cap) {
+    vbuf_t b = {.p = *buf, .len = *len, .cap = *cap};
+    value_format(v, mode, &b);
+    *buf = b.p;
+    *len = b.len;
+    *cap = b.cap;
+}
+
 static void format_value_default(const value_t *v, char **buf, size_t *len, size_t *cap) {
-    char tmp[64];
-    int n = 0;
-    switch (v->kind) {
-    case V_NONE:
-        buf_append(buf, len, cap, "", 0);
-        return;
-    case V_BOOL:
-        n = snprintf(tmp, sizeof(tmp), "%s", v->b ? "true" : "false");
-        break;
-    case V_INT:
-        n = snprintf(tmp, sizeof(tmp), (v->flags & VAL_HEX) ? "0x%llx" : "%lld",
-                     (v->flags & VAL_HEX) ? (long long)(uint64_t)v->i : (long long)v->i);
-        break;
-    case V_UINT:
-        n = snprintf(tmp, sizeof(tmp), (v->flags & VAL_HEX) ? "0x%llx" : "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        n = snprintf(tmp, sizeof(tmp), "%g", v->f);
-        break;
-    case V_STRING:
-        if (v->s)
-            buf_append(buf, len, cap, v->s, strlen(v->s));
-        return;
-    case V_BYTES:
-        for (size_t i = 0; i < v->bytes.n; i++) {
-            int k = snprintf(tmp, sizeof(tmp), "%02x", v->bytes.p[i]);
-            if (k > 0)
-                buf_append(buf, len, cap, tmp, (size_t)k);
-        }
-        return;
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            buf_append(buf, len, cap, v->enm.table[v->enm.idx], strlen(v->enm.table[v->enm.idx]));
-        else
-            n = snprintf(tmp, sizeof(tmp), "<enum:%d>", v->enm.idx);
-        break;
-    case V_OBJECT:
-        n = snprintf(tmp, sizeof(tmp), "<object>");
-        break;
-    case V_ERROR:
-        n = snprintf(tmp, sizeof(tmp), "<error: %s>", v->err ? v->err : "");
-        break;
-    case V_REF:
-        if (v->ref)
-            buf_append(buf, len, cap, v->ref, strlen(v->ref));
-        return;
-    case V_RANGE:
-        n = snprintf(tmp, sizeof(tmp), "%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
-        break;
-    case V_LIST:
-        buf_append(buf, len, cap, "[", 1);
-        for (size_t i = 0; i < v->list.len; i++) {
-            if (i)
-                buf_append(buf, len, cap, ", ", 2);
-            format_value_default(&v->list.items[i], buf, len, cap);
-        }
-        buf_append(buf, len, cap, "]", 1);
-        return;
-    case V_MAP:
-        // Maps interpolate as canonical compact JSON so `${machine.profile(m)}`
-        // stays machine-parseable text (schema probes pipe it to JSON parsers).
-        format_value_json_text(v, buf, len, cap);
-        return;
-    }
-    if (n > 0)
-        buf_append(buf, len, cap, tmp, (size_t)n);
+    vbuf_bridge(v, VFMT_TEXT, buf, len, cap);
 }
 
-// Append `s` as a JSON string literal (quotes + RFC 8259 escapes) to the
-// growable buffer. Serialization twin of api.c's buf_append_jstring.
-static void buf_append_json_string(char **buf, size_t *len, size_t *cap, const char *s) {
-    buf_append(buf, len, cap, "\"", 1);
-    for (const char *p = s ? s : ""; *p; p++) {
-        unsigned char c = (unsigned char)*p;
-        char esc[8];
-        switch (c) {
-        case '"':
-            buf_append(buf, len, cap, "\\\"", 2);
-            break;
-        case '\\':
-            buf_append(buf, len, cap, "\\\\", 2);
-            break;
-        case '\n':
-            buf_append(buf, len, cap, "\\n", 2);
-            break;
-        case '\r':
-            buf_append(buf, len, cap, "\\r", 2);
-            break;
-        case '\t':
-            buf_append(buf, len, cap, "\\t", 2);
-            break;
-        default:
-            if (c < 0x20) {
-                int k = snprintf(esc, sizeof(esc), "\\u%04x", c);
-                buf_append(buf, len, cap, esc, (size_t)k);
-            } else {
-                buf_append(buf, len, cap, (const char *)&c, 1);
-            }
-        }
-    }
-    buf_append(buf, len, cap, "\"", 1);
-}
-
-// Render a value subtree as strict compact JSON (the map interpolation
-// form). Follows the same per-kind rules as the gsEval bridge's
-// format_value_json so `${map}` text and the bridge agree byte-for-byte.
 static void format_value_json_text(const value_t *v, char **buf, size_t *len, size_t *cap) {
-    char tmp[64];
-    int n = 0;
-    switch (v->kind) {
-    case V_NONE:
-        buf_append(buf, len, cap, "null", 4);
-        return;
-    case V_BOOL:
-        buf_append(buf, len, cap, v->b ? "true" : "false", v->b ? 4 : 5);
-        return;
-    case V_INT:
-        n = snprintf(tmp, sizeof(tmp), "%lld", (long long)v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            n = snprintf(tmp, sizeof(tmp), "\"0x%llx\"", (unsigned long long)v->u);
-        else
-            n = snprintf(tmp, sizeof(tmp), "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        n = snprintf(tmp, sizeof(tmp), "%g", v->f);
-        break;
-    case V_STRING:
-        buf_append_json_string(buf, len, cap, v->s);
-        return;
-    case V_BYTES:
-        buf_append(buf, len, cap, "\"0x", 3);
-        for (size_t i = 0; i < v->bytes.n; i++) {
-            int k = snprintf(tmp, sizeof(tmp), "%02x", v->bytes.p[i]);
-            buf_append(buf, len, cap, tmp, (size_t)k);
-        }
-        buf_append(buf, len, cap, "\"", 1);
-        return;
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            buf_append_json_string(buf, len, cap, v->enm.table[v->enm.idx]);
-        else
-            n = snprintf(tmp, sizeof(tmp), "%d", v->enm.idx);
-        break;
-    case V_LIST:
-        buf_append(buf, len, cap, "[", 1);
-        for (size_t i = 0; i < v->list.len; i++) {
-            if (i)
-                buf_append(buf, len, cap, ",", 1);
-            format_value_json_text(&v->list.items[i], buf, len, cap);
-        }
-        buf_append(buf, len, cap, "]", 1);
-        return;
-    case V_MAP:
-        buf_append(buf, len, cap, "{", 1);
-        for (size_t i = 0; i < v->map.len; i++) {
-            if (i)
-                buf_append(buf, len, cap, ",", 1);
-            buf_append_json_string(buf, len, cap, v->map.entries[i].key);
-            buf_append(buf, len, cap, ":", 1);
-            format_value_json_text(&v->map.entries[i].val, buf, len, cap);
-        }
-        buf_append(buf, len, cap, "}", 1);
-        return;
-    case V_OBJECT:
-    case V_ERROR:
-    case V_REF:
-    case V_RANGE:
-        // Non-data kinds inside a map: fall back to the display form,
-        // quoted so the surrounding document stays valid JSON.
-        {
-            char *inner = NULL;
-            size_t ilen = 0, icap = 0;
-            format_value_default(v, &inner, &ilen, &icap);
-            buf_append_json_string(buf, len, cap, inner ? inner : "");
-            free(inner);
-        }
-        return;
-    }
-    if (n > 0)
-        buf_append(buf, len, cap, tmp, (size_t)n);
+    vbuf_bridge(v, VFMT_JSON, buf, len, cap);
 }
 
 // Format a value with an optional spec (proposal §4.2.1).
@@ -2230,96 +2144,148 @@ static void format_value_json_text(const value_t *v, char **buf, size_t *len, si
 //   [0]<W>d        width-padded decimal
 //   [0]<W>x|X      width-padded hex
 //   %<printf>      printf-style escape hatch (e.g. %-10s, %5d)
+// === Format specs =========================================================
+//
+// `${EXPR:FMT}` lets a script choose how a value renders.  The FMT text is
+// user input: it arrives from a script line, a logpoint `message=`, or a
+// gsEval string, and scripts under tests/integration/ are the same language,
+// so this is not a privileged surface.
+//
+// It used to be handed to snprintf as the format string.  Two consequences:
+//
+//   ${1:%s%d}  -- a second conversion reads the varargs area past the one
+//                 argument bound, passing a long long where %s expects a
+//                 pointer: an immediate crash or an arbitrary read.
+//   ${1:%n%d}  -- %n was rejected only when it was the LAST character, so
+//                 this selected the 'd' branch and executed %n, which WRITES
+//                 through a pointer taken from varargs.  An arbitrary-write
+//                 primitive available to any script line.
+//
+// So the user's text never reaches printf.  It is parsed into the struct
+// below, and the format string snprintf receives is REBUILT from those
+// fields -- one conversion, no %n, no '*', nothing the parser did not
+// produce itself.
+typedef struct {
+    bool left; // '-'
+    bool zero; // '0'
+    int width; // clamped to SPEC_MAX_FIELD
+    int prec; // -1 when unset
+    char conv; // one of d i o u x X f e E g G s
+} spec_t;
+
+// Width and precision are clamped so the rendered field cannot approach the
+// scratch buffer's size.  ${1:0500d} asked for a 500-character field out of a
+// 160-byte buffer, and snprintf's return value -- the length it WOULD have
+// written -- was then used as the copy length (F-02).
+#define SPEC_MAX_FIELD 64
+
+static bool spec_conv_valid(char c) {
+    switch (c) {
+    case 'd':
+    case 'i':
+    case 'o':
+    case 'u':
+    case 'x':
+    case 'X':
+    case 'f':
+    case 'e':
+    case 'E':
+    case 'g':
+    case 'G':
+    case 's':
+        return true;
+    default:
+        return false; // notably 'n', and anything else
+    }
+}
+
+// Parse `[%][-][0][width][.prec]conv`.  Returns false for anything that does
+// not match exactly -- a second '%', a '*', an unknown conversion, trailing
+// text -- and the caller then renders the value in its default form rather
+// than guessing at what was meant.
+static bool parse_spec(const char *spec, spec_t *out) {
+    const char *p = spec;
+    *out = (spec_t){.left = false, .zero = false, .width = 0, .prec = -1, .conv = 0};
+    if (*p == '%')
+        p++;
+    if (*p == '-') {
+        out->left = true;
+        p++;
+    }
+    if (*p == '0') {
+        out->zero = true;
+        p++;
+    }
+    while (*p >= '0' && *p <= '9') {
+        if (out->width < SPEC_MAX_FIELD)
+            out->width = out->width * 10 + (*p - '0');
+        p++;
+    }
+    if (*p == '.') {
+        p++;
+        out->prec = 0;
+        while (*p >= '0' && *p <= '9') {
+            if (out->prec < SPEC_MAX_FIELD)
+                out->prec = out->prec * 10 + (*p - '0');
+            p++;
+        }
+    }
+    if (!spec_conv_valid(*p))
+        return false;
+    out->conv = *p++;
+    if (*p != '\0')
+        return false; // trailing text: a second conversion, or junk
+    if (out->width > SPEC_MAX_FIELD)
+        out->width = SPEC_MAX_FIELD;
+    if (out->prec > SPEC_MAX_FIELD)
+        out->prec = SPEC_MAX_FIELD;
+    return true;
+}
+
+// Rebuild a one-conversion printf format from the parsed fields.  `len_mod`
+// is the length modifier the argument needs ("ll" for integers, "" for double
+// and char*).
+static void spec_build_fmt(const spec_t *sp, const char *len_mod, char *out, size_t out_size) {
+    char wbuf[16] = "";
+    char pbuf[16] = "";
+    if (sp->width > 0)
+        snprintf(wbuf, sizeof(wbuf), "%d", sp->width);
+    if (sp->prec >= 0)
+        snprintf(pbuf, sizeof(pbuf), ".%d", sp->prec);
+    snprintf(out, out_size, "%%%s%s%s%s%s%c", sp->left ? "-" : "", sp->zero ? "0" : "", wbuf, pbuf, len_mod, sp->conv);
+}
+
 static void format_value_with_spec(const value_t *v, const char *spec, char **buf, size_t *len, size_t *cap) {
     if (!spec || !*spec) {
         format_value_default(v, buf, len, cap);
         return;
     }
 
-    char tmp[160];
-    int n = 0;
-
-    // %<printf> escape hatch.
-    if (spec[0] == '%') {
-        const char *fmt_inner = spec; // includes leading '%'
-        // Build a printf-compatible format string. The spec arrives
-        // without the trailing conversion expectation, so we just hand
-        // the user's exact format to snprintf with the value bound to
-        // its declared kind. Coerce numerically for d/x/u/i; pass the
-        // string body for s; everything else falls back to default.
-        char endc = '\0';
-        for (size_t i = 1; spec[i]; i++)
-            endc = spec[i];
-        switch (endc) {
-        case 'd':
-        case 'i': {
-            bool ok = false;
-            int64_t iv = val_as_i64(v, &ok);
-            if (!ok)
-                iv = 0;
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, (long long)iv);
-            break;
-        }
-        case 'u':
-        case 'x':
-        case 'X':
-        case 'o': {
-            bool ok = false;
-            uint64_t uv = val_as_u64(v, &ok);
-            if (!ok)
-                uv = 0;
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, (unsigned long long)uv);
-            break;
-        }
-        case 'f':
-        case 'e':
-        case 'g':
-        case 'E':
-        case 'G': {
-            bool ok = false;
-            double dv = val_as_f64(v, &ok);
-            if (!ok)
-                dv = 0.0;
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, dv);
-            break;
-        }
-        case 's':
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, v->kind == V_STRING ? (v->s ? v->s : "") : "");
-            break;
-        default:
-            format_value_default(v, buf, len, cap);
-            return;
-        }
-        if (n > 0)
-            buf_append(buf, len, cap, tmp, (size_t)n);
+    spec_t sp;
+    if (!parse_spec(spec, &sp)) {
+        format_value_default(v, buf, len, cap);
         return;
     }
 
-    // Width-prefixed forms: optional '0' then digits then conversion.
-    char conv = spec[strlen(spec) - 1];
-    bool zero_pad = (spec[0] == '0');
-    int width = 0;
-    for (const char *q = spec + (zero_pad ? 1 : 0); *q && *q != conv; q++) {
-        if (*q >= '0' && *q <= '9')
-            width = width * 10 + (*q - '0');
-    }
+    char tmp[160];
+    char fmt[32];
+    int n = 0;
 
-    switch (conv) {
-    case 'd': {
+    switch (sp.conv) {
+    case 'd':
+    case 'i': {
         bool ok = false;
         int64_t iv = val_as_i64(v, &ok);
         if (!ok) {
             format_value_default(v, buf, len, cap);
             return;
         }
-        if (zero_pad && width > 0)
-            n = snprintf(tmp, sizeof(tmp), "%0*lld", width, (long long)iv);
-        else if (width > 0)
-            n = snprintf(tmp, sizeof(tmp), "%*lld", width, (long long)iv);
-        else
-            n = snprintf(tmp, sizeof(tmp), "%lld", (long long)iv);
+        spec_build_fmt(&sp, "ll", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, (long long)iv);
         break;
     }
+    case 'o':
+    case 'u':
     case 'x':
     case 'X': {
         bool ok = false;
@@ -2328,27 +2294,51 @@ static void format_value_with_spec(const value_t *v, const char *spec, char **bu
             format_value_default(v, buf, len, cap);
             return;
         }
-        const char *fmt = (conv == 'X') ? (zero_pad && width > 0 ? "%0*llX" : (width > 0 ? "%*llX" : "%llX"))
-                                        : (zero_pad && width > 0 ? "%0*llx" : (width > 0 ? "%*llx" : "%llx"));
-        if (width > 0)
-            n = snprintf(tmp, sizeof(tmp), fmt, width, (unsigned long long)uv);
-        else
-            n = snprintf(tmp, sizeof(tmp), fmt, (unsigned long long)uv);
+        spec_build_fmt(&sp, "ll", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, (unsigned long long)uv);
         break;
     }
-    case 's':
-        if (v->kind == V_STRING) {
-            buf_append(buf, len, cap, v->s ? v->s : "", v->s ? strlen(v->s) : 0);
+    case 'f':
+    case 'e':
+    case 'E':
+    case 'g':
+    case 'G': {
+        bool ok = false;
+        double dv = val_as_f64(v, &ok);
+        if (!ok) {
+            format_value_default(v, buf, len, cap);
             return;
         }
-        format_value_default(v, buf, len, cap);
-        return;
+        spec_build_fmt(&sp, "", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, dv);
+        break;
+    }
+    case 's': {
+        if (v->kind != V_STRING) {
+            format_value_default(v, buf, len, cap);
+            return;
+        }
+        const char *sv = v->s ? v->s : "";
+        // An unadorned %s appends the string whole; only a width or precision
+        // needs the scratch buffer, and those are clamped.
+        if (sp.width == 0 && sp.prec < 0) {
+            buf_append(buf, len, cap, sv, strlen(sv));
+            return;
+        }
+        spec_build_fmt(&sp, "", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, sv);
+        break;
+    }
     default:
         format_value_default(v, buf, len, cap);
         return;
     }
-    if (n > 0)
-        buf_append(buf, len, cap, tmp, (size_t)n);
+
+    // snprintf returns the length it WOULD have written.  Clamping here is
+    // what stops that value being used as a copy length out of `tmp` (F-02);
+    // the field clamps above make truncation unreachable in practice, and
+    // this is the guard that holds if one is ever relaxed.
+    buf_append_formatted(buf, len, cap, tmp, sizeof(tmp), n);
 }
 
 // Split body at the rightmost top-level ':' that introduces a format
@@ -2357,6 +2347,7 @@ static void format_value_with_spec(const value_t *v, const char *spec, char **bu
 // expression body.
 static int find_format_colon(const char *body, size_t blen) {
     int depth = 0;
+    int ternary_depth = 0;
     bool in_str = false;
     int last = -1;
     for (size_t i = 0; i < blen; i++) {
@@ -2378,6 +2369,16 @@ static int find_format_colon(const char *body, size_t blen) {
             depth++;
         else if (c == ')' || c == ']' || c == '}')
             depth--;
+        else if (c == '?' && depth == 0)
+            // A ternary's ':' belongs to the ternary, not to a format spec.
+            // Without this the scanner took the rightmost top-level ':' and
+            // split `${a ? 1 : 2}` into the expression `a ? 1 ` and the spec
+            // ` 2`, so the expression then failed with "expected ':' in
+            // ternary" -- making the ternary and `${...}` mutually exclusive,
+            // though both are documented parts of the language (F-09).
+            ternary_depth++;
+        else if (c == ':' && depth == 0 && ternary_depth > 0)
+            ternary_depth--;
         else if (c == ':' && depth == 0)
             last = (int)i;
     }

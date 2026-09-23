@@ -51,10 +51,14 @@
 // Link stubs
 // ============================================================
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp, (void)data, (void)size, (void)file, (void)line;
 }
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp, (void)data, (void)size, (void)file, (void)line;
 }
 int system_input_key(int adb_code, bool down) {
@@ -77,8 +81,9 @@ int debug_mac_resolve_key_name(const char *name) {
     return -1;
 }
 
-event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)s, (void)cb, (void)src, (void)data, (void)cycles, (void)ns;
     return NULL;
 }

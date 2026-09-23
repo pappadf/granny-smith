@@ -6,6 +6,8 @@
 
 #include "object.h"
 
+#include "parse.h"
+
 #include <assert.h>
 #include <ctype.h>
 #include <inttypes.h>
@@ -95,17 +97,69 @@ void object_root_reset(void) {
     // before we free the root. Callers own the children themselves.
     while (g_root->first_child)
         object_detach(g_root->first_child);
-    // Free the cached Meta node on the root, if any. Callers leak the
-    // synthetic introspection node otherwise — object_delete is the only
-    // path that runs meta_node_release, and the root bypasses it here.
-    meta_node_release(g_root);
-    free(g_root);
-    g_root = NULL;
+    // Route through object_delete rather than freeing directly.
+    //
+    // This path used to detach, release the Meta node and free() -- skipping
+    // object_fire_invalidators and the destructor hook, both of which
+    // object_delete runs.  The invalidator contract is the mechanism that
+    // makes a held node safe: shell_var.c's binding_store registers one on
+    // whatever V_OBJECT it holds, and without the fire it keeps a `watched`
+    // pointer into freed memory and is never marked stale, so the next read
+    // dereferences it.  This was the one path that bypassed it (F-57).
+    //
+    // Blast radius is small -- tests and process exit are the callers -- but
+    // it is the contract, not an optimisation, and a path that opts out of it
+    // is how the next holder gets a dangling pointer.
+    struct object *root = g_root;
+    g_root = NULL; // clear first: the destructor must not re-enter through it
+    object_delete(root);
 }
+
+#ifndef GS_FAST
+// object_validate_class() is the object model's only structural check, and
+// until now the only thing that ran it was root.c's stub registrar -- about a
+// dozen classes.  The hundred-odd that reach the tree through object_new()
+// were never checked at all.
+//
+// That gap is not hypothetical.  A block-scope `static const class_desc_t
+// ppc_mmu_class;` in ppc.c is not a declaration of the file-scope descriptor,
+// it is a second, zero-filled object that shadows it -- so machine.cpu.mmu and
+// machine.cpu.fpu on every PowerPC machine came up with a NULL class name and
+// no members, and nothing anywhere said a word.
+//
+// So validate here, where every node passes.  The result is cached per
+// descriptor because validation is O(members^2) in the duplicate-name check
+// and some classes (AppleTalk sessions, SCSI devices) are instantiated at
+// runtime rather than once at boot.
+//
+// A failure prints and continues rather than refusing the object: the node
+// staying absent is the quiet failure this is here to end.  Stripped entirely
+// under GS_FAST -- the shipping build trusts what the debug build proved.
+#define OBJ_VALIDATED_CACHE 192
+static const class_desc_t *g_validated[OBJ_VALIDATED_CACHE];
+static size_t g_validated_count;
+
+static void validate_class_once(const class_desc_t *cls) {
+    for (size_t i = 0; i < g_validated_count; i++)
+        if (g_validated[i] == cls)
+            return;
+    char err[200];
+    if (!object_validate_class(cls, err, sizeof(err)))
+        fprintf(stderr, "object: class '%s' invalid: %s\n", cls->name ? cls->name : "(unnamed)", err);
+    if (g_validated_count < OBJ_VALIDATED_CACHE)
+        g_validated[g_validated_count++] = cls;
+}
+#endif
+
+// The "no default, but not a hole" sentinel — see object_validate_class.
+const value_t obj_arg_unset = {.kind = V_NONE};
 
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
     if (!cls)
         return NULL;
+#ifndef GS_FAST
+    validate_class_once(cls);
+#endif
     struct object *o = (struct object *)calloc(1, sizeof(*o));
     if (!o)
         return NULL;
@@ -424,6 +478,25 @@ bool object_validate_name(const char *name, char *err_buf, size_t err_size) {
 // Forward declaration: defined in the validator section below.
 static const char *kind_name(value_kind_t k);
 
+// A V_ENUM table must be NULL-terminated: validate_slot and the tab completer
+// both walk one looking for the sentinel, so a table without it reads past its
+// own end.  Checking only [0] -- which is all this used to do -- catches an
+// absent table and misses an unterminated one, and three tables in the tree
+// were unterminated (08-core-infra N-01, the shape F-04 warns about).
+//
+// The bound is generous: it exists so a malformed table is a validation
+// failure rather than a walk off the end, not to limit real enums.
+#define OBJ_MAX_ENUM_VALUES 256
+
+static bool enum_table_ok(const char *const *table) {
+    if (!table || !table[0])
+        return false;
+    for (size_t i = 0; i < OBJ_MAX_ENUM_VALUES; i++)
+        if (!table[i])
+            return true;
+    return false;
+}
+
 // Helpers for §3.13 ordering / coercion checks.
 static bool kind_supports_width(value_kind_t k) {
     return k == V_INT || k == V_UINT;
@@ -467,6 +540,19 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             }
         }
 
+        // Every attribute and method carries doc text.  The object tree is the
+        // documentation -- `help machine.via1` is what a reader has instead of
+        // a manual -- so a member without a `.doc` is a member that silently
+        // documents nothing, and 76 of them had accumulated before anything
+        // checked.  Debug builds only: the shipping build trusts the strings
+        // the debug build proved are there, and does not carry the check.
+        if ((m->kind == M_ATTR || m->kind == M_METHOD) && (!m->doc || !m->doc[0])) {
+            if (err_buf && err_size)
+                snprintf(err_buf, err_size, "%s.%s: %s has no .doc text", cls->name, m->name,
+                         m->kind == M_ATTR ? "attribute" : "method");
+            return false;
+        }
+
         // Method-arg ordering / coercion invariants (proposal §3.13).
         if (m->kind == M_METHOD && m->method.args && m->method.nargs > 0) {
             const arg_decl_t *args = m->method.args;
@@ -506,17 +592,28 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                                  m->name, p->name ? p->name : "?");
                     return false;
                 }
-                if (p->default_value && p->default_value->kind != p->kind) {
+                // A V_NONE default is the "no default, but not a hole"
+                // sentinel (obj_arg_unset).  node_validate_args only truncates
+                // argc at the tail, so an optional slot that a caller skipped
+                // has to be *filled* with something before the later optionals
+                // it precedes; V_NONE is that something, and the body reads it
+                // as "not supplied".  It is deliberately exempt from the
+                // kind-match rule below -- the alternative is what
+                // logpoints.add used to do, declare V_UINT and default to
+                // V_INT -1, which forced the body to re-discriminate the kind
+                // it had already declared.
+                if (p->default_value && p->default_value->kind != V_NONE && p->default_value->kind != p->kind) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: default for arg '%s' is %s, declared %s", cls->name,
                                  m->name, p->name ? p->name : "?", kind_name(p->default_value->kind),
                                  kind_name(p->kind));
                     return false;
                 }
-                if (p->kind == V_ENUM && (!p->enum_values || !p->enum_values[0])) {
+                if (p->kind == V_ENUM && !enum_table_ok(p->enum_values)) {
                     if (err_buf && err_size)
-                        snprintf(err_buf, err_size, "%s.%s: arg '%s' is V_ENUM but has no enum_values table", cls->name,
-                                 m->name, p->name ? p->name : "?");
+                        snprintf(err_buf, err_size,
+                                 "%s.%s: arg '%s' is V_ENUM but has a missing or unterminated enum_values table",
+                                 cls->name, m->name, p->name ? p->name : "?");
                     return false;
                 }
                 if (p->width && !kind_supports_width(p->kind)) {
@@ -529,6 +626,33 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: arg '%s' has unsupported width %u (allowed: 0,1,2,4,8,10)",
                                  cls->name, m->name, p->name ? p->name : "?", p->width);
+                    return false;
+                }
+            }
+            // An optional slot with no default is only reachable by *tail*
+            // truncation: node_validate_args fills skipped slots from their
+            // defaults and can shorten argc only at the end.  So an optional
+            // slot that is followed by another optional and has no default is
+            // a hole nobody can step over -- naming any later argument fails
+            // with "missing argument '<this one>'", which is how
+            // debug.breakpoints.add(addr, space="physical") became impossible
+            // to call.  Give such a slot a real default, or &obj_arg_unset --
+            // or, if it belongs to an all-or-nothing group the body checks by
+            // argument count, say so with OBJ_ARG_GROUPED.
+            for (int a = 0; a < nargs - 1; a++) {
+                if (!(args[a].validation_flags & OBJ_ARG_OPTIONAL) || args[a].default_value)
+                    continue;
+                if (args[a].validation_flags & OBJ_ARG_GROUPED)
+                    continue; // all-or-nothing group: skipping it alone is not a legal call
+                for (int b = a + 1; b < nargs; b++) {
+                    if (!(args[b].validation_flags & OBJ_ARG_OPTIONAL))
+                        continue;
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size,
+                                 "%s.%s: optional arg '%s' has no default but '%s' follows it, so naming '%s' is "
+                                 "impossible",
+                                 cls->name, m->name, args[a].name ? args[a].name : "?",
+                                 args[b].name ? args[b].name : "?", args[b].name ? args[b].name : "?");
                     return false;
                 }
             }
@@ -554,10 +678,19 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     snprintf(err_buf, err_size, "%s.%s: V_ANY is not a valid attribute kind", cls->name, m->name);
                 return false;
             }
-            if (m->attr.type == V_ENUM && (!m->attr.enum_values || !m->attr.enum_values[0])) {
+            // A writable V_ENUM slot needs the table: node_set's V_STRING ->
+            // V_ENUM coercion is the only thing that reads `enum_values` on an
+            // attribute, and without a table it can only reject the write.
+            // A read-only slot does not -- its getter builds the value with
+            // val_enum(), carrying the table inside the value, which is how
+            // image.type, scsi_bus.phase, scsi_device.type and floppy.type all
+            // work.  Demanding a second copy in the descriptor would be asking
+            // for two tables that can disagree.
+            if (m->attr.type == V_ENUM && m->attr.set && !enum_table_ok(m->attr.enum_values)) {
                 if (err_buf && err_size)
-                    snprintf(err_buf, err_size, "%s.%s: V_ENUM attribute slot has no enum_values table", cls->name,
-                             m->name);
+                    snprintf(err_buf, err_size,
+                             "%s.%s: writable V_ENUM attribute has a missing or unterminated enum_values table",
+                             cls->name, m->name);
                 return false;
             }
             if (!width_is_supported(m->attr.width)) {
@@ -590,34 +723,30 @@ static const char *skip_ws(const char *p) {
     return p;
 }
 
-// Try to read an integer (decimal, 0x.. hex, or 0b.. binary). On success
-// writes the value into *out and returns the position after the digits.
-// Returns NULL if no integer was recognised at *p.
+// Read an integer at *p through the one integer grammar the object model
+// has, parse_integer_literal (parse.c).  On success writes the value into
+// *out and returns the position after the digits; NULL if none was found.
+//
+// This was a third hand-rolled scanner accepting decimal, 0x and 0b -- while
+// parse_integer_literal also accepts 0o, 0d, `$`, `_` separators and u/i
+// suffixes, and node_child's accepted base-0 octal.  Three grammars, all
+// reachable from path resolution (08-core-infra F-11).
 static const char *parse_int(const char *p, long long *out) {
     if (!p)
         return NULL;
-    int base = 10;
-    int sign = 1;
-    if (*p == '-') {
-        sign = -1;
-        p++;
-    } else if (*p == '+') {
-        p++;
-    }
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        base = 16;
-        p += 2;
-    } else if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
-        base = 2;
-        p += 2;
-    }
-    char *endp = NULL;
-    long long v = strtoll(p, &endp, base);
-    if (!endp || endp == p)
+    const char *q = p;
+    value_t v = parse_integer_literal(&q);
+    if (val_is_error(&v)) {
+        value_free(&v);
         return NULL;
-    if (out)
-        *out = sign * v;
-    return endp;
+    }
+    bool ok = false;
+    int64_t iv = val_as_i64(&v, &ok);
+    value_free(&v);
+    if (!ok)
+        return NULL;
+    *out = (long long)iv;
+    return q;
 }
 
 // Try to read an identifier. On success copies up to buf_size-1 chars
@@ -657,12 +786,24 @@ node_t node_child(node_t n, const char *segment) {
     bool is_int = false;
     long long ival = 0;
     {
-        char *endp = NULL;
-        long long v = strtoll(segment, &endp, 0);
-        if (endp && endp != segment && *endp == '\0') {
-            is_int = true;
-            ival = v;
+        // One integer grammar, parse_integer_literal's.  This used to be
+        // strtoll(segment, &endp, 0) -- base 0, so a leading '0' meant OCTAL,
+        // while the bracket form `devices[010]` went through parse_int and
+        // read base 10.  So `devices.010` selected index 8 and
+        // `devices[010]` selected index 10, for the same object, and nobody
+        // writing a script could predict which grammar applied where
+        // (08-core-infra F-11).
+        const char *q = segment;
+        value_t iv = parse_integer_literal(&q);
+        if (!val_is_error(&iv) && q && *q == '\0') {
+            bool ok = false;
+            long long v = (long long)val_as_i64(&iv, &ok);
+            if (ok) {
+                is_int = true;
+                ival = v;
+            }
         }
+        value_free(&iv);
     }
 
     // Case 1: `n` is sitting on an indexed-child member with no index
@@ -994,17 +1135,53 @@ static void coerce_int_sign(value_t *out, value_kind_t target_kind, uint8_t widt
 }
 
 // Format a "{a, b, c}" list of enum values for error messages.
+// Render an enum's accepted values as `{a,b,c}`, truncating with an ellipsis
+// rather than running off the end of `buf`.
+//
+// This accumulated `off += wrote` where `wrote` is snprintf's WOULD-HAVE
+// length.  Once the names exceeded the buffer, `off` grew past `buf_size`,
+// the loop exited on `off < buf_size`, and the closing brace was written at
+// `buf + off` -- past the end of the array -- with `buf_size - off`
+// underflowing to a near-SIZE_MAX size_t (08-core-infra F-03).
+//
+// The work order calls this latent, because the longest enum table in the
+// tree totalled about 45 characters against a 120-byte buffer.  F-35 armed
+// it: `debug.log`'s category slot is an enum over all 62 log categories, so
+// a mistyped category now formats a ~400-character list.  The first thing
+// the typed method did on a bad name was overflow this.
 static void format_enum_list(char *buf, size_t buf_size, const char *const *values) {
+    if (!buf || buf_size == 0)
+        return;
     size_t off = 0;
-    int wrote = snprintf(buf + off, buf_size - off, "{");
-    if (wrote > 0)
-        off += (size_t)wrote;
-    for (size_t i = 0; values && values[i] && off < buf_size; i++) {
-        wrote = snprintf(buf + off, buf_size - off, "%s%s", i ? "," : "", values[i]);
-        if (wrote > 0)
-            off += (size_t)wrote;
+    bool truncated = false;
+
+    // Reserve room for the closing "}" (and "..." when truncating).
+    const size_t tail = 5; // "...}" plus the NUL
+    if (buf_size <= tail) {
+        buf[0] = '\0';
+        return;
     }
-    snprintf(buf + off, buf_size - off, "}");
+    const size_t limit = buf_size - tail;
+
+    buf[off++] = '{';
+    for (size_t i = 0; values && values[i]; i++) {
+        size_t sep = i ? 1u : 0u;
+        size_t n = strlen(values[i]);
+        if (off + sep + n >= limit) {
+            truncated = true;
+            break;
+        }
+        if (sep)
+            buf[off++] = ',';
+        memcpy(buf + off, values[i], n);
+        off += n;
+    }
+    if (truncated) {
+        memcpy(buf + off, "...", 3);
+        off += 3;
+    }
+    buf[off++] = '}';
+    buf[off] = '\0';
 }
 
 // Validate / coerce one slot. Writes a rewritten value to *out when coercion
@@ -1063,11 +1240,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
         else if (s->kind == V_BOOL && in->kind == V_STRING) {
             const char *str = in->s ? in->s : "";
             bool bv;
-            if (!strcmp(str, "true") || !strcmp(str, "on") || !strcmp(str, "yes") || !strcmp(str, "1"))
-                bv = true;
-            else if (!strcmp(str, "false") || !strcmp(str, "off") || !strcmp(str, "no") || !strcmp(str, "0"))
-                bv = false;
-            else {
+            if (!val_parse_bool(str, &bv)) {
                 snprintf(err_buf, err_size, "must be a boolean (true/false/on/off/yes/no), got '%.20s'", str);
                 return VALIDATE_ERR;
             }

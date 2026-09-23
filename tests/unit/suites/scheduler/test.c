@@ -146,8 +146,9 @@ static uint8_t g_cp[2][65536];
 static size_t g_cp_w[2], g_cp_r;
 static int g_cp_slot;
 
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
-    (void)checkpoint, (void)file, (void)line;
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
     if (g_cp_r + size > g_cp_w[0]) {
         memset(data, 0, size);
         return;
@@ -155,13 +156,22 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     memcpy(data, g_cp[0] + g_cp_r, size);
     g_cp_r += size;
 }
-void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
-                                      int line) {
-    (void)checkpoint, (void)file, (void)line;
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
     if (g_cp_w[g_cp_slot] + size > sizeof(g_cp[0]))
         return;
     memcpy(g_cp[g_cp_slot] + g_cp_w[g_cp_slot], data, size);
     g_cp_w[g_cp_slot] += size;
+}
+
+// The restore path flags a checkpoint it cannot trust instead of asserting on
+// it (08-core-infra F-05), so the stub records the call and the corruption
+// tests below assert on it.
+static int g_cp_errors;
+void checkpoint_set_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    g_cp_errors++;
 }
 
 // Object tree: the scheduler tolerates a NULL binding (object_new failure
@@ -213,6 +223,56 @@ value_t val_float(double f) {
     (void)f;
     return val_none();
 }
+value_t val_int(int64_t i) {
+    value_t v = {0};
+    v.kind = V_INT;
+    v.width = 8;
+    v.i = i;
+    return v;
+}
+
+// scheduler.events builds a V_LIST of V_MAPs (08-core-infra F-30), so the
+// suite needs the map builder and the list accumulator.  Minimal versions:
+// this suite asserts on queue COUNTS, not on the rendered list.
+struct value_map_builder {
+    int unused;
+};
+static struct value_map_builder g_stub_builder;
+
+value_map_builder_t *val_map_new(void) {
+    return &g_stub_builder;
+}
+void val_map_put(value_map_builder_t *b, const char *key, value_t v) {
+    (void)b;
+    (void)key;
+    value_free(&v);
+}
+value_t val_map_finish(value_map_builder_t *b) {
+    (void)b;
+    return val_none();
+}
+bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v) {
+    if (*len + 1 > *cap) {
+        size_t nc = *cap ? *cap * 2 : 8;
+        value_t *n = (value_t *)realloc(*items, nc * sizeof(value_t));
+        if (!n) {
+            value_free(&v);
+            return false;
+        }
+        *items = n;
+        *cap = nc;
+    }
+    (*items)[(*len)++] = v;
+    return true;
+}
+value_t val_list(value_t *items, size_t len) {
+    value_t v = {0};
+    v.kind = V_LIST;
+    v.list.items = items;
+    v.list.len = len;
+    return v;
+}
+
 value_t val_err(const char *fmt, ...) {
     (void)fmt;
     return val_none();
@@ -1038,6 +1098,290 @@ TEST(test_checkpoint_carries_no_host_timing) {
     scheduler_delete(b);
 }
 
+// === Corrupt-checkpoint restores (08-core-infra F-05) =======================
+//
+// `scheduler_init(cpu, checkpoint)` fills the whole plain-data prefix straight
+// from the file, so every field in it is attacker-controlled: a checkpoint is
+// a user-supplied file, and the build-ID gate is no defence because the ID
+// lives in the file and copies from any legitimate one.
+//
+// These three fields were guarded by GS_ASSERT / GS_ASSERTF, which is not a
+// guard at all -- gs_assert_fail() prints, pauses and RETURNS, so execution
+// continued into the guarded operation even in a debug build, and GS_FAST (the
+// wasm release profile) compiles it out entirely.
+//
+// Each test below writes a VALID stream, damages exactly one field, and
+// restores.  All three fail with the fix reverted -- verified by reverting it.
+//
+// How test_restore_refuses_zero_cpi fails is worth stating exactly, because
+// this suite and the shipping build differ.  HERE it aborts at the old
+// GS_ASSERT, because support/stub_assert.c's gs_assert_fail() calls abort().
+// The REAL gs_assert_fail() does not: it prints, pauses the scheduler and
+// returns, and under GS_FAST (the wasm release profile) it is not called at
+// all.  So in the build that ships, control reaches the next statement --
+// `total_instructions = cpu_cycles / cpi` -- with cpi == 0, which raises
+// SIGFPE on x86-64 and TRAPS on WebAssembly, i64.div_u being undefined for a
+// zero divisor.  That is the same crash class as INT_MIN / -1, fixed in
+// 07-cpu-mmu A1-A3.  The unit suite cannot demonstrate that trap; it
+// demonstrates that corrupt input reaches the arithmetic at all.
+
+// Locate a 4-byte little-endian value in the recorded prefix, insisting it
+// occurs exactly once so a test can never silently poison the wrong field.
+static size_t cp_find_unique_u32(uint32_t needle) {
+    uint8_t pat[4] = {(uint8_t)(needle), (uint8_t)(needle >> 8), (uint8_t)(needle >> 16), (uint8_t)(needle >> 24)};
+    size_t hit = (size_t)-1;
+    int n = 0;
+    for (size_t i = 0; i + 4 <= g_cp_w[0]; i++) {
+        if (memcmp(g_cp[0] + i, pat, 4) == 0) {
+            hit = i;
+            n++;
+        }
+    }
+    if (n != 1) {
+        fprintf(stderr, "[FAIL] expected one occurrence of %u in the scheduler stream, found %d\n", needle, n);
+        exit(1);
+    }
+    return hit;
+}
+
+static void cp_poke_u32(size_t off, uint32_t v) {
+    memcpy(g_cp[0] + off, &v, sizeof(v));
+}
+
+// Save a valid stream with a distinctive cpi, leaving the read cursor rewound.
+static void cp_save_valid(uint32_t cpi) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+    g_cp_slot = 0;
+    g_now = 1000.0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_set_cpi(a, cpi);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    ASSERT_TRUE(g_cp_w[0] > 0);
+    scheduler_delete(a);
+    g_cp_r = 0;
+}
+
+TEST(test_restore_refuses_zero_cpi) {
+    // 173 is arbitrary but distinctive: cp_find_unique_u32 proves it appears
+    // exactly once, so this poisons cpi and nothing else.
+    cp_save_valid(173);
+    cp_poke_u32(cp_find_unique_u32(173), 0);
+
+    g_cp_errors = 0;
+    // Without the fix this does not return: cpu_cycles / 0 raises SIGFPE here
+    // and traps on wasm.
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_unknown_mode) {
+    cp_save_valid(173);
+    // `mode` is the first member of struct scheduler, so it is the first four
+    // bytes of the prefix.  0x7FFFFFFF is no schedule_mode.
+    cp_poke_u32(0, 0x7FFFFFFFu);
+
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    // ...and the scheduler came back on a known-good mode rather than running
+    // on the value from the file.
+    ASSERT_EQ_INT((int)scheduler_get_mode(b), (int)schedule_paced);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_absurd_event_count) {
+    cp_save_valid(173);
+    // The save writes the prefix and then num_events; with an empty queue that
+    // count is the last four bytes of the stream.  An unchecked count drove
+    // malloc(count * sizeof(event_as_checkpoint_t)) directly.
+    //
+    // 50000 is chosen deliberately, and the first version of this test used
+    // 0xFFFFFFFF and was WRONG.  With a four-billion count the multiply makes
+    // an allocation this host cannot satisfy, malloc returns NULL, and the
+    // out-of-memory branch flags the checkpoint -- so the test passed with the
+    // COUNT CAP REMOVED, catching a different guard than the one it names.
+    // 50000 is over MAX_SANE_EVENTS (10000) but allocates about a megabyte, so
+    // malloc succeeds and only the cap can reject it.  Verified by removing
+    // the cap: this test then fails, and it is the only one that does.
+    //
+    // The four-billion case is not merely a big malloc, incidentally: on the
+    // 32-bit wasm heap `count * sizeof(event_as_checkpoint_t)` overflows
+    // size_t, and a count near 2^32/sizeof wraps to a handful of bytes -- a
+    // small allocation followed by a multi-gigabyte read into it.  The cap
+    // below is what stops that too, which is why it is a cap and not a
+    // malloc-result check.
+    ASSERT_TRUE(g_cp_w[0] >= 4);
+    cp_poke_u32(g_cp_w[0] - 4, 50000u);
+
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    scheduler_delete(b);
+}
+
+// === scheduler.events / machine-sourced cleanup (08-core-infra F-27, F-30) ==
+
+// F-30: the pending queue had no inspectable form at all.  cmd_events(argc,
+// argv) -- the retired command shape -- had zero callers, so the one thing
+// that could say WHICH event leaked did not exist, while machine_teardown's
+// backstop reported only a count.
+TEST(test_pending_event_counts_track_the_queue) {
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(s != NULL);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+
+    int owner_a = 0, owner_b = 0;
+    scheduler_new_event_type(s, "a", &owner_a, "tick", ping_event);
+    scheduler_new_event_type(s, "b", &owner_b, "tick", ping_event);
+    scheduler_new_cpu_event(s, ping_event, &owner_a, 0, 0, 1000000);
+    scheduler_new_cpu_event(s, ping_event, &owner_b, 0, 0, 2000000);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 2);
+
+    // Forgetting one source leaves the other's event alone -- which is what
+    // makes a per-owner sweep safe, and why a shared source cannot be swept
+    // by one of its users.
+    scheduler_forget_source(s, &owner_a);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_forget_source(s, &owner_b);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
+// === Periodic events (08-core-infra F-28) ==================================
+//
+// A repeating event re-arms inside the scheduler instead of from its own
+// handler.  There is no separate periodic API and no handle type: the units
+// question is already answered by scheduler_new_cpu_event's cycles/ns pair,
+// and cancellation is already answered by remove_event and
+// scheduler_forget_source, so a repeating event adds no second lifetime.
+
+static int g_periodic_fires;
+static uint64_t g_periodic_stamps[8];
+static scheduler_t *g_periodic_sched;
+static bool g_cancel_self;
+
+static void periodic_event(void *source, uint64_t data) {
+    (void)data;
+    if (g_periodic_fires < 8)
+        g_periodic_stamps[g_periodic_fires] = scheduler_cpu_cycles(g_periodic_sched);
+    g_periodic_fires++;
+    if (g_cancel_self)
+        remove_event(g_periodic_sched, periodic_event, source);
+}
+
+TEST(test_periodic_repeats_without_self_rearm) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000); // 1 MHz: 1 cycle == 1 us
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+
+    // Armed ONCE, with no re-arm anywhere in the handler.
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_run_instructions(s, 1000);
+    ASSERT_TRUE(g_periodic_fires >= 3); // it kept going by itself
+    // ...and exactly one occurrence is ever queued, so it cannot accumulate.
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+    scheduler_delete(s);
+}
+
+// Drift-free: each deadline comes from the SCHEDULED time, not from the
+// dispatch time, so the gaps stay exactly the interval however late a sprint
+// delivers them.  A handler re-arming itself from "now" cannot do this.
+TEST(test_periodic_does_not_drift) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_TRUE(g_periodic_fires >= 3);
+    // The queue's own deadlines are exactly 100 apart even if dispatch is late.
+    // (The stamps are observation times, so assert on the SPACING of the
+    // scheduled deadlines via the queue rather than on the stamps.)
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+    scheduler_delete(s);
+}
+
+// The ordering that makes this work: the next occurrence is inserted BEFORE
+// the callback runs, so a handler cancelling itself finds it.  Insert after
+// and the cancel would be silently reinstated.
+TEST(test_periodic_can_be_cancelled_from_its_own_handler) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = true;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, 1); // fired once, then stopped itself
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
+// And the existing cancellation paths work on it unchanged, which is the
+// whole argument for not introducing a handle type.
+TEST(test_periodic_is_cancelled_by_forget_source) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_forget_source(s, &owner);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    int before = g_periodic_fires;
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, before); // stays stopped
+    scheduler_delete(s);
+}
+
+// A one-shot is still a one-shot -- the six-argument spelling is unchanged at
+// all 128 existing call sites.
+TEST(test_one_shot_still_fires_once) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, 1);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -1063,6 +1407,15 @@ int main(void) {
     RUN(test_last_event_ns_reports_the_furthest_pending);
     RUN(test_forget_source_drops_events_and_types);
     RUN(test_checkpoint_carries_no_host_timing);
+    RUN(test_restore_refuses_zero_cpi);
+    RUN(test_restore_refuses_unknown_mode);
+    RUN(test_restore_refuses_absurd_event_count);
+    RUN(test_pending_event_counts_track_the_queue);
+    RUN(test_periodic_repeats_without_self_rearm);
+    RUN(test_periodic_does_not_drift);
+    RUN(test_periodic_can_be_cancelled_from_its_own_handler);
+    RUN(test_periodic_is_cancelled_by_forget_source);
+    RUN(test_one_shot_still_fires_once);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

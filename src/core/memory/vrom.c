@@ -383,7 +383,7 @@ static const member_t vrom_members[] = {
      .method = {.args = vrom_path_arg, .nargs = 1, .result = V_MAP, .fn = vrom_method_identify}},
 };
 
-const class_desc_t vrom_class = {
+static const class_desc_t vrom_class = {
     .name = "vrom",
     .members = vrom_members,
     .n_members = sizeof(vrom_members) / sizeof(vrom_members[0]),

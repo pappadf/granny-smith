@@ -56,10 +56,24 @@ static const char *pool_strdup(const char *s) {
 // === Completion accumulator ==================================================
 
 static void push_match(struct completion *out, const char *cand, const char *prefix) {
-    if (!cand || out->count >= CMD_MAX_COMPLETIONS)
+    if (!cand) {
+        // pool_strdup returned NULL: a composed candidate was dropped because
+        // the pool filled.  Say so rather than returning a quietly short set.
+        out->truncated = true;
         return;
+    }
+    if (out->count >= CMD_MAX_COMPLETIONS) {
+        out->truncated = true;
+        return;
+    }
+    // strncmp, not strncasecmp: the completer is a VIEW of the resolver, and
+    // the resolver matches case-sensitively (class_find_member uses strcmp,
+    // and alias.c's comment records the proposal decision that member names
+    // are case-sensitive).  Typing `MACH<Tab>` used to offer `machine`, which
+    // then failed to resolve -- and this function's own dedup below was
+    // already case-sensitive, so it disagreed with itself (F-53).
     size_t plen = prefix ? strlen(prefix) : 0;
-    if (plen && strncasecmp(cand, prefix, plen) != 0)
+    if (plen && strncmp(cand, prefix, plen) != 0)
         return;
     // Dedup against earlier matches in this completion set.
     for (int i = 0; i < out->count; i++) {

@@ -23,8 +23,13 @@
 
 LOG_USE_CATEGORY_NAME("ppc");
 
-// Forward declaration — class descriptor is at the bottom of the file.
-extern const class_desc_t ppc_cpu_class;
+// Forward declarations — the class descriptors are at the bottom of the file.
+// These must stay at file scope: a block-scope `static const class_desc_t x;`
+// is not a declaration of the file-scope object, it is a *new* zero-filled
+// one that shadows it, so object_new() would bind an empty member table.
+static const class_desc_t ppc_cpu_class;
+static const class_desc_t ppc_mmu_class;
+static const class_desc_t ppc_fpu_class;
 
 // === Exception machinery ====================================================
 
@@ -781,14 +786,12 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         object_set_order(p->cpu_object, 10);
         object_attach(machine_object(), p->cpu_object);
         // machine.cpu.mmu: the translation debug window (§3.9d).
-        extern const class_desc_t ppc_mmu_class;
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
         if (p->mmu_object) {
             object_set_label(p->mmu_object, "MMU");
             object_attach(p->cpu_object, p->mmu_object);
         }
         // machine.cpu.fpu: the FPR file + FPSCR (Phase E, §3.9d).
-        extern const class_desc_t ppc_fpu_class;
         p->fpu_object = object_new(&ppc_fpu_class, p, "fpu");
         if (p->fpu_object) {
             object_set_label(p->fpu_object, "FPU");
@@ -1041,9 +1044,9 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
     return val_none();
 }
 
-#define PPC_ATTR(name_, id_)                                                                                           \
+#define PPC_ATTR(name_, id_, doc_)                                                                                     \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .attr = {                                                                       \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
             .type = V_UINT,                                                                                            \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = attr_ppc_get,                                                                                       \
@@ -1051,44 +1054,56 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
         }                                                                                                              \
     }
+// The GPR, segment-register and BAT files differ only by number, so their doc
+// text is generated with them rather than written out eighty times.
+#define PPC_GPR(N) PPC_ATTR("r" #N, PA_GPR0 + (N), "General-purpose register r" #N " (32-bit)")
+#define PPC_SREG(N)                                                                                                    \
+    PPC_ATTR("sr" #N, PA_SR0 + (N), "Segment register " #N " — maps effective address bits 0-3 to a 24-bit VSID")
+#define PPC_BAT(N)                                                                                                     \
+    PPC_ATTR("bat" #N "u", PA_BAT0U + 2 * (N), "IBAT " #N " upper — block effective address, length and valid bits"),  \
+        PPC_ATTR("bat" #N "l", PA_BAT0U + 2 * (N) + 1,                                                                 \
+                 "IBAT " #N " lower — block physical address and protection bits")
+#define PPC_DBAT(N)                                                                                                    \
+    PPC_ATTR("dbat" #N "u", PA_DBAT0U + 2 * (N),                                                                       \
+             "DBAT " #N " upper — block effective address, length and valid bits"),                                    \
+        PPC_ATTR("dbat" #N "l", PA_DBAT0U + 2 * (N) + 1,                                                               \
+                 "DBAT " #N " lower — block physical address and protection bits")
 
 // clang-format off
 static const member_t ppc_members[] = {
-    PPC_ATTR("pc", PA_PC),       PPC_ATTR("msr", PA_MSR),   PPC_ATTR("cr", PA_CR),     PPC_ATTR("xer", PA_XER),
-    PPC_ATTR("lr", PA_LR),       PPC_ATTR("ctr", PA_CTR),   PPC_ATTR("mq", PA_MQ),     PPC_ATTR("srr0", PA_SRR0),
-    PPC_ATTR("srr1", PA_SRR1),   PPC_ATTR("dec", PA_DEC),   PPC_ATTR("rtcu", PA_RTCU), PPC_ATTR("rtcl", PA_RTCL),
-    PPC_ATTR("sdr1", PA_SDR1),   PPC_ATTR("fpscr", PA_FPSCR), PPC_ATTR("dar", PA_DAR),   PPC_ATTR("dsisr", PA_DSISR),
-    PPC_ATTR("r0", PA_GPR0 + 0),   PPC_ATTR("r1", PA_GPR0 + 1),   PPC_ATTR("r2", PA_GPR0 + 2),
-    PPC_ATTR("r3", PA_GPR0 + 3),   PPC_ATTR("r4", PA_GPR0 + 4),   PPC_ATTR("r5", PA_GPR0 + 5),
-    PPC_ATTR("r6", PA_GPR0 + 6),   PPC_ATTR("r7", PA_GPR0 + 7),   PPC_ATTR("r8", PA_GPR0 + 8),
-    PPC_ATTR("r9", PA_GPR0 + 9),   PPC_ATTR("r10", PA_GPR0 + 10), PPC_ATTR("r11", PA_GPR0 + 11),
-    PPC_ATTR("r12", PA_GPR0 + 12), PPC_ATTR("r13", PA_GPR0 + 13), PPC_ATTR("r14", PA_GPR0 + 14),
-    PPC_ATTR("r15", PA_GPR0 + 15), PPC_ATTR("r16", PA_GPR0 + 16), PPC_ATTR("r17", PA_GPR0 + 17),
-    PPC_ATTR("r18", PA_GPR0 + 18), PPC_ATTR("r19", PA_GPR0 + 19), PPC_ATTR("r20", PA_GPR0 + 20),
-    PPC_ATTR("r21", PA_GPR0 + 21), PPC_ATTR("r22", PA_GPR0 + 22), PPC_ATTR("r23", PA_GPR0 + 23),
-    PPC_ATTR("r24", PA_GPR0 + 24), PPC_ATTR("r25", PA_GPR0 + 25), PPC_ATTR("r26", PA_GPR0 + 26),
-    PPC_ATTR("r27", PA_GPR0 + 27), PPC_ATTR("r28", PA_GPR0 + 28), PPC_ATTR("r29", PA_GPR0 + 29),
-    PPC_ATTR("r30", PA_GPR0 + 30), PPC_ATTR("r31", PA_GPR0 + 31),
-    PPC_ATTR("sr0", PA_SR0 + 0),   PPC_ATTR("sr1", PA_SR0 + 1),   PPC_ATTR("sr2", PA_SR0 + 2),
-    PPC_ATTR("sr3", PA_SR0 + 3),   PPC_ATTR("sr4", PA_SR0 + 4),   PPC_ATTR("sr5", PA_SR0 + 5),
-    PPC_ATTR("sr6", PA_SR0 + 6),   PPC_ATTR("sr7", PA_SR0 + 7),   PPC_ATTR("sr8", PA_SR0 + 8),
-    PPC_ATTR("sr9", PA_SR0 + 9),   PPC_ATTR("sr10", PA_SR0 + 10), PPC_ATTR("sr11", PA_SR0 + 11),
-    PPC_ATTR("sr12", PA_SR0 + 12), PPC_ATTR("sr13", PA_SR0 + 13), PPC_ATTR("sr14", PA_SR0 + 14),
-    PPC_ATTR("sr15", PA_SR0 + 15),
-    PPC_ATTR("bat0u", PA_BAT0U + 0), PPC_ATTR("bat0l", PA_BAT0U + 1), PPC_ATTR("bat1u", PA_BAT0U + 2),
-    PPC_ATTR("bat1l", PA_BAT0U + 3), PPC_ATTR("bat2u", PA_BAT0U + 4), PPC_ATTR("bat2l", PA_BAT0U + 5),
-    PPC_ATTR("bat3u", PA_BAT0U + 6), PPC_ATTR("bat3l", PA_BAT0U + 7),
+    PPC_ATTR("pc",    PA_PC,    "Program counter — address of the next instruction to execute"),
+    PPC_ATTR("msr",   PA_MSR,   "Machine state register: privilege level, interrupt enables, and the MMU translation bits"),
+    PPC_ATTR("cr",    PA_CR,    "Condition register — eight 4-bit fields the compare and record-form instructions set"),
+    PPC_ATTR("xer",   PA_XER,   "Fixed-point exception register: summary overflow, overflow and carry"),
+    PPC_ATTR("lr",    PA_LR,    "Link register — the return address a branch-and-link leaves behind"),
+    PPC_ATTR("ctr",   PA_CTR,   "Count register, used as a loop counter and as an indirect branch target"),
+    PPC_ATTR("mq",    PA_MQ,    "MQ register — a 601-only holding register for multiply, divide and shift"),
+    PPC_ATTR("srr0",  PA_SRR0,  "Save/restore register 0 — the PC an exception interrupted, where rfi returns to"),
+    PPC_ATTR("srr1",  PA_SRR1,  "Save/restore register 1 — the MSR an exception interrupted, plus its status bits"),
+    PPC_ATTR("dec",   PA_DEC,   "Decrementer — counts down and raises a decrementer exception when it passes zero"),
+    PPC_ATTR("rtcu",  PA_RTCU,  "Real-time clock, upper half (601); the timebase upper half on the 604"),
+    PPC_ATTR("rtcl",  PA_RTCL,  "Real-time clock, lower half (601); the timebase lower half on the 604"),
+    PPC_ATTR("sdr1",  PA_SDR1,  "Page-table base address and size — where hashed address translation looks"),
+    PPC_ATTR("fpscr", PA_FPSCR, "Floating-point status and control: rounding mode, exception enables and sticky flags"),
+    PPC_ATTR("dar",   PA_DAR,   "Data address register — the effective address that caused the last data storage exception"),
+    PPC_ATTR("dsisr", PA_DSISR, "Data storage interrupt status — why that access faulted"),
+    PPC_GPR(0),  PPC_GPR(1),  PPC_GPR(2),  PPC_GPR(3),  PPC_GPR(4),  PPC_GPR(5),  PPC_GPR(6),  PPC_GPR(7),
+    PPC_GPR(8),  PPC_GPR(9),  PPC_GPR(10), PPC_GPR(11), PPC_GPR(12), PPC_GPR(13), PPC_GPR(14), PPC_GPR(15),
+    PPC_GPR(16), PPC_GPR(17), PPC_GPR(18), PPC_GPR(19), PPC_GPR(20), PPC_GPR(21), PPC_GPR(22), PPC_GPR(23),
+    PPC_GPR(24), PPC_GPR(25), PPC_GPR(26), PPC_GPR(27), PPC_GPR(28), PPC_GPR(29), PPC_GPR(30), PPC_GPR(31),
+    PPC_SREG(0),  PPC_SREG(1),  PPC_SREG(2),  PPC_SREG(3),  PPC_SREG(4),  PPC_SREG(5),  PPC_SREG(6),  PPC_SREG(7),
+    PPC_SREG(8),  PPC_SREG(9),  PPC_SREG(10), PPC_SREG(11), PPC_SREG(12), PPC_SREG(13), PPC_SREG(14), PPC_SREG(15),
+    PPC_BAT(0), PPC_BAT(1), PPC_BAT(2), PPC_BAT(3),
     // 604 additions: the DBAT file, and tbu/tbl as aliases of the rtcu/rtcl
     // storage (which holds the timebase halves on that model).  Present on
     // both models — a static member table — and simply inert on the 601.
-    PPC_ATTR("dbat0u", PA_DBAT0U + 0), PPC_ATTR("dbat0l", PA_DBAT0U + 1), PPC_ATTR("dbat1u", PA_DBAT0U + 2),
-    PPC_ATTR("dbat1l", PA_DBAT0U + 3), PPC_ATTR("dbat2u", PA_DBAT0U + 4), PPC_ATTR("dbat2l", PA_DBAT0U + 5),
-    PPC_ATTR("dbat3u", PA_DBAT0U + 6), PPC_ATTR("dbat3l", PA_DBAT0U + 7),
-    PPC_ATTR("tbu", PA_RTCU),          PPC_ATTR("tbl", PA_RTCL),
+    PPC_DBAT(0), PPC_DBAT(1), PPC_DBAT(2), PPC_DBAT(3),
+    PPC_ATTR("tbu", PA_RTCU, "Timebase upper half (604); the same storage as rtcu"),
+    PPC_ATTR("tbl", PA_RTCL, "Timebase lower half (604); the same storage as rtcl"),
 };
 // clang-format on
 
-const class_desc_t ppc_cpu_class = {
+static const class_desc_t ppc_cpu_class = {
     .name = "ppc",
     .members = ppc_members,
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
@@ -1154,7 +1169,7 @@ static const member_t ppc_mmu_members[] = {
      .method = {.args = mmu_peek_args, .nargs = 2, .result = V_UINT, .fn = mmu_method_peek}          },
 };
 
-const class_desc_t ppc_mmu_class = {
+static const class_desc_t ppc_mmu_class = {
     .name = "ppc_mmu",
     .members = ppc_mmu_members,
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
@@ -1186,9 +1201,9 @@ static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) 
     return val_none();
 }
 
-#define PPC_FPR_ATTR(name_, id_)                                                                                       \
+#define PPC_FPR_ATTR(name_, id_, doc_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .attr = {                                                                       \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
             .type = V_UINT,                                                                                            \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = attr_fpr_get,                                                                                       \
@@ -1196,22 +1211,19 @@ static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) 
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
         }                                                                                                              \
     }
+#define PPC_FPR(N) PPC_FPR_ATTR("fpr" #N, (N), "Floating-point register fpr" #N " — the raw 64-bit double")
 
 // clang-format off
 static const member_t ppc_fpu_members[] = {
-    PPC_FPR_ATTR("fpscr", 32),
-    PPC_FPR_ATTR("fpr0", 0),   PPC_FPR_ATTR("fpr1", 1),   PPC_FPR_ATTR("fpr2", 2),   PPC_FPR_ATTR("fpr3", 3),
-    PPC_FPR_ATTR("fpr4", 4),   PPC_FPR_ATTR("fpr5", 5),   PPC_FPR_ATTR("fpr6", 6),   PPC_FPR_ATTR("fpr7", 7),
-    PPC_FPR_ATTR("fpr8", 8),   PPC_FPR_ATTR("fpr9", 9),   PPC_FPR_ATTR("fpr10", 10), PPC_FPR_ATTR("fpr11", 11),
-    PPC_FPR_ATTR("fpr12", 12), PPC_FPR_ATTR("fpr13", 13), PPC_FPR_ATTR("fpr14", 14), PPC_FPR_ATTR("fpr15", 15),
-    PPC_FPR_ATTR("fpr16", 16), PPC_FPR_ATTR("fpr17", 17), PPC_FPR_ATTR("fpr18", 18), PPC_FPR_ATTR("fpr19", 19),
-    PPC_FPR_ATTR("fpr20", 20), PPC_FPR_ATTR("fpr21", 21), PPC_FPR_ATTR("fpr22", 22), PPC_FPR_ATTR("fpr23", 23),
-    PPC_FPR_ATTR("fpr24", 24), PPC_FPR_ATTR("fpr25", 25), PPC_FPR_ATTR("fpr26", 26), PPC_FPR_ATTR("fpr27", 27),
-    PPC_FPR_ATTR("fpr28", 28), PPC_FPR_ATTR("fpr29", 29), PPC_FPR_ATTR("fpr30", 30), PPC_FPR_ATTR("fpr31", 31),
+    PPC_FPR_ATTR("fpscr", 32, "Floating-point status and control register, as the FPU node sees it"),
+    PPC_FPR(0),  PPC_FPR(1),  PPC_FPR(2),  PPC_FPR(3),  PPC_FPR(4),  PPC_FPR(5),  PPC_FPR(6),  PPC_FPR(7),
+    PPC_FPR(8),  PPC_FPR(9),  PPC_FPR(10), PPC_FPR(11), PPC_FPR(12), PPC_FPR(13), PPC_FPR(14), PPC_FPR(15),
+    PPC_FPR(16), PPC_FPR(17), PPC_FPR(18), PPC_FPR(19), PPC_FPR(20), PPC_FPR(21), PPC_FPR(22), PPC_FPR(23),
+    PPC_FPR(24), PPC_FPR(25), PPC_FPR(26), PPC_FPR(27), PPC_FPR(28), PPC_FPR(29), PPC_FPR(30), PPC_FPR(31),
 };
 // clang-format on
 
-const class_desc_t ppc_fpu_class = {
+static const class_desc_t ppc_fpu_class = {
     .name = "ppc_fpu",
     .members = ppc_fpu_members,
     .n_members = sizeof(ppc_fpu_members) / sizeof(ppc_fpu_members[0]),

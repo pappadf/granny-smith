@@ -9,6 +9,8 @@
 #ifndef CMD_COMPLETE_H
 #define CMD_COMPLETE_H
 
+#include <stdbool.h>
+
 // Tab completion maximum items.  Sized for the typed-tree root, which
 // has ~70 root methods plus ~12 attached child objects (cpu, memory,
 // scsi, floppy, mouse, keyboard, screen, vfs, find, debugger, …).  The
@@ -28,7 +30,20 @@ struct completion {
     int count;
     int start;
     int end;
+    // Set when candidates were DROPPED -- the per-call string pool filled, or
+    // the item table did.  Without it a short list was indistinguishable from
+    // a complete one, so a class with many long member names silently lost
+    // completions past the pool's 2 KB with no indication anywhere
+    // (08-core-infra F-54).
+    bool truncated;
 };
+
+// LIFETIME, which was previously only true by luck: `items` may point into a
+// per-call pool inside the completer, so the pointers are invalidated by the
+// NEXT shell_complete() call.  A caller that needs them beyond that must copy
+// immediately -- shell_meta_complete_provider does, which is the only reason
+// the terminal and meta.complete can both work today, and nothing here said
+// so.
 
 // Run tab completion for the given line at cursor_pos.
 // Fills out->items with matching completions.

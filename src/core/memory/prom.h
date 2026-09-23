@@ -107,8 +107,6 @@ bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, ch
 
 // === Lifecycle =============================================================
 
-extern const struct class_desc prom_class;
-
 void prom_init(void);
 void prom_delete(void);
 

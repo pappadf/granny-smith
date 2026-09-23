@@ -35,8 +35,8 @@ LOG_USE_CATEGORY_NAME("scc");
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // scc_init / scc_delete reference them.
-extern const class_desc_t scc_class;
-extern const class_desc_t scc_channel_class;
+static const class_desc_t scc_class;
+static const class_desc_t scc_channel_class;
 
 static inline bool scc_should_log(int level) {
     return log_would_log(_log_get_local_category(), level);
@@ -1756,29 +1756,47 @@ static const arg_decl_t scc_ch_receive_args[] = {
 };
 
 static const member_t scc_ch_members[] = {
-    {.kind = M_ATTR,   .name = "index",      .flags = VAL_RO,                             .attr = {.type = V_INT, .get = scc_ch_attr_index}      },
-    {.kind = M_ATTR,   .name = "dcd",        .flags = VAL_RO,                             .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd}       },
-    {.kind = M_ATTR,   .name = "tx_empty",   .flags = VAL_RO,                             .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty}  },
-    {.kind = M_ATTR,   .name = "rx_pending", .flags = VAL_RO,                             .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending}},
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .doc = "Channel number: 0 = channel A (modem port), 1 = channel B (printer port)",
+     .attr = {.type = V_INT, .get = scc_ch_attr_index}},
+    {.kind = M_ATTR,
+     .name = "dcd",
+     .flags = VAL_RO,
+     .doc = "State of this channel's DCD input — on a Mac it is wired to the mouse/disk interrupt, not a modem",
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd}},
+    {.kind = M_ATTR,
+     .name = "tx_empty",
+     .flags = VAL_RO,
+     .doc = "True when the transmit buffer has drained and the guest may write the next byte",
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty}},
+    {.kind = M_ATTR,
+     .name = "rx_pending",
+     .flags = VAL_RO,
+     .doc = "Bytes queued for the guest to read, delivered by `receive` and not yet consumed",
+     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending}},
     {.kind = M_ATTR,
      .name = "sent_pending",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending}                                                                                   },
+     .doc = "Bytes the guest has transmitted that are waiting in the host-side capture buffer",
+     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending}},
     {.kind = M_ATTR,
      .name = "sent_dropped",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}                                                                                   },
+     .doc = "Transmitted bytes lost because the capture buffer overflowed; nonzero means a script drained too "
+            "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}},
     {.kind = M_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
-     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_method_receive}                                          },
+     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_method_receive}},
     {.kind = M_METHOD,
      .name = "sent",
      .doc = "Drain and return the text this channel has transmitted since the last call",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_method_sent}                                                          },
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_method_sent}},
 };
 
-const class_desc_t scc_channel_class = {
+static const class_desc_t scc_channel_class = {
     .name = "scc_channel",
     .members = scc_ch_members,
     .n_members = sizeof(scc_ch_members) / sizeof(scc_ch_members[0]),
@@ -1807,7 +1825,7 @@ static const member_t scc_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}      },
 };
 
-const class_desc_t scc_class = {
+static const class_desc_t scc_class = {
     .name = "scc",
     .members = scc_members,
     .n_members = sizeof(scc_members) / sizeof(scc_members[0]),

@@ -429,7 +429,7 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
 
     if (checkpoint) {
         // Mirrors iop_checkpoint: one blob, host_irq included (F-08).
-        system_read_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior));
+        system_read_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
     }
 
     // Register periodic-event types with the scheduler so checkpoint
@@ -467,7 +467,7 @@ void iop_delete(iop_t *iop) {
 void iop_checkpoint(iop_t *iop, checkpoint_t *checkpoint) {
     if (!iop || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior));
+    system_write_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
 }
 
 const memory_interface_t *iop_get_memory_interface(iop_t *iop) {

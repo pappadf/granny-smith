@@ -168,7 +168,15 @@ typedef struct {
     resource_map_header header; // The parsed header of the map.
     uint16_t num_types; // Number of resource types minus one.
     resource_type_info *type_list; // A dynamically allocated array to hold the parsed types.
-    char *name_list_data; // A buffer holding all resource names.
+    // GUEST address of the resource-name list, not a host pointer.
+    //
+    // This was `char *`, assigned map_base_addr + name_list_offset -- a guest
+    // address cast straight to a host pointer.  Nothing dereferences it (the
+    // resource-name parsing is unfinished), so it is inert, but it handed the
+    // next person to finish that parsing a ready-made arbitrary-host-read
+    // primitive (08-core-infra F-44).  Read it through read_bytes /
+    // debug_mac_xlate like every other field in this file.
+    uint32_t name_list_addr;
 } resource_map;
 
 #pragma pack(pop) // Restore default packing
@@ -266,7 +274,7 @@ resource_map *read_resource_map(void) {
     // 7. Store a pointer to the name list data (optional, could be parsed further)
     // For simplicity, we just point to the raw data block.
     // A full implementation would need to know the total size of the name list.
-    parsed_map->name_list_data = (char *)(map_base_addr + parsed_map->header.name_list_offset);
+    parsed_map->name_list_addr = map_base_addr + parsed_map->header.name_list_offset;
 
     return parsed_map;
 }

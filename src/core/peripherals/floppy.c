@@ -19,11 +19,11 @@
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // floppy_init / floppy_delete reference them.
-extern const class_desc_t floppy_class;
-extern const class_desc_t floppy_drive_class;
-extern const class_desc_t floppy_disk_class;
-extern const class_desc_t floppy_drives_collection_class;
-extern const class_desc_t floppy_controller_class;
+static const class_desc_t floppy_class;
+static const class_desc_t floppy_drive_class;
+static const class_desc_t floppy_disk_class;
+static const class_desc_t floppy_drives_collection_class;
+static const class_desc_t floppy_controller_class;
 
 #include <assert.h>
 #include <math.h>
@@ -889,7 +889,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         // Every one of them is replaced below -- save writes has_data from
         // `data != NULL`, so a NULL at save restores as NULL -- but nothing
         // here may dereference one before that loop runs.
-        system_read_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE);
+        system_read_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE, "floppy");
         floppy_validate_restored_state(floppy);
 
         // Restore disk images by filename
@@ -1091,7 +1091,7 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
             }
         }
     }
-    system_write_checkpoint_data(checkpoint, prefix, FLOPPY_CHECKPOINT_SIZE);
+    system_write_checkpoint_data(checkpoint, prefix, FLOPPY_CHECKPOINT_SIZE, "floppy");
     free(prefix);
 
     // Write disk filenames for each drive
@@ -1256,7 +1256,7 @@ static const member_t floppy_members[] = {
      .method = {.args = floppy_create_args, .nargs = 2, .result = V_BOOL, .fn = floppy_method_create}},
 };
 
-const class_desc_t floppy_class = {
+static const class_desc_t floppy_class = {
     .name = "floppy",
     .members = floppy_members,
     .n_members = sizeof(floppy_members) / sizeof(floppy_members[0]),
@@ -1357,7 +1357,7 @@ static const member_t floppy_controller_members[] = {
      .attr = {.type = V_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
 };
 
-const class_desc_t floppy_controller_class = {
+static const class_desc_t floppy_controller_class = {
     .name = "floppy_controller",
     .members = floppy_controller_members,
     .n_members = sizeof(floppy_controller_members) / sizeof(floppy_controller_members[0]),
@@ -1524,7 +1524,7 @@ static const member_t floppy_disk_members[] = {
                 .task_category = "storage"}},
 };
 
-const class_desc_t floppy_disk_class = {
+static const class_desc_t floppy_disk_class = {
     .name = "disk",
     .members = floppy_disk_members,
     .n_members = sizeof(floppy_disk_members) / sizeof(floppy_disk_members[0]),
@@ -1576,22 +1576,27 @@ static const member_t floppy_drive_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .flags = VAL_RO,
+     .doc = "Drive number on the controller (0 = internal, 1 = second internal or external)",
      .attr = {.type = V_INT, .get = floppy_drive_attr_index, .set = NULL}},
     {.kind = M_ATTR,
      .name = "present",
      .flags = VAL_RO,
+     .doc = "True when a disk image is inserted in this drive",
      .attr = {.type = V_BOOL, .get = floppy_drive_attr_present, .set = NULL}},
     {.kind = M_ATTR,
      .name = "track",
      .flags = VAL_RO,
+     .doc = "Track the head is currently over (0 = outermost)",
      .attr = {.type = V_INT, .get = floppy_drive_attr_track, .set = NULL}},
     {.kind = M_ATTR,
      .name = "side",
      .flags = VAL_RO,
+     .doc = "Selected disk side, 0 or 1; always 0 on a single-sided 400K disk",
      .attr = {.type = V_INT, .get = floppy_drive_attr_side, .set = NULL}},
     {.kind = M_ATTR,
      .name = "motor_on",
      .flags = VAL_RO,
+     .doc = "True while the spindle is spinning — the guest keeps it off between accesses",
      .attr = {.type = V_BOOL, .get = floppy_drive_attr_motor_on, .set = NULL}},
     {.kind = M_METHOD,
      .name = "eject",
@@ -1608,7 +1613,7 @@ static const member_t floppy_drive_members[] = {
      .method = {.args = floppy_drive_insert_args, .nargs = 2, .result = V_BOOL, .fn = floppy_drive_method_insert}},
 };
 
-const class_desc_t floppy_drive_class = {
+static const class_desc_t floppy_drive_class = {
     .name = "floppy_drive",
     .members = floppy_drive_members,
     .n_members = sizeof(floppy_drive_members) / sizeof(floppy_drive_members[0]),
@@ -1644,7 +1649,7 @@ static const member_t floppy_drives_collection_members[] = {
                .next = floppy_drives_next,
                .lookup = NULL}},
 };
-const class_desc_t floppy_drives_collection_class = {
+static const class_desc_t floppy_drives_collection_class = {
     .name = "floppy_drives",
     .members = floppy_drives_collection_members,
     .n_members = 1,

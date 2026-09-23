@@ -33,8 +33,6 @@ int archive_extract_file(const char *path, const char *out_dir);
 // alongside rom / vrom / machine / checkpoint. It exposes `identify`
 // and `extract` methods.
 
-extern const struct class_desc archive_class;
-
 void archive_init(void);
 void archive_delete(void);
 

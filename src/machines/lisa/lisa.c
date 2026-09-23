@@ -579,16 +579,24 @@ static const arg_decl_t lisa_fd_insert_args[] = {
 };
 
 static const member_t lisa_fd_drive_members[] = {
-    {.kind = M_ATTR,   .name = "index",   .flags = VAL_RO, .attr = {.type = V_INT, .get = lisa_fd_drive_index}   },
-    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO, .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}},
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .doc = "Drive number on the Sony floppy controller (0 = upper, 1 = lower on a Lisa 2/10)",
+     .attr = {.type = V_INT, .get = lisa_fd_drive_index}},
+    {.kind = M_ATTR,
+     .name = "present",
+     .flags = VAL_RO,
+     .doc = "True when a disk is clamped in this drive",
+     .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the disk (unclamp)",
-     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}                                                     },
+     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}},
     {.kind = M_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into the Sony drive",
-     .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}           },
+     .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}},
 };
 static const class_desc_t lisa_fd_drive_class = {
     .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 4};
@@ -650,8 +658,11 @@ static value_t lisa_hd_attach(struct object *self, const member_t *m, int argc, 
     (void)m;
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
-    const char *path = (argc >= 1) ? argv[0].s : NULL; // NULL = blank in-memory disk
-    bool writable = (argc >= 2) ? argv[1].b : true;
+    // Read by kind: `path` now has a V_NONE default so that
+    // `profile.attach(writable=false)` -- a blank in-memory disk, mounted
+    // read-only -- is expressible at all.
+    const char *path = (argc >= 1 && argv[0].kind == V_STRING) ? argv[0].s : NULL; // NULL = blank in-memory disk
+    bool writable = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : true;
     if (!ls || !ls->profile)
         return val_err("profile: no controller");
     if (!lisa_profile_attach(ls->profile, path, writable))
@@ -754,21 +765,29 @@ static value_t lisa_hd_pram_load(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
+// The documented defaults, declared rather than only written in the doc string
+// and re-applied in the body -- without them, naming `valid` or `installed`
+// failed with "missing argument 'boot_vol'".
+static const value_t pram_def_boot_vol = {.kind = V_UINT, .u = 1};
+static const value_t pram_def_valid = {.kind = V_BOOL, .width = 1, .b = true};
+
 static const arg_decl_t lisa_hd_pram_init_args[] = {
     {.name = "boot_vol",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &pram_def_boot_vol,
      .doc = "BootVol nibble: 1 = built-in Sony floppy, 2 = parallel-port ProFile (pram_format.md §4)"},
     {.name = "valid",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &pram_def_valid,
      .doc = "true (default) = a verifying checksum; false = a fresh battery, so the OS rebuilds the device table "
-            "from the boot volume's MDDF snapshot"                                                    },
+            "from the boot volume's MDDF snapshot"},
     {.name = "installed",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "true = also pack the LOS 3.1 installer's device table (ProFile as cd_paraport); needed only for a "
-            "volume installed onto but not yet cleanly shut down"                                     },
+            "volume installed onto but not yet cleanly shut down"},
 };
 
 static const arg_decl_t lisa_hd_pram_args[] = {
@@ -779,36 +798,41 @@ static const arg_decl_t lisa_hd_attach_args[] = {
     {.name = "path",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"             },
+     .default_value = &obj_arg_unset,
+     .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"},
     {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default true)"},
 };
 
 static const member_t lisa_hd_members[] = {
-    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO,                                             .attr = {.type = V_BOOL, .get = lisa_hd_present}                                                 },
+    {.kind = M_ATTR,
+     .name = "present",
+     .flags = VAL_RO,
+     .doc = "True when a ProFile image is attached to the parallel port",
+     .attr = {.type = V_BOOL, .get = lisa_hd_present}},
     {.kind = M_METHOD,
      .name = "detach",
      .doc = "Flush and disconnect the ProFile",
-     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                                                                 },
+     .method = {.result = V_NONE, .fn = lisa_hd_detach}},
     {.kind = M_METHOD,
      .name = "attach",
      .doc = "Attach a ProFile image (created blank if missing; omit path for a blank in-memory disk)",
-     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                                                                        },
+     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}},
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
-            "base+delta pair)",                                                                        .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}          },
+            "base+delta pair)", .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
     {.kind = M_METHOD,
      .name = "pram_init",
      .doc = "Seed the parameter memory in the model: BootVol nibble, checksum validity, and optionally the LOS "
-            "installer's device table",                                                                .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = V_BOOL, .fn = lisa_hd_pram_init}},
+            "installer's device table", .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = V_BOOL, .fn = lisa_hd_pram_init}},
     {.kind = M_METHOD,
      .name = "pram_save",
      .doc = "Save the machine parameter memory (battery-backed NVRAM at $FCC181) to a file",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}                                                                                                       },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}},
     {.kind = M_METHOD,
      .name = "pram_load",
      .doc = "Load the machine parameter memory from a file (call before booting)",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}                                                                                                       },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}},
 };
 static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 6};
 

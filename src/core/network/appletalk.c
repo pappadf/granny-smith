@@ -46,17 +46,17 @@ scheduler_t *atalk_scheduler(void) {
 
 // Object-model class descriptors live near the bottom of the file but
 // appletalk_init / appletalk_delete reference them.
-extern const class_desc_t atalk_class;
-extern const class_desc_t atalk_stats_class;
-extern const class_desc_t atalk_nbp_collection_class;
-extern const class_desc_t atalk_nbp_entry_class;
-extern const class_desc_t atalk_afp_class;
-extern const class_desc_t atalk_afp_stats_class;
-extern const class_desc_t atalk_volumes_collection_class;
-extern const class_desc_t atalk_volume_class;
-extern const class_desc_t atalk_sessions_collection_class;
-extern const class_desc_t atalk_session_class;
-extern const class_desc_t atalk_printer_class;
+static const class_desc_t atalk_class;
+static const class_desc_t atalk_stats_class;
+static const class_desc_t atalk_nbp_collection_class;
+static const class_desc_t atalk_nbp_entry_class;
+static const class_desc_t atalk_afp_class;
+static const class_desc_t atalk_afp_stats_class;
+static const class_desc_t atalk_volumes_collection_class;
+static const class_desc_t atalk_volume_class;
+static const class_desc_t atalk_sessions_collection_class;
+static const class_desc_t atalk_session_class;
+static const class_desc_t atalk_printer_class;
 
 // Per-entry instance data for the indexed collections. Each collection's
 // get() consults the owning subsystem's `in_use` predicate and returns the
@@ -2965,7 +2965,7 @@ static const member_t atalk_stats_members[] = {
     ATALK_STAT_MEMBER(nbp_lookups, "NBP packets processed"),
 };
 
-const class_desc_t atalk_stats_class = {
+static const class_desc_t atalk_stats_class = {
     .name = "atalk_stats",
     .members = atalk_stats_members,
     .n_members = ARRAY_LEN(atalk_stats_members),
@@ -3034,7 +3034,7 @@ static const member_t atalk_nbp_entry_members[] = {
      .attr = {.type = V_UINT, .width = 1, .get = atalk_nbp_attr_node}  },
 };
 
-const class_desc_t atalk_nbp_entry_class = {
+static const class_desc_t atalk_nbp_entry_class = {
     .name = "atalk_nbp_entry",
     .members = atalk_nbp_entry_members,
     .n_members = ARRAY_LEN(atalk_nbp_entry_members),
@@ -3084,7 +3084,7 @@ static const member_t atalk_nbp_collection_members[] = {
                .lookup = atalk_nbp_entry_lookup}},
 };
 
-const class_desc_t atalk_nbp_collection_class = {
+static const class_desc_t atalk_nbp_collection_class = {
     .name = "atalk_nbp",
     .members = atalk_nbp_collection_members,
     .n_members = ARRAY_LEN(atalk_nbp_collection_members),
@@ -3182,7 +3182,7 @@ static const member_t atalk_volume_members[] = {
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 
-const class_desc_t atalk_volume_class = {
+static const class_desc_t atalk_volume_class = {
     .name = "atalk_volume",
     .members = atalk_volume_members,
     .n_members = ARRAY_LEN(atalk_volume_members),
@@ -3283,7 +3283,7 @@ static const member_t atalk_volumes_collection_members[] = {
                .lookup = atalk_volumes_lookup}},
 };
 
-const class_desc_t atalk_volumes_collection_class = {
+static const class_desc_t atalk_volumes_collection_class = {
     .name = "atalk_volumes",
     .members = atalk_volumes_collection_members,
     .n_members = ARRAY_LEN(atalk_volumes_collection_members),
@@ -3345,7 +3345,7 @@ static const member_t atalk_session_members[] = {
      .attr = {.type = V_UINT, .width = 8, .get = atalk_session_attr_idle_ns}    },
 };
 
-const class_desc_t atalk_session_class = {
+static const class_desc_t atalk_session_class = {
     .name = "atalk_session",
     .members = atalk_session_members,
     .n_members = ARRAY_LEN(atalk_session_members),
@@ -3384,7 +3384,7 @@ static const member_t atalk_sessions_collection_members[] = {
                .lookup = NULL}},
 };
 
-const class_desc_t atalk_sessions_collection_class = {
+static const class_desc_t atalk_sessions_collection_class = {
     .name = "atalk_sessions",
     .members = atalk_sessions_collection_members,
     .n_members = ARRAY_LEN(atalk_sessions_collection_members),
@@ -3440,7 +3440,7 @@ static const member_t atalk_afp_stats_members[] = {
                                                              .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
 };
 
-const class_desc_t atalk_afp_stats_class = {
+static const class_desc_t atalk_afp_stats_class = {
     .name = "atalk_afp_stats",
     .members = atalk_afp_stats_members,
     .n_members = ARRAY_LEN(atalk_afp_stats_members),
@@ -3529,7 +3529,7 @@ static const member_t atalk_afp_members[] = {
      .attr = {.type = V_LIST, .get = atalk_afp_attr_versions}},
 };
 
-const class_desc_t atalk_afp_class = {
+static const class_desc_t atalk_afp_class = {
     .name = "atalk_afp",
     .members = atalk_afp_members,
     .n_members = ARRAY_LEN(atalk_afp_members),
@@ -3647,7 +3647,7 @@ static const member_t atalk_printer_members[] = {
      .attr = {.type = V_STRING, .get = atalk_printer_attr_last_outcome}},
 };
 
-const class_desc_t atalk_printer_class = {
+static const class_desc_t atalk_printer_class = {
     .name = "atalk_printer",
     .members = atalk_printer_members,
     .n_members = ARRAY_LEN(atalk_printer_members),
@@ -3684,7 +3684,7 @@ static const member_t atalk_members[] = {
      .attr = {.type = V_UINT, .width = 1, .get = atalk_attr_node_id}},
 };
 
-const class_desc_t atalk_class = {
+static const class_desc_t atalk_class = {
     .name = "appletalk",
     .members = atalk_members,
     .n_members = ARRAY_LEN(atalk_members),

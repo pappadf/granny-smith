@@ -1646,14 +1646,16 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     machine_checkpoint_save_core(cfg, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
-    // Save order must mirror iifx_init's construction order exactly: the
-    // checkpoint stream is positional, with no per-block tag or size field, so
-    // a swapped pair does not fail loudly at the swap -- it cross-loads, and
-    // the size mismatch surfaces later at whichever block first disagrees.
-    // These three were saved asc -> adb -> floppy while init restores
-    // asc -> floppy -> adb (:1545, :1547, :1557), which made every
+    // Save order must mirror iifx_init's construction order exactly, because
+    // the stream is positional.  These three were saved asc -> adb -> floppy
+    // while init restored asc -> floppy -> adb, which made every
     // checkpoint.load on this machine fail with "expected 9840 at
-    // floppy.c:708 but file contains 336 at adb.c:891".
+    // floppy.c:708 but file contains 336 at adb.c:891" -- a confusing message
+    // naming an innocent block several positions past the actual swap.
+    //
+    // The subsystems below now tag their own blocks, so a future divergence
+    // is caught AT the swap and reported by name.  Nothing is needed here:
+    // the protection travels with the device, not with this call site.
     asc_checkpoint(st->asc, cp);
     floppy_checkpoint(st->floppy, cp);
     adb_checkpoint(st->adb, cp);

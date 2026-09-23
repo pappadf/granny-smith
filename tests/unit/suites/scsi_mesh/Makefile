@@ -59,9 +59,11 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/scsi_mesh.c \
         $(EMU_ROOT)/core/peripherals/scsi_msgsession.c \
         $(EMU_ROOT)/core/object/object.c \
+        $(EMU_ROOT)/core/object/parse.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \
-        $(EMU_ROOT)/core/object/api.c
+        $(EMU_ROOT)/core/object/api.c \
+        $(EMU_ROOT)/core/object/value_format.c
 
 ALL_SRCS := $(abspath $(SRCS))
 OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))

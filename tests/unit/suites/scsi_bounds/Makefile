@@ -28,8 +28,10 @@ EXTRA_SRCS   := ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/storage/rsrc_dcmp.c \
                 ../../../../src/core/storage/macroman.c \
                 ../../../../src/core/object/object.c \
+        ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/api.c \
+        ../../../../src/core/object/value_format.c \
                 ../../../../src/core/storage/drive_catalog.c
 include ../../common.mk

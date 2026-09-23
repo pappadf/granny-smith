@@ -5,5 +5,6 @@ EXTRA_SRCS := ../../../../src/core/object/value.c \
               ../../../../src/core/object/object.c \
               ../../../../src/core/object/meta.c \
               ../../../../src/core/object/parse.c \
-              ../../../../src/core/object/expr.c
+              ../../../../src/core/object/expr.c \
+        ../../../../src/core/object/value_format.c
 include ../../common.mk

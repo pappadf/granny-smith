@@ -102,14 +102,6 @@ int rom_load_into_machine(const char *path);
 // success, -1 on failure (no machine, unreadable/wrong-size chips).
 int rom_load_lisa_into_machine(const char *path_a, const char *path_b);
 
-// === Lifecycle =============================================================
-//
-// rom_init() creates the singleton `rom` object node and attaches it under
-// the root; rom_delete() detaches/frees it and clears the pending path.
-// Both are idempotent — repeated calls are safe and turn into no-ops.
-// Called from system_create / system_destroy alongside the other subsystems.
-extern const struct class_desc rom_class;
-
 void rom_init(void);
 void rom_delete(void);
 

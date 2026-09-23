@@ -48,18 +48,77 @@ uint32_t checkpoint_get_ram_size_kb(checkpoint_t *checkpoint);
 
 // === Block I/O (with file:line metadata for diagnostics) ===
 
-// Reads a data block from the checkpoint with size validation
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line);
+// Reads a data block from the checkpoint with size and tag validation
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line);
 
-// Writes a data block to the checkpoint with size header
-void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
-                                      int line);
+// Writes a data block to the checkpoint with size and tag header
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line);
 
-// Convenience macros that inject __FILE__ and __LINE__ automatically
-#define system_read_checkpoint_data(cp, data, size)                                                                    \
-    system_read_checkpoint_data_loc((cp), (data), (size), __FILE__, __LINE__)
-#define system_write_checkpoint_data(cp, data, size)                                                                   \
-    system_write_checkpoint_data_loc((cp), (data), (size), __FILE__, __LINE__)
+// === Block tags ===
+//
+// The stream is positional: subsystem N's state is whatever bytes sit between
+// N-1's and N+1's, and integrity rests entirely on the save and restore
+// functions visiting subsystems in the same order.  Nothing checks that they
+// do.  When they diverge, what happens depends only on whether the block
+// sizes happen to match: different sizes surface as a confusing mismatch
+// several blocks later, pointing at an innocent bystander; **equal sizes are
+// not detected at all, in either format**, and each subsystem silently
+// restores the other's state.  F-20 was exactly this -- the IIfx saved
+// ASC -> ADB -> floppy and restored ASC -> floppy -> ADB.
+//
+// So every block carries a 32-bit tag beside its size.  Pass an optional
+// fourth argument naming the block, on BOTH paths:
+//
+//     system_write_checkpoint_data(cp, &s->regs, sizeof(s->regs), "adb");
+//     system_read_checkpoint_data(cp, &s->regs, sizeof(s->regs), "adb");
+//
+// Tag it inside the subsystem, next to the data it names -- not at the
+// machine's call site.  One edit in adb.c then protects every machine that
+// saves ADB, because a machine restoring floppy where adb was saved reads the
+// wrong name and fails AT the swap.
+//
+// The three-argument form still works everywhere and writes tag 0, meaning
+// "unchecked".  A comparison passes whenever either side is 0, so a block may
+// gain a tag on the write side and the read side independently without the
+// stream ever desynchronising -- the field is ALWAYS present, so the layout
+// never depends on whether a caller chose to name its block.
+//
+// A source location cannot serve as the tag, which is why the stored
+// __FILE__/__LINE__ is a diagnostic and not a check: the writer and the
+// reader sit at different lines by construction.
+#define CP_SELECT_4(_1, _2, _3, _4, NAME, ...) NAME
+#define CP_READ_TAGGED(cp, data, size, tag)                                                                            \
+    system_read_checkpoint_data_loc((cp), (data), (size), (tag), __FILE__, __LINE__)
+#define CP_READ_PLAIN(cp, data, size) system_read_checkpoint_data_loc((cp), (data), (size), NULL, __FILE__, __LINE__)
+#define CP_WRITE_TAGGED(cp, data, size, tag)                                                                           \
+    system_write_checkpoint_data_loc((cp), (data), (size), (tag), __FILE__, __LINE__)
+#define CP_WRITE_PLAIN(cp, data, size) system_write_checkpoint_data_loc((cp), (data), (size), NULL, __FILE__, __LINE__)
+
+#define system_read_checkpoint_data(...)  CP_SELECT_4(__VA_ARGS__, CP_READ_TAGGED, CP_READ_PLAIN)(__VA_ARGS__)
+#define system_write_checkpoint_data(...) CP_SELECT_4(__VA_ARGS__, CP_WRITE_TAGGED, CP_WRITE_PLAIN)(__VA_ARGS__)
+
+// === Bounded reads from an untrusted stream ===
+//
+// A checkpoint is a user-supplied file and the build-ID gate is not a defence
+// (the ID is in the file).  Restore paths read counts and strings through
+// these rather than trusting the writer, so an on-disk length cannot drive an
+// allocation or a loop bound.  See 08-core-infra F-22/F-23/F-24.
+
+// Longest path a restore may claim for an image or its delta directory.
+#define CHECKPOINT_MAX_PATH 4096u
+
+// Read a uint32 count, refusing and flagging the checkpoint when it exceeds
+// `max`.  `what` names the items for the diagnostic ("images", "events").
+// Returns false with *out = 0 when the value is rejected or the read failed.
+bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max, const char *what);
+
+// Read a `uint32 length + bytes` string, bounded by `max` and ALWAYS
+// NUL-terminated regardless of what the file claimed.  Returns NULL for an
+// empty string and for a refused one; check checkpoint_has_error() to tell
+// them apart.  Caller frees.
+char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char *what);
 
 // === File Serialization (content or reference mode) ===
 
@@ -97,7 +156,6 @@ bool checkpoint_validate_build_id(const char *filename);
 // legacy `checkpoint --foo` shell-form parser.
 
 struct class_desc;
-extern const struct class_desc checkpoint_class;
 
 void checkpoint_init(void);
 void checkpoint_delete(void);

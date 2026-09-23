@@ -116,26 +116,35 @@ static bool rle_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t o
 
     while (ip < in_size && op < out_size) {
         uint8_t marker = in[ip++];
-        if (ip + 4 > in_size)
+        if (in_size - ip < 4)
             return false;
         uint32_t count;
         memcpy(&count, in + ip, 4);
         ip += 4;
 
+        // Every bound below is `count > remaining`, never `cursor + count >
+        // size`.  `count` is a uint32_t taken straight from the file and
+        // size_t is 32 bits on the shipping wasm build, so the sum form wraps:
+        // with op = 16 and count = 0xFFFFFFF8 it evaluates to 8, which passes
+        // a 64-byte bound and admits a four-gigabyte memcpy.  The subtraction
+        // form cannot wrap because op <= out_size and ip <= in_size are loop
+        // invariants.  (08-core-infra F-06.  Not reproducible on a 64-bit
+        // host, where the sum is computed in 64 bits and is correct -- see
+        // tests/unit/suites/checkpoint.)
         if (marker == 0x01) {
             // RUN: fill count bytes with next byte value
             if (ip >= in_size)
                 return false;
             uint8_t val = in[ip++];
-            if (op + count > out_size)
+            if (count > out_size - op)
                 return false;
             memset(out + op, val, count);
             op += count;
         } else if (marker == 0x00) {
             // LIT: copy count raw bytes
-            if (ip + count > in_size)
+            if (count > in_size - ip)
                 return false;
-            if (op + count > out_size)
+            if (count > out_size - op)
                 return false;
             memcpy(out + op, in + ip, count);
             ip += count;
@@ -204,10 +213,134 @@ static bool buf_read(checkpoint_t *cp, void *data, size_t len) {
     return true;
 }
 
+// === Bounded reads from an untrusted stream =================================
+//
+// Every length in a checkpoint comes off disk, and a checkpoint is a file the
+// user supplies.  The helpers here exist so that adding the next
+// variable-length field cannot reintroduce the same three bugs: an unbounded
+// allocation driven by an on-disk count (F-22), a string used without a
+// terminator the writer merely promised (F-23), and a loop bound taken from
+// the file (F-24).  Read a count through checkpoint_read_count(), a string
+// through checkpoint_read_string(), and both are correct by construction.
+
+// Longest diagnostic filename a block header may claim.  These are __FILE__
+// strings naming the save site; nothing in the tree is close, and the cap is
+// what stops a crafted 4 GB request on the 32-bit wasm heap.
+#define CP_MAX_FNAME 4096u
+
+// Longest path a restore may claim for an image or its delta directory.
+#define CP_MAX_PATH 4096u
+
+// Read the v2 block header's `uint32 length + bytes` filename directly from
+// the FILE, below the system_read_checkpoint_data layer.  Returns NULL both
+// for "absent" (length 0) and for "refused"; the caller distinguishes by
+// checking checkpoint->error, which is set only in the second case.  The
+// result is always NUL-terminated.
+static char *cp_read_block_fname(checkpoint_t *checkpoint) {
+    uint32_t fname_len = 0;
+    size_t got = fread(&fname_len, 1, sizeof(fname_len), checkpoint->file);
+    if (got != sizeof(fname_len)) {
+        LOG(0, "Error: Failed to read filename length from checkpoint (got %zu)", got);
+        checkpoint->error = true;
+        return NULL;
+    }
+    if (fname_len == 0)
+        return NULL;
+    if (fname_len > CP_MAX_FNAME) {
+        LOG(0, "Error: checkpoint block claims a %u-byte filename (cap %u); refusing", fname_len, CP_MAX_FNAME);
+        checkpoint->error = true;
+        return NULL;
+    }
+    char *saved_file = (char *)malloc((size_t)fname_len + 1);
+    if (!saved_file) {
+        LOG(0, "Error: Out of memory reading checkpoint filename");
+        checkpoint->error = true;
+        return NULL;
+    }
+    got = fread(saved_file, 1, fname_len, checkpoint->file);
+    if (got != fname_len) {
+        LOG(0, "Error: Failed to read filename from checkpoint (got %zu, expected %u)", got, fname_len);
+        free(saved_file);
+        checkpoint->error = true;
+        return NULL;
+    }
+    saved_file[fname_len] = '\0';
+    return saved_file;
+}
+
+// FNV-1a over the block name.  The hash only has to separate the names a
+// single machine uses, and a collision costs a missed diagnostic rather than
+// wrong behaviour -- the size check still stands behind it.
+static uint32_t cp_tag_hash(const char *name) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        h ^= (uint32_t)*p;
+        h *= 16777619u;
+    }
+    return h ? h : 1u; // 0 is reserved for "unchecked"
+}
+
+// Compare a stored tag against what the caller expects.  0 on either side
+// means "unchecked", so a block can gain a name on the write and read paths
+// independently.  Returns false and flags the checkpoint on a real mismatch.
+static bool cp_tag_ok(checkpoint_t *checkpoint, uint32_t stored, const char *tag, const char *file, int line) {
+    if (!tag || stored == 0)
+        return true;
+    uint32_t want = cp_tag_hash(tag);
+    if (stored == want)
+        return true;
+    LOG(0,
+        "Error: checkpoint block order diverges -- reading '%s' at %s:%d, but the stream holds a different block "
+        "here (tag %08x, expected %08x). The save and restore orders disagree.",
+        tag, file ? file : "(unknown)", line, stored, want);
+    checkpoint_set_error(checkpoint);
+    return false;
+}
+
+bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max, const char *what) {
+    *out = 0;
+    uint32_t v = 0;
+    system_read_checkpoint_data(checkpoint, &v, sizeof(v));
+    if (checkpoint_has_error(checkpoint))
+        return false;
+    if (v > max) {
+        LOG(0, "Error: checkpoint claims %u %s (cap %u); refusing the restore", v, what ? what : "items", max);
+        checkpoint_set_error(checkpoint);
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char *what) {
+    uint32_t len = 0;
+    if (!checkpoint_read_count(checkpoint, &len, max, what))
+        return NULL;
+    if (len == 0)
+        return NULL;
+    // One byte more than claimed, and terminate unconditionally: the writer
+    // includes its own NUL in `len`, but a hostile file need not, and the
+    // result is handed to access(), fopen() and printf("%s").
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf) {
+        LOG(0, "Error: out of memory reading a %u-byte %s from checkpoint", len, what ? what : "string");
+        checkpoint_set_error(checkpoint);
+        return NULL;
+    }
+    system_read_checkpoint_data(checkpoint, buf, len);
+    if (checkpoint_has_error(checkpoint)) {
+        free(buf);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
 // === Block I/O ===
 
 // Read a data block with size validation, source metadata, and RLE decompression
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
     if (!checkpoint || checkpoint->error || checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for reading");
         if (checkpoint)
@@ -219,6 +352,11 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     if (checkpoint->buf) {
         uint32_t stored_size = 0;
         if (!buf_read(checkpoint, &stored_size, sizeof(stored_size)))
+            return;
+        uint32_t stored_tag = 0;
+        if (!buf_read(checkpoint, &stored_tag, sizeof(stored_tag)))
+            return;
+        if (!cp_tag_ok(checkpoint, stored_tag, tag, file, line))
             return;
         if ((size_t)stored_size != size) {
             LOG(0, "Error: v3 checkpoint size mismatch: expected %zu but got %u at %s:%d", size, stored_size,
@@ -242,32 +380,22 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         return;
     }
 
-    // Read filename length and filename (for diagnostics)
-    uint32_t fname_len = 0;
-    got = fread(&fname_len, 1, sizeof(fname_len), checkpoint->file);
-    if (got != sizeof(fname_len)) {
-        LOG(0, "Error: Failed to read filename length from checkpoint (got %zu)", got);
+    uint32_t stored_tag = 0;
+    got = fread(&stored_tag, 1, sizeof(stored_tag), checkpoint->file);
+    if (got != sizeof(stored_tag)) {
+        LOG(0, "Error: Failed to read block tag from checkpoint (got %zu)", got);
         checkpoint->error = true;
         return;
     }
+    // Checked before the size, so a divergence is reported by NAME rather than
+    // as the size mismatch that only sometimes follows it.
+    if (!cp_tag_ok(checkpoint, stored_tag, tag, file, line))
+        return;
 
-    char *saved_file = NULL;
-    if (fname_len > 0) {
-        saved_file = (char *)malloc((size_t)fname_len + 1);
-        if (!saved_file) {
-            LOG(0, "Error: Out of memory reading checkpoint filename");
-            checkpoint->error = true;
-            return;
-        }
-        got = fread(saved_file, 1, fname_len, checkpoint->file);
-        if (got != fname_len) {
-            LOG(0, "Error: Failed to read filename from checkpoint (got %zu, expected %u)", got, fname_len);
-            free(saved_file);
-            checkpoint->error = true;
-            return;
-        }
-        saved_file[fname_len] = '\0';
-    }
+    // Read filename length and filename (for diagnostics)
+    char *saved_file = cp_read_block_fname(checkpoint);
+    if (checkpoint->error)
+        return;
 
     int32_t saved_line = 0;
     got = fread(&saved_line, 1, sizeof(saved_line), checkpoint->file);
@@ -371,8 +499,8 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
 }
 
 // Write a data block with size header, source metadata, and optional RLE compression
-void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
-                                      int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
     if (!checkpoint || checkpoint->error || !checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for writing");
         if (checkpoint)
@@ -380,10 +508,12 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
         return;
     }
 
-    // v3 buffered write: append size + raw data to accumulation buffer
+    // v3 buffered write: append size + tag + raw data to accumulation buffer
     if (checkpoint->buf) {
         uint32_t sz = (uint32_t)size;
+        uint32_t tg = tag ? cp_tag_hash(tag) : 0u;
         buf_append(checkpoint, &sz, sizeof(sz));
+        buf_append(checkpoint, &tg, sizeof(tg));
         buf_append(checkpoint, data, size);
         return;
     }
@@ -395,6 +525,16 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
     size_t w = fwrite(&store_size, 1, sizeof(store_size), checkpoint->file);
     if (w != sizeof(store_size)) {
         LOG(0, "Error: Failed to write size header to checkpoint (wrote %zu)", w);
+        checkpoint->error = true;
+        return;
+    }
+
+    // Block tag: 0 when the caller did not name this block.  Always written,
+    // so the layout never depends on whether a block happens to be named.
+    uint32_t store_tag = tag ? cp_tag_hash(tag) : 0u;
+    w = fwrite(&store_tag, 1, sizeof(store_tag), checkpoint->file);
+    if (w != sizeof(store_tag)) {
+        LOG(0, "Error: Failed to write block tag to checkpoint (wrote %zu)", w);
         checkpoint->error = true;
         return;
     }
@@ -1076,27 +1216,12 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
         checkpoint->error = true;
         return 0;
     }
-    uint32_t fname_len = 0;
-    got = fread(&fname_len, 1, sizeof(fname_len), checkpoint->file);
-    if (got != sizeof(fname_len)) {
-        checkpoint->error = true;
+    // Same bounded read as the v2 path; the name is read for stream alignment
+    // and discarded, but an unbounded length here drove a 4 GB malloc too.
+    char *skipped = cp_read_block_fname(checkpoint);
+    if (checkpoint->error)
         return 0;
-    }
-    if (fname_len) {
-        char *saved_file = (char *)malloc(fname_len + 1);
-        if (!saved_file) {
-            checkpoint->error = true;
-            return 0;
-        }
-        got = fread(saved_file, 1, fname_len, checkpoint->file);
-        if (got != fname_len) {
-            free(saved_file);
-            checkpoint->error = true;
-            return 0;
-        }
-        saved_file[fname_len] = '\0';
-        free(saved_file);
-    }
+    free(skipped);
     int32_t saved_line = 0;
     got = fread(&saved_line, 1, sizeof(saved_line), checkpoint->file);
     if (got != sizeof(saved_line)) {
@@ -1225,7 +1350,7 @@ static value_t checkpoint_method_probe(struct object *self, const member_t *m, i
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(find_valid_checkpoint_path() != NULL);
+    return val_bool(system_checkpoint_probe());
 }
 
 static value_t checkpoint_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -1236,36 +1361,42 @@ static value_t checkpoint_method_clear(struct object *self, const member_t *m, i
     return val_bool(gs_checkpoint_clear() == 0);
 }
 
-// `checkpoint.load([path])` — load the named checkpoint file or, when
-// path is omitted/empty, auto-load the latest valid checkpoint for the
-// active machine. Routes through cmd_load_checkpoint so the legacy
-// shell command and the typed method share one body.
+// `checkpoint.load([path])` — load the named checkpoint file or, when path is
+// omitted/empty, auto-load the latest valid checkpoint for the active machine.
+//
+// This used to build a fake argv[] and hand it to cmd_load_checkpoint, the
+// retired command shape, which then string-matched its way back out.  That was
+// the last place the pre-object-model command layer was load-bearing, and it
+// carried a live collision: cmd_load_checkpoint tested argv[1] against the
+// literal "probe", and argv[1] is where this method put the user's path -- so
+// `checkpoint.load("probe")` ran a probe instead of loading a file called
+// probe.  `checkpoint.probe()` above has been the real entry point all along,
+// so that string-match was vestigial -- reachable, but only by accident
+// (08-core-infra F-31).
 static value_t checkpoint_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc >= 1 && argv[0].s && *argv[0].s) {
-        char *fake_argv[2] = {"--load", (char *)argv[0].s};
-        return val_bool(cmd_load_checkpoint(2, fake_argv) == 0);
-    }
-    char *fake_argv[1] = {"--load"};
-    return val_bool(cmd_load_checkpoint(1, fake_argv) == 0);
+    const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
+    return val_bool(system_checkpoint_load(path) == 0);
 }
 
-// `checkpoint.save(path, [mode])` — write a consolidated checkpoint to
-// the given path. `mode` is "content" (default; embed image bytes) or
-// "refs" (record paths only — smaller file, requires the same images
-// to exist on restore).
+// `checkpoint.save(path, [mode])` — write a consolidated checkpoint to the
+// given path. `mode` is "content" (default; embed image bytes) or "refs"
+// (record paths only — smaller file, requires the same images on restore).
+//
+// `mode` is a real V_ENUM, so the framework rejects anything outside the table
+// and completion can offer both values.  It was a V_STRING that the legacy
+// handler strcmp'd against FIVE spellings — refs / reference / names /
+// content / inline — of which only two ever appeared in its usage line or its
+// error message.  The three undocumented aliases are dropped.
 static value_t checkpoint_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const char *path = argv[0].s;
-    char *fake_argv[3] = {"--save", (char *)path, NULL};
-    int fake_argc = 2;
-    if (argc >= 2 && argv[1].s && *argv[1].s) {
-        fake_argv[2] = (char *)argv[1].s;
-        fake_argc = 3;
-    }
-    return val_bool(cmd_save_checkpoint(fake_argc, fake_argv) == 0);
+    if (argc < 1 || !argv[0].s || !*argv[0].s)
+        return val_err("checkpoint.save: path is required");
+    // enum index 0 = "content", 1 = "refs"; absent means content.
+    bool as_refs = (argc >= 2 && argv[1].kind == V_ENUM && argv[1].enm.idx == 1);
+    return val_bool(system_checkpoint_save(argv[0].s, as_refs) == 0);
 }
 
 // `checkpoint.snapshot(name)` — capture a quick (background) checkpoint
@@ -1301,12 +1432,15 @@ static const arg_decl_t checkpoint_load_args[] = {
      .doc = "Checkpoint path; empty auto-loads the latest"},
 };
 
+static const char *const checkpoint_mode_values[] = {"content", "refs", NULL};
+
 static const arg_decl_t checkpoint_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
     {.name = "mode",
-     .kind = V_STRING,
+     .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"content\" (default) or \"refs\""},
+     .enum_values = checkpoint_mode_values,
+     .doc = "\"content\" (default) embeds image bytes; \"refs\" records paths only"},
 };
 
 static const arg_decl_t checkpoint_snapshot_args[] = {
@@ -1341,7 +1475,7 @@ static const member_t checkpoint_members[] = {
      .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_snapshot}},
 };
 
-const class_desc_t checkpoint_class = {
+static const class_desc_t checkpoint_class = {
     .name = "checkpoint",
     .members = checkpoint_members,
     .n_members = sizeof(checkpoint_members) / sizeof(checkpoint_members[0]),

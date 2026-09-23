@@ -28,11 +28,11 @@ static void scsi_static_detach(void);
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
-extern const class_desc_t scsi_class;
-extern const class_desc_t scsi_bus_class;
-extern const class_desc_t scsi_devices_collection_class;
-extern const class_desc_t scsi_device_class;
-extern const class_desc_t scsi_image_class;
+static const class_desc_t scsi_class;
+static const class_desc_t scsi_bus_class;
+static const class_desc_t scsi_devices_collection_class;
+static const class_desc_t scsi_device_class;
+static const class_desc_t scsi_image_class;
 
 #include <assert.h>
 #include <limits.h>
@@ -1877,7 +1877,7 @@ static const member_t scsi_image_members[] = {
                 .task_category = "storage"}},
 };
 
-const class_desc_t scsi_image_class = {
+static const class_desc_t scsi_image_class = {
     .name = "image",
     .members = scsi_image_members,
     .n_members = sizeof(scsi_image_members) / sizeof(scsi_image_members[0]),
@@ -1898,31 +1898,45 @@ static struct object *scsi_dev_image_lookup(struct object *self, const char *nam
 }
 
 static const member_t scsi_device_members[] = {
-    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = scsi_dev_attr_id, .set = NULL}},
-    {.kind = M_ATTR, .name = "type", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "id",
+     .flags = VAL_RO,
+     .doc = "SCSI ID 0-6 this device answers on (7 is the initiator, the Mac itself)",
+     .attr = {.type = V_INT, .get = scsi_dev_attr_id, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "type",
+     .flags = VAL_RO,
+     .doc = "What is attached at this ID: \"hd\", \"cdrom\", or \"none\" for an empty slot",
+     .attr = {.type = V_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
     {.kind = M_ATTR,
      .name = "vendor",
      .flags = VAL_RO,
+     .doc = "Vendor field of the INQUIRY response, as the guest's driver sees it",
      .attr = {.type = V_STRING, .get = scsi_dev_attr_vendor, .set = NULL}},
     {.kind = M_ATTR,
      .name = "product",
      .flags = VAL_RO,
+     .doc = "Product field of the INQUIRY response; Apple's drivers match on this to decide what they will mount",
      .attr = {.type = V_STRING, .get = scsi_dev_attr_product, .set = NULL}},
     {.kind = M_ATTR,
      .name = "revision",
      .flags = VAL_RO,
+     .doc = "Revision field of the INQUIRY response",
      .attr = {.type = V_STRING, .get = scsi_dev_attr_revision, .set = NULL}},
     {.kind = M_ATTR,
      .name = "block_size",
      .flags = VAL_RO,
+     .doc = "Bytes per logical block — 512 for a hard disk, 2048 for a CD-ROM",
      .attr = {.type = V_UINT, .get = scsi_dev_attr_block_size, .set = NULL}},
     {.kind = M_ATTR,
      .name = "read_only",
      .flags = VAL_RO,
+     .doc = "True when the device rejects writes (always so for a CD-ROM)",
      .attr = {.type = V_BOOL, .get = scsi_dev_attr_read_only, .set = NULL}},
     {.kind = M_ATTR,
      .name = "medium_present",
      .flags = VAL_RO,
+     .doc = "True when media is loaded; a CD-ROM slot stays attached with this false after `eject`",
      .attr = {.type = V_BOOL, .get = scsi_dev_attr_medium_present, .set = NULL}},
     {.kind = M_METHOD,
      .name = "eject",
@@ -1943,7 +1957,7 @@ static const member_t scsi_device_members[] = {
      .child = {.cls = &scsi_image_class, .lookup = scsi_dev_image_lookup}},
 };
 
-const class_desc_t scsi_device_class = {
+static const class_desc_t scsi_device_class = {
     .name = "scsi_device",
     .members = scsi_device_members,
     .n_members = sizeof(scsi_device_members) / sizeof(scsi_device_members[0]),
@@ -1970,18 +1984,21 @@ static value_t scsi_bus_attr_initiator(struct object *self, const member_t *m) {
 static const member_t scsi_bus_members[] = {
     {.kind = M_ATTR,
      .name = "phase",
-     .flags = VAL_RO,
-     .attr = {.type = V_ENUM, .get = scsi_bus_attr_phase, .set = NULL}   },
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Current bus phase: bus_free, arbitration, selection, reselection, command, data_in, data_out, "
+            "status, message_in, or message_out",                                             .attr = {.type = V_ENUM, .get = scsi_bus_attr_phase, .set = NULL}},
     {.kind = M_ATTR,
      .name = "target",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = scsi_bus_attr_target, .set = NULL}   },
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "SCSI ID the current transaction is addressing, or -1 when the bus is free",
+     .attr = {.type = V_INT, .get = scsi_bus_attr_target, .set = NULL}                                                                                         },
     {.kind = M_ATTR,
      .name = "initiator",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = scsi_bus_attr_initiator, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "SCSI ID that won arbitration, normally 7 (the Mac), or -1 when the bus is free",
+     .attr = {.type = V_INT, .get = scsi_bus_attr_initiator, .set = NULL}                                                                                      },
 };
-const class_desc_t scsi_bus_class = {
+static const class_desc_t scsi_bus_class = {
     .name = "scsi_bus",
     .members = scsi_bus_members,
     .n_members = sizeof(scsi_bus_members) / sizeof(scsi_bus_members[0]),
@@ -2032,7 +2049,7 @@ static const member_t scsi_devices_collection_members[] = {
                .next = scsi_devices_next,
                .lookup = NULL}},
 };
-const class_desc_t scsi_devices_collection_class = {
+static const class_desc_t scsi_devices_collection_class = {
     .name = "scsi_devices",
     .members = scsi_devices_collection_members,
     .n_members = 1,
@@ -2277,7 +2294,7 @@ static const member_t scsi_members[] = {
      .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_cdrom}},
 };
 
-const class_desc_t scsi_class = {
+static const class_desc_t scsi_class = {
     .name = "scsi",
     .members = scsi_members,
     .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),

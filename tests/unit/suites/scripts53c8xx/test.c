@@ -39,6 +39,7 @@
 #include "sym53c8xx.h"
 #include "test_assert.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -67,11 +68,11 @@ void scsi_reset_pin(struct scsi *bus) {
 // to satisfy the linker and are never reached.
 struct scheduler;
 struct event;
-struct event *scheduler_new_cpu_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
-                                      uint64_t data, uint64_t cycles, uint64_t ns);
-struct event *scheduler_new_cpu_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
-                                      uint64_t data, uint64_t cycles, uint64_t ns) {
-    (void)scheduler, (void)cb, (void)source, (void)data, (void)cycles, (void)ns;
+struct event *scheduler_new_cpu_event_ex(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
+                                         uint64_t data, uint64_t cycles, uint64_t ns, bool periodic);
+struct event *scheduler_new_cpu_event_ex(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
+                                         uint64_t data, uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)scheduler, (void)cb, (void)source, (void)data, (void)cycles, (void)ns, (void)periodic;
     return 0;
 }
 void remove_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source);
@@ -107,7 +108,9 @@ uint8_t *ram_native_pointer(memory_map_t *map, uint32_t offset) {
 static uint8_t s_cp_buf[16384];
 static size_t s_cp_w, s_cp_r;
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp;
     (void)file;
     (void)line;
@@ -116,7 +119,9 @@ void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t
     s_cp_w += size;
 }
 
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp;
     (void)file;
     (void)line;

@@ -34,7 +34,7 @@
 
 // Forward declaration — the `machine.sound` class descriptor lives with the
 // object-model section near the bottom of the file; asc_init references it.
-extern const class_desc_t asc_detail_class;
+static const class_desc_t asc_detail_class;
 
 #include <assert.h>
 #include <stddef.h>
@@ -726,7 +726,7 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     // Restore plain-data state from checkpoint if provided
     if (checkpoint) {
         size_t data_size = offsetof(asc_t, memory_interface);
-        system_read_checkpoint_data(checkpoint, asc, data_size);
+        system_read_checkpoint_data(checkpoint, asc, data_size, "asc");
     }
 
     // Register the FIFO drain event type for checkpoint save/restore
@@ -802,7 +802,7 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint) {
     if (!asc || !checkpoint)
         return;
     size_t data_size = offsetof(asc_t, memory_interface);
-    system_write_checkpoint_data(checkpoint, asc, data_size);
+    system_write_checkpoint_data(checkpoint, asc, data_size, "asc");
 }
 
 // ============================================================================
@@ -923,7 +923,7 @@ static const member_t asc_detail_members[] = {
      .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_b, .set = NULL}   },
 };
 
-const class_desc_t asc_detail_class = {
+static const class_desc_t asc_detail_class = {
     .name = "asc",
     .members = asc_detail_members,
     .n_members = sizeof asc_detail_members / sizeof asc_detail_members[0],

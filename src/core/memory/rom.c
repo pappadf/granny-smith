@@ -606,7 +606,7 @@ static const member_t rom_members[] = {
      .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
 };
 
-const class_desc_t rom_class = {
+static const class_desc_t rom_class = {
     .name = "rom",
     .members = rom_members,
     .n_members = sizeof(rom_members) / sizeof(rom_members[0]),

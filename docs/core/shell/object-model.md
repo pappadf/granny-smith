@@ -178,7 +178,13 @@ Both compile to the same `node_call` underneath.
 splices its formatted value. Inside expression mode, a bare path is a
 `node_get` (or, with a trailing call-form argument list, `node_call`);
 `$name` reads a binding; literals and operators work the way they do
-in C. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
+in C, **with one deliberate exception**: the bitwise operators `&`, `^` and
+`|` bind *tighter* than the comparisons, where C binds them looser. So
+`${machine.cpu.sr & 0x2000 == 0x2000}` means `(sr & 0x2000) == 0x2000` here
+and `sr & (0x2000 == 0x2000)` in C. C's order is a well-known trap and this
+is the friendlier reading; the full precedence table is in
+`proposal-shell-expressions.md` §2.3, and `expr.c`'s grammar comment is the
+authority in code. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
 strings/lists/bytes/maps, `none` never, and errors are not truth values —
 an error reaching a condition aborts.
 
@@ -514,3 +520,20 @@ written months ago.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — overall code organisation.
 - `src/core/object/object.h` — the substrate contract, with detailed
   docstrings on every public function.
+
+
+### Singleton lifetime
+
+A class registered as a process singleton (`<module>_class_register()` from
+`shell_init`) stays registered for the life of the process. **There is no
+unregister.** Four `*_class_unregister` functions used to exist — `find`,
+`mouse`, `screen`, `vfs` — with zero callers between them, and the absence of
+a shutdown path is deliberate rather than an omission: nothing in the process
+lifetime needs one, and a half-built teardown story is worse than none.
+
+`object_root_reset()` is the test-only path that tears the tree down, and it
+routes through `object_delete` so the invalidator contract still holds.
+
+*(Decision recorded working 08-core-infra F-49. If a future embedding needs to
+build and tear down the emulator repeatedly in one process, that is the change
+that should add `shell_shutdown()` — with all of it, not a piece.)*

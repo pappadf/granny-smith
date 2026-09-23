@@ -67,7 +67,7 @@ struct av_dsp {
     struct object *object; // the machine.dsp node
 };
 
-extern const class_desc_t av_dsp_class;
+static const class_desc_t av_dsp_class;
 
 static void av_dsp_burst_event(void *source, uint64_t data);
 
@@ -378,8 +378,10 @@ static value_t dsp_method_disasm(struct object *self, const member_t *m, int arg
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
-    uint32_t addr = argc >= 1 ? (uint32_t)argv[0].u : d->core->pc;
-    uint32_t count = argc >= 2 ? (uint32_t)argv[1].u : 16;
+    // `addr` carries a V_NONE default, so `dsp.disasm(count=8)` disassembles
+    // from the current pc instead of failing with "missing argument 'addr'".
+    uint32_t addr = (argc >= 1 && argv[0].kind == V_UINT) ? (uint32_t)argv[0].u : d->core->pc;
+    uint32_t count = (argc >= 2 && argv[1].kind == V_UINT) ? (uint32_t)argv[1].u : 16;
     if (count > 256)
         count = 256;
     size_t cap = (size_t)count * 160 + 1;
@@ -417,6 +419,7 @@ static const arg_decl_t dsp_disasm_args[] = {
      .kind = V_UINT,
      .presentation_flags = VAL_HEX,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
      .doc = "start address (default: current pc)"},
     {.name = "count",
      .kind = V_UINT,
@@ -475,7 +478,7 @@ static const member_t av_dsp_members[] = {
      .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_STRING, .fn = dsp_method_disasm}},
 };
 
-const class_desc_t av_dsp_class = {
+static const class_desc_t av_dsp_class = {
     .name = "dsp",
     .members = av_dsp_members,
     .n_members = sizeof(av_dsp_members) / sizeof(av_dsp_members[0]),

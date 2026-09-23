@@ -12,11 +12,17 @@
 
 #include "debug.h" // debug_trace_capture_log()
 #include "log.h"
+
+#include "log_categories.h"
+
 #include "ppc.h" // PowerPC pc / r24 for the PC decoration
 #include "scheduler.h" // cpu_instr_count()
 #include "shell.h"
 #include "system.h" // system_config() / system_cpu()
 #include "system_config.h" // config_t::ppc
+#include "value.h"
+
+static bool name_in_manifest(const char *name);
 
 // Holds a single logging category node
 struct log_category {
@@ -128,110 +134,70 @@ static void print_category_config(const struct log_category *c) {
            c->file_path ? c->file_path : "off", c->timestamp ? "on" : "off", c->show_pc ? "on" : "off");
 }
 
-static int parse_onoff(const char *v, int *out) {
-    if (!v || !out)
+// === Typed configuration ====================================================
+//
+// These replace log_configure(category, "level=5 stdout=off file=..."), which
+// was a flag grammar inside a string parsed with strtok_r -- the exact shape
+// docs/core/shell/object-model.md 6 says named arguments exist to retire.
+// The framework could not validate it (the slot was declared V_NONE, so it
+// was told nothing to validate), completion could not offer the keys or their
+// values, and it carried its own boolean vocabulary and its own error wording
+// (08-core-infra F-35).
+//
+// Each setter takes the category by name so the caller does not have to hold
+// a handle, and validates against the manifest by going through
+// log_register_category.
+
+int log_set_category_level(const char *category, int level) {
+    if (level < 0)
         return -1;
-    if (strcasecmp(v, "on") == 0 || strcasecmp(v, "true") == 0 || strcmp(v, "1") == 0) {
-        *out = 1;
-        return 0;
-    }
-    if (strcasecmp(v, "off") == 0 || strcasecmp(v, "false") == 0 || strcmp(v, "0") == 0) {
-        *out = 0;
-        return 0;
-    }
-    return -1;
+    log_category_t *c = log_register_category(category);
+    if (!c)
+        return -1;
+    log_set_level(c, level);
+    return 0;
 }
 
-// Apply one whitespace-delimited config token to category `c`: a bare
-// non-negative integer sets the level; `key=val` sets stdout / file /
-// ts / pc / level. `tok` is a NUL-terminated copy the caller owns.
-static void apply_log_token(struct log_category *c, char *tok) {
-    char *eq = strchr(tok, '=');
-    if (!eq) {
-        char *end = NULL;
-        long lvl = strtol(tok, &end, 10);
-        if (end && *end == '\0' && lvl >= 0)
-            c->level = (int)lvl;
-        else
-            printf("log: unrecognized option '%s'\n", tok);
+int log_set_category_stdout(const char *category, bool on) {
+    struct log_category *c = (struct log_category *)log_register_category(category);
+    if (!c)
+        return -1;
+    c->to_stdout = on;
+    return 0;
+}
+
+int log_set_category_timestamp(const char *category, bool on) {
+    struct log_category *c = (struct log_category *)log_register_category(category);
+    if (!c)
+        return -1;
+    c->timestamp = on;
+    return 0;
+}
+
+int log_set_category_show_pc(const char *category, bool on) {
+    struct log_category *c = (struct log_category *)log_register_category(category);
+    if (!c)
+        return -1;
+    c->show_pc = on;
+    return 0;
+}
+
+// `path` NULL or "off" closes any open file for this category.
+int log_set_category_file(const char *category, const char *path) {
+    struct log_category *c = (struct log_category *)log_register_category(category);
+    if (!c)
+        return -1;
+    return set_category_file(c, path ? path : "off");
+}
+
+// Print one category's current settings, as `debug.log <cat>` does.
+void log_print_category(const char *category) {
+    struct log_category *c = (struct log_category *)log_get_category(category);
+    if (!c) {
+        printf("unknown category \"%s\" (see debug.log_levels() for the full list)\n", category);
         return;
     }
-    *eq = '\0';
-    const char *key = tok;
-    const char *val = eq + 1;
-    if (strcasecmp(key, "level") == 0) {
-        char *end = NULL;
-        long lvl = strtol(val, &end, 10);
-        if (!(end && *end == '\0') || lvl < 0)
-            puts("log: invalid level");
-        else
-            c->level = (int)lvl;
-    } else if (strcasecmp(key, "stdout") == 0) {
-        int b;
-        if (parse_onoff(val, &b) == 0)
-            c->to_stdout = b;
-        else
-            puts("log: stdout expects on/off");
-    } else if (strcasecmp(key, "file") == 0) {
-        (void)set_category_file(c, val); // set_category_file prints on failure
-    } else if (strcasecmp(key, "ts") == 0 || strcasecmp(key, "timestamp") == 0) {
-        int b;
-        if (parse_onoff(val, &b) == 0)
-            c->timestamp = b;
-        else
-            puts("log: ts expects on/off");
-    } else if (strcasecmp(key, "pc") == 0) {
-        int b;
-        if (parse_onoff(val, &b) == 0)
-            c->show_pc = b;
-        else
-            puts("log: pc expects on/off");
-    } else {
-        printf("log: unknown key '%s'", key);
-    }
-}
-
-// `debug.log(category, spec)` core. `category` names the log category
-// (created on demand); `spec` is NULL/empty to just print the current
-// config, or a whitespace-delimited option string
-// (`"5"`, `"level=5 file=tmp/x.log stdout=off ts=on"`). Returns 0.
-int log_configure(const char *category, const char *spec) {
-    if (!category || !*category) {
-        for (struct log_category *c = s_registry_head; c; c = c->next)
-            print_category_config(c);
-        return 0;
-    }
-    struct log_category *c = find_category(category);
-    if (!spec || !*spec) {
-        if (!c) {
-            printf("unknown category \"%s\"\n", category);
-            return 0;
-        }
-        print_category_config(c);
-        return 0;
-    }
-    // Setting options: create the category on demand for pre-config.
-    if (!c) {
-        c = create_category(category);
-        if (!c) {
-            puts("log: out of memory");
-            return -1;
-        }
-        c->next = s_registry_head;
-        s_registry_head = c;
-    }
-    // Split `spec` on whitespace into tokens and apply each.
-    char *copy = strdup(spec);
-    if (!copy) {
-        puts("log: out of memory");
-        return -1;
-    }
-    char *save = NULL;
-    for (char *tok = strtok_r(copy, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save))
-        apply_log_token(c, tok);
-    free(copy);
     print_category_config(c);
-    return 0;
 }
 
 // Public API ----------------------------------------------------------------
@@ -244,9 +210,52 @@ void log_init(void) {
         s_sink_fn = NULL;
 }
 
+// === The manifest =========================================================
+
+static bool name_in_manifest(const char *name) {
+#define X(n, lvl, desc)                                                                                                \
+    if (strcmp(name, (n)) == 0)                                                                                        \
+        return true;
+    GS_LOG_CATEGORIES(X)
+#undef X
+    (void)name;
+    return false;
+}
+
+const char *log_category_description(const char *name) {
+    if (!name)
+        return NULL;
+#define X(n, lvl, desc)                                                                                                \
+    if (strcmp(name, (n)) == 0)                                                                                        \
+        return (desc);
+    GS_LOG_CATEGORIES(X)
+#undef X
+    return NULL;
+}
+
+// Create every category the manifest declares, so `debug.log` with no
+// arguments lists the real, complete set rather than only what has been hit
+// or configured so far (08-core-infra F-34).
+void log_register_manifest(void) {
+#define X(n, lvl, desc)                                                                                                \
+    do {                                                                                                               \
+        log_category_t *c = log_register_category(n);                                                                  \
+        if (c && (lvl) != 0)                                                                                           \
+            log_set_level(c, (lvl));                                                                                   \
+    } while (0);
+    GS_LOG_CATEGORIES(X)
+#undef X
+}
+
 // Registers a category by name (idempotent). Level defaults to 0 on first create.
 log_category_t *log_register_category(const char *name) {
     if (!name || !*name)
+        return NULL;
+    // A category that is not in the manifest is a typo, in code or in a
+    // `debug.log` argument.  It used to be created on the spot, which is how
+    // `debug.log cpuu 10` reported success and produced nothing (F-34).
+    GS_ASSERTF(name_in_manifest(name), "log category '%s' is not in GS_LOG_CATEGORIES", name);
+    if (!name_in_manifest(name))
         return NULL;
     struct log_category *c = find_category(name);
     if (c)
