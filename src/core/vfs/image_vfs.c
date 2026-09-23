@@ -303,10 +303,24 @@ static void mount_destroy(image_mount_t *m) {
 
 // ---- Mount open / probe ---------------------------------------------------
 
-// Try to probe an image_t as HFS or HFS+ at offset 0 (bare floppy / CD with
-// no APM).  On success, populate the synthetic APM entry so the rest of the
-// code can treat this uniformly.
-static bool probe_bare_hfs(image_mount_t *m) {
+// A volume with no partition map is exposed as one synthetic partition,
+// "partition1", covering the whole image, so the rest of the code treats it
+// like any other.
+static void set_synthetic_partition(image_mount_t *m, size_t img_size, const char *name, const char *type,
+                                    enum apm_fs_kind kind) {
+    m->synthetic_apm = true;
+    memset(&m->synthetic_part, 0, sizeof(m->synthetic_part));
+    m->synthetic_part.index = 1;
+    m->synthetic_part.start_block = 0;
+    m->synthetic_part.size_blocks = img_size / 512;
+    snprintf(m->synthetic_part.name, sizeof(m->synthetic_part.name), "%s", name);
+    snprintf(m->synthetic_part.type, sizeof(m->synthetic_part.type), "%s", type);
+    m->synthetic_part.fs_kind = kind;
+}
+
+// Probe for a bare volume (no APM) at offset 0: HFS / HFS+, then UFS.  On
+// success populate the synthetic partition.
+static bool probe_bare_volume(image_mount_t *m) {
     size_t img_size = disk_size(m->img);
     if (img_size < 1024 + 512)
         return false;
@@ -317,17 +331,18 @@ static bool probe_bare_hfs(image_mount_t *m) {
     // "BD" = classic HFS (possibly an HFS+ wrapper), "H+"/"HX" = bare HFS+.
     // hfs_open handles all three; classify them all as APM_FS_HFS.
     uint16_t sig = ((uint16_t)mdb[0] << 8) | mdb[1];
-    if (sig != HFS_SIG_BD && sig != HFS_SIG_HP && sig != HFS_SIG_HX)
-        return false;
-    m->synthetic_apm = true;
-    memset(&m->synthetic_part, 0, sizeof(m->synthetic_part));
-    m->synthetic_part.index = 1;
-    m->synthetic_part.start_block = 0;
-    m->synthetic_part.size_blocks = img_size / 512;
-    snprintf(m->synthetic_part.name, sizeof(m->synthetic_part.name), "HFS");
-    snprintf(m->synthetic_part.type, sizeof(m->synthetic_part.type), "Apple_HFS");
-    m->synthetic_part.fs_kind = APM_FS_HFS;
-    return true;
+    if (sig == HFS_SIG_BD || sig == HFS_SIG_HP || sig == HFS_SIG_HX) {
+        set_synthetic_partition(m, img_size, "HFS", "Apple_HFS", APM_FS_HFS);
+        return true;
+    }
+    // A bare UFS volume: an A/UX partition dumped without its map.  The
+    // listing code for it was already here; nothing probed for it
+    // (09-storage F-45).
+    if (ufs_probe(m->img, 0, img_size)) {
+        set_synthetic_partition(m, img_size, "UFS", "Apple_UNIX_SVR2", APM_FS_UFS);
+        return true;
+    }
+    return false;
 }
 
 // Fill in device/inode/mtime for a newly-opened mount, best-effort.
@@ -396,13 +411,13 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
     m->img = img;
     capture_identity(m, host_path);
 
-    // Probe APM first, then a bare HFS volume at offset 0.
+    // Probe APM first, then a bare HFS or UFS volume at offset 0.
     const char *errmsg = NULL;
     apm_table_t *apm = image_apm_parse(img, &errmsg);
     if (apm) {
         m->apm = apm;
         m->n_partitions = apm->n_partitions;
-    } else if (probe_bare_hfs(m)) {
+    } else if (probe_bare_volume(m)) {
         m->n_partitions = 1;
     } else {
         mount_destroy(m);
