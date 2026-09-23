@@ -687,6 +687,7 @@ void adsp_input(adsp_stack_t *s, const atalk_socket_addr_t *from, uint8_t dst_so
         return;
     s->stats.packets_in++;
     if (len < ADSP_HEADER_SIZE) {
+        s->stats.malformed++;
         LOG(3, "ADSP: runt packet (%d bytes)", len);
         return;
     }
@@ -712,6 +713,7 @@ void adsp_input(adsp_stack_t *s, const atalk_socket_addr_t *from, uint8_t dst_so
         return;
     }
     if (control && code > ADSP_CTL_RETRANSMIT) {
+        s->stats.malformed++;
         LOG(3, "ADSP: reserved control code %u rejected", (unsigned)code); // 12-14
         return;
     }
@@ -1427,6 +1429,7 @@ static const member_t adsp_stats_members[] = {
     ADSP_STAT_MEMBER(attentions_in, "Attention messages accepted"),
     ADSP_STAT_MEMBER(attentions_out, "Attention messages sent"),
     ADSP_STAT_MEMBER(timeouts, "Connection ends torn down by the connection timer"),
+    ADSP_STAT_MEMBER(malformed, "Packets discarded as malformed"),
 };
 
 static const class_desc_t adsp_stats_class = {

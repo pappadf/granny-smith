@@ -2517,8 +2517,9 @@ an operation, settable — through the object tree
 appletalk                        the stack itself
   enabled          rw  bool      attach/detach from the SCC link (default true)
   node_id          ro  uint      current LLAP node ID (0 while detached)
-  stats            ro  child     llap_rx/tx, crc_errors, ddp_in/out,
-                                 atp_requests/retries, nbp_lookups
+  stats            ro  child     llap_rx/tx, malformed, unhandled,
+                                 tx_dropped, ddp_in/out,
+                                 atp_requests/retries, nbp_packets
   nbp              ro  collection every advertised entity: object / type /
                                  zone / socket / node; `nbp["name"]` resolves
   afp                            the file server

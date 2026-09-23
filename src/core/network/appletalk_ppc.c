@@ -646,6 +646,7 @@ static void ppc_handle_message(ppc_session_t *s, const uint8_t *msg, int len) {
 
     // An open session carries message blocks (§4.7).
     if (len < PPC_BLOCK_HEADER_SIZE) {
+        g_stats.malformed++;
         LOG(3, "PPC: session %u sent a %d-byte block, shorter than its header", (unsigned)s->id, len);
         return;
     }
@@ -1304,6 +1305,7 @@ static const member_t ppc_stats_members[] = {
     PPC_STAT_MEMBER(blocks_in, "Message blocks received"),
     PPC_STAT_MEMBER(blocks_out, "Message blocks sent"),
     PPC_STAT_MEMBER(browses, "Port browses started"),
+    PPC_STAT_MEMBER(malformed, "Message blocks discarded as malformed"),
 };
 
 static const class_desc_t ppc_stats_class = {

@@ -36,12 +36,14 @@ unsigned atalk_node_id(void);
 typedef struct {
     uint64_t llap_rx;
     uint64_t llap_tx;
-    uint64_t crc_errors;
+    uint64_t malformed; // frames discarded as malformed, at any layer
+    uint64_t unhandled; // well-formed frames nothing here serves
+    uint64_t tx_dropped; // frames the stack gave up transmitting
     uint64_t ddp_in;
     uint64_t ddp_out;
     uint64_t atp_requests;
     uint64_t atp_retries;
-    uint64_t nbp_lookups;
+    uint64_t nbp_packets;
 } atalk_stats_t;
 
 const atalk_stats_t *atalk_get_stats(void);

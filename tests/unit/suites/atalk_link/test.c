@@ -309,6 +309,113 @@ TEST(a_successful_load_moves_the_stack_to_the_new_machine) {
     link_delete();
 }
 
+// --- malformed input (10-network F-02, F-35) -------------------------------------
+
+typedef struct {
+    uint64_t malformed, unhandled, tx_dropped, ddp_in;
+} counts_t;
+
+static counts_t counts(void) {
+    const atalk_stats_t *st = atalk_get_stats();
+    return (counts_t){st->malformed, st->unhandled, st->tx_dropped, st->ddp_in};
+}
+
+// Feed one raw frame and check which counter it moved: exactly one, by one.
+static void expect_drop(const uint8_t *frame, size_t len, int which /* 0 malformed, 1 unhandled */) {
+    counts_t before = counts();
+    guest_frame(frame, len);
+    counts_t after = counts();
+    ASSERT_EQ_INT(which == 0 ? 1 : 0, (int)(after.malformed - before.malformed));
+    ASSERT_EQ_INT(which == 1 ? 1 : 0, (int)(after.unhandled - before.unhandled));
+}
+
+// A short-DDP frame whose DDP header cannot be what it claims.  These were
+// three asserts on guest bytes: in this build (asserts on) the first frame
+// below aborted the process; in the browser build (asserts compiled out) a
+// frame under five bytes was parsed from stale bytes, and len - 5 wrapped.
+TEST(a_malformed_ddp_frame_is_dropped_and_counted) {
+    link_boot();
+    uint8_t f[800];
+    memset(f, 0, sizeof f);
+    f[0] = HOST_NODE;
+    f[1] = GUEST_NODE;
+    f[2] = LLAP_TYPE_DDP_SHORT;
+    // Every length from an empty DDP header to one byte short of a whole one.
+    for (size_t ddp_len = 0; ddp_len < 5; ddp_len++)
+        expect_drop(f, 3 + ddp_len, 0);
+    // Whole headers whose 10-bit length field disagrees with the frame.
+    for (size_t ddp_len = 5; ddp_len <= 12; ddp_len++) {
+        f[3] = 0;
+        f[4] = (uint8_t)(ddp_len + 1);
+        expect_drop(f, 3 + ddp_len, 0);
+        f[4] = 0;
+        expect_drop(f, 3 + ddp_len, 0);
+    }
+    // Consistent, but longer than DDP allows (586 bytes of data).
+    size_t big = 5 + 587;
+    f[3] = (uint8_t)(big >> 8);
+    f[4] = (uint8_t)big;
+    expect_drop(f, 3 + big, 0);
+    // None of it reached DDP.
+    ASSERT_EQ_INT(0, (int)atalk_get_stats()->ddp_in);
+    link_delete();
+}
+
+// Every other discard is counted too, by why.
+TEST(every_discard_is_counted_by_reason) {
+    link_boot();
+    // Malformed.
+    uint8_t two[2] = {HOST_NODE, GUEST_NODE};
+    expect_drop(two, sizeof two, 0); // shorter than an LLAP header
+    uint8_t enq4[4] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_ENQ, 0};
+    expect_drop(enq4, sizeof enq4, 0);
+    uint8_t cts4[4] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_CTS, 0};
+    expect_drop(cts4, sizeof cts4, 0); // CTS had no length check at all
+    uint8_t atp_short[4] = {0x40, 1, 0, 1};
+    counts_t b = counts();
+    guest_ddp(GUEST_NODE, 8, 200, 3, atp_short, sizeof atp_short);
+    ASSERT_EQ_INT(1, (int)(counts().malformed - b.malformed));
+    uint8_t atp_ctl0[8] = {0x00, 1, 0, 1, 0, 0, 0, 0}; // control type 0 is no ATP packet
+    b = counts();
+    guest_ddp(GUEST_NODE, 8, 200, 3, atp_ctl0, sizeof atp_ctl0);
+    ASSERT_EQ_INT(1, (int)(counts().malformed - b.malformed));
+    uint8_t nbp_trunc[] = {0x21, 0x42, 0, 0, GUEST_NODE, 253, 0, 1, '='}; // one tuple, cut short
+    b = counts();
+    guest_ddp(GUEST_NODE, 2, 253, 2, nbp_trunc, sizeof nbp_trunc);
+    ASSERT_EQ_INT(1, (int)(counts().malformed - b.malformed));
+
+    // Well-formed, but nothing here serves it.
+    uint8_t ack[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_ACK};
+    expect_drop(ack, sizeof ack, 1);
+    uint8_t ext[16] = {HOST_NODE, GUEST_NODE, 0x02};
+    expect_drop(ext, sizeof ext, 1); // extended DDP
+    uint8_t other[8] = {HOST_NODE + 1, GUEST_NODE, LLAP_TYPE_DDP_SHORT, 0, 5, 2, 253, 2};
+    expect_drop(other, sizeof other, 1); // data for another node
+    b = counts();
+    guest_ddp(GUEST_NODE, 99, 200, 0x55, NULL, 0); // no such DDP type
+    ASSERT_EQ_INT(1, (int)(counts().unhandled - b.unhandled));
+    uint8_t treq[8] = {0x40, 1, 0, 2, 0, 0, 0, 0};
+    b = counts();
+    guest_ddp(GUEST_NODE, 77, 200, 3, treq, sizeof treq); // no ATP handler on socket 77
+    ASSERT_EQ_INT(1, (int)(counts().unhandled - b.unhandled));
+    uint8_t tresp[8] = {0x80 | 0x10, 0, 0x7F, 0x7F, 0, 0, 0, 0};
+    b = counts();
+    guest_ddp(GUEST_NODE, 8, 200, 3, tresp, sizeof tresp); // answers nothing we asked
+    ASSERT_EQ_INT(1, (int)(counts().unhandled - b.unhandled));
+
+    // One of ours the guest never grants: after eight RTS attempts it is dropped.
+    atalk_nbp_service_desc_t desc = {.object = "Test Host", .type = "LinkTest", .socket = 200};
+    atalk_nbp_entry_t *entry = NULL;
+    ASSERT_EQ_INT(0, atalk_nbp_register(&desc, &entry));
+    uint8_t lkup[] = {0x21, 0x42, 0, 0, GUEST_NODE, 253, 0, 1, '=', 8, 'L', 'i', 'n', 'k', 'T', 'e', 's', 't', 1, '*'};
+    b = counts();
+    guest_ddp(GUEST_NODE, 2, 253, 2, lkup, sizeof lkup);
+    guest_idle_until(link_now_ns() + 100e6);
+    ASSERT_EQ_INT(1, (int)(counts().tx_dropped - b.tx_dropped));
+    ASSERT_EQ_INT(0, atalk_nbp_unregister(entry));
+    link_delete();
+}
+
 int main(void) {
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
     RUN(enq_for_our_node_is_acked_and_others_are_not);
@@ -321,6 +428,8 @@ int main(void) {
     RUN(configuration_survives_a_checkpoint);
     RUN(a_failed_load_gives_the_stack_back_to_the_running_machine);
     RUN(a_successful_load_moves_the_stack_to_the_new_machine);
+    RUN(a_malformed_ddp_frame_is_dropped_and_counted);
+    RUN(every_discard_is_counted_by_reason);
     printf("[PASS] All atalk_link tests passed\n");
     return 0;
 }

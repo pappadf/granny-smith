@@ -18,7 +18,8 @@
 #
 # The run steps the machine in small slices right after the Finder starts
 # reading the volume, until scheduler.events shows an ATP event queued, and
-# saves there.
+# saves there.  After the load the share must still be published under the
+# same volume id.
 
 include "../lib/mac.script"
 
@@ -144,8 +145,13 @@ break
 }
 assert $hit == 1 "no ATP event was ever pending to checkpoint"
 
+let vol_id = appletalk.afp.volumes["My Volume"].vol_id
 assert checkpoint.save("${$WORK_DIR}/afp.checkpoint") "checkpoint save"
 assert checkpoint.load("${$WORK_DIR}/afp.checkpoint") "checkpoint load"
+
+# The share is still published, under the id the guest cached for it
+# (10-network D-3: a load used to drop every volume).
+assert appletalk.afp.volumes["My Volume"].vol_id == $vol_id "the share did not come back under its volume id"
 
 # The restored queue still holds the transaction's timer, resolved to a live
 # callback -- not dropped, and not a wild pointer.

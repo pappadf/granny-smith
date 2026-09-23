@@ -128,6 +128,7 @@ typedef struct {
     uint64_t timeouts;
     uint64_t received;
     uint64_t auto_replies;
+    uint64_t malformed; // blocks that are no high-level event (10-network F-35)
 } aevt_stats_t;
 
 static aevt_stats_t g_stats;
@@ -312,12 +313,14 @@ static void aevt_session_block(void *ctx, ppc_session_t *s, uint32_t creator, ui
     (void)ctx;
     (void)user_data;
     if (len < AEVT_HLE_HEADER_SIZE) {
+        g_stats.malformed++;
         LOG(3, "AE: a %d-byte block is too short to be a high-level event", len);
         return;
     }
     uint16_t header_len = RD_BE16(&payload[0]);
     uint16_t version = RD_BE16(&payload[2]);
     if (header_len < AEVT_HLE_HEADER_SIZE || header_len > len) {
+        g_stats.malformed++;
         LOG(3, "AE: high-level event header length %u is not usable", (unsigned)header_len);
         return;
     }
@@ -962,6 +965,7 @@ static const member_t aevt_stats_members[] = {
     AEVT_STAT_MEMBER(timeouts, "Events whose instruction budget ran out"),
     AEVT_STAT_MEMBER(received, "Events guests sent us"),
     AEVT_STAT_MEMBER(auto_replies, "Automatic replies we sent"),
+    AEVT_STAT_MEMBER(malformed, "Blocks discarded as no high-level event"),
 };
 
 static const class_desc_t aevt_stats_class = {

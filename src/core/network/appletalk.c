@@ -23,10 +23,10 @@
 #include "system.h"
 #include "value.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -234,6 +234,23 @@ static void asp_sessions_set_next_ref(uint16_t ref);
 static log_category_t *_log_get_local_category(void);
 static void log_hex(int level, const char *tag, const uint8_t *data, size_t len);
 
+// Every frame the stack discards goes through here, counted by why, so
+// `appletalk.stats` says what was thrown away (10-network F-35).  There is no
+// CRC anywhere in the stack -- the SCC hands over whole frames -- so there is
+// no "CRC error"; what the old crc_errors counted was malformed frames, and
+// only three of the thirty-odd places that drop one counted anything.
+typedef enum {
+    ATALK_DROP_MALFORMED, // cannot be parsed: short, lengths disagree, bad type
+    ATALK_DROP_UNHANDLED, // well-formed, but nothing here serves it
+    ATALK_DROP_TX, // one of ours that could not be transmitted
+} atalk_drop_t;
+
+static void atalk_drop(atalk_drop_t kind, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
+
 // ============================================================================
 // Operations
 // ============================================================================
@@ -413,6 +430,7 @@ static void llap_rts_timeout_cb(void *source, uint64_t data) {
         llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
         LOG(2, "LLAP tx: no CTS from %02X after %d RTS attempts, dropping a %zu-byte frame", f->dst,
             g_llap_rts.attempts, f->len);
+        g_atalk_stats.tx_dropped++;
         g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
         g_llap_rts.count--;
         g_llap_rts.attempts = 0;
@@ -444,10 +462,12 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
         // here (they answer a frame the guest just sent), but traffic we
         // originate can, and it must not be forced onto a dead link.
         LOG(4, "LLAP tx: dropped, the guest's AppleTalk driver is not up");
+        g_atalk_stats.tx_dropped++;
         return -1;
     }
     if (len > LLAP_DATA_MAX_SIZE) {
         LOG(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
+        g_atalk_stats.tx_dropped++;
         return -1;
     }
     uint8_t buf[LLAP_HEADER_SIZE + LLAP_DATA_MAX_SIZE];
@@ -467,6 +487,7 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
         if (g_llap_rts.count >= LLAP_RTS_QUEUE_DEPTH) {
             // The wire cannot keep up; the upper layers (ATP) retransmit.
             LOG(2, "LLAP tx: RTS queue full, dropping a %zu-byte frame to %02X", total, llap->dst);
+            g_atalk_stats.tx_dropped++;
             return -1;
         }
         int slot = (g_llap_rts.head + g_llap_rts.count) % LLAP_RTS_QUEUE_DEPTH;
@@ -483,6 +504,27 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
     return 0;
 }
 
+static void atalk_drop(atalk_drop_t kind, const char *fmt, ...) {
+    static const char *const names[] = {"malformed", "unhandled", "not transmitted"};
+    switch (kind) {
+    case ATALK_DROP_MALFORMED:
+        g_atalk_stats.malformed++;
+        break;
+    case ATALK_DROP_UNHANDLED:
+        g_atalk_stats.unhandled++;
+        break;
+    case ATALK_DROP_TX:
+        g_atalk_stats.tx_dropped++;
+        break;
+    }
+    char msg[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    LOG(5, "dropped (%s): %s", names[kind], msg);
+}
+
 static void llap_in(const uint8_t *buf, size_t len) {
     llap_header_t header;
 
@@ -490,9 +532,9 @@ static void llap_in(const uint8_t *buf, size_t len) {
         return; // the stack is detached from the link
 
     // Short/malformed packets can arrive from the SCC during A/UX
-    // initialization — silently discard them.
+    // initialization.
     if (len < LLAP_HEADER_SIZE) {
-        g_atalk_stats.crc_errors++;
+        atalk_drop(ATALK_DROP_MALFORMED, "LLAP frame of %zu bytes", len);
         return;
     }
     g_atalk_stats.llap_rx++;
@@ -511,8 +553,7 @@ static void llap_in(const uint8_t *buf, size_t len) {
         if (len != LLAP_HEADER_SIZE) {
             // Control frames are exactly 3 bytes; drop wire junk instead of
             // dying on it (guest drivers do emit malformed traffic).
-            LOG(5, "LLAP ENQ with bad length %zu discarded", len);
-            g_atalk_stats.crc_errors++;
+            atalk_drop(ATALK_DROP_MALFORMED, "LLAP ENQ of %zu bytes", len);
             break;
         }
         LOG(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
@@ -529,8 +570,7 @@ static void llap_in(const uint8_t *buf, size_t len) {
 
     case LLAP_RTS:
         if (len != LLAP_HEADER_SIZE) {
-            LOG(5, "LLAP RTS with bad length %zu discarded", len);
-            g_atalk_stats.crc_errors++;
+            atalk_drop(ATALK_DROP_MALFORMED, "LLAP RTS of %zu bytes", len);
             break;
         }
         LOG(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
@@ -547,6 +587,10 @@ static void llap_in(const uint8_t *buf, size_t len) {
         break;
 
     case LLAP_CTS:
+        if (len != LLAP_HEADER_SIZE) {
+            atalk_drop(ATALK_DROP_MALFORMED, "LLAP CTS of %zu bytes", len);
+            break;
+        }
         // The receiver granted our lapRTS: transmit the parked data frame.
         LOG(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         if (g_llap_rts.rts_out && g_llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
@@ -568,13 +612,12 @@ static void llap_in(const uint8_t *buf, size_t len) {
         break;
 
     case LLAP_DDP_EXTENDED:
-        LOG(5, "LLAP DDP_EXTENDED (unsupported) src=%02X dst=%02X len=%zu", (unsigned)header.src, (unsigned)header.dst,
-            len);
+        // LocalTalk nodes use short headers; extended DDP is for routers.
+        atalk_drop(ATALK_DROP_UNHANDLED, "extended DDP from %02X", (unsigned)header.src);
         break;
 
     default:
-        LOG(5, "LLAP unknown type=%02X src=%02X dst=%02X", (unsigned)header.type, (unsigned)header.src,
-            (unsigned)header.dst);
+        atalk_drop(ATALK_DROP_UNHANDLED, "LLAP type %02X from %02X", (unsigned)header.type, (unsigned)header.src);
         break;
     }
 }
@@ -1149,14 +1192,12 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         break;
 
     case DDP_ATP:
-        // Accept ATP for AFP sockets (8/54) and for PAP printer socket
-        if (ddp->dst_socket == HOST_AFP_SOCKET || ddp->dst_socket == HOST_AFP_COMPAT_SOCKET ||
-            ddp->dst_socket == HOST_PAP_SOCKET) {
-            atp_in(ddp, buf, (int)len);
-        } else {
-            // Ignore non-AFP ATP for now (e.g., PAP to come later) but trace at level 3.
-            LOG(3, "ATP rx for dstSock=%u not handled (expect 8/54)", (unsigned)ddp->dst_socket);
-        }
+        // Requests go to whoever registered the socket (ASP on 8 and 54, PAP on
+        // 6), and responses to whoever sent the request; ATP drops -- and
+        // counts -- the rest.  A list of sockets here duplicated that registry
+        // and would have dropped the response to any request sent from a
+        // socket not on it (10-network F-21).
+        atp_in(ddp, buf, (int)len);
         break;
 
     case DDP_AEP:
@@ -1183,7 +1224,7 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         break;
 
     default:
-        LOG(3, "DDP unknown type=0x%02X len=%zu", (unsigned)ddp->type, len);
+        atalk_drop(ATALK_DROP_UNHANDLED, "DDP type %02X", (unsigned)ddp->type);
         break;
     }
 }
@@ -1192,14 +1233,25 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
 static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
     ddp_header_t ddp;
 
-    assert(len >= DDP_SHORT_HEADER_SIZE);
-
+    // These three were asserts, on bytes the guest wrote (10-network F-02).
+    // In a build with asserts one bad frame aborted the emulator; in the
+    // browser build, which compiles them out, a frame under five bytes was
+    // parsed from stale buffer bytes and passed on with len - 5 wrapped.
+    if (len < DDP_SHORT_HEADER_SIZE || len > DDP_MAX_DATA_SIZE + DDP_SHORT_HEADER_SIZE) {
+        atalk_drop(ATALK_DROP_MALFORMED, "DDP frame of %zu bytes", len);
+        return;
+    }
     // Decode 10-bit length from short header: low 2 bits from first byte, then full second byte.
     ddp.len = (uint16_t)(((buf[0] & 0x03) << 8) | buf[1]);
-
-    assert(ddp.len == len);
-
-    assert(len <= DDP_MAX_DATA_SIZE + DDP_SHORT_HEADER_SIZE);
+    if (ddp.len != len) {
+        atalk_drop(ATALK_DROP_MALFORMED, "DDP length field %u in a %zu-byte frame", (unsigned)ddp.len, len);
+        return;
+    }
+    // Data for another node, or from us: nobody else is on this wire.
+    if (llap->dst != LLAP_HOST_NODE && llap->dst != 0xFF) {
+        atalk_drop(ATALK_DROP_UNHANDLED, "DDP for node %02X", (unsigned)llap->dst);
+        return;
+    }
 
     ddp.llap = *llap;
     ddp.checksum = 0;
@@ -1720,14 +1772,18 @@ static void nbp_dispatch(const ddp_header_t *ddp_header, const nbp_header_t *hea
         nbp_deliver_lookup_reply(header->nbp_id, tuples, tuple_count);
         break;
     default:
-        LOG(4, "NBP: unsupported function %d", header->function);
+        atalk_drop(ATALK_DROP_UNHANDLED, "NBP function %d", (int)header->function);
         break;
     }
 }
 
 static void nbp_parse_and_dispatch(const ddp_header_t *ddp, const uint8_t *buf, size_t len) {
-    if (!ddp || !buf || len < 2)
+    if (!ddp || !buf)
         return;
+    if (len < 2) {
+        atalk_drop(ATALK_DROP_MALFORMED, "NBP packet of %zu bytes", len);
+        return;
+    }
     nbp_header_t header;
     nbp_tuple_t tuples[32];
     int parsed = 0;
@@ -1757,6 +1813,12 @@ static void nbp_parse_and_dispatch(const ddp_header_t *ddp, const uint8_t *buf, 
         if (!nbp_parse_pstr32(&p, &rem, tuples[parsed].zone, sizeof(tuples[parsed].zone), &tuples[parsed].zone_len))
             break;
         parsed++;
+    }
+    // A packet whose tuples run out before its count does is not a shorter
+    // packet: drop it rather than act on the part that parsed.
+    if (parsed != header.tuple_count) {
+        atalk_drop(ATALK_DROP_MALFORMED, "NBP packet claims %d tuples, %d parse", (int)header.tuple_count, parsed);
+        return;
     }
 
     nbp_dispatch(ddp, &header, tuples, parsed);
@@ -1912,7 +1974,7 @@ static void nbp_reset(void) {
 }
 
 static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
-    g_atalk_stats.nbp_lookups++;
+    g_atalk_stats.nbp_packets++;
     uint8_t header_byte = (len >= 1) ? buf[0] : 0;
     uint8_t nbp_id = (len >= 2) ? buf[1] : 0;
     int function = (header_byte >> 4) & 0x0F;
@@ -2495,8 +2557,10 @@ static atp_request_handle_t *atp_match_request(const ddp_header_t *ddp, const at
 
 static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp) {
     atp_request_handle_t *req = atp_match_request(ddp, atp);
-    if (!req)
+    if (!req) {
+        atalk_drop(ATALK_DROP_UNHANDLED, "ATP response tid %04X matches no request", (unsigned)atp->tid);
         return;
+    }
     uint8_t seq = atp->bitmap & 0x07;
     uint8_t mask = (uint8_t)(1u << seq);
     bool duplicate = ((req->pending_bitmap & mask) == 0);
@@ -2543,7 +2607,7 @@ static void atp_handle_trel(const ddp_header_t *ddp, const atp_packet_t *atp) {
 static void atp_dispatch_registered_request(const ddp_header_t *ddp, atp_packet_t *atp) {
     atp_handler_slot_t *slot = atp_find_handler_slot(ddp->dst_socket);
     if (!slot) {
-        LOG(3, "ATP: unhandled socket %u", (unsigned)ddp->dst_socket);
+        atalk_drop(ATALK_DROP_UNHANDLED, "ATP request for socket %u", (unsigned)ddp->dst_socket);
         return;
     }
     bool xo = (atp->ctl & ATP_CONTROL_XO) != 0;
@@ -2561,8 +2625,10 @@ static void atp_dispatch_registered_request(const ddp_header_t *ddp, atp_packet_
 
 static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
     atp_packet_t atp;
-    if (parse_atp(buf, len, &atp) != 0)
+    if (parse_atp(buf, len, &atp) != 0) {
+        atalk_drop(ATALK_DROP_MALFORMED, "ATP packet of %d bytes", len);
         return;
+    }
     uint8_t ctl_type = (uint8_t)(atp.ctl & 0xC0);
 
     if (ctl_type == ATP_CONTROL_TREL) {
@@ -2573,8 +2639,10 @@ static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
         atp_handle_response(ddp, &atp);
         return;
     }
-    if (ctl_type != ATP_CONTROL_TREQ)
+    if (ctl_type != ATP_CONTROL_TREQ) {
+        atalk_drop(ATALK_DROP_MALFORMED, "ATP control byte %02X", (unsigned)atp.ctl);
         return;
+    }
 
     atp_dispatch_registered_request(ddp, &atp);
 }
@@ -3230,12 +3298,14 @@ static value_t atalk_stats_attr(struct object *self, const member_t *m) {
 static const member_t atalk_stats_members[] = {
     ATALK_STAT_MEMBER(llap_rx, "LLAP frames received"),
     ATALK_STAT_MEMBER(llap_tx, "LLAP frames transmitted"),
-    ATALK_STAT_MEMBER(crc_errors, "Frames discarded as malformed"),
+    ATALK_STAT_MEMBER(malformed, "Frames discarded as malformed, at any layer"),
+    ATALK_STAT_MEMBER(unhandled, "Well-formed frames nothing here serves"),
+    ATALK_STAT_MEMBER(tx_dropped, "Frames the stack gave up transmitting"),
     ATALK_STAT_MEMBER(ddp_in, "DDP datagrams delivered inbound"),
     ATALK_STAT_MEMBER(ddp_out, "DDP datagrams sent"),
     ATALK_STAT_MEMBER(atp_requests, "ATP transactions this host originated"),
     ATALK_STAT_MEMBER(atp_retries, "ATP request retransmissions"),
-    ATALK_STAT_MEMBER(nbp_lookups, "NBP packets processed"),
+    ATALK_STAT_MEMBER(nbp_packets, "NBP packets processed"),
 };
 
 static const class_desc_t atalk_stats_class = {

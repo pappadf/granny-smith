@@ -373,10 +373,24 @@ TEST(test_reserved_control_code_rejected) {
     pkt[1] = (uint8_t)adsp_conn_remote_cid(cb);
     pkt[12] = ADSP_DESC_CONTROL | 0x0F;
     atalk_socket_addr_t from = {.net = 0, .node = NODE_A, .socket = SOCK_A};
+    uint64_t malformed_before = adsp_get_stats(g_b)->malformed;
     adsp_input(g_b, &from, SOCK_B, pkt, sizeof(pkt));
 
     ASSERT_EQ_INT((int)adsp_conn_recv_seq(cb), (int)recv_before);
     ASSERT_EQ_INT(conn_count(g_b), 1); // rejected, not fatal
+    ASSERT_EQ_INT((int)(adsp_get_stats(g_b)->malformed - malformed_before), 1); // and counted (F-35)
+    pump();
+}
+
+// A packet shorter than the 13-byte header is dropped and counted (10-network
+// F-35: it used to leave no trace but a log line).
+TEST(test_runt_packet_is_counted) {
+    setup();
+    uint8_t pkt[ADSP_HEADER_SIZE - 1] = {0};
+    atalk_socket_addr_t from = {.net = 0, .node = NODE_A, .socket = SOCK_A};
+    adsp_input(g_b, &from, SOCK_B, pkt, sizeof(pkt));
+    ASSERT_EQ_INT((int)adsp_get_stats(g_b)->malformed, 1);
+    ASSERT_EQ_INT(conn_count(g_b), 0);
     pump();
 }
 
@@ -685,6 +699,7 @@ int main(void) {
     RUN(test_open_refused_by_client);
     RUN(test_open_version_mismatch_denied);
     RUN(test_reserved_control_code_rejected);
+    RUN(test_runt_packet_is_counted);
     RUN(test_data_with_eom);
     RUN(test_bare_eom_packet);
     RUN(test_multi_packet_stream);
