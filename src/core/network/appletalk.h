@@ -22,11 +22,6 @@
 typedef struct scc scc_t;
 typedef struct scheduler scheduler_t;
 
-// === Operations ===
-
-// Entry point from SCC SDLC to feed a LocalTalk frame (LLAP) to AppleTalk stack
-void process_packet(const uint8_t *buf, size_t size);
-
 // === Stack-level state (object model: `appletalk`) ==========================
 
 // Attach/detach the stack from the SCC link.  Enabled by default; disabling

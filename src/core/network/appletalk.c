@@ -404,7 +404,7 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
     return 0;
 }
 
-void llap_in(const uint8_t *buf, size_t len) {
+static void llap_in(const uint8_t *buf, size_t len) {
     llap_header_t header;
 
     if (!g_atalk_enabled)
@@ -500,7 +500,10 @@ void llap_in(const uint8_t *buf, size_t len) {
     }
 }
 
-void process_packet(const uint8_t *buf, size_t size) {
+// The SCC's frame sink (scc_set_frame_sink): a frame the guest transmitted on
+// the LocalTalk port.
+static void llap_receive(void *ctx, const uint8_t *buf, size_t size) {
+    (void)ctx;
     llap_in(buf, size);
 }
 
@@ -584,6 +587,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
         g_atalk_superseded = true;
     }
     g_scc = scc; // Store SCC dependency for later use
+    scc_set_frame_sink(scc, llap_receive, NULL);
     g_scheduler = scheduler; // Store scheduler for ATP timers
     g_atalk_enabled = true;
     llap_rts_reset(); // no RTS exchange survives a machine boot
@@ -768,6 +772,12 @@ static void appletalk_teardown(void) {
         object_delete(g_atalk_object);
         g_atalk_object = NULL;
     }
+
+    // Stop receiving from this machine's SCC, and forget it: the machine that
+    // owns it is going away.
+    if (g_scc)
+        scc_set_frame_sink(g_scc, NULL, NULL);
+    g_scc = NULL;
 }
 
 // Public teardown.
@@ -869,7 +879,7 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
 }
 
 // Process an incoming DDP packet and dispatch to appropriate protocol handler
-void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
     g_atalk_stats.ddp_in++;
     switch (ddp->type) {
 
@@ -922,7 +932,7 @@ void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
 }
 
 // Process an incoming short DDP header and dispatch to ddp_in
-void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
+static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
     ddp_header_t ddp;
 
     assert(len >= DDP_SHORT_HEADER_SIZE);
@@ -1636,7 +1646,7 @@ void atalk_nbp_lookup_cancel(void) {
     g_nbp_lookup.ctx = NULL;
 }
 
-void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
     g_atalk_stats.nbp_lookups++;
     uint8_t header_byte = (len >= 1) ? buf[0] : 0;
     uint8_t nbp_id = (len >= 2) ? buf[1] : 0;

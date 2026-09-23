@@ -151,7 +151,7 @@ be selectively linked:
 | `stub_system.c` | `system_memory()`, `system_cpu()`, etc. (uses harness context) |
 | `stub_memory.c` | Memory globals and access functions (for isolated mode) |
 | `stub_debugger.c` | `debugger_init()`, `debug_break_and_trace()` |
-| `stub_peripherals.c` | `floppy_new()`, `process_packet()` |
+| `stub_peripherals.c` | `floppy_new()` |
 | `stub_assert.c` | `gs_assert_fail()`, `init_tests()` |
 
 Each test picks the minimal subset of emulator `.c` files it needs via

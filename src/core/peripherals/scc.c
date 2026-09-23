@@ -6,7 +6,6 @@
 
 #include "scc.h"
 
-#include "appletalk.h"
 #include "cpu.h"
 #include "log.h"
 #include "object.h"
@@ -142,6 +141,10 @@ struct scc {
     // Per-instance IRQ callback routing
     scc_irq_fn irq_cb;
     void *cb_context;
+
+    // Where the guest's LocalTalk frames go (scc_set_frame_sink)
+    scc_frame_fn frame_sink;
+    void *frame_ctx;
 
     // BRG source clock frequencies (Hz); 0 = use CPU cycles directly
     uint32_t pclk_hz;
@@ -605,7 +608,9 @@ static void tx_underrun(ch_t *ch) {
     if (!TX_EMPTY(ch)) {
         LOG(4, "scc:tx underrun len=%d", ch->tx.len);
         log_frame_preview(7, "scc:tx bytes", ch->tx.buf, (size_t)ch->tx.len);
-        process_packet(ch->tx.buf, ch->tx.len);
+        scc_t *scc = ch->scc;
+        if (ch->index == 1 && SDLC_MODE(ch) && scc->frame_sink)
+            scc->frame_sink(scc->frame_ctx, ch->tx.buf, (size_t)ch->tx.len);
         ch->tx.len = 0;
     }
 }
@@ -1110,6 +1115,13 @@ bool scc_sdlc_ready(const scc_t *restrict scc) {
         return false;
     const ch_t *ch = &scc->ch[1];
     return SDLC_MODE(ch);
+}
+
+void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context) {
+    if (!scc)
+        return;
+    scc->frame_sink = fn;
+    scc->frame_ctx = fn ? context : NULL;
 }
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {

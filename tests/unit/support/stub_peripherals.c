@@ -35,12 +35,6 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
     (void)sel;
 }
 
-// Network packet processing stub
-void process_packet(uint8_t *buf, size_t size) {
-    (void)buf;
-    (void)size;
-}
-
 // RTC stub for cmd_set_time (debug_mac.c) — no-op since system_rtc() returns NULL
 void rtc_set_seconds(rtc_t *rtc, uint32_t mac_seconds) {
     (void)rtc;

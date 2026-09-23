@@ -21,6 +21,10 @@ typedef struct scc scc_t;
 // Callback for SCC interrupt line changes (per-instance routing)
 typedef void (*scc_irq_fn)(void *context, bool active);
 
+// Callback for a frame the guest finished transmitting in SDLC mode on
+// channel B, the LocalTalk port: the LLAP header and payload, no CRC.
+typedef void (*scc_frame_fn)(void *context, const uint8_t *frame, size_t len);
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Create an SCC instance with per-instance IRQ callback routing.
@@ -50,6 +54,11 @@ void scc_set_dcd_b(scc_t *restrict scc, unsigned char val);
 void scc_dcd(scc_t *restrict scc, unsigned int ch, unsigned int dcd);
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len);
+
+// Route the guest's outgoing LocalTalk frames to `fn` (NULL detaches).  Only
+// an SDLC frame on channel B is delivered; anything else the transmitter
+// flushes -- async bytes, channel A -- is not a LocalTalk frame.
+void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context);
 
 // True once channel B is in SDLC mode — the guest's AppleTalk driver is up
 // and a frame we originate has somewhere to go.
