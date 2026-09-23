@@ -157,12 +157,6 @@ static int read_file_size(const char *path, size_t *out_size) {
     return 0;
 }
 
-static uint32_t read_be32(const uint8_t *ptr) {
-    uint32_t temp = 0;
-    memcpy(&temp, ptr, sizeof(temp));
-    return BE32(temp);
-}
-
 static int detect_diskcopy(const char *path, size_t file_size, uint32_t *out_data_size) {
     if (file_size < DISKCOPY_HEADER_SIZE)
         return 0;
@@ -177,8 +171,8 @@ static int detect_diskcopy(const char *path, size_t file_size, uint32_t *out_dat
     uint16_t magic = ((uint16_t)header[0x52] << 8) | header[0x53];
     if (magic != 0x0100)
         return 0;
-    uint32_t data_size = read_be32(header + 0x40);
-    uint32_t tag_size = read_be32(header + 0x44);
+    uint32_t data_size = RD_BE32(header + 0x40);
+    uint32_t tag_size = RD_BE32(header + 0x44);
     if (data_size == 0 || (data_size % STORAGE_BLOCK_SIZE) != 0)
         return 0;
     uint64_t total = (uint64_t)DISKCOPY_HEADER_SIZE + (uint64_t)data_size + (uint64_t)tag_size;
@@ -354,8 +348,8 @@ static void image_load_diskcopy_tags(image_t *image) {
     // own: DiskCopy 4.2 sectors are 512 data bytes whatever geometry the
     // image is opened with.  Bounding the tag section by the file bounds
     // the allocation by the file.
-    uint32_t data_size = read_be32(header + 0x40);
-    uint32_t tag_size = read_be32(header + 0x44);
+    uint32_t data_size = RD_BE32(header + 0x40);
+    uint32_t tag_size = RD_BE32(header + 0x44);
     uint32_t count = data_size / STORAGE_BLOCK_SIZE;
     uint64_t end = (uint64_t)DISKCOPY_HEADER_SIZE + data_size + tag_size;
     if (tag_size == 0 || count == 0 || (tag_size % count) != 0 || end > (uint64_t)st.st_size) {
@@ -1202,24 +1196,6 @@ static char *stream_set_large_buffer(FILE *f) {
         return NULL;
     }
     return buf;
-}
-
-size_t image_save(image_t *image) {
-    if (!image || !image->storage || !image->filename)
-        return (size_t)-1;
-    if (image->from_diskcopy) {
-        LOG(1, "image_save: exporting DiskCopy images is not supported (%s)", image->filename);
-        return (size_t)-1;
-    }
-    FILE *f = fopen(image->filename, "wb");
-    if (!f)
-        return (size_t)-1;
-    char *iobuf = stream_set_large_buffer(f);
-    storage_checkpoint(image->storage, NULL);
-    int rc = storage_save_state(image->storage, f, file_write_cb);
-    fclose(f);
-    free(iobuf);
-    return (rc == GS_SUCCESS) ? 0 : (size_t)-1;
 }
 
 // Export the full disk content (base + delta) to a new file at dest_path.

@@ -90,7 +90,7 @@ The zlib decompressor both this and the PNG reader use is first-party (`inflate.
 - **`image_tick_all(config_t *config)`** calls `storage_tick()` for each registered image. With the delta model, `storage_tick()` is a no-op (no consolidation needed).
 
 **Persisting changes / Exporting**
-- **`image_save(image_t *image)`** calls `storage_save_state()` to emit a dense raw image back to `image->filename`. DiskCopy sources cannot be exported back to `.dc42`.
+- **`image_export_to(image_t *image, const char *dest_path)`** calls `storage_save_state()` to write a dense raw copy (base + delta) to a new file. The base image is never written in place.
 
 **Creating blank floppy images**
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.

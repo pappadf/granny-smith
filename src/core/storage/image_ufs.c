@@ -35,6 +35,7 @@
 #define SB_OFF_CGOFFSET 24
 #define SB_OFF_CGMASK   28
 #define SB_OFF_NCG      44
+#define UFS_MAX_BSIZE   65536u // FFS MAXBSIZE
 #define SB_OFF_BSIZE    48
 #define SB_OFF_FSIZE    52
 #define SB_OFF_FRAG     56
@@ -312,10 +313,14 @@ ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
     vol->fsbtodb = RD_BE32(sb + SB_OFF_FSBTODB);
 
     // Sanity checks.  Reject obviously-corrupt values rather than reading
-    // random bytes on subsequent calls.
-    if (vol->bsize == 0 || vol->fsize == 0 || vol->frag == 0 || vol->bsize % 512 != 0 || vol->fsize % 512 != 0 ||
-        vol->bsize / vol->fsize != vol->frag || vol->ncg == 0 || vol->ipg == 0 || vol->fpg == 0 || vol->nindir == 0 ||
-        vol->nindir > 4096) {
+    // random bytes on subsequent calls.  Block and fragment sizes are bounded
+    // (FFS allows at most 64 KiB blocks), and an indirect block holds exactly
+    // bsize / 4 pointers: an unbounded size made every fragment-to-byte
+    // multiplication below a candidate for overflow (09-storage F-37).
+    // A/UX 3.0.1 volumes are 8192 / 1024 / nindir 2048.
+    if (vol->fsize < 512 || vol->fsize > UFS_MAX_BSIZE || vol->fsize % 512 != 0 || vol->bsize < vol->fsize ||
+        vol->bsize > UFS_MAX_BSIZE || vol->bsize % 512 != 0 || vol->frag == 0 || vol->bsize / vol->fsize != vol->frag ||
+        vol->nindir != vol->bsize / 4 || vol->ncg == 0 || vol->ipg == 0 || vol->fpg == 0) {
         free(vol);
         return NULL;
     }

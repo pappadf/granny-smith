@@ -440,56 +440,42 @@ int checkpoint_machine_write_manifest(void) {
         return -1;
     }
 
-    // Image list
-    size_t img_buf_cap = 256;
-    char *img_buf = (char *)malloc(img_buf_cap);
+    // Image list, built by appending: at most MAX_IMAGES entries, so the
+    // copying costs nothing, and there is no capacity arithmetic to get
+    // wrong -- the hand-grown buffer this replaces overran on a failed
+    // realloc (09-storage F-35).  A failure writes no manifest rather than
+    // a truncated one.
+    char *img_buf = str_dup_local("  \"images\": [");
+    bool first = true;
+    int n = global_emulator ? global_emulator->n_images : 0;
+    for (int i = 0; i < n && img_buf; i++) {
+        image_t *img = global_emulator->images[i];
+        if (!img)
+            continue;
+        char *base_esc = json_escape(img->filename ? img->filename : "");
+        char *inst_esc = json_escape((img->writable && img->instance_path) ? img->instance_path : "");
+        char *grown = NULL;
+        if (base_esc && inst_esc)
+            grown = str_printf_local(
+                "%s%s\n    { \"index\": %d, \"base_path\": \"%s\", \"size\": %zu, \"instance_path\": \"%s\" }", img_buf,
+                first ? "" : ",", i, base_esc, img->raw_size, inst_esc);
+        free(base_esc);
+        free(inst_esc);
+        free(img_buf);
+        img_buf = grown;
+        first = false;
+    }
+    if (img_buf) {
+        char *closed = str_printf_local("%s%s]\n", img_buf, first ? "" : "\n  ");
+        free(img_buf);
+        img_buf = closed;
+    }
     if (!img_buf) {
         free(prefix);
         free(machine);
         free(path);
         return -1;
     }
-    img_buf[0] = '\0';
-    size_t img_len = 0;
-    int n = global_emulator ? global_emulator->n_images : 0;
-    img_len += (size_t)snprintf(img_buf + img_len, img_buf_cap - img_len, "  \"images\": [");
-    for (int i = 0; i < n; i++) {
-        image_t *img = global_emulator->images[i];
-        if (!img)
-            continue;
-        char *base_esc = json_escape(img->filename ? img->filename : "");
-        char *inst_esc = json_escape((img->writable && img->instance_path) ? img->instance_path : "");
-        if (!base_esc || !inst_esc) {
-            free(base_esc);
-            free(inst_esc);
-            break;
-        }
-        // Re-grow if needed.
-        size_t need = strlen(base_esc) + strlen(inst_esc) + 128;
-        if (img_len + need >= img_buf_cap) {
-            img_buf_cap = (img_len + need) * 2;
-            char *grown = (char *)realloc(img_buf, img_buf_cap);
-            if (!grown) {
-                free(base_esc);
-                free(inst_esc);
-                break;
-            }
-            img_buf = grown;
-        }
-        img_len += (size_t)snprintf(
-            img_buf + img_len, img_buf_cap - img_len,
-            "%s\n    { \"index\": %d, \"base_path\": \"%s\", \"size\": %zu, \"instance_path\": \"%s\" }",
-            i == 0 ? "" : ",", i, base_esc, img->raw_size, inst_esc);
-        free(base_esc);
-        free(inst_esc);
-    }
-    if (img_len + 32 >= img_buf_cap) {
-        img_buf_cap += 32;
-        char *grown = (char *)realloc(img_buf, img_buf_cap);
-        if (grown)
-            img_buf = grown;
-    }
-    img_len += (size_t)snprintf(img_buf + img_len, img_buf_cap - img_len, "%s]\n", n > 0 ? "\n  " : "");
 
     body = str_printf_local("%s%s%s}\n", prefix, machine, img_buf);
     free(prefix);

@@ -159,9 +159,6 @@ size_t disk_size(image_t *disk);
 // otherwise); disk_read_data/disk_write_data work in whole blocks of it.
 uint32_t disk_block_size(image_t *disk);
 
-// Save modified data to the underlying storage
-size_t image_save(image_t *image);
-
 // Add an image to the config for tracking
 void add_image(config_t *sim, image_t *image);
 
