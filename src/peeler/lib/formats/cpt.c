@@ -25,6 +25,13 @@
 #define CP_FLAG_DATA_LZH 0x0004
 #define CP_DIR_MARKER    0x80
 
+// Deepest folder nesting cp_walk_entries will follow.  Each level is one
+// recursive call carrying two 256-byte path buffers, bought by three bytes of
+// archive; unbounded, a 180 KB archive of empty folders overflowed the stack
+// (09-storage F-07).  Paths are joined into 256 bytes, so no real archive
+// nests anywhere near this.
+#define CP_MAX_DIR_DEPTH 128
+
 #define CP_WIN_SIZE   8192
 #define CP_WIN_MASK   (CP_WIN_SIZE - 1)
 #define CP_BLOCK_COST 0x1FFF0
@@ -672,7 +679,9 @@ static void cp_join_path(char dst[256], const char *parent, const char *seg, siz
 // count C is followed by C depth-first entries.  Consumes C+1 entries
 // from the parent's remaining total.
 static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
-                           size_t *cursor, int remaining, const char *parent) {
+                           size_t *cursor, int remaining, const char *parent,
+                           int depth) {
+    if (depth > CP_MAX_DIR_DEPTH) return -1;
     while (remaining > 0) {
         if (*cursor >= size) return -1;
 
@@ -701,7 +710,7 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
             if (*cursor + 2 > size) return -1;
             uint16_t child_cnt = rd16be(data + *cursor);
             *cursor += 2;
-            int rc = cp_walk_entries(ar, data, size, cursor, (int)child_cnt, full);
+            int rc = cp_walk_entries(ar, data, size, cursor, (int)child_cnt, full, depth + 1);
             if (rc < 0) return rc;
             remaining -= (int)child_cnt + 1;
             continue;
@@ -758,7 +767,7 @@ static int cp_parse_directory(cp_archive_t *ar, const uint8_t *data,
     size_t cursor = (size_t)dir_off + 7 + comment_len;
     if (cursor > size) return -1;
 
-    return cp_walk_entries(ar, data, size, &cursor, (int)total, "");
+    return cp_walk_entries(ar, data, size, &cursor, (int)total, "", 0);
 }
 
 // ============================================================================
