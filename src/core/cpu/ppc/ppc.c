@@ -23,8 +23,13 @@
 
 LOG_USE_CATEGORY_NAME("ppc");
 
-// Forward declaration — class descriptor is at the bottom of the file.
+// Forward declarations — the class descriptors are at the bottom of the file.
+// These must stay at file scope: a block-scope `static const class_desc_t x;`
+// is not a declaration of the file-scope object, it is a *new* zero-filled
+// one that shadows it, so object_new() would bind an empty member table.
 static const class_desc_t ppc_cpu_class;
+static const class_desc_t ppc_mmu_class;
+static const class_desc_t ppc_fpu_class;
 
 // === Exception machinery ====================================================
 
@@ -781,14 +786,12 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         object_set_order(p->cpu_object, 10);
         object_attach(machine_object(), p->cpu_object);
         // machine.cpu.mmu: the translation debug window (§3.9d).
-        static const class_desc_t ppc_mmu_class;
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
         if (p->mmu_object) {
             object_set_label(p->mmu_object, "MMU");
             object_attach(p->cpu_object, p->mmu_object);
         }
         // machine.cpu.fpu: the FPR file + FPSCR (Phase E, §3.9d).
-        static const class_desc_t ppc_fpu_class;
         p->fpu_object = object_new(&ppc_fpu_class, p, "fpu");
         if (p->fpu_object) {
             object_set_label(p->fpu_object, "FPU");
