@@ -790,9 +790,22 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
             return false;
         }
 
-        uint16_t h1_len = rd16be(h1 + 6);
+        uint16_t h1_len  = rd16be(h1 + 6);
+        uint16_t namelen = rd16be(h1 + 30);
         if ((size_t)cursor + h1_len > avail) {
             *err = make_err("SIT5: header1 extends past archive end");
+            return false;
+        }
+        // sit.md § 5.3 — header 1 is 48 fixed bytes, then the name, then an
+        // optional comment, and h1_len is its whole extent.  Anything shorter
+        // is not a header.  Unchecked, the CRC step below zeroed bytes 32–33
+        // of a malloc(h1_len) -- a heap write past the end for h1_len < 34
+        // (09-storage F-02) -- and a skip marker with h1_len == 0 left the
+        // cursor where it was, forever (F-06).  With this bound in place the
+        // name read below cannot leave the header either.
+        if ((size_t)h1_len < 48 + (size_t)namelen) {
+            *err = make_err("SIT5: header1 length %u is shorter than its fixed fields and name",
+                            (unsigned)h1_len);
             return false;
         }
 
@@ -819,7 +832,6 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         uint32_t h2_off       = cursor + h1_len;
         uint8_t  flags        = h1[9];
         uint32_t parent_off   = rd32be(h1 + 26);
-        uint16_t namelen      = rd16be(h1 + 30);
         uint32_t d_raw_len    = rd32be(h1 + 34);
         uint32_t d_packed_len = rd32be(h1 + 38);
         uint16_t d_crc        = rd16be(h1 + 42);
@@ -828,9 +840,8 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         // Read entry name (starts at byte 48 of header 1)
         char namebuf[256];
         {
-            size_t cl = namelen;
+            size_t cl = namelen; // within header 1: h1_len >= 48 + namelen, above
             if (cl > sizeof(namebuf) - 1) cl = sizeof(namebuf) - 1;
-            if ((size_t)cursor + 48 + cl > avail) cl = avail - (size_t)cursor - 48;
             memcpy(namebuf, h1 + 48, cl);
             namebuf[cl] = '\0';
         }

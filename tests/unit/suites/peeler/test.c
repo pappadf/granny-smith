@@ -261,6 +261,133 @@ TEST(test_sit15_zero_run_bound_is_exact) {
 }
 
 // ============================================================================
+// StuffIt 5 archives
+// ============================================================================
+
+// CRC-16/ARC (reflected 0xA001, init 0) -- StuffIt's, per sit.md §3.
+static uint16_t crc16_arc(const uint8_t *p, size_t n) {
+    uint16_t crc = 0;
+    for (size_t i = 0; i < n; i++) {
+        crc ^= p[i];
+        for (int b = 0; b < 8; b++)
+            crc = (crc & 1) ? (uint16_t)((crc >> 1) ^ 0xA001) : (uint16_t)(crc >> 1);
+    }
+    return crc;
+}
+
+static void put16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+static void put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+#define SIT5_TOP_SIZE 100
+#define SIT5_H2_SIZE  36 // flags2 .. the version-1 skip; the stored data follows
+
+// One stored (method 0) file in a StuffIt 5 archive, laid out per sit.md §5:
+// the 100-byte top header, header 1 (48 fixed bytes + the name), header 2,
+// then the data.  `h1_len` is written as given so a test can lie about it;
+// pass -1 for the true length.  `raw_len_override`, if nonzero, replaces the
+// raw length (0xFFFFFFFF is the skip marker).  Returns a malloc'd archive.
+static uint8_t *make_sit5(const char *name, const uint8_t *data, uint32_t dlen, int h1_len, uint32_t raw_len_override,
+                          size_t *out_len) {
+    size_t namelen = strlen(name);
+    size_t true_h1 = 48 + namelen;
+    size_t total = SIT5_TOP_SIZE + true_h1 + SIT5_H2_SIZE + dlen + 64;
+    uint8_t *a = calloc(total, 1);
+    ASSERT_TRUE(a != NULL);
+
+    memcpy(a, "StuffIt (c)1997-2001", 20);
+    memcpy(a + 20, " Aladdin Systems, Inc., http://www.aladdinsys.com/StuffIt/", 58);
+    a[78] = '\r';
+    a[79] = '\n';
+    put16(a + 92, 1); // entry count
+    put32(a + 94, SIT5_TOP_SIZE); // first entry
+
+    uint8_t *h1 = a + SIT5_TOP_SIZE;
+    uint16_t written_h1 = (uint16_t)(h1_len >= 0 ? h1_len : (int)true_h1);
+    put32(h1 + 0, 0xA5A5A5A5u);
+    h1[4] = 1; // version
+    put16(h1 + 6, written_h1);
+    put16(h1 + 30, (uint16_t)namelen);
+    put32(h1 + 34, raw_len_override ? raw_len_override : dlen);
+    put32(h1 + 38, dlen); // stored: packed == raw
+    put16(h1 + 42, crc16_arc(data, dlen));
+    memcpy(h1 + 48, name, namelen);
+    // Header CRC over header 1 as written, with its own two bytes zeroed.
+    size_t crc_len = written_h1 <= true_h1 ? written_h1 : true_h1;
+    put16(h1 + 32, crc16_arc(h1, crc_len));
+
+    uint8_t *h2 = h1 + true_h1;
+    memcpy(h2 + 4, "TEXT", 4);
+    memcpy(h2 + 8, "ttxt", 4);
+    memcpy(h2 + SIT5_H2_SIZE, data, dlen);
+    *out_len = total;
+    return a;
+}
+
+// The builder is right: one stored file comes back byte for byte.
+TEST(test_sit5_round_trip) {
+    static const uint8_t data[] = "peeler";
+    size_t len;
+    uint8_t *a = make_sit5("ReadMe", data, 6, -1, 0, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    if (err)
+        fprintf(stderr, "  sit5: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(1, list.count);
+    ASSERT_TRUE(strcmp(list.files[0].meta.name, "ReadMe") == 0);
+    ASSERT_EQ_INT(6, (int)list.files[0].data_fork.size);
+    ASSERT_TRUE(memcmp(list.files[0].data_fork.data, "peeler", 6) == 0);
+    peel_file_list_free(&list);
+    free(a);
+}
+
+// F-02: header 1's length was never checked against its own fixed fields.
+// The CRC step mallocs h1_len bytes and then zeroes bytes 32 and 33 of the
+// copy -- two bytes past the end for any h1_len below 34.  Silent natively
+// (the write lands in allocator padding); ASan reports it.  Must be rejected.
+TEST(test_sit5_short_header_is_rejected) {
+    static const uint8_t data[] = "x";
+    size_t len;
+    uint8_t *a = make_sit5("ReadMe", data, 1, 20, 0, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    // Rejected by the length check itself.  The unfixed parser also failed on
+    // this input natively -- further on, for an unrelated reason, after the
+    // silent overrun -- so "some error" would pass for the wrong reason.
+    ASSERT_TRUE(strstr(peel_err_msg(err), "shorter than its fixed fields") != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
+// F-06: a skip-marker entry (raw length 0xFFFFFFFF) moves the cursor on by
+// h1_len and does not count down the entries remaining -- so h1_len == 0 left
+// the cursor where it was, forever.  The F-02 bound (h1_len >= 48 + name)
+// rules it out; this pins that down in case the bound is ever loosened to
+// "just enough for the CRC".
+TEST(test_sit5_zero_length_skip_marker_cannot_loop) {
+    static const uint8_t data[] = "x";
+    size_t len;
+    uint8_t *a = make_sit5("ReadMe", data, 1, 0, 0xFFFFFFFFu, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "shorter than its fixed fields") != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
+// ============================================================================
 // Garbage in, error out
 // ============================================================================
 
@@ -290,6 +417,9 @@ int main(void) {
     RUN(test_sit15_encoder_round_trip);
     RUN(test_sit15_zero_run_cannot_overflow);
     RUN(test_sit15_zero_run_bound_is_exact);
+    RUN(test_sit5_round_trip);
+    RUN(test_sit5_short_header_is_rejected);
+    RUN(test_sit5_zero_length_skip_marker_cannot_loop);
     RUN(test_peel_passes_unrecognised_input_through);
     fprintf(stderr, "All peeler tests passed\n");
     return 0;
