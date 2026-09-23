@@ -88,6 +88,10 @@ typedef struct {
 // Installs the result callbacks (once, at bridge init).
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx);
 
+// Register the transport's timers with the stack's scheduler.  Called from
+// laserwriter_job_init each time the stack comes up (atalk_timer_t).
+void laserwriter_transport_init(void);
+
 // Starts job `job_id` with `cfg`.  Returns false when the request could
 // not be issued (transport out of room or a request already outstanding);
 // otherwise on_opened / on_open_failed follows.

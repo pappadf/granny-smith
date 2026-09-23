@@ -76,6 +76,11 @@ bool laserwriter_job_available(void);
 // Installs the PAP layer's listener (once).
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx);
 
+// Register the bridge's and the transport's timers with the stack's
+// scheduler.  Called from atalk_printer_register each time the stack comes up,
+// so a checkpoint restore finds them (atalk_timer_t).
+void laserwriter_job_init(void);
+
 // Starts the job for PAP job `job_id`: a fresh interpreter seeded with the
 // identity and prelude, opened through the transport.  Returns false when
 // the request could not be issued; otherwise OPENED or FAILED follows.

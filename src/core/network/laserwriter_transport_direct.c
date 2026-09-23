@@ -74,8 +74,6 @@ typedef struct {
     // Output drained from the library for the result being delivered
     direct_buf_t reply;
     direct_buf_t errors;
-    int gap_event_token;
-    scheduler_t *registered_with; // the scheduler the event type is registered on
 } direct_state_t;
 
 static direct_state_t g_direct;
@@ -152,6 +150,8 @@ static void direct_clear_pending(void) {
 }
 
 // Scheduler event: run the pending request now.
+static atalk_timer_t g_direct_timer; // delivers a result a guest-time gap after the request
+
 static void direct_event_cb(void *source, uint64_t data) {
     (void)source;
     (void)data;
@@ -161,24 +161,15 @@ static void direct_event_cb(void *source, uint64_t data) {
 // Arms the delivery event on the stack's scheduler; false when there is
 // none (poll runs the request instead).
 static bool direct_arm(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (!sched)
+    if (!atalk_scheduler())
         return false;
-    if (g_direct.registered_with != sched) {
-        // Idempotent: a machine rebuild hands out a new scheduler
-        scheduler_new_event_type(sched, "laserwriter", &g_direct.gap_event_token, "direct_reply", &direct_event_cb);
-        g_direct.registered_with = sched;
-    }
-    remove_event(sched, &direct_event_cb, &g_direct.gap_event_token);
-    scheduler_new_cpu_event(sched, &direct_event_cb, &g_direct.gap_event_token, 0, 0, LASERWRITER_DIRECT_DELAY_NS);
+    atalk_timer_arm(&g_direct_timer, 0, LASERWRITER_DIRECT_DELAY_NS);
     return true;
 }
 
 // Cancels a delivery event, if any.
 static void direct_disarm(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (sched && g_direct.registered_with == sched)
-        remove_event(sched, &direct_event_cb, &g_direct.gap_event_token);
+    atalk_timer_cancel_all(&g_direct_timer);
 }
 
 // Executes OPEN: builds the platen_config from the copy and creates the job.
@@ -315,6 +306,11 @@ static bool direct_queue(direct_op_t op, uint32_t job_id) {
 // Operations (Public API)
 // ============================================================================
 
+void laserwriter_transport_init(void) {
+    if (atalk_scheduler())
+        atalk_timer_init(&g_direct_timer, "laserwriter", "direct_reply", &direct_event_cb);
+}
+
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {
     if (callbacks)
         g_direct.cb = *callbacks;
@@ -409,6 +405,8 @@ const char *laserwriter_transport_name(void) {
 // ============================================================================
 // Stubs for builds without the interpreter
 // ============================================================================
+
+void laserwriter_transport_init(void) {}
 
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {
     (void)callbacks;

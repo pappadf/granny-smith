@@ -237,8 +237,7 @@ static uint64_t pap_now_ms(void) {
 // Every SendData the printer issues goes through here, so none leaves in the
 // same instant as the frame that preceded it (see PAP_SENDDATA_GAP_NS).
 
-static int g_pap_gap_event_token;
-static scheduler_t *g_pap_gap_registered_with; // the scheduler the event type is registered on
+static atalk_timer_t g_pap_gap_timer;
 
 static void pap_senddata_gap_cb(void *source, uint64_t data) {
     (void)source;
@@ -252,19 +251,11 @@ static void pap_schedule_senddata(void) {
         pap_issue_senddata_request();
         return;
     }
-    if (g_pap_gap_registered_with != sched) {
-        // Idempotent: a machine rebuild hands out a new scheduler.
-        scheduler_new_event_type(sched, "pap", &g_pap_gap_event_token, "senddata_gap", &pap_senddata_gap_cb);
-        g_pap_gap_registered_with = sched;
-    }
-    remove_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token);
-    scheduler_new_cpu_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token, 0, 0, PAP_SENDDATA_GAP_NS);
+    atalk_timer_arm(&g_pap_gap_timer, 0, PAP_SENDDATA_GAP_NS);
 }
 
 static void pap_cancel_senddata(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (sched && g_pap_gap_registered_with == sched)
-        remove_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token);
+    atalk_timer_cancel_all(&g_pap_gap_timer);
 }
 
 // Ensures the printer service is initialized exactly once.
@@ -1632,6 +1623,12 @@ static void pap_platen_event(laserwriter_event_t event, const char *detail, void
 // Registers the printer PAP socket handler and auto-enables the LaserWriter advertisement.
 void atalk_printer_register(void) {
     pap_printer_init();
+    // Timers are registered each time the stack comes up, before a checkpoint
+    // restore replays the saved queue (atalk_timer_t).
+    if (atalk_scheduler()) {
+        atalk_timer_init(&g_pap_gap_timer, "pap", "senddata_gap", &pap_senddata_gap_cb);
+        laserwriter_job_init();
+    }
     static const atp_socket_handler_t handler = {.handle_request = pap_socket_request_handler};
     atp_register_socket_handler(HOST_PAP_SOCKET, &handler, NULL);
     if (!g_printer.enabled) {

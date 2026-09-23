@@ -91,10 +91,28 @@ TEST(nbp_lookup_is_answered_after_the_rts_cts_handshake) {
     link_delete();
 }
 
+// Every event type the transport can schedule is registered the moment the
+// stack comes up -- before a checkpoint restore replays the saved queue.  ATP
+// used to register its two only when it first armed one, so a checkpoint taken
+// with an AFP command or a print job in flight could not be restored
+// (10-network N-05; the printer, LaserWriter and ADSP timers are stubbed out
+// of this suite and are covered by the appletalk-afp-checkpoint row).
+TEST(every_transport_timer_is_registered_at_init) {
+    link_boot();
+    ASSERT_EQ_INT(0, sched_pending()); // registered, not armed
+    ASSERT_TRUE(sched_registered("llap.rts_timeout"));
+    ASSERT_TRUE(sched_registered("llap.rts_kick"));
+    ASSERT_TRUE(sched_registered("atp.retry_timeout"));
+    ASSERT_TRUE(sched_registered("atp.xo_release"));
+    ASSERT_TRUE(sched_registered("asp.session_sweep"));
+    link_delete();
+}
+
 int main(void) {
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
     RUN(enq_for_our_node_is_acked_and_others_are_not);
     RUN(nbp_lookup_is_answered_after_the_rts_cts_handshake);
+    RUN(every_transport_timer_is_registered_at_init);
     printf("[PASS] All atalk_link tests passed\n");
     return 0;
 }

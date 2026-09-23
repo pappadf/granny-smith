@@ -44,6 +44,60 @@ scheduler_t *atalk_scheduler(void) {
     return g_scheduler;
 }
 
+// === Timers (appletalk_internal.h) ===========================================
+
+// Every timer initialised since the stack came up, so teardown can forget
+// them all: nine today (llap x2, atp x2, asp, pap, laserwriter x2, adsp).
+#define ATALK_MAX_TIMERS 16
+static atalk_timer_t *g_timers[ATALK_MAX_TIMERS];
+static int g_num_timers;
+
+void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb) {
+    GS_ASSERT(t && cb && g_scheduler);
+    if (!t || !cb || !g_scheduler)
+        return;
+    t->cb = cb;
+    scheduler_new_event_type(g_scheduler, source_name, t, event_name, cb);
+    if (!t->registered) {
+        GS_ASSERT(g_num_timers < ATALK_MAX_TIMERS);
+        if (g_num_timers < ATALK_MAX_TIMERS)
+            g_timers[g_num_timers++] = t;
+        t->registered = true;
+    }
+}
+
+void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns) {
+    if (!g_scheduler)
+        return;
+    GS_ASSERT(t->registered); // an init path missed atalk_timer_init
+    if (delay_ns < ATALK_TIMER_MIN_NS)
+        delay_ns = ATALK_TIMER_MIN_NS;
+    remove_event_by_data(g_scheduler, t->cb, t, data);
+    scheduler_new_cpu_event(g_scheduler, t->cb, t, data, 0, delay_ns);
+}
+
+void atalk_timer_cancel(atalk_timer_t *t, uint64_t data) {
+    if (g_scheduler && t->registered)
+        remove_event_by_data(g_scheduler, t->cb, t, data);
+}
+
+void atalk_timer_cancel_all(atalk_timer_t *t) {
+    if (g_scheduler && t->registered)
+        remove_event(g_scheduler, t->cb, t);
+}
+
+// Cancel every timer and drop the registrations: the scheduler is going away
+// with the machine, and the next stack registers against its own.
+static void atalk_timers_forget(void) {
+    for (int i = 0; i < g_num_timers; i++) {
+        if (g_scheduler)
+            scheduler_forget_source(g_scheduler, g_timers[i]);
+        g_timers[i]->registered = false;
+        g_timers[i] = NULL;
+    }
+    g_num_timers = 0;
+}
+
 // Object-model class descriptors live near the bottom of the file but
 // appletalk_init / appletalk_delete reference them.
 static const class_desc_t atalk_class;
@@ -134,10 +188,10 @@ static atalk_stats_t g_atalk_stats;
 
 // Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
 static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len);
-static void atp_cancel_all_timers(void);
 static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
+static void atp_timers_init(void);
 static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx);
 // ASP session-table helpers, defined with the table itself further down.
 static void asp_sessions_reset(void);
@@ -214,8 +268,8 @@ static struct {
 #define LLAP_BYTE_NS 35000.0
 #define LLAP_IFG_NS  200000.0 // interframe gap before the next dialog opens
 
-static int g_llap_rts_event_token;
-static int g_llap_kick_event_token;
+static atalk_timer_t g_llap_rts_timer; // CTS did not come: retry the RTS (data = generation)
+static atalk_timer_t g_llap_kick_timer; // the wire is free again: open the next dialog
 static double g_llap_wire_busy_until_ns; // scheduler time the wire frees up
 // Set between answering the guest's lapRTS with lapCTS and the arrival of
 // its data frame: the wire is reserved for that dialog, and our own lapRTS
@@ -228,18 +282,14 @@ static void llap_rts_timeout_cb(void *source, uint64_t data);
 static void llap_rts_kick_cb(void *source, uint64_t data);
 static void llap_wire_send(const uint8_t *buf, size_t total);
 
-static void llap_rts_register_event(void) {
-    if (!g_scheduler)
-        return;
-    scheduler_new_event_type(g_scheduler, "llap", &g_llap_rts_event_token, "rts_timeout", &llap_rts_timeout_cb);
-    scheduler_new_event_type(g_scheduler, "llap", &g_llap_kick_event_token, "rts_kick", &llap_rts_kick_cb);
+static void llap_timers_init(void) {
+    atalk_timer_init(&g_llap_rts_timer, "llap", "rts_timeout", &llap_rts_timeout_cb);
+    atalk_timer_init(&g_llap_kick_timer, "llap", "rts_kick", &llap_rts_kick_cb);
 }
 
 static void llap_rts_reset(void) {
-    if (g_scheduler) {
-        remove_event(g_scheduler, &llap_rts_timeout_cb, &g_llap_rts_event_token);
-        remove_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token);
-    }
+    atalk_timer_cancel_all(&g_llap_rts_timer);
+    atalk_timer_cancel_all(&g_llap_kick_timer);
     memset(&g_llap_rts, 0, sizeof(g_llap_rts));
     g_llap_wire_busy_until_ns = 0;
     g_llap_peer_reserved = false;
@@ -304,13 +354,10 @@ static void llap_rts_kick(void) {
     if (g_scheduler) {
         double now = scheduler_time_ns(g_scheduler);
         if (now < g_llap_wire_busy_until_ns) {
-            // Never a zero-length wait: a sub-ns remainder truncates to 0,
-            // the event fires with time unchanged, and this re-arms forever.
-            uint64_t delay_ns = (uint64_t)(g_llap_wire_busy_until_ns - now);
-            if (delay_ns < 1000)
-                delay_ns = 1000;
-            remove_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token);
-            scheduler_new_cpu_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token, 0, 0, delay_ns);
+            // atalk_timer_arm never waits less than ATALK_TIMER_MIN_NS: a
+            // sub-ns remainder would fire with time unchanged and re-arm
+            // forever.
+            atalk_timer_arm(&g_llap_kick_timer, 0, (uint64_t)(g_llap_wire_busy_until_ns - now));
             return;
         }
     }
@@ -322,11 +369,7 @@ static void llap_rts_kick(void) {
     LOG(8, "LLAP tx: RTS to %02X, %zu-byte data queued for CTS (%d queued, attempt %d)", f->dst, f->len,
         g_llap_rts.count, g_llap_rts.attempts);
     llap_wire_send(rts, sizeof(rts));
-    if (g_scheduler) {
-        llap_rts_register_event();
-        scheduler_new_cpu_event(g_scheduler, &llap_rts_timeout_cb, &g_llap_rts_event_token, g_llap_rts.generation, 0,
-                                LLAP_RTS_TIMEOUT_NS);
-    }
+    atalk_timer_arm(&g_llap_rts_timer, g_llap_rts.generation, (uint64_t)LLAP_RTS_TIMEOUT_NS);
 }
 
 static void llap_rts_timeout_cb(void *source, uint64_t data) {
@@ -575,7 +618,7 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 // ============================================================================
 
 // ASP session sweep (defined below): registered eagerly in appletalk_init.
-static uint64_t g_asp_sweep_event_token;
+static atalk_timer_t g_asp_sweep_timer; // idle-session expiry, armed while any session is open
 static void asp_sweep_cb(void *source, uint64_t data);
 
 void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
@@ -591,12 +634,14 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     g_scheduler = scheduler; // Store scheduler for ATP timers
     g_atalk_enabled = true;
     llap_rts_reset(); // no RTS exchange survives a machine boot
-    llap_rts_register_event();
-    // Register the lazily-armed types NOW: a checkpoint restore rebuilds
-    // the scheduler and replays the saved events before any session
-    // exists, and an event whose type is unknown fails the restore
-    // ("cannot restore event 'asp.session_sweep' — type not registered").
-    scheduler_new_event_type(g_scheduler, "asp", &g_asp_sweep_event_token, "session_sweep", &asp_sweep_cb);
+    // Every timer is registered here, before a checkpoint restore replays the
+    // saved queue (atalk_timer_t).  The printer and ADSP register theirs from
+    // their own inits below.
+    if (g_scheduler) {
+        llap_timers_init();
+        atp_timers_init();
+        atalk_timer_init(&g_asp_sweep_timer, "asp", "session_sweep", &asp_sweep_cb);
+    }
     memset(&g_atalk_stats, 0, sizeof(g_atalk_stats));
     asp_sessions_reset();
     atalk_server_init();
@@ -719,17 +764,6 @@ void appletalk_checkpoint(checkpoint_t *checkpoint) {
 // ============================================================================
 
 static void appletalk_teardown(void) {
-    // Cancel every timer this stack owns.  The sources are file-scope tokens
-    // rather than heap objects, so nothing dangles -- but teardown left up to
-    // five event kinds queued, and an event that fires into a half-torn-down
-    // stack is its own problem.  Five scheduling sites, two removals, and
-    // neither of those two was here (proposal-scheduler-source-lifetime).
-    if (g_scheduler) {
-        scheduler_forget_source(g_scheduler, &g_llap_rts_event_token);
-        scheduler_forget_source(g_scheduler, &g_llap_kick_event_token);
-    }
-    atp_cancel_all_timers(); // its tokens are declared with the ATP code below
-
     // Sessions first: closing them hands the AFP layer its forks back.
     atalk_asp_close_all_sessions();
     atalk_server_delete();
@@ -739,6 +773,11 @@ static void appletalk_teardown(void) {
     atalk_ppc_shutdown();
     atalk_adsp_remove_objects();
     atalk_adsp_shutdown();
+
+    // Every timer last: the shutdowns above can still transmit -- ADSP's
+    // close-all puts CLOSE advice on the wire -- and a frame that waits for a
+    // CTS arms an LLAP timer.
+    atalk_timers_forget();
 
     // Collection entry objects are never attached, so free them by hand.
     for (int i = 0; i < ATALK_MAX_VOLUME_OBJS; i++) {
@@ -1723,21 +1762,12 @@ static atp_handler_slot_t g_atp_handlers[ATP_MAX_HANDLERS];
 static atp_request_handle_t g_atp_requests[ATP_MAX_OUTGOING];
 static atp_xo_entry_t g_xo_entries[ATP_MAX_XO_CACHE];
 static uint16_t g_next_tid = 0x2000;
-static int g_atp_retry_event_token;
-static int g_atp_release_event_token;
-
-// Drop every ATP retry and release timer.  Called from appletalk_teardown,
-// which cannot name these tokens directly -- they are declared here, with the
-// layer that owns them, and the file runs lower layers to higher.
-static void atp_cancel_all_timers(void) {
-    if (!g_scheduler)
-        return;
-    scheduler_forget_source(g_scheduler, &g_atp_retry_event_token);
-    scheduler_forget_source(g_scheduler, &g_atp_release_event_token);
-}
+// Per-request retry and per-transaction XO release; many can be pending at
+// once, told apart by their data (atp_encode_event_data).
+static atalk_timer_t g_atp_retry_timer;
+static atalk_timer_t g_atp_release_timer;
 
 // Utility helpers -----------------------------------------------------------
-static void atp_register_scheduler_events(void);
 static void atp_retry_timeout_cb(void *source, uint64_t data);
 static void atp_release_timeout_cb(void *source, uint64_t data);
 static int parse_atp(const uint8_t *buf, int len, atp_packet_t *atp);
@@ -1781,16 +1811,12 @@ static bool atp_decode_event_data(uint64_t data, uint16_t *index, uint32_t *gene
     return true;
 }
 
-static void atp_register_scheduler_events(void) {
-    if (!g_scheduler)
-        return;
-    // Idempotent — scheduler_new_event_type updates an existing entry
-    // in place. The previous static `g_atp_events_registered` guard
-    // assumed a single scheduler lifetime, which broke when machine.boot
-    // tore down the scheduler and made a fresh one (num_event_types = 0)
-    // while this TU's state survived.
-    scheduler_new_event_type(g_scheduler, "atp", &g_atp_retry_event_token, "retry_timeout", &atp_retry_timeout_cb);
-    scheduler_new_event_type(g_scheduler, "atp", &g_atp_release_event_token, "xo_release", &atp_release_timeout_cb);
+// Called from appletalk_init.  These used to be registered at first arm, so a
+// checkpoint taken with an ATP transaction in flight -- any AFP command, any
+// print job -- could not be restored (10-network N-05).
+static void atp_timers_init(void) {
+    atalk_timer_init(&g_atp_retry_timer, "atp", "retry_timeout", &atp_retry_timeout_cb);
+    atalk_timer_init(&g_atp_release_timer, "atp", "xo_release", &atp_release_timeout_cb);
 }
 
 // Handler registry ---------------------------------------------------------
@@ -1866,11 +1892,8 @@ static void atp_request_complete(atp_request_handle_t *req, atp_request_result_t
     if (!req || !req->in_use)
         return;
     // Cancel any pending retry timer
-    if (g_scheduler) {
-        uint16_t index = (uint16_t)(req - g_atp_requests);
-        uint64_t data = atp_encode_event_data(index, req->timer_generation);
-        remove_event_by_data(g_scheduler, &atp_retry_timeout_cb, NULL, data);
-    }
+    uint16_t index = (uint16_t)(req - g_atp_requests);
+    atalk_timer_cancel(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
     req->timer_generation++;
     req->in_use = false;
     if (req->callbacks.on_complete)
@@ -1925,18 +1948,12 @@ static void atp_send_request_packets(atp_request_handle_t *req, uint8_t bitmap) 
 }
 
 static void atp_arm_retry_timer(atp_request_handle_t *req) {
-    atp_register_scheduler_events();
-    if (!g_scheduler)
-        return;
     uint16_t index = (uint16_t)(req - g_atp_requests);
     // Cancel any existing retry event before scheduling a new one
-    uint64_t old_data = atp_encode_event_data(index, req->timer_generation);
-    remove_event_by_data(g_scheduler, &atp_retry_timeout_cb, NULL, old_data);
+    atalk_timer_cancel(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
     req->timer_generation++;
-    uint64_t data = atp_encode_event_data(index, req->timer_generation);
     LOG(5, "ATP: arm retry timer tid=0x%04X timeout_ns=%" PRIu64, req->tid, req->retry_timeout_ns);
-    scheduler_new_cpu_event(g_scheduler, &atp_retry_timeout_cb, &g_atp_retry_event_token, data, 0,
-                            req->retry_timeout_ns);
+    atalk_timer_arm(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation), req->retry_timeout_ns);
 }
 
 static void atp_retry_request(atp_request_handle_t *req, bool consume_retry) {
@@ -2060,10 +2077,7 @@ static void atp_xo_free(atp_xo_entry_t *entry) {
     uint16_t index = (uint16_t)(entry - g_xo_entries);
     LOG(10, "ATP: XO free slot=%u tid=0x%04X", index, entry->tid);
     // Cancel pending release timer event
-    if (g_scheduler) {
-        uint64_t data = atp_encode_event_data(index, entry->release_generation);
-        remove_event_by_data(g_scheduler, &atp_release_timeout_cb, NULL, data);
-    }
+    atalk_timer_cancel(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->in_use = false;
     entry->release_generation++;
 }
@@ -2081,18 +2095,13 @@ static void atp_xo_store_packet(atp_xo_entry_t *entry, uint8_t seq, const uint8_
 static void atp_xo_schedule_release(atp_xo_entry_t *entry) {
     if (!entry)
         return;
-    atp_register_scheduler_events();
-    if (!g_scheduler)
-        return;
     uint16_t index = (uint16_t)(entry - g_xo_entries);
     // Cancel any existing release event for this entry before scheduling a new one
-    uint64_t old_data = atp_encode_event_data(index, entry->release_generation);
-    remove_event_by_data(g_scheduler, &atp_release_timeout_cb, NULL, old_data);
+    atalk_timer_cancel(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->release_generation++;
-    uint64_t data = atp_encode_event_data(index, entry->release_generation);
     uint32_t seconds = atp_trel_hint_seconds(entry->trel_hint);
-    scheduler_new_cpu_event(g_scheduler, &atp_release_timeout_cb, &g_atp_release_event_token, data, 0,
-                            atp_seconds_to_ns(seconds));
+    atalk_timer_arm(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation),
+                    atp_seconds_to_ns(seconds));
 }
 
 static void atp_release_timeout_cb(void *source, uint64_t data) {
@@ -2518,8 +2527,6 @@ static void asp_expire_sessions(void) {
     }
 }
 
-static uint64_t g_asp_sweep_event_token;
-
 // Scheduler callback: expire stale sessions and re-arm while any remain.
 static void asp_sweep_cb(void *source, uint64_t data) {
     (void)source;
@@ -2536,9 +2543,7 @@ static void asp_arm_session_sweep(void) {
         any |= g_sessions[i].in_use;
     if (!any)
         return; // nothing to watch; the next OpenSess re-arms
-    scheduler_new_event_type(g_scheduler, "asp", &g_asp_sweep_event_token, "session_sweep", &asp_sweep_cb);
-    remove_event_by_data(g_scheduler, &asp_sweep_cb, NULL, 0);
-    scheduler_new_cpu_event(g_scheduler, &asp_sweep_cb, &g_asp_sweep_event_token, 0, 0, ASP_SESSION_SWEEP_NS);
+    atalk_timer_arm(&g_asp_sweep_timer, 0, ASP_SESSION_SWEEP_NS);
 }
 
 // Look up session by the 1-byte session ID from ATP UserBytes[1]

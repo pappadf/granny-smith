@@ -17,6 +17,19 @@ double scheduler_time_ns(void *scheduler) {
     return 0.0;
 }
 
+void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb) {
+    (void)t, (void)source_name, (void)event_name, (void)cb;
+}
+void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns) {
+    (void)t, (void)data, (void)delay_ns;
+}
+void atalk_timer_cancel(atalk_timer_t *t, uint64_t data) {
+    (void)t, (void)data;
+}
+void atalk_timer_cancel_all(atalk_timer_t *t) {
+    (void)t;
+}
+
 int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
                       int len) {
     (void)dest;

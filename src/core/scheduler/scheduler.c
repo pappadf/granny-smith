@@ -221,6 +221,9 @@ struct scheduler {
     // Temporary storage used during checkpoint restore
     unsigned int tmp_num_events;
     event_as_checkpoint_t *tmp_events;
+    // The checkpoint those came from, still open until scheduler_start has
+    // resolved them: a saved event that cannot be restored fails the load.
+    checkpoint_t *tmp_checkpoint;
 
     uint32_t frequency;
 
@@ -842,6 +845,7 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
             } else {
                 system_read_checkpoint_data(checkpoint, s->tmp_events,
                                             (size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
+                s->tmp_checkpoint = checkpoint;
             }
         }
     } else {
@@ -986,7 +990,15 @@ void scheduler_start(struct scheduler *restrict s) {
     if (s->tmp_events == NULL)
         return;
 
-    // Resolve saved event names to live pointers and rebuild the event queue
+    // Resolve saved event names to live pointers and rebuild the event queue.
+    //
+    // Everything below comes off disk, so it is checked, not asserted: a
+    // release build compiles GS_ASSERT out, and an unknown type then indexed
+    // event_types[-1] (10-network N-05).  A saved event whose type nothing
+    // registered -- a checkpoint from a different build, or a module that
+    // registers its types only when it first arms one -- or whose time is
+    // already past fails the load, and the machine that was running stays.
+    bool ok = true;
     for (unsigned int i = 0; i < s->tmp_num_events; i++) {
         event_as_checkpoint_t *saved = &s->tmp_events[i];
 
@@ -1001,16 +1013,22 @@ void scheduler_start(struct scheduler *restrict s) {
                 break;
             }
         }
-
-        GS_ASSERTF(found >= 0, "cannot restore event '%s.%s' — type not registered", saved->source_name,
-                   saved->event_name);
-        // Match the documented invariant: timestamp + CPI >= cpu_cycles (so an
+        if (found < 0) {
+            LOG(0, "Error: checkpoint holds a pending '%.*s.%.*s' event, and no such event type is registered",
+                (int)sizeof(saved->source_name), saved->source_name, (int)sizeof(saved->event_name), saved->event_name);
+            ok = false;
+            continue;
+        }
+        // The documented invariant: timestamp + CPI >= cpu_cycles (so an
         // event that legitimately fired on the same cycle the checkpoint was
         // taken can still be restored).
-        GS_ASSERTF(saved->timestamp + avg_cycles_per_instr(s) >= s->cpu_cycles,
-                   "restored event timestamp (%llu) too far past cpu_cycles (%llu) for '%s.%s'",
-                   (unsigned long long)saved->timestamp, (unsigned long long)s->cpu_cycles, saved->source_name,
-                   saved->event_name);
+        if (saved->timestamp + avg_cycles_per_instr(s) < s->cpu_cycles) {
+            LOG(0, "Error: checkpoint's '%.*s.%.*s' event is due at cycle %llu, before the saved clock (%llu)",
+                (int)sizeof(saved->source_name), saved->source_name, (int)sizeof(saved->event_name), saved->event_name,
+                (unsigned long long)saved->timestamp, (unsigned long long)s->cpu_cycles);
+            ok = false;
+            continue;
+        }
 
         // Recreate and insert event
         event_t *e = event_alloc();
@@ -1027,11 +1045,14 @@ void scheduler_start(struct scheduler *restrict s) {
 
         s->cpu_events = insert_event_queue(s->cpu_events, e);
     }
+    if (!ok && s->tmp_checkpoint)
+        checkpoint_set_error(s->tmp_checkpoint);
 
     // Cleanup temporary storage
     free(s->tmp_events);
     s->tmp_events = NULL;
     s->tmp_num_events = 0;
+    s->tmp_checkpoint = NULL;
 
     CHECK_INVARIANTS(s);
 }

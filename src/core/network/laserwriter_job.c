@@ -95,11 +95,10 @@ typedef struct {
     char last_outcome[128];
     laserwriter_listener_t listener;
     void *listener_ctx;
-    int poll_event_token;
-    scheduler_t *poll_registered_with; // the scheduler the poll event type is registered on
 } laserwriter_state_t;
 
 static laserwriter_state_t g_lw;
+static atalk_timer_t g_lw_poll_timer; // drains the transport while an answer is owed
 
 // ============================================================================
 // Forward Declarations
@@ -125,23 +124,12 @@ static void lw_notify(laserwriter_event_t event, const char *detail) {
 // Arms the transport poll tick for one period; re-armed from the tick
 // while a request is outstanding.
 static void lw_poll_arm(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (!sched)
-        return;
-    if (g_lw.poll_registered_with != sched) {
-        // Idempotent: a machine rebuild hands out a new scheduler
-        scheduler_new_event_type(sched, "laserwriter", &g_lw.poll_event_token, "transport_poll", &lw_poll_cb);
-        g_lw.poll_registered_with = sched;
-    }
-    remove_event(sched, &lw_poll_cb, &g_lw.poll_event_token);
-    scheduler_new_cpu_event(sched, &lw_poll_cb, &g_lw.poll_event_token, 0, 0, LASERWRITER_POLL_NS);
+    atalk_timer_arm(&g_lw_poll_timer, 0, LASERWRITER_POLL_NS);
 }
 
 // Cancels the poll tick.
 static void lw_poll_disarm(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (sched && g_lw.poll_registered_with == sched)
-        remove_event(sched, &lw_poll_cb, &g_lw.poll_event_token);
+    atalk_timer_cancel_all(&g_lw_poll_timer);
 }
 
 // Appends `len` bytes to the unread-output buffer, dropping past the cap.
@@ -377,6 +365,13 @@ bool laserwriter_job_available(void) {
     return true;
 }
 
+void laserwriter_job_init(void) {
+    if (!atalk_scheduler())
+        return;
+    atalk_timer_init(&g_lw_poll_timer, "laserwriter", "transport_poll", &lw_poll_cb);
+    laserwriter_transport_init();
+}
+
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
     static const laserwriter_transport_callbacks_t callbacks = {
         .on_opened = lw_on_opened,
@@ -538,6 +533,8 @@ const char *laserwriter_job_last_outcome(void) {
 bool laserwriter_job_available(void) {
     return false;
 }
+
+void laserwriter_job_init(void) {}
 
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
     (void)fn;

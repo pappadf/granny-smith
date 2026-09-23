@@ -1225,6 +1225,53 @@ TEST(test_restore_refuses_absurd_event_count) {
     scheduler_delete(b);
 }
 
+// The saved event queue is resolved against the types registered by the time
+// scheduler_start runs.  Both checks on a saved event were GS_ASSERTs: in a
+// release build an unknown type indexed event_types[-1] and restored a wild
+// callback (10-network N-05, reproduced with a real AppleShare session --
+// `atp.xo_release` was registered only when first armed).  A checkpoint is
+// user input, so both now fail the load instead.
+static int g_restore_owner;
+
+// Save a stream whose queue holds one "net.poll" event, rewound for reading.
+static void cp_save_with_one_event(void) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+    g_cp_slot = 0;
+    g_now = 1000.0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_new_event_type(a, "net", &g_restore_owner, "poll", ping_event);
+    scheduler_new_cpu_event(a, ping_event, &g_restore_owner, 7, 0, 1000000);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    scheduler_delete(a);
+    g_cp_r = 0;
+}
+
+TEST(test_restore_resolves_a_registered_event) {
+    cp_save_with_one_event();
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    scheduler_new_event_type(b, "net", &g_restore_owner, "poll", ping_event);
+    scheduler_start(b);
+    ASSERT_EQ_INT(g_cp_errors, 0);
+    ASSERT_EQ_INT(scheduler_pending_device_events(b), 1);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_an_event_whose_type_is_not_registered) {
+    cp_save_with_one_event();
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    // Nothing registers "net.poll" this time.
+    scheduler_start(b);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    ASSERT_EQ_INT(scheduler_pending_device_events(b), 0);
+    scheduler_delete(b);
+}
+
 // === scheduler.events / machine-sourced cleanup (08-core-infra F-27, F-30) ==
 
 // F-30: the pending queue had no inspectable form at all.  cmd_events(argc,
@@ -1410,6 +1457,8 @@ int main(void) {
     RUN(test_restore_refuses_zero_cpi);
     RUN(test_restore_refuses_unknown_mode);
     RUN(test_restore_refuses_absurd_event_count);
+    RUN(test_restore_resolves_a_registered_event);
+    RUN(test_restore_refuses_an_event_whose_type_is_not_registered);
     RUN(test_pending_event_counts_track_the_queue);
     RUN(test_periodic_repeats_without_self_rearm);
     RUN(test_periodic_does_not_drift);

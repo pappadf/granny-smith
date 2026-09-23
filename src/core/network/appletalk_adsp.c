@@ -1103,7 +1103,7 @@ const adsp_stats_t *adsp_get_stats(const adsp_stack_t *s) {
 
 static adsp_stack_t *g_adsp;
 static scheduler_t *g_adsp_scheduler;
-static int g_adsp_event_token;
+static atalk_timer_t g_adsp_timer; // the one event at the engine's earliest deadline
 static uint64_t g_adsp_armed_at = ADSP_NO_DEADLINE;
 
 static uint64_t adsp_host_now(void *ctx) {
@@ -1134,23 +1134,23 @@ static void adsp_host_rearm(void *ctx, uint64_t deadline_ns) {
         return;
     if (deadline_ns == g_adsp_armed_at)
         return;
-    remove_event(g_adsp_scheduler, &adsp_host_timer_cb, NULL);
     g_adsp_armed_at = deadline_ns;
-    if (deadline_ns == ADSP_NO_DEADLINE)
+    if (deadline_ns == ADSP_NO_DEADLINE) {
+        atalk_timer_cancel_all(&g_adsp_timer);
         return;
+    }
     uint64_t now = adsp_host_now(NULL);
-    uint64_t delay = (deadline_ns > now) ? (deadline_ns - now) : 0;
-    scheduler_new_cpu_event(g_adsp_scheduler, &adsp_host_timer_cb, &g_adsp_event_token, 0, 0, delay);
+    // A deadline already due arms the shortest delay atalk_timer_arm allows
+    // (the scheduler refuses a zero one).
+    atalk_timer_arm(&g_adsp_timer, 0, (deadline_ns > now) ? (deadline_ns - now) : 0);
 }
 
 void atalk_adsp_init(scheduler_t *scheduler) {
     atalk_adsp_shutdown();
     g_adsp_scheduler = scheduler;
     g_adsp_armed_at = ADSP_NO_DEADLINE;
-    if (scheduler) {
-        // Idempotent: re-registering after a machine rebuild updates in place.
-        scheduler_new_event_type(scheduler, "adsp", &g_adsp_event_token, "timer", &adsp_host_timer_cb);
-    }
+    if (scheduler)
+        atalk_timer_init(&g_adsp_timer, "adsp", "timer", &adsp_host_timer_cb);
     adsp_config_t cfg = {
         .ctx = NULL,
         .now_ns = adsp_host_now,
@@ -1167,8 +1167,7 @@ void atalk_adsp_shutdown(void) {
         adsp_stack_free(g_adsp);
         g_adsp = NULL;
     }
-    if (g_adsp_scheduler)
-        remove_event(g_adsp_scheduler, &adsp_host_timer_cb, NULL);
+    atalk_timer_cancel_all(&g_adsp_timer);
     g_adsp_scheduler = NULL;
     g_adsp_armed_at = ADSP_NO_DEADLINE;
 }

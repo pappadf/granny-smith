@@ -15,6 +15,40 @@
 // for guest-time timers in the protocol modules.
 struct scheduler *atalk_scheduler(void);
 
+// A guest-time timer the stack owns -- one scheduler event type.
+//
+// Every one is registered with the machine's scheduler while the stack comes
+// up: atalk_timer_init is called from the owning module's init, which
+// appletalk_init reaches.  Never lazily at first arm: a checkpoint restore
+// replays the saved event queue into a fresh scheduler before any session
+// exists, and a saved event whose type nothing has registered fails the load
+// (10-network N-05 -- ATP, PAP and the LaserWriter job all registered at first
+// arm, so a checkpoint taken during file sharing or printing could not be
+// restored).  appletalk_teardown forgets every initialised timer.
+//
+// The scheduler source is the timer itself, so a timer's callback receives
+// its own address as `source`.
+typedef void (*atalk_timer_fn)(void *source, uint64_t data);
+typedef struct atalk_timer {
+    atalk_timer_fn cb;
+    bool registered; // with the current stack's scheduler
+} atalk_timer_t;
+
+// Register `t` as "source_name.event_name" with the stack's scheduler.  Call
+// from the owning module's init; repeat calls are harmless.
+void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb);
+// One-shot `delay_ns` from now, carrying `data`; replaces a pending event of
+// this timer with the same `data`, so distinct data (one per ATP transaction)
+// can be pending together.  Delays under ATALK_TIMER_MIN_NS are raised to it:
+// a zero or sub-cycle delay fires with the clock unchanged and a timer that
+// re-arms itself would spin.
+void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns);
+// Cancel the pending event carrying `data`, or every pending event.
+void atalk_timer_cancel(atalk_timer_t *t, uint64_t data);
+void atalk_timer_cancel_all(atalk_timer_t *t);
+
+#define ATALK_TIMER_MIN_NS 1000u
+
 // Shared AppleTalk constants
 #define LLAP_HOST_NODE         33
 #define HOST_AFP_SOCKET        8
