@@ -2660,7 +2660,7 @@ application has since gone away.
 
 ## 4.4 The AppleDouble sidecar entry map
 
-`._<name>` is an AppleDouble v2 header file (`src/core/storage/appledouble.h`).
+`._<name>` is an AppleDouble v2 header file (`src/peeler/include/appledouble.h`).
 Metadata entries are written first and the fork last, so the server can read
 any file's metadata without touching a fork that may be megabytes long.
 
