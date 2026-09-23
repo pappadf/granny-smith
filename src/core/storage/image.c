@@ -17,6 +17,7 @@
 #include "log.h"
 #include "platform.h"
 #include "resource_fork.h"
+#include "storage_util.h"
 #include "system.h"
 
 #include <assert.h>
@@ -38,98 +39,6 @@
 LOG_USE_CATEGORY_NAME("image")
 
 #define DISKCOPY_HEADER_SIZE 0x54
-
-// ============================================================================
-// String / path helpers
-// ============================================================================
-
-static char *dup_string(const char *src) {
-    if (!src)
-        return NULL;
-    size_t len = strlen(src) + 1;
-    char *copy = (char *)malloc(len);
-    if (!copy)
-        return NULL;
-    memcpy(copy, src, len);
-    return copy;
-}
-
-static char *str_printf(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    va_list ap_copy;
-    va_copy(ap_copy, ap);
-    int needed = vsnprintf(NULL, 0, fmt, ap_copy);
-    va_end(ap_copy);
-    if (needed < 0) {
-        va_end(ap);
-        return NULL;
-    }
-    char *buf = (char *)malloc((size_t)needed + 1);
-    if (!buf) {
-        va_end(ap);
-        return NULL;
-    }
-    vsnprintf(buf, (size_t)needed + 1, fmt, ap);
-    va_end(ap);
-    return buf;
-}
-
-static int mkdir_if_needed(const char *path) {
-    if (!path || !*path)
-        return -1;
-#if defined(_WIN32)
-    int rc = _mkdir(path);
-#else
-    int rc = mkdir(path, 0777);
-#endif
-    if (rc == 0 || errno == EEXIST)
-        return 0;
-    return -1;
-}
-
-// Recursively create directories (like mkdir -p)
-static int mkdir_recursive(const char *path) {
-    if (!path || !*path)
-        return -1;
-    char *tmp = dup_string(path);
-    if (!tmp)
-        return -1;
-    size_t len = strlen(tmp);
-    if (len > 0 && tmp[len - 1] == '/')
-        tmp[len - 1] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir_if_needed(tmp) != 0) {
-                free(tmp);
-                return -1;
-            }
-            *p = '/';
-        }
-    }
-    int rc = mkdir_if_needed(tmp);
-    free(tmp);
-    return rc;
-}
-
-// Ensure all parent directories of a file path exist
-static int ensure_parent_dirs(const char *filepath) {
-    if (!filepath || !*filepath)
-        return -1;
-    char *tmp = dup_string(filepath);
-    if (!tmp)
-        return -1;
-    char *last_sep = strrchr(tmp, '/');
-    if (!last_sep || last_sep == tmp) {
-        free(tmp);
-        return 0;
-    }
-    *last_sep = '\0';
-    int rc = mkdir_recursive(tmp);
-    free(tmp);
-    return rc;
-}
 
 // ============================================================================
 // Format detection
@@ -214,7 +123,7 @@ static void image_canonicalise(const char *path, char *out, size_t cap);
 static void writable_register(image_t *image, const char *base_path) {
     char canon[PATH_MAX];
     image_canonicalise(base_path, canon, sizeof(canon));
-    image->source_canon = dup_string(canon);
+    image->source_canon = gs_strdup(canon);
     if (!image->source_canon)
         return;
     image->next_writable = g_open_writable;
@@ -305,12 +214,12 @@ static void mint_random_hex_id(char *out, size_t out_len) {
 // without a slash.
 static char *dirname_of(const char *path) {
     if (!path || !*path)
-        return dup_string(".");
+        return gs_strdup(".");
     const char *last = strrchr(path, '/');
     if (!last)
-        return dup_string(".");
+        return gs_strdup(".");
     if (last == path)
-        return dup_string("/");
+        return gs_strdup("/");
     size_t len = (size_t)(last - path);
     char *out = (char *)malloc(len + 1);
     if (!out)
@@ -421,39 +330,6 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // image so the rest of image.c opens it as an ordinary base.  See
 // proposal-appledouble-support.md §4.4.
 
-// Read up to `cap` bytes of a host file into a malloc'd buffer. 0 / -errno.
-static int read_whole_host_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
-    *out = NULL;
-    *out_len = 0;
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return -errno;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return -EIO;
-    }
-    long sz = ftell(f);
-    if (sz < 0 || (size_t)sz > cap) {
-        fclose(f);
-        return sz < 0 ? -EIO : -EFBIG;
-    }
-    rewind(f);
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz ? (size_t)sz : 1);
-    if (!buf) {
-        fclose(f);
-        return -ENOMEM;
-    }
-    size_t got = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    if (got != (size_t)sz) {
-        free(buf);
-        return -EIO;
-    }
-    *out = buf;
-    *out_len = (size_t)sz;
-    return 0;
-}
-
 // Split base_path into "<dir>/" prefix (with trailing slash, or empty) and
 // basename, writing the "._<name>"-style sidecar into `out`.
 static void fork_sidecar_path(const char *base_path, const char *prefix, char *out, size_t cap) {
@@ -476,7 +352,7 @@ static uint8_t *acquire_resource_fork(const char *base_path, size_t *out_len) {
         fork_sidecar_path(base_path, prefixes[i], path, sizeof(path));
         uint8_t *raw = NULL;
         size_t raw_len = 0;
-        if (read_whole_host_file(path, RFORK_MAX_FORK_LEN, &raw, &raw_len) != 0)
+        if (gs_read_file(path, RFORK_MAX_FORK_LEN, &raw, &raw_len) != 0)
             continue;
         ad_file_t ad;
         if (ad_detect(raw, raw_len) && ad_parse(raw, raw_len, &ad) == 0 && ad.rsrc && ad.rsrc_len) {
@@ -494,7 +370,7 @@ static uint8_t *acquire_resource_fork(const char *base_path, size_t *out_len) {
     snprintf(path, sizeof(path), "%s.rsrc", base_path);
     uint8_t *raw = NULL;
     size_t raw_len = 0;
-    if (read_whole_host_file(path, RFORK_MAX_FORK_LEN, &raw, &raw_len) == 0 && raw_len > 0) {
+    if (gs_read_file(path, RFORK_MAX_FORK_LEN, &raw, &raw_len) == 0 && raw_len > 0) {
         *out_len = raw_len;
         return raw;
     }
@@ -729,7 +605,7 @@ static char *udif_decode(const char *base_path) {
     if (!decoded_identity(base_path, "udif", identity, sizeof(identity), scratch, sizeof(scratch)))
         return NULL;
     if (image_scratch_valid(scratch, identity, tr.sectors * 512))
-        return dup_string(scratch); // already materialised
+        return gs_strdup(scratch); // already materialised
 
     // The block map lives in the XML plist the trailer points at.
     uint8_t *xml = (uint8_t *)malloc((size_t)tr.xml_length);
@@ -758,7 +634,7 @@ static char *udif_decode(const char *base_path) {
         image_scratch_seal(scratch, identity) == 0) {
         LOG(3, "decoded UDIF '%s' -> '%s' (%llu sectors, %zu partitions)", base_path, scratch,
             (unsigned long long)tr.sectors, map->n_tables);
-        result = dup_string(scratch);
+        result = gs_strdup(scratch);
     } else {
         remove(scratch);
         LOG(1, "UDIF decode failed for '%s'", base_path);
@@ -784,12 +660,12 @@ static char *ndif_decode(const char *base_path) {
             if (!decoded_identity(base_path, "ndif", identity, sizeof(identity), scratch, sizeof(scratch))) {
                 LOG(1, "NDIF '%s': path too long for the decode cache", base_path);
             } else if (image_scratch_valid(scratch, identity, (uint64_t)map->sectors * 512)) {
-                result = dup_string(scratch); // already materialised
+                result = gs_strdup(scratch); // already materialised
             } else {
                 if (image_scratch_prepare(scratch) == 0 && materialize_ndif_host(base_path, map, scratch) == 0 &&
                     image_scratch_seal(scratch, identity) == 0) {
                     LOG(3, "decoded NDIF '%s' -> '%s' (%u sectors)", base_path, scratch, map->sectors);
-                    result = dup_string(scratch);
+                    result = gs_strdup(scratch);
                 } else {
                     remove(scratch);
                     LOG(1, "NDIF decode failed for '%s'", base_path);
@@ -863,7 +739,7 @@ static int resolve_image(const char *base_path, uint32_t block_size, char **out_
         if (g_image_formats[i].decode)
             path = g_image_formats[i].decode(base_path);
     if (!path)
-        path = dup_string(base_path);
+        path = gs_strdup(base_path);
     if (!path)
         return -1;
 
@@ -920,12 +796,12 @@ image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry
     // Mint a scratch instance under the scratch root so the read-only
     // mount does not pollute the base image's directory with delta
     // sidecars.
-    mkdir_recursive(image_scratch_dir());
+    gs_mkdir_p(image_scratch_dir());
     char id[17];
     mint_random_hex_id(id, sizeof(id));
     image->instance_path = NULL; // never serialized for read-only mounts
-    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
+    image->delta_path = gs_str_printf("%s/%s.delta", image_scratch_dir(), id);
+    image->journal_path = gs_str_printf("%s/%s.journal", image_scratch_dir(), id);
     if (!image->filename || !image->delta_path || !image->journal_path) {
         image_close(image);
         return NULL;
@@ -974,7 +850,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
             delta_dir = derived_dir;
         }
     }
-    if (mkdir_recursive(delta_dir) != 0) {
+    if (gs_mkdir_p(delta_dir) != 0) {
         printf("image_create: cannot create delta directory: %s\n", delta_dir);
         free(derived_dir);
         free(effective);
@@ -996,9 +872,9 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     image->type = classify_image(raw_size);
     image->writable = true;
     image->from_diskcopy = is_diskcopy;
-    image->instance_path = str_printf("%s/%s", delta_dir, id);
-    image->delta_path = str_printf("%s.delta", image->instance_path);
-    image->journal_path = str_printf("%s.journal", image->instance_path);
+    image->instance_path = gs_str_printf("%s/%s", delta_dir, id);
+    image->delta_path = gs_str_printf("%s.delta", image->instance_path);
+    image->journal_path = gs_str_printf("%s.journal", image->instance_path);
     free(derived_dir);
     if (!image->filename || !image->instance_path || !image->delta_path || !image->journal_path) {
         image_close(image);
@@ -1041,9 +917,9 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
     image->type = classify_image(raw_size);
     image->writable = true;
     image->from_diskcopy = is_diskcopy;
-    image->instance_path = dup_string(instance_path);
-    image->delta_path = str_printf("%s.delta", instance_path);
-    image->journal_path = str_printf("%s.journal", instance_path);
+    image->instance_path = gs_strdup(instance_path);
+    image->delta_path = gs_str_printf("%s.delta", instance_path);
+    image->journal_path = gs_str_printf("%s.journal", instance_path);
     if (!image->filename || !image->instance_path || !image->delta_path || !image->journal_path) {
         image_close(image);
         return NULL;
@@ -1078,12 +954,12 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     // Place the delta+journal in the scratch root so the blank disk's
     // sidecars don't clutter any user directory; ghost_instance unlinks them on
     // image_close.  The image is ephemeral unless exported via image_export_to.
-    mkdir_recursive(image_scratch_dir());
+    gs_mkdir_p(image_scratch_dir());
     char id[17];
     mint_random_hex_id(id, sizeof(id));
     image->instance_path = NULL; // never serialized
-    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
+    image->delta_path = gs_str_printf("%s/%s.delta", image_scratch_dir(), id);
+    image->journal_path = gs_str_printf("%s/%s.journal", image_scratch_dir(), id);
     if (!image->delta_path || !image->journal_path) {
         image_close(image);
         return NULL;
@@ -1208,7 +1084,7 @@ int image_export_to(image_t *image, const char *dest_path) {
         fclose(exist);
         return -1;
     }
-    ensure_parent_dirs(dest_path);
+    gs_mkdir_parents(dest_path);
     FILE *f = fopen(dest_path, "wb");
     if (!f)
         return -1;
@@ -1230,7 +1106,7 @@ int image_export_to(image_t *image, const char *dest_path) {
 int image_create_empty(const char *filename, size_t size) {
     if (!filename || !*filename || size == 0)
         return -1;
-    ensure_parent_dirs(filename);
+    gs_mkdir_parents(filename);
     FILE *f = fopen(filename, "wb");
     if (!f)
         return -1;
@@ -1279,7 +1155,7 @@ int image_create_blank_profile(const char *filename, uint32_t block_count) {
         fclose(exist);
         return -2;
     }
-    ensure_parent_dirs(filename);
+    gs_mkdir_parents(filename);
     FILE *f = fopen(filename, "wb");
     if (!f)
         return -1;

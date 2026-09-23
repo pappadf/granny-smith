@@ -20,6 +20,7 @@
 
 #include "macroman.h"
 #include "rsrc_dcmp.h"
+#include "storage_util.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -380,51 +381,9 @@ static const char *attr_name(uint8_t bit) {
     }
 }
 
-// JSON-escape `src` into `dst`.  Replicates the small subset required for
-// resource names: backslash, quote, control chars escaped to \uXXXX.
-static int json_escape(const char *src, char *dst, size_t cap) {
-    size_t o = 0;
-    for (size_t i = 0; src[i]; i++) {
-        unsigned char c = (unsigned char)src[i];
-        char buf[8];
-        size_t need = 0;
-        if (c == '"' || c == '\\') {
-            need = 2;
-            buf[0] = '\\';
-            buf[1] = (char)c;
-        } else if (c == '\n') {
-            need = 2;
-            buf[0] = '\\';
-            buf[1] = 'n';
-        } else if (c == '\r') {
-            need = 2;
-            buf[0] = '\\';
-            buf[1] = 'r';
-        } else if (c == '\t') {
-            need = 2;
-            buf[0] = '\\';
-            buf[1] = 't';
-        } else if (c < 0x20) {
-            need = 6;
-            snprintf(buf, sizeof(buf), "\\u%04x", c);
-        } else {
-            need = 1;
-            buf[0] = (char)c;
-        }
-        if (o + need >= cap)
-            return -EINVAL;
-        memcpy(dst + o, buf, need);
-        o += need;
-    }
-    if (o >= cap)
-        return -EINVAL;
-    dst[o] = '\0';
-    return (int)o;
-}
-
 int rfork_info_format(const char *name, uint8_t attrs, size_t size, char *out, size_t cap) {
     char esc[256];
-    if (json_escape(name ? name : "", esc, sizeof(esc)) < 0)
+    if (gs_json_escape(name ? name : "", esc, sizeof(esc)) < 0)
         return -EINVAL;
 
     int n = snprintf(out, cap, "{\"name\":\"%s\",\"attrs\":[", esc);

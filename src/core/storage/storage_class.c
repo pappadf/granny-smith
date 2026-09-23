@@ -15,6 +15,7 @@
 #include "image_vfs.h"
 #include "object.h"
 #include "shell.h"
+#include "storage_util.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -345,33 +346,6 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
     return val_bool(system_hd_create(argv[0].s, size_str) == 0);
 }
 
-// Recursively remove a file or directory tree (best-effort). Returns 0 when
-// the path is gone afterwards, or a negative errno.
-static int storage_rm_tree(const char *path) {
-    DIR *dir = opendir(path);
-    if (!dir) {
-        if (unlink(path) == 0 || errno == ENOENT)
-            return 0;
-        return -errno;
-    }
-    struct dirent *e;
-    while ((e = readdir(dir)) != NULL) {
-        const char *name = e->d_name;
-        if (!name || strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-            continue;
-        char child[VFS_PATH_MAX];
-        if (snprintf(child, sizeof(child), "%s/%s", path, name) >= (int)sizeof(child))
-            continue;
-        struct stat st;
-        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
-            storage_rm_tree(child);
-        else
-            unlink(child);
-    }
-    closedir(dir);
-    return rmdir(path) == 0 || errno == ENOENT ? 0 : -errno;
-}
-
 // Paths storage.rm / storage.mv must never destroy: the filesystem root and
 // the OPFS mount root (all persisted browser state lives under /opfs — a
 // recursive rm there wipes every ROM, image and checkpoint). Tolerates a
@@ -397,7 +371,7 @@ static value_t storage_method_rm(struct object *self, const member_t *m, int arg
     const char *path = argv[0].s;
     if (storage_path_is_protected(path))
         return val_err("storage.rm: refusing to remove '%s'", path ? path : "(null)");
-    int rc = storage_rm_tree(path);
+    int rc = gs_rm_tree(path);
     if (rc < 0)
         return val_err("storage.rm: cannot remove '%s': %s", path, strerror(-rc));
     return val_bool(true);
@@ -436,7 +410,7 @@ static value_t storage_method_mv(struct object *self, const member_t *m, int arg
         return val_err("storage.mv: %s", err[0] ? err : "move failed");
     // The copy succeeded; if the source can't be fully removed the operation
     // is a copy, not a move — report that instead of pretending success.
-    int rc = storage_rm_tree(src);
+    int rc = gs_rm_tree(src);
     if (rc < 0)
         return val_err("storage.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
     return val_bool(true);

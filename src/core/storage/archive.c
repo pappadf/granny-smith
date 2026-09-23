@@ -12,10 +12,10 @@
 #include "log.h"
 #include "object.h"
 #include "peeler.h"
+#include "storage_util.h"
 #include "value.h"
 
 #include <errno.h>
-#include <libgen.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,69 +32,16 @@ typedef struct {
     int file_count;
 } archive_ctx_t;
 
-// mkdir -p: create `path` and any missing parents.  Returns 0 on success or
-// when the leaf already exists; -1 on any other error.
-static int mkdir_p(const char *path) {
-    if (!path || !*path)
-        return -1;
-    char tmp[1024];
-    size_t len = strlen(path);
-    if (len >= sizeof(tmp))
-        return -1;
-    memcpy(tmp, path, len + 1);
-    if (tmp[len - 1] == '/')
-        tmp[len - 1] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-                return -1;
-            *p = '/';
-        }
-    }
-    if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-        return -1;
-    return 0;
-}
-
-// Recursively create the directory chain leading to `path` under
-// ctx->output_dir. Last component is treated as a directory.
+// Create the directories leading to entry `path` under ctx->output_dir.
 static int ensure_dir_exists(const archive_ctx_t *ctx, const char *path) {
-    char *path_copy = strdup(path);
-    if (!path_copy)
+    char *full = gs_str_printf("%s/%s", ctx->output_dir, path);
+    if (!full)
         return -1;
-
-    char *dir = dirname(path_copy);
-    char full_path[1024];
-
-    if (snprintf(full_path, sizeof(full_path), "%s/%s", ctx->output_dir, dir) >= (int)sizeof(full_path)) {
-        fprintf(stderr, "archive: path too long\n");
-        free(path_copy);
-        return -1;
-    }
-    free(path_copy);
-
-    char *p = full_path;
-    if (*p == '/')
-        p++;
-
-    while ((p = strchr(p, '/'))) {
-        *p = '\0';
-        if (mkdir(full_path, 0755) != 0 && errno != EEXIST) {
-            fprintf(stderr, "archive: cannot create directory '%s': %s\n", full_path, strerror(errno));
-            *p = '/';
-            return -1;
-        }
-        *p = '/';
-        p++;
-    }
-
-    if (mkdir(full_path, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "archive: cannot create directory '%s': %s\n", full_path, strerror(errno));
-        return -1;
-    }
-
-    return 0;
+    int rc = gs_mkdir_parents(full);
+    if (rc != 0)
+        fprintf(stderr, "archive: cannot create the directories for '%s': %s\n", full, strerror(-rc));
+    free(full);
+    return rc != 0 ? -1 : 0;
 }
 
 // Synthesize the 32-byte Finder Info block (FInfo + FXInfo) from peeler's
@@ -268,7 +215,7 @@ int archive_extract_file(const char *path, const char *out_dir) {
         .output_dir = (out_dir && *out_dir) ? out_dir : ".",
         .file_count = 0,
     };
-    if (mkdir_p(ctx.output_dir) != 0) {
+    if (gs_mkdir_p(ctx.output_dir) != 0) {
         fprintf(stderr, "archive: cannot create output directory '%s': %s\n", ctx.output_dir, strerror(errno));
         return -1;
     }

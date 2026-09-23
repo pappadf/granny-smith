@@ -4,5 +4,6 @@
 TEST_NAME := checkpoint_manifest
 TEST_SRCS := test.c
 TEST_HARNESS := isolated
-EXTRA_SRCS := ../../../../src/core/storage/checkpoint_machine.c
+EXTRA_SRCS := ../../../../src/core/storage/checkpoint_machine.c \
+              ../../../../src/core/storage/storage_util.c
 include ../../common.mk

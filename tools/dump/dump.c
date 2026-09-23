@@ -23,6 +23,7 @@
 #include "coff.h"
 #include "coff_dump.h"
 #include "resource_fork.h"
+#include "storage_util.h"
 #include "symbols.h"
 #include "decoders/decoders.h"
 
@@ -49,73 +50,23 @@ static int dump_disasm(struct rfork *rf, const char *dst_dir);
 // Small filesystem helpers (mkdir -p + path joining)
 // ============================================================================
 
-// mkdir -p: create `path` and any missing parents.  Returns 0 on success
-// (or when the leaf already exists), -1 otherwise.
-static int re_mkdir_p(const char *path) {
-    if (!path || !*path)
-        return -1;
-    char tmp[PATH_MAX];
-    size_t len = strlen(path);
-    if (len >= sizeof(tmp))
-        return -1;
-    memcpy(tmp, path, len + 1);
-    if (tmp[len - 1] == '/')
-        tmp[len - 1] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-                return -1;
-            *p = '/';
-        }
-    }
-    if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-        return -1;
-    return 0;
-}
-
 // ============================================================================
 // Reading a host file into a malloc'd buffer
 // ============================================================================
 
-// Read the entire contents of `path` into a freshly malloc'd buffer.
-// Returns NULL on any error (with errno preserved); on success the byte
-// count is written to *out_len.  Caller frees with free().
-static uint8_t *read_host_file(const char *path, size_t *out_len) {
-    if (out_len)
-        *out_len = 0;
-    if (!path || !*path)
-        return NULL;
-    FILE *fp = fopen(path, "rb");
-    if (!fp)
-        return NULL;
-    if (fseek(fp, 0, SEEK_END) != 0) {
-        fclose(fp);
+// Largest data fork, Finder-info or COFF file dump reads.  A resource fork
+// is bounded by the format itself (RFORK_MAX_FORK_LEN).
+#define DUMP_MAX_INPUT (1024u * 1024u * 1024u)
+
+// Read all of `path`, up to `cap` bytes, into a malloc'd buffer.  NULL on
+// any error, with errno set; the byte count goes to *out_len.
+static uint8_t *read_host_file(const char *path, size_t cap, size_t *out_len) {
+    uint8_t *buf = NULL;
+    int rc = gs_read_file(path, cap, &buf, out_len);
+    if (rc != 0) {
+        errno = -rc;
         return NULL;
     }
-    long sz_signed = ftell(fp);
-    if (sz_signed < 0) {
-        fclose(fp);
-        return NULL;
-    }
-    size_t sz = (size_t)sz_signed;
-    if (fseek(fp, 0, SEEK_SET) != 0) {
-        fclose(fp);
-        return NULL;
-    }
-    uint8_t *buf = malloc(sz > 0 ? sz : 1);
-    if (!buf) {
-        fclose(fp);
-        return NULL;
-    }
-    if (sz > 0 && fread(buf, 1, sz, fp) != sz) {
-        free(buf);
-        fclose(fp);
-        return NULL;
-    }
-    fclose(fp);
-    if (out_len)
-        *out_len = sz;
     return buf;
 }
 
@@ -221,7 +172,7 @@ static int dump_resources(rfork_t *rf, const char *dst_dir) {
     int n = snprintf(dir, sizeof(dir), "%s/resources", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
         return -1;
-    if (re_mkdir_p(dir) != 0) {
+    if (gs_mkdir_p(dir) != 0) {
         fprintf(stderr, "re: cannot create '%s': %s\n", dir, strerror(errno));
         return -1;
     }
@@ -236,7 +187,7 @@ static int dump_resources(rfork_t *rf, const char *dst_dir) {
         n = snprintf(type_dir, sizeof(type_dir), "%s/%s", dir, type_path);
         if (n < 0 || (size_t)n >= sizeof(type_dir))
             return -1;
-        if (re_mkdir_p(type_dir) != 0) {
+        if (gs_mkdir_p(type_dir) != 0) {
             fprintf(stderr, "re: cannot create '%s': %s\n", type_dir, strerror(errno));
             return -1;
         }
@@ -299,7 +250,7 @@ int dump_run(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_byt
         return -EINVAL;
     if (!src_label)
         src_label = "(unnamed)";
-    if (re_mkdir_p(dst_dir) != 0) {
+    if (gs_mkdir_p(dst_dir) != 0) {
         fprintf(stderr, "dump: cannot create output directory '%s': %s\n", dst_dir, strerror(errno));
         return -EIO;
     }
@@ -592,7 +543,7 @@ static int dump_disasm(rfork_t *rf, const char *dst_dir) {
     int n = snprintf(dir, sizeof(dir), "%s/disasm", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
         return -1;
-    if (re_mkdir_p(dir) != 0) {
+    if (gs_mkdir_p(dir) != 0) {
         fprintf(stderr, "re: cannot create '%s': %s\n", dir, strerror(errno));
         return -1;
     }
@@ -817,7 +768,7 @@ static int dump_decoded(rfork_t *rf, const char *dst_dir) {
     int n = snprintf(base, sizeof(base), "%s/decoded", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(base))
         return -1;
-    if (re_mkdir_p(base) != 0)
+    if (gs_mkdir_p(base) != 0)
         return -1;
 
     int written = 0;
@@ -832,7 +783,7 @@ static int dump_decoded(rfork_t *rf, const char *dst_dir) {
         n = snprintf(type_dir, sizeof(type_dir), "%s/%s", base, type_path);
         if (n < 0 || (size_t)n >= sizeof(type_dir))
             return -1;
-        if (re_mkdir_p(type_dir) != 0)
+        if (gs_mkdir_p(type_dir) != 0)
             return -1;
 
         size_t n_res = rfork_num_resources(rf, type);
@@ -1367,14 +1318,14 @@ int main(int argc, char *argv[]) {
     size_t coff_len = 0;
 
     if (data_path) {
-        data_buf = read_host_file(data_path, &data_len);
+        data_buf = read_host_file(data_path, DUMP_MAX_INPUT, &data_len);
         if (!data_buf) {
             fprintf(stderr, "dump: cannot read --data '%s': %s\n", data_path, strerror(errno));
             return 1;
         }
     }
     if (rsrc_path) {
-        rsrc_buf = read_host_file(rsrc_path, &rsrc_len);
+        rsrc_buf = read_host_file(rsrc_path, RFORK_MAX_FORK_LEN, &rsrc_len);
         if (!rsrc_buf) {
             fprintf(stderr, "dump: cannot read --rsrc '%s': %s\n", rsrc_path, strerror(errno));
             free(data_buf);
@@ -1382,7 +1333,7 @@ int main(int argc, char *argv[]) {
         }
     }
     if (finf_path) {
-        finf_buf = read_host_file(finf_path, &finf_len);
+        finf_buf = read_host_file(finf_path, DUMP_MAX_INPUT, &finf_len);
         if (!finf_buf) {
             fprintf(stderr, "dump: cannot read --finf '%s': %s\n", finf_path, strerror(errno));
             free(data_buf);
@@ -1391,7 +1342,7 @@ int main(int argc, char *argv[]) {
         }
     }
     if (coff_path) {
-        coff_buf = read_host_file(coff_path, &coff_len);
+        coff_buf = read_host_file(coff_path, DUMP_MAX_INPUT, &coff_len);
         if (!coff_buf) {
             fprintf(stderr, "dump: cannot read --coff '%s': %s\n", coff_path, strerror(errno));
             free(data_buf);

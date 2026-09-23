@@ -5,6 +5,7 @@
 // Identity-checked cache of derived images.  See image_scratch.h.
 
 #include "image_scratch.h"
+#include "storage_util.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -66,31 +67,8 @@ bool image_scratch_valid(const char *scratch, const char *identity, uint64_t siz
     return ok;
 }
 
-// mkdir -p of the directory holding `file`.
-static int mkdir_parents(const char *file) {
-    char tmp[PATH_MAX];
-    int n = snprintf(tmp, sizeof(tmp), "%s", file);
-    if (n < 0 || (size_t)n >= sizeof(tmp))
-        return -ENAMETOOLONG;
-    char *last = strrchr(tmp, '/');
-    if (!last || last == tmp)
-        return 0;
-    *last = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(tmp, 0777) != 0 && errno != EEXIST)
-                return -errno;
-            *p = '/';
-        }
-    }
-    if (mkdir(tmp, 0777) != 0 && errno != EEXIST)
-        return -errno;
-    return 0;
-}
-
 int image_scratch_prepare(const char *scratch) {
-    int rc = mkdir_parents(scratch);
+    int rc = gs_mkdir_parents(scratch);
     if (rc != 0)
         return rc;
     char side[PATH_MAX];

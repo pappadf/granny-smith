@@ -12,6 +12,7 @@ TEST_HARNESS := isolated
 # that belong to subsystems this isolated suite deliberately does not link.
 EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_fdc.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/storage_util.c \
                 ../../../../src/core/storage/image_scratch.c \
                 ../../../../src/core/storage/storage.c \
                 ../../../../src/core/storage/appledouble.c \

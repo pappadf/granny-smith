@@ -40,6 +40,7 @@ CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c \
              $(CORE_DBG_DIR)/mac_traps_data.c \
              $(CORE_DBG_DIR)/mac_globals_data.c \
              $(CORE_STORAGE_DIR)/resource_fork.c \
+             $(CORE_STORAGE_DIR)/storage_util.c \
              $(CORE_STORAGE_DIR)/rsrc_dcmp.c \
              $(CORE_STORAGE_DIR)/macroman.c
 
