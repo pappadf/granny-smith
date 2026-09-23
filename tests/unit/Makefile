@@ -51,6 +51,10 @@ test-%:
 # says 64, the run is not testing what it claims to.
 WASM32_SUITES := peeler resfork ndif udif hfsplus appledouble storage vfs checkpoint
 WASM32_BUILD  := $(abspath $(BUILD_DIR))-wasm32
+# The shipping build's stack (Makefile: -s STACK_SIZE=5MB), not emscripten's
+# 64 KB default -- a recursion bound that is right for the product would
+# otherwise trap here, and one tuned to pass here would be wrong for it.
+WASM32_LDFLAGS := -sSTACK_SIZE=5MB
 
 run-wasm32:
 	@command -v emcc >/dev/null || { echo "run-wasm32: emcc not found"; exit 1; }
@@ -60,7 +64,8 @@ run-wasm32:
 	@failed=""; \
 	for s in $(WASM32_SUITES); do \
 	  echo "[RUN ] wasm32 $$s"; \
-	  if $(MAKE) -C suites/$$s run CC=emcc EXEC_WRAPPER=node BUILD_DIR=$(WASM32_BUILD) TARGET_EXT=.js; then :; \
+	  if $(MAKE) -C suites/$$s run CC=emcc EXEC_WRAPPER=node BUILD_DIR=$(WASM32_BUILD) TARGET_EXT=.js \
+	       LDFLAGS="$(WASM32_LDFLAGS)"; then :; \
 	  else echo "[FAIL] wasm32 $$s"; failed="$$failed $$s"; fi; \
 	done; \
 	if [ -z "$$failed" ]; then echo "All $(words $(WASM32_SUITES)) wasm32 suites passed"; \
