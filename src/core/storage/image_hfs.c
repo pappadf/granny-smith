@@ -22,6 +22,7 @@
 #include "image_hfs.h"
 #include "common.h"
 #include "image.h"
+#include "image_part.h"
 #include "macroman.h"
 #include "storage.h"
 
@@ -30,35 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// disk_read_data requires 512-aligned offset + length.  HFS and the VFS
-// layer work in byte-granular chunks; this helper does the bounce-buffer
-// work so callers don't repeat it.  Returns 0 on success, -EIO on short
-// read.
-static int disk_read_bytes(image_t *img, uint64_t off, void *buf, size_t n) {
-    uint8_t *dst = buf;
-    size_t done = 0;
-    uint8_t blk[STORAGE_BLOCK_SIZE];
-    while (done < n) {
-        uint64_t abs = off + done;
-        uint64_t block_off = abs & ~(uint64_t)(STORAGE_BLOCK_SIZE - 1);
-        size_t in_block = (size_t)(abs - block_off);
-        size_t take = STORAGE_BLOCK_SIZE - in_block;
-        if (take > n - done)
-            take = n - done;
-        if (in_block == 0 && take == STORAGE_BLOCK_SIZE) {
-            // Fast path: block-aligned whole-block read straight into dst.
-            if (disk_read_data(img, (size_t)block_off, dst + done, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-        } else {
-            if (disk_read_data(img, (size_t)block_off, blk, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-            memcpy(dst + done, blk + in_block, take);
-        }
-        done += take;
-    }
-    return 0;
-}
 
 // ---- Big-endian helpers ----------------------------------------------------
 
@@ -248,9 +220,7 @@ static void parse_fork(const uint8_t *rec_data, size_t logical_off, size_t ext_o
 
 // Read raw bytes from the image relative to the partition start.
 static int read_partition(hfs_volume_t *vol, uint64_t off, void *buf, size_t n) {
-    if (off + n > vol->partition_size)
-        return -EIO;
-    return disk_read_bytes(vol->img, vol->partition_off + off, buf, n);
+    return image_read_partition(vol->img, vol->partition_off, vol->partition_size, off, buf, n);
 }
 
 // ---- Catalog file assembly ------------------------------------------------
@@ -278,13 +248,13 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
         uint64_t take = cat_size - filled;
         if (take > ext_bytes)
             take = ext_bytes;
-        if (byte_off + take > vol->partition_size) {
+        if (!image_range_fits(byte_off, take, vol->partition_size)) {
             // Don't read past the end of the partition; catalog is malformed
             // or the extent overflow file is needed.  Bail out; remaining
             // bytes stay zeroed.
             break;
         }
-        int rc = disk_read_bytes(vol->img, vol->partition_off + byte_off, buf + filled, (size_t)take);
+        int rc = read_partition(vol, byte_off, buf + filled, (size_t)take);
         if (rc < 0) {
             free(buf);
             return rc;
@@ -416,9 +386,9 @@ static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf
         uint64_t take = xt_size - filled;
         if (take > ext_bytes)
             take = ext_bytes;
-        if (byte_off + take > vol->partition_size)
+        if (!image_range_fits(byte_off, take, vol->partition_size))
             break;
-        int rc = disk_read_bytes(vol->img, vol->partition_off + byte_off, buf + filled, (size_t)take);
+        int rc = read_partition(vol, byte_off, buf + filled, (size_t)take);
         if (rc < 0) {
             free(buf);
             return rc;

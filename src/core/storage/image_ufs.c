@@ -13,6 +13,7 @@
 #include "image_ufs.h"
 #include "common.h"
 #include "image.h"
+#include "image_part.h"
 #include "storage.h"
 
 #include <errno.h>
@@ -20,32 +21,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// ---- Disk-read helper (byte-granular over 512-aligned blocks) ------------
-
-static int disk_read_bytes(image_t *img, uint64_t off, void *buf, size_t n) {
-    uint8_t *dst = buf;
-    size_t done = 0;
-    uint8_t blk[STORAGE_BLOCK_SIZE];
-    while (done < n) {
-        uint64_t abs = off + done;
-        uint64_t block_off = abs & ~(uint64_t)(STORAGE_BLOCK_SIZE - 1);
-        size_t in_block = (size_t)(abs - block_off);
-        size_t take = STORAGE_BLOCK_SIZE - in_block;
-        if (take > n - done)
-            take = n - done;
-        if (in_block == 0 && take == STORAGE_BLOCK_SIZE) {
-            if (disk_read_data(img, (size_t)block_off, dst + done, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-        } else {
-            if (disk_read_data(img, (size_t)block_off, blk, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-            memcpy(dst + done, blk + in_block, take);
-        }
-        done += take;
-    }
-    return 0;
-}
 
 // ---- Big-endian helpers --------------------------------------------------
 
@@ -134,13 +109,9 @@ struct ufs_dir_iter {
 
 // ---- Small utilities -----------------------------------------------------
 
-// Read raw bytes from the partition (relative to partition start). Bounds
-// check is written as `n > size || off > size - n` so a hostile `off + n`
-// can't wrap and slip past `> partition_size`.
+// Read raw bytes from the partition (relative to partition start).
 static int read_partition(ufs_volume_t *vol, uint64_t off, void *buf, size_t n) {
-    if (n > vol->partition_size || off > vol->partition_size - n)
-        return -EIO;
-    return disk_read_bytes(vol->img, vol->partition_off + off, buf, n);
+    return image_read_partition(vol->img, vol->partition_off, vol->partition_size, off, buf, n);
 }
 
 // Compute the starting fragment number of cylinder group `c`.
@@ -298,7 +269,7 @@ bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_
     if (!img || partition_byte_size < UFS_SBOFF + 2048)
         return false;
     uint8_t buf[2048];
-    if (disk_read_bytes(img, partition_byte_offset + UFS_SBOFF, buf, sizeof(buf)) < 0)
+    if (image_read_bytes(img, partition_byte_offset + UFS_SBOFF, buf, sizeof(buf)) < 0)
         return false;
     // Magic at offset 1372; accept either endianness.
     uint32_t be = RD_BE32(buf + SB_OFF_MAGIC);
@@ -311,7 +282,7 @@ ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
     if (!img || partition_byte_size < UFS_SBOFF + 2048)
         return NULL;
     uint8_t sb[2048];
-    if (disk_read_bytes(img, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) < 0)
+    if (image_read_bytes(img, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) < 0)
         return NULL;
     if (RD_BE32(sb + SB_OFF_MAGIC) != UFS_FS_MAGIC) {
         // A/UX always writes BE, but we tolerate LE-rewritten images — not
