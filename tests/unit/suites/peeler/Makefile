@@ -45,6 +45,7 @@ LDFLAGS ?=
 LDFLAGS += $(SANITIZE)
 
 PEELER_SRCS := $(PEELER_DIR)/lib/peeler.c \
+               $(PEELER_DIR)/lib/appledouble.c \
                $(PEELER_DIR)/lib/err.c \
                $(PEELER_DIR)/lib/util.c \
                $(PEELER_DIR)/lib/formats/bin.c \

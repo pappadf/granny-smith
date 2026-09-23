@@ -14,7 +14,7 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
                 ../../../../src/core/storage/storage_util.c \
                 ../../../../src/core/storage/image_scratch.c \
                 ../../../../src/core/storage/storage.c \
-                ../../../../src/core/storage/appledouble.c \
+                ../../../../src/peeler/lib/appledouble.c \
                 ../../../../src/core/storage/image_ndif.c \
                 ../../../../src/core/storage/image_udif.c \
                 ../../../../src/core/storage/inflate.c \

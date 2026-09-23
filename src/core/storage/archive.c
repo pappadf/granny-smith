@@ -8,7 +8,6 @@
 
 #include "archive.h"
 
-#include "appledouble.h"
 #include "log.h"
 #include "object.h"
 #include "peeler.h"
@@ -44,24 +43,6 @@ static int ensure_dir_exists(const archive_ctx_t *ctx, const char *path) {
     return rc != 0 ? -1 : 0;
 }
 
-// Synthesize the 32-byte Finder Info block (FInfo + FXInfo) from peeler's
-// best-effort metadata — type, creator, Finder flags (big-endian), rest zero.
-// Returns true if any field was set (i.e. worth persisting).
-static bool build_finder_info(const peel_file_meta_t *m, uint8_t out[32]) {
-    memset(out, 0, 32);
-    out[0] = (uint8_t)(m->mac_type >> 24);
-    out[1] = (uint8_t)(m->mac_type >> 16);
-    out[2] = (uint8_t)(m->mac_type >> 8);
-    out[3] = (uint8_t)m->mac_type;
-    out[4] = (uint8_t)(m->mac_creator >> 24);
-    out[5] = (uint8_t)(m->mac_creator >> 16);
-    out[6] = (uint8_t)(m->mac_creator >> 8);
-    out[7] = (uint8_t)m->mac_creator;
-    out[8] = (uint8_t)(m->finder_flags >> 8);
-    out[9] = (uint8_t)m->finder_flags;
-    return m->mac_type || m->mac_creator || m->finder_flags;
-}
-
 // Write an AppleDouble "._<name>" header sidecar next to the extracted data
 // file at `data_full_path`, carrying the resource fork (entry 2) and Finder
 // Info (entry 9).  This keeps a Mac file lossless on the flat host FS — e.g. a
@@ -70,16 +51,10 @@ static bool build_finder_info(const peel_file_meta_t *m, uint8_t out[32]) {
 // A file with neither a resource fork nor Finder Info gets no sidecar.
 // Returns 0 on success (including the no-sidecar case), -1 on write failure.
 static int write_ad_sidecar(const char *data_full_path, const peel_file_t *file) {
-    uint8_t finder[32];
-    bool finder_set = build_finder_info(&file->meta, finder);
-    if (file->resource_fork.size == 0 && !finder_set)
-        return 0; // data-only file: nothing to preserve
-
     uint8_t *hdr = NULL;
     size_t hdr_len = 0;
-    if (ad_build_sidecar(file->resource_fork.data, file->resource_fork.size, finder_set ? finder : NULL, &hdr,
-                         &hdr_len) != 0)
-        return 0;
+    if (peel_build_sidecar(file, &hdr, &hdr_len) != 0 || !hdr)
+        return 0; // a data-only file, or out of memory: no sidecar
 
     char sidecar[1024];
     const char *slash = strrchr(data_full_path, '/');

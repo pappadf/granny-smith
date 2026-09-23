@@ -107,6 +107,14 @@ const char *peel_detect(const uint8_t *src, size_t len);
 // attacker-named paths outside its output directory (09-storage F-13).
 bool peel_path_is_confined(const char *path);
 
+// The AppleDouble sidecar ("._NAME") that carries an extracted file's
+// resource fork and Finder info (type, creator, flags).  Returns 0 and a
+// malloc'd buffer in *out / *out_len; 0 with *out == NULL when the file has
+// neither, so no sidecar should be written; or a negative errno.  Both the
+// peeler CLI and the emulator's archive extraction write sidecars through
+// this, so they are identical.
+int peel_build_sidecar(const peel_file_t *f, uint8_t **out, size_t *out_len);
+
 // === Main Entry Points ===
 
 // Detect, peel all layers, return extracted files.

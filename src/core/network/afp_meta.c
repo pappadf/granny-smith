@@ -357,29 +357,18 @@ int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *r
     size_t n_meta = build_meta_entries(meta, entries, 4, dates, macinfo);
     size_t n = n_meta + (rsrc_len ? 1 : 0);
 
-    // Header layout per appledouble.h: magic, version, 16-byte filler, entry
-    // count, then one 12-byte descriptor per entry; payloads follow in order.
-    size_t hdr_len = 26 + n * 12;
-    size_t off = hdr_len;
-    uint8_t hdr[26 + 5 * 12];
-    memset(hdr, 0, sizeof(hdr));
-    WR_BE32(hdr + 0, APPLEDOUBLE_MAGIC);
-    WR_BE32(hdr + 4, APPLE_FORK_VERSION);
-    hdr[24] = (uint8_t)(n >> 8);
-    hdr[25] = (uint8_t)n;
-    for (size_t i = 0; i < n_meta; i++) {
-        uint8_t *d = hdr + 26 + i * 12;
-        WR_BE32(d + 0, entries[i].id);
-        WR_BE32(d + 4, (uint32_t)off);
-        WR_BE32(d + 8, (uint32_t)entries[i].len);
-        off += entries[i].len;
-    }
+    // The header through the one AppleDouble writer (09-storage F-61); the
+    // payloads follow it in order, the fork streamed below rather than held.
     if (rsrc_len) {
-        uint8_t *d = hdr + 26 + n_meta * 12;
-        WR_BE32(d + 0, AD_ENTRY_RSRC);
-        WR_BE32(d + 4, (uint32_t)off);
-        WR_BE32(d + 8, (uint32_t)rsrc_len);
+        entries[n_meta].id = AD_ENTRY_RSRC;
+        entries[n_meta].bytes = NULL;
+        entries[n_meta].len = rsrc_len;
     }
+    uint8_t hdr[26 + 5 * 12];
+    long hl = ad_build_header(false, entries, n, hdr, sizeof(hdr));
+    if (hl < 0)
+        return (int)hl;
+    size_t hdr_len = (size_t)hl;
 
     char tmp[PATH_MAX];
     if ((size_t)snprintf(tmp, sizeof(tmp), "%s.gstmp", sc) >= sizeof(tmp))

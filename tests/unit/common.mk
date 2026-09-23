@@ -56,6 +56,8 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core/vfs \
                  -I$(EMU_ROOT)/machines \
                  -I$(EMU_ROOT)/platform/wasm \
+                 -I$(EMU_ROOT)/peeler/include \
+                 -I$(EMU_ROOT)/peeler/lib \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
