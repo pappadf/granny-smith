@@ -85,11 +85,7 @@ static void grow_ensure(grow_buf_t *g, size_t extra, decode_ctx_t *ctx) {
     if (new_cap < needed) {
         new_cap = needed;
     }
-    uint8_t *new_data = realloc(g->data, new_cap);
-    if (!new_data) {
-        decode_abort(ctx, "out of memory (grow_buf realloc to %zu bytes)", new_cap);
-    }
-    g->data = new_data;
+    g->data = dctx_realloc(ctx, g->data, new_cap);
     g->cap = new_cap;
 }
 
@@ -98,10 +94,8 @@ void grow_init(grow_buf_t *g, size_t initial_cap, decode_ctx_t *ctx) {
     if (initial_cap == 0) {
         initial_cap = GROW_DEFAULT_CAP;
     }
-    g->data = malloc(initial_cap);
-    if (!g->data) {
-        decode_abort(ctx, "out of memory (grow_buf init %zu bytes)", initial_cap);
-    }
+    g->ctx = ctx;
+    g->data = dctx_malloc(ctx, initial_cap);
     g->len = 0;
     g->cap = initial_cap;
 }
@@ -122,15 +116,17 @@ void grow_push(grow_buf_t *g, uint8_t byte, decode_ctx_t *ctx) {
     g->data[g->len++] = byte;
 }
 
-// Hand ownership of the buffer data to an owned peel_buf_t, then zero g.
+// Turn the buffer into a peel_buf_t, then zero g.  The data stays registered
+// with the decode context until the decoder releases it on success.
 peel_buf_t grow_finish(grow_buf_t *g) {
-    // Shrink to exact size to avoid wasting memory
+    // Shrink to exact size to avoid wasting memory.  A plain realloc: a shrink
+    // that fails keeps the oversized, still-valid buffer, and must not abort.
     if (g->len < g->cap && g->len > 0) {
         uint8_t *shrunk = realloc(g->data, g->len);
         if (shrunk) {
+            dctx_rebind(g->ctx, g->data, shrunk); // the block may have moved
             g->data = shrunk;
         }
-        // If realloc fails, keep the oversized buffer — still valid
     }
     peel_buf_t result = {
         .data = g->data,
@@ -144,6 +140,9 @@ peel_buf_t grow_finish(grow_buf_t *g) {
 
 // Release a growable buffer without producing a result (error cleanup).
 void grow_free(grow_buf_t *g) {
-    free(g->data);
+    if (g->ctx)
+        dctx_free(g->ctx, g->data);
+    else
+        free(g->data);
     memset(g, 0, sizeof(*g));
 }

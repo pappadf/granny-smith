@@ -71,10 +71,10 @@ $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJ) $(LDFLAGS) -o $@
 
-# Leak detection is off until the decoders stop leaking on abort (09 A2, F-10..F-12):
-# every abort path through sit15/sit3/hqx leaks today, and LeakSanitizer is
-# the test that says so.  A2 turns it on.
-DETECT_LEAKS ?= 0
+# Leak detection is on: every decoder's allocations are owned by its decode
+# context and freed on abort (09 A2), and LeakSanitizer is how a new abort
+# path that leaks gets caught -- F-10, F-11 and F-12 were exactly that.
+DETECT_LEAKS ?= 1
 run: $(TARGET)
 	@ASAN_OPTIONS=detect_leaks=$(DETECT_LEAKS) $(EXEC_WRAPPER_BIN) $(TARGET)
 

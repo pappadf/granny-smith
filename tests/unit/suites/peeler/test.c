@@ -885,6 +885,103 @@ TEST(test_sit13_length_repeat_cannot_overrun) {
 }
 
 // ============================================================================
+// BinHex 4.0
+// ============================================================================
+
+// hqx.c's alphabet (hqx.md §4.1), repeated here: the test encodes with it.
+static const char hqx_alpha[] = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXYZ[`abcdefhijklmpqr";
+
+// A BinHex 4.0 text file (hqx.md §6): the binary stream -- header, data fork,
+// resource fork, each followed by its CRC-16/CCITT (peeler's own
+// crc16_ccitt) -- 6-bit encoded between colons after the preamble line.  No
+// byte of the fixtures is 0x90, so no RLE escaping is needed.  `bad_rsrc_crc`
+// corrupts only the resource fork's CRC.
+static char *make_hqx(const char *name, const char *data, const char *rsrc, bool bad_rsrc_crc) {
+    uint8_t bin[512];
+    size_t n = 0;
+    size_t nl = strlen(name), dl = strlen(data), rl = strlen(rsrc);
+    bin[n++] = (uint8_t)nl;
+    memcpy(bin + n, name, nl);
+    n += nl;
+    bin[n++] = 0;
+    memcpy(bin + n, "TEXTttxt", 8);
+    n += 8;
+    bin[n++] = 0;
+    bin[n++] = 0; // Finder flags
+    put32(bin + n, (uint32_t)dl);
+    n += 4;
+    put32(bin + n, (uint32_t)rl);
+    n += 4;
+    put16(bin + n, crc16_ccitt(bin, n));
+    n += 2;
+    memcpy(bin + n, data, dl);
+    put16(bin + n + dl, crc16_ccitt(bin + n, dl));
+    n += dl + 2;
+    memcpy(bin + n, rsrc, rl);
+    put16(bin + n + rl, (uint16_t)(crc16_ccitt(bin + n, rl) ^ (bad_rsrc_crc ? 0x5555 : 0)));
+    n += rl + 2;
+
+    char *txt = calloc(1024, 1);
+    ASSERT_TRUE(txt != NULL);
+    size_t t = (size_t)sprintf(txt, "(This file must be converted with BinHex 4.0)\r\n:");
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v =
+            (uint32_t)bin[i] << 16 | (uint32_t)(i + 1 < n ? bin[i + 1] : 0) << 8 | (i + 2 < n ? bin[i + 2] : 0);
+        size_t chars = i + 2 < n ? 4 : i + 1 < n ? 3 : 2; // a partial group ends early
+        for (size_t c = 0; c < chars; c++)
+            txt[t++] = hqx_alpha[(v >> (18 - 6 * c)) & 63];
+    }
+    txt[t++] = ':';
+    txt[t] = '\0';
+    return txt;
+}
+
+// The builder is right: both forks come back.
+TEST(test_hqx_round_trip) {
+    char *txt = make_hqx("Hi", "data!", "RSRC", false);
+    peel_err_t *err = NULL;
+    peel_file_t f = peel_hqx_file((const uint8_t *)txt, strlen(txt), &err);
+    if (err)
+        fprintf(stderr, "  hqx: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(5, (int)f.data_fork.size);
+    ASSERT_TRUE(memcmp(f.data_fork.data, "data!", 5) == 0);
+    ASSERT_EQ_INT(4, (int)f.resource_fork.size);
+    ASSERT_TRUE(memcmp(f.resource_fork.data, "RSRC", 4) == 0);
+    peel_free(&f.data_fork);
+    peel_free(&f.resource_fork);
+    free(txt);
+}
+
+// F-12: the data fork decodes and is complete, then the resource fork's CRC
+// is wrong.  The abort used to leak the finished data fork; under
+// LeakSanitizer that fails the suite.
+TEST(test_hqx_resource_fork_failure_frees_the_data_fork) {
+    char *txt = make_hqx("Hi", "data!", "RSRC", true);
+    peel_err_t *err = NULL;
+    peel_file_t f = peel_hqx_file((const uint8_t *)txt, strlen(txt), &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "resource fork CRC mismatch") != NULL);
+    ASSERT_TRUE(f.data_fork.data == NULL);
+    peel_err_free(err);
+    free(txt);
+}
+
+// sit3.c's entry point, declared (not in a header) where sit.c declares it.
+peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+
+// F-11: sit3 allocated its output, then aborted on a truncated tree -- one
+// set bit starts a leaf, whose 8-bit symbol is not there -- and leaked it.
+TEST(test_sit3_abort_frees_its_output) {
+    static const uint8_t one_byte[] = {0xFF};
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit3(one_byte, 1, 64, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(out.data == NULL);
+    peel_err_free(err);
+}
+
+// ============================================================================
 // Garbage in, error out
 // ============================================================================
 
@@ -929,6 +1026,9 @@ int main(void) {
     RUN(test_sit5_resource_fork_extent_is_checked);
     RUN(test_sit5_short_header_is_rejected);
     RUN(test_sit5_zero_length_skip_marker_cannot_loop);
+    RUN(test_hqx_round_trip);
+    RUN(test_hqx_resource_fork_failure_frees_the_data_fork);
+    RUN(test_sit3_abort_frees_its_output);
     RUN(test_peel_passes_unrecognised_input_through);
     fprintf(stderr, "All peeler tests passed\n");
     return 0;

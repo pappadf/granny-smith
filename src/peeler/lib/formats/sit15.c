@@ -592,11 +592,10 @@ static bool parse_header(arsenic_state *s)
     // Initial end-of-stream flag.
     s->eos = ac_decode_sym(s, &s->m_primary) != 0;
 
-    // Allocate block buffers.
-    s->blk_buf = malloc((size_t)s->blk_cap);
-    s->lf_map  = malloc((size_t)s->blk_cap * sizeof(uint32_t));
-    if (!s->blk_buf || !s->lf_map)
-        arsenic_abort(s, "sit15: out of memory allocating block buffers");
+    // Allocate block buffers, owned by the decode context until freed, so an
+    // abort anywhere after this frees them (09-storage F-10).
+    s->blk_buf = dctx_malloc(s->ctx, (size_t)s->blk_cap);
+    s->lf_map  = dctx_malloc(s->ctx, (size_t)s->blk_cap * sizeof(uint32_t));
 
     return true;
 }
@@ -605,8 +604,8 @@ static bool parse_header(arsenic_state *s)
 // sit15.md §11.2 "Memory Allocation" — releases blk_buf + lf_map.
 static void free_buffers(arsenic_state *s)
 {
-    free(s->blk_buf);
-    free(s->lf_map);
+    dctx_free(s->ctx, s->blk_buf);
+    dctx_free(s->ctx, s->lf_map);
     s->blk_buf = NULL;
     s->lf_map  = NULL;
 }
@@ -631,29 +630,23 @@ peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
         return (peel_buf_t){.data = NULL, .size = 0, .owned = false};
     }
 
-    // Allocate the output buffer up front (known size from container metadata)
-    uint8_t *out = malloc(uncomp_len);
-    if (!out) {
-        *err = make_err("sit15: out of memory allocating %zu-byte output buffer", uncomp_len);
-        return (peel_buf_t){0};
-    }
-
-    // Use setjmp/longjmp for deep-error abort during decompression
+    // Use setjmp/longjmp for deep-error abort during decompression.  Every
+    // allocation below is owned by dctx until released, so the handler frees
+    // them all -- the output, the decoder state and its ~80 MiB of block
+    // buffers used to leak on every abort (09-storage F-10) -- and reads no
+    // local assigned after setjmp.
     decode_ctx_t dctx;
+    dctx_init(&dctx);
     if (setjmp(dctx.jmp) != 0) {
-        // Arrived here via arsenic_abort — propagate the error message
-        free(out);
+        dctx_cleanup(&dctx);
         *err = make_err("%s", dctx.errmsg);
         return (peel_buf_t){0};
     }
 
-    // The decoder state is large, so heap-allocate to avoid stack overflow.
-    arsenic_state *s = calloc(1, sizeof *s);
-    if (!s) {
-        free(out);
-        *err = make_err("sit15: out of memory allocating decoder state");
-        return (peel_buf_t){0};
-    }
+    // Output up front (known size from container metadata); the decoder
+    // state is large, so it goes on the heap too.
+    uint8_t *out = dctx_malloc(&dctx, uncomp_len);
+    arsenic_state *s = dctx_calloc(&dctx, 1, sizeof *s);
 
     // Wire up the decode context for longjmp error handling
     s->ctx = &dctx;
@@ -668,9 +661,9 @@ peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
     for (size_t i = 0; i < uncomp_len; i++)
         out[i] = produce_byte(s);
 
-    // Clean up decoder state
+    // Clean up decoder state; the output is the caller's now.
     free_buffers(s);
-    free(s);
+    dctx_free(&dctx, s);
 
-    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
+    return (peel_buf_t){.data = dctx_release(&dctx, out), .size = uncomp_len, .owned = true};
 }

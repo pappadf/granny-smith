@@ -31,11 +31,53 @@ peel_err_t *make_err(const char *fmt, ...)
 // setjmp/longjmp Abort Context — architecture.md § "setjmp/longjmp"
 // ============================================================================
 
-// Jump-target context for deep-error abort in decompressors.
+// Jump-target context for deep-error abort in decompressors -- and the owner
+// of everything a decoder allocates while it is armed.
+//
+// A decoder allocates through dctx_* and registers each block here.  On
+// success it releases what it returns (dctx_release) and frees the rest; the
+// abort handler calls dctx_cleanup, which frees whatever is still registered.
+// So an abort can never leak, however deep it fires or whatever was in
+// flight -- which every decoder that longjmp'd used to (09-storage F-10,
+// F-11, F-12: sit15 its decoder state and ~80 MiB of block buffers, sit3 its
+// output, hqx a finished data fork when the resource fork failed).
+//
+// It also removes a setjmp trap: a local assigned after setjmp has an
+// indeterminate value after longjmp unless it is volatile, so a handler that
+// frees `s` or `out` directly may free garbage.  The handler here reads only
+// the context, whose address has escaped into every callee.
+#define DCTX_MAX_OWNED 16
+
 typedef struct {
     jmp_buf jmp;
     char errmsg[256];
+    void *owned[DCTX_MAX_OWNED];
+    int n_owned;
 } decode_ctx_t;
+
+// Arm a context: no owned blocks.  Call before setjmp.
+void dctx_init(decode_ctx_t *ctx);
+
+// Allocate and register.  Abort through ctx on failure (so never NULL).
+void *dctx_malloc(decode_ctx_t *ctx, size_t size);
+void *dctx_calloc(decode_ctx_t *ctx, size_t n, size_t size);
+
+// Resize a registered block, keeping it registered.  Abort on failure.
+void *dctx_realloc(decode_ctx_t *ctx, void *p, size_t size);
+
+// A registered block was reallocated behind the context's back (a shrink
+// that must not abort on failure): follow it from `old` to `now`.
+void dctx_rebind(decode_ctx_t *ctx, void *old, void *now);
+
+// Free a registered block now.  NULL is a no-op.
+void dctx_free(decode_ctx_t *ctx, void *p);
+
+// Hand a registered block to the caller: it is no longer the context's to
+// free.  Returns p.  NULL is a no-op.
+void *dctx_release(decode_ctx_t *ctx, void *p);
+
+// Free every block still registered.  The abort handler's one job.
+void dctx_cleanup(decode_ctx_t *ctx);
 
 // Format a message into ctx->errmsg and longjmp back to the setjmp site.
 void decode_abort(decode_ctx_t *ctx, const char *fmt, ...)
@@ -104,10 +146,14 @@ uint16_t crc16_ccitt_update(uint16_t crc, const uint8_t *data, size_t len);
 // ============================================================================
 
 // A dynamically growing output buffer for building results incrementally.
+// Its storage is registered with the decode context it was created against,
+// so an abort frees it; grow_finish leaves it registered, and the decoder
+// releases it (dctx_release) once the whole decode has succeeded.
 typedef struct {
-    uint8_t *data; // Heap-allocated storage
+    uint8_t *data; // Heap-allocated storage, owned by ctx
     size_t len; // Number of valid bytes written
     size_t cap; // Allocated capacity in bytes
+    decode_ctx_t *ctx;
 } grow_buf_t;
 
 // Initialise a growable buffer with the given initial capacity.
@@ -120,7 +166,8 @@ void grow_append(grow_buf_t *g, const uint8_t *src, size_t n, decode_ctx_t *ctx)
 // Append a single byte.
 void grow_push(grow_buf_t *g, uint8_t byte, decode_ctx_t *ctx);
 
-// Finalise the growable buffer into an owned peel_buf_t.  Zeroes g.
+// Finalise the growable buffer into a peel_buf_t.  Zeroes g.  The data is
+// still owned by the context: release it when the decode has succeeded.
 peel_buf_t grow_finish(grow_buf_t *g);
 
 // Release a growable buffer without producing a peel_buf_t (for error paths).

@@ -156,8 +156,12 @@ peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len,
                      peel_err_t **err) {
     *err = NULL;
 
+    // The output is owned by ctx until released, so an abort frees it -- it
+    // used to leak on every decode error (09-storage F-11).
     decode_ctx_t ctx;
+    dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {
+        dctx_cleanup(&ctx);
         *err = make_err("%s", ctx.errmsg);
         return (peel_buf_t){0};
     }
@@ -173,12 +177,7 @@ peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len,
                            "uncomp_len=%zu", uncomp_len);
     }
 
-    uint8_t *out = malloc(uncomp_len);
-    if (!out) {
-        *err = make_err("SIT3: out of memory allocating %zu bytes for fork",
-                        uncomp_len);
-        return (peel_buf_t){0};
-    }
+    uint8_t *out = dctx_malloc(&ctx, uncomp_len);
 
     m3_bits_t bits = {.src = src, .len = len, .byte_pos = 0, .bit_pos = 0,
                       .ctx = &ctx};
@@ -187,5 +186,5 @@ peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len,
     int root = m3_read_node(&bits, &tree);
     m3_decode(&bits, &tree, root, out, uncomp_len);
 
-    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
+    return (peel_buf_t){.data = dctx_release(&ctx, out), .size = uncomp_len, .owned = true};
 }

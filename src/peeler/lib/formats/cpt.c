@@ -907,15 +907,14 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
         return (peel_file_list_t){0};
     }
 
-    // Use setjmp/longjmp for deep-error abort in decompressors
+    // Use setjmp/longjmp for deep-error abort in decompressors.  Every fork
+    // decoded so far -- and the one in flight, which used to leak -- is owned
+    // by ctx until the whole archive has decoded, so the handler frees them
+    // all with one call and must not free them again through `files`.
     decode_ctx_t ctx;
-    memset(&ctx, 0, sizeof(ctx));
+    dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {
-        // Decompression failure — clean up and report
-        for (int j = 0; j < file_count; j++) {
-            peel_free(&files[j].data_fork);
-            peel_free(&files[j].resource_fork);
-        }
+        dctx_cleanup(&ctx);
         free(files);
         free(ar.entries);
         *err = make_err("CPT: %s", ctx.errmsg);
@@ -976,6 +975,11 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
         fi++;
     }
 
+    // Every fork decoded: they are the caller's now.
+    for (int j = 0; j < file_count; j++) {
+        dctx_release(&ctx, files[j].data_fork.data);
+        dctx_release(&ctx, files[j].resource_fork.data);
+    }
     free(ar.entries);
     return (peel_file_list_t){.files = files, .count = file_count};
 }

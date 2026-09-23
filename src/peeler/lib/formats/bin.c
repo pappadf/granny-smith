@@ -190,14 +190,14 @@ static peel_file_t bin_decode(const uint8_t *src, size_t len,
         decode_abort(ctx, "MacBinary: data fork truncated");
     }
 
+    // Forks are owned by ctx until the caller has the whole file, so an abort
+    // below frees whatever was copied -- no hand-written cleanup per path.
     peel_buf_t data_fork = {0};
     if (hdr.data_len > 0) {
-        peel_err_t *copy_err = NULL;
-        data_fork = peel_buf_copy(src + pos, hdr.data_len, &copy_err);
-        if (copy_err) {
-            peel_err_free(copy_err);
-            decode_abort(ctx, "MacBinary: out of memory for data fork");
-        }
+        data_fork.data = dctx_malloc(ctx, hdr.data_len);
+        memcpy(data_fork.data, src + pos, hdr.data_len);
+        data_fork.size = hdr.data_len;
+        data_fork.owned = true;
     }
 
     // bin.md § 10.1 — skip data fork + padding to reach resource fork
@@ -205,19 +205,15 @@ static peel_file_t bin_decode(const uint8_t *src, size_t len,
 
     // bin.md § 14.1 step 5 — read the resource fork
     if (pos + hdr.rsrc_len > len) {
-        peel_free(&data_fork);
         decode_abort(ctx, "MacBinary: resource fork truncated");
     }
 
     peel_buf_t rsrc_fork = {0};
     if (hdr.rsrc_len > 0) {
-        peel_err_t *copy_err = NULL;
-        rsrc_fork = peel_buf_copy(src + pos, hdr.rsrc_len, &copy_err);
-        if (copy_err) {
-            peel_err_free(copy_err);
-            peel_free(&data_fork);
-            decode_abort(ctx, "MacBinary: out of memory for resource fork");
-        }
+        rsrc_fork.data = dctx_malloc(ctx, hdr.rsrc_len);
+        memcpy(rsrc_fork.data, src + pos, hdr.rsrc_len);
+        rsrc_fork.size = hdr.rsrc_len;
+        rsrc_fork.owned = true;
     }
 
     // Assemble the result file
@@ -269,12 +265,16 @@ peel_buf_t peel_bin(const uint8_t *src, size_t len, peel_err_t **err) {
 
     // Use setjmp/longjmp for deep-error abort throughout the decode pipeline
     decode_ctx_t ctx;
+    dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {
+        dctx_cleanup(&ctx);
         *err = make_err("%s", ctx.errmsg);
         return (peel_buf_t){0};
     }
 
     peel_file_t file = bin_decode(src, len, &ctx);
+    dctx_release(&ctx, file.data_fork.data);
+    dctx_release(&ctx, file.resource_fork.data);
 
     // bin.md § 10.3 — apply fork selection heuristic
     peel_buf_t result;
@@ -299,10 +299,15 @@ peel_file_t peel_bin_file(const uint8_t *src, size_t len, peel_err_t **err) {
     *err = NULL;
 
     decode_ctx_t ctx;
+    dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {
+        dctx_cleanup(&ctx);
         *err = make_err("%s", ctx.errmsg);
         return (peel_file_t){0};
     }
 
-    return bin_decode(src, len, &ctx);
+    peel_file_t file = bin_decode(src, len, &ctx);
+    dctx_release(&ctx, file.data_fork.data);
+    dctx_release(&ctx, file.resource_fork.data);
+    return file;
 }

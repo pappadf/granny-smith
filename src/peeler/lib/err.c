@@ -43,6 +43,94 @@ void decode_abort(decode_ctx_t *ctx, const char *fmt, ...) {
 }
 
 // ============================================================================
+// Decode-context allocation ownership (see decode_ctx_t in internal.h)
+// ============================================================================
+
+void dctx_init(decode_ctx_t *ctx) {
+    ctx->n_owned = 0;
+    ctx->errmsg[0] = '\0';
+}
+
+static void dctx_register(decode_ctx_t *ctx, void *p) {
+    if (ctx->n_owned >= DCTX_MAX_OWNED) {
+        free(p);
+        decode_abort(ctx, "internal: more than %d live decoder allocations", DCTX_MAX_OWNED);
+    }
+    ctx->owned[ctx->n_owned++] = p;
+}
+
+static int dctx_find(const decode_ctx_t *ctx, const void *p) {
+    for (int i = 0; i < ctx->n_owned; i++)
+        if (ctx->owned[i] == p)
+            return i;
+    return -1;
+}
+
+static void dctx_forget(decode_ctx_t *ctx, int i) {
+    ctx->owned[i] = ctx->owned[--ctx->n_owned];
+}
+
+void *dctx_malloc(decode_ctx_t *ctx, size_t size) {
+    void *p = malloc(size ? size : 1);
+    if (!p)
+        decode_abort(ctx, "out of memory allocating %zu bytes", size);
+    dctx_register(ctx, p);
+    return p;
+}
+
+void *dctx_calloc(decode_ctx_t *ctx, size_t n, size_t size) {
+    void *p = calloc(n ? n : 1, size ? size : 1);
+    if (!p)
+        decode_abort(ctx, "out of memory allocating %zu x %zu bytes", n, size);
+    dctx_register(ctx, p);
+    return p;
+}
+
+void *dctx_realloc(decode_ctx_t *ctx, void *p, size_t size) {
+    int i = p ? dctx_find(ctx, p) : -1;
+    void *q = realloc(p, size ? size : 1);
+    if (!q)
+        decode_abort(ctx, "out of memory reallocating to %zu bytes", size); // p still registered
+    if (i >= 0)
+        ctx->owned[i] = q;
+    else
+        dctx_register(ctx, q);
+    return q;
+}
+
+void dctx_rebind(decode_ctx_t *ctx, void *old, void *now) {
+    int i = dctx_find(ctx, old);
+    if (i >= 0)
+        ctx->owned[i] = now;
+    else
+        dctx_register(ctx, now);
+}
+
+void dctx_free(decode_ctx_t *ctx, void *p) {
+    if (!p)
+        return;
+    int i = dctx_find(ctx, p);
+    if (i >= 0)
+        dctx_forget(ctx, i);
+    free(p);
+}
+
+void *dctx_release(decode_ctx_t *ctx, void *p) {
+    if (p) {
+        int i = dctx_find(ctx, p);
+        if (i >= 0)
+            dctx_forget(ctx, i);
+    }
+    return p;
+}
+
+void dctx_cleanup(decode_ctx_t *ctx) {
+    for (int i = 0; i < ctx->n_owned; i++)
+        free(ctx->owned[i]);
+    ctx->n_owned = 0;
+}
+
+// ============================================================================
 // Operations (Public API)
 // ============================================================================
 
