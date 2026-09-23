@@ -18,13 +18,25 @@
 
 // --- the SCC ------------------------------------------------------------------
 
-// Only its address is ever used: the stack hands it back to the three SCC
-// functions below.
-static int g_fake_scc_storage;
-#define FAKE_SCC ((scc_t *)(void *)&g_fake_scc_storage)
+// Only their addresses are ever used: the stack hands one back to the SCC
+// functions below.  Two, because a checkpoint load builds a second machine
+// while the first is still running (link_load).
+static int g_fake_scc_storage[2];
+#define FAKE_SCC_N(i) ((scc_t *)(void *)&g_fake_scc_storage[(i)])
+#define FAKE_SCC      FAKE_SCC_N(0)
 
-static scc_frame_fn g_sink;
-static void *g_sink_ctx;
+static scc_frame_fn g_sinks[2];
+static void *g_sink_ctxs[2];
+static int g_machine; // the SCC the guest's frames arrive on
+
+static int scc_index(const scc_t *scc) {
+    if (scc == FAKE_SCC_N(0))
+        return 0;
+    ASSERT_TRUE(scc == FAKE_SCC_N(1));
+    return 1;
+}
+#define g_sink     g_sinks[g_machine]
+#define g_sink_ctx g_sink_ctxs[g_machine]
 
 #define WIRE_MAX 512
 typedef struct {
@@ -36,13 +48,13 @@ static int g_nwire;
 static int g_pending_cts = -1; // node whose RTS awaits the guest's CTS
 
 void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context) {
-    ASSERT_TRUE(scc == FAKE_SCC);
-    g_sink = fn;
-    g_sink_ctx = fn ? context : NULL;
+    int i = scc_index(scc);
+    g_sinks[i] = fn;
+    g_sink_ctxs[i] = fn ? context : NULL;
 }
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {
-    ASSERT_TRUE(scc == FAKE_SCC);
+    ASSERT_TRUE(scc_index(scc) == g_machine);
     if (len == 3 && buf[2] == LLAP_TYPE_RTS)
         g_pending_cts = buf[0];
     if (g_nwire < WIRE_MAX && len <= sizeof g_wire[0].b) {
@@ -176,23 +188,80 @@ static void run_until(double t) {
 
 // --- the checkpoint stream -------------------------------------------------------
 //
-// No test restores a checkpoint yet; appletalk_init is always called without
-// one.  The functions exist because appletalk.c links against them.
+// A byte stream: appletalk_checkpoint appends, appletalk_init reads back in
+// order.  A "failed" stream hands the saved bytes back AND reports the
+// checkpoint in error -- the reader's contract says nothing read from it may
+// be applied, and this is how a test can tell whether it was.
+
+static int g_cp_storage;
+#define FAKE_CP ((checkpoint_t *)(void *)&g_cp_storage)
+static uint8_t g_cp_buf[1 << 16];
+static size_t g_cp_len, g_cp_pos;
+static bool g_cp_fail, g_cp_error;
 
 void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
                                      int line) {
-    (void)cp, (void)data, (void)size, (void)tag, (void)file, (void)line;
-    ASSERT_TRUE(!"no test reads a checkpoint");
+    (void)tag, (void)file, (void)line;
+    ASSERT_TRUE(cp == FAKE_CP);
+    if (g_cp_pos + size > g_cp_len) {
+        g_cp_error = true;
+        memset(data, 0, size);
+        return;
+    }
+    memcpy(data, g_cp_buf + g_cp_pos, size);
+    g_cp_pos += size;
+    if (g_cp_fail)
+        g_cp_error = true;
 }
 
 void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
                                       const char *file, int line) {
-    (void)cp, (void)data, (void)size, (void)tag, (void)file, (void)line;
+    (void)tag, (void)file, (void)line;
+    ASSERT_TRUE(cp == FAKE_CP);
+    ASSERT_TRUE(g_cp_len + size <= sizeof g_cp_buf);
+    memcpy(g_cp_buf + g_cp_len, data, size);
+    g_cp_len += size;
+}
+
+bool checkpoint_has_error(checkpoint_t *cp) {
+    (void)cp;
+    return g_cp_error;
+}
+
+void checkpoint_set_error(checkpoint_t *cp) {
+    (void)cp;
+    g_cp_error = true;
+}
+
+// checkpoint.c's string pair, over the stream above.
+void checkpoint_write_string(checkpoint_t *cp, const char *s) {
+    uint32_t len = (s && *s) ? (uint32_t)strlen(s) + 1 : 0;
+    system_write_checkpoint_data_loc(cp, &len, sizeof(len), NULL, NULL, 0);
+    if (len)
+        system_write_checkpoint_data_loc(cp, s, len, NULL, NULL, 0);
+}
+
+char *checkpoint_read_string(checkpoint_t *cp, uint32_t max, const char *what) {
+    (void)what;
+    uint32_t len = 0;
+    system_read_checkpoint_data_loc(cp, &len, sizeof(len), NULL, NULL, 0);
+    if (g_cp_error || len == 0)
+        return NULL;
+    if (len > max) {
+        g_cp_error = true;
+        return NULL;
+    }
+    char *buf = malloc((size_t)len + 1);
+    ASSERT_TRUE(buf != NULL);
+    system_read_checkpoint_data_loc(cp, buf, len, NULL, NULL, 0);
+    buf[len] = '\0';
+    return buf;
 }
 
 // --- harness API ---------------------------------------------------------------
 
 void link_boot(void) {
+    g_machine = 0;
     memset(g_ev, 0, sizeof g_ev);
     memset(g_reg, 0, sizeof g_reg);
     g_nreg = 0;
@@ -201,10 +270,50 @@ void link_boot(void) {
     appletalk_init(&g_sched, FAKE_SCC, NULL);
 }
 
+void link_checkpoint(void) {
+    g_cp_len = 0;
+    appletalk_checkpoint(FAKE_CP);
+    ASSERT_TRUE(g_cp_len > 0);
+}
+
+void link_boot_from_checkpoint(bool read_fails) {
+    g_machine = 0;
+    memset(g_ev, 0, sizeof g_ev);
+    memset(g_reg, 0, sizeof g_reg);
+    g_nreg = 0;
+    g_now_ns = 0;
+    wire_clear();
+    g_cp_fail = read_fails;
+    g_cp_error = false;
+    g_cp_pos = 0;
+    appletalk_init(&g_sched, FAKE_SCC, FAKE_CP);
+}
+
 void link_delete(void) {
-    appletalk_delete();
-    ASSERT_TRUE(g_sink == NULL);
+    appletalk_delete(FAKE_SCC_N(g_machine));
+    ASSERT_TRUE(g_sinks[0] == NULL && g_sinks[1] == NULL);
     ASSERT_EQ_INT(0, sched_pending());
+}
+
+void link_load(bool fails) {
+    int prev = g_machine, next = 1 - g_machine;
+    g_cp_fail = false; // the stack's own record reads fine...
+    g_cp_error = false;
+    g_cp_pos = 0;
+    appletalk_init(&g_sched, FAKE_SCC_N(next), FAKE_CP);
+    if (fails) {
+        // ...but something later in the checkpoint does not, and the load
+        // destroys the machine it was building; the old one keeps running.
+        appletalk_delete(FAKE_SCC_N(next));
+        g_machine = prev;
+    } else {
+        appletalk_delete(FAKE_SCC_N(prev));
+        g_machine = next;
+    }
+}
+
+bool link_sink_on(int machine) {
+    return g_sinks[machine] != NULL;
 }
 
 void guest_frame(const uint8_t *frame, size_t len) {

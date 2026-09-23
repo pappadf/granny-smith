@@ -205,6 +205,110 @@ TEST(detaching_the_stack_stops_its_transmitter) {
     link_delete();
 }
 
+// The stack's checkpoint record round-trips: what was saved is applied.
+TEST(the_checkpoint_record_is_restored) {
+    link_boot();
+    atalk_set_enabled(false);
+    link_checkpoint();
+    link_delete();
+    g_aevt_set_calls = 0;
+    link_boot_from_checkpoint(false);
+    ASSERT_TRUE(!atalk_get_enabled());
+    ASSERT_EQ_INT(1, g_aevt_set_calls);
+    link_delete();
+}
+
+// A record read from a checkpoint in error is not applied.  The stack is
+// process-wide: a restore that fails keeps the running machine, and whatever
+// this stack applied on the way stays with it -- the old restore tested only
+// the magic word, in a local the reader had not written, and then copied the
+// Apple event strings out of it (10-network F-10).
+TEST(a_record_from_a_failed_checkpoint_is_not_applied) {
+    link_boot();
+    atalk_set_enabled(false);
+    link_checkpoint();
+    link_delete();
+    g_aevt_set_calls = 0;
+    link_boot_from_checkpoint(true);
+    ASSERT_TRUE(atalk_get_enabled()); // the default, not the record's
+    ASSERT_EQ_INT(0, g_aevt_set_calls);
+    link_delete();
+}
+
+// The configuration a user or script set travels in the checkpoint and comes
+// back on restore: shares with their volume ids, server identity, printer
+// settings.  A load used to drop every AFP volume while the restored guest
+// still had one mounted -- its next call got ParamErr -- and the server name
+// survived only because it was a process static nobody reset (10-network N-07,
+// decision D-3).
+TEST(configuration_survives_a_checkpoint) {
+    link_boot();
+    char err[128];
+    ASSERT_TRUE(atalk_afp_volume_add("Share A", "/share/a", err, sizeof err) >= 0);
+    ASSERT_TRUE(atalk_afp_volume_add("Share B", "/share/b", err, sizeof err) >= 0);
+    int slot_b = atalk_afp_volume_find("Share B");
+    unsigned id_b = atalk_afp_volume_vol_id(slot_b);
+    ASSERT_EQ_INT(0, atalk_afp_set_name("Renamed Server", err, sizeof err));
+    atalk_printer_capture_set(true);
+    link_checkpoint();
+    link_delete(); // empties the volume table, as a machine teardown does
+    ASSERT_EQ_INT(-1, atalk_afp_volume_find("Share B"));
+    atalk_afp_set_name("Something Else", err, sizeof err);
+    atalk_printer_capture_set(false);
+
+    link_boot_from_checkpoint(false);
+    slot_b = atalk_afp_volume_find("Share B");
+    ASSERT_TRUE(slot_b >= 0);
+    ASSERT_EQ_INT((int)id_b, (int)atalk_afp_volume_vol_id(slot_b)); // the guest's cached id still names it
+    ASSERT_TRUE(atalk_afp_volume_find("Share A") >= 0);
+    ASSERT_TRUE(strcmp(atalk_afp_get_name(), "Renamed Server") == 0);
+    ASSERT_TRUE(atalk_printer_capture_get());
+    link_delete();
+    atalk_printer_capture_set(false);
+}
+
+// A checkpoint load that fails after the new machine's stack came up: the
+// stack was left bound to the new machine's SCC and scheduler, which the load
+// then freed -- the next frame read freed memory (10-network N-06, found
+// under Valgrind).  Now the stack is rebuilt for the machine that keeps
+// running, with that machine's shares, not the checkpoint's.
+TEST(a_failed_load_gives_the_stack_back_to_the_running_machine) {
+    link_boot();
+    char err[128];
+    ASSERT_TRUE(atalk_afp_volume_add("Live Share", "/live", err, sizeof err) >= 0);
+    link_checkpoint(); // a record with "Live Share" in it...
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Live Share", err, sizeof err));
+    ASSERT_TRUE(atalk_afp_volume_add("Other Share", "/other", err, sizeof err) >= 0);
+    // ...but the running machine now publishes "Other Share".
+
+    link_load(true);
+    ASSERT_TRUE(link_sink_on(0));
+    ASSERT_TRUE(!link_sink_on(1));
+    ASSERT_TRUE(atalk_afp_volume_find("Other Share") >= 0);
+    ASSERT_EQ_INT(-1, atalk_afp_volume_find("Live Share"));
+    // ...and it answers the guest on the machine that is still there.
+    wire_clear();
+    uint8_t enq[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_ENQ};
+    guest_frame(enq, sizeof enq);
+    ASSERT_EQ_INT(1, wire_count_type(GUEST_NODE, LLAP_TYPE_ACK));
+    link_delete();
+}
+
+// ...and a load that succeeds leaves the stack with the new machine: the old
+// machine's delete does not dismantle it, and the record's shares are what
+// the new machine publishes.
+TEST(a_successful_load_moves_the_stack_to_the_new_machine) {
+    link_boot();
+    char err[128];
+    ASSERT_TRUE(atalk_afp_volume_add("Saved Share", "/saved", err, sizeof err) >= 0);
+    link_checkpoint();
+    link_load(false);
+    ASSERT_TRUE(link_sink_on(1));
+    ASSERT_TRUE(!link_sink_on(0));
+    ASSERT_TRUE(atalk_afp_volume_find("Saved Share") >= 0);
+    link_delete();
+}
+
 int main(void) {
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
     RUN(enq_for_our_node_is_acked_and_others_are_not);
@@ -212,6 +316,11 @@ int main(void) {
     RUN(every_transport_timer_is_registered_at_init);
     RUN(a_rebuilt_stack_serves_a_write_the_old_one_left_pending);
     RUN(detaching_the_stack_stops_its_transmitter);
+    RUN(the_checkpoint_record_is_restored);
+    RUN(a_record_from_a_failed_checkpoint_is_not_applied);
+    RUN(configuration_survives_a_checkpoint);
+    RUN(a_failed_load_gives_the_stack_back_to_the_running_machine);
+    RUN(a_successful_load_moves_the_stack_to_the_new_machine);
     printf("[PASS] All atalk_link tests passed\n");
     return 0;
 }

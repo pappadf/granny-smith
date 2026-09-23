@@ -26,6 +26,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,14 +150,42 @@ typedef struct {
     bool enabled;
     uint16_t next_sess_ref;
     atalk_stats_t stats;
-    // Durable Apple event configuration (ppc_appleevents.md §7): the sessions
-    // and the events collection are volatile and are not carried across.
-    atalk_aevt_config_t aevt;
 } atalk_persist_t;
 
-// Set when appletalk_init found a previous machine's stack still installed
-// and took it down itself; see appletalk_delete.
-static bool g_atalk_superseded;
+// The stack's configuration: what a user or a script set, as opposed to what
+// the guest is doing.  One record, used three ways -- written to a checkpoint
+// and applied from one (10-network D-3: a restored machine finds its shares,
+// server identity and printer as they were), and captured before a checkpoint
+// load replaces the stack so a load that fails can put it back (N-06).
+// Sessions, forks and print jobs are not configuration and are not here.
+#define ATALK_CONFIG_MAX_VOLUMES 8
+typedef struct {
+    char afp_name[33];
+    bool afp_enabled;
+    char afp_message[200];
+    bool printer_enabled;
+    char printer_name[33];
+    bool printer_capture;
+    atalk_aevt_config_t aevt;
+    int n_volumes;
+    struct {
+        char name[33];
+        char path[PATH_MAX];
+        unsigned vol_id;
+    } volumes[ATALK_CONFIG_MAX_VOLUMES];
+} atalk_config_t;
+
+// A checkpoint load builds the new machine before destroying the running one,
+// so appletalk_init can find the stack still bound to that machine.  It takes
+// it down and keeps what it needs to put it back here, until one of the two
+// machines is destroyed (appletalk_delete): the old one -- the load
+// succeeded, drop this -- or the new one -- the load failed, so rebuild the
+// stack for the machine that keeps running (10-network N-06).
+static struct {
+    scc_t *scc;
+    scheduler_t *scheduler;
+    atalk_config_t *config;
+} g_superseded;
 
 static void appletalk_teardown(void);
 
@@ -625,16 +654,141 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 // ============================================================================
 
 // ASP session sweep (defined below): registered eagerly in appletalk_init.
+// === Configuration record (atalk_config_t) ====================================
+
+static void cfg_copy(char *dst, size_t cap, const char *src) {
+    snprintf(dst, cap, "%s", src ? src : "");
+}
+
+// Capture the running stack's configuration.
+static void atalk_config_capture(atalk_config_t *c) {
+    memset(c, 0, sizeof(*c));
+    cfg_copy(c->afp_name, sizeof(c->afp_name), atalk_afp_get_name());
+    c->afp_enabled = atalk_afp_get_enabled();
+    cfg_copy(c->afp_message, sizeof(c->afp_message), atalk_afp_get_message());
+    c->printer_enabled = atalk_printer_is_enabled();
+    cfg_copy(c->printer_name, sizeof(c->printer_name), atalk_printer_object_name());
+    c->printer_capture = atalk_printer_capture_get();
+    atalk_aevt_get_config(&c->aevt);
+    for (int slot = 0; slot < atalk_afp_volume_max() && c->n_volumes < ATALK_CONFIG_MAX_VOLUMES; slot++) {
+        if (!atalk_afp_volume_in_use(slot))
+            continue;
+        cfg_copy(c->volumes[c->n_volumes].name, sizeof(c->volumes[0].name), atalk_afp_volume_name(slot));
+        cfg_copy(c->volumes[c->n_volumes].path, sizeof(c->volumes[0].path), atalk_afp_volume_path(slot));
+        c->volumes[c->n_volumes].vol_id = atalk_afp_volume_vol_id(slot);
+        c->n_volumes++;
+    }
+}
+
+// Apply a configuration to the stack that has just come up.  Each setting
+// goes through the same call the object model makes, so it is validated the
+// same way; one that is refused -- a share whose folder is gone -- is logged
+// and skipped, never an error: the machine comes up either way.
+static void atalk_config_apply(const atalk_config_t *c) {
+    char err[192];
+    if (atalk_afp_set_name(c->afp_name, err, sizeof(err)) != 0)
+        LOG(1, "atalk: server name not restored: %s", err);
+    if (atalk_afp_set_message(c->afp_message, err, sizeof(err)) != 0)
+        LOG(1, "atalk: server message not restored: %s", err);
+    if (atalk_afp_set_enabled(c->afp_enabled, err, sizeof(err)) != 0)
+        LOG(1, "atalk: file server state not restored: %s", err);
+    if (atalk_printer_set_name(c->printer_name, err, sizeof(err)) != 0)
+        LOG(1, "atalk: printer name not restored: %s", err);
+    if (atalk_printer_set_enabled(c->printer_enabled, err, sizeof(err)) != 0)
+        LOG(1, "atalk: printer state not restored: %s", err);
+    atalk_printer_capture_set(c->printer_capture);
+    atalk_aevt_set_config(&c->aevt);
+    for (int i = 0; i < c->n_volumes; i++) {
+        if (atalk_afp_volume_restore(c->volumes[i].name, c->volumes[i].path, c->volumes[i].vol_id, err, sizeof(err)) <
+            0)
+            LOG(1, "atalk: share '%s' not restored: %s", c->volumes[i].name, err);
+    }
+}
+
+static void cfg_write_bool(checkpoint_t *cp, bool b) {
+    uint8_t v = b ? 1 : 0;
+    system_write_checkpoint_data(cp, &v, sizeof(v));
+}
+
+static bool cfg_read_bool(checkpoint_t *cp) {
+    uint8_t v = 0;
+    system_read_checkpoint_data(cp, &v, sizeof(v));
+    return v != 0;
+}
+
+// Strings travel with their length and are bounded and terminated on the way
+// back in (checkpoint_read_string): a checkpoint is a user-supplied file.
+static void cfg_read_string(checkpoint_t *cp, char *dst, size_t cap, const char *what) {
+    char *s = checkpoint_read_string(cp, (uint32_t)cap, what);
+    cfg_copy(dst, cap, s);
+    free(s);
+}
+
+static void atalk_config_write(checkpoint_t *cp, const atalk_config_t *c) {
+    checkpoint_write_string(cp, c->afp_name);
+    cfg_write_bool(cp, c->afp_enabled);
+    checkpoint_write_string(cp, c->afp_message);
+    cfg_write_bool(cp, c->printer_enabled);
+    checkpoint_write_string(cp, c->printer_name);
+    cfg_write_bool(cp, c->printer_capture);
+    cfg_write_bool(cp, c->aevt.enabled);
+    checkpoint_write_string(cp, c->aevt.port_name);
+    checkpoint_write_string(cp, c->aevt.auto_reply);
+    uint32_t n = (uint32_t)c->n_volumes;
+    system_write_checkpoint_data(cp, &n, sizeof(n), "appletalk.volumes");
+    for (int i = 0; i < c->n_volumes; i++) {
+        checkpoint_write_string(cp, c->volumes[i].name);
+        checkpoint_write_string(cp, c->volumes[i].path);
+        uint32_t id = c->volumes[i].vol_id;
+        system_write_checkpoint_data(cp, &id, sizeof(id));
+    }
+}
+
+// False (and the checkpoint in error) if the record could not be read.
+static bool atalk_config_read(checkpoint_t *cp, atalk_config_t *c) {
+    memset(c, 0, sizeof(*c));
+    cfg_read_string(cp, c->afp_name, sizeof(c->afp_name), "AFP server name");
+    c->afp_enabled = cfg_read_bool(cp);
+    cfg_read_string(cp, c->afp_message, sizeof(c->afp_message), "AFP server message");
+    c->printer_enabled = cfg_read_bool(cp);
+    cfg_read_string(cp, c->printer_name, sizeof(c->printer_name), "printer name");
+    c->printer_capture = cfg_read_bool(cp);
+    c->aevt.enabled = cfg_read_bool(cp);
+    cfg_read_string(cp, c->aevt.port_name, sizeof(c->aevt.port_name), "Apple event port name");
+    cfg_read_string(cp, c->aevt.auto_reply, sizeof(c->aevt.auto_reply), "Apple event auto-reply");
+    uint32_t n = 0;
+    system_read_checkpoint_data(cp, &n, sizeof(n), "appletalk.volumes");
+    if (n > ATALK_CONFIG_MAX_VOLUMES) {
+        LOG(0, "Error: checkpoint claims %u AFP volumes (cap %d)", n, ATALK_CONFIG_MAX_VOLUMES);
+        checkpoint_set_error(cp);
+        return false;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        cfg_read_string(cp, c->volumes[i].name, sizeof(c->volumes[i].name), "AFP volume name");
+        cfg_read_string(cp, c->volumes[i].path, sizeof(c->volumes[i].path), "AFP volume path");
+        uint32_t id = 0;
+        system_read_checkpoint_data(cp, &id, sizeof(id));
+        c->volumes[i].vol_id = id;
+    }
+    c->n_volumes = (int)n;
+    return !checkpoint_has_error(cp);
+}
+
 static atalk_timer_t g_asp_sweep_timer; // idle-session expiry, armed while any session is open
 static void asp_sweep_cb(void *source, uint64_t data);
 
 void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
     // A previous machine may still be installed (checkpoint restore builds the
     // new machine first).  Take it down now so this init starts from a clean
-    // tree, and remember that its own teardown must not run afterwards.
+    // tree, keeping its bindings and configuration in case the load fails.
     if (g_atalk_object) {
+        free(g_superseded.config);
+        g_superseded.scc = g_scc;
+        g_superseded.scheduler = g_scheduler;
+        g_superseded.config = malloc(sizeof(atalk_config_t));
+        if (g_superseded.config)
+            atalk_config_capture(g_superseded.config);
         appletalk_teardown();
-        g_atalk_superseded = true;
     }
     g_scc = scc; // Store SCC dependency for later use
     scc_set_frame_sink(scc, llap_receive, NULL);
@@ -668,17 +822,28 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     // bytes are on disk, but the client's refnums belong to a session that no
     // longer has a transport (WP-11).
     if (checkpoint) {
+        // The reader zero-fills on failure, and a checkpoint in error is not
+        // applied at all: this stack's state is process-wide, so a block
+        // applied during a load that then fails survives into the machine
+        // that keeps running (10-network F-10).
         atalk_persist_t saved;
-        system_read_checkpoint_data(checkpoint, &saved, sizeof(saved));
-        if (saved.magic == ATALK_PERSIST_MAGIC) {
-            g_atalk_enabled = saved.enabled;
+        system_read_checkpoint_data(checkpoint, &saved, sizeof(saved), "appletalk");
+        if (!checkpoint_has_error(checkpoint) && saved.magic == ATALK_PERSIST_MAGIC) {
+            // A bool read off disk may hold any byte; take it as a byte.
+            uint8_t enabled_byte;
+            memcpy(&enabled_byte, &saved.enabled, 1);
+            g_atalk_enabled = enabled_byte != 0;
             g_atalk_stats = saved.stats;
             asp_sessions_set_next_ref(saved.next_sess_ref);
-            // Only the durable Apple event configuration travels; the guest's
-            // end of every session is equally gone, so the tables start empty.
-            atalk_aevt_set_config(&saved.aevt);
             LOG(1, "appletalk_init: restored from checkpoint (stack %s)", g_atalk_enabled ? "enabled" : "disabled");
         }
+        // The configuration: shares (with their volume ids), server identity,
+        // printer, Apple event port.  The guest's end of every session is
+        // gone, so it reconnects -- to shares that are still there.
+        atalk_config_t *cfg = malloc(sizeof(*cfg));
+        if (cfg && atalk_config_read(checkpoint, cfg))
+            atalk_config_apply(cfg);
+        free(cfg);
         afp_reset_transient_state();
         atalk_aevt_reset_transient_state();
     }
@@ -762,8 +927,15 @@ void appletalk_checkpoint(checkpoint_t *checkpoint) {
     out.enabled = g_atalk_enabled;
     out.next_sess_ref = asp_sessions_next_ref();
     out.stats = g_atalk_stats;
-    atalk_aevt_get_config(&out.aevt);
-    system_write_checkpoint_data(checkpoint, &out, sizeof(out));
+    system_write_checkpoint_data(checkpoint, &out, sizeof(out), "appletalk");
+    atalk_config_t *cfg = malloc(sizeof(*cfg));
+    if (!cfg) {
+        checkpoint_set_error(checkpoint);
+        return;
+    }
+    atalk_config_capture(cfg);
+    atalk_config_write(checkpoint, cfg);
+    free(cfg);
 }
 
 // ============================================================================
@@ -837,21 +1009,42 @@ static void appletalk_teardown(void) {
     g_scc = NULL;
 }
 
-// Public teardown.
+// Public teardown, called for every machine that goes away with the SCC it
+// was built with.
 //
-// The checkpoint restore path builds the *new* machine before destroying the
-// old one (cmd_load_checkpoint), so appletalk_init can run while a previous
-// machine's stack is still installed.  When that happens init tears the old
-// one down itself and sets this flag, because the appletalk_delete that
-// follows belongs to that old machine: running it would dismantle the stack
-// the new machine just built — which is exactly what made `appletalk.adsp`,
-// `.ppc` and `.aevt` vanish after a restore.
-void appletalk_delete(void) {
-    if (g_atalk_superseded) {
-        g_atalk_superseded = false;
+// The stack is one per process but belongs to one machine: the one whose SCC
+// it is bound to.  A checkpoint load builds the new machine first, and its
+// appletalk_init takes the running machine's stack down (see g_superseded),
+// so the delete that follows for the OLD machine must leave the new stack
+// alone -- dismantling it is what once made `appletalk.adsp`, `.ppc` and
+// `.aevt` vanish after a restore.  And when the load FAILS, the new machine is
+// the one destroyed while the old one keeps running: the stack is bound to
+// the new machine's freed SCC and scheduler, so it goes, and is rebuilt for the
+// old machine from what init kept.  (It used to stay bound to the freed
+// machine: the next frame read the freed SCC -- N-06.)  The guest's sessions
+// do not survive that; its shares, names and printer do.
+void appletalk_delete(scc_t *scc) {
+    if (!scc || scc != g_scc) {
+        // Not the machine this stack serves: a Lisa, or the machine a
+        // successful checkpoint load replaced.
+        if (scc && scc == g_superseded.scc) {
+            free(g_superseded.config);
+            memset(&g_superseded, 0, sizeof(g_superseded));
+        }
         return;
     }
     appletalk_teardown();
+    if (g_superseded.scc) {
+        scc_t *prev_scc = g_superseded.scc;
+        scheduler_t *prev_sched = g_superseded.scheduler;
+        atalk_config_t *prev_cfg = g_superseded.config;
+        memset(&g_superseded, 0, sizeof(g_superseded));
+        LOG(1, "atalk: the checkpoint load failed; restoring the stack of the machine that keeps running");
+        appletalk_init(prev_sched, prev_scc, NULL);
+        if (prev_cfg)
+            atalk_config_apply(prev_cfg);
+        free(prev_cfg);
+    }
 }
 
 // === Stack-level object-model accessors ====================================

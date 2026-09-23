@@ -312,6 +312,13 @@ bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max
     return true;
 }
 
+void checkpoint_write_string(checkpoint_t *checkpoint, const char *s) {
+    uint32_t len = (s && *s) ? (uint32_t)strlen(s) + 1 : 0;
+    system_write_checkpoint_data(checkpoint, &len, sizeof(len));
+    if (len)
+        system_write_checkpoint_data(checkpoint, s, len);
+}
+
 char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char *what) {
     uint32_t len = 0;
     if (!checkpoint_read_count(checkpoint, &len, max, what))
@@ -339,8 +346,8 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
 // === Block I/O ===
 
 // Read a data block with size validation, source metadata, and RLE decompression
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
-                                     const char *file, int line) {
+static void read_checkpoint_block(checkpoint_t *checkpoint, void *data, size_t size, const char *tag, const char *file,
+                                  int line) {
     if (!checkpoint || checkpoint->error || checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for reading");
         if (checkpoint)
@@ -496,6 +503,20 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
 
     if (saved_file)
         free(saved_file);
+}
+
+// A failed read leaves `data` zeroed, never untouched.  Callers read into a
+// local, test a magic or a field, and apply it: on the early returns above
+// the local used to keep whatever the stack held, so a failed or mismatched
+// block could be applied as garbage -- the AppleTalk restore, whose state is
+// process-wide and so survives into the machine that keeps running when the
+// load fails, did exactly that (10-network F-10).  One zero-fill here covers
+// every caller.
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
+    read_checkpoint_block(checkpoint, data, size, tag, file, line);
+    if ((!checkpoint || checkpoint->error) && data && size)
+        memset(data, 0, size);
 }
 
 // Write a data block with size header, source metadata, and optional RLE compression

@@ -42,7 +42,7 @@ void machine_teardown_config_devices(config_t *cfg) {
     }
     // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
     // goes first -- it holds the scc pointer it was given at init.
-    appletalk_delete();
+    appletalk_delete(cfg->scc);
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;

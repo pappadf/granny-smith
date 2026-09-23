@@ -581,9 +581,13 @@ void atalk_aevt_get_config(atalk_aevt_config_t *out) {
 void atalk_aevt_set_config(const atalk_aevt_config_t *in) {
     if (!in)
         return;
-    g_enabled = in->enabled;
-    snprintf(g_port_name, sizeof(g_port_name), "%s", in->port_name);
-    snprintf(g_auto_reply, sizeof(g_auto_reply), "%s", in->auto_reply);
+    // `in` may come straight off a checkpoint, so nothing in it is trusted to
+    // be terminated or to be a valid bool (10-network F-10).
+    uint8_t enabled_byte;
+    memcpy(&enabled_byte, &in->enabled, 1);
+    g_enabled = enabled_byte != 0;
+    snprintf(g_port_name, sizeof(g_port_name), "%.*s", (int)sizeof(in->port_name), in->port_name);
+    snprintf(g_auto_reply, sizeof(g_auto_reply), "%.*s", (int)sizeof(in->auto_reply), in->auto_reply);
     char err[192] = "";
     if (atalk_ppc_set_host_port(g_port_name, g_enabled, err, sizeof(err)) != 0)
         LOG(2, "AE: the host port could not be republished — %s", err);

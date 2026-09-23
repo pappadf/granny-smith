@@ -36,6 +36,19 @@
 void link_boot(void);
 // appletalk_delete, then check nothing of the stack's is left queued.
 void link_delete(void);
+// Save the running stack's checkpoint record.
+void link_checkpoint(void);
+// link_boot, restoring the saved record; with `read_fails` the read hands the
+// bytes back but leaves the checkpoint in error.
+void link_boot_from_checkpoint(bool read_fails);
+// A checkpoint load while a machine is running, as system.c does it: build a
+// second machine from the saved record, then destroy the old machine (the
+// load succeeded) or the new one (`fails`: the load failed after the
+// stack's record was read).  The guest's frames then arrive on whichever
+// machine is left.
+void link_load(bool fails);
+// True if the stack's frame sink is installed on machine 0 or 1's SCC.
+bool link_sink_on(int machine);
 
 // --- the guest's side of the wire -------------------------------------------
 

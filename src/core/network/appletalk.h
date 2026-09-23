@@ -70,6 +70,10 @@ bool atalk_nbp_entry_info(int index, atalk_nbp_info_t *out);
 // reason written into `err`.
 int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len);
 
+// The same, keeping the volume id a checkpoint recorded, so a restored guest's
+// cached id still names it.  Fails if the id is taken.
+int atalk_afp_volume_restore(const char *name, const char *path, unsigned vol_id, char *err, size_t err_len);
+
 // Withdraw a volume by name, closing its forks and flushing its catalog.
 int atalk_afp_volume_remove(const char *name, char *err, size_t err_len);
 
@@ -236,8 +240,9 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
 // Serialize the AppleTalk/AFP session and fork tables into a checkpoint.
 void appletalk_checkpoint(checkpoint_t *checkpoint);
 
-// Destructor
-void appletalk_delete(void);
+// Destructor: `scc` is the departing machine's SCC.  A no-op unless the stack
+// is bound to that machine (see appletalk.c).
+void appletalk_delete(scc_t *scc);
 
 // Server module hooks: publish the NBP advertisement at startup, release
 // volumes and forks at teardown.

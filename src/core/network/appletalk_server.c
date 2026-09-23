@@ -366,7 +366,8 @@ int atalk_afp_volume_max(void) {
     return AFP_MAX_VOLUMES;
 }
 
-int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len) {
+// Publish `path` as volume `name`, with `vol_id` or, when 0, the next free id.
+static int vol_add(const char *name, const char *path, uint16_t vol_id, char *err, size_t err_len) {
     if (err && err_len)
         err[0] = '\0';
     if (!name || !*name)
@@ -393,13 +394,21 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
         }
     if (slot < 0)
         return vol_fail(err, err_len, "volume table full (max %d)", AFP_MAX_VOLUMES);
+    if (vol_id && find_vol_by_id(vol_id))
+        return vol_fail(err, err_len, "volume id %u is already in use", (unsigned)vol_id);
 
     vol_t *v = &g_vols[slot];
     memset(v, 0, sizeof(*v));
     snprintf(v->name, sizeof(v->name), "%s", name);
     char resolved[PATH_MAX];
     snprintf(v->root, sizeof(v->root), "%s", realpath(path, resolved) ? resolved : path);
-    v->vol_id = g_next_vol_id++;
+    if (vol_id) {
+        v->vol_id = vol_id;
+        if (vol_id >= g_next_vol_id)
+            g_next_vol_id = (uint16_t)(vol_id + 1);
+    } else {
+        v->vol_id = g_next_vol_id++;
+    }
     v->catalog = afp_catalog_open(v->root);
     if (!v->catalog) {
         memset(v, 0, sizeof(*v));
@@ -411,6 +420,16 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
     LOG(1, "AFP: added volume '%s' -> '%s' (vol %u, %u catalog entries)", v->name, v->root, (unsigned)v->vol_id,
         afp_catalog_count(v->catalog));
     return slot;
+}
+
+int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len) {
+    return vol_add(name, path, 0, err, err_len);
+}
+
+int atalk_afp_volume_restore(const char *name, const char *path, unsigned vol_id, char *err, size_t err_len) {
+    if (vol_id == 0 || vol_id > 0xFFFF)
+        return vol_fail(err, err_len, "volume id %u is out of range", vol_id);
+    return vol_add(name, path, (uint16_t)vol_id, err, err_len);
 }
 
 // Release a volume's live state without touching the table entry itself.

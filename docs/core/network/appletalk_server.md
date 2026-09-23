@@ -2699,8 +2699,17 @@ ASP sessions, open forks, byte-range locks, desktop-database refnums and
 FPEnumerate snapshots are client-session state: reconstructible, and
 meaningless once the transport that owned them is gone. A checkpoint therefore
 records the stack's durable state (enablement, counters, session numbering)
-and drops the rest on restore; the backing bytes are already on disk, and a
-restored machine's clients re-open what they need.
+and its **configuration** -- every published volume with its path and volume
+ID, the server name, enablement and message, the printer's enablement, name
+and capture setting, and the Apple event port -- and drops the rest on
+restore. The backing bytes are already on disk, so a restored guest finds its
+shares where they were, under the same volume IDs; its ASP session is gone, so
+it sees the connection close and reconnects. A volume whose folder no longer
+exists at restore time is skipped with a log line, not an error.
+
+A restore that fails after the stack has come up for the new machine gives
+the stack back to the machine that keeps running, with that machine's
+configuration (its sessions do not survive).
 
 ---
 
