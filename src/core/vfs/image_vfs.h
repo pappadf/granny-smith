@@ -53,8 +53,9 @@ int image_vfs_unmount(const char *host_path);
 // in-image path (e.g. "/partition2/Foo/Bar.img").  Disk Copy 6.x / NDIF
 // images are decoded (bcem + ADC); other files are copied verbatim (nested
 // raw / Disk Copy 4.2).  Returns a malloc'd host path (caller frees) or NULL
-// if the file could not be decoded/extracted.  The scratch name is
-// deterministic, so repeated calls reuse the same file.
+// if the file could not be decoded/extracted.  The copy is cached under the
+// scratch root (image_scratch.h) and reused while the outer file is
+// unchanged; a copy that was not completed is never reused.
 char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_path);
 
 // Iteration over the current cache, for `image list`.  `cb` is called

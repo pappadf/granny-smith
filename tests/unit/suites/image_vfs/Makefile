@@ -19,6 +19,7 @@ EXTRA_SRCS := $(S)/vfs/image_vfs.c \
               $(S)/storage/image_hfs.c \
               $(S)/storage/image_ufs.c \
               $(S)/storage/image_part.c \
+              $(S)/storage/image_scratch.c \
               $(S)/storage/image_apm.c \
               $(S)/storage/image_apm_io.c \
               $(S)/storage/image_ndif.c \

@@ -18,6 +18,7 @@
 #include "image_hfs.h"
 #include "image_ndif.h"
 #include "image_part.h"
+#include "image_scratch.h"
 #include "image_ufs.h"
 #include "resource_fork.h"
 
@@ -1397,35 +1398,6 @@ static int img_readonly2(void *ctx, const char *a, const char *b) {
 // images are decoded here (bcem block map + ADC); any other nested file is
 // copied verbatim so a nested raw / Disk Copy 4.2 image mounts too.
 
-#define NESTED_SCRATCH_DIR "/tmp/gs-image-ro/nested"
-
-static int mkdir_p_nested(const char *path) {
-    char tmp[PATH_MAX];
-    int n = snprintf(tmp, sizeof(tmp), "%s", path);
-    if (n < 0 || (size_t)n >= sizeof(tmp))
-        return -1;
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(tmp, 0777) != 0 && errno != EEXIST)
-                return -1;
-            *p = '/';
-        }
-    }
-    if (mkdir(tmp, 0777) != 0 && errno != EEXIST)
-        return -1;
-    return 0;
-}
-
-static uint32_t fnv1a_update(const void *data, size_t n, uint32_t h) {
-    const uint8_t *p = (const uint8_t *)data;
-    for (size_t i = 0; i < n; i++) {
-        h ^= p[i];
-        h *= 0x01000193u;
-    }
-    return h;
-}
-
 // Read an entire in-image file (given its in-image subpath) into a malloc'd
 // buffer.  Returns 0 and sets *out_buf/*out_len (empty file → NULL/0), or a
 // negative errno.  Caller frees *out_buf.
@@ -1526,24 +1498,24 @@ char *image_vfs_materialize_nested(image_mount_t *m, const char *file_subpath) {
     if (img_stat(m, file_subpath, &st) != 0 || !(st.mode & VFS_MODE_FILE))
         return NULL;
 
-    // Deterministic scratch name from the outer file identity + subpath +
-    // mtime, so repeated descents reuse the same decoded file (and its cached
-    // mount) and a changed outer file re-decodes.
-    uint32_t h = 0x811c9dc5u;
-    if (m->host_path)
-        h = fnv1a_update(m->host_path, strlen(m->host_path), h);
-    h = fnv1a_update("\x1f", 1, h);
-    h = fnv1a_update(file_subpath, strlen(file_subpath), h);
-    uint32_t h2 = fnv1a_update(&m->mtime, sizeof(m->mtime), h);
+    // The cached copy is keyed on the outer file's identity (canonical
+    // path, inode, mtime), the inner path and the inner size, so repeated
+    // descents reuse the same decoded file (and its cached mount) and a
+    // changed outer file re-decodes.  It lives under the scratch root, so
+    // GS_STORAGE_CACHE redirects it like every other sidecar (09-storage
+    // F-64), and it is reused only once sealed complete (F-33).
+    char identity[PATH_MAX + VFS_PATH_MAX + 128];
+    int n =
+        snprintf(identity, sizeof(identity), "nested\x1f%s\x1f%llu:%u\x1f%s\x1f%llu", m->host_path ? m->host_path : "",
+                 (unsigned long long)m->inode, (unsigned)m->mtime, file_subpath, (unsigned long long)st.size);
     char scratch[PATH_MAX];
-    if (snprintf(scratch, sizeof(scratch), "%s/%08x%08x.img", NESTED_SCRATCH_DIR, h, h2) >= (int)sizeof(scratch))
+    if (n < 0 || (size_t)n >= sizeof(identity) || !image_scratch_path("nested/img", identity, scratch, sizeof(scratch)))
         return NULL;
 
-    struct stat sb;
-    if (stat(scratch, &sb) == 0 && sb.st_size > 0)
+    if (image_scratch_valid(scratch, identity, 0))
         return strdup(scratch); // already materialised
 
-    if (mkdir_p_nested(NESTED_SCRATCH_DIR) != 0)
+    if (image_scratch_prepare(scratch) != 0)
         return NULL;
 
     // Read the inner file's resource fork (for NDIF detection).  Best-effort:
@@ -1571,9 +1543,10 @@ char *image_vfs_materialize_nested(image_mount_t *m, const char *file_subpath) {
         ok = copy_fork_to_scratch(m, file_subpath, st.size, out);
     }
 
-    fclose(out);
+    if (fclose(out) != 0)
+        ok = false;
     free(rbuf);
-    if (!ok) {
+    if (!ok || image_scratch_seal(scratch, identity) != 0) {
         remove(scratch);
         return NULL;
     }

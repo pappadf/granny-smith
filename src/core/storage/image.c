@@ -12,6 +12,7 @@
 
 #include "appledouble.h"
 #include "image_ndif.h"
+#include "image_scratch.h"
 #include "image_udif.h"
 #include "log.h"
 #include "platform.h"
@@ -435,19 +436,10 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
     return n;
 }
 
-// Scratch directory for read-only image deltas (kept volatile).
-#define IMAGE_RO_SCRATCH_DIR "/tmp/gs-image-ro"
-
-// Sidecar scratch root: GS_STORAGE_CACHE, when set, redirects every
-// scratch sidecar (read-only deltas, blank-image deltas, NDIF
-// materialisations) AND the default writable delta placement below it —
-// the integration runner points it at a per-test directory so no test
-// ever writes beside shared media (tests/data stays clean, and tests
-// can run in parallel).  Unset: the fixed /tmp scratch dir.
-static const char *image_scratch_dir(void) {
-    const char *cache = getenv("GS_STORAGE_CACHE");
-    return (cache && *cache) ? cache : IMAGE_RO_SCRATCH_DIR;
-}
+// Scratch sidecars -- read-only deltas, blank-image deltas, decoded
+// images -- live under image_scratch_dir() (image_scratch.h), which
+// honours GS_STORAGE_CACHE; so does the default writable delta placement
+// below.
 
 // === AppleDouble fork acquisition + host-file NDIF materialisation =========
 // A host `.img` file has only a data fork, but a Disk Copy 6 / NDIF image keeps
@@ -570,13 +562,6 @@ static int materialize_ndif_host(const char *base_path, ndif_map_t *map, const c
     return rc;
 }
 
-// FNV-1a over a NUL-terminated string, seeded, for scratch-name derivation.
-static uint32_t fork_hash_str(const char *s, uint32_t h) {
-    for (; *s; s++)
-        h = (h ^ (uint8_t)*s) * 0x01000193u;
-    return h;
-}
-
 // Resolve `path` through realpath() so every spelling of the same file — the
 // relative one a script passes to storage.probe, the absolute one the VFS
 // resolves, a symlink — reduces to one string.  Falls back to the input when
@@ -590,24 +575,26 @@ static void image_canonicalise(const char *path, char *out, size_t cap) {
     free(resolved);
 }
 
-// Build the deterministic scratch path a decoded image is cached under:
-// "<scratch>/<tag>-<hash>.img", hashed from path + size + mtime so repeated
-// inserts reuse the decode and a changed source re-decodes.  The path is
-// canonicalised first: hashing the caller's spelling instead decoded the same
-// disc once per spelling, which for a CD-sized .dmg costs a second full decode
-// and another copy of the whole image on disk.
-static void image_scratch_path(const char *base_path, const char *tag, char *out, size_t cap) {
+// The identity a decoded image of `base_path` is cached under (see
+// image_scratch.h): the decoder tag, the canonical path, and the file's size
+// and mtime, so a changed source re-decodes.  The path is canonicalised
+// first: keying on the caller's spelling decoded the same disc once per
+// spelling, which for a CD-sized .dmg costs a second full decode and
+// another copy of the whole image on disk.  Also fills the scratch path.
+static bool decoded_identity(const char *base_path, const char *tag, char *identity, size_t id_cap, char *scratch,
+                             size_t scratch_cap) {
     struct stat sb;
     char canon[PATH_MAX];
     image_canonicalise(base_path, canon, sizeof(canon));
-    uint32_t h = fork_hash_str(canon, 0x811c9dc5u);
+    long long size = -1, mtime = -1;
     if (stat(base_path, &sb) == 0) {
-        h = fork_hash_str("\x1f", h);
-        char meta[64];
-        snprintf(meta, sizeof(meta), "%lld:%lld", (long long)sb.st_size, (long long)sb.st_mtime);
-        h = fork_hash_str(meta, h);
+        size = (long long)sb.st_size;
+        mtime = (long long)sb.st_mtime;
     }
-    snprintf(out, cap, "%s/%s-%08x.img", image_scratch_dir(), tag, h);
+    int n = snprintf(identity, id_cap, "%s\x1f%s\x1f%lld:%lld", tag, canon, size, mtime);
+    if (n < 0 || (size_t)n >= id_cap)
+        return false;
+    return image_scratch_path(tag, identity, scratch, scratch_cap);
 }
 
 // === UDIF (.dmg) materialisation ==========================================
@@ -767,10 +754,10 @@ static char *resolve_udif_image(const char *base_path) {
         return NULL;
     }
 
-    char scratch[PATH_MAX];
-    image_scratch_path(base_path, "udif", scratch, sizeof(scratch));
-    struct stat cached;
-    if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)tr.sectors * 512)
+    char scratch[PATH_MAX], identity[PATH_MAX + 128];
+    if (!decoded_identity(base_path, "udif", identity, sizeof(identity), scratch, sizeof(scratch)))
+        return NULL;
+    if (image_scratch_valid(scratch, identity, tr.sectors * 512))
         return dup_string(scratch); // already materialised
 
     // The block map lives in the XML plist the trailer points at.
@@ -796,8 +783,8 @@ static char *resolve_udif_image(const char *base_path) {
     }
 
     char *result = NULL;
-    mkdir_recursive(image_scratch_dir());
-    if (materialize_udif_host(base_path, &tr, map, scratch) == 0) {
+    if (image_scratch_prepare(scratch) == 0 && materialize_udif_host(base_path, &tr, map, scratch) == 0 &&
+        image_scratch_seal(scratch, identity) == 0) {
         LOG(3, "decoded UDIF '%s' -> '%s' (%llu sectors, %zu partitions)", base_path, scratch,
             (unsigned long long)tr.sectors, map->n_tables);
         result = dup_string(scratch);
@@ -828,15 +815,14 @@ static char *resolve_base_image(const char *base_path) {
     if (ndif_detect(rfork, rlen)) {
         ndif_map_t *map = NULL;
         if (ndif_parse(rfork, rlen, &map) == 0) {
-            char scratch[PATH_MAX];
-            image_scratch_path(base_path, "ndif", scratch, sizeof(scratch));
-
-            struct stat cached;
-            if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)map->sectors * 512) {
+            char scratch[PATH_MAX], identity[PATH_MAX + 128];
+            if (!decoded_identity(base_path, "ndif", identity, sizeof(identity), scratch, sizeof(scratch))) {
+                LOG(1, "NDIF '%s': path too long for the decode cache", base_path);
+            } else if (image_scratch_valid(scratch, identity, (uint64_t)map->sectors * 512)) {
                 result = dup_string(scratch); // already materialised
             } else {
-                mkdir_recursive(image_scratch_dir());
-                if (materialize_ndif_host(base_path, map, scratch) == 0) {
+                if (image_scratch_prepare(scratch) == 0 && materialize_ndif_host(base_path, map, scratch) == 0 &&
+                    image_scratch_seal(scratch, identity) == 0) {
                     LOG(3, "decoded NDIF '%s' -> '%s' (%u sectors)", base_path, scratch, map->sectors);
                     result = dup_string(scratch);
                 } else {

@@ -373,6 +373,63 @@ TEST(test_non_512_geometry_is_refused_cleanly) {
     unlink(g_host);
 }
 
+// ---- Nested-image scratch copies (F-33, F-64) -------------------------------
+
+static void read_file(const char *path, char *buf, size_t cap) {
+    FILE *f = fopen(path, "rb");
+    ASSERT_TRUE(f != NULL);
+    size_t n = fread(buf, 1, cap - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+}
+
+// A file inside a mounted volume is copied out under the scratch root --
+// GS_STORAGE_CACHE when set, which the nested cache used to ignore (a fixed
+// /tmp/gs-image-ro/nested) -- and reused on the next call.  A copy that was
+// never sealed complete is not reused: reuse used to need only a non-empty
+// file, so an interrupted copy was served as the image.
+TEST(test_nested_copy_honours_the_cache_root_and_its_seal) {
+    char root[64] = "/tmp/image_vfs_cache_XXXXXX";
+    ASSERT_TRUE(mkdtemp(root) != NULL);
+    setenv("GS_STORAGE_CACHE", root, 1);
+    image_mount_t *m = mount_volume(one_file, 1);
+
+    char *p1 = image_vfs_materialize_nested(m, "/partition1/A");
+    ASSERT_TRUE(p1 != NULL);
+    ASSERT_TRUE(strncmp(p1, root, strlen(root)) == 0);
+    char buf[16];
+    read_file(p1, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "data") == 0);
+
+    char *p2 = image_vfs_materialize_nested(m, "/partition1/A");
+    ASSERT_TRUE(p2 != NULL && strcmp(p1, p2) == 0);
+
+    // What an interrupted copy leaves: the file, but no seal.
+    char side[PATH_MAX];
+    snprintf(side, sizeof(side), "%s.id", p1);
+    ASSERT_EQ_INT(0, remove(side));
+    FILE *f = fopen(p1, "wb");
+    ASSERT_TRUE(f != NULL);
+    fputs("junk", f);
+    fclose(f);
+    char *p3 = image_vfs_materialize_nested(m, "/partition1/A");
+    ASSERT_TRUE(p3 != NULL);
+    read_file(p3, buf, sizeof(buf));
+    ASSERT_TRUE(strcmp(buf, "data") == 0);
+
+    remove(side);
+    remove(p1);
+    free(p1);
+    free(p2);
+    free(p3);
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s/nested", root);
+    rmdir(dir);
+    rmdir(root);
+    unsetenv("GS_STORAGE_CACHE");
+    unmount_volume();
+}
+
 int main(void) {
     RUN(test_reads_a_data_fork_and_a_resource);
     RUN(test_open_resource_survives_cache_pressure);
@@ -384,6 +441,7 @@ int main(void) {
     RUN(test_pending_unmount_completes_on_last_close);
     RUN(test_overlong_path_is_refused_not_truncated);
     RUN(test_non_512_geometry_is_refused_cleanly);
+    RUN(test_nested_copy_honours_the_cache_root_and_its_seal);
     fprintf(stderr, "All image_vfs tests passed\n");
     return 0;
 }
