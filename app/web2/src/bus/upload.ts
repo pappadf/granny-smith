@@ -419,6 +419,24 @@ async function persist(
   return finalPath;
 }
 
+// Persist a file that is already on the worker's filesystem (staged
+// anywhere, e.g. /tmp) as `category`: validate it as that category, then
+// copy it into /opfs/images/<category>/ exactly as an upload of that kind
+// is stored.  Returns the persisted path, or null if the file is not valid
+// as `category` or could not be copied (the source is left in place).  The
+// URL-media path uses this so a fetched image is kept the way a dropped one
+// is, rather than attached from volatile /tmp.
+export async function persistAs(
+  sourcePath: string,
+  originalName: string,
+  category: MediaTypeId,
+): Promise<string | null> {
+  const descriptor = MEDIA_TYPES[category];
+  const result = await descriptor.validate(sourcePath, gsEval);
+  if (!result.valid) return null;
+  return persist(sourcePath, originalName, descriptor, result.info);
+}
+
 // If the user dropped a ROM and no machine is running yet, boot a default
 // configuration so they go straight to a usable Mac without going through
 // the Configuration slide. Picks the first compatible model from the ROM
