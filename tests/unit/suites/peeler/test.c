@@ -1036,6 +1036,149 @@ TEST(test_sit3_abort_frees_its_output) {
     peel_err_free(err);
 }
 
+// ---- Characterisation: the decoders the corpus does not reach -------------
+//
+// No archive in the real corpus uses StuffIt method 3 or method 2 (LZW)
+// (measured), so these pin their behaviour down before their bit readers
+// are replaced by peeler's shared ones: each decodes a stream built here
+// bit by bit, including the edges -- a tree read across byte boundaries,
+// codes widening 9 -> 10 -> 11 bits, a clear code mid-block, running out of
+// input.
+
+// An MSB-first bit writer.
+typedef struct {
+    uint8_t buf[512];
+    size_t bit;
+} msb_writer;
+static void msb_put(msb_writer *w, uint32_t v, int n) {
+    for (int i = n - 1; i >= 0; i--, w->bit++)
+        if ((v >> i) & 1)
+            w->buf[w->bit / 8] |= (uint8_t)(0x80u >> (w->bit % 8));
+}
+
+// Method 3: a three-leaf tree -- 'a' = 0, 'b' = 10, 'c' = 11 -- serialised
+// pre-order (0 = internal, 1 + 8 bits = leaf), then the message.  The tree
+// alone is 29 bits, so everything after it straddles byte boundaries.
+TEST(test_sit3_decodes_a_tree_and_message) {
+    static msb_writer w;
+    memset(&w, 0, sizeof(w));
+    msb_put(&w, 0, 1); // root: internal
+    msb_put(&w, 1, 1); // zero child: leaf 'a'
+    msb_put(&w, 'a', 8);
+    msb_put(&w, 0, 1); // one child: internal
+    msb_put(&w, 1, 1); //   leaf 'b'
+    msb_put(&w, 'b', 8);
+    msb_put(&w, 1, 1); //   leaf 'c'
+    msb_put(&w, 'c', 8);
+    static const char msg[] = "abcacbbaccab";
+    for (const char *p = msg; *p; p++) {
+        if (*p == 'a')
+            msb_put(&w, 0, 1);
+        if (*p == 'b')
+            msb_put(&w, 2, 2);
+        if (*p == 'c')
+            msb_put(&w, 3, 2);
+    }
+    size_t len = (w.bit + 7) / 8;
+    size_t n = sizeof(msg) - 1;
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit3(w.buf, len, n, &err);
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT((int)n, (int)out.size);
+    ASSERT_TRUE(memcmp(out.data, msg, n) == 0);
+    peel_free(&out);
+
+    // One symbol more than the stream holds: the reader runs out, and
+    // method 3 aborts rather than inventing bits.
+    out = peel_sit3(w.buf, len, n + 8, &err);
+    ASSERT_TRUE(err != NULL && out.data == NULL);
+    peel_err_free(err);
+
+    // A single-leaf tree codes its symbol as no bits at all.
+    memset(&w, 0, sizeof(w));
+    msb_put(&w, 1, 1);
+    msb_put(&w, 'z', 8);
+    err = NULL;
+    out = peel_sit3(w.buf, (w.bit + 7) / 8, 5, &err);
+    ASSERT_TRUE(err == NULL && out.size == 5 && memcmp(out.data, "zzzzz", 5) == 0);
+    peel_free(&out);
+}
+
+// Method 2, beyond 9-bit literals: literal codes only, each always valid
+// and each after the first adding a dictionary entry, so the width widens
+// exactly as the decoder's table grows (to 10 bits at 512 entries, 11 at
+// 1024); then a clear code part-way through an 8-code block, the padding
+// codes the decoder skips to realign, and literals at 9 bits again.
+typedef struct {
+    uint8_t *buf;
+    size_t bit;
+    int width;
+    int table; // next free dictionary slot
+    int count; // codes since the last clear
+    bool first; // next code is the first after a reset
+} lzw_writer;
+static void lzw_put(lzw_writer *w, int code) {
+    for (int b = 0; b < w->width; b++, w->bit++)
+        if ((code >> b) & 1)
+            w->buf[w->bit / 8] |= (uint8_t)(1u << (w->bit % 8));
+    w->count++;
+}
+static void lzw_literal(lzw_writer *w, uint8_t byte) {
+    lzw_put(w, byte);
+    if (w->first) {
+        w->first = false; // the first code after a reset adds no entry
+        return;
+    }
+    w->table++;
+    if (w->table < (1 << 14) && (w->table & (w->table - 1)) == 0 && w->width < 14)
+        w->width++;
+}
+static void lzw_clear(lzw_writer *w) {
+    lzw_put(w, 256);
+    while (w->count & 7)
+        lzw_put(w, 0x155); // padding the decoder skips, at the current width
+    w->width = 9;
+    w->table = 257;
+    w->count = 0;
+    w->first = true;
+}
+
+TEST(test_sit5_lzw_widening_and_clear) {
+    enum { BEFORE = 1100, AFTER = 60 };
+    static uint8_t raw[BEFORE + AFTER];
+    for (int i = 0; i < BEFORE + AFTER; i++)
+        raw[i] = (uint8_t)(i * 37 + (i >> 5));
+    static uint8_t packed[4096];
+    memset(packed, 0, sizeof(packed));
+    lzw_writer w = {.buf = packed, .width = 9, .table = 257, .first = true};
+    for (int i = 0; i < BEFORE; i++)
+        lzw_literal(&w, raw[i]);
+    ASSERT_EQ_INT(11, w.width); // the stream really reached 11-bit codes
+    lzw_clear(&w);
+    for (int i = BEFORE; i < BEFORE + AFTER; i++)
+        lzw_literal(&w, raw[i]);
+
+    sit5_spec sp = {.name = "W",
+                    .data = packed,
+                    .dlen = (uint32_t)((w.bit + 7) / 8),
+                    .h1_len = -1,
+                    .d_algo = 2,
+                    .d_raw = raw,
+                    .d_raw_len = (uint32_t)sizeof(raw)};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    if (err)
+        fprintf(stderr, "  lzw: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(1, list.count);
+    ASSERT_EQ_INT((int)sizeof(raw), (int)list.files[0].data_fork.size);
+    ASSERT_TRUE(memcmp(list.files[0].data_fork.data, raw, sizeof(raw)) == 0);
+    peel_file_list_free(&list);
+    free(a);
+}
+
 // ============================================================================
 // A3: one cap on what an archive may declare (PEEL_MAX_FORK, internal.h)
 // ============================================================================
@@ -1332,6 +1475,8 @@ int main(void) {
     RUN(test_hqx_slash_in_a_name_cannot_escape);
     RUN(test_sit_classic_long_folder_name_is_clamped);
     RUN(test_peel_passes_unrecognised_input_through);
+    RUN(test_sit3_decodes_a_tree_and_message);
+    RUN(test_sit5_lzw_widening_and_clear);
     RUN(test_huff_canonical_codes);
     RUN(test_huff_pool_is_bounded);
     fprintf(stderr, "All peeler tests passed\n");
