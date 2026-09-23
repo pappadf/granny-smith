@@ -49,7 +49,7 @@ test-%:
 # under node.  Separate BUILD_DIR, so the native binaries are never touched.
 # The first line of output from this target is the probe's word size: if it
 # says 64, the run is not testing what it claims to.
-WASM32_SUITES := peeler resfork ndif udif hfsplus appledouble storage vfs checkpoint
+WASM32_SUITES := peeler resfork ndif udif hfsplus appledouble storage vfs image_vfs checkpoint
 WASM32_BUILD  := $(abspath $(BUILD_DIR))-wasm32
 # The shipping build's memory model (Makefile: -s STACK_SIZE=5MB,
 # -s ALLOW_MEMORY_GROWTH=1), not emscripten's defaults of a 64 KB stack and a

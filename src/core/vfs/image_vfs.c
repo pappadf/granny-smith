@@ -82,6 +82,7 @@ typedef struct rsrc_cache_entry {
     size_t fork_len;
     rfork_t *parsed; // owned: parsed map index
     uint64_t lru_tick; // monotonic last-touch counter
+    int pins; // open handles borrowing fork_buf / parsed; never evicted while > 0
 } rsrc_cache_entry_t;
 
 static rsrc_cache_entry_t g_rsrc_cache[RSRC_CACHE_CAPACITY];
@@ -116,17 +117,37 @@ static rsrc_cache_entry_t *rsrc_cache_find(const image_mount_t *m, uint32_t cnid
     return NULL;
 }
 
-// Pick a slot to use for a new entry: prefer empty, otherwise evict the LRU.
+// Pick a slot to use for a new entry: prefer empty, otherwise evict the least
+// recently used entry that nothing is borrowing.  Returns NULL if every entry
+// is pinned.
+//
+// Open handles borrow from an entry -- a resource file reads straight out of
+// fork_buf, a resource directory walks parsed -- and this used to evict the
+// LRU entry regardless, so the ninth fork opened freed the bytes an open
+// handle was reading (09-storage F-42).  The mount refcount the handles hold
+// keeps the mount alive, not its cache entries.
 static rsrc_cache_entry_t *rsrc_cache_pick(void) {
-    rsrc_cache_entry_t *victim = &g_rsrc_cache[0];
+    rsrc_cache_entry_t *victim = NULL;
     for (size_t i = 0; i < RSRC_CACHE_CAPACITY; i++) {
-        if (!g_rsrc_cache[i].mount)
-            return &g_rsrc_cache[i];
-        if (g_rsrc_cache[i].lru_tick < victim->lru_tick)
-            victim = &g_rsrc_cache[i];
+        rsrc_cache_entry_t *e = &g_rsrc_cache[i];
+        if (!e->mount)
+            return e;
+        if (e->pins == 0 && (!victim || e->lru_tick < victim->lru_tick))
+            victim = e;
     }
-    rsrc_cache_evict(victim);
+    if (victim)
+        rsrc_cache_evict(victim);
     return victim;
+}
+
+static void rsrc_cache_pin(rsrc_cache_entry_t *e) {
+    if (e)
+        e->pins++;
+}
+
+static void rsrc_cache_unpin(rsrc_cache_entry_t *e) {
+    if (e && e->pins > 0)
+        e->pins--;
 }
 
 // Read+parse the resource fork for (mount, hfs, dirent.rsrc_fork) and
@@ -138,6 +159,10 @@ static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, hfs_volume_t *hf
     rsrc_cache_entry_t *e = rsrc_cache_find(m, d->cnid);
     if (e)
         return e;
+    // The catalog's size is only a claim: refuse one no resource fork can
+    // have before allocating it (09-storage F-26 -- it was malloc'd as given).
+    if (d->rsrc_fork.logical_size > RFORK_MAX_FORK_LEN)
+        return NULL;
     size_t flen = (size_t)d->rsrc_fork.logical_size;
     uint8_t *buf = malloc(flen);
     if (!buf)
@@ -154,6 +179,11 @@ static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, hfs_volume_t *hf
         return NULL;
     }
     e = rsrc_cache_pick();
+    if (!e) { // every entry is borrowed by an open handle
+        rfork_free(rf);
+        free(buf);
+        return NULL;
+    }
     e->mount = m;
     e->hfs_cnid = d->cnid;
     e->fork_buf = buf;
@@ -687,7 +717,8 @@ struct vfs_dir {
     // UFS directory
     ufs_dir_iter_t *ufs_iter;
     // Synthetic resource tree (DIR_RSRC_ROOT / DIR_RSRC_TYPE)
-    const rfork_t *rfork; // borrowed (cache entry stays live via mount refcount)
+    const rfork_t *rfork; // borrowed from rsrc_entry, which this handle pins
+    struct rsrc_cache_entry *rsrc_entry;
     uint8_t rsrc_type[4]; // DIR_RSRC_TYPE only
     size_t rsrc_next_idx; // next type idx (root) or next resource idx (type)
     // Two-emission state machines so a single readdir call can stream both
@@ -722,9 +753,11 @@ struct vfs_file {
     uint8_t finder_info[HFS_FINDER_INFO_SIZE];
     ufs_volume_t *ufs; // used for FILE_UFS
     uint32_t ufs_ino;
-    // FILE_RSRC_DATA: pointer into the cached fork buffer.
+    // FILE_RSRC_DATA: pointer into the cached fork buffer of rsrc_entry,
+    // which this handle pins until it closes.
     const uint8_t *rsrc_bytes;
     size_t rsrc_size;
+    struct rsrc_cache_entry *rsrc_entry;
     // FILE_RSRC_INFO: precomputed JSON.  512 bytes accommodates a maximally
     // long resource name (255) plus the attrs list and brackets.
     char rsrc_info_buf[512];
@@ -998,6 +1031,8 @@ static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
                 d->kind = DIR_RSRC_ROOT;
             }
             d->rfork = e->parsed;
+            d->rsrc_entry = e;
+            rsrc_cache_pin(e);
             d->rsrc_next_idx = 0;
             m->refcount++;
             *out = d;
@@ -1159,6 +1194,7 @@ static int img_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
 static void img_closedir(vfs_dir_t *d) {
     if (!d)
         return;
+    rsrc_cache_unpin(d->rsrc_entry);
     if (d->hfs_iter)
         hfs_closedir_iter(d->hfs_iter);
     if (d->ufs_iter)
@@ -1278,6 +1314,8 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
         if (synth == SYNTH_RSRC_DATA) {
             f->kind = FILE_RSRC_DATA;
             f->rsrc_bytes = bytes;
+            f->rsrc_entry = e;
+            rsrc_cache_pin(e);
             f->rsrc_size = sz;
         } else {
             f->kind = FILE_RSRC_INFO;
@@ -1346,6 +1384,7 @@ static int img_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nr
 static void img_close(vfs_file_t *f) {
     if (!f)
         return;
+    rsrc_cache_unpin(f->rsrc_entry);
     if (f->mount && f->mount->refcount > 0)
         f->mount->refcount--;
     free(f);

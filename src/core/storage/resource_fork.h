@@ -49,6 +49,11 @@
 #include <stdint.h>
 
 // Resource attrs byte bits, from Inside Macintosh.
+// Largest resource fork anything here will read whole.  A fork's data
+// offsets are 24 bits, so its data area cannot exceed 16 MiB; the cap is the
+// one place that bound lives (09-storage F-26, F-65).
+#define RFORK_MAX_FORK_LEN (16u * 1024u * 1024u)
+
 #define RFORK_ATTR_SYSHEAP    0x40
 #define RFORK_ATTR_PURGEABLE  0x20
 #define RFORK_ATTR_LOCKED     0x10

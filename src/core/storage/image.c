@@ -15,6 +15,7 @@
 #include "image_udif.h"
 #include "log.h"
 #include "platform.h"
+#include "resource_fork.h"
 #include "system.h"
 
 #include <assert.h>
@@ -400,7 +401,6 @@ static const char *image_scratch_dir(void) {
 // forks and, when the data fork is NDIF-encoded, decodes it to a scratch raw
 // image so the rest of image.c opens it as an ordinary base.  See
 // proposal-appledouble-support.md §4.4.
-#define IMAGE_FORK_READ_CAP (16u * 1024u * 1024u)
 
 // Read up to `cap` bytes of a host file into a malloc'd buffer. 0 / -errno.
 static int read_whole_host_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
@@ -457,7 +457,7 @@ static uint8_t *acquire_resource_fork(const char *base_path, size_t *out_len) {
         fork_sidecar_path(base_path, prefixes[i], path, sizeof(path));
         uint8_t *raw = NULL;
         size_t raw_len = 0;
-        if (read_whole_host_file(path, IMAGE_FORK_READ_CAP, &raw, &raw_len) != 0)
+        if (read_whole_host_file(path, RFORK_MAX_FORK_LEN, &raw, &raw_len) != 0)
             continue;
         ad_file_t ad;
         if (ad_detect(raw, raw_len) && ad_parse(raw, raw_len, &ad) == 0 && ad.rsrc && ad.rsrc_len) {
@@ -475,7 +475,7 @@ static uint8_t *acquire_resource_fork(const char *base_path, size_t *out_len) {
     snprintf(path, sizeof(path), "%s.rsrc", base_path);
     uint8_t *raw = NULL;
     size_t raw_len = 0;
-    if (read_whole_host_file(path, IMAGE_FORK_READ_CAP, &raw, &raw_len) == 0 && raw_len > 0) {
+    if (read_whole_host_file(path, RFORK_MAX_FORK_LEN, &raw, &raw_len) == 0 && raw_len > 0) {
         *out_len = raw_len;
         return raw;
     }

@@ -1255,50 +1255,40 @@ TEST(test_peel_passes_unrecognised_input_through) {
     }
 }
 
-// PEELER_ONLY=<test name> runs one test alone -- how each fixture is checked
-// against unfixed code on its own, where an earlier failure would otherwise
-// stop the run first.
-#define PRUN(t)                                                                                                        \
-    do {                                                                                                               \
-        const char *only = getenv("PEELER_ONLY");                                                                      \
-        if (!only || strcmp(only, #t) == 0)                                                                            \
-            RUN(t);                                                                                                    \
-    } while (0)
-
 int main(void) {
-    PRUN(test_sit15_encoder_round_trip);
-    PRUN(test_sit15_zero_run_cannot_overflow);
-    PRUN(test_sit15_zero_run_bound_is_exact);
-    PRUN(test_sit13_dynamic_round_trip);
-    PRUN(test_sit13_length_repeat_cannot_overrun);
-    PRUN(test_sit13_minus_one_is_an_absent_symbol);
-    PRUN(test_sit13_negative_length_is_rejected);
-    PRUN(test_cpt_lzh_round_trip);
-    PRUN(test_cpt_lzh_offset_zero_is_a_full_window_back);
-    PRUN(test_cpt_short_fork_is_rejected);
-    PRUN(test_cpt_fork_extent_is_checked);
-    PRUN(test_cpt_nesting_cap_is_exact);
-    PRUN(test_cpt_folder_nesting_is_bounded);
-    PRUN(test_sit5_round_trip);
-    PRUN(test_sit5_round_trip_with_resource_fork);
-    PRUN(test_sit5_lzw_literals_round_trip);
-    PRUN(test_sit5_resource_fork_extent_is_checked);
-    PRUN(test_sit5_short_header_is_rejected);
-    PRUN(test_sit5_zero_length_skip_marker_cannot_loop);
-    PRUN(test_hqx_round_trip);
-    PRUN(test_hqx_resource_fork_failure_frees_the_data_fork);
-    PRUN(test_sit3_abort_frees_its_output);
-    PRUN(test_sit5_fork_over_the_cap_is_refused);
-    PRUN(test_cpt_fork_over_the_cap_is_refused);
-    PRUN(test_hqx_fork_over_the_cap_is_refused);
-    PRUN(test_read_file_over_the_cap_is_refused);
-    PRUN(test_path_is_confined);
-    PRUN(test_sit5_slash_in_a_name_cannot_escape);
-    PRUN(test_sit5_dots_only_name_is_prefixed);
-    PRUN(test_cpt_dot_dot_folder_is_prefixed);
-    PRUN(test_hqx_slash_in_a_name_cannot_escape);
-    PRUN(test_sit_classic_long_folder_name_is_clamped);
-    PRUN(test_peel_passes_unrecognised_input_through);
+    RUN(test_sit15_encoder_round_trip);
+    RUN(test_sit15_zero_run_cannot_overflow);
+    RUN(test_sit15_zero_run_bound_is_exact);
+    RUN(test_sit13_dynamic_round_trip);
+    RUN(test_sit13_length_repeat_cannot_overrun);
+    RUN(test_sit13_minus_one_is_an_absent_symbol);
+    RUN(test_sit13_negative_length_is_rejected);
+    RUN(test_cpt_lzh_round_trip);
+    RUN(test_cpt_lzh_offset_zero_is_a_full_window_back);
+    RUN(test_cpt_short_fork_is_rejected);
+    RUN(test_cpt_fork_extent_is_checked);
+    RUN(test_cpt_nesting_cap_is_exact);
+    RUN(test_cpt_folder_nesting_is_bounded);
+    RUN(test_sit5_round_trip);
+    RUN(test_sit5_round_trip_with_resource_fork);
+    RUN(test_sit5_lzw_literals_round_trip);
+    RUN(test_sit5_resource_fork_extent_is_checked);
+    RUN(test_sit5_short_header_is_rejected);
+    RUN(test_sit5_zero_length_skip_marker_cannot_loop);
+    RUN(test_hqx_round_trip);
+    RUN(test_hqx_resource_fork_failure_frees_the_data_fork);
+    RUN(test_sit3_abort_frees_its_output);
+    RUN(test_sit5_fork_over_the_cap_is_refused);
+    RUN(test_cpt_fork_over_the_cap_is_refused);
+    RUN(test_hqx_fork_over_the_cap_is_refused);
+    RUN(test_read_file_over_the_cap_is_refused);
+    RUN(test_path_is_confined);
+    RUN(test_sit5_slash_in_a_name_cannot_escape);
+    RUN(test_sit5_dots_only_name_is_prefixed);
+    RUN(test_cpt_dot_dot_folder_is_prefixed);
+    RUN(test_hqx_slash_in_a_name_cannot_escape);
+    RUN(test_sit_classic_long_folder_name_is_clamped);
+    RUN(test_peel_passes_unrecognised_input_through);
     fprintf(stderr, "All peeler tests passed\n");
     return 0;
 }
