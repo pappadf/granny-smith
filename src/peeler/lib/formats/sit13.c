@@ -289,14 +289,14 @@ static void m13_pool_insert(m13_hnode_t *pool, int *used,
 static int m13_build_canonical(m13_hnode_t *pool, int *used,
                                const int8_t *lengths, int nsym) {
     int root = m13_pool_alloc(pool, used);
-    int code = 0, assigned = 0;
+    uint32_t code = 0;
+    int assigned = 0;
     for (int len = -1; assigned < nsym; len++, code <<= 1) {
         for (int s = 0; s < nsym; s++) {
             if (lengths[s] == len) {
                 // Only insert symbols with positive code length
                 if (len > 0)
-                    m13_pool_insert(pool, used, root,
-                                    (uint32_t)code, len, s);
+                    m13_pool_insert(pool, used, root, code, len, s);
                 code++;
                 assigned++;
             }
@@ -358,57 +358,62 @@ static int m13_build_meta_tree(m13_hnode_t *pool, int *used) {
     return root;
 }
 
+// Longest code length the meta-code can produce by a direct set (command 30
+// sets 31); increment past it, or decrement below 0, is a length the
+// canonical builder cannot place.
+#define M13_MAX_CODE_LEN 31
+
 // Decode a list of code lengths from the bitstream using the meta-code.
 // sit13.md § 6.3 "Meta-Code Symbols and Code-Length RLE" — commands
 // 0..30 set the length directly, 31 resets to 0, 32/33 increment/
 // decrement, and 34..36 are various repeat encodings.
-static void m13_decode_lengths(m13_hnode_t *pool, int meta_root,
-                               m13_bitrd_t *br, int8_t *out, int nsym) {
+//
+// Returns 0, or -1 on a malformed list.  Two bounds that were missing
+// (09-storage F-03, F-05):
+//
+//   * Every command's entry count is checked against the space left.  The
+//     loop was bounded by nsym but the repeats inside it were not: command
+//     36 emits up to 74 entries, so from index 320 of a 321-entry list it
+//     wrote 73 bytes past the end of the caller's stack array.  The spec
+//     requires the list to end exactly at nsym, so an overshoot is an error,
+//     not something to clamp.
+//   * Every emitted length is 0..M13_MAX_CODE_LEN.  Decrementing past -1
+//     produced a length m13_build_canonical never matches, so its outer
+//     loop never finished.
+static int m13_decode_lengths(m13_hnode_t *pool, int meta_root,
+                              m13_bitrd_t *br, int8_t *out, int nsym) {
     int len = 0;
     int i = 0;
     while (i < nsym) {
+        // The meta-code is complete (its Kraft sum is exactly 1), so this
+        // walk always reaches a leaf and cmd is 0..36.
         int cmd = m13_huff_decode(pool, meta_root, br);
+        int emit = 1; // entries this command produces, per the spec's table
 
-        // Commands 0..30: set the current length to cmd + 1.
-        // Command 31: reset length to 0 (symbol absent).
-        // Command 32: increment length.
-        // Command 33: decrement length.
         if (cmd <= 30) {
-            len = cmd + 1;
+            len = cmd + 1;            // set the length directly
         } else if (cmd == 31) {
-            len = 0;
+            len = 0;                  // symbol absent
         } else if (cmd == 32) {
             len++;
         } else if (cmd == 33) {
             len--;
         } else if (cmd == 34) {
-            // Read 1 bit; if set, emit one extra entry before the
-            // normal per-iteration emit below.
-            if (m13_br_read(br, 1))
-                out[i++] = (int8_t)len;
-            out[i++] = (int8_t)len;
-            continue;
+            emit = 1 + (int)m13_br_read(br, 1);   // optional extra copy
         } else if (cmd == 35) {
-            // Read 3 bits → repeat count r; emit (r + 2) entries
-            // plus the normal per-iteration emit.
-            int reps = (int)m13_br_read(br, 3) + 2;
-            while (reps-- > 0)
-                out[i++] = (int8_t)len;
-            out[i++] = (int8_t)len;
-            continue;
-        } else if (cmd == 36) {
-            // Read 6 bits → repeat count r; emit (r + 10) entries
-            // plus the normal per-iteration emit.
-            int reps = (int)m13_br_read(br, 6) + 10;
-            while (reps-- > 0)
-                out[i++] = (int8_t)len;
-            out[i++] = (int8_t)len;
-            continue;
+            emit = (int)m13_br_read(br, 3) + 3;   // (n + 2) + the normal emit
+        } else {
+            emit = (int)m13_br_read(br, 6) + 11;  // (n + 10) + the normal emit
         }
 
-        // Normal emit for commands 0..33.
-        out[i++] = (int8_t)len;
+        if (len < 0 || len > M13_MAX_CODE_LEN)
+            return -1;
+        if (emit > nsym - i)
+            return -1;
+        while (emit-- > 0)
+            out[i++] = (int8_t)len;
     }
+    return 0;
 }
 
 // ============================================================================
@@ -477,8 +482,9 @@ static int m13_setup(m13_state_t *st) {
         int8_t lengths[M13_SYM_COUNT];
 
         // First literal/length tree.
-        m13_decode_lengths(st->pool, meta_root, &st->br,
-                           lengths, M13_SYM_COUNT);
+        if (m13_decode_lengths(st->pool, meta_root, &st->br,
+                               lengths, M13_SYM_COUNT) < 0)
+            return -1;
         st->root_first = m13_build_canonical(st->pool, &st->pool_used,
                                              lengths, M13_SYM_COUNT);
 
@@ -487,15 +493,17 @@ static int m13_setup(m13_state_t *st) {
         if (shared) {
             st->root_second = st->root_first;
         } else {
-            m13_decode_lengths(st->pool, meta_root, &st->br,
-                               lengths, M13_SYM_COUNT);
+            if (m13_decode_lengths(st->pool, meta_root, &st->br,
+                                   lengths, M13_SYM_COUNT) < 0)
+                return -1;
             st->root_second = m13_build_canonical(st->pool, &st->pool_used,
                                                   lengths, M13_SYM_COUNT);
         }
 
         // Distance tree.
-        m13_decode_lengths(st->pool, meta_root, &st->br,
-                           lengths, dist_n);
+        if (m13_decode_lengths(st->pool, meta_root, &st->br,
+                               lengths, dist_n) < 0)
+            return -1;
         st->root_dist = m13_build_canonical(st->pool, &st->pool_used,
                                             lengths, dist_n);
     } else if (set >= 1 && set <= 5) {

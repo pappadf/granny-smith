@@ -9,6 +9,7 @@
 // test is that it must fail on the unfixed code -- a crash counts -- and each
 // was verified to by reverting its fix alone.
 
+#include "formats/sit13.c" // for its meta-code tables; see Makefile
 #include "formats/sit15.c" // for the Arsenic encoder below; see Makefile
 
 #include "test_assert.h"
@@ -261,6 +262,65 @@ TEST(test_sit15_zero_run_bound_is_exact) {
 }
 
 // ============================================================================
+// sit13 (StuffIt method 13) -- a bit writer over the decoder's own meta code
+// ============================================================================
+//
+// The stream is read LSB-first (m13_br_read), and a Huffman code is walked
+// from its most significant bit down (m13_pool_insert), so a code goes out
+// MSB-first, one bit at a time, into an LSB-first stream.
+
+typedef struct {
+    uint8_t buf[4096];
+    size_t nbits;
+} m13_writer;
+
+static void m13w_bits(m13_writer *w, uint32_t v, int n) { // LSB-first field
+    ASSERT_TRUE(n >= 0 && n <= 32);
+    for (int i = 0; i < n; i++) {
+        ASSERT_TRUE(w->nbits < sizeof(w->buf) * 8);
+        if ((v >> i) & 1)
+            w->buf[w->nbits / 8] |= (uint8_t)(1u << (w->nbits % 8));
+        w->nbits++;
+    }
+}
+
+static void m13w_meta(m13_writer *w, int sym) { // one meta-code symbol
+    for (int b = m13_meta_lens[sym] - 1; b >= 0; b--)
+        m13w_bits(w, (m13_meta_words[sym] >> b) & 1, 1);
+}
+
+// Dynamic-mode header byte: SET = 0, shared second tree, K = 0.
+static void m13w_dynamic_header(m13_writer *w) {
+    m13w_bits(w, 0x08, 8);
+}
+
+// F-05: a length list that decrements to -2.  m13_build_canonical assigns
+// codes by walking lengths upward from -1; it never meets a -2, so it never
+// finishes (natively the shift in its loop is UB long before that).  Two
+// decrements emit -1 then -2; four long repeats and one of 23 fill the
+// remaining 319 entries exactly, so the list itself is well-formed in size.
+TEST(test_sit13_negative_length_is_rejected) {
+    m13_writer w = {0};
+    m13w_dynamic_header(&w);
+    m13w_meta(&w, 33); // L = -1
+    m13w_meta(&w, 33); // L = -2
+    for (int i = 0; i < 4; i++) {
+        m13w_meta(&w, 36);
+        m13w_bits(&w, 63, 6);
+    }
+    m13w_meta(&w, 36);
+    m13w_bits(&w, 12, 6); // 2 + 296 + 23 = 321
+    m13w_bits(&w, 0, 32);
+    m13w_bits(&w, 0, 32);
+
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 16, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(out.data == NULL);
+    peel_err_free(err);
+}
+
+// ============================================================================
 // StuffIt 5 archives
 // ============================================================================
 
@@ -387,6 +447,76 @@ TEST(test_sit5_zero_length_skip_marker_cannot_loop) {
     free(a);
 }
 
+// A real dynamic-mode stream, so the length decoder is proven on legitimate
+// input and not only on hostile input: a two-symbol literal code, 'A' = 0 and
+// 'B' = 1, every other symbol absent, the second tree shared, a 10-symbol
+// distance tree that is never walked.  The lists use each command kind the
+// fix touched -- set (0, 31), conditional repeat (34), short and long repeat
+// (35, 36) -- and each must land exactly on its list's end.
+TEST(test_sit13_dynamic_round_trip) {
+    m13_writer w = {0};
+    m13w_dynamic_header(&w); // shared second tree, K = 0: 10 distance symbols
+    // First tree, 321 entries: 0 x 65, then 1 for 'A' (65) and 'B' (66), then 0 x 254.
+    m13w_meta(&w, 31); //   1 zero                               -> 1
+    m13w_meta(&w, 36);
+    m13w_bits(&w, 53, 6); // 64 zeros                              -> 65
+    m13w_meta(&w, 0); // L = 1 for 'A'                          -> 66
+    m13w_meta(&w, 34);
+    m13w_bits(&w, 0, 1); // one more L = 1 for 'B'                  -> 67
+    m13w_meta(&w, 31); // L = 0                                   -> 68
+    for (int i = 0; i < 3; i++) {
+        m13w_meta(&w, 36);
+        m13w_bits(&w, 63, 6); // 3 x 74 zeros                      -> 290
+    }
+    m13w_meta(&w, 36);
+    m13w_bits(&w, 20, 6); // 31 zeros                             -> 321
+    // Distance tree, 10 entries, all absent.
+    m13w_meta(&w, 31); //  1                                       -> 1
+    m13w_meta(&w, 35);
+    m13w_bits(&w, 6, 3); // 9                                      -> 10
+    // "ABBA"
+    m13w_bits(&w, 0, 1);
+    m13w_bits(&w, 1, 1);
+    m13w_bits(&w, 1, 1);
+    m13w_bits(&w, 0, 1);
+    m13w_bits(&w, 0, 32);
+
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 4, &err);
+    if (err)
+        fprintf(stderr, "  sit13: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(4, (int)out.size);
+    ASSERT_TRUE(memcmp(out.data, "ABBA", 4) == 0);
+    peel_free(&out);
+}
+
+// F-03: m13_decode_lengths bounded its loop by nsym but not the repeat
+// commands inside it.  Command 36 emits r + 10 entries plus one more, r a
+// 6-bit field -- up to 74 -- so from index 320 of the 321-entry lengths array
+// it writes 73 bytes past the end of a stack array.  Four full repeats and
+// one of 24 reach index 320 exactly; a fifth full one overruns.
+TEST(test_sit13_length_repeat_cannot_overrun) {
+    m13_writer w = {0};
+    m13w_dynamic_header(&w);
+    for (int i = 0; i < 4; i++) { // 4 x 74 = 296
+        m13w_meta(&w, 36);
+        m13w_bits(&w, 63, 6);
+    }
+    m13w_meta(&w, 36); // + 24 = 320
+    m13w_bits(&w, 13, 6);
+    m13w_meta(&w, 36); // + 74 from 320: 73 past the end
+    m13w_bits(&w, 63, 6);
+    m13w_bits(&w, 0, 32); // padding
+    m13w_bits(&w, 0, 32);
+
+    peel_err_t *err = NULL;
+    peel_buf_t out = peel_sit13(w.buf, (w.nbits + 7) / 8, 16, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(out.data == NULL);
+    peel_err_free(err);
+}
+
 // ============================================================================
 // Garbage in, error out
 // ============================================================================
@@ -417,6 +547,9 @@ int main(void) {
     RUN(test_sit15_encoder_round_trip);
     RUN(test_sit15_zero_run_cannot_overflow);
     RUN(test_sit15_zero_run_bound_is_exact);
+    RUN(test_sit13_dynamic_round_trip);
+    RUN(test_sit13_length_repeat_cannot_overrun);
+    RUN(test_sit13_negative_length_is_rejected);
     RUN(test_sit5_round_trip);
     RUN(test_sit5_short_header_is_rejected);
     RUN(test_sit5_zero_length_skip_marker_cannot_loop);

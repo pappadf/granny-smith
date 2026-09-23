@@ -6,10 +6,11 @@
 # dependency if one were ever added.
 #
 # test.c #includes formats/sit15.c so that its arithmetic *encoder* can drive
-# the decoder's own model code (model_setup/model_bump), which makes the two
-# agree by construction.  sit15.c is therefore compiled as part of test.c and
-# left out of PEELER_SRCS below, or its one external symbol would be defined
-# twice.
+# the decoder's own model code (model_setup/model_bump), and formats/sit13.c
+# so that its bit writer uses the decoder's own meta-code tables -- encoder and
+# decoder agree by construction.  Both are therefore compiled as part of
+# test.c and left out of PEELER_SRCS below, or their external symbols would be
+# defined twice.
 #
 # CC and EXEC_WRAPPER are overridable so the same suite runs on wasm32, where
 # size_t is 32 bits (09-WORK-ORDER.md §0.2):
@@ -50,8 +51,7 @@ PEELER_SRCS := $(PEELER_DIR)/lib/peeler.c \
                $(PEELER_DIR)/lib/formats/cpt.c \
                $(PEELER_DIR)/lib/formats/hqx.c \
                $(PEELER_DIR)/lib/formats/sit.c \
-               $(PEELER_DIR)/lib/formats/sit3.c \
-               $(PEELER_DIR)/lib/formats/sit13.c
+               $(PEELER_DIR)/lib/formats/sit3.c
 
 SRCS := $(CURDIR)/test.c $(PEELER_SRCS)
 
