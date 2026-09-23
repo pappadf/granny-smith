@@ -180,55 +180,10 @@ static const int predefined_dist_nsym[5] = {11, 13, 14, 11, 11};
 // Bitstream Reader — sit13.md § 3 "Bit-Level Conventions"
 // ============================================================================
 
-// Accumulator-based LSB-first bit reader.
-// sit13.md § 3.1 "Bit Order" — bits are consumed LSB-first within each byte.
-// Bytes are loaded one at a time into the low bits of the accumulator.
-typedef struct {
-    const uint8_t *src;
-    size_t         src_len;
-    size_t         pos;       // Next byte position to read
-    uint32_t       acc;       // Bit accumulator
-    int            avail;     // Valid bit count in acc
-} m13_bitrd_t;
-
-// Initialise the bit reader over a byte buffer.
-static void m13_br_init(m13_bitrd_t *r, const uint8_t *data, size_t len) {
-    r->src   = data;
-    r->src_len = len;
-    r->pos   = 0;
-    r->acc   = 0;
-    r->avail = 0;
-}
-
-// Ensure at least 25 valid bits in the accumulator.
-// sit13.md § 3.2 "Bitstream Reader" — refill while avail ≤ 24.
-static void m13_br_refill(m13_bitrd_t *r) {
-    while (r->avail <= 24 && r->pos < r->src_len) {
-        r->acc |= (uint32_t)r->src[r->pos++] << r->avail;
-        r->avail += 8;
-    }
-}
-
-// Consume and return the next n bits (0 ≤ n ≤ 24).
-static uint32_t m13_br_read(m13_bitrd_t *r, int n) {
-    if (n == 0) return 0;
-    // Refill accumulator before extracting
-    m13_br_refill(r);
-    uint32_t v = r->acc & ((1u << n) - 1);
-    r->acc >>= n;
-    r->avail -= n;
-    return v;
-}
-
-// Consume and return a single bit.
-static int m13_br_bit(m13_bitrd_t *r) {
-    // Refill accumulator before extracting
-    m13_br_refill(r);
-    int b = (int)(r->acc & 1u);
-    r->acc >>= 1;
-    r->avail -= 1;
-    return b;
-}
+// sit13.md § 3.1 "Bit Order" — bits are consumed LSB-first within each
+// byte: peeler's shared peel_lsb_t (internal.h).  Bits past the end of the
+// stream read as zeros, as this file's own reader did; the decode loops are
+// bounded by the output size.
 
 // ============================================================================
 // Pool-Allocated Huffman Decoding Tree
@@ -251,10 +206,10 @@ static int m13_br_bit(m13_bitrd_t *r) {
 // reached.  Returns the leaf's symbol value, or -1 on error.
 // sit13.md § 5.4 "Single-Symbol Tree Edge Case" — if the root IS a
 // leaf, return its symbol without consuming any bits (handled by caller).
-static int m13_huff_decode(const peel_hpool_t *pool, int root, m13_bitrd_t *br) {
+static int m13_huff_decode(const peel_hpool_t *pool, int root, peel_lsb_t *br) {
     int cur = root;
     while (peel_huff_sym(pool, cur) == PEEL_HUFF_NOSYM) {
-        cur = peel_huff_child(pool, cur, m13_br_bit(br));
+        cur = peel_huff_child(pool, cur, (int)peel_lsb_get(br, 1));
         // Navigate to child; abort if tree is malformed
         if (cur < 0)
             return -1;
@@ -333,7 +288,7 @@ static int m13_build_canonical(peel_hpool_t *pool, const int8_t *lengths, int ns
 //     Decrementing past -1 produced a length m13_build_canonical never
 //     matches, so its outer loop never finished.
 static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root,
-                              m13_bitrd_t *br, int8_t *out, int nsym) {
+                              peel_lsb_t *br, int8_t *out, int nsym) {
     int len = 0;
     int i = 0;
     while (i < nsym) {
@@ -351,11 +306,11 @@ static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root,
         } else if (cmd == 33) {
             len--;
         } else if (cmd == 34) {
-            emit = 1 + (int)m13_br_read(br, 1);   // optional extra copy
+            emit = 1 + (int)peel_lsb_get(br, 1);   // optional extra copy
         } else if (cmd == 35) {
-            emit = (int)m13_br_read(br, 3) + 3;   // (n + 2) + the normal emit
+            emit = (int)peel_lsb_get(br, 3) + 3;   // (n + 2) + the normal emit
         } else {
-            emit = (int)m13_br_read(br, 6) + 11;  // (n + 10) + the normal emit
+            emit = (int)peel_lsb_get(br, 6) + 11;  // (n + 10) + the normal emit
         }
 
         if (len < M13_MIN_CODE_LEN || len > M13_MAX_CODE_LEN)
@@ -380,7 +335,7 @@ static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root,
 
 // Full decoder context for one method-13 stream.
 typedef struct {
-    m13_bitrd_t br;
+    peel_lsb_t br;
 
     // Node pool shared by all Huffman trees
     peel_hpool_t pool;
@@ -420,7 +375,7 @@ static int m13_setup(m13_state_t *st) {
 
     // Read the single header byte.
     // sit13.md § 4.1: SET = bits 7..4, S = bit 3, K = bits 2..0.
-    uint32_t hdr = m13_br_read(&st->br, 8);
+    uint32_t hdr = peel_lsb_get(&st->br, 8);
     int set      = (int)(hdr >> 4);       // code set selector (0 = dynamic)
     bool shared  = (hdr >> 3) & 1;        // second tree == first tree?
     int dist_n   = (int)(hdr & 7) + 10;   // distance tree symbol count
@@ -529,9 +484,9 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         if (sym <= 317)
             mlen = sym - 253;
         else if (sym == 318)
-            mlen = (int)m13_br_read(&st->br, 10) + 65;
+            mlen = (int)peel_lsb_get(&st->br, 10) + 65;
         else if (sym == 319)
-            mlen = (int)m13_br_read(&st->br, 15) + 65;
+            mlen = (int)peel_lsb_get(&st->br, 15) + 65;
         else
             return -1;   // symbol 320 or higher is invalid
 
@@ -546,7 +501,7 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         if (dsym == 0)
             dist = 1;
         else
-            dist = (1 << (dsym - 1)) + (int)m13_br_read(&st->br, dsym - 1) + 1;
+            dist = (1 << (dsym - 1)) + (int)peel_lsb_get(&st->br, dsym - 1) + 1;
 
         // Stage the match for copying (may span multiple read calls)
         st->match_left = mlen;
@@ -592,7 +547,7 @@ peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
     }
 
     // Initialise bit reader over the compressed input
-    m13_br_init(&st->br, src, len);
+    peel_lsb_init(&st->br, src, len);
 
     // Parse header and build Huffman trees
     if (m13_setup(st) < 0) {

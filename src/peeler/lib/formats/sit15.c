@@ -18,38 +18,12 @@
 // ============================================================================
 // Bitstream Reader — sit15.md §3.1 "Byte-to-Bit Extraction"
 // ============================================================================
-
-// Bitstream state — MSB-first extraction from a byte buffer.
-typedef struct {
-    const uint8_t *data;
-    size_t         len;
-    size_t         pos;          // next byte to consume
-    uint32_t       window;       // left-aligned shift register
-    int            avail;        // valid bits in window (MSB end)
-} bs_reader;
+//
+// MSB-first: peeler's shared peel_msb_t (internal.h).
 
 // Forward declaration of the error-abort function (needs the full state).
 typedef struct arsenic_state arsenic_state;
 static void arsenic_abort(arsenic_state *s, const char *fmt, ...);
-
-// Initialise a bitstream reader over a byte buffer.
-static void bs_init(bs_reader *r, const uint8_t *buf, size_t len)
-{
-    r->data   = buf;
-    r->len    = len;
-    r->pos    = 0;
-    r->window = 0;
-    r->avail  = 0;
-}
-
-// Pull whole bytes into the shift register until we have ≥24 bits or exhausted input.
-static void bs_refill(bs_reader *r)
-{
-    while (r->avail <= 24 && r->pos < r->len) {
-        r->window |= (uint32_t)r->data[r->pos++] << (24 - r->avail);
-        r->avail  += 8;
-    }
-}
 
 // Read exactly n bits (1 ≤ n ≤ 25).  Aborts via longjmp on underflow.
 static uint32_t bs_read(arsenic_state *s, int n);
@@ -188,7 +162,7 @@ struct arsenic_state {
     bool     eos;                   // end-of-stream seen in a block footer
 
     // Bitstream (§3)
-    bs_reader bits;
+    peel_msb_t bits;
 
     // Arithmetic decoder (§4.2)
     ac_state  ac;
@@ -243,22 +217,15 @@ static void arsenic_abort(arsenic_state *s, const char *fmt, ...)
 // Bitstream Implementation
 // ============================================================================
 
-// sit15.md §3.1 "Byte-to-Bit Extraction" — shift-register: reads top n
-//   bits via window >> (32−n), refills when avail ≤ 24.  Max single
-//   read 25 bits; bs_read_long splits wider fields (e.g. 26-bit AC
-//   bootstrap) into two reads.
+// sit15.md §3.1 "Byte-to-Bit Extraction" — read the top n bits of the
+//   shift register (at most 25); bs_read_long splits wider fields (e.g.
+//   the 26-bit AC bootstrap) into two reads.
 static uint32_t bs_read(arsenic_state *s, int n)
 {
-    bs_reader *r = &s->bits;
-    if (n > r->avail) {
-        bs_refill(r);
-        if (n > r->avail)
-            arsenic_abort(s, "sit15: bitstream exhaustion");
-    }
-    uint32_t v = r->window >> (32 - n);
-    r->window <<= n;
-    r->avail  -= n;
-    return v;
+    // A short stream is an error here, not zeros.
+    if (!peel_msb_avail(&s->bits, n))
+        arsenic_abort(s, "sit15: bitstream exhaustion");
+    return peel_msb_get(&s->bits, n);
 }
 
 // sit15.md §3.1 "Byte-to-Bit Extraction" — Read-long: splits reads
@@ -643,7 +610,7 @@ peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
     s->ctx = &dctx;
 
     // Initialise the bit reader over the compressed input
-    bs_init(&s->bits, src, len);
+    peel_msb_init(&s->bits, src, len);
 
     // Parse the Arsenic stream header (signature, block size, initial EOS)
     parse_header(s);

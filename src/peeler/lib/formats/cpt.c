@@ -39,103 +39,21 @@
 // ============================================================================
 // Byte-supplier callback type
 //
-// cpt.md § 9.1 "Memory Model" — all byte consumers (bit reader, RLE decoder) use
-// this uniform int (*fn)(void *, int *) interface returning 1/0.
+// cpt.md § 9.1 "Memory Model" — the RLE decoder pulls its bytes through
+// this int (*fn)(void *, int *) interface returning 1/0, from the archive or
+// from the LZH decoder.  (The LZH bit reader reads its slice directly.)
 // ============================================================================
 
 typedef int (*cp_getbyte_fn)(void *ctx, int *out);
 
 // ============================================================================
-// Accumulator-based MSB-first bit reader
+// MSB-first bit reader
 //
-// cpt.md § 6.2 "Bitstream Conventions" — bytes enter the high bits of a 32-bit accumulator;
-// bits are consumed from the top.
+// cpt.md § 6.2 "Bitstream Conventions" — bytes enter the high bits of a
+// 32-bit accumulator; bits are consumed from the top, bytes pulled on demand
+// (the end-of-block padding is computed from the bytes pulled).  Peeler's
+// shared peel_msb_t (internal.h), over the fork's slice of the archive.
 // ============================================================================
-
-// Accumulator-based MSB-first bit reader state.
-typedef struct {
-    uint32_t acc;        // accumulator holding bits in MSB-first order
-    int      fill;       // number of valid bits in acc (top fill bits)
-    cp_getbyte_fn src;   // callback to pull one byte
-    void    *src_ctx;
-    size_t   bytes_read; // total bytes consumed from source
-    int      eof;        // source exhausted flag
-} cp_bits_t;
-
-// Initialize a bit reader from the given byte-supplier callback.
-static void cp_bits_init(cp_bits_t *b, cp_getbyte_fn fn, void *ctx) {
-    memset(b, 0, sizeof(*b));
-    b->src = fn;
-    b->src_ctx = ctx;
-}
-
-// Pull bytes into the accumulator until we have at least 'need' bits, or EOF.
-// cpt.md § 6.2 "Bitstream Conventions" — demand-driven
-// refill: bytes enter the high bits of the 32-bit accumulator.
-static void cp_bits_refill(cp_bits_t *b, int need) {
-    while (b->fill < need && !b->eof) {
-        int byte_val;
-        if (!b->src(b->src_ctx, &byte_val)) {
-            b->eof = 1;
-            return;
-        }
-        b->acc |= ((uint32_t)(byte_val & 0xFF)) << (24 - b->fill);
-        b->fill += 8;
-        b->bytes_read++;
-    }
-}
-
-// Read n bits (1..25) from the accumulator, MSB-first. Returns 0 on underflow.
-// cpt.md § 6.2 "Bitstream Conventions" — underflow
-// returns zero-padded top bits and resets the accumulator to empty.
-static unsigned cp_bits_get(cp_bits_t *b, int n) {
-    if (n <= 0) return 0;
-    cp_bits_refill(b, n);
-    if (b->fill < n) {
-        // not enough bits — return what we have, padded with zeros
-        unsigned val = b->acc >> (32 - n);
-        b->acc = 0;
-        b->fill = 0;
-        return val;
-    }
-    unsigned val = b->acc >> (32 - n);
-    b->acc <<= n;
-    b->fill -= n;
-    return val;
-}
-
-// Check if at least 'n' bits are available.
-// cpt.md § 6.2 "Bitstream Conventions" — triggers demand-driven refill, used throughout LZH to
-// distinguish end-of-stream from valid data.
-static int cp_bits_avail(cp_bits_t *b, int n) {
-    cp_bits_refill(b, n);
-    return b->fill >= n;
-}
-
-// Align to next byte boundary by discarding partial-byte bits.
-static void cp_bits_align(cp_bits_t *b) {
-    int discard = b->fill & 7;
-    if (discard > 0) {
-        b->acc <<= discard;
-        b->fill -= discard;
-    }
-}
-
-// Skip exactly n bits (in chunks of up to 25).
-// cpt.md § 6.2 "Bitstream Conventions" — skip N bits,
-// used by end-of-block flush to skip 2 or 3 padding bytes.
-static void cp_bits_skip(cp_bits_t *b, int n) {
-    while (n > 0) {
-        int take = n < 25 ? n : 25;
-        (void)cp_bits_get(b, take);
-        n -= take;
-    }
-}
-
-// Return total bytes consumed from source so far.
-static size_t cp_bits_consumed(cp_bits_t *b) {
-    return b->bytes_read;
-}
 
 // ============================================================================
 // Pool-allocated Huffman tree
@@ -169,15 +87,15 @@ static int cp_htree_build(cp_htree_t *t, const int8_t *code_lens, int sym_count)
 //
 // cpt.md § 6.4.3 "Decoding with a Binary Tree" — read one bit at a time, traverse
 // left (0) or right (1) until a leaf is reached.
-static int cp_htree_decode(cp_htree_t *t, cp_bits_t *bits) {
+static int cp_htree_decode(cp_htree_t *t, peel_msb_t *bits) {
     int node = t->root;
     for (;;) {
         int sym = peel_huff_sym(&t->pool, node);
         if (sym != PEEL_HUFF_NOSYM)
             return sym;
-        if (!cp_bits_avail(bits, 1))
+        if (!peel_msb_avail(bits, 1))
             return -1;
-        node = peel_huff_child(&t->pool, node, (int)cp_bits_get(bits, 1));
+        node = peel_huff_child(&t->pool, node, (int)peel_msb_get(bits, 1));
         if (node < 0) return -1;
     }
 }
@@ -192,7 +110,7 @@ static int cp_htree_decode(cp_htree_t *t, cp_bits_t *bits) {
 
 // Streaming LZH decoder state (LZSS + Huffman, block-based).
 typedef struct {
-    cp_bits_t  bits;
+    peel_msb_t  bits;
     cp_htree_t lit_tree;
     cp_htree_t len_tree;
     cp_htree_t off_tree;
@@ -210,24 +128,24 @@ typedef struct {
 } cp_lzh_t;
 
 // Initialize an LZH decoder from the given byte-supplier callback.
-static void cp_lzh_init(cp_lzh_t *lz, cp_getbyte_fn fn, void *ctx) {
+static void cp_lzh_init(cp_lzh_t *lz, const uint8_t *src, size_t len) {
     memset(lz, 0, sizeof(*lz));
-    cp_bits_init(&lz->bits, fn, ctx);
+    peel_msb_init(&lz->bits, src, len);
     memset(lz->win, 0, sizeof(lz->win));
 }
 
 // Read one Huffman code-length table from the bitstream.
 // cpt.md § 6.4.1 "Table Serialization Format" — each table is encoded
 // as a sequence of nibble-packed code lengths.
-static int cp_lzh_read_table(cp_bits_t *bits, int8_t *lens, int sym_count) {
-    if (!cp_bits_avail(bits, 8)) return -1;
-    unsigned nbytes = cp_bits_get(bits, 8);
+static int cp_lzh_read_table(peel_msb_t *bits, int8_t *lens, int sym_count) {
+    if (!peel_msb_avail(bits, 8)) return -1;
+    unsigned nbytes = peel_msb_get(bits, 8);
     if (nbytes * 2u > (unsigned)sym_count) return -1;
 
     memset(lens, 0, (size_t)sym_count);
     for (unsigned i = 0; i < nbytes; i++) {
-        if (!cp_bits_avail(bits, 8)) return -1;
-        unsigned v = cp_bits_get(bits, 8);
+        if (!peel_msb_avail(bits, 8)) return -1;
+        unsigned v = peel_msb_get(bits, 8);
         lens[2 * i]     = (int8_t)(v >> 4);
         lens[2 * i + 1] = (int8_t)(v & 0x0F);
     }
@@ -253,7 +171,7 @@ static int cp_lzh_build_tables(cp_lzh_t *lz) {
 
     lz->tables_ok = 1;
     lz->blk_cost = 0;
-    lz->blk_byte_start = cp_bits_consumed(&lz->bits);
+    lz->blk_byte_start = peel_msb_pulled(&lz->bits);
     return 0;
 }
 
@@ -263,12 +181,12 @@ static int cp_lzh_build_tables(cp_lzh_t *lz) {
 // discarded.  Even/odd byte parity determines whether an extra padding
 // byte must also be skipped.
 static void cp_lzh_flush_block(cp_lzh_t *lz) {
-    cp_bits_align(&lz->bits);
-    size_t consumed = cp_bits_consumed(&lz->bits) - lz->blk_byte_start;
+    peel_msb_align(&lz->bits);
+    size_t consumed = peel_msb_pulled(&lz->bits) - lz->blk_byte_start;
     if (consumed & 1)
-        cp_bits_skip(&lz->bits, 24); // skip 3 bytes
+        peel_msb_skip(&lz->bits, 24); // skip 3 bytes
     else
-        cp_bits_skip(&lz->bits, 16); // skip 2 bytes
+        peel_msb_skip(&lz->bits, 16); // skip 2 bytes
     lz->tables_ok = 0;
 }
 
@@ -307,17 +225,17 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
 
         // Build tables for a new block if needed.
         if (!lz->tables_ok) {
-            if (!cp_bits_avail(&lz->bits, 8))
+            if (!peel_msb_avail(&lz->bits, 8))
                 return 0; // end of compressed stream
             if (cp_lzh_build_tables(lz) < 0)
                 return -1;
         }
 
         // Need at least one bit for the literal/match flag.
-        if (!cp_bits_avail(&lz->bits, 1))
+        if (!peel_msb_avail(&lz->bits, 1))
             return 0;
 
-        unsigned flag = cp_bits_get(&lz->bits, 1);
+        unsigned flag = peel_msb_get(&lz->bits, 1);
 
         if (flag) {
             // Literal byte.
@@ -336,8 +254,8 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
             if (mlen_sym < 0) return -1;
             int off_sym = cp_htree_decode(&lz->off_tree, &lz->bits);
             if (off_sym < 0) return -1;
-            if (!cp_bits_avail(&lz->bits, 6)) return -1;
-            unsigned lower6 = cp_bits_get(&lz->bits, 6);
+            if (!peel_msb_avail(&lz->bits, 6)) return -1;
+            unsigned lower6 = peel_msb_get(&lz->bits, 6);
 
             unsigned offset = ((unsigned)off_sym << 6) | lower6;
             unsigned mlen = (unsigned)mlen_sym;
@@ -551,9 +469,9 @@ static int cp_fork_init_lzh(cp_fork_t *f, const uint8_t *archive, size_t archive
     f->use_lzh = 1;
     f->remain = uncomp_len;
     f->done = (uncomp_len == 0);
-    if (cp_memsrc_init(&f->memsrc, archive, archive_len, comp_offset, comp_len) < 0)
+    if (!peel_extent_fits(comp_offset, comp_len, archive_len))
         return -1;
-    cp_lzh_init(&f->lzh, cp_memsrc_next, &f->memsrc);
+    cp_lzh_init(&f->lzh, archive + comp_offset, comp_len);
     cp_rle_init(&f->rle, cp_lzh_adapter, &f->lzh);
     return 0;
 }

@@ -114,9 +114,7 @@ typedef struct {
 // LZW decoder state.
 // sit.md § 9.3 "Dictionary Structure" — struct-of-arrays layout.
 typedef struct {
-    const uint8_t *src;        // Compressed bytestream
-    size_t         src_bytes;  // Length of compressed data
-    size_t         bit_pos;    // Current bit position in stream
+    peel_lsb_t     bits;       // Compressed bytestream, LE bit packing
 
     uint16_t prev_code[LZW_TABLE_CAP]; // Back-link to parent code
     uint8_t  suffix[LZW_TABLE_CAP];    // Byte appended at this entry
@@ -288,8 +286,7 @@ static void build_path(char *dst, size_t cap, const char *dir, const char *name)
 static lzw_state_t *lzw_create(const uint8_t *src, size_t src_bytes) {
     lzw_state_t *z = calloc(1, sizeof(*z));
     if (!z) return NULL;
-    z->src       = src;
-    z->src_bytes = src_bytes;
+    peel_lsb_init(&z->bits, src, src_bytes);
     z->code_bits = 9;
     z->tbl_next  = LZW_FIRST_NEW;
     z->prev      = -1;
@@ -303,25 +300,13 @@ static lzw_state_t *lzw_create(const uint8_t *src, size_t src_bytes) {
     return z;
 }
 
-// sit.md § 9.4 "Bit Packing" — read one code from the LE bitstream.
-// Returns -1 on input exhaustion.
+// sit.md § 9.4 "Bit Packing" — read one code from the LE bitstream, through
+// peeler's shared LSB-first reader.  Returns -1 once every input bit has
+// been read; a code that runs past the end reads its missing bits as zero.
 static int lzw_next_code(lzw_state_t *z) {
-    size_t byte_off = z->bit_pos >> 3;
-    if (byte_off >= z->src_bytes)
+    if (peel_lsb_at_end(&z->bits))
         return -1;
-    // Read up to 4 bytes starting at the byte boundary, little-endian.
-    // Composed explicitly: a memcpy into a uint32_t is little-endian only on
-    // a little-endian host (09-storage F-17).  Every target is one, so this
-    // changes nothing today; it makes the reader say what it means.
-    uint32_t acc = 0;
-    size_t avail = z->src_bytes - byte_off;
-    if (avail > 4) avail = 4;
-    for (size_t i = 0; i < avail; i++)
-        acc |= (uint32_t)z->src[byte_off + i] << (8 * i);
-    int shift = (int)(z->bit_pos & 7);
-    int mask  = (1 << z->code_bits) - 1;
-    int code  = (int)((acc >> shift) & (uint32_t)mask);
-    z->bit_pos += (size_t)z->code_bits;
+    int code = (int)peel_lsb_get(&z->bits, z->code_bits);
     z->block_count++;
     return code;
 }
@@ -387,8 +372,8 @@ static size_t lzw_decode(lzw_state_t *z, uint8_t *dst, size_t want) {
         // resets dictionary and skips remaining 8-code block
         if (code == LZW_CLEAR_CODE) {
             if (z->block_count & 7)
-                z->bit_pos += (size_t)(z->code_bits *
-                                       (8 - (z->block_count & 7)));
+                peel_lsb_skip(&z->bits, (size_t)(z->code_bits *
+                                                 (8 - (z->block_count & 7))));
             z->tbl_next    = LZW_FIRST_NEW;
             z->code_bits   = 9;
             z->prev        = -1;

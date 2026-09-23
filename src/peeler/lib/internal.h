@@ -174,6 +174,141 @@ uint16_t crc16_ccitt(const uint8_t *data, size_t len);
 uint16_t crc16_ccitt_update(uint16_t crc, const uint8_t *data, size_t len);
 
 // ============================================================================
+// Bit readers
+// ============================================================================
+//
+// Every bit reader in peeler, one per bit order.  The order is the file
+// format's, not a choice: StuffIt methods 3 and 15 and Compact Pro pack bits
+// most significant first; StuffIt method 13 and method 2 (LZW) least
+// significant first.  Each format had its own reader, with three different
+// behaviours at the end of the input; now both readers behave one way --
+// bits past the end read as zeros -- and a format that must refuse a short
+// stream asks peel_*_avail first (09-storage F-58).
+//
+// Both refill on demand, pulling only the bytes a read needs, so
+// peel_msb_pulled is exactly the input bytes consumed so far: Compact Pro's
+// end-of-block padding is computed from it.
+
+// MSB-first: bytes enter the top of a 32-bit window; a read takes its top
+// bits.  At most 25 bits per read.
+typedef struct {
+    const uint8_t *src;
+    size_t len;
+    size_t pos; // next byte to pull into the window
+    uint32_t window; // valid bits left-aligned
+    int fill; // valid bits in window
+} peel_msb_t;
+
+static inline void peel_msb_init(peel_msb_t *r, const uint8_t *src, size_t len) {
+    r->src = src;
+    r->len = len;
+    r->pos = 0;
+    r->window = 0;
+    r->fill = 0;
+}
+
+static inline void peel_msb_refill(peel_msb_t *r, int need) {
+    while (r->fill < need && r->pos < r->len) {
+        r->window |= (uint32_t)r->src[r->pos++] << (24 - r->fill);
+        r->fill += 8;
+    }
+}
+
+// True if at least n bits (n <= 25) remain.
+static inline bool peel_msb_avail(peel_msb_t *r, int n) {
+    peel_msb_refill(r, n);
+    return r->fill >= n;
+}
+
+// The next n bits (0..25); past the end, zeros -- and the reader is then
+// empty.
+static inline uint32_t peel_msb_get(peel_msb_t *r, int n) {
+    if (n <= 0)
+        return 0;
+    peel_msb_refill(r, n);
+    uint32_t v = r->window >> (32 - n);
+    if (r->fill < n) {
+        r->window = 0;
+        r->fill = 0;
+        return v;
+    }
+    r->window <<= n;
+    r->fill -= n;
+    return v;
+}
+
+// Discard the rest of the current byte.
+static inline void peel_msb_align(peel_msb_t *r) {
+    int discard = r->fill & 7;
+    r->window <<= discard;
+    r->fill -= discard;
+}
+
+static inline void peel_msb_skip(peel_msb_t *r, int n) {
+    for (; n > 0; n -= 25)
+        (void)peel_msb_get(r, n < 25 ? n : 25);
+}
+
+// Input bytes pulled into the window so far.
+static inline size_t peel_msb_pulled(const peel_msb_t *r) {
+    return r->pos;
+}
+
+// LSB-first: bytes enter above the bits already held; a read takes the low
+// bits.  At most 24 bits per read.
+typedef struct {
+    const uint8_t *src;
+    size_t len;
+    size_t pos; // next byte to pull
+    uint32_t acc; // valid bits at the bottom
+    int fill; // valid bits in acc
+} peel_lsb_t;
+
+static inline void peel_lsb_init(peel_lsb_t *r, const uint8_t *src, size_t len) {
+    r->src = src;
+    r->len = len;
+    r->pos = 0;
+    r->acc = 0;
+    r->fill = 0;
+}
+
+// The next n bits (0..24); past the end, zeros -- and the reader is then
+// empty.
+static inline uint32_t peel_lsb_get(peel_lsb_t *r, int n) {
+    if (n <= 0)
+        return 0;
+    while (r->fill < n && r->pos < r->len) {
+        r->acc |= (uint32_t)r->src[r->pos++] << r->fill;
+        r->fill += 8;
+    }
+    uint32_t v = r->acc & ((1u << n) - 1);
+    if (r->fill < n) {
+        r->acc = 0;
+        r->fill = 0;
+        return v;
+    }
+    r->acc >>= n;
+    r->fill -= n;
+    return v;
+}
+
+static inline void peel_lsb_skip(peel_lsb_t *r, size_t n) {
+    for (; n > 24; n -= 24)
+        (void)peel_lsb_get(r, 24);
+    (void)peel_lsb_get(r, (int)n);
+}
+
+// Bits consumed so far.
+static inline uint64_t peel_lsb_consumed(const peel_lsb_t *r) {
+    return (uint64_t)r->pos * 8 - (uint64_t)r->fill;
+}
+
+// True once every input bit has been consumed.
+static inline bool peel_lsb_at_end(const peel_lsb_t *r) {
+    return peel_lsb_consumed(r) >= (uint64_t)r->len * 8;
+}
+
+// ============================================================================
 // Canonical Huffman trees (sit13, cpt)
 // ============================================================================
 //

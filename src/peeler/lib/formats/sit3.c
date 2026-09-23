@@ -30,43 +30,27 @@ typedef struct {
     uint8_t symbol;  // valid only when zero == -1 && one == -1
 } m3_node_t;
 
-// MSB-first bit reader over a fixed input buffer.
+// MSB-first bit reader (peeler's shared peel_msb_t, internal.h) and the
+// abort context a short stream is reported through.
 typedef struct {
-    const uint8_t *src;
-    size_t         len;
-    size_t         byte_pos;  // index of byte currently being drained
-    unsigned       bit_pos;   // 0..7, position of *next* bit within byte (0 = MSB)
-    decode_ctx_t  *ctx;
+    peel_msb_t    r;
+    decode_ctx_t *ctx;
 } m3_bits_t;
 
 // ============================================================================
 // Bit Reader
 // ============================================================================
 
-// sit3.md § 2.1 — MSB-first within each byte, bytes consumed in order.
-static int m3_read_bit(m3_bits_t *b) {
-    if (b->byte_pos >= b->len) {
+// sit3.md § 2.1 — N bits, MSB-first within each byte, bytes consumed in
+// order.  Running out of input is an error, not zeros.
+static unsigned m3_read_bits(m3_bits_t *b, unsigned n) {
+    if (!peel_msb_avail(&b->r, (int)n))
         decode_abort(b->ctx, "SIT3: premature end of compressed stream");
-    }
-    uint8_t byte = b->src[b->byte_pos];
-    unsigned shift = 7u - b->bit_pos;
-    int bit = (byte >> shift) & 1;
-    b->bit_pos++;
-    if (b->bit_pos == 8) {
-        b->bit_pos = 0;
-        b->byte_pos++;
-    }
-    return bit;
+    return (unsigned)peel_msb_get(&b->r, (int)n);
 }
 
-// Read N bits MSB-first as an unsigned integer.
-// Used only for the 8-bit symbol values in the tree header.
-static unsigned m3_read_bits(m3_bits_t *b, unsigned n) {
-    unsigned v = 0;
-    for (unsigned i = 0; i < n; i++) {
-        v = (v << 1) | (unsigned)m3_read_bit(b);
-    }
-    return v;
+static int m3_read_bit(m3_bits_t *b) {
+    return (int)m3_read_bits(b, 1);
 }
 
 // ============================================================================
@@ -179,8 +163,8 @@ peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len,
 
     uint8_t *out = dctx_malloc(&ctx, uncomp_len);
 
-    m3_bits_t bits = {.src = src, .len = len, .byte_pos = 0, .bit_pos = 0,
-                      .ctx = &ctx};
+    m3_bits_t bits = {.ctx = &ctx};
+    peel_msb_init(&bits.r, src, len);
     m3_tree_t tree = {.next_node = 0};
 
     int root = m3_read_node(&bits, &tree);

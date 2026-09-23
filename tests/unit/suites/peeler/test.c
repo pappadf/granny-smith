@@ -278,7 +278,7 @@ TEST(test_sit15_zero_run_bound_is_exact) {
 // sit13 (StuffIt method 13) -- a bit writer over the decoder's own meta code
 // ============================================================================
 //
-// The stream is read LSB-first (m13_br_read), and a Huffman code is walked
+// The stream is read LSB-first (peel_lsb_get), and a Huffman code is walked
 // from its most significant bit down (peel_huff_insert), so a code goes out
 // MSB-first, one bit at a time, into an LSB-first stream.
 
@@ -446,7 +446,7 @@ static uint8_t *make_cpt_data_fork(const uint8_t *fork, uint32_t fork_len, uint3
     return a;
 }
 
-// An MSB-first bit writer, as cp_bits reads (bytes enter the accumulator's
+// An MSB-first bit writer, as peel_msb_t reads (bytes enter the accumulator's
 // high end), for Compact Pro LZH streams.
 typedef struct {
     uint8_t buf[4096];
