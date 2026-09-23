@@ -59,6 +59,19 @@ static inline uint32_t rd32be(const uint8_t *p) {
 }
 
 // ============================================================================
+// Extent Checks
+// ============================================================================
+
+// Does [off, off + len) lie inside a buffer of `total` bytes?  Wrap-safe:
+// never forms off + len, which a 32-bit size_t (the wasm32 build) wraps for
+// lengths an archive can simply claim.  Every format locates its forks with
+// lengths read from the archive; this is the one check they all use
+// (09-storage F-15).
+static inline bool peel_extent_fits(size_t off, uint64_t len, size_t total) {
+    return off <= total && len <= (uint64_t)(total - off);
+}
+
+// ============================================================================
 // Big-Endian Write Helpers
 // ============================================================================
 

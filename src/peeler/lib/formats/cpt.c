@@ -423,10 +423,11 @@ typedef struct {
 } cp_memsrc_t;
 
 // Set up a memory source over a byte range within the archive buffer.
+// Returns -1 if the range leaves the archive.
 static int cp_memsrc_init(cp_memsrc_t *m, const uint8_t *data, size_t archive_len,
                           size_t offset, size_t length) {
     if (!m || !data) return -1;
-    if (offset > archive_len || length > archive_len - offset) return -1;
+    if (!peel_extent_fits(offset, length, archive_len)) return -1;
     m->base = data;
     m->pos = offset;
     m->end = offset + length;
@@ -565,28 +566,33 @@ static int cp_lzh_adapter(void *ctx, int *out) {
     return cp_lzh_next((cp_lzh_t *)ctx, out);
 }
 
-// Initialize a fork stream for RLE-only decompression.
-static void cp_fork_init_rle(cp_fork_t *f, const uint8_t *archive, size_t archive_len,
-                             size_t comp_offset, size_t comp_len, size_t uncomp_len) {
+// Initialize a fork stream for RLE-only decompression.  Returns -1 if the
+// compressed range leaves the archive.
+static int cp_fork_init_rle(cp_fork_t *f, const uint8_t *archive, size_t archive_len,
+                            size_t comp_offset, size_t comp_len, size_t uncomp_len) {
     memset(f, 0, sizeof(*f));
     f->use_lzh = 0;
     f->remain = uncomp_len;
     f->done = (uncomp_len == 0);
-    cp_memsrc_init(&f->memsrc, archive, archive_len, comp_offset, comp_len);
+    if (cp_memsrc_init(&f->memsrc, archive, archive_len, comp_offset, comp_len) < 0)
+        return -1;
     cp_rle_init(&f->rle, cp_memsrc_next, &f->memsrc);
+    return 0;
 }
 
 // cpt.md § 9.5 "Fork Stream Composition" — LZH output is piped through
 // an adapter callback into the RLE decoder.
-static void cp_fork_init_lzh(cp_fork_t *f, const uint8_t *archive, size_t archive_len,
-                             size_t comp_offset, size_t comp_len, size_t uncomp_len) {
+static int cp_fork_init_lzh(cp_fork_t *f, const uint8_t *archive, size_t archive_len,
+                            size_t comp_offset, size_t comp_len, size_t uncomp_len) {
     memset(f, 0, sizeof(*f));
     f->use_lzh = 1;
     f->remain = uncomp_len;
     f->done = (uncomp_len == 0);
-    cp_memsrc_init(&f->memsrc, archive, archive_len, comp_offset, comp_len);
+    if (cp_memsrc_init(&f->memsrc, archive, archive_len, comp_offset, comp_len) < 0)
+        return -1;
     cp_lzh_init(&f->lzh, cp_memsrc_next, &f->memsrc);
     cp_rle_init(&f->rle, cp_lzh_adapter, &f->lzh);
+    return 0;
 }
 
 // cpt.md § 9.5 "Fork Stream Composition" — each fork reads decompressed
@@ -782,14 +788,14 @@ static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len,
                                      size_t uncomp_len, bool use_lzh,
                                      decode_ctx_t *ctx) {
     // Set up the fork stream
+    // The caller has already checked this range, so a failure here is a bug;
+    // it used to be ignored, leaving the source empty, and a fork decoded
+    // from nothing was returned as if it were the file's.
     cp_fork_t fork;
-    if (use_lzh) {
-        cp_fork_init_lzh(&fork, archive, archive_len,
-                         comp_offset, comp_len, uncomp_len);
-    } else {
-        cp_fork_init_rle(&fork, archive, archive_len,
-                         comp_offset, comp_len, uncomp_len);
-    }
+    int rc = use_lzh ? cp_fork_init_lzh(&fork, archive, archive_len, comp_offset, comp_len, uncomp_len)
+                     : cp_fork_init_rle(&fork, archive, archive_len, comp_offset, comp_len, uncomp_len);
+    if (rc < 0)
+        decode_abort(ctx, "fork range %zu+%zu leaves the archive", comp_offset, comp_len);
 
     // Allocate output buffer to exact uncompressed size
     grow_buf_t out;
@@ -919,15 +925,16 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
         f->meta.finder_flags = e->finder_flags;
 
         // cpt.md § 3.4 "Fork Data Layout" — resource fork at file_offset,
-        // data fork at file_offset + rsrc_comp.
+        // data fork at file_offset + rsrc_comp.  Checked with the wrap-safe
+        // extent test: `rsrc_offset + rsrc_comp > len` in size_t wraps on
+        // wasm32, where the shipping build accepted a malformed archive and
+        // returned a fork decoded from nothing (09-storage F-15).
         size_t rsrc_offset = (size_t)e->file_offset;
-        size_t data_offset = rsrc_offset + (size_t)e->rsrc_comp;
-
-        // Validate fork data fits within the archive
-        if (rsrc_offset + e->rsrc_comp > len) {
+        if (!peel_extent_fits(rsrc_offset, e->rsrc_comp, len)) {
             decode_abort(&ctx, "resource fork of '%s' extends past archive", e->name);
         }
-        if (data_offset + e->data_comp > len) {
+        size_t data_offset = rsrc_offset + (size_t)e->rsrc_comp; // inside: no wrap
+        if (!peel_extent_fits(data_offset, e->data_comp, len)) {
             decode_abort(&ctx, "data fork of '%s' extends past archive", e->name);
         }
 

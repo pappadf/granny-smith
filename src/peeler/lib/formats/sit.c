@@ -254,10 +254,10 @@ static void entry_list_free(sit_entry_list_t *list) {
 // checked at all; only its end, as the data fork's start.
 static bool sit_forks_fit(size_t off, uint32_t rsrc_len, uint32_t data_len,
                           size_t total, size_t *data_off) {
-    if (off > total || rsrc_len > total - off)
+    if (!peel_extent_fits(off, rsrc_len, total))
         return false;
-    size_t d = off + rsrc_len;
-    if (data_len > total - d)
+    size_t d = off + rsrc_len; // inside the buffer, so no wrap
+    if (!peel_extent_fits(d, data_len, total))
         return false;
     *data_off = d;
     return true;

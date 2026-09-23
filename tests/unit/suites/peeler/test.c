@@ -358,6 +358,48 @@ static uint8_t *make_cpt_nested(unsigned depth, size_t *out_len) {
     return a;
 }
 
+// A Compact Pro archive holding one file entry with the given fork lengths and
+// no fork bytes at all: magic, directory offset, directory header, then the
+// entry -- its name, and the 45 metadata bytes of cpt.md §3.2.3.
+static uint8_t *make_cpt_file(uint32_t file_offset, uint32_t rsrc_comp, uint32_t data_comp, size_t *out_len) {
+    const char *name = "F";
+    size_t len = 8 + 7 + 1 + 1 + 45 + 64;
+    uint8_t *a = calloc(len, 1);
+    ASSERT_TRUE(a != NULL);
+    a[0] = 0x01;
+    a[1] = 0x01;
+    put32(a + 4, 8);
+    put16(a + 8 + 4, 1); // one entry
+    uint8_t *e = a + 8 + 7;
+    e[0] = 1; // name length, not a folder
+    e[1] = (uint8_t)name[0];
+    uint8_t *m = e + 2;
+    put32(m + 1, file_offset);
+    put32(m + 29, 16); // rsrc_uncomp
+    put32(m + 33, 0); // data_uncomp
+    put32(m + 37, rsrc_comp); // rsrc_comp
+    put32(m + 41, data_comp); // data_comp
+    *out_len = len;
+    return a;
+}
+
+// F-15, Compact Pro half: the fork extents were `file_offset + rsrc_comp > len`
+// in size_t -- a sum that wraps on wasm32.  Observed unfixed: native refuses
+// the archive; wasm32 ACCEPTS it (no error, one file) with a resource fork
+// decoded from an empty source, because cp_memsrc_init's own wrap-safe check
+// failed and its result was ignored.  Must be refused on every target.
+TEST(test_cpt_fork_extent_is_checked) {
+    size_t len;
+    uint8_t *a = make_cpt_file(0x40, 0xFFFFFFF0u, 0, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_cpt(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_TRUE(strstr(peel_err_msg(err), "resource fork of 'F' extends past archive") != NULL);
+    peel_err_free(err);
+    peel_file_list_free(&list);
+    free(a);
+}
+
 // F-07: cp_walk_entries recursed once per nested folder with no depth limit,
 // and each frame carries two 256-byte path buffers -- so a few bytes of
 // archive per level buy half a kilobyte of stack.  60 000 levels is 180 KB of
@@ -707,6 +749,7 @@ int main(void) {
     RUN(test_sit13_dynamic_round_trip);
     RUN(test_sit13_length_repeat_cannot_overrun);
     RUN(test_sit13_negative_length_is_rejected);
+    RUN(test_cpt_fork_extent_is_checked);
     RUN(test_cpt_nesting_cap_is_exact);
     RUN(test_cpt_folder_nesting_is_bounded);
     RUN(test_sit5_round_trip);
