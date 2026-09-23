@@ -42,6 +42,15 @@ struct class_desc;
 // subsystem evaluates it later (possibly repeatedly) with extra
 // bindings, e.g. logpoint messages with `$value`/`$addr`/`$size`.
 #define OBJ_ARG_TEMPLATE 0x0020u
+// OBJ_ARG_GROUPED — this optional argument is part of an all-or-nothing group
+// that the method body checks by argument count (screen.match's exclude
+// rectangles: one reference, or a reference plus all four edges, or plus all
+// eight).  Such a slot deliberately has no default: skipping it alone is not a
+// legal call, so the class validator's "an optional with no default that
+// precedes another optional is unreachable by name" rule does not apply.
+// Saying so in the declaration is the point — without it the grouping lives
+// only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
+#define OBJ_ARG_GROUPED 0x0040u
 
 // === Member visibility category (proposal-system-object-model.md §7.2) =======
 //
@@ -423,6 +432,16 @@ void object_fire_invalidators(struct object *o);
 // must be unique within the class. Returns true on success; on failure
 // writes a one-line message into err_buf (may be NULL).
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
+
+// Default value for an optional argument that has no real default.
+//
+// node_validate_args can only truncate argc at the tail, so an optional slot a
+// caller skipped must still be filled if any later optional was supplied. Give
+// such a slot `.default_value = &obj_arg_unset` and the body sees V_NONE,
+// meaning "not supplied". Declaring a real kind and defaulting to a sentinel of
+// some *other* kind (V_INT -1 for a V_UINT slot, say) is the thing this
+// replaces: it makes the body re-check a kind the declaration already fixed.
+extern const value_t obj_arg_unset;
 
 // === Meta-attribute slot ====================================================
 //

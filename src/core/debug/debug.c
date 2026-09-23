@@ -2473,22 +2473,33 @@ static const member_t bp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
      .flags = VAL_RO,
+     .doc = "Address this breakpoint watches, in the space named by `space`",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bp_attr_addr, .set = NULL}},
-    {.kind = M_ATTR, .name = "space", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "space",
+     .flags = VAL_RO,
+     .doc = "\"logical\" or \"physical\" — which address `addr` is in (they coincide with the MMU off)",
+     .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}                              },
     {.kind = M_ATTR,
      .name = "condition",
      .flags = 0,
-     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
+     .doc = "Expression that must evaluate true for the breakpoint to stop; empty = always stop",
+     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}       },
     {.kind = M_ATTR,
      .name = "hit_count",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}},
+     .doc = "Times this breakpoint has fired since it was added",
+     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}                          },
+    {.kind = M_ATTR,
+     .name = "id",
+     .flags = VAL_RO,
+     .doc = "Stable identifier; survives the removal of other breakpoints (indices do not)",
+     .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}                                  },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this breakpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}           },
 };
 
 static const class_desc_t breakpoint_entry_class = {
@@ -2595,31 +2606,48 @@ static const member_t lp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
+     .doc = "First address of the watched range",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}    },
     {.kind = M_ATTR,
      .name = "end_addr",
      .flags = VAL_RO,
+     .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
-    {.kind = M_ATTR, .name = "kind", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
-    {.kind = M_ATTR, .name = "level", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "kind",
+     .flags = VAL_RO,
+     .doc = "What triggers it: \"pc\" on execution, or \"read\"/\"write\"/\"rw\" on a data access",
+     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}                                   },
+    {.kind = M_ATTR,
+     .name = "level",
+     .flags = VAL_RO,
+     .doc = "Log level each fire is emitted at",
+     .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}                                   },
     {.kind = M_ATTR,
      .name = "category",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}},
+     .doc = "Log category each fire is emitted under",
+     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}                             },
     {.kind = M_ATTR,
      .name = "message",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}},
+     .doc = "Fire-time template; $value/$addr/$size bind per fire. Empty = the default one-line report",
+     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}                              },
     {.kind = M_ATTR,
      .name = "hit_count",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
+     .doc = "Times this logpoint has fired since it was added",
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}                              },
+    {.kind = M_ATTR,
+     .name = "id",
+     .flags = VAL_RO,
+     .doc = "Stable identifier; survives the removal of other logpoints (indices do not)",
+     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}                                      },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this logpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}               },
 };
 
 static const class_desc_t logpoint_entry_class = {
@@ -2689,17 +2717,16 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     // Optional `space` (3rd arg): "logical" (default) or "physical".
     // Physical-space breakpoints are only meaningful on the 68030 with
     // the MMU active; on the Plus the two address spaces coincide.
-    addr_space_t space = ADDR_LOGICAL;
-    if (argc >= 3 && argv[2].s && *argv[2].s) {
-        if (argv[2].kind == V_ENUM && argv[2].enm.idx == 1)
-            space = ADDR_PHYSICAL;
-        else if (strcmp(argv[2].s, "logical") != 0)
-            return val_err("breakpoints.add: space must be \"logical\" or \"physical\"");
-    }
+    //
+    // Read the enum index, not `.s`: on a V_ENUM the string pointer shares
+    // storage with `enm`, so the old `argv[2].s && *argv[2].s` test
+    // dereferenced an index as a pointer.  It never fired only because the
+    // slot had no default and so was unreachable by name at all.
+    addr_space_t space = (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
     breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
-    if (argc >= 2 && argv[1].s && *argv[1].s)
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
         breakpoint_set_condition(bp, argv[1].s);
     return val_obj(breakpoint_get_entry_object(bp));
 }
@@ -2768,15 +2795,11 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
             return val_err("logpoints.add: width must be b, w, or l");
     }
 
+    // The slot is V_UINT, so validate_slot has already coerced anything the
+    // caller passed; V_NONE means it passed nothing (obj_arg_unset).
     uint32_t end_addr = addr;
-    if (argc > 3 && (argv[3].kind == V_UINT || argv[3].kind == V_INT)) {
-        bool ok = false;
-        uint64_t e = val_as_u64(&argv[3], &ok);
-        if (ok && argv[3].kind == V_UINT)
-            end_addr = (uint32_t)e;
-        else if (ok && argv[3].kind == V_INT && argv[3].i >= 0)
-            end_addr = (uint32_t)argv[3].i;
-    }
+    if (argc > 3 && argv[3].kind == V_UINT)
+        end_addr = (uint32_t)argv[3].u;
     // Memory logpoints with a width and no explicit range widen to
     // cover every access overlapping the address.
     if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
@@ -2800,24 +2823,16 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
 
     bool have_value_filter = false;
     uint32_t value_filter = 0;
-    if (argc > 7 && (argv[7].kind == V_UINT || argv[7].kind == V_INT)) {
-        bool ok = false;
-        uint64_t v = val_as_u64(&argv[7], &ok);
-        if (ok && !(argv[7].kind == V_INT && argv[7].i < 0)) {
-            have_value_filter = true;
-            value_filter = (uint32_t)v;
-        }
+    if (argc > 7 && argv[7].kind == V_UINT) {
+        have_value_filter = true;
+        value_filter = (uint32_t)argv[7].u;
     }
     if (have_value_filter && kind == LP_KIND_PC)
         return val_err("logpoints.add: value filter is only supported on memory logpoints");
 
-    addr_space_t space = ADDR_LOGICAL;
-    if (argc > 8 && argv[8].kind == V_STRING && argv[8].s && argv[8].s[0]) {
-        if (argv[8].kind == V_ENUM && argv[8].enm.idx == 1)
-            space = ADDR_PHYSICAL;
-        else if (strcmp(argv[8].s, "logical") != 0)
-            return val_err("logpoints.add: space must be \"logical\" or \"physical\"");
-    }
+    // The slot is V_ENUM against debug_space_values, so the index is the
+    // answer -- validate_slot rejected anything that is not in the table.
+    addr_space_t space = (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
 
     log_category_t *category = log_get_category(category_name);
     if (!category)
@@ -2841,13 +2856,23 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
     return val_obj(logpoint_get_entry_object(lp));
 }
 
+// "logical" — the default for every space= argument below.
+static const value_t def_space_logical = {
+    .kind = V_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
+};
+
 static const arg_decl_t bp_add_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address"},
-    {.name = "condition", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"},
+    {.name = "condition",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "optional condition string"},
     {.name = "space",
      .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = debug_space_values,
+     .default_value = &def_space_logical,
      .doc = "\"logical\" (default) or \"physical\""},
 };
 
@@ -2855,16 +2880,9 @@ static const arg_decl_t bp_add_args[] = {
 // V_NONE holes fill instead of erroring (see node_validate_args).
 static const value_t lp_def_mode = {.kind = V_STRING, .s = (char *)"pc"};
 static const value_t lp_def_width = {.kind = V_STRING, .s = (char *)""};
-static const value_t lp_def_end = {.kind = V_INT, .i = -1};
 static const value_t lp_def_message = {.kind = V_STRING, .s = (char *)""};
 static const value_t lp_def_level = {.kind = V_INT, .i = 0};
 static const value_t lp_def_category = {.kind = V_STRING, .s = (char *)""};
-static const value_t lp_def_value = {.kind = V_INT, .i = -1};
-// The default must be a V_ENUM now that the slot is one, so it agrees with
-// what validate_slot produces for an explicitly-passed "logical".
-static const value_t lp_def_space = {
-    .kind = V_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
-};
 
 static const arg_decl_t lp_add_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
@@ -2882,7 +2900,7 @@ static const arg_decl_t lp_add_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .default_value = &lp_def_end,
+     .default_value = &obj_arg_unset,
      .doc = "range end address, inclusive"},
     {.name = "message",
      .kind = V_STRING,
@@ -2903,12 +2921,13 @@ static const arg_decl_t lp_add_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .default_value = &lp_def_value,
+     .default_value = &obj_arg_unset,
      .doc = "only fire when the accessed value matches (memory modes)"},
     {.name = "space",
-     .kind = V_STRING,
+     .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &lp_def_space,
+     .enum_values = debug_space_values,
+     .default_value = &def_space_logical,
      .doc = "\"logical\" (default) or \"physical\""},
 };
 
@@ -3058,32 +3077,31 @@ static const char *const debug_log_category_values[] = {
 // `file`, which sits between them.  A V_NONE default is filled in and skips
 // validation, which is precisely "the caller did not mention this one" and is
 // what the body below tests for.
-static const value_t log_arg_unset = {.kind = V_NONE};
 
 static const arg_decl_t debug_log_args[] = {
     {.name = "category", .kind = V_ENUM, .enum_values = debug_log_category_values, .doc = "Subsystem to configure"},
     {.name = "level",
-     .default_value = &log_arg_unset,
+     .default_value = &obj_arg_unset,
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Verbosity; 0 silences level-1-and-up sites"},
     {.name = "stdout",
-     .default_value = &log_arg_unset,
+     .default_value = &obj_arg_unset,
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Emit to stdout"},
     {.name = "file",
-     .default_value = &log_arg_unset,
+     .default_value = &obj_arg_unset,
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Append to this path; \"off\" closes it"},
     {.name = "ts",
-     .default_value = &log_arg_unset,
+     .default_value = &obj_arg_unset,
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Stamp each line with a timestamp"},
     {.name = "pc",
-     .default_value = &log_arg_unset,
+     .default_value = &obj_arg_unset,
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Stamp each line with the guest PC"},
@@ -3129,12 +3147,20 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
     if (!dif)
         return val_err("debug.disasm: CPU not initialised");
 
+    // Either slot may be absent (V_NONE), so read by kind rather than argc:
+    // `disasm(20)` is a count, `disasm(0x400000, 20)` is address + count, and
+    // `disasm(count=20)` -- which used to fail with "missing argument
+    // 'addr_or_count'" -- is a count from the PC.
     uint32_t addr = dif->get_pc(dif->ctx);
     int64_t count = 16;
-    if (argc == 1) {
-        count = argv[0].i;
-    } else if (argc >= 2) {
+    bool have_first = argc >= 1 && argv[0].kind == V_INT;
+    bool have_second = argc >= 2 && argv[1].kind == V_INT;
+    if (have_first && have_second) {
         addr = (uint32_t)argv[0].i;
+        count = argv[1].i;
+    } else if (have_first) {
+        count = argv[0].i;
+    } else if (have_second) {
         count = argv[1].i;
     }
     if (count <= 0)
@@ -3155,11 +3181,12 @@ static const arg_decl_t debug_disasm_args[] = {
     {.name = "addr_or_count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
      .doc = "With one arg: instruction count (from PC, default 16). With two args: start address."},
     {.name = "count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Number of instructions when addr is given as the first argument."                    },
+     .doc = "Number of instructions when addr is given as the first argument."},
 };
 
 // Side-effect-free conversion of an 80-bit extended-precision register
@@ -3239,12 +3266,18 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     if (!cpu)
         return val_err("debug.frame: CPU not initialised");
 
+    // Same shape as debug.disasm: read by kind, so `frame(count=8)` works
+    // instead of failing with "missing argument 'addr'".
     uint32_t addr = cpu_get_pc(cpu);
     int64_t count = 32;
-    if (argc == 1) {
-        count = argv[0].i;
-    } else if (argc >= 2) {
+    bool have_addr = argc >= 1 && argv[0].kind == V_INT;
+    bool have_count = argc >= 2 && argv[1].kind == V_INT;
+    if (have_addr && have_count) {
         addr = (uint32_t)argv[0].i;
+        count = argv[1].i;
+    } else if (have_addr) {
+        count = argv[0].i;
+    } else if (have_count) {
         count = argv[1].i;
     }
     if (count <= 0)
@@ -3348,7 +3381,11 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
 }
 
 static const arg_decl_t debug_frame_args[] = {
-    {.name = "addr",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Start address (default PC)" },
+    {.name = "addr",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "Start address (default PC)"},
     {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Number of rows (default 32)"},
 };
 
@@ -3852,31 +3889,73 @@ static const arg_decl_t screen_save_args[] = {
 };
 static const arg_decl_t screen_match_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
-    {.name = "top", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region top edge"},
-    {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
-    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
-    {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
-    {.name = "top2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region top edge"},
-    {.name = "left2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region left edge"},
+    {.name = "top",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region top edge"},
+    {.name = "left",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region left edge"},
+    {.name = "bottom",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region bottom edge"},
+    {.name = "right",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region right edge"},
+    {.name = "top2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region top edge"},
+    {.name = "left2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region left edge"},
     {.name = "bottom2",
      .kind = V_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region bottom edge"},
-    {.name = "right2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region right edge"},
+    {.name = "right2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region right edge"},
 };
 static const arg_decl_t screen_matches_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
-    {.name = "top", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region top edge"},
-    {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
-    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
-    {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
-    {.name = "top2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region top edge"},
-    {.name = "left2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region left edge"},
+    {.name = "top",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region top edge"},
+    {.name = "left",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region left edge"},
+    {.name = "bottom",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region bottom edge"},
+    {.name = "right",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region right edge"},
+    {.name = "top2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region top edge"},
+    {.name = "left2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region left edge"},
     {.name = "bottom2",
      .kind = V_INT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region bottom edge"},
-    {.name = "right2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region right edge"},
+    {.name = "right2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -3886,10 +3965,16 @@ static const arg_decl_t screen_match_or_save_args[] = {
      .doc = "Path to write current screen on miss"},
 };
 static const arg_decl_t screen_checksum_args[] = {
-    {.name = "top",    .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region top edge"   },
-    {.name = "left",   .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region left edge"  },
-    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
-    {.name = "right",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
+    {.name = "top",    .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region top edge" },
+    {.name = "left",   .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region left edge"},
+    {.name = "bottom",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Region bottom edge"                                                                                       },
+    {.name = "right",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Region right edge"                                                                                        },
 };
 // Stride and format: every per-card framebuffer node has had these, and the
 // generic `screen` node -- the one node that exists on EVERY machine,

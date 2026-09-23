@@ -57,9 +57,18 @@ static const arg_decl_t sum_args[] = {
 };
 
 static const member_t nt_members[] = {
-    {.kind = M_METHOD, .name = "trip", .method = {.args = trip_args, .nargs = 3, .result = V_INT, .fn = nt_trip}},
-    {.kind = M_METHOD, .name = "sum",  .method = {.args = sum_args, .nargs = 2, .result = V_INT, .fn = nt_sum}  },
-    {.kind = M_METHOD, .name = "raw",  .method = {.args = NULL, .nargs = 0, .result = V_INT, .fn = nt_raw}      },
+    {.kind = M_METHOD,
+     .name = "trip",
+     .doc = "three named args",
+     .method = {.args = trip_args, .nargs = 3, .result = V_INT, .fn = nt_trip}},
+    {.kind = M_METHOD,
+     .name = "sum",
+     .doc = "two named args",
+     .method = {.args = sum_args, .nargs = 2, .result = V_INT, .fn = nt_sum}  },
+    {.kind = M_METHOD,
+     .name = "raw",
+     .doc = "no declared args",
+     .method = {.args = NULL, .nargs = 0, .result = V_INT, .fn = nt_raw}      },
 };
 
 static const class_desc_t nt_class = {

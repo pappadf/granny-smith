@@ -748,41 +748,56 @@ CPU_CCR_BIT_RW(n, cpu_ccr_n)
 CPU_CCR_BIT_RW(x, cpu_ccr_x)
 // clang-format on
 
-#define ATTR_RW_HEX(name_, get_, set_)                                                                                 \
+#define ATTR_RW_HEX(name_, get_, set_, doc_)                                                                           \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .attr = {                                                                       \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
             .type = V_UINT,                                                                                            \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = get_,                                                                                               \
             .set = set_                                                                                                \
         }                                                                                                              \
     }
-#define ATTR_RO(name_, get_)                                                                                           \
+#define ATTR_RO(name_, get_, doc_)                                                                                     \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .flags = VAL_RO, .attr = {.type = V_UINT, .get = get_, .set = NULL }            \
+        .kind = M_ATTR, .name = name_, .flags = VAL_RO, .doc = doc_, .attr = {                                         \
+            .type = V_UINT,                                                                                            \
+            .get = get_,                                                                                               \
+            .set = NULL                                                                                                \
+        }                                                                                                              \
     }
-#define ATTR_RW_BIT(name_, get_, set_)                                                                                 \
+// A condition-code bit: one of the five CCR flags, readable and writable as 0/1.
+#define ATTR_RW_BIT(name_, get_, set_, doc_)                                                                           \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .attr = {.type = V_UINT, .get = get_, .set = set_ }                             \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {.type = V_UINT, .get = get_, .set = set_ }                \
     }
+// D0..D7 and A0..A7 differ only by number, so generate their doc text too --
+// sixteen hand-written strings saying "data register 3" would be sixteen
+// chances to write "register 2".
+#define CPU_DREG_MEMBER(N) ATTR_RW_HEX("d" #N, attr_cpu_d##N, set_cpu_d##N, "Data register D" #N " (32-bit)")
+#define CPU_AREG_MEMBER(N) ATTR_RW_HEX("a" #N, attr_cpu_a##N, set_cpu_a##N, "Address register A" #N " (32-bit)")
 
+// clang-format off
 static const member_t cpu_members[] = {
-    ATTR_RW_HEX("pc", attr_cpu_pc, set_cpu_pc),    ATTR_RW_HEX("sr", attr_cpu_sr, set_cpu_sr),
-    ATTR_RW_HEX("ccr", attr_cpu_ccr, set_cpu_ccr), ATTR_RW_HEX("ssp", attr_cpu_ssp, set_cpu_ssp),
-    ATTR_RW_HEX("usp", attr_cpu_usp, set_cpu_usp), ATTR_RW_HEX("msp", attr_cpu_msp, set_cpu_msp),
-    ATTR_RW_HEX("vbr", attr_cpu_vbr, set_cpu_vbr), ATTR_RW_HEX("sp", attr_cpu_sp, set_cpu_sp),
-    ATTR_RW_HEX("d0", attr_cpu_d0, set_cpu_d0),    ATTR_RW_HEX("d1", attr_cpu_d1, set_cpu_d1),
-    ATTR_RW_HEX("d2", attr_cpu_d2, set_cpu_d2),    ATTR_RW_HEX("d3", attr_cpu_d3, set_cpu_d3),
-    ATTR_RW_HEX("d4", attr_cpu_d4, set_cpu_d4),    ATTR_RW_HEX("d5", attr_cpu_d5, set_cpu_d5),
-    ATTR_RW_HEX("d6", attr_cpu_d6, set_cpu_d6),    ATTR_RW_HEX("d7", attr_cpu_d7, set_cpu_d7),
-    ATTR_RW_HEX("a0", attr_cpu_a0, set_cpu_a0),    ATTR_RW_HEX("a1", attr_cpu_a1, set_cpu_a1),
-    ATTR_RW_HEX("a2", attr_cpu_a2, set_cpu_a2),    ATTR_RW_HEX("a3", attr_cpu_a3, set_cpu_a3),
-    ATTR_RW_HEX("a4", attr_cpu_a4, set_cpu_a4),    ATTR_RW_HEX("a5", attr_cpu_a5, set_cpu_a5),
-    ATTR_RW_HEX("a6", attr_cpu_a6, set_cpu_a6),    ATTR_RW_HEX("a7", attr_cpu_a7, set_cpu_a7),
-    ATTR_RW_BIT("c", attr_cpu_cc_c, set_cpu_cc_c), ATTR_RW_BIT("v", attr_cpu_cc_v, set_cpu_cc_v),
-    ATTR_RW_BIT("z", attr_cpu_cc_z, set_cpu_cc_z), ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n),
-    ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x), ATTR_RO("instr_count", attr_cpu_instr_count),
+    ATTR_RW_HEX("pc",  attr_cpu_pc,  set_cpu_pc,  "Program counter — address of the next instruction to execute"),
+    ATTR_RW_HEX("sr",  attr_cpu_sr,  set_cpu_sr,  "Status register: the CCR in the low byte, plus the supervisor/trace bits and interrupt mask"),
+    ATTR_RW_HEX("ccr", attr_cpu_ccr, set_cpu_ccr, "Condition code register — the low byte of SR (X, N, Z, V, C)"),
+    ATTR_RW_HEX("ssp", attr_cpu_ssp, set_cpu_ssp, "Supervisor stack pointer, the A7 seen in supervisor mode"),
+    ATTR_RW_HEX("usp", attr_cpu_usp, set_cpu_usp, "User stack pointer, the A7 seen in user mode"),
+    ATTR_RW_HEX("msp", attr_cpu_msp, set_cpu_msp, "Master stack pointer (68020+); used instead of SSP when SR's M bit is set"),
+    ATTR_RW_HEX("vbr", attr_cpu_vbr, set_cpu_vbr, "Vector base register (68010+) — where the exception vector table starts"),
+    ATTR_RW_HEX("sp",  attr_cpu_sp,  set_cpu_sp,  "Whichever stack pointer A7 currently selects, following the SR's S and M bits"),
+    CPU_DREG_MEMBER(0), CPU_DREG_MEMBER(1), CPU_DREG_MEMBER(2), CPU_DREG_MEMBER(3),
+    CPU_DREG_MEMBER(4), CPU_DREG_MEMBER(5), CPU_DREG_MEMBER(6), CPU_DREG_MEMBER(7),
+    CPU_AREG_MEMBER(0), CPU_AREG_MEMBER(1), CPU_AREG_MEMBER(2), CPU_AREG_MEMBER(3),
+    CPU_AREG_MEMBER(4), CPU_AREG_MEMBER(5), CPU_AREG_MEMBER(6), CPU_AREG_MEMBER(7),
+    ATTR_RW_BIT("c", attr_cpu_cc_c, set_cpu_cc_c, "Carry flag"),
+    ATTR_RW_BIT("v", attr_cpu_cc_v, set_cpu_cc_v, "Overflow flag"),
+    ATTR_RW_BIT("z", attr_cpu_cc_z, set_cpu_cc_z, "Zero flag"),
+    ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
+    ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
+    ATTR_RO("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
 };
+// clang-format on
 
 static const class_desc_t cpu_class = {
     .name = "cpu",
@@ -845,7 +860,8 @@ static value_t attr_fpu_fpN(struct object *self, const member_t *m) {
 
 #define FP_REG(idx)                                                                                                    \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = "fp" #idx, .flags = VAL_RO, .attr = {                                                  \
+        .kind = M_ATTR, .name = "fp" #idx, .flags = VAL_RO,                                                            \
+        .doc = "Floating-point data register FP" #idx " — 80-bit extended precision, as raw bytes", .attr = {          \
             .type = V_BYTES,                                                                                           \
             .get = attr_fpu_fpN,                                                                                       \
             .set = NULL,                                                                                               \
@@ -864,16 +880,19 @@ static const member_t fpu_members[] = {
     FP_REG(7),
     {.kind = M_ATTR,
          .name = "fpcr",
-         .flags = VAL_RO,
-         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpcr, .set = NULL} },
+         .flags = VAL_RO | M_CAT_ADVANCED,
+         .doc = "Floating-point control register: rounding mode, rounding precision, and the exception enables",
+         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpcr, .set = NULL}                                                                                                                   },
     {.kind = M_ATTR,
          .name = "fpsr",
-         .flags = VAL_RO,
-         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpsr, .set = NULL} },
+         .flags = VAL_RO | M_CAT_ADVANCED,
+         .doc = "Floating-point status register: condition codes, quotient byte, and the accrued/current exception bytes",
+         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpsr, .set = NULL}                                                                                                                   },
     {.kind = M_ATTR,
          .name = "fpiar",
-         .flags = VAL_RO,
-         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpiar, .set = NULL}},
+         .flags = VAL_RO | M_CAT_ADVANCED,
+         .doc =
+         "Address of the last floating-point instruction that could take an exception — where a trap handler resumes",   .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpiar, .set = NULL}},
 };
 
 static const class_desc_t fpu_class = {
@@ -984,39 +1003,48 @@ static value_t attr_mmu_enabled(struct object *self, const member_t *m) {
 static const member_t mmu_members[] = {
     {.kind = M_ATTR,
      .name = "tc",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Translation control: the enable bit, page size, and the initial-shift/table-index split",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tc, .set = NULL}    },
     {.kind = M_ATTR,
      .name = "crp_hi",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "CPU root pointer, high longword — descriptor type and limit for the user-space table",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_hi, .set = NULL}},
     {.kind = M_ATTR,
      .name = "crp_lo",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "CPU root pointer, low longword — physical address of the user-space root table",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_lo, .set = NULL}},
     {.kind = M_ATTR,
      .name = "srp_hi",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Supervisor root pointer, high longword; used only when TC selects a separate supervisor tree",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_hi, .set = NULL}},
     {.kind = M_ATTR,
      .name = "srp_lo",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Supervisor root pointer, low longword — physical address of the supervisor root table",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_lo, .set = NULL}},
     {.kind = M_ATTR,
      .name = "tt0",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Transparent translation register 0 — an address range that bypasses the page tables entirely",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt0, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "tt1",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Transparent translation register 1 — the second such range",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt1, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "mmusr",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Status of the last PTEST: bus error, resident, write-protected, and the level reached",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_mmusr, .set = NULL} },
     {.kind = M_ATTR,
      .name = "enabled",
      .flags = VAL_RO,
+     .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}                              },
 };
 
@@ -1070,39 +1098,48 @@ static value_t attr_mmu040_enabled(struct object *self, const member_t *m) {
 static const member_t mmu040_members[] = {
     {.kind = M_ATTR,
      .name = "tc",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Translation control: enable bit and page size (4K or 8K); the 68040 has no configurable table split",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_tc, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "itt0",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Instruction transparent translation register 0 — an instruction-fetch range that bypasses the tables",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt0, .set = NULL} },
     {.kind = M_ATTR,
      .name = "itt1",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Instruction transparent translation register 1",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt1, .set = NULL} },
     {.kind = M_ATTR,
      .name = "dtt0",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Data transparent translation register 0 — a data-access range that bypasses the tables",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt0, .set = NULL} },
     {.kind = M_ATTR,
      .name = "dtt1",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Data transparent translation register 1",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt1, .set = NULL} },
     {.kind = M_ATTR,
      .name = "urp",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "User root pointer — physical address of the root table used in user mode",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_urp, .set = NULL}  },
     {.kind = M_ATTR,
      .name = "srp",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Supervisor root pointer — physical address of the root table used in supervisor mode",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_srp, .set = NULL}  },
     {.kind = M_ATTR,
      .name = "mmusr",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Status of the last PTEST: physical address plus the resident, write-protected and transparent bits",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_mmusr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "enabled",
      .flags = VAL_RO,
+     .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}                             },
 };
 

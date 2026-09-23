@@ -1228,7 +1228,8 @@ static value_t via_port_attr_direction(struct object *self, const member_t *m) {
     static const member_t VAR[] = {                                                                                    \
         {.kind = M_ATTR,                                                                                               \
          .name = "output",                                                                                             \
-         .flags = VAL_RO,                                                                                              \
+         .flags = VAL_RO | M_CAT_ADVANCED,                                                                             \
+         .doc = "ORA/ORB — the byte the VIA drives onto the pins that `direction` marks as outputs",                   \
          .attr = {.type = V_UINT,                                                                                      \
                   .presentation_flags = VAL_HEX,                                                                       \
                   .get = via_port_attr_output,                                                                         \
@@ -1236,7 +1237,8 @@ static value_t via_port_attr_direction(struct object *self, const member_t *m) {
                   .user_data = (void *)(uintptr_t)(PORT)}},                                                            \
         {.kind = M_ATTR,                                                                                               \
          .name = "input",                                                                                              \
-         .flags = VAL_RO,                                                                                              \
+         .flags = VAL_RO | M_CAT_ADVANCED,                                                                             \
+         .doc = "IRA/IRB — the level attached hardware presents on the pins that `direction` marks as inputs",         \
          .attr = {.type = V_UINT,                                                                                      \
                   .presentation_flags = VAL_HEX,                                                                       \
                   .get = via_port_attr_input,                                                                          \
@@ -1244,7 +1246,8 @@ static value_t via_port_attr_direction(struct object *self, const member_t *m) {
                   .user_data = (void *)(uintptr_t)(PORT)}},                                                            \
         {.kind = M_ATTR,                                                                                               \
          .name = "direction",                                                                                          \
-         .flags = VAL_RO,                                                                                              \
+         .flags = VAL_RO | M_CAT_ADVANCED,                                                                             \
+         .doc = "DDRA/DDRB — per-pin data direction; a 1 bit is an output, a 0 bit an input",                          \
          .attr = {.type = V_UINT,                                                                                      \
                   .presentation_flags = VAL_HEX,                                                                       \
                   .get = via_port_attr_direction,                                                                      \
@@ -1265,30 +1268,38 @@ static const class_desc_t via_port_b_class = {.name = "via_port",
                                               .n_members = sizeof(via_port_b_members) / sizeof(via_port_b_members[0])};
 
 // Status-register member table (shared by via1 / via2 via instance_data).
+// The 6522's own registers. Advanced: a Mac-level reader wants `via1.port_a`,
+// not the interrupt-flag byte behind it.
 static const member_t via_members[] = {
     {.kind = M_ATTR,
      .name = "ifr",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Interrupt flag register; bit 7 is the OR of the enabled sources below it",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_ifr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "ier",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Interrupt enable register; a 1 bit lets the matching IFR bit raise the VIA's IRQ line",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_ier, .set = NULL}},
     {.kind = M_ATTR,
      .name = "acr",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Auxiliary control register: timer 1/2 modes, shift-register mode, and port input latching",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_acr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "pcr",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Peripheral control register: the edge and handshake behaviour of CA1/CA2 and CB1/CB2",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_pcr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "sr",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "Shift register — the byte in flight on CB2, which is how the Mac talks to the keyboard and RTC",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_sr, .set = NULL} },
     {.kind = M_ATTR,
      .name = "freq_factor",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .doc = "CPU cycles per VIA cycle on this machine; the timers count in VIA cycles",
      .attr = {.type = V_UINT, .get = via_attr_freq_factor, .set = NULL}                       },
 };
 

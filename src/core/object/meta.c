@@ -253,14 +253,12 @@ static value_t meta_get_category(struct object *self, const member_t *m) {
 static value_t meta_method_complete(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const char *line = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s) ? argv[0].s : "";
-    int cursor = (int)strlen(line);
-    if (argc >= 2) {
-        if (argv[1].kind == V_INT)
-            cursor = (int)argv[1].i;
-        else if (argv[1].kind == V_UINT)
-            cursor = (int)argv[1].u;
-    }
+    // `line` is a required V_STRING and `cursor` a V_INT, so node_validate_args
+    // has already rejected a call that does not supply them that way.  Only
+    // `cursor` being absent is still a live case -- it is optional with no
+    // default, so a one-argument call truncates argc to 1.
+    const char *line = argv[0].s;
+    int cursor = (argc >= 2 && argv[1].kind == V_INT) ? (int)argv[1].i : (int)strlen(line);
     if (!g_complete_provider)
         return val_list(NULL, 0);
     return g_complete_provider(line, cursor);
@@ -271,8 +269,7 @@ static value_t meta_method_complete(struct object *self, const member_t *m, int 
 // already knows which member it wants.
 static value_t meta_method_member(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("member: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const class_desc_t *cls = insp ? object_class(insp) : NULL;
     const member_t *mb = class_find_member(cls, argv[0].s);
@@ -306,8 +303,7 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
 // Unknown names default to "basic" (faithful-by-default, §P6).
 static value_t meta_method_member_category(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("member_category: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     return val_str(category_name(mb ? mb->flags : 0));
@@ -317,8 +313,7 @@ static value_t meta_method_member_category(struct object *self, const member_t *
 // name itself (proposal §7.1).
 static value_t meta_method_member_label(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("member_label: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     const char *label = (mb && mb->label) ? mb->label : argv[0].s;
@@ -332,8 +327,7 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
 // is not a method.
 static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("method_info: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!mb || mb->kind != M_METHOD)
@@ -359,8 +353,7 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
 // error/list distinction to tell "indexed collection" from "named child".
 static value_t meta_method_indices(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("indices: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!mb || mb->kind != M_CHILD || !mb->child.indexed)
@@ -396,7 +389,10 @@ static const arg_decl_t meta_complete_args[] = {
 };
 
 static const arg_decl_t meta_member_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Member name on the inspected class"},
+    {.name = "name",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Member name on the inspected class"},
 };
 
 static const arg_decl_t meta_named_member_args[] = {

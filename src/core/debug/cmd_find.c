@@ -207,12 +207,17 @@ static value_t find_method_long(struct object *self, const member_t *m, int argc
     return find_int_common("find.long", 4, argc, argv);
 }
 
+// `start` documents a default of 0, so declare it: without one, naming `end`
+// alone failed with "missing argument 'start'".
+static const value_t find_def_start = {.kind = V_UINT, .u = 0};
+
 static const arg_decl_t find_str_args[] = {
     {.name = "text", .kind = V_STRING, .doc = "Search text"},
     {.name = "start",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
+     .default_value = &find_def_start,
      .doc = "Scan start address (default 0)"},
     {.name = "end",
      .kind = V_UINT,
@@ -226,6 +231,7 @@ static const arg_decl_t find_bytes_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
+     .default_value = &find_def_start,
      .doc = "Scan start address (default 0)"},
     {.name = "end",
      .kind = V_UINT,
@@ -239,6 +245,7 @@ static const arg_decl_t find_int_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
+     .default_value = &find_def_start,
      .doc = "Scan start address (default 0)"},
     {.name = "end",
      .kind = V_UINT,

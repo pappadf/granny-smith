@@ -122,13 +122,24 @@ static const arg_decl_t any_arg[] = {
 static const member_t math2_members[] = {
     {.kind = M_METHOD,
      .name = "close",
-     .method = {.args = close_args, .nargs = 3, .result = V_BOOL, .fn = math2_close}                               },
-    {.kind = M_METHOD, .name = "min",  .method = {.args = pair_args, .nargs = 2, .result = V_INT, .fn = math2_min} },
-    {.kind = M_METHOD, .name = "id",   .method = {.args = one_arg, .nargs = 1, .result = V_INT, .fn = math2_id}    },
-    {.kind = M_METHOD, .name = "poly", .method = {.args = width_arg, .nargs = 1, .result = V_ANY, .fn = math2_poly}},
+     .doc = "three args, bool result",
+     .method = {.args = close_args, .nargs = 3, .result = V_BOOL, .fn = math2_close}},
+    {.kind = M_METHOD,
+     .name = "min",
+     .doc = "two args, int result",
+     .method = {.args = pair_args, .nargs = 2, .result = V_INT, .fn = math2_min}    },
+    {.kind = M_METHOD,
+     .name = "id",
+     .doc = "one arg, int result",
+     .method = {.args = one_arg, .nargs = 1, .result = V_INT, .fn = math2_id}       },
+    {.kind = M_METHOD,
+     .name = "poly",
+     .doc = "declared V_ANY result",
+     .method = {.args = width_arg, .nargs = 1, .result = V_ANY, .fn = math2_poly}   },
     {.kind = M_METHOD,
      .name = "kind_of",
-     .method = {.args = any_arg, .nargs = 1, .result = V_INT, .fn = math2_kind_of}                                 },
+     .doc = "V_ANY argument slot",
+     .method = {.args = any_arg, .nargs = 1, .result = V_INT, .fn = math2_kind_of}  },
 };
 
 static const class_desc_t math2_class = {
@@ -329,7 +340,11 @@ static value_t any_attr_get(struct object *self, const member_t *m) {
     return val_uint(4, 0);
 }
 static const member_t any_attr_members[] = {
-    {.kind = M_ATTR, .name = "x", .flags = VAL_RO, .attr = {.type = V_ANY, .get = any_attr_get}},
+    {.kind = M_ATTR,
+     .name = "x",
+     .flags = VAL_RO,
+     .doc = "V_ANY attribute slot",
+     .attr = {.type = V_ANY, .get = any_attr_get}},
 };
 static const class_desc_t any_attr_class = {
     .name = "anyattr",
