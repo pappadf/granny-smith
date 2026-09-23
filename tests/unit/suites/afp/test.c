@@ -2103,6 +2103,36 @@ TEST(desktop_store_reopens_and_prunes) {
 
 // ============================================================================
 
+// A fork refnum is never handed out while another fork holds it.  Refnums came
+// from a counter that skipped only 0: after 65,535 opens a new fork got the
+// refnum a still-open one held, and FPRead on it read the new file
+// (10-network F-08).  One allocator now serves every id the stack issues.
+TEST(fork_refnums_are_never_reused_while_held) {
+    fixture_up("refwrap");
+    write_file("held.txt", "HELD");
+    write_file("other.txt", "OTHER");
+    uint16_t held = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("held.txt", false, 0x0001, &held));
+    for (long i = 0; i < 65536; i++) {
+        uint16_t r = 0;
+        ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("other.txt", false, 0x0001, &r));
+        ASSERT_TRUE(r != held && r != 0);
+        close_fork(r);
+    }
+    req_reset();
+    put8(0);
+    put16(held);
+    put32(0);
+    put32(4);
+    put8(0);
+    put8(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_READ));
+    ASSERT_EQ_INT(4, g_reply_len);
+    ASSERT_EQ_INT(0, memcmp(g_reply, "HELD", 4));
+    close_fork(held);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2143,6 +2173,7 @@ int main(void) {
     RUN(set_fork_parms_truncates_and_flush_persists);
     RUN(write_may_be_partial_and_reports_where_it_stopped);
     RUN(read_past_end_of_fork_is_eof);
+    RUN(fork_refnums_are_never_reused_while_held);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

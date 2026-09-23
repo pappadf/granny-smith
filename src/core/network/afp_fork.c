@@ -8,6 +8,7 @@
 
 #include "afp_catalog.h"
 #include "afp_meta.h"
+#include "atalk_id.h"
 #include "log.h"
 
 #include <errno.h>
@@ -56,7 +57,7 @@ struct afp_fork {
 
 static afp_backing_t *g_backings;
 static afp_fork_t *g_forks;
-static uint16_t g_next_ref = 0x0042;
+static uint32_t g_next_ref = 0x0042; // atalk_id_alloc cursor
 static uint32_t g_open_count;
 
 // A server can hold this many forks open at once; past it FPOpenFork answers
@@ -195,6 +196,12 @@ static uint16_t deny_to_access(uint16_t deny) {
 
 // --- open / close ----------------------------------------------------------
 
+// A refnum is taken while an open fork holds it.
+static bool fork_ref_in_use(uint32_t ref, const void *ctx) {
+    (void)ctx;
+    return afp_fork_find((uint16_t)ref) != NULL;
+}
+
 afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char *host_path, const char *rel_path,
                                 bool is_resource, uint16_t access_mode, afp_fork_t **out) {
     if (out)
@@ -234,9 +241,13 @@ afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char
         return AFP_FORK_IO_ERR;
     }
     fk->backing = b;
-    fk->ref = g_next_ref++;
-    if (fk->ref == 0)
-        fk->ref = g_next_ref++;
+    uint32_t ref = 0;
+    if (!atalk_id_alloc(&g_next_ref, 1, 0xFFFF, fork_ref_in_use, NULL, &ref)) {
+        free(fk); // cannot happen: at most AFP_MAX_OPEN_FORKS of 65,535 are held
+        backing_release(b);
+        return AFP_FORK_TOO_MANY;
+    }
+    fk->ref = (uint16_t)ref;
     fk->vol_id = vol_id;
     fk->session_id = session_id;
     fk->access_mode = access_mode;

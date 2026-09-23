@@ -15,6 +15,7 @@
 #include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
+#include "atalk_id.h"
 #include "common.h"
 #include "log.h"
 #include "object.h"
@@ -1502,28 +1503,23 @@ static int nbp_copy_field(char *dst, size_t dst_cap, const char *src, bool allow
     return (int)len;
 }
 
-static uint8_t nbp_alloc_enumerator(uint8_t socket) {
-    uint8_t next = g_nbp_next_enum[socket];
-    if (next == 0)
-        next = 1;
-    for (int attempt = 0; attempt < 255; attempt++) {
-        bool collision = false;
-        for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-            const atalk_nbp_entry_t *entry = &g_nbp_entries[i];
-            if (!entry->in_use)
-                continue;
-            if (entry->socket == socket && entry->enumerator == next) {
-                collision = true;
-                break;
-            }
-        }
-        if (!collision) {
-            g_nbp_next_enum[socket] = (next == 255) ? 1 : (uint8_t)(next + 1);
-            return next;
-        }
-        next = (next == 255) ? 1 : (uint8_t)(next + 1);
+// Enumerators tell apart entities on one socket, 1..255 (Inside AppleTalk 7-8).
+static bool nbp_enumerator_in_use(uint32_t e, const void *ctx) {
+    uint8_t socket = *(const uint8_t *)ctx;
+    for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
+        const atalk_nbp_entry_t *entry = &g_nbp_entries[i];
+        if (entry->in_use && entry->socket == socket && entry->enumerator == e)
+            return true;
     }
-    return next; // fallback, though we should always return earlier
+    return false;
+}
+
+static uint8_t nbp_alloc_enumerator(uint8_t socket) {
+    uint32_t cursor = g_nbp_next_enum[socket], e = 1;
+    // Cannot fail: at most NBP_MAX_ENTRIES of 255 are held.
+    atalk_id_alloc(&cursor, 1, 255, nbp_enumerator_in_use, &socket, &e);
+    g_nbp_next_enum[socket] = (uint8_t)cursor;
+    return (uint8_t)e;
 }
 
 static bool nbp_field_equals_ci(const char *lhs, uint8_t lhs_len, const char *rhs, uint8_t rhs_len) {
@@ -2055,7 +2051,7 @@ typedef struct {
 static atp_handler_slot_t g_atp_handlers[ATP_MAX_HANDLERS];
 static atp_request_handle_t g_atp_requests[ATP_MAX_OUTGOING];
 static atp_xo_entry_t g_xo_entries[ATP_MAX_XO_CACHE];
-static uint16_t g_next_tid = 0x2000;
+static uint32_t g_next_tid = 0x2000; // atalk_id_alloc cursor
 // Per-request retry and per-transaction XO release; many can be pending at
 // once, told apart by their data (atp_encode_event_data).
 static atalk_timer_t g_atp_retry_timer;
@@ -2151,24 +2147,21 @@ void atp_unregister_socket_handler(uint8_t socket) {
 }
 
 // Request ID generator -----------------------------------------------------
-static uint16_t atp_next_tid(uint8_t src_socket) {
-    uint16_t start = g_next_tid;
-    while (true) {
-        g_next_tid++;
-        if (g_next_tid == start)
-            break;
-        bool in_use = false;
-        for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-            if (g_atp_requests[i].in_use && g_atp_requests[i].src_socket == src_socket &&
-                g_atp_requests[i].tid == g_next_tid) {
-                in_use = true;
-                break;
-            }
-        }
-        if (!in_use)
-            return g_next_tid;
+// A TID is taken while another outstanding request from the same socket
+// holds it (the request being numbered is already in the table).
+typedef struct {
+    uint8_t socket;
+    const atp_request_handle_t *self;
+} atp_tid_scope_t;
+
+static bool atp_tid_in_use(uint32_t tid, const void *ctx) {
+    const atp_tid_scope_t *scope = ctx;
+    for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
+        const atp_request_handle_t *r = &g_atp_requests[i];
+        if (r != scope->self && r->in_use && r->src_socket == scope->socket && r->tid == tid)
+            return true;
     }
-    return g_next_tid;
+    return false;
 }
 
 static atp_request_handle_t *atp_alloc_request_slot(void) {
@@ -2312,7 +2305,13 @@ atp_request_handle_t *atp_request_submit(const atp_request_params_t *params, con
         req->base_ctl |= ATP_CONTROL_XO;
         req->base_ctl |= req->trel_hint;
     }
-    req->tid = atp_next_tid(req->src_socket);
+    atp_tid_scope_t scope = {.socket = req->src_socket, .self = req};
+    uint32_t tid = 0;
+    if (!atalk_id_alloc(&g_next_tid, 0, 0xFFFF, atp_tid_in_use, &scope, &tid)) {
+        req->in_use = false; // cannot happen: at most ATP_MAX_OUTGOING of 65,536 are held
+        return NULL;
+    }
+    req->tid = (uint16_t)tid;
 
     g_atalk_stats.atp_requests++;
     atp_send_request_packets(req, req->pending_bitmap);

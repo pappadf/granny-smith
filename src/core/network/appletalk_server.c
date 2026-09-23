@@ -21,6 +21,7 @@
 #include "appletalk.h"
 #include "appletalk_asp.h"
 #include "appletalk_internal.h"
+#include "atalk_id.h"
 #include "common.h"
 #include "log.h"
 
@@ -259,7 +260,7 @@ static void vol_session_remove(vol_t *v, uint16_t session) {
 }
 
 static vol_t g_vols[AFP_MAX_VOLUMES];
-static uint16_t g_next_vol_id = 1;
+static uint32_t g_next_vol_id = 1; // atalk_id_alloc cursor
 static uint16_t g_next_dt_ref = 0x0100;
 
 // Server identity and enablement (object model: appletalk.afp.*).
@@ -368,6 +369,11 @@ int atalk_afp_volume_max(void) {
     return AFP_MAX_VOLUMES;
 }
 
+static bool vol_id_in_use(uint32_t id, const void *ctx) {
+    (void)ctx;
+    return find_vol_by_id((uint16_t)id) != NULL;
+}
+
 // Publish `path` as volume `name`, with `vol_id` or, when 0, the next free id.
 static int vol_add(const char *name, const char *path, uint16_t vol_id, char *err, size_t err_len) {
     if (err && err_len)
@@ -407,9 +413,14 @@ static int vol_add(const char *name, const char *path, uint16_t vol_id, char *er
     if (vol_id) {
         v->vol_id = vol_id;
         if (vol_id >= g_next_vol_id)
-            g_next_vol_id = (uint16_t)(vol_id + 1);
+            g_next_vol_id = (uint32_t)vol_id + 1;
     } else {
-        v->vol_id = g_next_vol_id++;
+        uint32_t id = 0;
+        if (!atalk_id_alloc(&g_next_vol_id, 1, 0xFFFF, vol_id_in_use, NULL, &id)) {
+            memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
+            return vol_fail(err, err_len, "no volume id is free");
+        }
+        v->vol_id = (uint16_t)id;
     }
     v->catalog = afp_catalog_open(v->root);
     if (!v->catalog) {

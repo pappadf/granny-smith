@@ -23,6 +23,7 @@
 
 #include "appletalk.h"
 #include "appletalk_internal.h"
+#include "atalk_id.h"
 #include "common.h"
 #include "log.h"
 #include "object.h"
@@ -254,21 +255,30 @@ static adsp_conn_t *adsp_alloc_conn(adsp_stack_t *s) {
 // A locally unique, non-zero ConnID (12-6).  LastConnID walks forward rather
 // than starting from a random value: identical scripts must produce identical
 // wire traces.
-static uint16_t adsp_next_cid(adsp_stack_t *s, uint8_t socket) {
-    for (int attempt = 0; attempt <= 0xFFFF; attempt++) {
-        s->last_cid = (uint16_t)(s->last_cid == 0xFFFF ? 1 : s->last_cid + 1);
-        bool taken = false;
-        for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++) {
-            const adsp_conn_t *c = &s->conns[i];
-            if (c->in_use && c->local_socket == socket && c->local_cid == s->last_cid) {
-                taken = true;
-                break;
-            }
-        }
-        if (!taken)
-            return s->last_cid;
+// A ConnID is taken while another connection on the same socket holds it;
+// 0 is never used (12-24).
+typedef struct {
+    const adsp_stack_t *s;
+    uint8_t socket;
+} adsp_cid_scope_t;
+
+static bool adsp_cid_in_use(uint32_t cid, const void *ctx) {
+    const adsp_cid_scope_t *scope = ctx;
+    for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++) {
+        const adsp_conn_t *c = &scope->s->conns[i];
+        if (c->in_use && c->local_socket == scope->socket && c->local_cid == cid)
+            return true;
     }
-    return 1;
+    return false;
+}
+
+static uint16_t adsp_next_cid(adsp_stack_t *s, uint8_t socket) {
+    adsp_cid_scope_t scope = {.s = s, .socket = socket};
+    uint32_t cursor = (uint32_t)s->last_cid + 1, cid = 1;
+    // Cannot fail: at most ADSP_MAX_CONNECTIONS of 65,535 are held.
+    atalk_id_alloc(&cursor, 1, 0xFFFF, adsp_cid_in_use, &scope, &cid);
+    s->last_cid = (uint16_t)cid;
+    return (uint16_t)cid;
 }
 
 static bool adsp_addr_eq(const atalk_socket_addr_t *a, const atalk_socket_addr_t *b) {
