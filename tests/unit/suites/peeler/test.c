@@ -602,6 +602,9 @@ typedef struct {
     uint32_t rdlen; // resource bytes actually present
     uint32_t r_raw_len, r_packed_len;
     uint8_t r_algo;
+    uint8_t d_algo; // data fork method; 0 = stored
+    const uint8_t *d_raw; // if set: the data fork's uncompressed bytes,
+    uint32_t d_raw_len; //   for its raw length and CRC (`data` is then packed)
 } sit5_spec;
 
 static uint8_t *build_sit5(const sit5_spec *sp, size_t *out_len) {
@@ -624,9 +627,11 @@ static uint8_t *build_sit5(const sit5_spec *sp, size_t *out_len) {
     h1[4] = 1; // version
     put16(h1 + 6, written_h1);
     put16(h1 + 30, (uint16_t)namelen);
-    put32(h1 + 34, sp->raw_len_override ? sp->raw_len_override : sp->dlen);
-    put32(h1 + 38, sp->dlen); // stored: packed == raw
-    put16(h1 + 42, crc16_arc(sp->data, sp->dlen));
+    uint32_t raw_len = sp->d_raw ? sp->d_raw_len : sp->dlen;
+    put32(h1 + 34, sp->raw_len_override ? sp->raw_len_override : raw_len);
+    put32(h1 + 38, sp->dlen);
+    put16(h1 + 42, sp->d_raw ? crc16_arc(sp->d_raw, sp->d_raw_len) : crc16_arc(sp->data, sp->dlen));
+    h1[46] = sp->d_algo;
     memcpy(h1 + 48, sp->name, namelen);
     // Header CRC over header 1 as written, with its own two bytes zeroed.
     size_t crc_len = written_h1 <= true_h1 ? written_h1 : true_h1;
@@ -702,6 +707,41 @@ TEST(test_sit5_round_trip_with_resource_fork) {
     ASSERT_TRUE(memcmp(list.files[0].data_fork.data, "data", 4) == 0);
     ASSERT_EQ_INT(4, (int)list.files[0].resource_fork.size);
     ASSERT_TRUE(memcmp(list.files[0].resource_fork.data, "RSRC", 4) == 0);
+    peel_file_list_free(&list);
+    free(a);
+}
+
+// LZW (method 2): a stream of 9-bit literal codes, packed least significant
+// bit first, decodes to exactly those bytes -- each code after the first adds
+// a dictionary entry, but under 255 codes the width stays 9.  Covers the
+// LZW bit reader, which F-17 changed from a memcpy into a host-order word
+// to explicit little-endian composition.
+TEST(test_sit5_lzw_literals_round_trip) {
+    static const char text[] = "Hello, LZW!";
+    size_t n = sizeof(text) - 1;
+    uint8_t packed[32] = {0};
+    size_t bit = 0;
+    for (size_t i = 0; i < n; i++)
+        for (int b = 0; b < 9; b++, bit++)
+            if (((unsigned)(uint8_t)text[i] >> b) & 1)
+                packed[bit / 8] |= (uint8_t)(1u << (bit % 8));
+    sit5_spec sp = {.name = "L",
+                    .data = packed,
+                    .dlen = (uint32_t)((bit + 7) / 8),
+                    .h1_len = -1,
+                    .d_algo = 2,
+                    .d_raw = (const uint8_t *)text,
+                    .d_raw_len = (uint32_t)n};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    if (err)
+        fprintf(stderr, "  lzw: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(1, list.count);
+    ASSERT_EQ_INT((int)n, (int)list.files[0].data_fork.size);
+    ASSERT_TRUE(memcmp(list.files[0].data_fork.data, text, n) == 0);
     peel_file_list_free(&list);
     free(a);
 }
@@ -885,6 +925,7 @@ int main(void) {
     RUN(test_cpt_folder_nesting_is_bounded);
     RUN(test_sit5_round_trip);
     RUN(test_sit5_round_trip_with_resource_fork);
+    RUN(test_sit5_lzw_literals_round_trip);
     RUN(test_sit5_resource_fork_extent_is_checked);
     RUN(test_sit5_short_header_is_rejected);
     RUN(test_sit5_zero_length_skip_marker_cannot_loop);

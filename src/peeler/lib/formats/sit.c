@@ -318,11 +318,15 @@ static int lzw_next_code(lzw_state_t *z) {
     size_t byte_off = z->bit_pos >> 3;
     if (byte_off >= z->src_bytes)
         return -1;
-    // Read up to 4 bytes starting at the byte boundary (little-endian)
+    // Read up to 4 bytes starting at the byte boundary, little-endian.
+    // Composed explicitly: a memcpy into a uint32_t is little-endian only on
+    // a little-endian host (09-storage F-17).  Every target is one, so this
+    // changes nothing today; it makes the reader say what it means.
     uint32_t acc = 0;
     size_t avail = z->src_bytes - byte_off;
     if (avail > 4) avail = 4;
-    memcpy(&acc, z->src + byte_off, avail);
+    for (size_t i = 0; i < avail; i++)
+        acc |= (uint32_t)z->src[byte_off + i] << (8 * i);
     int shift = (int)(z->bit_pos & 7);
     int mask  = (1 << z->code_bits) - 1;
     int code  = (int)((acc >> shift) & (uint32_t)mask);
