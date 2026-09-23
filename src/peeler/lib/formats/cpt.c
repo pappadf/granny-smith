@@ -35,7 +35,6 @@
 #define CP_OFF_COUNT  128
 #define CP_MAX_CODELEN 15
 
-#define CP_HUFF_POOL_MAX 2048
 
 // ============================================================================
 // Byte-supplier callback type
@@ -146,63 +145,23 @@ static size_t cp_bits_consumed(cp_bits_t *b) {
 // length) and the in-tree traversal is MSB-first.
 // ============================================================================
 
-// Single node in a pool-allocated Huffman tree.
+// One decode tree, in its own pool (peeler's shared canonical-Huffman pool,
+// internal.h).
 typedef struct {
-    int child[2]; // indices into pool; -1 = unused
-    int sym;      // >=0 when this is a leaf node
-} cp_hnode_t;
-
-// Pool-allocated Huffman decode tree.
-typedef struct {
-    cp_hnode_t pool[CP_HUFF_POOL_MAX];
-    int        used; // next free index
-    int        root; // root node index
+    peel_hpool_t pool;
+    int          root;
 } cp_htree_t;
 
-// Allocate a new internal (non-leaf) node. Returns index or -1 on overflow.
-static int cp_htree_alloc(cp_htree_t *t) {
-    if (t->used >= CP_HUFF_POOL_MAX) return -1;
-    int idx = t->used++;
-    t->pool[idx].child[0] = -1;
-    t->pool[idx].child[1] = -1;
-    t->pool[idx].sym = -1;
-    return idx;
-}
-
-// Build a canonical Huffman decode tree from code lengths.
-// code_lens[i] = number of bits for symbol i (0 means symbol not present).
-// Returns 0 on success, -1 on overflow.
+// Build a canonical Huffman decode tree from code lengths (0 = symbol not
+// present).  Returns 0 on success, -1 on overflow or a length past 15.
 //
 // cpt.md § 6.4.2 "Canonical Huffman Code Construction"
 // — canonical code assignment (ascending length, then ascending symbol),
 // MSB-first tree insertion, pool-allocated nodes (2048 per tree).
-static int cp_htree_build(cp_htree_t *t, const int *code_lens, int sym_count) {
-    t->used = 0;
-    t->root = cp_htree_alloc(t);
-    if (t->root < 0) return -1;
-
-    int code = 0;
-    for (int len = 1; len <= CP_MAX_CODELEN; len++) {
-        for (int sym = 0; sym < sym_count; sym++) {
-            if (code_lens[sym] != len) continue;
-
-            // Walk the tree for this code, creating nodes as needed.
-            int node = t->root;
-            for (int bp = len - 1; bp >= 0; bp--) {
-                int bit = (code >> bp) & 1;
-                if (t->pool[node].child[bit] < 0) {
-                    int nidx = cp_htree_alloc(t);
-                    if (nidx < 0) return -1;
-                    t->pool[node].child[bit] = nidx;
-                }
-                node = t->pool[node].child[bit];
-            }
-            t->pool[node].sym = sym;
-            code++;
-        }
-        code <<= 1;
-    }
-    return 0;
+static int cp_htree_build(cp_htree_t *t, const int8_t *code_lens, int sym_count) {
+    peel_hpool_reset(&t->pool);
+    t->root = peel_huff_build(&t->pool, code_lens, sym_count, 1, CP_MAX_CODELEN);
+    return t->root < 0 ? -1 : 0;
 }
 
 // Decode one symbol from the bit stream using tree walk.
@@ -213,14 +172,13 @@ static int cp_htree_build(cp_htree_t *t, const int *code_lens, int sym_count) {
 static int cp_htree_decode(cp_htree_t *t, cp_bits_t *bits) {
     int node = t->root;
     for (;;) {
-        if (t->pool[node].sym >= 0)
-            return t->pool[node].sym;
+        int sym = peel_huff_sym(&t->pool, node);
+        if (sym != PEEL_HUFF_NOSYM)
+            return sym;
         if (!cp_bits_avail(bits, 1))
             return -1;
-        int bit = (int)cp_bits_get(bits, 1);
-        int next = t->pool[node].child[bit];
-        if (next < 0) return -1;
-        node = next;
+        node = peel_huff_child(&t->pool, node, (int)cp_bits_get(bits, 1));
+        if (node < 0) return -1;
     }
 }
 
@@ -261,17 +219,17 @@ static void cp_lzh_init(cp_lzh_t *lz, cp_getbyte_fn fn, void *ctx) {
 // Read one Huffman code-length table from the bitstream.
 // cpt.md § 6.4.1 "Table Serialization Format" — each table is encoded
 // as a sequence of nibble-packed code lengths.
-static int cp_lzh_read_table(cp_bits_t *bits, int *lens, int sym_count) {
+static int cp_lzh_read_table(cp_bits_t *bits, int8_t *lens, int sym_count) {
     if (!cp_bits_avail(bits, 8)) return -1;
     unsigned nbytes = cp_bits_get(bits, 8);
     if (nbytes * 2u > (unsigned)sym_count) return -1;
 
-    memset(lens, 0, (size_t)sym_count * sizeof(int));
+    memset(lens, 0, (size_t)sym_count);
     for (unsigned i = 0; i < nbytes; i++) {
         if (!cp_bits_avail(bits, 8)) return -1;
         unsigned v = cp_bits_get(bits, 8);
-        lens[2 * i]     = (int)(v >> 4);
-        lens[2 * i + 1] = (int)(v & 0x0F);
+        lens[2 * i]     = (int8_t)(v >> 4);
+        lens[2 * i + 1] = (int8_t)(v & 0x0F);
     }
     return 0;
 }
@@ -282,7 +240,7 @@ static int cp_lzh_read_table(cp_bits_t *bits, int *lens, int sym_count) {
 // code lengths.  Each tree gets its own 2048-node pool
 // (cpt.md § 9.3 "Huffman Tree Pool Allocation").
 static int cp_lzh_build_tables(cp_lzh_t *lz) {
-    int lens[CP_LIT_COUNT]; // largest table
+    int8_t lens[CP_LIT_COUNT]; // largest table
 
     if (cp_lzh_read_table(&lz->bits, lens, CP_LIT_COUNT) < 0) return -1;
     if (cp_htree_build(&lz->lit_tree, lens, CP_LIT_COUNT) < 0) return -1;

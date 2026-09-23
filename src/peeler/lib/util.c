@@ -185,3 +185,60 @@ void grow_free(grow_buf_t *g) {
         free(g->data);
     memset(g, 0, sizeof(*g));
 }
+
+// ============================================================================
+// Canonical Huffman trees
+// ============================================================================
+
+void peel_hpool_reset(peel_hpool_t *p) {
+    p->used = 0;
+}
+
+int peel_huff_root(peel_hpool_t *p) {
+    if (p->used >= PEEL_HUFF_POOL_CAP)
+        return -1;
+    int idx = p->used++;
+    p->node[idx].ch[0] = -1;
+    p->node[idx].ch[1] = -1;
+    p->node[idx].sym = PEEL_HUFF_NOSYM;
+    return idx;
+}
+
+int peel_huff_insert(peel_hpool_t *p, int root, uint32_t code, int len, int sym) {
+    if (len < 1 || len > 31)
+        return -1;
+    int cur = root;
+    for (int bit = len - 1; bit >= 0; bit--) {
+        int b = (int)((code >> bit) & 1);
+        if (p->node[cur].ch[b] < 0) {
+            int n = peel_huff_root(p);
+            if (n < 0)
+                return -1;
+            p->node[cur].ch[b] = (int16_t)n;
+        }
+        cur = p->node[cur].ch[b];
+    }
+    p->node[cur].sym = (int16_t)sym;
+    return 0;
+}
+
+int peel_huff_build(peel_hpool_t *p, const int8_t *lengths, int nsym, int min_len, int max_len) {
+    // 0 is "absent" in every format; anything else must be in range.
+    for (int s = 0; s < nsym; s++)
+        if (lengths[s] != 0 && (lengths[s] < min_len || lengths[s] > max_len))
+            return -1;
+    int root = peel_huff_root(p);
+    if (root < 0)
+        return -1;
+    uint32_t code = 0;
+    for (int len = min_len; len <= max_len; len++, code <<= 1) {
+        for (int s = 0; s < nsym; s++) {
+            if (lengths[s] != len)
+                continue;
+            if (len > 0 && peel_huff_insert(p, root, code, len, s) < 0)
+                return -1;
+            code++;
+        }
+    }
+    return root;
+}

@@ -279,7 +279,7 @@ TEST(test_sit15_zero_run_bound_is_exact) {
 // ============================================================================
 //
 // The stream is read LSB-first (m13_br_read), and a Huffman code is walked
-// from its most significant bit down (m13_pool_insert), so a code goes out
+// from its most significant bit down (peel_huff_insert), so a code goes out
 // MSB-first, one bit at a time, into an LSB-first stream.
 
 typedef struct {
@@ -1255,6 +1255,49 @@ TEST(test_peel_passes_unrecognised_input_through) {
     }
 }
 
+// ---- The shared canonical-Huffman pool (09 A4: F-59, F-04) ------------------
+
+// Walk `bits` (MSB first) from `root`: the symbol reached, or -1.
+static int huff_walk(const peel_hpool_t *p, int root, const char *bits) {
+    int node = root;
+    for (; *bits && node >= 0; bits++)
+        node = peel_huff_child(p, node, *bits == '1');
+    return node < 0 ? -1 : peel_huff_sym(p, node);
+}
+
+// Canonical assignment: ascending length, then ascending symbol.  Lengths
+// {2, 1, 2}: symbol 1 is "0", symbol 0 "10", symbol 2 "11".  An absent
+// symbol (0) gets no code.
+TEST(test_huff_canonical_codes) {
+    static peel_hpool_t pool;
+    peel_hpool_reset(&pool);
+    const int8_t lens[4] = {2, 1, 2, 0};
+    int root = peel_huff_build(&pool, lens, 4, 1, 15);
+    ASSERT_TRUE(root >= 0);
+    ASSERT_EQ_INT(1, huff_walk(&pool, root, "0"));
+    ASSERT_EQ_INT(0, huff_walk(&pool, root, "10"));
+    ASSERT_EQ_INT(2, huff_walk(&pool, root, "11"));
+    // A length outside the format's range is refused, not skipped.
+    const int8_t bad[2] = {1, 16};
+    ASSERT_EQ_INT(-1, peel_huff_build(&pool, bad, 2, 1, 15));
+}
+
+// The pool is bounded: trees that do not fit are refused.  sit13 kept its
+// four trees in a 2048-node pool it never bounds-checked (F-04); it now
+// shares this one.  Under ASan an overrun here is a failure.
+TEST(test_huff_pool_is_bounded) {
+    static peel_hpool_t pool;
+    peel_hpool_reset(&pool);
+    // 256 symbols at length 8: a full tree, 511 nodes.  The fifth does not fit.
+    static int8_t lens[256];
+    memset(lens, 8, sizeof(lens));
+    int built = 0;
+    while (peel_huff_build(&pool, lens, 256, 1, 15) >= 0)
+        built++;
+    ASSERT_EQ_INT(4, built);
+    ASSERT_TRUE(pool.used <= PEEL_HUFF_POOL_CAP);
+}
+
 int main(void) {
     RUN(test_sit15_encoder_round_trip);
     RUN(test_sit15_zero_run_cannot_overflow);
@@ -1289,6 +1332,8 @@ int main(void) {
     RUN(test_hqx_slash_in_a_name_cannot_escape);
     RUN(test_sit_classic_long_folder_name_is_clamped);
     RUN(test_peel_passes_unrecognised_input_through);
+    RUN(test_huff_canonical_codes);
+    RUN(test_huff_pool_is_bounded);
     fprintf(stderr, "All peeler tests passed\n");
     return 0;
 }

@@ -243,82 +243,23 @@ static int m13_br_bit(m13_bitrd_t *r) {
 // than pointers, so the entire tree is freed in one shot with the enclosing
 // state struct.  sit13.md § 12.3 "Pool-Based Node Allocation".
 
-// Maximum nodes across all trees combined (meta + first + second + dist).
-#define M13_POOL_CAP 2048
-
-// Sentinel: this node has no symbol (it is an internal/branch node).
-#define M13_NOSYM ((int16_t)-1)
-
-// A single node in the pool-allocated Huffman tree.
-typedef struct {
-    int16_t ch[2];  // Children: index into pool, or -1 if absent
-    int16_t sym;    // Leaf symbol value, or M13_NOSYM if internal
-} m13_hnode_t;
-
-// Allocate one new node from the pool and return its index.
-// sit13.md § 12.3 — pool of 2048 nodes is shared across all trees.
-static int m13_pool_alloc(m13_hnode_t *pool, int *used) {
-    int idx = (*used)++;
-    pool[idx].ch[0] = -1;
-    pool[idx].ch[1] = -1;
-    pool[idx].sym   = M13_NOSYM;
-    return idx;
-}
-
-// Insert a code of len bits (MSB-first in code) mapping to sym into
-// the tree rooted at root_idx.
-// sit13.md § 5.3 "Canonical Huffman Code Construction" — MSB-first tree
-// insertion.  Also used for direct-insertion of the fixed meta-code words
-// (sit13.md § 6.2 "The Meta-Code").
-static void m13_pool_insert(m13_hnode_t *pool, int *used,
-                            int root_idx, uint32_t code, int len, int sym) {
-    int cur = root_idx;
-    for (int bit = len - 1; bit >= 0; bit--) {
-        int b = (int)((code >> bit) & 1);
-        if (pool[cur].ch[b] < 0)
-            pool[cur].ch[b] = (int16_t)m13_pool_alloc(pool, used);
-        cur = pool[cur].ch[b];
-    }
-    pool[cur].sym = (int16_t)sym;
-}
-
-// Build a canonical Huffman tree from an array of code lengths.
-// Symbols of the same code length are assigned sequential codes in
-// ascending symbol order.  Length 0 (or negative) means the symbol is
-// absent and receives no code.  Returns the root index.
-static int m13_build_canonical(m13_hnode_t *pool, int *used,
-                               const int8_t *lengths, int nsym) {
-    int root = m13_pool_alloc(pool, used);
-    uint32_t code = 0;
-    int assigned = 0;
-    for (int len = -1; assigned < nsym; len++, code <<= 1) {
-        for (int s = 0; s < nsym; s++) {
-            if (lengths[s] == len) {
-                // Only insert symbols with positive code length
-                if (len > 0)
-                    m13_pool_insert(pool, used, root, code, len, s);
-                code++;
-                assigned++;
-            }
-        }
-    }
-    return root;
-}
+// All trees of a block (meta + first + second + dist) share one of peeler's
+// canonical-Huffman pools (internal.h), which bounds it: this file's own
+// allocator did not (09-storage F-04, F-59).
 
 // Walk the tree from root, reading one bit at a time until a leaf is
 // reached.  Returns the leaf's symbol value, or -1 on error.
 // sit13.md § 5.4 "Single-Symbol Tree Edge Case" — if the root IS a
 // leaf, return its symbol without consuming any bits (handled by caller).
-static int m13_huff_decode(m13_hnode_t *pool, int root, m13_bitrd_t *br) {
+static int m13_huff_decode(const peel_hpool_t *pool, int root, m13_bitrd_t *br) {
     int cur = root;
-    while (pool[cur].sym == M13_NOSYM) {
-        int b = m13_br_bit(br);
-        cur = pool[cur].ch[b];
+    while (peel_huff_sym(pool, cur) == PEEL_HUFF_NOSYM) {
+        cur = peel_huff_child(pool, cur, m13_br_bit(br));
         // Navigate to child; abort if tree is malformed
         if (cur < 0)
             return -1;
     }
-    return (int)pool[cur].sym;
+    return peel_huff_sym(pool, cur);
 }
 
 // ============================================================================
@@ -346,15 +287,15 @@ static const int m13_meta_lens[M13_META_SIZE] = {
     0xC, 0xC, 0xC, 0xC, 0xC, 0x5, 0x2, 0x2, 0x3, 0x4, 0x5};
 
 // Build the meta-code tree from the fixed word/length pairs.
-// Returns the root index in the pool.
+// Returns the root index in the pool, or -1 if the pool is full.
 // sit13.md § 6.2 "The Meta-Code" — 37 symbols with explicit (word, length)
 // pairs.  The meta-code tree uses direct codeword insertion, NOT the
 // canonical code construction procedure.
-static int m13_build_meta_tree(m13_hnode_t *pool, int *used) {
-    int root = m13_pool_alloc(pool, used);
-    for (int i = 0; i < M13_META_SIZE; i++)
-        m13_pool_insert(pool, used, root,
-                        m13_meta_words[i], m13_meta_lens[i], i);
+static int m13_build_meta_tree(peel_hpool_t *pool) {
+    int root = peel_huff_root(pool);
+    for (int i = 0; root >= 0 && i < M13_META_SIZE; i++)
+        if (peel_huff_insert(pool, root, m13_meta_words[i], m13_meta_lens[i], i) < 0)
+            root = -1;
     return root;
 }
 
@@ -365,6 +306,14 @@ static int m13_build_meta_tree(m13_hnode_t *pool, int *used) {
 // with exactly that.  Below -1 the builder never matches, which is F-05.
 #define M13_MIN_CODE_LEN (-1)
 #define M13_MAX_CODE_LEN 31
+
+// Build a canonical tree from lengths in M13_MIN_CODE_LEN..M13_MAX_CODE_LEN.
+// sit13.md § 5.3: codes go in ascending length, then ascending symbol, and
+// absent symbols (-1, 0) still consume a code value -- which the shared
+// builder does for any min_len below 1.  Returns the root, or -1.
+static int m13_build_canonical(peel_hpool_t *pool, const int8_t *lengths, int nsym) {
+    return peel_huff_build(pool, lengths, nsym, M13_MIN_CODE_LEN, M13_MAX_CODE_LEN);
+}
 
 // Decode a list of code lengths from the bitstream using the meta-code.
 // sit13.md § 6.3 "Meta-Code Symbols and Code-Length RLE" — commands
@@ -383,7 +332,7 @@ static int m13_build_meta_tree(m13_hnode_t *pool, int *used) {
 //   * Every emitted length is M13_MIN_CODE_LEN..M13_MAX_CODE_LEN.
 //     Decrementing past -1 produced a length m13_build_canonical never
 //     matches, so its outer loop never finished.
-static int m13_decode_lengths(m13_hnode_t *pool, int meta_root,
+static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root,
                               m13_bitrd_t *br, int8_t *out, int nsym) {
     int len = 0;
     int i = 0;
@@ -434,8 +383,7 @@ typedef struct {
     m13_bitrd_t br;
 
     // Node pool shared by all Huffman trees
-    m13_hnode_t pool[M13_POOL_CAP];
-    int         pool_used;
+    peel_hpool_t pool;
 
     // Root indices into pool for the three trees
     int root_first;
@@ -468,7 +416,7 @@ static int m13_setup(m13_state_t *st) {
     st->wpos       = 0;
     st->match_left = 0;
     st->match_from = 0;
-    st->pool_used  = 0;
+    peel_hpool_reset(&st->pool);
 
     // Read the single header byte.
     // sit13.md § 4.1: SET = bits 7..4, S = bit 3, K = bits 2..0.
@@ -480,52 +428,52 @@ static int m13_setup(m13_state_t *st) {
     if (set == 0) {
         // Dynamic mode: build meta-code tree, then decode all three trees.
         // sit13.md § 6 "Tree Serialization (Dynamic Mode)".
-        int meta_root = m13_build_meta_tree(st->pool, &st->pool_used);
+        int meta_root = m13_build_meta_tree(&st->pool);
+        if (meta_root < 0)
+            return -1;
 
         int8_t lengths[M13_SYM_COUNT];
 
         // First literal/length tree.
-        if (m13_decode_lengths(st->pool, meta_root, &st->br,
+        if (m13_decode_lengths(&st->pool, meta_root, &st->br,
                                lengths, M13_SYM_COUNT) < 0)
             return -1;
-        st->root_first = m13_build_canonical(st->pool, &st->pool_used,
-                                             lengths, M13_SYM_COUNT);
+        st->root_first = m13_build_canonical(&st->pool, lengths, M13_SYM_COUNT);
 
         // Second literal/length tree (or shared).
         // sit13.md § 6.1 "Tree Sharing".
         if (shared) {
             st->root_second = st->root_first;
         } else {
-            if (m13_decode_lengths(st->pool, meta_root, &st->br,
+            if (m13_decode_lengths(&st->pool, meta_root, &st->br,
                                    lengths, M13_SYM_COUNT) < 0)
                 return -1;
-            st->root_second = m13_build_canonical(st->pool, &st->pool_used,
-                                                  lengths, M13_SYM_COUNT);
+            st->root_second = m13_build_canonical(&st->pool, lengths, M13_SYM_COUNT);
         }
 
         // Distance tree.
-        if (m13_decode_lengths(st->pool, meta_root, &st->br,
+        if (m13_decode_lengths(&st->pool, meta_root, &st->br,
                                lengths, dist_n) < 0)
             return -1;
-        st->root_dist = m13_build_canonical(st->pool, &st->pool_used,
-                                            lengths, dist_n);
+        st->root_dist = m13_build_canonical(&st->pool, lengths, dist_n);
     } else if (set >= 1 && set <= 5) {
         // Predefined mode: build trees from static tables.
         // sit13.md § 7 "Predefined Trees (Sets 1–5)".
         int idx = set - 1;
-        st->root_first  = m13_build_canonical(st->pool, &st->pool_used,
-                                              predefined_first[idx],
+        st->root_first  = m13_build_canonical(&st->pool, predefined_first[idx],
                                               M13_SYM_COUNT);
-        st->root_second = m13_build_canonical(st->pool, &st->pool_used,
-                                              predefined_second[idx],
+        st->root_second = m13_build_canonical(&st->pool, predefined_second[idx],
                                               M13_SYM_COUNT);
-        st->root_dist   = m13_build_canonical(st->pool, &st->pool_used,
-                                              predefined_dist[idx],
+        st->root_dist   = m13_build_canonical(&st->pool, predefined_dist[idx],
                                               predefined_dist_nsym[idx]);
     } else {
         // sit13.md § 11 "Error Conditions" — invalid SET value.
         return -1;
     }
+
+    // A tree that did not fit the pool, or had a length out of range.
+    if (st->root_first < 0 || st->root_second < 0 || st->root_dist < 0)
+        return -1;
 
     // Start with the first literal/length tree active.
     // sit13.md § 9.1 "State".
@@ -554,13 +502,10 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         }
 
         // Decode next symbol from the active literal/length tree.
-        // sit13.md § 5.4 "Single-Symbol Tree Edge Case" — if the tree
-        // root is a leaf, return its symbol without reading bits.
-        int sym;
-        if (st->pool[st->root_active].sym != M13_NOSYM)
-            sym = (int)st->pool[st->root_active].sym;
-        else
-            sym = m13_huff_decode(st->pool, st->root_active, &st->br);
+        // sit13.md § 5.4 "Single-Symbol Tree Edge Case" — a root that is a
+        // leaf yields its symbol without reading bits, which
+        // m13_huff_decode does as it stands.
+        int sym = m13_huff_decode(&st->pool, st->root_active, &st->br);
 
         if (sym < 0)
             return -1;
@@ -594,7 +539,7 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         // sit13.md § 5.2 "Distance Symbol Alphabet" — distance symbol
         // 0 means distance 1; other symbols d encode distance
         // 2^(d-1) + read_bits(d-1) + 1.
-        int dsym = m13_huff_decode(st->pool, st->root_dist, &st->br);
+        int dsym = m13_huff_decode(&st->pool, st->root_dist, &st->br);
         if (dsym < 0)
             return -1;
         int dist;

@@ -59,35 +59,6 @@ static size_t pad128(size_t n) {
     return (MB_BLOCK - (n % MB_BLOCK)) % MB_BLOCK;
 }
 
-// bin.md § 16.2 — detect if a buffer begins with a StuffIt archive signature.
-// Checks both classic SIT ("SIT!" etc. + "rLau") and SIT5 signatures.
-static bool looks_like_sit(const uint8_t *buf, size_t len) {
-    // SIT5: "StuffIt (c)1997-" at offset 0 and Aladdin URL at offset 20
-    if (len >= 80) {
-        if (memcmp(buf, "StuffIt (c)1997-", 16) == 0 &&
-            memcmp(buf + 20,
-                   " Aladdin Systems, Inc., "
-                   "http://www.aladdinsys.com/StuffIt/",
-                   58) == 0) {
-            return true;
-        }
-    }
-    // Classic SIT: one of several 4-byte magic values + "rLau" at offset 10
-    if (len >= 14) {
-        static const char *sigs[] = {
-            "SIT!", "ST46", "ST50", "ST60", "ST65",
-            "STin", "STi2", "STi3", "STi4",
-        };
-        for (int i = 0; i < (int)(sizeof(sigs) / sizeof(sigs[0])); i++) {
-            if (memcmp(buf, sigs[i], 4) == 0 &&
-                memcmp(buf + 10, "rLau", 4) == 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 // bin.md § 6 — validate a 128-byte header buffer as MacBinary II.
 // Returns true if the buffer passes all required validation checks.
 static bool bin_validate(const uint8_t *hdr) {
@@ -278,10 +249,12 @@ peel_buf_t peel_bin(const uint8_t *src, size_t len, peel_err_t **err) {
     dctx_release(&ctx, file.resource_fork.data);
     dctx_cleanup(&ctx);
 
-    // bin.md § 10.3 — apply fork selection heuristic
+    // bin.md § 10.3 — apply fork selection heuristic.  Whether the data
+    // fork is a StuffIt archive is sit.c's own detector's call: this file
+    // kept a second copy of its signature tables (09-storage F-62).
     peel_buf_t result;
     bool data_is_sit = file.data_fork.data &&
-                       looks_like_sit(file.data_fork.data, file.data_fork.size);
+                       sit_detect(file.data_fork.data, file.data_fork.size);
 
     if (data_is_sit || file.resource_fork.size == 0) {
         // Data fork is a StuffIt archive, or no resource fork — use data fork

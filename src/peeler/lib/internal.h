@@ -174,6 +174,58 @@ uint16_t crc16_ccitt(const uint8_t *data, size_t len);
 uint16_t crc16_ccitt_update(uint16_t crc, const uint8_t *data, size_t len);
 
 // ============================================================================
+// Canonical Huffman trees (sit13, cpt)
+// ============================================================================
+//
+// One pool-allocated decode tree for the two formats that build canonical
+// Huffman codes; each had its own, and only Compact Pro's bounded its pool
+// (09-storage F-59, F-04).  A pool holds one or more trees (sit13 keeps four
+// in one).  Formats keep their own bit readers and walk a tree with
+// peel_huff_child / peel_huff_sym.
+
+#define PEEL_HUFF_POOL_CAP 2048
+#define PEEL_HUFF_NOSYM    ((int16_t)-1)
+
+typedef struct {
+    int16_t ch[2]; // child node indices, or -1
+    int16_t sym; // leaf symbol, or PEEL_HUFF_NOSYM for an inner node
+} peel_hnode_t;
+
+typedef struct {
+    peel_hnode_t node[PEEL_HUFF_POOL_CAP];
+    int used;
+} peel_hpool_t;
+
+// Empty the pool.
+void peel_hpool_reset(peel_hpool_t *p);
+
+// A new, empty tree root in `p`: its index, or -1 if the pool is full.
+int peel_huff_root(peel_hpool_t *p);
+
+// Place `sym` at the `len`-bit code `code` (MSB first) under `root`.  0, or
+// -1 if the pool is full or len is outside 1..31.
+int peel_huff_insert(peel_hpool_t *p, int root, uint32_t code, int len, int sym);
+
+// Build a canonical code for lengths[0..nsym) into a new tree in `p`, and
+// return its root, or -1 (pool full, or a length that is neither 0 --
+// absent -- nor within [min_len, max_len]).  Codes go in ascending length, then ascending
+// symbol, over every length from min_len to max_len; only lengths >= 1 are
+// placed in the tree.  With min_len 1 that is the usual construction
+// (Compact Pro).  StuffIt 13 uses min_len -1: its absent symbols (-1 and 0)
+// still consume a code value each, which shifts every longer code.
+int peel_huff_build(peel_hpool_t *p, const int8_t *lengths, int nsym, int min_len, int max_len);
+
+// One step down from `node` on `bit`: the child's index, or -1.
+static inline int peel_huff_child(const peel_hpool_t *p, int node, int bit) {
+    return p->node[node].ch[bit & 1];
+}
+
+// The symbol at `node` if it is a leaf, else PEEL_HUFF_NOSYM.
+static inline int peel_huff_sym(const peel_hpool_t *p, int node) {
+    return p->node[node].sym;
+}
+
+// ============================================================================
 // Growable Buffer
 // ============================================================================
 
