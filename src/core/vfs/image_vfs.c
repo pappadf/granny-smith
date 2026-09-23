@@ -37,13 +37,151 @@
 
 #define IMAGE_VFS_MAX_MOUNTS 8
 
-// One partition's filesystem state.  fs_kind mirrors APM classification but
-// we reuse apm_fs_kind so downstream code can switch on a single enum.
+// ---- Filesystems ----------------------------------------------------------
+//
+// Every filesystem a partition can hold sits behind one fs_ops_t: open the
+// volume, look a path up, list a directory, read a file.  The backend
+// methods dispatch through it rather than branching on HFS vs UFS at every
+// site (09-storage F-52).  What only HFS has -- forks, Finder info, and the
+// synthetic /rsrc and /finf paths built on them -- is handled first, for a
+// filesystem with has_forks, and everything else takes the generic path.
+
+// A looked-up path or directory entry, filesystem-neutral.
+typedef struct fs_entry {
+    char name[256];
+    bool is_dir;
+    uint64_t size; // data bytes (files; 0 for directories)
+    uint64_t id; // what opendir and read take: a CNID (HFS) or an inode (UFS)
+    hfs_fork_t data_fork; // HFS only: the extents read follows
+} fs_entry_t;
+
+typedef struct fs_ops {
+    bool has_forks;
+    uint64_t root_id;
+    void *(*open)(image_t *img, uint64_t off, uint64_t size);
+    void (*close)(void *vol);
+    int (*lookup)(void *vol, const char *const *comp, size_t nc, fs_entry_t *out);
+    void *(*opendir)(void *vol, uint64_t dir_id);
+    int (*readdir)(void *iter, fs_entry_t *out); // 1 = entry, 0 = end, <0 = error
+    void (*closedir)(void *iter);
+    int (*read)(void *vol, const fs_entry_t *file, uint64_t off, void *buf, size_t n, size_t *nread);
+} fs_ops_t;
+
+static void hfs_entry(const hfs_dirent_t *d, fs_entry_t *out) {
+    snprintf(out->name, sizeof(out->name), "%s", d->name);
+    out->is_dir = d->is_dir;
+    out->size = d->is_dir ? 0 : d->data_fork.logical_size;
+    out->id = d->cnid;
+    out->data_fork = d->data_fork;
+}
+static void *hfs_ops_open(image_t *img, uint64_t off, uint64_t size) {
+    return hfs_open(img, off, size);
+}
+static void hfs_ops_close(void *vol) {
+    hfs_close(vol);
+}
+static int hfs_ops_lookup(void *vol, const char *const *comp, size_t nc, fs_entry_t *out) {
+    hfs_dirent_t d = {0};
+    int rc = hfs_lookup(vol, comp, nc, &d);
+    if (rc == 0)
+        hfs_entry(&d, out);
+    return rc;
+}
+static void *hfs_ops_opendir(void *vol, uint64_t dir_id) {
+    return hfs_opendir_cnid(vol, (uint32_t)dir_id);
+}
+static int hfs_ops_readdir(void *iter, fs_entry_t *out) {
+    hfs_dirent_t d = {0};
+    int rc = hfs_readdir_next(iter, &d);
+    if (rc > 0)
+        hfs_entry(&d, out);
+    return rc;
+}
+static void hfs_ops_closedir(void *iter) {
+    hfs_closedir_iter(iter);
+}
+static int hfs_ops_read(void *vol, const fs_entry_t *file, uint64_t off, void *buf, size_t n, size_t *nread) {
+    return hfs_read_fork(vol, &file->data_fork, off, buf, n, nread);
+}
+
+static void ufs_entry(const ufs_dirent_t *d, fs_entry_t *out) {
+    snprintf(out->name, sizeof(out->name), "%s", d->name);
+    out->is_dir = d->is_dir;
+    out->size = d->is_dir ? 0 : d->size;
+    out->id = d->ino;
+}
+static void *ufs_ops_open(image_t *img, uint64_t off, uint64_t size) {
+    return ufs_open(img, off, size);
+}
+static void ufs_ops_close(void *vol) {
+    ufs_close(vol);
+}
+static int ufs_ops_lookup(void *vol, const char *const *comp, size_t nc, fs_entry_t *out) {
+    ufs_dirent_t d = {0};
+    int rc = ufs_lookup(vol, comp, nc, &d);
+    if (rc == 0)
+        ufs_entry(&d, out);
+    return rc;
+}
+static void *ufs_ops_opendir(void *vol, uint64_t dir_id) {
+    return ufs_opendir_ino(vol, (uint32_t)dir_id);
+}
+static int ufs_ops_readdir(void *iter, fs_entry_t *out) {
+    ufs_dirent_t d = {0};
+    int rc = ufs_readdir_next(iter, &d);
+    if (rc > 0)
+        ufs_entry(&d, out);
+    return rc;
+}
+static void ufs_ops_closedir(void *iter) {
+    ufs_closedir_iter(iter);
+}
+static int ufs_ops_read(void *vol, const fs_entry_t *file, uint64_t off, void *buf, size_t n, size_t *nread) {
+    return ufs_read_file(vol, (uint32_t)file->id, off, buf, n, nread);
+}
+
+static const fs_ops_t HFS_OPS = {
+    .has_forks = true,
+    .root_id = HFS_ROOT_CNID,
+    .open = hfs_ops_open,
+    .close = hfs_ops_close,
+    .lookup = hfs_ops_lookup,
+    .opendir = hfs_ops_opendir,
+    .readdir = hfs_ops_readdir,
+    .closedir = hfs_ops_closedir,
+    .read = hfs_ops_read,
+};
+
+static const fs_ops_t UFS_OPS = {
+    .has_forks = false,
+    .root_id = UFS_ROOT_INO,
+    .open = ufs_ops_open,
+    .close = ufs_ops_close,
+    .lookup = ufs_ops_lookup,
+    .opendir = ufs_ops_opendir,
+    .readdir = ufs_ops_readdir,
+    .closedir = ufs_ops_closedir,
+    .read = ufs_ops_read,
+};
+
+// The filesystem a partition of this kind holds, or NULL for one we do not
+// read (a driver, the map itself, free space, ...).
+static const fs_ops_t *fs_ops_for(enum apm_fs_kind kind) {
+    switch (kind) {
+    case APM_FS_HFS:
+        return &HFS_OPS;
+    case APM_FS_UFS:
+        return &UFS_OPS;
+    default:
+        return NULL;
+    }
+}
+
+// One partition's filesystem state, opened on first use.
 typedef struct partition_fs {
-    bool attempted; // true once we've tried to open the FS
-    enum apm_fs_kind kind; // copy of parent apm_partition_t.fs_kind
-    hfs_volume_t *hfs; // non-NULL iff kind == APM_FS_HFS and open succeeded
-    ufs_volume_t *ufs; // non-NULL iff kind == APM_FS_UFS and open succeeded
+    const fs_ops_t *ops; // NULL: no filesystem we read
+    bool attempted; // true once we've tried to open it
+    void *vol; // non-NULL once open succeeded
 } partition_fs_t;
 
 struct image_mount {
@@ -279,12 +417,9 @@ static const apm_partition_t *mount_get_partition(const image_mount_t *m, uint32
 static void release_fs_state(image_mount_t *m) {
     if (!m->parts_fs)
         return;
-    for (uint32_t i = 0; i < m->n_partitions; i++) {
-        if (m->parts_fs[i].hfs)
-            hfs_close(m->parts_fs[i].hfs);
-        if (m->parts_fs[i].ufs)
-            ufs_close(m->parts_fs[i].ufs);
-    }
+    for (uint32_t i = 0; i < m->n_partitions; i++)
+        if (m->parts_fs[i].vol)
+            m->parts_fs[i].ops->close(m->parts_fs[i].vol);
     free(m->parts_fs);
     m->parts_fs = NULL;
 }
@@ -438,7 +573,7 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
     }
     for (uint32_t i = 0; i < m->n_partitions; i++) {
         const apm_partition_t *p = mount_get_partition(m, i + 1);
-        m->parts_fs[i].kind = p ? p->fs_kind : APM_FS_UNKNOWN;
+        m->parts_fs[i].ops = fs_ops_for(p ? p->fs_kind : APM_FS_UNKNOWN);
     }
 
     *out_mount = m;
@@ -484,46 +619,25 @@ void image_vfs_list(image_vfs_list_cb cb, void *user) {
 
 // ---- Partition-level FS state (lazy init) --------------------------------
 
-// Lazy-open the HFS filesystem for partition N (1-based).  Returns NULL if
-// this partition isn't HFS or the catalog was unreadable.
-static hfs_volume_t *get_partition_hfs(image_mount_t *m, uint32_t idx_1based) {
+// The open filesystem on partition N (1-based), opened on first use.  NULL
+// with *err = -ENOTDIR if the partition holds no filesystem we read, or -EIO
+// if it would not open (it is not tried again).
+static partition_fs_t *get_partition_fs(image_mount_t *m, uint32_t idx_1based, int *err) {
+    *err = -ENOENT;
     if (idx_1based == 0 || idx_1based > m->n_partitions)
         return NULL;
     partition_fs_t *pfs = &m->parts_fs[idx_1based - 1];
-    if (pfs->kind != APM_FS_HFS)
+    *err = -ENOTDIR;
+    if (!pfs->ops)
         return NULL;
-    if (pfs->hfs)
-        return pfs->hfs;
-    if (pfs->attempted)
-        return NULL;
-    pfs->attempted = true;
-
-    const apm_partition_t *p = mount_get_partition(m, idx_1based);
-    if (!p)
-        return NULL;
-    pfs->hfs = hfs_open(m->img, (uint64_t)p->start_block * 512, (uint64_t)p->size_blocks * 512);
-    return pfs->hfs;
-}
-
-// Lazy-open the UFS filesystem for partition N (1-based).  Returns NULL if
-// this partition isn't UFS or the superblock was unreadable.
-static ufs_volume_t *get_partition_ufs(image_mount_t *m, uint32_t idx_1based) {
-    if (idx_1based == 0 || idx_1based > m->n_partitions)
-        return NULL;
-    partition_fs_t *pfs = &m->parts_fs[idx_1based - 1];
-    if (pfs->kind != APM_FS_UFS)
-        return NULL;
-    if (pfs->ufs)
-        return pfs->ufs;
-    if (pfs->attempted)
-        return NULL;
-    pfs->attempted = true;
-
-    const apm_partition_t *p = mount_get_partition(m, idx_1based);
-    if (!p)
-        return NULL;
-    pfs->ufs = ufs_open(m->img, (uint64_t)p->start_block * 512, (uint64_t)p->size_blocks * 512);
-    return pfs->ufs;
+    *err = -EIO;
+    if (!pfs->vol && !pfs->attempted) {
+        pfs->attempted = true;
+        const apm_partition_t *p = mount_get_partition(m, idx_1based);
+        if (p)
+            pfs->vol = pfs->ops->open(m->img, (uint64_t)p->start_block * 512, (uint64_t)p->size_blocks * 512);
+    }
+    return pfs->vol ? pfs : NULL;
 }
 
 // ---- In-image path parsing ------------------------------------------------
@@ -698,7 +812,7 @@ static synth_kind_t classify_synth(const char *const *components, size_t n_compo
 
 // ---- Backend method implementations --------------------------------------
 
-// Dir handle: partition-list enumerator at the image root, an HFS or UFS
+// Dir handle: partition-list enumerator at the image root, a filesystem's
 // directory iterator, or one of the two synthetic-resource directory kinds
 // (DIR_RSRC_ROOT for /rsrc, DIR_RSRC_TYPE for /rsrc/<TYPE>).  The resource
 // kinds borrow an rfork_t* from the LRU cache; the cache outlives the dir
@@ -706,18 +820,16 @@ static synth_kind_t classify_synth(const char *const *components, size_t n_compo
 struct vfs_dir {
     enum {
         DIR_PART_LIST,
-        DIR_HFS,
-        DIR_UFS,
+        DIR_FS,
         DIR_RSRC_ROOT,
         DIR_RSRC_TYPE,
     } kind;
     image_mount_t *mount;
     // partition list
     uint32_t next_partition;
-    // HFS directory
-    hfs_dir_iter_t *hfs_iter;
-    // UFS directory
-    ufs_dir_iter_t *ufs_iter;
+    // filesystem directory (DIR_FS)
+    const fs_ops_t *fs_ops;
+    void *fs_iter;
     // Synthetic resource tree (DIR_RSRC_ROOT / DIR_RSRC_TYPE)
     rfork_t *rfork; // borrowed from rsrc_entry, which this handle pins
     struct rsrc_cache_entry *rsrc_entry;
@@ -737,24 +849,26 @@ struct vfs_dir {
 // HFS finder info is 16 bytes per fork + 16 bytes extended = 32 bytes total.
 #define HFS_FINDER_INFO_SIZE 32
 
-// File handle: data/resource fork, synthetic Finder-info blob, UFS inode,
-// or one of the new synthetic-resource leaf kinds.  FILE_RSRC_DATA borrows
+// File handle: a filesystem's file (an HFS data fork, a UFS inode), a raw
+// HFS resource fork, the synthetic Finder-info blob, or one of the
+// synthetic-resource leaf kinds.  FILE_RSRC_DATA borrows
 // a slice of the cached fork buffer; FILE_RSRC_INFO precomputes the JSON
 // once and reads out of an inline buffer.
 struct vfs_file {
     image_mount_t *mount;
     enum {
+        FILE_FS,
         FILE_HFS_FORK,
         FILE_FINDER_INFO,
-        FILE_UFS,
         FILE_RSRC_DATA,
         FILE_RSRC_INFO,
     } kind;
-    hfs_volume_t *hfs;
-    hfs_fork_t fork; // used for FILE_HFS_FORK
+    const fs_ops_t *fs_ops; // FILE_FS
+    void *fs_vol;
+    fs_entry_t entry;
+    hfs_volume_t *hfs; // FILE_HFS_FORK
+    hfs_fork_t fork;
     uint8_t finder_info[HFS_FINDER_INFO_SIZE];
-    ufs_volume_t *ufs; // used for FILE_UFS
-    uint32_t ufs_ino;
     // FILE_RSRC_DATA: pointer into the cached fork buffer of rsrc_entry,
     // which this handle pins until it closes.
     const uint8_t *rsrc_bytes;
@@ -777,7 +891,85 @@ static void img_close(vfs_file_t *f);
 static int img_readonly(void *ctx, const char *path);
 static int img_readonly2(void *ctx, const char *a, const char *b);
 
-// stat: understand partition roots, HFS directories/files, fork sub-paths.
+// The HFS-only part of stat: the synthetic /finf and /rsrc paths.  Returns 1
+// when the path is not one (the caller looks it up as a plain path),
+// otherwise 0 or a negated errno.
+static int stat_hfs_synthetic(image_mount_t *m, hfs_volume_t *hfs, const image_path_t *ip, vfs_stat_t *out) {
+    // classify_synth returns SYNTH_NONE for literal paths and lets
+    // file_core_count tell us how many leading components belong to the
+    // HFS file.
+    uint8_t syn_type[4] = {0};
+    int16_t syn_id = 0;
+    size_t core = 0;
+    synth_kind_t synth = classify_synth(ip->components, ip->n_components, &core, syn_type, &syn_id);
+    if (synth == SYNTH_NONE)
+        return 1;
+    if (core == 0)
+        return -ENOENT; // synthetic suffix anchored at the partition root makes no sense
+    hfs_dirent_t d = {0};
+    // A miss means the name literally contains "rsrc" or "finf": the caller
+    // retries the whole thing as a plain path.
+    if (hfs_lookup(hfs, ip->components, core, &d) < 0)
+        return 1;
+
+    // All synthetic kinds require a file (forks live on files).
+    if (d.is_dir)
+        return -ENOENT;
+    if (synth == SYNTH_FINF) {
+        out->mode = VFS_MODE_FILE;
+        out->size = HFS_FINDER_INFO_SIZE;
+        return 0;
+    }
+    if (synth == SYNTH_RSRC_RAW) {
+        out->mode = VFS_MODE_FILE;
+        out->size = d.rsrc_fork.logical_size;
+        return 0;
+    }
+    // /rsrc directory entries require a non-empty fork to enumerate.
+    if (d.rsrc_fork.logical_size == 0)
+        return -ENOENT;
+    if (synth == SYNTH_RSRC_DIR) {
+        out->mode = VFS_MODE_DIR;
+        return 0;
+    }
+    // /rsrc/<TYPE> and deeper need the parsed map.
+    rsrc_cache_entry_t *e = rsrc_cache_acquire(m, hfs, &d);
+    if (!e)
+        return -EIO;
+    size_t n_res = rfork_num_resources(e->parsed, syn_type);
+    if (synth == SYNTH_RSRC_TYPE_DIR) {
+        if (n_res == 0)
+            return -ENOENT;
+        out->mode = VFS_MODE_DIR;
+        return 0;
+    }
+    // Resource bytes or .info sidecar.
+    const uint8_t *bytes = NULL;
+    size_t sz = 0;
+    const char *name = NULL;
+    uint8_t attrs = 0;
+    if (rfork_lookup(e->parsed, syn_type, syn_id, &bytes, &sz, &name, &attrs) < 0)
+        return -ENOENT;
+    if (synth == SYNTH_RSRC_DATA) {
+        out->mode = VFS_MODE_FILE;
+        out->size = sz;
+        return 0;
+    }
+    // SYNTH_RSRC_INFO: format the JSON to a scratch buffer to take its
+    // length.  Identical to what img_open will later do — duplicating
+    // 512 bytes of stack work on stat is fine; the caller can avoid it
+    // entirely by reading the file directly.
+    char tmp[512];
+    int w = rfork_info_format(name, attrs, sz, tmp, sizeof(tmp));
+    if (w < 0)
+        return -EIO;
+    out->mode = VFS_MODE_FILE;
+    out->size = (uint64_t)w;
+    return 0;
+}
+
+// stat: partition roots, filesystem directories and files, and HFS fork
+// sub-paths.
 static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
     image_mount_t *m = (image_mount_t *)ctx;
     if (!m || !out)
@@ -805,117 +997,62 @@ static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
         return 0;
     }
 
-    // UFS partitions have no forks — dispatch before peeling any suffix.
-    if (p->fs_kind == APM_FS_UFS) {
-        ufs_volume_t *ufs = get_partition_ufs(m, ip.partition_idx);
-        if (!ufs)
-            return -EIO;
-        ufs_dirent_t d = {0};
-        int urc = ufs_lookup(ufs, ip.components, ip.n_components, &d);
-        if (urc < 0)
-            return urc;
-        out->mode = d.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
-        out->size = d.is_dir ? 0 : d.size;
-        return 0;
-    }
-
-    // HFS lookup path: classify any synthetic suffix first.  classify_synth
-    // returns SYNTH_NONE for literal paths and lets the file_core_count
-    // tell us how many leading components belong to the HFS file.
-    uint8_t syn_type[4] = {0};
-    int16_t syn_id = 0;
-    size_t core = 0;
-    synth_kind_t synth = classify_synth(ip.components, ip.n_components, &core, syn_type, &syn_id);
-
-    if (p->fs_kind != APM_FS_HFS)
-        return -ENOTDIR;
-
-    hfs_volume_t *hfs = get_partition_hfs(m, ip.partition_idx);
-    if (!hfs)
-        return -EIO;
-    hfs_dirent_t d = {0};
-    if (core == 0 && synth != SYNTH_NONE)
-        return -ENOENT; // synthetic suffix anchored at the partition root makes no sense
-    if (ip.n_components == 0) {
-        out->mode = VFS_MODE_DIR;
-        return 0;
-    }
-    rc = hfs_lookup(hfs, ip.components, core ? core : ip.n_components, &d);
-    if (rc < 0) {
-        // Synthetic lookup missed (filename literally contains "rsrc" or
-        // "finf"); retry the whole thing as a literal HFS path.
-        if (synth != SYNTH_NONE) {
-            rc = hfs_lookup(hfs, ip.components, ip.n_components, &d);
-            if (rc == 0)
-                synth = SYNTH_NONE;
-        }
-        if (rc < 0)
+    partition_fs_t *pfs = get_partition_fs(m, ip.partition_idx, &rc);
+    if (!pfs)
+        return rc;
+    if (pfs->ops->has_forks) {
+        rc = stat_hfs_synthetic(m, pfs->vol, &ip, out);
+        if (rc != 1)
             return rc;
     }
-
-    if (synth != SYNTH_NONE) {
-        // All synthetic kinds require a file (forks live on files).
-        if (d.is_dir)
-            return -ENOENT;
-        if (synth == SYNTH_FINF) {
-            out->mode = VFS_MODE_FILE;
-            out->size = HFS_FINDER_INFO_SIZE;
-            return 0;
-        }
-        if (synth == SYNTH_RSRC_RAW) {
-            out->mode = VFS_MODE_FILE;
-            out->size = d.rsrc_fork.logical_size;
-            return 0;
-        }
-        // /rsrc directory entries require a non-empty fork to enumerate.
-        if (d.rsrc_fork.logical_size == 0)
-            return -ENOENT;
-        if (synth == SYNTH_RSRC_DIR) {
-            out->mode = VFS_MODE_DIR;
-            return 0;
-        }
-        // /rsrc/<TYPE> and deeper need the parsed map.
-        rsrc_cache_entry_t *e = rsrc_cache_acquire(m, hfs, &d);
-        if (!e)
-            return -EIO;
-        size_t n_res = rfork_num_resources(e->parsed, syn_type);
-        if (synth == SYNTH_RSRC_TYPE_DIR) {
-            if (n_res == 0)
-                return -ENOENT;
-            out->mode = VFS_MODE_DIR;
-            return 0;
-        }
-        // Resource bytes or .info sidecar.
-        const uint8_t *bytes = NULL;
-        size_t sz = 0;
-        const char *name = NULL;
-        uint8_t attrs = 0;
-        if (rfork_lookup(e->parsed, syn_type, syn_id, &bytes, &sz, &name, &attrs) < 0)
-            return -ENOENT;
-        if (synth == SYNTH_RSRC_DATA) {
-            out->mode = VFS_MODE_FILE;
-            out->size = sz;
-            return 0;
-        }
-        // SYNTH_RSRC_INFO: format the JSON to a scratch buffer to take its
-        // length.  Identical to what img_open will later do — duplicating
-        // 512 bytes of stack work on stat is fine; the caller can avoid it
-        // entirely by reading the file directly.
-        char tmp[512];
-        int w = rfork_info_format(name, attrs, sz, tmp, sizeof(tmp));
-        if (w < 0)
-            return -EIO;
-        out->mode = VFS_MODE_FILE;
-        out->size = (uint64_t)w;
-        return 0;
-    }
-
-    out->mode = d.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
-    out->size = d.is_dir ? 0 : d.data_fork.logical_size;
+    fs_entry_t e;
+    rc = pfs->ops->lookup(pfs->vol, ip.components, ip.n_components, &e);
+    if (rc < 0)
+        return rc;
+    out->mode = e.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
+    out->size = e.size;
     return 0;
 }
 
-// opendir: enumerate partitions at root, or HFS directory children.
+// The HFS-only part of opendir: /rsrc and /rsrc/<TYPE> list a file's
+// resource fork.  Returns 1 when the path is not one of those (the caller
+// opens it as a plain directory), 0 with `d` set up, or a negated errno.
+static int opendir_hfs_synthetic(image_mount_t *m, hfs_volume_t *hfs, const image_path_t *ip, vfs_dir_t *d) {
+    uint8_t syn_type[4] = {0};
+    int16_t syn_id = 0; // per-resource leaves are files, not directories
+    size_t core = 0;
+    synth_kind_t synth = classify_synth(ip->components, ip->n_components, &core, syn_type, &syn_id);
+    if (synth != SYNTH_RSRC_DIR && synth != SYNTH_RSRC_TYPE_DIR)
+        return 1;
+    if (core == 0)
+        return -ENOENT;
+    hfs_dirent_t de = {0};
+    // A miss means the path only looked synthetic: the caller retries it as
+    // a plain path.
+    if (hfs_lookup(hfs, ip->components, core, &de) < 0)
+        return 1;
+    if (de.is_dir || de.rsrc_fork.logical_size == 0)
+        return -ENOENT;
+    rsrc_cache_entry_t *e = rsrc_cache_acquire(m, hfs, &de);
+    if (!e)
+        return -EIO;
+    if (synth == SYNTH_RSRC_TYPE_DIR) {
+        if (rfork_num_resources(e->parsed, syn_type) == 0)
+            return -ENOENT;
+        d->kind = DIR_RSRC_TYPE;
+        memcpy(d->rsrc_type, syn_type, 4);
+    } else {
+        d->kind = DIR_RSRC_ROOT;
+    }
+    d->rfork = e->parsed;
+    d->rsrc_entry = e;
+    rsrc_cache_pin(e);
+    d->rsrc_next_idx = 0;
+    return 0;
+}
+
+// opendir: enumerate partitions at root, a filesystem directory, or an HFS
+// file's resource tree.
 static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
     image_mount_t *m = (image_mount_t *)ctx;
     if (!m || !out)
@@ -941,133 +1078,45 @@ static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
         return 0;
     }
 
+    rc = -ENOENT;
     const apm_partition_t *p = mount_get_partition(m, ip.partition_idx);
-    if (!p) {
-        free(d);
-        return -ENOENT;
-    }
-    if (p->fs_kind == APM_FS_UFS) {
-        ufs_volume_t *ufs = get_partition_ufs(m, ip.partition_idx);
-        if (!ufs) {
-            free(d);
-            return -EIO;
-        }
-        uint32_t parent_ino = UFS_ROOT_INO;
-        if (ip.n_components > 0) {
-            ufs_dirent_t de = {0};
-            int lr = ufs_lookup(ufs, ip.components, ip.n_components, &de);
-            if (lr < 0) {
-                free(d);
-                return lr;
-            }
-            if (!de.is_dir) {
-                free(d);
-                return -ENOTDIR;
-            }
-            parent_ino = de.ino;
-        }
-        d->kind = DIR_UFS;
-        d->ufs_iter = ufs_opendir_ino(ufs, parent_ino);
-        if (!d->ufs_iter) {
-            free(d);
-            return -EIO;
-        }
-        m->refcount++;
-        *out = d;
-        return 0;
-    }
-    if (p->fs_kind != APM_FS_HFS) {
-        free(d);
-        return -ENOTDIR;
-    }
-    hfs_volume_t *hfs = get_partition_hfs(m, ip.partition_idx);
-    if (!hfs) {
-        free(d);
-        return -EIO;
-    }
-    // Classify any synthetic suffix and try the synthetic interpretation
-    // first.  Synthetic directories we care about are /rsrc (root) and
-    // /rsrc/<TYPE>.  Anything else (including the literal HFS case) flows
-    // through hfs_opendir_cnid below.
-    uint8_t syn_type[4] = {0};
-    int16_t syn_id = 0;
-    size_t core = 0;
-    synth_kind_t synth = classify_synth(ip.components, ip.n_components, &core, syn_type, &syn_id);
-    (void)syn_id; // unused at opendir; per-resource leaves are files not dirs
-
-    if (synth == SYNTH_RSRC_DIR || synth == SYNTH_RSRC_TYPE_DIR) {
-        if (core == 0) {
-            free(d);
-            return -ENOENT;
-        }
-        hfs_dirent_t de = {0};
-        int lr = hfs_lookup(hfs, ip.components, core, &de);
-        if (lr < 0) {
-            // Retry literal in case the path looked synthetic but isn't.
-            lr = hfs_lookup(hfs, ip.components, ip.n_components, &de);
-            if (lr == 0)
-                synth = SYNTH_NONE;
-            else {
-                free(d);
-                return lr;
-            }
-        }
-        if (synth != SYNTH_NONE) {
-            if (de.is_dir || de.rsrc_fork.logical_size == 0) {
-                free(d);
-                return -ENOENT;
-            }
-            rsrc_cache_entry_t *e = rsrc_cache_acquire(m, hfs, &de);
-            if (!e) {
-                free(d);
-                return -EIO;
-            }
-            if (synth == SYNTH_RSRC_TYPE_DIR) {
-                if (rfork_num_resources(e->parsed, syn_type) == 0) {
-                    free(d);
-                    return -ENOENT;
-                }
-                d->kind = DIR_RSRC_TYPE;
-                memcpy(d->rsrc_type, syn_type, 4);
-            } else {
-                d->kind = DIR_RSRC_ROOT;
-            }
-            d->rfork = e->parsed;
-            d->rsrc_entry = e;
-            rsrc_cache_pin(e);
-            d->rsrc_next_idx = 0;
-            m->refcount++;
-            *out = d;
-            return 0;
-        }
+    partition_fs_t *pfs = p ? get_partition_fs(m, ip.partition_idx, &rc) : NULL;
+    if (!pfs)
+        goto fail;
+    if (pfs->ops->has_forks) {
+        rc = opendir_hfs_synthetic(m, pfs->vol, &ip, d);
+        if (rc < 0)
+            goto fail;
+        if (rc == 0)
+            goto done;
     }
 
-    uint32_t parent_cnid = HFS_ROOT_CNID;
+    uint64_t dir_id = pfs->ops->root_id;
     if (ip.n_components > 0) {
-        hfs_dirent_t de = {0};
-        int lr = hfs_lookup(hfs, ip.components, ip.n_components, &de);
-        if (lr < 0) {
-            free(d);
-            return lr;
-        }
-        if (!de.is_dir) {
-            free(d);
-            return -ENOTDIR;
-        }
-        parent_cnid = de.cnid;
+        fs_entry_t e;
+        rc = pfs->ops->lookup(pfs->vol, ip.components, ip.n_components, &e);
+        if (rc < 0)
+            goto fail;
+        rc = -ENOTDIR;
+        if (!e.is_dir)
+            goto fail;
+        dir_id = e.id;
     }
-    d->kind = DIR_HFS;
-    d->hfs_iter = hfs_opendir_cnid(hfs, parent_cnid);
-    if (!d->hfs_iter) {
-        free(d);
-        // `hfs_opendir_cnid` doesn't surface an errno; the failure mode is
-        // either OOM or a corrupt catalog. `-EIO` is the closer match for the
-        // latter (the most likely case once the volume has cached past init).
-        return -EIO;
-    }
+    d->kind = DIR_FS;
+    d->fs_ops = pfs->ops;
+    d->fs_iter = pfs->ops->opendir(pfs->vol, dir_id);
+    // No errno from the iterator: the failure is OOM or a corrupt directory,
+    // and -EIO is the closer match for the latter.
+    rc = -EIO;
+    if (!d->fs_iter)
+        goto fail;
+done:
     m->refcount++;
     *out = d;
     return 0;
+fail:
+    free(d);
+    return rc;
 }
 
 static int img_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
@@ -1091,26 +1140,14 @@ static int img_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
         d->next_partition++;
         return 1;
     }
-    if (d->kind == DIR_HFS) {
-        hfs_dirent_t hde = {0};
-        int rc = hfs_readdir_next(d->hfs_iter, &hde);
+    if (d->kind == DIR_FS) {
+        fs_entry_t e;
+        int rc = d->fs_ops->readdir(d->fs_iter, &e);
         if (rc <= 0)
             return rc;
-        snprintf(out->name, sizeof(out->name), "%s", hde.name);
-        out->st.mode = hde.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
-        out->st.size = hde.is_dir ? 0 : hde.data_fork.logical_size;
-        out->st.readonly = true;
-        out->has_stat = true;
-        return 1;
-    }
-    if (d->kind == DIR_UFS) {
-        ufs_dirent_t ude = {0};
-        int rc = ufs_readdir_next(d->ufs_iter, &ude);
-        if (rc <= 0)
-            return rc;
-        snprintf(out->name, sizeof(out->name), "%s", ude.name);
-        out->st.mode = ude.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
-        out->st.size = ude.is_dir ? 0 : ude.size;
+        snprintf(out->name, sizeof(out->name), "%s", e.name);
+        out->st.mode = e.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
+        out->st.size = e.size;
         out->st.readonly = true;
         out->has_stat = true;
         return 1;
@@ -1197,89 +1234,33 @@ static void img_closedir(vfs_dir_t *d) {
     if (!d)
         return;
     rsrc_cache_unpin(d->rsrc_entry);
-    if (d->hfs_iter)
-        hfs_closedir_iter(d->hfs_iter);
-    if (d->ufs_iter)
-        ufs_closedir_iter(d->ufs_iter);
+    if (d->fs_iter)
+        d->fs_ops->closedir(d->fs_iter);
     mount_release(d->mount);
     free(d);
 }
 
-// open: data fork (bare path), resource fork (/rsrc), Finder info (/finf).
-static int img_open(void *ctx, const char *path, vfs_file_t **out) {
-    image_mount_t *m = (image_mount_t *)ctx;
-    if (!m || !out)
-        return -EINVAL;
-    if (mount_busy(m))
-        return -EBUSY;
-
-    image_path_t ip;
-    int rc = parse_image_path(path, &ip);
-    if (rc == 1)
-        return -EISDIR;
-    if (rc < 0)
-        return rc;
-
-    const apm_partition_t *p = mount_get_partition(m, ip.partition_idx);
-    if (!p)
-        return -ENOENT;
-    if (ip.n_components == 0)
-        return -EISDIR;
-
-    if (p->fs_kind == APM_FS_UFS) {
-        ufs_volume_t *ufs = get_partition_ufs(m, ip.partition_idx);
-        if (!ufs)
-            return -EIO;
-        ufs_dirent_t d = {0};
-        int urc = ufs_lookup(ufs, ip.components, ip.n_components, &d);
-        if (urc < 0)
-            return urc;
-        if (d.is_dir)
-            return -EISDIR;
-        vfs_file_t *f = calloc(1, sizeof(*f));
-        if (!f)
-            return -ENOMEM;
-        f->mount = m;
-        f->kind = FILE_UFS;
-        f->ufs = ufs;
-        f->ufs_ino = d.ino;
-        m->refcount++;
-        *out = f;
-        return 0;
-    }
-
-    if (p->fs_kind != APM_FS_HFS)
-        return -ENOTDIR;
-
-    // Classify synthetic suffix.  /rsrc on its own is a directory now and
-    // returns -EISDIR below; /rsrc/_raw maps to the old raw-fork-bytes
-    // behaviour; /rsrc/<TYPE> is a directory; the leaf cases produce
-    // FILE_RSRC_DATA / FILE_RSRC_INFO handles.
+// The HFS-only part of open: a file's Finder info (/finf), its raw resource
+// fork (/rsrc/_raw), and one resource or its .info sidecar
+// (/rsrc/<TYPE>/<id>[.info]).  Returns 1 when the path is not one of those
+// (the caller opens it as a plain file), 0 with *out set, or a negated
+// errno.
+static int open_hfs_synthetic(image_mount_t *m, hfs_volume_t *hfs, const image_path_t *ip, vfs_file_t **out) {
     uint8_t syn_type[4] = {0};
     int16_t syn_id = 0;
     size_t core = 0;
-    synth_kind_t synth = classify_synth(ip.components, ip.n_components, &core, syn_type, &syn_id);
-
-    hfs_volume_t *hfs = get_partition_hfs(m, ip.partition_idx);
-    if (!hfs)
-        return -EIO;
-    hfs_dirent_t d = {0};
-    if (core == 0 && synth != SYNTH_NONE)
+    synth_kind_t synth = classify_synth(ip->components, ip->n_components, &core, syn_type, &syn_id);
+    if (synth == SYNTH_NONE)
+        return 1;
+    if (core == 0)
         return -ENOENT;
-    rc = hfs_lookup(hfs, ip.components, core ? core : ip.n_components, &d);
-    if (rc < 0) {
-        if (synth != SYNTH_NONE) {
-            rc = hfs_lookup(hfs, ip.components, ip.n_components, &d);
-            if (rc == 0)
-                synth = SYNTH_NONE;
-        }
-        if (rc < 0)
-            return rc;
-    }
-    if (d.is_dir)
-        return -EISDIR;
-
-    if (synth == SYNTH_RSRC_DIR || synth == SYNTH_RSRC_TYPE_DIR)
+    hfs_dirent_t d = {0};
+    // A miss means the path only looked synthetic: the caller retries it as
+    // a plain path.
+    if (hfs_lookup(hfs, ip->components, core, &d) < 0)
+        return 1;
+    // /rsrc and /rsrc/<TYPE> are directories.
+    if (d.is_dir || synth == SYNTH_RSRC_DIR || synth == SYNTH_RSRC_TYPE_DIR)
         return -EISDIR;
 
     vfs_file_t *f = calloc(1, sizeof(*f));
@@ -1327,10 +1308,56 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
             }
             f->rsrc_info_len = (size_t)w;
         }
-    } else {
-        f->kind = FILE_HFS_FORK;
-        f->fork = d.data_fork;
     }
+    m->refcount++;
+    *out = f;
+    return 0;
+}
+
+// open: a filesystem's file (an HFS data fork, a UFS inode), or an HFS fork
+// sub-path (see open_hfs_synthetic).
+static int img_open(void *ctx, const char *path, vfs_file_t **out) {
+    image_mount_t *m = (image_mount_t *)ctx;
+    if (!m || !out)
+        return -EINVAL;
+    if (mount_busy(m))
+        return -EBUSY;
+
+    image_path_t ip;
+    int rc = parse_image_path(path, &ip);
+    if (rc == 1)
+        return -EISDIR;
+    if (rc < 0)
+        return rc;
+
+    const apm_partition_t *p = mount_get_partition(m, ip.partition_idx);
+    if (!p)
+        return -ENOENT;
+    if (ip.n_components == 0)
+        return -EISDIR;
+
+    partition_fs_t *pfs = get_partition_fs(m, ip.partition_idx, &rc);
+    if (!pfs)
+        return rc;
+    if (pfs->ops->has_forks) {
+        rc = open_hfs_synthetic(m, pfs->vol, &ip, out);
+        if (rc != 1)
+            return rc;
+    }
+    fs_entry_t e;
+    rc = pfs->ops->lookup(pfs->vol, ip.components, ip.n_components, &e);
+    if (rc < 0)
+        return rc;
+    if (e.is_dir)
+        return -EISDIR;
+    vfs_file_t *f = calloc(1, sizeof(*f));
+    if (!f)
+        return -ENOMEM;
+    f->mount = m;
+    f->kind = FILE_FS;
+    f->fs_ops = pfs->ops;
+    f->fs_vol = pfs->vol;
+    f->entry = e;
     m->refcount++;
     *out = f;
     return 0;
@@ -1377,8 +1404,8 @@ static int img_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nr
             *nread = got;
         return 0;
     }
-    if (f->kind == FILE_UFS)
-        return ufs_read_file(f->ufs, f->ufs_ino, off, buf, n, nread);
+    if (f->kind == FILE_FS)
+        return f->fs_ops->read(f->fs_vol, &f->entry, off, buf, n, nread);
     return hfs_read_fork(f->hfs, &f->fork, off, buf, n, nread);
 }
 
