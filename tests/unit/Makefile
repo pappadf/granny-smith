@@ -51,10 +51,12 @@ test-%:
 # says 64, the run is not testing what it claims to.
 WASM32_SUITES := peeler resfork ndif udif hfsplus appledouble storage vfs checkpoint
 WASM32_BUILD  := $(abspath $(BUILD_DIR))-wasm32
-# The shipping build's stack (Makefile: -s STACK_SIZE=5MB), not emscripten's
-# 64 KB default -- a recursion bound that is right for the product would
-# otherwise trap here, and one tuned to pass here would be wrong for it.
-WASM32_LDFLAGS := -sSTACK_SIZE=5MB
+# The shipping build's memory model (Makefile: -s STACK_SIZE=5MB,
+# -s ALLOW_MEMORY_GROWTH=1), not emscripten's defaults of a 64 KB stack and a
+# fixed ~16 MB heap.  A bound that is right for the product -- a 128-level
+# recursion, a 16 MiB resource -- would otherwise fail here, and one tuned to
+# pass here would be wrong for the product.
+WASM32_LDFLAGS := -sSTACK_SIZE=5MB -sALLOW_MEMORY_GROWTH=1
 
 run-wasm32:
 	@command -v emcc >/dev/null || { echo "run-wasm32: emcc not found"; exit 1; }
