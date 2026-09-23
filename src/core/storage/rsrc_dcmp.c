@@ -1146,11 +1146,9 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
 
     // Any other (dcmp_id, version) combo is currently unsupported.  This
     // includes dcmp 0 in a v9 wrapper (custom Donn variant) and the various
-    // third-party dcmp ids (1, 3, 7, 8, 0x10+) that ship in System file
-    // extensions.  The caller falls through to raw compressed bytes —
-    // .info still surfaces the compressed flag, and re.dump's disasm pass
-    // shows compressed-payload garbage in the .s file (with a header
-    // comment) but does not crash.
+    // other dcmp ids (1, 7, 8, 0x10+) that ship in System file extensions.  The caller falls through to raw compressed
+    // bytes — .info still surfaces the compressed flag, and re.dump's disasm pass shows compressed-payload garbage in
+    // the .s file (with a header comment) but does not crash.
     FAIL("unsupported dcmp");
 #undef FAIL
 }

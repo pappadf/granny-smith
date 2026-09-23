@@ -41,11 +41,11 @@ typedef struct rfork_type {
     //
     // When the resource carries the System 7 compressed flag (attrs &
     // RFORK_ATTR_COMPRESSED) AND its bytes start with the 0xA89F6572
-    // magic, we decompress eagerly at parse time and stash the inflated
-    // buffer in `inflated` / `inflated_size`.  rfork_lookup then returns
-    // the inflated bytes transparently so callers (CODE disassembler,
-    // per-type decoders) see real data.  `inflated` is NULL when the
-    // resource isn't compressed or when decompression failed (in which
+    // magic, the first rfork_lookup of it decompresses it and keeps the
+    // result in `inflated` / `inflated_size`; lookups return the inflated
+    // bytes transparently so callers (CODE disassembler, per-type
+    // decoders) see real data.  `inflated` is NULL when the resource isn't
+    // compressed, hasn't been looked up, or could not be inflated (in which
     // case we keep returning the raw bytes — the .info sidecar still
     // surfaces the `compressed` flag so the caller can react).
     struct {
@@ -56,6 +56,7 @@ typedef struct rfork_type {
         char name_utf8[64]; // empty string when name_off == -1
         uint8_t *inflated; // owned; NULL when not decompressed
         size_t inflated_size;
+        bool inflate_tried; // decompression attempted (success or not)
     } *resources;
 } rfork_type_t;
 
@@ -63,7 +64,17 @@ struct rfork {
     uint16_t fork_attrs;
     size_t num_types;
     rfork_type_t *types;
+    size_t inflated_total; // bytes held in every resource's `inflated`
 };
+
+// Most a fork may hold inflated at once.  Resources used to be inflated at
+// parse time, every one, each up to RSRC_DCMP_MAX_SIZE -- a fork whose map
+// declares thousands of small compressed resources asked for that many
+// times 16 MiB before anyone read one (09-storage F-22).  Inflation is on
+// first lookup now, and a lookup past this budget gets the raw bytes, as if
+// the resource's dcmp were unsupported.  A System file's compressed
+// resources come to a few MB.
+#define RFORK_INFLATE_BUDGET (64u * 1024u * 1024u)
 
 // Read a Pascal-format name out of the name list and transcode to UTF-8.
 // `name_off` is the offset relative to the name-list start; -1 means "no
@@ -185,31 +196,6 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
                            sizeof(rf->types[t].resources[r].name_utf8))) {
                 FAIL("name list out of range");
             }
-
-            // System 7 compressed-resource auto-inflate.  Triggered when
-            // the attrs byte has the 0x01 (compressed) bit set AND the
-            // first 4 bytes are the dcmp magic.  Failure here is
-            // non-fatal: the .info sidecar still surfaces the
-            // compressed flag, and rfork_lookup falls through to the
-            // raw bytes — consumers that care can branch on attrs.
-            if ((attrs & RFORK_ATTR_COMPRESSED) &&
-                rsrc_dcmp_is_compressed(rf->types[t].resources[r].bytes, rf->types[t].resources[r].size)) {
-                size_t inflated_size = 0;
-                const char *derr = NULL;
-                uint8_t *inflated = rsrc_dcmp_decompress(rf->types[t].resources[r].bytes,
-                                                         rf->types[t].resources[r].size, &inflated_size, &derr);
-                if (inflated) {
-                    rf->types[t].resources[r].inflated = inflated;
-                    rf->types[t].resources[r].inflated_size = inflated_size;
-                }
-                // On decompression failure we leave inflated NULL.
-                // derr is intentionally ignored — the failure path is
-                // expected for any dcmp we don't implement yet (dcmp 2
-                // / GreggyBits, third-party compressors), and we don't
-                // want to noise up the parser caller with a per-
-                // resource warning stream.
-                (void)derr;
-            }
         }
     }
 
@@ -279,13 +265,38 @@ int16_t rfork_id_at(const rfork_t *rf, const uint8_t type[4], size_t idx) {
     return t->resources[idx].id;
 }
 
-int rfork_lookup(const rfork_t *rf, const uint8_t type[4], int16_t id, const uint8_t **bytes_out, size_t *size_out,
+// Inflate resource `r` of type `t` if it is compressed and not yet tried,
+// within the fork's budget.  A failure (an unsupported dcmp, a corrupt
+// payload, the budget) is remembered, so each resource is tried once.
+static void inflate_on_lookup(rfork_t *rf, rfork_type_t *t, size_t r) {
+    if (t->resources[r].inflate_tried)
+        return;
+    t->resources[r].inflate_tried = true;
+    if (!(t->resources[r].attrs & RFORK_ATTR_COMPRESSED) ||
+        !rsrc_dcmp_is_compressed(t->resources[r].bytes, t->resources[r].size))
+        return;
+    size_t inflated_size = 0;
+    const char *derr = NULL; // expected for any dcmp we don't implement; not worth a warning per resource
+    uint8_t *inflated = rsrc_dcmp_decompress(t->resources[r].bytes, t->resources[r].size, &inflated_size, &derr);
+    if (!inflated)
+        return;
+    if (inflated_size > RFORK_INFLATE_BUDGET - rf->inflated_total) {
+        free(inflated);
+        return;
+    }
+    t->resources[r].inflated = inflated;
+    t->resources[r].inflated_size = inflated_size;
+    rf->inflated_total += inflated_size;
+}
+
+int rfork_lookup(rfork_t *rf, const uint8_t type[4], int16_t id, const uint8_t **bytes_out, size_t *size_out,
                  const char **name_out, uint8_t *attrs_out) {
-    const rfork_type_t *t = find_type(rf, type);
+    rfork_type_t *t = (rfork_type_t *)find_type(rf, type);
     if (!t)
         return -ENOENT;
     for (size_t r = 0; r < t->num_resources; r++) {
         if (t->resources[r].id == id) {
+            inflate_on_lookup(rf, t, r);
             // Prefer the inflated bytes when present.  The .info sidecar
             // (built by callers from `attrs`) still reports the
             // compressed flag — that's a property of the resource record,
@@ -314,64 +325,14 @@ void rfork_type_to_path(const uint8_t type[4], char *out, size_t cap) {
     macroman_to_utf8(type, 4, out, cap);
 }
 
-// Inverse of rfork_type_to_path: walk the UTF-8 component, decode each
-// codepoint, look it up in the MacRoman table (low byte = ASCII, high
-// byte = scan).  Reject if the decode produces != 4 MacRoman bytes.
-// Mirror of the MacRoman high-byte table from macroman.c, used by the
-// inverse transcoder below.  Duplicating the 128 entries here is cheaper
-// than exposing the internal table; both stay in sync as a single
-// source-of-truth update.
-static const uint16_t macroman_hi_lookup[128] = {
-    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5,
-    0x00E7, 0x00E9, 0x00E8, 0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3, 0x00F2, 0x00F4,
-    0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC, 0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6,
-    0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8, 0x221E, 0x00B1, 0x2264, 0x2265,
-    0x00A5, 0x00B5, 0x2202, 0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8, 0x00BF,
-    0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5,
-    0x0152, 0x0153, 0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044,
-    0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02, 0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1,
-    0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4, 0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9,
-    0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
-};
-
+// Inverse of rfork_type_to_path: a type is exactly four MacRoman bytes.
 int rfork_type_from_path(const char *path_component, uint8_t out[4]) {
     if (!path_component)
         return -EINVAL;
-    const uint8_t *p = (const uint8_t *)path_component;
-    size_t out_n = 0;
-    while (*p && out_n < 4) {
-        uint32_t cp;
-        if (p[0] < 0x80) {
-            cp = p[0];
-            p++;
-        } else if ((p[0] & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
-            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
-            p += 2;
-        } else if ((p[0] & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
-            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) | (p[2] & 0x3F);
-            p += 3;
-        } else {
-            return -EINVAL;
-        }
-        if (cp < 0x80) {
-            out[out_n++] = (uint8_t)cp;
-            continue;
-        }
-        // Scan the MacRoman high-byte table for a match.  ~128 entries,
-        // amortised on 4 chars per type, is negligible.
-        bool found = false;
-        for (size_t i = 0; i < 128; i++) {
-            if (macroman_hi_lookup[i] == cp) {
-                out[out_n++] = (uint8_t)(0x80 + i);
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-            return -EINVAL;
-    }
-    if (out_n != 4 || *p != '\0')
+    uint8_t cc[5];
+    if (macroman_from_utf8(path_component, cc, sizeof(cc)) != 4)
         return -EINVAL;
+    memcpy(out, cc, 4);
     return 0;
 }
 

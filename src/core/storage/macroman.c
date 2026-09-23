@@ -6,6 +6,8 @@
 
 #include "macroman.h"
 
+#include <errno.h>
+
 // MacRoman codepoints for 0x80..0xFF, from Apple's legacy encoding table.
 // Stored as Unicode code points; converted on demand to UTF-8.
 static const uint16_t macroman_hi[128] = {
@@ -44,4 +46,43 @@ void macroman_to_utf8(const uint8_t *src, size_t src_len, char *dst, size_t dst_
         }
     }
     dst[o] = '\0';
+}
+
+// The MacRoman byte for Unicode code point `cp`, or -1.  A scan of the one
+// table: names are short, and a second, inverted table would be a second
+// thing to keep in step with the first.
+static int macroman_byte(uint32_t cp) {
+    if (cp < 0x80)
+        return (int)cp;
+    for (size_t i = 0; i < 128; i++)
+        if (macroman_hi[i] == cp)
+            return (int)(0x80 + i);
+    return -1;
+}
+
+int macroman_from_utf8(const char *utf8, uint8_t *dst, size_t dst_cap) {
+    if (!utf8 || !dst)
+        return -EINVAL;
+    const uint8_t *p = (const uint8_t *)utf8;
+    size_t n = 0;
+    while (*p) {
+        uint32_t cp;
+        if (p[0] < 0x80) {
+            cp = p[0];
+            p++;
+        } else if ((p[0] & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            p += 2;
+        } else if ((p[0] & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+            p += 3;
+        } else {
+            return -EINVAL;
+        }
+        int b = macroman_byte(cp);
+        if (b < 0 || n == dst_cap)
+            return -EINVAL;
+        dst[n++] = (uint8_t)b;
+    }
+    return (int)n;
 }

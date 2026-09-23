@@ -703,7 +703,7 @@ struct vfs_dir {
     // UFS directory
     ufs_dir_iter_t *ufs_iter;
     // Synthetic resource tree (DIR_RSRC_ROOT / DIR_RSRC_TYPE)
-    const rfork_t *rfork; // borrowed from rsrc_entry, which this handle pins
+    rfork_t *rfork; // borrowed from rsrc_entry, which this handle pins
     struct rsrc_cache_entry *rsrc_entry;
     uint8_t rsrc_type[4]; // DIR_RSRC_TYPE only
     size_t rsrc_next_idx; // next type idx (root) or next resource idx (type)

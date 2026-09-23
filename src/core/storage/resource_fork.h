@@ -84,10 +84,13 @@ size_t rfork_num_resources(const rfork_t *rf, const uint8_t type[4]);
 int16_t rfork_id_at(const rfork_t *rf, const uint8_t type[4], size_t idx);
 
 // Resolve one resource.  Returns 0 on hit and populates *bytes_out (pointer
-// into the fork buffer), *size_out, *name_out (UTF-8, NUL-terminated; "" if
-// no name), and *attrs_out.  Returns -ENOENT on miss.  Any out parameter
-// may be NULL.
-int rfork_lookup(const rfork_t *rf, const uint8_t type[4], int16_t id, const uint8_t **bytes_out, size_t *size_out,
+// into the fork buffer, or into the fork's inflated copy of a compressed
+// resource), *size_out, *name_out (UTF-8, NUL-terminated; "" if no name),
+// and *attrs_out.  Returns -ENOENT on miss.  Any out parameter may be NULL.
+// A compressed resource is inflated on its first lookup and kept with the
+// fork -- which is why the fork is not const -- up to a per-fork budget;
+// past it, or when its dcmp is unsupported, the raw bytes come back.
+int rfork_lookup(rfork_t *rf, const uint8_t type[4], int16_t id, const uint8_t **bytes_out, size_t *size_out,
                  const char **name_out, uint8_t *attrs_out);
 
 // === Path-component helpers (used by image_vfs.c and re/) ===================

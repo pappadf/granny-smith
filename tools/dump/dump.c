@@ -43,7 +43,7 @@ static unsigned g_compressed_unhandled = 0;
 
 // Forward declaration: dump_disasm lives below dump_run for readability
 // but dump_run calls it as the final step.
-static int dump_disasm(const struct rfork *rf, const char *dst_dir);
+static int dump_disasm(struct rfork *rf, const char *dst_dir);
 
 // ============================================================================
 // Small filesystem helpers (mkdir -p + path joining)
@@ -216,7 +216,7 @@ static int write_blob(const char *out_path, const void *bytes, size_t len) {
 // Dump every resource of every type into <dst>/resources/<TYPE>/<id> and
 // <id>.info.  Returns the number of resources written, or -1 on any
 // per-resource failure (the partial output is left on disk for debugging).
-static int dump_resources(const rfork_t *rf, const char *dst_dir) {
+static int dump_resources(rfork_t *rf, const char *dst_dir) {
     char dir[PATH_MAX];
     int n = snprintf(dir, sizeof(dir), "%s/resources", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
@@ -286,9 +286,9 @@ static int dump_resources(const rfork_t *rf, const char *dst_dir) {
 
 // Forward decls for the new PR 5 helpers (decoded/ pass + manifest writer).
 // Both live below this function for readability.
-static int dump_decoded(const struct rfork *rf, const char *dst_dir);
-static int dump_manifest(const struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len,
-                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len);
+static int dump_decoded(struct rfork *rf, const char *dst_dir);
+static int dump_manifest(struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len, size_t rsrc_len,
+                         const uint8_t *finder_info, size_t finder_info_len);
 static void dump_readme(const struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len,
                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len, int total_resources,
                         int disasm_written, int decoded_written);
@@ -578,7 +578,7 @@ static const cbtype_t *find_cbtype(const uint8_t cc[4]) {
 // for CODE 0), plus disasm/<TYPE>-NNNN.s for every other code-bearing
 // type in g_code_bearing, plus a consolidated symbols.txt at dst_dir's
 // root.  Returns the number of disasm files written, or -1 on failure.
-static int dump_disasm(const rfork_t *rf, const char *dst_dir) {
+static int dump_disasm(rfork_t *rf, const char *dst_dir) {
     static const uint8_t code_cc[4] = {'C', 'O', 'D', 'E'};
     // Count how many code-bearing resources we'll process.  Zero of any
     // type means no disasm dir at all.
@@ -812,7 +812,7 @@ int dump_disasm_code(const uint8_t *rsrc_bytes, size_t rsrc_len, int code_id, co
 //   decoded/<TYPE>/<id>.txt  (when the decoder also writes a plain-text
 //                              summary)
 // Returns the number of files written, or -1 on failure.
-static int dump_decoded(const rfork_t *rf, const char *dst_dir) {
+static int dump_decoded(rfork_t *rf, const char *dst_dir) {
     char base[PATH_MAX];
     int n = snprintf(base, sizeof(base), "%s/decoded", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(base))
@@ -874,8 +874,8 @@ static int dump_decoded(const rfork_t *rf, const char *dst_dir) {
 // type/id list, and the recovered CODE-segment structure.  Resources
 // carry the relative paths of their bin / info / disasm / decoded files
 // so downstream tooling can navigate without re-walking the dir tree.
-static int dump_manifest(const rfork_t *rf, const char *src_label, const char *dst_dir, size_t data_len,
-                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len) {
+static int dump_manifest(rfork_t *rf, const char *src_label, const char *dst_dir, size_t data_len, size_t rsrc_len,
+                         const uint8_t *finder_info, size_t finder_info_len) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/manifest.json", dst_dir);
     FILE *fp = fopen(path, "wb");
