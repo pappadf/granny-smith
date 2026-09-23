@@ -326,29 +326,6 @@ static char *dirname_of(const char *path) {
     return out;
 }
 
-// Probe a base image for size and DiskCopy framing; return 0 on success,
-// negative on failure.  `out_raw_size` and `out_is_diskcopy` are populated
-// even if the file is not a DiskCopy archive.  The raw size must be a whole
-// number of `block_size`-byte blocks.
-static int probe_base_image(const char *base_path, uint32_t block_size, size_t *out_raw_size, bool *out_is_diskcopy) {
-    size_t file_size = 0;
-    if (read_file_size(base_path, &file_size) != 0) {
-        printf("image: cannot read file size: %s\n", base_path);
-        return -1;
-    }
-    uint32_t diskcopy_size = 0;
-    int dc_probe = detect_diskcopy(base_path, file_size, &diskcopy_size);
-    if (dc_probe < 0)
-        return -1;
-    bool is_diskcopy = (dc_probe > 0);
-    size_t raw_size = is_diskcopy ? (size_t)diskcopy_size : file_size;
-    if ((raw_size % block_size) != 0)
-        return -1;
-    *out_raw_size = raw_size;
-    *out_is_diskcopy = is_diskcopy;
-    return 0;
-}
-
 // Normalise a geometry's block size, treating 0 as the default (512).
 static uint32_t geometry_block_size(image_geometry_t geom) {
     return geom.block_size ? geom.block_size : STORAGE_BLOCK_SIZE;
@@ -736,7 +713,7 @@ done:
 // return that path (malloc'd, caller frees).  Returns NULL when the file is
 // not UDIF at all, or when its decode failed — both fall through to the
 // remaining formats.
-static char *resolve_udif_image(const char *base_path) {
+static char *udif_decode(const char *base_path) {
     FILE *f = fopen(base_path, "rb");
     if (!f)
         return NULL;
@@ -796,20 +773,14 @@ static char *resolve_udif_image(const char *base_path) {
     return result;
 }
 
-// If base_path is a compressed disk image, decode it to a cached scratch raw
-// file and return that path (malloc'd, caller frees / image takes ownership).
-// UDIF (.dmg) is self-contained and checked first; NDIF needs its block map
-// recovered from a fork sidecar.  Otherwise return a copy of base_path.
-// NULL only on allocation failure.
-static char *resolve_base_image(const char *base_path) {
-    char *udif = resolve_udif_image(base_path);
-    if (udif)
-        return udif;
-
+// An NDIF (Disk Copy 6) image keeps its block map in the resource fork;
+// decode it to a raw scratch file.  NULL if `base_path` is not NDIF or does
+// not decode.
+static char *ndif_decode(const char *base_path) {
     size_t rlen = 0;
     uint8_t *rfork = acquire_resource_fork(base_path, &rlen);
     if (!rfork)
-        return dup_string(base_path);
+        return NULL;
 
     char *result = NULL;
     if (ndif_detect(rfork, rlen)) {
@@ -834,7 +805,94 @@ static char *resolve_base_image(const char *base_path) {
         }
     }
     free(rfork);
-    return result ? result : dup_string(base_path);
+    return result;
+}
+
+// ============================================================================
+// Image formats
+// ============================================================================
+//
+// Every format a disk image file can be in, in probe order (09-storage
+// F-51).  Two kinds:
+//   - a container is decoded to a raw scratch file first (UDIF, NDIF); the
+//     first that decodes wins, else the file itself is used;
+//   - a layout says where the disk data sits in that file (DiskCopy 4.2's
+//     data after its 0x54-byte header; raw, the whole file); the first that
+//     recognises the file wins, and raw recognises anything.
+// A container that is detected but does not decode falls through to the
+// next format, as the hard-coded chain this replaces did -- ultimately to
+// raw.
+
+typedef struct image_format {
+    const char *name;
+    // Container: the malloc'd path of the decoded raw image, or NULL (not
+    // this format, or it did not decode).
+    char *(*decode)(const char *base_path);
+    // Layout: 1 if `path` (of `file_size` bytes) is this layout, setting
+    // *data_size and *is_diskcopy; 0 if not; <0 if it cannot be read.
+    int (*layout)(const char *path, size_t file_size, size_t *data_size, bool *is_diskcopy);
+} image_format_t;
+
+static int diskcopy42_layout(const char *path, size_t file_size, size_t *data_size, bool *is_diskcopy) {
+    uint32_t n = 0;
+    int rc = detect_diskcopy(path, file_size, &n);
+    if (rc > 0) {
+        *data_size = n;
+        *is_diskcopy = true;
+    }
+    return rc;
+}
+
+static int raw_layout(const char *path, size_t file_size, size_t *data_size, bool *is_diskcopy) {
+    (void)path;
+    *data_size = file_size;
+    *is_diskcopy = false;
+    return 1;
+}
+
+static const image_format_t g_image_formats[] = {
+    {"udif",       udif_decode, NULL             },
+    {"ndif",       ndif_decode, NULL             },
+    {"diskcopy42", NULL,        diskcopy42_layout},
+    {"raw",        NULL,        raw_layout       },
+};
+#define N_IMAGE_FORMATS (sizeof(g_image_formats) / sizeof(g_image_formats[0]))
+
+// Resolve `base_path` through the format table: the file storage should open
+// (the source, or its decoded scratch copy; malloc'd into *out_path), how
+// many bytes of disk data it holds, and whether they sit after a DiskCopy
+// 4.2 header.  0, or -1 (unreadable, or not a whole number of blocks).
+static int resolve_image(const char *base_path, uint32_t block_size, char **out_path, size_t *out_raw_size,
+                         bool *out_is_diskcopy) {
+    char *path = NULL;
+    for (size_t i = 0; i < N_IMAGE_FORMATS && !path; i++)
+        if (g_image_formats[i].decode)
+            path = g_image_formats[i].decode(base_path);
+    if (!path)
+        path = dup_string(base_path);
+    if (!path)
+        return -1;
+
+    size_t file_size = 0;
+    if (read_file_size(path, &file_size) != 0) {
+        printf("image: cannot read file size: %s\n", path);
+        free(path);
+        return -1;
+    }
+    size_t raw_size = 0;
+    bool is_diskcopy = false;
+    int rc = 0;
+    for (size_t i = 0; i < N_IMAGE_FORMATS && rc == 0; i++)
+        if (g_image_formats[i].layout)
+            rc = g_image_formats[i].layout(path, file_size, &raw_size, &is_diskcopy);
+    if (rc < 0 || (raw_size % block_size) != 0) {
+        free(path);
+        return -1;
+    }
+    *out_path = path;
+    *out_raw_size = raw_size;
+    *out_is_diskcopy = is_diskcopy;
+    return 0;
 }
 
 image_t *image_open_readonly(const char *base_path) {
@@ -846,16 +904,11 @@ image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry
         return NULL;
     uint32_t block_size = geometry_block_size(geom);
 
-    char *effective = resolve_base_image(base_path);
-    if (!effective)
-        return NULL;
-
+    char *effective = NULL;
     size_t raw_size = 0;
     bool is_diskcopy = false;
-    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
-        free(effective);
+    if (resolve_image(base_path, block_size, &effective, &raw_size, &is_diskcopy) != 0)
         return NULL;
-    }
 
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
     if (!image) {
@@ -907,16 +960,11 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     // mounts). The probe that used to live here had no effect on subsequent
     // behaviour.
 
-    char *effective = resolve_base_image(base_path);
-    if (!effective)
-        return NULL;
-
+    char *effective = NULL;
     size_t raw_size = 0;
     bool is_diskcopy = false;
-    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
-        free(effective);
+    if (resolve_image(base_path, block_size, &effective, &raw_size, &is_diskcopy) != 0)
         return NULL;
-    }
 
     // Default delta_dir: GS_STORAGE_CACHE when set (sidecars routed away
     // from the media — see image_scratch_dir), else the directory
@@ -982,16 +1030,11 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
         return NULL;
     uint32_t block_size = geometry_block_size(geom);
 
-    char *effective = resolve_base_image(base_path);
-    if (!effective)
-        return NULL;
-
+    char *effective = NULL;
     size_t raw_size = 0;
     bool is_diskcopy = false;
-    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
-        free(effective);
+    if (resolve_image(base_path, block_size, &effective, &raw_size, &is_diskcopy) != 0)
         return NULL;
-    }
 
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
     if (!image) {

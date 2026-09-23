@@ -61,7 +61,7 @@ static const char *pick_delta_dir(const char *path) {
 
 **Compressed image formats** — NDIF and UDIF
 
-Two Apple disk-image containers are decoded on open, before any of the above runs. `resolve_base_image()` tries each in turn and, on a hit, decodes the whole image once into a raw scratch file under the storage-cache directory (`GS_STORAGE_CACHE`, else `/tmp/gs-image-ro/`); everything downstream then sees an ordinary raw base. The scratch name is derived from the source path, size, and mtime, so repeated inserts reuse the decode and an edited source re-decodes.
+Two Apple disk-image containers are decoded on open, before any of the above runs. Every format an image file can be in is an entry in `image.c`'s `g_image_formats[]` table, in probe order: the containers (UDIF, then NDIF) decode to a raw scratch file, the first to succeed winning; then the layouts (DiskCopy 4.2, then raw) say where the disk data sits in the resulting file. `resolve_image()` walks the table. A decoded image lands once in a raw scratch file under the storage-cache directory (`GS_STORAGE_CACHE`, else `/tmp/gs-image-ro/`); everything downstream then sees an ordinary raw base. The cache (`image_scratch.h`) keys it on the source path, size, and mtime, so repeated inserts reuse the decode and an edited source re-decodes, and it reuses a file only once it has been sealed as a complete decode of that same source. A new container or layout is a new table entry.
 
 | | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) |
 |---|---|---|
