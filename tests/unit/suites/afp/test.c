@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 void stub_set_afp_version(const char *v);
+void stub_session_set(uint16_t ref, const char *v);
 int stub_attention_count(void);
 
 // AFP opcodes and result codes used by the tests (the server's private
