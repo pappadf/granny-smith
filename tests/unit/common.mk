@@ -149,9 +149,15 @@ $(TARGET): $(OBJ)
 # Include auto-generated header dependency files
 -include $(DEP)
 
-# Run the test binary
+# Run the test binary.  EXEC_WRAPPER lets the same suite run on wasm32 -- `make run
+# CC=emcc EXEC_WRAPPER=node` -- where size_t and long are 32 bits (09-WORK-ORDER.md
+# §0.2).  It is resolved through the shell because, with emsdk on PATH,
+# /opt/emsdk/node is a directory that precedes /usr/bin and make's own exec
+# stops at it with "Permission denied".
+EXEC_WRAPPER ?=
+EXEC_WRAPPER_BIN := $(if $(EXEC_WRAPPER),$(shell command -v $(EXEC_WRAPPER)))
 run: $(TARGET)
-	$(TARGET)
+	$(EXEC_WRAPPER_BIN) $(TARGET)
 
 # Clean this test's artifacts
 clean:

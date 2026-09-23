@@ -11,11 +11,14 @@ UNIT_ROOT      := $(abspath ../../)
 WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
 EMU_ROOT       := $(WORKSPACE_ROOT)/src
 
-BUILD_DIR := $(UNIT_ROOT)/build
+BUILD_DIR ?= $(UNIT_ROOT)/build
 OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
 TARGET    := $(BUILD_DIR)/$(TEST_NAME)
 
 CC ?= gcc
+# See common.mk: lets this suite run on wasm32 with CC=emcc EXEC_WRAPPER=node.
+EXEC_WRAPPER ?=
+EXEC_WRAPPER_BIN := $(if $(EXEC_WRAPPER),$(shell command -v $(EXEC_WRAPPER)))
 BASE_CFLAGS := -O0 -g -Wall -Wextra
 INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core \
@@ -67,7 +70,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(OBJ) $(LDFLAGS) -o $@
 
 run: $(TARGET)
-	@$(TARGET)
+	@$(EXEC_WRAPPER_BIN) $(TARGET)
 
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET)
