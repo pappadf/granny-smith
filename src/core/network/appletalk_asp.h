@@ -18,6 +18,9 @@
 
 // The layer above ASP.  Every callback is optional.
 typedef struct {
+    // A workstation asks to open a session; return false to refuse it (the
+    // workstation hears ServerBusy).  NULL accepts every session.
+    bool (*on_open)(void *ctx, uint16_t session_ref);
     // A session closed -- the client asked, it expired, or the stack is
     // detaching: release what it held.
     void (*on_close)(void *ctx, uint16_t session_ref);

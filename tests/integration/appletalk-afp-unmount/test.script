@@ -1,0 +1,138 @@
+# AppleTalk AFP — unmounting closes the ASP session.
+#
+# The appletalk-afp mount (Chooser → AppleShare → "My Volume" on the desktop),
+# then the volume is dragged to the Trash, which unmounts it: the AppleShare
+# client logs out and sends ASP CloseSess.
+#
+# CloseSess names its session in ATP user byte 1 and carries no data (Inside
+# AppleTalk Fig. 11-10).  The server read the session from the ATP data --
+# always absent -- so no CloseSess ever closed anything: every unmount left
+# the session held until the two-minute idle sweep, and with four session
+# slots a fifth mount inside that window was refused (10-network N-03).  The
+# run checks the session is gone within a few seconds of the drag.
+
+include "../lib/mac.script"
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# Boot to the Finder desktop (same budget as the scsi test).
+scheduler.run 30000000
+
+# Publish the host share BEFORE AppleTalk activates, as the legacy UI did.
+# add() returns the volume it created, so one call both registers and
+# verifies — no re-enumeration of the collection needed.
+assert appletalk.afp.volumes.add("My Volume", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
+assert appletalk.afp.volumes["My Volume"].vol_id > 0 "volume id not assigned"
+assert appletalk.afp.volumes["My Volume"].cnid_count == 1 "a fresh catalog holds only the root"
+
+# Nothing has talked to the server yet.
+assert appletalk.afp.stats.commands_served == 0 "AFP traffic before the client ran"
+assert try(appletalk.afp.sessions[0].session_ref, 0) == 0 "an ASP session exists before the Chooser ran"
+
+# Apple menu → Chooser (press at the menu title, drag down to the item,
+# release). The Apple menu on this System 6 volume lists About / Access
+# Privileges / Alarm Clock / Battery / Calculator / Chooser, so the Chooser
+# sits at y=123.
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Click the AppleShare icon in the Chooser's device list.
+machine.adb.mouse.move 95 90
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# "AppleShare requires AppleTalk" → OK. AppleTalk flips Active and the NBP
+# lookup runs; the server list must show the emulated share host.
+# (60M: the NBP discovery timers are guest-time-driven.)
+machine.adb.mouse.move 190 206
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+check("chooser-server-listed.png")
+
+# Select "Shared Folders", then OK.
+machine.adb.mouse.move 280 88
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 6000000
+machine.adb.mouse.move 333 178
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# "Connect to the file server ... as: Guest" → OK. FPLogin runs and
+# FPGetSrvrParms fills the volume list.
+machine.adb.mouse.move 392 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("volume-list.png")
+
+# The session is up and speaking AFP 2.0 before a single volume is mounted.
+assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"
+assert appletalk.afp.stats.commands_served > 0 "no AFP commands were served"
+
+# Select "My Volume", then OK — the mount itself.
+machine.adb.mouse.move 150 113
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+machine.adb.mouse.move 333 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Close the Chooser; the AFP volume icon is on the desktop.
+machine.adb.mouse.move 72 47
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("desktop-mounted.png")
+
+assert appletalk.afp.sessions[0].session_ref > 0 "no ASP session after the mount"
+
+# Drag "My Volume" to the Trash.
+machine.adb.mouse.move 472 102
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+let y = 102
+while $y < 300 {
+$y = $y + 22
+machine.adb.mouse.move 472 $y
+scheduler.run 400000
+}
+machine.adb.mouse.move 472 300
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("desktop-unmounted.png")
+
+# The session closed with the unmount -- not two minutes later.
+assert try(appletalk.afp.sessions[0].session_ref, 0) == 0 "the ASP session outlived the unmount"
+assert appletalk.afp.volumes["My Volume"].sessions_using == 0 "the volume still counts a session"
+
+quit

@@ -526,6 +526,168 @@ TEST(the_echoer_answers_requests_on_socket_4_with_a_reply) {
     link_delete();
 }
 
+// --- ASP sessions (10-network C2-C6) ---------------------------------------------
+
+#define ASP_CLOSE_SESS 1
+#define ASP_COMMAND    2
+#define ASP_GET_STAT   3
+
+// The last ATP response to `node`, or NULL.
+static const uint8_t *last_tresp(uint8_t node, size_t *len) {
+    for (int i = wire_count() - 1; i >= 0; i--) {
+        size_t l = 0;
+        const uint8_t *f = wire_frame(i, &l);
+        if (l >= 16 && f[0] == node && f[2] == LLAP_TYPE_DDP_SHORT && f[7] == 3 && (f[8] & 0xC0) == ATP_TRESP) {
+            if (len)
+                *len = l;
+            return f;
+        }
+    }
+    return NULL;
+}
+
+static uint32_t tresp_result(const uint8_t *f) {
+    return ((uint32_t)f[12] << 24) | ((uint32_t)f[13] << 16) | ((uint32_t)f[14] << 8) | f[15];
+}
+
+// An ASP request with user bytes [func, sid, 0, seq] and `data`.
+static void asp_request(uint8_t node, uint8_t func, uint8_t sid, uint16_t tid, const uint8_t *data, size_t dlen) {
+    uint8_t atp[8 + 64] = {ATP_TREQ | ATP_XO, 0x01, (uint8_t)(tid >> 8), (uint8_t)tid, func, sid, 0, 1};
+    if (dlen)
+        memcpy(atp + 8, data, dlen);
+    guest_ddp(node, AFP_SOCKET, 200, 3, atp, 8 + dlen);
+    guest_advance_to(link_now_ns() + 5e6);
+}
+
+static int live_sessions(void) {
+    int n = 0;
+    for (int i = 0; i < atalk_asp_session_max(); i++)
+        n += atalk_asp_session_in_use(i);
+    return n;
+}
+
+// CloseSess names its session in user byte 1 and carries no data (Inside
+// AppleTalk Fig. 11-10).  The server read the session from the ATP data, so a
+// real client's CloseSess closed nothing (10-network N-03).
+TEST(close_sess_closes_the_session) {
+    link_boot();
+    g_asp_closes = 0;
+    uint8_t sid = asp_open_session(GUEST_NODE, 100, 0x1001);
+    ASSERT_TRUE(sid != 0);
+    ASSERT_EQ_INT(1, live_sessions());
+    wire_clear();
+    asp_request(GUEST_NODE, ASP_CLOSE_SESS, sid, 0x1002, NULL, 0);
+    ASSERT_EQ_INT(0, live_sessions());
+    ASSERT_EQ_INT(1, g_asp_closes);
+    size_t len = 0;
+    const uint8_t *r = last_tresp(GUEST_NODE, &len);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(16, (int)len); // no data...
+    ASSERT_EQ_INT(0, (int)tresp_result(r)); // ...and zero user bytes
+    link_delete();
+}
+
+// OpenSess refusals carry the spec's codes (N-04): ServerBusy when full,
+// BadVersNum for anything but version 1.0.
+TEST(open_sess_refusals_use_asp_error_codes) {
+    link_boot();
+    for (int i = 0; i < atalk_asp_session_max(); i++)
+        ASSERT_TRUE(asp_open_session((uint8_t)(10 + i), 100, (uint16_t)(0x2000 + i)) != 0);
+    wire_clear();
+    uint8_t atp[8] = {ATP_TREQ | ATP_XO, 0x01, 0x21, 0x00, 4 /* OpenSess */, 100, 0x01, 0x00};
+    guest_ddp(30, AFP_SOCKET, 200, 3, atp, sizeof atp);
+    guest_advance_to(link_now_ns() + 5e6);
+    const uint8_t *r = last_tresp(30, NULL);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(0xFBD1, (r[14] << 8) | r[15]); // aspServerBusy
+    ASSERT_EQ_INT(0, r[13]); // no session id
+
+    wire_clear();
+    uint8_t v2[8] = {ATP_TREQ | ATP_XO, 0x01, 0x21, 0x01, 4, 100, 0x02, 0x00}; // version 2.0
+    guest_ddp(31, AFP_SOCKET, 200, 3, v2, sizeof v2);
+    guest_advance_to(link_now_ns() + 5e6);
+    r = last_tresp(31, NULL);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT(0xFBD6, (r[14] << 8) | r[15]); // aspBadVersNum
+    link_delete();
+}
+
+// Session ids are one byte on the wire and unique among live sessions; the
+// old ones were a counter's low byte, so two live sessions 256 opens apart
+// shared an id and commands for one landed on the other (F-06).
+TEST(session_ids_stay_unique_across_many_opens) {
+    link_boot();
+    uint8_t held = asp_open_session(GUEST_NODE, 100, 0x1001);
+    ASSERT_TRUE(held != 0);
+    for (int i = 0; i < 300; i++) {
+        uint8_t sid = asp_open_session(GUEST_NODE + 1, 101, (uint16_t)(0x3000 + i));
+        ASSERT_TRUE(sid != 0 && sid != held);
+        asp_request(GUEST_NODE + 1, ASP_CLOSE_SESS, sid, (uint16_t)(0x6000 + i), NULL, 0);
+    }
+    ASSERT_EQ_INT(1, live_sessions());
+    link_delete();
+}
+
+// A session answers only the node that opened it (F-06), and a command for a
+// session that is not open is answered SessClosed and never reaches the
+// client -- it used to run as "session 0", with no login (F-05).
+TEST(commands_reach_only_their_own_session) {
+    link_boot();
+    uint8_t sid = asp_open_session(GUEST_NODE, 100, 0x1001);
+    ASSERT_TRUE(sid != 0);
+    g_afp_calls = 0;
+    uint8_t cmd[] = {0x08}; // any opcode
+    wire_clear();
+    asp_request(GUEST_NODE + 4, ASP_COMMAND, sid, 0x1002, cmd, sizeof cmd); // another node, same id
+    ASSERT_EQ_INT(0, g_afp_calls);
+    const uint8_t *r = last_tresp(GUEST_NODE + 4, NULL);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT((int)0xFFFFEC62u, (int)tresp_result(r)); // SessClosed
+    wire_clear();
+    asp_request(GUEST_NODE, ASP_COMMAND, (uint8_t)(sid + 1), 0x1003, cmd, sizeof cmd); // no such session
+    ASSERT_EQ_INT(0, g_afp_calls);
+    wire_clear();
+    asp_request(GUEST_NODE, ASP_COMMAND, sid, 0x1004, cmd, sizeof cmd); // the real one
+    ASSERT_EQ_INT(1, g_afp_calls);
+    ASSERT_EQ_INT(0x08, g_afp_last_opcode);
+    link_delete();
+}
+
+// GetStatus returns the status block and runs nothing, whatever it carries.
+// With data it used to be a second command channel: the first data byte was
+// dispatched as an AFP opcode from session 0 (F-05).
+TEST(get_status_runs_no_command) {
+    link_boot();
+    g_afp_calls = 0;
+    uint8_t data[] = {0, 0, 0, 0, 0, 0, 0x08, 0, 0};
+    asp_request(GUEST_NODE, ASP_GET_STAT, 0, 0x1001, data, sizeof data);
+    ASSERT_EQ_INT(0, g_afp_calls);
+    ASSERT_TRUE(last_tresp(GUEST_NODE, NULL) != NULL);
+    link_delete();
+}
+
+// Each session has its own pending write (F-14): with one for the whole
+// server, a second session's Write while the first waited got no reply.
+TEST(two_sessions_write_at_once) {
+    link_boot();
+    uint8_t s1 = asp_open_session(GUEST_NODE, 100, 0x1001);
+    uint8_t s2 = asp_open_session(GUEST_NODE + 1, 101, 0x1002);
+    ASSERT_TRUE(s1 != 0 && s2 != 0);
+    wire_clear();
+    asp_write(GUEST_NODE, s1, 0x2001, 1);
+    asp_write(GUEST_NODE + 1, s2, 0x2002, 1);
+    ASSERT_EQ_INT(1, wire_count_atp(GUEST_NODE, ATP_TREQ, ASP_WRITE_CONTINUE));
+    ASSERT_EQ_INT(1, wire_count_atp(GUEST_NODE + 1, ATP_TREQ, ASP_WRITE_CONTINUE));
+    // A second Write in the same session while its first waits is answered
+    // with an error, not dropped.
+    wire_clear();
+    asp_write(GUEST_NODE, s1, 0x2003, 2);
+    const uint8_t *r = last_tresp(GUEST_NODE, NULL);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT((int)0xFFFFEC6Au, (int)tresp_result(r)); // MiscErr
+    link_delete();
+}
+
 int main(void) {
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
     RUN(enq_for_our_node_is_acked_and_others_are_not);
@@ -543,6 +705,12 @@ int main(void) {
     RUN(a_lookup_matching_eight_names_answers_with_eight_tuples);
     RUN(a_lookup_reply_with_eight_tuples_delivers_all_eight);
     RUN(the_echoer_answers_requests_on_socket_4_with_a_reply);
+    RUN(close_sess_closes_the_session);
+    RUN(open_sess_refusals_use_asp_error_codes);
+    RUN(session_ids_stay_unique_across_many_opens);
+    RUN(commands_reach_only_their_own_session);
+    RUN(get_status_runs_no_command);
+    RUN(two_sessions_write_at_once);
     printf("[PASS] All atalk_link tests passed\n");
     return 0;
 }
