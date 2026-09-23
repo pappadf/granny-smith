@@ -392,16 +392,13 @@ full surface.
 │   ├── images/
 │   │   ├── rom/                ROM images, named by checksum
 │   │   ├── vrom/               Video ROM images
-│   │   ├── fd/                 400K/800K floppy images
-│   │   ├── fdhd/               1.44 MB HD floppy images
+│   │   ├── fd/                 Floppy images (400K / 800K / 1.44 MB)
 │   │   ├── hd/                 SCSI hard-disk images
-│   │   ├── cd/                 CD-ROM images (.iso / .toast / .cdr)
-│   │   ├── <hash>.img          Content-addressed disk images
-│   │   ├── <hash>.img.delta    Delta files
-│   │   └── <hash>.img.journal  Pre-image journals
+│   │   └── cd/                 CD-ROM images (.iso / .toast / .cdr)
 │   ├── checkpoints/
 │   │   └── <machine-id>-<ts>/  Per-machine checkpoint dirs
-│   │       └── state.checkpoint
+│   │       ├── state.checkpoint
+│   │       └── <id>.delta / <id>.journal   Writable image state
 │   ├── upload/                 Drag-and-drop staging
 │   └── config/                 e.g. recent.json
 └── tmp/                        Memory mount (volatile)
@@ -413,11 +410,14 @@ worker thread. `/tmp/` uses a memory backend; its subdirectories are
 pre-created in C because `FS.mkdir` from the JS main thread fails
 cross-thread under WasmFS pthreads.
 
-When `fd insert` or `scsi.attach_hd` receives a volatile path
-(`/tmp/…`), the C-side `image_persist_volatile()` copies the file to
-`/opfs/images/<hash>.img` (content-addressed, FNV-1a hash) before the
-storage engine opens it. This ensures delta and journal files are also
-on OPFS. The persistent path is stored in checkpoints for restore.
+The core opens media at whatever path it is given and never copies it
+elsewhere. Persistence is the web app's job: an upload, and a URL-parameter
+download, is copied into `/opfs/images/<category>/` before it is attached
+(`bus/upload.ts::persist`), so the base image lives on OPFS and the path
+recorded in checkpoints still resolves after a reload. A volatile path
+(`/tmp/…`) attached from the shell stays volatile: the image, its delta and
+any checkpoint's reference to it do not survive a reload. Copy it under
+`/opfs/` first (`storage.import <src> <dst>`) to keep it.
 
 ## URL Parameters
 
@@ -530,8 +530,8 @@ headers intact through Codespaces' port-forwarding proxy.
 - New persistent UI state goes into a `state/<slice>.svelte.ts` file
   with `$state(...)`. Wire localStorage persistence in
   [`state/persist.svelte.ts`](../app/web2/src/state/persist.svelte.ts).
-- Volatile media images are auto-persisted to `/opfs/images/` by
-  `image_persist_volatile()` when mounted.
+- Media is persisted by the web app (`bus/upload.ts::persist`), not by
+  the core; the core opens the path it is given.
 - The core is path-agnostic — all directory-structure decisions belong
   to the web app.
 - Any new URL parameter is handled in

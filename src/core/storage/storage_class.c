@@ -165,30 +165,20 @@ static int storage_images_next(struct object *self, int prev_index) {
     return -1;
 }
 
-// `storage.import(host_path, dst_path?)` — copy `host_path` into the
-// emulator's persistent storage. When `dst_path` is empty (or absent
-// — second arg is optional), falls back to the content-hash path
-// produced by image_persist_volatile (/opfs/images/<hash>.img). When
-// `dst_path` is non-empty, the source is copied verbatim through the
-// VFS so paths like "/opfs/images/foo.img" can be picked explicitly.
+// `storage.import(host_path, dst_path)` — copy `host_path` to `dst_path`
+// through the VFS, e.g. into "/opfs/images/hd/foo.img".  The destination is
+// the caller's to choose: the core does not pick where media lives
+// (09-storage D-1; it used to fall back to /opfs/images/<hash>.img).
 //
-// Returns the resolved destination path as a V_STRING.
+// Returns the destination path as a V_STRING.
 static value_t storage_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
+    (void)argc;
     const char *host_path = argv[0].s;
-    const char *dst_path = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-
-    if (!dst_path) {
-        // Hash-named persistence — handles the drag-drop / volatile-
-        // path case and is idempotent on repeat imports.
-        char *resolved = image_persist_volatile(host_path);
-        if (!resolved)
-            return val_err("storage.import: failed to persist '%s'", host_path);
-        value_t v = val_str(resolved);
-        free(resolved);
-        return v;
-    }
+    const char *dst_path = argv[1].s;
+    if (!dst_path || !*dst_path)
+        return val_err("storage.import: a destination path is required");
 
     // Explicit destination — call shell_cp directly so VFS handling
     // stays in one place (no shell_dispatch).
@@ -199,11 +189,8 @@ static value_t storage_method_import(struct object *self, const member_t *m, int
 }
 
 static const arg_decl_t storage_import_args[] = {
-    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"},
-    {.name = "dst_path",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Destination path; empty → /opfs/images/<hash>.img"},
+    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"                                     },
+    {.name = "dst_path",  .kind = V_STRING, .doc = "Destination path (e.g. under /opfs/images/<category>/)"},
 };
 
 static const member_t storage_images_collection_members[] = {
@@ -778,7 +765,7 @@ static const arg_decl_t storage_partmap_args[] = {
 static const member_t storage_members[] = {
     {.kind = M_METHOD,
      .name = "import",
-     .doc = "Persist a host file under /images/ (implementation in progress)",
+     .doc = "Copy a host file to a destination path",
      .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}        },
     {.kind = M_METHOD,
      .name = "list_dir",

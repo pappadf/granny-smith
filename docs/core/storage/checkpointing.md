@@ -89,30 +89,17 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
 
 ## Image Persistence for Quick Checkpoints
 
-Quick checkpoints assume that disk image base files and their delta/journal pairs exist in persistent storage at restore time. In the browser, images uploaded via drag-and-drop initially land in volatile `/tmp/` (memory-backed), which is wiped on page reload. The C-side `image_persist_volatile()` function fixes this by copying volatile images to the OPFS-backed `/opfs/images/` directory before any image opener runs.
+Quick checkpoints assume that disk image base files and their delta/journal pairs exist in persistent storage at restore time. In the browser that is arranged by the web app, not the core: an uploaded or URL-fetched image is copied into `/opfs/images/<category>/` (`app/web2/src/bus/upload.ts::persist`) *before* it is attached, so the path the machine opens — and a checkpoint records — is already on OPFS. The core opens the path it is given and does not copy media anywhere.
 
 `/opfs/images/` is **strictly read-only base content**. The writable side — delta and journal — is rooted under the per-machine checkpoint directory (`/opfs/checkpoints/<machine_id>-<created>/<id>.delta` and `<id>.journal`), not next to the base. This is the key bug fix from the storage-isolation rewrite: reusing the same base image for an unrelated machine no longer replays stale deltas, because every `image_create` mints a fresh random instance id (see `docs/core/storage/image.md`).
 
 ### How It Works
 
-When an `fd insert` or `hd attach` command targets a volatile path (`/tmp/`), `image_persist_volatile()` (called from the worker thread where OPFS is accessible):
+`fd insert` / `hd attach` open the image at the given path via `image_create(base, pick_delta_dir(base))`. `pick_delta_dir` returns `checkpoint_machine_dir()` for OPFS-backed bases, so the delta and journal are created under `/opfs/checkpoints/<machine_id>-<created>/`. Quick checkpoints record the per-image `instance_path` so a future restore can reopen the same files via `image_open(base, instance_path)`.
 
-1. Reads the image file from volatile storage.
-2. Computes a content hash (FNV-1a over first 64 KB + total file size) -> 8-char hex.
-3. Copies the file to `/opfs/images/<hash>.img` (skipped if the hash file already exists).
-4. Returns the persistent path.
+A volatile path (`/tmp/…`) attached from the shell or API stays volatile: the image, its delta and the checkpoint's reference to it are gone after a reload. Copy it under `/opfs/` first to keep it.
 
-The command then opens the image at its persistent location via `image_create(base, pick_delta_dir(base))`. `pick_delta_dir` returns `checkpoint_machine_dir()` for OPFS-backed bases, so the delta and journal are created under `/opfs/checkpoints/<machine_id>-<created>/`. Quick checkpoints record the per-image `instance_path` so a future restore can reopen the same files via `image_open(base, instance_path)`.
-
-### Content-Addressed Naming
-
-Base images under `/opfs/images/` are named by their content hash (`<hash>.img`). This provides:
-
-- **Deduplication:** The same image mounted multiple times is stored only once.
-- **Skip-if-present:** If the hash file exists, the copy is skipped entirely — no wasted I/O.
-- **No name collisions:** Different images with the same original filename get unique hashes.
-
-Images loaded via URL parameters (`url-media.js`) land in `/opfs/images/` subdirectories and use the same persistence mechanism.
+Until 2026-09 the core copied every non-OPFS image to a flat, hash-named `/opfs/images/<8-hex>.img` before opening it (`image_persist_volatile`). That code is gone. Files it wrote are left in place: a checkpoint manifest records its base by path, so an old checkpoint still reopens its image.
 
 ### Filesystem Layout
 
@@ -122,11 +109,9 @@ Images loaded via URL parameters (`url-media.js`) land in `/opfs/images/` subdir
 │   ├── images/                                 Read-only base images
 │   │   ├── rom/                                ROM images (named by checksum)
 │   │   ├── vrom/                               Video ROM images
-│   │   ├── fd/                                 400K/800K floppy images
-│   │   ├── fdhd/                               1.4MB HD floppy images
+│   │   ├── fd/                                 Floppy images (400K / 800K / 1.4MB)
 │   │   ├── hd/                                 SCSI hard disk images
-│   │   ├── cd/                                 CD-ROM images
-│   │   └── <hash>.img                          Content-addressed disk images
+│   │   └── cd/                                 CD-ROM images
 │   ├── checkpoints/                            Per-machine state lives here
 │   │   └── <machine_id>-<created>/             One directory per machine
 │   │       ├── state.checkpoint                Quick checkpoint (atomic via tmp+rename)

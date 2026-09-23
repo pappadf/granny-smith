@@ -194,11 +194,6 @@ int image_create_blank_profile(const char *filename, uint32_t block_count);
 // Returns 0 on success, -1 on failure.
 int image_export_to(image_t *image, const char *dest_path);
 
-// If `path` is volatile (/tmp/ or /fd/), copy the file to /images/<hash>.img
-// and return the persistent path (caller must free).  If already persistent,
-// returns a copy of the original path.  Returns NULL on error.
-char *image_persist_volatile(const char *path);
-
 // Setup images from config
 extern void setup_images(config_t *config);
 
