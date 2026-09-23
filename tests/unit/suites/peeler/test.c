@@ -383,6 +383,134 @@ static uint8_t *make_cpt_file(uint32_t file_offset, uint32_t rsrc_comp, uint32_t
     return a;
 }
 
+// A Compact Pro archive with one file whose data fork is `fork` (fork_len
+// bytes, declared to decode to data_uncomp), flagged LZH or plain RLE.
+static uint8_t *make_cpt_data_fork(const uint8_t *fork, uint32_t fork_len, uint32_t data_uncomp, bool lzh,
+                                   size_t *out_len) {
+    const char *name = "F";
+    size_t dir_off = 8 + fork_len; // forks first, directory after
+    size_t len = dir_off + 7 + 1 + 1 + 45 + 16;
+    uint8_t *a = calloc(len, 1);
+    ASSERT_TRUE(a != NULL);
+    a[0] = 0x01;
+    a[1] = 0x01;
+    put32(a + 4, (uint32_t)dir_off);
+    memcpy(a + 8, fork, fork_len);
+    put16(a + dir_off + 4, 1); // one entry
+    uint8_t *e = a + dir_off + 7;
+    e[0] = 1;
+    e[1] = (uint8_t)name[0];
+    uint8_t *m = e + 2;
+    put32(m + 1, 8); // file_offset: the forks
+    put16(m + 27, lzh ? 0x0004 : 0); // flags: data fork LZH
+    put32(m + 33, data_uncomp); // data_uncomp
+    put32(m + 41, fork_len); // data_comp (rsrc_comp = 0)
+    *out_len = len;
+    return a;
+}
+
+// An MSB-first bit writer, as cp_bits reads (bytes enter the accumulator's
+// high end), for Compact Pro LZH streams.
+typedef struct {
+    uint8_t buf[512];
+    size_t nbits;
+} cpt_writer;
+
+static void cptw_bits(cpt_writer *w, uint32_t v, int n) {
+    for (int i = n - 1; i >= 0; i--) {
+        ASSERT_TRUE(w->nbits < sizeof(w->buf) * 8);
+        if ((v >> i) & 1)
+            w->buf[w->nbits / 8] |= (uint8_t)(0x80 >> (w->nbits % 8));
+        w->nbits++;
+    }
+}
+
+// One LZH block's three tables (cpt.md §6.4.1: a byte count, then nibble-
+// packed code lengths, high nibble first): literals 'A' and 'B' at length 1
+// (codes 0 and 1), match lengths 2 and 3 at length 1, offset symbols 0 and 1
+// at length 1.  Every code is one bit.
+static void cptw_tables(cpt_writer *w) {
+    cptw_bits(w, 34, 8); // literal lengths for symbols 0..67
+    for (int i = 0; i < 34; i++)
+        cptw_bits(w, i == 32 ? 0x01 : i == 33 ? 0x10 : 0x00, 8); // 65 = 'A', 66 = 'B'
+    cptw_bits(w, 2, 8); // match lengths 0..3
+    cptw_bits(w, 0x00, 8);
+    cptw_bits(w, 0x11, 8); // 2 and 3
+    cptw_bits(w, 1, 8); // offset symbols 0..1
+    cptw_bits(w, 0x11, 8);
+}
+
+static void cptw_literal(cpt_writer *w, char c) {
+    cptw_bits(w, 1, 1); // literal flag
+    cptw_bits(w, c == 'A' ? 0 : 1, 1); // 'A' = 0, 'B' = 1
+}
+
+// A match: flag 0, the length's code, the offset symbol's code, 6 low bits.
+static void cptw_match(cpt_writer *w, int mlen, unsigned offset) {
+    cptw_bits(w, 0, 1);
+    cptw_bits(w, (uint32_t)(mlen - 2), 1);
+    cptw_bits(w, offset >> 6, 1);
+    cptw_bits(w, offset & 63, 6);
+}
+
+// The LZH builder is right, and so is the error plumbing on valid input:
+// "AB" then a 2-byte match at offset 2 decodes to "ABAB".
+TEST(test_cpt_lzh_round_trip) {
+    cpt_writer w = {0};
+    cptw_tables(&w);
+    cptw_literal(&w, 'A');
+    cptw_literal(&w, 'B');
+    cptw_match(&w, 2, 2);
+    size_t len;
+    uint8_t *a = make_cpt_data_fork(w.buf, (uint32_t)((w.nbits + 7) / 8), 4, true, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_cpt(a, len, &err);
+    if (err)
+        fprintf(stderr, "  cpt: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(1, list.count);
+    ASSERT_EQ_INT(4, (int)list.files[0].data_fork.size);
+    ASSERT_TRUE(memcmp(list.files[0].data_fork.data, "ABAB", 4) == 0);
+    peel_file_list_free(&list);
+    free(a);
+}
+
+// F-16: match offsets are 1-based (cpt.md §6.5); offset 0 is invalid.  The
+// decoder accepted it and copied the window byte it was about to overwrite --
+// here the zero-filled window, so "A" + a 2-byte match at offset 0 came back
+// as "A\0\0", no error.  Must be refused.
+TEST(test_cpt_lzh_zero_offset_is_rejected) {
+    cpt_writer w = {0};
+    cptw_tables(&w);
+    cptw_literal(&w, 'A');
+    cptw_match(&w, 2, 0);
+    size_t len;
+    uint8_t *a = make_cpt_data_fork(w.buf, (uint32_t)((w.nbits + 7) / 8), 3, true, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_cpt(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
+// A fork that ends before its declared length -- here 4 plain bytes declared
+// to decode to 16 -- came back as a 4-byte fork with no error: the decoder
+// treated running dry as end of file, and nothing compared the result with
+// data_uncomp.  (Compact Pro's per-file CRC is also stored and never checked;
+// see the commit that added this test for why that is not fixed here.)
+TEST(test_cpt_short_fork_is_rejected) {
+    static const uint8_t four[] = {'a', 'b', 'c', 'd'};
+    size_t len;
+    uint8_t *a = make_cpt_data_fork(four, 4, 16, false, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel_cpt(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    ASSERT_EQ_INT(0, list.count);
+    peel_err_free(err);
+    free(a);
+}
+
 // F-15, Compact Pro half: the fork extents were `file_offset + rsrc_comp > len`
 // in size_t -- a sum that wraps on wasm32.  Observed unfixed: native refuses
 // the archive; wasm32 ACCEPTS it (no error, one file) with a resource fork
@@ -749,6 +877,9 @@ int main(void) {
     RUN(test_sit13_dynamic_round_trip);
     RUN(test_sit13_length_repeat_cannot_overrun);
     RUN(test_sit13_negative_length_is_rejected);
+    RUN(test_cpt_lzh_round_trip);
+    RUN(test_cpt_lzh_zero_offset_is_rejected);
+    RUN(test_cpt_short_fork_is_rejected);
     RUN(test_cpt_fork_extent_is_checked);
     RUN(test_cpt_nesting_cap_is_exact);
     RUN(test_cpt_folder_nesting_is_bounded);

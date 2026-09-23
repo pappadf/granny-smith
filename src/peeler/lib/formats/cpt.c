@@ -330,6 +330,11 @@ static void cp_lzh_flush_block(cp_lzh_t *lz) {
 // byte-by-byte copy.
 //
 // Returns 1 on success (byte written to *out), 0 on EOF, -1 on error.
+// EOF is only ever "no more input where a block or token would begin";
+// anything malformed -- a table that does not parse, a code that walks off
+// its tree, a stream that stops inside a token, a zero length or offset --
+// is an error.  Every one of those used to return 0 too, so a corrupt fork
+// came back truncated instead of refused (see cp_decompress_fork).
 static int cp_lzh_next(cp_lzh_t *lz, int *out) {
     // Continue emitting bytes from an in-progress match.
     if (lz->match_rem > 0) {
@@ -353,7 +358,7 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
             if (!cp_bits_avail(&lz->bits, 8))
                 return 0; // end of compressed stream
             if (cp_lzh_build_tables(lz) < 0)
-                return 0;
+                return -1;
         }
 
         // Need at least one bit for the literal/match flag.
@@ -365,7 +370,7 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
         if (flag) {
             // Literal byte.
             int sym = cp_htree_decode(&lz->lit_tree, &lz->bits);
-            if (sym < 0) return 0;
+            if (sym < 0) return -1;
 
             uint8_t b = (uint8_t)sym;
             lz->win[lz->wpos & CP_WIN_MASK] = b;
@@ -376,15 +381,17 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
         } else {
             // Match.
             int mlen_sym = cp_htree_decode(&lz->len_tree, &lz->bits);
-            if (mlen_sym < 0) return 0;
+            if (mlen_sym < 0) return -1;
             int off_sym = cp_htree_decode(&lz->off_tree, &lz->bits);
-            if (off_sym < 0) return 0;
-            if (!cp_bits_avail(&lz->bits, 6)) return 0;
+            if (off_sym < 0) return -1;
+            if (!cp_bits_avail(&lz->bits, 6)) return -1;
             unsigned lower6 = cp_bits_get(&lz->bits, 6);
 
             unsigned offset = ((unsigned)off_sym << 6) | lower6; // 1-based
             unsigned mlen = (unsigned)mlen_sym;
-            if (mlen == 0) return 0;
+            // cpt.md § 6.5: offsets are 1-based.  Offset 0 used to copy the
+            // window byte about to be overwritten (09-storage F-16).
+            if (mlen == 0 || offset == 0) return -1;
 
             lz->blk_cost += 3;
 
@@ -492,9 +499,9 @@ static int cp_rle_read(cp_rle_t *r, uint8_t *dst, size_t max) {
             byte_val = 0x81;
             r->escape_pending = 0;
         } else {
-            if (!r->src(r->src_ctx, &byte_val)) {
-                return (int)written;
-            }
+            int rc = r->src(r->src_ctx, &byte_val);
+            if (rc < 0) return -1; // corrupt input below, not end of it
+            if (rc == 0) return (int)written;
         }
 
         if (byte_val != 0x81) {
@@ -506,16 +513,16 @@ static int cp_rle_read(cp_rle_t *r, uint8_t *dst, size_t max) {
 
         // Escape start (0x81) — read next byte.
         int next;
-        if (!r->src(r->src_ctx, &next)) {
-            return (int)written;
-        }
+        int rc = r->src(r->src_ctx, &next);
+        if (rc < 0) return -1;
+        if (rc == 0) return (int)written;
 
         if (next == 0x82) {
             // RLE run: 0x81 0x82 <count>
             int count;
-            if (!r->src(r->src_ctx, &count)) {
-                return (int)written;
-            }
+            rc = r->src(r->src_ctx, &count);
+            if (rc < 0) return -1;
+            if (rc == 0) return (int)written;
             if (count == 0) {
                 // Literal 0x81 followed by 0x82.
                 dst[written++] = 0x81;
@@ -805,10 +812,22 @@ static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len,
     uint8_t chunk[8192];
     for (;;) {
         int n = cp_fork_read(&fork, chunk, sizeof(chunk));
-        if (n <= 0) break;
+        if (n < 0) {
+            grow_free(&out);
+            decode_abort(ctx, "corrupt compressed fork data");
+        }
+        if (n == 0) break;
         grow_append(&out, chunk, (size_t)n, ctx);
     }
 
+    // The fork must decode to exactly its declared length.  Nothing checked
+    // this, and the per-file CRC is never verified either, so a fork that
+    // ran dry early was returned short, as if it were the file.
+    if (out.len != uncomp_len) {
+        size_t got = out.len;
+        grow_free(&out);
+        decode_abort(ctx, "fork decoded to %zu of %zu bytes", got, uncomp_len);
+    }
     return grow_finish(&out);
 }
 
