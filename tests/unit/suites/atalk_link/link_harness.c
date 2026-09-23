@@ -242,6 +242,10 @@ void guest_advance_to(double t_ns) {
     }
 }
 
+void guest_idle_until(double t_ns) {
+    run_until(t_ns);
+}
+
 int wire_count(void) {
     return g_nwire;
 }
@@ -271,6 +275,18 @@ const uint8_t *wire_last_ddp(uint8_t dst, uint8_t ddp_type, size_t *len) {
         }
     }
     return NULL;
+}
+
+int wire_count_atp(uint8_t dst, uint8_t ctl_type, uint8_t user0) {
+    int n = 0;
+    for (int i = 0; i < g_nwire; i++) {
+        const frame_t *f = &g_wire[i];
+        if (f->len < 3 + 5 + 8 || f->b[0] != dst || f->b[2] != LLAP_TYPE_DDP_SHORT || f->b[7] != 3 /* ATP */)
+            continue;
+        if ((f->b[8] & 0xC0) == ctl_type && (user0 == 0xFF || f->b[12] == user0))
+            n++;
+    }
+    return n;
 }
 
 void wire_clear(void) {

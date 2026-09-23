@@ -1631,10 +1631,33 @@ void atalk_printer_register(void) {
     }
     static const atp_socket_handler_t handler = {.handle_request = pap_socket_request_handler};
     atp_register_socket_handler(HOST_PAP_SOCKET, &handler, NULL);
-    if (!g_printer.enabled) {
-        if (atalk_printer_enable(NULL) != 0)
-            LOG(1, "pap: failed to auto-enable printer");
+    // Publish on every stack: the previous one withdrew the advertisement in
+    // atalk_printer_shutdown.  (A printer is enabled by default, and this has
+    // always re-enabled one a script turned off -- that is configuration,
+    // which 10-network A5 carries through a restore.)
+    if (atalk_printer_enable(NULL) != 0)
+        LOG(1, "pap: failed to auto-enable printer");
+}
+
+void atalk_printer_shutdown(void) {
+    if (!g_printer.initialized)
+        return;
+    pap_session_reset(); // cancels its ATP request, closes the spool, aborts the job
+    memset(&g_completion, 0, sizeof(g_completion));
+    if (g_printer.nbp_entry) {
+        atalk_nbp_unregister(g_printer.nbp_entry);
+        g_printer.nbp_entry = NULL;
     }
+    atp_unregister_socket_handler(HOST_PAP_SOCKET);
+}
+
+void atalk_printer_link_down(void) {
+    if (!g_printer.initialized || !g_session.active)
+        return;
+    pap_session_reset();
+    memset(&g_completion, 0, sizeof(g_completion));
+    if (g_printer.enabled)
+        pap_printer_set_status_idle();
 }
 
 // Enables (or renames) the emulated LaserWriter and registers its NBP entry.

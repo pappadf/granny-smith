@@ -192,6 +192,9 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
 static void atp_timers_init(void);
+static void atp_reset(bool teardown);
+static void nbp_reset(void);
+static void asp_reset(void);
 static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx);
 // ASP session-table helpers, defined with the table itself further down.
 static void asp_sessions_reset(void);
@@ -389,6 +392,10 @@ static void llap_rts_timeout_cb(void *source, uint64_t data) {
 }
 
 static void llap_wire_send(const uint8_t *buf, size_t total) {
+    // llap_send checks this too, but a frame queued for its CTS goes out from
+    // the RTS timer, which does not pass through llap_send again.
+    if (!g_atalk_enabled)
+        return;
     log_hex(11, "LLAP tx dump", buf, total);
     g_atalk_stats.llap_tx++;
     if (g_scc)
@@ -643,7 +650,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
         atalk_timer_init(&g_asp_sweep_timer, "asp", "session_sweep", &asp_sweep_cb);
     }
     memset(&g_atalk_stats, 0, sizeof(g_atalk_stats));
-    asp_sessions_reset();
+    asp_reset();
     atalk_server_init();
     atalk_printer_register();
     // The three program-linking layers, bottom up: ADSP carries PPC sessions,
@@ -773,6 +780,17 @@ static void appletalk_teardown(void) {
     atalk_ppc_shutdown();
     atalk_adsp_remove_objects();
     atalk_adsp_shutdown();
+    atalk_printer_shutdown();
+
+    // Then the transport, top down: nothing above can call into it any more,
+    // so requests are dropped without completing (10-network N-08 -- none of
+    // this was reset, so a rebuilt machine inherited the old one's ATP
+    // requests, XO cache, pending ASP write and NBP registrations, and a new
+    // session's Write was never served).
+    asp_reset();
+    atp_reset(true);
+    nbp_reset();
+    llap_rts_reset();
 
     // Every timer last: the shutdowns above can still transmit -- ADSP's
     // close-all puts CLOSE advice on the wire -- and a frame that waits for a
@@ -852,6 +870,13 @@ void atalk_set_enabled(bool enabled) {
         atalk_asp_close_all_sessions();
         atalk_ppc_close_all("the stack was detached from the link");
         adsp_close_all(atalk_adsp_stack(), "the stack was detached from the link");
+        atalk_printer_link_down();
+        // ...and nothing below them keeps talking: outgoing requests end as
+        // ABORTED, the lookup is cancelled, and frames waiting for a CTS are
+        // dropped (10-network N-09).
+        atp_reset(false);
+        atalk_nbp_lookup_cancel();
+        llap_rts_reset();
     }
     LOG(1, "atalk: stack %s", enabled ? "attached to the link" : "detached from the link");
 }
@@ -1685,6 +1710,14 @@ void atalk_nbp_lookup_cancel(void) {
     g_nbp_lookup.ctx = NULL;
 }
 
+// Forget every registration and the outstanding lookup.  Each service
+// withdraws its own entry when it shuts down; this is what is left when one
+// did not, so the next stack does not advertise it.
+static void nbp_reset(void) {
+    atalk_nbp_lookup_cancel();
+    memset(g_nbp_entries, 0, sizeof(g_nbp_entries));
+}
+
 static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
     g_atalk_stats.nbp_lookups++;
     uint8_t header_byte = (len >= 1) ? buf[0] : 0;
@@ -2080,6 +2113,31 @@ static void atp_xo_free(atp_xo_entry_t *entry) {
     atalk_timer_cancel(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->in_use = false;
     entry->release_generation++;
+}
+
+// Drop every outgoing request and every XO cache entry, and their timers.
+// When the stack is only being detached from the link its clients are still
+// up, so each outstanding request completes as ABORTED and they clean up.  At
+// teardown they are already gone: requests are dropped without a callback,
+// and the socket handlers go too (each init registers its own).
+static void atp_reset(bool teardown) {
+    for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
+        atp_request_handle_t *req = &g_atp_requests[i];
+        if (!req->in_use)
+            continue;
+        if (!teardown) {
+            atp_request_complete(req, ATP_REQUEST_RESULT_ABORTED);
+        } else {
+            atalk_timer_cancel(&g_atp_retry_timer, atp_encode_event_data((uint16_t)i, req->timer_generation));
+            req->timer_generation++;
+            req->in_use = false;
+        }
+    }
+    for (int i = 0; i < ATP_MAX_XO_CACHE; i++)
+        if (g_xo_entries[i].in_use)
+            atp_xo_free(&g_xo_entries[i]);
+    if (teardown)
+        memset(g_atp_handlers, 0, sizeof(g_atp_handlers));
 }
 
 static void atp_xo_store_packet(atp_xo_entry_t *entry, uint8_t seq, const uint8_t *bytes, int len) {
@@ -2594,6 +2652,13 @@ typedef struct {
 } asp_pending_write_t;
 
 static asp_pending_write_t g_pending_write;
+
+// Forget every session and the pending write (the machine is going away, or
+// coming up).  The AFP layer is not told: it drops its own session state.
+static void asp_reset(void) {
+    asp_sessions_reset();
+    memset(&g_pending_write, 0, sizeof(g_pending_write));
+}
 
 // Called for each ATP response fragment from the client's WriteContinueReply
 static void asp_wc_on_response(const atp_response_fragment_t *fragment, void *ctx) {

@@ -48,6 +48,8 @@ void guest_ddp(uint8_t src_node, uint8_t dst_sock, uint8_t src_sock, uint8_t ddp
 // Move the clock to `t_ns`, firing due events and answering each RTS the
 // stack puts out with a CTS (an emulated Mac answers in ~0.5 ms).
 void guest_advance_to(double t_ns);
+// Move the clock to `t_ns`, firing due events, but never answering an RTS.
+void guest_idle_until(double t_ns);
 
 // --- what the stack put on the wire -----------------------------------------
 
@@ -58,6 +60,10 @@ int wire_count_type(uint8_t dst, uint8_t type);
 // The last short-DDP data frame to `dst` whose DDP type is `ddp_type`, or NULL.
 const uint8_t *wire_last_ddp(uint8_t dst, uint8_t ddp_type, size_t *len);
 void wire_clear(void);
+// The number of ATP packets to `dst` whose control type is `ctl_type` (0x40
+// TReq, 0x80 TResp, 0xC0 TRel) and, unless `user0` is 0xFF, whose first user
+// byte is `user0`.
+int wire_count_atp(uint8_t dst, uint8_t ctl_type, uint8_t user0);
 
 // --- the clock and the scheduler record ---------------------------------------
 

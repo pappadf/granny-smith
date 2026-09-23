@@ -199,8 +199,14 @@ int atp_responder_send_simple(const ddp_header_t *request_ddp, const atp_packet_
 int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
                       int len);
 
-// Printer AppleTalk entry points
+// Printer AppleTalk entry points.  register runs each time the stack comes
+// up; shutdown pairs it when the stack goes away with its machine (the
+// session, the job and the advertisement go; the configuration -- enabled,
+// name, capture -- stays for the next stack); link_down drops the session
+// when the stack is detached from the link, since its client is unreachable.
 void atalk_printer_register(void);
+void atalk_printer_shutdown(void);
+void atalk_printer_link_down(void);
 
 // Publish (or rename) / withdraw the LaserWriter NBP entity.  The object model
 // drives these through atalk_printer_set_enabled / atalk_printer_set_name.

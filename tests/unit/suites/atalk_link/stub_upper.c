@@ -138,6 +138,8 @@ unsigned atalk_afp_volume_cnid_count(int s) {
 
 // ---- printer (appletalk_printer.c) ----------------------------------------
 void atalk_printer_register(void) {}
+void atalk_printer_shutdown(void) {}
+void atalk_printer_link_down(void) {}
 bool atalk_printer_is_enabled(void) {
     return false;
 }
