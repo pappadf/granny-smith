@@ -71,6 +71,11 @@ void atalk_timer_cancel_all(atalk_timer_t *t);
 #define DDP_MAX_DATA_SIZE        586
 
 // ATP control bit masks (ctl field upper bits per Inside AppleTalk 10-7)
+// ATP limits: a response is at most eight packets (Inside AppleTalk 9-8) of
+// at most 578 bytes of data each.
+#define ATP_MAX_RESPONSE_FRAGMENTS 8
+#define ATP_MAX_ATP_PAYLOAD        578
+
 #define ATP_CONTROL_TREQ  0x40
 #define ATP_CONTROL_TRESP 0x80
 #define ATP_CONTROL_TREL  0xC0

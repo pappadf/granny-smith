@@ -42,6 +42,7 @@ SRCS := $(CURDIR)/test.c \
         $(CURDIR)/link_harness.c \
         $(CURDIR)/stub_upper.c \
         $(EMU_ROOT)/core/network/appletalk.c \
+        $(EMU_ROOT)/core/network/appletalk_asp.c \
         $(EMU_ROOT)/core/object/object.c \
         $(EMU_ROOT)/core/object/parse.c \
         $(EMU_ROOT)/core/object/value.c \

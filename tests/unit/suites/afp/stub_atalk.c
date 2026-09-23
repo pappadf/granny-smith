@@ -13,6 +13,7 @@
 // opened, and see what the server does with it (10-network unit 0.3).
 
 #include "appletalk.h"
+#include "appletalk_asp.h"
 
 #include <string.h>
 
@@ -59,6 +60,11 @@ void stub_set_afp_version(const char *v) {
 }
 int stub_attention_count(void) {
     return g_attentions;
+}
+
+// ASP's client registration: the suite calls the server directly.
+void asp_set_client(const asp_client_t *client, void *ctx) {
+    (void)client, (void)ctx;
 }
 
 int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry) {

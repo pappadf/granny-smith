@@ -19,6 +19,7 @@
 #include "afp_desktop.h"
 #include "afp_fork.h"
 #include "afp_meta.h"
+#include "afp_server.h"
 #include "appletalk.h"
 #include "test_assert.h"
 

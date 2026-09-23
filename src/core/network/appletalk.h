@@ -124,20 +124,6 @@ const atalk_afp_stats_t *atalk_afp_get_stats(void);
 uint64_t atalk_afp_error_count(int32_t code);
 int atalk_afp_error_code_at(int index, int32_t *out_code, uint64_t *out_count);
 
-// The AFP command entry point, called by the ASP layer.
-uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
-                            int out_max, int *out_len);
-
-// Release the forks, enumeration snapshots and volume references a departing
-// ASP session held.
-void afp_session_closed(uint16_t session_id);
-
-// Drop every reconstructible per-session cache (checkpoint restore).
-void afp_reset_transient_state(void);
-
-// Forks a session currently holds open, for `appletalk.afp.sessions[i]`.
-uint32_t afp_session_open_forks(uint16_t session_id);
-
 // === ASP sessions (object model: `appletalk.afp.sessions`) ==================
 
 typedef struct {
@@ -225,14 +211,6 @@ int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uin
 void atalk_nbp_lookup_cancel(void);
 
 // === ASP Status Block ===
-
-// Build the ASP GetStatus Service Status Block (per docs/errata.md layout).
-// Inputs: server_name and machine_type as C-strings (may be NULL → treated as empty).
-// Contents: the AFP version list the server actually implements and the UAM
-//           list ["No User Authent"].  No icon/mask is included (offset=0).
-// Output: *out_buf points to malloc'd buffer and *out_len is its size. Caller must free(*out_buf).
-// Returns 0 on success, non-zero on failure (e.g., allocation failure).
-int atalk_build_status_block(const char *server_name, const char *machine_type, uint8_t **out_buf, size_t *out_len);
 
 // === Lifecycle (Constructor / Destructor) ===
 

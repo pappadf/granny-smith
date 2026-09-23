@@ -16,8 +16,10 @@
 #include "afp_desktop.h"
 #include "afp_fork.h"
 #include "afp_meta.h"
+#include "afp_server.h"
 #include "appledouble.h"
 #include "appletalk.h"
+#include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "common.h"
 #include "log.h"
@@ -611,9 +613,37 @@ int atalk_afp_set_message(const char *message, char *err, size_t err_len) {
     return 0;
 }
 
+// The ASP client: what a session's commands, status request and close mean.
+static uint32_t afp_asp_command(void *ctx, uint16_t session_ref, uint8_t opcode, const uint8_t *in, int in_len,
+                                uint8_t *out, int out_max, int *out_len) {
+    (void)ctx;
+    return afp_handle_command(session_ref, opcode, in, in_len, out, out_max, out_len);
+}
+static void afp_asp_close(void *ctx, uint16_t session_ref) {
+    (void)ctx;
+    afp_session_closed(session_ref);
+}
+static int afp_asp_status(void *ctx, uint8_t **out, size_t *out_len) {
+    (void)ctx;
+    return atalk_build_status_block(g_afp_server_object, "GrannySmith", out, out_len);
+}
+static uint32_t afp_asp_open_forks(void *ctx, uint16_t session_ref) {
+    (void)ctx;
+    return afp_session_open_forks(session_ref);
+}
+static const asp_client_t k_afp_asp_client = {
+    .on_close = afp_asp_close,
+    .on_command = afp_asp_command,
+    .get_status = afp_asp_status,
+    .open_forks = afp_asp_open_forks,
+};
+
 void atalk_server_init(void) {
     memset(&g_afp_stats, 0, sizeof(g_afp_stats));
     memset(g_afp_err_tally, 0, sizeof(g_afp_err_tally));
+    // Nothing a previous machine's sessions held survives into this one.
+    afp_reset_transient_state();
+    asp_set_client(&k_afp_asp_client, NULL);
     if (!g_afp_enabled)
         return;
     if (afp_nbp_publish() != 0)
@@ -629,6 +659,7 @@ void atalk_server_delete(void) {
     }
     afp_fork_shutdown();
     afp_nbp_withdraw();
+    asp_set_client(NULL, NULL);
 }
 
 // ============================================================================

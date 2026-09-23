@@ -15,6 +15,7 @@
 #include "appletalk.h"
 #include "appletalk_adsp.h"
 #include "appletalk_aevt.h"
+#include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
 
@@ -26,34 +27,31 @@ void LOG_INDENT(int n) {
 }
 
 // ---- AFP server (appletalk_server.c) --------------------------------------
+//
+// atalk_server_init registers an ASP client that records what reached it, so
+// ASP tests can see which session and opcode a command was dispatched as.
 int g_afp_calls;
 uint8_t g_afp_last_opcode;
 uint16_t g_afp_last_session;
+int g_asp_closes;
 
-uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
-                            int out_max, int *out_len) {
-    (void)in, (void)in_len, (void)out, (void)out_max;
+static uint32_t rec_command(void *ctx, uint16_t session_ref, uint8_t opcode, const uint8_t *in, int in_len,
+                            uint8_t *out, int out_max, int *out_len) {
+    (void)ctx, (void)in, (void)in_len, (void)out, (void)out_max;
     g_afp_calls++;
     g_afp_last_opcode = opcode;
-    g_afp_last_session = session_id;
-    if (out_len)
-        *out_len = 0;
+    g_afp_last_session = session_ref;
+    *out_len = 0;
     return 0;
 }
-void afp_session_closed(uint16_t s) {
-    (void)s;
+static void rec_close(void *ctx, uint16_t session_ref) {
+    (void)ctx, (void)session_ref;
+    g_asp_closes++;
 }
-void afp_reset_transient_state(void) {}
-uint32_t afp_session_open_forks(uint16_t s) {
-    (void)s;
-    return 0;
-}
-void atalk_server_init(void) {}
-int atalk_build_status_block(const char *a, const char *b, uint8_t **o, size_t *l) {
-    (void)a, (void)b;
-    *o = NULL;
-    *l = 0;
-    return -1;
+static const asp_client_t k_rec_client = {.on_close = rec_close, .on_command = rec_command};
+
+void atalk_server_init(void) {
+    asp_set_client(&k_rec_client, NULL);
 }
 const char *const *atalk_afp_versions(int *c) {
     *c = 0;
