@@ -66,7 +66,8 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \
         $(EMU_ROOT)/core/object/api.c \
-        $(EMU_ROOT)/core/object/value_format.c
+        $(EMU_ROOT)/core/object/value_format.c \
+        $(UNIT_ROOT)/support/stub_assert.c
 
 ALL_SRCS := $(abspath $(SRCS))
 OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))

@@ -65,7 +65,7 @@
 // Forward Declarations
 // ============================================================================
 
-static void em_assertion_callback(const char *expr, const char *file, int line, const char *func);
+static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func);
 
 // Deferred speed mode: saved at parse time, applied in system_post_create()
 // when the machine (and scheduler) are created later via rom load.
@@ -1298,6 +1298,7 @@ static int clear_checkpoint_files(void) {
 
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
+    debug_set_failure_hook(em_assertion_callback);
 
     // Single OPFS mount at /opfs — everything under it persists.
     // The root stays memory-backed (wasmfs_create_opfs_backend() cannot run
@@ -1482,7 +1483,9 @@ int main(int argc, char *argv[]) {
 // Platform-specific assertion callback implementation.
 // Notifies the browser (Playwright tests) that an assertion has failed.
 // Must run on main thread (accesses window.__gsAssertionHandler).
-static void em_assertion_callback(const char *expr, const char *file, int line, const char *func) {
+static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func) {
+    if (!expr)
+        expr = kind;
     // clang-format off
     MAIN_THREAD_EM_ASM(
         {
@@ -1541,14 +1544,10 @@ static void provision_default_share(void) {
         printf("[C] default share: %s\n", err);
 }
 
-// Platform hook: install assertion callback and apply deferred speed mode
+// Platform hook: publish the default share and apply deferred speed mode
 // after each system_create (including deferred creation via rom load).
 void system_post_create(config_t *cfg) {
-    debug_t *debug = system_debug();
-    if (debug) {
-        debug->assertion_callback = em_assertion_callback;
-    }
-
+    (void)cfg;
     provision_default_share();
 
     // Apply deferred speed mode from --speed flag parsed at startup

@@ -119,8 +119,6 @@ struct debug {
     uint32_t trace_entries_size;
     uint32_t trace_entries_head;
     uint32_t trace_entries_tail;
-    // Platform-specific assertion callback (e.g., for test integration)
-    void (*assertion_callback)(const char *expr, const char *file, int line, const char *func);
     // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
     struct object *object; // root `debug` node
     struct object *bp_collection_object;
@@ -134,6 +132,15 @@ typedef struct debug debug_t;
 // === Lifecycle (Constructor / Destructor) ===
 
 debug_t *debug_init(void);
+
+// Called after every GS_ASSERT failure and every GS_UNIMPLEMENTED report, once
+// the diagnostics are printed and the machine is stopped.  `kind` is
+// "assertion" or "unimplemented function"; `expr` is the failed condition,
+// or NULL.  One hook per process, set by the platform at startup -- not per
+// machine, so a failure while a machine is being built (a checkpoint restore)
+// reaches it too.  NULL for none.
+typedef void (*debug_failure_hook_fn)(const char *kind, const char *expr, const char *file, int line, const char *func);
+void debug_set_failure_hook(debug_failure_hook_fn fn);
 void debug_cleanup(debug_t *debug);
 
 // === Operations ===

@@ -2296,6 +2296,12 @@ void debug_print_target_trace(void) {
 // Assertion failure handler (coordinates all diagnostic output)
 // ────────────────────────────────────────────────────────────────────────────
 
+static debug_failure_hook_fn g_failure_hook;
+
+void debug_set_failure_hook(debug_failure_hook_fn fn) {
+    g_failure_hook = fn;
+}
+
 // Shared tail of gs_assert_fail and gs_unimplemented_fail: dump what the host
 // and the guest were doing, stop the machine, and hand the shell back.  Neither
 // aborts -- a stopped machine with a message on it is worth more than a dead
@@ -2322,10 +2328,10 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
         printf("Handled %s while scheduler idle; shell remains available.\n", kind);
     fflush(stdout);
 
-    // Notify the platform layer (test integration hooks this to fail a run).
-    debug_t *debug = system_debug();
-    if (debug && debug->assertion_callback)
-        debug->assertion_callback(expr ? expr : kind, file, line, func);
+    // Notify the platform layer (the browser tells its test harness; headless
+    // fails the run).
+    if (g_failure_hook)
+        g_failure_hook(kind, expr, file, line, func);
 }
 
 // Main assertion failure handler - prints diagnostics and pauses execution
@@ -2356,7 +2362,7 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 // is compiled out by GS_FAST (see GS_UNIMPLEMENTED in common.h for why a
 // release build is exactly where this one matters).
 //
-// The banner goes to stderr, unbuffered: if a platform's assertion_callback
+// The banner goes to stderr, unbuffered: if a platform's failure hook
 // aborts -- the unit harness does -- a buffered stdout banner is lost at the
 // moment it was written for.
 void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
