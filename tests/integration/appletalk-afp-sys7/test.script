@@ -13,6 +13,15 @@
 #      "#<CNID>".
 #   6. Drag that file onto Macintosh HD and open the disk: the copy is there,
 #      its six bytes read over AFP.
+#   7. Make an alias of the 31-character file on the server (FPCreateID),
+#      rename the original "Moved", and open the alias: the Alias Manager
+#      finds the renamed file by its ID (FPResolveID) -- the Finder's "could
+#      not be opened" names "Moved", since the file has no creator.  Both
+#      calls are asserted through appletalk.afp.stats.ok_by_command.
+#
+# Find File is not driven here.  Its FPCatSearch now parses (it was
+# ParamErr), but how this client wants the last matches and the end of the
+# search delivered is not settled: see 10-WORK-ORDER.md §10, N-40.
 #
 # D-5 on System 7, measured with the shortening removed: the client cuts the
 # 40-character name to 31 itself, then asks for the file by the cut name --
@@ -143,5 +152,76 @@ scheduler.run 150000000
 # Macintosh HD's window lists the copy under its 31-character name; the
 # volume window behind it still shows the host's free space.
 check_ex("sys7-copied.png", 46, 250, 60, 412)
+
+# --- 7. An alias on the server, resolved by file ID ------------------------
+
+# Close Macintosh HD's window; select the 31-character file; Make Alias.
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x0D
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 40000000
+machine.adb.mouse.move 230 90 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 10000000
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x2E
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 350000000
+# Accept the name the Finder gave it (cut to 31: "...ex alias").
+machine.adb.keyboard.press 0x24
+scheduler.run 60000000
+check_ex("sys7-alias.png", 46, 250, 60, 412)
+assert appletalk.afp.stats.ok_by_command["FPCreateID"] >= 1 "making the alias did not get a file ID"
+
+# Rename the original "Moved": select it, Return, type, Return.
+machine.adb.mouse.move 226 80 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.keyboard.press 0x24
+scheduler.run 20000000
+machine.adb.keyboard.down 0x38
+scheduler.run 1000000
+machine.adb.keyboard.press 0x2E
+scheduler.run 1000000
+machine.adb.keyboard.up 0x38
+scheduler.run 1000000
+machine.adb.keyboard.press 0x1F
+scheduler.run 1000000
+machine.adb.keyboard.press 0x09
+scheduler.run 1000000
+machine.adb.keyboard.press 0x0E
+scheduler.run 1000000
+machine.adb.keyboard.press 0x02
+scheduler.run 1000000
+machine.adb.keyboard.press 0x24
+scheduler.run 80000000
+
+# Open the alias.  Its path names nothing now; the client asks FPResolveID.
+machine.adb.mouse.move 248 100 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 400000000
+check_ex("sys7-alias-resolved.png", 46, 250, 60, 412)
+# The frame alone would pass without FPResolveID: the Alias Manager falls
+# back to searching the alias's folder for the file number it recorded, and a
+# rename leaves the file there.  So the call itself is asserted.
+assert appletalk.afp.stats.ok_by_command["FPResolveID"] >= 1 "the alias was not resolved by its file ID"
+assert appletalk.afp.stats.open_forks == 0 "resolving the alias left a fork open"
 
 quit
