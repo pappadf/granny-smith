@@ -111,7 +111,63 @@ int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out) {
 // pathname into a C string -- so everything after the first NUL was lost and
 // "sub\0file" named "sub" -- and split it on ':', '/' and '\\' instead, so a
 // Mac name holding a '/' became two host path elements (10-network N-01).
-bool afp_walk_path(const char *base_rel, const afp_path_t *path, char *out, size_t out_len) {
+// --- names longer than a Mac name ---------------------------------------------
+//
+// A Mac name is at most 31 characters (HFS's Str31; AFP 2.x has no longer
+// one).  A host name whose MacRoman form is longer goes out as its first bytes
+// and "#<CNID in hex>", 31 in all.  Measured before choosing (10-network D-5,
+// appletalk-afp-longname): System 6's Finder listed a 40-character name whole,
+// then failed to copy the file to its disk -- "couldn't be written and was
+// skipped (unknown error)" -- since HFS cannot create the name.  The CNID never
+// changes, so the short form does not either, and afp_demangle maps it back.
+#define AFP_MAC_NAME_MAX 31
+
+int afp_client_name(const char *host_name, uint32_t cnid, uint8_t *out, size_t cap) {
+    uint8_t full[255];
+    int n = afp_mac_name(host_name, full, sizeof(full));
+    if (n <= AFP_MAC_NAME_MAX) {
+        n = n < (int)cap ? n : (int)cap;
+        memcpy(out, full, (size_t)n);
+        return n;
+    }
+    char suffix[12];
+    int sl = snprintf(suffix, sizeof(suffix), "#%X", (unsigned)cnid);
+    int keep = AFP_MAC_NAME_MAX - sl;
+    if (cap < AFP_MAC_NAME_MAX)
+        return -1;
+    memcpy(out, full, (size_t)keep);
+    memcpy(out + keep, suffix, (size_t)sl);
+    return AFP_MAC_NAME_MAX;
+}
+
+// `host` (one element, below `dir_rel`) is the short form of a longer name:
+// replace it with the name.  A name that exists as given is left alone, as is
+// one that is not exactly what afp_client_name makes for its CNID there.
+static void afp_demangle(vol_t *vol, const char *dir_rel, char *host, size_t cap) {
+    const char *hash = strrchr(host, '#');
+    if (!vol || !vol->catalog || !hash || !hash[1] || strspn(hash + 1, "0123456789ABCDEF") != strlen(hash + 1))
+        return;
+    char rel[AFP_MAX_REL_PATH];
+    struct stat st;
+    if (afp_build_child_path(dir_rel, host, rel, sizeof(rel)) && afp_stat_path(vol, rel, &st))
+        return; // a real file of that name
+    uint32_t cnid = (uint32_t)strtoul(hash + 1, NULL, 16);
+    const afp_cat_entry_t *e = afp_catalog_find(vol->catalog, cnid);
+    const afp_cat_entry_t *dir = (dir_rel && *dir_rel) ? afp_catalog_resolve_path(vol->catalog, dir_rel, false, true)
+                                                       : afp_catalog_find(vol->catalog, AFP_CNID_ROOT);
+    if (!e || !dir || e->parent != dir->cnid)
+        return;
+    char name[AFP_CAT_MAX_NAME];
+    snprintf(name, sizeof(name), "%s", e->name);
+    uint8_t mac[AFP_MAC_NAME_MAX];
+    int n = afp_client_name(name, cnid, mac, sizeof(mac));
+    char expect[AFP_MAC_NAME_MAX * 3 + 1];
+    if (n > AFP_MAC_NAME_MAX - 1 && macroman_name_to_host(mac, (size_t)n, expect, sizeof(expect)) &&
+        strcmp(expect, host) == 0)
+        snprintf(host, cap, "%s", name);
+}
+
+bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, char *out, size_t out_len) {
     if (!out || out_len == 0)
         return false;
     out[0] = '\0';
@@ -139,6 +195,7 @@ bool afp_walk_path(const char *base_rel, const afp_path_t *path, char *out, size
         char host[AFP_MAX_NAME * 3 + 1];
         if (!afp_client_element(path->bytes + start, (size_t)(i - start), host, sizeof(host)))
             return false;
+        afp_demangle(vol, out, host, sizeof(host));
         if (!afp_append_component(out, out_len, host))
             return false;
     }
@@ -403,14 +460,17 @@ int afp_mac_text(const char *text, uint8_t *out, size_t cap) {
     return n;
 }
 
-static int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint16_t bm,
-                               int pos_long_off, int pos_short_off) {
+static int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint32_t cnid,
+                               uint16_t bm, int pos_long_off, int pos_short_off) {
     // The Mac name for the host name (10-network N-02: host names went out as
-    // raw UTF-8, so "café" reached the Mac as "cafÃ©").
-    uint8_t nm[255];
-    int n = afp_mac_name(host_name, nm, sizeof(nm));
+    // raw UTF-8, so "café" reached the Mac as "cafÃ©"), at most 31 characters
+    // in both fields (D-5).
+    uint8_t nm[AFP_MAC_NAME_MAX];
+    int n = afp_client_name(host_name, cnid, nm, sizeof(nm));
+    if (n < 0)
+        return -1;
     uint8_t long_len = (uint8_t)n;
-    uint8_t short_len = (uint8_t)(n > 31 ? 31 : n);
+    uint8_t short_len = (uint8_t)n;
     if ((bm & (1u << 6))) {
         if (vpos + 1 + (int)long_len > out_max)
             return -1;
@@ -500,7 +560,8 @@ int afp_emit_params(bool is_dir, vol_t *vol, const char *rel, const struct stat 
     if (p < 0 || !afp_populate_param_area(is_dir, vol, rel, st, bm, out, pbase))
         return -1;
     const char *name = (rel && rel[0]) ? afp_last_component(rel) : vol->name;
-    p = afp_write_name_vars(out, p, out_max, pbase, name, bm, long_off, short_off);
+    uint32_t cnid = (rel && rel[0]) ? afp_cnid_of(vol, rel) : AFP_CNID_ROOT;
+    p = afp_write_name_vars(out, p, out_max, pbase, name, cnid, bm, long_off, short_off);
     if (p < 0)
         return -1;
     if (p % 2) {

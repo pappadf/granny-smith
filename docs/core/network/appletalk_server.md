@@ -2595,7 +2595,13 @@ UTF-8 on the host, and a Mac `/` is a host `:` -- the convention the
 disk-image side and macOS use. Host names stored decomposed (NFD) are composed
 first. A host name that is not UTF-8 is read as raw MacRoman, the form older
 versions of this server wrote. A host name MacRoman cannot hold (CJK, emoji)
-is not listed at all: under a lossy name it could never be addressed again.
+is not listed at all: under a lossy name it could never be addressed again. A
+Mac name is at most 31 characters (HFS's `Str31`; AFP 2.x has no longer
+one): a host name whose MacRoman form is longer goes out as its first bytes
+and `#` plus its CNID in hex, 31 in all, and that name is mapped back through
+the catalog -- unless a file of exactly that name exists. The rule was chosen
+by measurement (`appletalk-afp-longname`): sent whole, a 40-character name
+listed on System 6, but copying the file to the Mac's disk failed.
 
 Every host path the server touches is built in one place, `afp_host_join`,
 from the share root and names that are each a real element -- never empty,

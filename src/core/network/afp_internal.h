@@ -154,7 +154,10 @@ typedef struct {
 // for a path type other than 1 or 2 or a length past the request.
 int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out);
 // Resolve `path` below `base_rel` into a volume-relative host path.
-bool afp_walk_path(const char *base_rel, const afp_path_t *path, char *out, size_t out_len);
+bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, char *out, size_t out_len);
+// A host name as a client sees it: MacRoman, and at most 31 characters -- a
+// longer one is shortened to its first bytes and "#<CNID in hex>" (D-5).
+int afp_client_name(const char *host_name, uint32_t cnid, uint8_t *out, size_t cap);
 // A new name (FPRename, FPMoveAndRename, FPCopyFile): exactly one element, as
 // its host name.
 bool afp_parse_leaf(const afp_path_t *path, char *out, size_t cap);

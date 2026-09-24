@@ -157,7 +157,7 @@ uint32_t afp_resolve_target(const afp_ctx_t *ctx, uint16_t vol_id, uint32_t dir_
     char base[AFP_MAX_REL_PATH];
     if (!afp_dir_rel_path(vol, dir_id, base, sizeof(base)))
         return AFPERR_DirNotFound;
-    if (!afp_walk_path(base, path, out_rel, rel_cap))
+    if (!afp_walk_path(vol, base, path, out_rel, rel_cap))
         return AFPERR_ParamErr;
     if (out_vol)
         *out_vol = vol;

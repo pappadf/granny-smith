@@ -3552,6 +3552,53 @@ TEST(a_server_rename_that_cannot_be_published_changes_nothing) {
     fixture_down();
 }
 
+// --- D-5: names longer than a Mac name (10-network 0.6) --------------------------
+
+// A host name longer than 31 MacRoman characters goes out as its first bytes
+// and "#<CNID in hex>", 31 in all, and that name finds the file again; a name
+// of 31 is left alone, and a real file whose name looks shortened is itself.
+TEST(long_names_are_shortened_and_found_again) {
+    fixture_up("longname");
+    const char *long40 = "A name that runs to forty characters, ok";
+    write_file(long40, "forty");
+    write_file("Thirty-one characters, exactly.", "31");
+    uint32_t cnid = file_number(long40); // adopts it, by its host name
+    char expect[40];
+    snprintf(expect, sizeof expect, "#%X", (unsigned)cnid);
+    char shortname[40];
+    snprintf(shortname, sizeof shortname, "%.*s%s", (int)(31 - strlen(expect)), long40, expect);
+    ASSERT_EQ_INT(31, (int)strlen(shortname));
+
+    char names[8][96];
+    int n = enum_root_names(names, 8);
+    ASSERT_EQ_INT(2, n);
+    ASSERT_TRUE(listed(shortname));
+    ASSERT_TRUE(listed("Thirty-one characters, exactly."));
+    for (int i = 0; i < n; i++)
+        ASSERT_TRUE(strlen(names[i]) <= 31);
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms(shortname, 0x0100, 0x0100)); // by its short name
+    ASSERT_EQ_INT((int)cnid, (int)rd32(g_reply + 6));
+    uint16_t ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork(shortname, false, 0x0001, &ref));
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(16);
+    put8(0);
+    put8(0);
+    call(OP_READ);
+    ASSERT_EQ_INT(5, g_reply_len);
+    ASSERT_EQ_INT(0, memcmp(g_reply, "forty", 5));
+    close_fork(ref);
+
+    write_file("Looks#1A", "real"); // a real name of that shape is itself
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Looks#1A", 0x0100, 0x0100));
+    ASSERT_TRUE(rd32(g_reply + 6) != 0x1A);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3628,6 +3675,7 @@ int main(void) {
     RUN(a_directory_too_large_to_page_is_refused_whole);
     RUN(sidecars_and_the_volume_record_are_replaced_whole);
     RUN(a_server_rename_that_cannot_be_published_changes_nothing);
+    RUN(long_names_are_shortened_and_found_again);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
