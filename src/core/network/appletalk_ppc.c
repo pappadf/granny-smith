@@ -1094,39 +1094,19 @@ static struct object *ppc_ports_get(struct object *self, int index) {
         return NULL;
     return g_ppc_port_objs[index];
 }
-static int ppc_ports_count_cb(struct object *self) {
-    (void)self;
-    return atalk_ppc_port_count();
-}
-static int ppc_ports_next(struct object *self, int prev) {
-    (void)self;
-    int next = prev + 1;
-    return (next < atalk_ppc_port_count()) ? next : -1;
-}
 static struct object *ppc_ports_lookup(struct object *self, const char *name) {
     (void)self;
     int idx = atalk_ppc_port_find(name);
     return (idx >= 0) ? g_ppc_port_objs[idx] : NULL;
 }
-static value_t ppc_ports_attr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    return val_uint(4, (uint64_t)atalk_ppc_port_count());
-}
 
 static const member_t ppc_ports_members[] = {
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Program-linking ports discovered by the last browse",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = ppc_ports_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &ppc_port_class,
                .indexed = true,
                .get = ppc_ports_get,
-               .count = ppc_ports_count_cb,
-               .next = ppc_ports_next,
+               .slots = PPC_MAX_PORTS,
                .lookup = ppc_ports_lookup}},
 };
 
@@ -1224,25 +1204,6 @@ static struct object *ppc_sessions_get(struct object *self, int index) {
         return NULL;
     return g_ppc_session_objs[index];
 }
-static int ppc_sessions_count_cb(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < PPC_MAX_SESSIONS; i++)
-        if (atalk_ppc_session_at(i))
-            n++;
-    return n;
-}
-static int ppc_sessions_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < PPC_MAX_SESSIONS; i++)
-        if (atalk_ppc_session_at(i))
-            return i;
-    return -1;
-}
-static value_t ppc_sessions_attr_count(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, (uint64_t)ppc_sessions_count_cb(self));
-}
 // Name lookup by the port at the far end, so `sessions["Finder"].state` reads
 // naturally in a script.
 static struct object *ppc_sessions_lookup(struct object *self, const char *name) {
@@ -1256,18 +1217,12 @@ static struct object *ppc_sessions_lookup(struct object *self, const char *name)
 }
 
 static const member_t ppc_sessions_members[] = {
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Live PPC sessions",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = ppc_sessions_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &ppc_session_class,
                .indexed = true,
                .get = ppc_sessions_get,
-               .count = ppc_sessions_count_cb,
-               .next = ppc_sessions_next,
+               .slots = PPC_MAX_SESSIONS,
                .lookup = ppc_sessions_lookup}},
 };
 

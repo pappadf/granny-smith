@@ -351,25 +351,6 @@ static struct object *nubus_slot_get(struct object *self, int index) {
         return NULL;
     return g_slot_nodes[index].slot;
 }
-static int nubus_slot_count(struct object *self) {
-    (void)self;
-    if (!g_obj_bus)
-        return 0;
-    int n = 0;
-    for (int i = NUBUS_OBJ_FIRST; i <= NUBUS_OBJ_LAST; i++)
-        if (g_slot_nodes[i].slot)
-            n++;
-    return n;
-}
-static int nubus_slot_next(struct object *self, int prev_index) {
-    (void)self;
-    if (!g_obj_bus)
-        return -1;
-    for (int i = prev_index + 1; i <= NUBUS_OBJ_LAST; i++)
-        if (g_slot_nodes[i].slot)
-            return i;
-    return -1;
-}
 
 static const member_t nubus_members[] = {
     {.kind = M_CHILD,
@@ -377,11 +358,7 @@ static const member_t nubus_members[] = {
      .doc = "Populated NuBus slots ($9..$E); index by slot number, e.g. slot[9].card.framebuffer",
      .label = "Slots",
      .order = 10,
-     .child = {.cls = &nubus_slot_class,
-               .indexed = true,
-               .get = nubus_slot_get,
-               .count = nubus_slot_count,
-               .next = nubus_slot_next}},
+     .child = {.cls = &nubus_slot_class, .indexed = true, .get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1}},
     {.kind = M_METHOD,
      .name = "cards",
      .doc = "List the ids of all registered NuBus card drivers",

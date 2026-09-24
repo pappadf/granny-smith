@@ -472,7 +472,44 @@ TEST(test_counter_fields_read_their_block) {
     ASSERT_TRUE(counters_members[0].flags & VAL_RO);
 }
 
+// An indexed collection that gives `slots` and no next(): the core walks
+// get() over the slots, skipping holes, and synthesizes `count` (10-network
+// F-26: 15 of 17 collections carried a next() doing exactly that, and a
+// count() the core never called).
+static struct object *g_sparse_items[4];
+static struct object *sparse_get(struct object *self, int index) {
+    (void)self;
+    return (index >= 0 && index < 4) ? g_sparse_items[index] : NULL;
+}
+static const class_desc_t sparse_item_class = {.name = "sparse_item", .members = NULL, .n_members = 0};
+static const member_t sparse_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &sparse_item_class, .indexed = true, .get = sparse_get, .slots = 4}},
+};
+static const class_desc_t sparse_class = {.name = "sparse", .members = sparse_members, .n_members = 1};
+
+TEST(test_slots_walk_and_count) {
+    object_root_reset();
+    struct object *c = object_new(&sparse_class, NULL, "sparse");
+    object_attach(object_root(), c);
+    g_sparse_items[1] = object_new(&sparse_item_class, NULL, NULL);
+    g_sparse_items[3] = object_new(&sparse_item_class, NULL, NULL);
+    const member_t *m = &sparse_members[0];
+    ASSERT_EQ_INT(1, object_child_next(c, m, -1));
+    ASSERT_EQ_INT(3, object_child_next(c, m, 1));
+    ASSERT_EQ_INT(-1, object_child_next(c, m, 3));
+    value_t n = node_get(object_resolve(object_root(), "sparse.count"));
+    ASSERT_EQ_INT(2, (int)val_as_u64(&n, NULL));
+    value_free(&n);
+    g_sparse_items[3] = NULL; // a hole again: the count follows
+    n = node_get(object_resolve(object_root(), "sparse.count"));
+    ASSERT_EQ_INT(1, (int)val_as_u64(&n, NULL));
+    value_free(&n);
+}
+
 int main(void) {
+    RUN(test_slots_walk_and_count);
     RUN(test_counter_fields_read_their_block);
     RUN(test_node_call_succeeds);
     RUN(test_node_call_too_few_args);

@@ -776,15 +776,6 @@ static struct object *aevt_events_get(struct object *self, int index) {
         return NULL;
     return g_aevt_event_objs[index];
 }
-static int aevt_events_count(struct object *self) {
-    (void)self;
-    return g_event_count;
-}
-static int aevt_events_next(struct object *self, int prev) {
-    (void)self;
-    int next = prev + 1;
-    return (next < g_event_count) ? next : -1;
-}
 // Name lookup resolves the `tag:` given at send time (§8).
 static struct object *aevt_events_lookup(struct object *self, const char *name) {
     (void)self;
@@ -793,25 +784,14 @@ static struct object *aevt_events_lookup(struct object *self, const char *name) 
             return g_aevt_event_objs[i];
     return NULL;
 }
-static value_t aevt_events_attr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    return val_uint(4, (uint64_t)g_event_count);
-}
 
 static const member_t aevt_events_members[] = {
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Events sent this run",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = aevt_events_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &aevt_event_class,
                .indexed = true,
                .get = aevt_events_get,
-               .count = aevt_events_count,
-               .next = aevt_events_next,
+               .slots = AEVT_MAX_EVENTS,
                .lookup = aevt_events_lookup}},
 };
 
@@ -910,20 +890,6 @@ static struct object *aevt_inbox_get(struct object *self, int index) {
         return NULL;
     return g_aevt_inbox_objs[index];
 }
-static int aevt_inbox_count_cb(struct object *self) {
-    (void)self;
-    return g_inbox_count;
-}
-static int aevt_inbox_next(struct object *self, int prev) {
-    (void)self;
-    int next = prev + 1;
-    return (next < g_inbox_count) ? next : -1;
-}
-static value_t aevt_inbox_attr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    return val_uint(4, (uint64_t)g_inbox_count);
-}
 
 static value_t aevt_inbox_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -943,18 +909,9 @@ static const member_t aevt_inbox_members[] = {
                 .result = V_NONE,
                 .fn = aevt_inbox_method_clear,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Events guests have sent us this run",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = aevt_inbox_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
-     .child = {.cls = &aevt_inbox_entry_class,
-               .indexed = true,
-               .get = aevt_inbox_get,
-               .count = aevt_inbox_count_cb,
-               .next = aevt_inbox_next}},
+     .child = {.cls = &aevt_inbox_entry_class, .indexed = true, .get = aevt_inbox_get, .slots = AEVT_MAX_INBOX}},
 };
 
 static const class_desc_t aevt_inbox_class = {

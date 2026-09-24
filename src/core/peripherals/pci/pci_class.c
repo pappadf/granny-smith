@@ -206,25 +206,6 @@ static struct object *pci_bar_get(struct object *self, int index) {
         return NULL;
     return n->bar[index];
 }
-static int pci_bar_count(struct object *self) {
-    pci_slot_nodes_t *n = node_rec(self);
-    int c = 0;
-    if (n) {
-        for (int b = 0; b < PCI_BAR_SLOTS; b++)
-            if (n->bar[b])
-                c++;
-    }
-    return c;
-}
-static int pci_bar_next(struct object *self, int prev_index) {
-    pci_slot_nodes_t *n = node_rec(self);
-    if (!n)
-        return -1;
-    for (int b = prev_index + 1; b < PCI_BAR_SLOTS; b++)
-        if (n->bar[b])
-            return b;
-    return -1;
-}
 
 static const member_t config_members[] = {
     {.kind = M_ATTR,
@@ -262,8 +243,7 @@ static const member_t config_members[] = {
      .doc = "Base address registers; index 0..5, plus 6 for the expansion ROM",
      .label = "BARs",
      .order = 10,
-     .child =
-         {.cls = &pci_bar_class, .indexed = true, .get = pci_bar_get, .count = pci_bar_count, .next = pci_bar_next}},
+     .child = {.cls = &pci_bar_class, .indexed = true, .get = pci_bar_get, .slots = PCI_BAR_SLOTS}},
 };
 static const class_desc_t pci_config_class = {
     .name = "config", .members = config_members, .n_members = sizeof(config_members) / sizeof(config_members[0])};
@@ -436,25 +416,6 @@ static struct object *pci_slot_get(struct object *self, int index) {
         return NULL;
     return g_slot_nodes[index].slot;
 }
-static int pci_slot_count(struct object *self) {
-    (void)self;
-    if (!g_obj_root)
-        return 0;
-    int n = 0;
-    for (int i = 0; i < PCI_OBJ_SLOTS; i++)
-        if (g_slot_nodes[i].slot)
-            n++;
-    return n;
-}
-static int pci_slot_next(struct object *self, int prev_index) {
-    (void)self;
-    if (!g_obj_root)
-        return -1;
-    for (int i = prev_index + 1; i < PCI_OBJ_SLOTS; i++)
-        if (g_slot_nodes[i].slot)
-            return i;
-    return -1;
-}
 
 static const member_t pci_members[] = {
     {.kind = M_CHILD,
@@ -462,11 +423,7 @@ static const member_t pci_members[] = {
      .doc = "Declared PCI slots; index by slot number, e.g. slot[1].card.config",
      .label = "Slots",
      .order = 10,
-     .child = {.cls = &pci_slot_class,
-               .indexed = true,
-               .get = pci_slot_get,
-               .count = pci_slot_count,
-               .next = pci_slot_next}},
+     .child = {.cls = &pci_slot_class, .indexed = true, .get = pci_slot_get, .slots = PCI_OBJ_SLOTS}},
     {.kind = M_METHOD,
      .name = "cards",
      .doc = "List the ids of all registered PCI card drivers",

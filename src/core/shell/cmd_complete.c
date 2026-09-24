@@ -332,9 +332,9 @@ static void complete_attached(struct object *o, const char *tail, struct complet
 // Indexed-child completion: `floppy.drives.<TAB>` should suggest live
 // indices as bare integers ("0", "1"). Pool-allocates the name strings.
 static void complete_indexed_children(struct object *o, const member_t *m, const char *tail, struct completion *out) {
-    if (!o || !m || m->kind != M_CHILD || !m->child.indexed || !m->child.next)
+    if (!o || !m || m->kind != M_CHILD || !m->child.indexed)
         return;
-    int idx = m->child.next(o, -1);
+    int idx = object_child_next(o, m, -1);
     while (idx >= 0 && out->count < CMD_MAX_COMPLETIONS) {
         // Indexed children resolve to objects: complete to "N.".
         char tmp[16];
@@ -343,7 +343,7 @@ static void complete_indexed_children(struct object *o, const member_t *m, const
         if (!copy)
             break;
         push_match(out, copy, tail);
-        idx = m->child.next(o, idx);
+        idx = object_child_next(o, m, idx);
     }
 }
 

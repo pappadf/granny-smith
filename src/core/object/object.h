@@ -113,7 +113,6 @@ typedef value_t (*attr_get_fn)(struct object *self, const struct member *m);
 typedef value_t (*attr_set_fn)(struct object *self, const struct member *m, value_t in);
 typedef value_t (*method_fn)(struct object *self, const struct member *m, int argc, const value_t *argv);
 typedef struct object *(*child_get_fn)(struct object *self, int index);
-typedef int (*child_count_fn)(struct object *self);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
 typedef struct object *(*child_lookup_fn)(struct object *self, const char *name);
 
@@ -183,11 +182,15 @@ typedef struct member {
             // expandable child. Reference children are always callback-backed
             // (never in the attached/owning list) so cascade never frees them.
             bool reference;
-            // Indexed children: get(i)→object|NULL (NULL = hole), count→live,
-            //                   next(prev)→next live index or -1. Pass -1 to start.
+            // Indexed children: get(i)→object|NULL (NULL = hole) for i in
+            //                   [0, slots); the core walks them.  A collection
+            //                   whose ids are sparse past any fixed bound gives
+            //                   next(prev)→next live index or -1 (start at -1)
+            //                   instead.  A class whose one indexed child this
+            //                   is answers `count` with its live entries.
             // Named children:   lookup(name)→object|NULL.
             child_get_fn get;
-            child_count_fn count;
+            int slots;
             child_next_fn next;
             child_lookup_fn lookup; // for named children (when not statically attached)
         } child;
@@ -399,6 +402,10 @@ typedef struct {
 // on success, V_ERROR on a binding error.
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
                        value_t *out_argv, int *out_argc);
+
+// The next live index of an indexed child member after `prev` (-1 to start),
+// or -1: the member's own next(), or a walk of get() over its slots.
+int object_child_next(struct object *self, const member_t *m, int prev);
 
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);

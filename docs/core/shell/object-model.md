@@ -128,10 +128,14 @@ table. Each `member_t` is one of three kinds:
   same metadata for argument-position suggestions.
 - **`M_CHILD`** — a child object. Children are either *named* (a fixed
   name with its own class) or *indexed* (a sparse, stable-id
-  collection accessed via `child.get(i)` / `child.count` / `child.next`
-  callbacks). Indexed children are how `debug.breakpoints[7]` and
-  `machine.floppy.drive[0]` work without the framework needing to know a
-  collection's storage shape.
+  collection: `child.get(i)` answers each index in `[0, child.slots)`,
+  NULL for a hole, and the framework walks them; a collection whose ids
+  are sparse past any fixed bound gives a `child.next` iterator instead,
+  as the debugger's breakpoints do). Indexed children are how
+  `debug.breakpoints[7]` and `machine.floppy.drive[0]` work without the
+  framework needing to know a collection's storage shape. A class whose
+  one indexed child is its collection answers `count` with the live
+  entries, unless it declares a `count` of its own.
 
 Member tables are static `const`. The framework walks them linearly
 for resolution, completion, and help; no string lookup tables are

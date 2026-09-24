@@ -2795,21 +2795,6 @@ static struct object *atalk_nbp_get(struct object *self, int index) {
         return NULL;
     return g_atalk_nbp_objs[index];
 }
-static int atalk_nbp_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++)
-        if (atalk_nbp_entry_in_use(i))
-            n++;
-    return n;
-}
-static int atalk_nbp_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++)
-        if (atalk_nbp_entry_in_use(i))
-            return i;
-    return -1;
-}
 // Named lookup so `appletalk.nbp["Shared Folders"]` resolves.
 static struct object *atalk_nbp_entry_lookup(struct object *self, const char *name) {
     (void)self;
@@ -2828,8 +2813,7 @@ static const member_t atalk_nbp_collection_members[] = {
      .child = {.cls = &atalk_nbp_entry_class,
                .indexed = true,
                .get = atalk_nbp_get,
-               .count = atalk_nbp_count,
-               .next = atalk_nbp_next,
+               .slots = ATALK_MAX_NBP_OBJS,
                .lookup = atalk_nbp_entry_lookup}},
 };
 
@@ -2945,21 +2929,6 @@ static struct object *atalk_volumes_get(struct object *self, int index) {
         return NULL;
     return g_atalk_volume_objs[index];
 }
-static int atalk_volumes_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ATALK_MAX_VOLUME_OBJS && i < atalk_afp_volume_max(); i++)
-        if (atalk_afp_volume_in_use(i))
-            n++;
-    return n;
-}
-static int atalk_volumes_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ATALK_MAX_VOLUME_OBJS && i < atalk_afp_volume_max(); i++)
-        if (atalk_afp_volume_in_use(i))
-            return i;
-    return -1;
-}
 // Name lookup, so `appletalk.afp.volumes["Shared"].cnid_count` reads naturally.
 static struct object *atalk_volumes_lookup(struct object *self, const char *name) {
     (void)self;
@@ -3027,8 +2996,7 @@ static const member_t atalk_volumes_collection_members[] = {
      .child = {.cls = &atalk_volume_class,
                .indexed = true,
                .get = atalk_volumes_get,
-               .count = atalk_volumes_count,
-               .next = atalk_volumes_next,
+               .slots = ATALK_MAX_VOLUME_OBJS,
                .lookup = atalk_volumes_lookup}},
 };
 
@@ -3106,21 +3074,6 @@ static struct object *atalk_sessions_get(struct object *self, int index) {
         return NULL;
     return g_atalk_session_objs[index];
 }
-static int atalk_sessions_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ATALK_MAX_SESSION_OBJS && i < atalk_asp_session_max(); i++)
-        if (atalk_asp_session_in_use(i))
-            n++;
-    return n;
-}
-static int atalk_sessions_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ATALK_MAX_SESSION_OBJS && i < atalk_asp_session_max(); i++)
-        if (atalk_asp_session_in_use(i))
-            return i;
-    return -1;
-}
 
 static const member_t atalk_sessions_collection_members[] = {
     {.kind = M_CHILD,
@@ -3128,8 +3081,7 @@ static const member_t atalk_sessions_collection_members[] = {
      .child = {.cls = &atalk_session_class,
                .indexed = true,
                .get = atalk_sessions_get,
-               .count = atalk_sessions_count,
-               .next = atalk_sessions_next,
+               .slots = ATALK_MAX_SESSION_OBJS,
                .lookup = NULL}},
 };
 

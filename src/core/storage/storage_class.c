@@ -146,25 +146,6 @@ static struct object *storage_images_get(struct object *self, int index) {
         return NULL;
     return g_storage_image_objs[index];
 }
-static int storage_images_count(struct object *self) {
-    config_t *cfg = (config_t *)object_data(self);
-    if (!cfg)
-        return 0;
-    int n = 0;
-    for (int i = 0; i < cfg->n_images; i++)
-        if (cfg->images[i])
-            n++;
-    return n;
-}
-static int storage_images_next(struct object *self, int prev_index) {
-    config_t *cfg = (config_t *)object_data(self);
-    if (!cfg)
-        return -1;
-    for (int i = prev_index + 1; i < cfg->n_images; i++)
-        if (cfg->images[i])
-            return i;
-    return -1;
-}
 
 // `storage.import(host_path, dst_path)` — copy `host_path` to `dst_path`
 // through the VFS, e.g. into "/opfs/images/hd/foo.img".  The destination is
@@ -200,8 +181,7 @@ static const member_t storage_images_collection_members[] = {
      .child = {.cls = &storage_image_class,
                .indexed = true,
                .get = storage_images_get,
-               .count = storage_images_count,
-               .next = storage_images_next,
+               .slots = MAX_IMAGES,
                .lookup = NULL}},
 };
 

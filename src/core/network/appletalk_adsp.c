@@ -1366,43 +1366,12 @@ static struct object *adsp_conns_get(struct object *self, int index) {
         return NULL;
     return g_adsp_conn_objs[index];
 }
-static int adsp_conns_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++)
-        if (adsp_conn_at(g_adsp, i))
-            n++;
-    return n;
-}
-static int adsp_conns_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ADSP_MAX_CONNECTIONS; i++)
-        if (adsp_conn_at(g_adsp, i))
-            return i;
-    return -1;
-}
-
-// Collections publish their live size as an attribute: scripts assert on it
-// directly instead of probing indices with try().
-static value_t adsp_conns_attr_count(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, (uint64_t)adsp_conns_count(self));
-}
 
 static const member_t adsp_conns_members[] = {
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Live ADSP connection ends",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = adsp_conns_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
      .doc = "Live ADSP connection ends",
-     .child = {.cls = &adsp_conn_class,
-               .indexed = true,
-               .get = adsp_conns_get,
-               .count = adsp_conns_count,
-               .next = adsp_conns_next}},
+     .child = {.cls = &adsp_conn_class, .indexed = true, .get = adsp_conns_get, .slots = ADSP_MAX_CONNECTIONS}},
 };
 
 static const class_desc_t adsp_conns_class = {

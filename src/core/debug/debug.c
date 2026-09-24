@@ -2662,18 +2662,13 @@ static debug_t *debug_from(struct object *self) {
 // Forward-declared because the indexed-child member descriptors below
 // need it but the entry classes are already defined above.
 static struct object *bp_entries_get(struct object *self, int index);
-static int bp_entries_count(struct object *self);
 static int bp_entries_next(struct object *self, int prev_index);
 static struct object *lp_entries_get(struct object *self, int index);
-static int lp_entries_count(struct object *self);
 static int lp_entries_next(struct object *self, int prev_index);
 
 static struct object *bp_entries_get(struct object *self, int index) {
     breakpoint_t *bp = debug_breakpoint_by_id(debug_from(self), index);
     return bp ? breakpoint_get_entry_object(bp) : NULL;
-}
-static int bp_entries_count(struct object *self) {
-    return debug_breakpoint_count(debug_from(self));
 }
 static int bp_entries_next(struct object *self, int prev_index) {
     return debug_breakpoint_next_id(debug_from(self), prev_index);
@@ -2682,9 +2677,6 @@ static int bp_entries_next(struct object *self, int prev_index) {
 static struct object *lp_entries_get(struct object *self, int index) {
     logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
     return lp ? logpoint_get_entry_object(lp) : NULL;
-}
-static int lp_entries_count(struct object *self) {
-    return debug_logpoint_count(debug_from(self));
 }
 static int lp_entries_next(struct object *self, int prev_index) {
     return debug_logpoint_next_id(debug_from(self), prev_index);
@@ -2929,7 +2921,6 @@ static const member_t bp_collection_members[] = {
      .child = {.cls = &breakpoint_entry_class,
                .indexed = true,
                .get = bp_entries_get,
-               .count = bp_entries_count,
                .next = bp_entries_next,
                .lookup = NULL}},
 };
@@ -2955,7 +2946,6 @@ static const member_t lp_collection_members[] = {
      .child = {.cls = &logpoint_entry_class,
                .indexed = true,
                .get = lp_entries_get,
-               .count = lp_entries_count,
                .next = lp_entries_next,
                .lookup = NULL}},
 };
