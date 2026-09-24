@@ -313,7 +313,7 @@ static uint32_t afp_cmd_close_vol(afp_req_t *r) {
     if (!v)
         return AFPERR_ParamErr;
     session_set_remove(&v->open_by, r->ctx->session_id);
-    enum_snapshots_drop_session(r->ctx->session_id);
+    enum_snapshots_drop(r->ctx->session_id, v->vol_id); // this volume's only
     LOG(10, "AFP FPCloseVol: volId=0x%04X", vol_id);
     return AFPERR_NoErr;
 }
@@ -2301,7 +2301,7 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
 // references.
 static void afp_session_release(uint16_t session_id) {
     afp_fork_close_session(session_id);
-    enum_snapshots_drop_session(session_id);
+    enum_snapshots_drop(session_id, ENUM_ANY);
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
         if (!g_vols[i].in_use)
             continue;
@@ -2327,7 +2327,7 @@ void afp_reset_transient_state(void) {
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
         if (!g_vols[i].in_use)
             continue;
-        enum_snapshots_drop_volume(g_vols[i].vol_id);
+        enum_snapshots_drop(ENUM_ANY, g_vols[i].vol_id);
         g_vols[i].open_by.n = 0;
         g_vols[i].dt_open_by.n = 0;
         g_vols[i].mutations++;

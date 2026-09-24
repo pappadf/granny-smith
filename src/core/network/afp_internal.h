@@ -175,8 +175,11 @@ uint16_t afp_attributes_of(const char *host_path, const struct stat *st, const a
 // --- FPEnumerate and its snapshots (afp_enum.c) --------------------------------
 
 uint32_t afp_cmd_enumerate(afp_req_t *r);
-void enum_snapshots_drop_volume(uint16_t vol_id);
-void enum_snapshots_drop_session(uint16_t session_id);
+// Drop the FPEnumerate snapshots a session holds on a volume; ENUM_ANY for
+// either matches every one.  A volume's go when it is withdrawn -- or a later
+// volume given its ID would serve its listing (10-network F-09).
+#define ENUM_ANY UINT32_MAX
+void enum_snapshots_drop(uint32_t session_id, uint32_t vol_id);
 
 // --- Handlers and dispatch (appletalk_server.c) --------------------------------
 

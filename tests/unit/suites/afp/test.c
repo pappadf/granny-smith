@@ -219,13 +219,16 @@ static void login_as(const char *version) {
 
 // FPOpenVol "TestVol" for `session`: a volume ID is served only to a session
 // that opened the volume.
-static void open_vol_as(uint16_t session) {
+static uint16_t open_named_vol_as(uint16_t session, const char *name) {
     req_reset();
     put8(0);
     put16(0x0020); // Volume ID
-    put_pstr("TestVol");
+    put_pstr(name);
     ASSERT_EQ_INT((int)ERR_OK, (int)call_as(session, OP_OPEN_VOL));
-    ASSERT_EQ_INT(g_vol_id, rd16(g_reply + 2));
+    return rd16(g_reply + 2);
+}
+static void open_vol_as(uint16_t session) {
+    ASSERT_EQ_INT(g_vol_id, open_named_vol_as(session, "TestVol"));
 }
 
 // Open a fresh share with a unique root, open a session as ASP would, log in
@@ -2249,9 +2252,10 @@ static void put_raw_path(uint8_t type, const void *bytes, size_t len) {
 }
 
 // The long names FPEnumerate lists in the root, as Mac bytes.
-static int enum_root_names(char names[][96], int max) {
+// The root listing from index `start` on, as names.
+static int enum_names_from(uint16_t start, char names[][96], int max) {
     uint16_t actual = 0;
-    if (enumerate(1, 200, 8192, &actual) != ERR_OK)
+    if (enumerate(start, 200, 8192, &actual) != ERR_OK)
         return 0;
     int pos = 6, n = 0;
     for (int i = 0; i < actual && n < max; i++) {
@@ -2265,6 +2269,9 @@ static int enum_root_names(char names[][96], int max) {
         pos += len;
     }
     return n;
+}
+static int enum_root_names(char names[][96], int max) {
+    return enum_names_from(1, names, max);
 }
 
 static bool listed(const char *mac_name) {
@@ -2859,6 +2866,81 @@ TEST(a_reopened_store_keeps_every_icon_bitmap) {
     fixture_down();
 }
 
+// --- F2: a listing lives no longer than its volume (10-network F-09) ------------
+
+// A host file beside the share, outside AFP (no mutation is counted).
+static void write_host_file(const char *dir, const char *name) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != NULL);
+    fclose(f);
+}
+
+// A withdrawn volume's FPEnumerate snapshots go with it.  They stayed until
+// the session closed, and a volume later given the same ID -- by a wrap of
+// the ID counter, or a restore -- was listed with the removed share's names.
+TEST(a_withdrawn_volume_takes_its_listings_with_it) {
+    fixture_up("f09");
+    write_file("SecretA1", "");
+    write_file("SecretA2", "");
+    write_file("SecretA3", "");
+    uint16_t actual = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)enumerate(1, 1, 8192, &actual)); // page 1 takes the snapshot
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof err));
+
+    char other[300];
+    snprintf(other, sizeof other, "%s-other", g_root);
+    rm_rf(other);
+    ASSERT_EQ_INT(0, mkdir(other, 0755));
+    write_host_file(other, "B1");
+    write_host_file(other, "B2");
+    write_host_file(other, "B3");
+    ASSERT_TRUE(atalk_afp_volume_restore("Other", other, g_vol_id, err, sizeof err) >= 0);
+    ASSERT_EQ_INT(g_vol_id, open_named_vol_as(SESSION, "Other"));
+
+    char names[8][96];
+    ASSERT_EQ_INT(2, enum_names_from(2, names, 8));
+    ASSERT_EQ_INT(0, strcmp(names[0], "B2"));
+    ASSERT_EQ_INT(0, strcmp(names[1], "B3"));
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Other", err, sizeof err));
+    rm_rf(other);
+    fixture_down();
+}
+
+// FPCloseVol drops the session's snapshots on that volume only.  It dropped
+// them on every volume, so a listing in progress elsewhere lost its
+// snapshot and its next page came from a fresh listing.
+TEST(closing_a_volume_keeps_the_sessions_listings_on_others) {
+    fixture_up("closevol");
+    write_file("a", "");
+    write_file("b", "");
+    write_file("c", "");
+    char second[300];
+    snprintf(second, sizeof second, "%s-second", g_root);
+    rm_rf(second);
+    ASSERT_EQ_INT(0, mkdir(second, 0755));
+    char err[192];
+    ASSERT_TRUE(atalk_afp_volume_add("Second", second, err, sizeof err) >= 0);
+    uint16_t second_id = open_named_vol_as(SESSION, "Second");
+
+    uint16_t actual = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)enumerate(1, 1, 8192, &actual)); // "a", and the snapshot
+    write_file("aa", ""); // from the host: the snapshot stays valid
+    req_reset();
+    put8(0);
+    put16(second_id);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_CLOSE_VOL));
+
+    char names[8][96];
+    ASSERT_EQ_INT(2, enum_names_from(2, names, 8)); // "b", "c" -- not "aa", "b", "c"
+    ASSERT_EQ_INT(0, strcmp(names[0], "b"));
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Second", err, sizeof err));
+    rm_rf(second);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2916,6 +2998,8 @@ int main(void) {
     RUN(a_short_icon_bitmap_is_refused);
     RUN(every_icon_reads_back_its_own_bitmap);
     RUN(a_reopened_store_keeps_every_icon_bitmap);
+    RUN(a_withdrawn_volume_takes_its_listings_with_it);
+    RUN(closing_a_volume_keeps_the_sessions_listings_on_others);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

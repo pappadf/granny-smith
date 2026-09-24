@@ -75,18 +75,13 @@ static void enum_snapshot_free(enum_snapshot_t *s) {
     memset(s, 0, sizeof(*s));
 }
 
-// Drop every snapshot belonging to a session (logout / expiry).
-void enum_snapshots_drop_session(uint16_t session_id) {
-    for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++)
-        if (g_enum_snapshots[i].in_use && g_enum_snapshots[i].session_id == session_id)
-            enum_snapshot_free(&g_enum_snapshots[i]);
-}
-
-// Drop every snapshot belonging to a volume (share removal / checkpoint restore).
-void enum_snapshots_drop_volume(uint16_t vol_id) {
-    for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++)
-        if (g_enum_snapshots[i].in_use && g_enum_snapshots[i].vol_id == vol_id)
-            enum_snapshot_free(&g_enum_snapshots[i]);
+void enum_snapshots_drop(uint32_t session_id, uint32_t vol_id) {
+    for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++) {
+        enum_snapshot_t *s = &g_enum_snapshots[i];
+        if (s->in_use && (session_id == ENUM_ANY || s->session_id == session_id) &&
+            (vol_id == ENUM_ANY || s->vol_id == vol_id))
+            enum_snapshot_free(s);
+    }
 }
 
 // Name order for a stable listing.  Case-insensitive so the guest sees the

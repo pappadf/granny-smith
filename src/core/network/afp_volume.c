@@ -270,6 +270,7 @@ int atalk_afp_volume_restore(const char *name, const char *path, unsigned vol_id
 // Release a volume's live state without touching the table entry itself.
 static void vol_teardown(vol_t *v) {
     afp_fork_close_volume(v->vol_id);
+    enum_snapshots_drop(ENUM_ANY, v->vol_id);
     if (v->catalog)
         afp_catalog_close(v->catalog);
     if (v->desktop)
