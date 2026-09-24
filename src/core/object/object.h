@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "common.h"
 #include "value.h"
@@ -278,6 +279,27 @@ const class_desc_t *object_class(const struct object *o);
 const char *object_name(const struct object *o);
 void *object_data(struct object *o);
 struct object *object_parent(struct object *o);
+
+// === Counter blocks ==========================================================
+//
+// A stats object publishes a struct of uint64_t counters, one read-only
+// attribute per field, each member naming its field by offset.  One getter
+// serves every such block: OBJ_U64_FIELD reads the block the object's data
+// points to (object_new(cls, block, name)); OBJ_U64_FIELD_WITH takes a getter
+// of its own, for a block that moves -- which returns obj_u64_at(block, m).
+value_t obj_u64_at(const void *block, const member_t *m);
+value_t obj_u64_field_get(struct object *self, const member_t *m);
+
+#define OBJ_U64_FIELD_WITH(block_type, field, doc_text, getter)                                                        \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
+            .type = V_UINT,                                                                                            \
+            .width = 8,                                                                                                \
+            .get = getter,                                                                                             \
+            .user_data = (const void *)(uintptr_t)offsetof(block_type, field)                                          \
+        }                                                                                                              \
+    }
+#define OBJ_U64_FIELD(block_type, field, doc_text) OBJ_U64_FIELD_WITH(block_type, field, doc_text, obj_u64_field_get)
 
 // === Display label & ordering (proposal §7.1 / §7.4) ========================
 //

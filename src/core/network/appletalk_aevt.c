@@ -965,31 +965,15 @@ static const class_desc_t aevt_inbox_class = {
 
 // --- appletalk.aevt.stats ----------------------------------------------------
 
-static value_t aevt_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)&g_stats + offset));
-}
-
-#define AEVT_STAT_MEMBER(field, doc_text)                                                                              \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = aevt_stats_attr,                                                                                    \
-            .user_data = (const void *)(uintptr_t)offsetof(aevt_stats_t, field)                                        \
-        }                                                                                                              \
-    }
-
 static const member_t aevt_stats_members[] = {
-    AEVT_STAT_MEMBER(sent, "Events put on the wire"),
-    AEVT_STAT_MEMBER(replied, "Events that came back answered"),
-    AEVT_STAT_MEMBER(errors, "Events that failed"),
-    AEVT_STAT_MEMBER(timeouts, "Events whose instruction budget ran out"),
-    AEVT_STAT_MEMBER(received, "Events guests sent us"),
-    AEVT_STAT_MEMBER(auto_replies, "Automatic replies we sent"),
-    AEVT_STAT_MEMBER(malformed, "Blocks discarded as no high-level event"),
-    AEVT_STAT_MEMBER(dropped, "Events received with the inbox full: answered, not kept"),
+    OBJ_U64_FIELD(aevt_stats_t, sent, "Events put on the wire"),
+    OBJ_U64_FIELD(aevt_stats_t, replied, "Events that came back answered"),
+    OBJ_U64_FIELD(aevt_stats_t, errors, "Events that failed"),
+    OBJ_U64_FIELD(aevt_stats_t, timeouts, "Events whose instruction budget ran out"),
+    OBJ_U64_FIELD(aevt_stats_t, received, "Events guests sent us"),
+    OBJ_U64_FIELD(aevt_stats_t, auto_replies, "Automatic replies we sent"),
+    OBJ_U64_FIELD(aevt_stats_t, malformed, "Blocks discarded as no high-level event"),
+    OBJ_U64_FIELD(aevt_stats_t, dropped, "Events received with the inbox full: answered, not kept"),
 };
 
 static const class_desc_t aevt_stats_class = {
@@ -1277,7 +1261,7 @@ void atalk_aevt_install_objects(struct object *parent) {
     g_aevt_inbox_object = object_new(&aevt_inbox_class, NULL, "inbox");
     if (g_aevt_inbox_object)
         object_attach(g_aevt_object, g_aevt_inbox_object);
-    g_aevt_stats_object = object_new(&aevt_stats_class, NULL, "stats");
+    g_aevt_stats_object = object_new(&aevt_stats_class, &g_stats, "stats");
     if (g_aevt_stats_object) {
         object_set_category(g_aevt_stats_object, M_CAT_ADVANCED);
         object_attach(g_aevt_object, g_aevt_stats_object);

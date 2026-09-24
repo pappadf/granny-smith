@@ -1415,37 +1415,27 @@ static const class_desc_t adsp_conns_class = {
 
 // --- appletalk.adsp.stats ----------------------------------------------------
 
+// The host stack comes and goes with the machine, so its block is fetched
+// per read rather than fixed as the object's data.
 static value_t adsp_stats_attr(struct object *self, const member_t *m) {
     (void)self;
-    const adsp_stats_t *st = adsp_get_stats(g_adsp);
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
+    return obj_u64_at(adsp_get_stats(g_adsp), m);
 }
 
-#define ADSP_STAT_MEMBER(field, doc_text)                                                                              \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = adsp_stats_attr,                                                                                    \
-            .user_data = (const void *)(uintptr_t)offsetof(adsp_stats_t, field)                                        \
-        }                                                                                                              \
-    }
-
 static const member_t adsp_stats_members[] = {
-    ADSP_STAT_MEMBER(packets_in, "ADSP packets accepted from the wire"),
-    ADSP_STAT_MEMBER(packets_out, "ADSP packets put on the wire"),
-    ADSP_STAT_MEMBER(bytes_in, "Stream bytes delivered to clients"),
-    ADSP_STAT_MEMBER(bytes_out, "Stream bytes transmitted"),
-    ADSP_STAT_MEMBER(opens, "Connections that reached the open state"),
-    ADSP_STAT_MEMBER(open_denials, "Open requests denied, in either direction"),
-    ADSP_STAT_MEMBER(retransmits, "Retransmission events"),
-    ADSP_STAT_MEMBER(out_of_sequence, "Data packets discarded as out of sequence"),
-    ADSP_STAT_MEMBER(forward_resets, "Forward resets sent or accepted"),
-    ADSP_STAT_MEMBER(attentions_in, "Attention messages accepted"),
-    ADSP_STAT_MEMBER(attentions_out, "Attention messages sent"),
-    ADSP_STAT_MEMBER(timeouts, "Connection ends torn down by the connection timer"),
-    ADSP_STAT_MEMBER(malformed, "Packets discarded as malformed"),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, packets_in, "ADSP packets accepted from the wire", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, packets_out, "ADSP packets put on the wire", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, bytes_in, "Stream bytes delivered to clients", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, bytes_out, "Stream bytes transmitted", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, opens, "Connections that reached the open state", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, open_denials, "Open requests denied, in either direction", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, retransmits, "Retransmission events", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, out_of_sequence, "Data packets discarded as out of sequence", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, forward_resets, "Forward resets sent or accepted", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, attentions_in, "Attention messages accepted", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, attentions_out, "Attention messages sent", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, timeouts, "Connection ends torn down by the connection timer", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, malformed, "Packets discarded as malformed", adsp_stats_attr),
 };
 
 static const class_desc_t adsp_stats_class = {

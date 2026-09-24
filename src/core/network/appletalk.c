@@ -886,7 +886,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
         return;
     object_attach(object_root(), g_atalk_object);
 
-    g_atalk_stats_object = object_new(&atalk_stats_class, NULL, "stats");
+    g_atalk_stats_object = object_new(&atalk_stats_class, (void *)atalk_get_stats(), "stats");
     if (g_atalk_stats_object) {
         object_set_category(g_atalk_stats_object, M_CAT_ADVANCED);
         object_attach(g_atalk_object, g_atalk_stats_object);
@@ -908,7 +908,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
             object_set_category(g_atalk_sessions_object, M_CAT_ADVANCED);
             object_attach(g_atalk_afp_object, g_atalk_sessions_object);
         }
-        g_atalk_afp_stats_object = object_new(&atalk_afp_stats_class, NULL, "stats");
+        g_atalk_afp_stats_object = object_new(&atalk_afp_stats_class, (void *)atalk_afp_get_stats(), "stats");
         if (g_atalk_afp_stats_object) {
             object_set_category(g_atalk_afp_stats_object, M_CAT_ADVANCED);
             object_attach(g_atalk_afp_object, g_atalk_afp_stats_object);
@@ -2675,37 +2675,17 @@ static value_t atalk_err(const char *fallback, const char *buf) {
 
 // --- appletalk.stats -------------------------------------------------------
 
-// One getter serves the whole counter block; each member points at its field
-// through `user_data`, so adding a counter is a one-line member entry.
-static value_t atalk_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
-    const atalk_stats_t *st = atalk_get_stats();
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
-}
-
-#define ATALK_STAT_MEMBER(field, doc_text)                                                                             \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = atalk_stats_attr,                                                                                   \
-            .set = NULL,                                                                                               \
-            .user_data = (const void *)(uintptr_t)offsetof(atalk_stats_t, field)                                       \
-        }                                                                                                              \
-    }
-
 static const member_t atalk_stats_members[] = {
-    ATALK_STAT_MEMBER(llap_rx, "LLAP frames received"),
-    ATALK_STAT_MEMBER(llap_tx, "LLAP frames transmitted"),
-    ATALK_STAT_MEMBER(malformed, "Frames discarded as malformed, at any layer"),
-    ATALK_STAT_MEMBER(unhandled, "Well-formed frames nothing here serves"),
-    ATALK_STAT_MEMBER(tx_dropped, "Frames the stack gave up transmitting"),
-    ATALK_STAT_MEMBER(ddp_in, "DDP datagrams delivered inbound"),
-    ATALK_STAT_MEMBER(ddp_out, "DDP datagrams sent"),
-    ATALK_STAT_MEMBER(atp_requests, "ATP transactions this host originated"),
-    ATALK_STAT_MEMBER(atp_retries, "ATP request retransmissions"),
-    ATALK_STAT_MEMBER(nbp_packets, "NBP packets processed"),
+    OBJ_U64_FIELD(atalk_stats_t, llap_rx, "LLAP frames received"),
+    OBJ_U64_FIELD(atalk_stats_t, llap_tx, "LLAP frames transmitted"),
+    OBJ_U64_FIELD(atalk_stats_t, malformed, "Frames discarded as malformed, at any layer"),
+    OBJ_U64_FIELD(atalk_stats_t, unhandled, "Well-formed frames nothing here serves"),
+    OBJ_U64_FIELD(atalk_stats_t, tx_dropped, "Frames the stack gave up transmitting"),
+    OBJ_U64_FIELD(atalk_stats_t, ddp_in, "DDP datagrams delivered inbound"),
+    OBJ_U64_FIELD(atalk_stats_t, ddp_out, "DDP datagrams sent"),
+    OBJ_U64_FIELD(atalk_stats_t, atp_requests, "ATP transactions this host originated"),
+    OBJ_U64_FIELD(atalk_stats_t, atp_retries, "ATP request retransmissions"),
+    OBJ_U64_FIELD(atalk_stats_t, nbp_packets, "NBP packets processed"),
 };
 
 static const class_desc_t atalk_stats_class = {
@@ -3135,13 +3115,6 @@ static const class_desc_t atalk_sessions_collection_class = {
 
 // --- appletalk.afp.stats ---------------------------------------------------
 
-static value_t atalk_afp_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
-    const atalk_afp_stats_t *st = atalk_afp_get_stats();
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
-}
-
 // The per-code error tally is a map rather than a fixed member list: only the
 // codes that have actually occurred appear, so the tree stays small and the
 // integration tests can assert on one key.
@@ -3159,28 +3132,17 @@ static value_t atalk_afp_stats_attr_errors_by_code(struct object *self, const me
     return val_map_finish(b);
 }
 
-#define ATALK_AFP_STAT_MEMBER(field, doc_text)                                                                         \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = atalk_afp_stats_attr,                                                                               \
-            .set = NULL,                                                                                               \
-            .user_data = (const void *)(uintptr_t)offsetof(atalk_afp_stats_t, field)                                   \
-        }                                                                                                              \
-    }
-
 static const member_t atalk_afp_stats_members[] = {
-    ATALK_AFP_STAT_MEMBER(commands_served, "AFP commands dispatched"),
-    ATALK_AFP_STAT_MEMBER(bytes_read, "Bytes served through FPRead"),
-    ATALK_AFP_STAT_MEMBER(bytes_written, "Bytes accepted through FPWrite"),
-    ATALK_AFP_STAT_MEMBER(errors, "Commands that returned a non-zero result"),
-    ATALK_AFP_STAT_MEMBER(open_forks, "Forks currently open across all volumes"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, commands_served, "AFP commands dispatched"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, bytes_read, "Bytes served through FPRead"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, bytes_written, "Bytes accepted through FPWrite"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, errors, "Commands that returned a non-zero result"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, open_forks, "Forks currently open across all volumes"),
     {.kind = M_ATTR,
-                                                             .name = "errors_by_code",
-                                                             .doc = "Result code -> occurrence count, for the codes seen so far",
-                                                             .flags = VAL_RO,
-                                                             .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
+                                                                                .name = "errors_by_code",
+                                                                                .doc = "Result code -> occurrence count, for the codes seen so far",
+                                                                                .flags = VAL_RO,
+                                                                                .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
 };
 
 static const class_desc_t atalk_afp_stats_class = {

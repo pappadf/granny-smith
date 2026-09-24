@@ -428,7 +428,52 @@ TEST(test_interior_optional_slot_can_be_skipped) {
     object_root_reset();
 }
 
+// A counter block published through OBJ_U64_FIELD (the object's data) and
+// OBJ_U64_FIELD_WITH (a getter of its own): each attribute reads its field,
+// read-only, and follows the block as it changes.
+typedef struct {
+    uint64_t hits;
+    uint64_t misses;
+} counters_t;
+
+static counters_t g_counters;
+
+static value_t counters_misses(struct object *self, const member_t *m) {
+    (void)self;
+    return obj_u64_at(&g_counters, m);
+}
+
+static const member_t counters_members[] = {
+    OBJ_U64_FIELD(counters_t, hits, "Hits"),
+    OBJ_U64_FIELD_WITH(counters_t, misses, "Misses", counters_misses),
+};
+
+static const class_desc_t counters_class = {
+    .name = "counters",
+    .members = counters_members,
+    .n_members = sizeof(counters_members) / sizeof(counters_members[0]),
+};
+
+TEST(test_counter_fields_read_their_block) {
+    object_root_reset();
+    object_attach(object_root(), object_new(&counters_class, &g_counters, "counters"));
+    g_counters.hits = 5;
+    g_counters.misses = 1ull << 40;
+    value_t h = node_get(object_resolve(object_root(), "counters.hits"));
+    value_t m = node_get(object_resolve(object_root(), "counters.misses"));
+    ASSERT_EQ_INT(5, (int)val_as_u64(&h, NULL));
+    ASSERT_TRUE(val_as_u64(&m, NULL) == (1ull << 40));
+    value_free(&h);
+    value_free(&m);
+    g_counters.hits++;
+    h = node_get(object_resolve(object_root(), "counters.hits"));
+    ASSERT_EQ_INT(6, (int)val_as_u64(&h, NULL));
+    value_free(&h);
+    ASSERT_TRUE(counters_members[0].flags & VAL_RO);
+}
+
 int main(void) {
+    RUN(test_counter_fields_read_their_block);
     RUN(test_node_call_succeeds);
     RUN(test_node_call_too_few_args);
     RUN(test_call_form_inside_expr);

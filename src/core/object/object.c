@@ -304,6 +304,19 @@ const char *object_name(const struct object *o) {
 void *object_data(struct object *o) {
     return o ? o->instance_data : NULL;
 }
+value_t obj_u64_at(const void *block, const member_t *m) {
+    if (!block)
+        return val_uint(8, 0);
+    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
+    uint64_t v;
+    memcpy(&v, (const uint8_t *)block + offset, sizeof(v));
+    return val_uint(8, v);
+}
+
+value_t obj_u64_field_get(struct object *self, const member_t *m) {
+    return obj_u64_at(object_data(self), m);
+}
+
 struct object *object_parent(struct object *o) {
     return o ? o->parent : NULL;
 }

@@ -1281,31 +1281,14 @@ static const class_desc_t ppc_sessions_class = {
 
 // --- appletalk.ppc.stats -----------------------------------------------------
 
-static value_t ppc_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
-    const ppc_stats_t *st = atalk_ppc_get_stats();
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
-}
-
-#define PPC_STAT_MEMBER(field, doc_text)                                                                               \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = ppc_stats_attr,                                                                                     \
-            .user_data = (const void *)(uintptr_t)offsetof(ppc_stats_t, field)                                         \
-        }                                                                                                              \
-    }
-
 static const member_t ppc_stats_members[] = {
-    PPC_STAT_MEMBER(sessions_opened, "Sessions that reached the open state"),
-    PPC_STAT_MEMBER(sessions_rejected, "Session requests the far side turned down"),
-    PPC_STAT_MEMBER(sessions_refused, "Session requests we turned down"),
-    PPC_STAT_MEMBER(blocks_in, "Message blocks received"),
-    PPC_STAT_MEMBER(blocks_out, "Message blocks sent"),
-    PPC_STAT_MEMBER(browses, "Port browses started"),
-    PPC_STAT_MEMBER(malformed, "Message blocks discarded as malformed"),
+    OBJ_U64_FIELD(ppc_stats_t, sessions_opened, "Sessions that reached the open state"),
+    OBJ_U64_FIELD(ppc_stats_t, sessions_rejected, "Session requests the far side turned down"),
+    OBJ_U64_FIELD(ppc_stats_t, sessions_refused, "Session requests we turned down"),
+    OBJ_U64_FIELD(ppc_stats_t, blocks_in, "Message blocks received"),
+    OBJ_U64_FIELD(ppc_stats_t, blocks_out, "Message blocks sent"),
+    OBJ_U64_FIELD(ppc_stats_t, browses, "Port browses started"),
+    OBJ_U64_FIELD(ppc_stats_t, malformed, "Message blocks discarded as malformed"),
 };
 
 static const class_desc_t ppc_stats_class = {
@@ -1367,7 +1350,7 @@ void atalk_ppc_install_objects(struct object *parent) {
         object_set_category(g_ppc_sessions_object, M_CAT_ADVANCED);
         object_attach(g_ppc_object, g_ppc_sessions_object);
     }
-    g_ppc_stats_object = object_new(&ppc_stats_class, NULL, "stats");
+    g_ppc_stats_object = object_new(&ppc_stats_class, (void *)atalk_ppc_get_stats(), "stats");
     if (g_ppc_stats_object) {
         object_set_category(g_ppc_stats_object, M_CAT_ADVANCED);
         object_attach(g_ppc_object, g_ppc_stats_object);
