@@ -906,11 +906,17 @@ static void adsp_conn_release(adsp_stack_t *s, adsp_conn_t *c, const char *reaso
     const adsp_client_t *client = c->client;
     void *ctx = c->client_ctx;
     LOG(4, "ADSP: connection %d closed — %s", c->id, reason ? reason : "");
-    if (notify && client && client->on_close)
-        client->on_close(ctx, c, reason ? reason : "closed");
-    memset(c, 0, sizeof(*c));
+    // The slot is free before the client hears of it.  It was freed after, so
+    // an on_close that closed the same end found it still open -- a second
+    // CLOSE went out and on_close ran again -- and the memset that followed
+    // wiped any connection on_close had opened into the slot (10-network
+    // F-15).  adsp_alloc_conn zeroes a slot when it is taken.
+    c->in_use = false;
+    c->state = ADSP_STATE_CLOSED;
     for (int t = 0; t < ADSP_TIMER_COUNT; t++)
         c->deadline[t] = ADSP_NO_DEADLINE;
+    if (notify && client && client->on_close)
+        client->on_close(ctx, c, reason ? reason : "closed");
     (void)s;
 }
 

@@ -40,6 +40,7 @@ typedef struct {
 #define WIRE_MAX 512
 
 static wire_pkt_t g_wire[WIRE_MAX];
+static int g_sent_by_a, g_sent_by_b; // packets each end has put on the wire
 static int g_wire_head;
 static int g_wire_tail;
 static uint64_t g_now_ns;
@@ -67,6 +68,7 @@ typedef struct {
     int stream_len;
     uint8_t stream[8192];
     adsp_conn_t *last_conn;
+    adsp_stack_t *close_again; // on_close closes the same end once more, on this stack
 } recorder_t;
 
 static recorder_t g_rec_a;
@@ -81,6 +83,10 @@ static int wire_send(void *ctx, const atalk_socket_addr_t *dest, uint8_t src_soc
     ASSERT_TRUE(g_wire_tail < WIRE_MAX);
     wire_pkt_t *w = &g_wire[g_wire_tail++];
     w->from_node = (uint8_t)(uintptr_t)ctx;
+    if (w->from_node == NODE_A)
+        g_sent_by_a++;
+    else
+        g_sent_by_b++;
     w->dest = *dest;
     w->src_socket = src_socket;
     w->len = len;
@@ -162,6 +168,10 @@ static void rec_close(void *ctx, adsp_conn_t *c, const char *reason) {
     recorder_t *r = (recorder_t *)ctx;
     r->closes++;
     snprintf(r->last_close, sizeof(r->last_close), "%s", reason ? reason : "");
+    adsp_stack_t *again = r->close_again;
+    r->close_again = NULL; // once: a close that re-entered for ever would never return
+    if (again)
+        adsp_close(again, c, "closed again from on_close");
 }
 
 static const adsp_client_t g_client = {
@@ -185,6 +195,7 @@ static void setup(void) {
     memset(&g_rec_a, 0, sizeof(g_rec_a));
     memset(&g_rec_b, 0, sizeof(g_rec_b));
     g_wire_head = g_wire_tail = 0;
+    g_sent_by_a = g_sent_by_b = 0;
     g_now_ns = 0;
     g_drop_data = 0;
     g_dropped = 0;
@@ -547,6 +558,35 @@ TEST(test_close_advice) {
     ASSERT_TRUE(strstr(g_rec_b.last_close, "remote end") != NULL);
 }
 
+// A client may close a connection from inside on_close.  The slot was still
+// open then: a second CLOSE went out and on_close ran twice (F-15).
+TEST(test_local_close_reenters) {
+    setup();
+    adsp_conn_t *ca = open_a_to_b();
+    g_rec_a.close_again = g_a;
+    int sent = g_sent_by_a;
+    adsp_close(g_a, ca, "done");
+    ASSERT_EQ_INT(1, g_rec_a.closes);
+    ASSERT_EQ_INT(sent + 1, g_sent_by_a); // one CLOSE advice
+    ASSERT_EQ_INT(0, conn_count(g_a));
+    pump();
+    ASSERT_EQ_INT(1, g_rec_b.closes);
+}
+
+// The same at the other end: a CLOSE received, and on_close closes again.
+// Nothing more may go back -- the peer is gone.
+TEST(test_remote_close_reenters) {
+    setup();
+    adsp_conn_t *ca = open_a_to_b();
+    g_rec_b.close_again = g_b;
+    int sent = g_sent_by_b;
+    adsp_close(g_a, ca, "done");
+    pump();
+    ASSERT_EQ_INT(1, g_rec_b.closes);
+    ASSERT_EQ_INT(sent, g_sent_by_b); // no CLOSE from B after a remote close
+    ASSERT_EQ_INT(0, conn_count(g_b));
+}
+
 // Figure 12-6: nothing comes back, so the end probes and, on the fourth
 // expiry of the connection timer, tears itself down (12-5).
 TEST(test_connection_timer_teardown) {
@@ -715,6 +755,8 @@ int main(void) {
     RUN(test_idle_probe_keeps_connection);
     RUN(test_send_queue_backpressure);
     RUN(test_two_connections_on_one_socket);
+    RUN(test_local_close_reenters);
+    RUN(test_remote_close_reenters);
     printf("adsp: all tests passed\n");
     return 0;
 }
