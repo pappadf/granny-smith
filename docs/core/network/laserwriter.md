@@ -83,8 +83,10 @@ Understanding this sequence makes it easier to build accurate emulations or trou
 The workflow above is what the *driver* does. What the emulated printer
 does with the PostScript it receives depends on the build:
 
-* **Default (`PLATEN=0`).** The printer spools the PostScript to a file and
-  answers the driver's queries with fixed placeholders (the PatchPrep `0`/`1`
+* **Default (`PLATEN=0`).** The printer captures the PostScript and hands it
+  to the platform when the job ends (headless writes `<job>.ps` in
+  `--print-dir`, the browser downloads it), and answers the driver's queries
+  with fixed placeholders (the PatchPrep `0`/`1`
   handshake and the built-in font list). No PDF is produced. This keeps
   `main` builds free of any Rust toolchain.
 * **`PLATEN=1`.** EfterScript's `platen` library — a per-job PostScript
@@ -186,9 +188,12 @@ compiled either way.
 * `--print-dir=DIR` (or `$GS_PRINT_DIR`) — write each finished job as
   `DIR/<job>-<title>.pdf`. Without it a finished job is logged and dropped.
   A `PLATEN=0` binary warns that it has no interpreter.
-* `appletalk.printer.capture = true` — also write the raw PostScript to the
-  spool file beside the PDF (off by default with the interpreter linked, on
-  without it since the spool is then the only output).
+* `appletalk.printer.capture = true` — also hand each job's raw PostScript to
+  the platform: headless writes `DIR/<job>.ps` beside the PDF (the job number
+  matches), the browser downloads it (off by default with the interpreter
+  linked, on without it since the capture is then the only output). The core
+  keeps it in memory, never in a file of its own; a job larger than 32 MB is
+  aborted rather than captured in part.
 * `appletalk.printer` observability: `interpreter`, `status`, `documents`,
   `last_pages`, `last_outcome`.
 

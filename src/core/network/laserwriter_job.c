@@ -31,6 +31,12 @@ __attribute__((weak)) void laserwriter_sink_document(const laserwriter_document_
         (unsigned)doc->job_id, doc->title, (unsigned)doc->pages, doc->pdf_len);
 }
 
+// Fallback for a capture: the same.
+__attribute__((weak)) void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
+    LOG(1, "laserwriter: job %u PostScript (%zu bytes) dropped: no capture sink on this platform",
+        (unsigned)cap->job_id, cap->ps_len);
+}
+
 #if GS_PLATEN
 
 #include "laserwriter_prelude.h"

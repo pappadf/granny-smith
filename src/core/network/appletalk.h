@@ -161,10 +161,11 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 const char *atalk_printer_status_text(void);
 
 // True when the build links the PostScript interpreter (PLATEN=1); then a
-// job produces a PDF through the platform sink and the spool is optional.
+// job produces a PDF through the platform sink and the capture is optional.
 bool atalk_printer_has_interpreter(void);
 
-// Whether each job's PostScript is also written to the spool file.
+// Whether each job's PostScript is also handed to the platform, as it was
+// sent (laserwriter_sink_capture): a .ps beside the PDF, or a download.
 bool atalk_printer_capture_get(void);
 void atalk_printer_capture_set(bool enabled);
 

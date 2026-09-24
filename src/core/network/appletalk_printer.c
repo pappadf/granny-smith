@@ -22,12 +22,10 @@ LOG_USE_CATEGORY_NAME("appletalk");
 
 #define PRINTER_STATUS_MAX       255
 #define PRINTER_OBJECT_MAX       32
-#define PRINTER_SPOOL_PATH_MAX   160
 #define PRINTER_DEFAULT_OBJECT   "LaserWriter (Sim)"
 #define PRINTER_STATUS_IDLE      "status: idle"
 #define PRINTER_STATUS_BUSY      "status: print spooler processing job"
 #define PRINTER_ENTITY_TYPE      "LaserWriter"
-#define PRINTER_SPOOL_DIR        "/tmp"
 #define PAP_SENDDATA_RETRY_MS    8000u
 #define PAP_SENDDATA_RETRY_LIMIT 12
 #define PAP_SESSION_TIMEOUT_MS   120000u
@@ -41,12 +39,20 @@ LOG_USE_CATEGORY_NAME("appletalk");
 #define PAP_SENDDATA_GAP_NS         10000000ull
 #define PAP_QUERY_PLACEHOLDER_LIMIT 8
 
-// With the interpreter linked (PLATEN=1) the spool file is an optional
-// capture beside the PDF; without it the spool is the only output.
+// With the interpreter linked (PLATEN=1) the capture is an optional copy of
+// the PostScript beside the PDF; without it the capture is the only output.
 #if GS_PLATEN
 #define PRINTER_CAPTURE_DEFAULT false
 #else
 #define PRINTER_CAPTURE_DEFAULT true
+#endif
+
+// A job's captured PostScript is held in memory and handed to the platform
+// (laserwriter_sink_capture) when the job ends.  It went to a file under /tmp
+// -- a path the core has no business naming, and one the browser cannot
+// reach (10-network F-12).  A job larger than this is aborted, not held.
+#ifndef PRINTER_CAPTURE_MAX
+#define PRINTER_CAPTURE_MAX (32u * 1024u * 1024u)
 #endif
 
 // Kinds of PostScript queries we synthesize replies for (builds without the
@@ -63,7 +69,7 @@ typedef struct {
     atalk_nbp_entry_t *nbp_entry;
     uint32_t job_counter;
     bool patch_installed; // True once the PatchPrep procset has been uploaded
-    bool capture; // Write each job's PostScript to the spool file
+    bool capture; // Capture each job's PostScript for the platform
 } pap_printer_service_t;
 
 // Structure tracking a held PAP SendData request while we wait for data to emit.
@@ -87,8 +93,9 @@ typedef struct {
     bool blocked_for_reply;
     atalk_socket_addr_t client_addr;
     atp_request_handle_t *send_handle;
-    FILE *spool;
-    char spool_path[PRINTER_SPOOL_PATH_MAX];
+    uint8_t *capture; // this job's PostScript, when capturing
+    size_t capture_len;
+    size_t capture_cap;
     uint32_t job_id;
     size_t bytes_received;
     uint64_t last_activity_ms;
@@ -168,9 +175,8 @@ static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uin
                                     size_t out_max);
 static void pap_session_finish(bool success, const char *reason, bool notify_client);
 static void pap_session_abort(const char *reason);
-static bool pap_session_open_spool(pap_session_t *sess);
+static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete);
 #if !GS_PLATEN
-static void pap_session_rewind_spool(pap_session_t *sess);
 #endif
 static void pap_update_progress_status(void);
 static void pap_session_record_activity(void);
@@ -276,17 +282,17 @@ static void pap_printer_init(void) {
     g_printer.initialized = true;
 }
 
-// Resets the active session, canceling pending ATP requests and closing the spool file.
+// Resets the active session, canceling pending ATP requests and dropping the capture.
 static void pap_session_reset(void) {
     pap_cancel_senddata();
     if (g_session.send_handle) {
         atp_request_cancel(g_session.send_handle);
         g_session.send_handle = NULL;
     }
-    if (g_session.spool) {
-        fclose(g_session.spool);
-        g_session.spool = NULL;
-    }
+    free(g_session.capture);
+    g_session.capture = NULL;
+    g_session.capture_len = 0;
+    g_session.capture_cap = 0;
     // A connection that goes away mid-job takes its interpreter with it
     laserwriter_job_abort();
     free(g_session.reply_bytes);
@@ -298,7 +304,6 @@ static void pap_session_reset(void) {
     g_session.rx_seq = 0;
     g_session.rx_eof = false;
     g_session.rx_pending = false;
-    memset(g_session.spool_path, 0, sizeof(g_session.spool_path));
     g_session.active = false;
     g_session.awaiting_data = false;
     g_session.eof_pending = false;
@@ -392,15 +397,10 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
     uint8_t closing_conn = g_session.conn_id;
     atalk_socket_addr_t closing_addr = g_session.client_addr;
     size_t bytes = g_session.bytes_received;
-    char saved_path[PRINTER_SPOOL_PATH_MAX];
-    saved_path[0] = '\0';
-    if (g_session.spool_path[0])
-        strncpy(saved_path, g_session.spool_path, sizeof(saved_path) - 1);
-    saved_path[sizeof(saved_path) - 1] = '\0';
 
     LOG(success ? 2 : 1, "pap: job %u %s (%s)", job_id, success ? "complete" : "aborted", reason ? reason : "done");
-    LOG(10, "pap: session finish: conn=%u bytes=%zu notify=%d spool='%s'", closing_conn, bytes, notify_client ? 1 : 0,
-        saved_path);
+    LOG(10, "pap: session finish: conn=%u bytes=%zu notify=%d", closing_conn, bytes, notify_client ? 1 : 0);
+    pap_capture_deliver(&g_session, job_id, success);
 
     const char *final_msg = PRINTER_STATUS_IDLE;
 
@@ -425,39 +425,47 @@ static void pap_session_abort(const char *reason) {
     pap_session_finish(false, reason, true);
 }
 
-// Opens (or creates) a spool file for the current job.
-static bool pap_session_open_spool(pap_session_t *sess) {
-    if (!sess)
+// Add a fragment to the capture.  False past PRINTER_CAPTURE_MAX, or when
+// memory runs out: the caller aborts the job.
+static bool pap_capture_append(pap_session_t *sess, const uint8_t *data, size_t len) {
+    if (len > PRINTER_CAPTURE_MAX - sess->capture_len)
         return false;
-    snprintf(sess->spool_path, sizeof(sess->spool_path), PRINTER_SPOOL_DIR "/laserwriter-job-%05u.ps", sess->job_id);
-    sess->spool = fopen(sess->spool_path, "wb");
-    if (!sess->spool) {
-        LOG(1, "pap: unable to open spool '%s': %s", sess->spool_path, strerror(errno));
-        sess->spool_path[0] = '\0';
-        return false;
+    if (sess->capture_len + len > sess->capture_cap) {
+        size_t cap = sess->capture_cap ? sess->capture_cap : 4096;
+        while (cap < sess->capture_len + len)
+            cap *= 2;
+        if (cap > PRINTER_CAPTURE_MAX)
+            cap = PRINTER_CAPTURE_MAX;
+        uint8_t *grown = (uint8_t *)realloc(sess->capture, cap);
+        if (!grown)
+            return false;
+        sess->capture = grown;
+        sess->capture_cap = cap;
     }
-    LOG(2, "pap: capturing job %u in %s", sess->job_id, sess->spool_path);
+    memcpy(sess->capture + sess->capture_len, data, len);
+    sess->capture_len += len;
     return true;
 }
 
-#if !GS_PLATEN
-// Truncates the current spool file so the real job can overwrite the query payload.
-static void pap_session_rewind_spool(pap_session_t *sess) {
-    if (!sess)
-        return;
-    if (!sess->spool_path[0])
-        return;
-    if (sess->spool) {
-        fclose(sess->spool);
-        sess->spool = NULL;
+// Hand what was captured to the platform, and start the next job empty.
+static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete) {
+    if (sess->capture_len) {
+        laserwriter_capture_t cap = {
+            .job_id = job_id, .ps = sess->capture, .ps_len = sess->capture_len, .complete = complete};
+        LOG(3, "pap: job %u captured (%zu bytes)", (unsigned)job_id, sess->capture_len);
+        laserwriter_sink_capture(&cap);
     }
-    sess->spool = fopen(sess->spool_path, "wb");
-    if (!sess->spool)
-        LOG(1, "pap: unable to rewind spool '%s': %s", sess->spool_path, strerror(errno));
-    else
-        LOG(4, "pap: rewound spool for job %u", (unsigned)sess->job_id);
+    sess->capture_len = 0;
 }
-#endif // !GS_PLATEN
+
+// Capture the fragment, or abort a job grown past what is held.
+static bool pap_capture_fragment(pap_session_t *sess, const uint8_t *data, size_t len) {
+    if (pap_capture_append(sess, data, len))
+        return true;
+    sess->capture_len = 0; // nothing of a job too large is handed over
+    pap_session_abort("job too large");
+    return false;
+}
 
 // Updates the status string with the current job progress.
 static void pap_update_progress_status(void) {
@@ -620,7 +628,7 @@ static bool pap_consume_query_eof(pap_session_t *sess) {
     sess->query_mode = PAP_QUERY_NONE;
     sess->font_query_window_len = 0;
     sess->font_query_detected = false;
-    pap_session_rewind_spool(sess);
+    sess->capture_len = 0; // the real job replaces the query
     if (sess->active && !sess->blocked_for_reply)
         pap_schedule_senddata();
     return true;
@@ -646,32 +654,20 @@ static void pap_handle_patch_complete(pap_session_t *sess) {
     g_printer.patch_installed = true;
     // LaserWriter returns "1" after PatchPrep installs so the Mac skips re-sending it
     pap_queue_postscript_reply("1");
-    pap_session_rewind_spool(sess);
+    sess->capture_len = 0; // the real job replaces the PatchPrep upload
     if (sess->active && !sess->blocked_for_reply)
         pap_schedule_senddata();
 }
 
-// Closes the current spool, reports completion, and primes the session for another job.
+// Hands over the capture, reports completion, and primes the session for another job.
 static bool pap_finalize_job(const char *reason) {
     pap_session_t *sess = &g_session;
     if (!sess->active)
         return false;
 
     uint32_t completed_job = sess->job_id;
-    char saved_path[PRINTER_SPOOL_PATH_MAX];
-    saved_path[0] = '\0';
-    if (sess->spool_path[0]) {
-        strncpy(saved_path, sess->spool_path, sizeof(saved_path) - 1);
-        saved_path[sizeof(saved_path) - 1] = '\0';
-    }
-    if (sess->spool) {
-        fclose(sess->spool);
-        sess->spool = NULL;
-    }
-
     LOG(2, "pap: job %u complete (%s)", completed_job, reason ? reason : "done");
-    if (saved_path[0])
-        LOG(3, "pap: job %u captured at %s", completed_job, saved_path);
+    pap_capture_deliver(sess, completed_job, true);
 
     pap_printer_set_status_idle();
     pap_status_queue_drain(PRINTER_STATUS_IDLE, false);
@@ -692,7 +688,6 @@ static bool pap_finalize_job(const char *reason) {
     sess->font_query_window_len = 0;
     sess->font_query_detected = false;
 
-    sess->spool_path[0] = '\0';
     sess->job_id = ++g_printer.job_counter;
     LOG(4, "pap: prepared for next job %u", sess->job_id);
     return true;
@@ -1116,7 +1111,7 @@ static bool pap_issue_senddata_request(void) {
     return true;
 }
 
-// ATP response callback that writes each data fragment to the spool file.
+// ATP response callback that captures (and, with the interpreter, feeds) each data fragment.
 static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, void *ctx) {
     pap_session_t *sess = (pap_session_t *)ctx;
     if (!sess || !sess->active || !fragment)
@@ -1178,16 +1173,10 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
             sess->eof_pending = true;
         }
     } else if (fragment->data_len > 0) {
-        if (!sess->spool) {
-            if (!pap_session_open_spool(sess)) {
-                pap_session_abort("spool open failed");
-                return;
-            }
-        }
-        size_t wrote = fwrite(fragment->data, 1, (size_t)fragment->data_len, sess->spool);
-        if (wrote != (size_t)fragment->data_len)
-            LOG(1, "pap: short write to spool (%zu vs %d)", wrote, fragment->data_len);
-        sess->bytes_received += wrote;
+        // Without the interpreter the capture is the job's only output: always kept
+        if (!pap_capture_fragment(sess, fragment->data, (size_t)fragment->data_len))
+            return;
+        sess->bytes_received += (size_t)fragment->data_len;
         pap_update_progress_status();
         bool flush_sequence = pap_detect_flush_sequence(sess, fragment->data, fragment->data_len);
         if (!sess->query_detected && flush_sequence) {
@@ -1297,10 +1286,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         g_session.next_send_seq = 1;
         g_session.bytes_received = 0;
         g_session.last_activity_ms = pap_now_ms();
-        if (g_printer.capture && !pap_session_open_spool(&g_session)) {
-            result = PAP_RESULT_BUSY;
-            pap_session_reset();
-        } else if (laserwriter_job_available() && !laserwriter_job_begin(g_session.job_id)) {
+        if (laserwriter_job_available() && !laserwriter_job_begin(g_session.job_id)) {
             // No interpreter, no job: busy is the only honest answer
             result = PAP_RESULT_BUSY;
             pap_session_reset();
@@ -1466,19 +1452,12 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
 
 #if GS_PLATEN
 
-// Spools (when capturing) and gathers one data fragment for the interpreter;
+// Captures (on request) and gathers one data fragment for the interpreter;
 // the transaction's data is fed as one piece when it completes.
 static void pap_platen_ingest_fragment(pap_session_t *sess, const atp_response_fragment_t *fragment) {
     if (fragment->data_len > 0 && fragment->data) {
-        if (g_printer.capture) {
-            if (!sess->spool && !pap_session_open_spool(sess)) {
-                pap_session_abort("spool open failed");
-                return;
-            }
-            size_t wrote = fwrite(fragment->data, 1, (size_t)fragment->data_len, sess->spool);
-            if (wrote != (size_t)fragment->data_len)
-                LOG(1, "pap: short write to spool (%zu vs %d)", wrote, fragment->data_len);
-        }
+        if (g_printer.capture && !pap_capture_fragment(sess, fragment->data, (size_t)fragment->data_len))
+            return;
         size_t room = sizeof(sess->rx) - sess->rx_len;
         size_t n = (size_t)fragment->data_len;
         if (n > room) {
@@ -1549,12 +1528,8 @@ static void pap_platen_finalize_job(void) {
     if (!sess->active)
         return;
     uint32_t completed_job = sess->job_id;
-    if (sess->spool) {
-        fclose(sess->spool);
-        sess->spool = NULL;
-        LOG(3, "pap: job %u captured at %s", completed_job, sess->spool_path);
-    }
     LOG(2, "pap: job %u complete (%s)", completed_job, laserwriter_job_last_outcome());
+    pap_capture_deliver(sess, completed_job, true);
     pap_platen_pull_output();
     // A LaserWriter closes its side of the job with EOF once its output is out
     sess->reply_eof_pending = true;
@@ -1563,7 +1538,6 @@ static void pap_platen_finalize_job(void) {
     sess->rx_eof = false;
     sess->rx_pending = false;
     sess->bytes_received = 0;
-    sess->spool_path[0] = '\0';
     pap_printer_set_status_idle();
     pap_try_deliver_pending_reply();
     sess->job_id = ++g_printer.job_counter;
@@ -1642,7 +1616,7 @@ void atalk_printer_register(void) {
 void atalk_printer_shutdown(void) {
     if (!g_printer.initialized)
         return;
-    pap_session_reset(); // cancels its ATP request, closes the spool, aborts the job
+    pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
     memset(&g_completion, 0, sizeof(g_completion));
     if (g_printer.nbp_entry) {
         atalk_nbp_unregister(g_printer.nbp_entry);
@@ -1777,7 +1751,7 @@ bool atalk_printer_capture_get(void) {
     return g_printer.capture;
 }
 
-// Takes effect at the next job: a spool already open stays open.
+// Takes effect at the next data: a job already captured in part keeps its part.
 void atalk_printer_capture_set(bool enabled) {
     pap_printer_init();
     g_printer.capture = enabled;

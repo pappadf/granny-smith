@@ -3333,7 +3333,7 @@ static const member_t atalk_printer_members[] = {
      .attr = {.type = V_BOOL, .get = atalk_printer_attr_interpreter}},
     {.kind = M_ATTR,
      .name = "capture",
-     .doc = "Also write each job's PostScript to the spool file",
+     .doc = "Also hand each job's PostScript to the host: a .ps beside the PDF, or a download",
      .attr = {.type = V_BOOL, .get = atalk_printer_attr_capture, .set = atalk_printer_attr_set_capture}},
     {.kind = M_ATTR,
      .name = "documents",

@@ -50,6 +50,7 @@
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "keyboard.h"
+#include "laserwriter_job.h"
 #include "laserwriter_transport.h"
 #include "log.h"
 #include "machine.h"
@@ -991,6 +992,49 @@ void laserwriter_ring_notify(volatile uint32_t *addr) {
     emscripten_futex_wake(addr, INT_MAX);
 }
 
+// Hand `len` bytes to the page as a download named `name`.  Blocks until the
+// main thread has copied them, so `buf` need only live for the call.
+static void em_download_bytes(const char *name, const uint8_t *buf, size_t nread) {
+    // Trigger browser download on the main thread (DOM access required).
+    // The worker is blocked in MAIN_THREAD_EM_ASM, so buf is valid.
+    // clang-format off
+    MAIN_THREAD_EM_ASM(
+        {
+            try {
+                var ptr = $0;
+                var len = $1;
+                var namePtr = $2;
+                var name = UTF8ToString(namePtr) || 'download.bin';
+                // Access the shared heap — try both global and Module-scoped accessors
+                var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
+                var data = new Uint8Array(heap.buffer, ptr, len);
+                var copy = new Uint8Array(data);  // copy out of shared buffer
+                var blob = new Blob([copy], {type: 'application/octet-stream'});
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(function() {
+                    try { URL.revokeObjectURL(a.href); } catch (e) {}
+                }, 0);
+            } catch (e) {
+                console.error('[download] MAIN_THREAD_EM_ASM failed:', e);
+            }
+        },
+        buf, (int)nread, name);
+    // clang-format on
+}
+
+// Platform sink for a job's captured PostScript (appletalk.printer.capture):
+// downloaded as <job>.ps, the way the page downloads the job's PDF.
+void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
+    char name[32];
+    snprintf(name, sizeof(name), "%05u.ps", (unsigned)cap->job_id);
+    em_download_bytes(name, cap->ps, cap->ps_len);
+}
+
 // Download command - save file to browser
 // Platform impl of gs_download (weak default in system.c stubs out).
 // Returns 0 on success, non-zero on any failure (so the typed
@@ -1032,38 +1076,7 @@ int gs_download(const char *path) {
     // Extract filename from path
     const char *name = strrchr(path, '/');
     name = name ? name + 1 : path;
-
-    // Trigger browser download on the main thread (DOM access required).
-    // The worker is blocked in MAIN_THREAD_EM_ASM, so buf is valid.
-    // clang-format off
-    MAIN_THREAD_EM_ASM(
-        {
-            try {
-                var ptr = $0;
-                var len = $1;
-                var namePtr = $2;
-                var name = UTF8ToString(namePtr) || 'download.bin';
-                // Access the shared heap — try both global and Module-scoped accessors
-                var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
-                var data = new Uint8Array(heap.buffer, ptr, len);
-                var copy = new Uint8Array(data);  // copy out of shared buffer
-                var blob = new Blob([copy], {type: 'application/octet-stream'});
-                var a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = name;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                setTimeout(function() {
-                    try { URL.revokeObjectURL(a.href); } catch (e) {}
-                }, 0);
-            } catch (e) {
-                console.error('[download] MAIN_THREAD_EM_ASM failed:', e);
-            }
-        },
-        buf, (int)nread, name);
-    // clang-format on
-
+    em_download_bytes(name, buf, nread);
     free(buf);
     printf("download: requested '%s'\n", path);
     return 0;

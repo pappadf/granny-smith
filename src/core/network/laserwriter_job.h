@@ -139,4 +139,19 @@ const char *laserwriter_job_last_outcome(void);
 // (its worker posts the PDF to the page), so the sink is not called there.
 void laserwriter_sink_document(const laserwriter_document_t *doc);
 
+// A job's PostScript as the workstation sent it (appletalk.printer.capture),
+// handed over when the job ends.  The bytes are valid only for the duration
+// of the call.
+typedef struct {
+    uint32_t job_id; // PAP job counter value, as in laserwriter_document_t
+    const uint8_t *ps;
+    size_t ps_len;
+    bool complete; // the job ended normally; false for one cut off
+} laserwriter_capture_t;
+
+// Platform sink for a capture.  The weak default in laserwriter_job.c logs
+// and drops it; headless_main.c writes <print-dir>/<job>.ps beside the PDF;
+// the browser downloads it.  The core printer holds no file of its own.
+void laserwriter_sink_capture(const laserwriter_capture_t *cap);
+
 #endif // LASERWRITER_JOB_H

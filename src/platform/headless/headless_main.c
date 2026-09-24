@@ -116,6 +116,32 @@ void laserwriter_sink_document(const laserwriter_document_t *doc) {
                (unsigned)doc->pages, path, outcome, doc->offending);
 }
 
+// Platform sink for a job's captured PostScript (appletalk.printer.capture):
+// <print-dir>/<job>.ps, the job number matching its PDF's.
+void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
+    if (!g_print_dir[0]) {
+        printf("laserwriter: job %u PostScript (%zu bytes) discarded: no --print-dir\n", (unsigned)cap->job_id,
+               cap->ps_len);
+        return;
+    }
+    if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
+        printf("laserwriter: cannot create print directory %s: %s\n", g_print_dir, strerror(errno));
+        return;
+    }
+    char path[PATH_MAX + 32];
+    snprintf(path, sizeof(path), "%s/%05u.ps", g_print_dir, (unsigned)cap->job_id);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        printf("laserwriter: cannot write %s: %s\n", path, strerror(errno));
+        return;
+    }
+    size_t wrote = fwrite(cap->ps, 1, cap->ps_len, f);
+    fclose(f);
+    if (wrote != cap->ps_len)
+        printf("laserwriter: short write to %s (%zu of %zu bytes)\n", path, wrote, cap->ps_len);
+    printf("laserwriter: job %u PostScript%s -> %s\n", (unsigned)cap->job_id, cap->complete ? "" : " (cut off)", path);
+}
+
 // Publish the default share after every system_create.  A machine teardown
 // drops the volume table, so this has to re-run; failure is a warning, not a
 // fatal error.
