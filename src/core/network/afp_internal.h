@@ -153,7 +153,8 @@ typedef struct {
 // Read PathType + pathname at `pos`: the position after it, or -1 (ParamErr)
 // for a path type other than 1 or 2 or a length past the request.
 int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out);
-// Resolve `path` below `base_rel` into a volume-relative host path.
+// Resolve `path` below `base_rel` into a volume-relative host path.  An element
+// that names nothing exactly is the one entry whose name folds equal (D-7).
 bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, char *out, size_t out_len);
 // A host name as a client sees it: MacRoman, and at most 31 characters -- a
 // longer one is shortened to its first bytes and "#<CNID in hex>" (D-5).
@@ -161,6 +162,17 @@ int afp_client_name(const char *host_name, uint32_t cnid, uint8_t *out, size_t c
 // A new name (FPRename, FPMoveAndRename, FPCopyFile): exactly one element, as
 // its host name.
 bool afp_parse_leaf(const afp_path_t *path, char *out, size_t cap);
+// Case (Inside AppleTalk App. D, Table D-2; 10-network D-7).  afp_fold maps a
+// MacRoman byte to its uppercase equivalent; the comparisons fold both sides,
+// host names through their Mac form.
+uint8_t afp_fold(uint8_t c);
+int afp_fold_cmp(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen);
+int afp_name_fold_cmp(const char *host_a, const char *host_b);
+bool afp_name_fold_contains(const char *host_haystack, const char *host_needle);
+// True when `name` cannot be created in `dir_rel`: it exists, or a sibling's
+// name folds onto it -- other than `self_rel` (the object being renamed or
+// moved, or NULL), which may change the case of its own name.
+bool afp_name_taken(vol_t *vol, const char *dir_rel, const char *name, const char *self_rel);
 // True if the server shows the host name `host_name` to clients: not one of
 // its own, and representable as a Mac name (10-network D-1).
 bool afp_name_visible(const char *host_name);

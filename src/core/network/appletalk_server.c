@@ -1161,8 +1161,7 @@ static uint32_t afp_cmd_rename(afp_req_t *r) {
         return AFPERR_ParamErr;
     if (strcmp(old_rel, new_rel) == 0)
         return AFPERR_NoErr;
-    struct stat dst_st;
-    if (stat(new_full, &dst_st) == 0)
+    if (afp_name_taken(vol, parent_rel, new_name, old_rel))
         return AFPERR_ObjectExists;
     if (rename(old_full, new_full) != 0)
         return AFPERR_CantRename;
@@ -1238,8 +1237,7 @@ static uint32_t afp_cmd_move_and_rename(afp_req_t *r) {
     char dst_full[PATH_MAX];
     if (!afp_host_path(vol, dst_rel, dst_full, sizeof(dst_full)))
         return AFPERR_ParamErr;
-    struct stat dst_st;
-    if (stat(dst_full, &dst_st) == 0)
+    if (afp_name_taken(vol, dst_dir_rel, final_name, src_rel))
         return AFPERR_ObjectExists;
     if (rename(src_full, dst_full) != 0)
         return AFPERR_CantMove;
@@ -1341,8 +1339,7 @@ static uint32_t afp_cmd_copy_file(afp_req_t *r) {
     char dst_full[PATH_MAX];
     if (!afp_host_path(dvol, dst_rel, dst_full, sizeof(dst_full)))
         return AFPERR_ParamErr;
-    struct stat dst_st;
-    if (stat(dst_full, &dst_st) == 0)
+    if (afp_name_taken(dvol, dst_dir_rel, final_name, NULL))
         return AFPERR_ObjectExists;
 
     // The source is held for reading with writers denied for the duration of
@@ -2011,17 +2008,6 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
     return true;
 }
 
-// Case-insensitive substring test used for partial-name matching.
-static bool name_contains(const char *haystack, const char *needle) {
-    size_t nl = strlen(needle);
-    if (nl == 0)
-        return true;
-    for (const char *p = haystack; *p; p++)
-        if (strncasecmp(p, needle, nl) == 0)
-            return true;
-    return false;
-}
-
 // Test one candidate against the decoded specifications.
 static bool catsearch_matches(vol_t *vol, const char *rel, const char *name, bool is_dir, const struct stat *st,
                               uint32_t request_bm, const catsearch_spec_t *s1, const catsearch_spec_t *s2,
@@ -2063,7 +2049,8 @@ static bool catsearch_matches(vol_t *vol, const char *rel, const char *name, boo
         }
     }
     if (request_bm & (1u << 6)) {
-        if (partial_name ? !name_contains(name, s1->name) : strcasecmp(name, s1->name) != 0)
+        // Folded as Mac names (D-7): case-insensitive, diacritical-sensitive.
+        if (partial_name ? !afp_name_fold_contains(name, s1->name) : afp_name_fold_cmp(name, s1->name) != 0)
             return false;
     }
     if (request_bm & (1u << 9)) {

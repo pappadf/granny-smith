@@ -93,12 +93,12 @@ void enum_snapshots_drop(uint32_t session_id, uint32_t vol_id) {
     }
 }
 
-// Name order for a stable listing.  Case-insensitive so the guest sees the
-// same sequence HFS would produce.
+// Name order for a stable listing: by Mac name, folded as AFP compares names
+// (D-7), then exactly, so names differing in case alone keep one order.
 static int enum_entry_cmp(const void *a, const void *b) {
     const enum_entry_t *ea = (const enum_entry_t *)a;
     const enum_entry_t *eb = (const enum_entry_t *)b;
-    int rc = strcasecmp(ea->name, eb->name);
+    int rc = afp_name_fold_cmp(ea->name, eb->name);
     return rc ? rc : strcmp(ea->name, eb->name);
 }
 

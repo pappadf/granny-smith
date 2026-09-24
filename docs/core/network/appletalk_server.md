@@ -2603,6 +2603,17 @@ the catalog -- unless a file of exactly that name exists. The rule was chosen
 by measurement (`appletalk-afp-longname`): sent whole, a 40-character name
 listed on System 6, but copying the file to the Mac's disk failed.
 
+**Case.** AFP names are case-insensitive and diacritical-sensitive (Inside
+AppleTalk 13-4), compared after Appendix D's Table D-2 maps lowercase to
+uppercase: a-z, and 13 MacRoman letters (é is É, but é is not e). The host is
+case-sensitive, so an element that names no host entry exactly is the one
+entry whose Mac name folds equal. When the host holds names differing in case
+alone, each is reached by its exact name and a third spelling finds nothing.
+A new name -- FPCreateFile, FPCreateDir, FPRename, FPMoveAndRename,
+FPCopyFile -- that folds onto a sibling is `ObjectExists`, as on HFS, unless
+the sibling is the object being renamed: changing only the case of a name is a
+rename. FPCatSearch compares, and FPEnumerate orders, by the same fold.
+
 Every host path the server touches is built in one place, `afp_host_join`,
 from the share root and names that are each a real element -- never empty,
 `.` or `..`. A client's name is decoded as exactly one element, so the result

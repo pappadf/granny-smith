@@ -105,12 +105,6 @@ int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out) {
     return pos + 2 + len;
 }
 
-// Resolve `path` below `base_rel` (Inside AppleTalk 13-10): CNode names
-// separated by NUL bytes; a single NUL before the first name is ignored, and
-// each NUL beyond the first in a run climbs one level.  This used to copy the
-// pathname into a C string -- so everything after the first NUL was lost and
-// "sub\0file" named "sub" -- and split it on ':', '/' and '\\' instead, so a
-// Mac name holding a '/' became two host path elements (10-network N-01).
 // --- names longer than a Mac name ---------------------------------------------
 //
 // A Mac name is at most 31 characters (HFS's Str31; AFP 2.x has no longer
@@ -167,6 +161,141 @@ static void afp_demangle(vol_t *vol, const char *dir_rel, char *host, size_t cap
         snprintf(host, cap, "%s", name);
 }
 
+// --- case -------------------------------------------------------------------
+//
+// AFP names are case-insensitive and diacritical-sensitive (Inside AppleTalk
+// 13-4): two names are one when they match after Appendix D's Table D-2 maps
+// lowercase to uppercase -- a-z and 13 MacRoman letters.  É is é, but é is
+// not e.  The hosts are case-sensitive, so a lookup that misses exactly is
+// tried again folded, and a new name that folds onto a sibling is refused
+// (10-network D-7).
+static const uint8_t k_d2_pairs[][2] = {
+    {0x88, 0xCB},
+    {0x8A, 0x80},
+    {0x8B, 0xCC},
+    {0x8C, 0x81},
+    {0x8D, 0x82},
+    {0x8E, 0x83},
+    {0x96, 0x84},
+    {0x9A, 0x85},
+    {0x9B, 0xCD},
+    {0x9F, 0x86},
+    {0xBE, 0xAE},
+    {0xBF, 0xAF},
+    {0xCF, 0xCE},
+};
+
+uint8_t afp_fold(uint8_t c) {
+    if (c >= 'a' && c <= 'z')
+        return (uint8_t)(c - ('a' - 'A'));
+    if (c >= 0x80)
+        for (size_t i = 0; i < sizeof(k_d2_pairs) / sizeof(k_d2_pairs[0]); i++)
+            if (k_d2_pairs[i][0] == c)
+                return k_d2_pairs[i][1];
+    return c;
+}
+
+int afp_fold_cmp(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen) {
+    size_t n = alen < blen ? alen : blen;
+    for (size_t i = 0; i < n; i++) {
+        int d = (int)afp_fold(a[i]) - (int)afp_fold(b[i]);
+        if (d)
+            return d;
+    }
+    return alen < blen ? -1 : alen > blen ? 1 : 0;
+}
+
+int afp_name_fold_cmp(const char *host_a, const char *host_b) {
+    uint8_t a[255], b[255];
+    int an = afp_mac_name(host_a, a, sizeof(a));
+    int bn = afp_mac_name(host_b, b, sizeof(b));
+    return afp_fold_cmp(a, (size_t)an, b, (size_t)bn);
+}
+
+bool afp_name_fold_contains(const char *host_haystack, const char *host_needle) {
+    uint8_t h[255], n[255];
+    int hn = afp_mac_name(host_haystack, h, sizeof(h));
+    int nn = afp_mac_name(host_needle, n, sizeof(n));
+    for (int i = 0; i + nn <= hn; i++)
+        if (afp_fold_cmp(h + i, (size_t)nn, n, (size_t)nn) == 0)
+            return true;
+    return false;
+}
+
+// The visible entries of `dir_rel` whose Mac name folds to `mac`, skipping
+// `skip` (a name, or NULL): how many, and the first in `found`.
+static int afp_fold_matches(vol_t *vol, const char *dir_rel, const uint8_t *mac, size_t len, const char *skip,
+                            char *found, size_t cap) {
+    char dir_full[PATH_MAX];
+    if (!afp_host_path(vol, dir_rel, dir_full, sizeof(dir_full)))
+        return 0;
+    DIR *d = opendir(dir_full);
+    if (!d)
+        return 0;
+    int matches = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (!afp_host_element(ent->d_name, strlen(ent->d_name)) || (skip && strcmp(ent->d_name, skip) == 0))
+            continue;
+        uint8_t m[255];
+        int n = macroman_name_from_host(ent->d_name, m, sizeof(m));
+        if (n <= 0 || afp_meta_is_hidden(ent->d_name) || afp_fold_cmp(m, (size_t)n, mac, len) != 0)
+            continue;
+        if (matches++ == 0 && found)
+            snprintf(found, cap, "%s", ent->d_name);
+    }
+    closedir(d);
+    return matches;
+}
+
+// `host` (one element below `dir_rel`, decoded from the client's `mac`) names
+// nothing on the host: if exactly one entry there has a name that folds to the
+// same, it is that entry.  Two or more -- names differing in case alone, made
+// on the host -- and the element stays as sent, so a lookup finds nothing: no
+// rule chooses between two files the Mac cannot tell apart.
+static void afp_fold_lookup(vol_t *vol, const char *dir_rel, const uint8_t *mac, size_t len, char *host, size_t cap) {
+    char rel[AFP_MAX_REL_PATH], found[AFP_MAX_NAME * 3 + 1];
+    struct stat st;
+    if (!vol || !afp_build_child_path(dir_rel, host, rel, sizeof(rel)) || afp_stat_path(vol, rel, &st))
+        return;
+    if (afp_fold_matches(vol, dir_rel, mac, len, NULL, found, sizeof(found)) == 1)
+        snprintf(host, cap, "%s", found);
+}
+
+bool afp_name_taken(vol_t *vol, const char *dir_rel, const char *name, const char *self_rel) {
+    char rel[AFP_MAX_REL_PATH];
+    struct stat st, self;
+    if (!afp_build_child_path(dir_rel, name, rel, sizeof(rel)))
+        return true;
+    bool has_self = self_rel && afp_stat_path(vol, self_rel, &self);
+    if (afp_stat_path(vol, rel, &st)) {
+        // On a case-insensitive host, the object's own name in another case.
+        if (!has_self || st.st_ino != self.st_ino || st.st_dev != self.st_dev)
+            return true;
+    }
+    uint8_t mac[255];
+    int n = afp_mac_name(name, mac, sizeof(mac));
+    const char *self_leaf = NULL;
+    char self_parent[AFP_MAX_REL_PATH];
+    if (self_rel) {
+        afp_extract_parent(self_rel, self_parent, sizeof(self_parent));
+        if (strcmp(self_parent, dir_rel ? dir_rel : "") == 0)
+            self_leaf = afp_last_component(self_rel);
+    }
+    // The exact name was dealt with above.
+    char found[AFP_MAX_NAME * 3 + 1];
+    int matches = afp_fold_matches(vol, dir_rel, mac, (size_t)n, name, found, sizeof(found));
+    if (matches == 1 && self_leaf && strcmp(found, self_leaf) == 0)
+        return false; // a rename that changes only case
+    return matches > 0;
+}
+
+// Resolve `path` below `base_rel` (Inside AppleTalk 13-10): CNode names
+// separated by NUL bytes; a single NUL before the first name is ignored, and
+// each NUL beyond the first in a run climbs one level.  This used to copy the
+// pathname into a C string -- so everything after the first NUL was lost and
+// "sub\0file" named "sub" -- and split it on ':', '/' and '\\' instead, so a
+// Mac name holding a '/' became two host path elements (10-network N-01).
 bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, char *out, size_t out_len) {
     if (!out || out_len == 0)
         return false;
@@ -196,6 +325,7 @@ bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, cha
         if (!afp_client_element(path->bytes + start, (size_t)(i - start), host, sizeof(host)))
             return false;
         afp_demangle(vol, out, host, sizeof(host));
+        afp_fold_lookup(vol, out, path->bytes + start, (size_t)(i - start), host, sizeof(host));
         if (!afp_append_component(out, out_len, host))
             return false;
     }

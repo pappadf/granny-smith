@@ -3599,6 +3599,124 @@ TEST(long_names_are_shortened_and_found_again) {
     fixture_down();
 }
 
+// --- D-7: names are case-insensitive, diacritical-sensitive ---------------------
+
+static uint32_t rename_to(const char *from, const char *to) {
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path(from);
+    put_path(to);
+    return call(OP_RENAME);
+}
+
+static uint32_t cat_search_name(const char *mac_name) {
+    put_catsearch_header(10, NULL, 0x0040, 0x0000, 0x00000040u);
+    int spec1 = g_req_len;
+    put8(0);
+    put8(0);
+    put16(2);
+    put_pstr(mac_name);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    int spec2 = g_req_len;
+    put8(0);
+    put8(0);
+    put16(0);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    uint32_t rc = call(OP_CAT_SEARCH);
+    return (rc == ERR_OK || rc == ERR_EOF) ? rd32(g_reply + 20) : 0xFFFFFFFFu;
+}
+
+// A client's name finds the host file whose name folds equal under Inside
+// AppleTalk's Table D-2 when none matches exactly; accents fold with their
+// letter (é is É) but stay distinct from it (é is not e); names differing in
+// case alone on the host are found only exactly; and a new name that folds onto
+// a sibling is ObjectExists for every call that makes one, except the object's
+// own name in another case.
+TEST(names_are_case_insensitive_and_diacritical_sensitive) {
+    fixture_up("case");
+    write_file("ReadMe", "r");
+    write_file("Caf\xC3\xA9", "c"); // host "Café"
+    uint32_t cnid = file_number("ReadMe");
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("README", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)cnid, (int)rd32(g_reply + 6));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("readme", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("CAF\x83", 0x0100, 0x0100)); // É ($83) is é ($8E)
+    ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)get_fd_parms("Cafe", 0x0100, 0x0100));
+
+    // Two host names differing in case alone: each exactly, neither by a third case.
+    write_file("twin", "1");
+    write_file("TWIN", "2");
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("twin", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("TWIN", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)get_fd_parms("Twin", 0x0100, 0x0100));
+
+    // Creating what the Mac sees as an existing name.
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)create_file("readme"));
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)create_dir("README", NULL));
+    write_file("Other", "o");
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)rename_to("Other", "README"));
+    req_reset(); // FPCopyFile to "readme"
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("Other");
+    put_path("");
+    put_path("readme");
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)call(OP_COPY_FILE));
+    uint32_t dir_id = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("Sub", &dir_id));
+    write_file("Sub/other", "s");
+    req_reset(); // FPMoveAndRename "Other" into Sub, where "other" is
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put32(dir_id);
+    put_path("Other");
+    put_path("");
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)call(OP_MOVE_AND_RENAME));
+    char path[512];
+    host_path("readme", path, sizeof(path));
+    ASSERT_TRUE(!host_exists(path));
+    host_path("README", path, sizeof(path));
+    ASSERT_TRUE(!host_exists(path));
+
+    // Its own name in another case is a rename, and keeps the CNID.
+    ASSERT_EQ_INT((int)ERR_OK, (int)rename_to("ReadMe", "README"));
+    ASSERT_TRUE(host_exists(path));
+    host_path("ReadMe", path, sizeof(path));
+    ASSERT_TRUE(!host_exists(path));
+    ASSERT_EQ_INT((int)cnid, (int)file_number("README"));
+
+    // FPCatSearch compares names the same way.
+    ASSERT_EQ_INT(1, (int)cat_search_name("CAF\x83"));
+    ASSERT_EQ_INT(0, (int)cat_search_name("CAFE"));
+    fixture_down();
+}
+
+// A listing is ordered by folded Mac name: "éa" before "Éb", whatever the
+// bytes of their UTF-8 host names say (É is C3 89, é C3 A9).
+TEST(listings_are_ordered_by_folded_mac_name) {
+    fixture_up("caseorder");
+    write_file("\xC3\x89"
+               "b",
+               "1"); // "Éb"
+    write_file("\xC3\xA9"
+               "a",
+               "2"); // "éa"
+    char names[4][96];
+    ASSERT_EQ_INT(2, enum_root_names(names, 4));
+    ASSERT_EQ_INT(0, strcmp(names[0], "\x8E"
+                                      "a"));
+    ASSERT_EQ_INT(0, strcmp(names[1], "\x83"
+                                      "b"));
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3676,6 +3794,8 @@ int main(void) {
     RUN(sidecars_and_the_volume_record_are_replaced_whole);
     RUN(a_server_rename_that_cannot_be_published_changes_nothing);
     RUN(long_names_are_shortened_and_found_again);
+    RUN(names_are_case_insensitive_and_diacritical_sensitive);
+    RUN(listings_are_ordered_by_folded_mac_name);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
