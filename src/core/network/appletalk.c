@@ -118,6 +118,7 @@ static const class_desc_t atalk_volume_class;
 static const class_desc_t atalk_sessions_collection_class;
 static const class_desc_t atalk_session_class;
 static const class_desc_t atalk_printer_class;
+static const class_desc_t atalk_printer_stats_class;
 
 // Per-entry instance data for the indexed collections. Each collection's
 // get() consults the owning subsystem's `in_use` predicate and returns the
@@ -146,6 +147,7 @@ static struct object *g_atalk_afp_stats_object;
 static struct object *g_atalk_volumes_object;
 static struct object *g_atalk_sessions_object;
 static struct object *g_atalk_printer_object;
+static struct object *g_atalk_printer_stats_object;
 
 // Checkpoint record. Only durable state travels; open forks, locks and
 // enumeration snapshots are reconstructible client-session state (§4.5).
@@ -919,8 +921,15 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
         }
     }
     g_atalk_printer_object = object_new(&atalk_printer_class, NULL, "printer");
-    if (g_atalk_printer_object)
+    if (g_atalk_printer_object) {
         object_attach(g_atalk_object, g_atalk_printer_object);
+        g_atalk_printer_stats_object =
+            object_new(&atalk_printer_stats_class, (void *)atalk_printer_get_stats(), "stats");
+        if (g_atalk_printer_stats_object) {
+            object_set_category(g_atalk_printer_stats_object, M_CAT_ADVANCED);
+            object_attach(g_atalk_printer_object, g_atalk_printer_stats_object);
+        }
+    }
 
     // Each program-linking layer owns its own subtree.
     atalk_adsp_install_objects(g_atalk_object);
@@ -1020,9 +1029,9 @@ static void appletalk_teardown(void) {
         g_atalk_session_objs[i] = NULL;
     }
 
-    struct object **attached[] = {&g_atalk_volumes_object, &g_atalk_sessions_object, &g_atalk_afp_stats_object,
-                                  &g_atalk_afp_object,     &g_atalk_stats_object,    &g_atalk_nbp_object,
-                                  &g_atalk_printer_object};
+    struct object **attached[] = {&g_atalk_volumes_object,       &g_atalk_sessions_object, &g_atalk_afp_stats_object,
+                                  &g_atalk_afp_object,           &g_atalk_stats_object,    &g_atalk_nbp_object,
+                                  &g_atalk_printer_stats_object, &g_atalk_printer_object};
     for (size_t i = 0; i < ARRAY_LEN(attached); i++) {
         if (!*attached[i])
             continue;
@@ -3325,6 +3334,20 @@ static value_t atalk_printer_attr_last_outcome(struct object *self, const member
     (void)m;
     return val_str(atalk_printer_last_outcome());
 }
+
+static const member_t atalk_printer_stats_members[] = {
+    OBJ_U64_FIELD(atalk_printer_stats_t, jobs, "Jobs that ran to their end"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, aborts, "Jobs cut off: timeout, too large, closed early"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, bytes, "PostScript bytes received"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, captures, "Captures handed to the host (appletalk.printer.capture)"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, last_capture, "Bytes in the last capture"),
+};
+
+static const class_desc_t atalk_printer_stats_class = {
+    .name = "atalk_printer_stats",
+    .members = atalk_printer_stats_members,
+    .n_members = ARRAY_LEN(atalk_printer_stats_members),
+};
 
 static const member_t atalk_printer_members[] = {
     {.kind = M_ATTR,

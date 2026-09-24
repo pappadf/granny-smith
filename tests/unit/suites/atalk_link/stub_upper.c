@@ -92,6 +92,10 @@ const char *atalk_printer_status_text(void) {
 bool atalk_printer_has_interpreter(void) {
     return false;
 }
+const atalk_printer_stats_t *atalk_printer_get_stats(void) {
+    static atalk_printer_stats_t none;
+    return &none;
+}
 uint32_t atalk_printer_documents(void) {
     return 0;
 }

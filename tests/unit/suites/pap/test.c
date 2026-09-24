@@ -114,12 +114,21 @@ atp_request_handle_t *atp_request_submit(const atp_request_params_t *p, const at
 void atp_request_cancel(atp_request_handle_t *h) {
     (void)h;
 }
+// What the printer last answered a workstation's read with.
+static char g_last_reply[256];
+static void record_reply(const uint8_t *pl, int len) {
+    int n = len < (int)sizeof g_last_reply - 1 ? len : (int)sizeof g_last_reply - 1;
+    if (n < 0 || !pl)
+        n = 0;
+    memcpy(g_last_reply, pl ? pl : (const uint8_t *)"", (size_t)n);
+    g_last_reply[n] = '\0';
+}
 int atp_responder_send_packets(const ddp_header_t *d, const atp_packet_t *a, const atp_response_packet_desc_t *p,
                                size_t n) {
     (void)d;
     (void)a;
-    (void)p;
-    (void)n;
+    if (n)
+        record_reply(p[0].payload, p[0].payload_len);
     return 0;
 }
 static int g_close_replies;
@@ -129,8 +138,8 @@ int atp_responder_send_simple(const ddp_header_t *d, const atp_packet_t *a, cons
     (void)a;
     if (user[1] == PAP_FUNC_CLOSE_REPLY)
         g_close_replies++;
-    (void)pl;
-    (void)len;
+    else
+        record_reply(pl, len);
     (void)sts;
     return 0;
 }
@@ -218,6 +227,7 @@ static void setup(void) {
 // spooled (F-12).
 TEST(a_job_reaches_the_capture_sink_whole) {
     setup();
+    atalk_printer_stats_t before = *atalk_printer_get_stats();
     unlink("/tmp/laserwriter-job-00001.ps");
     open_conn(5);
     const char *parts[] = {"%!PS\n", "1 2 add pop\n", "showpage\n"};
@@ -226,6 +236,12 @@ TEST(a_job_reaches_the_capture_sink_whole) {
     ASSERT_EQ_INT(26, (int)g_captured_len);
     ASSERT_EQ_INT(0, memcmp(g_captured, "%!PS\n1 2 add pop\nshowpage\n", 26));
     ASSERT_TRUE(g_captured_complete);
+    const atalk_printer_stats_t *after = atalk_printer_get_stats(); // F-33
+    ASSERT_EQ_INT(1, (int)(after->jobs - before.jobs));
+    ASSERT_EQ_INT(26, (int)(after->bytes - before.bytes));
+    ASSERT_EQ_INT(1, (int)(after->captures - before.captures));
+    ASSERT_EQ_INT(26, (int)after->last_capture);
+    ASSERT_EQ_INT(0, (int)(after->aborts - before.aborts));
     struct stat st;
     ASSERT_TRUE(stat("/tmp/laserwriter-job-00001.ps", &st) != 0);
 }
@@ -234,12 +250,14 @@ TEST(a_job_reaches_the_capture_sink_whole) {
 // handed over.
 TEST(a_job_too_large_is_aborted) {
     setup();
+    uint64_t aborts = atalk_printer_get_stats()->aborts;
     open_conn(6);
     const char *parts[] = {"0123456789012345678901234567890123456789", "0123456789012345678901234"}; // 65 bytes
     answer(parts, 2, false);
     ASSERT_EQ_INT(0, g_captures);
     ASSERT_EQ_INT(1, g_close_requests); // the workstation is told the job is over
     ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
+    ASSERT_EQ_INT(1, (int)(atalk_printer_get_stats()->aborts - aborts));
 }
 
 // A CloseConn ends the job only when it is the session's: its connection id
@@ -288,12 +306,26 @@ TEST(a_printer_rename_that_cannot_be_published_changes_nothing) {
     ASSERT_EQ_INT(0, strcmp(atalk_printer_object_name(), "Before"));
 }
 
+// A query's "= flush" marker split across two fragments is still found, and
+// answered on the workstation's next read with the PatchPrep state ("0": not
+// installed).
+TEST(a_query_split_across_fragments_is_answered) {
+    setup();
+    open_conn(8);
+    const char *parts[] = {"%!PS\n/PatchPrep where { pop 1 } { 0 } ifelse = fl", "ush\n"};
+    answer(parts, 2, false);
+    g_last_reply[0] = '\0';
+    request(10, 8, PAP_FUNC_SENDDATA, NULL, 0); // the workstation reads
+    ASSERT_TRUE(g_last_reply[0] == '0');
+}
+
 int main(void) {
     RUN(a_job_reaches_the_capture_sink_whole);
     RUN(a_job_too_large_is_aborted);
     RUN(a_foreign_closeconn_does_not_end_the_job);
     RUN(an_idle_connection_times_out_on_its_own);
     RUN(a_printer_rename_that_cannot_be_published_changes_nothing);
+    RUN(a_query_split_across_fragments_is_answered);
     printf("pap: all tests passed\n");
     return 0;
 }

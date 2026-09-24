@@ -169,6 +169,19 @@ bool atalk_printer_has_interpreter(void);
 bool atalk_printer_capture_get(void);
 void atalk_printer_capture_set(bool enabled);
 
+// Printer counters (object model: `appletalk.printer.stats`) -- what a
+// script needs to see that a job happened, how big it was and what became of
+// it; the printer published two attributes and nothing else (10-network F-33).
+typedef struct {
+    uint64_t jobs; // jobs that ran to their end
+    uint64_t aborts; // jobs cut off: timeout, too large, closed early
+    uint64_t bytes; // PostScript bytes received
+    uint64_t captures; // captures handed to the platform
+    uint64_t last_capture; // bytes in the last of them
+} atalk_printer_stats_t;
+
+const atalk_printer_stats_t *atalk_printer_get_stats(void);
+
 // Documents produced, and the page count and outcome of the last finished
 // job ("" before any; "ok"; "error: <name> in <command>"; "budget").
 uint32_t atalk_printer_documents(void);
