@@ -1456,7 +1456,10 @@ static uint32_t afp_cmd_add_icon(afp_req_t *r) {
 
 // FPGetIcon (0x33)
 static uint32_t afp_cmd_get_icon(afp_req_t *r) {
-    if (r->in_len < 14)
+    // Pad(1) DTRefNum(2) FileCreator(4) FileType(4) IconType(1) Pad(1)
+    // Length(2) -- Inside AppleTalk p. 13-92.  Length was read from the pad
+    // (10-network N-10): 256 asked for 1 byte, 128 got 256.
+    if (r->in_len < 15)
         return AFPERR_ParamErr;
     vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
@@ -1464,7 +1467,7 @@ static uint32_t afp_cmd_get_icon(afp_req_t *r) {
     uint32_t creator = RD_BE32(r->in + 3);
     uint32_t file_type = RD_BE32(r->in + 7);
     uint8_t icon_type = r->in[11];
-    uint16_t req_size = RD_BE16(r->in + 12);
+    uint16_t req_size = RD_BE16(r->in + 13);
 
     const afp_icon_t *icon = afp_desktop_get_icon(v->desktop, creator, file_type, icon_type);
     if (!icon)

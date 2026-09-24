@@ -1589,13 +1589,15 @@ TEST(icons_survive_a_share_reopen) {
     open_vol_as(SESSION); // a re-added share is opened again, as a client would
     dt = open_dt();
 
-    // FPGetIcon: Pad(1) DTRefNum(2) Creator(4) FileType(4) IconType(1) Length(2).
+    // FPGetIcon: Pad(1) DTRefNum(2) Creator(4) FileType(4) IconType(1) Pad(1)
+    // Length(2) -- Inside AppleTalk p. 13-92.
     req_reset();
     put8(0);
     put16(dt);
     put32(0x41505054u);
     put32(0x4150504Cu);
     put8(1);
+    put8(0); // pad
     put16((uint16_t)sizeof(bitmap));
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_ICON));
     ASSERT_EQ_INT((int)sizeof(bitmap), g_reply_len);
@@ -1620,6 +1622,7 @@ TEST(icons_survive_a_share_reopen) {
     put32(0x4E4F4E45u);
     put32(0x4150504Cu);
     put8(1);
+    put8(0); // pad
     put16(256);
     ASSERT_EQ_INT((int)ERR_ITEM_NOT_FOUND, (int)call(OP_GET_ICON));
     req_reset();
@@ -2834,6 +2837,7 @@ TEST(every_icon_reads_back_its_own_bitmap) {
         put32(0x49434F00u + (uint32_t)i);
         put32(0x4150504Cu);
         put8(1);
+        put8(0); // pad
         put16((uint16_t)sizeof bits);
         ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_ICON));
         ASSERT_EQ_INT((int)sizeof bits, g_reply_len);
@@ -3119,6 +3123,28 @@ TEST(a_listing_in_progress_is_not_evicted_first) {
     fixture_down();
 }
 
+// --- F7: FPGetIcon's Length is after a pad (10-network N-10) ----------------------
+
+// FPGetIcon returns at most Length bytes.  Length was read one byte early,
+// from the pad: asking for 16 bytes of a 256-byte icon got all 256.
+TEST(get_icon_returns_at_most_the_length_asked) {
+    fixture_up("iconlen");
+    uint16_t dt = open_dt();
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_icon(dt, 0x4C454E47u, 0x77)); // 'LENG', 32 bytes
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x4C454E47u);
+    put32(0x4150504Cu);
+    put8(1);
+    put8(0); // pad
+    put16(16);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_ICON));
+    ASSERT_EQ_INT(16, g_reply_len);
+    ASSERT_EQ_INT(0x77, g_reply[15]);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3182,6 +3208,7 @@ int main(void) {
     RUN(a_fork_never_grows_past_the_volume_ceiling);
     RUN(the_icon_store_is_bounded);
     RUN(a_listing_in_progress_is_not_evicted_first);
+    RUN(get_icon_returns_at_most_the_length_asked);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
