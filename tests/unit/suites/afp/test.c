@@ -3717,6 +3717,76 @@ TEST(listings_are_ordered_by_folded_mac_name) {
     fixture_down();
 }
 
+// A path may start at Directory ID 1, the root's parent, with the volume's
+// name as its first element (Inside AppleTalk 13-11): System 7.5's AppleShare
+// 3.5 asks for the root that way right after mounting.  The name folds like
+// any other; one that is not the volume's names nothing.
+TEST(a_path_from_the_roots_parent_starts_with_the_volume_name) {
+    fixture_up("rootparent");
+    write_file("Inner", "i");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(1);
+    put16(0x0100);
+    put16(0x0100);
+    put_path("TestVol");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_FD_PARMS));
+    ASSERT_EQ_INT((int)CNID_ROOT, (int)rd32(g_reply + 6));
+
+    const char *paths[] = {"testvol", "TestVol:Inner", ":TestVol:Inner"};
+    for (int i = 0; i < 3; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(1);
+        put16(0x0100);
+        put16(0x0100);
+        put_path(paths[i]);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_FD_PARMS));
+    }
+    ASSERT_EQ_INT((int)file_number("Inner"), (int)rd32(g_reply + 6));
+
+    const char *bad[] = {"Other", "", "TestVol::x"};
+    const uint32_t want[] = {ERR_OBJECT_NOT_FND, ERR_OBJECT_NOT_FND, ERR_PARAM};
+    for (int i = 0; i < 3; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(1);
+        put16(0x0100);
+        put16(0x0100);
+        put_path(bad[i]);
+        ASSERT_EQ_INT((int)want[i], (int)call(OP_GET_FD_PARMS));
+    }
+    fixture_down();
+}
+
+// FPEnumerate adopts what it lists in name order, so a share's CNIDs do not
+// depend on the host's readdir order (creation order on some filesystems, a
+// seeded hash on ext4).  Twenty files made in a scrambled order must number
+// in name order.
+TEST(a_listing_numbers_its_entries_in_name_order) {
+    fixture_up("cnidorder");
+    const int order[20] = {7, 15, 2, 19, 11, 0, 13, 4, 17, 9, 1, 18, 6, 12, 3, 16, 8, 14, 5, 10};
+    for (int i = 0; i < 20; i++) {
+        char name[8];
+        snprintf(name, sizeof(name), "f%02d", order[i]);
+        write_file(name, "x");
+    }
+    char names[24][96];
+    ASSERT_EQ_INT(20, enum_root_names(names, 24));
+    uint32_t prev = 0;
+    for (int i = 0; i < 20; i++) {
+        char name[8];
+        snprintf(name, sizeof(name), "f%02d", i);
+        uint32_t id = file_number(name);
+        ASSERT_TRUE(id > prev);
+        prev = id;
+    }
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3796,6 +3866,8 @@ int main(void) {
     RUN(long_names_are_shortened_and_found_again);
     RUN(names_are_case_insensitive_and_diacritical_sensitive);
     RUN(listings_are_ordered_by_folded_mac_name);
+    RUN(a_path_from_the_roots_parent_starts_with_the_volume_name);
+    RUN(a_listing_numbers_its_entries_in_name_order);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

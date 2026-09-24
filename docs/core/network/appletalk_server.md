@@ -2614,6 +2614,11 @@ FPCopyFile -- that folds onto a sibling is `ObjectExists`, as on HFS, unless
 the sibling is the object being renamed: changing only the case of a name is a
 rename. FPCatSearch compares, and FPEnumerate orders, by the same fold.
 
+**Directory ID 1** is the root's parent. A path from it starts with the
+volume's name, compared like any name, and continues from the root (Inside
+AppleTalk 13-11). System 7.5's AppleShare 3.5 asks for the root this way just
+after mounting; System 6 never does.
+
 Every host path the server touches is built in one place, `afp_host_join`,
 from the share root and names that are each a real element -- never empty,
 `.` or `..`. A client's name is decoded as exactly one element, so the result
@@ -2673,7 +2678,9 @@ name running to the end of the payload; op 7 carries the catalog's state.
   FPGetFileDirParms, an FPOpenFork — that has no entry gets one. Files that
   appear behind the server's back (the shell's `cp`, the host, a restored
   page) therefore acquire stable IDs on first use, and a file renamed
-  *outside* AFP is correctly a new object.
+  *outside* AFP is correctly a new object. FPEnumerate adopts a directory's
+  new entries in name order, not the host's readdir order (which differs
+  between filesystems), so a share gets the same CNIDs on every host.
 - A compaction writes STATE and pure ADDs, and leaves `generation` alone: no
   CNID changes, so a client's FPCatSearch cursor and a live FPEnumerate
   snapshot stay good across it. A deletion and a tombstone sweep bump it.

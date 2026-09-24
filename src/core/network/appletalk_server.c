@@ -154,6 +154,24 @@ uint32_t afp_resolve_target(const afp_ctx_t *ctx, uint16_t vol_id, uint32_t dir_
     vol_t *vol = afp_session_vol(ctx, vol_id);
     if (!vol)
         return AFPERR_ParamErr; // unknown, or not opened by this session
+    // Directory ID 1 is the root's parent, and a path from it starts with the
+    // volume's name (Inside AppleTalk 13-11, the eighth example); the rest
+    // resolves from the root.  System 7's AppleShare client asks this way.
+    afp_path_t from_root;
+    if (dir_id == AFP_CNID_ROOT_PARENT) {
+        int start = (path && path->len > 0 && path->bytes[0] == 0) ? 1 : 0;
+        int end = start;
+        while (path && end < path->len && path->bytes[end] != 0)
+            end++;
+        uint8_t mac[AFP_MAX_NAME];
+        int n = afp_mac_name(vol->name, mac, sizeof(mac));
+        if (!path || end == start || afp_fold_cmp(path->bytes + start, (size_t)(end - start), mac, (size_t)n) != 0)
+            return AFPERR_ObjectNotFound;
+        from_root.len = path->len - end;
+        memcpy(from_root.bytes, path->bytes + end, (size_t)from_root.len);
+        path = &from_root;
+        dir_id = AFP_CNID_ROOT;
+    }
     char base[AFP_MAX_REL_PATH];
     if (!afp_dir_rel_path(vol, dir_id, base, sizeof(base)))
         return AFPERR_DirNotFound;

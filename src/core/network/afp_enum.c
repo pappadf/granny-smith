@@ -194,12 +194,19 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
         snprintf(e->name, sizeof(e->name), "%s", dent->d_name);
         e->is_dir = S_ISDIR(child_st.st_mode);
         e->st = child_st;
-        // Adopt each child so its CNID is stable from the first listing on.
-        afp_catalog_resolve_path(vol->catalog, child_rel, true, e->is_dir);
         count++;
     }
     closedir(dir);
     qsort(entries, count, sizeof(enum_entry_t), enum_entry_cmp);
+    // Adopt each child so its CNID is stable from the first listing on -- in
+    // name order, not the host's readdir order, which differs between
+    // filesystems (ext4 hashes names with a per-filesystem seed): the same
+    // share gets the same CNIDs on every host.
+    for (size_t i = 0; i < count; i++) {
+        char child_rel[AFP_MAX_REL_PATH];
+        if (afp_build_child_path(dir_rel, entries[i].name, child_rel, sizeof(child_rel)))
+            afp_catalog_resolve_path(vol->catalog, child_rel, true, entries[i].is_dir);
+    }
 
     slot->in_use = true;
     slot->session_id = ctx->session_id;
