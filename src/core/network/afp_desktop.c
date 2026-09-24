@@ -110,6 +110,22 @@ static const afp_icon_t *icon_view(afp_desktop_t *dt, size_t si) {
     return &s->v;
 }
 
+// Count live records in a store.
+static size_t icon_live(const afp_desktop_t *dt) {
+    size_t n = 0;
+    for (size_t i = 0; i < dt->icon_len; i++)
+        if (!dt->icons[i].dead)
+            n++;
+    return n;
+}
+static size_t appl_live(const afp_desktop_t *dt) {
+    size_t n = 0;
+    for (size_t i = 0; i < dt->appl_len; i++)
+        if (!dt->appls[i].dead)
+            n++;
+    return n;
+}
+
 // Apply an icon record to the in-memory table (no log write).
 static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t file_type, uint8_t icon_type,
                       uint32_t tag, const uint8_t *bitmap, uint16_t size) {
@@ -122,6 +138,8 @@ static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
     if (size > AFP_ICON_MAX_BYTES)
         return -EINVAL;
     if (si < 0) {
+        if (icon_live(dt) >= AFP_MAX_ICONS)
+            return -ENOSPC;
         if (dt->icon_len == dt->icon_cap) {
             size_t cap = dt->icon_cap ? dt->icon_cap * 2 : 16;
             icon_slot_t *tmp = (icon_slot_t *)realloc(dt->icons, cap * sizeof(icon_slot_t));
@@ -301,22 +319,6 @@ afp_desktop_t *afp_desktop_open(const char *host_root) {
     dt->icon_log = store_open(dt->icon_path, DT_ICON_MAGIC);
     dt->appl_log = store_open(dt->appl_path, DT_APPL_MAGIC);
     return dt;
-}
-
-// Count live records in a store.
-static size_t icon_live(const afp_desktop_t *dt) {
-    size_t n = 0;
-    for (size_t i = 0; i < dt->icon_len; i++)
-        if (!dt->icons[i].dead)
-            n++;
-    return n;
-}
-static size_t appl_live(const afp_desktop_t *dt) {
-    size_t n = 0;
-    for (size_t i = 0; i < dt->appl_len; i++)
-        if (!dt->appls[i].dead)
-            n++;
-    return n;
 }
 
 // Rewrite each store as pure PUTs of its live records.

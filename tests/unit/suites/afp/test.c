@@ -79,6 +79,7 @@ int stub_attention_count(void);
 #define OP_ADD_ICON        0xC0
 
 #define ERR_OK              0x00000000u
+#define ERR_MISC            0xFFFFEC6Au
 #define ERR_ACCESS_DENIED   0xFFFFEC78u
 #define ERR_SESS_CLOSED     0xFFFFEC62u
 #define ERR_USER_NOT_AUTH   0xFFFFEC61u
@@ -3019,6 +3020,37 @@ TEST(a_fork_never_grows_past_the_volume_ceiling) {
     fixture_down();
 }
 
+// --- F5: the icon store is bounded (10-network F-18) ------------------------------
+
+static uint32_t add_icon(uint16_t dt, uint32_t creator, uint8_t fill) {
+    uint8_t bits[32];
+    memset(bits, fill, sizeof bits);
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(creator);
+    put32(0x4150504Cu);
+    put8(1);
+    put8(0);
+    put32(0);
+    put16((uint16_t)sizeof bits);
+    put_bytes(bits, sizeof bits);
+    return call(OP_ADD_ICON);
+}
+
+// A desktop database holds AFP_MAX_ICONS icons; a new key past it is MiscErr.
+// There was no bound: a guest looping FPAddIcon with fresh creators grew the
+// table and the log until the host ran out.  Replacing an icon still works.
+TEST(the_icon_store_is_bounded) {
+    fixture_up("iconcap");
+    uint16_t dt = open_dt();
+    for (uint32_t i = 0; i < AFP_MAX_ICONS; i++)
+        ASSERT_EQ_INT((int)ERR_OK, (int)add_icon(dt, 0x10000000u + i, 1));
+    ASSERT_EQ_INT((int)ERR_MISC, (int)add_icon(dt, 0x20000000u, 1));
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_icon(dt, 0x10000000u, 2)); // a replacement, not a new key
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3080,6 +3112,7 @@ int main(void) {
     RUN(closing_a_volume_keeps_the_sessions_listings_on_others);
     RUN(get_user_info_never_writes_past_the_reply_buffer);
     RUN(a_fork_never_grows_past_the_volume_ceiling);
+    RUN(the_icon_store_is_bounded);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

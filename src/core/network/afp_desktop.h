@@ -33,6 +33,11 @@
 // Largest icon AFP defines is kLarge8BitIcon at 1 KB (Files.p icon types).
 #define AFP_ICON_MAX_BYTES 1024u
 
+// Icons one volume's desktop database holds, about 4 MB at most.  A new
+// (creator, type, icon type) past it is refused: the key space is 72 bits,
+// and a guest looping FPAddIcon grew the store without bound (F-18).
+#define AFP_MAX_ICONS 4096u
+
 typedef struct afp_desktop afp_desktop_t;
 
 // One icon record as handed back by a lookup (borrowed; valid until the next
@@ -61,8 +66,9 @@ void afp_desktop_close(afp_desktop_t *dt);
 
 // --- icons -----------------------------------------------------------------
 
-// Insert or replace the icon for (creator, type, icon_type).  Returns 0, or
-// -EINVAL when the bitmap exceeds AFP_ICON_MAX_BYTES.
+// Insert or replace the icon for (creator, type, icon_type).  Returns 0,
+// -EINVAL when the bitmap exceeds AFP_ICON_MAX_BYTES, or -ENOSPC for a new key
+// when the store already holds AFP_MAX_ICONS.
 int afp_desktop_put_icon(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, uint8_t icon_type, uint32_t tag,
                          const uint8_t *bitmap, uint16_t size);
 
