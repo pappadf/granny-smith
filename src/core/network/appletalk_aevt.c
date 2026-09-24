@@ -611,14 +611,8 @@ static struct object *g_aevt_events_object;
 static struct object *g_aevt_inbox_object;
 static struct object *g_aevt_stats_object;
 
-typedef struct {
-    int slot;
-} aevt_slot_data_t;
-
-static aevt_slot_data_t g_aevt_event_data[AEVT_MAX_EVENTS];
-static struct object *g_aevt_event_objs[AEVT_MAX_EVENTS];
-static aevt_slot_data_t g_aevt_inbox_data[AEVT_MAX_INBOX];
-static struct object *g_aevt_inbox_objs[AEVT_MAX_INBOX];
+OBJECT_POOL(g_aevt_event_pool, AEVT_MAX_EVENTS);
+OBJECT_POOL(g_aevt_inbox_pool, AEVT_MAX_INBOX);
 
 static const class_desc_t aevt_class;
 static const class_desc_t aevt_events_class;
@@ -628,8 +622,7 @@ static const class_desc_t aevt_inbox_entry_class;
 static const class_desc_t aevt_stats_class;
 
 static int aevt_obj_slot(struct object *self) {
-    const aevt_slot_data_t *d = (const aevt_slot_data_t *)object_data(self);
-    return d ? d->slot : -1;
+    return object_pool_slot(self);
 }
 
 static aevt_event_t *aevt_obj_event(struct object *self) {
@@ -774,14 +767,14 @@ static struct object *aevt_events_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_event_count || !g_events[index].in_use)
         return NULL;
-    return g_aevt_event_objs[index];
+    return object_pool_at(&g_aevt_event_pool, index);
 }
 // Name lookup resolves the `tag:` given at send time (§8).
 static struct object *aevt_events_lookup(struct object *self, const char *name) {
     (void)self;
     for (int i = 0; i < g_event_count; i++)
         if (g_events[i].in_use && g_events[i].tag[0] && !strcmp(g_events[i].tag, name))
-            return g_aevt_event_objs[i];
+            return object_pool_at(&g_aevt_event_pool, i);
     return NULL;
 }
 
@@ -888,7 +881,7 @@ static struct object *aevt_inbox_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_inbox_count || !g_inbox[index].in_use)
         return NULL;
-    return g_aevt_inbox_objs[index];
+    return object_pool_at(&g_aevt_inbox_pool, index);
 }
 
 static value_t aevt_inbox_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -1000,8 +993,8 @@ static value_t aevt_attr_set_auto_reply(struct object *self, const member_t *m, 
 // Shared tail of send and send_raw: register the event and start it.
 static value_t aevt_finish_send(aevt_event_t *ev) {
     aevt_begin(ev);
-    if (ev->slot < AEVT_MAX_EVENTS && g_aevt_event_objs[ev->slot])
-        return val_obj(g_aevt_event_objs[ev->slot]);
+    if (ev->slot < AEVT_MAX_EVENTS && object_pool_at(&g_aevt_event_pool, ev->slot))
+        return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
     return val_none();
 }
 
@@ -1104,7 +1097,7 @@ static value_t aevt_method_send_raw(struct object *self, const member_t *m, int 
     ppc_session_t *s = aevt_session_for(ev->target, err, sizeof(err));
     if (!s) {
         aevt_fail(ev, err);
-        return val_obj(g_aevt_event_objs[ev->slot]);
+        return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
     }
     ev->session = s;
     if (atalk_ppc_session_state(s) == PPC_SESSION_OPEN) {
@@ -1119,7 +1112,7 @@ static value_t aevt_method_send_raw(struct object *self, const member_t *m, int 
     } else {
         aevt_fail(ev, "no session to that port is open yet; browse and retry");
     }
-    return val_obj(g_aevt_event_objs[ev->slot]);
+    return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
 }
 
 // Interior optional slots need defaults, or the named-argument binder's
@@ -1224,27 +1217,13 @@ void atalk_aevt_install_objects(struct object *parent) {
         object_attach(g_aevt_object, g_aevt_stats_object);
     }
 
-    for (int i = 0; i < AEVT_MAX_EVENTS; i++) {
-        g_aevt_event_data[i].slot = i;
-        g_aevt_event_objs[i] = object_new(&aevt_event_class, &g_aevt_event_data[i], NULL);
-    }
-    for (int i = 0; i < AEVT_MAX_INBOX; i++) {
-        g_aevt_inbox_data[i].slot = i;
-        g_aevt_inbox_objs[i] = object_new(&aevt_inbox_entry_class, &g_aevt_inbox_data[i], NULL);
-    }
+    object_pool_create(&g_aevt_event_pool, &aevt_event_class);
+    object_pool_create(&g_aevt_inbox_pool, &aevt_inbox_entry_class);
 }
 
 void atalk_aevt_remove_objects(void) {
-    for (int i = 0; i < AEVT_MAX_EVENTS; i++) {
-        if (g_aevt_event_objs[i])
-            object_delete(g_aevt_event_objs[i]);
-        g_aevt_event_objs[i] = NULL;
-    }
-    for (int i = 0; i < AEVT_MAX_INBOX; i++) {
-        if (g_aevt_inbox_objs[i])
-            object_delete(g_aevt_inbox_objs[i]);
-        g_aevt_inbox_objs[i] = NULL;
-    }
+    object_pool_delete(&g_aevt_event_pool);
+    object_pool_delete(&g_aevt_inbox_pool);
     struct object **nodes[] = {&g_aevt_events_object, &g_aevt_inbox_object, &g_aevt_stats_object, &g_aevt_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

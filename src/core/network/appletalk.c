@@ -120,23 +120,13 @@ static const class_desc_t atalk_session_class;
 static const class_desc_t atalk_printer_class;
 static const class_desc_t atalk_printer_stats_class;
 
-// Per-entry instance data for the indexed collections. Each collection's
-// get() consults the owning subsystem's `in_use` predicate and returns the
-// corresponding pre-allocated object, so empty slots are holes.
-typedef struct {
-    int slot;
-} atalk_slot_data_t;
-
 #define ATALK_MAX_VOLUME_OBJS  8
 #define ATALK_MAX_NBP_OBJS     16
 #define ATALK_MAX_SESSION_OBJS 4
 
-static atalk_slot_data_t g_atalk_volume_data[ATALK_MAX_VOLUME_OBJS];
-static struct object *g_atalk_volume_objs[ATALK_MAX_VOLUME_OBJS];
-static atalk_slot_data_t g_atalk_nbp_data[ATALK_MAX_NBP_OBJS];
-static struct object *g_atalk_nbp_objs[ATALK_MAX_NBP_OBJS];
-static atalk_slot_data_t g_atalk_session_data[ATALK_MAX_SESSION_OBJS];
-static struct object *g_atalk_session_objs[ATALK_MAX_SESSION_OBJS];
+OBJECT_POOL(g_atalk_volume_pool, ATALK_MAX_VOLUME_OBJS);
+OBJECT_POOL(g_atalk_nbp_pool, ATALK_MAX_NBP_OBJS);
+OBJECT_POOL(g_atalk_session_pool, ATALK_MAX_SESSION_OBJS);
 
 // Singleton object-tree nodes — lifetime tied to appletalk_init/delete.
 static struct object *g_atalk_object;
@@ -939,18 +929,9 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     // Collection entry objects are pre-allocated once and handed out by the
     // get()/next() callbacks; they are never attached, so the cascade delete
     // does not free them (this module does, in appletalk_delete).
-    for (int i = 0; i < ATALK_MAX_VOLUME_OBJS; i++) {
-        g_atalk_volume_data[i].slot = i;
-        g_atalk_volume_objs[i] = object_new(&atalk_volume_class, &g_atalk_volume_data[i], NULL);
-    }
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS; i++) {
-        g_atalk_nbp_data[i].slot = i;
-        g_atalk_nbp_objs[i] = object_new(&atalk_nbp_entry_class, &g_atalk_nbp_data[i], NULL);
-    }
-    for (int i = 0; i < ATALK_MAX_SESSION_OBJS; i++) {
-        g_atalk_session_data[i].slot = i;
-        g_atalk_session_objs[i] = object_new(&atalk_session_class, &g_atalk_session_data[i], NULL);
-    }
+    object_pool_create(&g_atalk_volume_pool, &atalk_volume_class);
+    object_pool_create(&g_atalk_nbp_pool, &atalk_nbp_entry_class);
+    object_pool_create(&g_atalk_session_pool, &atalk_session_class);
 }
 
 // ============================================================================
@@ -1013,21 +994,9 @@ static void appletalk_teardown(void) {
     atalk_timers_forget();
 
     // Collection entry objects are never attached, so free them by hand.
-    for (int i = 0; i < ATALK_MAX_VOLUME_OBJS; i++) {
-        if (g_atalk_volume_objs[i])
-            object_delete(g_atalk_volume_objs[i]);
-        g_atalk_volume_objs[i] = NULL;
-    }
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS; i++) {
-        if (g_atalk_nbp_objs[i])
-            object_delete(g_atalk_nbp_objs[i]);
-        g_atalk_nbp_objs[i] = NULL;
-    }
-    for (int i = 0; i < ATALK_MAX_SESSION_OBJS; i++) {
-        if (g_atalk_session_objs[i])
-            object_delete(g_atalk_session_objs[i]);
-        g_atalk_session_objs[i] = NULL;
-    }
+    object_pool_delete(&g_atalk_volume_pool);
+    object_pool_delete(&g_atalk_nbp_pool);
+    object_pool_delete(&g_atalk_session_pool);
 
     struct object **attached[] = {&g_atalk_volumes_object,       &g_atalk_sessions_object, &g_atalk_afp_stats_object,
                                   &g_atalk_afp_object,           &g_atalk_stats_object,    &g_atalk_nbp_object,
@@ -2723,8 +2692,7 @@ static const class_desc_t atalk_stats_class = {
 // --- appletalk.nbp ---------------------------------------------------------
 
 static int atalk_slot_of(struct object *self) {
-    atalk_slot_data_t *d = (atalk_slot_data_t *)object_data(self);
-    return d ? d->slot : -1;
+    return object_pool_slot(self);
 }
 
 // The NBP entry accessors re-read the registry each time: entries can be
@@ -2793,7 +2761,7 @@ static struct object *atalk_nbp_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_MAX_NBP_OBJS || !atalk_nbp_entry_in_use(index))
         return NULL;
-    return g_atalk_nbp_objs[index];
+    return object_pool_at(&g_atalk_nbp_pool, index);
 }
 // Named lookup so `appletalk.nbp["Shared Folders"]` resolves.
 static struct object *atalk_nbp_entry_lookup(struct object *self, const char *name) {
@@ -2801,7 +2769,7 @@ static struct object *atalk_nbp_entry_lookup(struct object *self, const char *na
     for (int i = 0; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++) {
         atalk_nbp_info_t info;
         if (atalk_nbp_entry_info(i, &info) && strcmp(info.object, name) == 0)
-            return g_atalk_nbp_objs[i];
+            return object_pool_at(&g_atalk_nbp_pool, i);
     }
     return NULL;
 }
@@ -2927,7 +2895,7 @@ static struct object *atalk_volumes_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_MAX_VOLUME_OBJS || !atalk_afp_volume_in_use(index))
         return NULL;
-    return g_atalk_volume_objs[index];
+    return object_pool_at(&g_atalk_volume_pool, index);
 }
 // Name lookup, so `appletalk.afp.volumes["Shared"].cnid_count` reads naturally.
 static struct object *atalk_volumes_lookup(struct object *self, const char *name) {
@@ -2935,7 +2903,7 @@ static struct object *atalk_volumes_lookup(struct object *self, const char *name
     int slot = atalk_afp_volume_find(name);
     if (slot < 0 || slot >= ATALK_MAX_VOLUME_OBJS)
         return NULL;
-    return g_atalk_volume_objs[slot];
+    return object_pool_at(&g_atalk_volume_pool, slot);
 }
 
 // Constructive methods return the object they made, so a script can chain
@@ -2948,9 +2916,9 @@ static value_t atalk_volumes_method_add(struct object *self, const member_t *m, 
     int slot = atalk_afp_volume_add(argv[0].s, argv[1].s, err, sizeof(err));
     if (slot < 0)
         return atalk_err("cannot add the volume", err);
-    if (slot >= ATALK_MAX_VOLUME_OBJS || !g_atalk_volume_objs[slot])
+    if (slot >= ATALK_MAX_VOLUME_OBJS || !object_pool_at(&g_atalk_volume_pool, slot))
         return val_none();
-    return val_obj(g_atalk_volume_objs[slot]);
+    return val_obj(object_pool_at(&g_atalk_volume_pool, slot));
 }
 
 static value_t atalk_volumes_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -3072,7 +3040,7 @@ static struct object *atalk_sessions_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_MAX_SESSION_OBJS || !atalk_asp_session_in_use(index))
         return NULL;
-    return g_atalk_session_objs[index];
+    return object_pool_at(&g_atalk_session_pool, index);
 }
 
 static const member_t atalk_sessions_collection_members[] = {

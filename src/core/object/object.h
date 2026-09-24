@@ -283,6 +283,30 @@ const char *object_name(const struct object *o);
 void *object_data(struct object *o);
 struct object *object_parent(struct object *o);
 
+// === Entry pools =============================================================
+//
+// A collection whose entries are made once, one per slot of the table they
+// stand for: entry i's data is its slot number, so its callbacks find their
+// record with object_pool_slot(self), and the collection's get() hands out
+// object_pool_at(pool, i).  OBJECT_POOL declares the storage; the network
+// modules each carried a data type, two arrays and a create and a delete loop
+// per collection -- eight of them.
+typedef struct {
+    struct object **objs;
+    int *slots;
+    int n;
+} object_pool_t;
+
+#define OBJECT_POOL(name, count)                                                                                       \
+    static struct object *name##_objs[count];                                                                          \
+    static int name##_slots[count];                                                                                    \
+    static object_pool_t name = {name##_objs, name##_slots, (count)}
+
+void object_pool_create(object_pool_t *pool, const class_desc_t *cls);
+void object_pool_delete(object_pool_t *pool);
+struct object *object_pool_at(const object_pool_t *pool, int slot); // NULL out of range or before create
+int object_pool_slot(struct object *entry); // -1 for no entry
+
 // === Counter blocks ==========================================================
 //
 // A stats object publishes a struct of uint64_t counters, one read-only

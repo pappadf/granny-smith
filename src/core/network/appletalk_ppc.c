@@ -993,14 +993,8 @@ static struct object *g_ppc_ports_object;
 static struct object *g_ppc_sessions_object;
 static struct object *g_ppc_stats_object;
 
-typedef struct {
-    int slot;
-} ppc_slot_data_t;
-
-static ppc_slot_data_t g_ppc_port_data[PPC_MAX_PORTS];
-static struct object *g_ppc_port_objs[PPC_MAX_PORTS];
-static ppc_slot_data_t g_ppc_session_data[PPC_MAX_SESSIONS];
-static struct object *g_ppc_session_objs[PPC_MAX_SESSIONS];
+OBJECT_POOL(g_ppc_port_pool, PPC_MAX_PORTS);
+OBJECT_POOL(g_ppc_session_pool, PPC_MAX_SESSIONS);
 
 static const class_desc_t ppc_class;
 static const class_desc_t ppc_ports_class;
@@ -1010,8 +1004,7 @@ static const class_desc_t ppc_session_class;
 static const class_desc_t ppc_stats_class;
 
 static int ppc_obj_slot(struct object *self) {
-    const ppc_slot_data_t *d = (const ppc_slot_data_t *)object_data(self);
-    return d ? d->slot : -1;
+    return object_pool_slot(self);
 }
 
 // --- appletalk.ppc.ports[i] --------------------------------------------------
@@ -1092,12 +1085,12 @@ static struct object *ppc_ports_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= atalk_ppc_port_count())
         return NULL;
-    return g_ppc_port_objs[index];
+    return object_pool_at(&g_ppc_port_pool, index);
 }
 static struct object *ppc_ports_lookup(struct object *self, const char *name) {
     (void)self;
     int idx = atalk_ppc_port_find(name);
-    return (idx >= 0) ? g_ppc_port_objs[idx] : NULL;
+    return (idx >= 0) ? object_pool_at(&g_ppc_port_pool, idx) : NULL;
 }
 
 static const member_t ppc_ports_members[] = {
@@ -1202,7 +1195,7 @@ static struct object *ppc_sessions_get(struct object *self, int index) {
     (void)self;
     if (!atalk_ppc_session_at(index))
         return NULL;
-    return g_ppc_session_objs[index];
+    return object_pool_at(&g_ppc_session_pool, index);
 }
 // Name lookup by the port at the far end, so `sessions["Finder"].state` reads
 // naturally in a script.
@@ -1211,7 +1204,7 @@ static struct object *ppc_sessions_lookup(struct object *self, const char *name)
     for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
         const ppc_session_t *s = atalk_ppc_session_at(i);
         if (s && !strcmp(s->port_name, name))
-            return g_ppc_session_objs[i];
+            return object_pool_at(&g_ppc_session_pool, i);
     }
     return NULL;
 }
@@ -1309,27 +1302,13 @@ void atalk_ppc_install_objects(struct object *parent) {
         object_attach(g_ppc_object, g_ppc_stats_object);
     }
 
-    for (int i = 0; i < PPC_MAX_PORTS; i++) {
-        g_ppc_port_data[i].slot = i;
-        g_ppc_port_objs[i] = object_new(&ppc_port_class, &g_ppc_port_data[i], NULL);
-    }
-    for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        g_ppc_session_data[i].slot = i;
-        g_ppc_session_objs[i] = object_new(&ppc_session_class, &g_ppc_session_data[i], NULL);
-    }
+    object_pool_create(&g_ppc_port_pool, &ppc_port_class);
+    object_pool_create(&g_ppc_session_pool, &ppc_session_class);
 }
 
 void atalk_ppc_remove_objects(void) {
-    for (int i = 0; i < PPC_MAX_PORTS; i++) {
-        if (g_ppc_port_objs[i])
-            object_delete(g_ppc_port_objs[i]);
-        g_ppc_port_objs[i] = NULL;
-    }
-    for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        if (g_ppc_session_objs[i])
-            object_delete(g_ppc_session_objs[i]);
-        g_ppc_session_objs[i] = NULL;
-    }
+    object_pool_delete(&g_ppc_port_pool);
+    object_pool_delete(&g_ppc_session_pool);
     struct object **nodes[] = {&g_ppc_ports_object, &g_ppc_sessions_object, &g_ppc_stats_object, &g_ppc_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

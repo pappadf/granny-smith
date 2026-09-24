@@ -508,7 +508,26 @@ TEST(test_slots_walk_and_count) {
     value_free(&n);
 }
 
+// An entry pool: one entry per slot, each knowing its slot; at() is bounded;
+// delete empties it.
+OBJECT_POOL(g_test_pool, 3);
+
+TEST(test_object_pool_entries_know_their_slots) {
+    object_pool_create(&g_test_pool, &sparse_item_class);
+    for (int i = 0; i < 3; i++) {
+        struct object *e = object_pool_at(&g_test_pool, i);
+        ASSERT_TRUE(e != NULL);
+        ASSERT_EQ_INT(i, object_pool_slot(e));
+    }
+    ASSERT_TRUE(object_pool_at(&g_test_pool, 3) == NULL);
+    ASSERT_TRUE(object_pool_at(&g_test_pool, -1) == NULL);
+    ASSERT_EQ_INT(-1, object_pool_slot(NULL));
+    object_pool_delete(&g_test_pool);
+    ASSERT_TRUE(object_pool_at(&g_test_pool, 0) == NULL);
+}
+
 int main(void) {
+    RUN(test_object_pool_entries_know_their_slots);
     RUN(test_slots_walk_and_count);
     RUN(test_counter_fields_read_their_block);
     RUN(test_node_call_succeeds);

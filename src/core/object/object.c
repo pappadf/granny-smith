@@ -304,6 +304,30 @@ const char *object_name(const struct object *o) {
 void *object_data(struct object *o) {
     return o ? o->instance_data : NULL;
 }
+void object_pool_create(object_pool_t *pool, const class_desc_t *cls) {
+    for (int i = 0; i < pool->n; i++) {
+        pool->slots[i] = i;
+        pool->objs[i] = object_new(cls, &pool->slots[i], NULL);
+    }
+}
+
+void object_pool_delete(object_pool_t *pool) {
+    for (int i = 0; i < pool->n; i++) {
+        if (pool->objs[i])
+            object_delete(pool->objs[i]);
+        pool->objs[i] = NULL;
+    }
+}
+
+struct object *object_pool_at(const object_pool_t *pool, int slot) {
+    return (slot >= 0 && slot < pool->n) ? pool->objs[slot] : NULL;
+}
+
+int object_pool_slot(struct object *entry) {
+    const int *slot = (const int *)object_data(entry);
+    return slot ? *slot : -1;
+}
+
 value_t obj_u64_at(const void *block, const member_t *m) {
     if (!block)
         return val_uint(8, 0);
