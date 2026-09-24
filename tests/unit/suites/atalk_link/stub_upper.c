@@ -86,7 +86,7 @@ unsigned atalk_afp_volume_cnid_count(int s) {
 void atalk_printer_register(void) {}
 void atalk_printer_shutdown(void) {}
 void atalk_printer_link_down(void) {}
-const char *atalk_printer_status_text(void) {
+const char *atalk_printer_get_status(void) {
     return "";
 }
 bool atalk_printer_has_interpreter(void) {
@@ -253,10 +253,10 @@ const char *atalk_afp_volume_path(int s) {
 unsigned atalk_afp_volume_vol_id(int s) {
     return g_stub_vols[s].vol_id;
 }
-bool atalk_printer_is_enabled(void) {
+bool atalk_printer_get_enabled(void) {
     return g_printer_enabled;
 }
-const char *atalk_printer_object_name(void) {
+const char *atalk_printer_get_name(void) {
     return g_printer_name;
 }
 int atalk_printer_set_enabled(bool en, char *e, size_t el) {
@@ -269,9 +269,9 @@ int atalk_printer_set_name(const char *n, char *e, size_t el) {
     snprintf(g_printer_name, sizeof(g_printer_name), "%s", n);
     return 0;
 }
-bool atalk_printer_capture_get(void) {
+bool atalk_printer_get_capture(void) {
     return g_printer_capture;
 }
-void atalk_printer_capture_set(bool en) {
+void atalk_printer_set_capture(bool en) {
     g_printer_capture = en;
 }

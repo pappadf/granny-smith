@@ -92,7 +92,4 @@ int afp_desktop_remove_appl(afp_desktop_t *dt, uint32_t creator, uint32_t cnid);
 // The `index`-th (1-based) mapping for `creator`.  NULL past the end.
 const afp_appl_t *afp_desktop_appl_at(afp_desktop_t *dt, uint32_t creator, uint16_t index);
 
-// Drop mappings whose CNID no longer resolves.  `alive` is called per CNID.
-void afp_desktop_prune_appls(afp_desktop_t *dt, bool (*alive)(uint32_t cnid, void *ud), void *ud);
-
 #endif // GS_NETWORK_AFP_DESKTOP_H

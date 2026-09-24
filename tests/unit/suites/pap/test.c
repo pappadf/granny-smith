@@ -256,7 +256,7 @@ TEST(a_job_too_large_is_aborted) {
     answer(parts, 2, false);
     ASSERT_EQ_INT(0, g_captures);
     ASSERT_EQ_INT(1, g_close_requests); // the workstation is told the job is over
-    ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
+    ASSERT_TRUE(strstr(atalk_printer_get_status(), "idle") != NULL);
     ASSERT_EQ_INT(1, (int)(atalk_printer_get_stats()->aborts - aborts));
 }
 
@@ -269,10 +269,10 @@ TEST(a_foreign_closeconn_does_not_end_the_job) {
     request(99, 77, PAP_FUNC_CLOSE, NULL, 0); // another id, another node
     request(99, 5, PAP_FUNC_CLOSE, NULL, 0); // the session's id, another node
     ASSERT_EQ_INT(2, g_close_replies);
-    ASSERT_TRUE(strstr(atalk_printer_status_text(), "processing") != NULL);
+    ASSERT_TRUE(strstr(atalk_printer_get_status(), "processing") != NULL);
     request(10, 5, PAP_FUNC_CLOSE, NULL, 0); // the session's own
     ASSERT_EQ_INT(3, g_close_replies);
-    ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
+    ASSERT_TRUE(strstr(atalk_printer_get_status(), "idle") != NULL);
 }
 
 // A workstation that goes quiet loses its connection after 120 s of guest
@@ -283,10 +283,10 @@ TEST(an_idle_connection_times_out_on_its_own) {
     setup();
     open_conn(7);
     advance(119ull * 1000000000ull);
-    ASSERT_TRUE(strstr(atalk_printer_status_text(), "processing") != NULL);
+    ASSERT_TRUE(strstr(atalk_printer_get_status(), "processing") != NULL);
     ASSERT_EQ_INT(0, g_close_requests);
     advance(2ull * 1000000000ull);
-    ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
+    ASSERT_TRUE(strstr(atalk_printer_get_status(), "idle") != NULL);
     ASSERT_EQ_INT(1, g_close_requests); // the workstation is told
 }
 
@@ -300,10 +300,10 @@ TEST(a_printer_rename_that_cannot_be_published_changes_nothing) {
     ASSERT_EQ_INT(0, atalk_printer_set_name("Before", err, sizeof err));
     ASSERT_EQ_INT(0, strcmp(g_nbp_name, "Before"));
     ASSERT_TRUE(atalk_printer_set_name("Taken", err, sizeof err) != 0);
-    ASSERT_EQ_INT(0, strcmp(atalk_printer_object_name(), "Before"));
+    ASSERT_EQ_INT(0, strcmp(atalk_printer_get_name(), "Before"));
     ASSERT_EQ_INT(0, strcmp(g_nbp_name, "Before"));
     ASSERT_TRUE(atalk_printer_enable("A name of forty characters, past NBP's 32") != 0);
-    ASSERT_EQ_INT(0, strcmp(atalk_printer_object_name(), "Before"));
+    ASSERT_EQ_INT(0, strcmp(atalk_printer_get_name(), "Before"));
 }
 
 // A query's "= flush" marker split across two fragments is still found, and

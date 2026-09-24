@@ -89,7 +89,7 @@ struct asp_session {
     asp_write_t *write; // an SPWrite waiting for its WriteContinue
 };
 
-#define MAX_ASP_SESS 4
+#define MAX_ASP_SESS ATALK_ASP_MAX_SESSIONS
 static asp_session_t g_sessions[MAX_ASP_SESS];
 static uint32_t g_next_sess_ref = 0x0021; // atalk_id_alloc cursors
 static uint32_t g_next_sess_id = 1;

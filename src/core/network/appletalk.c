@@ -120,13 +120,9 @@ static const class_desc_t atalk_session_class;
 static const class_desc_t atalk_printer_class;
 static const class_desc_t atalk_printer_stats_class;
 
-#define ATALK_MAX_VOLUME_OBJS  8
-#define ATALK_MAX_NBP_OBJS     16
-#define ATALK_MAX_SESSION_OBJS 4
-
-OBJECT_POOL(g_atalk_volume_pool, ATALK_MAX_VOLUME_OBJS);
-OBJECT_POOL(g_atalk_nbp_pool, ATALK_MAX_NBP_OBJS);
-OBJECT_POOL(g_atalk_session_pool, ATALK_MAX_SESSION_OBJS);
+OBJECT_POOL(g_atalk_volume_pool, ATALK_AFP_MAX_VOLUMES);
+OBJECT_POOL(g_atalk_nbp_pool, ATALK_NBP_MAX_ENTRIES);
+OBJECT_POOL(g_atalk_session_pool, ATALK_ASP_MAX_SESSIONS);
 
 // Singleton object-tree nodes — lifetime tied to appletalk_init/delete.
 static struct object *g_atalk_object;
@@ -705,9 +701,9 @@ static void atalk_config_capture(atalk_config_t *c) {
     cfg_copy(c->afp_name, sizeof(c->afp_name), atalk_afp_get_name());
     c->afp_enabled = atalk_afp_get_enabled();
     cfg_copy(c->afp_message, sizeof(c->afp_message), atalk_afp_get_message());
-    c->printer_enabled = atalk_printer_is_enabled();
-    cfg_copy(c->printer_name, sizeof(c->printer_name), atalk_printer_object_name());
-    c->printer_capture = atalk_printer_capture_get();
+    c->printer_enabled = atalk_printer_get_enabled();
+    cfg_copy(c->printer_name, sizeof(c->printer_name), atalk_printer_get_name());
+    c->printer_capture = atalk_printer_get_capture();
     atalk_aevt_get_config(&c->aevt);
     for (int slot = 0; slot < atalk_afp_volume_max() && c->n_volumes < ATALK_CONFIG_MAX_VOLUMES; slot++) {
         if (!atalk_afp_volume_in_use(slot))
@@ -735,7 +731,7 @@ static void atalk_config_apply(const atalk_config_t *c) {
         LOG(1, "atalk: printer name not restored: %s", err);
     if (atalk_printer_set_enabled(c->printer_enabled, err, sizeof(err)) != 0)
         LOG(1, "atalk: printer state not restored: %s", err);
-    atalk_printer_capture_set(c->printer_capture);
+    atalk_printer_set_capture(c->printer_capture);
     atalk_aevt_set_config(&c->aevt);
     for (int i = 0; i < c->n_volumes; i++) {
         if (atalk_afp_volume_restore(c->volumes[i].name, c->volumes[i].path, c->volumes[i].vol_id, err, sizeof(err)) <
@@ -1415,7 +1411,7 @@ static void log_hex(log_category_t *cat, int level, const char *tag, const uint8
 #define NBP_OBJECT_MAX            32
 #define NBP_TYPE_MAX              32
 #define NBP_ZONE_MAX              32
-#define NBP_MAX_ENTRIES           16
+#define NBP_MAX_ENTRIES           ATALK_NBP_MAX_ENTRIES
 #define NBP_MAX_TUPLES_PER_PACKET 8
 #define NBP_APPROX_CHAR           0xC5 // MacRoman "≈" wildcard per Inside AppleTalk
 
@@ -2779,14 +2775,14 @@ static const class_desc_t atalk_nbp_entry_class = {
 
 static struct object *atalk_nbp_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= ATALK_MAX_NBP_OBJS || !atalk_nbp_entry_in_use(index))
+    if (index < 0 || index >= ATALK_NBP_MAX_ENTRIES || !atalk_nbp_entry_in_use(index))
         return NULL;
     return object_pool_at(&g_atalk_nbp_pool, index);
 }
 // Named lookup so `appletalk.nbp["Shared Folders"]` resolves.
 static struct object *atalk_nbp_entry_lookup(struct object *self, const char *name) {
     (void)self;
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++) {
+    for (int i = 0; i < ATALK_NBP_MAX_ENTRIES && i < atalk_nbp_entry_max(); i++) {
         atalk_nbp_info_t info;
         if (atalk_nbp_entry_info(i, &info) && strcmp(info.object, name) == 0)
             return object_pool_at(&g_atalk_nbp_pool, i);
@@ -2801,7 +2797,7 @@ static const member_t atalk_nbp_collection_members[] = {
      .child = {.cls = &atalk_nbp_entry_class,
                .indexed = true,
                .get = atalk_nbp_get,
-               .slots = ATALK_MAX_NBP_OBJS,
+               .slots = ATALK_NBP_MAX_ENTRIES,
                .lookup = atalk_nbp_entry_lookup}},
 };
 
@@ -2913,7 +2909,7 @@ static const class_desc_t atalk_volume_class = {
 
 static struct object *atalk_volumes_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= ATALK_MAX_VOLUME_OBJS || !atalk_afp_volume_in_use(index))
+    if (index < 0 || index >= ATALK_AFP_MAX_VOLUMES || !atalk_afp_volume_in_use(index))
         return NULL;
     return object_pool_at(&g_atalk_volume_pool, index);
 }
@@ -2921,7 +2917,7 @@ static struct object *atalk_volumes_get(struct object *self, int index) {
 static struct object *atalk_volumes_lookup(struct object *self, const char *name) {
     (void)self;
     int slot = atalk_afp_volume_find(name);
-    if (slot < 0 || slot >= ATALK_MAX_VOLUME_OBJS)
+    if (slot < 0 || slot >= ATALK_AFP_MAX_VOLUMES)
         return NULL;
     return object_pool_at(&g_atalk_volume_pool, slot);
 }
@@ -2936,7 +2932,7 @@ static value_t atalk_volumes_method_add(struct object *self, const member_t *m, 
     int slot = atalk_afp_volume_add(argv[0].s, argv[1].s, err, sizeof(err));
     if (slot < 0)
         return atalk_err("cannot add the volume", err);
-    if (slot >= ATALK_MAX_VOLUME_OBJS || !object_pool_at(&g_atalk_volume_pool, slot))
+    if (slot >= ATALK_AFP_MAX_VOLUMES || !object_pool_at(&g_atalk_volume_pool, slot))
         return val_none();
     return val_obj(object_pool_at(&g_atalk_volume_pool, slot));
 }
@@ -2984,7 +2980,7 @@ static const member_t atalk_volumes_collection_members[] = {
      .child = {.cls = &atalk_volume_class,
                .indexed = true,
                .get = atalk_volumes_get,
-               .slots = ATALK_MAX_VOLUME_OBJS,
+               .slots = ATALK_AFP_MAX_VOLUMES,
                .lookup = atalk_volumes_lookup}},
 };
 
@@ -3058,7 +3054,7 @@ static const class_desc_t atalk_session_class = {
 
 static struct object *atalk_sessions_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= ATALK_MAX_SESSION_OBJS || !atalk_asp_session_in_use(index))
+    if (index < 0 || index >= ATALK_ASP_MAX_SESSIONS || !atalk_asp_session_in_use(index))
         return NULL;
     return object_pool_at(&g_atalk_session_pool, index);
 }
@@ -3069,7 +3065,7 @@ static const member_t atalk_sessions_collection_members[] = {
      .child = {.cls = &atalk_session_class,
                .indexed = true,
                .get = atalk_sessions_get,
-               .slots = ATALK_MAX_SESSION_OBJS,
+               .slots = ATALK_ASP_MAX_SESSIONS,
                .lookup = NULL}},
 };
 
@@ -3211,7 +3207,7 @@ static const class_desc_t atalk_afp_class = {
 static value_t atalk_printer_attr_enabled(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    return val_bool(atalk_printer_is_enabled());
+    return val_bool(atalk_printer_get_enabled());
 }
 static value_t atalk_printer_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
     (void)self;
@@ -3224,7 +3220,7 @@ static value_t atalk_printer_attr_set_enabled(struct object *self, const member_
 static value_t atalk_printer_attr_name(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    const char *n = atalk_printer_object_name();
+    const char *n = atalk_printer_get_name();
     return val_str(n ? n : "");
 }
 static value_t atalk_printer_attr_set_name(struct object *self, const member_t *m, value_t in) {
@@ -3241,7 +3237,7 @@ static value_t atalk_printer_attr_set_name(struct object *self, const member_t *
 static value_t atalk_printer_attr_status(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    return val_str(atalk_printer_status_text());
+    return val_str(atalk_printer_get_status());
 }
 static value_t atalk_printer_attr_interpreter(struct object *self, const member_t *m) {
     (void)self;
@@ -3251,12 +3247,12 @@ static value_t atalk_printer_attr_interpreter(struct object *self, const member_
 static value_t atalk_printer_attr_capture(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    return val_bool(atalk_printer_capture_get());
+    return val_bool(atalk_printer_get_capture());
 }
 static value_t atalk_printer_attr_set_capture(struct object *self, const member_t *m, value_t in) {
     (void)self;
     (void)m;
-    atalk_printer_capture_set(in.b);
+    atalk_printer_set_capture(in.b);
     return val_none();
 }
 static value_t atalk_printer_attr_documents(struct object *self, const member_t *m) {

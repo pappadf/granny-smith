@@ -40,14 +40,14 @@
 
 // Volume table size.  One entry per share; the object model exposes the live
 // ones as `appletalk.afp.volumes`.
-#define AFP_MAX_VOLUMES 8
+#define AFP_MAX_VOLUMES ATALK_AFP_MAX_VOLUMES
 
 // The least reply buffer the dispatcher accepts: one ATP response packet,
 // which ASP always offers.  Every fixed-size reply fits in it.
 #define AFP_MIN_REPLY 578
 
 // Upper bound on concurrent ASP sessions, mirroring the stack's own table.
-#define AFP_MAX_SESSIONS 4
+#define AFP_MAX_SESSIONS ATALK_ASP_MAX_SESSIONS
 
 // NBP entity strings for the AFP server.
 #define AFP_ENTITY_OBJECT "Shared Folders"

@@ -249,12 +249,12 @@ TEST(configuration_survives_a_checkpoint) {
     int slot_b = atalk_afp_volume_find("Share B");
     unsigned id_b = atalk_afp_volume_vol_id(slot_b);
     ASSERT_EQ_INT(0, atalk_afp_set_name("Renamed Server", err, sizeof err));
-    atalk_printer_capture_set(true);
+    atalk_printer_set_capture(true);
     link_checkpoint();
     link_delete(); // empties the volume table, as a machine teardown does
     ASSERT_EQ_INT(-1, atalk_afp_volume_find("Share B"));
     atalk_afp_set_name("Something Else", err, sizeof err);
-    atalk_printer_capture_set(false);
+    atalk_printer_set_capture(false);
 
     link_boot_from_checkpoint(false);
     slot_b = atalk_afp_volume_find("Share B");
@@ -262,9 +262,9 @@ TEST(configuration_survives_a_checkpoint) {
     ASSERT_EQ_INT((int)id_b, (int)atalk_afp_volume_vol_id(slot_b)); // the guest's cached id still names it
     ASSERT_TRUE(atalk_afp_volume_find("Share A") >= 0);
     ASSERT_TRUE(strcmp(atalk_afp_get_name(), "Renamed Server") == 0);
-    ASSERT_TRUE(atalk_printer_capture_get());
+    ASSERT_TRUE(atalk_printer_get_capture());
     link_delete();
-    atalk_printer_capture_set(false);
+    atalk_printer_set_capture(false);
 }
 
 // A checkpoint load that fails after the new machine's stack came up: the

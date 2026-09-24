@@ -31,7 +31,6 @@
 #include "log.h"
 #include "macroman.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>

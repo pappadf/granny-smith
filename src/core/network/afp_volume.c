@@ -24,7 +24,6 @@
 #include "log.h"
 #include "storage_util.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -323,10 +322,6 @@ unsigned atalk_afp_volume_cnid_count(int slot) {
 // ============================================================================
 
 const char *atalk_afp_get_name(void) {
-    return g_afp_server_object;
-}
-
-const char *atalk_server_object_name(void) {
     return g_afp_server_object;
 }
 

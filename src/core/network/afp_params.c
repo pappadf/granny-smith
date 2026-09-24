@@ -23,7 +23,6 @@
 #include "common.h"
 #include "log.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>

@@ -22,6 +22,15 @@
 typedef struct scc scc_t;
 typedef struct scheduler scheduler_t;
 
+// === Table sizes ==============================================================
+//
+// The stack's tables, and the object-model collections that mirror them slot
+// for slot, size themselves from these: each mirror had its own constant,
+// equal by hand (10-network K5).
+#define ATALK_NBP_MAX_ENTRIES  16 // NBP names this host registers
+#define ATALK_ASP_MAX_SESSIONS 4 // ASP sessions (and AFP's session table)
+#define ATALK_AFP_MAX_VOLUMES  8 // published AFP volumes
+
 // === Stack-level state (object model: `appletalk`) ==========================
 
 // Attach/detach the stack from the SCC link.  Enabled by default; disabling
@@ -152,13 +161,13 @@ void atalk_asp_close_all_sessions(void);
 
 // === Printer (object model: `appletalk.printer`) ============================
 
-bool atalk_printer_is_enabled(void);
-const char *atalk_printer_object_name(void);
+bool atalk_printer_get_enabled(void);
+const char *atalk_printer_get_name(void);
 int atalk_printer_set_enabled(bool enabled, char *err, size_t err_len);
 int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 
 // The PAP status string as the workstation reads it.
-const char *atalk_printer_status_text(void);
+const char *atalk_printer_get_status(void);
 
 // True when the build links the PostScript interpreter (PLATEN=1); then a
 // job produces a PDF through the platform sink and the capture is optional.
@@ -166,8 +175,8 @@ bool atalk_printer_has_interpreter(void);
 
 // Whether each job's PostScript is also handed to the platform, as it was
 // sent (laserwriter_sink_capture): a .ps beside the PDF, or a download.
-bool atalk_printer_capture_get(void);
-void atalk_printer_capture_set(bool enabled);
+bool atalk_printer_get_capture(void);
+void atalk_printer_set_capture(bool enabled);
 
 // Printer counters (object model: `appletalk.printer.stats`) -- what a
 // script needs to see that a job happened, how big it was and what became of

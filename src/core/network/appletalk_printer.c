@@ -1600,14 +1600,14 @@ int atalk_printer_disable(void) {
 // `appletalk.printer` exposes `enabled` and `name` as writable attributes
 // (object-model proposal §2): state is an attribute, methods are verbs.
 
-bool atalk_printer_is_enabled(void) {
+bool atalk_printer_get_enabled(void) {
     return g_printer.enabled;
 }
 
 // The advertised NBP name.  Unlike the enablement flag, the name survives a
 // disable so the tree can show what will be published when it is turned back
 // on — and so setting `name` while disabled is not silently lost.
-const char *atalk_printer_object_name(void) {
+const char *atalk_printer_get_name(void) {
     pap_printer_init();
     return g_printer.object_name;
 }
@@ -1648,7 +1648,7 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
     return 0;
 }
 
-const char *atalk_printer_status_text(void) {
+const char *atalk_printer_get_status(void) {
     pap_printer_init();
     return g_printer.status_text;
 }
@@ -1661,13 +1661,13 @@ const atalk_printer_stats_t *atalk_printer_get_stats(void) {
     return &g_pap_stats;
 }
 
-bool atalk_printer_capture_get(void) {
+bool atalk_printer_get_capture(void) {
     pap_printer_init();
     return g_printer.capture;
 }
 
 // Takes effect at the next data: a job already captured in part keeps its part.
-void atalk_printer_capture_set(bool enabled) {
+void atalk_printer_set_capture(bool enabled) {
     pap_printer_init();
     g_printer.capture = enabled;
 }

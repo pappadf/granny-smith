@@ -73,8 +73,6 @@ struct afp_catalog {
     afp_applog_t *log; // <root>/.gs-afp/catalog.gsc
 };
 
-// --- big-endian helpers ----------------------------------------------------
-
 // --- index -----------------------------------------------------------------
 
 // Rebuild the cnid -> slot index at `cap` buckets (a power of two).

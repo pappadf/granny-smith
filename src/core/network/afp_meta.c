@@ -22,13 +22,9 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("afp");
-
 // Ceiling on a sidecar we are willing to read whole.  The fork itself is
 // streamed by afp_fork.c; this bound only guards the metadata reader.
 #define AFP_META_SIDECAR_MAX (64u * 1024u * 1024u)
-
-// --- big-endian helpers ----------------------------------------------------
 
 // --- time conversions ------------------------------------------------------
 
@@ -166,35 +162,6 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
     }
     fclose(f);
     return true;
-}
-
-void afp_meta_load_rsrc(const char *host_path, uint8_t **rsrc, size_t *rsrc_len) {
-    if (rsrc)
-        *rsrc = NULL;
-    if (rsrc_len)
-        *rsrc_len = 0;
-    if (!rsrc || !rsrc_len)
-        return;
-    size_t len = afp_meta_rsrc_len(host_path);
-    if (!len || len > AFP_META_SIDECAR_MAX)
-        return;
-    uint8_t *buf = (uint8_t *)malloc(len);
-    if (!buf)
-        return;
-    FILE *tmp = tmpfile();
-    if (!tmp) {
-        free(buf);
-        return;
-    }
-    size_t copied = afp_meta_copy_rsrc(host_path, tmp);
-    rewind(tmp);
-    if (copied == len && fread(buf, 1, len, tmp) == len) {
-        *rsrc = buf;
-        *rsrc_len = len;
-    } else {
-        free(buf);
-    }
-    fclose(tmp);
 }
 
 // Read a sidecar's fixed header plus its entry table, without touching the

@@ -52,8 +52,6 @@ struct afp_desktop {
     afp_applog_t *appl_log; // .gs-afp/desktop.appl
 };
 
-// --- big-endian helpers ----------------------------------------------------
-
 // --- icon store ------------------------------------------------------------
 
 // Slot index for (creator, type, icon_type), or -1.
@@ -355,18 +353,4 @@ const afp_appl_t *afp_desktop_appl_at(afp_desktop_t *dt, uint32_t creator, uint1
             return &dt->appls[i].v;
     }
     return NULL;
-}
-
-void afp_desktop_prune_appls(afp_desktop_t *dt, bool (*alive)(uint32_t cnid, void *ud), void *ud) {
-    if (!dt || !alive)
-        return;
-    for (size_t i = 0; i < dt->appl_len; i++) {
-        if (dt->appls[i].dead)
-            continue;
-        if (alive(dt->appls[i].v.cnid, ud))
-            continue;
-        afp_appl_t a = dt->appls[i].v;
-        dt->appls[i].dead = true;
-        appl_log_append(dt, DT_OP_DEL, &a);
-    }
 }

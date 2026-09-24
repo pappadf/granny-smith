@@ -90,10 +90,6 @@ bool afp_meta_sidecar_path(const char *host_path, char *out, size_t cap);
 // a sidecar was parsed, false when none exists.
 bool afp_meta_load(const char *host_path, afp_meta_t *out);
 
-// Load the resource fork from the sidecar (malloc'd; caller frees).  Yields
-// NULL/0 when the file has no sidecar or no entry 2.
-void afp_meta_load_rsrc(const char *host_path, uint8_t **rsrc, size_t *rsrc_len);
-
 // Resource-fork length recorded in the sidecar (0 if none).  Reads only the
 // entry table, so it does not pay for the fork bytes.
 uint32_t afp_meta_rsrc_len(const char *host_path);
