@@ -480,7 +480,7 @@ static uint32_t afp_cmd_get_srvr_msg(afp_req_t *r) {
 
 // FPOpenDir (0x19)
 static uint32_t afp_cmd_open_dir(afp_req_t *r) {
-    if (r->in_len < 10)
+    if (r->in_len < 9) // Pad VolumeID DirectoryID PathType, and an empty pathname
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
@@ -1544,19 +1544,22 @@ static uint32_t afp_cmd_remove_appl(afp_req_t *r) {
         return AFPERR_ParamErr;
     uint32_t dir_id = RD_BE32(r->in + 3);
     uint32_t creator = RD_BE32(r->in + 7);
+    // The application is named by its path.  One that did not resolve left
+    // the CNID 0, which the store takes as "every mapping for this creator"
+    // (10-network N-15).
     afp_path_t path;
-    uint32_t cnid = 0;
-    if (r->in_len > 12 && afp_read_path(r->in, r->in_len, 11, &path) >= 0 && path.len > 0) {
-        vol_t *resolved = NULL;
-        char target_rel[AFP_MAX_REL_PATH];
-        if (afp_resolve_target(r->ctx, v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel)) ==
-            AFPERR_NoErr) {
-            const afp_cat_entry_t *entry = afp_catalog_resolve_path(v->catalog, target_rel, false, false);
-            if (entry)
-                cnid = entry->cnid;
-        }
-    }
-    if (afp_desktop_remove_appl(v->desktop, creator, cnid) == 0)
+    if (afp_read_path(r->in, r->in_len, 11, &path) < 0)
+        return AFPERR_ParamErr;
+    vol_t *resolved = NULL;
+    char target_rel[AFP_MAX_REL_PATH];
+    uint32_t rc = afp_resolve_target(r->ctx, v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel));
+    if (rc != AFPERR_NoErr)
+        return rc;
+    struct stat st;
+    if (!afp_stat_path(v, target_rel, &st))
+        return AFPERR_ObjectNotFound;
+    const afp_cat_entry_t *entry = afp_catalog_resolve_path(v->catalog, target_rel, false, false);
+    if (!entry || afp_desktop_remove_appl(v->desktop, creator, entry->cnid) == 0)
         return AFPERR_ItemNotFound;
     return AFPERR_NoErr;
 }
@@ -1634,6 +1637,11 @@ static uint32_t afp_cmd_add_comment(afp_req_t *r) {
     meta.comment_len = 0;
     meta.comment[0] = '\0';
     meta.has_comment = true;
+    // A pad follows the pathname when the comment would start on an odd
+    // offset of the command block -- which begins one byte before r->in, with
+    // the opcode.  It was read as the comment's length (10-network N-11).
+    if (pos % 2 == 0)
+        pos++;
     if (pos < r->in_len) {
         int len = r->in[pos++];
         if (len > AFP_META_COMMENT_MAX)
@@ -2136,35 +2144,43 @@ static uint32_t afp_cmd_cat_search(afp_req_t *r) {
     if (req_matches == 0)
         req_matches = UINT32_MAX;
 
+    // The cursor moves past an entry only once it is written or rejected: an
+    // entry the reply had no room for, or that came after the last match
+    // asked for, is where the next call resumes.  It moved first, so every
+    // resume lost one match (10-network N-12: 1999 of 2000).
     for (const afp_cat_entry_t *e = afp_catalog_next(vol->catalog, cursor); e;
          e = afp_catalog_next(vol->catalog, cursor)) {
-        cursor = e->cnid;
         if (actual >= req_matches) {
             exhausted = false;
             break;
         }
-        if (e->cnid == AFP_CNID_ROOT || !afp_name_visible(e->name))
-            continue;
+        // Copied now: matching adopts ancestors into the catalog, which can
+        // move `e` (10-network N-33).
+        uint32_t cnid = e->cnid;
+        char name[AFP_CAT_MAX_NAME + 1];
+        snprintf(name, sizeof(name), "%s", e->name);
         char rel[AFP_MAX_REL_PATH];
-        if (!afp_catalog_path(vol->catalog, e->cnid, rel, sizeof(rel)))
-            continue;
         struct stat st;
-        if (!afp_stat_path(vol, rel, &st))
-            continue; // swept lazily by the next full search
-        bool is_dir = S_ISDIR(st.st_mode);
-        if ((is_dir && !dir_bm) || (!is_dir && !file_bm))
-            continue;
-        if (!catsearch_matches(vol, rel, e->name, is_dir, &st, criteria, &s1, &s2, partial_name))
-            continue;
-
-        // Result records use FPEnumerate's framing.
-        int end = afp_emit_record(is_dir, vol, rel, &st, is_dir ? dir_bm : file_bm, r->out, w, r->out_max);
-        if (end < 0) {
-            exhausted = false;
-            break;
+        bool is_dir = false;
+        bool candidate = cnid != AFP_CNID_ROOT && afp_name_visible(name) &&
+                         afp_catalog_path(vol->catalog, cnid, rel, sizeof(rel)) &&
+                         afp_stat_path(vol, rel, &st); // a vanished file is swept by the next full search
+        if (candidate) {
+            is_dir = S_ISDIR(st.st_mode);
+            candidate = (is_dir ? dir_bm : file_bm) != 0 &&
+                        catsearch_matches(vol, rel, name, is_dir, &st, criteria, &s1, &s2, partial_name);
         }
-        w = end;
-        actual++;
+        if (candidate) {
+            // Result records use FPEnumerate's framing.
+            int end = afp_emit_record(is_dir, vol, rel, &st, is_dir ? dir_bm : file_bm, r->out, w, r->out_max);
+            if (end < 0) {
+                exhausted = false;
+                break;
+            }
+            w = end;
+            actual++;
+        }
+        cursor = cnid;
     }
 
     memset(r->out, 0, 16);

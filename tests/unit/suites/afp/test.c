@@ -52,6 +52,7 @@ int stub_attention_count(void);
 #define OP_LOGOUT          0x14
 #define OP_MOVE_AND_RENAME 0x17
 #define OP_OPEN_VOL        0x18
+#define OP_OPEN_DIR        0x19
 #define OP_OPEN_FORK       0x1A
 #define OP_READ            0x1B
 #define OP_RENAME          0x1C
@@ -72,6 +73,7 @@ int stub_attention_count(void);
 #define OP_GET_ICON        0x33
 #define OP_GET_ICON_INFO   0x34
 #define OP_ADD_APPL        0x35
+#define OP_RMV_APPL        0x36
 #define OP_GET_APPL        0x37
 #define OP_ADD_COMMENT     0x38
 #define OP_RMV_COMMENT     0x39
@@ -147,6 +149,12 @@ static void put_path(const char *s) {
     put8((uint8_t)n);
     for (size_t i = 0; i < n; i++)
         put8(s[i] == ':' ? 0 : (uint8_t)s[i]);
+}
+// The pad some fields must follow to start on an even offset of the command
+// block, which begins one byte before g_req, with the opcode.
+static void put_even_pad(void) {
+    if (g_req_len % 2 == 0)
+        put8(0);
 }
 static void put_bytes(const void *p, size_t n) {
     memcpy(g_req + g_req_len, p, n);
@@ -1700,12 +1708,13 @@ TEST(comments_live_in_the_sidecar_and_follow_the_file) {
     uint16_t dt = open_dt();
 
     // FPAddComment: Pad(1) DTRefNum(2) DirectoryID(4) PathType(1) Pathname
-    // + Comment (Pascal string).
+    // Pad(0-1) Comment (Pascal string, on an even offset: p. 13-52).
     req_reset();
     put8(0);
     put16(dt);
     put32(CNID_ROOT);
     put_path("Doc");
+    put_even_pad();
     put_pstr("Written on the server");
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ADD_COMMENT));
 
@@ -3145,6 +3154,170 @@ TEST(get_icon_returns_at_most_the_length_asked) {
     fixture_down();
 }
 
+// --- F8: small AFP corrections (10-network N-11, N-12, N-13a, N-15) ------------------
+
+static uint32_t add_comment(uint16_t dt, const char *path, const char *comment) {
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put_path(path);
+    put_even_pad();
+    put_pstr(comment);
+    return call(OP_ADD_COMMENT);
+}
+
+static uint32_t get_comment(uint16_t dt, const char *path) {
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put_path(path);
+    return call(OP_GET_COMMENT);
+}
+
+// A comment follows its pathname on an even offset, after a pad when needed.
+// The pad was read as the comment's length: an odd-length name lost its
+// comment.  An even-length name, with no pad, must keep working.
+TEST(comments_follow_the_pad_the_pathname_needs) {
+    fixture_up("commentpad");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Odd"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Even"));
+    uint16_t dt = open_dt();
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Odd", "after a pad"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Even", "no pad"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_comment(dt, "Odd"));
+    ASSERT_EQ_INT(11, (int)g_reply[0]);
+    ASSERT_EQ_INT(0, memcmp(g_reply + 1, "after a pad", 11));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_comment(dt, "Even"));
+    ASSERT_EQ_INT(6, (int)g_reply[0]);
+    ASSERT_EQ_INT(0, memcmp(g_reply + 1, "no pad", 6));
+    fixture_down();
+}
+
+// FPCatSearch one match at a time finds every match.  The catalog position
+// moved past an entry before the "enough matches" check, so each resume
+// skipped one: 3 matches, 2 found.
+TEST(cat_search_resumes_without_losing_a_match) {
+    fixture_up("catsearchresume");
+    const char *files[] = {"Match1", "Match2", "Match3", "Other"};
+    for (int i = 0; i < 4; i++) {
+        write_file(files[i], "x");
+        (void)file_number(files[i]);
+    }
+    uint8_t catpos[16] = {0};
+    int found = 0;
+    for (int call_no = 0; call_no < 8; call_no++) {
+        put_catsearch_header(1, catpos, 0x0040, 0x0000, 0x80000040u);
+        int spec1 = g_req_len;
+        put8(0);
+        put8(0);
+        put16(2);
+        put_pstr("Match");
+        g_req[spec1] = (uint8_t)(g_req_len - spec1);
+        int spec2 = g_req_len;
+        put8(0);
+        put8(0);
+        put16(0);
+        g_req[spec2] = (uint8_t)(g_req_len - spec2);
+        uint32_t rc = call(OP_CAT_SEARCH);
+        ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
+        found += (int)rd32(g_reply + 20);
+        memcpy(catpos, g_reply, 16);
+        if (rc == ERR_EOF)
+            break;
+    }
+    ASSERT_EQ_INT(3, found);
+    fixture_down();
+}
+
+// With a null file bitmap, StartIndex counts directories only.  It indexed
+// the mixed listing, so a directories-only walk one at a time repeated one.
+TEST(enumerate_start_index_counts_the_kinds_asked_for) {
+    fixture_up("enumkind");
+    const char *dirs[] = {"a", "c", "e"};
+    for (int i = 0; i < 3; i++) {
+        char path[512];
+        host_path(dirs[i], path, sizeof path);
+        ASSERT_EQ_INT(0, mkdir(path, 0755));
+    }
+    write_file("b", "");
+    write_file("d", "");
+    for (uint16_t start = 1; start <= 3; start++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(CNID_ROOT);
+        put16(0x0000); // no files
+        put16(0x0040); // directories: long name
+        put16(1);
+        put16(start);
+        put16(4096);
+        put_path("");
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ENUMERATE));
+        int name = 6 + 2 + rd16(g_reply + 8);
+        ASSERT_EQ_INT(1, (int)g_reply[name]);
+        ASSERT_EQ_INT(dirs[start - 1][0], g_reply[name + 1]);
+    }
+    fixture_down();
+}
+
+// FPRemoveAPPL names the application by path; a path that names nothing is
+// ObjectNotFound.  It removed every mapping for the creator instead.
+TEST(remove_appl_of_a_missing_application_removes_nothing) {
+    fixture_up("rmvappl");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("TeachText"));
+    uint16_t dt = open_dt();
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put32(0x74747874u); // 'ttxt'
+    put32(0x00000042u);
+    put_path("TeachText");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ADD_APPL));
+
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put32(0x74747874u);
+    put_path("Nowhere");
+    ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)call(OP_RMV_APPL));
+
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x74747874u);
+    put16(1);
+    put16(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_APPL)); // the mapping is still there
+
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put32(0x74747874u);
+    put_path("TeachText");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_RMV_APPL));
+    fixture_down();
+}
+
+// FPOpenDir's shortest request -- an empty pathname, naming the directory ID
+// itself -- is 9 bytes.  It needed 10.
+TEST(open_dir_accepts_an_empty_pathname) {
+    fixture_up("opendir9");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("");
+    ASSERT_EQ_INT(9, g_req_len);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_OPEN_DIR));
+    ASSERT_EQ_INT((int)CNID_ROOT, (int)rd32(g_reply));
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3209,6 +3382,11 @@ int main(void) {
     RUN(the_icon_store_is_bounded);
     RUN(a_listing_in_progress_is_not_evicted_first);
     RUN(get_icon_returns_at_most_the_length_asked);
+    RUN(comments_follow_the_pad_the_pathname_needs);
+    RUN(cat_search_resumes_without_losing_a_match);
+    RUN(enumerate_start_index_counts_the_kinds_asked_for);
+    RUN(remove_appl_of_a_missing_application_removes_nothing);
+    RUN(open_dir_accepts_an_empty_pathname);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

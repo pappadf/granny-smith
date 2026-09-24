@@ -289,11 +289,20 @@ uint32_t afp_cmd_enumerate(afp_req_t *r) {
     uint16_t actual = 0;
     uint16_t left = req_count ? req_count : UINT16_MAX;
 
-    for (size_t i = start_index - 1; i < snap->count && left > 0; i++) {
+    // StartIndex counts the entries of the kinds asked for: with a null file
+    // bitmap it indexes the directories alone, with a null directory bitmap
+    // the files.  It indexed the mixed listing, so a directories-only walk
+    // repeated entries (10-network N-13a).
+    size_t i = 0, seen = 0;
+    if (file_bm && dir_bm)
+        i = seen = start_index - 1u; // every entry counts: go straight there
+    for (; i < snap->count && left > 0; i++) {
         enum_entry_t *entry = &snap->entries[i];
         uint16_t bm = entry->is_dir ? dir_bm : file_bm;
         if (bm == 0)
             continue; // this kind was not requested
+        if (++seen < start_index)
+            continue;
         char rel[AFP_MAX_REL_PATH];
         if (!afp_build_child_path(snap->dir_rel, entry->name, rel, sizeof(rel)))
             break;
