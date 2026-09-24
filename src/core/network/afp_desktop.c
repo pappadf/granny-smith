@@ -7,6 +7,7 @@
 #include "afp_desktop.h"
 #include "common.h"
 
+#include "afp_catalog.h"
 #include "afp_meta.h"
 #include "log.h"
 
@@ -276,7 +277,7 @@ afp_desktop_t *afp_desktop_open(const char *host_root) {
     if (!dt)
         return NULL;
     char ctrl[PATH_MAX];
-    if (snprintf(ctrl, sizeof(ctrl), "%s/%s", host_root, AFP_CONTROL_DIR) >= (int)sizeof(ctrl)) {
+    if (!afp_host_join(host_root, AFP_CONTROL_DIR, ctrl, sizeof(ctrl))) {
         free(dt);
         return NULL;
     }

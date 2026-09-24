@@ -663,7 +663,7 @@ static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len) {
         return AFPERR_ObjectNotFound;
     bool is_dir = S_ISDIR(st.st_mode);
     char full[PATH_MAX];
-    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+    if (!afp_host_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
 
     // Only the settable bits may appear; the rest are read-only parameters.
@@ -816,7 +816,7 @@ static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     if (S_ISDIR(st.st_mode))
         return AFPERR_ObjectTypeErr;
     char full[PATH_MAX];
-    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+    if (!afp_host_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
     // A WriteInhibit file may still be read, never written.
     if ((access_mode & AFP_ACCESS_WRITE) && afp_inhibited(full, AFP_ATTR_WRITEINHIBIT))
@@ -1148,7 +1148,7 @@ static uint32_t afp_cmd_create_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len
     if (!target_rel[0])
         return AFPERR_ParamErr;
     char full[PATH_MAX];
-    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+    if (!afp_host_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
     struct stat st;
     if (stat(full, &st) == 0)
@@ -1194,7 +1194,7 @@ static uint32_t afp_cmd_create_file(afp_ctx_t *ctx, const uint8_t *in, int in_le
     if (!target_rel[0])
         return AFPERR_ParamErr;
     char full[PATH_MAX];
-    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+    if (!afp_host_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
 
     struct stat st;
@@ -1263,7 +1263,7 @@ static uint32_t afp_cmd_delete(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     if (!target_rel[0])
         return AFPERR_AccessDenied; // the volume root is not deletable
     char full[PATH_MAX];
-    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+    if (!afp_host_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
     struct stat st;
     if (stat(full, &st) != 0)
@@ -1295,8 +1295,9 @@ static uint32_t afp_cmd_delete(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
         while ((ent = readdir(dir)) != NULL) {
             if (!afp_meta_is_hidden(ent->d_name))
                 continue;
-            char child[PATH_MAX];
-            if (snprintf(child, sizeof(child), "%s/%s", full, ent->d_name) < (int)sizeof(child))
+            char child_rel[AFP_MAX_REL_PATH], child[PATH_MAX];
+            if (afp_build_child_path(target_rel, ent->d_name, child_rel, sizeof(child_rel)) &&
+                afp_host_path(vol, child_rel, child, sizeof(child)))
                 remove(child);
         }
         closedir(dir);
@@ -1353,7 +1354,7 @@ static uint32_t afp_cmd_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     if (!old_rel[0])
         return AFPERR_CantRename; // renaming the volume itself is not supported
     char old_full[PATH_MAX];
-    if (!afp_full_path(vol, old_rel, old_full, sizeof(old_full)))
+    if (!afp_host_path(vol, old_rel, old_full, sizeof(old_full)))
         return AFPERR_ParamErr;
     struct stat st;
     if (stat(old_full, &st) != 0)
@@ -1367,7 +1368,7 @@ static uint32_t afp_cmd_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     if (!afp_build_child_path(parent_rel, new_name, new_rel, sizeof(new_rel)))
         return AFPERR_ParamErr;
     char new_full[PATH_MAX];
-    if (!afp_full_path(vol, new_rel, new_full, sizeof(new_full)))
+    if (!afp_host_path(vol, new_rel, new_full, sizeof(new_full)))
         return AFPERR_ParamErr;
     if (strcmp(old_rel, new_rel) == 0)
         return AFPERR_NoErr;
@@ -1433,7 +1434,7 @@ static uint32_t afp_cmd_move_and_rename(afp_ctx_t *ctx, const uint8_t *in, int i
         return rc;
 
     char src_full[PATH_MAX];
-    if (!afp_full_path(vol, src_rel, src_full, sizeof(src_full)))
+    if (!afp_host_path(vol, src_rel, src_full, sizeof(src_full)))
         return AFPERR_ParamErr;
     struct stat st;
     if (stat(src_full, &st) != 0)
@@ -1452,7 +1453,7 @@ static uint32_t afp_cmd_move_and_rename(afp_ctx_t *ctx, const uint8_t *in, int i
         (dst_rel[strlen(src_rel)] == '/' || dst_rel[strlen(src_rel)] == '\0'))
         return AFPERR_CantMove;
     char dst_full[PATH_MAX];
-    if (!afp_full_path(vol, dst_rel, dst_full, sizeof(dst_full)))
+    if (!afp_host_path(vol, dst_rel, dst_full, sizeof(dst_full)))
         return AFPERR_ParamErr;
     struct stat dst_st;
     if (stat(dst_full, &dst_st) == 0)
@@ -1545,7 +1546,7 @@ static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len,
         return rc;
 
     char src_full[PATH_MAX];
-    if (!afp_full_path(svol, src_rel, src_full, sizeof(src_full)))
+    if (!afp_host_path(svol, src_rel, src_full, sizeof(src_full)))
         return AFPERR_ParamErr;
     struct stat st;
     if (stat(src_full, &st) != 0)
@@ -1560,7 +1561,7 @@ static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     if (!afp_build_child_path(dst_dir_rel, final_name, dst_rel, sizeof(dst_rel)))
         return AFPERR_ParamErr;
     char dst_full[PATH_MAX];
-    if (!afp_full_path(dvol, dst_rel, dst_full, sizeof(dst_full)))
+    if (!afp_host_path(dvol, dst_rel, dst_full, sizeof(dst_full)))
         return AFPERR_ParamErr;
     struct stat dst_st;
     if (stat(dst_full, &dst_st) == 0)
@@ -1894,7 +1895,7 @@ static uint32_t afp_cmd_add_comment(afp_ctx_t *ctx, const uint8_t *in, int in_le
         return rc;
     char full[PATH_MAX];
     struct stat st;
-    if (!afp_full_path(v, rel, full, sizeof(full)) || stat(full, &st) != 0)
+    if (!afp_host_path(v, rel, full, sizeof(full)) || stat(full, &st) != 0)
         return AFPERR_ObjectNotFound;
 
     afp_meta_t meta;
@@ -1933,7 +1934,7 @@ static uint32_t afp_cmd_remove_comment(afp_ctx_t *ctx, const uint8_t *in, int in
     if (rc != AFPERR_NoErr)
         return rc;
     char full[PATH_MAX];
-    if (!afp_full_path(v, rel, full, sizeof(full)))
+    if (!afp_host_path(v, rel, full, sizeof(full)))
         return AFPERR_ParamErr;
     afp_meta_t meta;
     afp_meta_load(full, &meta);
@@ -1959,7 +1960,7 @@ static uint32_t afp_cmd_get_comment(afp_ctx_t *ctx, const uint8_t *in, int in_le
     if (rc != AFPERR_NoErr)
         return rc;
     char full[PATH_MAX];
-    if (!afp_full_path(v, rel, full, sizeof(full)))
+    if (!afp_host_path(v, rel, full, sizeof(full)))
         return AFPERR_ParamErr;
     afp_meta_t meta;
     afp_meta_load(full, &meta);
@@ -2126,8 +2127,8 @@ static uint32_t afp_cmd_exchange_files(afp_ctx_t *ctx, const uint8_t *in, int in
         return AFPERR_SameObjectErr;
 
     char src_full[PATH_MAX], dst_full[PATH_MAX];
-    if (!afp_full_path(vol, src_rel, src_full, sizeof(src_full)) ||
-        !afp_full_path(vol, dst_rel, dst_full, sizeof(dst_full)))
+    if (!afp_host_path(vol, src_rel, src_full, sizeof(src_full)) ||
+        !afp_host_path(vol, dst_rel, dst_full, sizeof(dst_full)))
         return AFPERR_ParamErr;
     struct stat src_st, dst_st;
     if (stat(src_full, &src_st) != 0 || stat(dst_full, &dst_st) != 0)
@@ -2337,7 +2338,7 @@ static bool catsearch_matches(vol_t *vol, const char *rel, const char *name, boo
                               uint32_t request_bm, const catsearch_spec_t *s1, const catsearch_spec_t *s2,
                               bool partial_name) {
     char full[PATH_MAX];
-    if (!afp_full_path(vol, rel, full, sizeof(full)))
+    if (!afp_host_path(vol, rel, full, sizeof(full)))
         return false;
     afp_meta_t meta;
     afp_meta_load(full, &meta);

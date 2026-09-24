@@ -388,7 +388,7 @@ afp_catalog_t *afp_catalog_open(const char *host_root) {
     cat->next_cnid = AFP_CNID_FIRST;
 
     char ctrl[PATH_MAX];
-    if (snprintf(ctrl, sizeof(ctrl), "%s/%s", cat->root, AFP_CONTROL_DIR) >= (int)sizeof(ctrl)) {
+    if (!afp_host_join(cat->root, AFP_CONTROL_DIR, ctrl, sizeof(ctrl))) {
         free(cat);
         return NULL;
     }
@@ -608,11 +608,31 @@ bool afp_catalog_set_file_id(afp_catalog_t *cat, uint32_t cnid, bool present) {
 
 // --- path resolution / adoption --------------------------------------------
 
-// Host path for a catalog-relative path.  False on overflow.
-static bool host_path_of(afp_catalog_t *cat, const char *rel, char *out, size_t cap) {
+bool afp_host_element(const char *name, size_t len) {
+    if (!name || len == 0 || memchr(name, '/', len))
+        return false;
+    return !(len == 1 && name[0] == '.') && !(len == 2 && name[0] == '.' && name[1] == '.');
+}
+
+bool afp_host_join(const char *root, const char *rel, char *out, size_t cap) {
+    if (!root || !*root || !out || cap == 0)
+        return false;
+    size_t root_len = strlen(root);
+    while (root_len > 1 && root[root_len - 1] == '/')
+        root_len--;
     if (!rel || !*rel)
-        return (size_t)snprintf(out, cap, "%s", cat->root) < cap;
-    return (size_t)snprintf(out, cap, "%s/%s", cat->root, rel) < cap;
+        return (size_t)snprintf(out, cap, "%.*s", (int)root_len, root) < cap;
+    for (const char *p = rel;;) {
+        const char *slash = strchr(p, '/');
+        size_t len = slash ? (size_t)(slash - p) : strlen(p);
+        if (!afp_host_element(p, len))
+            return false;
+        if (!slash)
+            break;
+        p = slash + 1;
+    }
+    const char *sep = (root_len == 1 && root[0] == '/') ? "" : "/";
+    return (size_t)snprintf(out, cap, "%.*s%s%s", (int)root_len, root, sep, rel) < cap;
 }
 
 const afp_cat_entry_t *afp_catalog_resolve_path(afp_catalog_t *cat, const char *rel_path, bool adopt, bool is_dir) {
@@ -670,7 +690,7 @@ uint32_t afp_catalog_sweep(afp_catalog_t *cat) {
         char host[PATH_MAX];
         struct stat st;
         if (!afp_catalog_path(cat, cat->slots[i].cnid, rel, sizeof(rel)) ||
-            !host_path_of(cat, rel, host, sizeof(host)) || stat(host, &st) != 0) {
+            !afp_host_join(cat->root, rel, host, sizeof(host)) || stat(host, &st) != 0) {
             log_append(cat, GSC_OP_DELETE, cat->slots[i].cnid, cat->slots[i].parent, cat->slots[i].is_dir,
                        cat->slots[i].name);
             kill_slot(cat, i);

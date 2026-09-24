@@ -102,11 +102,12 @@ int afp_write_param_area(bool is_dir, uint16_t bm, uint8_t *out, int p, int out_
                          int *pos_short_off);
 int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint16_t bm,
                         int pos_long_off, int pos_short_off);
+// A share-relative path as a host path: afp_host_join under the volume root.
+bool afp_host_path(const vol_t *vol, const char *rel, char *out, size_t out_len);
 bool afp_stat_path(vol_t *vol, const char *rel, struct stat *st);
 int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t dst_len);
 bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, const struct stat *st, uint16_t bm,
                              uint8_t *out, int pbase);
-bool afp_full_path(const vol_t *vol, const char *rel, char *out, size_t out_len);
 const afp_cat_entry_t *afp_entry_for(vol_t *vol, const char *rel_path);
 bool afp_build_child_path(const char *parent, const char *child, char *out, size_t out_len);
 int afp_write_vol_param_block(vol_t *v, uint16_t *bitmap_ptr, uint8_t *out, int out_max, bool afp21);

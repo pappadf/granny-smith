@@ -2589,6 +2589,24 @@ state, two homes:
 offspring count, and a client pathname that names either is rejected with
 `ParamErr` before it can resolve.
 
+**Names and paths.** A pathname from the client is CNode names separated by
+NUL bytes (Inside AppleTalk 13-10). Each name is MacRoman on the wire and
+UTF-8 on the host, and a Mac `/` is a host `:` -- the convention the
+disk-image side and macOS use. Host names stored decomposed (NFD) are composed
+first. A host name that is not UTF-8 is read as raw MacRoman, the form older
+versions of this server wrote. A host name MacRoman cannot hold (CJK, emoji)
+is not listed at all: under a lossy name it could never be addressed again.
+
+Every host path the server touches is built in one place, `afp_host_join`,
+from the share root and names that are each a real element -- never empty,
+`.` or `..`. A client's name is decoded as exactly one element, so the result
+is inside the share. The one exception is a **symlink** in a published folder:
+it is followed, whether it points to a file or a directory. That only arises
+in headless builds, where a developer publishes a host folder. In the browser
+the filesystem is emscripten's sandbox, and the guest reaches nothing outside
+it. A developer who links a folder into a share lets the guest read and write
+through that link.
+
 ## 4.1 catalog.gsc — the CNID catalog
 
 AFP requires catalog node IDs that are unique per volume, stable across

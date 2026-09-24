@@ -62,12 +62,10 @@ static bool afp_path_pop(char *path) {
     return true;
 }
 
-static bool afp_valid_element(const char *name);
-
 // Append one element to a volume-relative path.  The element is checked here
 // too, whatever its source: nothing may walk a path out of its volume.
 static bool afp_append_component(char *path, size_t path_len, const char *component) {
-    if (!path || !afp_valid_element(component))
+    if (!path || !component || !afp_host_element(component, strlen(component)))
         return false;
     size_t curr = strlen(path);
     size_t comp_len = strlen(component);
@@ -80,12 +78,6 @@ static bool afp_append_component(char *path, size_t path_len, const char *compon
     return true;
 }
 
-// A host name that may be one element of a volume-relative path: not empty,
-// not "." or "..", and holding no '/'.
-static bool afp_valid_element(const char *name) {
-    return name && *name && strcmp(name, ".") != 0 && strcmp(name, "..") != 0 && !strchr(name, '/');
-}
-
 // One element of a client's path or new name, as the host name it stands for
 // (macroman_name_to_host: MacRoman to UTF-8, '/' to ':').  False for a name
 // that cannot be one element -- "..", ".", or anything the conversion refuses
@@ -94,7 +86,7 @@ static bool afp_valid_element(const char *name) {
 static bool afp_client_element(const uint8_t *bytes, size_t len, char *host, size_t cap) {
     if (len == 0 || !macroman_name_to_host(bytes, len, host, cap))
         return false;
-    return afp_valid_element(host) && !afp_meta_is_hidden(host);
+    return afp_host_element(host, strlen(host)) && !afp_meta_is_hidden(host);
 }
 
 int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out) {
@@ -194,18 +186,13 @@ bool afp_build_child_path(const char *parent, const char *child, char *out, size
     return afp_append_component(out, out_len, child);
 }
 
-bool afp_full_path(const vol_t *vol, const char *rel, char *out, size_t out_len) {
-    if (!vol || !out || out_len == 0)
-        return false;
-    if (!rel || !*rel)
-        return (size_t)snprintf(out, out_len, "%s", vol->root) < out_len;
-    const char *sep = (vol->root[0] && vol->root[strlen(vol->root) - 1] == '/') ? "" : "/";
-    return (size_t)snprintf(out, out_len, "%s%s%s", vol->root, sep, rel) < out_len;
+bool afp_host_path(const vol_t *vol, const char *rel, char *out, size_t out_len) {
+    return vol && afp_host_join(vol->root, rel, out, out_len);
 }
 
 bool afp_stat_path(vol_t *vol, const char *rel, struct stat *st) {
     char full[PATH_MAX];
-    if (!afp_full_path(vol, rel, full, sizeof(full)))
+    if (!afp_host_path(vol, rel, full, sizeof(full)))
         return false;
     return stat(full, st) == 0;
 }
@@ -458,7 +445,7 @@ bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, cons
     if (!st || !vol)
         return false;
     char full[PATH_MAX];
-    if (!afp_full_path(vol, rel_path ? rel_path : "", full, sizeof(full)))
+    if (!afp_host_path(vol, rel_path ? rel_path : "", full, sizeof(full)))
         return false;
     afp_meta_t meta;
     afp_meta_load(full, &meta);

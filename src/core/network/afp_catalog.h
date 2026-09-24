@@ -47,6 +47,17 @@
 
 typedef struct afp_catalog afp_catalog_t;
 
+// A host name that can be one element of a share-relative path: not empty,
+// not "." or "..", and holding no '/'.
+bool afp_host_element(const char *name, size_t len);
+
+// The one place a share-relative path ('/'-separated host names, "" for the
+// share itself) becomes a host path under `root`.  Every element must pass
+// afp_host_element, so the result names something inside the share -- or
+// outside it only through a symlink planted on the host, which is followed
+// (appletalk_server.md §4).  False on a bad element or overflow.
+bool afp_host_join(const char *root, const char *rel, char *out, size_t cap);
+
 // One catalog entry as handed back to callers.  Each entry has its own
 // storage, so holding two at once is safe — but any call that can grow the
 // table (afp_catalog_add, and therefore afp_catalog_resolve_path with

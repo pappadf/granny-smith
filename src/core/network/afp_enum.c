@@ -120,7 +120,7 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
     enum_snapshot_free(slot);
 
     char full_dir[PATH_MAX];
-    if (!afp_full_path(vol, dir_rel, full_dir, sizeof(full_dir)))
+    if (!afp_host_path(vol, dir_rel, full_dir, sizeof(full_dir)))
         return NULL;
     DIR *dir = opendir(full_dir);
     if (!dir)
@@ -141,11 +141,10 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
         // addressed again (10-network D-1).
         if (!afp_name_visible(dent->d_name))
             continue;
-        char child_full[PATH_MAX];
-        if (snprintf(child_full, sizeof(child_full), "%s/%s", full_dir, dent->d_name) >= (int)sizeof(child_full))
-            continue;
+        char child_rel[AFP_MAX_REL_PATH];
         struct stat child_st;
-        if (stat(child_full, &child_st) != 0)
+        if (!afp_build_child_path(dir_rel, dent->d_name, child_rel, sizeof(child_rel)) ||
+            !afp_stat_path(vol, child_rel, &child_st))
             continue;
         if (count == cap) {
             size_t next = cap * 2;
@@ -157,10 +156,9 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
         }
         enum_entry_t *e = &entries[count];
         snprintf(e->name, sizeof(e->name), "%s", dent->d_name);
+        snprintf(e->rel, sizeof(e->rel), "%s", child_rel);
         e->is_dir = S_ISDIR(child_st.st_mode);
         e->st = child_st;
-        if (!afp_build_child_path(dir_rel, e->name, e->rel, sizeof(e->rel)))
-            continue;
         // Adopt each child so its CNID is stable from the first listing on.
         afp_catalog_resolve_path(vol->catalog, e->rel, true, e->is_dir);
         count++;

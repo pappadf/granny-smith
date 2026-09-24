@@ -2461,6 +2461,34 @@ TEST(names_are_macroman_on_the_wire_and_utf8_on_the_host) {
     fixture_down();
 }
 
+// A share-relative path becomes a host path in one place, afp_host_join, and
+// only when every element is a real name (10 D4): a catalog entry named ".."
+// -- the catalog takes any name, and replays one from its log -- names no
+// host path, so the sweep drops it instead of keeping the share's parent.
+TEST(host_paths_are_joined_from_real_names_only) {
+    fixture_up("hostjoin");
+    char out[64];
+    ASSERT_TRUE(afp_host_join("/s", "", out, sizeof out) && strcmp(out, "/s") == 0);
+    ASSERT_TRUE(afp_host_join("/s/", "a/b", out, sizeof out) && strcmp(out, "/s/a/b") == 0);
+    ASSERT_TRUE(afp_host_join("/", "a", out, sizeof out) && strcmp(out, "/a") == 0);
+    ASSERT_TRUE(afp_host_join("/s", "._a", out, sizeof out)); // the server's own names are names
+    const char *bad[] = {"..", ".", "a/..", "../a", "a/./b", "/a", "a/", "a//b"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++)
+        ASSERT_TRUE(!afp_host_join("/s", bad[i], out, sizeof out));
+    ASSERT_TRUE(
+        !afp_host_join("/s", "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz", out, sizeof out));
+
+    afp_catalog_t *cat = afp_catalog_open(g_root);
+    ASSERT_TRUE(cat != NULL);
+    const afp_cat_entry_t *up = afp_catalog_add(cat, AFP_CNID_ROOT, "..", true);
+    ASSERT_TRUE(up != NULL);
+    uint32_t up_id = up->cnid;
+    ASSERT_EQ_INT(1, (int)afp_catalog_sweep(cat));
+    ASSERT_TRUE(afp_catalog_find(cat, up_id) == NULL);
+    afp_catalog_close(cat);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2509,6 +2537,7 @@ int main(void) {
     RUN(pathnames_separate_elements_with_nuls);
     RUN(path_type_and_length_are_checked);
     RUN(names_are_macroman_on_the_wire_and_utf8_on_the_host);
+    RUN(host_paths_are_joined_from_real_names_only);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
