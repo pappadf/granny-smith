@@ -165,6 +165,17 @@ uint32_t afp_resolve_target(const afp_ctx_t *ctx, uint16_t vol_id, uint32_t dir_
     return AFPERR_NoErr;
 }
 
+uint32_t afp_decode_target(const afp_req_t *r, int path_at, vol_t **out_vol, char *out_rel, size_t rel_cap, int *next) {
+    afp_path_t path;
+    int end = (r->in_len >= 7) ? afp_read_path(r->in, r->in_len, path_at, &path) : -1;
+    if (end < 0)
+        return AFPERR_ParamErr;
+    uint32_t rc = afp_resolve_target(r->ctx, RD_BE16(r->in + 1), RD_BE32(r->in + 3), &path, out_vol, out_rel, rel_cap);
+    if (rc == AFPERR_NoErr && next)
+        *next = end;
+    return rc;
+}
+
 // Map a fork-layer status onto the AFP result code the client expects.
 static uint32_t afp_fork_status_to_err(afp_fork_status_t st) {
     switch (st) {
@@ -469,15 +480,10 @@ static uint32_t afp_cmd_get_srvr_msg(afp_req_t *r) {
 static uint32_t afp_cmd_open_dir(afp_req_t *r) {
     if (r->in_len < 10)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
-        return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_decode_target(r, 7, &vol, target_rel, sizeof(target_rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -490,7 +496,7 @@ static uint32_t afp_cmd_open_dir(afp_req_t *r) {
         return AFPERR_MiscErr;
     WR_BE32(r->out, entry->cnid);
     r->out_len = 4;
-    LOG(10, "AFP FPOpenDir: vol=0x%04X parent=0x%08X path='%s' → cnid=0x%08X", vol_id, dir_id,
+    LOG(10, "AFP FPOpenDir: vol=0x%04X parent=0x%08X path='%s' → cnid=0x%08X", vol->vol_id, RD_BE32(r->in + 3),
         target_rel[0] ? target_rel : "<root>", entry->cnid);
     return AFPERR_NoErr;
 }
@@ -515,19 +521,14 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_req_t *r) {
     if (r->in_len < 11)
         return AFPERR_ParamErr;
     afp_log_hex("AFP FPGetFileDirParms req", r->in, r->in_len);
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
     uint16_t file_bm = RD_BE16(r->in + 7);
     uint16_t dir_bm = RD_BE16(r->in + 9);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 11, &path) < 0)
-        return AFPERR_ParamErr;
     if (file_bm == 0 && dir_bm == 0)
         return AFPERR_BitmapErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_decode_target(r, 11, &vol, target_rel, sizeof(target_rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -543,7 +544,7 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_req_t *r) {
         return AFPERR_ParamErr;
     r->out_len = vpos;
     afp_log_hex("AFP FPGetFileDirParms resp", r->out, vpos);
-    LOG(2, "AFP FPGetFileDirParms: vol=0x%04X type=%s path='%s' reply=%d", vol_id, is_dir ? "dir" : "file",
+    LOG(2, "AFP FPGetFileDirParms: vol=0x%04X type=%s path='%s' reply=%d", vol->vol_id, is_dir ? "dir" : "file",
         target_rel[0] ? target_rel : "<root>", vpos);
     return AFPERR_NoErr;
 }
@@ -566,17 +567,12 @@ static void afp_apply_attribute_word(afp_meta_t *meta, uint16_t word) {
 static uint32_t afp_parse_set_parms(const afp_req_t *r) {
     if (r->in_len < 9)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
     uint16_t bitmap = RD_BE16(r->in + 7);
-    afp_path_t path;
-    int pos = afp_read_path(r->in, r->in_len, 9, &path);
-    if (pos < 0)
-        return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    int pos = 0;
+    uint32_t rc = afp_decode_target(r, 9, &vol, target_rel, sizeof(target_rel), &pos);
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -674,7 +670,8 @@ static uint32_t afp_parse_set_parms(const afp_req_t *r) {
         if (utimes(full, times) != 0)
             LOG(2, "AFP SetParms: utimes('%s') failed (%s)", target_rel, strerror(errno));
     }
-    LOG(2, "AFP SetParms: vol=0x%04X bitmap=0x%04X path='%s'", vol_id, bitmap, target_rel[0] ? target_rel : "<root>");
+    LOG(2, "AFP SetParms: vol=0x%04X bitmap=0x%04X path='%s'", vol->vol_id, bitmap,
+        target_rel[0] ? target_rel : "<root>");
     return AFPERR_NoErr;
 }
 
@@ -700,16 +697,12 @@ static uint32_t afp_cmd_open_fork(afp_req_t *r) {
         return AFPERR_ParamErr;
     bool is_resource = (r->in[0] & 0x80) != 0;
     uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
     uint16_t bitmap = RD_BE16(r->in + 7);
     uint16_t access_mode = RD_BE16(r->in + 9);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 11, &path) < 0)
-        return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_decode_target(r, 11, &vol, target_rel, sizeof(target_rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -959,15 +952,10 @@ static void afp_sidecar_rename(const char *old_full, const char *new_full) {
 static uint32_t afp_cmd_create_dir(afp_req_t *r) {
     if (r->in_len < 8)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
-        return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_decode_target(r, 7, &vol, target_rel, sizeof(target_rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1000,15 +988,10 @@ static uint32_t afp_cmd_create_file(afp_req_t *r) {
     if (r->in_len < 8)
         return AFPERR_ParamErr;
     bool hard_create = (r->in[0] & 0x80) != 0;
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
-        return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_decode_target(r, 7, &vol, target_rel, sizeof(target_rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1064,15 +1047,10 @@ static uint32_t afp_cmd_create_file(afp_req_t *r) {
 static uint32_t afp_cmd_delete(afp_req_t *r) {
     if (r->in_len < 8)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
-        return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_decode_target(r, 7, &vol, target_rel, sizeof(target_rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1720,15 +1698,10 @@ static uint32_t afp_cmd_get_comment(afp_req_t *r) {
 static uint32_t afp_cmd_create_id(afp_req_t *r) {
     if (r->in_len < 8)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
-        return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, rel, sizeof(rel));
+    uint32_t rc = afp_decode_target(r, 7, &vol, rel, sizeof(rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;

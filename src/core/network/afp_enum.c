@@ -200,16 +200,11 @@ uint32_t afp_cmd_enumerate(afp_req_t *r) {
     if (r->in_len < 18)
         return AFPERR_ParamErr;
     afp_log_hex("AFP FPEnumerate req", r->in, r->in_len);
-    uint16_t vol_id = RD_BE16(r->in + 1);
-    uint32_t dir_id = RD_BE32(r->in + 3);
     uint16_t file_bm = RD_BE16(r->in + 7);
     uint16_t dir_bm = RD_BE16(r->in + 9);
     uint16_t req_count = RD_BE16(r->in + 11);
     uint16_t start_index = RD_BE16(r->in + 13);
     uint16_t max_reply = RD_BE16(r->in + 15);
-    afp_path_t path;
-    if (afp_read_path(r->in, r->in_len, 17, &path) < 0)
-        return AFPERR_ParamErr;
     if (start_index == 0)
         start_index = 1;
     if (file_bm == 0 && dir_bm == 0)
@@ -217,7 +212,7 @@ uint32_t afp_cmd_enumerate(afp_req_t *r) {
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_decode_target(r, 17, &vol, target_rel, sizeof(target_rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat dir_st;
@@ -272,7 +267,7 @@ uint32_t afp_cmd_enumerate(afp_req_t *r) {
     if (actual == 0)
         return AFPERR_ObjectNotFound;
     r->out_len = w;
-    LOG(10, "AFP FPEnumerate: vol=0x%04X dir='%s' start=%u req=%u returned=%u total=%zu", vol_id,
+    LOG(10, "AFP FPEnumerate: vol=0x%04X dir='%s' start=%u req=%u returned=%u total=%zu", vol->vol_id,
         target_rel[0] ? target_rel : "<root>", start_index, req_count, actual, snap->count);
     afp_log_hex("AFP FPEnumerate resp", r->out, w);
     return AFPERR_NoErr;

@@ -182,6 +182,10 @@ void enum_snapshots_drop_session(uint16_t session_id);
 
 uint32_t afp_resolve_target(const afp_ctx_t *ctx, uint16_t vol_id, uint32_t dir_id, const afp_path_t *path,
                             vol_t **out_vol, char *out_rel, size_t rel_cap);
+// The same for a request laid out Volume ID (offset 1), Directory ID (3),
+// Pathname (`path_at`): ParamErr for a bad pathname.  `*next`, if given, is the
+// offset after the pathname.
+uint32_t afp_decode_target(const afp_req_t *r, int path_at, vol_t **out_vol, char *out_rel, size_t rel_cap, int *next);
 void afp_log_hex(const char *label, const uint8_t *buf, int len);
 
 #endif // AFP_INTERNAL_H
