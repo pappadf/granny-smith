@@ -64,8 +64,9 @@ void afp_fork_shutdown(void);
 afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char *host_path, const char *rel_path,
                                 bool is_resource, uint16_t access_mode, afp_fork_t **out);
 
-// Look up an open handle by its wire reference number.
-afp_fork_t *afp_fork_find(uint16_t ref);
+// Look up an open handle by its wire reference number, for the session that
+// opened it: another session's refnum is not found (ParamErr, ch. 13).
+afp_fork_t *afp_fork_find(uint16_t ref, uint16_t session_id);
 
 // Handle accessors.
 uint16_t afp_fork_ref(const afp_fork_t *fk);

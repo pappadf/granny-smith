@@ -54,6 +54,12 @@
 #define AFP_VOL_FALLBACK_TOTAL (1024u * 1024u * 1024u)
 #define AFP_VOL_FALLBACK_FREE  (512u * 1024u * 1024u)
 
+// The sessions holding one handle -- a volume, or its desktop database.
+typedef struct {
+    uint16_t ids[AFP_MAX_SESSIONS];
+    uint32_t n;
+} afp_session_set_t;
+
 // One shared directory, published as an AFP volume.  The share table and the
 // server's volume table used to be separate mirrors of each other; they are
 // one structure now, so a volume's identity, its catalog and its desktop
@@ -65,15 +71,13 @@ typedef struct {
     char root[PATH_MAX];
     afp_catalog_t *catalog;
     afp_desktop_t *desktop;
-    uint16_t dt_ref; // desktop-database refnum handed to clients (0 = closed)
     uint32_t backup_date; // AFP time, persisted in .gs-afp/volume
     uint32_t mutations; // bumped by every catalog-visible change (enum snapshots)
-    // Sessions that currently have this volume open.  Tracked by reference
-    // rather than as a bare count: a logout has to drop only the volumes that
-    // session actually opened, and a stale count is directly visible in the
-    // object model.
-    uint16_t open_by[AFP_MAX_SESSIONS];
-    uint32_t n_open_by;
+    // Sessions that have this volume open (FPOpenVol), and its desktop
+    // database (FPOpenDT).  A volume ID or DTRefNum is served only to a
+    // session in the set: it is that session's handle, not a global name.
+    afp_session_set_t open_by;
+    afp_session_set_t dt_open_by;
 } vol_t;
 
 // What every handler knows about the session it is answering for: its
@@ -87,10 +91,11 @@ typedef struct {
 extern vol_t g_vols[AFP_MAX_VOLUMES];
 extern atalk_afp_stats_t g_afp_stats;
 extern bool g_afp_enabled;
-extern uint16_t g_next_dt_ref;
 extern char g_afp_message[AFP_META_COMMENT_MAX + 1];
-void vol_session_add(vol_t *v, uint16_t session);
-void vol_session_remove(vol_t *v, uint16_t session);
+void session_set_add(afp_session_set_t *set, uint16_t session);
+void session_set_remove(afp_session_set_t *set, uint16_t session);
+bool session_set_has(const afp_session_set_t *set, uint16_t session);
+vol_t *afp_session_vol(const afp_ctx_t *ctx, uint16_t vol_id);
 void vol_record_store(const vol_t *v);
 vol_t *find_vol_by_name(const char *name);
 vol_t *find_vol_by_id(uint16_t id);
@@ -153,8 +158,8 @@ void enum_snapshots_drop_session(uint16_t session_id);
 
 // --- Handlers and dispatch (appletalk_server.c) --------------------------------
 
-uint32_t afp_resolve_target(uint16_t vol_id, uint32_t dir_id, const afp_path_t *path, vol_t **out_vol, char *out_rel,
-                            size_t rel_cap);
+uint32_t afp_resolve_target(const afp_ctx_t *ctx, uint16_t vol_id, uint32_t dir_id, const afp_path_t *path,
+                            vol_t **out_vol, char *out_rel, size_t rel_cap);
 void afp_log_hex(const char *label, const uint8_t *buf, int len);
 
 #endif // AFP_INTERNAL_H

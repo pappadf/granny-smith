@@ -51,29 +51,32 @@ static const char *const k_afp_versions[] = {"AFPVersion 2.0", "AFPVersion 2.1"}
 // Volume table
 // ============================================================================
 
-// Note that `session` has this volume open.  Repeated FPOpenVol calls from one
-// session are idempotent, as the client expects.
-void vol_session_add(vol_t *v, uint16_t session) {
-    for (uint32_t i = 0; i < v->n_open_by; i++)
-        if (v->open_by[i] == session)
-            return;
-    if (v->n_open_by < AFP_MAX_SESSIONS)
-        v->open_by[v->n_open_by++] = session;
+// Add a session to a handle's set.  Repeated opens from one session are
+// idempotent, as the client expects; the set cannot fill, since it holds each
+// of at most AFP_MAX_SESSIONS sessions once.
+void session_set_add(afp_session_set_t *set, uint16_t session) {
+    if (!session_set_has(set, session) && set->n < AFP_MAX_SESSIONS)
+        set->ids[set->n++] = session;
 }
 
-// Forget that `session` had this volume open.
-void vol_session_remove(vol_t *v, uint16_t session) {
-    for (uint32_t i = 0; i < v->n_open_by; i++) {
-        if (v->open_by[i] != session)
+void session_set_remove(afp_session_set_t *set, uint16_t session) {
+    for (uint32_t i = 0; i < set->n; i++) {
+        if (set->ids[i] != session)
             continue;
-        v->open_by[i] = v->open_by[--v->n_open_by];
+        set->ids[i] = set->ids[--set->n];
         return;
     }
 }
 
+bool session_set_has(const afp_session_set_t *set, uint16_t session) {
+    for (uint32_t i = 0; i < set->n; i++)
+        if (set->ids[i] == session)
+            return true;
+    return false;
+}
+
 vol_t g_vols[AFP_MAX_VOLUMES];
 static uint32_t g_next_vol_id = 1; // atalk_id_alloc cursor
-uint16_t g_next_dt_ref = 0x0100;
 
 // Server identity and enablement (object model: appletalk.afp.*).
 static char g_afp_server_object[33] = AFP_ENTITY_OBJECT;
@@ -154,6 +157,13 @@ vol_t *find_vol_by_id(uint16_t id) {
         if (g_vols[i].in_use && g_vols[i].vol_id == id)
             return &g_vols[i];
     return NULL;
+}
+
+// The volume a request's Volume ID names, if the session has it open.  ParamErr
+// for anything else -- an ID another session opened is not this one's to use.
+vol_t *afp_session_vol(const afp_ctx_t *ctx, uint16_t vol_id) {
+    vol_t *v = find_vol_by_id(vol_id);
+    return (v && ctx && session_set_has(&v->open_by, ctx->session_id)) ? v : NULL;
 }
 
 vol_t *find_vol_by_name(const char *name) {
@@ -300,7 +310,7 @@ unsigned atalk_afp_volume_open_forks(int slot) {
     return atalk_afp_volume_in_use(slot) ? afp_fork_count_volume(g_vols[slot].vol_id) : 0;
 }
 unsigned atalk_afp_volume_sessions_using(int slot) {
-    return atalk_afp_volume_in_use(slot) ? g_vols[slot].n_open_by : 0;
+    return atalk_afp_volume_in_use(slot) ? g_vols[slot].open_by.n : 0;
 }
 unsigned atalk_afp_volume_catalog_generation(int slot) {
     return atalk_afp_volume_in_use(slot) ? afp_catalog_generation(g_vols[slot].catalog) : 0;
@@ -417,8 +427,10 @@ int atalk_afp_set_enabled(bool enabled, char *err, size_t err_len) {
         afp_nbp_withdraw();
         afp_fork_shutdown();
         atalk_asp_close_all_sessions();
-        for (int i = 0; i < AFP_MAX_VOLUMES; i++)
-            g_vols[i].n_open_by = 0;
+        for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
+            g_vols[i].open_by.n = 0;
+            g_vols[i].dt_open_by.n = 0;
+        }
         LOG(1, "AFP: server disabled");
     }
     return 0;

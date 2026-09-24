@@ -44,6 +44,7 @@ int stub_attention_count(void);
 #define OP_DELETE          0x08
 #define OP_ENUMERATE       0x09
 #define OP_FLUSH_FORK      0x0B
+#define OP_GET_FORK_PARMS  0x0E
 #define OP_GET_SRVR_PARMS  0x10
 #define OP_GET_VOL_PARMS   0x11
 #define OP_GET_SRVR_INFO   0x0F
@@ -66,6 +67,7 @@ int stub_attention_count(void);
 #define OP_EXCHANGE_FILES  0x2A
 #define OP_CAT_SEARCH      0x2B
 #define OP_OPEN_DT         0x30
+#define OP_CLOSE_DT        0x31
 #define OP_GET_ICON        0x33
 #define OP_GET_ICON_INFO   0x34
 #define OP_ADD_APPL        0x35
@@ -162,6 +164,13 @@ static uint32_t call(uint8_t opcode) {
     return afp_handle_command(SESSION, opcode, g_req, g_req_len, g_reply, (int)sizeof(g_reply), &g_reply_len);
 }
 
+// The same, for another session.
+static uint32_t call_as(uint16_t session, uint8_t opcode) {
+    g_reply_len = 0;
+    memset(g_reply, 0, sizeof(g_reply));
+    return afp_handle_command(session, opcode, g_req, g_req_len, g_reply, (int)sizeof(g_reply), &g_reply_len);
+}
+
 // --- share fixture ----------------------------------------------------------
 
 static char g_root[256];
@@ -208,8 +217,20 @@ static void login_as(const char *version) {
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_LOGIN));
 }
 
-// Open a fresh share with a unique root, open a session as ASP would, and log
-// in at 2.1 so the 2.1 calls are allowed.  Every test starts from this state.
+// FPOpenVol "TestVol" for `session`: a volume ID is served only to a session
+// that opened the volume.
+static void open_vol_as(uint16_t session) {
+    req_reset();
+    put8(0);
+    put16(0x0020); // Volume ID
+    put_pstr("TestVol");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(session, OP_OPEN_VOL));
+    ASSERT_EQ_INT(g_vol_id, rd16(g_reply + 2));
+}
+
+// Open a fresh share with a unique root, open a session as ASP would, log in
+// at 2.1 so the 2.1 calls are allowed, and open the volume.  Every test
+// starts from this state.
 static void fixture_up(const char *tag) {
     snprintf(g_root, sizeof(g_root), "/tmp/gs-afp-test-%d-%s", (int)getpid(), tag);
     rm_rf(g_root);
@@ -221,6 +242,7 @@ static void fixture_up(const char *tag) {
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(slot);
     ASSERT_TRUE(afp_session_opened(SESSION));
     login_as("AFPVersion 2.1");
+    open_vol_as(SESSION);
 }
 
 static void fixture_down(void) {
@@ -601,6 +623,7 @@ TEST(cnids_persist_across_a_share_remove_and_readd) {
     ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
 
     ASSERT_EQ_INT((int)alpha, (int)file_number("Alpha"));
     ASSERT_EQ_INT((int)beta, (int)file_number("Beta"));
@@ -625,6 +648,7 @@ TEST(catalog_survives_a_torn_tail_record) {
 
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
 
     // Everything before the torn record replayed; the truncated one did not,
     // so Beta is re-adopted with a fresh ID rather than the log being lost.
@@ -1443,7 +1467,7 @@ TEST(write_may_be_partial_and_reports_where_it_stopped) {
     put_bytes("ABCD", 4);
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_WRITE));
     ASSERT_EQ_INT(4, (int)rd32(g_reply));
-    ASSERT_EQ_INT(4, (int)afp_fork_length(afp_fork_find(ref)));
+    ASSERT_EQ_INT(4, (int)afp_fork_length(afp_fork_find(ref, SESSION)));
 
     // The client resumes from LastWritten.
     req_reset();
@@ -1556,6 +1580,7 @@ TEST(icons_survive_a_share_reopen) {
     ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
     dt = open_dt();
 
     // FPGetIcon: Pad(1) DTRefNum(2) Creator(4) FileType(4) IconType(1) Length(2).
@@ -1698,6 +1723,7 @@ TEST(comments_live_in_the_sidecar_and_follow_the_file) {
     ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
     dt = open_dt();
     req_reset();
     put8(0);
@@ -2153,12 +2179,6 @@ TEST(fork_refnums_are_never_reused_while_held) {
 
 // --- sessions and login (10-network C7, F-05) --------------------------------------
 
-static uint32_t call_as(uint16_t session, uint8_t opcode) {
-    g_reply_len = 0;
-    memset(g_reply, 0, sizeof(g_reply));
-    return afp_handle_command(session, opcode, g_req, g_req_len, g_reply, (int)sizeof(g_reply), &g_reply_len);
-}
-
 static void req_delete(const char *name) {
     req_vol_dir_path(g_vol_id, CNID_ROOT, name);
 }
@@ -2489,6 +2509,153 @@ TEST(host_paths_are_joined_from_real_names_only) {
     fixture_down();
 }
 
+// --- handles have owners (10-network E2, F-04) -----------------------------------
+
+// Open and log in a second session; with `open_vol`, open the volume too.
+static void second_session_up(uint16_t session, bool open_vol) {
+    ASSERT_TRUE(afp_session_opened(session));
+    req_reset();
+    put_pstr("AFPVersion 2.1");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(session, OP_LOGIN));
+    if (open_vol)
+        open_vol_as(session);
+}
+
+// A fork refnum is the opening session's handle.  Any session could read,
+// write, truncate, lock or close any other session's fork by its refnum.
+TEST(forks_belong_to_the_session_that_opened_them) {
+    fixture_up("forkowner");
+    write_file("held.txt", "HELD");
+    uint16_t ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("held.txt", false, 0x0003, &ref));
+    uint16_t other = 0x0044;
+    second_session_up(other, true);
+
+    const uint8_t ops[] = {OP_READ,       OP_WRITE,      OP_GET_FORK_PARMS, OP_SET_FORK_PARMS,
+                           OP_FLUSH_FORK, OP_CLOSE_FORK, OP_BYTE_RANGE_LOCK};
+    for (size_t i = 0; i < sizeof ops; i++) {
+        req_reset();
+        put8(0);
+        put16(ref);
+        if (ops[i] == OP_READ || ops[i] == OP_BYTE_RANGE_LOCK) {
+            put32(0);
+            put32(4);
+            put8(0);
+            put8(0);
+        } else if (ops[i] == OP_WRITE) {
+            put32(0);
+            put32(3);
+            put_bytes("XYZ", 3);
+        } else if (ops[i] == OP_GET_FORK_PARMS) {
+            put16(0x0200);
+        } else if (ops[i] == OP_SET_FORK_PARMS) {
+            put16(0x0200);
+            put32(0);
+        }
+        ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, ops[i]));
+    }
+
+    // The owner's fork is untouched: open, unlocked, and still "HELD".
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(4);
+    put8(0);
+    put8(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_READ));
+    ASSERT_EQ_INT(4, g_reply_len);
+    ASSERT_EQ_INT(0, memcmp(g_reply, "HELD", 4));
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(4);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_BYTE_RANGE_LOCK));
+    ASSERT_EQ_INT((int)ERR_OK, (int)close_fork(ref));
+    afp_session_closed(other);
+    fixture_down();
+}
+
+// A volume ID is served to the sessions that opened the volume.  Any logged-in
+// session could delete by a volume ID it never opened, and close another
+// session's volume.
+TEST(volume_ids_belong_to_the_sessions_that_opened_them) {
+    fixture_up("volowner");
+    write_file("keep.txt", "K");
+    uint16_t other = 0x0045;
+    second_session_up(other, false);
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put16(0x0020);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, OP_GET_VOL_PARMS));
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, OP_DELETE));
+    char path[512];
+    host_path("keep.txt", path, sizeof path);
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(path, &st));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, OP_CLOSE_VOL));
+    ASSERT_EQ_INT(1, (int)atalk_afp_volume_sessions_using(atalk_afp_volume_find("TestVol")));
+
+    // Opened, it is the other session's too; closed, it is gone for it alone.
+    open_vol_as(other);
+    ASSERT_EQ_INT(2, (int)atalk_afp_volume_sessions_using(atalk_afp_volume_find("TestVol")));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_CLOSE_VOL));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("keep.txt", 0x0100, 0x0100));
+    afp_session_closed(other);
+    fixture_down();
+}
+
+// FPGetIconInfo for a creator with no icons: ItemNotFound on an open
+// desktop database, ParamErr on a refnum the session does not hold.
+static uint32_t icon_info_as(uint16_t session, uint16_t dt) {
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x4E4F4E45u);
+    put16(1);
+    return call_as(session, OP_GET_ICON_INFO);
+}
+
+// A DTRefNum is held per session.  It was one global value per volume: one
+// session's FPCloseDT closed every session's, and a session that never
+// opened the desktop database could use it.
+TEST(desktop_refnums_belong_to_their_session) {
+    fixture_up("dtowner");
+    uint16_t dt = open_dt();
+    ASSERT_TRUE(dt != 0);
+    uint16_t other = 0x0046, third = 0x0047;
+    second_session_up(other, true);
+    second_session_up(third, true);
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_OPEN_DT));
+    ASSERT_EQ_INT(dt, rd16(g_reply)); // the volume's refnum
+    req_reset();
+    put8(0);
+    put16(dt);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_CLOSE_DT));
+
+    ASSERT_EQ_INT((int)ERR_ITEM_NOT_FOUND, (int)icon_info_as(SESSION, dt)); // still open here
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)icon_info_as(other, dt)); // closed there
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)icon_info_as(third, dt)); // never opened
+    afp_session_closed(other);
+    afp_session_closed(third);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2538,6 +2705,9 @@ int main(void) {
     RUN(path_type_and_length_are_checked);
     RUN(names_are_macroman_on_the_wire_and_utf8_on_the_host);
     RUN(host_paths_are_joined_from_real_names_only);
+    RUN(forks_belong_to_the_session_that_opened_them);
+    RUN(volume_ids_belong_to_the_sessions_that_opened_them);
+    RUN(desktop_refnums_belong_to_their_session);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

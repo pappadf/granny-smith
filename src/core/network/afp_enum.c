@@ -217,7 +217,7 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat dir_st;

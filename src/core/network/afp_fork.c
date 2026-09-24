@@ -196,10 +196,18 @@ static uint16_t deny_to_access(uint16_t deny) {
 
 // --- open / close ----------------------------------------------------------
 
+// The open fork holding a refnum, whichever session opened it.
+static afp_fork_t *fork_by_ref(uint16_t ref) {
+    for (afp_fork_t *fk = g_forks; fk; fk = fk->next)
+        if (fk->ref == ref)
+            return fk;
+    return NULL;
+}
+
 // A refnum is taken while an open fork holds it.
 static bool fork_ref_in_use(uint32_t ref, const void *ctx) {
     (void)ctx;
-    return afp_fork_find((uint16_t)ref) != NULL;
+    return fork_by_ref((uint16_t)ref) != NULL;
 }
 
 afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char *host_path, const char *rel_path,
@@ -261,11 +269,9 @@ afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char
     return AFP_FORK_OK;
 }
 
-afp_fork_t *afp_fork_find(uint16_t ref) {
-    for (afp_fork_t *fk = g_forks; fk; fk = fk->next)
-        if (fk->ref == ref)
-            return fk;
-    return NULL;
+afp_fork_t *afp_fork_find(uint16_t ref, uint16_t session_id) {
+    afp_fork_t *fk = fork_by_ref(ref);
+    return (fk && fk->session_id == session_id) ? fk : NULL;
 }
 
 uint16_t afp_fork_ref(const afp_fork_t *fk) {

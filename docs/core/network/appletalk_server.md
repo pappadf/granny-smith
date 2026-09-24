@@ -2741,6 +2741,10 @@ AFP 2.1 calls also need the login to have negotiated "AFPVersion 2.1".
 Anything else is refused -- `SessClosed` for a session that is not open,
 `UserNotAuth` before login -- and FPLogout returns the session to "open, not
 logged in". A disabled server refuses new sessions (ASP answers ServerBusy).
+Handles belong to sessions: a Volume ID is served to the sessions that opened
+the volume with FPOpenVol, and a fork refnum or DTRefNum to the session that
+opened it. Another session's handle is `ParamErr`, and closing it there leaves
+the owner's open. The DTRefNum is the volume's ID.
 
 The server is guest-only by design, and says so consistently: `FPGetSrvrInfo`
 advertises the single UAM "No User Authent", `FPLogin` accepts only that UAM,
