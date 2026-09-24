@@ -146,21 +146,6 @@ static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len);
 // Operations — small helpers
 // ============================================================================
 
-static uint32_t fourcc_of(const char *s) {
-    uint8_t b[4];
-    for (int i = 0; i < 4; i++)
-        b[i] = (s && s[i]) ? (uint8_t)s[i] : (uint8_t)' ';
-    return RD_BE32(b);
-}
-
-static void fourcc_str(uint32_t v, char out[5]) {
-    out[0] = (char)(v >> 24);
-    out[1] = (char)(v >> 16);
-    out[2] = (char)(v >> 8);
-    out[3] = (char)v;
-    out[4] = '\0';
-}
-
 // ============================================================================
 // Operations — the event table
 // ============================================================================
@@ -244,9 +229,9 @@ static bool aevt_write_event(ppc_session_t *s, const char *class4, const char *i
     WR_BE32(&msg[4], 0); // reserved
     // The embedded EventRecord is a header, not an event (§5.1).
     WR_BE16(&msg[8], AEVT_HLE_WHAT);
-    WR_BE32(&msg[10], fourcc_of(class4)); // message = event class
+    WR_BE32(&msg[10], fourcc_value(class4)); // message = event class
     WR_BE32(&msg[14], 0); // when: the receiver stamps it
-    WR_BE32(&msg[18], fourcc_of(id4)); // where = event ID
+    WR_BE32(&msg[18], fourcc_value(id4)); // where = event ID
     WR_BE16(&msg[22], is_reply ? AEVT_MODIFIER_REPLY : 0);
     WR_BE32(&msg[24], return_id);
     WR_BE32(&msg[28], 0); // posting options
@@ -254,8 +239,8 @@ static bool aevt_write_event(ppc_session_t *s, const char *class4, const char *i
     if (stream_len > 0)
         memcpy(&msg[AEVT_HLE_HEADER_SIZE], stream, (size_t)stream_len);
 
-    if (atalk_ppc_send_block(s, fourcc_of(class4), fourcc_of(id4), return_id, msg, AEVT_HLE_HEADER_SIZE + stream_len) !=
-        0) {
+    if (atalk_ppc_send_block(s, fourcc_value(class4), fourcc_value(id4), return_id, msg,
+                             AEVT_HLE_HEADER_SIZE + stream_len) != 0) {
         snprintf(err, err_len, "the session would not take the message");
         return false;
     }
@@ -334,12 +319,12 @@ static void aevt_session_block(void *ctx, ppc_session_t *s, uint32_t creator, ui
     // The class and ID live in the EventRecord overlay; the block header
     // carries them too, and we trust the overlay (§5.1).
     char class4[5], id4[5];
-    fourcc_str(RD_BE32(&payload[10]), class4);
-    fourcc_str(RD_BE32(&payload[18]), id4);
+    fourcc_text(RD_BE32(&payload[10]), class4);
+    fourcc_text(RD_BE32(&payload[18]), id4);
     if (class4[0] == '\0')
-        fourcc_str(creator, class4);
+        fourcc_text(creator, class4);
     if (id4[0] == '\0')
-        fourcc_str(type, id4);
+        fourcc_text(type, id4);
 
     const uint8_t *stream = payload + header_len;
     int avail = len - header_len;
