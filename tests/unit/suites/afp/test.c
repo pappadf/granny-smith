@@ -58,6 +58,7 @@ int stub_attention_count(void);
 #define OP_SET_FORK_PARMS  0x1F
 #define OP_SET_VOL_PARMS   0x20
 #define OP_WRITE           0x21
+#define OP_GET_USER_INFO   0x25
 #define OP_GET_FD_PARMS    0x22
 #define OP_SET_FD_PARMS    0x23
 #define OP_GET_SRVR_MSG    0x26
@@ -2941,6 +2942,26 @@ TEST(closing_a_volume_keeps_the_sessions_listings_on_others) {
     fixture_down();
 }
 
+// FPGetUserInfo with both bitmap bits writes 10 bytes; it checked for 6
+// (10-network F-11).  The dispatcher's floor refuses a short buffer before
+// the handler runs, and the bytes past it are untouched.
+TEST(get_user_info_never_writes_past_the_reply_buffer) {
+    fixture_up("userinfo");
+    uint8_t buf[16];
+    memset(buf, 0xEE, sizeof buf);
+    req_reset();
+    put8(0x01); // ThisUser
+    put32(0);
+    put16(0x0003); // User ID and Primary Group ID: 2 + 4 + 4 bytes
+    int len = 0;
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)afp_handle_command(SESSION, OP_GET_USER_INFO, g_req, g_req_len, buf, 6, &len));
+    for (int i = 6; i < (int)sizeof buf; i++)
+        ASSERT_EQ_INT(0xEE, buf[i]);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_USER_INFO)); // a real buffer
+    ASSERT_EQ_INT(10, g_reply_len);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3000,6 +3021,7 @@ int main(void) {
     RUN(a_reopened_store_keeps_every_icon_bitmap);
     RUN(a_withdrawn_volume_takes_its_listings_with_it);
     RUN(closing_a_volume_keeps_the_sessions_listings_on_others);
+    RUN(get_user_info_never_writes_past_the_reply_buffer);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
