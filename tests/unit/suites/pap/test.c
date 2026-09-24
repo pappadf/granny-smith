@@ -105,11 +105,13 @@ int atp_responder_send_packets(const ddp_header_t *d, const atp_packet_t *a, con
     (void)n;
     return 0;
 }
+static int g_close_replies;
 int atp_responder_send_simple(const ddp_header_t *d, const atp_packet_t *a, const uint8_t user[4], const uint8_t *pl,
                               int len, bool sts) {
     (void)d;
     (void)a;
-    (void)user;
+    if (user[1] == PAP_FUNC_CLOSE_REPLY)
+        g_close_replies++;
     (void)pl;
     (void)len;
     (void)sts;
@@ -146,19 +148,24 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
 
 // --- driving a job -------------------------------------------------------------
 
-static void open_conn(uint8_t conn) {
-    uint8_t open_data[4] = {200, 8, 0, 0}; // workstation socket, flow quantum
+// A PAP request from `node` on connection `conn`.
+static void request(uint8_t node, uint8_t conn, uint8_t func, const uint8_t *data, int len) {
     ddp_header_t ddp = {0};
-    ddp.llap.src = 10;
+    ddp.llap.src = node;
     ddp.src_socket = 200;
     ddp.type = DDP_TYPE_ATP;
     atp_packet_t atp = {0};
     atp.user[0] = conn;
-    atp.user[1] = PAP_FUNC_OPEN;
-    atp.data = open_data;
-    atp.data_len = 4;
+    atp.user[1] = func;
+    atp.data = data;
+    atp.data_len = len;
     atp.bitmap = 1;
     g_pap->handle_request(&ddp, &atp, g_pap_ctx);
+}
+
+static void open_conn(uint8_t conn) {
+    uint8_t open_data[4] = {200, 8, 0, 0}; // workstation socket, flow quantum
+    request(10, conn, PAP_FUNC_OPEN, open_data, 4);
     fire_timers(); // the printer's first SendData follows the OpenReply after a gap
 }
 
@@ -182,6 +189,7 @@ static void setup(void) {
     g_captures = 0;
     g_captured_len = 0;
     g_close_requests = 0;
+    g_close_replies = 0;
     memset(&g_req_cb, 0, sizeof(g_req_cb));
     atalk_printer_shutdown(); // the last test's connection goes
     g_n_armed = 0;
@@ -218,9 +226,25 @@ TEST(a_job_too_large_is_aborted) {
     ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
 }
 
+// A CloseConn ends the job only when it is the session's: its connection id
+// from the node that opened it.  Any id ended the active job (F-13).  A
+// foreign one is still answered with a CloseReply.
+TEST(a_foreign_closeconn_does_not_end_the_job) {
+    setup();
+    open_conn(5); // from node 10
+    request(99, 77, PAP_FUNC_CLOSE, NULL, 0); // another id, another node
+    request(99, 5, PAP_FUNC_CLOSE, NULL, 0); // the session's id, another node
+    ASSERT_EQ_INT(2, g_close_replies);
+    ASSERT_TRUE(strstr(atalk_printer_status_text(), "processing") != NULL);
+    request(10, 5, PAP_FUNC_CLOSE, NULL, 0); // the session's own
+    ASSERT_EQ_INT(3, g_close_replies);
+    ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
+}
+
 int main(void) {
     RUN(a_job_reaches_the_capture_sink_whole);
     RUN(a_job_too_large_is_aborted);
+    RUN(a_foreign_closeconn_does_not_end_the_job);
     printf("pap: all tests passed\n");
     return 0;
 }

@@ -226,7 +226,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp);
 static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp);
 static void pap_handle_close_conn(const ddp_header_t *ddp, atp_packet_t *atp);
 static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp);
-static void pap_handle_tickle(void);
+static void pap_handle_tickle(const ddp_header_t *ddp, const atp_packet_t *atp);
 static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *request, void *ctx);
 static const char *pap_func_name(uint8_t func);
 static void pap_format_request_detail(char *dst, size_t dst_len, uint8_t func, const atp_packet_t *packet);
@@ -1328,23 +1328,38 @@ static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp) {
     atp_responder_send_simple(ddp, atp, user, payload_len ? payload : NULL, payload_len, false);
 }
 
-// Handles PAP CloseConn requests by acknowledging and finalizing the job.
+// True when a request belongs to the active session: its connection id, from
+// the node and network that opened it.  The id is one byte the workstation
+// chose, so on its own it is anyone's -- a CloseConn with any id ended the
+// active job, and any Tickle kept it alive (10-network F-13).
+static bool pap_request_is_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
+    return g_session.active && atp->user[0] == g_session.conn_id && ddp->llap.src == g_session.client_addr.node &&
+           ddp->src_net == g_session.client_addr.net;
+}
+
+// Handles PAP CloseConn requests: always acknowledged, and the job ends when
+// the request is its session's.
 static void pap_handle_close_conn(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t user[4] = {atp->user[0], PAP_FUNC_CLOSE_REPLY, 0, 0};
     LOG(2, "PAP -> Mac CloseReply conn=%u", (unsigned)atp->user[0]);
     atp_responder_send_simple(ddp, atp, user, NULL, 0, false);
-    pap_session_finish(true, "client closed", false);
+    if (pap_request_is_session(ddp, atp))
+        pap_session_finish(true, "client closed", false);
+    else
+        LOG(2, "pap: CloseConn conn=%u from node %u is not the session's", (unsigned)atp->user[0],
+            (unsigned)ddp->llap.src);
 }
 
 // Handles PAP SendData requests issued by the workstation to read status text.
 static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t conn_id = atp->user[0];
-    bool same_conn = g_session.active && conn_id == g_session.conn_id;
+    bool same_conn = pap_request_is_session(ddp, atp);
     if (same_conn)
         pap_session_record_activity();
 
     uint16_t seq = (uint16_t)((atp->user[2] << 8) | atp->user[3]);
-    bool completion_match = (!same_conn && g_completion.active && conn_id == g_completion.conn_id);
+    bool completion_match = (!same_conn && g_completion.active && conn_id == g_completion.conn_id &&
+                             ddp->llap.src == g_completion.client_addr.node);
 
     if (same_conn) {
         if (!pap_status_queue_enqueue(ddp, atp)) {
@@ -1389,9 +1404,10 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     }
 }
 
-// Handles PAP tickle packets to keep the session alive.
-static void pap_handle_tickle(void) {
-    pap_session_record_activity();
+// Handles PAP tickle packets to keep the session alive -- its own, only.
+static void pap_handle_tickle(const ddp_header_t *ddp, const atp_packet_t *atp) {
+    if (pap_request_is_session(ddp, atp))
+        pap_session_record_activity();
 }
 
 // Central ATP socket handler for PAP requests arriving on HOST_PAP_SOCKET.
@@ -1441,7 +1457,7 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
         pap_handle_status_read(ddp, request);
         break;
     case PAP_FUNC_TICKLE:
-        pap_handle_tickle();
+        pap_handle_tickle(ddp, request);
         break;
     default:
         LOG(3, "pap: unhandled function %u", func);
