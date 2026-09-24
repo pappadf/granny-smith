@@ -41,6 +41,10 @@
 // ones as `appletalk.afp.volumes`.
 #define AFP_MAX_VOLUMES 8
 
+// The least reply buffer the dispatcher accepts: one ATP response packet,
+// which ASP always offers.  Every fixed-size reply fits in it.
+#define AFP_MIN_REPLY 578
+
 // Upper bound on concurrent ASP sessions, mirroring the stack's own table.
 #define AFP_MAX_SESSIONS 4
 
@@ -86,9 +90,10 @@ typedef struct {
     uint16_t session_id;
 } afp_ctx_t;
 
-// One command as its handler sees it: the session, the request (the opcode
-// byte at in[0]), and the reply buffer.  `out_len` starts at 0; a handler
-// that replies with data sets it.
+// One command as its handler sees it: the session, the request (in[0] is the
+// byte after the opcode, a pad or a flag byte), and the reply buffer -- never
+// less than AFP_MIN_REPLY, so a handler checks the room only for what can be
+// longer.  `out_len` starts at 0; a handler that replies with data sets it.
 typedef struct {
     afp_ctx_t *ctx;
     const uint8_t *in;
@@ -115,16 +120,22 @@ void afp_count_result(uint32_t result);
 
 // --- Paths and parameter blocks (afp_params.c) ---------------------------------
 
-int afp_write_param_area(bool is_dir, uint16_t bm, uint8_t *out, int p, int out_max, int *pos_long_off,
-                         int *pos_short_off);
-int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint16_t bm,
-                        int pos_long_off, int pos_short_off);
 // A share-relative path as a host path: afp_host_join under the volume root.
 bool afp_host_path(const vol_t *vol, const char *rel, char *out, size_t out_len);
 bool afp_stat_path(vol_t *vol, const char *rel, struct stat *st);
+// The parameters of one file or directory at `pbase`, as the bitmap selects
+// them: the fixed fields, then the names -- `rel`'s last element, or the
+// volume's name for its root -- padded to an even offset.  The one writer for
+// every reply that carries them.  Returns the end offset, or -1 if it does not
+// fit in `out_max`.
+int afp_emit_params(bool is_dir, vol_t *vol, const char *rel, const struct stat *st, uint16_t bm, uint8_t *out,
+                    int pbase, int out_max);
+// One result record of FPEnumerate or FPCatSearch at `w`: StructLength(1),
+// FileDir flag(1), then afp_emit_params.  Returns the offset after it, or -1
+// if it does not fit -- in `out_max`, or in StructLength's one byte.
+int afp_emit_record(bool is_dir, vol_t *vol, const char *rel, const struct stat *st, uint16_t bm, uint8_t *out, int w,
+                    int out_max);
 int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t dst_len);
-bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, const struct stat *st, uint16_t bm,
-                             uint8_t *out, int pbase);
 const afp_cat_entry_t *afp_entry_for(vol_t *vol, const char *rel_path);
 bool afp_build_child_path(const char *parent, const char *child, char *out, size_t out_len);
 int afp_write_vol_param_block(vol_t *v, uint16_t *bitmap_ptr, uint8_t *out, int out_max, bool afp21);
@@ -132,7 +143,6 @@ void afp_vol_touch(vol_t *vol);
 uint32_t afp_unix_time_to_afp(time_t t);
 uint32_t afp_parent_cnid(vol_t *vol, const char *rel_path);
 int afp_param_field_width(bool is_dir, int bit);
-int afp_param_field_ptr(bool is_dir, uint16_t bm, int pbase, int target_bit);
 // A pathname off the wire (Inside AppleTalk 13-10): the Pascal string's bytes,
 // CNode names separated by NULs.
 typedef struct {

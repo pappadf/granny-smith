@@ -219,8 +219,6 @@ static bool afp_inhibited(const char *host_path, uint16_t bit) {
 
 // FPGetSrvrParms (0x10) — server time plus the volume list.
 static uint32_t afp_cmd_get_srvr_parms(afp_req_t *r) {
-    if (r->out_max < 5)
-        return AFPERR_ParamErr;
     int count = 0;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++)
         if (g_vols[i].in_use)
@@ -250,7 +248,7 @@ static uint32_t afp_cmd_get_srvr_parms(afp_req_t *r) {
 
 // FPGetVolParms (0x11)
 static uint32_t afp_cmd_get_vol_parms(afp_req_t *r) {
-    if (r->in_len < 5 || r->out_max < 2)
+    if (r->in_len < 5)
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(r->in + 1);
     uint16_t bitmap = RD_BE16(r->in + 3);
@@ -357,8 +355,6 @@ static uint32_t afp_cmd_login(afp_req_t *r) {
         LOG(7, "AFP FPLogin: unsupported UAM → BadUAM");
         return AFPERR_BadUAM;
     }
-    if (r->out_max < 2)
-        return AFPERR_ParamErr;
     afp_session_t *s = afp_session(r->ctx->session_id);
     if (s) {
         s->state = AFP_SESS_LOGGED_IN;
@@ -405,8 +401,6 @@ static uint32_t afp_cmd_map_id(afp_req_t *r) {
     uint32_t id = RD_BE32(r->in + 1);
     const char *name = (id == 0) ? "" : (subfunc == 1 ? "guest" : "staff");
     uint8_t name_len = (uint8_t)strlen(name);
-    if (r->out_max < 1 + (int)name_len)
-        return AFPERR_ParamErr;
     r->out[0] = name_len;
     if (name_len)
         memcpy(r->out + 1, name, name_len);
@@ -415,7 +409,7 @@ static uint32_t afp_cmd_map_id(afp_req_t *r) {
 }
 
 static uint32_t afp_cmd_map_name(afp_req_t *r) {
-    if (r->in_len < 1 || r->out_max < 4)
+    if (r->in_len < 1)
         return AFPERR_ParamErr;
     WR_BE32(r->out, 0); // every name maps to the guest ID
     r->out_len = 4;
@@ -423,7 +417,7 @@ static uint32_t afp_cmd_map_name(afp_req_t *r) {
 }
 
 static uint32_t afp_cmd_get_user_info(afp_req_t *r) {
-    if (r->in_len < 5 || r->out_max < 6)
+    if (r->in_len < 5)
         return AFPERR_ParamErr;
     uint16_t bitmap = (r->in_len >= 7) ? RD_BE16(r->in + 5) : 0x0003;
     if (bitmap & ~0x0003u)
@@ -446,7 +440,7 @@ static uint32_t afp_cmd_get_user_info(afp_req_t *r) {
 // FPGetSrvrMsg (0x26) — AFP 2.1.  MsgType 0 = logon, 1 = server; the bitmap
 // currently selects only the message string itself (AFP_21_22 p. 55).
 static uint32_t afp_cmd_get_srvr_msg(afp_req_t *r) {
-    if (r->in_len < 5 || r->out_max < 4)
+    if (r->in_len < 5)
         return AFPERR_ParamErr;
     uint16_t msg_type = RD_BE16(r->in + 1);
     uint16_t bitmap = RD_BE16(r->in + 3);
@@ -457,8 +451,6 @@ static uint32_t afp_cmd_get_srvr_msg(afp_req_t *r) {
 
     uint8_t msg[AFP_META_COMMENT_MAX];
     size_t len = (size_t)afp_mac_text(g_afp_message, msg, sizeof(msg));
-    if (r->out_max < 4 + 1 + (int)len)
-        return AFPERR_ParamErr;
     WR_BE16(r->out + 0, msg_type);
     WR_BE16(r->out + 2, bitmap);
     r->out[4] = (uint8_t)len;
@@ -475,7 +467,7 @@ static uint32_t afp_cmd_get_srvr_msg(afp_req_t *r) {
 
 // FPOpenDir (0x19)
 static uint32_t afp_cmd_open_dir(afp_req_t *r) {
-    if (r->in_len < 10 || r->out_max < 4)
+    if (r->in_len < 10)
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(r->in + 1);
     uint32_t dir_id = RD_BE32(r->in + 3);
@@ -542,33 +534,13 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_req_t *r) {
     if (!afp_stat_path(vol, target_rel, &st))
         return AFPERR_ObjectNotFound;
     bool is_dir = S_ISDIR(st.st_mode);
-    uint16_t selected_bm = is_dir ? dir_bm : file_bm;
-    const char *name = target_rel[0] ? afp_last_component(target_rel) : vol->name;
-    if (!name)
-        name = vol->name;
-
-    if (r->out_max < 6)
-        return AFPERR_ParamErr;
     WR_BE16(r->out + 0, file_bm);
     WR_BE16(r->out + 2, dir_bm);
     r->out[4] = is_dir ? 0x80 : 0x00;
     r->out[5] = 0x00;
-
-    int pbase = 6;
-    int pos_long_off = -1, pos_short_off = -1;
-    int p = pbase;
-    if (selected_bm) {
-        p = afp_write_param_area(is_dir, selected_bm, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
-        if (p < 0)
-            return AFPERR_ParamErr;
-        if (!afp_populate_param_area(is_dir, vol, target_rel, &st, selected_bm, r->out, pbase))
-            return AFPERR_ParamErr;
-    }
-    int vpos = afp_write_name_vars(r->out, p, r->out_max, pbase, name, selected_bm, pos_long_off, pos_short_off);
+    int vpos = afp_emit_params(is_dir, vol, target_rel, &st, is_dir ? dir_bm : file_bm, r->out, 6, r->out_max);
     if (vpos < 0)
         return AFPERR_ParamErr;
-    if ((vpos % 2) && vpos < r->out_max)
-        r->out[vpos++] = 0x00;
     r->out_len = vpos;
     afp_log_hex("AFP FPGetFileDirParms resp", r->out, vpos);
     LOG(2, "AFP FPGetFileDirParms: vol=0x%04X type=%s path='%s' reply=%d", vol_id, is_dir ? "dir" : "file",
@@ -761,31 +733,14 @@ static uint32_t afp_cmd_open_fork(afp_req_t *r) {
         return afp_fork_status_to_err(st_open);
 
     afp_catalog_resolve_path(vol->catalog, target_rel, true, false);
-    if (r->out_max < 4)
-        return AFPERR_ParamErr;
     WR_BE16(r->out + 0, bitmap);
     WR_BE16(r->out + 2, fk ? afp_fork_ref(fk) : 0);
-
-    int pbase = 4;
-    int p = pbase;
-    if (bitmap) {
-        int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, vol, target_rel, &st, bitmap, r->out, pbase)) {
-            if (fk)
-                afp_fork_close(fk);
-            return AFPERR_ParamErr;
-        }
-        const char *name = afp_last_component(target_rel);
-        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
-        if (p < 0) {
-            if (fk)
-                afp_fork_close(fk);
-            return AFPERR_ParamErr;
-        }
+    int p = afp_emit_params(false, vol, target_rel, &st, bitmap, r->out, 4, r->out_max);
+    if (p < 0) {
+        if (fk)
+            afp_fork_close(fk);
+        return AFPERR_ParamErr;
     }
-    if (p % 2 && p < r->out_max)
-        r->out[p++] = 0x00;
     r->out_len = p;
     if (st_open == AFP_FORK_DENY_CONFLICT) {
         LOG(2, "AFP FPOpenFork: deny conflict on '%s' (%s)", target_rel, is_resource ? "rsrc" : "data");
@@ -853,7 +808,7 @@ static uint32_t afp_cmd_read(afp_req_t *r) {
 
 // FPWrite (0x21) — the payload follows the 11-byte parameter header.
 static uint32_t afp_cmd_write(afp_req_t *r) {
-    if (r->in_len < 11 || r->out_max < 4)
+    if (r->in_len < 11)
         return AFPERR_ParamErr;
     bool from_end = (r->in[0] & 0x80) != 0;
     uint32_t offset = RD_BE32(r->in + 3);
@@ -898,7 +853,7 @@ static uint32_t afp_cmd_write(afp_req_t *r) {
 
 // FPGetForkParms (0x0E)
 static uint32_t afp_cmd_get_fork_parms(afp_req_t *r) {
-    if (r->in_len < 5 || r->out_max < 2)
+    if (r->in_len < 5)
         return AFPERR_ParamErr;
     uint16_t bitmap = RD_BE16(r->in + 3);
     afp_fork_t *fk = NULL;
@@ -913,25 +868,9 @@ static uint32_t afp_cmd_get_fork_parms(afp_req_t *r) {
         return AFPERR_ObjectNotFound;
 
     WR_BE16(r->out + 0, bitmap);
-    int pbase = 2;
-    int p = pbase;
-    if (bitmap) {
-        int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, vol, afp_fork_rel_path(fk), &st, bitmap, r->out, pbase))
-            return AFPERR_ParamErr;
-        // Report the open fork's live length: the sidecar only catches up on
-        // flush, and the data fork may have grown since the stat above.
-        int lp = afp_param_field_ptr(false, bitmap, pbase, afp_fork_is_resource(fk) ? 10 : 9);
-        if (lp >= 0)
-            WR_BE32(r->out + lp, afp_fork_length(fk));
-        const char *name = afp_last_component(afp_fork_rel_path(fk));
-        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
-        if (p < 0)
-            return AFPERR_ParamErr;
-    }
-    if (p % 2 && p < r->out_max)
-        r->out[p++] = 0x00;
+    int p = afp_emit_params(false, vol, afp_fork_rel_path(fk), &st, bitmap, r->out, 2, r->out_max);
+    if (p < 0)
+        return AFPERR_ParamErr;
     r->out_len = p;
     return AFPERR_NoErr;
 }
@@ -981,7 +920,7 @@ static uint32_t afp_cmd_flush_fork(afp_req_t *r) {
 // FPByteRangeLock (0x01) — real ranges now, checked against every other open
 // of the same fork (WP-6).
 static uint32_t afp_cmd_byte_range_lock(afp_req_t *r) {
-    if (r->in_len < 11 || r->out_max < 4)
+    if (r->in_len < 11)
         return AFPERR_ParamErr;
     uint8_t flag = r->in[0];
     bool unlock = (flag & 0x01) != 0; // bit 0: 0 = lock, 1 = unlock
@@ -1018,7 +957,7 @@ static void afp_sidecar_rename(const char *old_full, const char *new_full) {
 
 // FPCreateDir (0x06)
 static uint32_t afp_cmd_create_dir(afp_req_t *r) {
-    if (r->in_len < 8 || r->out_max < 4)
+    if (r->in_len < 8)
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(r->in + 1);
     uint32_t dir_id = RD_BE32(r->in + 3);
@@ -1475,7 +1414,7 @@ static vol_t *find_vol_by_dt_ref(const afp_ctx_t *ctx, uint16_t dt_ref) {
 
 // FPOpenDT (0x30)
 static uint32_t afp_cmd_open_dt(afp_req_t *r) {
-    if (r->in_len < 3 || r->out_max < 2)
+    if (r->in_len < 3)
         return AFPERR_ParamErr;
     vol_t *v = afp_session_vol(r->ctx, RD_BE16(r->in + 1));
     if (!v)
@@ -1518,13 +1457,12 @@ static uint32_t afp_cmd_add_icon(afp_req_t *r) {
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
     const uint8_t *data = r->in + 19;
-    int avail = r->in_len - 19;
-    if (avail < 0)
-        avail = 0;
-    if (icon_size > avail)
-        icon_size = (uint16_t)avail;
     if (icon_size > AFP_ICON_MAX_BYTES)
         return AFPERR_IconTypeError;
+    // A bitmap shorter than its BitmapSize is a bad request, as a short FPWrite
+    // is -- not a smaller icon (10-network N-32).
+    if (icon_size > r->in_len - 19)
+        return AFPERR_ParamErr;
     // Replacing an existing icon with one of a different size is an error,
     // not a silent resize (appletalk_server.md FPAddIcon details).
     const afp_icon_t *existing = afp_desktop_get_icon(v->desktop, creator, file_type, icon_type);
@@ -1563,7 +1501,7 @@ static uint32_t afp_cmd_get_icon(afp_req_t *r) {
 
 // FPGetIconInfo (0x34)
 static uint32_t afp_cmd_get_icon_info(afp_req_t *r) {
-    if (r->in_len < 9 || r->out_max < 12)
+    if (r->in_len < 9)
         return AFPERR_ParamErr;
     vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
@@ -1642,7 +1580,7 @@ static uint32_t afp_cmd_remove_appl(afp_req_t *r) {
 
 // FPGetAPPL (0x37)
 static uint32_t afp_cmd_get_appl(afp_req_t *r) {
-    if (r->in_len < 9 || r->out_max < 6)
+    if (r->in_len < 9)
         return AFPERR_ParamErr;
     vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
@@ -1663,20 +1601,9 @@ static uint32_t afp_cmd_get_appl(afp_req_t *r) {
 
     WR_BE16(r->out + 0, bitmap);
     WR_BE32(r->out + 2, appl->tag);
-    int pbase = 6;
-    int p = pbase;
-    if (bitmap) {
-        int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, v, rel, &st, bitmap, r->out, pbase))
-            return AFPERR_ParamErr;
-        const char *name = afp_last_component(rel);
-        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
-        if (p < 0)
-            return AFPERR_ParamErr;
-    }
-    if (p % 2 && p < r->out_max)
-        r->out[p++] = 0x00;
+    int p = afp_emit_params(false, v, rel, &st, bitmap, r->out, 6, r->out_max);
+    if (p < 0)
+        return AFPERR_ParamErr;
     r->out_len = p;
     return AFPERR_NoErr;
 }
@@ -1778,10 +1705,6 @@ static uint32_t afp_cmd_get_comment(afp_req_t *r) {
     if (!meta.has_comment || meta.comment_len == 0)
         return AFPERR_ItemNotFound;
     int clen = meta.comment_len;
-    if (1 + clen > r->out_max)
-        clen = r->out_max - 1;
-    if (clen < 0)
-        return AFPERR_ParamErr;
     r->out[0] = (uint8_t)clen;
     memcpy(r->out + 1, meta.comment, (size_t)clen);
     r->out_len = 1 + clen;
@@ -1795,7 +1718,7 @@ static uint32_t afp_cmd_get_comment(afp_req_t *r) {
 // FPCreateID (0x27) — attach a file-ID thread to a file.  The CNID is already
 // the file's FileNumber; the thread is what makes it resolvable.
 static uint32_t afp_cmd_create_id(afp_req_t *r) {
-    if (r->in_len < 8 || r->out_max < 4)
+    if (r->in_len < 8)
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(r->in + 1);
     uint32_t dir_id = RD_BE32(r->in + 3);
@@ -1850,7 +1773,7 @@ static uint32_t afp_cmd_delete_id(afp_req_t *r) {
 
 // FPResolveID (0x29) — parameters for the file a file ID names.
 static uint32_t afp_cmd_resolve_id(afp_req_t *r) {
-    if (r->in_len < 9 || r->out_max < 2)
+    if (r->in_len < 9)
         return AFPERR_ParamErr;
     vol_t *vol = afp_session_vol(r->ctx, RD_BE16(r->in + 1));
     if (!vol)
@@ -1869,20 +1792,9 @@ static uint32_t afp_cmd_resolve_id(afp_req_t *r) {
         return AFPERR_IDNotFound; // dangling thread — the file is gone
 
     WR_BE16(r->out + 0, bitmap);
-    int pbase = 2;
-    int p = pbase;
-    if (bitmap) {
-        int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, vol, rel, &st, bitmap, r->out, pbase))
-            return AFPERR_ParamErr;
-        const char *name = afp_last_component(rel);
-        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
-        if (p < 0)
-            return AFPERR_ParamErr;
-    }
-    if (p % 2 && p < r->out_max)
-        r->out[p++] = 0x00;
+    int p = afp_emit_params(false, vol, rel, &st, bitmap, r->out, 2, r->out_max);
+    if (p < 0)
+        return AFPERR_ParamErr;
     r->out_len = p;
     LOG(10, "AFP FPResolveID: id=0x%08X → '%s'", file_id, rel);
     return AFPERR_NoErr;
@@ -2183,7 +2095,7 @@ static bool catsearch_matches(vol_t *vol, const char *rel, const char *name, boo
 }
 
 static uint32_t afp_cmd_cat_search(afp_req_t *r) {
-    if (r->in_len < 35 || r->out_max < 24)
+    if (r->in_len < 35)
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(r->in + 1);
     uint32_t req_matches = RD_BE32(r->in + 3);
@@ -2267,47 +2179,13 @@ static uint32_t afp_cmd_cat_search(afp_req_t *r) {
         if (!catsearch_matches(vol, rel, e->name, is_dir, &st, criteria, &s1, &s2, partial_name))
             continue;
 
-        // Result records use FPEnumerate's framing: length, File/Dir flag,
-        // then the parameters the result bitmap selects.
-        uint16_t bm = is_dir ? dir_bm : file_bm;
-        int header = w;
-        if (header + 2 > r->out_max) {
+        // Result records use FPEnumerate's framing.
+        int end = afp_emit_record(is_dir, vol, rel, &st, is_dir ? dir_bm : file_bm, r->out, w, r->out_max);
+        if (end < 0) {
             exhausted = false;
             break;
         }
-        r->out[header] = 0;
-        r->out[header + 1] = is_dir ? 0x80 : 0x00;
-        int pbase = header + 2;
-        int pos_long_off = -1, pos_short_off = -1;
-        int p = afp_write_param_area(is_dir, bm, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
-        if (p < 0) {
-            exhausted = false;
-            break;
-        }
-        if (!afp_populate_param_area(is_dir, vol, rel, &st, bm, r->out, pbase)) {
-            exhausted = false;
-            break;
-        }
-        int vpos = afp_write_name_vars(r->out, p, r->out_max, pbase, e->name, bm, pos_long_off, pos_short_off);
-        if (vpos < 0) {
-            exhausted = false;
-            break;
-        }
-        int struct_len = vpos - header;
-        if (struct_len & 1) {
-            if (vpos >= r->out_max) {
-                exhausted = false;
-                break;
-            }
-            r->out[vpos++] = 0x00;
-            struct_len++;
-        }
-        if (struct_len > 255) {
-            exhausted = false;
-            break;
-        }
-        r->out[header] = (uint8_t)struct_len;
-        w = vpos;
+        w = end;
         actual++;
     }
 
@@ -2396,6 +2274,15 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
                             int out_max, int *out_len) {
     if (out_len)
         *out_len = 0;
+    // Handlers write their fixed-size replies without checking the room: the
+    // reply buffer is never smaller than one ATP packet.  They used to check
+    // it one by one, some only after acting -- FPOpenFork after opening the
+    // fork, FPLogin after recording the version (10-network N-32).
+    if (!out || out_max < AFP_MIN_REPLY) {
+        LOG(1, "AFP: command 0x%02X refused — reply buffer of %d bytes", opcode, out_max);
+        afp_count_result(AFPERR_ParamErr);
+        return AFPERR_ParamErr;
+    }
     if (!g_afp_enabled) {
         LOG(2, "AFP: command 0x%02X refused — the server is disabled", opcode);
         return AFPERR_ServerGoingDown;

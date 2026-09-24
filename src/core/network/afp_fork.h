@@ -107,6 +107,10 @@ void afp_fork_repoint(const char *old_host_path, const char *new_host_path, cons
 // Current fork length in bytes.
 uint32_t afp_fork_length(afp_fork_t *fk);
 
+// The live length of a file's data or resource fork while any session has it
+// open; false when none does, and the host file or sidecar is current.
+bool afp_fork_live_length(const char *host_path, bool is_resource, uint32_t *out);
+
 // Read up to `count` bytes at `offset`.  `*out_read` receives the byte count.
 // Fails with AFP_FORK_LOCK_ERR when the range is locked by another handle.
 afp_fork_status_t afp_fork_read(afp_fork_t *fk, uint32_t offset, uint32_t count, uint8_t *buf, uint32_t *out_read);

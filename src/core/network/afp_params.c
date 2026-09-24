@@ -343,7 +343,7 @@ int afp_fixed_param_len(bool is_dir, uint16_t bm) {
 
 // Offset of one bitmap field inside a parameter area starting at `pbase`,
 // or -1 when the bit is not selected.
-int afp_param_field_ptr(bool is_dir, uint16_t bm, int pbase, int target_bit) {
+static int afp_param_field_ptr(bool is_dir, uint16_t bm, int pbase, int target_bit) {
     if (!(bm & (1u << target_bit)))
         return -1;
     int off = 0;
@@ -355,8 +355,8 @@ int afp_param_field_ptr(bool is_dir, uint16_t bm, int pbase, int target_bit) {
 
 // Reserve and zero the fixed part of a parameter area, remembering where the
 // long/short name offsets go.  Returns the end position, or -1 on overflow.
-int afp_write_param_area(bool is_dir, uint16_t bm, uint8_t *out, int p, int out_max, int *pos_long_off,
-                         int *pos_short_off) {
+static int afp_write_param_area(bool is_dir, uint16_t bm, uint8_t *out, int p, int out_max, int *pos_long_off,
+                                int *pos_short_off) {
     if (pos_long_off)
         *pos_long_off = -1;
     if (pos_short_off)
@@ -404,8 +404,8 @@ int afp_mac_text(const char *text, uint8_t *out, size_t cap) {
     return n;
 }
 
-int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint16_t bm,
-                        int pos_long_off, int pos_short_off) {
+static int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint16_t bm,
+                               int pos_long_off, int pos_short_off) {
     // The Mac name for the host name (10-network N-02: host names went out as
     // raw UTF-8, so "café" reached the Mac as "cafÃ©").
     uint8_t nm[255];
@@ -440,8 +440,8 @@ int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const ch
 // Fill a reserved parameter area with the object's real values.  Every field
 // a client can ask for is served from the catalog (IDs) or the AppleDouble
 // sidecar (dates, Finder Info, attributes) rather than being synthesised.
-bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, const struct stat *st, uint16_t bm,
-                             uint8_t *out, int pbase) {
+static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, const struct stat *st, uint16_t bm,
+                                    uint8_t *out, int pbase) {
     if (!st || !vol)
         return false;
     char full[PATH_MAX];
@@ -474,10 +474,13 @@ bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, cons
         memset(out + ptr, 0, 6);
 
     if (!is_dir) {
+        // An open fork's length is live: the sidecar catches up only on flush,
+        // and the data fork may have grown since the stat (10-network N-14).
+        uint32_t len;
         if ((ptr = afp_param_field_ptr(false, bm, pbase, 9)) >= 0)
-            WR_BE32(out + ptr, (uint32_t)st->st_size);
+            WR_BE32(out + ptr, afp_fork_live_length(full, false, &len) ? len : (uint32_t)st->st_size);
         if ((ptr = afp_param_field_ptr(false, bm, pbase, 10)) >= 0)
-            WR_BE32(out + ptr, afp_meta_rsrc_len(full));
+            WR_BE32(out + ptr, afp_fork_live_length(full, true, &len) ? len : afp_meta_rsrc_len(full));
     } else {
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 9)) >= 0)
             WR_BE16(out + ptr, afp_count_offspring(full));
@@ -489,6 +492,36 @@ bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, cons
             WR_BE32(out + ptr, AFP_ACCESS_RIGHTS_ALL);
     }
     return true;
+}
+
+int afp_emit_params(bool is_dir, vol_t *vol, const char *rel, const struct stat *st, uint16_t bm, uint8_t *out,
+                    int pbase, int out_max) {
+    int long_off = -1, short_off = -1;
+    int p = afp_write_param_area(is_dir, bm, out, pbase, out_max, &long_off, &short_off);
+    if (p < 0 || !afp_populate_param_area(is_dir, vol, rel, st, bm, out, pbase))
+        return -1;
+    const char *name = (rel && rel[0]) ? afp_last_component(rel) : vol->name;
+    p = afp_write_name_vars(out, p, out_max, pbase, name, bm, long_off, short_off);
+    if (p < 0)
+        return -1;
+    if (p % 2) {
+        if (p >= out_max)
+            return -1;
+        out[p++] = 0x00;
+    }
+    return p;
+}
+
+int afp_emit_record(bool is_dir, vol_t *vol, const char *rel, const struct stat *st, uint16_t bm, uint8_t *out, int w,
+                    int out_max) {
+    if (w + 2 > out_max)
+        return -1;
+    out[w + 1] = is_dir ? 0x80 : 0x00;
+    int end = afp_emit_params(is_dir, vol, rel, st, bm, out, w + 2, out_max);
+    if (end < 0 || end - w > 255)
+        return -1; // StructLength is one byte
+    out[w] = (uint8_t)(end - w);
+    return end;
 }
 
 int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t dst_len) {

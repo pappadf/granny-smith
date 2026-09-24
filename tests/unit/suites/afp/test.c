@@ -2656,6 +2656,138 @@ TEST(desktop_refnums_belong_to_their_session) {
     fixture_down();
 }
 
+// --- one writer for the parameter replies (10-network H2: N-14, N-32) ---------
+
+static uint32_t write_fork(uint16_t ref, const void *data, uint32_t n) {
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(n);
+    put_bytes(data, n);
+    return call(OP_WRITE);
+}
+
+// An open fork's length is live in every reply that carries it.  Only
+// FPGetForkParms reported it, and only for the fork it was asked about;
+// FPGetFileDirParms, FPEnumerate and a second FPOpenFork read the host file
+// and the sidecar, which catch up only on flush -- so they said 0.
+TEST(open_forks_report_their_live_length_in_every_reply) {
+    fixture_up("livelen");
+    write_file("live.txt", "");
+    uint16_t data_ref = 0, rsrc_ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("live.txt", false, 0x0003, &data_ref));
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("live.txt", true, 0x0003, &rsrc_ref));
+    uint8_t bytes[100];
+    memset(bytes, 0xA5, sizeof bytes);
+    ASSERT_EQ_INT((int)ERR_OK, (int)write_fork(data_ref, bytes, 37));
+    ASSERT_EQ_INT((int)ERR_OK, (int)write_fork(rsrc_ref, bytes, 100));
+    const uint16_t lengths = (1u << 9) | (1u << 10); // DataForkLen, RsrcForkLen
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("live.txt", lengths, 0));
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 6));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 10));
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(lengths);
+    put16(0); // no directories
+    put16(10);
+    put16(1);
+    put16(4096);
+    put_path("");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ENUMERATE));
+    ASSERT_EQ_INT(1, (int)rd16(g_reply + 4));
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 8));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 12));
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(lengths);
+    put16(0x0001); // read, deny nothing
+    put_path("live.txt");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_OPEN_FORK));
+    uint16_t second = rd16(g_reply + 2);
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 4));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 8));
+
+    req_reset();
+    put8(0);
+    put16(data_ref);
+    put16(lengths);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_FORK_PARMS));
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 2));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 6)); // the other fork's, too
+
+    close_fork(second);
+    close_fork(rsrc_ref);
+    close_fork(data_ref);
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("live.txt", lengths, 0)); // flushed on close
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 6));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 10));
+    fixture_down();
+}
+
+// A command refused for want of reply room does nothing.  FPOpenFork checked
+// the room after opening the fork, and left it open; FPLogin after logging
+// the session in.  The dispatcher now refuses a buffer below one ATP packet
+// before any handler runs.
+TEST(a_command_refused_for_reply_room_has_no_effect) {
+    fixture_up("replyroom");
+    write_file("f.txt", "F");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(0);
+    put16(0x0001);
+    put_path("f.txt");
+    int len = 0;
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)afp_handle_command(SESSION, OP_OPEN_FORK, g_req, g_req_len, g_reply, 2, &len));
+    ASSERT_EQ_INT(0, (int)afp_fork_count_total());
+
+    uint16_t other = 0x0048;
+    ASSERT_TRUE(afp_session_opened(other));
+    req_reset();
+    put_pstr("AFPVersion 2.1");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)afp_handle_command(other, OP_LOGIN, g_req, g_req_len, g_reply, 1, &len));
+    ASSERT_EQ_INT(0, (int)strlen(afp_session_version(other))); // not logged in
+    afp_session_closed(other);
+    fixture_down();
+}
+
+// An icon whose bitmap is shorter than its BitmapSize is refused, as a short
+// FPWrite is.  It was stored cut to what arrived.
+TEST(a_short_icon_bitmap_is_refused) {
+    fixture_up("shorticon");
+    uint16_t dt = open_dt();
+    uint8_t bitmap[100];
+    memset(bitmap, 0x3C, sizeof bitmap);
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x53484F52u); // 'SHOR'
+    put32(0x4150504Cu);
+    put8(1);
+    put8(0);
+    put32(0);
+    put16(256); // claims 256 bytes
+    put_bytes(bitmap, sizeof bitmap);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_ADD_ICON));
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x53484F52u);
+    put16(1);
+    ASSERT_EQ_INT((int)ERR_ITEM_NOT_FOUND, (int)call(OP_GET_ICON_INFO));
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2708,6 +2840,9 @@ int main(void) {
     RUN(forks_belong_to_the_session_that_opened_them);
     RUN(volume_ids_belong_to_the_sessions_that_opened_them);
     RUN(desktop_refnums_belong_to_their_session);
+    RUN(open_forks_report_their_live_length_in_every_reply);
+    RUN(a_command_refused_for_reply_room_has_no_effect);
+    RUN(a_short_icon_bitmap_is_refused);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

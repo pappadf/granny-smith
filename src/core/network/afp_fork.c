@@ -465,13 +465,23 @@ afp_fork_status_t afp_fork_range_lock(afp_fork_t *fk, bool unlock, bool end_rela
 
 // --- I/O -------------------------------------------------------------------
 
-uint32_t afp_fork_length(afp_fork_t *fk) {
-    if (!fk || !fk->backing || !fk->backing->f)
+static uint32_t backing_length(afp_backing_t *b) {
+    if (!b || !b->f || fseek(b->f, 0, SEEK_END) != 0)
         return 0;
-    if (fseek(fk->backing->f, 0, SEEK_END) != 0)
-        return 0;
-    long sz = ftell(fk->backing->f);
+    long sz = ftell(b->f);
     return sz < 0 ? 0 : (uint32_t)sz;
+}
+
+uint32_t afp_fork_length(afp_fork_t *fk) {
+    return fk ? backing_length(fk->backing) : 0;
+}
+
+bool afp_fork_live_length(const char *host_path, bool is_resource, uint32_t *out) {
+    afp_backing_t *b = host_path ? backing_find(host_path, is_resource) : NULL;
+    if (!b || !b->f)
+        return false;
+    *out = backing_length(b);
+    return true;
 }
 
 afp_fork_status_t afp_fork_read(afp_fork_t *fk, uint32_t offset, uint32_t count, uint8_t *buf, uint32_t *out_read) {

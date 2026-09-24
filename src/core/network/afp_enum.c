@@ -260,34 +260,10 @@ uint32_t afp_cmd_enumerate(afp_req_t *r) {
         uint16_t bm = entry->is_dir ? dir_bm : file_bm;
         if (bm == 0)
             continue; // this kind was not requested
-        int header = w;
-        if (header + 2 > max_bytes)
+        int end = afp_emit_record(entry->is_dir, vol, entry->rel, &entry->st, bm, r->out, w, max_bytes);
+        if (end < 0)
             break;
-        r->out[header] = 0; // struct length, patched below
-        r->out[header + 1] = entry->is_dir ? 0x80 : 0x00;
-        int pbase = header + 2;
-        int pos_long_off = -1, pos_short_off = -1;
-        int p = afp_write_param_area(entry->is_dir, bm, r->out, pbase, max_bytes, &pos_long_off, &pos_short_off);
-        if (p < 0)
-            break;
-        if (!afp_populate_param_area(entry->is_dir, vol, entry->rel, &entry->st, bm, r->out, pbase))
-            break;
-        int vpos = afp_write_name_vars(r->out, p, max_bytes, pbase, entry->name, bm, pos_long_off, pos_short_off);
-        if (vpos < 0)
-            break;
-        int struct_len = vpos - header;
-        if (struct_len <= 0)
-            break;
-        if (struct_len & 1) {
-            if (vpos >= max_bytes)
-                break;
-            r->out[vpos++] = 0x00;
-            struct_len++;
-        }
-        if (struct_len > 255)
-            break; // the per-entry length field is one byte
-        r->out[header] = (uint8_t)struct_len;
-        w = vpos;
+        w = end;
         actual++;
         left--;
     }
