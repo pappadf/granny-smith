@@ -12,5 +12,6 @@ EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
               ../../../../src/core/network/afp_desktop.c \
               ../../../../src/core/network/afp_fork.c \
               ../../../../src/core/network/afp_meta.c \
+              ../../../../src/core/storage/macroman.c \
               ../../../../src/peeler/lib/appledouble.c
 include ../../common.mk

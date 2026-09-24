@@ -136,8 +136,11 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
     while ((dent = readdir(dir)) != NULL) {
         if (strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0)
             continue;
-        if (afp_meta_is_hidden(dent->d_name))
-            continue; // sidecars and the .gs-afp control directory
+        // Sidecars and the .gs-afp control directory, and host names MacRoman
+        // cannot hold: listed under a lossy name, such a file could never be
+        // addressed again (10-network D-1).
+        if (!afp_name_visible(dent->d_name))
+            continue;
         char child_full[PATH_MAX];
         if (snprintf(child_full, sizeof(child_full), "%s/%s", full_dir, dent->d_name) >= (int)sizeof(child_full))
             continue;
@@ -206,8 +209,8 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
     uint16_t req_count = RD_BE16(in + 11);
     uint16_t start_index = RD_BE16(in + 13);
     uint16_t max_reply = RD_BE16(in + 15);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 18, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 17, &path) < 0)
         return AFPERR_ParamErr;
     if (start_index == 0)
         start_index = 1;
@@ -216,7 +219,7 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat dir_st;
@@ -271,9 +274,7 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
             break;
         if (!afp_populate_param_area(entry->is_dir, vol, entry->rel, &entry->st, bm, out, pbase))
             break;
-        size_t nlen = strlen(entry->name);
-        int vpos = afp_write_name_vars(out, p, max_bytes, pbase, entry->name, bm, pos_long_off, pos_short_off,
-                                       (uint8_t)(nlen > 255 ? 255 : nlen), (uint8_t)(nlen > 31 ? 31 : nlen));
+        int vpos = afp_write_name_vars(out, p, max_bytes, pbase, entry->name, bm, pos_long_off, pos_short_off);
         if (vpos < 0)
             break;
         int struct_len = vpos - header;

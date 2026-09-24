@@ -132,10 +132,16 @@ static void put_pstr(const char *s) {
     for (size_t i = 0; i < n; i++)
         put8((uint8_t)s[i]);
 }
-// A pathname argument is a PathType byte followed by the Pascal string.
+// A pathname argument is a PathType byte followed by the Pascal string.  An
+// AFP pathname separates its elements with NUL bytes (Inside AppleTalk 13-10);
+// tests write them as ':', the way a Mac client's own paths do, and this turns
+// them into NULs as the client's AppleShare driver would.
 static void put_path(const char *s) {
     put8(2); // 2 = long names
-    put_pstr(s);
+    size_t n = s ? strlen(s) : 0;
+    put8((uint8_t)n);
+    for (size_t i = 0; i < n; i++)
+        put8(s[i] == ':' ? 0 : (uint8_t)s[i]);
 }
 static void put_bytes(const void *p, size_t n) {
     memcpy(g_req + g_req_len, p, n);
@@ -569,11 +575,11 @@ TEST(cnid_survives_rename_move_and_is_never_reused) {
     put_path("Renamed");
     put_path(""); // destination path is the directory itself
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_MOVE_AND_RENAME));
-    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Folder/Renamed", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Folder:Renamed", 0x0100, 0x0100));
     ASSERT_EQ_INT((int)id, (int)rd32(g_reply + 6));
 
     // A deleted CNID is never handed out again.
-    req_vol_dir_path(g_vol_id, CNID_ROOT, "Folder/Renamed");
+    req_vol_dir_path(g_vol_id, CNID_ROOT, "Folder:Renamed");
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_DELETE));
     ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Fresh"));
     ASSERT_TRUE(file_number("Fresh") != id);
@@ -1789,7 +1795,7 @@ TEST(golden_error_codes_per_command) {
     // pathname is rejected outright, which the spec calls afpParmErr
     // ("pathname is null or bad"), not merely "not found".
     ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms(".gs-afp", 0x0100, 0x0100));
-    ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms(".gs-afp/catalog.gsc", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms(".gs-afp:catalog.gsc", 0x0100, 0x0100));
 
     // FPRename onto an existing name is afpObjectExists.
     req_reset();
@@ -2213,6 +2219,248 @@ TEST(a_disabled_server_takes_no_sessions) {
     afp_session_closed(0x0044);
 }
 
+// --- names and paths at the wire (10-network Track D) -------------------------------
+
+// A pathname with explicit PathType and bytes (NULs allowed).
+static void put_raw_path(uint8_t type, const void *bytes, size_t len) {
+    put8(type);
+    put8((uint8_t)len);
+    put_bytes(bytes, len);
+}
+
+// The long names FPEnumerate lists in the root, as Mac bytes.
+static int enum_root_names(char names[][96], int max) {
+    uint16_t actual = 0;
+    if (enumerate(1, 200, 8192, &actual) != ERR_OK)
+        return 0;
+    int pos = 6, n = 0;
+    for (int i = 0; i < actual && n < max; i++) {
+        int len = g_reply[pos];
+        int params = pos + 2;
+        int name = params + rd16(g_reply + params);
+        int nl = g_reply[name];
+        memcpy(names[n], g_reply + name + 1, (size_t)nl);
+        names[n][nl] = '\0';
+        n++;
+        pos += len;
+    }
+    return n;
+}
+
+static bool listed(const char *mac_name) {
+    char names[200][96];
+    int n = enum_root_names(names, 200);
+    for (int i = 0; i < n; i++)
+        if (strcmp(names[i], mac_name) == 0)
+            return true;
+    return false;
+}
+
+static bool host_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+// A new name is one element: it can hold '/', which is just a character in a
+// Mac name (the host sees ':'), but it cannot be "..", ".", one of the
+// server's own names, or two elements.  It went straight into a host path
+// join, so "../../x" renamed, moved or copied a file out of the share -- and
+// a directory moved that way got a CNID whose path was outside, so later calls
+// by that CNID worked outside too (F-01).
+TEST(new_names_cannot_leave_the_share) {
+    fixture_up("leaf");
+    char outside[300];
+    snprintf(outside, sizeof outside, "%s-outside", g_root);
+    rm_rf(outside);
+    ASSERT_EQ_INT(0, mkdir(outside, 0755));
+    const char *leaf = strrchr(outside, '/') + 1;
+    char escape[160];
+    snprintf(escape, sizeof escape, "../%s/escaped", leaf); // the Mac name "../<outside>/escaped"
+
+    write_file("a.txt", "A");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("a.txt");
+    put8(2);
+    put_pstr(escape);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_RENAME)); // a legal Mac name...
+    char p[600];
+    snprintf(p, sizeof p, "%s/escaped", outside);
+    ASSERT_TRUE(!host_exists(p)); // ...that stays in the share
+    snprintf(p, sizeof p, "%s/..:%s:escaped", g_root, leaf);
+    ASSERT_TRUE(host_exists(p));
+
+    write_file("b.txt", "B");
+    const char *bad[] = {"..", ".", "._b", ".gs-afp"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(CNID_ROOT);
+        put_path("b.txt");
+        put8(2);
+        put_pstr(bad[i]);
+        ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_RENAME));
+    }
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("b.txt");
+    put_raw_path(2, "x\0y", 3); // two elements
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_RENAME));
+
+    // FPMoveAndRename of a directory, then a file created under its CNID.
+    uint32_t dd = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("dd", &dd));
+    char dd_escape[160];
+    snprintf(dd_escape, sizeof dd_escape, "../%s/dd", leaf);
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put32(CNID_ROOT);
+    put_path("dd");
+    put_path("");
+    put8(2);
+    put_pstr(dd_escape);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_MOVE_AND_RENAME));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(dd);
+    put_path("planted");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_CREATE_FILE));
+    snprintf(p, sizeof p, "%s/dd/planted", outside);
+    ASSERT_TRUE(!host_exists(p));
+
+    // FPCopyFile creates its destination: the arbitrary-path write.
+    write_file("c.txt", "C");
+    char cp_escape[160];
+    snprintf(cp_escape, sizeof cp_escape, "../%s/copied", leaf);
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("c.txt");
+    put_path("");
+    put8(2);
+    put_pstr(cp_escape);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_COPY_FILE));
+    snprintf(p, sizeof p, "%s/copied", outside);
+    ASSERT_TRUE(!host_exists(p));
+    snprintf(p, sizeof p, "%s/._copied", outside);
+    ASSERT_TRUE(!host_exists(p));
+
+    rm_rf(outside);
+    fixture_down();
+}
+
+// AFP pathnames separate elements with NULs (Inside AppleTalk 13-10): a NUL
+// before the first name is ignored and each extra NUL climbs a level.  The
+// server truncated a pathname at its first NUL -- "sub\0f.txt" answered for
+// "sub" -- and split on ':', '/' and '\' instead (N-01).
+TEST(pathnames_separate_elements_with_nuls) {
+    fixture_up("nulpath");
+    uint32_t sub = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("sub", &sub));
+    write_file("sub/f.txt", "F");
+    write_file("x.txt", "X");
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("sub:f.txt", 0x0100, 0x0100));
+    ASSERT_EQ_INT(0, g_reply[4] & 0x80); // the file, not "sub"
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms(":sub:f.txt", 0x0100, 0x0100)); // leading NUL ignored
+    ASSERT_EQ_INT(0, g_reply[4] & 0x80);
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("sub::x.txt", 0x0100, 0x0100)); // up one, to the root
+    ASSERT_EQ_INT(0, g_reply[4] & 0x80);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms("::x.txt", 0x0100, 0x0100)); // above the root
+    fixture_down();
+}
+
+// The path type is 1 or 2 in AFP 2.x, and a Pascal length that runs past the
+// request is a bad parameter.  Every type was accepted (F-25), and a length
+// past the request was clamped: an FPDelete that claimed 10 bytes but carried
+// "abc" deleted "abc" (N-17).
+TEST(path_type_and_length_are_checked) {
+    fixture_up("ptype");
+    write_file("abc", "x");
+    const uint8_t types[] = {0, 3, 0x55};
+    for (size_t i = 0; i < sizeof types; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(CNID_ROOT);
+        put16(0x0100);
+        put16(0x0100);
+        put_raw_path(types[i], "abc", 3);
+        ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_GET_FD_PARMS));
+    }
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put8(2);
+    put8(10); // claims ten bytes...
+    put_bytes("abc", 3); // ...carries three
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_DELETE));
+    char p[512];
+    host_path("abc", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    fixture_down();
+}
+
+// Names are MacRoman on the wire and UTF-8 on the host, with a Mac '/' as a
+// host ':' -- the convention image_hfs.c already used (N-02, decision D-1).
+// They went across as raw bytes: "Résumé" became an invalid UTF-8 host name,
+// "café.txt" reached the Mac as mojibake, and "a/b" was split into a path.
+TEST(names_are_macroman_on_the_wire_and_utf8_on_the_host) {
+    fixture_up("names");
+    char p[512];
+    // Mac -> host
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_raw_path(2, "R\x8Esum\x8E", 6);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_CREATE_FILE));
+    host_path("R\xC3\xA9sum\xC3\xA9", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("a/b"));
+    host_path("a:b", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("a/b", 0x0100, 0x0100)); // and it can be found again
+
+    // host -> Mac
+    write_file("caf\xC3\xA9.txt", "x"); // UTF-8, composed
+    write_file("nfd"
+               "e\xCC\x81",
+               "x"); // e + COMBINING ACUTE, as macOS writes
+    // Raw MacRoman, as the old server wrote it.  Only a native host can hold
+    // such a name: emscripten's filesystems keep names as Unicode strings, so
+    // in the browser the byte became U+FFFD when it was written -- which is
+    // how, there, two Mac names differing in one accented letter came to share
+    // one host file.
+    write_file("legacy\x8E", "x");
+    write_file("\xE6\x97\xA5\xE6\x9C\xAC", "x"); // no MacRoman for it
+    ASSERT_TRUE(listed("caf\x8E.txt"));
+    ASSERT_TRUE(listed("nfd\x8E"));
+#ifndef __EMSCRIPTEN__
+    ASSERT_TRUE(listed("legacy\x8E"));
+#endif
+    ASSERT_TRUE(listed("a/b"));
+    ASSERT_TRUE(listed("R\x8Esum\x8E"));
+    char names[200][96];
+#ifndef __EMSCRIPTEN__
+    ASSERT_EQ_INT(5, enum_root_names(names, 200)); // the unrepresentable one is not listed
+#else
+    ASSERT_EQ_INT(4, enum_root_names(names, 200)); // ...nor the mangled legacy one
+#endif
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2257,6 +2505,10 @@ int main(void) {
     RUN(commands_need_an_open_logged_in_session);
     RUN(get_srvr_info_is_not_a_command);
     RUN(a_disabled_server_takes_no_sessions);
+    RUN(new_names_cannot_leave_the_share);
+    RUN(pathnames_separate_elements_with_nuls);
+    RUN(path_type_and_length_are_checked);
+    RUN(names_are_macroman_on_the_wire_and_utf8_on_the_host);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

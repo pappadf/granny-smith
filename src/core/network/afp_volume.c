@@ -504,13 +504,13 @@ void atalk_server_delete(void) {
 
 // Helper: write a Pascal string (length byte + bytes). Returns bytes written.
 static size_t write_pstr(uint8_t *dst, const char *cstr) {
-    size_t n = cstr ? strlen(cstr) : 0;
-    if (n > 255)
-        n = 255; // truncate to P-string max
-    dst[0] = (uint8_t)n;
-    if (n)
-        memcpy(dst + 1, cstr, n);
-    return 1 + n;
+    // The Mac name for a host string (the server name a script set).
+    uint8_t mac[255];
+    int m = afp_mac_name(cstr ? cstr : "", mac, sizeof(mac));
+    dst[0] = (uint8_t)m;
+    if (m)
+        memcpy(dst + 1, mac, (size_t)m);
+    return 1 + (size_t)m;
 }
 
 // Flags word we advertise.  Every bit here is backed by an implementation:

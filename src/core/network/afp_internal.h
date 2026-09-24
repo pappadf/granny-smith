@@ -100,8 +100,8 @@ void afp_count_result(uint32_t result);
 
 int afp_write_param_area(bool is_dir, uint16_t bm, uint8_t *out, int p, int out_max, int *pos_long_off,
                          int *pos_short_off);
-int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *nm, uint16_t bm, int pos_long_off,
-                        int pos_short_off, uint8_t long_len, uint8_t short_len);
+int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint16_t bm,
+                        int pos_long_off, int pos_short_off);
 bool afp_stat_path(vol_t *vol, const char *rel, struct stat *st);
 int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t dst_len);
 bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, const struct stat *st, uint16_t bm,
@@ -115,7 +115,28 @@ uint32_t afp_unix_time_to_afp(time_t t);
 uint32_t afp_parent_cnid(vol_t *vol, const char *rel_path);
 int afp_param_field_width(bool is_dir, int bit);
 int afp_param_field_ptr(bool is_dir, uint16_t bm, int pbase, int target_bit);
-bool afp_normalize_relative_path(const char *base_rel, const char *suffix, char *out, size_t out_len);
+// A pathname off the wire (Inside AppleTalk 13-10): the Pascal string's bytes,
+// CNode names separated by NULs.
+typedef struct {
+    int len;
+    uint8_t bytes[255];
+} afp_path_t;
+// Read PathType + pathname at `pos`: the position after it, or -1 (ParamErr)
+// for a path type other than 1 or 2 or a length past the request.
+int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out);
+// Resolve `path` below `base_rel` into a volume-relative host path.
+bool afp_walk_path(const char *base_rel, const afp_path_t *path, char *out, size_t out_len);
+// A new name (FPRename, FPMoveAndRename, FPCopyFile): exactly one element, as
+// its host name.
+bool afp_parse_leaf(const afp_path_t *path, char *out, size_t cap);
+// True if the server shows the host name `host_name` to clients: not one of
+// its own, and representable as a Mac name (10-network D-1).
+bool afp_name_visible(const char *host_name);
+// A host name, or a host string, as the Mac bytes that go on the wire (at most
+// `cap`); the length.  Names go through the name codec; text only through
+// MacRoman.  Either falls back to the raw bytes if it cannot convert.
+int afp_mac_name(const char *host_name, uint8_t *out, size_t cap);
+int afp_mac_text(const char *text, uint8_t *out, size_t cap);
 const char *afp_last_component(const char *rel_path);
 int afp_fixed_param_len(bool is_dir, uint16_t bm);
 void afp_extract_parent(const char *rel_path, char *parent, size_t parent_len);
@@ -131,7 +152,7 @@ void enum_snapshots_drop_session(uint16_t session_id);
 
 // --- Handlers and dispatch (appletalk_server.c) --------------------------------
 
-uint32_t afp_resolve_target(uint16_t vol_id, uint32_t dir_id, const char *path, vol_t **out_vol, char *out_rel,
+uint32_t afp_resolve_target(uint16_t vol_id, uint32_t dir_id, const afp_path_t *path, vol_t **out_vol, char *out_rel,
                             size_t rel_cap);
 void afp_log_hex(const char *label, const uint8_t *buf, int len);
 

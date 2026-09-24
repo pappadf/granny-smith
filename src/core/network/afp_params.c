@@ -7,6 +7,7 @@
 // Part of the AFP server; afp_internal.h has what its files share.
 
 #include "afp_internal.h"
+#include "macroman.h"
 
 #include "afp_catalog.h"
 #include "afp_desktop.h"
@@ -61,9 +62,13 @@ static bool afp_path_pop(char *path) {
     return true;
 }
 
+static bool afp_valid_element(const char *name);
+
+// Append one element to a volume-relative path.  The element is checked here
+// too, whatever its source: nothing may walk a path out of its volume.
 static bool afp_append_component(char *path, size_t path_len, const char *component) {
-    if (!path || !component || !*component)
-        return true;
+    if (!path || !afp_valid_element(component))
+        return false;
     size_t curr = strlen(path);
     size_t comp_len = strlen(component);
     size_t needed = curr + (curr ? 1 : 0) + comp_len + 1;
@@ -75,34 +80,47 @@ static bool afp_append_component(char *path, size_t path_len, const char *compon
     return true;
 }
 
-static bool afp_process_component(char *path, size_t path_len, const char *component) {
-    if (!path || !component)
-        return false;
-    if (*component == '\0' || strcmp(component, "..") == 0) {
-        if (*path == '\0')
-            return false;
-        return afp_path_pop(path);
-    }
-    if (strcmp(component, ".") == 0)
-        return true;
-    char clean[AFP_MAX_NAME];
-    size_t len = 0;
-    for (const char *p = component; *p && len + 1 < sizeof(clean); p++) {
-        if (*p == '/' || *p == ':')
-            continue;
-        clean[len++] = *p;
-    }
-    clean[len] = '\0';
-    if (len == 0)
-        return true;
-    // Defense in depth: no client path may name the server's control
-    // directory, even though FPEnumerate already hides it (§4.1).
-    if (afp_meta_is_hidden(clean))
-        return false;
-    return afp_append_component(path, path_len, clean);
+// A host name that may be one element of a volume-relative path: not empty,
+// not "." or "..", and holding no '/'.
+static bool afp_valid_element(const char *name) {
+    return name && *name && strcmp(name, ".") != 0 && strcmp(name, "..") != 0 && !strchr(name, '/');
 }
 
-bool afp_normalize_relative_path(const char *base_rel, const char *suffix, char *out, size_t out_len) {
+// One element of a client's path or new name, as the host name it stands for
+// (macroman_name_to_host: MacRoman to UTF-8, '/' to ':').  False for a name
+// that cannot be one element -- "..", ".", or anything the conversion refuses
+// (':' is illegal in a Mac name) -- and for the names the server keeps for
+// itself (§4.1).
+static bool afp_client_element(const uint8_t *bytes, size_t len, char *host, size_t cap) {
+    if (len == 0 || !macroman_name_to_host(bytes, len, host, cap))
+        return false;
+    return afp_valid_element(host) && !afp_meta_is_hidden(host);
+}
+
+int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out) {
+    if (!in || !out || pos < 0 || pos + 2 > in_len)
+        return -1;
+    // 1 = short names, 2 = long names (Inside AppleTalk 13-10).  3 is AFP 3's
+    // UTF-8; 0 is no 2.x path type at all.  The host has one name per file, so
+    // both 2.x types resolve alike.
+    uint8_t type = in[pos];
+    if (type != 1 && type != 2)
+        return -1;
+    uint8_t len = in[pos + 1];
+    if (pos + 2 + len > in_len)
+        return -1; // claims more bytes than the request holds
+    out->len = len;
+    memcpy(out->bytes, in + pos + 2, len);
+    return pos + 2 + len;
+}
+
+// Resolve `path` below `base_rel` (Inside AppleTalk 13-10): CNode names
+// separated by NUL bytes; a single NUL before the first name is ignored, and
+// each NUL beyond the first in a run climbs one level.  This used to copy the
+// pathname into a C string -- so everything after the first NUL was lost and
+// "sub\0file" named "sub" -- and split it on ':', '/' and '\\' instead, so a
+// Mac name holding a '/' became two host path elements (10-network N-01).
+bool afp_walk_path(const char *base_rel, const afp_path_t *path, char *out, size_t out_len) {
     if (!out || out_len == 0)
         return false;
     out[0] = '\0';
@@ -111,33 +129,40 @@ bool afp_normalize_relative_path(const char *base_rel, const char *suffix, char 
             return false;
         strcpy(out, base_rel);
     }
-    if (!suffix || !*suffix)
-        return true;
-    char token[AFP_MAX_NAME];
-    size_t token_len = 0;
-    for (size_t i = 0;; i++) {
-        char ch = suffix[i];
-        bool is_sep = (ch == '\0') || ch == ':' || ch == '/' || ch == '\\';
-        if (!is_sep) {
-            if (token_len + 1 < sizeof(token))
-                token[token_len++] = ch;
-        }
-        if (is_sep) {
-            token[token_len] = '\0';
-            if (token_len == 0 && ch != '\0') {
-                if (*out == '\0')
-                    return false;
-                if (!afp_path_pop(out))
-                    return false;
-            } else if (token_len > 0 && !afp_process_component(out, out_len, token)) {
-                return false;
+    int i = 0;
+    while (path && i < path->len) {
+        if (path->bytes[i] == 0) {
+            int run = 0;
+            while (i < path->len && path->bytes[i] == 0) {
+                run++;
+                i++;
             }
-            token_len = 0;
-            if (ch == '\0')
-                break;
+            for (int up = 1; up < run; up++)
+                if (!*out || !afp_path_pop(out))
+                    return false; // above the volume root
+            continue;
         }
+        int start = i;
+        while (i < path->len && path->bytes[i] != 0)
+            i++;
+        char host[AFP_MAX_NAME * 3 + 1];
+        if (!afp_client_element(path->bytes + start, (size_t)(i - start), host, sizeof(host)))
+            return false;
+        if (!afp_append_component(out, out_len, host))
+            return false;
     }
     return true;
+}
+
+bool afp_parse_leaf(const afp_path_t *path, char *out, size_t cap) {
+    if (!path || memchr(path->bytes, 0, (size_t)path->len))
+        return false; // a new name is one element: no separators
+    return afp_client_element(path->bytes, (size_t)path->len, out, cap);
+}
+
+bool afp_name_visible(const char *host_name) {
+    uint8_t mac[255];
+    return !afp_meta_is_hidden(host_name) && macroman_name_from_host(host_name, mac, sizeof(mac)) > 0;
 }
 
 void afp_extract_parent(const char *rel_path, char *parent, size_t parent_len) {
@@ -252,8 +277,8 @@ uint16_t afp_count_offspring(const char *full_path) {
     while ((ent = readdir(dir)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        if (afp_meta_is_hidden(ent->d_name))
-            continue; // sidecars and .gs-afp are not AFP-visible
+        if (!afp_name_visible(ent->d_name))
+            continue; // sidecars, .gs-afp, and names no Mac name can hold
         if (++count >= UINT16_MAX)
             break;
     }
@@ -367,10 +392,39 @@ int afp_write_param_area(bool is_dir, uint16_t bm, uint8_t *out, int p, int out_
     return p;
 }
 
-int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *nm, uint16_t bm, int pos_long_off,
-                        int pos_short_off, uint8_t long_len, uint8_t short_len) {
-    if (!nm)
-        nm = "";
+int afp_mac_name(const char *host_name, uint8_t *out, size_t cap) {
+    // Every file name the server lists passed afp_name_visible, so the
+    // conversion holds for those; a name that somehow does not (a volume or
+    // server name a script set) goes out as its raw bytes rather than not at all.
+    const char *h = host_name ? host_name : "";
+    int n = macroman_name_from_host(h, out, cap);
+    if (n >= 0)
+        return n;
+    size_t raw = strlen(h);
+    n = (int)(raw > cap ? cap : raw);
+    memcpy(out, h, (size_t)n);
+    return n;
+}
+
+int afp_mac_text(const char *text, uint8_t *out, size_t cap) {
+    const char *t = text ? text : "";
+    int n = macroman_from_utf8(t, out, cap);
+    if (n >= 0)
+        return n;
+    size_t raw = strlen(t);
+    n = (int)(raw > cap ? cap : raw);
+    memcpy(out, t, (size_t)n);
+    return n;
+}
+
+int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint16_t bm,
+                        int pos_long_off, int pos_short_off) {
+    // The Mac name for the host name (10-network N-02: host names went out as
+    // raw UTF-8, so "café" reached the Mac as "cafÃ©").
+    uint8_t nm[255];
+    int n = afp_mac_name(host_name, nm, sizeof(nm));
+    uint8_t long_len = (uint8_t)n;
+    uint8_t short_len = (uint8_t)(n > 31 ? 31 : n);
     if ((bm & (1u << 6))) {
         if (vpos + 1 + (int)long_len > out_max)
             return -1;
@@ -453,17 +507,16 @@ bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, cons
 int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t dst_len) {
     if (!in || !dst || dst_len == 0 || pos >= in_len)
         return -1;
+    // Strict: a length that runs past the request, or past `dst`, is a bad
+    // parameter -- not a shorter string.  (Clamping it made an FPDelete that
+    // claimed 10 bytes but carried "abc" delete "abc": 10-network N-17.)
     uint8_t raw_len = in[pos++];
-    if (pos + raw_len > in_len)
-        raw_len = (uint8_t)((in_len > pos) ? (in_len - pos) : 0);
-    size_t copy_len = raw_len;
-    if (copy_len >= dst_len)
-        copy_len = dst_len - 1;
-    if (copy_len > 0)
-        memcpy(dst, &in[pos], copy_len);
-    dst[copy_len] = '\0';
-    pos += raw_len;
-    return pos;
+    if (pos + raw_len > in_len || (size_t)raw_len >= dst_len)
+        return -1;
+    if (raw_len > 0)
+        memcpy(dst, &in[pos], raw_len);
+    dst[raw_len] = '\0';
+    return pos + raw_len;
 }
 
 // ============================================================================
@@ -522,9 +575,8 @@ int afp_write_vol_param_block(vol_t *v, uint16_t *bitmap_ptr, uint8_t *out, int 
         if (bitmap & (1u << b))
             fixed_len += k_vol_widths[b];
 
-    size_t name_len = strlen(v->name);
-    if (name_len > 255)
-        name_len = 255;
+    uint8_t mac_name[255];
+    size_t name_len = (size_t)afp_mac_name(v->name, mac_name, sizeof(mac_name));
     int var_len = (bitmap & 0x0100) ? 1 + (int)name_len : 0;
     int total_len = 2 + fixed_len + var_len;
     if (total_len > out_max) {
@@ -589,7 +641,7 @@ int afp_write_vol_param_block(vol_t *v, uint16_t *bitmap_ptr, uint8_t *out, int 
             return vpos;
         out[vpos++] = (uint8_t)name_len;
         if (name_len) {
-            memcpy(&out[vpos], v->name, name_len);
+            memcpy(&out[vpos], mac_name, name_len);
             vpos += (int)name_len;
         }
     }

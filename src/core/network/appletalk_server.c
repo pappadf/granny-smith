@@ -29,6 +29,7 @@
 #include "atalk_id.h"
 #include "common.h"
 #include "log.h"
+#include "macroman.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -150,7 +151,7 @@ static bool afp_session_is_21(const afp_ctx_t *ctx) {
 // Resolve the (Volume ID, Directory ID, Pathname) triple every catalog call
 // carries into a volume plus a volume-relative path.  Returns an AFP result
 // code; AFPERR_NoErr means `*out_vol` / `out_rel` are usable.
-uint32_t afp_resolve_target(uint16_t vol_id, uint32_t dir_id, const char *path, vol_t **out_vol, char *out_rel,
+uint32_t afp_resolve_target(uint16_t vol_id, uint32_t dir_id, const afp_path_t *path, vol_t **out_vol, char *out_rel,
                             size_t rel_cap) {
     vol_t *vol = find_vol_by_id(vol_id);
     if (!vol)
@@ -158,7 +159,7 @@ uint32_t afp_resolve_target(uint16_t vol_id, uint32_t dir_id, const char *path, 
     char base[AFP_MAX_REL_PATH];
     if (!afp_dir_rel_path(vol, dir_id, base, sizeof(base)))
         return AFPERR_DirNotFound;
-    if (!afp_normalize_relative_path(base, path, out_rel, rel_cap))
+    if (!afp_walk_path(base, path, out_rel, rel_cap))
         return AFPERR_ParamErr;
     if (out_vol)
         *out_vol = vol;
@@ -221,8 +222,8 @@ static uint32_t afp_cmd_get_srvr_parms(afp_ctx_t *ctx, const uint8_t *in, int in
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
         if (!g_vols[i].in_use)
             continue;
-        const char *name = g_vols[i].name;
-        size_t n = strlen(name);
+        uint8_t name[255];
+        size_t n = (size_t)afp_mac_name(g_vols[i].name, name, sizeof(name));
         if (n > 31)
             n = 31; // HFS name limit
         if (pos + 2 + (int)n > out_max)
@@ -264,10 +265,13 @@ static uint32_t afp_cmd_open_vol(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
         return AFPERR_ParamErr;
     afp_log_hex("AFP FPOpenVol req", in, in_len);
     uint16_t bitmap = RD_BE16(in + 1);
-    char vol_name[33];
-    int pos = afp_read_pstring(in, in_len, 3, vol_name, sizeof(vol_name));
+    char mac_name[33];
+    int pos = afp_read_pstring(in, in_len, 3, mac_name, sizeof(mac_name));
     if (pos < 0)
         return AFPERR_ParamErr;
+    char vol_name[33 * 3 + 1];
+    if (!macroman_name_to_host((const uint8_t *)mac_name, strlen(mac_name), vol_name, sizeof(vol_name)))
+        return AFPERR_ObjectNotFound;
 
     vol_t *v = find_vol_by_name(vol_name);
     if (!v)
@@ -489,10 +493,8 @@ static uint32_t afp_cmd_get_srvr_msg(afp_ctx_t *ctx, const uint8_t *in, int in_l
     if (msg_type > 1)
         return AFPERR_ParamErr;
 
-    const char *msg = g_afp_message;
-    size_t len = strlen(msg);
-    if (len > AFP_META_COMMENT_MAX)
-        len = AFP_META_COMMENT_MAX;
+    uint8_t msg[AFP_META_COMMENT_MAX];
+    size_t len = (size_t)afp_mac_text(g_afp_message, msg, sizeof(msg));
     if (out_max < 4 + 1 + (int)len)
         return AFPERR_ParamErr;
     WR_BE16(out + 0, msg_type);
@@ -518,13 +520,13 @@ static uint32_t afp_cmd_open_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t dir_id = RD_BE32(in + 3);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -575,15 +577,15 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, in
     uint32_t dir_id = RD_BE32(in + 3);
     uint16_t file_bm = RD_BE16(in + 7);
     uint16_t dir_bm = RD_BE16(in + 9);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 12, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 11, &path) < 0)
         return AFPERR_ParamErr;
     if (file_bm == 0 && dir_bm == 0)
         return AFPERR_BitmapErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -612,9 +614,7 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, in
         if (!afp_populate_param_area(is_dir, vol, target_rel, &st, selected_bm, out, pbase))
             return AFPERR_ParamErr;
     }
-    size_t nlen = strlen(name);
-    int vpos = afp_write_name_vars(out, p, out_max, pbase, name, selected_bm, pos_long_off, pos_short_off,
-                                   (uint8_t)(nlen > 255 ? 255 : nlen), (uint8_t)(nlen > 31 ? 31 : nlen));
+    int vpos = afp_write_name_vars(out, p, out_max, pbase, name, selected_bm, pos_long_off, pos_short_off);
     if (vpos < 0)
         return AFPERR_ParamErr;
     if ((vpos % 2) && vpos < out_max)
@@ -648,14 +648,14 @@ static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len) {
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t dir_id = RD_BE32(in + 3);
     uint16_t bitmap = RD_BE16(in + 7);
-    char path[AFP_MAX_NAME];
-    int pos = afp_read_pstring(in, in_len, 10, path, sizeof(path));
+    afp_path_t path;
+    int pos = afp_read_path(in, in_len, 9, &path);
     if (pos < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -801,13 +801,13 @@ static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     uint32_t dir_id = RD_BE32(in + 3);
     uint16_t bitmap = RD_BE16(in + 7);
     uint16_t access_mode = RD_BE16(in + 9);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 12, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 11, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -846,9 +846,7 @@ static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len,
             return AFPERR_ParamErr;
         }
         const char *name = afp_last_component(target_rel);
-        size_t nlen = name ? strlen(name) : 0;
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off,
-                                (uint8_t)(nlen > 255 ? 255 : nlen), (uint8_t)(nlen > 31 ? 31 : nlen));
+        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0) {
             if (fk)
                 afp_fork_close(fk);
@@ -1018,9 +1016,7 @@ static uint32_t afp_cmd_get_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in
         if (lp >= 0)
             WR_BE32(out + lp, afp_fork_length(fk));
         const char *name = afp_last_component(afp_fork_rel_path(fk));
-        size_t nlen = name ? strlen(name) : 0;
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off,
-                                (uint8_t)(nlen > 255 ? 255 : nlen), (uint8_t)(nlen > 31 ? 31 : nlen));
+        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0)
             return AFPERR_ParamErr;
     }
@@ -1140,13 +1136,13 @@ static uint32_t afp_cmd_create_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t dir_id = RD_BE32(in + 3);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1186,13 +1182,13 @@ static uint32_t afp_cmd_create_file(afp_ctx_t *ctx, const uint8_t *in, int in_le
     bool hard_create = (in[0] & 0x80) != 0;
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t dir_id = RD_BE32(in + 3);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1255,13 +1251,13 @@ static uint32_t afp_cmd_delete(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t dir_id = RD_BE32(in + 3);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1336,18 +1332,22 @@ static uint32_t afp_cmd_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t dir_id = RD_BE32(in + 3);
-    char old_name[AFP_MAX_NAME];
-    int pos = afp_read_pstring(in, in_len, 8, old_name, sizeof(old_name));
+    afp_path_t old_name;
+    int pos = afp_read_path(in, in_len, 7, &old_name);
     if (pos < 0 || pos >= in_len)
         return AFPERR_ParamErr;
-    pos++; // new pathname's PathType byte
-    char new_name[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, pos, new_name, sizeof(new_name)) < 0)
+    // The new name is one element, decoded like any other: "..", a name with a
+    // separator in it, or one of the server's own names is a bad NewName.  It
+    // went straight into a host path join, so "../../x" renamed a file out of
+    // the share (10-network F-01).
+    afp_path_t new_path;
+    char new_name[AFP_MAX_NAME * 3 + 1];
+    if (afp_read_path(in, in_len, pos, &new_path) < 0 || !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char old_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, old_name, &vol, old_rel, sizeof(old_rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &old_name, &vol, old_rel, sizeof(old_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!old_rel[0])
@@ -1402,31 +1402,33 @@ static uint32_t afp_cmd_move_and_rename(afp_ctx_t *ctx, const uint8_t *in, int i
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t src_dir_id = RD_BE32(in + 3);
     uint32_t dst_dir_id = RD_BE32(in + 7);
-    char src_path[AFP_MAX_NAME];
-    int pos = afp_read_pstring(in, in_len, 12, src_path, sizeof(src_path));
+    afp_path_t src_path;
+    int pos = afp_read_path(in, in_len, 11, &src_path);
     if (pos < 0 || pos >= in_len)
         return AFPERR_ParamErr;
-    pos++; // destination PathType
-    char dst_path[AFP_MAX_NAME];
-    pos = afp_read_pstring(in, in_len, pos, dst_path, sizeof(dst_path));
+    afp_path_t dst_path;
+    pos = afp_read_path(in, in_len, pos, &dst_path);
     if (pos < 0)
         return AFPERR_ParamErr;
-    char new_name[AFP_MAX_NAME];
-    new_name[0] = '\0';
+    // An optional new name (F-01: checked like FPRename's).
+    char new_name[AFP_MAX_NAME * 3 + 1] = "";
     if (pos < in_len) {
-        pos++; // new-name PathType
-        afp_read_pstring(in, in_len, pos, new_name, sizeof(new_name));
+        afp_path_t new_path;
+        if (afp_read_path(in, in_len, pos, &new_path) < 0)
+            return AFPERR_ParamErr;
+        if (new_path.len > 0 && !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
+            return AFPERR_ParamErr;
     }
 
     vol_t *vol = NULL;
     char src_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, src_dir_id, src_path, &vol, src_rel, sizeof(src_rel));
+    uint32_t rc = afp_resolve_target(vol_id, src_dir_id, &src_path, &vol, src_rel, sizeof(src_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!src_rel[0])
         return AFPERR_CantMove;
     char dst_dir_rel[AFP_MAX_REL_PATH];
-    rc = afp_resolve_target(vol_id, dst_dir_id, dst_path, &vol, dst_dir_rel, sizeof(dst_dir_rel));
+    rc = afp_resolve_target(vol_id, dst_dir_id, &dst_path, &vol, dst_dir_rel, sizeof(dst_dir_rel));
     if (rc != AFPERR_NoErr)
         return rc;
 
@@ -1515,28 +1517,30 @@ static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     uint32_t src_dir = RD_BE32(in + 3);
     uint16_t dst_vol_id = RD_BE16(in + 7);
     uint32_t dst_dir = RD_BE32(in + 9);
-    char src_name[AFP_MAX_NAME];
-    int pos = afp_read_pstring(in, in_len, 14, src_name, sizeof(src_name));
+    afp_path_t src_name;
+    int pos = afp_read_path(in, in_len, 13, &src_name);
     if (pos < 0 || pos >= in_len)
         return AFPERR_ParamErr;
-    pos++; // destination PathType
-    char dst_name[AFP_MAX_NAME];
-    pos = afp_read_pstring(in, in_len, pos, dst_name, sizeof(dst_name));
+    afp_path_t dst_name;
+    pos = afp_read_path(in, in_len, pos, &dst_name);
     if (pos < 0)
         return AFPERR_ParamErr;
-    char new_name[AFP_MAX_NAME];
-    new_name[0] = '\0';
+    // An optional new name (F-01: checked like FPRename's).
+    char new_name[AFP_MAX_NAME * 3 + 1] = "";
     if (pos < in_len) {
-        pos++; // new-name PathType
-        afp_read_pstring(in, in_len, pos, new_name, sizeof(new_name));
+        afp_path_t new_path;
+        if (afp_read_path(in, in_len, pos, &new_path) < 0)
+            return AFPERR_ParamErr;
+        if (new_path.len > 0 && !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
+            return AFPERR_ParamErr;
     }
 
     vol_t *svol = NULL, *dvol = NULL;
     char src_rel[AFP_MAX_REL_PATH], dst_dir_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(src_vol_id, src_dir, src_name, &svol, src_rel, sizeof(src_rel));
+    uint32_t rc = afp_resolve_target(src_vol_id, src_dir, &src_name, &svol, src_rel, sizeof(src_rel));
     if (rc != AFPERR_NoErr)
         return rc;
-    rc = afp_resolve_target(dst_vol_id, dst_dir, dst_name, &dvol, dst_dir_rel, sizeof(dst_dir_rel));
+    rc = afp_resolve_target(dst_vol_id, dst_dir, &dst_name, &dvol, dst_dir_rel, sizeof(dst_dir_rel));
     if (rc != AFPERR_NoErr)
         return rc;
 
@@ -1753,13 +1757,13 @@ static uint32_t afp_cmd_add_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     uint32_t dir_id = RD_BE32(in + 3);
     uint32_t creator = RD_BE32(in + 7);
     uint32_t appl_tag = RD_BE32(in + 11);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 16, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 15, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *resolved = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(v->vol_id, dir_id, path, &resolved, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -1789,12 +1793,12 @@ static uint32_t afp_cmd_remove_appl(afp_ctx_t *ctx, const uint8_t *in, int in_le
         return AFPERR_ParamErr;
     uint32_t dir_id = RD_BE32(in + 3);
     uint32_t creator = RD_BE32(in + 7);
-    char path[AFP_MAX_NAME];
+    afp_path_t path;
     uint32_t cnid = 0;
-    if (in_len > 12 && afp_read_pstring(in, in_len, 12, path, sizeof(path)) >= 0 && path[0]) {
+    if (in_len > 12 && afp_read_path(in, in_len, 11, &path) >= 0 && path.len > 0) {
         vol_t *resolved = NULL;
         char target_rel[AFP_MAX_REL_PATH];
-        if (afp_resolve_target(v->vol_id, dir_id, path, &resolved, target_rel, sizeof(target_rel)) == AFPERR_NoErr) {
+        if (afp_resolve_target(v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel)) == AFPERR_NoErr) {
             const afp_cat_entry_t *entry = afp_catalog_resolve_path(v->catalog, target_rel, false, false);
             if (entry)
                 cnid = entry->cnid;
@@ -1840,9 +1844,7 @@ static uint32_t afp_cmd_get_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
         if (p < 0 || !afp_populate_param_area(false, v, rel, &st, bitmap, out, pbase))
             return AFPERR_ParamErr;
         const char *name = afp_last_component(rel);
-        size_t nlen = name ? strlen(name) : 0;
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off,
-                                (uint8_t)(nlen > 255 ? 255 : nlen), (uint8_t)(nlen > 31 ? 31 : nlen));
+        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0)
             return AFPERR_ParamErr;
     }
@@ -1862,14 +1864,14 @@ static uint32_t afp_resolve_dt_target(const uint8_t *in, int in_len, vol_t **out
     if (!v)
         return AFPERR_ParamErr;
     uint32_t dir_id = RD_BE32(in + 3);
-    char path[AFP_MAX_NAME];
-    int pos = afp_read_pstring(in, in_len, 8, path, sizeof(path));
+    afp_path_t path;
+    int pos = afp_read_path(in, in_len, 7, &path);
     if (pos < 0)
         return AFPERR_ParamErr;
     if (out_pos)
         *out_pos = pos;
     vol_t *resolved = NULL;
-    uint32_t rc = afp_resolve_target(v->vol_id, dir_id, path, &resolved, out_rel, rel_cap);
+    uint32_t rc = afp_resolve_target(v->vol_id, dir_id, &path, &resolved, out_rel, rel_cap);
     if (rc != AFPERR_NoErr)
         return rc;
     if (out_vol)
@@ -1988,13 +1990,13 @@ static uint32_t afp_cmd_create_id(afp_ctx_t *ctx, const uint8_t *in, int in_len,
         return AFPERR_ParamErr;
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t dir_id = RD_BE32(in + 3);
-    char path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
+    afp_path_t path;
+    if (afp_read_path(in, in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, dir_id, path, &vol, rel, sizeof(rel));
+    uint32_t rc = afp_resolve_target(vol_id, dir_id, &path, &vol, rel, sizeof(rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -2075,9 +2077,7 @@ static uint32_t afp_cmd_resolve_id(afp_ctx_t *ctx, const uint8_t *in, int in_len
         if (p < 0 || !afp_populate_param_area(false, vol, rel, &st, bitmap, out, pbase))
             return AFPERR_ParamErr;
         const char *name = afp_last_component(rel);
-        size_t nlen = name ? strlen(name) : 0;
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off,
-                                (uint8_t)(nlen > 255 ? 255 : nlen), (uint8_t)(nlen > 31 ? 31 : nlen));
+        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0)
             return AFPERR_ParamErr;
     }
@@ -2106,21 +2106,20 @@ static uint32_t afp_cmd_exchange_files(afp_ctx_t *ctx, const uint8_t *in, int in
     uint16_t vol_id = RD_BE16(in + 1);
     uint32_t src_dir = RD_BE32(in + 3);
     uint32_t dst_dir = RD_BE32(in + 7);
-    char src_path[AFP_MAX_NAME];
-    int pos = afp_read_pstring(in, in_len, 12, src_path, sizeof(src_path));
+    afp_path_t src_path;
+    int pos = afp_read_path(in, in_len, 11, &src_path);
     if (pos < 0 || pos >= in_len)
         return AFPERR_ParamErr;
-    pos++; // destination PathType
-    char dst_path[AFP_MAX_NAME];
-    if (afp_read_pstring(in, in_len, pos, dst_path, sizeof(dst_path)) < 0)
+    afp_path_t dst_path;
+    if (afp_read_path(in, in_len, pos, &dst_path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char src_rel[AFP_MAX_REL_PATH], dst_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(vol_id, src_dir, src_path, &vol, src_rel, sizeof(src_rel));
+    uint32_t rc = afp_resolve_target(vol_id, src_dir, &src_path, &vol, src_rel, sizeof(src_rel));
     if (rc != AFPERR_NoErr)
         return rc;
-    rc = afp_resolve_target(vol_id, dst_dir, dst_path, &vol, dst_rel, sizeof(dst_rel));
+    rc = afp_resolve_target(vol_id, dst_dir, &dst_path, &vol, dst_rel, sizeof(dst_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (strcmp(src_rel, dst_rel) == 0)
@@ -2220,7 +2219,7 @@ typedef struct {
     uint32_t backup_lo, backup_hi;
     uint8_t finder[AFP_META_FINDER_SIZE];
     uint8_t finder_mask[AFP_META_FINDER_SIZE];
-    char name[AFP_MAX_NAME + 1];
+    char name[AFP_MAX_NAME * 3 + 1]; // as a host name
     uint32_t dlen_lo, dlen_hi;
     uint32_t rlen_lo, rlen_hi;
 } catsearch_spec_t;
@@ -2295,8 +2294,12 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
                 break;
             if (nlen > AFP_MAX_NAME)
                 nlen = AFP_MAX_NAME;
-            memcpy(spec->name, in + np + 1, (size_t)nlen);
-            spec->name[nlen] = '\0';
+            // The criterion is a Mac name; compare it as the host name it
+            // stands for.  One that cannot be a host name matches nothing.
+            if (!macroman_name_to_host(in + np + 1, (size_t)nlen, spec->name, sizeof(spec->name))) {
+                memcpy(spec->name, in + np + 1, (size_t)nlen);
+                spec->name[nlen] = '\0';
+            }
             break;
         }
         case 9:
@@ -2459,7 +2462,7 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
             exhausted = false;
             break;
         }
-        if (e->cnid == AFP_CNID_ROOT)
+        if (e->cnid == AFP_CNID_ROOT || !afp_name_visible(e->name))
             continue;
         char rel[AFP_MAX_REL_PATH];
         if (!afp_catalog_path(vol->catalog, e->cnid, rel, sizeof(rel)))
@@ -2494,9 +2497,7 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
             exhausted = false;
             break;
         }
-        size_t nlen = strlen(e->name);
-        int vpos = afp_write_name_vars(out, p, out_max, pbase, e->name, bm, pos_long_off, pos_short_off,
-                                       (uint8_t)(nlen > 255 ? 255 : nlen), (uint8_t)(nlen > 31 ? 31 : nlen));
+        int vpos = afp_write_name_vars(out, p, out_max, pbase, e->name, bm, pos_long_off, pos_short_off);
         if (vpos < 0) {
             exhausted = false;
             break;
