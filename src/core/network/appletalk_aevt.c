@@ -45,7 +45,7 @@ LOG_USE_CATEGORY_NAME("ppc");
 // Constants and Macros
 // ============================================================================
 
-#define AEVT_MAX_EVENTS 64 // events remembered per run (append-only, §8)
+#define AEVT_MAX_EVENTS 256 // events remembered per run (append-only, §8)
 #define AEVT_MAX_INBOX  32
 
 #define AEVT_HLE_HEADER_SIZE 36 // HighLevelEventMsg (§5.1)
@@ -129,6 +129,7 @@ typedef struct {
     uint64_t received;
     uint64_t auto_replies;
     uint64_t malformed; // blocks that are no high-level event (10-network F-35)
+    uint64_t dropped; // events received with the inbox full (answered, not kept)
 } aevt_stats_t;
 
 static aevt_stats_t g_stats;
@@ -347,8 +348,8 @@ static void aevt_session_block(void *ctx, ppc_session_t *s, uint32_t creator, ui
         return;
     }
 
-    atalk_aevt_deliver((uint16_t)atalk_ppc_session_id(s), atalk_ppc_session_port(s), class4, id4, return_id,
-                       (modifiers & AEVT_MODIFIER_REPLY) != 0, stream, (int)msg_len);
+    atalk_aevt_deliver(s, atalk_ppc_session_port(s), class4, id4, return_id, (modifiers & AEVT_MODIFIER_REPLY) != 0,
+                       stream, (int)msg_len);
 }
 
 static const ppc_client_t g_session_client = {
@@ -402,9 +403,8 @@ static void aevt_send_auto_reply(ppc_session_t *s, uint32_t return_id) {
     value_free(&reply);
 }
 
-void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *class4, const char *id4,
+void atalk_aevt_deliver(ppc_session_t *session, const char *sender, const char *class4, const char *id4,
                         uint32_t return_id, bool is_reply, const uint8_t *stream, int len) {
-    (void)session_id;
     value_t map = aevt_decode(class4, id4, stream, len);
 
     // What makes an arriving event a reply is that its return ID matches one
@@ -439,11 +439,17 @@ void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *cla
         return;
     }
 
-    // Not a reply: this is an event the guest sent us.
+    // Not a reply: this is an event the guest sent us.  It is answered on the
+    // session it came in on, so the sender's AESend completes -- even when the
+    // inbox is full and it is not kept.  A full inbox returned without
+    // answering: the guest waited out its own timeout, and nothing counted the
+    // loss (10-network N-20).
     g_stats.received++;
     if (g_inbox_count >= AEVT_MAX_INBOX) {
-        LOG(2, "AE: the inbox is full; dropping %s/%s", class4, id4);
+        g_stats.dropped++;
+        LOG(2, "AE: the inbox is full; answering but not keeping %s/%s (inbox.clear() makes room)", class4, id4);
         value_free(&map);
+        aevt_send_auto_reply(session, return_id);
         return;
     }
     aevt_inbox_t *in = &g_inbox[g_inbox_count];
@@ -457,15 +463,9 @@ void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *cla
     in->map = map;
     in->text = val_is_error(&map) ? NULL : aevt_render_text(&map);
     LOG(3, "AE: received %s/%s from '%s'", in->class4, in->id4, in->sender);
-
-    // Answer on the session it came in on, so the sender's AESend completes.
-    for (int i = 0; i < atalk_ppc_session_slot_max(); i++) {
-        ppc_session_t *s = atalk_ppc_session_at(i);
-        if (s && atalk_ppc_session_id(s) == session_id) {
-            aevt_send_auto_reply(s, return_id);
-            break;
-        }
-    }
+    // The session itself, not its id looked up again: the id went through a
+    // 16-bit parameter and back against 32 bits (10-network N-24).
+    aevt_send_auto_reply(session, return_id);
 }
 
 // ============================================================================
@@ -540,11 +540,9 @@ static void aevt_begin(aevt_event_t *ev) {
 // Lifecycle
 // ============================================================================
 
-void atalk_aevt_reset_transient_state(void) {
-    for (int i = 0; i < AEVT_MAX_EVENTS; i++)
-        if (g_events[i].in_use)
-            aevt_event_free_contents(&g_events[i]);
-    g_event_count = 0;
+// Empty the inbox.  Its entries are never handed to a script as bindings, so
+// nothing can be left holding one.
+static void aevt_inbox_clear(void) {
     for (int i = 0; i < AEVT_MAX_INBOX; i++) {
         if (!g_inbox[i].in_use)
             continue;
@@ -553,6 +551,14 @@ void atalk_aevt_reset_transient_state(void) {
         memset(&g_inbox[i], 0, sizeof(g_inbox[i]));
     }
     g_inbox_count = 0;
+}
+
+void atalk_aevt_reset_transient_state(void) {
+    for (int i = 0; i < AEVT_MAX_EVENTS; i++)
+        if (g_events[i].in_use)
+            aevt_event_free_contents(&g_events[i]);
+    g_event_count = 0;
+    aevt_inbox_clear();
     g_next_return_id = 1;
     memset(&g_stats, 0, sizeof(g_stats));
 }
@@ -919,7 +925,24 @@ static value_t aevt_inbox_attr_count(struct object *self, const member_t *m) {
     return val_uint(4, (uint64_t)g_inbox_count);
 }
 
+static value_t aevt_inbox_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    aevt_inbox_clear();
+    return val_none();
+}
+
 static const member_t aevt_inbox_members[] = {
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Forget every event guests have sent us, making room for more",
+     .method = {.args = NULL,
+                .nargs = 0,
+                .result = V_NONE,
+                .fn = aevt_inbox_method_clear,
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
     {.kind = M_ATTR,
      .name = "count",
      .doc = "Events guests have sent us this run",
@@ -966,6 +989,7 @@ static const member_t aevt_stats_members[] = {
     AEVT_STAT_MEMBER(received, "Events guests sent us"),
     AEVT_STAT_MEMBER(auto_replies, "Automatic replies we sent"),
     AEVT_STAT_MEMBER(malformed, "Blocks discarded as no high-level event"),
+    AEVT_STAT_MEMBER(dropped, "Events received with the inbox full: answered, not kept"),
 };
 
 static const class_desc_t aevt_stats_class = {

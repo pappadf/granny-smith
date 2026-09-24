@@ -17,6 +17,7 @@
 #ifndef APPLETALK_AEVT_H
 #define APPLETALK_AEVT_H
 
+#include "appletalk_ppc.h"
 #include "value.h"
 
 #include <stdbool.h>
@@ -93,8 +94,9 @@ void atalk_aevt_set_config(const atalk_aevt_config_t *in);
 void atalk_aevt_reset_transient_state(void);
 
 // Delivery hook, called by the PPC session layer when a high-level event
-// arrives: either the reply to a pending send, or a new inbox entry.
-void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *class4, const char *id4,
+// arrives on `session`: either the reply to a pending send, or a new inbox
+// entry, answered on the session it came in on.
+void atalk_aevt_deliver(ppc_session_t *session, const char *sender, const char *class4, const char *id4,
                         uint32_t return_id, bool is_reply, const uint8_t *stream, int len);
 
 #endif // APPLETALK_AEVT_H
