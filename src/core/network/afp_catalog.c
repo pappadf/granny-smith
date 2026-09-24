@@ -54,6 +54,7 @@ typedef struct {
     bool has_file_id;
     bool dead;
     char name[AFP_CAT_MAX_NAME];
+    uint32_t child_next; // next slot+1 in its (parent, name) chain; 0 ends it
     afp_cat_entry_t pub;
 } cat_slot_t;
 
@@ -64,6 +65,8 @@ struct afp_catalog {
     size_t cap;
     uint32_t *idx_cnid; // open-addressed cnid -> slot+1
     size_t idx_cap;
+    uint32_t *idx_child; // (parent, name) -> first slot+1 of a chain; live slots only
+    size_t child_cap;
     uint32_t generation;
     uint32_t next_cnid;
     uint32_t live;
@@ -125,8 +128,63 @@ static long slot_of(afp_catalog_t *cat, uint32_t cnid) {
     return -1;
 }
 
+// --- child index: (parent, name) -> slot ------------------------------------
+//
+// FPEnumerate adopts every entry it lists and each adoption looks its name up
+// under its parent, so a scan here made listing a directory quadratic: 4000
+// entries took 0.16 s, twice as many four times as long (10-network F-24).
+// Names are matched exactly, as the host does: two host files may differ only
+// in case, and each needs its own CNID.
+
+static uint32_t child_hash(uint32_t parent, const char *name) {
+    uint32_t h = 2166136261u ^ (parent * 2654435761u); // FNV-1a, seeded with the parent
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
+        h = (h ^ *p) * 16777619u;
+    return h;
+}
+
+static uint32_t *child_bucket(afp_catalog_t *cat, uint32_t parent, const char *name) {
+    return &cat->idx_child[child_hash(parent, name) & (cat->child_cap - 1)];
+}
+
+static void child_link(afp_catalog_t *cat, size_t slot) {
+    uint32_t *b = child_bucket(cat, cat->slots[slot].parent, cat->slots[slot].name);
+    cat->slots[slot].child_next = *b;
+    *b = (uint32_t)(slot + 1);
+}
+
+// Take a slot out of its chain, before its parent or name changes or it dies.
+static void child_unlink(afp_catalog_t *cat, size_t slot) {
+    for (uint32_t *link = child_bucket(cat, cat->slots[slot].parent, cat->slots[slot].name); *link;
+         link = &cat->slots[*link - 1].child_next) {
+        if (*link == slot + 1) {
+            *link = cat->slots[slot].child_next;
+            cat->slots[slot].child_next = 0;
+            return;
+        }
+    }
+}
+
+// Rebuild the child index at `cap` buckets (a power of two) from the live slots.
+static bool child_rebuild(afp_catalog_t *cat, size_t cap) {
+    uint32_t *idx = (uint32_t *)calloc(cap, sizeof(uint32_t));
+    if (!idx)
+        return false;
+    free(cat->idx_child);
+    cat->idx_child = idx;
+    cat->child_cap = cap;
+    for (size_t i = 0; i < cat->len; i++)
+        if (!cat->slots[i].dead)
+            child_link(cat, i);
+    return true;
+}
+
 // Append a slot to the table (no log write), returning its index or -1.
+// CNIDs ascend through the table -- afp_catalog_next searches it by halves --
+// so one that does not, from a damaged log, is refused.
 static long slot_push(afp_catalog_t *cat, uint32_t cnid, uint32_t parent, bool is_dir, const char *name) {
+    if (cat->len && cnid <= cat->slots[cat->len - 1].cnid)
+        return -1;
     if (cat->len == cat->cap) {
         size_t cap = cat->cap ? cat->cap * 2 : 32;
         cat_slot_t *tmp = (cat_slot_t *)realloc(cat->slots, cap * sizeof(cat_slot_t));
@@ -146,10 +204,38 @@ static long slot_push(afp_catalog_t *cat, uint32_t cnid, uint32_t parent, bool i
         cat->len--;
         return -1;
     }
+    if (cat->live + 1 > cat->child_cap) {
+        if (!child_rebuild(cat, cat->child_cap ? cat->child_cap * 2 : 64)) { // covers this slot
+            cat->len--;
+            index_rebuild(cat, cat->idx_cap);
+            return -1;
+        }
+    } else {
+        child_link(cat, idx);
+    }
     cat->live++;
     if (cnid >= cat->next_cnid)
         cat->next_cnid = cnid + 1;
     return (long)idx;
+}
+
+// Tombstone one slot without touching the log (callers log their own record).
+static void kill_slot(afp_catalog_t *cat, size_t slot) {
+    if (cat->slots[slot].dead)
+        return;
+    child_unlink(cat, slot);
+    cat->slots[slot].dead = true;
+    cat->slots[slot].has_file_id = false;
+    if (cat->live)
+        cat->live--;
+}
+
+// Give a live slot a new parent and name, keeping the child index in step.
+static void slot_rekey(afp_catalog_t *cat, size_t slot, uint32_t parent, const char *name) {
+    child_unlink(cat, slot);
+    cat->slots[slot].parent = parent;
+    snprintf(cat->slots[slot].name, sizeof(cat->slots[slot].name), "%s", name ? name : "");
+    child_link(cat, slot);
 }
 
 // --- log I/O ---------------------------------------------------------------
@@ -203,17 +289,12 @@ static void replay(void *ctx, uint8_t op, const uint8_t *p, uint16_t len) {
         break;
     case GSC_OP_RENAME:
     case GSC_OP_MOVE:
-        if (si >= 0) {
-            cat->slots[si].parent = parent;
-            snprintf(cat->slots[si].name, sizeof(cat->slots[si].name), "%s", name);
-        }
+        if (si >= 0 && !cat->slots[si].dead)
+            slot_rekey(cat, (size_t)si, parent, name);
         break;
     case GSC_OP_DELETE:
-        if (si >= 0 && !cat->slots[si].dead) {
-            cat->slots[si].dead = true;
-            if (cat->live)
-                cat->live--;
-        }
+        if (si >= 0)
+            kill_slot(cat, (size_t)si);
         break;
     case GSC_OP_SET_ID:
         if (si >= 0)
@@ -278,6 +359,7 @@ afp_catalog_t *afp_catalog_open(const char *host_root) {
     if (slot_push(cat, AFP_CNID_ROOT, AFP_CNID_ROOT_PARENT, true, "") < 0) {
         free(cat->slots);
         free(cat->idx_cnid);
+        free(cat->idx_child);
         free(cat);
         return NULL;
     }
@@ -304,6 +386,7 @@ void afp_catalog_close(afp_catalog_t *cat) {
     afp_applog_close(cat->log, cat->live);
     free(cat->slots);
     free(cat->idx_cnid);
+    free(cat->idx_child);
     free(cat);
 }
 
@@ -340,12 +423,11 @@ const afp_cat_entry_t *afp_catalog_find(afp_catalog_t *cat, uint32_t cnid) {
 const afp_cat_entry_t *afp_catalog_find_child(afp_catalog_t *cat, uint32_t parent, const char *name) {
     if (!cat || !name)
         return NULL;
-    for (size_t i = 0; i < cat->len; i++) {
-        if (cat->slots[i].dead || cat->slots[i].parent != parent)
-            continue;
-        if (strcmp(cat->slots[i].name, name) == 0)
-            return view_of(cat, i);
-    }
+    if (!cat->idx_child)
+        return NULL;
+    for (uint32_t v = *child_bucket(cat, parent, name); v; v = cat->slots[v - 1].child_next)
+        if (cat->slots[v - 1].parent == parent && strcmp(cat->slots[v - 1].name, name) == 0)
+            return view_of(cat, v - 1);
     return NULL;
 }
 
@@ -405,7 +487,7 @@ bool afp_catalog_rename(afp_catalog_t *cat, uint32_t cnid, const char *new_name)
     long si = slot_of(cat, cnid);
     if (si < 0 || cat->slots[si].dead)
         return false;
-    snprintf(cat->slots[si].name, sizeof(cat->slots[si].name), "%s", new_name);
+    slot_rekey(cat, (size_t)si, cat->slots[si].parent, new_name);
     log_append(cat, GSC_OP_RENAME, cnid, cat->slots[si].parent, cat->slots[si].is_dir, new_name);
     return true;
 }
@@ -416,21 +498,11 @@ bool afp_catalog_move(afp_catalog_t *cat, uint32_t cnid, uint32_t new_parent, co
     long si = slot_of(cat, cnid);
     if (si < 0 || cat->slots[si].dead)
         return false;
-    cat->slots[si].parent = new_parent;
-    if (new_name && *new_name)
-        snprintf(cat->slots[si].name, sizeof(cat->slots[si].name), "%s", new_name);
+    char name[AFP_CAT_MAX_NAME];
+    snprintf(name, sizeof(name), "%s", (new_name && *new_name) ? new_name : cat->slots[si].name);
+    slot_rekey(cat, (size_t)si, new_parent, name);
     log_append(cat, GSC_OP_MOVE, cnid, new_parent, cat->slots[si].is_dir, cat->slots[si].name);
     return true;
-}
-
-// Tombstone one slot without touching the log (callers log their own record).
-static void kill_slot(afp_catalog_t *cat, size_t slot) {
-    if (cat->slots[slot].dead)
-        return;
-    cat->slots[slot].dead = true;
-    cat->slots[slot].has_file_id = false;
-    if (cat->live)
-        cat->live--;
 }
 
 bool afp_catalog_remove(afp_catalog_t *cat, uint32_t cnid) {
@@ -541,14 +613,21 @@ const afp_cat_entry_t *afp_catalog_resolve_path(afp_catalog_t *cat, const char *
 const afp_cat_entry_t *afp_catalog_next(afp_catalog_t *cat, uint32_t after) {
     if (!cat)
         return NULL;
-    long best = -1;
-    for (size_t i = 0; i < cat->len; i++) {
-        if (cat->slots[i].dead || cat->slots[i].cnid <= after)
-            continue;
-        if (best < 0 || cat->slots[i].cnid < cat->slots[best].cnid)
-            best = (long)i;
+    // CNIDs ascend through the table (slot_push), so the first above `after`
+    // is found by halves; it was a full scan per call, and FPCatSearch calls
+    // this once per entry.
+    size_t lo = 0, hi = cat->len;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (cat->slots[mid].cnid <= after)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
-    return best < 0 ? NULL : view_of(cat, (size_t)best);
+    for (size_t i = lo; i < cat->len; i++)
+        if (!cat->slots[i].dead)
+            return view_of(cat, i);
+    return NULL;
 }
 
 uint32_t afp_catalog_sweep(afp_catalog_t *cat) {

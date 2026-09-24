@@ -3421,6 +3421,78 @@ TEST(a_rewritten_icon_does_not_grow_the_log) {
     fixture_down();
 }
 
+// --- G2: catalog lookups are indexed (10-network F-24) --------------------------
+
+// The child index follows every rename, move and delete, keeps names that
+// differ only in case apart (the host does), and a reopened catalog rebuilds
+// it and walks CNIDs in order.
+TEST(the_catalog_index_follows_every_change) {
+    fixture_up("catindex");
+    afp_catalog_t *cat = afp_catalog_open(g_root);
+    const afp_cat_entry_t *d = afp_catalog_add(cat, AFP_CNID_ROOT, "Dir", true);
+    uint32_t dir = d->cnid;
+    uint32_t ids[300];
+    char name[16];
+    for (int i = 0; i < 300; i++) { // grows the index several times
+        snprintf(name, sizeof name, "f%03d", i);
+        ids[i] = afp_catalog_add(cat, dir, name, false)->cnid;
+    }
+    uint32_t upper = afp_catalog_add(cat, dir, "F000", false)->cnid;
+    ASSERT_TRUE(upper != ids[0]);
+    ASSERT_EQ_INT((int)ids[0], (int)afp_catalog_find_child(cat, dir, "f000")->cnid);
+    ASSERT_EQ_INT((int)upper, (int)afp_catalog_find_child(cat, dir, "F000")->cnid);
+
+    ASSERT_TRUE(afp_catalog_rename(cat, ids[1], "renamed"));
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f001") == NULL);
+    ASSERT_EQ_INT((int)ids[1], (int)afp_catalog_find_child(cat, dir, "renamed")->cnid);
+    ASSERT_TRUE(afp_catalog_move(cat, ids[2], AFP_CNID_ROOT, "moved"));
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f002") == NULL);
+    ASSERT_EQ_INT((int)ids[2], (int)afp_catalog_find_child(cat, AFP_CNID_ROOT, "moved")->cnid);
+    ASSERT_TRUE(afp_catalog_remove(cat, ids[3]));
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f003") == NULL);
+    afp_catalog_close(cat);
+
+    cat = afp_catalog_open(g_root);
+    ASSERT_EQ_INT((int)ids[1], (int)afp_catalog_find_child(cat, dir, "renamed")->cnid);
+    ASSERT_EQ_INT((int)ids[2], (int)afp_catalog_find_child(cat, AFP_CNID_ROOT, "moved")->cnid);
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f003") == NULL);
+    ASSERT_EQ_INT((int)ids[299], (int)afp_catalog_find_child(cat, dir, "f299")->cnid);
+    // CNIDs come back in order, the deleted one skipped.
+    uint32_t prev = 0;
+    int seen = 0;
+    for (const afp_cat_entry_t *e = afp_catalog_next(cat, 0); e; e = afp_catalog_next(cat, prev)) {
+        ASSERT_TRUE(e->cnid > prev);
+        ASSERT_TRUE(e->cnid != ids[3]);
+        prev = e->cnid;
+        seen++;
+    }
+    ASSERT_EQ_INT(1 + 1 + 300 + 1 - 1, seen); // root, Dir, 300 files and F000, less the deleted one
+    afp_catalog_close(cat);
+    fixture_down();
+}
+
+// A listing holds at most 65,535 entries -- the reach of StartIndex.  A
+// larger directory is MiscErr, not a listing cut short.
+TEST(a_directory_too_large_to_page_is_refused_whole) {
+    fixture_up("f23cap");
+    char path[512];
+    host_path("Big", path, sizeof path);
+    ASSERT_EQ_INT(0, mkdir(path, 0755));
+    char file[64];
+    for (int i = 0; i < 65536; i++) {
+        snprintf(file, sizeof file, "Big/%05d", i);
+        write_file(file, "");
+    }
+    char names[16][96];
+    int n = 0;
+    ASSERT_EQ_INT((int)ERR_MISC, (int)enum_dir_as(SESSION, "Big", 1, 1, names, &n));
+    host_path("Big/65535", path, sizeof path);
+    ASSERT_EQ_INT(0, unlink(path));
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(SESSION, "Big", 65535, 1, names, &n));
+    ASSERT_EQ_INT(0, strcmp(names[0], "65534"));
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3493,6 +3565,8 @@ int main(void) {
     RUN(the_catalog_keeps_what_is_written_after_a_torn_tail);
     RUN(the_desktop_keeps_what_is_written_after_a_torn_tail);
     RUN(a_rewritten_icon_does_not_grow_the_log);
+    RUN(the_catalog_index_follows_every_change);
+    RUN(a_directory_too_large_to_page_is_refused_whole);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
