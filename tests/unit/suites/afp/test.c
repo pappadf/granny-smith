@@ -3051,6 +3051,74 @@ TEST(the_icon_store_is_bounded) {
     fixture_down();
 }
 
+// --- F6: listings are evicted oldest first, and never cut short (10-network F-23) -
+
+// FPEnumerate `session` over the directory `dir` from `start`, `count` at a
+// time; the names land in `names`.  Returns the result code.
+static uint32_t enum_dir_as(uint16_t session, const char *dir, uint16_t start, uint16_t count, char names[][96],
+                            int *n) {
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(0x0040); // long name
+    put16(0x0040);
+    put16(count);
+    put16(start);
+    put16(8192);
+    put_path(dir);
+    uint32_t rc = call_as(session, OP_ENUMERATE);
+    *n = 0;
+    if (rc != ERR_OK)
+        return rc;
+    int pos = 6;
+    for (int i = 0; i < rd16(g_reply + 4); i++) {
+        int params = pos + 2;
+        int name = params + rd16(g_reply + params);
+        memcpy(names[i], g_reply + name + 1, g_reply[name]);
+        names[i][g_reply[name]] = '\0';
+        pos += g_reply[pos];
+        (*n)++;
+    }
+    return rc;
+}
+
+// One session fills every snapshot slot with a page from each of eight
+// directories; a second starts two listings.  Slot 0 was evicted whoever held
+// it, so the second session's own first listing went at once, and its next
+// page, served from a fresh listing after a host insert, repeated an entry.
+TEST(a_listing_in_progress_is_not_evicted_first) {
+    fixture_up("f23");
+    char dir[16], file[32];
+    for (int d = 0; d < 10; d++) {
+        snprintf(dir, sizeof dir, "D%d", d);
+        char path[512];
+        host_path(dir, path, sizeof path);
+        ASSERT_EQ_INT(0, mkdir(path, 0755));
+        for (int i = 0; i < 10; i++) {
+            snprintf(file, sizeof file, "D%d/f%02d", d, i);
+            write_file(file, "x");
+        }
+    }
+    uint16_t other = 0x0049;
+    second_session_up(other, true);
+    char names[16][96];
+    int n = 0;
+    for (int d = 0; d < 8; d++) {
+        snprintf(dir, sizeof dir, "D%d", d);
+        ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(SESSION, dir, 1, 3, names, &n));
+    }
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(other, "D8", 1, 3, names, &n)); // f00 f01 f02
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(other, "D9", 1, 3, names, &n));
+    write_file("D8/a-inserted", "x"); // from the host: sorts first
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(other, "D8", 4, 3, names, &n));
+    ASSERT_EQ_INT(3, n);
+    ASSERT_EQ_INT(0, strcmp(names[0], "f03")); // not f02 again
+    ASSERT_EQ_INT(0, strcmp(names[2], "f05"));
+    afp_session_closed(other);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3113,6 +3181,7 @@ int main(void) {
     RUN(get_user_info_never_writes_past_the_reply_buffer);
     RUN(a_fork_never_grows_past_the_volume_ceiling);
     RUN(the_icon_store_is_bounded);
+    RUN(a_listing_in_progress_is_not_evicted_first);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
