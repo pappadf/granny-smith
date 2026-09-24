@@ -15,6 +15,7 @@
 
 #include "afp_catalog.h"
 #include "afp_desktop.h"
+#include "afp_fork.h"
 #include "afp_meta.h"
 #include "afp_wire.h"
 #include "appletalk.h"
@@ -54,7 +55,7 @@
 
 // Wire fields are 32-bit and classic clients cap a volume at 2 GB, so every
 // size we report is clamped here (proposal §5 WP-1).
-#define AFP_VOL_SIZE_CEILING   0x7FFFFC00u // 2 GB - 1 KB, kept 512-byte aligned
+#define AFP_VOL_SIZE_CEILING   AFP_FORK_MAX_LENGTH // 2 GB - 1 KB, kept 512-byte aligned
 #define AFP_VOL_FALLBACK_TOTAL (1024u * 1024u * 1024u)
 #define AFP_VOL_FALLBACK_FREE  (512u * 1024u * 1024u)
 

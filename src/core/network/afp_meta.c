@@ -127,7 +127,7 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
     uint32_t off = 0, len = 0;
     uint8_t buf[AFP_META_COMMENT_MAX + 1];
 
-    if (find_entry_extent(hdr, n, AD_ENTRY_DATES, &off, &len) && len >= 16 && fseek(f, (long)off, SEEK_SET) == 0 &&
+    if (find_entry_extent(hdr, n, AD_ENTRY_DATES, &off, &len) && len >= 16 && fseeko(f, (off_t)off, SEEK_SET) == 0 &&
         fread(buf, 1, 16, f) == 16) {
         out->create_date = afp_date_from_ad((int32_t)RD_BE32(buf + 0));
         out->modify_date = afp_date_from_ad((int32_t)RD_BE32(buf + 4));
@@ -136,17 +136,18 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
         out->has_dates = true;
     }
     if (find_entry_extent(hdr, n, AD_ENTRY_FINDER, &off, &len) && len >= AFP_META_FINDER_SIZE &&
-        fseek(f, (long)off, SEEK_SET) == 0 && fread(out->finder, 1, AFP_META_FINDER_SIZE, f) == AFP_META_FINDER_SIZE) {
+        fseeko(f, (off_t)off, SEEK_SET) == 0 &&
+        fread(out->finder, 1, AFP_META_FINDER_SIZE, f) == AFP_META_FINDER_SIZE) {
         out->has_finder = true;
     }
-    if (find_entry_extent(hdr, n, AD_ENTRY_MACINFO, &off, &len) && len >= 4 && fseek(f, (long)off, SEEK_SET) == 0 &&
+    if (find_entry_extent(hdr, n, AD_ENTRY_MACINFO, &off, &len) && len >= 4 && fseeko(f, (off_t)off, SEEK_SET) == 0 &&
         fread(buf, 1, 4, f) == 4) {
         // Entry 10's leading two bytes carry our AFP attribute word; the
         // trailing byte keeps the classic "protected" flag for foreign readers.
         out->attrs = (uint16_t)((buf[0] << 8) | buf[1]);
         out->has_attrs = true;
     }
-    if (find_entry_extent(hdr, n, AD_ENTRY_COMMENT, &off, &len) && fseek(f, (long)off, SEEK_SET) == 0) {
+    if (find_entry_extent(hdr, n, AD_ENTRY_COMMENT, &off, &len) && fseeko(f, (off_t)off, SEEK_SET) == 0) {
         size_t want = len > AFP_META_COMMENT_MAX ? AFP_META_COMMENT_MAX : len;
         size_t got = want ? fread(out->comment, 1, want, f) : 0;
         out->comment[got] = '\0';
@@ -419,7 +420,7 @@ size_t afp_meta_copy_rsrc(const char *host_path, FILE *dst) {
     if (!f)
         return 0;
     size_t copied = 0;
-    if (fseek(f, (long)off, SEEK_SET) == 0) {
+    if (fseeko(f, (off_t)off, SEEK_SET) == 0) {
         uint8_t chunk[64 * 1024];
         size_t left = len;
         while (left) {

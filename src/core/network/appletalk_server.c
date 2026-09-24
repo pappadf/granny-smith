@@ -195,6 +195,8 @@ static uint32_t afp_fork_status_to_err(afp_fork_status_t st) {
         return AFPERR_RangeOverlap;
     case AFP_FORK_RANGE_NOT_LOCKED:
         return AFPERR_RangeNotLocked;
+    case AFP_FORK_DISK_FULL:
+        return AFPERR_DiskFull;
     default:
         return AFPERR_MiscErr;
     }

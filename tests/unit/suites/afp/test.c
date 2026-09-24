@@ -85,6 +85,7 @@ int stub_attention_count(void);
 #define ERR_BITMAP          0xFFFFEC74u
 #define ERR_DENY_CONFLICT   0xFFFFEC72u
 #define ERR_DIR_NOT_EMPTY   0xFFFFEC71u
+#define ERR_DISK_FULL       0xFFFFEC70u
 #define ERR_EOF             0xFFFFEC6Fu
 #define ERR_FILE_BUSY       0xFFFFEC6Eu
 #define ERR_ITEM_NOT_FOUND  0xFFFFEC6Cu
@@ -2962,6 +2963,62 @@ TEST(get_user_info_never_writes_past_the_reply_buffer) {
     fixture_down();
 }
 
+// --- F4: no fork past the volume ceiling (10-network F-17) -----------------------
+
+static uint32_t set_fork_length(uint16_t ref, uint16_t bitmap, uint32_t length) {
+    req_reset();
+    put8(0);
+    put16(ref);
+    put16(bitmap);
+    put32(length);
+    return call(OP_SET_FORK_PARMS);
+}
+
+static uint32_t write_fork_at(uint16_t ref, uint32_t offset, const void *data, uint32_t n) {
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(offset);
+    put32(n);
+    put_bytes(data, n);
+    return call(OP_WRITE);
+}
+
+// A fork length, or a write ending, past the 2 GB - 1 KB ceiling every
+// reported size is clamped to is DiskFull.  Both went to the host as asked:
+// FPSetForkParms(0xFFFFFFFF) made a 4 GB sparse file, and 4 bytes written at
+// 0xFFFFFFFE succeeded with LastWritten wrapped to 2.
+TEST(a_fork_never_grows_past_the_volume_ceiling) {
+    fixture_up("ceiling");
+    write_file("big", "");
+    uint16_t data_ref = 0, rsrc_ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("big", false, 0x0003, &data_ref));
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("big", true, 0x0003, &rsrc_ref));
+
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)set_fork_length(data_ref, 0x0200, 0xFFFFFFFFu));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)set_fork_length(data_ref, 0x0200, 0x7FFFFC01u));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)set_fork_length(rsrc_ref, 0x0400, 0x80000000u));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)write_fork_at(data_ref, 0xFFFFFFFEu, "WRAP", 4));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)write_fork_at(data_ref, 0x7FFFFBFFu, "XY", 2)); // one past
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)write_fork_at(rsrc_ref, 0x7FFFFFF0u, "R", 1));
+
+    char path[512];
+    host_path("big", path, sizeof path);
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(path, &st));
+    ASSERT_EQ_INT(0, (int)st.st_size); // nothing reached the host
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)set_fork_length(data_ref, 0x0200, 10));
+    ASSERT_EQ_INT((int)ERR_OK, (int)write_fork_at(rsrc_ref, 0, "RSRC", 4));
+    close_fork(rsrc_ref);
+    close_fork(data_ref);
+    ASSERT_EQ_INT(0, stat(path, &st));
+    ASSERT_EQ_INT(10, (int)st.st_size);
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("big", 1u << 10, 0));
+    ASSERT_EQ_INT(4, (int)rd32(g_reply + 6)); // the resource fork, as written
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3022,6 +3079,7 @@ int main(void) {
     RUN(a_withdrawn_volume_takes_its_listings_with_it);
     RUN(closing_a_volume_keeps_the_sessions_listings_on_others);
     RUN(get_user_info_never_writes_past_the_reply_buffer);
+    RUN(a_fork_never_grows_past_the_volume_ceiling);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

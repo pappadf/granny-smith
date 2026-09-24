@@ -83,9 +83,9 @@ static void persist_backing(afp_backing_t *b) {
     if (!b || !b->is_resource || !b->f || !b->dirty)
         return;
     fflush(b->f);
-    if (fseek(b->f, 0, SEEK_END) != 0)
+    if (fseeko(b->f, 0, SEEK_END) != 0)
         return;
-    long sz = ftell(b->f);
+    off_t sz = ftello(b->f);
     if (sz < 0)
         sz = 0;
     rewind(b->f);
@@ -466,9 +466,9 @@ afp_fork_status_t afp_fork_range_lock(afp_fork_t *fk, bool unlock, bool end_rela
 // --- I/O -------------------------------------------------------------------
 
 static uint32_t backing_length(afp_backing_t *b) {
-    if (!b || !b->f || fseek(b->f, 0, SEEK_END) != 0)
+    if (!b || !b->f || fseeko(b->f, 0, SEEK_END) != 0)
         return 0;
-    long sz = ftell(b->f);
+    off_t sz = ftello(b->f);
     return sz < 0 ? 0 : (uint32_t)sz;
 }
 
@@ -494,7 +494,7 @@ afp_fork_status_t afp_fork_read(afp_fork_t *fk, uint32_t offset, uint32_t count,
         end = UINT32_MAX;
     if (foreign_lock_covers(fk, offset, (uint32_t)end))
         return AFP_FORK_LOCK_ERR;
-    if (fseek(fk->backing->f, (long)offset, SEEK_SET) != 0)
+    if (fseeko(fk->backing->f, (off_t)offset, SEEK_SET) != 0)
         return AFP_FORK_IO_ERR;
     size_t got = fread(buf, 1, count, fk->backing->f);
     if (out_read)
@@ -511,11 +511,11 @@ afp_fork_status_t afp_fork_write(afp_fork_t *fk, uint32_t offset, const uint8_t 
     if (!(fk->access_mode & AFP_ACCESS_WRITE))
         return AFP_FORK_ACCESS_DENIED;
     uint64_t end = (uint64_t)offset + count;
-    if (end > UINT32_MAX)
-        end = UINT32_MAX;
+    if (end > AFP_FORK_MAX_LENGTH)
+        return AFP_FORK_DISK_FULL;
     if (foreign_lock_covers(fk, offset, (uint32_t)end))
         return AFP_FORK_LOCK_ERR;
-    if (fseek(fk->backing->f, (long)offset, SEEK_SET) != 0)
+    if (fseeko(fk->backing->f, (off_t)offset, SEEK_SET) != 0)
         return AFP_FORK_IO_ERR;
     size_t wrote = count ? fwrite(buf, 1, count, fk->backing->f) : 0;
     fflush(fk->backing->f); // make writes visible to every other handle at once
@@ -531,6 +531,8 @@ afp_fork_status_t afp_fork_truncate(afp_fork_t *fk, uint32_t length) {
         return AFP_FORK_IO_ERR;
     if (!(fk->access_mode & AFP_ACCESS_WRITE))
         return AFP_FORK_ACCESS_DENIED;
+    if (length > AFP_FORK_MAX_LENGTH)
+        return AFP_FORK_DISK_FULL;
     fflush(fk->backing->f);
     int fd = fileno(fk->backing->f);
     if (fd < 0 || ftruncate(fd, (off_t)length) != 0)
