@@ -2788,6 +2788,77 @@ TEST(a_short_icon_bitmap_is_refused) {
     fixture_down();
 }
 
+// --- F1: every icon keeps its own bytes (10-network F-03) ------------------------
+
+static void icon_fill(uint8_t *bits, size_t n, int i) {
+    for (size_t k = 0; k < n; k++)
+        bits[k] = (uint8_t)(i * 31 + k);
+}
+
+// Seventeen icons, each read back.  The table starts with room for 16; the
+// 17th moved it, and every earlier icon's bitmap pointer went on pointing at
+// the freed block (ASan: heap-use-after-free in the afp_asan build).
+TEST(every_icon_reads_back_its_own_bitmap) {
+    fixture_up("icons17");
+    uint16_t dt = open_dt();
+    uint8_t bits[256];
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        req_reset();
+        put8(0);
+        put16(dt);
+        put32(0x49434F00u + (uint32_t)i); // one creator per icon
+        put32(0x4150504Cu);
+        put8(1);
+        put8(0);
+        put32((uint32_t)i);
+        put16((uint16_t)sizeof bits);
+        put_bytes(bits, sizeof bits);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ADD_ICON));
+    }
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        req_reset();
+        put8(0);
+        put16(dt);
+        put32(0x49434F00u + (uint32_t)i);
+        put32(0x4150504Cu);
+        put8(1);
+        put16((uint16_t)sizeof bits);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_ICON));
+        ASSERT_EQ_INT((int)sizeof bits, g_reply_len);
+        ASSERT_EQ_INT(0, memcmp(g_reply, bits, sizeof bits));
+    }
+    fixture_down();
+}
+
+// The same through a reopen: replaying seventeen records grows the table
+// with no guest action at all.
+TEST(a_reopened_store_keeps_every_icon_bitmap) {
+    fixture_up("icons17reopen");
+    afp_desktop_t *dt = afp_desktop_open(g_root);
+    ASSERT_TRUE(dt != NULL);
+    uint8_t bits[64];
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, (uint32_t)i, 2, 1, 0, bits, sizeof bits));
+    }
+    afp_desktop_close(dt);
+    dt = afp_desktop_open(g_root);
+    ASSERT_TRUE(dt != NULL);
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        const afp_icon_t *icon = afp_desktop_get_icon(dt, (uint32_t)i, 2, 1);
+        ASSERT_TRUE(icon != NULL);
+        ASSERT_EQ_INT(0, memcmp(icon->bitmap, bits, sizeof bits));
+        icon = afp_desktop_icon_at(dt, (uint32_t)i, 1);
+        ASSERT_TRUE(icon != NULL);
+        ASSERT_EQ_INT(0, memcmp(icon->bitmap, bits, sizeof bits));
+    }
+    afp_desktop_close(dt);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2843,6 +2914,8 @@ int main(void) {
     RUN(open_forks_report_their_live_length_in_every_reply);
     RUN(a_command_refused_for_reply_room_has_no_effect);
     RUN(a_short_icon_bitmap_is_refused);
+    RUN(every_icon_reads_back_its_own_bitmap);
+    RUN(a_reopened_store_keeps_every_icon_bitmap);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

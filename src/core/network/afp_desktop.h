@@ -66,7 +66,8 @@ void afp_desktop_close(afp_desktop_t *dt);
 int afp_desktop_put_icon(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, uint8_t icon_type, uint32_t tag,
                          const uint8_t *bitmap, uint16_t size);
 
-// Exact lookup by (creator, type, icon_type).  NULL when absent.
+// Exact lookup by (creator, type, icon_type).  NULL when absent.  A returned
+// icon, like the one afp_desktop_icon_at returns, is valid until the next put.
 const afp_icon_t *afp_desktop_get_icon(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, uint8_t icon_type);
 
 // The `index`-th (1-based) icon belonging to `creator`, in insertion order —

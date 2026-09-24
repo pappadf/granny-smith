@@ -100,6 +100,16 @@ static long icon_slot(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, u
     return -1;
 }
 
+// The caller's view of a slot.  The bitmap pointer is set here, on every
+// hand-out, because the slot's bytes move whenever the table grows: set once
+// at store time, it dangled for every icon stored before the 17th
+// (10-network F-03).  The catalog's view_of works the same way.
+static const afp_icon_t *icon_view(afp_desktop_t *dt, size_t si) {
+    icon_slot_t *s = &dt->icons[si];
+    s->v.bitmap = s->bytes;
+    return &s->v;
+}
+
 // Apply an icon record to the in-memory table (no log write).
 static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t file_type, uint8_t icon_type,
                       uint32_t tag, const uint8_t *bitmap, uint16_t size) {
@@ -132,7 +142,6 @@ static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
     s->v.size = size;
     if (size && bitmap)
         memcpy(s->bytes, bitmap, size);
-    s->v.bitmap = s->bytes;
     return 0;
 }
 
@@ -405,7 +414,7 @@ int afp_desktop_put_icon(afp_desktop_t *dt, uint32_t creator, uint32_t file_type
         return rc;
     long si = icon_slot(dt, creator, file_type, icon_type);
     if (si >= 0)
-        icon_log_append(dt, DT_OP_PUT, &dt->icons[si].v);
+        icon_log_append(dt, DT_OP_PUT, icon_view(dt, (size_t)si));
     return 0;
 }
 
@@ -413,7 +422,7 @@ const afp_icon_t *afp_desktop_get_icon(afp_desktop_t *dt, uint32_t creator, uint
     if (!dt)
         return NULL;
     long si = icon_slot(dt, creator, file_type, icon_type);
-    return si < 0 ? NULL : &dt->icons[si].v;
+    return si < 0 ? NULL : icon_view(dt, (size_t)si);
 }
 
 const afp_icon_t *afp_desktop_icon_at(afp_desktop_t *dt, uint32_t creator, uint16_t index) {
@@ -424,7 +433,7 @@ const afp_icon_t *afp_desktop_icon_at(afp_desktop_t *dt, uint32_t creator, uint1
         if (dt->icons[i].dead || dt->icons[i].v.creator != creator)
             continue;
         if (++seen == index)
-            return &dt->icons[i].v;
+            return icon_view(dt, i);
     }
     return NULL;
 }
