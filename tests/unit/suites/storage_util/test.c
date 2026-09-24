@@ -113,6 +113,49 @@ TEST(test_read_file_is_capped) {
     ASSERT_EQ_INT(0, gs_rm_tree(g_root));
 }
 
+// A file replaced whole or not at all: a commit that failed -- or was told
+// the writes failed -- leaves the old file and no temporary behind.
+TEST(test_atomic_write_replaces_whole_or_not_at_all) {
+    fresh_root();
+    char *p = gs_str_printf("%s/f", g_root);
+    char *tmp = gs_str_printf("%s/f.tmp", g_root);
+    char *alt = gs_str_printf("%s/f.part", g_root);
+    write_file(p, "old");
+
+    gs_atomic_t a;
+    FILE *f = gs_atomic_open(&a, p, NULL);
+    ASSERT_TRUE(f != NULL && exists(tmp));
+    fputs("half", f);
+    ASSERT_TRUE(gs_atomic_commit(&a, false) != 0);
+    ASSERT_TRUE(!exists(tmp));
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    ASSERT_EQ_INT(0, gs_read_file(p, 16, &buf, &len));
+    ASSERT_TRUE(len == 3 && memcmp(buf, "old", 3) == 0);
+    free(buf);
+
+    f = gs_atomic_open(&a, p, ".part");
+    ASSERT_TRUE(f != NULL && exists(alt));
+    fputs("new", f);
+    ASSERT_EQ_INT(0, gs_atomic_commit(&a, true));
+    ASSERT_TRUE(!exists(alt));
+    ASSERT_EQ_INT(0, gs_read_file(p, 16, &buf, &len));
+    ASSERT_TRUE(len == 3 && memcmp(buf, "new", 3) == 0);
+    free(buf);
+
+    ASSERT_EQ_INT(0, gs_write_atomic(p, "whole", 5));
+    ASSERT_EQ_INT(0, gs_read_file(p, 16, &buf, &len));
+    ASSERT_TRUE(len == 5 && memcmp(buf, "whole", 5) == 0);
+    free(buf);
+    char *nodir = gs_str_printf("%s/missing/f", g_root);
+    ASSERT_TRUE(gs_write_atomic(nodir, "x", 1) < 0);
+    free(nodir);
+    free(p);
+    free(tmp);
+    free(alt);
+    ASSERT_EQ_INT(0, gs_rm_tree(g_root));
+}
+
 // One escaper for both former copies' escape sets, and it refuses rather
 // than truncates.
 TEST(test_json_escape) {
@@ -135,6 +178,7 @@ int main(void) {
     RUN(test_rm_tree_does_not_follow_symlinks);
     RUN(test_read_file_is_capped);
     RUN(test_json_escape);
+    RUN(test_atomic_write_replaces_whole_or_not_at_all);
     fprintf(stderr, "All storage_util tests passed\n");
     return 0;
 }

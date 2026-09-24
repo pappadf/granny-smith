@@ -125,6 +125,10 @@ bool afp_meta_is_hidden(const char *name);
 // desktop database (proposal §4.1).
 #define AFP_CONTROL_DIR ".gs-afp"
 
+// "<root>/.gs-afp/<leaf>", creating the control directory when it is missing:
+// where the catalog, the desktop stores and the volume record live.
+bool afp_meta_control_path(const char *root, const char *leaf, char *out, size_t cap);
+
 // AFP <-> host time conversions, shared by every caller that touches dates.
 uint32_t afp_meta_time_from_unix(int64_t unix_secs);
 int64_t afp_meta_time_to_unix(uint32_t afp_secs);

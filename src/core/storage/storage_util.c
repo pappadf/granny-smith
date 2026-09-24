@@ -121,6 +121,62 @@ int gs_rm_tree(const char *path) {
     return (rmdir(path) == 0 || errno == ENOENT) ? 0 : -errno;
 }
 
+FILE *gs_atomic_open(gs_atomic_t *a, const char *path, const char *tmp_suffix) {
+    memset(a, 0, sizeof(*a));
+    if (!path) {
+        errno = EINVAL;
+        return NULL;
+    }
+    a->path = gs_strdup(path);
+    a->tmp = gs_str_printf("%s%s", path, tmp_suffix ? tmp_suffix : ".tmp");
+    if (!a->path || !a->tmp) {
+        free(a->path);
+        free(a->tmp);
+        memset(a, 0, sizeof(*a));
+        errno = ENOMEM;
+        return NULL;
+    }
+    a->f = fopen(a->tmp, "wb");
+    if (!a->f) {
+        int e = errno;
+        free(a->path);
+        free(a->tmp);
+        memset(a, 0, sizeof(*a));
+        errno = e;
+    }
+    return a->f;
+}
+
+int gs_atomic_commit(gs_atomic_t *a, bool ok) {
+    if (!a->f)
+        return -EINVAL;
+    int rc = 0;
+    if (ferror(a->f))
+        ok = false;
+    if (fclose(a->f) != 0 && ok) {
+        rc = errno ? -errno : -EIO;
+        ok = false;
+    }
+    if (ok && rename(a->tmp, a->path) != 0)
+        rc = errno ? -errno : -EIO;
+    else if (!ok && rc == 0)
+        rc = -EIO;
+    if (rc != 0)
+        remove(a->tmp);
+    free(a->path);
+    free(a->tmp);
+    memset(a, 0, sizeof(*a));
+    return rc;
+}
+
+int gs_write_atomic(const char *path, const void *data, size_t len) {
+    gs_atomic_t a;
+    FILE *f = gs_atomic_open(&a, path, NULL);
+    if (!f)
+        return errno ? -errno : -EIO;
+    return gs_atomic_commit(&a, len == 0 || fwrite(data, 1, len, f) == len);
+}
+
 int gs_read_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
     *out = NULL;
     *out_len = 0;

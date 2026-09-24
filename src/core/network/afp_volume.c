@@ -22,6 +22,7 @@
 #include "atalk_id.h"
 #include "common.h"
 #include "log.h"
+#include "storage_util.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -113,7 +114,7 @@ void afp_count_result(uint32_t result) {
 
 // Path of a volume's control-directory record file.
 static bool vol_record_path(const vol_t *v, char *out, size_t cap) {
-    return (size_t)snprintf(out, cap, "%s/%s/volume", v->root, AFP_CONTROL_DIR) < cap;
+    return afp_meta_control_path(v->root, "volume", out, cap);
 }
 
 static void vol_record_load(vol_t *v) {
@@ -133,14 +134,11 @@ void vol_record_store(const vol_t *v) {
     char path[PATH_MAX];
     if (!vol_record_path(v, path, sizeof(path)))
         return;
-    FILE *f = fopen(path, "wb");
-    if (!f)
-        return;
     uint8_t rec[8];
     WR_BE32(rec, AFP_VOLREC_MAGIC);
     WR_BE32(rec + 4, v->backup_date);
-    fwrite(rec, 1, sizeof(rec), f);
-    fclose(f);
+    if (gs_write_atomic(path, rec, sizeof(rec)) != 0) // it was rewritten in place (N-26)
+        LOG(1, "AFP: cannot record the backup date of '%s'", v->name);
 }
 
 static int find_vol_slot_by_name(const char *name) {

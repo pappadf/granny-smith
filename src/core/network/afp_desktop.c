@@ -254,17 +254,14 @@ afp_desktop_t *afp_desktop_open(const char *host_root) {
     afp_desktop_t *dt = (afp_desktop_t *)calloc(1, sizeof(*dt));
     if (!dt)
         return NULL;
-    char ctrl[PATH_MAX];
-    if (!afp_host_join(host_root, AFP_CONTROL_DIR, ctrl, sizeof(ctrl))) {
+    char path[PATH_MAX];
+    if (!afp_meta_control_path(host_root, "desktop.icons", path, sizeof(path))) {
         free(dt);
         return NULL;
     }
-    mkdir(ctrl, 0755);
-    char path[PATH_MAX + 16];
-    snprintf(path, sizeof(path), "%s/desktop.icons", ctrl);
     dt->icon_log = afp_applog_open(path, DT_ICON_MAGIC, icon_replay, icon_dump, dt, NULL);
-    snprintf(path, sizeof(path), "%s/desktop.appl", ctrl);
-    dt->appl_log = afp_applog_open(path, DT_APPL_MAGIC, appl_replay, appl_dump, dt, NULL);
+    if (afp_meta_control_path(host_root, "desktop.appl", path, sizeof(path)))
+        dt->appl_log = afp_applog_open(path, DT_APPL_MAGIC, appl_replay, appl_dump, dt, NULL);
     return dt;
 }
 

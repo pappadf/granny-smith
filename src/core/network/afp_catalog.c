@@ -347,13 +347,11 @@ afp_catalog_t *afp_catalog_open(const char *host_root) {
     cat->generation = 1;
     cat->next_cnid = AFP_CNID_FIRST;
 
-    char ctrl[PATH_MAX], log_path[PATH_MAX + 16];
-    if (!afp_host_join(cat->root, AFP_CONTROL_DIR, ctrl, sizeof(ctrl))) {
+    char log_path[PATH_MAX];
+    if (!afp_meta_control_path(cat->root, "catalog.gsc", log_path, sizeof(log_path))) {
         free(cat);
         return NULL;
     }
-    mkdir(ctrl, 0755); // idempotent; a failure only costs persistence
-    snprintf(log_path, sizeof(log_path), "%s/catalog.gsc", ctrl);
 
     // The root always exists and always has CNID 2.
     if (slot_push(cat, AFP_CNID_ROOT, AFP_CNID_ROOT_PARENT, true, "") < 0) {

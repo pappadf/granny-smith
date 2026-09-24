@@ -3493,6 +3493,47 @@ TEST(a_directory_too_large_to_page_is_refused_whole) {
     fixture_down();
 }
 
+// --- G3: stores are replaced whole (10-network N-26) ------------------------------
+
+static ino_t inode_of(const char *path) {
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(path, &st));
+    return st.st_ino;
+}
+
+static void set_backup_date(uint32_t date) {
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put16(0x0010);
+    put32(date);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_SET_VOL_PARMS));
+}
+
+// A metadata update and a backup date are written to a new file renamed over
+// the old -- a new inode each time -- so a crash mid-write leaves the old one.
+// Both were rewritten in place: a crash lost the file's Finder Info, dates and
+// comment, or the volume's backup date.
+TEST(sidecars_and_the_volume_record_are_replaced_whole) {
+    fixture_up("atomic");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Doc"));
+    uint16_t dt = open_dt();
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Doc", "one"));
+    char sc[512];
+    host_path("._Doc", sc, sizeof sc);
+    ino_t before = inode_of(sc);
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Doc", "two"));
+    ASSERT_TRUE(inode_of(sc) != before);
+
+    set_backup_date(0xC0000000u);
+    char rec[512];
+    snprintf(rec, sizeof rec, "%s/%s/volume", g_root, AFP_CONTROL_DIR);
+    before = inode_of(rec);
+    set_backup_date(0xC0000001u);
+    ASSERT_TRUE(inode_of(rec) != before);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3567,6 +3608,7 @@ int main(void) {
     RUN(a_rewritten_icon_does_not_grow_the_log);
     RUN(the_catalog_index_follows_every_change);
     RUN(a_directory_too_large_to_page_is_refused_whole);
+    RUN(sidecars_and_the_volume_record_are_replaced_whole);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

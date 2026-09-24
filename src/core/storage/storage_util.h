@@ -11,8 +11,10 @@
 #ifndef GS_STORAGE_UTIL_H
 #define GS_STORAGE_UTIL_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 // strdup that tolerates NULL (returns NULL).
 char *gs_strdup(const char *s);
@@ -32,6 +34,24 @@ int gs_mkdir_parents(const char *path);
 // top or anywhere below -- is removed, never followed.  0 when the path is
 // gone afterwards (including when it never existed), else a negative errno.
 int gs_rm_tree(const char *path);
+
+// A file replaced whole or not at all.  gs_atomic_open writes to a sibling,
+// `path` plus `tmp_suffix` (".tmp" when NULL); gs_atomic_commit closes it and,
+// when `ok` and every write and the close succeeded, renames it over `path` --
+// otherwise it removes it.  A crash, a short write or a full disk leaves the
+// old file, never part of the new one.  The suffix is the caller's to choose
+// where "<path>.tmp" could be another file's name.
+typedef struct {
+    FILE *f;
+    char *path;
+    char *tmp;
+} gs_atomic_t;
+
+FILE *gs_atomic_open(gs_atomic_t *a, const char *path, const char *tmp_suffix); // NULL on failure, errno set
+int gs_atomic_commit(gs_atomic_t *a, bool ok); // 0 or a negative errno
+
+// The whole of `data` to `path`, replaced atomically.  0 or a negative errno.
+int gs_write_atomic(const char *path, const void *data, size_t len);
 
 // Read all of `path` into a malloc'd buffer (*out; a non-NULL buffer even for
 // an empty file) of *out_len bytes.  A file larger than `cap` is refused

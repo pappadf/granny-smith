@@ -9,6 +9,7 @@ EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
               ../../../../src/core/network/afp_params.c \
               ../../../../src/core/network/afp_enum.c \
               ../../../../src/core/crc32.c \
+              ../../../../src/core/storage/storage_util.c \
               ../../../../src/core/network/afp_applog.c \
               ../../../../src/core/network/afp_catalog.c \
               ../../../../src/core/network/afp_desktop.c \

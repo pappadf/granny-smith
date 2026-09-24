@@ -7,8 +7,10 @@
 #include "afp_meta.h"
 #include "common.h"
 
+#include "afp_catalog.h"
 #include "appledouble.h"
 #include "log.h"
+#include "storage_util.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -84,6 +86,14 @@ bool afp_meta_sidecar_path(const char *host_path, char *out, size_t cap) {
     int n = slash ? snprintf(out, cap, "%.*s._%s", (int)(slash - host_path + 1), host_path, base)
                   : snprintf(out, cap, "._%s", base);
     return n > 0 && (size_t)n < cap;
+}
+
+bool afp_meta_control_path(const char *root, const char *leaf, char *out, size_t cap) {
+    char dir[PATH_MAX];
+    if (!afp_host_join(root, AFP_CONTROL_DIR, dir, sizeof(dir)))
+        return false;
+    gs_mkdir_p(dir); // idempotent; a failure only costs persistence
+    return (size_t)snprintf(out, cap, "%s/%s", dir, leaf) < cap;
 }
 
 bool afp_meta_is_hidden(const char *name) {
@@ -304,10 +314,19 @@ static size_t build_meta_entries(const afp_meta_t *meta, ad_entry_t *entries, si
     return n;
 }
 
-int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, size_t rsrc_len) {
+// Write a sidecar whole or not at all: the AppleDouble header through the
+// one writer (09-storage F-61), the metadata entries, then the resource fork
+// from memory (`rsrc`) or streamed from `rsrc_src` in fixed-size chunks, so
+// its size never bounds memory.  Both public writers are this one; the
+// in-memory one used to truncate the sidecar in place, so a crash mid-write
+// lost every piece of metadata it held (10-network N-26).
+static int meta_write(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, FILE *rsrc_src,
+                      size_t rsrc_len) {
     char sc[PATH_MAX];
     if (!host_path || !afp_meta_sidecar_path(host_path, sc, sizeof(sc)))
         return -EINVAL;
+    if (!rsrc && !rsrc_src)
+        rsrc_len = 0;
     if (rsrc_len == 0 && meta_is_empty(meta)) {
         remove(sc); // keep metadata-free files a clean stream
         return 0;
@@ -316,95 +335,52 @@ int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t 
     ad_entry_t entries[5];
     uint8_t dates[16];
     uint8_t macinfo[4];
-    size_t n = build_meta_entries(meta, entries, 4, dates, macinfo);
+    size_t n_meta = build_meta_entries(meta, entries, 4, dates, macinfo);
+    size_t n = n_meta;
     if (rsrc_len) {
         entries[n].id = AD_ENTRY_RSRC;
-        entries[n].bytes = rsrc;
+        entries[n].bytes = NULL; // written below
         entries[n].len = rsrc_len;
         n++;
-    }
-
-    uint8_t *buf = NULL;
-    size_t buf_len = 0;
-    int rc = ad_build(false, entries, n, &buf, &buf_len);
-    if (rc < 0)
-        return rc;
-    FILE *f = fopen(sc, "wb");
-    if (!f) {
-        int e = errno;
-        free(buf);
-        return e ? -e : -EIO;
-    }
-    size_t w = fwrite(buf, 1, buf_len, f);
-    int cr = fclose(f);
-    free(buf);
-    return (w == buf_len && cr == 0) ? 0 : -EIO;
-}
-
-int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *rsrc_src, size_t rsrc_len) {
-    char sc[PATH_MAX];
-    if (!host_path || !afp_meta_sidecar_path(host_path, sc, sizeof(sc)))
-        return -EINVAL;
-    if ((rsrc_len == 0 || !rsrc_src) && meta_is_empty(meta)) {
-        remove(sc);
-        return 0;
-    }
-    if (!rsrc_src)
-        rsrc_len = 0;
-
-    ad_entry_t entries[5];
-    uint8_t dates[16];
-    uint8_t macinfo[4];
-    size_t n_meta = build_meta_entries(meta, entries, 4, dates, macinfo);
-    size_t n = n_meta + (rsrc_len ? 1 : 0);
-
-    // The header through the one AppleDouble writer (09-storage F-61); the
-    // payloads follow it in order, the fork streamed below rather than held.
-    if (rsrc_len) {
-        entries[n_meta].id = AD_ENTRY_RSRC;
-        entries[n_meta].bytes = NULL;
-        entries[n_meta].len = rsrc_len;
     }
     uint8_t hdr[26 + 5 * 12];
     long hl = ad_build_header(false, entries, n, hdr, sizeof(hdr));
     if (hl < 0)
         return (int)hl;
-    size_t hdr_len = (size_t)hl;
 
-    char tmp[PATH_MAX];
-    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.gstmp", sc) >= sizeof(tmp))
-        return -ENAMETOOLONG;
-    FILE *f = fopen(tmp, "wb");
+    // ".gstmp", not ".tmp": "._x.tmp" is the sidecar of a file named "x.tmp".
+    gs_atomic_t out;
+    FILE *f = gs_atomic_open(&out, sc, ".gstmp");
     if (!f)
         return errno ? -errno : -EIO;
-    bool ok = fwrite(hdr, 1, hdr_len, f) == hdr_len;
+    bool ok = fwrite(hdr, 1, (size_t)hl, f) == (size_t)hl;
     for (size_t i = 0; ok && i < n_meta; i++)
         ok = entries[i].len == 0 || fwrite(entries[i].bytes, 1, entries[i].len, f) == entries[i].len;
-    // Stream the fork in fixed-size chunks so its size never bounds memory.
-    uint8_t chunk[64 * 1024];
-    size_t left = rsrc_len;
-    while (ok && left) {
-        size_t want = left < sizeof(chunk) ? left : sizeof(chunk);
-        size_t got = fread(chunk, 1, want, rsrc_src);
-        if (got == 0)
-            break;
-        ok = fwrite(chunk, 1, got, f) == got;
-        left -= got;
+    if (ok && rsrc) {
+        ok = fwrite(rsrc, 1, rsrc_len, f) == rsrc_len;
+    } else if (ok && rsrc_len) {
+        uint8_t chunk[64 * 1024];
+        size_t left = rsrc_len;
+        while (ok && left) {
+            size_t want = left < sizeof(chunk) ? left : sizeof(chunk);
+            size_t got = fread(chunk, 1, want, rsrc_src);
+            if (got == 0)
+                break;
+            ok = fwrite(chunk, 1, got, f) == got;
+            left -= got;
+        }
+        if (left)
+            ok = false; // the source ran short of the declared length
     }
-    if (left)
-        ok = false; // the source ran short of the declared length
-    if (fclose(f) != 0)
-        ok = false;
-    if (!ok) {
-        remove(tmp);
-        return -EIO;
-    }
-    if (rename(tmp, sc) != 0) {
-        int e = errno;
-        remove(tmp);
-        return e ? -e : -EIO;
-    }
-    return 0;
+    return gs_atomic_commit(&out, ok);
+}
+
+int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, size_t rsrc_len) {
+    return meta_write(host_path, meta, rsrc, NULL, rsrc_len);
+}
+
+int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *rsrc_src, size_t rsrc_len) {
+    return meta_write(host_path, meta, NULL, rsrc_src, rsrc_len);
 }
 
 size_t afp_meta_copy_rsrc(const char *host_path, FILE *dst) {

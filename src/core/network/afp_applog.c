@@ -10,6 +10,7 @@
 #include "crc32.h"
 
 #include "log.h"
+#include "storage_util.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -125,12 +126,11 @@ bool afp_applog_emit(afp_applog_t *log, uint8_t op, const void *payload, uint16_
     return true;
 }
 
-// Rewrite the log from the store's live state: a temporary file, then a
-// rename over the log, so a crash leaves one or the other whole.
+// Rewrite the log from the store's live state, atomically (gs_atomic_open):
+// a crash leaves the old log or the new one whole.
 static void applog_compact(afp_applog_t *log) {
-    char tmp[PATH_MAX + 8];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", log->path);
-    FILE *f = fopen(tmp, "wb");
+    gs_atomic_t out;
+    FILE *f = gs_atomic_open(&out, log->path, NULL);
     if (!f)
         return;
     uint8_t m[4];
@@ -139,19 +139,12 @@ static void applog_compact(afp_applog_t *log) {
     log->emitted = 0;
     bool ok = fwrite(m, 1, sizeof(m), f) == sizeof(m) && log->dump(log->ctx, log);
     log->emit_to = NULL;
-    if (fclose(f) != 0)
-        ok = false;
-    if (!ok) {
-        remove(tmp);
-        return;
-    }
-    fclose(log->f);
-    if (rename(tmp, log->path) == 0) {
+    fclose(log->f); // the append handle goes before the file is replaced
+    int rc = gs_atomic_commit(&out, ok);
+    if (rc == 0)
         log->records = log->emitted;
-    } else {
-        LOG(1, "AFP: cannot replace '%s' (%s)", log->path, strerror(errno));
-        remove(tmp);
-    }
+    else
+        LOG(1, "AFP: cannot compact '%s' (%s)", log->path, strerror(-rc));
     log->f = fopen(log->path, "ab");
 }
 
