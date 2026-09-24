@@ -1126,9 +1126,7 @@ static uint64_t g_adsp_armed_at = ADSP_NO_DEADLINE;
 
 static uint64_t adsp_host_now(void *ctx) {
     (void)ctx;
-    if (!g_adsp_scheduler)
-        return 0;
-    return (uint64_t)scheduler_time_ns(g_adsp_scheduler);
+    return atalk_now_ns();
 }
 
 static int adsp_host_send(void *ctx, const atalk_socket_addr_t *dest, uint8_t src_socket, const uint8_t *pkt, int len) {

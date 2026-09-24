@@ -15,6 +15,11 @@
 // for guest-time timers in the protocol modules.
 struct scheduler *atalk_scheduler(void);
 
+// The stack's clock: guest time from the machine's scheduler, in ns, so a run
+// is deterministic; 0 before a scheduler is attached.  ASP, PAP and ADSP all
+// read it -- PAP used to fall back to the host's clock (10-network N-22).
+uint64_t atalk_now_ns(void);
+
 // A guest-time timer the stack owns -- one scheduler event type.
 //
 // Every one is registered with the machine's scheduler while the stack comes

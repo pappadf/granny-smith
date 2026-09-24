@@ -28,7 +28,7 @@ LOG_USE_CATEGORY_NAME("appletalk");
 #define PRINTER_ENTITY_TYPE      "LaserWriter"
 #define PAP_SENDDATA_RETRY_MS    8000u
 #define PAP_SENDDATA_RETRY_LIMIT 12
-#define PAP_SESSION_TIMEOUT_MS   120000u
+#define PAP_SESSION_TIMEOUT_NS   (120ull * 1000000000ull)
 // Gap between a frame the printer has just sent (an OpenReply, a TRel, a
 // reply to the workstation's read) and its next SendData.  A real printer
 // takes far longer between reads; issuing the next request in the same
@@ -98,7 +98,7 @@ typedef struct {
     size_t capture_cap;
     uint32_t job_id;
     size_t bytes_received;
-    uint64_t last_activity_ms;
+    uint64_t last_activity_ns;
     char pending_reply[PRINTER_STATUS_MAX + 1];
     uint8_t pending_reply_len;
     bool pending_reply_ready;
@@ -162,7 +162,6 @@ static pap_completion_stream_t g_completion;
 
 // Forward declarations for helper routines.
 static void pap_printer_init(void);
-static uint64_t pap_now_ms(void);
 static void pap_session_reset(void);
 static void pap_printer_set_status_fmt(const char *fmt, ...)
 #ifdef __GNUC__
@@ -180,7 +179,6 @@ static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool compl
 #endif
 static void pap_update_progress_status(void);
 static void pap_session_record_activity(void);
-static void pap_session_check_timeout(void);
 #if !GS_PLATEN
 static void pap_queue_postscript_reply(const char *text);
 static bool pap_detect_flush_sequence(pap_session_t *sess, const uint8_t *data, int len);
@@ -231,19 +229,13 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
 static const char *pap_func_name(uint8_t func);
 static void pap_format_request_detail(char *dst, size_t dst_len, uint8_t func, const atp_packet_t *packet);
 
-// Helper returning the current platform tick count in milliseconds.
-static uint64_t pap_now_ms(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (sched)
-        return (uint64_t)(scheduler_time_ns(sched) / 1000000.0);
-    return platform_ticks();
-}
-
 // -- Deferred SendData ------------------------------------------------------
 // Every SendData the printer issues goes through here, so none leaves in the
 // same instant as the frame that preceded it (see PAP_SENDDATA_GAP_NS).
 
 static atalk_timer_t g_pap_gap_timer;
+static atalk_timer_t g_pap_idle_timer; // the connection timer (pap_idle_cb)
+static void pap_idle_cb(void *source, uint64_t data);
 
 static void pap_senddata_gap_cb(void *source, uint64_t data) {
     (void)source;
@@ -319,7 +311,8 @@ static void pap_session_reset(void) {
     g_session.client_addr.socket = 0;
     g_session.job_id = 0;
     g_session.bytes_received = 0;
-    g_session.last_activity_ms = 0;
+    g_session.last_activity_ns = 0;
+    atalk_timer_cancel_all(&g_pap_idle_timer);
     g_session.pending_reply[0] = '\0';
     g_session.pending_reply_len = 0;
     g_session.pending_reply_ready = false;
@@ -381,7 +374,7 @@ static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uin
 static void pap_session_record_activity(void) {
     if (!g_session.active)
         return;
-    g_session.last_activity_ms = pap_now_ms();
+    g_session.last_activity_ns = atalk_now_ns();
 }
 
 // Terminates the active session, optionally notifying the workstation beforehand.
@@ -481,17 +474,23 @@ static void pap_update_progress_status(void) {
 #endif
 }
 
-// Aborts connections that exceeded the PAP inactivity timer.
-static void pap_session_check_timeout(void) {
+// The connection timer: a session idle for PAP_SESSION_TIMEOUT_NS is aborted.
+// It fires on the guest clock, armed when the connection opens and re-armed
+// for what is left of the interval -- the timeout was checked only when the
+// next PAP packet arrived, so a workstation that vanished held the printer
+// for ever (10-network N-22).
+static void pap_idle_cb(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
     if (!g_session.active)
         return;
-    uint64_t now = pap_now_ms();
-    if (g_session.last_activity_ms == 0)
-        g_session.last_activity_ms = now;
-    if (now - g_session.last_activity_ms >= PAP_SESSION_TIMEOUT_MS) {
+    uint64_t idle = atalk_now_ns() - g_session.last_activity_ns;
+    if (idle >= PAP_SESSION_TIMEOUT_NS) {
         LOG(1, "pap: connection timeout for job %u", g_session.job_id);
         pap_session_abort("connection timeout");
+        return;
     }
+    atalk_timer_arm(&g_pap_idle_timer, 0, PAP_SESSION_TIMEOUT_NS - idle);
 }
 
 #if !GS_PLATEN
@@ -1285,7 +1284,8 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         g_session.job_id = ++g_printer.job_counter;
         g_session.next_send_seq = 1;
         g_session.bytes_received = 0;
-        g_session.last_activity_ms = pap_now_ms();
+        g_session.last_activity_ns = atalk_now_ns();
+        atalk_timer_arm(&g_pap_idle_timer, 0, PAP_SESSION_TIMEOUT_NS);
         if (laserwriter_job_available() && !laserwriter_job_begin(g_session.job_id)) {
             // No interpreter, no job: busy is the only honest answer
             result = PAP_RESULT_BUSY;
@@ -1416,8 +1416,6 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
     pap_printer_init();
     if (!ddp || !request)
         return;
-
-    pap_session_check_timeout();
 
     uint8_t func = request->user[1];
     char detail[96];
@@ -1617,6 +1615,7 @@ void atalk_printer_register(void) {
     // restore replays the saved queue (atalk_timer_t).
     if (atalk_scheduler()) {
         atalk_timer_init(&g_pap_gap_timer, "pap", "senddata_gap", &pap_senddata_gap_cb);
+        atalk_timer_init(&g_pap_idle_timer, "pap", "idle", &pap_idle_cb);
         laserwriter_job_init();
     }
     static const atp_socket_handler_t handler = {.handle_request = pap_socket_request_handler};

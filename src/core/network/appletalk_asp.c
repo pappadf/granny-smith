@@ -119,13 +119,6 @@ static uint32_t asp_client_command(uint16_t session_ref, uint8_t opcode, const u
 
 // === Sessions ===================================================================
 
-// Guest time, not host time, so an instruction-budgeted run expires sessions
-// deterministically.
-static uint64_t asp_now_ns(void) {
-    scheduler_t *sched = atalk_scheduler();
-    return sched ? (uint64_t)scheduler_time_ns(sched) : 0;
-}
-
 static bool sess_ref_in_use(uint32_t ref, const void *ctx) {
     (void)ctx;
     for (int i = 0; i < MAX_ASP_SESS; i++)
@@ -215,7 +208,7 @@ bool atalk_asp_session_info(int index, atalk_session_info_t *out) {
         (g_client && g_client->session_version) ? g_client->session_version(g_client_ctx, s->sess_ref) : NULL;
     snprintf(out->afp_version, sizeof(out->afp_version), "%s", ver ? ver : "");
     out->open_forks = (g_client && g_client->open_forks) ? g_client->open_forks(g_client_ctx, s->sess_ref) : 0;
-    uint64_t now = asp_now_ns();
+    uint64_t now = atalk_now_ns();
     out->idle_ns = (now > s->last_activity_ns) ? (now - s->last_activity_ns) : 0;
     return true;
 }
@@ -257,7 +250,7 @@ void atalk_asp_close_all_sessions(void) {
 // Close every session that has gone quiet past the ASP timeout, returning
 // their forks, locks and desktop references.
 static void asp_expire_sessions(void) {
-    uint64_t now = asp_now_ns();
+    uint64_t now = atalk_now_ns();
     for (int i = 0; i < MAX_ASP_SESS; i++) {
         asp_session_t *s = &g_sessions[i];
         if (!s->in_use || now < s->last_activity_ns + ASP_SESSION_TIMEOUT_NS)
@@ -506,7 +499,7 @@ static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
         s->sess_id = (uint8_t)id;
         s->wss = wss;
         s->client_node = ddp->llap.src;
-        s->last_activity_ns = asp_now_ns();
+        s->last_activity_ns = atalk_now_ns();
         asp_arm_session_sweep();
         user[0] = HOST_AFP_SOCKET;
         user[1] = s->sess_id;
@@ -551,7 +544,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
             return; // a stray Tickle
         }
     }
-    s->last_activity_ns = asp_now_ns(); // any traffic is liveness
+    s->last_activity_ns = atalk_now_ns(); // any traffic is liveness
 
     switch (func) {
     case ASP_TICKLE:

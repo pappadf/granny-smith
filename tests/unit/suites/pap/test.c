@@ -19,19 +19,23 @@
 void LOG_INDENT(int n) {
     (void)n;
 }
+// A scheduler to hand out, so the printer registers its timers; they run
+// through the stubs below, never through it.
+static int g_scheduler_dummy;
 struct scheduler *atalk_scheduler(void) {
-    return NULL;
+    return (struct scheduler *)&g_scheduler_dummy;
 }
-double scheduler_time_ns(struct scheduler *s) {
-    (void)s;
-    return 0;
+static uint64_t g_now_ns; // the guest clock, moved by the test
+uint64_t atalk_now_ns(void) {
+    return g_now_ns;
 }
 
-// Timers fire only when the test says so (fire_timers).
+// Timers fire when the test runs them (fire_timers), those that are due.
 #define MAX_ARMED 8
 static struct {
     atalk_timer_t *t;
     uint64_t data;
+    uint64_t due;
 } g_armed[MAX_ARMED];
 static int g_n_armed;
 void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb) {
@@ -40,14 +44,16 @@ void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *eve
     t->cb = cb;
 }
 void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns) {
-    (void)delay_ns;
-    for (int i = 0; i < g_n_armed; i++)
-        if (g_armed[i].t == t && g_armed[i].data == data)
-            return;
-    ASSERT_TRUE(g_n_armed < MAX_ARMED);
-    g_armed[g_n_armed].t = t;
-    g_armed[g_n_armed].data = data;
-    g_n_armed++;
+    int i = 0;
+    while (i < g_n_armed && !(g_armed[i].t == t && g_armed[i].data == data))
+        i++;
+    if (i == g_n_armed) {
+        ASSERT_TRUE(g_n_armed < MAX_ARMED);
+        g_n_armed++;
+    }
+    g_armed[i].t = t;
+    g_armed[i].data = data;
+    g_armed[i].due = g_now_ns + delay_ns;
 }
 void atalk_timer_cancel(atalk_timer_t *t, uint64_t data) {
     for (int i = 0; i < g_n_armed; i++)
@@ -60,12 +66,23 @@ void atalk_timer_cancel_all(atalk_timer_t *t) {
             g_armed[i--] = g_armed[--g_n_armed];
 }
 static void fire_timers(void) {
-    while (g_n_armed) {
-        atalk_timer_t *t = g_armed[0].t;
-        uint64_t data = g_armed[0].data;
-        g_armed[0] = g_armed[--g_n_armed];
+    for (int i = 0; i < g_n_armed;) {
+        if (g_armed[i].due > g_now_ns) {
+            i++;
+            continue;
+        }
+        atalk_timer_t *t = g_armed[i].t;
+        uint64_t data = g_armed[i].data;
+        g_armed[i] = g_armed[--g_n_armed];
         t->cb(t, data);
+        i = 0; // the callback may have armed or cancelled others
     }
+}
+
+// Move the clock on by `ns` and run whatever fell due.
+static void advance(uint64_t ns) {
+    g_now_ns += ns;
+    fire_timers();
 }
 void atp_unregister_socket_handler(uint8_t socket) {
     (void)socket;
@@ -166,7 +183,7 @@ static void request(uint8_t node, uint8_t conn, uint8_t func, const uint8_t *dat
 static void open_conn(uint8_t conn) {
     uint8_t open_data[4] = {200, 8, 0, 0}; // workstation socket, flow quantum
     request(10, conn, PAP_FUNC_OPEN, open_data, 4);
-    fire_timers(); // the printer's first SendData follows the OpenReply after a gap
+    advance(20000000); // the printer's first SendData follows the OpenReply after a gap
 }
 
 // One SendData transaction answered with `n` fragments, the last with EOF.
@@ -182,7 +199,7 @@ static void answer(const char *const *parts, int n, bool eof) {
         g_req_cb.on_response(&f, g_req_ctx);
     }
     g_req_cb.on_complete((atp_request_handle_t *)&g_req_handle, ATP_REQUEST_RESULT_OK, g_req_ctx);
-    fire_timers();
+    advance(20000000);
 }
 
 static void setup(void) {
@@ -241,10 +258,26 @@ TEST(a_foreign_closeconn_does_not_end_the_job) {
     ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
 }
 
+// A workstation that goes quiet loses its connection after 120 s of guest
+// time, whether or not anything else arrives.  The timeout was checked only
+// when the next PAP packet came in, so a vanished client held the printer
+// (N-22).
+TEST(an_idle_connection_times_out_on_its_own) {
+    setup();
+    open_conn(7);
+    advance(119ull * 1000000000ull);
+    ASSERT_TRUE(strstr(atalk_printer_status_text(), "processing") != NULL);
+    ASSERT_EQ_INT(0, g_close_requests);
+    advance(2ull * 1000000000ull);
+    ASSERT_TRUE(strstr(atalk_printer_status_text(), "idle") != NULL);
+    ASSERT_EQ_INT(1, g_close_requests); // the workstation is told
+}
+
 int main(void) {
     RUN(a_job_reaches_the_capture_sink_whole);
     RUN(a_job_too_large_is_aborted);
     RUN(a_foreign_closeconn_does_not_end_the_job);
+    RUN(an_idle_connection_times_out_on_its_own);
     printf("pap: all tests passed\n");
     return 0;
 }

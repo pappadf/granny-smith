@@ -47,6 +47,10 @@ scheduler_t *atalk_scheduler(void) {
     return g_scheduler;
 }
 
+uint64_t atalk_now_ns(void) {
+    return g_scheduler ? (uint64_t)scheduler_time_ns(g_scheduler) : 0;
+}
+
 // === Timers (appletalk_internal.h) ===========================================
 
 // Every timer initialised since the stack came up, so teardown can forget
