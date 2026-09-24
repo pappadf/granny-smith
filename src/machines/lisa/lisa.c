@@ -605,22 +605,10 @@ static struct object *lisa_fd_drives_get(struct object *self, int index) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return (ls && index == 0) ? ls->fd_drive_obj : NULL;
 }
-static int lisa_fd_drives_count(struct object *self) {
-    (void)self;
-    return 1; // one Sony drive
-}
-static int lisa_fd_drives_next(struct object *self, int prev) {
-    (void)self;
-    return prev + 1 < 1 ? prev + 1 : -1;
-}
 static const member_t lisa_fd_drives_members[] = {
     {.kind = M_CHILD,
      .name = "entries",
-     .child = {.cls = &lisa_fd_drive_class,
-               .indexed = true,
-               .get = lisa_fd_drives_get,
-               .count = lisa_fd_drives_count,
-               .next = lisa_fd_drives_next}},
+     .child = {.cls = &lisa_fd_drive_class, .indexed = true, .get = lisa_fd_drives_get, .slots = 1}},
 };
 static const class_desc_t lisa_fd_drives_class = {
     .name = "floppy_drives", .members = lisa_fd_drives_members, .n_members = 1};

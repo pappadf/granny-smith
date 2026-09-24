@@ -204,6 +204,7 @@ typedef struct {
     uint64_t attentions_in;
     uint64_t attentions_out;
     uint64_t timeouts; // ends torn down by the connection timer
+    uint64_t malformed; // runts and reserved control codes (10-network F-35)
 } adsp_stats_t;
 
 const adsp_stats_t *adsp_get_stats(const adsp_stack_t *s);

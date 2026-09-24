@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "laserwriter_transport.h" // LASERWRITER_OUTPUT_MAX
+
 // === Constants ===
 
 // The device the interpreter presents.  Seeded as statusdict identity
@@ -76,6 +78,11 @@ bool laserwriter_job_available(void);
 // Installs the PAP layer's listener (once).
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx);
 
+// Register the bridge's and the transport's timers with the stack's
+// scheduler.  Called from atalk_printer_register each time the stack comes up,
+// so a checkpoint restore finds them (atalk_timer_t).
+void laserwriter_job_init(void);
+
 // Starts the job for PAP job `job_id`: a fresh interpreter seeded with the
 // identity and prelude, opened through the transport.  Returns false when
 // the request could not be issued; otherwise OPENED or FAILED follows.
@@ -133,5 +140,20 @@ const char *laserwriter_job_last_outcome(void);
 // <print-dir>/<job>-<title>.pdf.  The browser never sees the bytes here
 // (its worker posts the PDF to the page), so the sink is not called there.
 void laserwriter_sink_document(const laserwriter_document_t *doc);
+
+// A job's PostScript as the workstation sent it (appletalk.printer.capture),
+// handed over when the job ends.  The bytes are valid only for the duration
+// of the call.
+typedef struct {
+    uint32_t job_id; // PAP job counter value, as in laserwriter_document_t
+    const uint8_t *ps;
+    size_t ps_len;
+    bool complete; // the job ended normally; false for one cut off
+} laserwriter_capture_t;
+
+// Platform sink for a capture.  The weak default in laserwriter_job.c logs
+// and drops it; headless_main.c writes <print-dir>/<job>.ps beside the PDF;
+// the browser downloads it.  The core printer holds no file of its own.
+void laserwriter_sink_capture(const laserwriter_capture_t *cap);
 
 #endif // LASERWRITER_JOB_H

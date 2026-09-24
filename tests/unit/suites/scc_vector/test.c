@@ -87,9 +87,6 @@ double scheduler_time_ns(struct scheduler *restrict s) {
     (void)s;
     return 0.0;
 }
-void appletalk_scc_notify(void *ctx, unsigned int ch) {
-    (void)ctx, (void)ch;
-}
 void remove_event_by_data(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data) {
     (void)s, (void)cb, (void)src, (void)data;
 }
@@ -98,9 +95,6 @@ int platform_bsr32(uint32_t v) {
     while (n >= 0 && !(v & (1u << n)))
         n--;
     return n;
-}
-void process_packet(void *ctx, const uint8_t *buf, size_t len) {
-    (void)ctx, (void)buf, (void)len;
 }
 
 // ============================================================

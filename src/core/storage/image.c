@@ -11,6 +11,7 @@
 #include "image.h"
 
 #include "appledouble.h"
+#include "crc32.h"
 #include "image_ndif.h"
 #include "image_scratch.h"
 #include "image_udif.h"
@@ -459,7 +460,7 @@ static uint32_t crc32_zeros(uint32_t crc, uint64_t len) {
     static const uint8_t zeros[4096] = {0};
     while (len) {
         size_t n = len < sizeof(zeros) ? (size_t)len : sizeof(zeros);
-        crc = udif_crc32(crc, zeros, n);
+        crc = gs_crc32(crc, zeros, n);
         len -= n;
     }
     return crc;
@@ -479,7 +480,7 @@ static int copy_raw_chunk(FILE *df, FILE *out, const udif_chunk_t *c, uint64_t b
         size_t n = remaining < sizeof(buf) ? (size_t)remaining : sizeof(buf);
         if (read_at(df, src, buf, n) != 0 || fwrite(buf, 1, n, out) != n)
             return -EIO;
-        *crc = udif_crc32(*crc, buf, n);
+        *crc = gs_crc32(*crc, buf, n);
         src += n;
         remaining -= n;
     }
@@ -518,7 +519,7 @@ static int write_udif_chunk(FILE *df, FILE *out, const udif_chunk_t *c, uint64_t
             fwrite(dbuf, 1, (size_t)need, out) != need)
             rc = -EIO;
         else
-            *crc = udif_crc32(*crc, dbuf, (size_t)need);
+            *crc = gs_crc32(*crc, dbuf, (size_t)need);
     }
     free(cbuf);
     free(dbuf);

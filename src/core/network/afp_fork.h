@@ -52,7 +52,13 @@ typedef enum {
     AFP_FORK_RANGE_OVERLAP,
     AFP_FORK_RANGE_NOT_LOCKED,
     AFP_FORK_IO_ERR,
+    AFP_FORK_DISK_FULL,
 } afp_fork_status_t;
+
+// No fork grows past this: the 2 GB - 1 KB ceiling every size the server
+// reports is clamped to (AFP_VOL_SIZE_CEILING).  A length or a write that would
+// end beyond it is AFP_FORK_DISK_FULL -- not a 4 GB sparse file (F-17).
+#define AFP_FORK_MAX_LENGTH 0x7FFFFC00u
 
 // Release every backing and handle.  Called from the server's teardown.
 void afp_fork_shutdown(void);
@@ -64,8 +70,9 @@ void afp_fork_shutdown(void);
 afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char *host_path, const char *rel_path,
                                 bool is_resource, uint16_t access_mode, afp_fork_t **out);
 
-// Look up an open handle by its wire reference number.
-afp_fork_t *afp_fork_find(uint16_t ref);
+// Look up an open handle by its wire reference number, for the session that
+// opened it: another session's refnum is not found (ParamErr, ch. 13).
+afp_fork_t *afp_fork_find(uint16_t ref, uint16_t session_id);
 
 // Handle accessors.
 uint16_t afp_fork_ref(const afp_fork_t *fk);
@@ -105,6 +112,10 @@ void afp_fork_repoint(const char *old_host_path, const char *new_host_path, cons
 
 // Current fork length in bytes.
 uint32_t afp_fork_length(afp_fork_t *fk);
+
+// The live length of a file's data or resource fork while any session has it
+// open; false when none does, and the host file or sidecar is current.
+bool afp_fork_live_length(const char *host_path, bool is_resource, uint32_t *out);
 
 // Read up to `count` bytes at `offset`.  `*out_read` receives the byte count.
 // Fails with AFP_FORK_LOCK_ERR when the range is locked by another handle.

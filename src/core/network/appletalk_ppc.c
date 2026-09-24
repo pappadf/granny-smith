@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("ppc");
+LOG_USE_CATEGORY_NAME("ppctoolbox");
 
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
@@ -646,6 +646,7 @@ static void ppc_handle_message(ppc_session_t *s, const uint8_t *msg, int len) {
 
     // An open session carries message blocks (§4.7).
     if (len < PPC_BLOCK_HEADER_SIZE) {
+        g_stats.malformed++;
         LOG(3, "PPC: session %u sent a %d-byte block, shorter than its header", (unsigned)s->id, len);
         return;
     }
@@ -868,20 +869,16 @@ const char *atalk_ppc_host_port_name(void) {
 }
 
 int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t err_len) {
-    if (name && *name) {
-        if (strlen(name) > 32) {
-            snprintf(err, err_len, "a port name may be at most 32 characters");
-            return -1;
-        }
-        snprintf(g_host_port, sizeof(g_host_port), "%s", name);
+    const char *port = (name && *name) ? name : g_host_port;
+    if (strlen(port) > 32) {
+        snprintf(err, err_len, "a port name may be at most 32 characters");
+        return -1;
     }
-
-    if (g_host_nbp) {
-        atalk_nbp_unregister(g_host_nbp);
-        g_host_nbp = NULL;
-    }
-    g_host_enabled = enabled;
     if (!enabled) {
+        atalk_nbp_withdraw(&g_host_nbp);
+        if (port != g_host_port)
+            snprintf(g_host_port, sizeof(g_host_port), "%s", port);
+        g_host_enabled = false;
         // Sessions belong to the port; withdrawing it strands them.
         atalk_ppc_close_all("the host program-linking port was withdrawn");
         adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
@@ -889,26 +886,31 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
     }
 
     // One NBP entity per machine, on the connection-listening socket (§3).
+    // Published -- or renamed in place -- before the name is stored: a name
+    // another machine holds leaves the port advertised as it was.  The old
+    // advertisement was withdrawn first, so the port vanished (N-23).
     atalk_nbp_service_desc_t desc = {
-        .object = g_host_port,
+        .object = port,
         .type = PPC_NBP_TYPE,
         .zone = "*",
         .socket = PPC_HOST_SOCKET,
         .node = LLAP_HOST_NODE,
         .net = 0,
     };
-    if (atalk_nbp_register(&desc, &g_host_nbp) != 0) {
-        g_host_enabled = false;
-        snprintf(err, err_len, "the name '%s' is already taken on the network", g_host_port);
+    if (atalk_nbp_publish(&g_host_nbp, &desc) != 0) {
+        snprintf(err, err_len, "the name '%s' is already taken on the network", port);
         return -1;
     }
-    adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
-    if (adsp_listen(atalk_adsp_stack(), PPC_HOST_SOCKET, &g_listen_client, NULL) != 0) {
-        atalk_nbp_unregister(g_host_nbp);
-        g_host_nbp = NULL;
-        g_host_enabled = false;
-        snprintf(err, err_len, "the PPC listening socket could not be opened");
-        return -1;
+    if (port != g_host_port)
+        snprintf(g_host_port, sizeof(g_host_port), "%s", port);
+    if (!g_host_enabled) {
+        adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
+        if (adsp_listen(atalk_adsp_stack(), PPC_HOST_SOCKET, &g_listen_client, NULL) != 0) {
+            atalk_nbp_withdraw(&g_host_nbp);
+            snprintf(err, err_len, "the PPC listening socket could not be opened");
+            return -1;
+        }
+        g_host_enabled = true;
     }
     LOG(3, "PPC: host port '%s' advertised as %s on socket %d", g_host_port, PPC_NBP_TYPE, PPC_HOST_SOCKET);
     return 0;
@@ -974,10 +976,7 @@ void atalk_ppc_shutdown(void) {
             memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
         }
     }
-    if (g_host_nbp) {
-        atalk_nbp_unregister(g_host_nbp);
-        g_host_nbp = NULL;
-    }
+    atalk_nbp_withdraw(&g_host_nbp);
     g_host_enabled = false;
     g_browse_active = false;
     g_machine_count = 0;
@@ -994,14 +993,8 @@ static struct object *g_ppc_ports_object;
 static struct object *g_ppc_sessions_object;
 static struct object *g_ppc_stats_object;
 
-typedef struct {
-    int slot;
-} ppc_slot_data_t;
-
-static ppc_slot_data_t g_ppc_port_data[PPC_MAX_PORTS];
-static struct object *g_ppc_port_objs[PPC_MAX_PORTS];
-static ppc_slot_data_t g_ppc_session_data[PPC_MAX_SESSIONS];
-static struct object *g_ppc_session_objs[PPC_MAX_SESSIONS];
+OBJECT_POOL(g_ppc_port_pool, PPC_MAX_PORTS);
+OBJECT_POOL(g_ppc_session_pool, PPC_MAX_SESSIONS);
 
 static const class_desc_t ppc_class;
 static const class_desc_t ppc_ports_class;
@@ -1011,8 +1004,7 @@ static const class_desc_t ppc_session_class;
 static const class_desc_t ppc_stats_class;
 
 static int ppc_obj_slot(struct object *self) {
-    const ppc_slot_data_t *d = (const ppc_slot_data_t *)object_data(self);
-    return d ? d->slot : -1;
+    return object_pool_slot(self);
 }
 
 // --- appletalk.ppc.ports[i] --------------------------------------------------
@@ -1093,41 +1085,21 @@ static struct object *ppc_ports_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= atalk_ppc_port_count())
         return NULL;
-    return g_ppc_port_objs[index];
-}
-static int ppc_ports_count_cb(struct object *self) {
-    (void)self;
-    return atalk_ppc_port_count();
-}
-static int ppc_ports_next(struct object *self, int prev) {
-    (void)self;
-    int next = prev + 1;
-    return (next < atalk_ppc_port_count()) ? next : -1;
+    return object_pool_at(&g_ppc_port_pool, index);
 }
 static struct object *ppc_ports_lookup(struct object *self, const char *name) {
     (void)self;
     int idx = atalk_ppc_port_find(name);
-    return (idx >= 0) ? g_ppc_port_objs[idx] : NULL;
-}
-static value_t ppc_ports_attr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    return val_uint(4, (uint64_t)atalk_ppc_port_count());
+    return (idx >= 0) ? object_pool_at(&g_ppc_port_pool, idx) : NULL;
 }
 
 static const member_t ppc_ports_members[] = {
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Program-linking ports discovered by the last browse",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = ppc_ports_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &ppc_port_class,
                .indexed = true,
                .get = ppc_ports_get,
-               .count = ppc_ports_count_cb,
-               .next = ppc_ports_next,
+               .slots = PPC_MAX_PORTS,
                .lookup = ppc_ports_lookup}},
 };
 
@@ -1223,26 +1195,7 @@ static struct object *ppc_sessions_get(struct object *self, int index) {
     (void)self;
     if (!atalk_ppc_session_at(index))
         return NULL;
-    return g_ppc_session_objs[index];
-}
-static int ppc_sessions_count_cb(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < PPC_MAX_SESSIONS; i++)
-        if (atalk_ppc_session_at(i))
-            n++;
-    return n;
-}
-static int ppc_sessions_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < PPC_MAX_SESSIONS; i++)
-        if (atalk_ppc_session_at(i))
-            return i;
-    return -1;
-}
-static value_t ppc_sessions_attr_count(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, (uint64_t)ppc_sessions_count_cb(self));
+    return object_pool_at(&g_ppc_session_pool, index);
 }
 // Name lookup by the port at the far end, so `sessions["Finder"].state` reads
 // naturally in a script.
@@ -1251,24 +1204,18 @@ static struct object *ppc_sessions_lookup(struct object *self, const char *name)
     for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
         const ppc_session_t *s = atalk_ppc_session_at(i);
         if (s && !strcmp(s->port_name, name))
-            return g_ppc_session_objs[i];
+            return object_pool_at(&g_ppc_session_pool, i);
     }
     return NULL;
 }
 
 static const member_t ppc_sessions_members[] = {
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Live PPC sessions",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = ppc_sessions_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &ppc_session_class,
                .indexed = true,
                .get = ppc_sessions_get,
-               .count = ppc_sessions_count_cb,
-               .next = ppc_sessions_next,
+               .slots = PPC_MAX_SESSIONS,
                .lookup = ppc_sessions_lookup}},
 };
 
@@ -1280,30 +1227,14 @@ static const class_desc_t ppc_sessions_class = {
 
 // --- appletalk.ppc.stats -----------------------------------------------------
 
-static value_t ppc_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
-    const ppc_stats_t *st = atalk_ppc_get_stats();
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
-}
-
-#define PPC_STAT_MEMBER(field, doc_text)                                                                               \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = ppc_stats_attr,                                                                                     \
-            .user_data = (const void *)(uintptr_t)offsetof(ppc_stats_t, field)                                         \
-        }                                                                                                              \
-    }
-
 static const member_t ppc_stats_members[] = {
-    PPC_STAT_MEMBER(sessions_opened, "Sessions that reached the open state"),
-    PPC_STAT_MEMBER(sessions_rejected, "Session requests the far side turned down"),
-    PPC_STAT_MEMBER(sessions_refused, "Session requests we turned down"),
-    PPC_STAT_MEMBER(blocks_in, "Message blocks received"),
-    PPC_STAT_MEMBER(blocks_out, "Message blocks sent"),
-    PPC_STAT_MEMBER(browses, "Port browses started"),
+    OBJ_U64_FIELD(ppc_stats_t, sessions_opened, "Sessions that reached the open state"),
+    OBJ_U64_FIELD(ppc_stats_t, sessions_rejected, "Session requests the far side turned down"),
+    OBJ_U64_FIELD(ppc_stats_t, sessions_refused, "Session requests we turned down"),
+    OBJ_U64_FIELD(ppc_stats_t, blocks_in, "Message blocks received"),
+    OBJ_U64_FIELD(ppc_stats_t, blocks_out, "Message blocks sent"),
+    OBJ_U64_FIELD(ppc_stats_t, browses, "Port browses started"),
+    OBJ_U64_FIELD(ppc_stats_t, malformed, "Message blocks discarded as malformed"),
 };
 
 static const class_desc_t ppc_stats_class = {
@@ -1365,33 +1296,19 @@ void atalk_ppc_install_objects(struct object *parent) {
         object_set_category(g_ppc_sessions_object, M_CAT_ADVANCED);
         object_attach(g_ppc_object, g_ppc_sessions_object);
     }
-    g_ppc_stats_object = object_new(&ppc_stats_class, NULL, "stats");
+    g_ppc_stats_object = object_new(&ppc_stats_class, (void *)atalk_ppc_get_stats(), "stats");
     if (g_ppc_stats_object) {
         object_set_category(g_ppc_stats_object, M_CAT_ADVANCED);
         object_attach(g_ppc_object, g_ppc_stats_object);
     }
 
-    for (int i = 0; i < PPC_MAX_PORTS; i++) {
-        g_ppc_port_data[i].slot = i;
-        g_ppc_port_objs[i] = object_new(&ppc_port_class, &g_ppc_port_data[i], NULL);
-    }
-    for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        g_ppc_session_data[i].slot = i;
-        g_ppc_session_objs[i] = object_new(&ppc_session_class, &g_ppc_session_data[i], NULL);
-    }
+    object_pool_create(&g_ppc_port_pool, &ppc_port_class);
+    object_pool_create(&g_ppc_session_pool, &ppc_session_class);
 }
 
 void atalk_ppc_remove_objects(void) {
-    for (int i = 0; i < PPC_MAX_PORTS; i++) {
-        if (g_ppc_port_objs[i])
-            object_delete(g_ppc_port_objs[i]);
-        g_ppc_port_objs[i] = NULL;
-    }
-    for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        if (g_ppc_session_objs[i])
-            object_delete(g_ppc_session_objs[i]);
-        g_ppc_session_objs[i] = NULL;
-    }
+    object_pool_delete(&g_ppc_port_pool);
+    object_pool_delete(&g_ppc_session_pool);
     struct object **nodes[] = {&g_ppc_ports_object, &g_ppc_sessions_object, &g_ppc_stats_object, &g_ppc_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

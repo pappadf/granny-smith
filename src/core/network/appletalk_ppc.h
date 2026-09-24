@@ -145,6 +145,7 @@ typedef struct {
     uint64_t blocks_in;
     uint64_t blocks_out;
     uint64_t browses;
+    uint64_t malformed; // message blocks too short for their header (10-network F-35)
 } ppc_stats_t;
 
 const ppc_stats_t *atalk_ppc_get_stats(void);

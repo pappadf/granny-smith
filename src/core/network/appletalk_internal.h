@@ -15,6 +15,45 @@
 // for guest-time timers in the protocol modules.
 struct scheduler *atalk_scheduler(void);
 
+// The stack's clock: guest time from the machine's scheduler, in ns, so a run
+// is deterministic; 0 before a scheduler is attached.  ASP, PAP and ADSP all
+// read it -- PAP used to fall back to the host's clock (10-network N-22).
+uint64_t atalk_now_ns(void);
+
+// A guest-time timer the stack owns -- one scheduler event type.
+//
+// Every one is registered with the machine's scheduler while the stack comes
+// up: atalk_timer_init is called from the owning module's init, which
+// appletalk_init reaches.  Never lazily at first arm: a checkpoint restore
+// replays the saved event queue into a fresh scheduler before any session
+// exists, and a saved event whose type nothing has registered fails the load
+// (10-network N-05 -- ATP, PAP and the LaserWriter job all registered at first
+// arm, so a checkpoint taken during file sharing or printing could not be
+// restored).  appletalk_teardown forgets every initialised timer.
+//
+// The scheduler source is the timer itself, so a timer's callback receives
+// its own address as `source`.
+typedef void (*atalk_timer_fn)(void *source, uint64_t data);
+typedef struct atalk_timer {
+    atalk_timer_fn cb;
+    bool registered; // with the current stack's scheduler
+} atalk_timer_t;
+
+// Register `t` as "source_name.event_name" with the stack's scheduler.  Call
+// from the owning module's init; repeat calls are harmless.
+void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb);
+// One-shot `delay_ns` from now, carrying `data`; replaces a pending event of
+// this timer with the same `data`, so distinct data (one per ATP transaction)
+// can be pending together.  Delays under ATALK_TIMER_MIN_NS are raised to it:
+// a zero or sub-cycle delay fires with the clock unchanged and a timer that
+// re-arms itself would spin.
+void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns);
+// Cancel the pending event carrying `data`, or every pending event.
+void atalk_timer_cancel(atalk_timer_t *t, uint64_t data);
+void atalk_timer_cancel_all(atalk_timer_t *t);
+
+#define ATALK_TIMER_MIN_NS 1000u
+
 // Shared AppleTalk constants
 #define LLAP_HOST_NODE         33
 #define HOST_AFP_SOCKET        8
@@ -37,6 +76,11 @@ struct scheduler *atalk_scheduler(void);
 #define DDP_MAX_DATA_SIZE        586
 
 // ATP control bit masks (ctl field upper bits per Inside AppleTalk 10-7)
+// ATP limits: a response is at most eight packets (Inside AppleTalk 9-8) of
+// at most 578 bytes of data each.
+#define ATP_MAX_RESPONSE_FRAGMENTS 8
+#define ATP_MAX_ATP_PAYLOAD        578
+
 #define ATP_CONTROL_TREQ  0x40
 #define ATP_CONTROL_TRESP 0x80
 #define ATP_CONTROL_TREL  0xC0
@@ -165,8 +209,14 @@ int atp_responder_send_simple(const ddp_header_t *request_ddp, const atp_packet_
 int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
                       int len);
 
-// Printer AppleTalk entry points
+// Printer AppleTalk entry points.  register runs each time the stack comes
+// up; shutdown pairs it when the stack goes away with its machine (the
+// session, the job and the advertisement go; the configuration -- enabled,
+// name, capture -- stays for the next stack); link_down drops the session
+// when the stack is detached from the link, since its client is unreachable.
 void atalk_printer_register(void);
+void atalk_printer_shutdown(void);
+void atalk_printer_link_down(void);
 
 // Publish (or rename) / withdraw the LaserWriter NBP entity.  The object model
 // drives these through atalk_printer_set_enabled / atalk_printer_set_name.

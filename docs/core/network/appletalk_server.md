@@ -2517,8 +2517,9 @@ an operation, settable — through the object tree
 appletalk                        the stack itself
   enabled          rw  bool      attach/detach from the SCC link (default true)
   node_id          ro  uint      current LLAP node ID (0 while detached)
-  stats            ro  child     llap_rx/tx, crc_errors, ddp_in/out,
-                                 atp_requests/retries, nbp_lookups
+  stats            ro  child     llap_rx/tx, malformed, unhandled,
+                                 tx_dropped, ddp_in/out,
+                                 atp_requests/retries, nbp_packets
   nbp              ro  collection every advertised entity: object / type /
                                  zone / socket / node; `nbp["name"]` resolves
   afp                            the file server
@@ -2538,7 +2539,8 @@ appletalk                        the stack itself
                                  open_forks, idle_ns
     stats          ro  child     commands_served, bytes_read, bytes_written,
                                  errors, open_forks, errors_by_code (a map
-                                 keyed by result code)
+                                 keyed by result code), ok_by_command (a map
+                                 keyed by command name: its NoErr results)
   printer
     enabled        rw  bool
     name           rw  string    NBP entity name; the setter re-registers
@@ -2588,6 +2590,65 @@ state, two homes:
 offspring count, and a client pathname that names either is rejected with
 `ParamErr` before it can resolve.
 
+**Names and paths.** A pathname from the client is CNode names separated by
+NUL bytes (Inside AppleTalk 13-10). Each name is MacRoman on the wire and
+UTF-8 on the host, and a Mac `/` is a host `:` -- the convention the
+disk-image side and macOS use. Host names stored decomposed (NFD) are composed
+first. A host name that is not UTF-8 is read as raw MacRoman, the form older
+versions of this server wrote. A host name MacRoman cannot hold (CJK, emoji)
+is not listed at all: under a lossy name it could never be addressed again. A
+Mac name is at most 31 characters (HFS's `Str31`; AFP 2.x has no longer
+one): a host name whose MacRoman form is longer goes out as its first bytes
+and `#` plus its CNID in hex, 31 in all, and that name is mapped back through
+the catalog -- unless a file of exactly that name exists. The rule was chosen
+by measurement (`appletalk-afp-longname`): sent whole, a 40-character name
+listed on System 6, but copying the file to the Mac's disk failed.
+
+**Case.** AFP names are case-insensitive and diacritical-sensitive (Inside
+AppleTalk 13-9), compared after Appendix D's Table D-2 maps lowercase to
+uppercase: a-z, and 13 MacRoman letters (é is É, but é is not e). The host is
+case-sensitive, so an element that names no host entry exactly is the one
+entry whose Mac name folds equal. When the host holds names differing in case
+alone, each is reached by its exact name and a third spelling finds nothing.
+A new name -- FPCreateFile, FPCreateDir, FPRename, FPMoveAndRename,
+FPCopyFile -- that folds onto a sibling is `ObjectExists`, as on HFS, unless
+the sibling is the object being renamed: changing only the case of a name is a
+rename. FPCatSearch compares, and FPEnumerate orders, by the same fold.
+
+**Directory ID 1** is the root's parent. A path from it starts with the
+volume's name, compared like any name, and continues from the root (Inside
+AppleTalk 13-26). System 7.5's AppleShare 3.5 asks for the root this way just
+after mounting; System 6 never does.
+
+Every host path the server touches is built in one place, `afp_host_join`,
+from the share root and names that are each a real element -- never empty,
+`.` or `..`. A client's name is decoded as exactly one element, so the result
+is inside the share. The one exception is a **symlink** in a published folder:
+it is followed, whether it points to a file or a directory. That only arises
+in headless builds, where a developer publishes a host folder. In the browser
+the filesystem is emscripten's sandbox, and the guest reaches nothing outside
+it. A developer who links a folder into a share lets the guest read and write
+through that link.
+
+All three control-directory logs -- the catalog and the two desktop stores --
+share one append-log format (`afp_applog.c`), big-endian throughout:
+
+```
+file:    u32 magic | record*
+record:  u8 op | u16 len | payload[len] | u32 crc32 (over op, len, payload)
+```
+
+- A store changes its in-memory state, then appends a record, flushed before
+  the call returns: a crash loses at most the record in flight.
+- Load replays the records in order. Every record carries its length, so an
+  op the store does not know is skipped whole. The first record that is cut
+  short or fails its CRC ends the replay, and the file is cut there, so the
+  next append does not land behind the garbage.
+- A log that holds more than four records per live entry is compacted --
+  rewritten from the live state through a temporary file and a rename --
+  checked on every append and at close.
+- A missing log, or one with another magic, starts afresh.
+
 ## 4.1 catalog.gsc — the CNID catalog
 
 AFP requires catalog node IDs that are unique per volume, stable across
@@ -2597,59 +2658,55 @@ map; each entry is `(cnid, parent cnid, leaf name, is_dir, has file-ID
 thread)`, so a directory rename keeps every descendant's ID for free and a
 relative path is a walk of the parent chain.
 
-Big-endian throughout:
+Magic `'GSC2'`. Ops 1–6 carry `u32 cnid | u32 parent | u8 is_dir | name`, the
+name running to the end of the payload; op 7 carries the catalog's state.
 
-```
-header:  'GSC1' | u32 generation | u32 next_cnid
-record:  u8 op | u32 cnid | u32 parent | u8 is_dir | pstr name | u32 crc32
-```
-
-| op | Meaning                                            |
-| -: | :------------------------------------------------- |
-|  1 | ADD — a new entry                                  |
-|  2 | RENAME — same parent, new leaf name                |
-|  3 | MOVE — new parent, and possibly a new leaf name    |
-|  4 | DELETE — tombstone; the CNID is never handed out again |
-|  5 | SET_ID — an FPCreateID thread now exists           |
-|  6 | CLR_ID — FPDeleteID dropped the thread             |
+| op | Meaning                                                   |
+| -: | :-------------------------------------------------------- |
+|  1 | ADD — a new entry                                         |
+|  2 | RENAME — same parent, new leaf name                       |
+|  3 | MOVE — new parent, and possibly a new leaf name           |
+|  4 | DELETE — tombstone; the CNID is never handed out again    |
+|  5 | SET_ID — an FPCreateID thread now exists                  |
+|  6 | CLR_ID — FPDeleteID dropped the thread                    |
+|  7 | STATE — `u32 generation \| u32 next_cnid`                  |
 
 - The root is always CNID 2 with parent 1; allocation starts at 17, because
   HFS reserves everything below 16 and clients expect that.
-- Every mutation appends and flushes, so a crash loses at most the record in
-  flight. A record whose CRC does not match ends the replay: the log is
-  self-truncating rather than corrupt.
+- `next_cnid` is recovered from the ADD records as well as from STATE, which
+  is written when the generation changes and first in every compaction.
 - **Lazy adoption**: anything the server touches — an FPEnumerate, an
   FPGetFileDirParms, an FPOpenFork — that has no entry gets one. Files that
   appear behind the server's back (the shell's `cp`, the host, a restored
   page) therefore acquire stable IDs on first use, and a file renamed
-  *outside* AFP is correctly a new object.
-- The log is rewritten as pure ADDs once it exceeds four times its live-entry
-  footprint, and at volume close. Compaction and any tombstone sweep bump
-  `generation`, which is what invalidates an FPCatSearch cursor and a live
-  FPEnumerate snapshot.
+  *outside* AFP is correctly a new object. FPEnumerate adopts a directory's
+  new entries in name order, not the host's readdir order (which differs
+  between filesystems), so a share gets the same CNIDs on every host.
+- A compaction writes STATE and pure ADDs, and leaves `generation` alone: no
+  CNID changes, so a client's FPCatSearch cursor and a live FPEnumerate
+  snapshot stay good across it. A deletion and a tombstone sweep bump it.
 - An unreadable log is not fatal: the catalog starts empty with the generation
   bumped, and rebuilds by adoption. Aliases break; files do not.
 
 ## 4.2 desktop.icons — the icon store
 
-An append-log of icon records, `'GSI1'` magic followed by:
+Magic `'GSI2'`; each record's payload is
 
 ```
-record:  u8 op | u32 creator | u32 file_type | u8 icon_type | u32 tag
-         | u16 size | bitmap[size]
+u32 creator | u32 file_type | u8 icon_type | u32 tag | bitmap (to the end)
 ```
 
 `op` is 1 (put) or 2 (delete). Records are replayed in order, so the last put
-for a `(creator, type, icon type)` triple wins; the store is compacted at
-close once it holds more than four times its live records. The 1 KB per-record
-ceiling is `kLarge8BitIcon`, the largest icon AFP defines (`Files.p`).
+for a `(creator, type, icon type)` triple wins. The 1 KB bitmap ceiling is
+`kLarge8BitIcon`, the largest icon AFP defines (`Files.p`); the store holds at
+most 4096 icons (`AFP_MAX_ICONS`).
 
 ## 4.3 desktop.appl — the APPL mappings
 
-An append-log with `'GSA1'` magic:
+Magic `'GSA2'`; each record's payload is
 
 ```
-record:  u8 op | u32 creator | u32 cnid | u32 tag
+u32 creator | u32 cnid | u32 tag
 ```
 
 Mappings are keyed by the application's **CNID**, not its path, so renaming an
@@ -2699,12 +2756,33 @@ ASP sessions, open forks, byte-range locks, desktop-database refnums and
 FPEnumerate snapshots are client-session state: reconstructible, and
 meaningless once the transport that owned them is gone. A checkpoint therefore
 records the stack's durable state (enablement, counters, session numbering)
-and drops the rest on restore; the backing bytes are already on disk, and a
-restored machine's clients re-open what they need.
+and its **configuration** -- every published volume with its path and volume
+ID, the server name, enablement and message, the printer's enablement, name
+and capture setting, and the Apple event port -- and drops the rest on
+restore. The backing bytes are already on disk, so a restored guest finds its
+shares where they were, under the same volume IDs; its ASP session is gone, so
+it sees the connection close and reconnects. A volume whose folder no longer
+exists at restore time is skipped with a log line, not an error.
+
+A restore that fails after the stack has come up for the new machine gives
+the stack back to the machine that keeps running, with that machine's
+configuration (its sessions do not survive).
 
 ---
 
 # 5 Deferred: authentication and access control
+
+**Sessions and login.** Guest-only is not "no session": a command is served
+only to a session ASP has opened and that has logged in with FPLogin
+("No User Authent"). FPLogin and FPLoginCont need only the open session; the
+AFP 2.1 calls also need the login to have negotiated "AFPVersion 2.1".
+Anything else is refused -- `SessClosed` for a session that is not open,
+`UserNotAuth` before login -- and FPLogout returns the session to "open, not
+logged in". A disabled server refuses new sessions (ASP answers ServerBusy).
+Handles belong to sessions: a Volume ID is served to the sessions that opened
+the volume with FPOpenVol, and a fork refnum or DTRefNum to the session that
+opened it. Another session's handle is `ParamErr`, and closing it there leaves
+the owner's open. The DTRefNum is the volume's ID.
 
 The server is guest-only by design, and says so consistently: `FPGetSrvrInfo`
 advertises the single UAM "No User Authent", `FPLogin` accepts only that UAM,

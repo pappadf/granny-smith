@@ -175,8 +175,7 @@ static const class_desc_t entry_cls = {.name = "entry", .members = NULL, .n_memb
 static const member_t ring_members[] = {
     {.kind = M_CHILD,
      .name = "items",
-     .child =
-         {.cls = &entry_cls, .indexed = true, .get = ring_get, .count = ring_count, .next = ring_next, .lookup = NULL}},
+     .child = {.cls = &entry_cls, .indexed = true, .get = ring_get, .next = ring_next, .lookup = NULL}},
 };
 static const class_desc_t ring_cls = {
     .name = "ring",

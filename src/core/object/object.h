@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "common.h"
 #include "value.h"
@@ -112,7 +113,6 @@ typedef value_t (*attr_get_fn)(struct object *self, const struct member *m);
 typedef value_t (*attr_set_fn)(struct object *self, const struct member *m, value_t in);
 typedef value_t (*method_fn)(struct object *self, const struct member *m, int argc, const value_t *argv);
 typedef struct object *(*child_get_fn)(struct object *self, int index);
-typedef int (*child_count_fn)(struct object *self);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
 typedef struct object *(*child_lookup_fn)(struct object *self, const char *name);
 
@@ -182,11 +182,15 @@ typedef struct member {
             // expandable child. Reference children are always callback-backed
             // (never in the attached/owning list) so cascade never frees them.
             bool reference;
-            // Indexed children: get(i)→object|NULL (NULL = hole), count→live,
-            //                   next(prev)→next live index or -1. Pass -1 to start.
+            // Indexed children: get(i)→object|NULL (NULL = hole) for i in
+            //                   [0, slots); the core walks them.  A collection
+            //                   whose ids are sparse past any fixed bound gives
+            //                   next(prev)→next live index or -1 (start at -1)
+            //                   instead.  A class whose one indexed child this
+            //                   is answers `count` with its live entries.
             // Named children:   lookup(name)→object|NULL.
             child_get_fn get;
-            child_count_fn count;
+            int slots;
             child_next_fn next;
             child_lookup_fn lookup; // for named children (when not statically attached)
         } child;
@@ -278,6 +282,51 @@ const class_desc_t *object_class(const struct object *o);
 const char *object_name(const struct object *o);
 void *object_data(struct object *o);
 struct object *object_parent(struct object *o);
+
+// === Entry pools =============================================================
+//
+// A collection whose entries are made once, one per slot of the table they
+// stand for: entry i's data is its slot number, so its callbacks find their
+// record with object_pool_slot(self), and the collection's get() hands out
+// object_pool_at(pool, i).  OBJECT_POOL declares the storage; the network
+// modules each carried a data type, two arrays and a create and a delete loop
+// per collection -- eight of them.
+typedef struct {
+    struct object **objs;
+    int *slots;
+    int n;
+} object_pool_t;
+
+#define OBJECT_POOL(name, count)                                                                                       \
+    static struct object *name##_objs[count];                                                                          \
+    static int name##_slots[count];                                                                                    \
+    static object_pool_t name = {name##_objs, name##_slots, (count)}
+
+void object_pool_create(object_pool_t *pool, const class_desc_t *cls);
+void object_pool_delete(object_pool_t *pool);
+struct object *object_pool_at(const object_pool_t *pool, int slot); // NULL out of range or before create
+int object_pool_slot(struct object *entry); // -1 for no entry
+
+// === Counter blocks ==========================================================
+//
+// A stats object publishes a struct of uint64_t counters, one read-only
+// attribute per field, each member naming its field by offset.  One getter
+// serves every such block: OBJ_U64_FIELD reads the block the object's data
+// points to (object_new(cls, block, name)); OBJ_U64_FIELD_WITH takes a getter
+// of its own, for a block that moves -- which returns obj_u64_at(block, m).
+value_t obj_u64_at(const void *block, const member_t *m);
+value_t obj_u64_field_get(struct object *self, const member_t *m);
+
+#define OBJ_U64_FIELD_WITH(block_type, field, doc_text, getter)                                                        \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
+            .type = V_UINT,                                                                                            \
+            .width = 8,                                                                                                \
+            .get = getter,                                                                                             \
+            .user_data = (const void *)(uintptr_t)offsetof(block_type, field)                                          \
+        }                                                                                                              \
+    }
+#define OBJ_U64_FIELD(block_type, field, doc_text) OBJ_U64_FIELD_WITH(block_type, field, doc_text, obj_u64_field_get)
 
 // === Display label & ordering (proposal §7.1 / §7.4) ========================
 //
@@ -377,6 +426,10 @@ typedef struct {
 // on success, V_ERROR on a binding error.
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
                        value_t *out_argv, int *out_argc);
+
+// The next live index of an indexed child member after `prev` (-1 to start),
+// or -1: the member's own next(), or a walk of get() over its slots.
+int object_child_next(struct object *self, const member_t *m, int prev);
 
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);

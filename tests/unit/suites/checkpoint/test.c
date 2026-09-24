@@ -281,6 +281,38 @@ TEST(block_size_divergence_is_caught_in_v2) {
     cp_unlink();
 }
 
+// === A failed read zeroes its destination (10-network F-10) ================
+//
+// Every restore reads a block into a local and then decides whether to apply
+// it.  The reader used to return early without touching the destination, so a
+// failed or mismatched block left the local holding whatever the stack held:
+// the AppleTalk restore tested a magic in such a local and applied the rest,
+// strings included.  The reader now zero-fills on any failure -- the block it
+// was asked for, and every later read from a stream already in error.
+
+static void failed_reads_zero(checkpoint_kind_t kind) {
+    write_valid(kind);
+    checkpoint_t *cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint64_t wrong = 0x5A5A5A5A5A5A5A5Aull; // the stream holds a 4-byte block here
+    system_read_checkpoint_data(cp, &wrong, sizeof(wrong));
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    ASSERT_TRUE(wrong == 0);
+    uint16_t later = 0x5A5A; // the stream is already in error
+    system_read_checkpoint_data(cp, &later, sizeof(later));
+    ASSERT_EQ_INT((int)later, 0);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+TEST(failed_read_zeroes_its_destination_consolidated) {
+    failed_reads_zero(CHECKPOINT_KIND_CONSOLIDATED);
+}
+
+TEST(failed_read_zeroes_its_destination_quick) {
+    failed_reads_zero(CHECKPOINT_KIND_QUICK);
+}
+
 // === F-06: the length arithmetic that only overflows on wasm32 ==============
 //
 // rle_decode guards its copies with `op + count > out_size` and
@@ -616,6 +648,8 @@ int main(void) {
     RUN(foreign_build_id_is_refused);
     RUN(truncated_stream_sets_error_not_garbage);
     RUN(block_size_divergence_is_caught_in_v2);
+    RUN(failed_read_zeroes_its_destination_consolidated);
+    RUN(failed_read_zeroes_its_destination_quick);
     RUN(rle_length_guard_wraps_on_32bit_targets);
     RUN(corrupt_quick_payload_is_refused);
     RUN(bounded_count_accepts_within_cap);

@@ -1,0 +1,166 @@
+# AppleTalk AFP long names (10-network 0.6, decision D-5).
+#
+# A Mac name is at most 31 characters.  This row publishes a share holding a
+# 40-character name and a 31-character control, mounts it from System 6 as
+# appletalk-afp does, lists it by name and copies the long-named file to the
+# local disk.
+#
+# Measured first (2026-09-24): with names sent whole, the Finder listed the
+# 40-character name, then the copy stopped with "The file ... couldn't be
+# written and was skipped (unknown error)" -- HFS cannot create the name --
+# while the 31-character control copied.  So the server now sends a longer
+# name as its first bytes and "#<CNID>", 31 in all, and maps that back; this
+# row pins that the copy goes through.  System 7 was not measured here: no row
+# mounts AFP from it.
+#
+# Mouse coordinates are Mac global (512x342); budgets are instruction-exact.
+
+include "../lib/mac.script"
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# Boot to the Finder desktop (same budget as the scsi test).
+scheduler.run 30000000
+
+# Publish the host share BEFORE AppleTalk activates, as the legacy UI did.
+# add() returns the volume it created, so one call both registers and
+# verifies — no re-enumeration of the collection needed.
+assert appletalk.afp.volumes.add("My Volume", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
+assert appletalk.afp.volumes["My Volume"].vol_id > 0 "volume id not assigned"
+
+# Nothing has talked to the server yet.
+assert appletalk.afp.stats.commands_served == 0 "AFP traffic before the client ran"
+assert appletalk.afp.sessions.count == 0 "an ASP session exists before the Chooser ran"
+
+# Apple menu → Chooser (press at the menu title, drag down to the item,
+# release). The Apple menu on this System 6 volume lists About / Access
+# Privileges / Alarm Clock / Battery / Calculator / Chooser, so the Chooser
+# sits at y=123.
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Click the AppleShare icon in the Chooser's device list.
+machine.adb.mouse.move 95 90
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# "AppleShare requires AppleTalk" → OK. AppleTalk flips Active and the NBP
+# lookup runs; the server list must show the emulated share host.
+# (60M: the NBP discovery timers are guest-time-driven.)
+machine.adb.mouse.move 190 206
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+# (chooser-server-listed.png is pinned by appletalk-afp)
+
+# Select "Shared Folders", then OK.
+machine.adb.mouse.move 280 88
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 6000000
+machine.adb.mouse.move 333 178
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# "Connect to the file server ... as: Guest" → OK. FPLogin runs and
+# FPGetSrvrParms fills the volume list.
+machine.adb.mouse.move 392 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+# (volume-list.png is pinned by appletalk-afp)
+
+# The session is up and speaking AFP 2.0 before a single volume is mounted.
+assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"
+assert appletalk.afp.stats.commands_served > 0 "no AFP commands were served"
+
+# Select "My Volume", then OK — the mount itself.
+machine.adb.mouse.move 150 113
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+machine.adb.mouse.move 333 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Close the Chooser; the AFP volume icon is on the desktop.
+machine.adb.mouse.move 72 47
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+# (desktop-mounted.png is pinned by appletalk-afp)
+
+# Open the volume's window. The gap between the two clicks has to fit inside
+# DoubleTime, so it is a fraction of the budgets used for single clicks.
+machine.adb.mouse.move 468 108
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Opening the volume listed both files, adopting them into the catalog.
+assert appletalk.afp.volumes["My Volume"].cnid_count == 3 "the two files were not listed"
+
+# View > by Name.
+machine.adb.mouse.move 145 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 150 58
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# Drag the 40-character file onto the local disk -- the copy HFS refused
+# while the name went out whole.
+machine.adb.mouse.move 60 97
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 300 97
+scheduler.run 2000000
+machine.adb.mouse.move 470 56
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+# The copy went through: no "couldn't be written" dialog over the window,
+# the file's six bytes were read for it, and nothing is left open.  Two
+# regions are left out of the match: the info bar's free space, as in
+# appletalk-afp, and the Last Modified column.  The client shifts every date
+# by the gap between the server's clock (the host's) and its own pinned one,
+# so the column reads the guest clock minus however long the host took from
+# staging the share to the mount -- 9:30 PM on one run, 9:29 on a slower one.
+check_ex2("longname-copied.png", 58, 140, 80, 420, 82, 290, 114, 403)
+assert appletalk.afp.stats.bytes_read == 6 "the long-named file's data was not read for the copy"
+assert appletalk.afp.stats.open_forks == 0 "the copy left a fork open"
+quit

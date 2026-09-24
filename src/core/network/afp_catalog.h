@@ -12,16 +12,18 @@
 // is_dir), so a directory rename keeps every descendant's ID for free and a
 // relative path is a walk of the parent chain.
 //
-// It is backed by an append-log at "<share>/.gs-afp/catalog.gsc":
+// It is backed by an append log (afp_applog.h) at
+// "<share>/.gs-afp/catalog.gsc", magic 'GSC2', whose records are
 //
-//   header  'GSC1' | u32 generation | u32 next_cnid
-//   record  u8 op | u32 cnid | u32 parent | u8 is_dir | pstr name | u32 crc
+//   ADD, RENAME, MOVE, DELETE, SET_ID, CLR_ID
+//           u32 cnid | u32 parent | u8 is_dir | name (to the record's end)
+//   STATE   u32 generation | u32 next_cnid
 //
 // Every mutation appends synchronously and is replayed in order at load;
-// the log is compacted (rewritten as pure ADDs) once it grows past 4x the
-// live-entry footprint, or at volume close.  A corrupt log is not fatal: the
-// catalog rebuilds from a tree walk with fresh CNIDs and a bumped generation
-// (aliases break, files do not).
+// the log is compacted (rewritten as a STATE and pure ADDs) once it holds
+// more than four records per live entry.  A missing or unreadable log is not
+// fatal: the catalog rebuilds from a tree walk with fresh CNIDs and a bumped
+// generation (aliases break, files do not).
 //
 // The module owns no AFP wire knowledge and no volume table, so the unit
 // suite drives it directly against a temp directory.
@@ -46,6 +48,17 @@
 #define AFP_CAT_MAX_PATH 768
 
 typedef struct afp_catalog afp_catalog_t;
+
+// A host name that can be one element of a share-relative path: not empty,
+// not "." or "..", and holding no '/'.
+bool afp_host_element(const char *name, size_t len);
+
+// The one place a share-relative path ('/'-separated host names, "" for the
+// share itself) becomes a host path under `root`.  Every element must pass
+// afp_host_element, so the result names something inside the share -- or
+// outside it only through a symlink planted on the host, which is followed
+// (appletalk_server.md §4).  False on a bad element or overflow.
+bool afp_host_join(const char *root, const char *rel, char *out, size_t cap);
 
 // One catalog entry as handed back to callers.  Each entry has its own
 // storage, so holding two at once is safe — but any call that can grow the

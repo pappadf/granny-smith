@@ -11,6 +11,7 @@
 // Toast-mastered UDZO CD image and Jonathan Levin's "Demystifying the DMG
 // File Format".
 
+#include "crc32.h"
 #include "image_udif.h"
 #include "inflate.h"
 #include "test_assert.h"
@@ -115,7 +116,7 @@ TEST(inflate_dynamic_huffman) {
     uint8_t out[1024] = {0};
     long n = inflate_zlib(stream, sizeof(stream), out, sizeof(out));
     ASSERT_EQ_INT(600, (int)n);
-    ASSERT_EQ_INT((int)0xDAF73B30u, (int)udif_crc32(0, out, 600));
+    ASSERT_EQ_INT((int)0xDAF73B30u, (int)gs_crc32(0, out, 600));
 }
 
 TEST(inflate_alloc_form_matches) {
@@ -213,7 +214,7 @@ TEST(inflate_overflow_is_an_error_not_a_clamp) {
 }
 
 TEST(crc32_known_vector) {
-    ASSERT_EQ_INT((int)0xCBF43926u, (int)udif_crc32(0, (const uint8_t *)"123456789", 9));
+    ASSERT_EQ_INT((int)0xCBF43926u, (int)gs_crc32(0, (const uint8_t *)"123456789", 9));
 }
 
 // ---- 'koly' trailer --------------------------------------------------------

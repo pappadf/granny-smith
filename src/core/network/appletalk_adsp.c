@@ -23,6 +23,7 @@
 
 #include "appletalk.h"
 #include "appletalk_internal.h"
+#include "atalk_id.h"
 #include "common.h"
 #include "log.h"
 #include "object.h"
@@ -254,21 +255,30 @@ static adsp_conn_t *adsp_alloc_conn(adsp_stack_t *s) {
 // A locally unique, non-zero ConnID (12-6).  LastConnID walks forward rather
 // than starting from a random value: identical scripts must produce identical
 // wire traces.
-static uint16_t adsp_next_cid(adsp_stack_t *s, uint8_t socket) {
-    for (int attempt = 0; attempt <= 0xFFFF; attempt++) {
-        s->last_cid = (uint16_t)(s->last_cid == 0xFFFF ? 1 : s->last_cid + 1);
-        bool taken = false;
-        for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++) {
-            const adsp_conn_t *c = &s->conns[i];
-            if (c->in_use && c->local_socket == socket && c->local_cid == s->last_cid) {
-                taken = true;
-                break;
-            }
-        }
-        if (!taken)
-            return s->last_cid;
+// A ConnID is taken while another connection on the same socket holds it;
+// 0 is never used (12-24).
+typedef struct {
+    const adsp_stack_t *s;
+    uint8_t socket;
+} adsp_cid_scope_t;
+
+static bool adsp_cid_in_use(uint32_t cid, const void *ctx) {
+    const adsp_cid_scope_t *scope = ctx;
+    for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++) {
+        const adsp_conn_t *c = &scope->s->conns[i];
+        if (c->in_use && c->local_socket == scope->socket && c->local_cid == cid)
+            return true;
     }
-    return 1;
+    return false;
+}
+
+static uint16_t adsp_next_cid(adsp_stack_t *s, uint8_t socket) {
+    adsp_cid_scope_t scope = {.s = s, .socket = socket};
+    uint32_t cursor = (uint32_t)s->last_cid + 1, cid = 1;
+    // Cannot fail: at most ADSP_MAX_CONNECTIONS of 65,535 are held.
+    atalk_id_alloc(&cursor, 1, 0xFFFF, adsp_cid_in_use, &scope, &cid);
+    s->last_cid = (uint16_t)cid;
+    return (uint16_t)cid;
 }
 
 static bool adsp_addr_eq(const atalk_socket_addr_t *a, const atalk_socket_addr_t *b) {
@@ -687,6 +697,7 @@ void adsp_input(adsp_stack_t *s, const atalk_socket_addr_t *from, uint8_t dst_so
         return;
     s->stats.packets_in++;
     if (len < ADSP_HEADER_SIZE) {
+        s->stats.malformed++;
         LOG(3, "ADSP: runt packet (%d bytes)", len);
         return;
     }
@@ -712,6 +723,7 @@ void adsp_input(adsp_stack_t *s, const atalk_socket_addr_t *from, uint8_t dst_so
         return;
     }
     if (control && code > ADSP_CTL_RETRANSMIT) {
+        s->stats.malformed++;
         LOG(3, "ADSP: reserved control code %u rejected", (unsigned)code); // 12-14
         return;
     }
@@ -894,11 +906,17 @@ static void adsp_conn_release(adsp_stack_t *s, adsp_conn_t *c, const char *reaso
     const adsp_client_t *client = c->client;
     void *ctx = c->client_ctx;
     LOG(4, "ADSP: connection %d closed — %s", c->id, reason ? reason : "");
-    if (notify && client && client->on_close)
-        client->on_close(ctx, c, reason ? reason : "closed");
-    memset(c, 0, sizeof(*c));
+    // The slot is free before the client hears of it.  It was freed after, so
+    // an on_close that closed the same end found it still open -- a second
+    // CLOSE went out and on_close ran again -- and the memset that followed
+    // wiped any connection on_close had opened into the slot (10-network
+    // F-15).  adsp_alloc_conn zeroes a slot when it is taken.
+    c->in_use = false;
+    c->state = ADSP_STATE_CLOSED;
     for (int t = 0; t < ADSP_TIMER_COUNT; t++)
         c->deadline[t] = ADSP_NO_DEADLINE;
+    if (notify && client && client->on_close)
+        client->on_close(ctx, c, reason ? reason : "closed");
     (void)s;
 }
 
@@ -1103,14 +1121,12 @@ const adsp_stats_t *adsp_get_stats(const adsp_stack_t *s) {
 
 static adsp_stack_t *g_adsp;
 static scheduler_t *g_adsp_scheduler;
-static int g_adsp_event_token;
+static atalk_timer_t g_adsp_timer; // the one event at the engine's earliest deadline
 static uint64_t g_adsp_armed_at = ADSP_NO_DEADLINE;
 
 static uint64_t adsp_host_now(void *ctx) {
     (void)ctx;
-    if (!g_adsp_scheduler)
-        return 0;
-    return (uint64_t)scheduler_time_ns(g_adsp_scheduler);
+    return atalk_now_ns();
 }
 
 static int adsp_host_send(void *ctx, const atalk_socket_addr_t *dest, uint8_t src_socket, const uint8_t *pkt, int len) {
@@ -1134,23 +1150,23 @@ static void adsp_host_rearm(void *ctx, uint64_t deadline_ns) {
         return;
     if (deadline_ns == g_adsp_armed_at)
         return;
-    remove_event(g_adsp_scheduler, &adsp_host_timer_cb, NULL);
     g_adsp_armed_at = deadline_ns;
-    if (deadline_ns == ADSP_NO_DEADLINE)
+    if (deadline_ns == ADSP_NO_DEADLINE) {
+        atalk_timer_cancel_all(&g_adsp_timer);
         return;
+    }
     uint64_t now = adsp_host_now(NULL);
-    uint64_t delay = (deadline_ns > now) ? (deadline_ns - now) : 0;
-    scheduler_new_cpu_event(g_adsp_scheduler, &adsp_host_timer_cb, &g_adsp_event_token, 0, 0, delay);
+    // A deadline already due arms the shortest delay atalk_timer_arm allows
+    // (the scheduler refuses a zero one).
+    atalk_timer_arm(&g_adsp_timer, 0, (deadline_ns > now) ? (deadline_ns - now) : 0);
 }
 
 void atalk_adsp_init(scheduler_t *scheduler) {
     atalk_adsp_shutdown();
     g_adsp_scheduler = scheduler;
     g_adsp_armed_at = ADSP_NO_DEADLINE;
-    if (scheduler) {
-        // Idempotent: re-registering after a machine rebuild updates in place.
-        scheduler_new_event_type(scheduler, "adsp", &g_adsp_event_token, "timer", &adsp_host_timer_cb);
-    }
+    if (scheduler)
+        atalk_timer_init(&g_adsp_timer, "adsp", "timer", &adsp_host_timer_cb);
     adsp_config_t cfg = {
         .ctx = NULL,
         .now_ns = adsp_host_now,
@@ -1167,8 +1183,7 @@ void atalk_adsp_shutdown(void) {
         adsp_stack_free(g_adsp);
         g_adsp = NULL;
     }
-    if (g_adsp_scheduler)
-        remove_event(g_adsp_scheduler, &adsp_host_timer_cb, NULL);
+    atalk_timer_cancel_all(&g_adsp_timer);
     g_adsp_scheduler = NULL;
     g_adsp_armed_at = ADSP_NO_DEADLINE;
 }
@@ -1192,13 +1207,7 @@ static struct object *g_adsp_object;
 static struct object *g_adsp_conns_object;
 static struct object *g_adsp_stats_object;
 
-// Per-entry instance data: the connection's slot in the engine's table.
-typedef struct {
-    int slot;
-} adsp_slot_data_t;
-
-static adsp_slot_data_t g_adsp_conn_data[ADSP_MAX_CONNECTIONS];
-static struct object *g_adsp_conn_objs[ADSP_MAX_CONNECTIONS];
+OBJECT_POOL(g_adsp_conn_pool, ADSP_MAX_CONNECTIONS);
 
 static const class_desc_t adsp_class;
 static const class_desc_t adsp_conns_class;
@@ -1206,8 +1215,8 @@ static const class_desc_t adsp_conn_class;
 static const class_desc_t adsp_stats_class;
 
 static adsp_conn_t *adsp_obj_conn(struct object *self) {
-    const adsp_slot_data_t *d = (const adsp_slot_data_t *)object_data(self);
-    return d ? adsp_conn_at(g_adsp, d->slot) : NULL;
+    int slot = object_pool_slot(self);
+    return slot >= 0 ? adsp_conn_at(g_adsp, slot) : NULL;
 }
 
 // --- appletalk.adsp.connections[i] ------------------------------------------
@@ -1349,45 +1358,14 @@ static struct object *adsp_conns_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ADSP_MAX_CONNECTIONS || !adsp_conn_at(g_adsp, index))
         return NULL;
-    return g_adsp_conn_objs[index];
-}
-static int adsp_conns_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++)
-        if (adsp_conn_at(g_adsp, i))
-            n++;
-    return n;
-}
-static int adsp_conns_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ADSP_MAX_CONNECTIONS; i++)
-        if (adsp_conn_at(g_adsp, i))
-            return i;
-    return -1;
-}
-
-// Collections publish their live size as an attribute: scripts assert on it
-// directly instead of probing indices with try().
-static value_t adsp_conns_attr_count(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, (uint64_t)adsp_conns_count(self));
+    return object_pool_at(&g_adsp_conn_pool, index);
 }
 
 static const member_t adsp_conns_members[] = {
-    {.kind = M_ATTR,
-     .name = "count",
-     .doc = "Live ADSP connection ends",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = adsp_conns_attr_count}},
     {.kind = M_CHILD,
      .name = "entries",
      .doc = "Live ADSP connection ends",
-     .child = {.cls = &adsp_conn_class,
-               .indexed = true,
-               .get = adsp_conns_get,
-               .count = adsp_conns_count,
-               .next = adsp_conns_next}},
+     .child = {.cls = &adsp_conn_class, .indexed = true, .get = adsp_conns_get, .slots = ADSP_MAX_CONNECTIONS}},
 };
 
 static const class_desc_t adsp_conns_class = {
@@ -1398,36 +1376,27 @@ static const class_desc_t adsp_conns_class = {
 
 // --- appletalk.adsp.stats ----------------------------------------------------
 
+// The host stack comes and goes with the machine, so its block is fetched
+// per read rather than fixed as the object's data.
 static value_t adsp_stats_attr(struct object *self, const member_t *m) {
     (void)self;
-    const adsp_stats_t *st = adsp_get_stats(g_adsp);
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
+    return obj_u64_at(adsp_get_stats(g_adsp), m);
 }
 
-#define ADSP_STAT_MEMBER(field, doc_text)                                                                              \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = adsp_stats_attr,                                                                                    \
-            .user_data = (const void *)(uintptr_t)offsetof(adsp_stats_t, field)                                        \
-        }                                                                                                              \
-    }
-
 static const member_t adsp_stats_members[] = {
-    ADSP_STAT_MEMBER(packets_in, "ADSP packets accepted from the wire"),
-    ADSP_STAT_MEMBER(packets_out, "ADSP packets put on the wire"),
-    ADSP_STAT_MEMBER(bytes_in, "Stream bytes delivered to clients"),
-    ADSP_STAT_MEMBER(bytes_out, "Stream bytes transmitted"),
-    ADSP_STAT_MEMBER(opens, "Connections that reached the open state"),
-    ADSP_STAT_MEMBER(open_denials, "Open requests denied, in either direction"),
-    ADSP_STAT_MEMBER(retransmits, "Retransmission events"),
-    ADSP_STAT_MEMBER(out_of_sequence, "Data packets discarded as out of sequence"),
-    ADSP_STAT_MEMBER(forward_resets, "Forward resets sent or accepted"),
-    ADSP_STAT_MEMBER(attentions_in, "Attention messages accepted"),
-    ADSP_STAT_MEMBER(attentions_out, "Attention messages sent"),
-    ADSP_STAT_MEMBER(timeouts, "Connection ends torn down by the connection timer"),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, packets_in, "ADSP packets accepted from the wire", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, packets_out, "ADSP packets put on the wire", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, bytes_in, "Stream bytes delivered to clients", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, bytes_out, "Stream bytes transmitted", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, opens, "Connections that reached the open state", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, open_denials, "Open requests denied, in either direction", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, retransmits, "Retransmission events", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, out_of_sequence, "Data packets discarded as out of sequence", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, forward_resets, "Forward resets sent or accepted", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, attentions_in, "Attention messages accepted", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, attentions_out, "Attention messages sent", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, timeouts, "Connection ends torn down by the connection timer", adsp_stats_attr),
+    OBJ_U64_FIELD_WITH(adsp_stats_t, malformed, "Packets discarded as malformed", adsp_stats_attr),
 };
 
 static const class_desc_t adsp_stats_class = {
@@ -1478,18 +1447,11 @@ void atalk_adsp_install_objects(struct object *parent) {
 
     // Entry objects are handed out by the collection callbacks and never
     // attached, so the cascade delete does not free them (we do, below).
-    for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++) {
-        g_adsp_conn_data[i].slot = i;
-        g_adsp_conn_objs[i] = object_new(&adsp_conn_class, &g_adsp_conn_data[i], NULL);
-    }
+    object_pool_create(&g_adsp_conn_pool, &adsp_conn_class);
 }
 
 void atalk_adsp_remove_objects(void) {
-    for (int i = 0; i < ADSP_MAX_CONNECTIONS; i++) {
-        if (g_adsp_conn_objs[i])
-            object_delete(g_adsp_conn_objs[i]);
-        g_adsp_conn_objs[i] = NULL;
-    }
+    object_pool_delete(&g_adsp_conn_pool);
     struct object **nodes[] = {&g_adsp_conns_object, &g_adsp_stats_object, &g_adsp_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

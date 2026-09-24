@@ -90,10 +90,6 @@ bool afp_meta_sidecar_path(const char *host_path, char *out, size_t cap);
 // a sidecar was parsed, false when none exists.
 bool afp_meta_load(const char *host_path, afp_meta_t *out);
 
-// Load the resource fork from the sidecar (malloc'd; caller frees).  Yields
-// NULL/0 when the file has no sidecar or no entry 2.
-void afp_meta_load_rsrc(const char *host_path, uint8_t **rsrc, size_t *rsrc_len);
-
 // Resource-fork length recorded in the sidecar (0 if none).  Reads only the
 // entry table, so it does not pay for the fork bytes.
 uint32_t afp_meta_rsrc_len(const char *host_path);
@@ -124,6 +120,10 @@ bool afp_meta_is_hidden(const char *name);
 // Name of the per-volume control directory holding the CNID catalog and the
 // desktop database (proposal §4.1).
 #define AFP_CONTROL_DIR ".gs-afp"
+
+// "<root>/.gs-afp/<leaf>", creating the control directory when it is missing:
+// where the catalog, the desktop stores and the volume record live.
+bool afp_meta_control_path(const char *root, const char *leaf, char *out, size_t cap);
 
 // AFP <-> host time conversions, shared by every caller that touches dates.
 uint32_t afp_meta_time_from_unix(int64_t unix_secs);

@@ -1,0 +1,227 @@
+# AppleTalk AFP from System 7.5 -- Chooser -> AppleShare 3.5 -> mount -> copy.
+#
+# Every other AFP row mounts from System 6, whose client speaks AFP 2.0.  This
+# one boots System 7.5 on a IIci, whose AppleShare 3.5 client negotiates AFP
+# 2.1 -- the first real client to do so against this server (10-network D-8)
+# -- and repeats D-5's long-name measurement on System 7:
+#
+#   1. Publish a share holding a 40-character name and a 31-character control.
+#   2. Apple menu -> Chooser -> AppleShare: the server is listed.
+#   3. Select it -> OK -> Guest -> OK: FPLogin at AFP 2.1, the volume list.
+#   4. OK -> close the Chooser: the volume is mounted.
+#   5. Open it: the 40-character name is listed as 31 characters ending
+#      "#<CNID>".
+#   6. Drag that file onto Macintosh HD and open the disk: the copy is there,
+#      its six bytes read over AFP.
+#   7. Make an alias of the 31-character file on the server (FPCreateID),
+#      rename the original "Moved", and open the alias: the Alias Manager
+#      finds the renamed file by its ID (FPResolveID) -- the Finder's "could
+#      not be opened" names "Moved", since the file has no creator.  Both
+#      calls are asserted through appletalk.afp.stats.ok_by_command.
+#
+# Find File is not driven here.  Its FPCatSearch now parses (it was
+# ParamErr), but how this client wants the last matches and the end of the
+# search delivered is not settled: see 10-WORK-ORDER.md §10, N-40.
+#
+# D-5 on System 7, measured with the shortening removed: the client cuts the
+# 40-character name to 31 itself, then asks for the file by the cut name --
+# which does not exist -- and the Finder refuses the copy: "You cannot copy
+# ... because it cannot be found", no bytes read.  So step 6 fails without the
+# server's shortening, as appletalk-afp-longname does on System 6.
+#
+# Mouse positions use the "global" routing mode (7.5 accelerates deltas), and
+# a double-click's transitions are 1M instructions apart, as in the aevt rows.
+
+include "../lib/mac.script"
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+scheduler.run 250000000
+
+assert appletalk.afp.volumes.add("My Volume", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
+assert appletalk.afp.sessions.count == 0 "an ASP session exists before the Chooser ran"
+
+# --- 2. Chooser -> AppleShare ----------------------------------------------
+
+machine.adb.mouse.move 300 300 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 60 114 "global"
+scheduler.run 6000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+
+# AppleTalk is already active on this system; AppleShare's NBP lookup lists
+# the emulated server.
+machine.adb.mouse.move 147 118 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 120000000
+check("sys7-server-listed.png")
+
+# --- 3. Select the server, OK, connect as Guest -----------------------------
+
+machine.adb.mouse.move 380 111 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 10000000
+machine.adb.mouse.move 428 302 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+machine.adb.mouse.move 453 258 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+check("sys7-volume-list.png")
+
+assert appletalk.afp.sessions.count == 1 "expected exactly one ASP session"
+assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.1" "System 7.5's AppleShare 3.5 negotiates AFP 2.1"
+
+# --- 4. Mount "My Volume", close the Chooser --------------------------------
+
+machine.adb.mouse.move 400 258 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+machine.adb.mouse.move 99 67 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+check("sys7-mounted.png")
+assert appletalk.afp.volumes["My Volume"].sessions_using == 1 "the mount is not counted on the volume"
+
+# --- 5. Open the volume ------------------------------------------------------
+
+machine.adb.mouse.move 600 92 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 120000000
+# The info bar's free space is the host filesystem's, so it is left out.
+check_ex("sys7-volume-window.png", 46, 250, 60, 412)
+assert appletalk.afp.volumes["My Volume"].cnid_count == 3 "the two files were not listed"
+
+# --- 6. Copy the 40-character file to the Mac's disk, and look -------------
+
+machine.adb.mouse.move 38 90 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 200 150 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 500 100 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 600 52 "global"
+scheduler.run 6000000
+machine.adb.mouse.click false
+scheduler.run 250000000
+assert appletalk.afp.stats.bytes_read == 6 "the long-named file's data was not read for the copy"
+assert appletalk.afp.stats.open_forks == 0 "the copy left a fork open"
+
+machine.adb.mouse.move 600 50 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+# Macintosh HD's window lists the copy under its 31-character name; the
+# volume window behind it still shows the host's free space.
+check_ex("sys7-copied.png", 46, 250, 60, 412)
+
+# --- 7. An alias on the server, resolved by file ID ------------------------
+
+# Close Macintosh HD's window; select the 31-character file; Make Alias.
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x0D
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 40000000
+machine.adb.mouse.move 230 90 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 10000000
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x2E
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 350000000
+# Accept the name the Finder gave it (cut to 31: "...ex alias").
+machine.adb.keyboard.press 0x24
+scheduler.run 60000000
+check_ex("sys7-alias.png", 46, 250, 60, 412)
+assert appletalk.afp.stats.ok_by_command["FPCreateID"] >= 1 "making the alias did not get a file ID"
+
+# Rename the original "Moved": select it, Return, type, Return.
+machine.adb.mouse.move 226 80 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.keyboard.press 0x24
+scheduler.run 20000000
+machine.adb.keyboard.down 0x38
+scheduler.run 1000000
+machine.adb.keyboard.press 0x2E
+scheduler.run 1000000
+machine.adb.keyboard.up 0x38
+scheduler.run 1000000
+machine.adb.keyboard.press 0x1F
+scheduler.run 1000000
+machine.adb.keyboard.press 0x09
+scheduler.run 1000000
+machine.adb.keyboard.press 0x0E
+scheduler.run 1000000
+machine.adb.keyboard.press 0x02
+scheduler.run 1000000
+machine.adb.keyboard.press 0x24
+scheduler.run 80000000
+
+# Open the alias.  Its path names nothing now; the client asks FPResolveID.
+machine.adb.mouse.move 248 100 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 400000000
+check_ex("sys7-alias-resolved.png", 46, 250, 60, 412)
+# The frame alone would pass without FPResolveID: the Alias Manager falls
+# back to searching the alias's folder for the file number it recorded, and a
+# rename leaves the file there.  So the call itself is asserted.
+assert appletalk.afp.stats.ok_by_command["FPResolveID"] >= 1 "the alias was not resolved by its file ID"
+assert appletalk.afp.stats.open_forks == 0 "resolving the alias left a fork open"
+
+quit

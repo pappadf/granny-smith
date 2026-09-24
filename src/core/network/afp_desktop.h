@@ -33,6 +33,11 @@
 // Largest icon AFP defines is kLarge8BitIcon at 1 KB (Files.p icon types).
 #define AFP_ICON_MAX_BYTES 1024u
 
+// Icons one volume's desktop database holds, about 4 MB at most.  A new
+// (creator, type, icon type) past it is refused: the key space is 72 bits,
+// and a guest looping FPAddIcon grew the store without bound (F-18).
+#define AFP_MAX_ICONS 4096u
+
 typedef struct afp_desktop afp_desktop_t;
 
 // One icon record as handed back by a lookup (borrowed; valid until the next
@@ -61,12 +66,14 @@ void afp_desktop_close(afp_desktop_t *dt);
 
 // --- icons -----------------------------------------------------------------
 
-// Insert or replace the icon for (creator, type, icon_type).  Returns 0, or
-// -EINVAL when the bitmap exceeds AFP_ICON_MAX_BYTES.
+// Insert or replace the icon for (creator, type, icon_type).  Returns 0,
+// -EINVAL when the bitmap exceeds AFP_ICON_MAX_BYTES, or -ENOSPC for a new key
+// when the store already holds AFP_MAX_ICONS.
 int afp_desktop_put_icon(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, uint8_t icon_type, uint32_t tag,
                          const uint8_t *bitmap, uint16_t size);
 
-// Exact lookup by (creator, type, icon_type).  NULL when absent.
+// Exact lookup by (creator, type, icon_type).  NULL when absent.  A returned
+// icon, like the one afp_desktop_icon_at returns, is valid until the next put.
 const afp_icon_t *afp_desktop_get_icon(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, uint8_t icon_type);
 
 // The `index`-th (1-based) icon belonging to `creator`, in insertion order —
@@ -84,8 +91,5 @@ int afp_desktop_remove_appl(afp_desktop_t *dt, uint32_t creator, uint32_t cnid);
 
 // The `index`-th (1-based) mapping for `creator`.  NULL past the end.
 const afp_appl_t *afp_desktop_appl_at(afp_desktop_t *dt, uint32_t creator, uint16_t index);
-
-// Drop mappings whose CNID no longer resolves.  `alive` is called per CNID.
-void afp_desktop_prune_appls(afp_desktop_t *dt, bool (*alive)(uint32_t cnid, void *ud), void *ud);
 
 #endif // GS_NETWORK_AFP_DESKTOP_H

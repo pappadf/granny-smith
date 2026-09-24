@@ -89,9 +89,6 @@ double scheduler_time_ns(struct scheduler *restrict s) {
     (void)s;
     return 0.0;
 }
-void appletalk_scc_notify(void *ctx, unsigned int ch) {
-    (void)ctx, (void)ch;
-}
 void remove_event_by_data(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data) {
     (void)s, (void)cb, (void)src, (void)data;
 }
@@ -100,9 +97,6 @@ int platform_bsr32(uint32_t v) {
     while (n >= 0 && !(v & (1u << n)))
         n--;
     return n;
-}
-void process_packet(void *ctx, const uint8_t *buf, size_t len) {
-    (void)ctx, (void)buf, (void)len;
 }
 
 // ============================================================
@@ -235,12 +229,105 @@ TEST(test_sdlc_send_refuses_an_oversized_frame) {
     scc_delete(scc);
 }
 
+// --- The LocalTalk frame sink (10-network unit 0.1) -------------------------
+//
+// The SCC used to hand every flushed transmit buffer to a global
+// process_packet(), whatever the channel or mode: async console bytes on
+// either port reached the AppleTalk stack as if they were LLAP frames, and
+// on a machine with no stack (Lisa) they reached one left over from the
+// previous machine.  Now only an SDLC frame on channel B -- the LocalTalk
+// port -- is delivered, and only to the sink the machine's stack installed.
+
+static uint8_t g_frame[64];
+static size_t g_frame_len;
+static int g_frames;
+static void *g_frame_ctx;
+
+static void frame_sink(void *ctx, const uint8_t *frame, size_t len) {
+    g_frame_ctx = ctx;
+    g_frames++;
+    g_frame_len = len < sizeof g_frame ? len : sizeof g_frame;
+    memcpy(g_frame, frame, g_frame_len);
+}
+
+// WR0 command "reset Tx underrun/EOM latch": the classic .MPP driver ends
+// every SDLC frame with it, and the model flushes the frame there.
+#define WR0_RESET_TX_UNDERRUN 0xC0
+
+static void send_frame(scc_t *scc, uint32_t ctl, const uint8_t *bytes, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        wr(scc, ctl, 8, bytes[i]);
+    wr(scc, ctl, 0, WR0_RESET_TX_UNDERRUN);
+}
+
+static void sink_reset(void) {
+    g_frames = 0;
+    g_frame_len = 0;
+    g_frame_ctx = NULL;
+}
+
+TEST(test_sdlc_frame_on_channel_b_reaches_the_sink) {
+    scc_t *scc = make();
+    int ctx;
+    scc_set_frame_sink(scc, frame_sink, &ctx);
+    sink_reset();
+    wr(scc, CH_B_CTL, 4, WR4_SDLC);
+
+    const uint8_t enq[] = {0x21, 0x21, 0x81};
+    send_frame(scc, CH_B_CTL, enq, sizeof enq);
+
+    ASSERT_EQ_INT(1, g_frames);
+    ASSERT_EQ_INT(3, (int)g_frame_len);
+    ASSERT_EQ_INT(0, memcmp(g_frame, enq, sizeof enq));
+    ASSERT_TRUE(g_frame_ctx == &ctx);
+
+    // Detached: nothing is delivered.
+    scc_set_frame_sink(scc, NULL, NULL);
+    send_frame(scc, CH_B_CTL, enq, sizeof enq);
+    ASSERT_EQ_INT(1, g_frames);
+
+    scc_delete(scc);
+}
+
+// Async output on the LocalTalk port -- a serial console, A/UX's early
+// boot chatter -- is not a frame.
+TEST(test_async_bytes_on_channel_b_are_not_a_frame) {
+    scc_t *scc = make(); // reset leaves WR4 async
+    scc_set_frame_sink(scc, frame_sink, NULL);
+    sink_reset();
+
+    const uint8_t text[] = {'o', 'k', '\r', '\n'};
+    send_frame(scc, CH_B_CTL, text, sizeof text);
+
+    ASSERT_EQ_INT(0, g_frames);
+    scc_delete(scc);
+}
+
+// Channel A in SDLC is legal on the chip, but it is not the LocalTalk port:
+// the stack never answers there (scc_sdlc_send and scc_sdlc_ready are
+// channel B only), so it must not hear from there either.
+TEST(test_sdlc_frame_on_channel_a_is_not_delivered) {
+    scc_t *scc = make();
+    scc_set_frame_sink(scc, frame_sink, NULL);
+    sink_reset();
+    wr(scc, CH_A_CTL, 4, WR4_SDLC);
+
+    const uint8_t enq[] = {0x21, 0x21, 0x81};
+    send_frame(scc, CH_A_CTL, enq, sizeof enq);
+
+    ASSERT_EQ_INT(0, g_frames);
+    scc_delete(scc);
+}
+
 int main(void) {
     RUN(test_sdlc_receive_on_channel_a_reads_the_byte);
     RUN(test_channel_b_still_takes_the_sdlc_path);
     RUN(test_sdlc_send_refuses_when_the_channel_left_sdlc);
     RUN(test_sdlc_send_refuses_a_short_frame);
     RUN(test_sdlc_send_refuses_an_oversized_frame);
+    RUN(test_sdlc_frame_on_channel_b_reaches_the_sink);
+    RUN(test_async_bytes_on_channel_b_are_not_a_frame);
+    RUN(test_sdlc_frame_on_channel_a_is_not_delivered);
     printf("[PASS] All scc_bad_input tests passed\n");
     return 0;
 }

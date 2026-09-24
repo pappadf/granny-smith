@@ -21,6 +21,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Cap on program output not yet read, in every queue it passes through on the
+// way to the workstation -- a transport's result channels, the job's output,
+// PAP's reply queue: a real LaserWriter would block the program instead,
+// which the ABI cannot.
+#define LASERWRITER_OUTPUT_MAX (1u << 20)
+
 // === Type Definitions ===
 
 // One statusdict identity entry: the key and the value as PostScript
@@ -87,6 +93,10 @@ typedef struct {
 
 // Installs the result callbacks (once, at bridge init).
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx);
+
+// Register the transport's timers with the stack's scheduler.  Called from
+// laserwriter_job_init each time the stack comes up (atalk_timer_t).
+void laserwriter_transport_init(void);
 
 // Starts job `job_id` with `cfg`.  Returns false when the request could
 // not be issued (transport out of room or a request already outstanding);

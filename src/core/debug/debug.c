@@ -15,6 +15,7 @@
 #include "common.h"
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "crc32.h"
 #include "debug_mac.h"
 #include "display.h"
 #include "expr.h"
@@ -1013,27 +1014,6 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
 // indexed/direct paths land alongside the JMFB driver in step 6 of the
 // IIcx/IIx proposal; for now an unsupported format is a hard error.
 
-// CRC32 table for PNG chunk checksums
-static uint32_t crc32_table[256];
-static int crc32_table_init = 0;
-
-// Initialize CRC32 lookup table
-static void init_crc32_table(void) {
-    if (crc32_table_init)
-        return;
-    for (uint32_t n = 0; n < 256; n++) {
-        uint32_t c = n;
-        for (int k = 0; k < 8; k++) {
-            if (c & 1)
-                c = 0xedb88320 ^ (c >> 1);
-            else
-                c = c >> 1;
-        }
-        crc32_table[n] = c;
-    }
-    crc32_table_init = 1;
-}
-
 // Write 32-bit big-endian value to buffer
 // Write a PNG chunk to file
 static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint32_t len) {
@@ -1051,15 +1031,8 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
             return -1;
     }
 
-    // Compute CRC over type + data
-    uint32_t crc = 0xffffffff;
-    for (int i = 0; i < 4; i++) {
-        crc = crc32_table[(crc ^ header[4 + i]) & 0xff] ^ (crc >> 8);
-    }
-    for (uint32_t i = 0; i < len; i++) {
-        crc = crc32_table[(crc ^ data[i]) & 0xff] ^ (crc >> 8);
-    }
-    crc ^= 0xffffffff;
+    // CRC over type + data
+    uint32_t crc = gs_crc32(gs_crc32(0, header + 4, 4), data, len > 0 && data ? len : 0);
 
     // Write CRC (big-endian)
     uint8_t crc_buf[4];
@@ -1781,9 +1754,6 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     const uint32_t stride = d->stride;
     const uint8_t *fb = d->bits;
 
-    // Initialize CRC table
-    init_crc32_table();
-
     // Open output file
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
@@ -2296,6 +2266,12 @@ void debug_print_target_trace(void) {
 // Assertion failure handler (coordinates all diagnostic output)
 // ────────────────────────────────────────────────────────────────────────────
 
+static debug_failure_hook_fn g_failure_hook;
+
+void debug_set_failure_hook(debug_failure_hook_fn fn) {
+    g_failure_hook = fn;
+}
+
 // Shared tail of gs_assert_fail and gs_unimplemented_fail: dump what the host
 // and the guest were doing, stop the machine, and hand the shell back.  Neither
 // aborts -- a stopped machine with a message on it is worth more than a dead
@@ -2322,10 +2298,10 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
         printf("Handled %s while scheduler idle; shell remains available.\n", kind);
     fflush(stdout);
 
-    // Notify the platform layer (test integration hooks this to fail a run).
-    debug_t *debug = system_debug();
-    if (debug && debug->assertion_callback)
-        debug->assertion_callback(expr ? expr : kind, file, line, func);
+    // Notify the platform layer (the browser tells its test harness; headless
+    // fails the run).
+    if (g_failure_hook)
+        g_failure_hook(kind, expr, file, line, func);
 }
 
 // Main assertion failure handler - prints diagnostics and pauses execution
@@ -2356,7 +2332,7 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 // is compiled out by GS_FAST (see GS_UNIMPLEMENTED in common.h for why a
 // release build is exactly where this one matters).
 //
-// The banner goes to stderr, unbuffered: if a platform's assertion_callback
+// The banner goes to stderr, unbuffered: if a platform's failure hook
 // aborts -- the unit harness does -- a buffered stdout banner is lost at the
 // moment it was written for.
 void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
@@ -2686,18 +2662,13 @@ static debug_t *debug_from(struct object *self) {
 // Forward-declared because the indexed-child member descriptors below
 // need it but the entry classes are already defined above.
 static struct object *bp_entries_get(struct object *self, int index);
-static int bp_entries_count(struct object *self);
 static int bp_entries_next(struct object *self, int prev_index);
 static struct object *lp_entries_get(struct object *self, int index);
-static int lp_entries_count(struct object *self);
 static int lp_entries_next(struct object *self, int prev_index);
 
 static struct object *bp_entries_get(struct object *self, int index) {
     breakpoint_t *bp = debug_breakpoint_by_id(debug_from(self), index);
     return bp ? breakpoint_get_entry_object(bp) : NULL;
-}
-static int bp_entries_count(struct object *self) {
-    return debug_breakpoint_count(debug_from(self));
 }
 static int bp_entries_next(struct object *self, int prev_index) {
     return debug_breakpoint_next_id(debug_from(self), prev_index);
@@ -2706,9 +2677,6 @@ static int bp_entries_next(struct object *self, int prev_index) {
 static struct object *lp_entries_get(struct object *self, int index) {
     logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
     return lp ? logpoint_get_entry_object(lp) : NULL;
-}
-static int lp_entries_count(struct object *self) {
-    return debug_logpoint_count(debug_from(self));
 }
 static int lp_entries_next(struct object *self, int prev_index) {
     return debug_logpoint_next_id(debug_from(self), prev_index);
@@ -2953,7 +2921,6 @@ static const member_t bp_collection_members[] = {
      .child = {.cls = &breakpoint_entry_class,
                .indexed = true,
                .get = bp_entries_get,
-               .count = bp_entries_count,
                .next = bp_entries_next,
                .lookup = NULL}},
 };
@@ -2979,7 +2946,6 @@ static const member_t lp_collection_members[] = {
      .child = {.cls = &logpoint_entry_class,
                .indexed = true,
                .get = lp_entries_get,
-               .count = lp_entries_count,
                .next = lp_entries_next,
                .lookup = NULL}},
 };

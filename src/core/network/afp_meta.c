@@ -7,8 +7,10 @@
 #include "afp_meta.h"
 #include "common.h"
 
+#include "afp_catalog.h"
 #include "appledouble.h"
 #include "log.h"
+#include "storage_util.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -20,13 +22,9 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("appletalk");
-
 // Ceiling on a sidecar we are willing to read whole.  The fork itself is
 // streamed by afp_fork.c; this bound only guards the metadata reader.
 #define AFP_META_SIDECAR_MAX (64u * 1024u * 1024u)
-
-// --- big-endian helpers ----------------------------------------------------
 
 // --- time conversions ------------------------------------------------------
 
@@ -86,6 +84,14 @@ bool afp_meta_sidecar_path(const char *host_path, char *out, size_t cap) {
     return n > 0 && (size_t)n < cap;
 }
 
+bool afp_meta_control_path(const char *root, const char *leaf, char *out, size_t cap) {
+    char dir[PATH_MAX];
+    if (!afp_host_join(root, AFP_CONTROL_DIR, dir, sizeof(dir)))
+        return false;
+    gs_mkdir_p(dir); // idempotent; a failure only costs persistence
+    return (size_t)snprintf(out, cap, "%s/%s", dir, leaf) < cap;
+}
+
 bool afp_meta_is_hidden(const char *name) {
     if (!name)
         return false;
@@ -127,7 +133,7 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
     uint32_t off = 0, len = 0;
     uint8_t buf[AFP_META_COMMENT_MAX + 1];
 
-    if (find_entry_extent(hdr, n, AD_ENTRY_DATES, &off, &len) && len >= 16 && fseek(f, (long)off, SEEK_SET) == 0 &&
+    if (find_entry_extent(hdr, n, AD_ENTRY_DATES, &off, &len) && len >= 16 && fseeko(f, (off_t)off, SEEK_SET) == 0 &&
         fread(buf, 1, 16, f) == 16) {
         out->create_date = afp_date_from_ad((int32_t)RD_BE32(buf + 0));
         out->modify_date = afp_date_from_ad((int32_t)RD_BE32(buf + 4));
@@ -136,17 +142,18 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
         out->has_dates = true;
     }
     if (find_entry_extent(hdr, n, AD_ENTRY_FINDER, &off, &len) && len >= AFP_META_FINDER_SIZE &&
-        fseek(f, (long)off, SEEK_SET) == 0 && fread(out->finder, 1, AFP_META_FINDER_SIZE, f) == AFP_META_FINDER_SIZE) {
+        fseeko(f, (off_t)off, SEEK_SET) == 0 &&
+        fread(out->finder, 1, AFP_META_FINDER_SIZE, f) == AFP_META_FINDER_SIZE) {
         out->has_finder = true;
     }
-    if (find_entry_extent(hdr, n, AD_ENTRY_MACINFO, &off, &len) && len >= 4 && fseek(f, (long)off, SEEK_SET) == 0 &&
+    if (find_entry_extent(hdr, n, AD_ENTRY_MACINFO, &off, &len) && len >= 4 && fseeko(f, (off_t)off, SEEK_SET) == 0 &&
         fread(buf, 1, 4, f) == 4) {
         // Entry 10's leading two bytes carry our AFP attribute word; the
         // trailing byte keeps the classic "protected" flag for foreign readers.
         out->attrs = (uint16_t)((buf[0] << 8) | buf[1]);
         out->has_attrs = true;
     }
-    if (find_entry_extent(hdr, n, AD_ENTRY_COMMENT, &off, &len) && fseek(f, (long)off, SEEK_SET) == 0) {
+    if (find_entry_extent(hdr, n, AD_ENTRY_COMMENT, &off, &len) && fseeko(f, (off_t)off, SEEK_SET) == 0) {
         size_t want = len > AFP_META_COMMENT_MAX ? AFP_META_COMMENT_MAX : len;
         size_t got = want ? fread(out->comment, 1, want, f) : 0;
         out->comment[got] = '\0';
@@ -155,35 +162,6 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
     }
     fclose(f);
     return true;
-}
-
-void afp_meta_load_rsrc(const char *host_path, uint8_t **rsrc, size_t *rsrc_len) {
-    if (rsrc)
-        *rsrc = NULL;
-    if (rsrc_len)
-        *rsrc_len = 0;
-    if (!rsrc || !rsrc_len)
-        return;
-    size_t len = afp_meta_rsrc_len(host_path);
-    if (!len || len > AFP_META_SIDECAR_MAX)
-        return;
-    uint8_t *buf = (uint8_t *)malloc(len);
-    if (!buf)
-        return;
-    FILE *tmp = tmpfile();
-    if (!tmp) {
-        free(buf);
-        return;
-    }
-    size_t copied = afp_meta_copy_rsrc(host_path, tmp);
-    rewind(tmp);
-    if (copied == len && fread(buf, 1, len, tmp) == len) {
-        *rsrc = buf;
-        *rsrc_len = len;
-    } else {
-        free(buf);
-    }
-    fclose(tmp);
 }
 
 // Read a sidecar's fixed header plus its entry table, without touching the
@@ -303,10 +281,19 @@ static size_t build_meta_entries(const afp_meta_t *meta, ad_entry_t *entries, si
     return n;
 }
 
-int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, size_t rsrc_len) {
+// Write a sidecar whole or not at all: the AppleDouble header through the
+// one writer (09-storage F-61), the metadata entries, then the resource fork
+// from memory (`rsrc`) or streamed from `rsrc_src` in fixed-size chunks, so
+// its size never bounds memory.  Both public writers are this one; the
+// in-memory one used to truncate the sidecar in place, so a crash mid-write
+// lost every piece of metadata it held (10-network N-26).
+static int meta_write(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, FILE *rsrc_src,
+                      size_t rsrc_len) {
     char sc[PATH_MAX];
     if (!host_path || !afp_meta_sidecar_path(host_path, sc, sizeof(sc)))
         return -EINVAL;
+    if (!rsrc && !rsrc_src)
+        rsrc_len = 0;
     if (rsrc_len == 0 && meta_is_empty(meta)) {
         remove(sc); // keep metadata-free files a clean stream
         return 0;
@@ -315,95 +302,52 @@ int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t 
     ad_entry_t entries[5];
     uint8_t dates[16];
     uint8_t macinfo[4];
-    size_t n = build_meta_entries(meta, entries, 4, dates, macinfo);
+    size_t n_meta = build_meta_entries(meta, entries, 4, dates, macinfo);
+    size_t n = n_meta;
     if (rsrc_len) {
         entries[n].id = AD_ENTRY_RSRC;
-        entries[n].bytes = rsrc;
+        entries[n].bytes = NULL; // written below
         entries[n].len = rsrc_len;
         n++;
-    }
-
-    uint8_t *buf = NULL;
-    size_t buf_len = 0;
-    int rc = ad_build(false, entries, n, &buf, &buf_len);
-    if (rc < 0)
-        return rc;
-    FILE *f = fopen(sc, "wb");
-    if (!f) {
-        int e = errno;
-        free(buf);
-        return e ? -e : -EIO;
-    }
-    size_t w = fwrite(buf, 1, buf_len, f);
-    int cr = fclose(f);
-    free(buf);
-    return (w == buf_len && cr == 0) ? 0 : -EIO;
-}
-
-int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *rsrc_src, size_t rsrc_len) {
-    char sc[PATH_MAX];
-    if (!host_path || !afp_meta_sidecar_path(host_path, sc, sizeof(sc)))
-        return -EINVAL;
-    if ((rsrc_len == 0 || !rsrc_src) && meta_is_empty(meta)) {
-        remove(sc);
-        return 0;
-    }
-    if (!rsrc_src)
-        rsrc_len = 0;
-
-    ad_entry_t entries[5];
-    uint8_t dates[16];
-    uint8_t macinfo[4];
-    size_t n_meta = build_meta_entries(meta, entries, 4, dates, macinfo);
-    size_t n = n_meta + (rsrc_len ? 1 : 0);
-
-    // The header through the one AppleDouble writer (09-storage F-61); the
-    // payloads follow it in order, the fork streamed below rather than held.
-    if (rsrc_len) {
-        entries[n_meta].id = AD_ENTRY_RSRC;
-        entries[n_meta].bytes = NULL;
-        entries[n_meta].len = rsrc_len;
     }
     uint8_t hdr[26 + 5 * 12];
     long hl = ad_build_header(false, entries, n, hdr, sizeof(hdr));
     if (hl < 0)
         return (int)hl;
-    size_t hdr_len = (size_t)hl;
 
-    char tmp[PATH_MAX];
-    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.gstmp", sc) >= sizeof(tmp))
-        return -ENAMETOOLONG;
-    FILE *f = fopen(tmp, "wb");
+    // ".gstmp", not ".tmp": "._x.tmp" is the sidecar of a file named "x.tmp".
+    gs_atomic_t out;
+    FILE *f = gs_atomic_open(&out, sc, ".gstmp");
     if (!f)
         return errno ? -errno : -EIO;
-    bool ok = fwrite(hdr, 1, hdr_len, f) == hdr_len;
+    bool ok = fwrite(hdr, 1, (size_t)hl, f) == (size_t)hl;
     for (size_t i = 0; ok && i < n_meta; i++)
         ok = entries[i].len == 0 || fwrite(entries[i].bytes, 1, entries[i].len, f) == entries[i].len;
-    // Stream the fork in fixed-size chunks so its size never bounds memory.
-    uint8_t chunk[64 * 1024];
-    size_t left = rsrc_len;
-    while (ok && left) {
-        size_t want = left < sizeof(chunk) ? left : sizeof(chunk);
-        size_t got = fread(chunk, 1, want, rsrc_src);
-        if (got == 0)
-            break;
-        ok = fwrite(chunk, 1, got, f) == got;
-        left -= got;
+    if (ok && rsrc) {
+        ok = fwrite(rsrc, 1, rsrc_len, f) == rsrc_len;
+    } else if (ok && rsrc_len) {
+        uint8_t chunk[64 * 1024];
+        size_t left = rsrc_len;
+        while (ok && left) {
+            size_t want = left < sizeof(chunk) ? left : sizeof(chunk);
+            size_t got = fread(chunk, 1, want, rsrc_src);
+            if (got == 0)
+                break;
+            ok = fwrite(chunk, 1, got, f) == got;
+            left -= got;
+        }
+        if (left)
+            ok = false; // the source ran short of the declared length
     }
-    if (left)
-        ok = false; // the source ran short of the declared length
-    if (fclose(f) != 0)
-        ok = false;
-    if (!ok) {
-        remove(tmp);
-        return -EIO;
-    }
-    if (rename(tmp, sc) != 0) {
-        int e = errno;
-        remove(tmp);
-        return e ? -e : -EIO;
-    }
-    return 0;
+    return gs_atomic_commit(&out, ok);
+}
+
+int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, size_t rsrc_len) {
+    return meta_write(host_path, meta, rsrc, NULL, rsrc_len);
+}
+
+int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *rsrc_src, size_t rsrc_len) {
+    return meta_write(host_path, meta, NULL, rsrc_src, rsrc_len);
 }
 
 size_t afp_meta_copy_rsrc(const char *host_path, FILE *dst) {
@@ -419,7 +363,7 @@ size_t afp_meta_copy_rsrc(const char *host_path, FILE *dst) {
     if (!f)
         return 0;
     size_t copied = 0;
-    if (fseek(f, (long)off, SEEK_SET) == 0) {
+    if (fseeko(f, (off_t)off, SEEK_SET) == 0) {
         uint8_t chunk[64 * 1024];
         size_t left = len;
         while (left) {

@@ -362,8 +362,8 @@ static value_t meta_method_indices(struct object *self, const member_t *m, int a
     // next live index or -1 when exhausted; holes are skipped by the callback.
     value_t *items = NULL;
     size_t len = 0, cap = 0;
-    if (mb->child.next) {
-        for (int i = mb->child.next(insp, -1); i >= 0; i = mb->child.next(insp, i)) {
+    {
+        for (int i = object_child_next(insp, mb, -1); i >= 0; i = object_child_next(insp, mb, i)) {
             if (len + 1 > cap) {
                 size_t ncap = cap ? cap * 2 : 8;
                 value_t *t = (value_t *)realloc(items, ncap * sizeof(value_t));

@@ -102,12 +102,7 @@ static const member_t bucket_members[] = {
     {.kind = M_CHILD,
      .name = "devices",
      .flags = 0,
-     .child = {.cls = &dev_class,
-               .indexed = true,
-               .get = bucket_get,
-               .count = bucket_count,
-               .next = bucket_next,
-               .lookup = NULL}},
+     .child = {.cls = &dev_class, .indexed = true, .get = bucket_get, .next = bucket_next, .lookup = NULL}},
 };
 static const class_desc_t bucket_class = {
     .name = "bucket",

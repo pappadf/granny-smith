@@ -44,7 +44,7 @@ assert appletalk.afp.volumes["My Volume"].cnid_count == 1 "a fresh catalog holds
 
 # Nothing has talked to the server yet.
 assert appletalk.afp.stats.commands_served == 0 "AFP traffic before the client ran"
-assert try(appletalk.afp.sessions[0].session_ref, 0) == 0 "an ASP session exists before the Chooser ran"
+assert appletalk.afp.sessions.count == 0 "an ASP session exists before the Chooser ran"
 
 # Apple menu → Chooser (press at the menu title, drag down to the item,
 # release). The Apple menu on this System 6 volume lists About / Access
@@ -150,7 +150,7 @@ check_ex("volume-window.png", 58, 140, 80, 420)
 # suite asserts on them instead of grepping the log.
 assert appletalk.afp.stats.commands_served > 20 "the volume window served no catalog calls"
 assert appletalk.afp.sessions[0].session_ref > 0 "no ASP session after the mount"
-assert try(appletalk.afp.sessions[1].session_ref, 0) == 0 "expected exactly one ASP session"
+assert appletalk.afp.sessions.count == 1 "expected exactly one ASP session"
 assert appletalk.afp.sessions[0].client_node > 0 "session has no client node"
 assert appletalk.afp.volumes["My Volume"].sessions_using == 1 "the mount is not counted on the volume"
 

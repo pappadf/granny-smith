@@ -116,6 +116,32 @@ void laserwriter_sink_document(const laserwriter_document_t *doc) {
                (unsigned)doc->pages, path, outcome, doc->offending);
 }
 
+// Platform sink for a job's captured PostScript (appletalk.printer.capture):
+// <print-dir>/<job>.ps, the job number matching its PDF's.
+void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
+    if (!g_print_dir[0]) {
+        printf("laserwriter: job %u PostScript (%zu bytes) discarded: no --print-dir\n", (unsigned)cap->job_id,
+               cap->ps_len);
+        return;
+    }
+    if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
+        printf("laserwriter: cannot create print directory %s: %s\n", g_print_dir, strerror(errno));
+        return;
+    }
+    char path[PATH_MAX + 32];
+    snprintf(path, sizeof(path), "%s/%05u.ps", g_print_dir, (unsigned)cap->job_id);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        printf("laserwriter: cannot write %s: %s\n", path, strerror(errno));
+        return;
+    }
+    size_t wrote = fwrite(cap->ps, 1, cap->ps_len, f);
+    fclose(f);
+    if (wrote != cap->ps_len)
+        printf("laserwriter: short write to %s (%zu of %zu bytes)\n", path, wrote, cap->ps_len);
+    printf("laserwriter: job %u PostScript%s -> %s\n", (unsigned)cap->job_id, cap->complete ? "" : " (cut off)", path);
+}
+
 // Publish the default share after every system_create.  A machine teardown
 // drops the volume table, so this has to re-run; failure is a warning, not a
 // fatal error.
@@ -265,6 +291,31 @@ static void print_usage(const char *program) {
 
 // Global script exit code (set by commands like screenshot match)
 static int g_script_exit_code = 0;
+
+// Assertion failures seen this run.  A failed GS_ASSERT prints its
+// diagnostics and pauses the machine (debug.c diagnose_and_halt) so it can be
+// examined on the spot; it does not stop a script, which would otherwise run
+// on and pass.  So the run's exit status carries it (10-network D-4).
+static unsigned g_assert_failures;
+
+static void headless_failure_hook(const char *kind, const char *expr, const char *file, int line, const char *func) {
+    (void)expr, (void)func;
+    if (strcmp(kind, "assertion") != 0)
+        return; // GS_UNIMPLEMENTED: a gap in the model, reported, not a failed invariant
+    g_assert_failures++;
+    fprintf(stderr, "headless: assertion %u failed at %s:%d -- this run will exit non-zero\n", g_assert_failures,
+            file ? file : "<unknown>", line);
+}
+
+// The exit status: the script's own, or 3 if any assertion failed.
+static int headless_exit_code(void) {
+    if (g_assert_failures) {
+        fprintf(stderr, "headless: %u assertion failure(s) this run\n", g_assert_failures);
+        if (g_script_exit_code == 0)
+            return 3;
+    }
+    return g_script_exit_code;
+}
 
 // Quit flag for headless mode - set by quit command
 static volatile int quit_requested = 0;
@@ -857,6 +908,8 @@ static void offer_sibling_proms(const char *rom_path) {
 }
 
 int main(int argc, char *argv[]) {
+    debug_set_failure_hook(headless_failure_hook);
+
     // Configuration from arguments
     const char *rom_file = NULL;
     const char *hd_files[8] = {NULL};
@@ -1338,7 +1391,7 @@ int main(int argc, char *argv[]) {
 
         system_destroy(global_emulator);
         global_emulator = NULL;
-        return g_script_exit_code;
+        return headless_exit_code();
     }
 
     // ====================================================================
@@ -1405,5 +1458,5 @@ int main(int argc, char *argv[]) {
     system_destroy(global_emulator);
     global_emulator = NULL;
 
-    return g_script_exit_code;
+    return headless_exit_code();
 }

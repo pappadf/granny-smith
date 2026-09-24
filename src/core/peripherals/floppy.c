@@ -1627,27 +1627,12 @@ static struct object *floppy_drives_get(struct object *self, int index) {
         return NULL;
     return floppy->drive_objects[index];
 }
-static int floppy_drives_count(struct object *self) {
-    floppy_t *floppy = (floppy_t *)object_data(self);
-    return floppy ? NUM_DRIVES : 0;
-}
-static int floppy_drives_next(struct object *self, int prev_index) {
-    floppy_t *floppy = (floppy_t *)object_data(self);
-    if (!floppy)
-        return -1;
-    int next = prev_index + 1;
-    return next < NUM_DRIVES ? next : -1;
-}
 
 static const member_t floppy_drives_collection_members[] = {
     {.kind = M_CHILD,
      .name = "entries",
-     .child = {.cls = &floppy_drive_class,
-               .indexed = true,
-               .get = floppy_drives_get,
-               .count = floppy_drives_count,
-               .next = floppy_drives_next,
-               .lookup = NULL}},
+     .child =
+         {.cls = &floppy_drive_class, .indexed = true, .get = floppy_drives_get, .slots = NUM_DRIVES, .lookup = NULL}},
 };
 static const class_desc_t floppy_drives_collection_class = {
     .name = "floppy_drives",

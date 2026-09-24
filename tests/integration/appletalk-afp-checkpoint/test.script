@@ -1,0 +1,164 @@
+# AppleTalk AFP — a checkpoint taken mid-conversation restores.
+#
+# The appletalk-afp flow (Chooser → AppleShare → mount "My Volume" → open its
+# window), then a checkpoint saved at an instant when an ATP transaction is in
+# flight, and loaded again.
+#
+# Every AFP command rides an ATP exactly-once transaction, and the responder
+# holds a release timer (atp.xo_release) for it until the client's TRel comes
+# back.  ATP registered that timer's event type only when it first armed one,
+# and a restore replays the saved event queue into a fresh scheduler before any
+# transaction exists -- so a checkpoint saved inside that window failed:
+# "cannot restore event 'atp.xo_release' — type not registered", and in the
+# release build (asserts compiled out) the restore indexed event_types[-1].
+# The browser saves a background checkpoint every ~15 s, so ordinary file
+# sharing hit it (10-network N-05).  The same held for PAP, the LaserWriter job
+# and its transport.  Every one is now registered when the stack comes up
+# (atalk_timer_t).
+#
+# The run steps the machine in small slices right after the Finder starts
+# reading the volume, until scheduler.events shows an ATP event queued, and
+# saves there.  After the load the share must still be published under the
+# same volume id.
+
+include "../lib/mac.script"
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# Boot to the Finder desktop (same budget as the scsi test).
+scheduler.run 30000000
+
+# Publish the host share BEFORE AppleTalk activates, as the legacy UI did.
+# add() returns the volume it created, so one call both registers and
+# verifies — no re-enumeration of the collection needed.
+assert appletalk.afp.volumes.add("My Volume", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
+assert appletalk.afp.volumes["My Volume"].vol_id > 0 "volume id not assigned"
+assert appletalk.afp.volumes["My Volume"].cnid_count == 1 "a fresh catalog holds only the root"
+
+# Nothing has talked to the server yet.
+assert appletalk.afp.stats.commands_served == 0 "AFP traffic before the client ran"
+assert try(appletalk.afp.sessions[0].session_ref, 0) == 0 "an ASP session exists before the Chooser ran"
+
+# Apple menu → Chooser (press at the menu title, drag down to the item,
+# release). The Apple menu on this System 6 volume lists About / Access
+# Privileges / Alarm Clock / Battery / Calculator / Chooser, so the Chooser
+# sits at y=123.
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Click the AppleShare icon in the Chooser's device list.
+machine.adb.mouse.move 95 90
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# "AppleShare requires AppleTalk" → OK. AppleTalk flips Active and the NBP
+# lookup runs; the server list must show the emulated share host.
+# (60M: the NBP discovery timers are guest-time-driven.)
+machine.adb.mouse.move 190 206
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+check("chooser-server-listed.png")
+
+# Select "Shared Folders", then OK.
+machine.adb.mouse.move 280 88
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 6000000
+machine.adb.mouse.move 333 178
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# "Connect to the file server ... as: Guest" → OK. FPLogin runs and
+# FPGetSrvrParms fills the volume list.
+machine.adb.mouse.move 392 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("volume-list.png")
+
+# The session is up and speaking AFP 2.0 before a single volume is mounted.
+assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"
+assert appletalk.afp.stats.commands_served > 0 "no AFP commands were served"
+
+# Select "My Volume", then OK — the mount itself.
+machine.adb.mouse.move 150 113
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+machine.adb.mouse.move 333 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Close the Chooser; the AFP volume icon is on the desktop.
+machine.adb.mouse.move 72 47
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("desktop-mounted.png")
+
+# Open the volume's window. The gap between the two clicks has to fit inside
+# DoubleTime, so it is a fraction of the budgets used for single clicks.
+machine.adb.mouse.move 468 108
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+let n = 0
+let hit = 0
+while $n < 20000 {
+scheduler.run 3000
+$n = $n + 1
+if contains("${scheduler.events}", "\"atp\"") {
+$hit = 1
+break
+}
+}
+assert $hit == 1 "no ATP event was ever pending to checkpoint"
+
+let vol_id = appletalk.afp.volumes["My Volume"].vol_id
+assert checkpoint.save("${$WORK_DIR}/afp.checkpoint") "checkpoint save"
+assert checkpoint.load("${$WORK_DIR}/afp.checkpoint") "checkpoint load"
+
+# The share is still published, under the id the guest cached for it
+# (10-network D-3: a load used to drop every volume).
+assert appletalk.afp.volumes["My Volume"].vol_id == $vol_id "the share did not come back under its volume id"
+
+# The restored queue still holds the transaction's timer, resolved to a live
+# callback -- not dropped, and not a wild pointer.
+assert contains("${scheduler.events}", "\"atp\"") "the restored queue lost the ATP event"
+
+# ...and the machine runs on past the instant that timer fires.  (An assert
+# anywhere in this run fails it: headless exits non-zero on one.)
+scheduler.run 60000000
+
+quit

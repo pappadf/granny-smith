@@ -94,6 +94,28 @@ void gs_unimplemented_fail(const char *file, int line, const char *func, const c
 #define WR_LE16(p, v) ((void)__builtin_memcpy((p), &(uint16_t){(uint16_t)(v)}, 2))
 #define WR_LE32(p, v) ((void)__builtin_memcpy((p), &(uint32_t){(uint32_t)(v)}, 4))
 
+// Four-character codes (OSType, ResType, an Apple event's class and ID): four
+// bytes on the wire, read as a big-endian uint32; as text, those characters and
+// a NUL.  A code shorter than four is padded with spaces, as the Mac pads one.
+// The Apple-event layer and its codec had a copy each of both directions.
+static inline void fourcc_text(uint32_t v, char out[5]) {
+    out[0] = (char)(v >> 24);
+    out[1] = (char)(v >> 16);
+    out[2] = (char)(v >> 8);
+    out[3] = (char)v;
+    out[4] = '\0';
+}
+static inline uint32_t fourcc_value(const char *s) {
+    uint32_t v = 0;
+    bool ended = !s;
+    for (int i = 0; i < 4; i++) {
+        if (!ended && !s[i])
+            ended = true;
+        v = (v << 8) | (ended ? (uint8_t)' ' : (uint8_t)s[i]);
+    }
+    return v;
+}
+
 // Forward declaration for checkpoint data type used across modules
 // Modules receive a pointer to this opaque struct when saving/restoring state.
 struct checkpoint;

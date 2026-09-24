@@ -6,6 +6,7 @@
 
 #include "appletalk.h"
 #include "appletalk_internal.h"
+#include "byteq.h"
 #include "laserwriter_job.h"
 #include "log.h"
 #include "platform.h"
@@ -18,19 +19,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("pap");
 
 #define PRINTER_STATUS_MAX       255
 #define PRINTER_OBJECT_MAX       32
-#define PRINTER_SPOOL_PATH_MAX   160
 #define PRINTER_DEFAULT_OBJECT   "LaserWriter (Sim)"
 #define PRINTER_STATUS_IDLE      "status: idle"
 #define PRINTER_STATUS_BUSY      "status: print spooler processing job"
 #define PRINTER_ENTITY_TYPE      "LaserWriter"
-#define PRINTER_SPOOL_DIR        "/tmp"
 #define PAP_SENDDATA_RETRY_MS    8000u
 #define PAP_SENDDATA_RETRY_LIMIT 12
-#define PAP_SESSION_TIMEOUT_MS   120000u
+#define PAP_SESSION_TIMEOUT_NS   (120ull * 1000000000ull)
 // Gap between a frame the printer has just sent (an OpenReply, a TRel, a
 // reply to the workstation's read) and its next SendData.  A real printer
 // takes far longer between reads; issuing the next request in the same
@@ -41,12 +40,27 @@ LOG_USE_CATEGORY_NAME("appletalk");
 #define PAP_SENDDATA_GAP_NS         10000000ull
 #define PAP_QUERY_PLACEHOLDER_LIMIT 8
 
-// With the interpreter linked (PLATEN=1) the spool file is an optional
-// capture beside the PDF; without it the spool is the only output.
+// The PostScript markers the spool-only printer answers queries by, found in
+// a stream the workstation splits anywhere: one window of the last bytes
+// seen, as long as the longest marker, serves all three.  Each had its own
+// window and its own copy of the sliding code.
+#define PAP_SCAN_WINDOW 32
+enum { PAP_MARK_FLUSH = 1u << 0, PAP_MARK_PATCHPREP = 1u << 1, PAP_MARK_FONTLIST = 1u << 2 };
+
+// With the interpreter linked (PLATEN=1) the capture is an optional copy of
+// the PostScript beside the PDF; without it the capture is the only output.
 #if GS_PLATEN
 #define PRINTER_CAPTURE_DEFAULT false
 #else
 #define PRINTER_CAPTURE_DEFAULT true
+#endif
+
+// A job's captured PostScript is held in memory and handed to the platform
+// (laserwriter_sink_capture) when the job ends.  It went to a file under /tmp
+// -- a path the core has no business naming, and one the browser cannot
+// reach (10-network F-12).  A job larger than this is aborted, not held.
+#ifndef PRINTER_CAPTURE_MAX
+#define PRINTER_CAPTURE_MAX (32u * 1024u * 1024u)
 #endif
 
 // Kinds of PostScript queries we synthesize replies for (builds without the
@@ -63,7 +77,7 @@ typedef struct {
     atalk_nbp_entry_t *nbp_entry;
     uint32_t job_counter;
     bool patch_installed; // True once the PatchPrep procset has been uploaded
-    bool capture; // Write each job's PostScript to the spool file
+    bool capture; // Capture each job's PostScript for the platform
 } pap_printer_service_t;
 
 // Structure tracking a held PAP SendData request while we wait for data to emit.
@@ -87,35 +101,28 @@ typedef struct {
     bool blocked_for_reply;
     atalk_socket_addr_t client_addr;
     atp_request_handle_t *send_handle;
-    FILE *spool;
-    char spool_path[PRINTER_SPOOL_PATH_MAX];
+    byteq_t capture; // this job's PostScript, when capturing
     uint32_t job_id;
     size_t bytes_received;
-    uint64_t last_activity_ms;
+    uint64_t last_activity_ns;
     char pending_reply[PRINTER_STATUS_MAX + 1];
     uint8_t pending_reply_len;
     bool pending_reply_ready;
-    char query_window[16];
-    uint8_t query_window_len;
-    char patch_window[32];
-    uint8_t patch_window_len;
+    char scan[PAP_SCAN_WINDOW]; // the stream's last bytes, for pap_scan
+    uint8_t scan_len;
     bool query_detected;
     bool query_waiting_job;
     uint8_t query_placeholder_eofs;
     bool expecting_patch; // Query requested a PatchPrep upload before the job
     bool patch_active; // Currently ingesting a PatchPrep payload
     pap_query_mode_t query_mode;
-    char font_query_window[32];
-    uint8_t font_query_window_len;
     bool font_query_detected;
     pap_status_credit_t pending_status_reads[PAP_MAX_FLOW_QUANTUM];
     uint8_t pending_status_head;
     uint8_t pending_status_count;
     // Interpreter output (PLATEN=1) waiting for the workstation's read
     // credits, and the end-of-job EOF that follows the last of it.
-    uint8_t *reply_bytes;
-    size_t reply_bytes_len;
-    size_t reply_bytes_cap;
+    byteq_t reply; // bounded by LASERWRITER_OUTPUT_MAX, as the output it drains
     bool reply_eof_pending;
     // One SendData transaction's data (PLATEN=1): the fragments are
     // gathered here and fed to the interpreter as one piece when the
@@ -151,11 +158,11 @@ static pap_printer_service_t g_printer = {.initialized = false,
                                           .patch_installed = false,
                                           .capture = PRINTER_CAPTURE_DEFAULT};
 static pap_session_t g_session;
+static atalk_printer_stats_t g_pap_stats;
 static pap_completion_stream_t g_completion;
 
 // Forward declarations for helper routines.
 static void pap_printer_init(void);
-static uint64_t pap_now_ms(void);
 static void pap_session_reset(void);
 static void pap_printer_set_status_fmt(const char *fmt, ...)
 #ifdef __GNUC__
@@ -163,23 +170,18 @@ static void pap_printer_set_status_fmt(const char *fmt, ...)
 #endif
     ;
 static void pap_printer_set_status_idle(void);
-static void pap_printer_set_status_disabled(void);
 static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uint16_t result_code, uint8_t *out,
                                     size_t out_max);
 static void pap_session_finish(bool success, const char *reason, bool notify_client);
 static void pap_session_abort(const char *reason);
-static bool pap_session_open_spool(pap_session_t *sess);
+static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete);
 #if !GS_PLATEN
-static void pap_session_rewind_spool(pap_session_t *sess);
 #endif
 static void pap_update_progress_status(void);
 static void pap_session_record_activity(void);
-static void pap_session_check_timeout(void);
 #if !GS_PLATEN
 static void pap_queue_postscript_reply(const char *text);
-static bool pap_detect_flush_sequence(pap_session_t *sess, const uint8_t *data, int len);
-static bool pap_detect_patchprep_sequence(pap_session_t *sess, const uint8_t *data, int len);
-static bool pap_detect_fontlist_sequence(pap_session_t *sess, const uint8_t *data, int len);
+static unsigned pap_scan(pap_session_t *sess, const uint8_t *data, int len);
 static bool pap_consume_query_eof(pap_session_t *sess);
 static void pap_handle_patch_complete(pap_session_t *sess);
 static bool pap_finalize_job(const char *reason);
@@ -220,25 +222,18 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp);
 static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp);
 static void pap_handle_close_conn(const ddp_header_t *ddp, atp_packet_t *atp);
 static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp);
-static void pap_handle_tickle(void);
+static void pap_handle_tickle(const ddp_header_t *ddp, const atp_packet_t *atp);
 static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *request, void *ctx);
 static const char *pap_func_name(uint8_t func);
 static void pap_format_request_detail(char *dst, size_t dst_len, uint8_t func, const atp_packet_t *packet);
-
-// Helper returning the current platform tick count in milliseconds.
-static uint64_t pap_now_ms(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (sched)
-        return (uint64_t)(scheduler_time_ns(sched) / 1000000.0);
-    return platform_ticks();
-}
 
 // -- Deferred SendData ------------------------------------------------------
 // Every SendData the printer issues goes through here, so none leaves in the
 // same instant as the frame that preceded it (see PAP_SENDDATA_GAP_NS).
 
-static int g_pap_gap_event_token;
-static scheduler_t *g_pap_gap_registered_with; // the scheduler the event type is registered on
+static atalk_timer_t g_pap_gap_timer;
+static atalk_timer_t g_pap_idle_timer; // the connection timer (pap_idle_cb)
+static void pap_idle_cb(void *source, uint64_t data);
 
 static void pap_senddata_gap_cb(void *source, uint64_t data) {
     (void)source;
@@ -252,19 +247,11 @@ static void pap_schedule_senddata(void) {
         pap_issue_senddata_request();
         return;
     }
-    if (g_pap_gap_registered_with != sched) {
-        // Idempotent: a machine rebuild hands out a new scheduler.
-        scheduler_new_event_type(sched, "pap", &g_pap_gap_event_token, "senddata_gap", &pap_senddata_gap_cb);
-        g_pap_gap_registered_with = sched;
-    }
-    remove_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token);
-    scheduler_new_cpu_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token, 0, 0, PAP_SENDDATA_GAP_NS);
+    atalk_timer_arm(&g_pap_gap_timer, 0, PAP_SENDDATA_GAP_NS);
 }
 
 static void pap_cancel_senddata(void) {
-    scheduler_t *sched = atalk_scheduler();
-    if (sched && g_pap_gap_registered_with == sched)
-        remove_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token);
+    atalk_timer_cancel_all(&g_pap_gap_timer);
 }
 
 // Ensures the printer service is initialized exactly once.
@@ -285,29 +272,38 @@ static void pap_printer_init(void) {
     g_printer.initialized = true;
 }
 
-// Resets the active session, canceling pending ATP requests and closing the spool file.
+// Forgets the query state machine -- all of it at a job's end; all but the
+// PatchPrep expectation when a query's EOF is consumed (the upload it asked
+// for comes next).  Four copies each reset their own subset of it.
+static void pap_query_reset(pap_session_t *sess, bool keep_patch) {
+    sess->query_detected = false;
+    sess->query_waiting_job = false;
+    sess->query_placeholder_eofs = 0;
+    sess->query_mode = PAP_QUERY_NONE;
+    sess->font_query_detected = false;
+    sess->scan_len = 0;
+    if (!keep_patch) {
+        sess->expecting_patch = false;
+        sess->patch_active = false;
+    }
+}
+
+// Resets the active session, canceling pending ATP requests and dropping the capture.
 static void pap_session_reset(void) {
     pap_cancel_senddata();
     if (g_session.send_handle) {
         atp_request_cancel(g_session.send_handle);
         g_session.send_handle = NULL;
     }
-    if (g_session.spool) {
-        fclose(g_session.spool);
-        g_session.spool = NULL;
-    }
+    byteq_free(&g_session.capture);
     // A connection that goes away mid-job takes its interpreter with it
     laserwriter_job_abort();
-    free(g_session.reply_bytes);
-    g_session.reply_bytes = NULL;
-    g_session.reply_bytes_len = 0;
-    g_session.reply_bytes_cap = 0;
+    byteq_free(&g_session.reply);
     g_session.reply_eof_pending = false;
     g_session.rx_len = 0;
     g_session.rx_seq = 0;
     g_session.rx_eof = false;
     g_session.rx_pending = false;
-    memset(g_session.spool_path, 0, sizeof(g_session.spool_path));
     g_session.active = false;
     g_session.awaiting_data = false;
     g_session.eof_pending = false;
@@ -323,21 +319,13 @@ static void pap_session_reset(void) {
     g_session.client_addr.socket = 0;
     g_session.job_id = 0;
     g_session.bytes_received = 0;
-    g_session.last_activity_ms = 0;
+    g_session.last_activity_ns = 0;
+    atalk_timer_cancel_all(&g_pap_idle_timer);
     g_session.pending_reply[0] = '\0';
     g_session.pending_reply_len = 0;
     g_session.pending_reply_ready = false;
-    g_session.query_detected = false;
-    g_session.query_waiting_job = false;
-    g_session.query_placeholder_eofs = 0;
-    g_session.expecting_patch = false;
-    g_session.patch_active = false;
-    g_session.query_mode = PAP_QUERY_NONE;
-    g_session.font_query_window_len = 0;
-    g_session.font_query_detected = false;
+    pap_query_reset(&g_session, false);
     pap_status_queue_reset();
-    g_session.query_window_len = 0;
-    g_session.patch_window_len = 0;
 }
 
 // Updates the status string with formatted text (truncated to the PAP maximum).
@@ -362,10 +350,6 @@ static void pap_printer_set_status_idle(void) {
 }
 
 // Sets the status string to the disabled/offline message.
-static void pap_printer_set_status_disabled(void) {
-    pap_printer_set_status_fmt("%s", PRINTER_STATUS_IDLE);
-}
-
 // Builds the OpenConn/Status reply payload per PAP spec.
 static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uint16_t result_code, uint8_t *out,
                                     size_t out_max) {
@@ -385,7 +369,7 @@ static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uin
 static void pap_session_record_activity(void) {
     if (!g_session.active)
         return;
-    g_session.last_activity_ms = pap_now_ms();
+    g_session.last_activity_ns = atalk_now_ns();
 }
 
 // Terminates the active session, optionally notifying the workstation beforehand.
@@ -401,15 +385,12 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
     uint8_t closing_conn = g_session.conn_id;
     atalk_socket_addr_t closing_addr = g_session.client_addr;
     size_t bytes = g_session.bytes_received;
-    char saved_path[PRINTER_SPOOL_PATH_MAX];
-    saved_path[0] = '\0';
-    if (g_session.spool_path[0])
-        strncpy(saved_path, g_session.spool_path, sizeof(saved_path) - 1);
-    saved_path[sizeof(saved_path) - 1] = '\0';
 
     LOG(success ? 2 : 1, "pap: job %u %s (%s)", job_id, success ? "complete" : "aborted", reason ? reason : "done");
-    LOG(10, "pap: session finish: conn=%u bytes=%zu notify=%d spool='%s'", closing_conn, bytes, notify_client ? 1 : 0,
-        saved_path);
+    if (!success)
+        g_pap_stats.aborts++;
+    LOG(10, "pap: session finish: conn=%u bytes=%zu notify=%d", closing_conn, bytes, notify_client ? 1 : 0);
+    pap_capture_deliver(&g_session, job_id, success);
 
     const char *final_msg = PRINTER_STATUS_IDLE;
 
@@ -423,7 +404,7 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
 
     pap_session_reset();
     if (!g_printer.enabled) {
-        pap_printer_set_status_disabled();
+        pap_printer_set_status_idle();
         return;
     }
     pap_printer_set_status_fmt("%s", final_msg);
@@ -434,39 +415,29 @@ static void pap_session_abort(const char *reason) {
     pap_session_finish(false, reason, true);
 }
 
-// Opens (or creates) a spool file for the current job.
-static bool pap_session_open_spool(pap_session_t *sess) {
-    if (!sess)
-        return false;
-    snprintf(sess->spool_path, sizeof(sess->spool_path), PRINTER_SPOOL_DIR "/laserwriter-job-%05u.ps", sess->job_id);
-    sess->spool = fopen(sess->spool_path, "wb");
-    if (!sess->spool) {
-        LOG(1, "pap: unable to open spool '%s': %s", sess->spool_path, strerror(errno));
-        sess->spool_path[0] = '\0';
-        return false;
+// Hand what was captured to the platform, and start the next job empty.
+static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete) {
+    if (byteq_len(&sess->capture)) {
+        laserwriter_capture_t cap = {.job_id = job_id,
+                                     .ps = byteq_data(&sess->capture),
+                                     .ps_len = byteq_len(&sess->capture),
+                                     .complete = complete};
+        LOG(3, "pap: job %u captured (%zu bytes)", (unsigned)job_id, cap.ps_len);
+        g_pap_stats.captures++;
+        g_pap_stats.last_capture = cap.ps_len;
+        laserwriter_sink_capture(&cap);
     }
-    LOG(2, "pap: capturing job %u in %s", sess->job_id, sess->spool_path);
-    return true;
+    byteq_clear(&sess->capture);
 }
 
-#if !GS_PLATEN
-// Truncates the current spool file so the real job can overwrite the query payload.
-static void pap_session_rewind_spool(pap_session_t *sess) {
-    if (!sess)
-        return;
-    if (!sess->spool_path[0])
-        return;
-    if (sess->spool) {
-        fclose(sess->spool);
-        sess->spool = NULL;
-    }
-    sess->spool = fopen(sess->spool_path, "wb");
-    if (!sess->spool)
-        LOG(1, "pap: unable to rewind spool '%s': %s", sess->spool_path, strerror(errno));
-    else
-        LOG(4, "pap: rewound spool for job %u", (unsigned)sess->job_id);
+// Capture the fragment, or abort a job grown past what is held.
+static bool pap_capture_fragment(pap_session_t *sess, const uint8_t *data, size_t len) {
+    if (byteq_append(&sess->capture, data, len, PRINTER_CAPTURE_MAX))
+        return true;
+    byteq_clear(&sess->capture); // nothing of a job too large is handed over
+    pap_session_abort("job too large");
+    return false;
 }
-#endif // !GS_PLATEN
 
 // Updates the status string with the current job progress.
 static void pap_update_progress_status(void) {
@@ -482,17 +453,23 @@ static void pap_update_progress_status(void) {
 #endif
 }
 
-// Aborts connections that exceeded the PAP inactivity timer.
-static void pap_session_check_timeout(void) {
+// The connection timer: a session idle for PAP_SESSION_TIMEOUT_NS is aborted.
+// It fires on the guest clock, armed when the connection opens and re-armed
+// for what is left of the interval -- the timeout was checked only when the
+// next PAP packet arrived, so a workstation that vanished held the printer
+// for ever (10-network N-22).
+static void pap_idle_cb(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
     if (!g_session.active)
         return;
-    uint64_t now = pap_now_ms();
-    if (g_session.last_activity_ms == 0)
-        g_session.last_activity_ms = now;
-    if (now - g_session.last_activity_ms >= PAP_SESSION_TIMEOUT_MS) {
+    uint64_t idle = atalk_now_ns() - g_session.last_activity_ns;
+    if (idle >= PAP_SESSION_TIMEOUT_NS) {
         LOG(1, "pap: connection timeout for job %u", g_session.job_id);
         pap_session_abort("connection timeout");
+        return;
     }
+    atalk_timer_arm(&g_pap_idle_timer, 0, PAP_SESSION_TIMEOUT_NS - idle);
 }
 
 #if !GS_PLATEN
@@ -552,68 +529,31 @@ static void pap_queue_font_list_reply(void) {
     pap_queue_postscript_reply(buffer);
 }
 
-// Lightweight detector for the literal sequence "= flush" spanning fragments.
-static bool pap_detect_flush_sequence(pap_session_t *sess, const uint8_t *data, int len) {
-    static const char pattern[] = "= flush";
-    const int pattern_len = (int)(sizeof(pattern) - 1);
-    if (!sess || !data || len <= 0)
-        return false;
-    for (int i = 0; i < len; i++) {
-        if (sess->query_window_len < sizeof(sess->query_window)) {
-            sess->query_window[sess->query_window_len++] = (char)data[i];
-        } else {
-            memmove(sess->query_window, sess->query_window + 1, sizeof(sess->query_window) - 1);
-            sess->query_window[sizeof(sess->query_window) - 1] = (char)data[i];
-        }
-        if (sess->query_window_len >= pattern_len) {
-            if (memcmp(&sess->query_window[sess->query_window_len - pattern_len], pattern, pattern_len) == 0)
-                return true;
-        }
-    }
-    return false;
-}
+static const struct {
+    const char *text;
+    unsigned mark;
+} k_pap_marks[] = {
+    {"= flush",               PAP_MARK_FLUSH    },
+    {"PatchPrep",             PAP_MARK_PATCHPREP},
+    {"%%?BeginFontListQuery", PAP_MARK_FONTLIST },
+};
 
-// Lightweight detector for the "PatchPrep" token so we know when the patch payload begins.
-static bool pap_detect_patchprep_sequence(pap_session_t *sess, const uint8_t *data, int len) {
-    static const char pattern[] = "PatchPrep";
-    const int pattern_len = (int)(sizeof(pattern) - 1);
-    if (!sess || !data || len <= 0)
-        return false;
-    for (int i = 0; i < len; i++) {
-        if (sess->patch_window_len < sizeof(sess->patch_window)) {
-            sess->patch_window[sess->patch_window_len++] = (char)data[i];
-        } else {
-            memmove(sess->patch_window, sess->patch_window + 1, sizeof(sess->patch_window) - 1);
-            sess->patch_window[sizeof(sess->patch_window) - 1] = (char)data[i];
+// Feeds bytes through the window; returns the markers that end in them.
+static unsigned pap_scan(pap_session_t *sess, const uint8_t *data, int len) {
+    unsigned found = 0;
+    for (int i = 0; data && i < len; i++) {
+        if (sess->scan_len == sizeof(sess->scan)) {
+            memmove(sess->scan, sess->scan + 1, sizeof(sess->scan) - 1);
+            sess->scan_len--;
         }
-        if (sess->patch_window_len >= pattern_len) {
-            if (memcmp(&sess->patch_window[sess->patch_window_len - pattern_len], pattern, pattern_len) == 0)
-                return true;
+        sess->scan[sess->scan_len++] = (char)data[i];
+        for (size_t k = 0; k < sizeof(k_pap_marks) / sizeof(k_pap_marks[0]); k++) {
+            size_t n = strlen(k_pap_marks[k].text);
+            if (sess->scan_len >= n && memcmp(sess->scan + sess->scan_len - n, k_pap_marks[k].text, n) == 0)
+                found |= k_pap_marks[k].mark;
         }
     }
-    return false;
-}
-
-// Lightweight detector for the font list query PostScript sequence.
-static bool pap_detect_fontlist_sequence(pap_session_t *sess, const uint8_t *data, int len) {
-    static const char pattern[] = "%%?BeginFontListQuery";
-    const int pattern_len = (int)(sizeof(pattern) - 1);
-    if (!sess || !data || len <= 0)
-        return false;
-    for (int i = 0; i < len; i++) {
-        if (sess->font_query_window_len < sizeof(sess->font_query_window)) {
-            sess->font_query_window[sess->font_query_window_len++] = (char)data[i];
-        } else {
-            memmove(sess->font_query_window, sess->font_query_window + 1, sizeof(sess->font_query_window) - 1);
-            sess->font_query_window[sizeof(sess->font_query_window) - 1] = (char)data[i];
-        }
-        if (sess->font_query_window_len >= pattern_len) {
-            size_t start = sess->font_query_window_len - pattern_len;
-            if (memcmp(&sess->font_query_window[start], pattern, pattern_len) == 0)
-                return true;
-        }
-    }
-    return false;
+    return found;
 }
 
 // Consumes the EOF from the query handshake so the workstation can submit the real job.
@@ -621,15 +561,10 @@ static bool pap_consume_query_eof(pap_session_t *sess) {
     if (!sess || !sess->query_waiting_job)
         return false;
     LOG(2, "pap: query handshake complete, awaiting real job");
-    sess->query_detected = false;
-    sess->query_waiting_job = false;
-    sess->query_placeholder_eofs = 0;
+    pap_query_reset(sess, true);
     sess->eof_pending = false;
     sess->bytes_received = 0;
-    sess->query_mode = PAP_QUERY_NONE;
-    sess->font_query_window_len = 0;
-    sess->font_query_detected = false;
-    pap_session_rewind_spool(sess);
+    byteq_clear(&sess->capture); // the real job replaces the query
     if (sess->active && !sess->blocked_for_reply)
         pap_schedule_senddata();
     return true;
@@ -641,46 +576,26 @@ static void pap_handle_patch_complete(pap_session_t *sess) {
         return;
     LOG(2, "pap: PatchPrep upload complete; retaining session for job");
     sess->eof_pending = false;
-    sess->patch_active = false;
-    sess->expecting_patch = false;
-    sess->patch_window_len = 0;
     sess->bytes_received = 0;
-    sess->query_mode = PAP_QUERY_NONE;
-    sess->font_query_window_len = 0;
-    sess->font_query_detected = false;
-    sess->query_detected = false;
-    sess->query_waiting_job = false;
-    sess->query_placeholder_eofs = 0;
-    sess->query_window_len = 0;
+    pap_query_reset(sess, false);
     g_printer.patch_installed = true;
     // LaserWriter returns "1" after PatchPrep installs so the Mac skips re-sending it
     pap_queue_postscript_reply("1");
-    pap_session_rewind_spool(sess);
+    byteq_clear(&sess->capture); // the real job replaces the PatchPrep upload
     if (sess->active && !sess->blocked_for_reply)
         pap_schedule_senddata();
 }
 
-// Closes the current spool, reports completion, and primes the session for another job.
+// Hands over the capture, reports completion, and primes the session for another job.
 static bool pap_finalize_job(const char *reason) {
     pap_session_t *sess = &g_session;
     if (!sess->active)
         return false;
 
     uint32_t completed_job = sess->job_id;
-    char saved_path[PRINTER_SPOOL_PATH_MAX];
-    saved_path[0] = '\0';
-    if (sess->spool_path[0]) {
-        strncpy(saved_path, sess->spool_path, sizeof(saved_path) - 1);
-        saved_path[sizeof(saved_path) - 1] = '\0';
-    }
-    if (sess->spool) {
-        fclose(sess->spool);
-        sess->spool = NULL;
-    }
-
     LOG(2, "pap: job %u complete (%s)", completed_job, reason ? reason : "done");
-    if (saved_path[0])
-        LOG(3, "pap: job %u captured at %s", completed_job, saved_path);
+    g_pap_stats.jobs++;
+    pap_capture_deliver(sess, completed_job, true);
 
     pap_printer_set_status_idle();
     pap_status_queue_drain(PRINTER_STATUS_IDLE, false);
@@ -690,18 +605,8 @@ static bool pap_finalize_job(const char *reason) {
     sess->pending_reply[0] = '\0';
     sess->eof_pending = false;
     sess->bytes_received = 0;
-    sess->query_detected = false;
-    sess->query_waiting_job = false;
-    sess->query_placeholder_eofs = 0;
-    sess->expecting_patch = false;
-    sess->patch_active = false;
-    sess->query_mode = PAP_QUERY_NONE;
-    sess->query_window_len = 0;
-    sess->patch_window_len = 0;
-    sess->font_query_window_len = 0;
-    sess->font_query_detected = false;
+    pap_query_reset(sess, false);
 
-    sess->spool_path[0] = '\0';
     sess->job_id = ++g_printer.job_counter;
     LOG(4, "pap: prepared for next job %u", sess->job_id);
     return true;
@@ -776,31 +681,20 @@ static int pap_format_status_line(const char *text, char *out, size_t out_len) {
     int len = snprintf(out, out_len, "%s\r\n", text);
     if (len < 0)
         len = 0;
-    if ((size_t)len > out_len)
-        len = (int)out_len;
+    // snprintf returns what it would have written; cut short, the buffer holds
+    // one byte less and a NUL -- which the old clamp sent as payload (F-30).
+    if ((size_t)len >= out_len)
+        len = (int)out_len - 1;
     return len;
 }
 
 #if GS_PLATEN
 
-// Queues interpreter output for the workstation's read credits.
+// Queues interpreter output for the workstation's read credits.  It drains
+// the job's output queue, and is bounded as that is; it grew without bound.
 static void pap_reply_bytes_append(const uint8_t *data, size_t len) {
-    if (!data || len == 0)
-        return;
-    if (g_session.reply_bytes_len + len > g_session.reply_bytes_cap) {
-        size_t cap = g_session.reply_bytes_cap ? g_session.reply_bytes_cap : 2048;
-        while (cap < g_session.reply_bytes_len + len)
-            cap *= 2;
-        uint8_t *grown = realloc(g_session.reply_bytes, cap);
-        if (!grown) {
-            LOG(1, "pap: dropping %zu reply bytes (out of memory)", len);
-            return;
-        }
-        g_session.reply_bytes = grown;
-        g_session.reply_bytes_cap = cap;
-    }
-    memcpy(g_session.reply_bytes + g_session.reply_bytes_len, data, len);
-    g_session.reply_bytes_len += len;
+    if (data && len && !byteq_append(&g_session.reply, data, len, LASERWRITER_OUTPUT_MAX))
+        LOG(1, "pap: dropping %zu reply bytes (past %u, or out of memory)", len, LASERWRITER_OUTPUT_MAX);
 }
 
 // Moves everything the interpreter wrote since the last pull into the
@@ -814,7 +708,7 @@ static void pap_platen_pull_output(void) {
         any = true;
     }
     if (any) {
-        LOG(2, "pap: interpreter output queued (%zu bytes pending, %u credits)", g_session.reply_bytes_len,
+        LOG(2, "pap: interpreter output queued (%zu bytes pending, %u credits)", byteq_len(&g_session.reply),
             (unsigned)g_session.pending_status_count);
         pap_try_deliver_pending_reply();
     }
@@ -825,22 +719,21 @@ static void pap_platen_pull_output(void) {
 // job's output (an empty one when nothing is left to say).
 static bool pap_try_deliver_pending_reply(void) {
     bool sent = false;
-    while (g_session.reply_bytes_len > 0 || g_session.reply_eof_pending) {
+    while (byteq_len(&g_session.reply) > 0 || g_session.reply_eof_pending) {
         pap_status_credit_t *credit = pap_status_queue_head();
         if (!credit)
             break;
-        size_t n = g_session.reply_bytes_len;
+        size_t n = byteq_len(&g_session.reply);
         if (n > PAP_MAX_DATA_SIZE)
             n = PAP_MAX_DATA_SIZE;
-        bool last = n == g_session.reply_bytes_len;
+        bool last = n == byteq_len(&g_session.reply);
         bool eof = last && g_session.reply_eof_pending;
         LOG(2, "PAP -> Mac StatusData conn=%u bytes=%zu eof=%d source=interpreter", (unsigned)credit->atp.user[0], n,
             eof ? 1 : 0);
-        pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0], n ? g_session.reply_bytes : NULL,
-                               (int)n, eof);
+        pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0], byteq_data(&g_session.reply), (int)n,
+                               eof);
         pap_status_queue_pop();
-        memmove(g_session.reply_bytes, g_session.reply_bytes + n, g_session.reply_bytes_len - n);
-        g_session.reply_bytes_len -= n;
+        byteq_consume(&g_session.reply, n);
         if (eof)
             g_session.reply_eof_pending = false;
         sent = true;
@@ -865,7 +758,7 @@ static bool pap_try_deliver_pending_reply(void) {
 // credit, since a query's answer is available as soon as the feed that
 // completed it returns.
 static void pap_platen_answer_status_credits(void) {
-    if (g_session.reply_bytes_len > 0 || g_session.reply_eof_pending)
+    if (byteq_len(&g_session.reply) > 0 || g_session.reply_eof_pending)
         return; // interpreter output (and its terminating EOF) comes first
     char line[PRINTER_STATUS_MAX + 3];
     int len = pap_format_status_line(g_printer.status_text, line, sizeof(line));
@@ -1125,7 +1018,7 @@ static bool pap_issue_senddata_request(void) {
     return true;
 }
 
-// ATP response callback that writes each data fragment to the spool file.
+// ATP response callback that captures (and, with the interpreter, feeds) each data fragment.
 static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, void *ctx) {
     pap_session_t *sess = (pap_session_t *)ctx;
     if (!sess || !sess->active || !fragment)
@@ -1159,12 +1052,9 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
     if (sess->query_waiting_job && fragment->user[2])
         placeholder_eof = pap_fragment_is_placeholder_eof(fragment);
 
-    bool patch_token = false;
-    bool font_query_token = false;
-    if (fragment->data_len > 0 && fragment->data) {
-        patch_token = pap_detect_patchprep_sequence(sess, fragment->data, fragment->data_len);
-        font_query_token = pap_detect_fontlist_sequence(sess, fragment->data, fragment->data_len);
-    }
+    unsigned marks = pap_scan(sess, fragment->data, fragment->data_len);
+    bool patch_token = (marks & PAP_MARK_PATCHPREP) != 0;
+    bool font_query_token = (marks & PAP_MARK_FONTLIST) != 0;
     if (patch_token && sess->query_detected && sess->query_waiting_job && !sess->expecting_patch &&
         !g_printer.patch_installed) {
         sess->expecting_patch = true;
@@ -1187,18 +1077,13 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
             sess->eof_pending = true;
         }
     } else if (fragment->data_len > 0) {
-        if (!sess->spool) {
-            if (!pap_session_open_spool(sess)) {
-                pap_session_abort("spool open failed");
-                return;
-            }
-        }
-        size_t wrote = fwrite(fragment->data, 1, (size_t)fragment->data_len, sess->spool);
-        if (wrote != (size_t)fragment->data_len)
-            LOG(1, "pap: short write to spool (%zu vs %d)", wrote, fragment->data_len);
-        sess->bytes_received += wrote;
+        // Without the interpreter the capture is the job's only output: always kept
+        if (!pap_capture_fragment(sess, fragment->data, (size_t)fragment->data_len))
+            return;
+        sess->bytes_received += (size_t)fragment->data_len;
+        g_pap_stats.bytes += (uint64_t)fragment->data_len;
         pap_update_progress_status();
-        bool flush_sequence = pap_detect_flush_sequence(sess, fragment->data, fragment->data_len);
+        bool flush_sequence = (marks & PAP_MARK_FLUSH) != 0;
         if (!sess->query_detected && flush_sequence) {
             sess->query_detected = true;
             sess->query_waiting_job = true;
@@ -1305,11 +1190,9 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         g_session.job_id = ++g_printer.job_counter;
         g_session.next_send_seq = 1;
         g_session.bytes_received = 0;
-        g_session.last_activity_ms = pap_now_ms();
-        if (g_printer.capture && !pap_session_open_spool(&g_session)) {
-            result = PAP_RESULT_BUSY;
-            pap_session_reset();
-        } else if (laserwriter_job_available() && !laserwriter_job_begin(g_session.job_id)) {
+        g_session.last_activity_ns = atalk_now_ns();
+        atalk_timer_arm(&g_pap_idle_timer, 0, PAP_SESSION_TIMEOUT_NS);
+        if (laserwriter_job_available() && !laserwriter_job_begin(g_session.job_id)) {
             // No interpreter, no job: busy is the only honest answer
             result = PAP_RESULT_BUSY;
             pap_session_reset();
@@ -1351,23 +1234,38 @@ static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp) {
     atp_responder_send_simple(ddp, atp, user, payload_len ? payload : NULL, payload_len, false);
 }
 
-// Handles PAP CloseConn requests by acknowledging and finalizing the job.
+// True when a request belongs to the active session: its connection id, from
+// the node and network that opened it.  The id is one byte the workstation
+// chose, so on its own it is anyone's -- a CloseConn with any id ended the
+// active job, and any Tickle kept it alive (10-network F-13).
+static bool pap_request_is_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
+    return g_session.active && atp->user[0] == g_session.conn_id && ddp->llap.src == g_session.client_addr.node &&
+           ddp->src_net == g_session.client_addr.net;
+}
+
+// Handles PAP CloseConn requests: always acknowledged, and the job ends when
+// the request is its session's.
 static void pap_handle_close_conn(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t user[4] = {atp->user[0], PAP_FUNC_CLOSE_REPLY, 0, 0};
     LOG(2, "PAP -> Mac CloseReply conn=%u", (unsigned)atp->user[0]);
     atp_responder_send_simple(ddp, atp, user, NULL, 0, false);
-    pap_session_finish(true, "client closed", false);
+    if (pap_request_is_session(ddp, atp))
+        pap_session_finish(true, "client closed", false);
+    else
+        LOG(2, "pap: CloseConn conn=%u from node %u is not the session's", (unsigned)atp->user[0],
+            (unsigned)ddp->llap.src);
 }
 
 // Handles PAP SendData requests issued by the workstation to read status text.
 static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint8_t conn_id = atp->user[0];
-    bool same_conn = g_session.active && conn_id == g_session.conn_id;
+    bool same_conn = pap_request_is_session(ddp, atp);
     if (same_conn)
         pap_session_record_activity();
 
     uint16_t seq = (uint16_t)((atp->user[2] << 8) | atp->user[3]);
-    bool completion_match = (!same_conn && g_completion.active && conn_id == g_completion.conn_id);
+    bool completion_match = (!same_conn && g_completion.active && conn_id == g_completion.conn_id &&
+                             ddp->llap.src == g_completion.client_addr.node);
 
     if (same_conn) {
         if (!pap_status_queue_enqueue(ddp, atp)) {
@@ -1412,9 +1310,10 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
     }
 }
 
-// Handles PAP tickle packets to keep the session alive.
-static void pap_handle_tickle(void) {
-    pap_session_record_activity();
+// Handles PAP tickle packets to keep the session alive -- its own, only.
+static void pap_handle_tickle(const ddp_header_t *ddp, const atp_packet_t *atp) {
+    if (pap_request_is_session(ddp, atp))
+        pap_session_record_activity();
 }
 
 // Central ATP socket handler for PAP requests arriving on HOST_PAP_SOCKET.
@@ -1423,8 +1322,6 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
     pap_printer_init();
     if (!ddp || !request)
         return;
-
-    pap_session_check_timeout();
 
     uint8_t func = request->user[1];
     char detail[96];
@@ -1464,7 +1361,7 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
         pap_handle_status_read(ddp, request);
         break;
     case PAP_FUNC_TICKLE:
-        pap_handle_tickle();
+        pap_handle_tickle(ddp, request);
         break;
     default:
         LOG(3, "pap: unhandled function %u", func);
@@ -1475,19 +1372,13 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
 
 #if GS_PLATEN
 
-// Spools (when capturing) and gathers one data fragment for the interpreter;
+// Captures (on request) and gathers one data fragment for the interpreter;
 // the transaction's data is fed as one piece when it completes.
 static void pap_platen_ingest_fragment(pap_session_t *sess, const atp_response_fragment_t *fragment) {
     if (fragment->data_len > 0 && fragment->data) {
-        if (g_printer.capture) {
-            if (!sess->spool && !pap_session_open_spool(sess)) {
-                pap_session_abort("spool open failed");
-                return;
-            }
-            size_t wrote = fwrite(fragment->data, 1, (size_t)fragment->data_len, sess->spool);
-            if (wrote != (size_t)fragment->data_len)
-                LOG(1, "pap: short write to spool (%zu vs %d)", wrote, fragment->data_len);
-        }
+        g_pap_stats.bytes += (uint64_t)fragment->data_len;
+        if (g_printer.capture && !pap_capture_fragment(sess, fragment->data, (size_t)fragment->data_len))
+            return;
         size_t room = sizeof(sess->rx) - sess->rx_len;
         size_t n = (size_t)fragment->data_len;
         if (n > room) {
@@ -1558,12 +1449,9 @@ static void pap_platen_finalize_job(void) {
     if (!sess->active)
         return;
     uint32_t completed_job = sess->job_id;
-    if (sess->spool) {
-        fclose(sess->spool);
-        sess->spool = NULL;
-        LOG(3, "pap: job %u captured at %s", completed_job, sess->spool_path);
-    }
     LOG(2, "pap: job %u complete (%s)", completed_job, laserwriter_job_last_outcome());
+    g_pap_stats.jobs++;
+    pap_capture_deliver(sess, completed_job, true);
     pap_platen_pull_output();
     // A LaserWriter closes its side of the job with EOF once its output is out
     sess->reply_eof_pending = true;
@@ -1572,7 +1460,6 @@ static void pap_platen_finalize_job(void) {
     sess->rx_eof = false;
     sess->rx_pending = false;
     sess->bytes_received = 0;
-    sess->spool_path[0] = '\0';
     pap_printer_set_status_idle();
     pap_try_deliver_pending_reply();
     sess->job_id = ++g_printer.job_counter;
@@ -1632,43 +1519,64 @@ static void pap_platen_event(laserwriter_event_t event, const char *detail, void
 // Registers the printer PAP socket handler and auto-enables the LaserWriter advertisement.
 void atalk_printer_register(void) {
     pap_printer_init();
+    // Timers are registered each time the stack comes up, before a checkpoint
+    // restore replays the saved queue (atalk_timer_t).
+    if (atalk_scheduler()) {
+        atalk_timer_init(&g_pap_gap_timer, "pap", "senddata_gap", &pap_senddata_gap_cb);
+        atalk_timer_init(&g_pap_idle_timer, "pap", "idle", &pap_idle_cb);
+        laserwriter_job_init();
+    }
     static const atp_socket_handler_t handler = {.handle_request = pap_socket_request_handler};
     atp_register_socket_handler(HOST_PAP_SOCKET, &handler, NULL);
-    if (!g_printer.enabled) {
-        if (atalk_printer_enable(NULL) != 0)
-            LOG(1, "pap: failed to auto-enable printer");
-    }
+    // Publish on every stack: the previous one withdrew the advertisement in
+    // atalk_printer_shutdown.  (A printer is enabled by default, and this has
+    // always re-enabled one a script turned off -- that is configuration,
+    // which 10-network A5 carries through a restore.)
+    if (atalk_printer_enable(NULL) != 0)
+        LOG(1, "pap: failed to auto-enable printer");
+}
+
+void atalk_printer_shutdown(void) {
+    if (!g_printer.initialized)
+        return;
+    pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
+    memset(&g_completion, 0, sizeof(g_completion));
+    atalk_nbp_withdraw(&g_printer.nbp_entry);
+    atp_unregister_socket_handler(HOST_PAP_SOCKET);
+}
+
+void atalk_printer_link_down(void) {
+    if (!g_printer.initialized || !g_session.active)
+        return;
+    pap_session_reset();
+    memset(&g_completion, 0, sizeof(g_completion));
+    if (g_printer.enabled)
+        pap_printer_set_status_idle();
 }
 
 // Enables (or renames) the emulated LaserWriter and registers its NBP entry.
+// The name is published before it is stored, so a failure -- a name another
+// entity holds -- leaves the printer advertised, and named, as it was; and
+// one too long is refused, as set_name refuses it, not cut short (N-23).
 int atalk_printer_enable(const char *object_name) {
     pap_printer_init();
-    if (object_name && *object_name) {
-        size_t n = strlen(object_name);
-        if (n > PRINTER_OBJECT_MAX)
-            n = PRINTER_OBJECT_MAX;
-        memcpy(g_printer.object_name, object_name, n);
-        g_printer.object_name[n] = '\0';
+    const char *name = (object_name && *object_name) ? object_name : g_printer.object_name;
+    if (strlen(name) > PRINTER_OBJECT_MAX) {
+        LOG(1, "atalk: printer name '%s' is longer than %d characters", name, PRINTER_OBJECT_MAX);
+        return -1;
     }
-
-    atalk_nbp_service_desc_t desc = {.object = g_printer.object_name,
+    atalk_nbp_service_desc_t desc = {.object = name,
                                      .type = PRINTER_ENTITY_TYPE,
                                      .zone = "*",
                                      .socket = HOST_PAP_SOCKET,
                                      .node = LLAP_HOST_NODE,
                                      .net = 0};
-
-    int rc;
-    if (g_printer.nbp_entry)
-        rc = atalk_nbp_update(g_printer.nbp_entry, &desc);
-    else
-        rc = atalk_nbp_register(&desc, &g_printer.nbp_entry);
-
-    if (rc != 0) {
-        LOG(1, "pap: failed to register printer NBP entry");
-        LOG(1, "atalk: failed to publish printer '%s'", g_printer.object_name);
+    if (atalk_nbp_publish(&g_printer.nbp_entry, &desc) != 0) {
+        LOG(1, "atalk: failed to publish printer '%s'", name);
         return -1;
     }
+    if (name != g_printer.object_name)
+        snprintf(g_printer.object_name, sizeof(g_printer.object_name), "%s", name);
 
     g_printer.enabled = true;
     pap_printer_set_status_idle();
@@ -1679,13 +1587,10 @@ int atalk_printer_enable(const char *object_name) {
 // Disables the LaserWriter advertisement and aborts any active job.
 int atalk_printer_disable(void) {
     pap_printer_init();
-    if (g_printer.nbp_entry) {
-        atalk_nbp_unregister(g_printer.nbp_entry);
-        g_printer.nbp_entry = NULL;
-    }
+    atalk_nbp_withdraw(&g_printer.nbp_entry);
     g_printer.enabled = false;
     pap_session_abort("printer disabled");
-    pap_printer_set_status_disabled();
+    pap_printer_set_status_idle();
     LOG(1, "atalk: printer disabled");
     return 0;
 }
@@ -1695,14 +1600,14 @@ int atalk_printer_disable(void) {
 // `appletalk.printer` exposes `enabled` and `name` as writable attributes
 // (object-model proposal §2): state is an attribute, methods are verbs.
 
-bool atalk_printer_is_enabled(void) {
+bool atalk_printer_get_enabled(void) {
     return g_printer.enabled;
 }
 
 // The advertised NBP name.  Unlike the enablement flag, the name survives a
 // disable so the tree can show what will be published when it is turned back
 // on — and so setting `name` while disabled is not silently lost.
-const char *atalk_printer_object_name(void) {
+const char *atalk_printer_get_name(void) {
     pap_printer_init();
     return g_printer.object_name;
 }
@@ -1735,15 +1640,15 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
         snprintf(g_printer.object_name, sizeof(g_printer.object_name), "%s", name);
         return 0;
     }
-    if (atalk_printer_enable(name) != 0) { // re-registers the NBP entry
+    if (atalk_printer_enable(name) != 0) { // renames the NBP entry in place, or changes nothing
         if (err && err_len)
-            snprintf(err, err_len, "NBP re-registration failed for '%s'", name);
+            snprintf(err, err_len, "the name '%s' is already taken on the network", name);
         return -1;
     }
     return 0;
 }
 
-const char *atalk_printer_status_text(void) {
+const char *atalk_printer_get_status(void) {
     pap_printer_init();
     return g_printer.status_text;
 }
@@ -1752,13 +1657,17 @@ bool atalk_printer_has_interpreter(void) {
     return laserwriter_job_available();
 }
 
-bool atalk_printer_capture_get(void) {
+const atalk_printer_stats_t *atalk_printer_get_stats(void) {
+    return &g_pap_stats;
+}
+
+bool atalk_printer_get_capture(void) {
     pap_printer_init();
     return g_printer.capture;
 }
 
-// Takes effect at the next job: a spool already open stays open.
-void atalk_printer_capture_set(bool enabled) {
+// Takes effect at the next data: a job already captured in part keeps its part.
+void atalk_printer_set_capture(bool enabled) {
     pap_printer_init();
     g_printer.capture = enabled;
 }

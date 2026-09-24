@@ -2019,35 +2019,11 @@ static struct object *scsi_devices_get(struct object *self, int index) {
         return NULL;
     return scsi->device_objects[index];
 }
-static int scsi_devices_count(struct object *self) {
-    scsi_t *scsi = (scsi_t *)object_data(self);
-    if (!scsi)
-        return 0;
-    int n = 0;
-    for (int i = 0; i < 8; i++)
-        if (scsi_device_present(scsi, (unsigned)i))
-            n++;
-    return n;
-}
-static int scsi_devices_next(struct object *self, int prev_index) {
-    scsi_t *scsi = (scsi_t *)object_data(self);
-    if (!scsi)
-        return -1;
-    for (int i = prev_index + 1; i < 8; i++)
-        if (scsi_device_present(scsi, (unsigned)i))
-            return i;
-    return -1;
-}
 
 static const member_t scsi_devices_collection_members[] = {
     {.kind = M_CHILD,
      .name = "entries",
-     .child = {.cls = &scsi_device_class,
-               .indexed = true,
-               .get = scsi_devices_get,
-               .count = scsi_devices_count,
-               .next = scsi_devices_next,
-               .lookup = NULL}},
+     .child = {.cls = &scsi_device_class, .indexed = true, .get = scsi_devices_get, .slots = 8, .lookup = NULL}},
 };
 static const class_desc_t scsi_devices_collection_class = {
     .name = "scsi_devices",

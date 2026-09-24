@@ -21,6 +21,7 @@
 // Compiles natively too (tests/unit/suites/laserwriter_ring drives it with
 // a simulated worker); the atomics are the compiler's builtins.
 
+#include "common.h"
 #include "laserwriter_transport.h"
 
 #include "laserwriter_ring_protocol.h"
@@ -30,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("laserwriter");
 
 // ============================================================================
 // Constants and Macros
@@ -96,20 +97,6 @@ static inline void ring_store(int word, uint32_t v) {
     __atomic_store_n(&g_ring.ctrl[word], v, __ATOMIC_SEQ_CST);
 }
 
-// Writes a little-endian uint32 at `p` (wasm is little-endian; native
-// hosts of the unit test are too, but say it explicitly).
-static inline void put_u32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);
-    p[3] = (uint8_t)(v >> 24);
-}
-
-// Reads a little-endian uint32 at `p`.
-static inline uint32_t get_u32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
 // Allocates the region and asks the platform to attach the worker.
 static bool ring_create(void) {
     if (g_ring.region)
@@ -161,13 +148,13 @@ static uint32_t ring_reserve(uint32_t kind, uint32_t len) {
     if (g_ring.out_size - used < pad + len)
         return UINT32_MAX;
     if (pad) {
-        put_u32(g_ring.out + at, LWRING_R_PAD);
-        put_u32(g_ring.out + at + 4, pad);
+        WR_LE32(g_ring.out + at, LWRING_R_PAD);
+        WR_LE32(g_ring.out + at + 4, pad);
         g_ring.out_wr += pad;
         at = 0;
     }
-    put_u32(g_ring.out + at, kind);
-    put_u32(g_ring.out + at + 4, len);
+    WR_LE32(g_ring.out + at, kind);
+    WR_LE32(g_ring.out + at + 4, len);
     g_ring.out_wr += len;
     return at;
 }
@@ -223,7 +210,7 @@ static const char *ring_text(const uint8_t *p, uint32_t len, char *scratch, size
 // Dispatches one inbound record (payload at `p`, `words` header words
 // followed by the text fields).  A record for another job is dropped.
 static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len) {
-    uint32_t job_id = payload_len >= 4 ? get_u32(p) : 0;
+    uint32_t job_id = payload_len >= 4 ? RD_LE32(p) : 0;
     if (job_id != g_ring.job_id || g_ring.job_id == 0) {
         LOG(3, "laserwriter: ring record kind %u for job %u dropped (holding job %u)", (unsigned)kind, (unsigned)job_id,
             (unsigned)g_ring.job_id);
@@ -237,7 +224,7 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
             g_ring.cb.on_opened(job_id, g_ring.cb_ctx);
         break;
     case LWRING_R_OPEN_FAILED: {
-        uint32_t text_len = get_u32(p + 4 * LWRING_OPEN_FAILED_TEXT);
+        uint32_t text_len = RD_LE32(p + 4 * LWRING_OPEN_FAILED_TEXT);
         const uint8_t *text = p + 4 * LWRING_OPEN_FAILED_WORDS;
         if (4 * LWRING_OPEN_FAILED_WORDS + text_len > payload_len)
             text_len = payload_len - 4 * LWRING_OPEN_FAILED_WORDS;
@@ -248,12 +235,12 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
         break;
     }
     case LWRING_R_FED: {
-        uint32_t seq = get_u32(p + 4 * LWRING_FED_SEQ);
-        uint32_t status = get_u32(p + 4 * LWRING_FED_STATUS);
-        uint32_t pages = get_u32(p + 4 * LWRING_FED_PAGES);
-        uint32_t reply_len = get_u32(p + 4 * LWRING_FED_REPLY_LEN);
-        uint32_t error_len = get_u32(p + 4 * LWRING_FED_ERROR_LEN);
-        uint32_t flags = get_u32(p + 4 * LWRING_FED_FLAGS);
+        uint32_t seq = RD_LE32(p + 4 * LWRING_FED_SEQ);
+        uint32_t status = RD_LE32(p + 4 * LWRING_FED_STATUS);
+        uint32_t pages = RD_LE32(p + 4 * LWRING_FED_PAGES);
+        uint32_t reply_len = RD_LE32(p + 4 * LWRING_FED_REPLY_LEN);
+        uint32_t error_len = RD_LE32(p + 4 * LWRING_FED_ERROR_LEN);
+        uint32_t flags = RD_LE32(p + 4 * LWRING_FED_FLAGS);
         const uint8_t *reply = p + 4 * LWRING_FED_WORDS;
         const uint8_t *errors = reply + LWRING_PAD4(reply_len);
         if (4 * LWRING_FED_WORDS + LWRING_PAD4(reply_len) + LWRING_PAD4(error_len) > payload_len) {
@@ -271,12 +258,12 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
         break;
     }
     case LWRING_R_FINISHED: {
-        uint32_t outcome = get_u32(p + 4 * LWRING_FINISHED_OUTCOME);
-        uint32_t pages = get_u32(p + 4 * LWRING_FINISHED_PAGES);
-        uint32_t name_len = get_u32(p + 4 * LWRING_FINISHED_ERRNAME_LEN);
-        uint32_t offend_len = get_u32(p + 4 * LWRING_FINISHED_OFFEND_LEN);
-        uint32_t reply_len = get_u32(p + 4 * LWRING_FINISHED_REPLY_LEN);
-        uint32_t error_len = get_u32(p + 4 * LWRING_FINISHED_ERROR_LEN);
+        uint32_t outcome = RD_LE32(p + 4 * LWRING_FINISHED_OUTCOME);
+        uint32_t pages = RD_LE32(p + 4 * LWRING_FINISHED_PAGES);
+        uint32_t name_len = RD_LE32(p + 4 * LWRING_FINISHED_ERRNAME_LEN);
+        uint32_t offend_len = RD_LE32(p + 4 * LWRING_FINISHED_OFFEND_LEN);
+        uint32_t reply_len = RD_LE32(p + 4 * LWRING_FINISHED_REPLY_LEN);
+        uint32_t error_len = RD_LE32(p + 4 * LWRING_FINISHED_ERROR_LEN);
         const uint8_t *name = p + 4 * LWRING_FINISHED_WORDS;
         const uint8_t *offend = name + LWRING_PAD4(name_len);
         const uint8_t *reply = offend + LWRING_PAD4(offend_len);
@@ -319,6 +306,9 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
 // Operations (Public API)
 // ============================================================================
 
+// The ring has no guest-time timers: the bridge's poll tick drains it.
+void laserwriter_transport_init(void) {}
+
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {
     if (callbacks)
         g_ring.cb = *callbacks;
@@ -350,15 +340,15 @@ bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t 
         return false;
     }
     uint8_t *p = g_ring.out + at + LWRING_HDR_BYTES;
-    put_u32(p + 4 * LWRING_OPEN_JOB, job_id);
-    put_u32(p + 4 * LWRING_OPEN_COMPRESS, cfg->compress ? 1u : 0u);
-    put_u32(p + 4 * LWRING_OPEN_EMBED, cfg->embed_all_fonts ? 1u : 0u);
-    put_u32(p + 4 * LWRING_OPEN_BUDGET_L, (uint32_t)cfg->step_budget);
-    put_u32(p + 4 * LWRING_OPEN_BUDGET_H, (uint32_t)(cfg->step_budget >> 32));
-    put_u32(p + 4 * LWRING_OPEN_PASSWORD, (uint32_t)cfg->server_password);
-    put_u32(p + 4 * LWRING_OPEN_ID_COUNT, (uint32_t)cfg->identity_len);
-    put_u32(p + 4 * LWRING_OPEN_ID_BYTES, id_bytes);
-    put_u32(p + 4 * LWRING_OPEN_PRELUDE, (uint32_t)cfg->prelude_len);
+    WR_LE32(p + 4 * LWRING_OPEN_JOB, job_id);
+    WR_LE32(p + 4 * LWRING_OPEN_COMPRESS, cfg->compress ? 1u : 0u);
+    WR_LE32(p + 4 * LWRING_OPEN_EMBED, cfg->embed_all_fonts ? 1u : 0u);
+    WR_LE32(p + 4 * LWRING_OPEN_BUDGET_L, (uint32_t)cfg->step_budget);
+    WR_LE32(p + 4 * LWRING_OPEN_BUDGET_H, (uint32_t)(cfg->step_budget >> 32));
+    WR_LE32(p + 4 * LWRING_OPEN_PASSWORD, (uint32_t)cfg->server_password);
+    WR_LE32(p + 4 * LWRING_OPEN_ID_COUNT, (uint32_t)cfg->identity_len);
+    WR_LE32(p + 4 * LWRING_OPEN_ID_BYTES, id_bytes);
+    WR_LE32(p + 4 * LWRING_OPEN_PRELUDE, (uint32_t)cfg->prelude_len);
     uint8_t *q = p + 4 * LWRING_OPEN_WORDS;
     for (size_t i = 0; i < cfg->identity_len; i++) {
         size_t k = strlen(cfg->identity[i].key) + 1u;
@@ -396,9 +386,9 @@ bool laserwriter_transport_feed(uint32_t job_id, uint32_t sequence, const uint8_
         return false;
     }
     uint8_t *p = g_ring.out + at + LWRING_HDR_BYTES;
-    put_u32(p + 4 * LWRING_FEED_JOB, job_id);
-    put_u32(p + 4 * LWRING_FEED_SEQ, sequence);
-    put_u32(p + 4 * LWRING_FEED_LEN, (uint32_t)len);
+    WR_LE32(p + 4 * LWRING_FEED_JOB, job_id);
+    WR_LE32(p + 4 * LWRING_FEED_SEQ, sequence);
+    WR_LE32(p + 4 * LWRING_FEED_LEN, (uint32_t)len);
     if (len)
         memcpy(p + 4 * LWRING_FEED_WORDS, bytes, len);
     ring_issue(LWRING_R_FEED, sequence);
@@ -423,8 +413,8 @@ bool laserwriter_transport_finish(uint32_t job_id, const char *title) {
         return false;
     }
     uint8_t *p = g_ring.out + at + LWRING_HDR_BYTES;
-    put_u32(p + 4 * LWRING_FINISH_JOB, job_id);
-    put_u32(p + 4 * LWRING_FINISH_TITLE_LEN, title_len);
+    WR_LE32(p + 4 * LWRING_FINISH_JOB, job_id);
+    WR_LE32(p + 4 * LWRING_FINISH_TITLE_LEN, title_len);
     if (title_len)
         memcpy(p + 4 * LWRING_FINISH_WORDS, title, title_len);
     ring_issue(LWRING_R_FINISH, 0);
@@ -444,7 +434,7 @@ void laserwriter_transport_abandon(uint32_t job_id) {
         LOG(1, "laserwriter: job %u: no room in the interpreter ring for abandon", (unsigned)job_id);
         return;
     }
-    put_u32(g_ring.out + at + LWRING_HDR_BYTES + 4 * LWRING_ABANDON_JOB, job_id);
+    WR_LE32(g_ring.out + at + LWRING_HDR_BYTES + 4 * LWRING_ABANDON_JOB, job_id);
     ring_publish();
 }
 
@@ -458,8 +448,8 @@ void laserwriter_transport_poll(void) {
         if (head - g_ring.in_rd < LWRING_HDR_BYTES)
             break;
         uint32_t at = g_ring.in_rd & mask;
-        uint32_t kind = get_u32(g_ring.in + at);
-        uint32_t len = get_u32(g_ring.in + at + 4);
+        uint32_t kind = RD_LE32(g_ring.in + at);
+        uint32_t len = RD_LE32(g_ring.in + at + 4);
         if (len < LWRING_HDR_BYTES || (len & 7u) || at + len > g_ring.in_size || head - g_ring.in_rd < len) {
             // The worker's framing is broken: nothing after this can be trusted
             LOG(1, "laserwriter: inbound ring corrupt (kind %u len %u at %u); worker lost", (unsigned)kind,

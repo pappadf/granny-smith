@@ -8,6 +8,7 @@
 
 #include "afp_catalog.h"
 #include "afp_meta.h"
+#include "atalk_id.h"
 #include "log.h"
 
 #include <errno.h>
@@ -21,7 +22,7 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 // One byte range held by a handle.
 typedef struct {
@@ -56,7 +57,7 @@ struct afp_fork {
 
 static afp_backing_t *g_backings;
 static afp_fork_t *g_forks;
-static uint16_t g_next_ref = 0x0042;
+static uint32_t g_next_ref = 0x0042; // atalk_id_alloc cursor
 static uint32_t g_open_count;
 
 // A server can hold this many forks open at once; past it FPOpenFork answers
@@ -82,9 +83,9 @@ static void persist_backing(afp_backing_t *b) {
     if (!b || !b->is_resource || !b->f || !b->dirty)
         return;
     fflush(b->f);
-    if (fseek(b->f, 0, SEEK_END) != 0)
+    if (fseeko(b->f, 0, SEEK_END) != 0)
         return;
-    long sz = ftell(b->f);
+    off_t sz = ftello(b->f);
     if (sz < 0)
         sz = 0;
     rewind(b->f);
@@ -195,6 +196,20 @@ static uint16_t deny_to_access(uint16_t deny) {
 
 // --- open / close ----------------------------------------------------------
 
+// The open fork holding a refnum, whichever session opened it.
+static afp_fork_t *fork_by_ref(uint16_t ref) {
+    for (afp_fork_t *fk = g_forks; fk; fk = fk->next)
+        if (fk->ref == ref)
+            return fk;
+    return NULL;
+}
+
+// A refnum is taken while an open fork holds it.
+static bool fork_ref_in_use(uint32_t ref, const void *ctx) {
+    (void)ctx;
+    return fork_by_ref((uint16_t)ref) != NULL;
+}
+
 afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char *host_path, const char *rel_path,
                                 bool is_resource, uint16_t access_mode, afp_fork_t **out) {
     if (out)
@@ -234,9 +249,13 @@ afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char
         return AFP_FORK_IO_ERR;
     }
     fk->backing = b;
-    fk->ref = g_next_ref++;
-    if (fk->ref == 0)
-        fk->ref = g_next_ref++;
+    uint32_t ref = 0;
+    if (!atalk_id_alloc(&g_next_ref, 1, 0xFFFF, fork_ref_in_use, NULL, &ref)) {
+        free(fk); // cannot happen: at most AFP_MAX_OPEN_FORKS of 65,535 are held
+        backing_release(b);
+        return AFP_FORK_TOO_MANY;
+    }
+    fk->ref = (uint16_t)ref;
     fk->vol_id = vol_id;
     fk->session_id = session_id;
     fk->access_mode = access_mode;
@@ -250,11 +269,9 @@ afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char
     return AFP_FORK_OK;
 }
 
-afp_fork_t *afp_fork_find(uint16_t ref) {
-    for (afp_fork_t *fk = g_forks; fk; fk = fk->next)
-        if (fk->ref == ref)
-            return fk;
-    return NULL;
+afp_fork_t *afp_fork_find(uint16_t ref, uint16_t session_id) {
+    afp_fork_t *fk = fork_by_ref(ref);
+    return (fk && fk->session_id == session_id) ? fk : NULL;
 }
 
 uint16_t afp_fork_ref(const afp_fork_t *fk) {
@@ -448,13 +465,23 @@ afp_fork_status_t afp_fork_range_lock(afp_fork_t *fk, bool unlock, bool end_rela
 
 // --- I/O -------------------------------------------------------------------
 
-uint32_t afp_fork_length(afp_fork_t *fk) {
-    if (!fk || !fk->backing || !fk->backing->f)
+static uint32_t backing_length(afp_backing_t *b) {
+    if (!b || !b->f || fseeko(b->f, 0, SEEK_END) != 0)
         return 0;
-    if (fseek(fk->backing->f, 0, SEEK_END) != 0)
-        return 0;
-    long sz = ftell(fk->backing->f);
+    off_t sz = ftello(b->f);
     return sz < 0 ? 0 : (uint32_t)sz;
+}
+
+uint32_t afp_fork_length(afp_fork_t *fk) {
+    return fk ? backing_length(fk->backing) : 0;
+}
+
+bool afp_fork_live_length(const char *host_path, bool is_resource, uint32_t *out) {
+    afp_backing_t *b = host_path ? backing_find(host_path, is_resource) : NULL;
+    if (!b || !b->f)
+        return false;
+    *out = backing_length(b);
+    return true;
 }
 
 afp_fork_status_t afp_fork_read(afp_fork_t *fk, uint32_t offset, uint32_t count, uint8_t *buf, uint32_t *out_read) {
@@ -467,7 +494,7 @@ afp_fork_status_t afp_fork_read(afp_fork_t *fk, uint32_t offset, uint32_t count,
         end = UINT32_MAX;
     if (foreign_lock_covers(fk, offset, (uint32_t)end))
         return AFP_FORK_LOCK_ERR;
-    if (fseek(fk->backing->f, (long)offset, SEEK_SET) != 0)
+    if (fseeko(fk->backing->f, (off_t)offset, SEEK_SET) != 0)
         return AFP_FORK_IO_ERR;
     size_t got = fread(buf, 1, count, fk->backing->f);
     if (out_read)
@@ -484,11 +511,11 @@ afp_fork_status_t afp_fork_write(afp_fork_t *fk, uint32_t offset, const uint8_t 
     if (!(fk->access_mode & AFP_ACCESS_WRITE))
         return AFP_FORK_ACCESS_DENIED;
     uint64_t end = (uint64_t)offset + count;
-    if (end > UINT32_MAX)
-        end = UINT32_MAX;
+    if (end > AFP_FORK_MAX_LENGTH)
+        return AFP_FORK_DISK_FULL;
     if (foreign_lock_covers(fk, offset, (uint32_t)end))
         return AFP_FORK_LOCK_ERR;
-    if (fseek(fk->backing->f, (long)offset, SEEK_SET) != 0)
+    if (fseeko(fk->backing->f, (off_t)offset, SEEK_SET) != 0)
         return AFP_FORK_IO_ERR;
     size_t wrote = count ? fwrite(buf, 1, count, fk->backing->f) : 0;
     fflush(fk->backing->f); // make writes visible to every other handle at once
@@ -504,6 +531,8 @@ afp_fork_status_t afp_fork_truncate(afp_fork_t *fk, uint32_t length) {
         return AFP_FORK_IO_ERR;
     if (!(fk->access_mode & AFP_ACCESS_WRITE))
         return AFP_FORK_ACCESS_DENIED;
+    if (length > AFP_FORK_MAX_LENGTH)
+        return AFP_FORK_DISK_FULL;
     fflush(fk->backing->f);
     int fd = fileno(fk->backing->f);
     if (fd < 0 || ftruncate(fd, (off_t)length) != 0)

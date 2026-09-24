@@ -120,6 +120,10 @@ bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max
 // them apart.  Caller frees.
 char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char *what);
 
+// The writer checkpoint_read_string reads: `uint32 length + bytes`, the length
+// counting the NUL.  NULL and "" both write length 0 (and read back as NULL).
+void checkpoint_write_string(checkpoint_t *checkpoint, const char *s);
+
 // === File Serialization (content or reference mode) ===
 
 // Writes a file to the checkpoint (either embedded or as reference)

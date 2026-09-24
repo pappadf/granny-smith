@@ -5,6 +5,7 @@
 // Persistent per-volume CNID catalog (see afp_catalog.h).
 
 #include "afp_catalog.h"
+#include "afp_applog.h"
 #include "common.h"
 
 #include "afp_meta.h"
@@ -22,9 +23,9 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
-#define GSC_MAGIC 0x47534331u // 'GSC1'
+#define GSC_MAGIC 0x47534332u // 'GSC2': afp_applog framing
 
 // Log record opcodes.  RENAME and MOVE carry the same payload; keeping both
 // makes a replayed log readable and matches the documented format.
@@ -35,10 +36,8 @@ enum {
     GSC_OP_DELETE = 4,
     GSC_OP_SET_ID = 5,
     GSC_OP_CLR_ID = 6,
+    GSC_OP_STATE = 7, // generation(4) next_cnid(4)
 };
-
-// Compact once the log holds more than this multiple of the live entries.
-#define GSC_COMPACT_FACTOR 4
 
 // One stored entry.  Tombstoned entries stay in the table so their CNID is
 // never handed out again inside a generation.
@@ -55,36 +54,24 @@ typedef struct {
     bool has_file_id;
     bool dead;
     char name[AFP_CAT_MAX_NAME];
+    uint32_t child_next; // next slot+1 in its (parent, name) chain; 0 ends it
     afp_cat_entry_t pub;
 } cat_slot_t;
 
 struct afp_catalog {
     char root[PATH_MAX]; // volume root host path
-    char log_path[PATH_MAX]; // <root>/.gs-afp/catalog.gsc
     cat_slot_t *slots;
     size_t len;
     size_t cap;
     uint32_t *idx_cnid; // open-addressed cnid -> slot+1
     size_t idx_cap;
+    uint32_t *idx_child; // (parent, name) -> first slot+1 of a chain; live slots only
+    size_t child_cap;
     uint32_t generation;
     uint32_t next_cnid;
     uint32_t live;
-    FILE *log; // append handle, NULL when the log is unusable
-    size_t log_records;
+    afp_applog_t *log; // <root>/.gs-afp/catalog.gsc
 };
-
-// --- big-endian helpers ----------------------------------------------------
-
-// CRC-32 (IEEE) over one record, so a torn tail write is detected on replay.
-static uint32_t crc32_buf(const uint8_t *data, size_t len) {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++)
-            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
-    }
-    return ~crc;
-}
 
 // --- index -----------------------------------------------------------------
 
@@ -139,8 +126,63 @@ static long slot_of(afp_catalog_t *cat, uint32_t cnid) {
     return -1;
 }
 
+// --- child index: (parent, name) -> slot ------------------------------------
+//
+// FPEnumerate adopts every entry it lists and each adoption looks its name up
+// under its parent, so a scan here made listing a directory quadratic: 4000
+// entries took 0.16 s, twice as many four times as long (10-network F-24).
+// Names are matched exactly, as the host does: two host files may differ only
+// in case, and each needs its own CNID.
+
+static uint32_t child_hash(uint32_t parent, const char *name) {
+    uint32_t h = 2166136261u ^ (parent * 2654435761u); // FNV-1a, seeded with the parent
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
+        h = (h ^ *p) * 16777619u;
+    return h;
+}
+
+static uint32_t *child_bucket(afp_catalog_t *cat, uint32_t parent, const char *name) {
+    return &cat->idx_child[child_hash(parent, name) & (cat->child_cap - 1)];
+}
+
+static void child_link(afp_catalog_t *cat, size_t slot) {
+    uint32_t *b = child_bucket(cat, cat->slots[slot].parent, cat->slots[slot].name);
+    cat->slots[slot].child_next = *b;
+    *b = (uint32_t)(slot + 1);
+}
+
+// Take a slot out of its chain, before its parent or name changes or it dies.
+static void child_unlink(afp_catalog_t *cat, size_t slot) {
+    for (uint32_t *link = child_bucket(cat, cat->slots[slot].parent, cat->slots[slot].name); *link;
+         link = &cat->slots[*link - 1].child_next) {
+        if (*link == slot + 1) {
+            *link = cat->slots[slot].child_next;
+            cat->slots[slot].child_next = 0;
+            return;
+        }
+    }
+}
+
+// Rebuild the child index at `cap` buckets (a power of two) from the live slots.
+static bool child_rebuild(afp_catalog_t *cat, size_t cap) {
+    uint32_t *idx = (uint32_t *)calloc(cap, sizeof(uint32_t));
+    if (!idx)
+        return false;
+    free(cat->idx_child);
+    cat->idx_child = idx;
+    cat->child_cap = cap;
+    for (size_t i = 0; i < cat->len; i++)
+        if (!cat->slots[i].dead)
+            child_link(cat, i);
+    return true;
+}
+
 // Append a slot to the table (no log write), returning its index or -1.
+// CNIDs ascend through the table -- afp_catalog_next searches it by halves --
+// so one that does not, from a damaged log, is refused.
 static long slot_push(afp_catalog_t *cat, uint32_t cnid, uint32_t parent, bool is_dir, const char *name) {
+    if (cat->len && cnid <= cat->slots[cat->len - 1].cnid)
+        return -1;
     if (cat->len == cat->cap) {
         size_t cap = cat->cap ? cat->cap * 2 : 32;
         cat_slot_t *tmp = (cat_slot_t *)realloc(cat->slots, cap * sizeof(cat_slot_t));
@@ -160,59 +202,83 @@ static long slot_push(afp_catalog_t *cat, uint32_t cnid, uint32_t parent, bool i
         cat->len--;
         return -1;
     }
+    if (cat->live + 1 > cat->child_cap) {
+        if (!child_rebuild(cat, cat->child_cap ? cat->child_cap * 2 : 64)) { // covers this slot
+            cat->len--;
+            index_rebuild(cat, cat->idx_cap);
+            return -1;
+        }
+    } else {
+        child_link(cat, idx);
+    }
     cat->live++;
     if (cnid >= cat->next_cnid)
         cat->next_cnid = cnid + 1;
     return (long)idx;
 }
 
+// Tombstone one slot without touching the log (callers log their own record).
+static void kill_slot(afp_catalog_t *cat, size_t slot) {
+    if (cat->slots[slot].dead)
+        return;
+    child_unlink(cat, slot);
+    cat->slots[slot].dead = true;
+    cat->slots[slot].has_file_id = false;
+    if (cat->live)
+        cat->live--;
+}
+
+// Give a live slot a new parent and name, keeping the child index in step.
+static void slot_rekey(afp_catalog_t *cat, size_t slot, uint32_t parent, const char *name) {
+    child_unlink(cat, slot);
+    cat->slots[slot].parent = parent;
+    snprintf(cat->slots[slot].name, sizeof(cat->slots[slot].name), "%s", name ? name : "");
+    child_link(cat, slot);
+}
+
 // --- log I/O ---------------------------------------------------------------
 
-// Serialize one record.  Returns its length, or 0 if the name overflows.
-static size_t record_encode(uint8_t *buf, size_t cap, uint8_t op, uint32_t cnid, uint32_t parent, bool is_dir,
-                            const char *name) {
-    size_t nlen = name ? strlen(name) : 0;
-    if (nlen > 255)
-        nlen = 255;
-    size_t total = 1 + 4 + 4 + 1 + 1 + nlen + 4;
-    if (total > cap)
-        return 0;
-    size_t p = 0;
-    buf[p++] = op;
-    WR_BE32(buf + p, cnid);
-    p += 4;
-    WR_BE32(buf + p, parent);
-    p += 4;
-    buf[p++] = is_dir ? 1 : 0;
-    buf[p++] = (uint8_t)nlen;
-    if (nlen)
-        memcpy(buf + p, name, nlen);
-    p += nlen;
-    WR_BE32(buf + p, crc32_buf(buf, p));
-    p += 4;
-    return p;
+// Every entry record carries the same payload: cnid(4) parent(4) is_dir(1)
+// name, the name running to the record's end.
+static void log_append(afp_catalog_t *cat, uint8_t op, uint32_t cnid, uint32_t parent, bool is_dir, const char *name) {
+    uint8_t buf[9 + AFP_CAT_MAX_NAME];
+    size_t nlen = name ? strnlen(name, AFP_CAT_MAX_NAME - 1) : 0;
+    WR_BE32(buf, cnid);
+    WR_BE32(buf + 4, parent);
+    buf[8] = is_dir ? 1 : 0;
+    memcpy(buf + 9, name ? name : "", nlen);
+    afp_applog_append(cat->log, op, buf, (uint16_t)(9 + nlen), cat->live);
 }
 
-// Append a record and flush it, so a crash loses at most the in-flight write.
-static void log_append(afp_catalog_t *cat, uint8_t op, uint32_t cnid, uint32_t parent, bool is_dir, const char *name) {
-    if (!cat->log)
-        return;
-    uint8_t buf[1 + 4 + 4 + 1 + 1 + 255 + 4];
-    size_t n = record_encode(buf, sizeof(buf), op, cnid, parent, is_dir, name);
-    if (!n)
-        return;
-    if (fwrite(buf, 1, n, cat->log) != n) {
-        LOG(1, "AFP catalog: log write failed for '%s' (%s)", cat->log_path, strerror(errno));
-        fclose(cat->log);
-        cat->log = NULL;
+// The generation and the next CNID.  Replay recovers next_cnid from the ADD
+// records too; this record keeps it across the deletes a compaction drops.
+static void log_state(afp_catalog_t *cat) {
+    uint8_t buf[8];
+    WR_BE32(buf, cat->generation);
+    WR_BE32(buf + 4, cat->next_cnid);
+    afp_applog_append(cat->log, GSC_OP_STATE, buf, sizeof(buf), cat->live);
+}
+
+// Apply one replayed record to the in-memory table.
+static void replay(void *ctx, uint8_t op, const uint8_t *p, uint16_t len) {
+    afp_catalog_t *cat = (afp_catalog_t *)ctx;
+    if (op == GSC_OP_STATE) {
+        if (len >= 8) {
+            cat->generation = RD_BE32(p);
+            if (RD_BE32(p + 4) > cat->next_cnid)
+                cat->next_cnid = RD_BE32(p + 4);
+        }
         return;
     }
-    fflush(cat->log);
-    cat->log_records++;
-}
-
-// Apply one decoded record to the in-memory table.
-static void replay(afp_catalog_t *cat, uint8_t op, uint32_t cnid, uint32_t parent, bool is_dir, const char *name) {
+    if (len < 9)
+        return;
+    uint32_t cnid = RD_BE32(p);
+    uint32_t parent = RD_BE32(p + 4);
+    bool is_dir = p[8] != 0;
+    char name[AFP_CAT_MAX_NAME];
+    size_t nlen = (size_t)len - 9 < sizeof(name) - 1 ? (size_t)len - 9 : sizeof(name) - 1;
+    memcpy(name, p + 9, nlen);
+    name[nlen] = '\0';
     long si = slot_of(cat, cnid);
     switch (op) {
     case GSC_OP_ADD:
@@ -221,17 +287,12 @@ static void replay(afp_catalog_t *cat, uint8_t op, uint32_t cnid, uint32_t paren
         break;
     case GSC_OP_RENAME:
     case GSC_OP_MOVE:
-        if (si >= 0) {
-            cat->slots[si].parent = parent;
-            snprintf(cat->slots[si].name, sizeof(cat->slots[si].name), "%s", name ? name : "");
-        }
+        if (si >= 0 && !cat->slots[si].dead)
+            slot_rekey(cat, (size_t)si, parent, name);
         break;
     case GSC_OP_DELETE:
-        if (si >= 0 && !cat->slots[si].dead) {
-            cat->slots[si].dead = true;
-            if (cat->live)
-                cat->live--;
-        }
+        if (si >= 0)
+            kill_slot(cat, (size_t)si);
         break;
     case GSC_OP_SET_ID:
         if (si >= 0)
@@ -242,137 +303,34 @@ static void replay(afp_catalog_t *cat, uint8_t op, uint32_t cnid, uint32_t paren
             cat->slots[si].has_file_id = false;
         break;
     default:
-        break;
+        break; // a later format's record
     }
 }
 
-// Read the whole log back into the table.  Returns false on a corrupt header
-// (the caller then starts a fresh catalog); a torn tail record is simply
-// dropped, which is the normal crash case.
-static bool log_load(afp_catalog_t *cat) {
-    FILE *f = fopen(cat->log_path, "rb");
-    if (!f)
-        return false; // no log yet — a fresh volume
-    uint8_t hdr[12];
-    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr) || RD_BE32(hdr) != GSC_MAGIC) {
-        fclose(f);
-        LOG(1, "AFP catalog: '%s' has no usable header — rebuilding", cat->log_path);
+// A compaction: the state, then an ADD (and a SET_ID) per live entry.  The
+// generation is unchanged -- CNIDs are, so a client's catalog position and
+// every FPEnumerate snapshot stay good across it.
+static bool dump(void *ctx, afp_applog_t *log) {
+    afp_catalog_t *cat = (afp_catalog_t *)ctx;
+    uint8_t buf[9 + AFP_CAT_MAX_NAME];
+    WR_BE32(buf, cat->generation);
+    WR_BE32(buf + 4, cat->next_cnid);
+    if (!afp_applog_emit(log, GSC_OP_STATE, buf, 8))
         return false;
-    }
-    cat->generation = RD_BE32(hdr + 4);
-    cat->next_cnid = RD_BE32(hdr + 8);
-    if (cat->next_cnid < AFP_CNID_FIRST)
-        cat->next_cnid = AFP_CNID_FIRST;
-
-    for (;;) {
-        uint8_t fixed[11];
-        size_t got = fread(fixed, 1, sizeof(fixed), f);
-        if (got != sizeof(fixed))
-            break; // clean EOF or torn record
-        uint8_t nlen = fixed[10];
-        uint8_t body[255 + 4];
-        if (fread(body, 1, (size_t)nlen + 4, f) != (size_t)nlen + 4)
-            break;
-        uint8_t whole[sizeof(fixed) + 255];
-        memcpy(whole, fixed, sizeof(fixed));
-        memcpy(whole + sizeof(fixed), body, nlen);
-        if (crc32_buf(whole, sizeof(fixed) + nlen) != RD_BE32(body + nlen)) {
-            LOG(1, "AFP catalog: dropping torn tail record in '%s'", cat->log_path);
-            break;
-        }
-        char name[AFP_CAT_MAX_NAME];
-        size_t copy = nlen < sizeof(name) - 1 ? nlen : sizeof(name) - 1;
-        memcpy(name, body, copy);
-        name[copy] = '\0';
-        replay(cat, fixed[0], RD_BE32(fixed + 1), RD_BE32(fixed + 5), fixed[9] != 0, name);
-        cat->log_records++;
-    }
-    fclose(f);
-    return true;
-}
-
-// Rewrite the log as pure ADDs (plus SET_ID) for the live entries only.
-static void log_compact(afp_catalog_t *cat) {
-    char tmp[PATH_MAX];
-    if (snprintf(tmp, sizeof(tmp), "%s.tmp", cat->log_path) >= (int)sizeof(tmp))
-        return;
-    FILE *f = fopen(tmp, "wb");
-    if (!f)
-        return;
-    cat->generation++;
-    uint8_t hdr[12];
-    WR_BE32(hdr, GSC_MAGIC);
-    WR_BE32(hdr + 4, cat->generation);
-    WR_BE32(hdr + 8, cat->next_cnid);
-    bool ok = fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr);
-    size_t records = 0;
-    for (size_t i = 0; ok && i < cat->len; i++) {
-        if (cat->slots[i].dead || cat->slots[i].cnid == AFP_CNID_ROOT)
+    for (size_t i = 0; i < cat->len; i++) {
+        cat_slot_t *s = &cat->slots[i];
+        if (s->dead || s->cnid == AFP_CNID_ROOT)
             continue;
-        uint8_t buf[1 + 4 + 4 + 1 + 1 + 255 + 4];
-        size_t n = record_encode(buf, sizeof(buf), GSC_OP_ADD, cat->slots[i].cnid, cat->slots[i].parent,
-                                 cat->slots[i].is_dir, cat->slots[i].name);
-        ok = n && fwrite(buf, 1, n, f) == n;
-        records++;
-        if (ok && cat->slots[i].has_file_id) {
-            n = record_encode(buf, sizeof(buf), GSC_OP_SET_ID, cat->slots[i].cnid, cat->slots[i].parent,
-                              cat->slots[i].is_dir, cat->slots[i].name);
-            ok = n && fwrite(buf, 1, n, f) == n;
-            records++;
-        }
+        size_t nlen = strnlen(s->name, AFP_CAT_MAX_NAME - 1);
+        WR_BE32(buf, s->cnid);
+        WR_BE32(buf + 4, s->parent);
+        buf[8] = s->is_dir ? 1 : 0;
+        memcpy(buf + 9, s->name, nlen);
+        if (!afp_applog_emit(log, GSC_OP_ADD, buf, (uint16_t)(9 + nlen)) ||
+            (s->has_file_id && !afp_applog_emit(log, GSC_OP_SET_ID, buf, (uint16_t)(9 + nlen))))
+            return false;
     }
-    if (fclose(f) != 0)
-        ok = false;
-    if (!ok) {
-        remove(tmp);
-        return;
-    }
-    if (cat->log) {
-        fclose(cat->log);
-        cat->log = NULL;
-    }
-    if (rename(tmp, cat->log_path) != 0) {
-        remove(tmp);
-    } else {
-        cat->log_records = records;
-    }
-    cat->log = fopen(cat->log_path, "ab");
-}
-
-// Open the append handle, writing a header first when the file is new.
-static void log_open_append(afp_catalog_t *cat, bool fresh) {
-    if (fresh) {
-        FILE *f = fopen(cat->log_path, "wb");
-        if (!f) {
-            LOG(1, "AFP catalog: cannot create '%s' (%s) — IDs will not persist", cat->log_path, strerror(errno));
-            return;
-        }
-        uint8_t hdr[12];
-        WR_BE32(hdr, GSC_MAGIC);
-        WR_BE32(hdr + 4, cat->generation);
-        WR_BE32(hdr + 8, cat->next_cnid);
-        fwrite(hdr, 1, sizeof(hdr), f);
-        fclose(f);
-    }
-    cat->log = fopen(cat->log_path, "ab");
-    if (!cat->log)
-        LOG(1, "AFP catalog: cannot append to '%s' (%s)", cat->log_path, strerror(errno));
-}
-
-// Rewrite the header in place so `generation` / `next_cnid` survive a reload.
-static void log_sync_header(afp_catalog_t *cat) {
-    if (!cat->log)
-        return;
-    fflush(cat->log);
-    FILE *f = fopen(cat->log_path, "r+b");
-    if (!f)
-        return;
-    uint8_t hdr[12];
-    WR_BE32(hdr, GSC_MAGIC);
-    WR_BE32(hdr + 4, cat->generation);
-    WR_BE32(hdr + 8, cat->next_cnid);
-    fwrite(hdr, 1, sizeof(hdr), f);
-    fclose(f);
+    return true;
 }
 
 // --- lifecycle -------------------------------------------------------------
@@ -387,13 +345,8 @@ afp_catalog_t *afp_catalog_open(const char *host_root) {
     cat->generation = 1;
     cat->next_cnid = AFP_CNID_FIRST;
 
-    char ctrl[PATH_MAX];
-    if (snprintf(ctrl, sizeof(ctrl), "%s/%s", cat->root, AFP_CONTROL_DIR) >= (int)sizeof(ctrl)) {
-        free(cat);
-        return NULL;
-    }
-    mkdir(ctrl, 0755); // idempotent; a failure only costs persistence
-    if ((size_t)snprintf(cat->log_path, sizeof(cat->log_path), "%s/catalog.gsc", ctrl) >= sizeof(cat->log_path)) {
+    char log_path[PATH_MAX];
+    if (!afp_meta_control_path(cat->root, "catalog.gsc", log_path, sizeof(log_path))) {
         free(cat);
         return NULL;
     }
@@ -402,21 +355,23 @@ afp_catalog_t *afp_catalog_open(const char *host_root) {
     if (slot_push(cat, AFP_CNID_ROOT, AFP_CNID_ROOT_PARENT, true, "") < 0) {
         free(cat->slots);
         free(cat->idx_cnid);
+        free(cat->idx_child);
         free(cat);
         return NULL;
     }
     cat->next_cnid = AFP_CNID_FIRST;
 
-    bool loaded = log_load(cat);
-    if (!loaded) {
+    bool fresh = false;
+    cat->log = afp_applog_open(log_path, GSC_MAGIC, replay, dump, cat, &fresh);
+    if (fresh) {
         // No usable log: start clean and bump the generation so any cached
         // client CatPosition is rejected rather than silently mis-resumed.
         cat->generation++;
-        log_open_append(cat, true);
-    } else {
-        log_open_append(cat, false);
+        log_state(cat);
     }
-    LOG(2, "AFP catalog: opened '%s' gen=%u entries=%u next_cnid=%u", cat->log_path, cat->generation, cat->live,
+    if (cat->next_cnid < AFP_CNID_FIRST)
+        cat->next_cnid = AFP_CNID_FIRST;
+    LOG(2, "AFP catalog: opened '%s' gen=%u entries=%u next_cnid=%u", log_path, cat->generation, cat->live,
         cat->next_cnid);
     return cat;
 }
@@ -424,13 +379,10 @@ afp_catalog_t *afp_catalog_open(const char *host_root) {
 void afp_catalog_close(afp_catalog_t *cat) {
     if (!cat)
         return;
-    if (cat->log && cat->live && cat->log_records > (size_t)GSC_COMPACT_FACTOR * cat->live)
-        log_compact(cat);
-    log_sync_header(cat);
-    if (cat->log)
-        fclose(cat->log);
+    afp_applog_close(cat->log, cat->live);
     free(cat->slots);
     free(cat->idx_cnid);
+    free(cat->idx_child);
     free(cat);
 }
 
@@ -467,12 +419,11 @@ const afp_cat_entry_t *afp_catalog_find(afp_catalog_t *cat, uint32_t cnid) {
 const afp_cat_entry_t *afp_catalog_find_child(afp_catalog_t *cat, uint32_t parent, const char *name) {
     if (!cat || !name)
         return NULL;
-    for (size_t i = 0; i < cat->len; i++) {
-        if (cat->slots[i].dead || cat->slots[i].parent != parent)
-            continue;
-        if (strcmp(cat->slots[i].name, name) == 0)
-            return view_of(cat, i);
-    }
+    if (!cat->idx_child)
+        return NULL;
+    for (uint32_t v = *child_bucket(cat, parent, name); v; v = cat->slots[v - 1].child_next)
+        if (cat->slots[v - 1].parent == parent && strcmp(cat->slots[v - 1].name, name) == 0)
+            return view_of(cat, v - 1);
     return NULL;
 }
 
@@ -522,7 +473,6 @@ const afp_cat_entry_t *afp_catalog_add(afp_catalog_t *cat, uint32_t parent, cons
     if (si < 0)
         return NULL;
     log_append(cat, GSC_OP_ADD, cnid, parent, is_dir, name);
-    log_sync_header(cat);
     LOG(10, "AFP catalog: add cnid=%u parent=%u %s '%s'", cnid, parent, is_dir ? "dir" : "file", name);
     return view_of(cat, (size_t)si);
 }
@@ -533,7 +483,7 @@ bool afp_catalog_rename(afp_catalog_t *cat, uint32_t cnid, const char *new_name)
     long si = slot_of(cat, cnid);
     if (si < 0 || cat->slots[si].dead)
         return false;
-    snprintf(cat->slots[si].name, sizeof(cat->slots[si].name), "%s", new_name);
+    slot_rekey(cat, (size_t)si, cat->slots[si].parent, new_name);
     log_append(cat, GSC_OP_RENAME, cnid, cat->slots[si].parent, cat->slots[si].is_dir, new_name);
     return true;
 }
@@ -544,21 +494,11 @@ bool afp_catalog_move(afp_catalog_t *cat, uint32_t cnid, uint32_t new_parent, co
     long si = slot_of(cat, cnid);
     if (si < 0 || cat->slots[si].dead)
         return false;
-    cat->slots[si].parent = new_parent;
-    if (new_name && *new_name)
-        snprintf(cat->slots[si].name, sizeof(cat->slots[si].name), "%s", new_name);
+    char name[AFP_CAT_MAX_NAME];
+    snprintf(name, sizeof(name), "%s", (new_name && *new_name) ? new_name : cat->slots[si].name);
+    slot_rekey(cat, (size_t)si, new_parent, name);
     log_append(cat, GSC_OP_MOVE, cnid, new_parent, cat->slots[si].is_dir, cat->slots[si].name);
     return true;
-}
-
-// Tombstone one slot without touching the log (callers log their own record).
-static void kill_slot(afp_catalog_t *cat, size_t slot) {
-    if (cat->slots[slot].dead)
-        return;
-    cat->slots[slot].dead = true;
-    cat->slots[slot].has_file_id = false;
-    if (cat->live)
-        cat->live--;
 }
 
 bool afp_catalog_remove(afp_catalog_t *cat, uint32_t cnid) {
@@ -582,15 +522,15 @@ bool afp_catalog_remove(afp_catalog_t *cat, uint32_t cnid) {
                 long ps = slot_of(cat, cat->slots[i].parent);
                 if (ps < 0 || !cat->slots[ps].dead)
                     continue;
+                kill_slot(cat, i); // before the record: an append may compact
                 log_append(cat, GSC_OP_DELETE, cat->slots[i].cnid, cat->slots[i].parent, cat->slots[i].is_dir,
                            cat->slots[i].name);
-                kill_slot(cat, i);
                 progress = true;
             }
         }
     }
     cat->generation++;
-    log_sync_header(cat);
+    log_state(cat);
     return true;
 }
 
@@ -608,11 +548,31 @@ bool afp_catalog_set_file_id(afp_catalog_t *cat, uint32_t cnid, bool present) {
 
 // --- path resolution / adoption --------------------------------------------
 
-// Host path for a catalog-relative path.  False on overflow.
-static bool host_path_of(afp_catalog_t *cat, const char *rel, char *out, size_t cap) {
+bool afp_host_element(const char *name, size_t len) {
+    if (!name || len == 0 || memchr(name, '/', len))
+        return false;
+    return !(len == 1 && name[0] == '.') && !(len == 2 && name[0] == '.' && name[1] == '.');
+}
+
+bool afp_host_join(const char *root, const char *rel, char *out, size_t cap) {
+    if (!root || !*root || !out || cap == 0)
+        return false;
+    size_t root_len = strlen(root);
+    while (root_len > 1 && root[root_len - 1] == '/')
+        root_len--;
     if (!rel || !*rel)
-        return (size_t)snprintf(out, cap, "%s", cat->root) < cap;
-    return (size_t)snprintf(out, cap, "%s/%s", cat->root, rel) < cap;
+        return (size_t)snprintf(out, cap, "%.*s", (int)root_len, root) < cap;
+    for (const char *p = rel;;) {
+        const char *slash = strchr(p, '/');
+        size_t len = slash ? (size_t)(slash - p) : strlen(p);
+        if (!afp_host_element(p, len))
+            return false;
+        if (!slash)
+            break;
+        p = slash + 1;
+    }
+    const char *sep = (root_len == 1 && root[0] == '/') ? "" : "/";
+    return (size_t)snprintf(out, cap, "%.*s%s%s", (int)root_len, root, sep, rel) < cap;
 }
 
 const afp_cat_entry_t *afp_catalog_resolve_path(afp_catalog_t *cat, const char *rel_path, bool adopt, bool is_dir) {
@@ -649,14 +609,21 @@ const afp_cat_entry_t *afp_catalog_resolve_path(afp_catalog_t *cat, const char *
 const afp_cat_entry_t *afp_catalog_next(afp_catalog_t *cat, uint32_t after) {
     if (!cat)
         return NULL;
-    long best = -1;
-    for (size_t i = 0; i < cat->len; i++) {
-        if (cat->slots[i].dead || cat->slots[i].cnid <= after)
-            continue;
-        if (best < 0 || cat->slots[i].cnid < cat->slots[best].cnid)
-            best = (long)i;
+    // CNIDs ascend through the table (slot_push), so the first above `after`
+    // is found by halves; it was a full scan per call, and FPCatSearch calls
+    // this once per entry.
+    size_t lo = 0, hi = cat->len;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (cat->slots[mid].cnid <= after)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
-    return best < 0 ? NULL : view_of(cat, (size_t)best);
+    for (size_t i = lo; i < cat->len; i++)
+        if (!cat->slots[i].dead)
+            return view_of(cat, i);
+    return NULL;
 }
 
 uint32_t afp_catalog_sweep(afp_catalog_t *cat) {
@@ -670,16 +637,16 @@ uint32_t afp_catalog_sweep(afp_catalog_t *cat) {
         char host[PATH_MAX];
         struct stat st;
         if (!afp_catalog_path(cat, cat->slots[i].cnid, rel, sizeof(rel)) ||
-            !host_path_of(cat, rel, host, sizeof(host)) || stat(host, &st) != 0) {
+            !afp_host_join(cat->root, rel, host, sizeof(host)) || stat(host, &st) != 0) {
+            kill_slot(cat, i); // before the record: an append may compact
             log_append(cat, GSC_OP_DELETE, cat->slots[i].cnid, cat->slots[i].parent, cat->slots[i].is_dir,
                        cat->slots[i].name);
-            kill_slot(cat, i);
             killed++;
         }
     }
     if (killed) {
         cat->generation++;
-        log_sync_header(cat);
+        log_state(cat);
         LOG(2, "AFP catalog: swept %u stale entries (gen=%u)", killed, cat->generation);
     }
     return killed;

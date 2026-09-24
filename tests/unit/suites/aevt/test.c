@@ -719,7 +719,22 @@ TEST(test_encode_respects_buffer) {
     value_free(&ev);
 }
 
+// Four-character codes, as common.h converts them: a short code is padded
+// with spaces -- and not read past its end, which one of the two copies it
+// replaced did -- and the text form round-trips.
+TEST(fourcc_codes_pad_and_round_trip) {
+    ASSERT_TRUE(fourcc_value("aevt") == 0x61657674u);
+    ASSERT_TRUE(fourcc_value("ab") == 0x61622020u);
+    ASSERT_TRUE(fourcc_value("") == 0x20202020u);
+    ASSERT_TRUE(fourcc_value(NULL) == 0x20202020u);
+    char text[5];
+    fourcc_text(0x6F646F63u, text);
+    ASSERT_TRUE(strcmp(text, "odoc") == 0);
+    ASSERT_TRUE(fourcc_value(text) == 0x6F646F63u);
+}
+
 int main(void) {
+    RUN(fourcc_codes_pad_and_round_trip);
     RUN(test_decode_empty_event);
     RUN(test_decode_zero_length_stream);
     RUN(test_decode_scalars);

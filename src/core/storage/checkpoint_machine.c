@@ -234,30 +234,6 @@ int checkpoint_machine_sweep_others(void) {
     return 0;
 }
 
-// Writes a sibling "<path>.tmp" then renames to <path>.  Returns 0 on success.
-static int write_atomic(const char *path, const char *body) {
-    if (!path || !body)
-        return -1;
-    char *tmp = gs_str_printf("%s.tmp", path);
-    if (!tmp)
-        return -1;
-    FILE *f = fopen(tmp, "wb");
-    if (!f) {
-        free(tmp);
-        return -1;
-    }
-    size_t len = strlen(body);
-    int rc = (fwrite(body, 1, len, f) == len) ? 0 : -1;
-    fclose(f);
-    if (rc != 0 || rename(tmp, path) != 0) {
-        unlink(tmp);
-        free(tmp);
-        return -1;
-    }
-    free(tmp);
-    return 0;
-}
-
 int checkpoint_machine_write_manifest(void) {
     if (!g_machine_dir)
         return -1;
@@ -357,7 +333,7 @@ int checkpoint_machine_write_manifest(void) {
         return -1;
     }
 
-    int rc = write_atomic(path, body);
+    int rc = gs_write_atomic(path, body, strlen(body));
     free(body);
     free(path);
     if (rc != 0)

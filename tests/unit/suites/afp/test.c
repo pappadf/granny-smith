@@ -19,7 +19,9 @@
 #include "afp_desktop.h"
 #include "afp_fork.h"
 #include "afp_meta.h"
+#include "afp_server.h"
 #include "appletalk.h"
+#include "crc32.h"
 #include "test_assert.h"
 
 #include <dirent.h>
@@ -30,7 +32,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-void stub_set_afp_version(const char *v);
 int stub_attention_count(void);
 
 // AFP opcodes and result codes used by the tests (the server's private
@@ -44,17 +45,22 @@ int stub_attention_count(void);
 #define OP_DELETE          0x08
 #define OP_ENUMERATE       0x09
 #define OP_FLUSH_FORK      0x0B
+#define OP_GET_FORK_PARMS  0x0E
 #define OP_GET_SRVR_PARMS  0x10
 #define OP_GET_VOL_PARMS   0x11
+#define OP_GET_SRVR_INFO   0x0F
 #define OP_LOGIN           0x12
+#define OP_LOGOUT          0x14
 #define OP_MOVE_AND_RENAME 0x17
 #define OP_OPEN_VOL        0x18
+#define OP_OPEN_DIR        0x19
 #define OP_OPEN_FORK       0x1A
 #define OP_READ            0x1B
 #define OP_RENAME          0x1C
 #define OP_SET_FORK_PARMS  0x1F
 #define OP_SET_VOL_PARMS   0x20
 #define OP_WRITE           0x21
+#define OP_GET_USER_INFO   0x25
 #define OP_GET_FD_PARMS    0x22
 #define OP_SET_FD_PARMS    0x23
 #define OP_GET_SRVR_MSG    0x26
@@ -64,9 +70,11 @@ int stub_attention_count(void);
 #define OP_EXCHANGE_FILES  0x2A
 #define OP_CAT_SEARCH      0x2B
 #define OP_OPEN_DT         0x30
+#define OP_CLOSE_DT        0x31
 #define OP_GET_ICON        0x33
 #define OP_GET_ICON_INFO   0x34
 #define OP_ADD_APPL        0x35
+#define OP_RMV_APPL        0x36
 #define OP_GET_APPL        0x37
 #define OP_ADD_COMMENT     0x38
 #define OP_RMV_COMMENT     0x39
@@ -74,10 +82,14 @@ int stub_attention_count(void);
 #define OP_ADD_ICON        0xC0
 
 #define ERR_OK              0x00000000u
+#define ERR_MISC            0xFFFFEC6Au
 #define ERR_ACCESS_DENIED   0xFFFFEC78u
+#define ERR_SESS_CLOSED     0xFFFFEC62u
+#define ERR_USER_NOT_AUTH   0xFFFFEC61u
 #define ERR_BITMAP          0xFFFFEC74u
 #define ERR_DENY_CONFLICT   0xFFFFEC72u
 #define ERR_DIR_NOT_EMPTY   0xFFFFEC71u
+#define ERR_DISK_FULL       0xFFFFEC70u
 #define ERR_EOF             0xFFFFEC6Fu
 #define ERR_FILE_BUSY       0xFFFFEC6Eu
 #define ERR_ITEM_NOT_FOUND  0xFFFFEC6Cu
@@ -128,10 +140,22 @@ static void put_pstr(const char *s) {
     for (size_t i = 0; i < n; i++)
         put8((uint8_t)s[i]);
 }
-// A pathname argument is a PathType byte followed by the Pascal string.
+// A pathname argument is a PathType byte followed by the Pascal string.  An
+// AFP pathname separates its elements with NUL bytes (Inside AppleTalk 13-10);
+// tests write them as ':', the way a Mac client's own paths do, and this turns
+// them into NULs as the client's AppleShare driver would.
 static void put_path(const char *s) {
     put8(2); // 2 = long names
-    put_pstr(s);
+    size_t n = s ? strlen(s) : 0;
+    put8((uint8_t)n);
+    for (size_t i = 0; i < n; i++)
+        put8(s[i] == ':' ? 0 : (uint8_t)s[i]);
+}
+// The pad some fields must follow to start on an even offset of the command
+// block, which begins one byte before g_req, with the opcode.
+static void put_even_pad(void) {
+    if (g_req_len % 2 == 0)
+        put8(0);
 }
 static void put_bytes(const void *p, size_t n) {
     memcpy(g_req + g_req_len, p, n);
@@ -150,6 +174,13 @@ static uint32_t call(uint8_t opcode) {
     g_reply_len = 0;
     memset(g_reply, 0, sizeof(g_reply));
     return afp_handle_command(SESSION, opcode, g_req, g_req_len, g_reply, (int)sizeof(g_reply), &g_reply_len);
+}
+
+// The same, for another session.
+static uint32_t call_as(uint16_t session, uint8_t opcode) {
+    g_reply_len = 0;
+    memset(g_reply, 0, sizeof(g_reply));
+    return afp_handle_command(session, opcode, g_req, g_req_len, g_reply, (int)sizeof(g_reply), &g_reply_len);
 }
 
 // --- share fixture ----------------------------------------------------------
@@ -190,8 +221,31 @@ static void host_path(const char *rel, char *out, size_t cap) {
     snprintf(out, cap, "%s/%s", g_root, rel);
 }
 
-// Open a fresh share with a unique root, and log in so the 2.1 calls are
-// allowed.  Every test starts from this state.
+// Log SESSION in at `version` (FPLogin with no user authentication).
+static void login_as(const char *version) {
+    req_reset();
+    put_pstr(version);
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_LOGIN));
+}
+
+// FPOpenVol "TestVol" for `session`: a volume ID is served only to a session
+// that opened the volume.
+static uint16_t open_named_vol_as(uint16_t session, const char *name) {
+    req_reset();
+    put8(0);
+    put16(0x0020); // Volume ID
+    put_pstr(name);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(session, OP_OPEN_VOL));
+    return rd16(g_reply + 2);
+}
+static void open_vol_as(uint16_t session) {
+    ASSERT_EQ_INT(g_vol_id, open_named_vol_as(session, "TestVol"));
+}
+
+// Open a fresh share with a unique root, open a session as ASP would, log in
+// at 2.1 so the 2.1 calls are allowed, and open the volume.  Every test
+// starts from this state.
 static void fixture_up(const char *tag) {
     snprintf(g_root, sizeof(g_root), "/tmp/gs-afp-test-%d-%s", (int)getpid(), tag);
     rm_rf(g_root);
@@ -201,10 +255,13 @@ static void fixture_up(const char *tag) {
     int slot = atalk_afp_volume_find("TestVol");
     ASSERT_TRUE(slot >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(slot);
-    stub_set_afp_version("AFPVersion 2.1");
+    ASSERT_TRUE(afp_session_opened(SESSION));
+    login_as("AFPVersion 2.1");
+    open_vol_as(SESSION);
 }
 
 static void fixture_down(void) {
+    afp_session_closed(SESSION);
     char err[192];
     atalk_afp_volume_remove("TestVol", err, sizeof(err));
     rm_rf(g_root);
@@ -555,11 +612,11 @@ TEST(cnid_survives_rename_move_and_is_never_reused) {
     put_path("Renamed");
     put_path(""); // destination path is the directory itself
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_MOVE_AND_RENAME));
-    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Folder/Renamed", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Folder:Renamed", 0x0100, 0x0100));
     ASSERT_EQ_INT((int)id, (int)rd32(g_reply + 6));
 
     // A deleted CNID is never handed out again.
-    req_vol_dir_path(g_vol_id, CNID_ROOT, "Folder/Renamed");
+    req_vol_dir_path(g_vol_id, CNID_ROOT, "Folder:Renamed");
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_DELETE));
     ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Fresh"));
     ASSERT_TRUE(file_number("Fresh") != id);
@@ -581,6 +638,7 @@ TEST(cnids_persist_across_a_share_remove_and_readd) {
     ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
 
     ASSERT_EQ_INT((int)alpha, (int)file_number("Alpha"));
     ASSERT_EQ_INT((int)beta, (int)file_number("Beta"));
@@ -605,6 +663,7 @@ TEST(catalog_survives_a_torn_tail_record) {
 
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
 
     // Everything before the torn record replayed; the truncated one did not,
     // so Beta is re-adopted with a fresh ID rather than the log being lost.
@@ -993,13 +1052,13 @@ TEST(cat_search_matches_on_name_and_resumes_from_cat_position) {
     put8(0); // filler
     put16(2); // name offset: just past this 2-byte field
     put_pstr("Report");
-    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
     // Specification2 carries a nil name field.
     int spec2 = g_req_len;
     put8(0);
     put8(0);
     put16(0);
-    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
 
     uint32_t rc = call(OP_CAT_SEARCH);
     ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF); // afpEofError = walked the tree
@@ -1016,12 +1075,12 @@ TEST(cat_search_matches_on_name_and_resumes_from_cat_position) {
     put8(0);
     put16(2);
     put_pstr("Report");
-    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
     spec2 = g_req_len;
     put8(0);
     put8(0);
     put16(0);
-    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
     ASSERT_EQ_INT((int)ERR_CATALOG_CHANGED, (int)call(OP_CAT_SEARCH));
 
     fixture_down();
@@ -1043,12 +1102,12 @@ TEST(cat_search_partial_name_matches_several) {
     put8(0);
     put16(2);
     put_pstr("Repo");
-    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
     int spec2 = g_req_len;
     put8(0);
     put8(0);
     put16(0);
-    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
 
     uint32_t rc = call(OP_CAT_SEARCH);
     ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
@@ -1060,9 +1119,9 @@ TEST(cat_search_rejects_criteria_it_cannot_serve) {
     fixture_up("catsearchbm");
     // Bit 11 (Group ID) is not a searchable field here.
     put_catsearch_header(10, NULL, 0x0040, 0x0000, 0x00000800u);
-    put8(2);
     put8(0);
-    put8(2);
+    put8(0);
+    put8(0);
     put8(0);
     ASSERT_EQ_INT((int)ERR_BITMAP, (int)call(OP_CAT_SEARCH));
     fixture_down();
@@ -1099,7 +1158,7 @@ TEST(server_message_round_trips_and_raises_an_attention) {
 
 TEST(afp_21_commands_are_refused_on_a_20_session) {
     fixture_up("gate21");
-    stub_set_afp_version("AFPVersion 2.0");
+    login_as("AFPVersion 2.0");
     req_vol_dir_path(g_vol_id, CNID_ROOT, "Doc");
     ASSERT_EQ_INT((int)ERR_NOT_SUPPORTED, (int)call(OP_CREATE_ID));
     req_reset();
@@ -1107,7 +1166,7 @@ TEST(afp_21_commands_are_refused_on_a_20_session) {
     put16(1);
     put16(1);
     ASSERT_EQ_INT((int)ERR_NOT_SUPPORTED, (int)call(OP_GET_SRVR_MSG));
-    stub_set_afp_version("AFPVersion 2.1");
+    login_as("AFPVersion 2.1");
     fixture_down();
 }
 
@@ -1127,7 +1186,7 @@ TEST(login_negotiates_a_known_version_and_uam) {
     put_pstr("AFPVersion 2.1");
     put_pstr("Cleartxt Passwrd");
     ASSERT_EQ_INT((int)0xFFFFEC76u, (int)call(OP_LOGIN)); // BadUAM
-    stub_set_afp_version("AFPVersion 2.1");
+    login_as("AFPVersion 2.1");
     fixture_down();
 }
 
@@ -1423,7 +1482,7 @@ TEST(write_may_be_partial_and_reports_where_it_stopped) {
     put_bytes("ABCD", 4);
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_WRITE));
     ASSERT_EQ_INT(4, (int)rd32(g_reply));
-    ASSERT_EQ_INT(4, (int)afp_fork_length(afp_fork_find(ref)));
+    ASSERT_EQ_INT(4, (int)afp_fork_length(afp_fork_find(ref, SESSION)));
 
     // The client resumes from LastWritten.
     req_reset();
@@ -1536,15 +1595,18 @@ TEST(icons_survive_a_share_reopen) {
     ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
     dt = open_dt();
 
-    // FPGetIcon: Pad(1) DTRefNum(2) Creator(4) FileType(4) IconType(1) Length(2).
+    // FPGetIcon: Pad(1) DTRefNum(2) Creator(4) FileType(4) IconType(1) Pad(1)
+    // Length(2) -- Inside AppleTalk p. 13-92.
     req_reset();
     put8(0);
     put16(dt);
     put32(0x41505054u);
     put32(0x4150504Cu);
     put8(1);
+    put8(0); // pad
     put16((uint16_t)sizeof(bitmap));
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_ICON));
     ASSERT_EQ_INT((int)sizeof(bitmap), g_reply_len);
@@ -1569,6 +1631,7 @@ TEST(icons_survive_a_share_reopen) {
     put32(0x4E4F4E45u);
     put32(0x4150504Cu);
     put8(1);
+    put8(0); // pad
     put16(256);
     ASSERT_EQ_INT((int)ERR_ITEM_NOT_FOUND, (int)call(OP_GET_ICON));
     req_reset();
@@ -1646,12 +1709,13 @@ TEST(comments_live_in_the_sidecar_and_follow_the_file) {
     uint16_t dt = open_dt();
 
     // FPAddComment: Pad(1) DTRefNum(2) DirectoryID(4) PathType(1) Pathname
-    // + Comment (Pascal string).
+    // Pad(0-1) Comment (Pascal string, on an even offset: p. 13-52).
     req_reset();
     put8(0);
     put16(dt);
     put32(CNID_ROOT);
     put_path("Doc");
+    put_even_pad();
     put_pstr("Written on the server");
     ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ADD_COMMENT));
 
@@ -1678,6 +1742,7 @@ TEST(comments_live_in_the_sidecar_and_follow_the_file) {
     ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
     ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
     g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION); // a re-added share is opened again, as a client would
     dt = open_dt();
     req_reset();
     put8(0);
@@ -1775,7 +1840,7 @@ TEST(golden_error_codes_per_command) {
     // pathname is rejected outright, which the spec calls afpParmErr
     // ("pathname is null or bad"), not merely "not found".
     ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms(".gs-afp", 0x0100, 0x0100));
-    ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms(".gs-afp/catalog.gsc", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms(".gs-afp:catalog.gsc", 0x0100, 0x0100));
 
     // FPRename onto an existing name is afpObjectExists.
     req_reset();
@@ -2101,6 +2166,1655 @@ TEST(desktop_store_reopens_and_prunes) {
 
 // ============================================================================
 
+// A fork refnum is never handed out while another fork holds it.  Refnums came
+// from a counter that skipped only 0: after 65,535 opens a new fork got the
+// refnum a still-open one held, and FPRead on it read the new file
+// (10-network F-08).  One allocator now serves every id the stack issues.
+TEST(fork_refnums_are_never_reused_while_held) {
+    fixture_up("refwrap");
+    write_file("held.txt", "HELD");
+    write_file("other.txt", "OTHER");
+    uint16_t held = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("held.txt", false, 0x0001, &held));
+    for (long i = 0; i < 65536; i++) {
+        uint16_t r = 0;
+        ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("other.txt", false, 0x0001, &r));
+        ASSERT_TRUE(r != held && r != 0);
+        close_fork(r);
+    }
+    req_reset();
+    put8(0);
+    put16(held);
+    put32(0);
+    put32(4);
+    put8(0);
+    put8(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_READ));
+    ASSERT_EQ_INT(4, g_reply_len);
+    ASSERT_EQ_INT(0, memcmp(g_reply, "HELD", 4));
+    close_fork(held);
+    fixture_down();
+}
+
+// --- sessions and login (10-network C7, F-05) --------------------------------------
+
+static void req_delete(const char *name) {
+    req_vol_dir_path(g_vol_id, CNID_ROOT, name);
+}
+
+// A command is served only to a session that is open and logged in.  Every
+// 2.0 command used to be served to any session id -- one that never opened,
+// or one that had logged out -- including FPDelete.
+TEST(commands_need_an_open_logged_in_session) {
+    fixture_up("gate");
+    write_file("keep.txt", "K");
+    char path[512];
+    host_path("keep.txt", path, sizeof path);
+    struct stat st;
+
+    // A session that never opened.
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_SESS_CLOSED, (int)call_as(0xBEEF, OP_DELETE));
+    ASSERT_EQ_INT(0, stat(path, &st));
+
+    // Open, not logged in: only FPLogin (and FPLoginCont) are served.
+    uint16_t other = 0x0033;
+    ASSERT_TRUE(afp_session_opened(other));
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_USER_NOT_AUTH, (int)call_as(other, OP_DELETE));
+    ASSERT_EQ_INT(0, stat(path, &st));
+    req_reset();
+    put_pstr("AFPVersion 2.0");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_LOGIN));
+
+    // Logged out: refused again (it used to keep working).
+    req_reset();
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_LOGOUT));
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_USER_NOT_AUTH, (int)call_as(other, OP_DELETE));
+    ASSERT_EQ_INT(0, stat(path, &st));
+    afp_session_closed(other);
+    ASSERT_TRUE(afp_session_version(other) == NULL);
+    fixture_down();
+}
+
+// FPGetSrvrInfo travels only on ASP GetStatus (appletalk_server.md §1.4); as a
+// command it was the payload of a session-free second channel (F-05).
+TEST(get_srvr_info_is_not_a_command) {
+    fixture_up("srvrinfo");
+    req_reset();
+    ASSERT_EQ_INT((int)ERR_NOT_SUPPORTED, (int)call(OP_GET_SRVR_INFO));
+    fixture_down();
+}
+
+// A disabled server takes no new sessions (ASP answers ServerBusy).
+TEST(a_disabled_server_takes_no_sessions) {
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_set_enabled(false, err, sizeof err));
+    ASSERT_TRUE(!afp_session_opened(0x0044));
+    ASSERT_EQ_INT(0, atalk_afp_set_enabled(true, err, sizeof err));
+    ASSERT_TRUE(afp_session_opened(0x0044));
+    afp_session_closed(0x0044);
+}
+
+// --- names and paths at the wire (10-network Track D) -------------------------------
+
+// A pathname with explicit PathType and bytes (NULs allowed).
+static void put_raw_path(uint8_t type, const void *bytes, size_t len) {
+    put8(type);
+    put8((uint8_t)len);
+    put_bytes(bytes, len);
+}
+
+// The long names FPEnumerate lists in the root, as Mac bytes.
+// The root listing from index `start` on, as names.
+static int enum_names_from(uint16_t start, char names[][96], int max) {
+    uint16_t actual = 0;
+    if (enumerate(start, 200, 8192, &actual) != ERR_OK)
+        return 0;
+    int pos = 6, n = 0;
+    for (int i = 0; i < actual && n < max; i++) {
+        int len = g_reply[pos];
+        int params = pos + 2;
+        int name = params + rd16(g_reply + params);
+        int nl = g_reply[name];
+        memcpy(names[n], g_reply + name + 1, (size_t)nl);
+        names[n][nl] = '\0';
+        n++;
+        pos += len;
+    }
+    return n;
+}
+static int enum_root_names(char names[][96], int max) {
+    return enum_names_from(1, names, max);
+}
+
+static bool listed(const char *mac_name) {
+    char names[200][96];
+    int n = enum_root_names(names, 200);
+    for (int i = 0; i < n; i++)
+        if (strcmp(names[i], mac_name) == 0)
+            return true;
+    return false;
+}
+
+static bool host_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+// A new name is one element: it can hold '/', which is just a character in a
+// Mac name (the host sees ':'), but it cannot be "..", ".", one of the
+// server's own names, or two elements.  It went straight into a host path
+// join, so "../../x" renamed, moved or copied a file out of the share -- and
+// a directory moved that way got a CNID whose path was outside, so later calls
+// by that CNID worked outside too (F-01).
+TEST(new_names_cannot_leave_the_share) {
+    fixture_up("leaf");
+    char outside[300];
+    snprintf(outside, sizeof outside, "%s-outside", g_root);
+    rm_rf(outside);
+    ASSERT_EQ_INT(0, mkdir(outside, 0755));
+    const char *leaf = strrchr(outside, '/') + 1;
+    char escape[160];
+    snprintf(escape, sizeof escape, "../%s/escaped", leaf); // the Mac name "../<outside>/escaped"
+
+    write_file("a.txt", "A");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("a.txt");
+    put8(2);
+    put_pstr(escape);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_RENAME)); // a legal Mac name...
+    char p[600];
+    snprintf(p, sizeof p, "%s/escaped", outside);
+    ASSERT_TRUE(!host_exists(p)); // ...that stays in the share
+    snprintf(p, sizeof p, "%s/..:%s:escaped", g_root, leaf);
+    ASSERT_TRUE(host_exists(p));
+
+    write_file("b.txt", "B");
+    const char *bad[] = {"..", ".", "._b", ".gs-afp"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(CNID_ROOT);
+        put_path("b.txt");
+        put8(2);
+        put_pstr(bad[i]);
+        ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_RENAME));
+    }
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("b.txt");
+    put_raw_path(2, "x\0y", 3); // two elements
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_RENAME));
+
+    // FPMoveAndRename of a directory, then a file created under its CNID.
+    uint32_t dd = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("dd", &dd));
+    char dd_escape[160];
+    snprintf(dd_escape, sizeof dd_escape, "../%s/dd", leaf);
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put32(CNID_ROOT);
+    put_path("dd");
+    put_path("");
+    put8(2);
+    put_pstr(dd_escape);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_MOVE_AND_RENAME));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(dd);
+    put_path("planted");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_CREATE_FILE));
+    snprintf(p, sizeof p, "%s/dd/planted", outside);
+    ASSERT_TRUE(!host_exists(p));
+
+    // FPCopyFile creates its destination: the arbitrary-path write.
+    write_file("c.txt", "C");
+    char cp_escape[160];
+    snprintf(cp_escape, sizeof cp_escape, "../%s/copied", leaf);
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("c.txt");
+    put_path("");
+    put8(2);
+    put_pstr(cp_escape);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_COPY_FILE));
+    snprintf(p, sizeof p, "%s/copied", outside);
+    ASSERT_TRUE(!host_exists(p));
+    snprintf(p, sizeof p, "%s/._copied", outside);
+    ASSERT_TRUE(!host_exists(p));
+
+    rm_rf(outside);
+    fixture_down();
+}
+
+// AFP pathnames separate elements with NULs (Inside AppleTalk 13-10): a NUL
+// before the first name is ignored and each extra NUL climbs a level.  The
+// server truncated a pathname at its first NUL -- "sub\0f.txt" answered for
+// "sub" -- and split on ':', '/' and '\' instead (N-01).
+TEST(pathnames_separate_elements_with_nuls) {
+    fixture_up("nulpath");
+    uint32_t sub = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("sub", &sub));
+    write_file("sub/f.txt", "F");
+    write_file("x.txt", "X");
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("sub:f.txt", 0x0100, 0x0100));
+    ASSERT_EQ_INT(0, g_reply[4] & 0x80); // the file, not "sub"
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms(":sub:f.txt", 0x0100, 0x0100)); // leading NUL ignored
+    ASSERT_EQ_INT(0, g_reply[4] & 0x80);
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("sub::x.txt", 0x0100, 0x0100)); // up one, to the root
+    ASSERT_EQ_INT(0, g_reply[4] & 0x80);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)get_fd_parms("::x.txt", 0x0100, 0x0100)); // above the root
+    fixture_down();
+}
+
+// The path type is 1 or 2 in AFP 2.x, and a Pascal length that runs past the
+// request is a bad parameter.  Every type was accepted (F-25), and a length
+// past the request was clamped: an FPDelete that claimed 10 bytes but carried
+// "abc" deleted "abc" (N-17).
+TEST(path_type_and_length_are_checked) {
+    fixture_up("ptype");
+    write_file("abc", "x");
+    const uint8_t types[] = {0, 3, 0x55};
+    for (size_t i = 0; i < sizeof types; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(CNID_ROOT);
+        put16(0x0100);
+        put16(0x0100);
+        put_raw_path(types[i], "abc", 3);
+        ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_GET_FD_PARMS));
+    }
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put8(2);
+    put8(10); // claims ten bytes...
+    put_bytes("abc", 3); // ...carries three
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_DELETE));
+    char p[512];
+    host_path("abc", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    fixture_down();
+}
+
+// Names are MacRoman on the wire and UTF-8 on the host, with a Mac '/' as a
+// host ':' -- the convention image_hfs.c already used (N-02, decision D-1).
+// They went across as raw bytes: "Résumé" became an invalid UTF-8 host name,
+// "café.txt" reached the Mac as mojibake, and "a/b" was split into a path.
+TEST(names_are_macroman_on_the_wire_and_utf8_on_the_host) {
+    fixture_up("names");
+    char p[512];
+    // Mac -> host
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_raw_path(2, "R\x8Esum\x8E", 6);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_CREATE_FILE));
+    host_path("R\xC3\xA9sum\xC3\xA9", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("a/b"));
+    host_path("a:b", p, sizeof p);
+    ASSERT_TRUE(host_exists(p));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("a/b", 0x0100, 0x0100)); // and it can be found again
+
+    // host -> Mac
+    write_file("caf\xC3\xA9.txt", "x"); // UTF-8, composed
+    write_file("nfd"
+               "e\xCC\x81",
+               "x"); // e + COMBINING ACUTE, as macOS writes
+    // Raw MacRoman, as the old server wrote it.  Only a native host can hold
+    // such a name: emscripten's filesystems keep names as Unicode strings, so
+    // in the browser the byte became U+FFFD when it was written -- which is
+    // how, there, two Mac names differing in one accented letter came to share
+    // one host file.
+    write_file("legacy\x8E", "x");
+    write_file("\xE6\x97\xA5\xE6\x9C\xAC", "x"); // no MacRoman for it
+    ASSERT_TRUE(listed("caf\x8E.txt"));
+    ASSERT_TRUE(listed("nfd\x8E"));
+#ifndef __EMSCRIPTEN__
+    ASSERT_TRUE(listed("legacy\x8E"));
+#endif
+    ASSERT_TRUE(listed("a/b"));
+    ASSERT_TRUE(listed("R\x8Esum\x8E"));
+    char names[200][96];
+#ifndef __EMSCRIPTEN__
+    ASSERT_EQ_INT(5, enum_root_names(names, 200)); // the unrepresentable one is not listed
+#else
+    ASSERT_EQ_INT(4, enum_root_names(names, 200)); // ...nor the mangled legacy one
+#endif
+    fixture_down();
+}
+
+// A share-relative path becomes a host path in one place, afp_host_join, and
+// only when every element is a real name (10 D4): a catalog entry named ".."
+// -- the catalog takes any name, and replays one from its log -- names no
+// host path, so the sweep drops it instead of keeping the share's parent.
+TEST(host_paths_are_joined_from_real_names_only) {
+    fixture_up("hostjoin");
+    char out[64];
+    ASSERT_TRUE(afp_host_join("/s", "", out, sizeof out) && strcmp(out, "/s") == 0);
+    ASSERT_TRUE(afp_host_join("/s/", "a/b", out, sizeof out) && strcmp(out, "/s/a/b") == 0);
+    ASSERT_TRUE(afp_host_join("/", "a", out, sizeof out) && strcmp(out, "/a") == 0);
+    ASSERT_TRUE(afp_host_join("/s", "._a", out, sizeof out)); // the server's own names are names
+    const char *bad[] = {"..", ".", "a/..", "../a", "a/./b", "/a", "a/", "a//b"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++)
+        ASSERT_TRUE(!afp_host_join("/s", bad[i], out, sizeof out));
+    ASSERT_TRUE(
+        !afp_host_join("/s", "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz", out, sizeof out));
+
+    afp_catalog_t *cat = afp_catalog_open(g_root);
+    ASSERT_TRUE(cat != NULL);
+    const afp_cat_entry_t *up = afp_catalog_add(cat, AFP_CNID_ROOT, "..", true);
+    ASSERT_TRUE(up != NULL);
+    uint32_t up_id = up->cnid;
+    ASSERT_EQ_INT(1, (int)afp_catalog_sweep(cat));
+    ASSERT_TRUE(afp_catalog_find(cat, up_id) == NULL);
+    afp_catalog_close(cat);
+    fixture_down();
+}
+
+// --- handles have owners (10-network E2, F-04) -----------------------------------
+
+// Open and log in a second session; with `open_vol`, open the volume too.
+static void second_session_up(uint16_t session, bool open_vol) {
+    ASSERT_TRUE(afp_session_opened(session));
+    req_reset();
+    put_pstr("AFPVersion 2.1");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(session, OP_LOGIN));
+    if (open_vol)
+        open_vol_as(session);
+}
+
+// A fork refnum is the opening session's handle.  Any session could read,
+// write, truncate, lock or close any other session's fork by its refnum.
+TEST(forks_belong_to_the_session_that_opened_them) {
+    fixture_up("forkowner");
+    write_file("held.txt", "HELD");
+    uint16_t ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("held.txt", false, 0x0003, &ref));
+    uint16_t other = 0x0044;
+    second_session_up(other, true);
+
+    const uint8_t ops[] = {OP_READ,       OP_WRITE,      OP_GET_FORK_PARMS, OP_SET_FORK_PARMS,
+                           OP_FLUSH_FORK, OP_CLOSE_FORK, OP_BYTE_RANGE_LOCK};
+    for (size_t i = 0; i < sizeof ops; i++) {
+        req_reset();
+        put8(0);
+        put16(ref);
+        if (ops[i] == OP_READ || ops[i] == OP_BYTE_RANGE_LOCK) {
+            put32(0);
+            put32(4);
+            put8(0);
+            put8(0);
+        } else if (ops[i] == OP_WRITE) {
+            put32(0);
+            put32(3);
+            put_bytes("XYZ", 3);
+        } else if (ops[i] == OP_GET_FORK_PARMS) {
+            put16(0x0200);
+        } else if (ops[i] == OP_SET_FORK_PARMS) {
+            put16(0x0200);
+            put32(0);
+        }
+        ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, ops[i]));
+    }
+
+    // The owner's fork is untouched: open, unlocked, and still "HELD".
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(4);
+    put8(0);
+    put8(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_READ));
+    ASSERT_EQ_INT(4, g_reply_len);
+    ASSERT_EQ_INT(0, memcmp(g_reply, "HELD", 4));
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(4);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_BYTE_RANGE_LOCK));
+    ASSERT_EQ_INT((int)ERR_OK, (int)close_fork(ref));
+    afp_session_closed(other);
+    fixture_down();
+}
+
+// A volume ID is served to the sessions that opened the volume.  Any logged-in
+// session could delete by a volume ID it never opened, and close another
+// session's volume.
+TEST(volume_ids_belong_to_the_sessions_that_opened_them) {
+    fixture_up("volowner");
+    write_file("keep.txt", "K");
+    uint16_t other = 0x0045;
+    second_session_up(other, false);
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put16(0x0020);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, OP_GET_VOL_PARMS));
+    req_delete("keep.txt");
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, OP_DELETE));
+    char path[512];
+    host_path("keep.txt", path, sizeof path);
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(path, &st));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call_as(other, OP_CLOSE_VOL));
+    ASSERT_EQ_INT(1, (int)atalk_afp_volume_sessions_using(atalk_afp_volume_find("TestVol")));
+
+    // Opened, it is the other session's too; closed, it is gone for it alone.
+    open_vol_as(other);
+    ASSERT_EQ_INT(2, (int)atalk_afp_volume_sessions_using(atalk_afp_volume_find("TestVol")));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_CLOSE_VOL));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("keep.txt", 0x0100, 0x0100));
+    afp_session_closed(other);
+    fixture_down();
+}
+
+// FPGetIconInfo for a creator with no icons: ItemNotFound on an open
+// desktop database, ParamErr on a refnum the session does not hold.
+static uint32_t icon_info_as(uint16_t session, uint16_t dt) {
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x4E4F4E45u);
+    put16(1);
+    return call_as(session, OP_GET_ICON_INFO);
+}
+
+// A DTRefNum is held per session.  It was one global value per volume: one
+// session's FPCloseDT closed every session's, and a session that never
+// opened the desktop database could use it.
+TEST(desktop_refnums_belong_to_their_session) {
+    fixture_up("dtowner");
+    uint16_t dt = open_dt();
+    ASSERT_TRUE(dt != 0);
+    uint16_t other = 0x0046, third = 0x0047;
+    second_session_up(other, true);
+    second_session_up(third, true);
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_OPEN_DT));
+    ASSERT_EQ_INT(dt, rd16(g_reply)); // the volume's refnum
+    req_reset();
+    put8(0);
+    put16(dt);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call_as(other, OP_CLOSE_DT));
+
+    ASSERT_EQ_INT((int)ERR_ITEM_NOT_FOUND, (int)icon_info_as(SESSION, dt)); // still open here
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)icon_info_as(other, dt)); // closed there
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)icon_info_as(third, dt)); // never opened
+    afp_session_closed(other);
+    afp_session_closed(third);
+    fixture_down();
+}
+
+// --- one writer for the parameter replies (10-network H2: N-14, N-32) ---------
+
+static uint32_t write_fork(uint16_t ref, const void *data, uint32_t n) {
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(n);
+    put_bytes(data, n);
+    return call(OP_WRITE);
+}
+
+// An open fork's length is live in every reply that carries it.  Only
+// FPGetForkParms reported it, and only for the fork it was asked about;
+// FPGetFileDirParms, FPEnumerate and a second FPOpenFork read the host file
+// and the sidecar, which catch up only on flush -- so they said 0.
+TEST(open_forks_report_their_live_length_in_every_reply) {
+    fixture_up("livelen");
+    write_file("live.txt", "");
+    uint16_t data_ref = 0, rsrc_ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("live.txt", false, 0x0003, &data_ref));
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("live.txt", true, 0x0003, &rsrc_ref));
+    uint8_t bytes[100];
+    memset(bytes, 0xA5, sizeof bytes);
+    ASSERT_EQ_INT((int)ERR_OK, (int)write_fork(data_ref, bytes, 37));
+    ASSERT_EQ_INT((int)ERR_OK, (int)write_fork(rsrc_ref, bytes, 100));
+    const uint16_t lengths = (1u << 9) | (1u << 10); // DataForkLen, RsrcForkLen
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("live.txt", lengths, 0));
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 6));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 10));
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(lengths);
+    put16(0); // no directories
+    put16(10);
+    put16(1);
+    put16(4096);
+    put_path("");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ENUMERATE));
+    ASSERT_EQ_INT(1, (int)rd16(g_reply + 4));
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 8));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 12));
+
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(lengths);
+    put16(0x0001); // read, deny nothing
+    put_path("live.txt");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_OPEN_FORK));
+    uint16_t second = rd16(g_reply + 2);
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 4));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 8));
+
+    req_reset();
+    put8(0);
+    put16(data_ref);
+    put16(lengths);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_FORK_PARMS));
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 2));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 6)); // the other fork's, too
+
+    close_fork(second);
+    close_fork(rsrc_ref);
+    close_fork(data_ref);
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("live.txt", lengths, 0)); // flushed on close
+    ASSERT_EQ_INT(37, (int)rd32(g_reply + 6));
+    ASSERT_EQ_INT(100, (int)rd32(g_reply + 10));
+    fixture_down();
+}
+
+// A command refused for want of reply room does nothing.  FPOpenFork checked
+// the room after opening the fork, and left it open; FPLogin after logging
+// the session in.  The dispatcher now refuses a buffer below one ATP packet
+// before any handler runs.
+TEST(a_command_refused_for_reply_room_has_no_effect) {
+    fixture_up("replyroom");
+    write_file("f.txt", "F");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(0);
+    put16(0x0001);
+    put_path("f.txt");
+    int len = 0;
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)afp_handle_command(SESSION, OP_OPEN_FORK, g_req, g_req_len, g_reply, 2, &len));
+    ASSERT_EQ_INT(0, (int)afp_fork_count_total());
+
+    uint16_t other = 0x0048;
+    ASSERT_TRUE(afp_session_opened(other));
+    req_reset();
+    put_pstr("AFPVersion 2.1");
+    put_pstr("No User Authent");
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)afp_handle_command(other, OP_LOGIN, g_req, g_req_len, g_reply, 1, &len));
+    ASSERT_EQ_INT(0, (int)strlen(afp_session_version(other))); // not logged in
+    afp_session_closed(other);
+    fixture_down();
+}
+
+// An icon whose bitmap is shorter than its BitmapSize is refused, as a short
+// FPWrite is.  It was stored cut to what arrived.
+TEST(a_short_icon_bitmap_is_refused) {
+    fixture_up("shorticon");
+    uint16_t dt = open_dt();
+    uint8_t bitmap[100];
+    memset(bitmap, 0x3C, sizeof bitmap);
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x53484F52u); // 'SHOR'
+    put32(0x4150504Cu);
+    put8(1);
+    put8(0);
+    put32(0);
+    put16(256); // claims 256 bytes
+    put_bytes(bitmap, sizeof bitmap);
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)call(OP_ADD_ICON));
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x53484F52u);
+    put16(1);
+    ASSERT_EQ_INT((int)ERR_ITEM_NOT_FOUND, (int)call(OP_GET_ICON_INFO));
+    fixture_down();
+}
+
+// --- F1: every icon keeps its own bytes (10-network F-03) ------------------------
+
+static void icon_fill(uint8_t *bits, size_t n, int i) {
+    for (size_t k = 0; k < n; k++)
+        bits[k] = (uint8_t)(i * 31 + k);
+}
+
+// Seventeen icons, each read back.  The table starts with room for 16; the
+// 17th moved it, and every earlier icon's bitmap pointer went on pointing at
+// the freed block (ASan: heap-use-after-free in the afp_asan build).
+TEST(every_icon_reads_back_its_own_bitmap) {
+    fixture_up("icons17");
+    uint16_t dt = open_dt();
+    uint8_t bits[256];
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        req_reset();
+        put8(0);
+        put16(dt);
+        put32(0x49434F00u + (uint32_t)i); // one creator per icon
+        put32(0x4150504Cu);
+        put8(1);
+        put8(0);
+        put32((uint32_t)i);
+        put16((uint16_t)sizeof bits);
+        put_bytes(bits, sizeof bits);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ADD_ICON));
+    }
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        req_reset();
+        put8(0);
+        put16(dt);
+        put32(0x49434F00u + (uint32_t)i);
+        put32(0x4150504Cu);
+        put8(1);
+        put8(0); // pad
+        put16((uint16_t)sizeof bits);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_ICON));
+        ASSERT_EQ_INT((int)sizeof bits, g_reply_len);
+        ASSERT_EQ_INT(0, memcmp(g_reply, bits, sizeof bits));
+    }
+    fixture_down();
+}
+
+// The same through a reopen: replaying seventeen records grows the table
+// with no guest action at all.
+TEST(a_reopened_store_keeps_every_icon_bitmap) {
+    fixture_up("icons17reopen");
+    afp_desktop_t *dt = afp_desktop_open(g_root);
+    ASSERT_TRUE(dt != NULL);
+    uint8_t bits[64];
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, (uint32_t)i, 2, 1, 0, bits, sizeof bits));
+    }
+    afp_desktop_close(dt);
+    dt = afp_desktop_open(g_root);
+    ASSERT_TRUE(dt != NULL);
+    for (int i = 0; i < 17; i++) {
+        icon_fill(bits, sizeof bits, i);
+        const afp_icon_t *icon = afp_desktop_get_icon(dt, (uint32_t)i, 2, 1);
+        ASSERT_TRUE(icon != NULL);
+        ASSERT_EQ_INT(0, memcmp(icon->bitmap, bits, sizeof bits));
+        icon = afp_desktop_icon_at(dt, (uint32_t)i, 1);
+        ASSERT_TRUE(icon != NULL);
+        ASSERT_EQ_INT(0, memcmp(icon->bitmap, bits, sizeof bits));
+    }
+    afp_desktop_close(dt);
+    fixture_down();
+}
+
+// --- F2: a listing lives no longer than its volume (10-network F-09) ------------
+
+// A host file beside the share, outside AFP (no mutation is counted).
+static void write_host_file(const char *dir, const char *name) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != NULL);
+    fclose(f);
+}
+
+// A withdrawn volume's FPEnumerate snapshots go with it.  They stayed until
+// the session closed, and a volume later given the same ID -- by a wrap of
+// the ID counter, or a restore -- was listed with the removed share's names.
+TEST(a_withdrawn_volume_takes_its_listings_with_it) {
+    fixture_up("f09");
+    write_file("SecretA1", "");
+    write_file("SecretA2", "");
+    write_file("SecretA3", "");
+    uint16_t actual = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)enumerate(1, 1, 8192, &actual)); // page 1 takes the snapshot
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof err));
+
+    char other[300];
+    snprintf(other, sizeof other, "%s-other", g_root);
+    rm_rf(other);
+    ASSERT_EQ_INT(0, mkdir(other, 0755));
+    write_host_file(other, "B1");
+    write_host_file(other, "B2");
+    write_host_file(other, "B3");
+    ASSERT_TRUE(atalk_afp_volume_restore("Other", other, g_vol_id, err, sizeof err) >= 0);
+    ASSERT_EQ_INT(g_vol_id, open_named_vol_as(SESSION, "Other"));
+
+    char names[8][96];
+    ASSERT_EQ_INT(2, enum_names_from(2, names, 8));
+    ASSERT_EQ_INT(0, strcmp(names[0], "B2"));
+    ASSERT_EQ_INT(0, strcmp(names[1], "B3"));
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Other", err, sizeof err));
+    rm_rf(other);
+    fixture_down();
+}
+
+// FPCloseVol drops the session's snapshots on that volume only.  It dropped
+// them on every volume, so a listing in progress elsewhere lost its
+// snapshot and its next page came from a fresh listing.
+TEST(closing_a_volume_keeps_the_sessions_listings_on_others) {
+    fixture_up("closevol");
+    write_file("a", "");
+    write_file("b", "");
+    write_file("c", "");
+    char second[300];
+    snprintf(second, sizeof second, "%s-second", g_root);
+    rm_rf(second);
+    ASSERT_EQ_INT(0, mkdir(second, 0755));
+    char err[192];
+    ASSERT_TRUE(atalk_afp_volume_add("Second", second, err, sizeof err) >= 0);
+    uint16_t second_id = open_named_vol_as(SESSION, "Second");
+
+    uint16_t actual = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)enumerate(1, 1, 8192, &actual)); // "a", and the snapshot
+    write_file("aa", ""); // from the host: the snapshot stays valid
+    req_reset();
+    put8(0);
+    put16(second_id);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_CLOSE_VOL));
+
+    char names[8][96];
+    ASSERT_EQ_INT(2, enum_names_from(2, names, 8)); // "b", "c" -- not "aa", "b", "c"
+    ASSERT_EQ_INT(0, strcmp(names[0], "b"));
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Second", err, sizeof err));
+    rm_rf(second);
+    fixture_down();
+}
+
+// FPGetUserInfo with both bitmap bits writes 10 bytes; it checked for 6
+// (10-network F-11).  The dispatcher's floor refuses a short buffer before
+// the handler runs, and the bytes past it are untouched.
+TEST(get_user_info_never_writes_past_the_reply_buffer) {
+    fixture_up("userinfo");
+    uint8_t buf[16];
+    memset(buf, 0xEE, sizeof buf);
+    req_reset();
+    put8(0x01); // ThisUser
+    put32(0);
+    put16(0x0003); // User ID and Primary Group ID: 2 + 4 + 4 bytes
+    int len = 0;
+    ASSERT_EQ_INT((int)ERR_PARAM, (int)afp_handle_command(SESSION, OP_GET_USER_INFO, g_req, g_req_len, buf, 6, &len));
+    for (int i = 6; i < (int)sizeof buf; i++)
+        ASSERT_EQ_INT(0xEE, buf[i]);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_USER_INFO)); // a real buffer
+    ASSERT_EQ_INT(10, g_reply_len);
+    fixture_down();
+}
+
+// --- F4: no fork past the volume ceiling (10-network F-17) -----------------------
+
+static uint32_t set_fork_length(uint16_t ref, uint16_t bitmap, uint32_t length) {
+    req_reset();
+    put8(0);
+    put16(ref);
+    put16(bitmap);
+    put32(length);
+    return call(OP_SET_FORK_PARMS);
+}
+
+static uint32_t write_fork_at(uint16_t ref, uint32_t offset, const void *data, uint32_t n) {
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(offset);
+    put32(n);
+    put_bytes(data, n);
+    return call(OP_WRITE);
+}
+
+// A fork length, or a write ending, past the 2 GB - 1 KB ceiling every
+// reported size is clamped to is DiskFull.  Both went to the host as asked:
+// FPSetForkParms(0xFFFFFFFF) made a 4 GB sparse file, and 4 bytes written at
+// 0xFFFFFFFE succeeded with LastWritten wrapped to 2.
+TEST(a_fork_never_grows_past_the_volume_ceiling) {
+    fixture_up("ceiling");
+    write_file("big", "");
+    uint16_t data_ref = 0, rsrc_ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("big", false, 0x0003, &data_ref));
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork("big", true, 0x0003, &rsrc_ref));
+
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)set_fork_length(data_ref, 0x0200, 0xFFFFFFFFu));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)set_fork_length(data_ref, 0x0200, 0x7FFFFC01u));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)set_fork_length(rsrc_ref, 0x0400, 0x80000000u));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)write_fork_at(data_ref, 0xFFFFFFFEu, "WRAP", 4));
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)write_fork_at(data_ref, 0x7FFFFBFFu, "XY", 2)); // one past
+    ASSERT_EQ_INT((int)ERR_DISK_FULL, (int)write_fork_at(rsrc_ref, 0x7FFFFFF0u, "R", 1));
+
+    char path[512];
+    host_path("big", path, sizeof path);
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(path, &st));
+    ASSERT_EQ_INT(0, (int)st.st_size); // nothing reached the host
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)set_fork_length(data_ref, 0x0200, 10));
+    ASSERT_EQ_INT((int)ERR_OK, (int)write_fork_at(rsrc_ref, 0, "RSRC", 4));
+    close_fork(rsrc_ref);
+    close_fork(data_ref);
+    ASSERT_EQ_INT(0, stat(path, &st));
+    ASSERT_EQ_INT(10, (int)st.st_size);
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("big", 1u << 10, 0));
+    ASSERT_EQ_INT(4, (int)rd32(g_reply + 6)); // the resource fork, as written
+    fixture_down();
+}
+
+// --- F5: the icon store is bounded (10-network F-18) ------------------------------
+
+static uint32_t add_icon(uint16_t dt, uint32_t creator, uint8_t fill) {
+    uint8_t bits[32];
+    memset(bits, fill, sizeof bits);
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(creator);
+    put32(0x4150504Cu);
+    put8(1);
+    put8(0);
+    put32(0);
+    put16((uint16_t)sizeof bits);
+    put_bytes(bits, sizeof bits);
+    return call(OP_ADD_ICON);
+}
+
+// A desktop database holds AFP_MAX_ICONS icons; a new key past it is MiscErr.
+// There was no bound: a guest looping FPAddIcon with fresh creators grew the
+// table and the log until the host ran out.  Replacing an icon still works.
+TEST(the_icon_store_is_bounded) {
+    fixture_up("iconcap");
+    uint16_t dt = open_dt();
+    for (uint32_t i = 0; i < AFP_MAX_ICONS; i++)
+        ASSERT_EQ_INT((int)ERR_OK, (int)add_icon(dt, 0x10000000u + i, 1));
+    ASSERT_EQ_INT((int)ERR_MISC, (int)add_icon(dt, 0x20000000u, 1));
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_icon(dt, 0x10000000u, 2)); // a replacement, not a new key
+    fixture_down();
+}
+
+// --- F6: listings are evicted oldest first, and never cut short (10-network F-23) -
+
+// FPEnumerate `session` over the directory `dir` from `start`, `count` at a
+// time; the names land in `names`.  Returns the result code.
+static uint32_t enum_dir_as(uint16_t session, const char *dir, uint16_t start, uint16_t count, char names[][96],
+                            int *n) {
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(0x0040); // long name
+    put16(0x0040);
+    put16(count);
+    put16(start);
+    put16(8192);
+    put_path(dir);
+    uint32_t rc = call_as(session, OP_ENUMERATE);
+    *n = 0;
+    if (rc != ERR_OK)
+        return rc;
+    int pos = 6;
+    for (int i = 0; i < rd16(g_reply + 4); i++) {
+        int params = pos + 2;
+        int name = params + rd16(g_reply + params);
+        memcpy(names[i], g_reply + name + 1, g_reply[name]);
+        names[i][g_reply[name]] = '\0';
+        pos += g_reply[pos];
+        (*n)++;
+    }
+    return rc;
+}
+
+// One session fills every snapshot slot with a page from each of eight
+// directories; a second starts two listings.  Slot 0 was evicted whoever held
+// it, so the second session's own first listing went at once, and its next
+// page, served from a fresh listing after a host insert, repeated an entry.
+TEST(a_listing_in_progress_is_not_evicted_first) {
+    fixture_up("f23");
+    char dir[16], file[32];
+    for (int d = 0; d < 10; d++) {
+        snprintf(dir, sizeof dir, "D%d", d);
+        char path[512];
+        host_path(dir, path, sizeof path);
+        ASSERT_EQ_INT(0, mkdir(path, 0755));
+        for (int i = 0; i < 10; i++) {
+            snprintf(file, sizeof file, "D%d/f%02d", d, i);
+            write_file(file, "x");
+        }
+    }
+    uint16_t other = 0x0049;
+    second_session_up(other, true);
+    char names[16][96];
+    int n = 0;
+    for (int d = 0; d < 8; d++) {
+        snprintf(dir, sizeof dir, "D%d", d);
+        ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(SESSION, dir, 1, 3, names, &n));
+    }
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(other, "D8", 1, 3, names, &n)); // f00 f01 f02
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(other, "D9", 1, 3, names, &n));
+    write_file("D8/a-inserted", "x"); // from the host: sorts first
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(other, "D8", 4, 3, names, &n));
+    ASSERT_EQ_INT(3, n);
+    ASSERT_EQ_INT(0, strcmp(names[0], "f03")); // not f02 again
+    ASSERT_EQ_INT(0, strcmp(names[2], "f05"));
+    afp_session_closed(other);
+    fixture_down();
+}
+
+// --- F7: FPGetIcon's Length is after a pad (10-network N-10) ----------------------
+
+// FPGetIcon returns at most Length bytes.  Length was read one byte early,
+// from the pad: asking for 16 bytes of a 256-byte icon got all 256.
+TEST(get_icon_returns_at_most_the_length_asked) {
+    fixture_up("iconlen");
+    uint16_t dt = open_dt();
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_icon(dt, 0x4C454E47u, 0x77)); // 'LENG', 32 bytes
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x4C454E47u);
+    put32(0x4150504Cu);
+    put8(1);
+    put8(0); // pad
+    put16(16);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_ICON));
+    ASSERT_EQ_INT(16, g_reply_len);
+    ASSERT_EQ_INT(0x77, g_reply[15]);
+    fixture_down();
+}
+
+// --- F8: small AFP corrections (10-network N-11, N-12, N-13a, N-15) ------------------
+
+static uint32_t add_comment(uint16_t dt, const char *path, const char *comment) {
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put_path(path);
+    put_even_pad();
+    put_pstr(comment);
+    return call(OP_ADD_COMMENT);
+}
+
+static uint32_t get_comment(uint16_t dt, const char *path) {
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put_path(path);
+    return call(OP_GET_COMMENT);
+}
+
+// A comment follows its pathname on an even offset, after a pad when needed.
+// The pad was read as the comment's length: an odd-length name lost its
+// comment.  An even-length name, with no pad, must keep working.
+TEST(comments_follow_the_pad_the_pathname_needs) {
+    fixture_up("commentpad");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Odd"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Even"));
+    uint16_t dt = open_dt();
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Odd", "after a pad"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Even", "no pad"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_comment(dt, "Odd"));
+    ASSERT_EQ_INT(11, (int)g_reply[0]);
+    ASSERT_EQ_INT(0, memcmp(g_reply + 1, "after a pad", 11));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_comment(dt, "Even"));
+    ASSERT_EQ_INT(6, (int)g_reply[0]);
+    ASSERT_EQ_INT(0, memcmp(g_reply + 1, "no pad", 6));
+    fixture_down();
+}
+
+// FPCatSearch one match at a time finds every match.  The catalog position
+// moved past an entry before the "enough matches" check, so each resume
+// skipped one: 3 matches, 2 found.
+TEST(cat_search_resumes_without_losing_a_match) {
+    fixture_up("catsearchresume");
+    const char *files[] = {"Match1", "Match2", "Match3", "Other"};
+    for (int i = 0; i < 4; i++) {
+        write_file(files[i], "x");
+        (void)file_number(files[i]);
+    }
+    uint8_t catpos[16] = {0};
+    int found = 0;
+    for (int call_no = 0; call_no < 8; call_no++) {
+        put_catsearch_header(1, catpos, 0x0040, 0x0000, 0x80000040u);
+        int spec1 = g_req_len;
+        put8(0);
+        put8(0);
+        put16(2);
+        put_pstr("Match");
+        g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
+        int spec2 = g_req_len;
+        put8(0);
+        put8(0);
+        put16(0);
+        g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
+        uint32_t rc = call(OP_CAT_SEARCH);
+        ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
+        found += (int)rd32(g_reply + 20);
+        memcpy(catpos, g_reply, 16);
+        if (rc == ERR_EOF)
+            break;
+    }
+    ASSERT_EQ_INT(3, found);
+    fixture_down();
+}
+
+// With a null file bitmap, StartIndex counts directories only.  It indexed
+// the mixed listing, so a directories-only walk one at a time repeated one.
+TEST(enumerate_start_index_counts_the_kinds_asked_for) {
+    fixture_up("enumkind");
+    const char *dirs[] = {"a", "c", "e"};
+    for (int i = 0; i < 3; i++) {
+        char path[512];
+        host_path(dirs[i], path, sizeof path);
+        ASSERT_EQ_INT(0, mkdir(path, 0755));
+    }
+    write_file("b", "");
+    write_file("d", "");
+    for (uint16_t start = 1; start <= 3; start++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(CNID_ROOT);
+        put16(0x0000); // no files
+        put16(0x0040); // directories: long name
+        put16(1);
+        put16(start);
+        put16(4096);
+        put_path("");
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ENUMERATE));
+        int name = 6 + 2 + rd16(g_reply + 8);
+        ASSERT_EQ_INT(1, (int)g_reply[name]);
+        ASSERT_EQ_INT(dirs[start - 1][0], g_reply[name + 1]);
+    }
+    fixture_down();
+}
+
+// FPRemoveAPPL names the application by path; a path that names nothing is
+// ObjectNotFound.  It removed every mapping for the creator instead.
+TEST(remove_appl_of_a_missing_application_removes_nothing) {
+    fixture_up("rmvappl");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("TeachText"));
+    uint16_t dt = open_dt();
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put32(0x74747874u); // 'ttxt'
+    put32(0x00000042u);
+    put_path("TeachText");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_ADD_APPL));
+
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put32(0x74747874u);
+    put_path("Nowhere");
+    ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)call(OP_RMV_APPL));
+
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(0x74747874u);
+    put16(1);
+    put16(0);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_APPL)); // the mapping is still there
+
+    req_reset();
+    put8(0);
+    put16(dt);
+    put32(CNID_ROOT);
+    put32(0x74747874u);
+    put_path("TeachText");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_RMV_APPL));
+    fixture_down();
+}
+
+// FPOpenDir's shortest request -- an empty pathname, naming the directory ID
+// itself -- is 9 bytes.  It needed 10.
+TEST(open_dir_accepts_an_empty_pathname) {
+    fixture_up("opendir9");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("");
+    ASSERT_EQ_INT(9, g_req_len);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_OPEN_DIR));
+    ASSERT_EQ_INT((int)CNID_ROOT, (int)rd32(g_reply));
+    fixture_down();
+}
+
+// --- G1: one append log for the catalog and the desktop stores (10-network N-16) --
+
+static void desktop_log_path(const char *leaf, char *out, size_t cap) {
+    snprintf(out, cap, "%s/%s/%s", g_root, AFP_CONTROL_DIR, leaf);
+}
+
+static void append_bytes(const char *path, const void *bytes, size_t n) {
+    FILE *f = fopen(path, "ab");
+    ASSERT_TRUE(f != NULL);
+    ASSERT_EQ_INT((int)n, (int)fwrite(bytes, 1, n, f));
+    fclose(f);
+}
+
+// One well-formed record: op, length, payload, CRC-32 over the three.
+static void append_record(const char *path, uint8_t op, const uint8_t *payload, uint16_t len) {
+    uint8_t head[3] = {op, (uint8_t)(len >> 8), (uint8_t)len};
+    uint32_t crc = gs_crc32(gs_crc32(0, head, 3), payload, len);
+    uint8_t tail[4] = {(uint8_t)(crc >> 24), (uint8_t)(crc >> 16), (uint8_t)(crc >> 8), (uint8_t)crc};
+    append_bytes(path, head, 3);
+    append_bytes(path, payload, len);
+    append_bytes(path, tail, 4);
+}
+
+// A record appended after a crash survives the next reload.  Replay stopped
+// at the torn record but left it in the file, so every later append landed
+// behind the garbage and was lost at the next load -- a CNID handed out after
+// a crash came back as a different one.
+TEST(the_catalog_keeps_what_is_written_after_a_torn_tail) {
+    fixture_up("torn2");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Alpha"));
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
+    char log[512];
+    desktop_log_path("catalog.gsc", log, sizeof log);
+    append_bytes(log, "\x01\x00\x40torn", 7); // a record cut short
+
+    ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
+    g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION);
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Gamma")); // after the crash
+    uint32_t gamma = file_number("Gamma");
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
+
+    ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
+    g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION);
+    ASSERT_EQ_INT((int)gamma, (int)file_number("Gamma"));
+    fixture_down();
+}
+
+// The same for the icon store; and a record of an op the store does not know
+// is skipped whole -- it was replayed as a PUT, creating an icon.
+TEST(the_desktop_keeps_what_is_written_after_a_torn_tail) {
+    fixture_up("torndt");
+    uint8_t bits[32];
+    memset(bits, 0x5A, sizeof bits);
+    afp_desktop_t *dt = afp_desktop_open(g_root);
+    ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, 1, 2, 1, 0, bits, sizeof bits));
+    afp_desktop_close(dt);
+    char log[512];
+    desktop_log_path("desktop.icons", log, sizeof log);
+    uint8_t unknown[13 + 32] = {0, 0, 0, 7, 0, 0, 0, 2, 1}; // creator 7
+    append_record(log, 0x7F, unknown, sizeof unknown);
+    append_bytes(log, "\x01\x00", 2); // then a torn one
+
+    dt = afp_desktop_open(g_root);
+    ASSERT_TRUE(afp_desktop_get_icon(dt, 7, 2, 1) == NULL); // the unknown op made nothing
+    ASSERT_TRUE(afp_desktop_get_icon(dt, 1, 2, 1) != NULL);
+    ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, 3, 2, 1, 0, bits, sizeof bits)); // after the crash
+    afp_desktop_close(dt);
+
+    dt = afp_desktop_open(g_root);
+    const afp_icon_t *icon = afp_desktop_get_icon(dt, 3, 2, 1);
+    ASSERT_TRUE(icon != NULL);
+    ASSERT_EQ_INT(0, memcmp(icon->bitmap, bits, sizeof bits));
+    afp_desktop_close(dt);
+    fixture_down();
+}
+
+// Re-putting one icon is compacted as it goes: the log stays a few records
+// long.  Compaction ran only at close, so a store that stayed open grew
+// without bound.
+TEST(a_rewritten_icon_does_not_grow_the_log) {
+    fixture_up("iconrewrite");
+    uint8_t bits[32];
+    afp_desktop_t *dt = afp_desktop_open(g_root);
+    for (int i = 0; i < 1000; i++) {
+        memset(bits, (uint8_t)i, sizeof bits);
+        ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, 1, 2, 1, 0, bits, sizeof bits));
+    }
+    char log[512];
+    desktop_log_path("desktop.icons", log, sizeof log);
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(log, &st));
+    ASSERT_TRUE(st.st_size < 20 * (3 + 13 + 32 + 4)); // 1000 records would be 52 KB
+    afp_desktop_close(dt);
+    dt = afp_desktop_open(g_root);
+    ASSERT_EQ_INT((int)(uint8_t)999, afp_desktop_get_icon(dt, 1, 2, 1)->bitmap[0]); // the last one
+    afp_desktop_close(dt);
+    fixture_down();
+}
+
+// --- G2: catalog lookups are indexed (10-network F-24) --------------------------
+
+// The child index follows every rename, move and delete, keeps names that
+// differ only in case apart (the host does), and a reopened catalog rebuilds
+// it and walks CNIDs in order.
+TEST(the_catalog_index_follows_every_change) {
+    fixture_up("catindex");
+    afp_catalog_t *cat = afp_catalog_open(g_root);
+    const afp_cat_entry_t *d = afp_catalog_add(cat, AFP_CNID_ROOT, "Dir", true);
+    uint32_t dir = d->cnid;
+    uint32_t ids[300];
+    char name[16];
+    for (int i = 0; i < 300; i++) { // grows the index several times
+        snprintf(name, sizeof name, "f%03d", i);
+        ids[i] = afp_catalog_add(cat, dir, name, false)->cnid;
+    }
+    uint32_t upper = afp_catalog_add(cat, dir, "F000", false)->cnid;
+    ASSERT_TRUE(upper != ids[0]);
+    ASSERT_EQ_INT((int)ids[0], (int)afp_catalog_find_child(cat, dir, "f000")->cnid);
+    ASSERT_EQ_INT((int)upper, (int)afp_catalog_find_child(cat, dir, "F000")->cnid);
+
+    ASSERT_TRUE(afp_catalog_rename(cat, ids[1], "renamed"));
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f001") == NULL);
+    ASSERT_EQ_INT((int)ids[1], (int)afp_catalog_find_child(cat, dir, "renamed")->cnid);
+    ASSERT_TRUE(afp_catalog_move(cat, ids[2], AFP_CNID_ROOT, "moved"));
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f002") == NULL);
+    ASSERT_EQ_INT((int)ids[2], (int)afp_catalog_find_child(cat, AFP_CNID_ROOT, "moved")->cnid);
+    ASSERT_TRUE(afp_catalog_remove(cat, ids[3]));
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f003") == NULL);
+    afp_catalog_close(cat);
+
+    cat = afp_catalog_open(g_root);
+    ASSERT_EQ_INT((int)ids[1], (int)afp_catalog_find_child(cat, dir, "renamed")->cnid);
+    ASSERT_EQ_INT((int)ids[2], (int)afp_catalog_find_child(cat, AFP_CNID_ROOT, "moved")->cnid);
+    ASSERT_TRUE(afp_catalog_find_child(cat, dir, "f003") == NULL);
+    ASSERT_EQ_INT((int)ids[299], (int)afp_catalog_find_child(cat, dir, "f299")->cnid);
+    // CNIDs come back in order, the deleted one skipped.
+    uint32_t prev = 0;
+    int seen = 0;
+    for (const afp_cat_entry_t *e = afp_catalog_next(cat, 0); e; e = afp_catalog_next(cat, prev)) {
+        ASSERT_TRUE(e->cnid > prev);
+        ASSERT_TRUE(e->cnid != ids[3]);
+        prev = e->cnid;
+        seen++;
+    }
+    ASSERT_EQ_INT(1 + 1 + 300 + 1 - 1, seen); // root, Dir, 300 files and F000, less the deleted one
+    afp_catalog_close(cat);
+    fixture_down();
+}
+
+// A listing holds at most 65,535 entries -- the reach of StartIndex.  A
+// larger directory is MiscErr, not a listing cut short.
+TEST(a_directory_too_large_to_page_is_refused_whole) {
+    fixture_up("f23cap");
+    char path[512];
+    host_path("Big", path, sizeof path);
+    ASSERT_EQ_INT(0, mkdir(path, 0755));
+    char file[64];
+    for (int i = 0; i < 65536; i++) {
+        snprintf(file, sizeof file, "Big/%05d", i);
+        write_file(file, "");
+    }
+    char names[16][96];
+    int n = 0;
+    ASSERT_EQ_INT((int)ERR_MISC, (int)enum_dir_as(SESSION, "Big", 1, 1, names, &n));
+    host_path("Big/65535", path, sizeof path);
+    ASSERT_EQ_INT(0, unlink(path));
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(SESSION, "Big", 65535, 1, names, &n));
+    ASSERT_EQ_INT(0, strcmp(names[0], "65534"));
+    fixture_down();
+}
+
+// --- G3: stores are replaced whole (10-network N-26) ------------------------------
+
+static ino_t inode_of(const char *path) {
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(path, &st));
+    return st.st_ino;
+}
+
+static void set_backup_date(uint32_t date) {
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put16(0x0010);
+    put32(date);
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_SET_VOL_PARMS));
+}
+
+// A metadata update and a backup date are written to a new file renamed over
+// the old -- a new inode each time -- so a crash mid-write leaves the old one.
+// Both were rewritten in place: a crash lost the file's Finder Info, dates and
+// comment, or the volume's backup date.
+TEST(sidecars_and_the_volume_record_are_replaced_whole) {
+    fixture_up("atomic");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Doc"));
+    uint16_t dt = open_dt();
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Doc", "one"));
+    char sc[512];
+    host_path("._Doc", sc, sizeof sc);
+    ino_t before = inode_of(sc);
+    ASSERT_EQ_INT((int)ERR_OK, (int)add_comment(dt, "Doc", "two"));
+    ASSERT_TRUE(inode_of(sc) != before);
+
+    set_backup_date(0xC0000000u);
+    char rec[512];
+    snprintf(rec, sizeof rec, "%s/%s/volume", g_root, AFP_CONTROL_DIR);
+    before = inode_of(rec);
+    set_backup_date(0xC0000001u);
+    ASSERT_TRUE(inode_of(rec) != before);
+    fixture_down();
+}
+
+// --- I5: a rename that cannot be published changes nothing (10-network N-23) ------
+
+// The server's new name is published before it is stored: a name another
+// entity holds ("Taken", in this suite's registry) leaves the server named as
+// it was.  It stored the name first, so the tree showed one nobody could find.
+TEST(a_server_rename_that_cannot_be_published_changes_nothing) {
+    fixture_up("rename");
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_set_name("Before", err, sizeof err));
+    ASSERT_TRUE(atalk_afp_set_name("Taken", err, sizeof err) != 0);
+    ASSERT_TRUE(strstr(err, "taken") != NULL);
+    ASSERT_EQ_INT(0, strcmp(atalk_afp_get_name(), "Before"));
+    ASSERT_EQ_INT(0, atalk_afp_set_name("After", err, sizeof err));
+    ASSERT_EQ_INT(0, strcmp(atalk_afp_get_name(), "After"));
+    ASSERT_EQ_INT(0, atalk_afp_set_name("Shared Folders", err, sizeof err)); // the default, for later tests
+    fixture_down();
+}
+
+// --- D-5: names longer than a Mac name (10-network 0.6) --------------------------
+
+// A host name longer than 31 MacRoman characters goes out as its first bytes
+// and "#<CNID in hex>", 31 in all, and that name finds the file again; a name
+// of 31 is left alone, and a real file whose name looks shortened is itself.
+TEST(long_names_are_shortened_and_found_again) {
+    fixture_up("longname");
+    const char *long40 = "A name that runs to forty characters, ok";
+    write_file(long40, "forty");
+    write_file("Thirty-one characters, exactly.", "31");
+    uint32_t cnid = file_number(long40); // adopts it, by its host name
+    char expect[40];
+    snprintf(expect, sizeof expect, "#%X", (unsigned)cnid);
+    char shortname[40];
+    snprintf(shortname, sizeof shortname, "%.*s%s", (int)(31 - strlen(expect)), long40, expect);
+    ASSERT_EQ_INT(31, (int)strlen(shortname));
+
+    char names[8][96];
+    int n = enum_root_names(names, 8);
+    ASSERT_EQ_INT(2, n);
+    ASSERT_TRUE(listed(shortname));
+    ASSERT_TRUE(listed("Thirty-one characters, exactly."));
+    for (int i = 0; i < n; i++)
+        ASSERT_TRUE(strlen(names[i]) <= 31);
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms(shortname, 0x0100, 0x0100)); // by its short name
+    ASSERT_EQ_INT((int)cnid, (int)rd32(g_reply + 6));
+    uint16_t ref = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)open_fork(shortname, false, 0x0001, &ref));
+    req_reset();
+    put8(0);
+    put16(ref);
+    put32(0);
+    put32(16);
+    put8(0);
+    put8(0);
+    call(OP_READ);
+    ASSERT_EQ_INT(5, g_reply_len);
+    ASSERT_EQ_INT(0, memcmp(g_reply, "forty", 5));
+    close_fork(ref);
+
+    write_file("Looks#1A", "real"); // a real name of that shape is itself
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("Looks#1A", 0x0100, 0x0100));
+    ASSERT_TRUE(rd32(g_reply + 6) != 0x1A);
+    fixture_down();
+}
+
+// --- D-7: names are case-insensitive, diacritical-sensitive ---------------------
+
+static uint32_t rename_to(const char *from, const char *to) {
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path(from);
+    put_path(to);
+    return call(OP_RENAME);
+}
+
+static uint32_t cat_search_name(const char *mac_name) {
+    put_catsearch_header(10, NULL, 0x0040, 0x0000, 0x00000040u);
+    int spec1 = g_req_len;
+    put8(0);
+    put8(0);
+    put16(2);
+    put_pstr(mac_name);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
+    int spec2 = g_req_len;
+    put8(0);
+    put8(0);
+    put16(0);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
+    uint32_t rc = call(OP_CAT_SEARCH);
+    return (rc == ERR_OK || rc == ERR_EOF) ? rd32(g_reply + 20) : 0xFFFFFFFFu;
+}
+
+// A client's name finds the host file whose name folds equal under Inside
+// AppleTalk's Table D-2 when none matches exactly; accents fold with their
+// letter (é is É) but stay distinct from it (é is not e); names differing in
+// case alone on the host are found only exactly; and a new name that folds onto
+// a sibling is ObjectExists for every call that makes one, except the object's
+// own name in another case.
+TEST(names_are_case_insensitive_and_diacritical_sensitive) {
+    fixture_up("case");
+    write_file("ReadMe", "r");
+    write_file("Caf\xC3\xA9", "c"); // host "Café"
+    uint32_t cnid = file_number("ReadMe");
+
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("README", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)cnid, (int)rd32(g_reply + 6));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("readme", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("CAF\x83", 0x0100, 0x0100)); // É ($83) is é ($8E)
+    ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)get_fd_parms("Cafe", 0x0100, 0x0100));
+
+    // Two host names differing in case alone: each exactly, neither by a third case.
+    write_file("twin", "1");
+    write_file("TWIN", "2");
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("twin", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OK, (int)get_fd_parms("TWIN", 0x0100, 0x0100));
+    ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)get_fd_parms("Twin", 0x0100, 0x0100));
+
+    // Creating what the Mac sees as an existing name.
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)create_file("readme"));
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)create_dir("README", NULL));
+    write_file("Other", "o");
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)rename_to("Other", "README"));
+    req_reset(); // FPCopyFile to "readme"
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put_path("Other");
+    put_path("");
+    put_path("readme");
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)call(OP_COPY_FILE));
+    uint32_t dir_id = 0;
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_dir("Sub", &dir_id));
+    write_file("Sub/other", "s");
+    req_reset(); // FPMoveAndRename "Other" into Sub, where "other" is
+    put8(0);
+    put16(g_vol_id);
+    put32(CNID_ROOT);
+    put32(dir_id);
+    put_path("Other");
+    put_path("");
+    ASSERT_EQ_INT((int)ERR_OBJECT_EXISTS, (int)call(OP_MOVE_AND_RENAME));
+    char path[512];
+    host_path("readme", path, sizeof(path));
+    ASSERT_TRUE(!host_exists(path));
+    host_path("README", path, sizeof(path));
+    ASSERT_TRUE(!host_exists(path));
+
+    // Its own name in another case is a rename, and keeps the CNID.
+    ASSERT_EQ_INT((int)ERR_OK, (int)rename_to("ReadMe", "README"));
+    ASSERT_TRUE(host_exists(path));
+    host_path("ReadMe", path, sizeof(path));
+    ASSERT_TRUE(!host_exists(path));
+    ASSERT_EQ_INT((int)cnid, (int)file_number("README"));
+
+    // FPCatSearch compares names the same way.
+    ASSERT_EQ_INT(1, (int)cat_search_name("CAF\x83"));
+    ASSERT_EQ_INT(0, (int)cat_search_name("CAFE"));
+    fixture_down();
+}
+
+// A listing is ordered by folded Mac name: "éa" before "Éb", whatever the
+// bytes of their UTF-8 host names say (É is C3 89, é C3 A9).
+TEST(listings_are_ordered_by_folded_mac_name) {
+    fixture_up("caseorder");
+    write_file("\xC3\x89"
+               "b",
+               "1"); // "Éb"
+    write_file("\xC3\xA9"
+               "a",
+               "2"); // "éa"
+    char names[4][96];
+    ASSERT_EQ_INT(2, enum_root_names(names, 4));
+    ASSERT_EQ_INT(0, strcmp(names[0], "\x8E"
+                                      "a"));
+    ASSERT_EQ_INT(0, strcmp(names[1], "\x83"
+                                      "b"));
+    fixture_down();
+}
+
+// A path may start at Directory ID 1, the root's parent, with the volume's
+// name as its first element (Inside AppleTalk 13-26): System 7.5's AppleShare
+// 3.5 asks for the root that way right after mounting.  The name folds like
+// any other; one that is not the volume's names nothing.
+TEST(a_path_from_the_roots_parent_starts_with_the_volume_name) {
+    fixture_up("rootparent");
+    write_file("Inner", "i");
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(1);
+    put16(0x0100);
+    put16(0x0100);
+    put_path("TestVol");
+    ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_FD_PARMS));
+    ASSERT_EQ_INT((int)CNID_ROOT, (int)rd32(g_reply + 6));
+
+    const char *paths[] = {"testvol", "TestVol:Inner", ":TestVol:Inner"};
+    for (int i = 0; i < 3; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(1);
+        put16(0x0100);
+        put16(0x0100);
+        put_path(paths[i]);
+        ASSERT_EQ_INT((int)ERR_OK, (int)call(OP_GET_FD_PARMS));
+    }
+    ASSERT_EQ_INT((int)file_number("Inner"), (int)rd32(g_reply + 6));
+
+    const char *bad[] = {"Other", "", "TestVol::x"};
+    const uint32_t want[] = {ERR_OBJECT_NOT_FND, ERR_OBJECT_NOT_FND, ERR_PARAM};
+    for (int i = 0; i < 3; i++) {
+        req_reset();
+        put8(0);
+        put16(g_vol_id);
+        put32(1);
+        put16(0x0100);
+        put16(0x0100);
+        put_path(bad[i]);
+        ASSERT_EQ_INT((int)want[i], (int)call(OP_GET_FD_PARMS));
+    }
+    fixture_down();
+}
+
+// FPEnumerate adopts what it lists in name order, so a share's CNIDs do not
+// depend on the host's readdir order (creation order on some filesystems, a
+// seeded hash on ext4).  Twenty files made in a scrambled order must number
+// in name order.
+TEST(a_listing_numbers_its_entries_in_name_order) {
+    fixture_up("cnidorder");
+    const int order[20] = {7, 15, 2, 19, 11, 0, 13, 4, 17, 9, 1, 18, 6, 12, 3, 16, 8, 14, 5, 10};
+    for (int i = 0; i < 20; i++) {
+        char name[8];
+        snprintf(name, sizeof(name), "f%02d", order[i]);
+        write_file(name, "x");
+    }
+    char names[24][96];
+    ASSERT_EQ_INT(20, enum_root_names(names, 24));
+    uint32_t prev = 0;
+    for (int i = 0; i < 20; i++) {
+        char name[8];
+        snprintf(name, sizeof(name), "f%02d", i);
+        uint32_t id = file_number(name);
+        ASSERT_TRUE(id > prev);
+        prev = id;
+    }
+    fixture_down();
+}
+
+// FPCatSearch exactly as System 7.5's Find File sends it (AppleShare 3.5,
+// captured from appletalk-afp-sys7): partial name "forty", visible files and
+// directories.  Each specification's StructLength counts the parameters after
+// its length and filler bytes -- 40 and 36 here, in a 115-byte request.  The
+// server read it as counting those two bytes as well, found Specification2
+// two bytes early, and answered ParamErr.
+TEST(cat_search_parses_find_files_request) {
+    fixture_up("catsearchreal");
+    write_file("A name that runs to forty", "x");
+    write_file("Other", "x");
+    (void)file_number("A name that runs to forty"); // CatSearch walks the catalog
+    (void)file_number("Other");
+    static const uint8_t spec[] = {// Specification1: 40 bytes -- Finder Info (32), name offset 34, "forty".
+                                   0x28, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x22, 0x05, 'f', 'o', 'r', 't', 'y',
+                                   // Specification2: 36 bytes -- the Finder Info mask (invisible bit),
+                                   // then a nil name field and its pad.
+                                   0x24, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x22, 0x00, 0x00};
+    put_catsearch_header(30, NULL, 0x0042, 0x0042, 0x80000060u);
+    put_bytes(spec, sizeof(spec));
+    ASSERT_EQ_INT(115, g_req_len);
+    uint32_t rc = call(OP_CAT_SEARCH);
+    ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
+    ASSERT_EQ_INT(1, (int)rd32(g_reply + 20));
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -2128,6 +3842,7 @@ int main(void) {
     RUN(exchange_files_keeps_an_open_fork_pointed_at_its_bytes);
     RUN(cat_search_matches_on_name_and_resumes_from_cat_position);
     RUN(cat_search_partial_name_matches_several);
+    RUN(cat_search_parses_find_files_request);
     RUN(cat_search_rejects_criteria_it_cannot_serve);
     RUN(server_message_round_trips_and_raises_an_attention);
     RUN(afp_21_commands_are_refused_on_a_20_session);
@@ -2141,6 +3856,47 @@ int main(void) {
     RUN(set_fork_parms_truncates_and_flush_persists);
     RUN(write_may_be_partial_and_reports_where_it_stopped);
     RUN(read_past_end_of_fork_is_eof);
+    RUN(fork_refnums_are_never_reused_while_held);
+    RUN(commands_need_an_open_logged_in_session);
+    RUN(get_srvr_info_is_not_a_command);
+    RUN(a_disabled_server_takes_no_sessions);
+    RUN(new_names_cannot_leave_the_share);
+    RUN(pathnames_separate_elements_with_nuls);
+    RUN(path_type_and_length_are_checked);
+    RUN(names_are_macroman_on_the_wire_and_utf8_on_the_host);
+    RUN(host_paths_are_joined_from_real_names_only);
+    RUN(forks_belong_to_the_session_that_opened_them);
+    RUN(volume_ids_belong_to_the_sessions_that_opened_them);
+    RUN(desktop_refnums_belong_to_their_session);
+    RUN(open_forks_report_their_live_length_in_every_reply);
+    RUN(a_command_refused_for_reply_room_has_no_effect);
+    RUN(a_short_icon_bitmap_is_refused);
+    RUN(every_icon_reads_back_its_own_bitmap);
+    RUN(a_reopened_store_keeps_every_icon_bitmap);
+    RUN(a_withdrawn_volume_takes_its_listings_with_it);
+    RUN(closing_a_volume_keeps_the_sessions_listings_on_others);
+    RUN(get_user_info_never_writes_past_the_reply_buffer);
+    RUN(a_fork_never_grows_past_the_volume_ceiling);
+    RUN(the_icon_store_is_bounded);
+    RUN(a_listing_in_progress_is_not_evicted_first);
+    RUN(get_icon_returns_at_most_the_length_asked);
+    RUN(comments_follow_the_pad_the_pathname_needs);
+    RUN(cat_search_resumes_without_losing_a_match);
+    RUN(enumerate_start_index_counts_the_kinds_asked_for);
+    RUN(remove_appl_of_a_missing_application_removes_nothing);
+    RUN(open_dir_accepts_an_empty_pathname);
+    RUN(the_catalog_keeps_what_is_written_after_a_torn_tail);
+    RUN(the_desktop_keeps_what_is_written_after_a_torn_tail);
+    RUN(a_rewritten_icon_does_not_grow_the_log);
+    RUN(the_catalog_index_follows_every_change);
+    RUN(a_directory_too_large_to_page_is_refused_whole);
+    RUN(sidecars_and_the_volume_record_are_replaced_whole);
+    RUN(a_server_rename_that_cannot_be_published_changes_nothing);
+    RUN(long_names_are_shortened_and_found_again);
+    RUN(names_are_case_insensitive_and_diacritical_sensitive);
+    RUN(listings_are_ordered_by_folded_mac_name);
+    RUN(a_path_from_the_roots_parent_starts_with_the_volume_name);
+    RUN(a_listing_numbers_its_entries_in_name_order);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

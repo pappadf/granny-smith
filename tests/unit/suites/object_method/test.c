@@ -428,7 +428,108 @@ TEST(test_interior_optional_slot_can_be_skipped) {
     object_root_reset();
 }
 
+// A counter block published through OBJ_U64_FIELD (the object's data) and
+// OBJ_U64_FIELD_WITH (a getter of its own): each attribute reads its field,
+// read-only, and follows the block as it changes.
+typedef struct {
+    uint64_t hits;
+    uint64_t misses;
+} counters_t;
+
+static counters_t g_counters;
+
+static value_t counters_misses(struct object *self, const member_t *m) {
+    (void)self;
+    return obj_u64_at(&g_counters, m);
+}
+
+static const member_t counters_members[] = {
+    OBJ_U64_FIELD(counters_t, hits, "Hits"),
+    OBJ_U64_FIELD_WITH(counters_t, misses, "Misses", counters_misses),
+};
+
+static const class_desc_t counters_class = {
+    .name = "counters",
+    .members = counters_members,
+    .n_members = sizeof(counters_members) / sizeof(counters_members[0]),
+};
+
+TEST(test_counter_fields_read_their_block) {
+    object_root_reset();
+    object_attach(object_root(), object_new(&counters_class, &g_counters, "counters"));
+    g_counters.hits = 5;
+    g_counters.misses = 1ull << 40;
+    value_t h = node_get(object_resolve(object_root(), "counters.hits"));
+    value_t m = node_get(object_resolve(object_root(), "counters.misses"));
+    ASSERT_EQ_INT(5, (int)val_as_u64(&h, NULL));
+    ASSERT_TRUE(val_as_u64(&m, NULL) == (1ull << 40));
+    value_free(&h);
+    value_free(&m);
+    g_counters.hits++;
+    h = node_get(object_resolve(object_root(), "counters.hits"));
+    ASSERT_EQ_INT(6, (int)val_as_u64(&h, NULL));
+    value_free(&h);
+    ASSERT_TRUE(counters_members[0].flags & VAL_RO);
+}
+
+// An indexed collection that gives `slots` and no next(): the core walks
+// get() over the slots, skipping holes, and synthesizes `count` (10-network
+// F-26: 15 of 17 collections carried a next() doing exactly that, and a
+// count() the core never called).
+static struct object *g_sparse_items[4];
+static struct object *sparse_get(struct object *self, int index) {
+    (void)self;
+    return (index >= 0 && index < 4) ? g_sparse_items[index] : NULL;
+}
+static const class_desc_t sparse_item_class = {.name = "sparse_item", .members = NULL, .n_members = 0};
+static const member_t sparse_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &sparse_item_class, .indexed = true, .get = sparse_get, .slots = 4}},
+};
+static const class_desc_t sparse_class = {.name = "sparse", .members = sparse_members, .n_members = 1};
+
+TEST(test_slots_walk_and_count) {
+    object_root_reset();
+    struct object *c = object_new(&sparse_class, NULL, "sparse");
+    object_attach(object_root(), c);
+    g_sparse_items[1] = object_new(&sparse_item_class, NULL, NULL);
+    g_sparse_items[3] = object_new(&sparse_item_class, NULL, NULL);
+    const member_t *m = &sparse_members[0];
+    ASSERT_EQ_INT(1, object_child_next(c, m, -1));
+    ASSERT_EQ_INT(3, object_child_next(c, m, 1));
+    ASSERT_EQ_INT(-1, object_child_next(c, m, 3));
+    value_t n = node_get(object_resolve(object_root(), "sparse.count"));
+    ASSERT_EQ_INT(2, (int)val_as_u64(&n, NULL));
+    value_free(&n);
+    g_sparse_items[3] = NULL; // a hole again: the count follows
+    n = node_get(object_resolve(object_root(), "sparse.count"));
+    ASSERT_EQ_INT(1, (int)val_as_u64(&n, NULL));
+    value_free(&n);
+}
+
+// An entry pool: one entry per slot, each knowing its slot; at() is bounded;
+// delete empties it.
+OBJECT_POOL(g_test_pool, 3);
+
+TEST(test_object_pool_entries_know_their_slots) {
+    object_pool_create(&g_test_pool, &sparse_item_class);
+    for (int i = 0; i < 3; i++) {
+        struct object *e = object_pool_at(&g_test_pool, i);
+        ASSERT_TRUE(e != NULL);
+        ASSERT_EQ_INT(i, object_pool_slot(e));
+    }
+    ASSERT_TRUE(object_pool_at(&g_test_pool, 3) == NULL);
+    ASSERT_TRUE(object_pool_at(&g_test_pool, -1) == NULL);
+    ASSERT_EQ_INT(-1, object_pool_slot(NULL));
+    object_pool_delete(&g_test_pool);
+    ASSERT_TRUE(object_pool_at(&g_test_pool, 0) == NULL);
+}
+
 int main(void) {
+    RUN(test_object_pool_entries_know_their_slots);
+    RUN(test_slots_walk_and_count);
+    RUN(test_counter_fields_read_their_block);
     RUN(test_node_call_succeeds);
     RUN(test_node_call_too_few_args);
     RUN(test_call_form_inside_expr);

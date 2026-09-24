@@ -304,6 +304,43 @@ const char *object_name(const struct object *o) {
 void *object_data(struct object *o) {
     return o ? o->instance_data : NULL;
 }
+void object_pool_create(object_pool_t *pool, const class_desc_t *cls) {
+    for (int i = 0; i < pool->n; i++) {
+        pool->slots[i] = i;
+        pool->objs[i] = object_new(cls, &pool->slots[i], NULL);
+    }
+}
+
+void object_pool_delete(object_pool_t *pool) {
+    for (int i = 0; i < pool->n; i++) {
+        if (pool->objs[i])
+            object_delete(pool->objs[i]);
+        pool->objs[i] = NULL;
+    }
+}
+
+struct object *object_pool_at(const object_pool_t *pool, int slot) {
+    return (slot >= 0 && slot < pool->n) ? pool->objs[slot] : NULL;
+}
+
+int object_pool_slot(struct object *entry) {
+    const int *slot = (const int *)object_data(entry);
+    return slot ? *slot : -1;
+}
+
+value_t obj_u64_at(const void *block, const member_t *m) {
+    if (!block)
+        return val_uint(8, 0);
+    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
+    uint64_t v;
+    memcpy(&v, (const uint8_t *)block + offset, sizeof(v));
+    return val_uint(8, v);
+}
+
+value_t obj_u64_field_get(struct object *self, const member_t *m) {
+    return obj_u64_at(object_data(self), m);
+}
+
 struct object *object_parent(struct object *o) {
     return o ? o->parent : NULL;
 }
@@ -767,6 +804,52 @@ static const char *parse_ident(const char *p, char *buf, size_t buf_size) {
     return p;
 }
 
+int object_child_next(struct object *self, const member_t *m, int prev) {
+    if (!m || m->kind != M_CHILD || !m->child.indexed)
+        return -1;
+    if (m->child.next)
+        return m->child.next(self, prev);
+    if (!m->child.get)
+        return -1;
+    for (int i = prev < 0 ? 0 : prev + 1; i < m->child.slots; i++)
+        if (m->child.get(self, i))
+            return i;
+    return -1;
+}
+
+// The one indexed child member of a class, or NULL when it has none or more.
+static const member_t *sole_indexed_child(const class_desc_t *cls) {
+    const member_t *found = NULL;
+    for (size_t i = 0; cls && i < cls->n_members; i++) {
+        if (cls->members[i].kind != M_CHILD || !cls->members[i].child.indexed)
+            continue;
+        if (found)
+            return NULL;
+        found = &cls->members[i];
+    }
+    return found;
+}
+
+// `count` for a class with one indexed child and no count of its own: its
+// live entries.  Collections had to declare one each (with a callback the
+// core never called), and three did not (10-network F-26).
+static value_t synth_count_get(struct object *self, const member_t *m) {
+    (void)m;
+    const member_t *child = sole_indexed_child(object_class(self));
+    uint64_t n = 0;
+    for (int i = object_child_next(self, child, -1); i >= 0; i = object_child_next(self, child, i))
+        n++;
+    return val_uint(4, n);
+}
+
+static const member_t k_synth_count = {
+    .kind = M_ATTR,
+    .name = "count",
+    .doc = "Live entries in the collection",
+    .flags = VAL_RO,
+    .attr = {.type = V_UINT, .width = 4, .get = synth_count_get}
+};
+
 node_t node_child(node_t n, const char *segment) {
     node_t bad = (node_t){0};
     if (!segment || !*segment)
@@ -872,6 +955,8 @@ node_t node_child(node_t n, const char *segment) {
     const member_t *m = class_find_member(cls, segment);
     if (m)
         return (node_t){.obj = here, .member = m, .index = -1};
+    if (strcmp(segment, "count") == 0 && sole_indexed_child(cls))
+        return (node_t){.obj = here, .member = &k_synth_count, .index = -1};
 
     // Identifier may also name a statically-attached child object the
     // class did not predeclare as a member (the root uses this — its
@@ -1570,8 +1655,9 @@ value_t node_get(node_t n) {
                 value_t *items = (value_t *)malloc(cap * sizeof(value_t));
                 if (!items)
                     return val_err("out of memory");
-                if (n.member->child.next) {
-                    for (int i = n.member->child.next(n.obj, -1); i >= 0; i = n.member->child.next(n.obj, i)) {
+                {
+                    for (int i = object_child_next(n.obj, n.member, -1); i >= 0;
+                         i = object_child_next(n.obj, n.member, i)) {
                         struct object *c = n.member->child.get(n.obj, i);
                         if (!c)
                             continue;

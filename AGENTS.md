@@ -237,7 +237,8 @@ simulated network are its siblings at the root:
 - **meta services** (siblings of `machine`): `scheduler`, `debug` (+ `.mac`),
   `storage`, `vfs`, `checkpoint`, `archive`, `find`, `shell`.
 - **network**: `appletalk` (+ `stats`, `nbp`, `afp` with its `volumes` /
-  `sessions` / `stats` subtrees, and `printer`).
+  `sessions` / `stats` subtrees, `printer` with its `stats`, and the
+  program-linking layers `adsp`, `ppc` and `aevt`).
 - **root verbs**: `objects`, `attributes`, `methods`, `help`, `echo`,
   `download`, `quit`, `assert`, `time`.
 

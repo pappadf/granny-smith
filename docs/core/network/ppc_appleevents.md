@@ -582,8 +582,10 @@ appletalk
     send_raw(target, bytes)                     -> the event object
     events       collection  state, text, class, id, reply, errn, tag
     inbox        collection  received events: class, id, sender, map, text
+      clear()                forget them all, making room for more
     auto_reply   rw string   text-form template answering inbox events
-    stats                    sent, replied, errors, received, timeouts
+    stats                    sent, replied, errors, received, timeouts,
+                             auto_replies, malformed, dropped
 ```
 
 `send` is **non-blocking**: replies only arrive while the guest runs, and the
@@ -599,7 +601,20 @@ Named arguments use the shell's `name=value` form — `timeout=`, `tag=`,
 `mode=` — not the `name:` spelling the original proposal sketched.
 
 Event objects are append-only for the life of the run, so the `V_OBJECT` a
-`send` returns stays valid in a `let` binding. A checkpoint restore drops
+`send` returns stays valid in a `let` binding.
+
+**Limits.** A run holds **256 events** and an inbox of **32**.
+
+- The 257th `send` (or `send_raw`) is an error: "no room for another event
+  this run (limit 256)". A statement that produces an error stops the
+  script at that line (`shell.md`, Errors), so a script that wants to carry
+  on writes `let e = try(appletalk.aevt.send(…), none)` and tests `$e`.
+  There is no `events.clear()`: it would invalidate — or silently re-point —
+  the event objects scripts hold.
+- An event a guest sends to a full inbox is still **answered** — its
+  `AESend` completes — but not kept, and counts in `stats.dropped`.
+  `inbox.clear()` makes room; inbox entries are never handed out as
+  bindings, so nothing is left holding one. A checkpoint restore drops
 sessions, connections and the events collection, and keeps only
 `enabled`, `port_name` and `auto_reply`.
 
