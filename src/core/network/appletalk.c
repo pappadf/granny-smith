@@ -223,7 +223,11 @@ static void atp_reset(bool teardown);
 static void nbp_reset(void);
 // Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
 static log_category_t *_log_get_local_category(void);
-static void log_hex(int level, const char *tag, const uint8_t *data, size_t len);
+static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len);
+static log_category_t *llap_log_category(void);
+static log_category_t *atp_log_category(void);
+#define LOG_LLAP(level, fmt, ...) LOG_WITH(llap_log_category(), (level), (fmt), ##__VA_ARGS__)
+#define LOG_ATP(level, fmt, ...)  LOG_WITH(atp_log_category(), (level), (fmt), ##__VA_ARGS__)
 
 // Every frame the stack discards goes through here, counted by why, so
 // `appletalk.stats` says what was thrown away (10-network F-35).  There is no
@@ -406,8 +410,8 @@ static void llap_rts_kick(void) {
     g_llap_rts.rts_out = true;
     g_llap_rts.attempts++;
     g_llap_rts.generation++;
-    LOG(8, "LLAP tx: RTS to %02X, %zu-byte data queued for CTS (%d queued, attempt %d)", f->dst, f->len,
-        g_llap_rts.count, g_llap_rts.attempts);
+    LOG_LLAP(8, "LLAP tx: RTS to %02X, %zu-byte data queued for CTS (%d queued, attempt %d)", f->dst, f->len,
+             g_llap_rts.count, g_llap_rts.attempts);
     llap_wire_send(rts, sizeof(rts));
     atalk_timer_arm(&g_llap_rts_timer, g_llap_rts.generation, (uint64_t)LLAP_RTS_TIMEOUT_NS);
 }
@@ -419,8 +423,8 @@ static void llap_rts_timeout_cb(void *source, uint64_t data) {
     g_llap_rts.rts_out = false;
     if (g_llap_rts.attempts >= LLAP_RTS_MAX_ATTEMPTS) {
         llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
-        LOG(2, "LLAP tx: no CTS from %02X after %d RTS attempts, dropping a %zu-byte frame", f->dst,
-            g_llap_rts.attempts, f->len);
+        LOG_LLAP(2, "LLAP tx: no CTS from %02X after %d RTS attempts, dropping a %zu-byte frame", f->dst,
+                 g_llap_rts.attempts, f->len);
         g_atalk_stats.tx_dropped++;
         g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
         g_llap_rts.count--;
@@ -434,7 +438,7 @@ static void llap_wire_send(const uint8_t *buf, size_t total) {
     // the RTS timer, which does not pass through llap_send again.
     if (!g_atalk_enabled)
         return;
-    log_hex(11, "LLAP tx dump", buf, total);
+    log_hex(llap_log_category(), 11, "LLAP tx dump", buf, total);
     g_atalk_stats.llap_tx++;
     if (g_scc)
         scc_sdlc_send(g_scc, (uint8_t *)buf, total);
@@ -452,12 +456,12 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
         // mode, so its AppleTalk driver is not loaded.  Replies never reach
         // here (they answer a frame the guest just sent), but traffic we
         // originate can, and it must not be forced onto a dead link.
-        LOG(4, "LLAP tx: dropped, the guest's AppleTalk driver is not up");
+        LOG_LLAP(4, "LLAP tx: dropped, the guest's AppleTalk driver is not up");
         g_atalk_stats.tx_dropped++;
         return -1;
     }
     if (len > LLAP_DATA_MAX_SIZE) {
-        LOG(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
+        LOG_LLAP(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
         g_atalk_stats.tx_dropped++;
         return -1;
     }
@@ -477,7 +481,7 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
     if (llap->dst != 0xFF && llap->type < 0x80) {
         if (g_llap_rts.count >= LLAP_RTS_QUEUE_DEPTH) {
             // The wire cannot keep up; the upper layers (ATP) retransmit.
-            LOG(2, "LLAP tx: RTS queue full, dropping a %zu-byte frame to %02X", total, llap->dst);
+            LOG_LLAP(2, "LLAP tx: RTS queue full, dropping a %zu-byte frame to %02X", total, llap->dst);
             g_atalk_stats.tx_dropped++;
             return -1;
         }
@@ -536,7 +540,7 @@ static void llap_in(const uint8_t *buf, size_t len) {
     llap_wire_note_peer_frame(len);
 
     // LLAP rx hexdump at high verbosity
-    log_hex(11, "LLAP rx dump", buf, len);
+    log_hex(llap_log_category(), 11, "LLAP rx dump", buf, len);
 
     switch (header.type) {
 
@@ -547,14 +551,14 @@ static void llap_in(const uint8_t *buf, size_t len) {
             atalk_drop(ATALK_DROP_MALFORMED, "LLAP ENQ of %zu bytes", len);
             break;
         }
-        LOG(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
+        LOG_LLAP(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Reply with ACK if this ENQ targets our node (dynamic node ID probe/ack).
         if (header.dst == LLAP_HOST_NODE) {
             llap_header_t ack;
             ack.dst = header.src;
             ack.src = LLAP_HOST_NODE;
             ack.type = LLAP_ACK;
-            LOG(11, "LLAP send ACK to=%02X", (unsigned)ack.dst);
+            LOG_LLAP(11, "LLAP send ACK to=%02X", (unsigned)ack.dst);
             llap_send(&ack, NULL, 0);
         }
         break;
@@ -564,14 +568,14 @@ static void llap_in(const uint8_t *buf, size_t len) {
             atalk_drop(ATALK_DROP_MALFORMED, "LLAP RTS of %zu bytes", len);
             break;
         }
-        LOG(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
+        LOG_LLAP(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Respond with CTS for directed traffic addressed to us so the sender may transmit.
         if (header.dst == LLAP_HOST_NODE) {
             llap_header_t cts;
             cts.dst = header.src;
             cts.src = LLAP_HOST_NODE;
             cts.type = LLAP_CTS;
-            LOG(11, "LLAP send CTS to=%02X", (unsigned)cts.dst);
+            LOG_LLAP(11, "LLAP send CTS to=%02X", (unsigned)cts.dst);
             llap_send(&cts, NULL, 0);
             llap_wire_reserve_for_peer();
         }
@@ -583,7 +587,7 @@ static void llap_in(const uint8_t *buf, size_t len) {
             break;
         }
         // The receiver granted our lapRTS: transmit the parked data frame.
-        LOG(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
+        LOG_LLAP(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         if (g_llap_rts.rts_out && g_llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
             header.src == g_llap_rts.q[g_llap_rts.head].dst) {
             llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
@@ -598,7 +602,7 @@ static void llap_in(const uint8_t *buf, size_t len) {
         break;
 
     case LLAP_DDP_SHORT:
-        LOG(11, "LLAP DDP_SHORT rx len=%zu", len - 3);
+        LOG_LLAP(11, "LLAP DDP_SHORT rx len=%zu", len - 3);
         ddp_short_in(&header, buf + 3, len - 3);
         break;
 
@@ -1118,7 +1122,7 @@ static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
     memcpy(&buffer[5], data, (size_t)size);
 
     LOG_INDENT(4);
-    log_hex(9, "DDP tx dump", buffer, length);
+    log_hex(_log_get_local_category(), 9, "DDP tx dump", buffer, length);
     LOG_INDENT(-4);
 
     g_atalk_stats.ddp_out++;
@@ -1254,7 +1258,7 @@ static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
 
     LOG_INDENT(4);
     // Full DDP hexdump at high verbosity (includes 5-byte header + payload)
-    log_hex(9, "DDP rx dump", buf, len);
+    log_hex(_log_get_local_category(), 9, "DDP rx dump", buf, len);
     ddp_in(&ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
 }
@@ -1329,14 +1333,30 @@ static bool nbp_parse_pstr32(const uint8_t **p, int *len, uint8_t *dst, size_t d
 
 // ATP layer wrappers (parallel to DDP): parse, setup reply, and send
 
-// Logging: implicit category for this file
+// Logging: implicit category for this file -- DDP, NBP and the stack's own
+// business.  LLAP and ATP log under their own categories, the names their
+// scheduler sources carry, so one layer can be turned up alone: the whole
+// stack logged as "appletalk" (10-network F-27).
 LOG_USE_CATEGORY_NAME("appletalk");
+
+static log_category_t *llap_log_category(void) {
+    static log_category_t *cat;
+    if (!cat)
+        cat = log_register_category("llap");
+    return cat;
+}
+static log_category_t *atp_log_category(void) {
+    static log_category_t *cat;
+    if (!cat)
+        cat = log_register_category("atp");
+    return cat;
+}
 
 // --------------- Hex dump helper for high-verbosity diagnostics ---------------
 // Emit a multi-line hex dump with ASCII gutter to the AppleTalk log category
-static void log_hex(int level, const char *tag, const uint8_t *data, size_t len) {
+static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len) {
     if (!data || len == 0) {
-        LOG(level, "%s: <empty>", tag ? tag : "HEX");
+        LOG_WITH(cat, level, "%s: <empty>", tag ? tag : "HEX");
         return;
     }
     // Build per-line hex with ASCII gutter (16 bytes per line)
@@ -1387,7 +1407,7 @@ static void log_hex(int level, const char *tag, const uint8_t *data, size_t len)
         }
         asciibuf[n] = '\0';
 
-        LOG(level, "%04" PRIx64 ": %s | %s", (uint64_t)off, hexbuf, asciibuf);
+        LOG_WITH(cat, level, "%04" PRIx64 ": %s | %s", (uint64_t)off, hexbuf, asciibuf);
     }
 }
 
@@ -2131,7 +2151,7 @@ int atp_register_socket_handler(uint8_t socket, const atp_socket_handler_t *hand
             return 0;
         }
     }
-    LOG(1, "ATP: handler table full, cannot register socket %u", (unsigned)socket);
+    LOG_ATP(1, "ATP: handler table full, cannot register socket %u", (unsigned)socket);
     return -1;
 }
 
@@ -2200,8 +2220,8 @@ static void atp_send_trel(const atp_request_handle_t *req) {
     ddp.src_socket = req->src_socket;
     ddp.type = DDP_ATP;
     ddp_send(&ddp, buffer, sizeof(buffer));
-    LOG(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
-        (unsigned)req->dest.socket);
+    LOG_ATP(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
+            (unsigned)req->dest.socket);
 }
 
 static void atp_send_request_packets(atp_request_handle_t *req, uint8_t bitmap) {
@@ -2225,8 +2245,8 @@ static void atp_send_request_packets(atp_request_handle_t *req, uint8_t bitmap) 
     ddp.src_socket = req->src_socket;
     ddp.type = DDP_ATP;
     ddp_send(&ddp, atp_buf, total);
-    LOG(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
-        (unsigned)req->dest.socket, (unsigned)bitmap);
+    LOG_ATP(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
+            (unsigned)req->dest.socket, (unsigned)bitmap);
 }
 
 static void atp_arm_retry_timer(atp_request_handle_t *req) {
@@ -2234,7 +2254,7 @@ static void atp_arm_retry_timer(atp_request_handle_t *req) {
     // Cancel any existing retry event before scheduling a new one
     atalk_timer_cancel(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
     req->timer_generation++;
-    LOG(5, "ATP: arm retry timer tid=0x%04X timeout_ns=%" PRIu64, req->tid, req->retry_timeout_ns);
+    LOG_ATP(5, "ATP: arm retry timer tid=0x%04X timeout_ns=%" PRIu64, req->tid, req->retry_timeout_ns);
     atalk_timer_arm(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation), req->retry_timeout_ns);
 }
 
@@ -2243,7 +2263,7 @@ static void atp_retry_request(atp_request_handle_t *req, bool consume_retry) {
         return;
     if (!req->infinite_retries && consume_retry) {
         if (req->retries_remaining == 0) {
-            LOG(2, "ATP: retries exhausted for tid=0x%04X", req->tid);
+            LOG_ATP(2, "ATP: retries exhausted for tid=0x%04X", req->tid);
             atp_send_trel(req);
             atp_request_complete(req, ATP_REQUEST_RESULT_TIMEOUT);
             return;
@@ -2266,7 +2286,7 @@ static void atp_retry_timeout_cb(void *source, uint64_t data) {
     atp_request_handle_t *req = &g_atp_requests[index];
     if (!req->in_use || req->timer_generation != generation)
         return;
-    LOG(3, "ATP: retry timeout tid=0x%04X bitmap=0x%02X", req->tid, (unsigned)req->pending_bitmap);
+    LOG_ATP(3, "ATP: retry timeout tid=0x%04X bitmap=0x%02X", req->tid, (unsigned)req->pending_bitmap);
     atp_retry_request(req, true);
 }
 
@@ -2317,7 +2337,7 @@ atp_request_handle_t *atp_request_submit(const atp_request_params_t *params, con
 void atp_request_cancel(atp_request_handle_t *handle) {
     if (!handle || !handle->in_use)
         return;
-    LOG(3, "ATP: cancel request tid=0x%04X", handle->tid);
+    LOG_ATP(3, "ATP: cancel request tid=0x%04X", handle->tid);
     atp_request_complete(handle, ATP_REQUEST_RESULT_ABORTED);
 }
 
@@ -2350,12 +2370,12 @@ static int atp_xo_alloc(const ddp_header_t *ddp, const atp_packet_t *atp) {
             g_xo_entries[i].trel_hint = (uint8_t)(atp->ctl & 0x07);
             // Start release timer immediately (Inside AppleTalk p. 9-17)
             atp_xo_schedule_release(&g_xo_entries[i]);
-            LOG(10, "ATP: XO alloc slot=%d tid=0x%04X node=%u sock=%u->%u trel=%u", i, atp->tid, ddp->llap.src,
-                ddp->src_socket, ddp->dst_socket, atp->ctl & 0x07);
+            LOG_ATP(10, "ATP: XO alloc slot=%d tid=0x%04X node=%u sock=%u->%u trel=%u", i, atp->tid, ddp->llap.src,
+                    ddp->src_socket, ddp->dst_socket, atp->ctl & 0x07);
             return i;
         }
     }
-    LOG(2, "ATP: XO cache full (tid=0x%04X node=%u sock=%u)", atp->tid, ddp->llap.src, ddp->src_socket);
+    LOG_ATP(2, "ATP: XO cache full (tid=0x%04X node=%u sock=%u)", atp->tid, ddp->llap.src, ddp->src_socket);
     return -1;
 }
 
@@ -2363,7 +2383,7 @@ static void atp_xo_free(atp_xo_entry_t *entry) {
     if (!entry)
         return;
     uint16_t index = (uint16_t)(entry - g_xo_entries);
-    LOG(10, "ATP: XO free slot=%u tid=0x%04X", index, entry->tid);
+    LOG_ATP(10, "ATP: XO free slot=%u tid=0x%04X", index, entry->tid);
     // Cancel pending release timer event
     atalk_timer_cancel(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->in_use = false;
@@ -2428,7 +2448,7 @@ static void atp_release_timeout_cb(void *source, uint64_t data) {
     atp_xo_entry_t *entry = &g_xo_entries[index];
     if (!entry->in_use || entry->release_generation != generation)
         return;
-    LOG(3, "ATP: XO release timeout tid=0x%04X", entry->tid);
+    LOG_ATP(3, "ATP: XO release timeout tid=0x%04X", entry->tid);
     atp_xo_free(entry);
 }
 
@@ -2436,7 +2456,7 @@ static void atp_release_timeout_cb(void *source, uint64_t data) {
 static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, uint8_t bitmap) {
     if (!entry || !entry->response_ready)
         return;
-    LOG(6, "ATP: XO retransmit cached tid=0x%04X bitmap=0x%02X", entry->tid, bitmap);
+    LOG_ATP(6, "ATP: XO retransmit cached tid=0x%04X bitmap=0x%02X", entry->tid, bitmap);
     ddp_header_t reply;
     ddp_setup_reply(ddp, &reply);
     reply.type = DDP_ATP;
@@ -2598,7 +2618,7 @@ static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp
 
 static void atp_handle_trel(const ddp_header_t *ddp, const atp_packet_t *atp) {
     int idx = atp_xo_find(atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
-    LOG(10, "ATP: TRel tid=0x%04X node=%u sock=%u xo_slot=%d", atp->tid, ddp->llap.src, ddp->src_socket, idx);
+    LOG_ATP(10, "ATP: TRel tid=0x%04X node=%u sock=%u xo_slot=%d", atp->tid, ddp->llap.src, ddp->src_socket, idx);
     if (idx >= 0)
         atp_xo_free(&g_xo_entries[idx]);
 }
@@ -2618,7 +2638,7 @@ static void atp_dispatch_registered_request(const ddp_header_t *ddp, atp_packet_
             return;
         }
         if (atp_xo_alloc(ddp, atp) < 0)
-            LOG(2, "ATP: XO cache full, duplicate protection degraded");
+            LOG_ATP(2, "ATP: XO cache full, duplicate protection degraded");
     }
     slot->handler.handle_request(ddp, atp, slot->ctx);
 }

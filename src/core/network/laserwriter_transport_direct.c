@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("laserwriter");
 
 #if GS_PLATEN
 

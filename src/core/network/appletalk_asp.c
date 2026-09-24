@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("asp");
 
 // SPFunction, ATP user byte 0 (Inside AppleTalk 11-26)
 #define ASP_CLOSE_SESS     1

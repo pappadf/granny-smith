@@ -22,7 +22,7 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 // One byte range held by a handle.
 typedef struct {

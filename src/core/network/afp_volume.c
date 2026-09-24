@@ -41,7 +41,7 @@
 #include <time.h>
 #include <unistd.h>
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 // AFP versions we speak.  "AFPVersion 2.1" is only advertised because every
 // 2.1 command below is implemented (WP-5); the honest-negotiation rule is

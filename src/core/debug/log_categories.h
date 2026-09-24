@@ -63,8 +63,16 @@
     X("via", 0, "VIA 6522 ports, timers and shift register")                                                           \
     /* Serial, network and sound */                                                                                    \
     X("scc", 0, "Z8530 serial controller")                                                                             \
-    X("appletalk", 0, "AppleTalk stack")                                                                               \
+    X("appletalk", 0, "AppleTalk stack: DDP, NBP, configuration")                                                      \
+    X("llap", 0, "AppleTalk LLAP link and node address")                                                               \
+    X("atp", 0, "AppleTalk ATP transactions")                                                                          \
+    X("asp", 0, "AppleTalk ASP sessions")                                                                              \
+    X("afp", 0, "AFP file server")                                                                                     \
+    X("pap", 0, "AppleTalk PAP printer server")                                                                        \
+    X("laserwriter", 0, "LaserWriter interpreter bridge")                                                              \
     X("adsp", 0, "AppleTalk ADSP connections")                                                                         \
+    X("ppctoolbox", 0, "AppleTalk PPC Toolbox program linking")                                                        \
+    X("aevt", 0, "Apple events over PPC")                                                                              \
     X("sonic", 0, "SONIC Ethernet controller")                                                                         \
     X("mace", 0, "MACE Ethernet controller")                                                                           \
     X("sound", 0, "Sound output path")                                                                                 \

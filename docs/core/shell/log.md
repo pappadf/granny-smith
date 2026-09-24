@@ -112,7 +112,7 @@ starts to hold:
 | 4+ | per byte, per sample, per scanline | firehose |
 
 Modules with genuinely more structure may go further — `scc.c`'s 6 and 11 and
-`appletalk.c`'s 8 and 11 are deliberately paired for LocalTalk tracing, so a
+`llap`'s 8 and 11 (in `appletalk.c`) are deliberately paired for LocalTalk tracing, so a
 single level selects a matched view across both. Exceeding the bands is fine;
 doing it *by accident* is what the table is here to prevent.
 

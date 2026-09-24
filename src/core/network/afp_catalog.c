@@ -23,7 +23,7 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 #define GSC_MAGIC 0x47534332u // 'GSC2': afp_applog framing
 

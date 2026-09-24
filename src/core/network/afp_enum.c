@@ -38,7 +38,7 @@
 #include <time.h>
 #include <unistd.h>
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 // ============================================================================
 // FPEnumerate snapshots (WP-4)

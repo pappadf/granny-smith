@@ -22,7 +22,7 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 // Ceiling on a sidecar we are willing to read whole.  The fork itself is
 // streamed by afp_fork.c; this bound only guards the metadata reader.

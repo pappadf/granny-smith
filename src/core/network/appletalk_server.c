@@ -49,7 +49,7 @@
 #include <unistd.h>
 
 // Logging for this module uses the same category as appletalk.c
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 // Emit a short hex dump at LOG level 2 for AFP request/response payloads
 void afp_log_hex(const char *label, const uint8_t *buf, int len) {

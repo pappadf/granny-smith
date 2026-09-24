@@ -23,6 +23,19 @@
 
 machine.rtc.time = "2026-04-26T21:30:36"
 
+# Every layer of the stack has its own log category (10-network F-27): a
+# name the manifest does not know is an error here.  Level 0 is the default,
+# so this only names them.  Program linking is `ppctoolbox`, not `ppc` --
+# that is the PowerPC's, which PPC and Apple events used to log into.
+debug.log llap 0
+debug.log atp 0
+debug.log asp 0
+debug.log afp 0
+debug.log pap 0
+debug.log laserwriter 0
+debug.log ppctoolbox 0
+debug.log aevt 0
+
 # --- 1. Boot ---------------------------------------------------------------
 
 scheduler.run 150000000

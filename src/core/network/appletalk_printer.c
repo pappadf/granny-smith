@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("pap");
 
 #define PRINTER_STATUS_MAX       255
 #define PRINTER_OBJECT_MAX       32

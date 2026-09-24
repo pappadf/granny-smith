@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("ppc");
+LOG_USE_CATEGORY_NAME("ppctoolbox");
 
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))

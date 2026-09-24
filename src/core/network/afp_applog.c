@@ -24,7 +24,7 @@
 #define PATH_MAX 4096
 #endif
 
-LOG_USE_CATEGORY_NAME("appletalk");
+LOG_USE_CATEGORY_NAME("afp");
 
 struct afp_applog {
     char path[PATH_MAX];
