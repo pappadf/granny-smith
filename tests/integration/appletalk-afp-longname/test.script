@@ -154,8 +154,13 @@ scheduler.run 4000000
 machine.adb.mouse.click false
 scheduler.run 150000000
 # The copy went through: no "couldn't be written" dialog over the window,
-# the file's six bytes were read for it, and nothing is left open.
-check_ex("longname-copied.png", 58, 140, 80, 420)
+# the file's six bytes were read for it, and nothing is left open.  Two
+# regions are left out of the match: the info bar's free space, as in
+# appletalk-afp, and the Last Modified column.  The client shifts every date
+# by the gap between the server's clock (the host's) and its own pinned one,
+# so the column reads the guest clock minus however long the host took from
+# staging the share to the mount -- 9:30 PM on one run, 9:29 on a slower one.
+check_ex2("longname-copied.png", 58, 140, 80, 420, 82, 290, 114, 403)
 assert appletalk.afp.stats.bytes_read == 6 "the long-named file's data was not read for the copy"
 assert appletalk.afp.stats.open_forks == 0 "the copy left a fork open"
 quit
