@@ -64,27 +64,6 @@ static uint64_t rd64(const uint8_t *p) {
     return ((uint64_t)RD_BE32(p) << 32) | (uint64_t)RD_BE32(p + 4);
 }
 
-// CRC-32 (reflected, polynomial 0xEDB88320) — the same one zlib and PNG use,
-// which is what UDIF stores for checksum type 2.  Kept local because the
-// other two copies in the tree are private to their own subsystems.
-uint32_t udif_crc32(uint32_t crc, const uint8_t *data, size_t len) {
-    static uint32_t table[256];
-    static int table_ready = 0;
-    if (!table_ready) {
-        for (uint32_t n = 0; n < 256; n++) {
-            uint32_t c = n;
-            for (int k = 0; k < 8; k++)
-                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-            table[n] = c;
-        }
-        table_ready = 1;
-    }
-    crc = ~crc;
-    for (size_t i = 0; i < len; i++)
-        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-    return ~crc;
-}
-
 bool udif_detect(const uint8_t *trailer, size_t len) {
     if (!trailer || len < UDIF_TRAILER_SIZE)
         return false;

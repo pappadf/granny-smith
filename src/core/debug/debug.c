@@ -15,6 +15,7 @@
 #include "common.h"
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "crc32.h"
 #include "debug_mac.h"
 #include "display.h"
 #include "expr.h"
@@ -1013,27 +1014,6 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
 // indexed/direct paths land alongside the JMFB driver in step 6 of the
 // IIcx/IIx proposal; for now an unsupported format is a hard error.
 
-// CRC32 table for PNG chunk checksums
-static uint32_t crc32_table[256];
-static int crc32_table_init = 0;
-
-// Initialize CRC32 lookup table
-static void init_crc32_table(void) {
-    if (crc32_table_init)
-        return;
-    for (uint32_t n = 0; n < 256; n++) {
-        uint32_t c = n;
-        for (int k = 0; k < 8; k++) {
-            if (c & 1)
-                c = 0xedb88320 ^ (c >> 1);
-            else
-                c = c >> 1;
-        }
-        crc32_table[n] = c;
-    }
-    crc32_table_init = 1;
-}
-
 // Write 32-bit big-endian value to buffer
 // Write a PNG chunk to file
 static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint32_t len) {
@@ -1051,15 +1031,8 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
             return -1;
     }
 
-    // Compute CRC over type + data
-    uint32_t crc = 0xffffffff;
-    for (int i = 0; i < 4; i++) {
-        crc = crc32_table[(crc ^ header[4 + i]) & 0xff] ^ (crc >> 8);
-    }
-    for (uint32_t i = 0; i < len; i++) {
-        crc = crc32_table[(crc ^ data[i]) & 0xff] ^ (crc >> 8);
-    }
-    crc ^= 0xffffffff;
+    // CRC over type + data
+    uint32_t crc = gs_crc32(gs_crc32(0, header + 4, 4), data, len > 0 && data ? len : 0);
 
     // Write CRC (big-endian)
     uint8_t crc_buf[4];
@@ -1780,9 +1753,6 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     const int height = (int)d->height;
     const uint32_t stride = d->stride;
     const uint8_t *fb = d->bits;
-
-    // Initialize CRC table
-    init_crc32_table();
 
     // Open output file
     FILE *fp = fopen(filename, "wb");

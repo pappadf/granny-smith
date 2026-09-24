@@ -6,6 +6,7 @@
 
 #include "afp_catalog.h"
 #include "common.h"
+#include "crc32.h"
 
 #include "afp_meta.h"
 #include "log.h"
@@ -74,17 +75,6 @@ struct afp_catalog {
 };
 
 // --- big-endian helpers ----------------------------------------------------
-
-// CRC-32 (IEEE) over one record, so a torn tail write is detected on replay.
-static uint32_t crc32_buf(const uint8_t *data, size_t len) {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++)
-            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
-    }
-    return ~crc;
-}
 
 // --- index -----------------------------------------------------------------
 
@@ -188,7 +178,7 @@ static size_t record_encode(uint8_t *buf, size_t cap, uint8_t op, uint32_t cnid,
     if (nlen)
         memcpy(buf + p, name, nlen);
     p += nlen;
-    WR_BE32(buf + p, crc32_buf(buf, p));
+    WR_BE32(buf + p, gs_crc32(0, buf, p));
     p += 4;
     return p;
 }
@@ -276,7 +266,7 @@ static bool log_load(afp_catalog_t *cat) {
         uint8_t whole[sizeof(fixed) + 255];
         memcpy(whole, fixed, sizeof(fixed));
         memcpy(whole + sizeof(fixed), body, nlen);
-        if (crc32_buf(whole, sizeof(fixed) + nlen) != RD_BE32(body + nlen)) {
+        if (gs_crc32(0, whole, sizeof(fixed) + nlen) != RD_BE32(body + nlen)) {
             LOG(1, "AFP catalog: dropping torn tail record in '%s'", cat->log_path);
             break;
         }

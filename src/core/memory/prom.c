@@ -15,6 +15,7 @@
 
 #include "prom.h"
 #include "common.h"
+#include "crc32.h"
 #include "offer_registry.h"
 
 #include "log.h"
@@ -46,18 +47,6 @@ LOG_USE_CATEGORY_NAME("prom");
 #define PCIR_MIN_LENGTH    0x18
 #define PROM_CODE_TYPE_X86 0x00
 #define PROM_CODE_TYPE_OF  0x01
-
-// CRC-32 (IEEE), the identity key.  Bit-serial: this runs a handful of
-// times per boot over at most 256 KB, so a table would be pure weight.
-static uint32_t prom_crc32(const uint8_t *data, size_t len) {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++)
-            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
-    }
-    return ~crc;
-}
 
 // ============================================================================
 // The catalog
@@ -214,7 +203,7 @@ prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *
         return r;
     }
 
-    uint32_t crc = prom_crc32(buf, size);
+    uint32_t crc = gs_crc32(0, buf, size);
     free(buf);
     if (out_crc)
         *out_crc = crc;
