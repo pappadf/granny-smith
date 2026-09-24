@@ -1583,7 +1583,7 @@ static int nbp_populate_entry(atalk_nbp_entry_t *dst, const atalk_nbp_service_de
     return 0;
 }
 
-int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry) {
+static int nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry) {
     if (!desc)
         return -1;
     int free_slot = -1;
@@ -1618,7 +1618,7 @@ int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t *
     return 0;
 }
 
-int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *desc) {
+static int nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *desc) {
     int idx = nbp_entry_index(entry);
     if (idx < 0 || !desc)
         return -1;
@@ -1639,7 +1639,7 @@ int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *d
     return 0;
 }
 
-int atalk_nbp_unregister(atalk_nbp_entry_t *entry) {
+static int nbp_unregister(atalk_nbp_entry_t *entry) {
     int idx = nbp_entry_index(entry);
     if (idx < 0)
         return -1;
@@ -1648,6 +1648,19 @@ int atalk_nbp_unregister(atalk_nbp_entry_t *entry) {
     LOG(3, "NBP unregister: object='%s' type='%s'", g_nbp_entries[idx].object, g_nbp_entries[idx].type);
     memset(&g_nbp_entries[idx], 0, sizeof(g_nbp_entries[idx]));
     return 0;
+}
+
+int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t *desc) {
+    if (!entry || !desc)
+        return -1;
+    return *entry ? nbp_update(*entry, desc) : nbp_register(desc, entry);
+}
+
+void atalk_nbp_withdraw(atalk_nbp_entry_t **entry) {
+    if (!entry || !*entry)
+        return;
+    nbp_unregister(*entry);
+    *entry = NULL;
 }
 
 static bool nbp_pattern_is_all(const uint8_t *field, int len) {

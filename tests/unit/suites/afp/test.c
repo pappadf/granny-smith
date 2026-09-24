@@ -3534,6 +3534,24 @@ TEST(sidecars_and_the_volume_record_are_replaced_whole) {
     fixture_down();
 }
 
+// --- I5: a rename that cannot be published changes nothing (10-network N-23) ------
+
+// The server's new name is published before it is stored: a name another
+// entity holds ("Taken", in this suite's registry) leaves the server named as
+// it was.  It stored the name first, so the tree showed one nobody could find.
+TEST(a_server_rename_that_cannot_be_published_changes_nothing) {
+    fixture_up("rename");
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_set_name("Before", err, sizeof err));
+    ASSERT_TRUE(atalk_afp_set_name("Taken", err, sizeof err) != 0);
+    ASSERT_TRUE(strstr(err, "taken") != NULL);
+    ASSERT_EQ_INT(0, strcmp(atalk_afp_get_name(), "Before"));
+    ASSERT_EQ_INT(0, atalk_afp_set_name("After", err, sizeof err));
+    ASSERT_EQ_INT(0, strcmp(atalk_afp_get_name(), "After"));
+    ASSERT_EQ_INT(0, atalk_afp_set_name("Shared Folders", err, sizeof err)); // the default, for later tests
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3609,6 +3627,7 @@ int main(void) {
     RUN(the_catalog_index_follows_every_change);
     RUN(a_directory_too_large_to_page_is_refused_whole);
     RUN(sidecars_and_the_volume_record_are_replaced_whole);
+    RUN(a_server_rename_that_cannot_be_published_changes_nothing);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);

@@ -51,7 +51,7 @@ TEST(nbp_lookup_is_answered_after_the_rts_cts_handshake) {
     link_boot();
     atalk_nbp_service_desc_t desc = {.object = "Test Host", .type = "LinkTest", .socket = 200};
     atalk_nbp_entry_t *entry = NULL;
-    ASSERT_EQ_INT(0, atalk_nbp_register(&desc, &entry));
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&entry, &desc));
 
     uint8_t rts[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_RTS};
     guest_frame(rts, sizeof rts);
@@ -87,7 +87,7 @@ TEST(nbp_lookup_is_answered_after_the_rts_cts_handshake) {
     ASSERT_EQ_INT(HOST_NODE, reply[12]); // the entity's node
     ASSERT_EQ_INT(200, reply[13]); // the entity's socket
 
-    ASSERT_EQ_INT(0, atalk_nbp_unregister(entry));
+    atalk_nbp_withdraw(&entry);
     link_delete();
 }
 
@@ -176,7 +176,7 @@ TEST(detaching_the_stack_stops_its_transmitter) {
     link_boot();
     atalk_nbp_service_desc_t desc = {.object = "Test Host", .type = "LinkTest", .socket = 200};
     atalk_nbp_entry_t *entry = NULL;
-    ASSERT_EQ_INT(0, atalk_nbp_register(&desc, &entry));
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&entry, &desc));
     // A directed lookup reply goes out as RTS, then data after our CTS; the
     // guest never grants it.
     uint8_t rts[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_RTS};
@@ -201,7 +201,7 @@ TEST(detaching_the_stack_stops_its_transmitter) {
     ASSERT_EQ_INT(0, wire_count());
 
     atalk_set_enabled(true);
-    ASSERT_EQ_INT(0, atalk_nbp_unregister(entry));
+    atalk_nbp_withdraw(&entry);
     link_delete();
 }
 
@@ -406,13 +406,13 @@ TEST(every_discard_is_counted_by_reason) {
     // One of ours the guest never grants: after eight RTS attempts it is dropped.
     atalk_nbp_service_desc_t desc = {.object = "Test Host", .type = "LinkTest", .socket = 200};
     atalk_nbp_entry_t *entry = NULL;
-    ASSERT_EQ_INT(0, atalk_nbp_register(&desc, &entry));
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&entry, &desc));
     uint8_t lkup[] = {0x21, 0x42, 0, 0, GUEST_NODE, 253, 0, 1, '=', 8, 'L', 'i', 'n', 'k', 'T', 'e', 's', 't', 1, '*'};
     b = counts();
     guest_ddp(GUEST_NODE, 2, 253, 2, lkup, sizeof lkup);
     guest_idle_until(link_now_ns() + 100e6);
     ASSERT_EQ_INT(1, (int)(counts().tx_dropped - b.tx_dropped));
-    ASSERT_EQ_INT(0, atalk_nbp_unregister(entry));
+    atalk_nbp_withdraw(&entry);
     link_delete();
 }
 
@@ -438,12 +438,12 @@ static int nbp_count_tuples(const uint8_t *p, size_t len) {
 
 TEST(a_lookup_matching_eight_names_answers_with_eight_tuples) {
     link_boot();
-    atalk_nbp_entry_t *entries[8];
+    atalk_nbp_entry_t *entries[8] = {0};
     char names[8][8];
     for (int i = 0; i < 8; i++) {
         snprintf(names[i], sizeof names[i], "Host %d", i);
         atalk_nbp_service_desc_t desc = {.object = names[i], .type = "Eight", .socket = (unsigned)(200 + i)};
-        ASSERT_EQ_INT(0, atalk_nbp_register(&desc, &entries[i]));
+        ASSERT_EQ_INT(0, atalk_nbp_publish(&entries[i], &desc));
     }
     uint8_t lkup[] = {0x21, 0x42, 0, 0, GUEST_NODE, 253, 0, 1, '=', 5, 'E', 'i', 'g', 'h', 't', 1, '*'};
     guest_ddp(GUEST_NODE, 2, 253, 2, lkup, sizeof lkup);
@@ -454,7 +454,7 @@ TEST(a_lookup_matching_eight_names_answers_with_eight_tuples) {
     ASSERT_EQ_INT(0x38, reply[8]); // LkUp-Reply, eight tuples...
     ASSERT_EQ_INT(8, nbp_count_tuples(reply + 8, len - 8)); // ...and it carries them
     for (int i = 0; i < 8; i++)
-        ASSERT_EQ_INT(0, atalk_nbp_unregister(entries[i]));
+        atalk_nbp_withdraw(&entries[i]);
     link_delete();
 }
 
@@ -688,7 +688,45 @@ TEST(two_sessions_write_at_once) {
     link_delete();
 }
 
+// A rename that cannot be published changes nothing: the entry keeps its old
+// name, still found by a lookup (10-network N-23: services stored the new name
+// first, or withdrew first).
+static int count_named(const char *object) {
+    int n = 0;
+    atalk_nbp_info_t info;
+    for (int i = 0; i < atalk_nbp_entry_max(); i++)
+        if (atalk_nbp_entry_info(i, &info) && strcmp(info.object, object) == 0)
+            n++;
+    return n;
+}
+
+TEST(a_publish_that_fails_changes_nothing) {
+    link_boot();
+    atalk_nbp_service_desc_t alpha = {.object = "Alpha", .type = "LinkTest", .socket = 200};
+    atalk_nbp_service_desc_t beta = {.object = "Beta", .type = "LinkTest", .socket = 201};
+    atalk_nbp_entry_t *a = NULL, *b = NULL;
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&a, &alpha));
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&b, &beta));
+    atalk_nbp_entry_t *before = a;
+    alpha.object = "Beta"; // taken
+    ASSERT_EQ_INT(-1, atalk_nbp_publish(&a, &alpha));
+    ASSERT_TRUE(a == before);
+    ASSERT_EQ_INT(1, count_named("Alpha"));
+    ASSERT_EQ_INT(1, count_named("Beta"));
+    alpha.object = "Gamma"; // free: renamed in place
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&a, &alpha));
+    ASSERT_TRUE(a == before);
+    ASSERT_EQ_INT(0, count_named("Alpha"));
+    ASSERT_EQ_INT(1, count_named("Gamma"));
+    atalk_nbp_withdraw(&a);
+    ASSERT_TRUE(a == NULL);
+    ASSERT_EQ_INT(0, count_named("Gamma"));
+    atalk_nbp_withdraw(&b);
+    link_delete();
+}
+
 int main(void) {
+    RUN(a_publish_that_fails_changes_nothing);
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
     RUN(enq_for_our_node_is_acked_and_others_are_not);
     RUN(nbp_lookup_is_answered_after_the_rts_cts_handshake);

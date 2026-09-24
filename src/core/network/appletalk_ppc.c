@@ -869,20 +869,16 @@ const char *atalk_ppc_host_port_name(void) {
 }
 
 int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t err_len) {
-    if (name && *name) {
-        if (strlen(name) > 32) {
-            snprintf(err, err_len, "a port name may be at most 32 characters");
-            return -1;
-        }
-        snprintf(g_host_port, sizeof(g_host_port), "%s", name);
+    const char *port = (name && *name) ? name : g_host_port;
+    if (strlen(port) > 32) {
+        snprintf(err, err_len, "a port name may be at most 32 characters");
+        return -1;
     }
-
-    if (g_host_nbp) {
-        atalk_nbp_unregister(g_host_nbp);
-        g_host_nbp = NULL;
-    }
-    g_host_enabled = enabled;
     if (!enabled) {
+        atalk_nbp_withdraw(&g_host_nbp);
+        if (port != g_host_port)
+            snprintf(g_host_port, sizeof(g_host_port), "%s", port);
+        g_host_enabled = false;
         // Sessions belong to the port; withdrawing it strands them.
         atalk_ppc_close_all("the host program-linking port was withdrawn");
         adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
@@ -890,26 +886,31 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
     }
 
     // One NBP entity per machine, on the connection-listening socket (§3).
+    // Published -- or renamed in place -- before the name is stored: a name
+    // another machine holds leaves the port advertised as it was.  The old
+    // advertisement was withdrawn first, so the port vanished (N-23).
     atalk_nbp_service_desc_t desc = {
-        .object = g_host_port,
+        .object = port,
         .type = PPC_NBP_TYPE,
         .zone = "*",
         .socket = PPC_HOST_SOCKET,
         .node = LLAP_HOST_NODE,
         .net = 0,
     };
-    if (atalk_nbp_register(&desc, &g_host_nbp) != 0) {
-        g_host_enabled = false;
-        snprintf(err, err_len, "the name '%s' is already taken on the network", g_host_port);
+    if (atalk_nbp_publish(&g_host_nbp, &desc) != 0) {
+        snprintf(err, err_len, "the name '%s' is already taken on the network", port);
         return -1;
     }
-    adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
-    if (adsp_listen(atalk_adsp_stack(), PPC_HOST_SOCKET, &g_listen_client, NULL) != 0) {
-        atalk_nbp_unregister(g_host_nbp);
-        g_host_nbp = NULL;
-        g_host_enabled = false;
-        snprintf(err, err_len, "the PPC listening socket could not be opened");
-        return -1;
+    if (port != g_host_port)
+        snprintf(g_host_port, sizeof(g_host_port), "%s", port);
+    if (!g_host_enabled) {
+        adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
+        if (adsp_listen(atalk_adsp_stack(), PPC_HOST_SOCKET, &g_listen_client, NULL) != 0) {
+            atalk_nbp_withdraw(&g_host_nbp);
+            snprintf(err, err_len, "the PPC listening socket could not be opened");
+            return -1;
+        }
+        g_host_enabled = true;
     }
     LOG(3, "PPC: host port '%s' advertised as %s on socket %d", g_host_port, PPC_NBP_TYPE, PPC_HOST_SOCKET);
     return 0;
@@ -975,10 +976,7 @@ void atalk_ppc_shutdown(void) {
             memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
         }
     }
-    if (g_host_nbp) {
-        atalk_nbp_unregister(g_host_nbp);
-        g_host_nbp = NULL;
-    }
+    atalk_nbp_withdraw(&g_host_nbp);
     g_host_enabled = false;
     g_browse_active = false;
     g_machine_count = 0;

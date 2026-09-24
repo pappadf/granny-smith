@@ -372,25 +372,21 @@ int atalk_afp_error_code_at(int index, int32_t *out_code, uint64_t *out_count) {
     return -1;
 }
 
-// Register or update the NBP advertisement to match the current name.
-static int afp_nbp_publish(void) {
-    atalk_nbp_service_desc_t desc = {.object = g_afp_server_object,
+// Advertise the server as `object` (registering, or renaming in place).  On
+// failure the advertisement -- and the caller's stored name -- stay as they were.
+static int afp_nbp_publish(const char *object) {
+    atalk_nbp_service_desc_t desc = {.object = object,
                                      .type = AFP_ENTITY_TYPE,
                                      .zone = "*",
                                      .socket = HOST_AFP_SOCKET,
                                      .node = LLAP_HOST_NODE,
                                      .net = 0};
-    if (g_afp_nbp_entry)
-        return atalk_nbp_update(g_afp_nbp_entry, &desc);
-    return atalk_nbp_register(&desc, &g_afp_nbp_entry);
+    return atalk_nbp_publish(&g_afp_nbp_entry, &desc);
 }
 
 // Withdraw the NBP advertisement so the Chooser stops listing the server.
 static void afp_nbp_withdraw(void) {
-    if (!g_afp_nbp_entry)
-        return;
-    atalk_nbp_unregister(g_afp_nbp_entry);
-    g_afp_nbp_entry = NULL;
+    atalk_nbp_withdraw(&g_afp_nbp_entry);
 }
 
 int atalk_afp_set_name(const char *name, char *err, size_t err_len) {
@@ -400,9 +396,11 @@ int atalk_afp_set_name(const char *name, char *err, size_t err_len) {
         return vol_fail(err, err_len, "server name is required");
     if (strlen(name) > 32)
         return vol_fail(err, err_len, "server name max 32 chars ('%s' is %zu)", name, strlen(name));
+    // Published under the new name first, stored after: a name another entity
+    // holds leaves the server advertised, and named, as it was (N-23).
+    if (g_afp_enabled && afp_nbp_publish(name) != 0)
+        return vol_fail(err, err_len, "the name '%s' is already taken on the network", name);
     snprintf(g_afp_server_object, sizeof(g_afp_server_object), "%s", name);
-    if (g_afp_enabled && afp_nbp_publish() != 0)
-        return vol_fail(err, err_len, "NBP re-registration failed for '%s'", name);
     LOG(1, "AFP: server name is now '%s'", g_afp_server_object);
     return 0;
 }
@@ -414,7 +412,7 @@ int atalk_afp_set_enabled(bool enabled, char *err, size_t err_len) {
         return 0;
     g_afp_enabled = enabled;
     if (enabled) {
-        if (afp_nbp_publish() != 0) {
+        if (afp_nbp_publish(g_afp_server_object) != 0) {
             g_afp_enabled = false;
             return vol_fail(err, err_len, "NBP registration failed");
         }
@@ -493,7 +491,7 @@ void atalk_server_init(void) {
     asp_set_client(&k_afp_asp_client, NULL);
     if (!g_afp_enabled)
         return;
-    if (afp_nbp_publish() != 0)
+    if (afp_nbp_publish(g_afp_server_object) != 0)
         LOG(1, "AFP: failed to register NBP advertisement");
 }
 

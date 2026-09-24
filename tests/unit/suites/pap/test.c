@@ -135,19 +135,18 @@ int atp_responder_send_simple(const ddp_header_t *d, const atp_packet_t *a, cons
     return 0;
 }
 static int g_nbp_entry;
-int atalk_nbp_register(const atalk_nbp_service_desc_t *d, atalk_nbp_entry_t **o) {
-    (void)d;
-    *o = (atalk_nbp_entry_t *)&g_nbp_entry;
+static char g_nbp_name[40]; // what is advertised; "Taken" is refused
+int atalk_nbp_publish(atalk_nbp_entry_t **e, const atalk_nbp_service_desc_t *d) {
+    if (!e || !d || strcmp(d->object, "Taken") == 0)
+        return -1;
+    *e = (atalk_nbp_entry_t *)&g_nbp_entry;
+    snprintf(g_nbp_name, sizeof g_nbp_name, "%s", d->object);
     return 0;
 }
-int atalk_nbp_update(atalk_nbp_entry_t *e, const atalk_nbp_service_desc_t *d) {
-    (void)e;
-    (void)d;
-    return 0;
-}
-int atalk_nbp_unregister(atalk_nbp_entry_t *e) {
-    (void)e;
-    return 0;
+void atalk_nbp_withdraw(atalk_nbp_entry_t **e) {
+    if (e)
+        *e = NULL;
+    g_nbp_name[0] = '\0';
 }
 
 // --- the platform's capture sink -------------------------------------------------
@@ -273,11 +272,28 @@ TEST(an_idle_connection_times_out_on_its_own) {
     ASSERT_EQ_INT(1, g_close_requests); // the workstation is told
 }
 
+// A printer rename that cannot be published leaves the printer named, and
+// advertised, as it was; a name longer than NBP allows is refused, not cut
+// short (N-23: the name was stored first, and enable truncated what set_name
+// rejects).
+TEST(a_printer_rename_that_cannot_be_published_changes_nothing) {
+    setup();
+    char err[128];
+    ASSERT_EQ_INT(0, atalk_printer_set_name("Before", err, sizeof err));
+    ASSERT_EQ_INT(0, strcmp(g_nbp_name, "Before"));
+    ASSERT_TRUE(atalk_printer_set_name("Taken", err, sizeof err) != 0);
+    ASSERT_EQ_INT(0, strcmp(atalk_printer_object_name(), "Before"));
+    ASSERT_EQ_INT(0, strcmp(g_nbp_name, "Before"));
+    ASSERT_TRUE(atalk_printer_enable("A name of forty characters, past NBP's 32") != 0);
+    ASSERT_EQ_INT(0, strcmp(atalk_printer_object_name(), "Before"));
+}
+
 int main(void) {
     RUN(a_job_reaches_the_capture_sink_whole);
     RUN(a_job_too_large_is_aborted);
     RUN(a_foreign_closeconn_does_not_end_the_job);
     RUN(an_idle_connection_times_out_on_its_own);
+    RUN(a_printer_rename_that_cannot_be_published_changes_nothing);
     printf("pap: all tests passed\n");
     return 0;
 }

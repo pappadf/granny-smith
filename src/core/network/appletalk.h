@@ -190,11 +190,17 @@ typedef struct {
     uint16_t net; // optional, defaults to 0 (unknown)
 } atalk_nbp_service_desc_t;
 
-int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry);
+// Advertise `desc` through `*entry`: registered when *entry is NULL, updated in
+// place otherwise.  All or nothing: on failure -- the name is taken, the table
+// is full -- *entry and what it advertises are unchanged, so a service that
+// publishes a new name before storing it keeps the old one whole.  Renames
+// used to store the new name first (AFP, the printer: the tree showed a name
+// nobody could look up) or withdraw first (PPC: the port vanished) --
+// 10-network N-23.  0, or -1 with nothing changed.
+int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t *desc);
 
-int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *desc);
-
-int atalk_nbp_unregister(atalk_nbp_entry_t *entry);
+// Withdraw *entry, if published, and clear it.
+void atalk_nbp_withdraw(atalk_nbp_entry_t **entry);
 
 // Look an entity pattern up on the network.  `object` and `type` may use the
 // NBP wildcards ("=" matches everything); replies are delivered to `cb` one

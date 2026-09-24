@@ -1590,10 +1590,7 @@ void atalk_printer_shutdown(void) {
         return;
     pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
     memset(&g_completion, 0, sizeof(g_completion));
-    if (g_printer.nbp_entry) {
-        atalk_nbp_unregister(g_printer.nbp_entry);
-        g_printer.nbp_entry = NULL;
-    }
+    atalk_nbp_withdraw(&g_printer.nbp_entry);
     atp_unregister_socket_handler(HOST_PAP_SOCKET);
 }
 
@@ -1607,34 +1604,28 @@ void atalk_printer_link_down(void) {
 }
 
 // Enables (or renames) the emulated LaserWriter and registers its NBP entry.
+// The name is published before it is stored, so a failure -- a name another
+// entity holds -- leaves the printer advertised, and named, as it was; and
+// one too long is refused, as set_name refuses it, not cut short (N-23).
 int atalk_printer_enable(const char *object_name) {
     pap_printer_init();
-    if (object_name && *object_name) {
-        size_t n = strlen(object_name);
-        if (n > PRINTER_OBJECT_MAX)
-            n = PRINTER_OBJECT_MAX;
-        memcpy(g_printer.object_name, object_name, n);
-        g_printer.object_name[n] = '\0';
+    const char *name = (object_name && *object_name) ? object_name : g_printer.object_name;
+    if (strlen(name) > PRINTER_OBJECT_MAX) {
+        LOG(1, "atalk: printer name '%s' is longer than %d characters", name, PRINTER_OBJECT_MAX);
+        return -1;
     }
-
-    atalk_nbp_service_desc_t desc = {.object = g_printer.object_name,
+    atalk_nbp_service_desc_t desc = {.object = name,
                                      .type = PRINTER_ENTITY_TYPE,
                                      .zone = "*",
                                      .socket = HOST_PAP_SOCKET,
                                      .node = LLAP_HOST_NODE,
                                      .net = 0};
-
-    int rc;
-    if (g_printer.nbp_entry)
-        rc = atalk_nbp_update(g_printer.nbp_entry, &desc);
-    else
-        rc = atalk_nbp_register(&desc, &g_printer.nbp_entry);
-
-    if (rc != 0) {
-        LOG(1, "pap: failed to register printer NBP entry");
-        LOG(1, "atalk: failed to publish printer '%s'", g_printer.object_name);
+    if (atalk_nbp_publish(&g_printer.nbp_entry, &desc) != 0) {
+        LOG(1, "atalk: failed to publish printer '%s'", name);
         return -1;
     }
+    if (name != g_printer.object_name)
+        snprintf(g_printer.object_name, sizeof(g_printer.object_name), "%s", name);
 
     g_printer.enabled = true;
     pap_printer_set_status_idle();
@@ -1645,10 +1636,7 @@ int atalk_printer_enable(const char *object_name) {
 // Disables the LaserWriter advertisement and aborts any active job.
 int atalk_printer_disable(void) {
     pap_printer_init();
-    if (g_printer.nbp_entry) {
-        atalk_nbp_unregister(g_printer.nbp_entry);
-        g_printer.nbp_entry = NULL;
-    }
+    atalk_nbp_withdraw(&g_printer.nbp_entry);
     g_printer.enabled = false;
     pap_session_abort("printer disabled");
     pap_printer_set_status_disabled();
@@ -1701,9 +1689,9 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
         snprintf(g_printer.object_name, sizeof(g_printer.object_name), "%s", name);
         return 0;
     }
-    if (atalk_printer_enable(name) != 0) { // re-registers the NBP entry
+    if (atalk_printer_enable(name) != 0) { // renames the NBP entry in place, or changes nothing
         if (err && err_len)
-            snprintf(err, err_len, "NBP re-registration failed for '%s'", name);
+            snprintf(err, err_len, "the name '%s' is already taken on the network", name);
         return -1;
     }
     return 0;

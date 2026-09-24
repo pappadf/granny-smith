@@ -25,20 +25,17 @@ void asp_set_client(const asp_client_t *client, void *ctx) {
     (void)client, (void)ctx;
 }
 
-int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry) {
-    (void)desc;
-    if (out_entry)
-        *out_entry = (atalk_nbp_entry_t *)(void *)&g_attentions; // any non-NULL handle
+// One registry of one entity: "Taken" is refused, as another machine holding
+// the name would make it (the rename tests).
+int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t *desc) {
+    if (!entry || !desc || (desc->object && strcmp(desc->object, "Taken") == 0))
+        return -1;
+    *entry = (atalk_nbp_entry_t *)(void *)&g_attentions; // any non-NULL handle
     return 0;
 }
-int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *desc) {
-    (void)entry;
-    (void)desc;
-    return 0;
-}
-int atalk_nbp_unregister(atalk_nbp_entry_t *entry) {
-    (void)entry;
-    return 0;
+void atalk_nbp_withdraw(atalk_nbp_entry_t **entry) {
+    if (entry)
+        *entry = NULL;
 }
 
 int atalk_asp_send_attention(uint16_t session_ref, uint16_t code) {
