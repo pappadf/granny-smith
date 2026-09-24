@@ -10,6 +10,8 @@
 
 #include "laserwriter_job.h"
 
+#include "byteq.h"
+
 #include "appletalk_internal.h"
 #include "laserwriter_transport.h"
 #include "log.h"
@@ -52,10 +54,6 @@ __attribute__((weak)) void laserwriter_sink_capture(const laserwriter_capture_t 
 // for real documents.
 #define LASERWRITER_STEP_BUDGET 100000000ull
 
-// Cap on unread program output; a real LaserWriter would block the program
-// instead, which the ABI cannot.
-#define LASERWRITER_OUTPUT_MAX (1u << 20)
-
 // Guest time between polls of the transport while a request is outstanding
 // (the ring transport delivers from the poll; the direct one from its own
 // event, and the poll is then a no-op).
@@ -92,9 +90,7 @@ typedef struct {
     char title[LASERWRITER_TITLE_MAX + 1];
     title_scan_state_t title_state;
     uint8_t title_window_len; // bytes of the "%%Title:" pattern matched so far
-    uint8_t *output; // program output not yet read by the PAP layer
-    size_t output_len;
-    size_t output_cap;
+    byteq_t output; // program output not yet read by the PAP layer
     size_t output_dropped; // bytes lost to LASERWRITER_OUTPUT_MAX
     uint32_t documents; // finished jobs handed to the sink
     uint32_t last_pages;
@@ -140,26 +136,8 @@ static void lw_poll_disarm(void) {
 
 // Appends `len` bytes to the unread-output buffer, dropping past the cap.
 static void lw_output_append(const uint8_t *bytes, size_t len) {
-    if (!bytes || len == 0)
-        return;
-    if (g_lw.output_len + len > LASERWRITER_OUTPUT_MAX) {
+    if (bytes && len && !byteq_append(&g_lw.output, bytes, len, LASERWRITER_OUTPUT_MAX))
         g_lw.output_dropped += len;
-        return;
-    }
-    if (g_lw.output_len + len > g_lw.output_cap) {
-        size_t cap = g_lw.output_cap ? g_lw.output_cap : 4096;
-        while (cap < g_lw.output_len + len)
-            cap *= 2;
-        uint8_t *grown = realloc(g_lw.output, cap);
-        if (!grown) {
-            g_lw.output_dropped += len;
-            return;
-        }
-        g_lw.output = grown;
-        g_lw.output_cap = cap;
-    }
-    memcpy(g_lw.output + g_lw.output_len, bytes, len);
-    g_lw.output_len += len;
 }
 
 // Queues what a feed or a finish produced: the reply channel first, then
@@ -456,13 +434,7 @@ bool laserwriter_job_feed(uint32_t sequence, const uint8_t *data, size_t len) {
 }
 
 size_t laserwriter_job_read_output(uint8_t *buf, size_t cap) {
-    if (!buf || cap == 0 || g_lw.output_len == 0)
-        return 0;
-    size_t n = cap < g_lw.output_len ? cap : g_lw.output_len;
-    memcpy(buf, g_lw.output, n);
-    memmove(g_lw.output, g_lw.output + n, g_lw.output_len - n);
-    g_lw.output_len -= n;
-    return n;
+    return buf ? byteq_read(&g_lw.output, buf, cap) : 0;
 }
 
 bool laserwriter_job_finish(void) {
@@ -486,7 +458,7 @@ void laserwriter_job_abort(void) {
     laserwriter_transport_abandon(g_lw.job_id);
     lw_release();
     // Output of an abandoned job has no reader
-    g_lw.output_len = 0;
+    byteq_clear(&g_lw.output);
     g_lw.output_dropped = 0;
 }
 

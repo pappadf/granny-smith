@@ -21,6 +21,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Cap on program output not yet read, in every queue it passes through on the
+// way to the workstation -- a transport's result channels, the job's output,
+// PAP's reply queue: a real LaserWriter would block the program instead,
+// which the ABI cannot.
+#define LASERWRITER_OUTPUT_MAX (1u << 20)
+
 // === Type Definitions ===
 
 // One statusdict identity entry: the key and the value as PostScript

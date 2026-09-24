@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "laserwriter_transport.h" // LASERWRITER_OUTPUT_MAX
+
 // === Constants ===
 
 // The device the interpreter presents.  Seeded as statusdict identity

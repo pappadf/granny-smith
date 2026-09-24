@@ -6,6 +6,7 @@
 
 #include "appletalk.h"
 #include "appletalk_internal.h"
+#include "byteq.h"
 #include "laserwriter_job.h"
 #include "log.h"
 #include "platform.h"
@@ -93,9 +94,7 @@ typedef struct {
     bool blocked_for_reply;
     atalk_socket_addr_t client_addr;
     atp_request_handle_t *send_handle;
-    uint8_t *capture; // this job's PostScript, when capturing
-    size_t capture_len;
-    size_t capture_cap;
+    byteq_t capture; // this job's PostScript, when capturing
     uint32_t job_id;
     size_t bytes_received;
     uint64_t last_activity_ns;
@@ -120,9 +119,7 @@ typedef struct {
     uint8_t pending_status_count;
     // Interpreter output (PLATEN=1) waiting for the workstation's read
     // credits, and the end-of-job EOF that follows the last of it.
-    uint8_t *reply_bytes;
-    size_t reply_bytes_len;
-    size_t reply_bytes_cap;
+    byteq_t reply; // bounded by LASERWRITER_OUTPUT_MAX, as the output it drains
     bool reply_eof_pending;
     // One SendData transaction's data (PLATEN=1): the fragments are
     // gathered here and fed to the interpreter as one piece when the
@@ -281,16 +278,10 @@ static void pap_session_reset(void) {
         atp_request_cancel(g_session.send_handle);
         g_session.send_handle = NULL;
     }
-    free(g_session.capture);
-    g_session.capture = NULL;
-    g_session.capture_len = 0;
-    g_session.capture_cap = 0;
+    byteq_free(&g_session.capture);
     // A connection that goes away mid-job takes its interpreter with it
     laserwriter_job_abort();
-    free(g_session.reply_bytes);
-    g_session.reply_bytes = NULL;
-    g_session.reply_bytes_len = 0;
-    g_session.reply_bytes_cap = 0;
+    byteq_free(&g_session.reply);
     g_session.reply_eof_pending = false;
     g_session.rx_len = 0;
     g_session.rx_seq = 0;
@@ -418,44 +409,24 @@ static void pap_session_abort(const char *reason) {
     pap_session_finish(false, reason, true);
 }
 
-// Add a fragment to the capture.  False past PRINTER_CAPTURE_MAX, or when
-// memory runs out: the caller aborts the job.
-static bool pap_capture_append(pap_session_t *sess, const uint8_t *data, size_t len) {
-    if (len > PRINTER_CAPTURE_MAX - sess->capture_len)
-        return false;
-    if (sess->capture_len + len > sess->capture_cap) {
-        size_t cap = sess->capture_cap ? sess->capture_cap : 4096;
-        while (cap < sess->capture_len + len)
-            cap *= 2;
-        if (cap > PRINTER_CAPTURE_MAX)
-            cap = PRINTER_CAPTURE_MAX;
-        uint8_t *grown = (uint8_t *)realloc(sess->capture, cap);
-        if (!grown)
-            return false;
-        sess->capture = grown;
-        sess->capture_cap = cap;
-    }
-    memcpy(sess->capture + sess->capture_len, data, len);
-    sess->capture_len += len;
-    return true;
-}
-
 // Hand what was captured to the platform, and start the next job empty.
 static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete) {
-    if (sess->capture_len) {
-        laserwriter_capture_t cap = {
-            .job_id = job_id, .ps = sess->capture, .ps_len = sess->capture_len, .complete = complete};
-        LOG(3, "pap: job %u captured (%zu bytes)", (unsigned)job_id, sess->capture_len);
+    if (byteq_len(&sess->capture)) {
+        laserwriter_capture_t cap = {.job_id = job_id,
+                                     .ps = byteq_data(&sess->capture),
+                                     .ps_len = byteq_len(&sess->capture),
+                                     .complete = complete};
+        LOG(3, "pap: job %u captured (%zu bytes)", (unsigned)job_id, cap.ps_len);
         laserwriter_sink_capture(&cap);
     }
-    sess->capture_len = 0;
+    byteq_clear(&sess->capture);
 }
 
 // Capture the fragment, or abort a job grown past what is held.
 static bool pap_capture_fragment(pap_session_t *sess, const uint8_t *data, size_t len) {
-    if (pap_capture_append(sess, data, len))
+    if (byteq_append(&sess->capture, data, len, PRINTER_CAPTURE_MAX))
         return true;
-    sess->capture_len = 0; // nothing of a job too large is handed over
+    byteq_clear(&sess->capture); // nothing of a job too large is handed over
     pap_session_abort("job too large");
     return false;
 }
@@ -627,7 +598,7 @@ static bool pap_consume_query_eof(pap_session_t *sess) {
     sess->query_mode = PAP_QUERY_NONE;
     sess->font_query_window_len = 0;
     sess->font_query_detected = false;
-    sess->capture_len = 0; // the real job replaces the query
+    byteq_clear(&sess->capture); // the real job replaces the query
     if (sess->active && !sess->blocked_for_reply)
         pap_schedule_senddata();
     return true;
@@ -653,7 +624,7 @@ static void pap_handle_patch_complete(pap_session_t *sess) {
     g_printer.patch_installed = true;
     // LaserWriter returns "1" after PatchPrep installs so the Mac skips re-sending it
     pap_queue_postscript_reply("1");
-    sess->capture_len = 0; // the real job replaces the PatchPrep upload
+    byteq_clear(&sess->capture); // the real job replaces the PatchPrep upload
     if (sess->active && !sess->blocked_for_reply)
         pap_schedule_senddata();
 }
@@ -768,24 +739,11 @@ static int pap_format_status_line(const char *text, char *out, size_t out_len) {
 
 #if GS_PLATEN
 
-// Queues interpreter output for the workstation's read credits.
+// Queues interpreter output for the workstation's read credits.  It drains
+// the job's output queue, and is bounded as that is; it grew without bound.
 static void pap_reply_bytes_append(const uint8_t *data, size_t len) {
-    if (!data || len == 0)
-        return;
-    if (g_session.reply_bytes_len + len > g_session.reply_bytes_cap) {
-        size_t cap = g_session.reply_bytes_cap ? g_session.reply_bytes_cap : 2048;
-        while (cap < g_session.reply_bytes_len + len)
-            cap *= 2;
-        uint8_t *grown = realloc(g_session.reply_bytes, cap);
-        if (!grown) {
-            LOG(1, "pap: dropping %zu reply bytes (out of memory)", len);
-            return;
-        }
-        g_session.reply_bytes = grown;
-        g_session.reply_bytes_cap = cap;
-    }
-    memcpy(g_session.reply_bytes + g_session.reply_bytes_len, data, len);
-    g_session.reply_bytes_len += len;
+    if (data && len && !byteq_append(&g_session.reply, data, len, LASERWRITER_OUTPUT_MAX))
+        LOG(1, "pap: dropping %zu reply bytes (past %u, or out of memory)", len, LASERWRITER_OUTPUT_MAX);
 }
 
 // Moves everything the interpreter wrote since the last pull into the
@@ -799,7 +757,7 @@ static void pap_platen_pull_output(void) {
         any = true;
     }
     if (any) {
-        LOG(2, "pap: interpreter output queued (%zu bytes pending, %u credits)", g_session.reply_bytes_len,
+        LOG(2, "pap: interpreter output queued (%zu bytes pending, %u credits)", byteq_len(&g_session.reply),
             (unsigned)g_session.pending_status_count);
         pap_try_deliver_pending_reply();
     }
@@ -810,22 +768,21 @@ static void pap_platen_pull_output(void) {
 // job's output (an empty one when nothing is left to say).
 static bool pap_try_deliver_pending_reply(void) {
     bool sent = false;
-    while (g_session.reply_bytes_len > 0 || g_session.reply_eof_pending) {
+    while (byteq_len(&g_session.reply) > 0 || g_session.reply_eof_pending) {
         pap_status_credit_t *credit = pap_status_queue_head();
         if (!credit)
             break;
-        size_t n = g_session.reply_bytes_len;
+        size_t n = byteq_len(&g_session.reply);
         if (n > PAP_MAX_DATA_SIZE)
             n = PAP_MAX_DATA_SIZE;
-        bool last = n == g_session.reply_bytes_len;
+        bool last = n == byteq_len(&g_session.reply);
         bool eof = last && g_session.reply_eof_pending;
         LOG(2, "PAP -> Mac StatusData conn=%u bytes=%zu eof=%d source=interpreter", (unsigned)credit->atp.user[0], n,
             eof ? 1 : 0);
-        pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0], n ? g_session.reply_bytes : NULL,
-                               (int)n, eof);
+        pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0], byteq_data(&g_session.reply), (int)n,
+                               eof);
         pap_status_queue_pop();
-        memmove(g_session.reply_bytes, g_session.reply_bytes + n, g_session.reply_bytes_len - n);
-        g_session.reply_bytes_len -= n;
+        byteq_consume(&g_session.reply, n);
         if (eof)
             g_session.reply_eof_pending = false;
         sent = true;
@@ -850,7 +807,7 @@ static bool pap_try_deliver_pending_reply(void) {
 // credit, since a query's answer is available as soon as the feed that
 // completed it returns.
 static void pap_platen_answer_status_credits(void) {
-    if (g_session.reply_bytes_len > 0 || g_session.reply_eof_pending)
+    if (byteq_len(&g_session.reply) > 0 || g_session.reply_eof_pending)
         return; // interpreter output (and its terminating EOF) comes first
     char line[PRINTER_STATUS_MAX + 3];
     int len = pap_format_status_line(g_printer.status_text, line, sizeof(line));

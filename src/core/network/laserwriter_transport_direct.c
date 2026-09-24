@@ -12,6 +12,8 @@
 
 #include "laserwriter_transport.h"
 
+#include "byteq.h"
+
 #include "appletalk_internal.h"
 #include "log.h"
 #include "scheduler.h"
@@ -47,13 +49,6 @@ LOG_USE_CATEGORY_NAME("appletalk");
 // The request kinds that wait for the scheduler.
 typedef enum { OP_NONE = 0, OP_OPEN, OP_FEED, OP_FINISH } direct_op_t;
 
-// A growable byte buffer for one output channel.
-typedef struct {
-    uint8_t *bytes;
-    size_t len;
-    size_t cap;
-} direct_buf_t;
-
 // The transport: the library job, the one pending request, its copied
 // arguments, and the buffers a result is delivered from.
 typedef struct {
@@ -72,8 +67,8 @@ typedef struct {
     laserwriter_identity_t identity[LASERWRITER_IDENTITY_MAX];
     uint8_t *prelude;
     // Output drained from the library for the result being delivered
-    direct_buf_t reply;
-    direct_buf_t errors;
+    byteq_t reply;
+    byteq_t errors;
 } direct_state_t;
 
 static direct_state_t g_direct;
@@ -88,24 +83,12 @@ static void direct_run_pending(void);
 // Static Helpers
 // ============================================================================
 
-// Appends `len` bytes to `b`, growing it; drops (and logs) on allocation failure.
-static void direct_buf_append(direct_buf_t *b, const uint8_t *bytes, size_t len) {
-    if (len == 0)
-        return;
-    if (b->len + len > b->cap) {
-        size_t cap = b->cap ? b->cap : 4096;
-        while (cap < b->len + len)
-            cap *= 2;
-        uint8_t *grown = realloc(b->bytes, cap);
-        if (!grown) {
-            LOG(1, "laserwriter: dropping %zu output bytes (out of memory)", len);
-            return;
-        }
-        b->bytes = grown;
-        b->cap = cap;
-    }
-    memcpy(b->bytes + b->len, bytes, len);
-    b->len += len;
+// Appends `len` bytes to one output channel; past LASERWRITER_OUTPUT_MAX, or
+// out of memory, they are dropped and logged.  The channels grew without
+// bound (10-network N-21).
+static void direct_buf_append(byteq_t *b, const uint8_t *bytes, size_t len) {
+    if (!byteq_append(b, bytes, len, LASERWRITER_OUTPUT_MAX))
+        LOG(1, "laserwriter: dropping %zu output bytes (past %u, or out of memory)", len, LASERWRITER_OUTPUT_MAX);
 }
 
 // Pulls everything the library has written on both channels into the
@@ -113,8 +96,8 @@ static void direct_buf_append(direct_buf_t *b, const uint8_t *bytes, size_t len)
 static void direct_drain(void) {
     uint8_t chunk[LASERWRITER_DRAIN_CHUNK];
     size_t n;
-    g_direct.reply.len = 0;
-    g_direct.errors.len = 0;
+    byteq_clear(&g_direct.reply);
+    byteq_clear(&g_direct.errors);
     while ((n = platen_job_read_replies(g_direct.job, chunk, sizeof(chunk))) > 0)
         direct_buf_append(&g_direct.reply, chunk, n);
     while ((n = platen_job_read_errors(g_direct.job, chunk, sizeof(chunk))) > 0)
@@ -219,8 +202,9 @@ static void direct_run_feed(uint32_t job_id, uint32_t seq, const uint8_t *bytes,
     }
     direct_drain();
     if (g_direct.cb.on_fed)
-        g_direct.cb.on_fed(job_id, seq, status, platen_job_pages(g_direct.job), g_direct.reply.bytes,
-                           g_direct.reply.len, g_direct.errors.bytes, g_direct.errors.len, false, g_direct.cb_ctx);
+        g_direct.cb.on_fed(job_id, seq, status, platen_job_pages(g_direct.job), byteq_data(&g_direct.reply),
+                           byteq_len(&g_direct.reply), byteq_data(&g_direct.errors), byteq_len(&g_direct.errors), false,
+                           g_direct.cb_ctx);
 }
 
 // Executes FINISH: the program runs to completion; FINISHED carries the
@@ -234,10 +218,10 @@ static void direct_run_finish(void) {
     res.pages = platen_job_pages(g_direct.job);
     res.error_name = platen_job_error_name(g_direct.job);
     res.offending = platen_job_offending(g_direct.job);
-    res.reply = g_direct.reply.bytes;
-    res.reply_len = g_direct.reply.len;
-    res.errors = g_direct.errors.bytes;
-    res.errors_len = g_direct.errors.len;
+    res.reply = byteq_data(&g_direct.reply);
+    res.reply_len = byteq_len(&g_direct.reply);
+    res.errors = byteq_data(&g_direct.errors);
+    res.errors_len = byteq_len(&g_direct.errors);
     if (outcome < 0) {
         // The document could not be closed or the job is poisoned: nothing to keep
         LOG(1, "laserwriter: job %u finish failed (%d): %s", (unsigned)job_id, outcome, platen_last_error());
