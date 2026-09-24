@@ -7,6 +7,7 @@
 #include "afp_desktop.h"
 #include "common.h"
 
+#include "afp_applog.h"
 #include "afp_catalog.h"
 #include "afp_meta.h"
 #include "log.h"
@@ -25,14 +26,11 @@
 
 LOG_USE_CATEGORY_NAME("appletalk");
 
-#define DT_ICON_MAGIC 0x47534931u // 'GSI1'
-#define DT_APPL_MAGIC 0x47534131u // 'GSA1'
+#define DT_ICON_MAGIC 0x47534932u // 'GSI2': afp_applog framing
+#define DT_APPL_MAGIC 0x47534132u // 'GSA2'
 
 // Record ops shared by both stores.
 enum { DT_OP_PUT = 1, DT_OP_DEL = 2 };
-
-// Rewrite a store once it holds more than this multiple of its live records.
-#define DT_COMPACT_FACTOR 4
 
 typedef struct {
     afp_icon_t v;
@@ -46,47 +44,17 @@ typedef struct {
 } appl_slot_t;
 
 struct afp_desktop {
-    char icon_path[PATH_MAX];
-    char appl_path[PATH_MAX];
     icon_slot_t *icons;
-    size_t icon_len, icon_cap, icon_records;
+    size_t icon_len, icon_cap;
     appl_slot_t *appls;
-    size_t appl_len, appl_cap, appl_records;
-    FILE *icon_log;
-    FILE *appl_log;
+    size_t appl_len, appl_cap;
+    afp_applog_t *icon_log; // .gs-afp/desktop.icons
+    afp_applog_t *appl_log; // .gs-afp/desktop.appl
 };
 
 // --- big-endian helpers ----------------------------------------------------
 
 // --- icon store ------------------------------------------------------------
-
-// icon record: op(1) creator(4) type(4) icon_type(1) tag(4) size(2) bitmap[size]
-#define DT_ICON_FIXED 16
-
-// Append one icon record; drops the log handle on write failure so the store
-// degrades to volatile rather than looping on a dead file.
-static void icon_log_append(afp_desktop_t *dt, uint8_t op, const afp_icon_t *ic) {
-    if (!dt->icon_log)
-        return;
-    uint8_t hdr[DT_ICON_FIXED];
-    hdr[0] = op;
-    WR_BE32(hdr + 1, ic->creator);
-    WR_BE32(hdr + 5, ic->file_type);
-    hdr[9] = ic->icon_type;
-    WR_BE32(hdr + 10, ic->tag);
-    WR_BE16(hdr + 14, ic->size);
-    bool ok = fwrite(hdr, 1, sizeof(hdr), dt->icon_log) == sizeof(hdr);
-    if (ok && ic->size && ic->bitmap)
-        ok = fwrite(ic->bitmap, 1, ic->size, dt->icon_log) == ic->size;
-    if (!ok) {
-        LOG(1, "AFP desktop: icon log write failed (%s)", strerror(errno));
-        fclose(dt->icon_log);
-        dt->icon_log = NULL;
-        return;
-    }
-    fflush(dt->icon_log);
-    dt->icon_records++;
-}
 
 // Slot index for (creator, type, icon_type), or -1.
 static long icon_slot(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, uint8_t icon_type) {
@@ -135,6 +103,8 @@ static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
             dt->icons[si].dead = true;
         return 0;
     }
+    if (op != DT_OP_PUT)
+        return 0; // a later format's record -- it was taken as a PUT (N-16)
     if (size > AFP_ICON_MAX_BYTES)
         return -EINVAL;
     if (si < 0) {
@@ -163,55 +133,56 @@ static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
     return 0;
 }
 
-// Replay the icon log.  A truncated tail record simply ends the replay.
-static void icon_load(afp_desktop_t *dt) {
-    FILE *f = fopen(dt->icon_path, "rb");
-    if (!f)
+// icon record: creator(4) type(4) icon_type(1) tag(4), then the bitmap to
+// the record's end.
+#define DT_ICON_FIXED 13
+
+static uint16_t icon_encode(uint8_t *buf, const afp_icon_t *ic) {
+    WR_BE32(buf, ic->creator);
+    WR_BE32(buf + 4, ic->file_type);
+    buf[8] = ic->icon_type;
+    WR_BE32(buf + 9, ic->tag);
+    if (ic->size)
+        memcpy(buf + DT_ICON_FIXED, ic->bitmap, ic->size);
+    return (uint16_t)(DT_ICON_FIXED + ic->size);
+}
+
+static void icon_log_append(afp_desktop_t *dt, uint8_t op, const afp_icon_t *ic) {
+    uint8_t buf[DT_ICON_FIXED + AFP_ICON_MAX_BYTES];
+    afp_applog_append(dt->icon_log, op, buf, icon_encode(buf, ic), icon_live(dt));
+}
+
+static void icon_replay(void *ctx, uint8_t op, const uint8_t *p, uint16_t len) {
+    if (len < DT_ICON_FIXED || (unsigned)(len - DT_ICON_FIXED) > AFP_ICON_MAX_BYTES)
         return;
-    uint8_t magic[4];
-    if (fread(magic, 1, 4, f) != 4 || RD_BE32(magic) != DT_ICON_MAGIC) {
-        fclose(f);
-        LOG(1, "AFP desktop: '%s' unreadable — starting a fresh icon store", dt->icon_path);
-        remove(dt->icon_path);
-        return;
-    }
-    for (;;) {
-        uint8_t hdr[DT_ICON_FIXED];
-        if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr))
-            break;
-        uint16_t size = RD_BE16(hdr + 14);
-        if (size > AFP_ICON_MAX_BYTES)
-            break;
-        uint8_t bitmap[AFP_ICON_MAX_BYTES];
-        if (size && fread(bitmap, 1, size, f) != size)
-            break;
-        icon_apply(dt, hdr[0], RD_BE32(hdr + 1), RD_BE32(hdr + 5), hdr[9], RD_BE32(hdr + 10), bitmap, size);
-        dt->icon_records++;
-    }
-    fclose(f);
+    icon_apply((afp_desktop_t *)ctx, op, RD_BE32(p), RD_BE32(p + 4), p[8], RD_BE32(p + 9), p + DT_ICON_FIXED,
+               (uint16_t)(len - DT_ICON_FIXED));
+}
+
+static bool icon_dump(void *ctx, afp_applog_t *log) {
+    afp_desktop_t *dt = (afp_desktop_t *)ctx;
+    uint8_t buf[DT_ICON_FIXED + AFP_ICON_MAX_BYTES];
+    for (size_t i = 0; i < dt->icon_len; i++)
+        if (!dt->icons[i].dead && !afp_applog_emit(log, DT_OP_PUT, buf, icon_encode(buf, icon_view(dt, i))))
+            return false;
+    return true;
 }
 
 // --- APPL store ------------------------------------------------------------
 
-// appl record: op(1) creator(4) cnid(4) tag(4)
-#define DT_APPL_FIXED 13
+// appl record: creator(4) cnid(4) tag(4)
+#define DT_APPL_FIXED 12
+
+static void appl_encode(uint8_t *buf, const afp_appl_t *a) {
+    WR_BE32(buf, a->creator);
+    WR_BE32(buf + 4, a->cnid);
+    WR_BE32(buf + 8, a->tag);
+}
 
 static void appl_log_append(afp_desktop_t *dt, uint8_t op, const afp_appl_t *a) {
-    if (!dt->appl_log)
-        return;
-    uint8_t rec[DT_APPL_FIXED];
-    rec[0] = op;
-    WR_BE32(rec + 1, a->creator);
-    WR_BE32(rec + 5, a->cnid);
-    WR_BE32(rec + 9, a->tag);
-    if (fwrite(rec, 1, sizeof(rec), dt->appl_log) != sizeof(rec)) {
-        LOG(1, "AFP desktop: APPL log write failed (%s)", strerror(errno));
-        fclose(dt->appl_log);
-        dt->appl_log = NULL;
-        return;
-    }
-    fflush(dt->appl_log);
-    dt->appl_records++;
+    uint8_t buf[DT_APPL_FIXED];
+    appl_encode(buf, a);
+    afp_applog_append(dt->appl_log, op, buf, sizeof(buf), appl_live(dt));
 }
 
 static long appl_slot(afp_desktop_t *dt, uint32_t creator, uint32_t cnid) {
@@ -236,6 +207,8 @@ static int appl_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
         }
         return 0;
     }
+    if (op != DT_OP_PUT)
+        return 0; // a later format's record
     if (si < 0) {
         if (dt->appl_len == dt->appl_cap) {
             size_t cap = dt->appl_cap ? dt->appl_cap * 2 : 16;
@@ -255,47 +228,25 @@ static int appl_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
     return 0;
 }
 
-static void appl_load(afp_desktop_t *dt) {
-    FILE *f = fopen(dt->appl_path, "rb");
-    if (!f)
-        return;
-    uint8_t magic[4];
-    if (fread(magic, 1, 4, f) != 4 || RD_BE32(magic) != DT_APPL_MAGIC) {
-        fclose(f);
-        LOG(1, "AFP desktop: '%s' unreadable — starting a fresh APPL store", dt->appl_path);
-        remove(dt->appl_path);
-        return;
+static void appl_replay(void *ctx, uint8_t op, const uint8_t *p, uint16_t len) {
+    if (len >= DT_APPL_FIXED)
+        appl_apply((afp_desktop_t *)ctx, op, RD_BE32(p), RD_BE32(p + 4), RD_BE32(p + 8));
+}
+
+static bool appl_dump(void *ctx, afp_applog_t *log) {
+    afp_desktop_t *dt = (afp_desktop_t *)ctx;
+    uint8_t buf[DT_APPL_FIXED];
+    for (size_t i = 0; i < dt->appl_len; i++) {
+        if (dt->appls[i].dead)
+            continue;
+        appl_encode(buf, &dt->appls[i].v);
+        if (!afp_applog_emit(log, DT_OP_PUT, buf, sizeof(buf)))
+            return false;
     }
-    for (;;) {
-        uint8_t rec[DT_APPL_FIXED];
-        if (fread(rec, 1, sizeof(rec), f) != sizeof(rec))
-            break;
-        appl_apply(dt, rec[0], RD_BE32(rec + 1), RD_BE32(rec + 5), RD_BE32(rec + 9));
-        dt->appl_records++;
-    }
-    fclose(f);
+    return true;
 }
 
 // --- store lifecycle -------------------------------------------------------
-
-// Open a store for append, writing its magic first when the file is new.
-static FILE *store_open(const char *path, uint32_t magic) {
-    FILE *f = fopen(path, "rb");
-    if (f) {
-        fclose(f);
-    } else {
-        f = fopen(path, "wb");
-        if (!f) {
-            LOG(1, "AFP desktop: cannot create '%s' (%s)", path, strerror(errno));
-            return NULL;
-        }
-        uint8_t m[4];
-        WR_BE32(m, magic);
-        fwrite(m, 1, 4, f);
-        fclose(f);
-    }
-    return fopen(path, "ab");
-}
 
 afp_desktop_t *afp_desktop_open(const char *host_root) {
     if (!host_root || !*host_root)
@@ -309,95 +260,19 @@ afp_desktop_t *afp_desktop_open(const char *host_root) {
         return NULL;
     }
     mkdir(ctrl, 0755);
-    if ((size_t)snprintf(dt->icon_path, sizeof(dt->icon_path), "%s/desktop.icons", ctrl) >= sizeof(dt->icon_path) ||
-        (size_t)snprintf(dt->appl_path, sizeof(dt->appl_path), "%s/desktop.appl", ctrl) >= sizeof(dt->appl_path)) {
-        free(dt);
-        return NULL;
-    }
-    icon_load(dt);
-    appl_load(dt);
-    dt->icon_log = store_open(dt->icon_path, DT_ICON_MAGIC);
-    dt->appl_log = store_open(dt->appl_path, DT_APPL_MAGIC);
+    char path[PATH_MAX + 16];
+    snprintf(path, sizeof(path), "%s/desktop.icons", ctrl);
+    dt->icon_log = afp_applog_open(path, DT_ICON_MAGIC, icon_replay, icon_dump, dt, NULL);
+    snprintf(path, sizeof(path), "%s/desktop.appl", ctrl);
+    dt->appl_log = afp_applog_open(path, DT_APPL_MAGIC, appl_replay, appl_dump, dt, NULL);
     return dt;
-}
-
-// Rewrite each store as pure PUTs of its live records.
-static void desktop_compact(afp_desktop_t *dt) {
-    char tmp[PATH_MAX];
-    if (dt->icon_log && snprintf(tmp, sizeof(tmp), "%s.tmp", dt->icon_path) < (int)sizeof(tmp)) {
-        FILE *f = fopen(tmp, "wb");
-        if (f) {
-            uint8_t m[4];
-            WR_BE32(m, DT_ICON_MAGIC);
-            bool ok = fwrite(m, 1, 4, f) == 4;
-            for (size_t i = 0; ok && i < dt->icon_len; i++) {
-                if (dt->icons[i].dead)
-                    continue;
-                uint8_t hdr[DT_ICON_FIXED];
-                hdr[0] = DT_OP_PUT;
-                WR_BE32(hdr + 1, dt->icons[i].v.creator);
-                WR_BE32(hdr + 5, dt->icons[i].v.file_type);
-                hdr[9] = dt->icons[i].v.icon_type;
-                WR_BE32(hdr + 10, dt->icons[i].v.tag);
-                WR_BE16(hdr + 14, dt->icons[i].v.size);
-                ok = fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr);
-                if (ok && dt->icons[i].v.size)
-                    ok = fwrite(dt->icons[i].bytes, 1, dt->icons[i].v.size, f) == dt->icons[i].v.size;
-            }
-            if (fclose(f) != 0)
-                ok = false;
-            if (ok) {
-                fclose(dt->icon_log);
-                dt->icon_log = NULL;
-                if (rename(tmp, dt->icon_path) != 0)
-                    remove(tmp);
-                dt->icon_log = fopen(dt->icon_path, "ab");
-            } else {
-                remove(tmp);
-            }
-        }
-    }
-    if (dt->appl_log && snprintf(tmp, sizeof(tmp), "%s.tmp", dt->appl_path) < (int)sizeof(tmp)) {
-        FILE *f = fopen(tmp, "wb");
-        if (f) {
-            uint8_t m[4];
-            WR_BE32(m, DT_APPL_MAGIC);
-            bool ok = fwrite(m, 1, 4, f) == 4;
-            for (size_t i = 0; ok && i < dt->appl_len; i++) {
-                if (dt->appls[i].dead)
-                    continue;
-                uint8_t rec[DT_APPL_FIXED];
-                rec[0] = DT_OP_PUT;
-                WR_BE32(rec + 1, dt->appls[i].v.creator);
-                WR_BE32(rec + 5, dt->appls[i].v.cnid);
-                WR_BE32(rec + 9, dt->appls[i].v.tag);
-                ok = fwrite(rec, 1, sizeof(rec), f) == sizeof(rec);
-            }
-            if (fclose(f) != 0)
-                ok = false;
-            if (ok) {
-                fclose(dt->appl_log);
-                dt->appl_log = NULL;
-                if (rename(tmp, dt->appl_path) != 0)
-                    remove(tmp);
-                dt->appl_log = fopen(dt->appl_path, "ab");
-            } else {
-                remove(tmp);
-            }
-        }
-    }
 }
 
 void afp_desktop_close(afp_desktop_t *dt) {
     if (!dt)
         return;
-    size_t il = icon_live(dt), al = appl_live(dt);
-    if (dt->icon_records > DT_COMPACT_FACTOR * (il + 1) || dt->appl_records > DT_COMPACT_FACTOR * (al + 1))
-        desktop_compact(dt);
-    if (dt->icon_log)
-        fclose(dt->icon_log);
-    if (dt->appl_log)
-        fclose(dt->appl_log);
+    afp_applog_close(dt->icon_log, icon_live(dt));
+    afp_applog_close(dt->appl_log, appl_live(dt));
     free(dt->icons);
     free(dt->appls);
     free(dt);

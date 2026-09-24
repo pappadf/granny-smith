@@ -2607,6 +2607,25 @@ the filesystem is emscripten's sandbox, and the guest reaches nothing outside
 it. A developer who links a folder into a share lets the guest read and write
 through that link.
 
+All three control-directory logs -- the catalog and the two desktop stores --
+share one append-log format (`afp_applog.c`), big-endian throughout:
+
+```
+file:    u32 magic | record*
+record:  u8 op | u16 len | payload[len] | u32 crc32 (over op, len, payload)
+```
+
+- A store changes its in-memory state, then appends a record, flushed before
+  the call returns: a crash loses at most the record in flight.
+- Load replays the records in order. Every record carries its length, so an
+  op the store does not know is skipped whole. The first record that is cut
+  short or fails its CRC ends the replay, and the file is cut there, so the
+  next append does not land behind the garbage.
+- A log that holds more than four records per live entry is compacted --
+  rewritten from the live state through a temporary file and a rename --
+  checked on every append and at close.
+- A missing log, or one with another magic, starts afresh.
+
 ## 4.1 catalog.gsc — the CNID catalog
 
 AFP requires catalog node IDs that are unique per volume, stable across
@@ -2616,59 +2635,53 @@ map; each entry is `(cnid, parent cnid, leaf name, is_dir, has file-ID
 thread)`, so a directory rename keeps every descendant's ID for free and a
 relative path is a walk of the parent chain.
 
-Big-endian throughout:
+Magic `'GSC2'`. Ops 1–6 carry `u32 cnid | u32 parent | u8 is_dir | name`, the
+name running to the end of the payload; op 7 carries the catalog's state.
 
-```
-header:  'GSC1' | u32 generation | u32 next_cnid
-record:  u8 op | u32 cnid | u32 parent | u8 is_dir | pstr name | u32 crc32
-```
-
-| op | Meaning                                            |
-| -: | :------------------------------------------------- |
-|  1 | ADD — a new entry                                  |
-|  2 | RENAME — same parent, new leaf name                |
-|  3 | MOVE — new parent, and possibly a new leaf name    |
-|  4 | DELETE — tombstone; the CNID is never handed out again |
-|  5 | SET_ID — an FPCreateID thread now exists           |
-|  6 | CLR_ID — FPDeleteID dropped the thread             |
+| op | Meaning                                                   |
+| -: | :-------------------------------------------------------- |
+|  1 | ADD — a new entry                                         |
+|  2 | RENAME — same parent, new leaf name                       |
+|  3 | MOVE — new parent, and possibly a new leaf name           |
+|  4 | DELETE — tombstone; the CNID is never handed out again    |
+|  5 | SET_ID — an FPCreateID thread now exists                  |
+|  6 | CLR_ID — FPDeleteID dropped the thread                    |
+|  7 | STATE — `u32 generation \| u32 next_cnid`                  |
 
 - The root is always CNID 2 with parent 1; allocation starts at 17, because
   HFS reserves everything below 16 and clients expect that.
-- Every mutation appends and flushes, so a crash loses at most the record in
-  flight. A record whose CRC does not match ends the replay: the log is
-  self-truncating rather than corrupt.
+- `next_cnid` is recovered from the ADD records as well as from STATE, which
+  is written when the generation changes and first in every compaction.
 - **Lazy adoption**: anything the server touches — an FPEnumerate, an
   FPGetFileDirParms, an FPOpenFork — that has no entry gets one. Files that
   appear behind the server's back (the shell's `cp`, the host, a restored
   page) therefore acquire stable IDs on first use, and a file renamed
   *outside* AFP is correctly a new object.
-- The log is rewritten as pure ADDs once it exceeds four times its live-entry
-  footprint, and at volume close. Compaction and any tombstone sweep bump
-  `generation`, which is what invalidates an FPCatSearch cursor and a live
-  FPEnumerate snapshot.
+- A compaction writes STATE and pure ADDs, and leaves `generation` alone: no
+  CNID changes, so a client's FPCatSearch cursor and a live FPEnumerate
+  snapshot stay good across it. A deletion and a tombstone sweep bump it.
 - An unreadable log is not fatal: the catalog starts empty with the generation
   bumped, and rebuilds by adoption. Aliases break; files do not.
 
 ## 4.2 desktop.icons — the icon store
 
-An append-log of icon records, `'GSI1'` magic followed by:
+Magic `'GSI2'`; each record's payload is
 
 ```
-record:  u8 op | u32 creator | u32 file_type | u8 icon_type | u32 tag
-         | u16 size | bitmap[size]
+u32 creator | u32 file_type | u8 icon_type | u32 tag | bitmap (to the end)
 ```
 
 `op` is 1 (put) or 2 (delete). Records are replayed in order, so the last put
-for a `(creator, type, icon type)` triple wins; the store is compacted at
-close once it holds more than four times its live records. The 1 KB per-record
-ceiling is `kLarge8BitIcon`, the largest icon AFP defines (`Files.p`).
+for a `(creator, type, icon type)` triple wins. The 1 KB bitmap ceiling is
+`kLarge8BitIcon`, the largest icon AFP defines (`Files.p`); the store holds at
+most 4096 icons (`AFP_MAX_ICONS`).
 
 ## 4.3 desktop.appl — the APPL mappings
 
-An append-log with `'GSA1'` magic:
+Magic `'GSA2'`; each record's payload is
 
 ```
-record:  u8 op | u32 creator | u32 cnid | u32 tag
+u32 creator | u32 cnid | u32 tag
 ```
 
 Mappings are keyed by the application's **CNID**, not its path, so renaming an

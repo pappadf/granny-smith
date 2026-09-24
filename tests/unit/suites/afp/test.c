@@ -21,6 +21,7 @@
 #include "afp_meta.h"
 #include "afp_server.h"
 #include "appletalk.h"
+#include "crc32.h"
 #include "test_assert.h"
 
 #include <dirent.h>
@@ -3318,6 +3319,108 @@ TEST(open_dir_accepts_an_empty_pathname) {
     fixture_down();
 }
 
+// --- G1: one append log for the catalog and the desktop stores (10-network N-16) --
+
+static void desktop_log_path(const char *leaf, char *out, size_t cap) {
+    snprintf(out, cap, "%s/%s/%s", g_root, AFP_CONTROL_DIR, leaf);
+}
+
+static void append_bytes(const char *path, const void *bytes, size_t n) {
+    FILE *f = fopen(path, "ab");
+    ASSERT_TRUE(f != NULL);
+    ASSERT_EQ_INT((int)n, (int)fwrite(bytes, 1, n, f));
+    fclose(f);
+}
+
+// One well-formed record: op, length, payload, CRC-32 over the three.
+static void append_record(const char *path, uint8_t op, const uint8_t *payload, uint16_t len) {
+    uint8_t head[3] = {op, (uint8_t)(len >> 8), (uint8_t)len};
+    uint32_t crc = gs_crc32(gs_crc32(0, head, 3), payload, len);
+    uint8_t tail[4] = {(uint8_t)(crc >> 24), (uint8_t)(crc >> 16), (uint8_t)(crc >> 8), (uint8_t)crc};
+    append_bytes(path, head, 3);
+    append_bytes(path, payload, len);
+    append_bytes(path, tail, 4);
+}
+
+// A record appended after a crash survives the next reload.  Replay stopped
+// at the torn record but left it in the file, so every later append landed
+// behind the garbage and was lost at the next load -- a CNID handed out after
+// a crash came back as a different one.
+TEST(the_catalog_keeps_what_is_written_after_a_torn_tail) {
+    fixture_up("torn2");
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Alpha"));
+    char err[192];
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
+    char log[512];
+    desktop_log_path("catalog.gsc", log, sizeof log);
+    append_bytes(log, "\x01\x00\x40torn", 7); // a record cut short
+
+    ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
+    g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION);
+    ASSERT_EQ_INT((int)ERR_OK, (int)create_file("Gamma")); // after the crash
+    uint32_t gamma = file_number("Gamma");
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("TestVol", err, sizeof(err)));
+
+    ASSERT_TRUE(atalk_afp_volume_add("TestVol", g_root, err, sizeof(err)) >= 0);
+    g_vol_id = (uint16_t)atalk_afp_volume_vol_id(atalk_afp_volume_find("TestVol"));
+    open_vol_as(SESSION);
+    ASSERT_EQ_INT((int)gamma, (int)file_number("Gamma"));
+    fixture_down();
+}
+
+// The same for the icon store; and a record of an op the store does not know
+// is skipped whole -- it was replayed as a PUT, creating an icon.
+TEST(the_desktop_keeps_what_is_written_after_a_torn_tail) {
+    fixture_up("torndt");
+    uint8_t bits[32];
+    memset(bits, 0x5A, sizeof bits);
+    afp_desktop_t *dt = afp_desktop_open(g_root);
+    ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, 1, 2, 1, 0, bits, sizeof bits));
+    afp_desktop_close(dt);
+    char log[512];
+    desktop_log_path("desktop.icons", log, sizeof log);
+    uint8_t unknown[13 + 32] = {0, 0, 0, 7, 0, 0, 0, 2, 1}; // creator 7
+    append_record(log, 0x7F, unknown, sizeof unknown);
+    append_bytes(log, "\x01\x00", 2); // then a torn one
+
+    dt = afp_desktop_open(g_root);
+    ASSERT_TRUE(afp_desktop_get_icon(dt, 7, 2, 1) == NULL); // the unknown op made nothing
+    ASSERT_TRUE(afp_desktop_get_icon(dt, 1, 2, 1) != NULL);
+    ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, 3, 2, 1, 0, bits, sizeof bits)); // after the crash
+    afp_desktop_close(dt);
+
+    dt = afp_desktop_open(g_root);
+    const afp_icon_t *icon = afp_desktop_get_icon(dt, 3, 2, 1);
+    ASSERT_TRUE(icon != NULL);
+    ASSERT_EQ_INT(0, memcmp(icon->bitmap, bits, sizeof bits));
+    afp_desktop_close(dt);
+    fixture_down();
+}
+
+// Re-putting one icon is compacted as it goes: the log stays a few records
+// long.  Compaction ran only at close, so a store that stayed open grew
+// without bound.
+TEST(a_rewritten_icon_does_not_grow_the_log) {
+    fixture_up("iconrewrite");
+    uint8_t bits[32];
+    afp_desktop_t *dt = afp_desktop_open(g_root);
+    for (int i = 0; i < 1000; i++) {
+        memset(bits, (uint8_t)i, sizeof bits);
+        ASSERT_EQ_INT(0, afp_desktop_put_icon(dt, 1, 2, 1, 0, bits, sizeof bits));
+    }
+    char log[512];
+    desktop_log_path("desktop.icons", log, sizeof log);
+    struct stat st;
+    ASSERT_EQ_INT(0, stat(log, &st));
+    ASSERT_TRUE(st.st_size < 20 * (3 + 13 + 32 + 4)); // 1000 records would be 52 KB
+    afp_desktop_close(dt);
+    dt = afp_desktop_open(g_root);
+    ASSERT_EQ_INT((int)(uint8_t)999, afp_desktop_get_icon(dt, 1, 2, 1)->bitmap[0]); // the last one
+    afp_desktop_close(dt);
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3387,6 +3490,9 @@ int main(void) {
     RUN(enumerate_start_index_counts_the_kinds_asked_for);
     RUN(remove_appl_of_a_missing_application_removes_nothing);
     RUN(open_dir_accepts_an_empty_pathname);
+    RUN(the_catalog_keeps_what_is_written_after_a_torn_tail);
+    RUN(the_desktop_keeps_what_is_written_after_a_torn_tail);
+    RUN(a_rewritten_icon_does_not_grow_the_log);
 
     RUN(icons_survive_a_share_reopen);
     RUN(appl_mapping_is_cnid_keyed_and_survives_a_rename);
