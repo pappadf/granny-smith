@@ -3098,6 +3098,17 @@ static value_t atalk_afp_stats_attr_errors_by_code(struct object *self, const me
     return val_map_finish(b);
 }
 
+static value_t atalk_afp_stats_attr_ok_by_command(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    value_map_builder_t *b = val_map_new();
+    const char *name = NULL;
+    uint64_t count = 0;
+    for (int i = 0; atalk_afp_ok_command_at(i, &name, &count) == 0; i++)
+        val_map_put(b, name, val_uint(8, count));
+    return val_map_finish(b);
+}
+
 static const member_t atalk_afp_stats_members[] = {
     OBJ_U64_FIELD(atalk_afp_stats_t, commands_served, "AFP commands dispatched"),
     OBJ_U64_FIELD(atalk_afp_stats_t, bytes_read, "Bytes served through FPRead"),
@@ -3109,6 +3120,11 @@ static const member_t atalk_afp_stats_members[] = {
                                                                                 .doc = "Result code -> occurrence count, for the codes seen so far",
                                                                                 .flags = VAL_RO,
                                                                                 .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
+    {.kind = M_ATTR,
+                                                                                .name = "ok_by_command",
+                                                                                .doc = "Command name -> times it returned NoErr, for the commands that have",
+                                                                                .flags = VAL_RO,
+                                                                                .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_ok_by_command} },
 };
 
 static const class_desc_t atalk_afp_stats_class = {

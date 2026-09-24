@@ -91,12 +91,16 @@ atalk_afp_stats_t g_afp_stats;
 #define AFP_ERR_TALLY_BASE  5000
 #define AFP_ERR_TALLY_COUNT 48
 static uint64_t g_afp_err_tally[AFP_ERR_TALLY_COUNT];
+// Successes per opcode, so a test can ask whether one call worked.
+static uint64_t g_afp_ok_tally[256];
 
 // Record one command outcome for the stats subtree.
-void afp_count_result(uint32_t result) {
+void afp_count_result(uint8_t opcode, uint32_t result) {
     g_afp_stats.commands_served++;
-    if (result == AFPERR_NoErr)
+    if (result == AFPERR_NoErr) {
+        g_afp_ok_tally[opcode]++;
         return;
+    }
     g_afp_stats.errors++;
     int32_t code = (int32_t)result;
     int idx = -code - AFP_ERR_TALLY_BASE;
@@ -351,6 +355,10 @@ uint64_t atalk_afp_error_count(int32_t code) {
     return g_afp_err_tally[idx];
 }
 
+uint64_t afp_ok_count(uint8_t opcode) {
+    return g_afp_ok_tally[opcode];
+}
+
 int atalk_afp_error_code_at(int index, int32_t *out_code, uint64_t *out_count) {
     int seen = 0;
     for (int i = 0; i < AFP_ERR_TALLY_COUNT; i++) {
@@ -481,6 +489,7 @@ static const asp_client_t k_afp_asp_client = {
 void atalk_server_init(void) {
     memset(&g_afp_stats, 0, sizeof(g_afp_stats));
     memset(g_afp_err_tally, 0, sizeof(g_afp_err_tally));
+    memset(g_afp_ok_tally, 0, sizeof(g_afp_ok_tally));
     // Nothing a previous machine's sessions held survives into this one.
     afp_reset_transient_state();
     asp_set_client(&k_afp_asp_client, NULL);

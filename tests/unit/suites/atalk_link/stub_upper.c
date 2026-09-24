@@ -65,6 +65,10 @@ int atalk_afp_error_code_at(int i, int32_t *c, uint64_t *n) {
     (void)i, (void)c, (void)n;
     return -1;
 }
+int atalk_afp_ok_command_at(int i, const char **name, uint64_t *n) {
+    (void)i, (void)name, (void)n;
+    return -1;
+}
 unsigned atalk_afp_volume_open_forks(int s) {
     (void)s;
     return 0;

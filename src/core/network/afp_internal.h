@@ -117,7 +117,8 @@ vol_t *afp_session_vol(const afp_ctx_t *ctx, uint16_t vol_id);
 void vol_record_store(const vol_t *v);
 vol_t *find_vol_by_name(const char *name);
 vol_t *find_vol_by_id(uint16_t id);
-void afp_count_result(uint32_t result);
+void afp_count_result(uint8_t opcode, uint32_t result);
+uint64_t afp_ok_count(uint8_t opcode);
 
 // --- Paths and parameter blocks (afp_params.c) ---------------------------------
 

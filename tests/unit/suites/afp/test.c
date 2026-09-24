@@ -1052,13 +1052,13 @@ TEST(cat_search_matches_on_name_and_resumes_from_cat_position) {
     put8(0); // filler
     put16(2); // name offset: just past this 2-byte field
     put_pstr("Report");
-    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
     // Specification2 carries a nil name field.
     int spec2 = g_req_len;
     put8(0);
     put8(0);
     put16(0);
-    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
 
     uint32_t rc = call(OP_CAT_SEARCH);
     ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF); // afpEofError = walked the tree
@@ -1075,12 +1075,12 @@ TEST(cat_search_matches_on_name_and_resumes_from_cat_position) {
     put8(0);
     put16(2);
     put_pstr("Report");
-    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
     spec2 = g_req_len;
     put8(0);
     put8(0);
     put16(0);
-    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
     ASSERT_EQ_INT((int)ERR_CATALOG_CHANGED, (int)call(OP_CAT_SEARCH));
 
     fixture_down();
@@ -1102,12 +1102,12 @@ TEST(cat_search_partial_name_matches_several) {
     put8(0);
     put16(2);
     put_pstr("Repo");
-    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
     int spec2 = g_req_len;
     put8(0);
     put8(0);
     put16(0);
-    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
 
     uint32_t rc = call(OP_CAT_SEARCH);
     ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
@@ -1119,9 +1119,9 @@ TEST(cat_search_rejects_criteria_it_cannot_serve) {
     fixture_up("catsearchbm");
     // Bit 11 (Group ID) is not a searchable field here.
     put_catsearch_header(10, NULL, 0x0040, 0x0000, 0x00000800u);
-    put8(2);
     put8(0);
-    put8(2);
+    put8(0);
+    put8(0);
     put8(0);
     ASSERT_EQ_INT((int)ERR_BITMAP, (int)call(OP_CAT_SEARCH));
     fixture_down();
@@ -3215,12 +3215,12 @@ TEST(cat_search_resumes_without_losing_a_match) {
         put8(0);
         put16(2);
         put_pstr("Match");
-        g_req[spec1] = (uint8_t)(g_req_len - spec1);
+        g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
         int spec2 = g_req_len;
         put8(0);
         put8(0);
         put16(0);
-        g_req[spec2] = (uint8_t)(g_req_len - spec2);
+        g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
         uint32_t rc = call(OP_CAT_SEARCH);
         ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
         found += (int)rd32(g_reply + 20);
@@ -3618,12 +3618,12 @@ static uint32_t cat_search_name(const char *mac_name) {
     put8(0);
     put16(2);
     put_pstr(mac_name);
-    g_req[spec1] = (uint8_t)(g_req_len - spec1);
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
     int spec2 = g_req_len;
     put8(0);
     put8(0);
     put16(0);
-    g_req[spec2] = (uint8_t)(g_req_len - spec2);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
     uint32_t rc = call(OP_CAT_SEARCH);
     return (rc == ERR_OK || rc == ERR_EOF) ? rd32(g_reply + 20) : 0xFFFFFFFFu;
 }
@@ -3787,6 +3787,34 @@ TEST(a_listing_numbers_its_entries_in_name_order) {
     fixture_down();
 }
 
+// FPCatSearch exactly as System 7.5's Find File sends it (AppleShare 3.5,
+// captured from appletalk-afp-sys7): partial name "forty", visible files and
+// directories.  Each specification's StructLength counts the parameters after
+// its length and filler bytes -- 40 and 36 here, in a 115-byte request.  The
+// server read it as counting those two bytes as well, found Specification2
+// two bytes early, and answered ParamErr.
+TEST(cat_search_parses_find_files_request) {
+    fixture_up("catsearchreal");
+    write_file("A name that runs to forty", "x");
+    write_file("Other", "x");
+    (void)file_number("A name that runs to forty"); // CatSearch walks the catalog
+    (void)file_number("Other");
+    static const uint8_t spec[] = {// Specification1: 40 bytes -- Finder Info (32), name offset 34, "forty".
+                                   0x28, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x22, 0x05, 'f', 'o', 'r', 't', 'y',
+                                   // Specification2: 36 bytes -- the Finder Info mask (invisible bit),
+                                   // then a nil name field and its pad.
+                                   0x24, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x22, 0x00, 0x00};
+    put_catsearch_header(30, NULL, 0x0042, 0x0042, 0x80000060u);
+    put_bytes(spec, sizeof(spec));
+    ASSERT_EQ_INT(115, g_req_len);
+    uint32_t rc = call(OP_CAT_SEARCH);
+    ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
+    ASSERT_EQ_INT(1, (int)rd32(g_reply + 20));
+    fixture_down();
+}
+
 int main(void) {
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
@@ -3814,6 +3842,7 @@ int main(void) {
     RUN(exchange_files_keeps_an_open_fork_pointed_at_its_bytes);
     RUN(cat_search_matches_on_name_and_resumes_from_cat_position);
     RUN(cat_search_partial_name_matches_several);
+    RUN(cat_search_parses_find_files_request);
     RUN(cat_search_rejects_criteria_it_cannot_serve);
     RUN(server_message_round_trips_and_raises_an_attention);
     RUN(afp_21_commands_are_refused_on_a_20_session);

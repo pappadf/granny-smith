@@ -2539,7 +2539,8 @@ appletalk                        the stack itself
                                  open_forks, idle_ns
     stats          ro  child     commands_served, bytes_read, bytes_written,
                                  errors, open_forks, errors_by_code (a map
-                                 keyed by result code)
+                                 keyed by result code), ok_by_command (a map
+                                 keyed by command name: its NoErr results)
   printer
     enabled        rw  bool
     name           rw  string    NBP entity name; the setter re-registers

@@ -133,6 +133,9 @@ const atalk_afp_stats_t *atalk_afp_get_stats(void);
 // have actually occurred, so the map the object model publishes stays small.
 uint64_t atalk_afp_error_count(int32_t code);
 int atalk_afp_error_code_at(int index, int32_t *out_code, uint64_t *out_count);
+// Per-command success tally, walked the same way: the commands that have
+// returned NoErr at least once, by name ("FPResolveID").
+int atalk_afp_ok_command_at(int index, const char **out_name, uint64_t *out_count);
 
 // === ASP sessions (object model: `appletalk.afp.sessions`) ==================
 

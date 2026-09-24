@@ -1936,12 +1936,16 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
                                  catsearch_spec_t *spec, bool second, int *out_next) {
     if (pos >= in_len)
         return false;
+    // StructLength counts the parameters after it and its filler byte, not
+    // those two: System 7.5's AppleShare 3.5 sends 0x28, 40 bytes of
+    // parameters, and its Specification2 starts 42 bytes on.
     int size = in[pos];
-    int base = pos + 2; // skip the size byte and its filler
-    if (size < 2 || pos + size > in_len)
+    int base = pos + 2;
+    int end = base + size;
+    if (end > in_len)
         return false;
     if (out_next)
-        *out_next = pos + size;
+        *out_next = end;
     int p = base;
     for (int bit = 0; bit < 16; bit++) {
         if (!(request_bm & (1u << bit)))
@@ -1949,7 +1953,7 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
         int width = afp_param_field_width(is_dir, bit);
         if (width == 0)
             continue;
-        if (p + width > pos + size)
+        if (p + width > end)
             return false;
         const uint8_t *f = in + p;
         p += width;
@@ -1992,10 +1996,10 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
                 break;
             uint16_t off = RD_BE16(f);
             int np = base + off;
-            if (off == 0 || np >= pos + size)
+            if (off == 0 || np >= end)
                 break;
             int nlen = in[np];
-            if (np + 1 + nlen > pos + size)
+            if (np + 1 + nlen > end)
                 break;
             if (nlen > AFP_MAX_NAME)
                 nlen = AFP_MAX_NAME;
@@ -2266,6 +2270,21 @@ static const afp_command_handler_t *afp_find_handler(uint8_t opcode) {
     return NULL;
 }
 
+int atalk_afp_ok_command_at(int index, const char **out_name, uint64_t *out_count) {
+    int seen = 0;
+    for (size_t i = 0; i < ARRAY_LEN(k_afp_command_handlers); i++) {
+        uint64_t n = afp_ok_count(k_afp_command_handlers[i].opcode);
+        if (!n || seen++ != index)
+            continue;
+        if (out_name)
+            *out_name = k_afp_command_handlers[i].name;
+        if (out_count)
+            *out_count = n;
+        return 0;
+    }
+    return -1;
+}
+
 // The 2.1 calls are only legal once the session has negotiated 2.1; before
 // that the client must use its 2.0 fallbacks (AFP_21_22 result codes).
 uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
@@ -2278,7 +2297,7 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
     // fork, FPLogin after recording the version (10-network N-32).
     if (!out || out_max < AFP_MIN_REPLY) {
         LOG(1, "AFP: command 0x%02X refused — reply buffer of %d bytes", opcode, out_max);
-        afp_count_result(AFPERR_ParamErr);
+        afp_count_result(opcode, AFPERR_ParamErr);
         return AFPERR_ParamErr;
     }
     if (!g_afp_enabled) {
@@ -2288,7 +2307,7 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
     const afp_command_handler_t *handler = afp_find_handler(opcode);
     if (!handler) {
         LOG(1, "AFP unknown opcode 0x%02X (len=%d)", opcode, in_len);
-        afp_count_result(AFPERR_CallNotSupported);
+        afp_count_result(opcode, AFPERR_CallNotSupported);
         return AFPERR_CallNotSupported;
     }
     // The gate: every command needs an open session, and all but FPLogin and
@@ -2303,14 +2322,14 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
         refused = AFPERR_CallNotSupported;
     if (refused != AFPERR_NoErr) {
         LOG(2, "AFP %s from session 0x%04X refused (0x%08X)", handler->name, session_id, refused);
-        afp_count_result(refused);
+        afp_count_result(opcode, refused);
         return refused;
     }
     afp_ctx_t ctx = {.session_id = session_id};
     afp_req_t req = {.ctx = &ctx, .in = in, .in_len = in_len, .out = out, .out_max = out_max};
     LOG(10, "AFP >> %s (0x%02X) in_len=%d session=0x%04X", handler->name, opcode, in_len, session_id);
     uint32_t result = handler->handler(&req);
-    afp_count_result(result);
+    afp_count_result(opcode, result);
     if (out_len)
         *out_len = req.out_len;
     if (result == AFPERR_NoErr)
