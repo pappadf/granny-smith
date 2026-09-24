@@ -86,6 +86,18 @@ typedef struct {
     uint16_t session_id;
 } afp_ctx_t;
 
+// One command as its handler sees it: the session, the request (the opcode
+// byte at in[0]), and the reply buffer.  `out_len` starts at 0; a handler
+// that replies with data sets it.
+typedef struct {
+    afp_ctx_t *ctx;
+    const uint8_t *in;
+    int in_len;
+    uint8_t *out;
+    int out_max;
+    int out_len;
+} afp_req_t;
+
 // --- The volume table and the server (afp_volume.c) ----------------------------
 
 extern vol_t g_vols[AFP_MAX_VOLUMES];
@@ -152,7 +164,7 @@ uint16_t afp_attributes_of(const char *host_path, const struct stat *st, const a
 
 // --- FPEnumerate and its snapshots (afp_enum.c) --------------------------------
 
-uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len);
+uint32_t afp_cmd_enumerate(afp_req_t *r);
 void enum_snapshots_drop_volume(uint16_t vol_id);
 void enum_snapshots_drop_session(uint16_t session_id);
 

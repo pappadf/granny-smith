@@ -74,8 +74,7 @@ void afp_log_hex(const char *label, const uint8_t *buf, int len) {
 // Per-command context and shared resolution
 // ============================================================================
 
-typedef uint32_t (*afp_command_handler_fn)(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                           int *out_len);
+typedef uint32_t (*afp_command_handler_fn)(afp_req_t *r);
 
 // What a session must have done before a command is served (10-network C7).
 // The zero value is the common case, so the table names only the exceptions.
@@ -193,11 +192,10 @@ static uint32_t afp_fork_status_to_err(afp_fork_status_t st) {
 // The fork a request's OForkRefNum (offset 1) names, for this session and with
 // the access the command needs.  ParamErr for a refnum the session did not
 // open -- another session's included (Inside AppleTalk ch. 13).
-static uint32_t afp_fork_from_req(const afp_ctx_t *ctx, const uint8_t *in, int in_len, uint16_t need_access,
-                                  afp_fork_t **out) {
-    if (in_len < 3)
+static uint32_t afp_fork_from_req(const afp_req_t *r, uint16_t need_access, afp_fork_t **out) {
+    if (r->in_len < 3)
         return AFPERR_ParamErr;
-    afp_fork_t *fk = afp_fork_find(RD_BE16(in + 1), ctx->session_id);
+    afp_fork_t *fk = afp_fork_find(RD_BE16(r->in + 1), r->ctx->session_id);
     if (!fk)
         return AFPERR_ParamErr;
     if ((afp_fork_access_mode(fk) & need_access) != need_access)
@@ -220,21 +218,17 @@ static bool afp_inhibited(const char *host_path, uint16_t bit) {
 // ============================================================================
 
 // FPGetSrvrParms (0x10) — server time plus the volume list.
-static uint32_t afp_cmd_get_srvr_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                       int *out_len) {
-    (void)ctx;
-    (void)in;
-    (void)in_len;
-    if (out_max < 5)
+static uint32_t afp_cmd_get_srvr_parms(afp_req_t *r) {
+    if (r->out_max < 5)
         return AFPERR_ParamErr;
     int count = 0;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++)
         if (g_vols[i].in_use)
             count++;
 
-    WR_BE32(out, afp_unix_time_to_afp(time(NULL)));
+    WR_BE32(r->out, afp_unix_time_to_afp(time(NULL)));
     int pos = 4;
-    out[pos++] = (uint8_t)count;
+    r->out[pos++] = (uint8_t)count;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
         if (!g_vols[i].in_use)
             continue;
@@ -242,47 +236,43 @@ static uint32_t afp_cmd_get_srvr_parms(afp_ctx_t *ctx, const uint8_t *in, int in
         size_t n = (size_t)afp_mac_name(g_vols[i].name, name, sizeof(name));
         if (n > 31)
             n = 31; // HFS name limit
-        if (pos + 2 + (int)n > out_max)
+        if (pos + 2 + (int)n > r->out_max)
             break;
-        out[pos++] = 0x00; // flags: no volume password, not configured
-        out[pos++] = (uint8_t)n;
-        memcpy(&out[pos], name, n);
+        r->out[pos++] = 0x00; // flags: no volume password, not configured
+        r->out[pos++] = (uint8_t)n;
+        memcpy(&r->out[pos], name, n);
         pos += (int)n;
     }
-    if (out_len)
-        *out_len = pos;
+    r->out_len = pos;
     LOG(10, "AFP FPGetSrvrParms: numvols=%d reply=%d", count, pos);
     return AFPERR_NoErr;
 }
 
 // FPGetVolParms (0x11)
-static uint32_t afp_cmd_get_vol_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                      int *out_len) {
-    if (in_len < 5 || out_max < 2)
+static uint32_t afp_cmd_get_vol_parms(afp_req_t *r) {
+    if (r->in_len < 5 || r->out_max < 2)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint16_t bitmap = RD_BE16(in + 3);
-    vol_t *v = afp_session_vol(ctx, vol_id);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint16_t bitmap = RD_BE16(r->in + 3);
+    vol_t *v = afp_session_vol(r->ctx, vol_id);
     if (!v)
         return AFPERR_ParamErr;
-    int produced = afp_write_vol_param_block(v, &bitmap, out, out_max, afp_session_is_21(ctx));
+    int produced = afp_write_vol_param_block(v, &bitmap, r->out, r->out_max, afp_session_is_21(r->ctx));
     if (produced <= 0)
         return AFPERR_ParamErr;
-    if (out_len)
-        *out_len = produced;
+    r->out_len = produced;
     LOG(10, "AFP FPGetVolParms: vol=0x%04X bitmap=0x%04X reply=%d", vol_id, bitmap, produced);
     return AFPERR_NoErr;
 }
 
 // FPOpenVol (0x18)
-static uint32_t afp_cmd_open_vol(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    if (in_len < 4)
+static uint32_t afp_cmd_open_vol(afp_req_t *r) {
+    if (r->in_len < 4)
         return AFPERR_ParamErr;
-    afp_log_hex("AFP FPOpenVol req", in, in_len);
-    uint16_t bitmap = RD_BE16(in + 1);
+    afp_log_hex("AFP FPOpenVol req", r->in, r->in_len);
+    uint16_t bitmap = RD_BE16(r->in + 1);
     char mac_name[33];
-    int pos = afp_read_pstring(in, in_len, 3, mac_name, sizeof(mac_name));
+    int pos = afp_read_pstring(r->in, r->in_len, 3, mac_name, sizeof(mac_name));
     if (pos < 0)
         return AFPERR_ParamErr;
     char vol_name[33 * 3 + 1];
@@ -294,57 +284,46 @@ static uint32_t afp_cmd_open_vol(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
         return AFPERR_ObjectNotFound;
     // The client must get the volume ID back to address anything on it.
     bitmap |= 0x0020;
-    int written = afp_write_vol_param_block(v, &bitmap, out, out_max, afp_session_is_21(ctx));
+    int written = afp_write_vol_param_block(v, &bitmap, r->out, r->out_max, afp_session_is_21(r->ctx));
     if (written <= 0)
         return AFPERR_ParamErr;
-    session_set_add(&v->open_by, ctx->session_id);
-    if (out_len)
-        *out_len = written;
+    session_set_add(&v->open_by, r->ctx->session_id);
+    r->out_len = written;
     LOG(2, "AFP FPOpenVol: '%s' volId=0x%04X bitmap=0x%04X reply=%d (session 0x%04X)", v->name, v->vol_id, bitmap,
-        written, ctx->session_id);
-    afp_log_hex("AFP FPOpenVol resp", out, written);
+        written, r->ctx->session_id);
+    afp_log_hex("AFP FPOpenVol resp", r->out, written);
     return AFPERR_NoErr;
 }
 
 // FPCloseVol (0x02)
-static uint32_t afp_cmd_close_vol(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                  int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 3)
+static uint32_t afp_cmd_close_vol(afp_req_t *r) {
+    if (r->in_len < 3)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    vol_t *v = afp_session_vol(ctx, vol_id);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    vol_t *v = afp_session_vol(r->ctx, vol_id);
     if (!v)
         return AFPERR_ParamErr;
-    session_set_remove(&v->open_by, ctx->session_id);
-    enum_snapshots_drop_session(ctx->session_id);
-    if (out_len)
-        *out_len = 0;
+    session_set_remove(&v->open_by, r->ctx->session_id);
+    enum_snapshots_drop_session(r->ctx->session_id);
     LOG(10, "AFP FPCloseVol: volId=0x%04X", vol_id);
     return AFPERR_NoErr;
 }
 
 // FPSetVolParms (0x20) — only the backup date is settable, and it is now
 // persisted in the volume's control record instead of being dropped.
-static uint32_t afp_cmd_set_vol_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                      int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (out_len)
-        *out_len = 0;
-    if (in_len < 5)
+static uint32_t afp_cmd_set_vol_parms(afp_req_t *r) {
+    if (r->in_len < 5)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint16_t bitmap = RD_BE16(in + 3);
-    vol_t *v = afp_session_vol(ctx, vol_id);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint16_t bitmap = RD_BE16(r->in + 3);
+    vol_t *v = afp_session_vol(r->ctx, vol_id);
     if (!v)
         return AFPERR_ParamErr;
     if (bitmap & ~0x0010u)
         return AFPERR_BitmapErr; // backup date is the only settable parameter
-    if (in_len < 9)
+    if (r->in_len < 9)
         return AFPERR_ParamErr;
-    v->backup_date = RD_BE32(in + 5);
+    v->backup_date = RD_BE32(r->in + 5);
     vol_record_store(v);
     LOG(10, "AFP FPSetVolParms: vol=0x%04X backupDate=%u", vol_id, v->backup_date);
     return AFPERR_NoErr;
@@ -352,15 +331,15 @@ static uint32_t afp_cmd_set_vol_parms(afp_ctx_t *ctx, const uint8_t *in, int in_
 
 // FPLogin (0x12) — guest-only, but the negotiated version is remembered so
 // FPGetSrvrMsg and the other 2.1 calls can gate on it.
-static uint32_t afp_cmd_login(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    if (in_len < 2)
+static uint32_t afp_cmd_login(afp_req_t *r) {
+    if (r->in_len < 2)
         return AFPERR_ParamErr;
     char ver[64];
-    int pos = afp_read_pstring(in, in_len, 0, ver, sizeof(ver));
+    int pos = afp_read_pstring(r->in, r->in_len, 0, ver, sizeof(ver));
     if (pos < 0)
         return AFPERR_ParamErr;
     char uam[64];
-    if (afp_read_pstring(in, in_len, pos, uam, sizeof(uam)) < 0)
+    if (afp_read_pstring(r->in, r->in_len, pos, uam, sizeof(uam)) < 0)
         return AFPERR_ParamErr;
     LOG(10, "AFP FPLogin: version='%s' uam='%s'", ver, uam);
 
@@ -378,131 +357,99 @@ static uint32_t afp_cmd_login(afp_ctx_t *ctx, const uint8_t *in, int in_len, uin
         LOG(7, "AFP FPLogin: unsupported UAM → BadUAM");
         return AFPERR_BadUAM;
     }
-    if (out_max < 2)
+    if (r->out_max < 2)
         return AFPERR_ParamErr;
-    afp_session_t *s = afp_session(ctx->session_id);
+    afp_session_t *s = afp_session(r->ctx->session_id);
     if (s) {
         s->state = AFP_SESS_LOGGED_IN;
         snprintf(s->version, sizeof(s->version), "%.*s", (int)sizeof(s->version) - 1, ver);
     }
-    WR_BE16(out, 0x0000); // guest login carries no user ID
-    if (out_len)
-        *out_len = 2;
+    WR_BE16(r->out, 0x0000); // guest login carries no user ID
+    r->out_len = 2;
     return AFPERR_NoErr;
 }
 
 // FPLoginCont (0x13) — unreachable while the only UAM is "No User Authent".
-static uint32_t afp_cmd_login_cont(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                   int *out_len) {
-    (void)ctx;
-    (void)in;
-    (void)in_len;
-    (void)out;
-    (void)out_max;
-    if (out_len)
-        *out_len = 0;
+static uint32_t afp_cmd_login_cont(afp_req_t *r) {
+    (void)r;
     LOG(10, "AFP FPLoginCont: rejected (no multi-step UAM)");
     return AFPERR_ParamErr;
 }
 
 // FPLogout (0x14) — drop everything this session held.
-static uint32_t afp_cmd_logout(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    (void)in;
-    (void)in_len;
-    (void)out;
-    (void)out_max;
-    afp_session_release(ctx->session_id);
+static uint32_t afp_cmd_logout(afp_req_t *r) {
+    afp_session_release(r->ctx->session_id);
     // Logged out: the session stays open, but serves nothing until it logs in
     // again.  It used to keep its version and go on working (F-05).
-    afp_session_t *s = afp_session(ctx->session_id);
+    afp_session_t *s = afp_session(r->ctx->session_id);
     if (s) {
         s->state = AFP_SESS_OPEN;
         s->version[0] = '\0';
     }
-    if (out_len)
-        *out_len = 0;
-    LOG(2, "AFP FPLogout: session 0x%04X", ctx->session_id);
+    LOG(2, "AFP FPLogout: session 0x%04X", r->ctx->session_id);
     return AFPERR_NoErr;
 }
 
 // FPChangePassword (0x24) — correct answer for a guest-only server.
-static uint32_t afp_cmd_change_password(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                        int *out_len) {
-    (void)ctx;
-    (void)in;
-    (void)in_len;
-    (void)out;
-    (void)out_max;
-    if (out_len)
-        *out_len = 0;
+static uint32_t afp_cmd_change_password(afp_req_t *r) {
+    (void)r;
     return AFPERR_CallNotSupported;
 }
 
 // FPMapID (0x15) / FPMapName (0x16) / FPGetUserInfo (0x25) — a consistent
 // single-user fiction; WP-13 documents where a real user database would plug in.
-static uint32_t afp_cmd_map_id(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    (void)ctx;
-    if (in_len < 5)
+static uint32_t afp_cmd_map_id(afp_req_t *r) {
+    if (r->in_len < 5)
         return AFPERR_ParamErr;
-    uint8_t subfunc = in[0];
-    uint32_t id = RD_BE32(in + 1);
+    uint8_t subfunc = r->in[0];
+    uint32_t id = RD_BE32(r->in + 1);
     const char *name = (id == 0) ? "" : (subfunc == 1 ? "guest" : "staff");
     uint8_t name_len = (uint8_t)strlen(name);
-    if (out_max < 1 + (int)name_len)
+    if (r->out_max < 1 + (int)name_len)
         return AFPERR_ParamErr;
-    out[0] = name_len;
+    r->out[0] = name_len;
     if (name_len)
-        memcpy(out + 1, name, name_len);
-    if (out_len)
-        *out_len = 1 + (int)name_len;
+        memcpy(r->out + 1, name, name_len);
+    r->out_len = 1 + (int)name_len;
     return AFPERR_NoErr;
 }
 
-static uint32_t afp_cmd_map_name(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    (void)ctx;
-    (void)in;
-    if (in_len < 1 || out_max < 4)
+static uint32_t afp_cmd_map_name(afp_req_t *r) {
+    if (r->in_len < 1 || r->out_max < 4)
         return AFPERR_ParamErr;
-    WR_BE32(out, 0); // every name maps to the guest ID
-    if (out_len)
-        *out_len = 4;
+    WR_BE32(r->out, 0); // every name maps to the guest ID
+    r->out_len = 4;
     return AFPERR_NoErr;
 }
 
-static uint32_t afp_cmd_get_user_info(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                      int *out_len) {
-    (void)ctx;
-    if (in_len < 5 || out_max < 6)
+static uint32_t afp_cmd_get_user_info(afp_req_t *r) {
+    if (r->in_len < 5 || r->out_max < 6)
         return AFPERR_ParamErr;
-    uint16_t bitmap = (in_len >= 7) ? RD_BE16(in + 5) : 0x0003;
+    uint16_t bitmap = (r->in_len >= 7) ? RD_BE16(r->in + 5) : 0x0003;
     if (bitmap & ~0x0003u)
         return AFPERR_BitmapErr;
     int p = 0;
-    WR_BE16(out + p, bitmap);
+    WR_BE16(r->out + p, bitmap);
     p += 2;
     if (bitmap & 0x0001) {
-        WR_BE32(out + p, 0);
+        WR_BE32(r->out + p, 0);
         p += 4;
     }
     if (bitmap & 0x0002) {
-        WR_BE32(out + p, 0);
+        WR_BE32(r->out + p, 0);
         p += 4;
     }
-    if (out_len)
-        *out_len = p;
+    r->out_len = p;
     return AFPERR_NoErr;
 }
 
 // FPGetSrvrMsg (0x26) — AFP 2.1.  MsgType 0 = logon, 1 = server; the bitmap
 // currently selects only the message string itself (AFP_21_22 p. 55).
-static uint32_t afp_cmd_get_srvr_msg(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                     int *out_len) {
-    (void)ctx;
-    if (in_len < 5 || out_max < 4)
+static uint32_t afp_cmd_get_srvr_msg(afp_req_t *r) {
+    if (r->in_len < 5 || r->out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t msg_type = RD_BE16(in + 1);
-    uint16_t bitmap = RD_BE16(in + 3);
+    uint16_t msg_type = RD_BE16(r->in + 1);
+    uint16_t bitmap = RD_BE16(r->in + 3);
     if (bitmap & ~0x0001u)
         return AFPERR_BitmapErr;
     if (msg_type > 1)
@@ -510,15 +457,14 @@ static uint32_t afp_cmd_get_srvr_msg(afp_ctx_t *ctx, const uint8_t *in, int in_l
 
     uint8_t msg[AFP_META_COMMENT_MAX];
     size_t len = (size_t)afp_mac_text(g_afp_message, msg, sizeof(msg));
-    if (out_max < 4 + 1 + (int)len)
+    if (r->out_max < 4 + 1 + (int)len)
         return AFPERR_ParamErr;
-    WR_BE16(out + 0, msg_type);
-    WR_BE16(out + 2, bitmap);
-    out[4] = (uint8_t)len;
+    WR_BE16(r->out + 0, msg_type);
+    WR_BE16(r->out + 2, bitmap);
+    r->out[4] = (uint8_t)len;
     if (len)
-        memcpy(out + 5, msg, len);
-    if (out_len)
-        *out_len = 5 + (int)len;
+        memcpy(r->out + 5, msg, len);
+    r->out_len = 5 + (int)len;
     LOG(10, "AFP FPGetSrvrMsg: type=%u len=%zu", msg_type, len);
     return AFPERR_NoErr;
 }
@@ -528,19 +474,18 @@ static uint32_t afp_cmd_get_srvr_msg(afp_ctx_t *ctx, const uint8_t *in, int in_l
 // ============================================================================
 
 // FPOpenDir (0x19)
-static uint32_t afp_cmd_open_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    if (in_len < 10 || out_max < 4)
+static uint32_t afp_cmd_open_dir(afp_req_t *r) {
+    if (r->in_len < 10 || r->out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 7, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -551,9 +496,8 @@ static uint32_t afp_cmd_open_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     const afp_cat_entry_t *entry = afp_entry_for(vol, target_rel);
     if (!entry)
         return AFPERR_MiscErr;
-    WR_BE32(out, entry->cnid);
-    if (out_len)
-        *out_len = 4;
+    WR_BE32(r->out, entry->cnid);
+    r->out_len = 4;
     LOG(10, "AFP FPOpenDir: vol=0x%04X parent=0x%08X path='%s' → cnid=0x%08X", vol_id, dir_id,
         target_rel[0] ? target_rel : "<root>", entry->cnid);
     return AFPERR_NoErr;
@@ -561,43 +505,37 @@ static uint32_t afp_cmd_open_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
 
 // FPCloseDir (0x03) — the server holds no per-open directory state; the call
 // exists so a client can retire a Directory ID it no longer needs.
-static uint32_t afp_cmd_close_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                  int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 7)
+static uint32_t afp_cmd_close_dir(afp_req_t *r) {
+    if (r->in_len < 7)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
-    vol_t *vol = afp_session_vol(ctx, vol_id);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
+    vol_t *vol = afp_session_vol(r->ctx, vol_id);
     if (!vol)
         return AFPERR_ParamErr;
     if (dir_id != 0 && dir_id != AFP_CNID_ROOT && !afp_catalog_find(vol->catalog, dir_id))
         return AFPERR_ParamErr;
-    if (out_len)
-        *out_len = 0;
     return AFPERR_NoErr;
 }
 
 // FPGetFileDirParms (0x22)
-static uint32_t afp_cmd_get_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                           int *out_len) {
-    if (in_len < 11)
+static uint32_t afp_cmd_get_file_dir_parms(afp_req_t *r) {
+    if (r->in_len < 11)
         return AFPERR_ParamErr;
-    afp_log_hex("AFP FPGetFileDirParms req", in, in_len);
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
-    uint16_t file_bm = RD_BE16(in + 7);
-    uint16_t dir_bm = RD_BE16(in + 9);
+    afp_log_hex("AFP FPGetFileDirParms req", r->in, r->in_len);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
+    uint16_t file_bm = RD_BE16(r->in + 7);
+    uint16_t dir_bm = RD_BE16(r->in + 9);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 11, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 11, &path) < 0)
         return AFPERR_ParamErr;
     if (file_bm == 0 && dir_bm == 0)
         return AFPERR_BitmapErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -609,31 +547,30 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, in
     if (!name)
         name = vol->name;
 
-    if (out_max < 6)
+    if (r->out_max < 6)
         return AFPERR_ParamErr;
-    WR_BE16(out + 0, file_bm);
-    WR_BE16(out + 2, dir_bm);
-    out[4] = is_dir ? 0x80 : 0x00;
-    out[5] = 0x00;
+    WR_BE16(r->out + 0, file_bm);
+    WR_BE16(r->out + 2, dir_bm);
+    r->out[4] = is_dir ? 0x80 : 0x00;
+    r->out[5] = 0x00;
 
     int pbase = 6;
     int pos_long_off = -1, pos_short_off = -1;
     int p = pbase;
     if (selected_bm) {
-        p = afp_write_param_area(is_dir, selected_bm, out, pbase, out_max, &pos_long_off, &pos_short_off);
+        p = afp_write_param_area(is_dir, selected_bm, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
         if (p < 0)
             return AFPERR_ParamErr;
-        if (!afp_populate_param_area(is_dir, vol, target_rel, &st, selected_bm, out, pbase))
+        if (!afp_populate_param_area(is_dir, vol, target_rel, &st, selected_bm, r->out, pbase))
             return AFPERR_ParamErr;
     }
-    int vpos = afp_write_name_vars(out, p, out_max, pbase, name, selected_bm, pos_long_off, pos_short_off);
+    int vpos = afp_write_name_vars(r->out, p, r->out_max, pbase, name, selected_bm, pos_long_off, pos_short_off);
     if (vpos < 0)
         return AFPERR_ParamErr;
-    if ((vpos % 2) && vpos < out_max)
-        out[vpos++] = 0x00;
-    if (out_len)
-        *out_len = vpos;
-    afp_log_hex("AFP FPGetFileDirParms resp", out, vpos);
+    if ((vpos % 2) && vpos < r->out_max)
+        r->out[vpos++] = 0x00;
+    r->out_len = vpos;
+    afp_log_hex("AFP FPGetFileDirParms resp", r->out, vpos);
     LOG(2, "AFP FPGetFileDirParms: vol=0x%04X type=%s path='%s' reply=%d", vol_id, is_dir ? "dir" : "file",
         target_rel[0] ? target_rel : "<root>", vpos);
     return AFPERR_NoErr;
@@ -654,20 +591,20 @@ static void afp_apply_attribute_word(afp_meta_t *meta, uint16_t word) {
 // The parameter block is walked bit by bit through the same width table the
 // read path uses, so a Finder Info field preceded by dates lands at the right
 // offset — the old hand-rolled 0..4 switch mis-computed exactly that case.
-static uint32_t afp_parse_set_parms(const afp_ctx_t *ctx, const uint8_t *in, int in_len) {
-    if (in_len < 9)
+static uint32_t afp_parse_set_parms(const afp_req_t *r) {
+    if (r->in_len < 9)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
-    uint16_t bitmap = RD_BE16(in + 7);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
+    uint16_t bitmap = RD_BE16(r->in + 7);
     afp_path_t path;
-    int pos = afp_read_path(in, in_len, 9, &path);
+    int pos = afp_read_path(r->in, r->in_len, 9, &path);
     if (pos < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -688,7 +625,7 @@ static uint32_t afp_parse_set_parms(const afp_ctx_t *ctx, const uint8_t *in, int
     // boundary (our buffer starts one byte past the opcode), detect the pad
     // from the byte count the bitmap accounts for.
     int need = afp_fixed_param_len(is_dir, bitmap);
-    int avail = in_len - pos;
+    int avail = r->in_len - pos;
     if (avail == need + 1)
         pos++;
     else if (avail < need)
@@ -706,9 +643,9 @@ static uint32_t afp_parse_set_parms(const afp_ctx_t *ctx, const uint8_t *in, int
         int width = afp_param_field_width(is_dir, bit);
         if (width == 0)
             continue;
-        if (pos + width > in_len)
+        if (pos + width > r->in_len)
             return AFPERR_ParamErr;
-        const uint8_t *field = in + pos;
+        const uint8_t *field = r->in + pos;
         pos += width;
         switch (bit) {
         case 0: // Attributes
@@ -769,34 +706,16 @@ static uint32_t afp_parse_set_parms(const afp_ctx_t *ctx, const uint8_t *in, int
     return AFPERR_NoErr;
 }
 
-static uint32_t afp_cmd_set_file_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                       int *out_len) {
-    (void)ctx;
-    (void)out;
-    (void)out_max;
-    if (out_len)
-        *out_len = 0;
-    return afp_parse_set_parms(ctx, in, in_len);
+static uint32_t afp_cmd_set_file_parms(afp_req_t *r) {
+    return afp_parse_set_parms(r);
 }
 
-static uint32_t afp_cmd_set_dir_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                      int *out_len) {
-    (void)ctx;
-    (void)out;
-    (void)out_max;
-    if (out_len)
-        *out_len = 0;
-    return afp_parse_set_parms(ctx, in, in_len);
+static uint32_t afp_cmd_set_dir_parms(afp_req_t *r) {
+    return afp_parse_set_parms(r);
 }
 
-static uint32_t afp_cmd_set_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                           int *out_len) {
-    (void)ctx;
-    (void)out;
-    (void)out_max;
-    if (out_len)
-        *out_len = 0;
-    return afp_parse_set_parms(ctx, in, in_len);
+static uint32_t afp_cmd_set_file_dir_parms(afp_req_t *r) {
+    return afp_parse_set_parms(r);
 }
 
 // ============================================================================
@@ -804,22 +723,21 @@ static uint32_t afp_cmd_set_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, in
 // ============================================================================
 
 // FPOpenFork (0x1A)
-static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                  int *out_len) {
-    if (in_len < 12)
+static uint32_t afp_cmd_open_fork(afp_req_t *r) {
+    if (r->in_len < 12)
         return AFPERR_ParamErr;
-    bool is_resource = (in[0] & 0x80) != 0;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
-    uint16_t bitmap = RD_BE16(in + 7);
-    uint16_t access_mode = RD_BE16(in + 9);
+    bool is_resource = (r->in[0] & 0x80) != 0;
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
+    uint16_t bitmap = RD_BE16(r->in + 7);
+    uint16_t access_mode = RD_BE16(r->in + 9);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 11, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 11, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -835,40 +753,40 @@ static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len,
         return AFPERR_AccessDenied;
 
     afp_fork_t *fk = NULL;
-    afp_fork_status_t st_open = afp_fork_open(vol_id, ctx->session_id, full, target_rel, is_resource, access_mode, &fk);
+    afp_fork_status_t st_open =
+        afp_fork_open(vol_id, r->ctx->session_id, full, target_rel, is_resource, access_mode, &fk);
     // On DenyConflict the client still gets the file parameters, so it can
     // work out whether it is the holder (Inside AppleTalk ch. 13, FPOpenFork).
     if (st_open != AFP_FORK_OK && st_open != AFP_FORK_DENY_CONFLICT)
         return afp_fork_status_to_err(st_open);
 
     afp_catalog_resolve_path(vol->catalog, target_rel, true, false);
-    if (out_max < 4)
+    if (r->out_max < 4)
         return AFPERR_ParamErr;
-    WR_BE16(out + 0, bitmap);
-    WR_BE16(out + 2, fk ? afp_fork_ref(fk) : 0);
+    WR_BE16(r->out + 0, bitmap);
+    WR_BE16(r->out + 2, fk ? afp_fork_ref(fk) : 0);
 
     int pbase = 4;
     int p = pbase;
     if (bitmap) {
         int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, out, pbase, out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, vol, target_rel, &st, bitmap, out, pbase)) {
+        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
+        if (p < 0 || !afp_populate_param_area(false, vol, target_rel, &st, bitmap, r->out, pbase)) {
             if (fk)
                 afp_fork_close(fk);
             return AFPERR_ParamErr;
         }
         const char *name = afp_last_component(target_rel);
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
+        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0) {
             if (fk)
                 afp_fork_close(fk);
             return AFPERR_ParamErr;
         }
     }
-    if (p % 2 && p < out_max)
-        out[p++] = 0x00;
-    if (out_len)
-        *out_len = p;
+    if (p % 2 && p < r->out_max)
+        r->out[p++] = 0x00;
+    r->out_len = p;
     if (st_open == AFP_FORK_DENY_CONFLICT) {
         LOG(2, "AFP FPOpenFork: deny conflict on '%s' (%s)", target_rel, is_resource ? "rsrc" : "data");
         return AFPERR_DenyConflict;
@@ -879,63 +797,54 @@ static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len,
 }
 
 // FPCloseFork (0x04)
-static uint32_t afp_cmd_close_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                   int *out_len) {
-    (void)out;
-    (void)out_max;
+static uint32_t afp_cmd_close_fork(afp_req_t *r) {
     afp_fork_t *fk = NULL;
-    uint32_t rc = afp_fork_from_req(ctx, in, in_len, 0, &fk);
+    uint32_t rc = afp_fork_from_req(r, 0, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
     afp_fork_close(fk);
-    if (out_len)
-        *out_len = 0;
     return AFPERR_NoErr;
 }
 
 // FPRead (0x1B)
-static uint32_t afp_cmd_read(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    if (in_len < 11)
+static uint32_t afp_cmd_read(afp_req_t *r) {
+    if (r->in_len < 11)
         return AFPERR_ParamErr;
-    uint32_t offset = RD_BE32(in + 3);
-    uint32_t req_count = RD_BE32(in + 7);
-    uint8_t newline_mask = (in_len > 11) ? in[11] : 0;
-    uint8_t newline_char = (in_len > 12) ? in[12] : 0;
+    uint32_t offset = RD_BE32(r->in + 3);
+    uint32_t req_count = RD_BE32(r->in + 7);
+    uint8_t newline_mask = (r->in_len > 11) ? r->in[11] : 0;
+    uint8_t newline_char = (r->in_len > 12) ? r->in[12] : 0;
 
     afp_fork_t *fk = NULL;
-    uint32_t rc = afp_fork_from_req(ctx, in, in_len, AFP_ACCESS_READ, &fk);
+    uint32_t rc = afp_fork_from_req(r, AFP_ACCESS_READ, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
 
     uint32_t fork_len = afp_fork_length(fk);
-    if (offset >= fork_len) {
-        if (out_len)
-            *out_len = 0;
+    if (offset >= fork_len)
         return AFPERR_EOFErr;
-    }
     uint32_t to_read = req_count;
     if (to_read > fork_len - offset)
         to_read = fork_len - offset;
-    if (to_read > (uint32_t)out_max)
-        to_read = (uint32_t)out_max;
+    if (to_read > (uint32_t)r->out_max)
+        to_read = (uint32_t)r->out_max;
 
     uint32_t got = 0;
-    afp_fork_status_t st = afp_fork_read(fk, offset, to_read, out, &got);
+    afp_fork_status_t st = afp_fork_read(fk, offset, to_read, r->out, &got);
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
 
     // Newline mode: stop at the first byte matching under the mask.
     if (newline_mask) {
         for (uint32_t i = 0; i < got; i++) {
-            if ((out[i] & newline_mask) == (newline_char & newline_mask)) {
+            if ((r->out[i] & newline_mask) == (newline_char & newline_mask)) {
                 got = i + 1;
                 break;
             }
         }
     }
     g_afp_stats.bytes_read += got;
-    if (out_len)
-        *out_len = (int)got;
+    r->out_len = (int)got;
     LOG(2, "AFP FPRead: ref=0x%04X off=%u req=%u got=%u", afp_fork_ref(fk), offset, req_count, got);
     if (got < req_count && offset + got >= fork_len)
         return AFPERR_EOFErr;
@@ -943,20 +852,20 @@ static uint32_t afp_cmd_read(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint
 }
 
 // FPWrite (0x21) — the payload follows the 11-byte parameter header.
-static uint32_t afp_cmd_write(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    if (in_len < 11 || out_max < 4)
+static uint32_t afp_cmd_write(afp_req_t *r) {
+    if (r->in_len < 11 || r->out_max < 4)
         return AFPERR_ParamErr;
-    bool from_end = (in[0] & 0x80) != 0;
-    uint32_t offset = RD_BE32(in + 3);
-    uint32_t req_count = RD_BE32(in + 7);
+    bool from_end = (r->in[0] & 0x80) != 0;
+    uint32_t offset = RD_BE32(r->in + 3);
+    uint32_t req_count = RD_BE32(r->in + 7);
 
     afp_fork_t *fk = NULL;
-    uint32_t rc = afp_fork_from_req(ctx, in, in_len, AFP_ACCESS_WRITE, &fk);
+    uint32_t rc = afp_fork_from_req(r, AFP_ACCESS_WRITE, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
 
-    const uint8_t *payload = in + 11;
-    uint32_t payload_len = (uint32_t)(in_len - 11);
+    const uint8_t *payload = r->in + 11;
+    uint32_t payload_len = (uint32_t)(r->in_len - 11);
     // A partial write is legal: the transport may split a large write across
     // ASP requests, and the reply's LastWritten is exactly how the client
     // learns where to resume (appletalk_server.md FPWrite details).  What is
@@ -981,21 +890,19 @@ static uint32_t afp_cmd_write(afp_ctx_t *ctx, const uint8_t *in, int in_len, uin
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
     g_afp_stats.bytes_written += written;
-    WR_BE32(out, start + written);
-    if (out_len)
-        *out_len = 4;
+    WR_BE32(r->out, start + written);
+    r->out_len = 4;
     LOG(2, "AFP FPWrite: ref=0x%04X off=%u req=%u wrote=%u", afp_fork_ref(fk), start, req_count, written);
     return AFPERR_NoErr;
 }
 
 // FPGetForkParms (0x0E)
-static uint32_t afp_cmd_get_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                       int *out_len) {
-    if (in_len < 5 || out_max < 2)
+static uint32_t afp_cmd_get_fork_parms(afp_req_t *r) {
+    if (r->in_len < 5 || r->out_max < 2)
         return AFPERR_ParamErr;
-    uint16_t bitmap = RD_BE16(in + 3);
+    uint16_t bitmap = RD_BE16(r->in + 3);
     afp_fork_t *fk = NULL;
-    uint32_t rc = afp_fork_from_req(ctx, in, in_len, 0, &fk);
+    uint32_t rc = afp_fork_from_req(r, 0, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
     vol_t *vol = find_vol_by_id(afp_fork_vol_id(fk));
@@ -1005,110 +912,93 @@ static uint32_t afp_cmd_get_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in
     if (stat(afp_fork_host_path(fk), &st) != 0)
         return AFPERR_ObjectNotFound;
 
-    WR_BE16(out + 0, bitmap);
+    WR_BE16(r->out + 0, bitmap);
     int pbase = 2;
     int p = pbase;
     if (bitmap) {
         int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, out, pbase, out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, vol, afp_fork_rel_path(fk), &st, bitmap, out, pbase))
+        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
+        if (p < 0 || !afp_populate_param_area(false, vol, afp_fork_rel_path(fk), &st, bitmap, r->out, pbase))
             return AFPERR_ParamErr;
         // Report the open fork's live length: the sidecar only catches up on
         // flush, and the data fork may have grown since the stat above.
         int lp = afp_param_field_ptr(false, bitmap, pbase, afp_fork_is_resource(fk) ? 10 : 9);
         if (lp >= 0)
-            WR_BE32(out + lp, afp_fork_length(fk));
+            WR_BE32(r->out + lp, afp_fork_length(fk));
         const char *name = afp_last_component(afp_fork_rel_path(fk));
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
+        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0)
             return AFPERR_ParamErr;
     }
-    if (p % 2 && p < out_max)
-        out[p++] = 0x00;
-    if (out_len)
-        *out_len = p;
+    if (p % 2 && p < r->out_max)
+        r->out[p++] = 0x00;
+    r->out_len = p;
     return AFPERR_NoErr;
 }
 
 // FPSetForkParms (0x1F) — the only settable parameter is the fork length.
-static uint32_t afp_cmd_set_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                       int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 9)
+static uint32_t afp_cmd_set_fork_parms(afp_req_t *r) {
+    if (r->in_len < 9)
         return AFPERR_ParamErr;
-    uint16_t bitmap = RD_BE16(in + 3);
+    uint16_t bitmap = RD_BE16(r->in + 3);
     afp_fork_t *fk = NULL;
-    uint32_t rc = afp_fork_from_req(ctx, in, in_len, 0, &fk);
+    uint32_t rc = afp_fork_from_req(r, 0, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
     if (bitmap & ~((1u << 9) | (1u << 10)))
         return AFPERR_BitmapErr;
     if (!(bitmap & ((1u << 9) | (1u << 10))))
         return AFPERR_BitmapErr;
-    uint32_t new_len = RD_BE32(in + 5);
+    uint32_t new_len = RD_BE32(r->in + 5);
     afp_fork_status_t st = afp_fork_truncate(fk, new_len);
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPSetForkParms: ref=0x%04X len=%u", afp_fork_ref(fk), new_len);
     return AFPERR_NoErr;
 }
 
 // FPFlush (0x0A)
-static uint32_t afp_cmd_flush(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 3)
+static uint32_t afp_cmd_flush(afp_req_t *r) {
+    if (r->in_len < 3)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    if (!afp_session_vol(ctx, vol_id))
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    if (!afp_session_vol(r->ctx, vol_id))
         return AFPERR_ParamErr;
     afp_fork_flush_volume(vol_id);
-    if (out_len)
-        *out_len = 0;
     return AFPERR_NoErr;
 }
 
 // FPFlushFork (0x0B)
-static uint32_t afp_cmd_flush_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                   int *out_len) {
-    (void)out;
-    (void)out_max;
+static uint32_t afp_cmd_flush_fork(afp_req_t *r) {
     afp_fork_t *fk = NULL;
-    uint32_t rc = afp_fork_from_req(ctx, in, in_len, 0, &fk);
+    uint32_t rc = afp_fork_from_req(r, 0, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
     afp_fork_flush(fk);
-    if (out_len)
-        *out_len = 0;
     return AFPERR_NoErr;
 }
 
 // FPByteRangeLock (0x01) — real ranges now, checked against every other open
 // of the same fork (WP-6).
-static uint32_t afp_cmd_byte_range_lock(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                        int *out_len) {
-    if (in_len < 11 || out_max < 4)
+static uint32_t afp_cmd_byte_range_lock(afp_req_t *r) {
+    if (r->in_len < 11 || r->out_max < 4)
         return AFPERR_ParamErr;
-    uint8_t flag = in[0];
+    uint8_t flag = r->in[0];
     bool unlock = (flag & 0x01) != 0; // bit 0: 0 = lock, 1 = unlock
     bool end_relative = (flag & 0x80) != 0; // bit 7: offset measured from EOF
-    int32_t offset = (int32_t)RD_BE32(in + 3);
-    uint32_t length = RD_BE32(in + 7);
+    int32_t offset = (int32_t)RD_BE32(r->in + 3);
+    uint32_t length = RD_BE32(r->in + 7);
 
     afp_fork_t *fk = NULL;
-    uint32_t rc = afp_fork_from_req(ctx, in, in_len, 0, &fk);
+    uint32_t rc = afp_fork_from_req(r, 0, &fk);
     if (rc != AFPERR_NoErr)
         return rc;
     uint32_t range_start = 0;
     afp_fork_status_t st = afp_fork_range_lock(fk, unlock, end_relative, offset, length, &range_start);
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
-    WR_BE32(out, range_start);
-    if (out_len)
-        *out_len = 4;
+    WR_BE32(r->out, range_start);
+    r->out_len = 4;
     LOG(10, "AFP FPByteRangeLock: ref=0x%04X %s start=%u len=%u", afp_fork_ref(fk), unlock ? "unlock" : "lock",
         range_start, length);
     return AFPERR_NoErr;
@@ -1127,19 +1017,18 @@ static void afp_sidecar_rename(const char *old_full, const char *new_full) {
 }
 
 // FPCreateDir (0x06)
-static uint32_t afp_cmd_create_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                   int *out_len) {
-    if (in_len < 8 || out_max < 4)
+static uint32_t afp_cmd_create_dir(afp_req_t *r) {
+    if (r->in_len < 8 || r->out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 7, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1161,30 +1050,26 @@ static uint32_t afp_cmd_create_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len
     if (!entry)
         return AFPERR_MiscErr;
     afp_vol_touch(vol);
-    WR_BE32(out, entry->cnid);
-    if (out_len)
-        *out_len = 4;
+    WR_BE32(r->out, entry->cnid);
+    r->out_len = 4;
     LOG(10, "AFP FPCreateDir: '%s' → cnid=0x%08X", target_rel, entry->cnid);
     return AFPERR_NoErr;
 }
 
 // FPCreateFile (0x07) — flag bit 7 selects a hard create (overwrite).
-static uint32_t afp_cmd_create_file(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                    int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 8)
+static uint32_t afp_cmd_create_file(afp_req_t *r) {
+    if (r->in_len < 8)
         return AFPERR_ParamErr;
-    bool hard_create = (in[0] & 0x80) != 0;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
+    bool hard_create = (r->in[0] & 0x80) != 0;
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 7, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1232,27 +1117,23 @@ static uint32_t afp_cmd_create_file(afp_ctx_t *ctx, const uint8_t *in, int in_le
     uint32_t parent_cnid = parent ? parent->cnid : AFP_CNID_ROOT;
     afp_catalog_add(vol->catalog, parent_cnid, afp_last_component(target_rel), false);
     afp_vol_touch(vol);
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPCreateFile: '%s' hard=%d", target_rel, hard_create ? 1 : 0);
     return AFPERR_NoErr;
 }
 
 // FPDelete (0x08)
-static uint32_t afp_cmd_delete(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 8)
+static uint32_t afp_cmd_delete(afp_req_t *r) {
+    if (r->in_len < 8)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 7, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!target_rel[0])
@@ -1313,23 +1194,19 @@ static uint32_t afp_cmd_delete(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     if (entry)
         afp_catalog_remove(vol->catalog, entry->cnid);
     afp_vol_touch(vol);
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPDelete: '%s' (%s)", target_rel, S_ISDIR(st.st_mode) ? "dir" : "file");
     return AFPERR_NoErr;
 }
 
 // FPRename (0x1C) — same parent, new name; the CNID is preserved.
-static uint32_t afp_cmd_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 8)
+static uint32_t afp_cmd_rename(afp_req_t *r) {
+    if (r->in_len < 8)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
     afp_path_t old_name;
-    int pos = afp_read_path(in, in_len, 7, &old_name);
-    if (pos < 0 || pos >= in_len)
+    int pos = afp_read_path(r->in, r->in_len, 7, &old_name);
+    if (pos < 0 || pos >= r->in_len)
         return AFPERR_ParamErr;
     // The new name is one element, decoded like any other: "..", a name with a
     // separator in it, or one of the server's own names is a bad NewName.  It
@@ -1337,12 +1214,12 @@ static uint32_t afp_cmd_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     // the share (10-network F-01).
     afp_path_t new_path;
     char new_name[AFP_MAX_NAME * 3 + 1];
-    if (afp_read_path(in, in_len, pos, &new_path) < 0 || !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
+    if (afp_read_path(r->in, r->in_len, pos, &new_path) < 0 || !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char old_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &old_name, &vol, old_rel, sizeof(old_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &old_name, &vol, old_rel, sizeof(old_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!old_rel[0])
@@ -1379,36 +1256,31 @@ static uint32_t afp_cmd_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
         afp_catalog_rename(vol->catalog, entry->cnid, afp_last_component(new_rel));
 
     afp_vol_touch(vol);
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPRename: '%s' → '%s'", old_rel, new_rel);
     return AFPERR_NoErr;
 }
 
 // FPMoveAndRename (0x17) — new parent and optionally a new name; the CNID and
 // every descendant CNID survive the move.
-static uint32_t afp_cmd_move_and_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                        int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 12)
+static uint32_t afp_cmd_move_and_rename(afp_req_t *r) {
+    if (r->in_len < 12)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t src_dir_id = RD_BE32(in + 3);
-    uint32_t dst_dir_id = RD_BE32(in + 7);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t src_dir_id = RD_BE32(r->in + 3);
+    uint32_t dst_dir_id = RD_BE32(r->in + 7);
     afp_path_t src_path;
-    int pos = afp_read_path(in, in_len, 11, &src_path);
-    if (pos < 0 || pos >= in_len)
+    int pos = afp_read_path(r->in, r->in_len, 11, &src_path);
+    if (pos < 0 || pos >= r->in_len)
         return AFPERR_ParamErr;
     afp_path_t dst_path;
-    pos = afp_read_path(in, in_len, pos, &dst_path);
+    pos = afp_read_path(r->in, r->in_len, pos, &dst_path);
     if (pos < 0)
         return AFPERR_ParamErr;
     // An optional new name (F-01: checked like FPRename's).
     char new_name[AFP_MAX_NAME * 3 + 1] = "";
-    if (pos < in_len) {
+    if (pos < r->in_len) {
         afp_path_t new_path;
-        if (afp_read_path(in, in_len, pos, &new_path) < 0)
+        if (afp_read_path(r->in, r->in_len, pos, &new_path) < 0)
             return AFPERR_ParamErr;
         if (new_path.len > 0 && !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
             return AFPERR_ParamErr;
@@ -1416,13 +1288,13 @@ static uint32_t afp_cmd_move_and_rename(afp_ctx_t *ctx, const uint8_t *in, int i
 
     vol_t *vol = NULL;
     char src_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, src_dir_id, &src_path, &vol, src_rel, sizeof(src_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, src_dir_id, &src_path, &vol, src_rel, sizeof(src_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (!src_rel[0])
         return AFPERR_CantMove;
     char dst_dir_rel[AFP_MAX_REL_PATH];
-    rc = afp_resolve_target(ctx, vol_id, dst_dir_id, &dst_path, &vol, dst_dir_rel, sizeof(dst_dir_rel));
+    rc = afp_resolve_target(r->ctx, vol_id, dst_dir_id, &dst_path, &vol, dst_dir_rel, sizeof(dst_dir_rel));
     if (rc != AFPERR_NoErr)
         return rc;
 
@@ -1465,8 +1337,6 @@ static uint32_t afp_cmd_move_and_rename(afp_ctx_t *ctx, const uint8_t *in, int i
     if (moved_cnid)
         afp_catalog_move(vol->catalog, moved_cnid, new_parent_cnid, final_name);
     afp_vol_touch(vol);
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPMoveAndRename: '%s' → '%s'", src_rel, dst_rel);
     return AFPERR_NoErr;
 }
@@ -1499,31 +1369,28 @@ static uint32_t afp_copy_bytes(const char *src, const char *dst) {
 }
 
 // FPCopyFile (0x05) — a server-side copy of both forks and all metadata.
-static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                  int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 14)
+static uint32_t afp_cmd_copy_file(afp_req_t *r) {
+    if (r->in_len < 14)
         return AFPERR_ParamErr;
     // Pad(1) SrcVolID(2) SrcDirID(4) DstVolID(2) DstDirID(4) — the two volume
     // IDs are not adjacent; the source's directory ID sits between them.
-    uint16_t src_vol_id = RD_BE16(in + 1);
-    uint32_t src_dir = RD_BE32(in + 3);
-    uint16_t dst_vol_id = RD_BE16(in + 7);
-    uint32_t dst_dir = RD_BE32(in + 9);
+    uint16_t src_vol_id = RD_BE16(r->in + 1);
+    uint32_t src_dir = RD_BE32(r->in + 3);
+    uint16_t dst_vol_id = RD_BE16(r->in + 7);
+    uint32_t dst_dir = RD_BE32(r->in + 9);
     afp_path_t src_name;
-    int pos = afp_read_path(in, in_len, 13, &src_name);
-    if (pos < 0 || pos >= in_len)
+    int pos = afp_read_path(r->in, r->in_len, 13, &src_name);
+    if (pos < 0 || pos >= r->in_len)
         return AFPERR_ParamErr;
     afp_path_t dst_name;
-    pos = afp_read_path(in, in_len, pos, &dst_name);
+    pos = afp_read_path(r->in, r->in_len, pos, &dst_name);
     if (pos < 0)
         return AFPERR_ParamErr;
     // An optional new name (F-01: checked like FPRename's).
     char new_name[AFP_MAX_NAME * 3 + 1] = "";
-    if (pos < in_len) {
+    if (pos < r->in_len) {
         afp_path_t new_path;
-        if (afp_read_path(in, in_len, pos, &new_path) < 0)
+        if (afp_read_path(r->in, r->in_len, pos, &new_path) < 0)
             return AFPERR_ParamErr;
         if (new_path.len > 0 && !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
             return AFPERR_ParamErr;
@@ -1531,10 +1398,10 @@ static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len,
 
     vol_t *svol = NULL, *dvol = NULL;
     char src_rel[AFP_MAX_REL_PATH], dst_dir_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, src_vol_id, src_dir, &src_name, &svol, src_rel, sizeof(src_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, src_vol_id, src_dir, &src_name, &svol, src_rel, sizeof(src_rel));
     if (rc != AFPERR_NoErr)
         return rc;
-    rc = afp_resolve_target(ctx, dst_vol_id, dst_dir, &dst_name, &dvol, dst_dir_rel, sizeof(dst_dir_rel));
+    rc = afp_resolve_target(r->ctx, dst_vol_id, dst_dir, &dst_name, &dvol, dst_dir_rel, sizeof(dst_dir_rel));
     if (rc != AFPERR_NoErr)
         return rc;
 
@@ -1563,8 +1430,8 @@ static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     // The source is held for reading with writers denied for the duration of
     // the copy (Inside AppleTalk ch. 13, FPCopyFile: "Read, DenyWrite").
     afp_fork_t *guard = NULL;
-    afp_fork_status_t gs =
-        afp_fork_open(src_vol_id, ctx->session_id, src_full, src_rel, false, AFP_ACCESS_READ | AFP_DENY_WRITE, &guard);
+    afp_fork_status_t gs = afp_fork_open(src_vol_id, r->ctx->session_id, src_full, src_rel, false,
+                                         AFP_ACCESS_READ | AFP_DENY_WRITE, &guard);
     if (gs == AFP_FORK_DENY_CONFLICT)
         return AFPERR_DenyConflict;
     if (gs != AFP_FORK_OK)
@@ -1585,8 +1452,6 @@ static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     uint32_t parent_cnid = parent ? parent->cnid : AFP_CNID_ROOT;
     afp_catalog_add(dvol->catalog, parent_cnid, final_name, false);
     afp_vol_touch(dvol);
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPCopyFile: '%s' → '%s'", src_rel, dst_rel);
     return AFPERR_NoErr;
 }
@@ -1609,61 +1474,51 @@ static vol_t *find_vol_by_dt_ref(const afp_ctx_t *ctx, uint16_t dt_ref) {
 }
 
 // FPOpenDT (0x30)
-static uint32_t afp_cmd_open_dt(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                int *out_len) {
-    if (in_len < 3 || out_max < 2)
+static uint32_t afp_cmd_open_dt(afp_req_t *r) {
+    if (r->in_len < 3 || r->out_max < 2)
         return AFPERR_ParamErr;
-    vol_t *v = afp_session_vol(ctx, RD_BE16(in + 1));
+    vol_t *v = afp_session_vol(r->ctx, RD_BE16(r->in + 1));
     if (!v)
         return AFPERR_ParamErr;
     if (!v->desktop)
         v->desktop = afp_desktop_open(v->root);
-    session_set_add(&v->dt_open_by, ctx->session_id);
-    WR_BE16(out, afp_dt_ref(v));
-    if (out_len)
-        *out_len = 2;
+    session_set_add(&v->dt_open_by, r->ctx->session_id);
+    WR_BE16(r->out, afp_dt_ref(v));
+    r->out_len = 2;
     LOG(10, "AFP FPOpenDT: vol='%s' → DTRef=0x%04X", v->name, afp_dt_ref(v));
     return AFPERR_NoErr;
 }
 
 // FPCloseDT (0x31) — the stores stay open (and persistent); only the client's
 // reference goes away.
-static uint32_t afp_cmd_close_dt(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 3)
+static uint32_t afp_cmd_close_dt(afp_req_t *r) {
+    if (r->in_len < 3)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(ctx, RD_BE16(in + 1));
+    vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v)
         return AFPERR_ParamErr;
-    session_set_remove(&v->dt_open_by, ctx->session_id); // another session's refnum stays open
-    if (out_len)
-        *out_len = 0;
+    session_set_remove(&v->dt_open_by, r->ctx->session_id); // another session's refnum stays open
     return AFPERR_NoErr;
 }
 
 // FPAddIcon (0xC0) — arrives as an ASP Write, so the bitmap follows the header.
-static uint32_t afp_cmd_add_icon(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    (void)out;
-    (void)out_max;
+static uint32_t afp_cmd_add_icon(afp_req_t *r) {
     // Pad(1) DTRefNum(2) FileCreator(4) FileType(4) IconType(1) Pad(1)
     // IconTag(4) BitmapSize(2), then the bitmap streamed via ASP Write.
-    if (in_len < 19)
+    if (r->in_len < 19)
         return AFPERR_ParamErr;
-    uint16_t dt_ref = RD_BE16(in + 1);
-    uint32_t creator = RD_BE32(in + 3);
-    uint32_t file_type = RD_BE32(in + 7);
-    uint8_t icon_type = in[11];
-    uint32_t icon_tag = RD_BE32(in + 13);
-    uint16_t icon_size = RD_BE16(in + 17);
+    uint16_t dt_ref = RD_BE16(r->in + 1);
+    uint32_t creator = RD_BE32(r->in + 3);
+    uint32_t file_type = RD_BE32(r->in + 7);
+    uint8_t icon_type = r->in[11];
+    uint32_t icon_tag = RD_BE32(r->in + 13);
+    uint16_t icon_size = RD_BE16(r->in + 17);
 
-    vol_t *v = find_vol_by_dt_ref(ctx, dt_ref);
+    vol_t *v = find_vol_by_dt_ref(r->ctx, dt_ref);
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    const uint8_t *data = in + 19;
-    int avail = in_len - 19;
+    const uint8_t *data = r->in + 19;
+    int avail = r->in_len - 19;
     if (avail < 0)
         avail = 0;
     if (icon_size > avail)
@@ -1677,24 +1532,21 @@ static uint32_t afp_cmd_add_icon(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
         return AFPERR_IconTypeError;
     if (afp_desktop_put_icon(v->desktop, creator, file_type, icon_type, icon_tag, data, icon_size) != 0)
         return AFPERR_MiscErr;
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPAddIcon: creator=0x%08X type=0x%08X iconType=%u size=%u", creator, file_type, icon_type, icon_size);
     return AFPERR_NoErr;
 }
 
 // FPGetIcon (0x33)
-static uint32_t afp_cmd_get_icon(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    if (in_len < 14)
+static uint32_t afp_cmd_get_icon(afp_req_t *r) {
+    if (r->in_len < 14)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(ctx, RD_BE16(in + 1));
+    vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t creator = RD_BE32(in + 3);
-    uint32_t file_type = RD_BE32(in + 7);
-    uint8_t icon_type = in[11];
-    uint16_t req_size = RD_BE16(in + 12);
+    uint32_t creator = RD_BE32(r->in + 3);
+    uint32_t file_type = RD_BE32(r->in + 7);
+    uint8_t icon_type = r->in[11];
+    uint16_t req_size = RD_BE16(r->in + 12);
 
     const afp_icon_t *icon = afp_desktop_get_icon(v->desktop, creator, file_type, icon_type);
     if (!icon)
@@ -1702,58 +1554,52 @@ static uint32_t afp_cmd_get_icon(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     int sz = icon->size;
     if (req_size && sz > req_size)
         sz = req_size;
-    if (sz > out_max)
-        sz = out_max;
-    memcpy(out, icon->bitmap, (size_t)sz);
-    if (out_len)
-        *out_len = sz;
+    if (sz > r->out_max)
+        sz = r->out_max;
+    memcpy(r->out, icon->bitmap, (size_t)sz);
+    r->out_len = sz;
     return AFPERR_NoErr;
 }
 
 // FPGetIconInfo (0x34)
-static uint32_t afp_cmd_get_icon_info(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                      int *out_len) {
-    if (in_len < 9 || out_max < 12)
+static uint32_t afp_cmd_get_icon_info(afp_req_t *r) {
+    if (r->in_len < 9 || r->out_max < 12)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(ctx, RD_BE16(in + 1));
+    vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t creator = RD_BE32(in + 3);
-    uint16_t index = RD_BE16(in + 7);
+    uint32_t creator = RD_BE32(r->in + 3);
+    uint16_t index = RD_BE16(r->in + 7);
     const afp_icon_t *icon = afp_desktop_icon_at(v->desktop, creator, index);
     if (!icon)
         return AFPERR_ItemNotFound;
-    WR_BE32(out + 0, icon->tag);
-    WR_BE32(out + 4, icon->file_type);
-    out[8] = icon->icon_type;
-    out[9] = 0;
-    WR_BE16(out + 10, icon->size);
-    if (out_len)
-        *out_len = 12;
+    WR_BE32(r->out + 0, icon->tag);
+    WR_BE32(r->out + 4, icon->file_type);
+    r->out[8] = icon->icon_type;
+    r->out[9] = 0;
+    WR_BE16(r->out + 10, icon->size);
+    r->out_len = 12;
     return AFPERR_NoErr;
 }
 
 // FPAddAPPL (0x35) — the mapping is keyed by the application's CNID, so
 // renaming it through AFP no longer orphans the entry.
-static uint32_t afp_cmd_add_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 15)
+static uint32_t afp_cmd_add_appl(afp_req_t *r) {
+    if (r->in_len < 15)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(ctx, RD_BE16(in + 1));
+    vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t dir_id = RD_BE32(in + 3);
-    uint32_t creator = RD_BE32(in + 7);
-    uint32_t appl_tag = RD_BE32(in + 11);
+    uint32_t dir_id = RD_BE32(r->in + 3);
+    uint32_t creator = RD_BE32(r->in + 7);
+    uint32_t appl_tag = RD_BE32(r->in + 11);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 15, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 15, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *resolved = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -1764,30 +1610,25 @@ static uint32_t afp_cmd_add_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
         return AFPERR_MiscErr;
     if (afp_desktop_put_appl(v->desktop, creator, entry->cnid, appl_tag) != 0)
         return AFPERR_MiscErr;
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPAddAPPL: creator=0x%08X cnid=0x%08X path='%s'", creator, entry->cnid, target_rel);
     return AFPERR_NoErr;
 }
 
 // FPRemoveAPPL (0x36)
-static uint32_t afp_cmd_remove_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                    int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 11)
+static uint32_t afp_cmd_remove_appl(afp_req_t *r) {
+    if (r->in_len < 11)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(ctx, RD_BE16(in + 1));
+    vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t dir_id = RD_BE32(in + 3);
-    uint32_t creator = RD_BE32(in + 7);
+    uint32_t dir_id = RD_BE32(r->in + 3);
+    uint32_t creator = RD_BE32(r->in + 7);
     afp_path_t path;
     uint32_t cnid = 0;
-    if (in_len > 12 && afp_read_path(in, in_len, 11, &path) >= 0 && path.len > 0) {
+    if (r->in_len > 12 && afp_read_path(r->in, r->in_len, 11, &path) >= 0 && path.len > 0) {
         vol_t *resolved = NULL;
         char target_rel[AFP_MAX_REL_PATH];
-        if (afp_resolve_target(ctx, v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel)) ==
+        if (afp_resolve_target(r->ctx, v->vol_id, dir_id, &path, &resolved, target_rel, sizeof(target_rel)) ==
             AFPERR_NoErr) {
             const afp_cat_entry_t *entry = afp_catalog_resolve_path(v->catalog, target_rel, false, false);
             if (entry)
@@ -1796,22 +1637,19 @@ static uint32_t afp_cmd_remove_appl(afp_ctx_t *ctx, const uint8_t *in, int in_le
     }
     if (afp_desktop_remove_appl(v->desktop, creator, cnid) == 0)
         return AFPERR_ItemNotFound;
-    if (out_len)
-        *out_len = 0;
     return AFPERR_NoErr;
 }
 
 // FPGetAPPL (0x37)
-static uint32_t afp_cmd_get_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                 int *out_len) {
-    if (in_len < 9 || out_max < 6)
+static uint32_t afp_cmd_get_appl(afp_req_t *r) {
+    if (r->in_len < 9 || r->out_max < 6)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(ctx, RD_BE16(in + 1));
+    vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t creator = RD_BE32(in + 3);
-    uint16_t index = RD_BE16(in + 7);
-    uint16_t bitmap = (in_len >= 11) ? RD_BE16(in + 9) : 0;
+    uint32_t creator = RD_BE32(r->in + 3);
+    uint16_t index = RD_BE16(r->in + 7);
+    uint16_t bitmap = (r->in_len >= 11) ? RD_BE16(r->in + 9) : 0;
 
     const afp_appl_t *appl = afp_desktop_appl_at(v->desktop, creator, index);
     if (!appl)
@@ -1823,44 +1661,43 @@ static uint32_t afp_cmd_get_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     if (!afp_stat_path(v, rel, &st))
         return AFPERR_ItemNotFound; // the application is gone; the mapping is stale
 
-    WR_BE16(out + 0, bitmap);
-    WR_BE32(out + 2, appl->tag);
+    WR_BE16(r->out + 0, bitmap);
+    WR_BE32(r->out + 2, appl->tag);
     int pbase = 6;
     int p = pbase;
     if (bitmap) {
         int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, out, pbase, out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, v, rel, &st, bitmap, out, pbase))
+        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
+        if (p < 0 || !afp_populate_param_area(false, v, rel, &st, bitmap, r->out, pbase))
             return AFPERR_ParamErr;
         const char *name = afp_last_component(rel);
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
+        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0)
             return AFPERR_ParamErr;
     }
-    if (p % 2 && p < out_max)
-        out[p++] = 0x00;
-    if (out_len)
-        *out_len = p;
+    if (p % 2 && p < r->out_max)
+        r->out[p++] = 0x00;
+    r->out_len = p;
     return AFPERR_NoErr;
 }
 
 // Resolve the (DTRefNum, DirectoryID, Pathname) triple the comment calls use.
-static uint32_t afp_resolve_dt_target(const afp_ctx_t *ctx, const uint8_t *in, int in_len, vol_t **out_vol,
-                                      char *out_rel, size_t rel_cap, int *out_pos) {
-    if (in_len < 8)
+static uint32_t afp_resolve_dt_target(const afp_req_t *r, vol_t **out_vol, char *out_rel, size_t rel_cap,
+                                      int *out_pos) {
+    if (r->in_len < 8)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(ctx, RD_BE16(in + 1));
+    vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
     if (!v)
         return AFPERR_ParamErr;
-    uint32_t dir_id = RD_BE32(in + 3);
+    uint32_t dir_id = RD_BE32(r->in + 3);
     afp_path_t path;
-    int pos = afp_read_path(in, in_len, 7, &path);
+    int pos = afp_read_path(r->in, r->in_len, 7, &path);
     if (pos < 0)
         return AFPERR_ParamErr;
     if (out_pos)
         *out_pos = pos;
     vol_t *resolved = NULL;
-    uint32_t rc = afp_resolve_target(ctx, v->vol_id, dir_id, &path, &resolved, out_rel, rel_cap);
+    uint32_t rc = afp_resolve_target(r->ctx, v->vol_id, dir_id, &path, &resolved, out_rel, rel_cap);
     if (rc != AFPERR_NoErr)
         return rc;
     if (out_vol)
@@ -1870,14 +1707,11 @@ static uint32_t afp_resolve_dt_target(const afp_ctx_t *ctx, const uint8_t *in, i
 
 // FPAddComment (0x38) — comments live in the file's sidecar, so they follow it
 // through renames and copies for free.
-static uint32_t afp_cmd_add_comment(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                    int *out_len) {
-    (void)out;
-    (void)out_max;
+static uint32_t afp_cmd_add_comment(afp_req_t *r) {
     vol_t *v = NULL;
     char rel[AFP_MAX_REL_PATH];
     int pos = 0;
-    uint32_t rc = afp_resolve_dt_target(ctx, in, in_len, &v, rel, sizeof(rel), &pos);
+    uint32_t rc = afp_resolve_dt_target(r, &v, rel, sizeof(rel), &pos);
     if (rc != AFPERR_NoErr)
         return rc;
     char full[PATH_MAX];
@@ -1890,33 +1724,28 @@ static uint32_t afp_cmd_add_comment(afp_ctx_t *ctx, const uint8_t *in, int in_le
     meta.comment_len = 0;
     meta.comment[0] = '\0';
     meta.has_comment = true;
-    if (pos < in_len) {
-        int len = in[pos++];
+    if (pos < r->in_len) {
+        int len = r->in[pos++];
         if (len > AFP_META_COMMENT_MAX)
             len = AFP_META_COMMENT_MAX;
-        if (pos + len > in_len)
-            len = in_len - pos;
+        if (pos + len > r->in_len)
+            len = r->in_len - pos;
         if (len > 0)
-            memcpy(meta.comment, in + pos, (size_t)len);
+            memcpy(meta.comment, r->in + pos, (size_t)len);
         meta.comment[len] = '\0';
         meta.comment_len = (uint8_t)len;
     }
     if (afp_meta_update(full, &meta) != 0)
         return AFPERR_AccessDenied;
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPAddComment: '%s' len=%u", rel, meta.comment_len);
     return AFPERR_NoErr;
 }
 
 // FPRemoveComment (0x39)
-static uint32_t afp_cmd_remove_comment(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                       int *out_len) {
-    (void)out;
-    (void)out_max;
+static uint32_t afp_cmd_remove_comment(afp_req_t *r) {
     vol_t *v = NULL;
     char rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_dt_target(ctx, in, in_len, &v, rel, sizeof(rel), NULL);
+    uint32_t rc = afp_resolve_dt_target(r, &v, rel, sizeof(rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     char full[PATH_MAX];
@@ -1931,17 +1760,14 @@ static uint32_t afp_cmd_remove_comment(afp_ctx_t *ctx, const uint8_t *in, int in
     meta.comment[0] = '\0';
     if (afp_meta_update(full, &meta) != 0)
         return AFPERR_AccessDenied;
-    if (out_len)
-        *out_len = 0;
     return AFPERR_NoErr;
 }
 
 // FPGetComment (0x3A)
-static uint32_t afp_cmd_get_comment(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                    int *out_len) {
+static uint32_t afp_cmd_get_comment(afp_req_t *r) {
     vol_t *v = NULL;
     char rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_dt_target(ctx, in, in_len, &v, rel, sizeof(rel), NULL);
+    uint32_t rc = afp_resolve_dt_target(r, &v, rel, sizeof(rel), NULL);
     if (rc != AFPERR_NoErr)
         return rc;
     char full[PATH_MAX];
@@ -1952,14 +1778,13 @@ static uint32_t afp_cmd_get_comment(afp_ctx_t *ctx, const uint8_t *in, int in_le
     if (!meta.has_comment || meta.comment_len == 0)
         return AFPERR_ItemNotFound;
     int clen = meta.comment_len;
-    if (1 + clen > out_max)
-        clen = out_max - 1;
+    if (1 + clen > r->out_max)
+        clen = r->out_max - 1;
     if (clen < 0)
         return AFPERR_ParamErr;
-    out[0] = (uint8_t)clen;
-    memcpy(out + 1, meta.comment, (size_t)clen);
-    if (out_len)
-        *out_len = 1 + clen;
+    r->out[0] = (uint8_t)clen;
+    memcpy(r->out + 1, meta.comment, (size_t)clen);
+    r->out_len = 1 + clen;
     return AFPERR_NoErr;
 }
 
@@ -1969,19 +1794,18 @@ static uint32_t afp_cmd_get_comment(afp_ctx_t *ctx, const uint8_t *in, int in_le
 
 // FPCreateID (0x27) — attach a file-ID thread to a file.  The CNID is already
 // the file's FileNumber; the thread is what makes it resolvable.
-static uint32_t afp_cmd_create_id(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                  int *out_len) {
-    if (in_len < 8 || out_max < 4)
+static uint32_t afp_cmd_create_id(afp_req_t *r) {
+    if (r->in_len < 8 || r->out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 7, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 7, &path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, rel, sizeof(rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, rel, sizeof(rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat st;
@@ -1994,9 +1818,8 @@ static uint32_t afp_cmd_create_id(afp_ctx_t *ctx, const uint8_t *in, int in_len,
         return AFPERR_MiscErr;
     uint32_t cnid = entry->cnid;
     bool existed = entry->has_file_id;
-    WR_BE32(out, cnid);
-    if (out_len)
-        *out_len = 4;
+    WR_BE32(r->out, cnid);
+    r->out_len = 4;
     if (existed)
         return AFPERR_IDExists; // the ID is still returned, per the spec
     if (!afp_catalog_set_file_id(vol->catalog, cnid, true))
@@ -2006,16 +1829,13 @@ static uint32_t afp_cmd_create_id(afp_ctx_t *ctx, const uint8_t *in, int in_len,
 }
 
 // FPDeleteID (0x28)
-static uint32_t afp_cmd_delete_id(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                  int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 7)
+static uint32_t afp_cmd_delete_id(afp_req_t *r) {
+    if (r->in_len < 7)
         return AFPERR_ParamErr;
-    vol_t *vol = afp_session_vol(ctx, RD_BE16(in + 1));
+    vol_t *vol = afp_session_vol(r->ctx, RD_BE16(r->in + 1));
     if (!vol)
         return AFPERR_ParamErr;
-    uint32_t file_id = RD_BE32(in + 3);
+    uint32_t file_id = RD_BE32(r->in + 3);
     const afp_cat_entry_t *entry = afp_catalog_find(vol->catalog, file_id);
     if (!entry)
         return AFPERR_IDNotFound;
@@ -2024,22 +1844,19 @@ static uint32_t afp_cmd_delete_id(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     if (!entry->has_file_id)
         return AFPERR_IDNotFound;
     afp_catalog_set_file_id(vol->catalog, file_id, false);
-    if (out_len)
-        *out_len = 0;
     LOG(10, "AFP FPDeleteID: id=0x%08X", file_id);
     return AFPERR_NoErr;
 }
 
 // FPResolveID (0x29) — parameters for the file a file ID names.
-static uint32_t afp_cmd_resolve_id(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                   int *out_len) {
-    if (in_len < 9 || out_max < 2)
+static uint32_t afp_cmd_resolve_id(afp_req_t *r) {
+    if (r->in_len < 9 || r->out_max < 2)
         return AFPERR_ParamErr;
-    vol_t *vol = afp_session_vol(ctx, RD_BE16(in + 1));
+    vol_t *vol = afp_session_vol(r->ctx, RD_BE16(r->in + 1));
     if (!vol)
         return AFPERR_ParamErr;
-    uint32_t file_id = RD_BE32(in + 3);
-    uint16_t bitmap = RD_BE16(in + 7);
+    uint32_t file_id = RD_BE32(r->in + 3);
+    uint16_t bitmap = RD_BE16(r->in + 7);
 
     const afp_cat_entry_t *entry = afp_catalog_find(vol->catalog, file_id);
     if (!entry || entry->is_dir || !entry->has_file_id)
@@ -2051,23 +1868,22 @@ static uint32_t afp_cmd_resolve_id(afp_ctx_t *ctx, const uint8_t *in, int in_len
     if (!afp_stat_path(vol, rel, &st))
         return AFPERR_IDNotFound; // dangling thread — the file is gone
 
-    WR_BE16(out + 0, bitmap);
+    WR_BE16(r->out + 0, bitmap);
     int pbase = 2;
     int p = pbase;
     if (bitmap) {
         int pos_long_off = -1, pos_short_off = -1;
-        p = afp_write_param_area(false, bitmap, out, pbase, out_max, &pos_long_off, &pos_short_off);
-        if (p < 0 || !afp_populate_param_area(false, vol, rel, &st, bitmap, out, pbase))
+        p = afp_write_param_area(false, bitmap, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
+        if (p < 0 || !afp_populate_param_area(false, vol, rel, &st, bitmap, r->out, pbase))
             return AFPERR_ParamErr;
         const char *name = afp_last_component(rel);
-        p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
+        p = afp_write_name_vars(r->out, p, r->out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off);
         if (p < 0)
             return AFPERR_ParamErr;
     }
-    if (p % 2 && p < out_max)
-        out[p++] = 0x00;
-    if (out_len)
-        *out_len = p;
+    if (p % 2 && p < r->out_max)
+        r->out[p++] = 0x00;
+    r->out_len = p;
     LOG(10, "AFP FPResolveID: id=0x%08X → '%s'", file_id, rel);
     return AFPERR_NoErr;
 }
@@ -2079,29 +1895,26 @@ static uint32_t afp_cmd_resolve_id(afp_ctx_t *ctx, const uint8_t *in, int in_len
 // physically swapping the two files (and their sidecars), keeping each name's
 // catalog entry — hence its ID — in place, restoring each name's creation
 // date, and re-pointing any open fork at wherever its bytes moved.
-static uint32_t afp_cmd_exchange_files(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                       int *out_len) {
-    (void)out;
-    (void)out_max;
-    if (in_len < 12)
+static uint32_t afp_cmd_exchange_files(afp_req_t *r) {
+    if (r->in_len < 12)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t src_dir = RD_BE32(in + 3);
-    uint32_t dst_dir = RD_BE32(in + 7);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t src_dir = RD_BE32(r->in + 3);
+    uint32_t dst_dir = RD_BE32(r->in + 7);
     afp_path_t src_path;
-    int pos = afp_read_path(in, in_len, 11, &src_path);
-    if (pos < 0 || pos >= in_len)
+    int pos = afp_read_path(r->in, r->in_len, 11, &src_path);
+    if (pos < 0 || pos >= r->in_len)
         return AFPERR_ParamErr;
     afp_path_t dst_path;
-    if (afp_read_path(in, in_len, pos, &dst_path) < 0)
+    if (afp_read_path(r->in, r->in_len, pos, &dst_path) < 0)
         return AFPERR_ParamErr;
 
     vol_t *vol = NULL;
     char src_rel[AFP_MAX_REL_PATH], dst_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, src_dir, &src_path, &vol, src_rel, sizeof(src_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, src_dir, &src_path, &vol, src_rel, sizeof(src_rel));
     if (rc != AFPERR_NoErr)
         return rc;
-    rc = afp_resolve_target(ctx, vol_id, dst_dir, &dst_path, &vol, dst_rel, sizeof(dst_rel));
+    rc = afp_resolve_target(r->ctx, vol_id, dst_dir, &dst_path, &vol, dst_rel, sizeof(dst_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     if (strcmp(src_rel, dst_rel) == 0)
@@ -2171,8 +1984,6 @@ static uint32_t afp_cmd_exchange_files(afp_ctx_t *ctx, const uint8_t *in, int in
     afp_catalog_resolve_path(vol->catalog, src_rel, true, false);
     afp_catalog_resolve_path(vol->catalog, dst_rel, true, false);
     afp_vol_touch(vol);
-    if (out_len)
-        *out_len = 0;
     LOG(2, "AFP FPExchangeFiles: '%s' <-> '%s'", src_rel, dst_rel);
     return AFPERR_NoErr;
 }
@@ -2371,20 +2182,19 @@ static bool catsearch_matches(vol_t *vol, const char *rel, const char *name, boo
     return true;
 }
 
-static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max,
-                                   int *out_len) {
-    if (in_len < 35 || out_max < 24)
+static uint32_t afp_cmd_cat_search(afp_req_t *r) {
+    if (r->in_len < 35 || r->out_max < 24)
         return AFPERR_ParamErr;
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t req_matches = RD_BE32(in + 3);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t req_matches = RD_BE32(r->in + 3);
     // in + 7: Reserved (must be zero)
-    const uint8_t *catpos = in + 11; // 16 bytes
-    uint16_t file_bm = RD_BE16(in + 27);
-    uint16_t dir_bm = RD_BE16(in + 29);
-    uint32_t request_bm = RD_BE32(in + 31);
+    const uint8_t *catpos = r->in + 11; // 16 bytes
+    uint16_t file_bm = RD_BE16(r->in + 27);
+    uint16_t dir_bm = RD_BE16(r->in + 29);
+    uint32_t request_bm = RD_BE32(r->in + 31);
     int pos = 35;
 
-    vol_t *vol = afp_session_vol(ctx, vol_id);
+    vol_t *vol = afp_session_vol(r->ctx, vol_id);
     if (!vol || !vol->catalog)
         return AFPERR_ParamErr;
     if (file_bm == 0 && dir_bm == 0)
@@ -2422,9 +2232,9 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
     memset(s2.finder_mask, 0xFF, sizeof(s2.finder_mask));
     s2.attrs_mask = 0xFFFF;
     int next = pos;
-    if (!catsearch_parse_spec(in, in_len, pos, criteria, search_dirs, &s1, false, &next))
+    if (!catsearch_parse_spec(r->in, r->in_len, pos, criteria, search_dirs, &s1, false, &next))
         return AFPERR_ParamErr;
-    if (!catsearch_parse_spec(in, in_len, next, criteria, search_dirs, &s2, true, NULL))
+    if (!catsearch_parse_spec(r->in, r->in_len, next, criteria, search_dirs, &s2, true, NULL))
         return AFPERR_ParamErr;
 
     // Reply header: CatPosition(16) FileRsltBitmap(2) DirRsltBitmap(2)
@@ -2461,55 +2271,54 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
         // then the parameters the result bitmap selects.
         uint16_t bm = is_dir ? dir_bm : file_bm;
         int header = w;
-        if (header + 2 > out_max) {
+        if (header + 2 > r->out_max) {
             exhausted = false;
             break;
         }
-        out[header] = 0;
-        out[header + 1] = is_dir ? 0x80 : 0x00;
+        r->out[header] = 0;
+        r->out[header + 1] = is_dir ? 0x80 : 0x00;
         int pbase = header + 2;
         int pos_long_off = -1, pos_short_off = -1;
-        int p = afp_write_param_area(is_dir, bm, out, pbase, out_max, &pos_long_off, &pos_short_off);
+        int p = afp_write_param_area(is_dir, bm, r->out, pbase, r->out_max, &pos_long_off, &pos_short_off);
         if (p < 0) {
             exhausted = false;
             break;
         }
-        if (!afp_populate_param_area(is_dir, vol, rel, &st, bm, out, pbase)) {
+        if (!afp_populate_param_area(is_dir, vol, rel, &st, bm, r->out, pbase)) {
             exhausted = false;
             break;
         }
-        int vpos = afp_write_name_vars(out, p, out_max, pbase, e->name, bm, pos_long_off, pos_short_off);
+        int vpos = afp_write_name_vars(r->out, p, r->out_max, pbase, e->name, bm, pos_long_off, pos_short_off);
         if (vpos < 0) {
             exhausted = false;
             break;
         }
         int struct_len = vpos - header;
         if (struct_len & 1) {
-            if (vpos >= out_max) {
+            if (vpos >= r->out_max) {
                 exhausted = false;
                 break;
             }
-            out[vpos++] = 0x00;
+            r->out[vpos++] = 0x00;
             struct_len++;
         }
         if (struct_len > 255) {
             exhausted = false;
             break;
         }
-        out[header] = (uint8_t)struct_len;
+        r->out[header] = (uint8_t)struct_len;
         w = vpos;
         actual++;
     }
 
-    memset(out, 0, 16);
-    WR_BE16(out + 0, 1); // a real catalog position, not a hint
-    WR_BE32(out + 4, afp_catalog_generation(vol->catalog));
-    WR_BE32(out + 8, cursor);
-    WR_BE16(out + 16, file_bm);
-    WR_BE16(out + 18, dir_bm);
-    WR_BE32(out + 20, actual);
-    if (out_len)
-        *out_len = w;
+    memset(r->out, 0, 16);
+    WR_BE16(r->out + 0, 1); // a real catalog position, not a hint
+    WR_BE32(r->out + 4, afp_catalog_generation(vol->catalog));
+    WR_BE32(r->out + 8, cursor);
+    WR_BE16(r->out + 16, file_bm);
+    WR_BE16(r->out + 18, dir_bm);
+    WR_BE32(r->out + 20, actual);
+    r->out_len = w;
     LOG(10, "AFP FPCatSearch: vol=0x%04X requestBm=0x%08X matches=%u cursor=0x%08X%s", vol_id, request_bm, actual,
         cursor, exhausted ? " (end)" : "");
     // afpEofError means "the whole tree has been walked", not "no matches".
@@ -2613,13 +2422,16 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
         return refused;
     }
     afp_ctx_t ctx = {.session_id = session_id};
+    afp_req_t req = {.ctx = &ctx, .in = in, .in_len = in_len, .out = out, .out_max = out_max};
     LOG(10, "AFP >> %s (0x%02X) in_len=%d session=0x%04X", handler->name, opcode, in_len, session_id);
-    uint32_t result = handler->handler(&ctx, in, in_len, out, out_max, out_len);
+    uint32_t result = handler->handler(&req);
     afp_count_result(result);
+    if (out_len)
+        *out_len = req.out_len;
     if (result == AFPERR_NoErr)
-        LOG(3, "AFP << %s OK reply=%d", handler->name, out_len ? *out_len : 0);
+        LOG(3, "AFP << %s OK reply=%d", handler->name, req.out_len);
     else
-        LOG(3, "AFP << %s ERR=0x%08X reply=%d", handler->name, result, out_len ? *out_len : 0);
+        LOG(3, "AFP << %s ERR=0x%08X reply=%d", handler->name, result, req.out_len);
     return result;
 }
 

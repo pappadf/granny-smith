@@ -196,19 +196,19 @@ static enum_snapshot_t *enum_snapshot_find(afp_ctx_t *ctx, vol_t *vol, uint32_t 
 // FPEnumerate (0x09)
 // ============================================================================
 
-uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    if (in_len < 18)
+uint32_t afp_cmd_enumerate(afp_req_t *r) {
+    if (r->in_len < 18)
         return AFPERR_ParamErr;
-    afp_log_hex("AFP FPEnumerate req", in, in_len);
-    uint16_t vol_id = RD_BE16(in + 1);
-    uint32_t dir_id = RD_BE32(in + 3);
-    uint16_t file_bm = RD_BE16(in + 7);
-    uint16_t dir_bm = RD_BE16(in + 9);
-    uint16_t req_count = RD_BE16(in + 11);
-    uint16_t start_index = RD_BE16(in + 13);
-    uint16_t max_reply = RD_BE16(in + 15);
+    afp_log_hex("AFP FPEnumerate req", r->in, r->in_len);
+    uint16_t vol_id = RD_BE16(r->in + 1);
+    uint32_t dir_id = RD_BE32(r->in + 3);
+    uint16_t file_bm = RD_BE16(r->in + 7);
+    uint16_t dir_bm = RD_BE16(r->in + 9);
+    uint16_t req_count = RD_BE16(r->in + 11);
+    uint16_t start_index = RD_BE16(r->in + 13);
+    uint16_t max_reply = RD_BE16(r->in + 15);
     afp_path_t path;
-    if (afp_read_path(in, in_len, 17, &path) < 0)
+    if (afp_read_path(r->in, r->in_len, 17, &path) < 0)
         return AFPERR_ParamErr;
     if (start_index == 0)
         start_index = 1;
@@ -217,7 +217,7 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
 
     vol_t *vol = NULL;
     char target_rel[AFP_MAX_REL_PATH];
-    uint32_t rc = afp_resolve_target(ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
+    uint32_t rc = afp_resolve_target(r->ctx, vol_id, dir_id, &path, &vol, target_rel, sizeof(target_rel));
     if (rc != AFPERR_NoErr)
         return rc;
     struct stat dir_st;
@@ -231,9 +231,9 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
     // The listing is captured once, on the first page, and every later page is
     // served from that capture — otherwise a concurrent create or delete
     // shifts the indices and the client skips or repeats an entry.
-    enum_snapshot_t *snap = (start_index == 1) ? NULL : enum_snapshot_find(ctx, vol, dir_cnid);
+    enum_snapshot_t *snap = (start_index == 1) ? NULL : enum_snapshot_find(r->ctx, vol, dir_cnid);
     if (!snap)
-        snap = enum_snapshot_build(ctx, vol, dir_cnid, target_rel);
+        snap = enum_snapshot_build(r->ctx, vol, dir_cnid, target_rel);
     if (!snap)
         return AFPERR_MiscErr;
 
@@ -242,15 +242,15 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
     if (start_index > snap->count)
         return AFPERR_ObjectNotFound;
 
-    int max_bytes = max_reply ? (int)max_reply : out_max;
-    if (max_bytes > out_max)
-        max_bytes = out_max;
+    int max_bytes = max_reply ? (int)max_reply : r->out_max;
+    if (max_bytes > r->out_max)
+        max_bytes = r->out_max;
     if (max_bytes < 6)
         return AFPERR_ParamErr;
 
-    WR_BE16(out + 0, file_bm);
-    WR_BE16(out + 2, dir_bm);
-    WR_BE16(out + 4, 0);
+    WR_BE16(r->out + 0, file_bm);
+    WR_BE16(r->out + 2, dir_bm);
+    WR_BE16(r->out + 4, 0);
     int w = 6;
     uint16_t actual = 0;
     uint16_t left = req_count ? req_count : UINT16_MAX;
@@ -263,16 +263,16 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
         int header = w;
         if (header + 2 > max_bytes)
             break;
-        out[header] = 0; // struct length, patched below
-        out[header + 1] = entry->is_dir ? 0x80 : 0x00;
+        r->out[header] = 0; // struct length, patched below
+        r->out[header + 1] = entry->is_dir ? 0x80 : 0x00;
         int pbase = header + 2;
         int pos_long_off = -1, pos_short_off = -1;
-        int p = afp_write_param_area(entry->is_dir, bm, out, pbase, max_bytes, &pos_long_off, &pos_short_off);
+        int p = afp_write_param_area(entry->is_dir, bm, r->out, pbase, max_bytes, &pos_long_off, &pos_short_off);
         if (p < 0)
             break;
-        if (!afp_populate_param_area(entry->is_dir, vol, entry->rel, &entry->st, bm, out, pbase))
+        if (!afp_populate_param_area(entry->is_dir, vol, entry->rel, &entry->st, bm, r->out, pbase))
             break;
-        int vpos = afp_write_name_vars(out, p, max_bytes, pbase, entry->name, bm, pos_long_off, pos_short_off);
+        int vpos = afp_write_name_vars(r->out, p, max_bytes, pbase, entry->name, bm, pos_long_off, pos_short_off);
         if (vpos < 0)
             break;
         int struct_len = vpos - header;
@@ -281,24 +281,23 @@ uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint8_
         if (struct_len & 1) {
             if (vpos >= max_bytes)
                 break;
-            out[vpos++] = 0x00;
+            r->out[vpos++] = 0x00;
             struct_len++;
         }
         if (struct_len > 255)
             break; // the per-entry length field is one byte
-        out[header] = (uint8_t)struct_len;
+        r->out[header] = (uint8_t)struct_len;
         w = vpos;
         actual++;
         left--;
     }
 
-    WR_BE16(out + 4, actual);
+    WR_BE16(r->out + 4, actual);
     if (actual == 0)
         return AFPERR_ObjectNotFound;
-    if (out_len)
-        *out_len = w;
+    r->out_len = w;
     LOG(10, "AFP FPEnumerate: vol=0x%04X dir='%s' start=%u req=%u returned=%u total=%zu", vol_id,
         target_rel[0] ? target_rel : "<root>", start_index, req_count, actual, snap->count);
-    afp_log_hex("AFP FPEnumerate resp", out, w);
+    afp_log_hex("AFP FPEnumerate resp", r->out, w);
     return AFPERR_NoErr;
 }
