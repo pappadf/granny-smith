@@ -5,9 +5,10 @@
 // Public interface for the AppleTalk networking protocol stack and the AFP
 // file server that rides on it.
 //
-// The object-model surface built on top of this API is
-// `appletalk` / `appletalk.afp` / `appletalk.printer`
-// (proposal-appletalk-afp-object-model.md §2).  Every call that can fail for
+// The object-model surface built on top of this API is `appletalk` with its
+// `stats` and `nbp`, `appletalk.afp`, `appletalk.printer`, and the
+// program-linking layers `appletalk.adsp`, `.ppc` and `.aevt`, which own
+// their subtrees (proposal-appletalk-afp-object-model.md §2).  Every call that can fail for
 // a reason a user should see reports it through an `err`/`err_len` buffer, so
 // the tree can surface the real message instead of "failed (see log)".
 

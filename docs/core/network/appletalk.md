@@ -1,5 +1,13 @@
 # AppleTalk Phase 2 over LocalTalk
 
+**Scope: LocalTalk only.** The stack is entered from the SCC: LLAP frames
+arrive on the serial port's channel B in SDLC mode and leave the same way
+(`scc_set_frame_sink`). The Ethernet controllers the emulator models --
+SONIC ([`sonic.md`](../peripherals/sonic.md)) and the AV machines' MACE
+([`av.md`](../../machines/av/av.md)) -- carry no AppleTalk: they have no
+datapath into this stack, so EtherTalk is not available. It would be an
+ELAP shim under `ddp_in`, AARP included, beside the LLAP one.
+
 # Part I — Physical and Link Layers
 
 ---

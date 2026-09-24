@@ -2670,10 +2670,14 @@ static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
 //
 //   appletalk            enabled / node_id / stats / nbp
 //     afp                enabled / name / message / versions
-//       volumes          add(name, path) -> the created volume, remove(name)
-//       sessions         one entry per live ASP session
+//       volumes          add(name, path) -> the created volume, remove(name), count
+//       sessions         one entry per live ASP session, count
 //       stats            commands_served / bytes moved / errors
-//     printer            enabled / name
+//     printer            enabled / name / capture / status / documents
+//       stats            jobs / aborts / bytes / captures / last_capture
+//     adsp               connections, stats        (appletalk_adsp.c)
+//     ppc                ports, sessions, browse(), stats  (appletalk_ppc.c)
+//     aevt               send(), events, inbox, stats      (appletalk_aevt.c)
 //
 // The design rules are: state is an attribute with a setter, methods are
 // verbs, constructive methods return the object they made, and failures come
