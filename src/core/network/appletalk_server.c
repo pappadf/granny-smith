@@ -155,7 +155,7 @@ uint32_t afp_resolve_target(const afp_ctx_t *ctx, uint16_t vol_id, uint32_t dir_
     if (!vol)
         return AFPERR_ParamErr; // unknown, or not opened by this session
     // Directory ID 1 is the root's parent, and a path from it starts with the
-    // volume's name (Inside AppleTalk 13-11, the eighth example); the rest
+    // volume's name (Inside AppleTalk 13-26, the eighth example); the rest
     // resolves from the root.  System 7's AppleShare client asks this way.
     afp_path_t from_root;
     if (dir_id == AFP_CNID_ROOT_PARENT) {

@@ -3718,7 +3718,7 @@ TEST(listings_are_ordered_by_folded_mac_name) {
 }
 
 // A path may start at Directory ID 1, the root's parent, with the volume's
-// name as its first element (Inside AppleTalk 13-11): System 7.5's AppleShare
+// name as its first element (Inside AppleTalk 13-26): System 7.5's AppleShare
 // 3.5 asks for the root that way right after mounting.  The name folds like
 // any other; one that is not the volume's names nothing.
 TEST(a_path_from_the_roots_parent_starts_with_the_volume_name) {

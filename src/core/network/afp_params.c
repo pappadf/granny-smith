@@ -164,7 +164,7 @@ static void afp_demangle(vol_t *vol, const char *dir_rel, char *host, size_t cap
 // --- case -------------------------------------------------------------------
 //
 // AFP names are case-insensitive and diacritical-sensitive (Inside AppleTalk
-// 13-4): two names are one when they match after Appendix D's Table D-2 maps
+// 13-9): two names are one when they match after Appendix D's Table D-2 maps
 // lowercase to uppercase -- a-z and 13 MacRoman letters.  É is é, but é is
 // not e.  The hosts are case-sensitive, so a lookup that misses exactly is
 // tried again folded, and a new name that folds onto a sibling is refused

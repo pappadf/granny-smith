@@ -2604,7 +2604,7 @@ by measurement (`appletalk-afp-longname`): sent whole, a 40-character name
 listed on System 6, but copying the file to the Mac's disk failed.
 
 **Case.** AFP names are case-insensitive and diacritical-sensitive (Inside
-AppleTalk 13-4), compared after Appendix D's Table D-2 maps lowercase to
+AppleTalk 13-9), compared after Appendix D's Table D-2 maps lowercase to
 uppercase: a-z, and 13 MacRoman letters (é is É, but é is not e). The host is
 case-sensitive, so an element that names no host entry exactly is the one
 entry whose Mac name folds equal. When the host holds names differing in case
@@ -2616,7 +2616,7 @@ rename. FPCatSearch compares, and FPEnumerate orders, by the same fold.
 
 **Directory ID 1** is the root's parent. A path from it starts with the
 volume's name, compared like any name, and continues from the root (Inside
-AppleTalk 13-11). System 7.5's AppleShare 3.5 asks for the root this way just
+AppleTalk 13-26). System 7.5's AppleShare 3.5 asks for the root this way just
 after mounting; System 6 never does.
 
 Every host path the server touches is built in one place, `afp_host_join`,
