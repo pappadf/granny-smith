@@ -706,10 +706,10 @@ void print_prompt(void) {}
 // forbidden.
 //
 // The single shared-memory region. Layout in em.h, mirrored in
-// emulator.js. Buffer sizes (path, args, output) are tuned for current
-// peak usage: longest paths are checkpoint paths under /opfs, args
-// carry JSON arrays of primitive values, output carries `meta.*`
-// introspection dumps which dominate.
+// app/web2/src/bus/emulator.ts (offsets pinned by em.h's _Static_asserts).
+// Path and args are fixed-size; gsEval refuses a request that would not
+// fit rather than let it be truncated.  Output carries `meta.*`
+// introspection dumps, which dominate.
 static js_bridge_t g_bridge = {.version = JS_BRIDGE_VERSION};
 
 EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
@@ -725,13 +725,16 @@ int shell_poll(void) {
     //                              `shell.run`, schema queries via
     //                              `<path>.meta.*`, and tab completion
     //                              via `shell.complete` / `meta.complete`.
-    if (!g_bridge.pending)
+    // Acquire pairs with JS's Atomics.store of `pending`, which it makes after
+    // writing path/args: seeing 1 here makes those bytes visible too.
+    if (!__atomic_load_n(&g_bridge.pending, __ATOMIC_ACQUIRE))
         return 0;
 
     const char *args = (g_bridge.args[0] != '\0') ? g_bridge.args : NULL;
-    int rc = gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
-    g_bridge.result = rc;
-    g_bridge.pending = 0;
+    gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
+    // Relaxed is enough: the seq-cst store of `done` below orders it, and JS
+    // writes `pending` again only after it has seen `done`.
+    __atomic_store_n(&g_bridge.pending, 0, __ATOMIC_RELAXED);
     // Atomic store + wake any JS thread parked in Atomics.waitAsync on
     // `done`. Sequentially consistent so the result/output writes above
     // are visible before JS observes done == 1.

@@ -10,6 +10,7 @@
 // === Includes ===
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // === Forward Declarations ===
@@ -54,9 +55,14 @@ void em_print_host_callstack(void);
 // Single shared-memory region that carries every JS↔C interaction.
 // JS resolves the base pointer once via `_get_js_bridge()` and reads /
 // writes fields by offset through `Module.HEAP32` / `Module.HEAPU8`.
-// Layout is mirrored in `app/web2/src/bus/emulator.ts` (and the legacy
-// `app/web-legacy/js/emulator.js`); bump JS_BRIDGE_VERSION whenever
-// fields are added, reordered, or resized.
+// Layout is mirrored in `app/web2/src/bus/emulator.ts` (the OFF_* constants;
+// the _Static_asserts below pin every offset it hardcodes); bump
+// JS_BRIDGE_VERSION whenever fields are added, reordered, or resized.
+//
+// The int32 words are shared with JS's Atomics.* and are therefore accessed
+// only through __atomic_* on this side — never plain loads or stores, which
+// carry no ordering with JS's writes (11-WORK-ORDER A4, F-25).  `version` is
+// the exception: a static initialiser, fixed before JS can see the struct.
 //
 // Request protocol — exactly one kind, serialised by the JS-side
 // `cmdInFlight` lock. Introspection rides on `<path>.meta.*`
@@ -82,16 +88,27 @@ void em_print_host_callstack(void);
 
 typedef struct {
     int32_t version; // offset 0;  must equal JS_BRIDGE_VERSION
-    volatile int32_t ready; // offset 4;  1 once the worker is ready to dispatch requests
-    volatile int32_t pending; // offset 8;  request kind (1..4); 0 = idle
-    volatile int32_t done; // offset 12; flipped to 1 by worker on completion
-    volatile int32_t result; // offset 16; integer result code
+    int32_t ready; // offset 4;  1 once the worker is ready to dispatch requests
+    int32_t pending; // offset 8;  1 = a gs_eval request is waiting; 0 = idle
+    int32_t done; // offset 12; flipped to 1 by worker on completion
+    int32_t reserved; // offset 16; unused (was a result code JS never read); kept so offsets hold
     char path[JS_BRIDGE_PATH_SIZE]; // offset 20
     char args[JS_BRIDGE_ARGS_SIZE]; // offset 1044
     char output[JS_BRIDGE_OUTPUT_SIZE]; // offset 9236
     // offset 271380: 1 once the page has a WebGPU device for the Voodoo2
     // takeover (em_gpu.c); written by JS before any machine boots.
-    volatile int32_t gpu_available;
+    int32_t gpu_available;
 } js_bridge_t; // total: 271384 bytes
+
+// The offsets app/web2/src/bus/emulator.ts hardcodes (OFF_*): a field change
+// that forgets the TS side now fails the build here, not the page at runtime.
+_Static_assert(offsetof(js_bridge_t, version) == 0, "OFF_VERSION");
+_Static_assert(offsetof(js_bridge_t, ready) == 4, "OFF_READY");
+_Static_assert(offsetof(js_bridge_t, pending) == 8, "OFF_PENDING");
+_Static_assert(offsetof(js_bridge_t, done) == 12, "OFF_DONE");
+_Static_assert(offsetof(js_bridge_t, path) == 20, "OFF_PATH");
+_Static_assert(offsetof(js_bridge_t, args) == 1044, "OFF_ARGS");
+_Static_assert(offsetof(js_bridge_t, output) == 9236, "OFF_OUTPUT");
+_Static_assert(offsetof(js_bridge_t, gpu_available) == 271380, "OFF_GPU_AVAILABLE");
 
 #endif // EM_H
