@@ -219,31 +219,59 @@ export function isModuleReady(): boolean {
 
 // --- gsEval -------------------------------------------------------------
 
+// The result contract (11-WORK-ORDER A1; the execution-model proposal's
+// Phase 0 shape):
+//   - a value     — the method or attribute's result;
+//   - null        — ONLY a successful method that returns nothing (V_NONE);
+//   - { error }   — failure.  A C-side V_ERROR carries the core's message;
+//                   a failure of the bridge itself (module not ready, a
+//                   thrown request) also sets `transport: true`.
+// So `r !== null` is never a success test: `{ error }` satisfies it.  Use
+// gsOk() for "did it work", `=== true` for a V_BOOL method, and a shape check
+// for a read.
+export interface GsError {
+  error: string;
+  transport?: true;
+}
+
+// A bridge-level failure, distinct from an error the core returned.
+function transportError(message: string): GsError {
+  return { error: message, transport: true };
+}
+
 export async function gsEval(
   path: string,
   args?: unknown[] | Record<string, unknown>,
 ): Promise<unknown> {
-  if (!Module || !moduleReady) return null;
+  if (!Module || !moduleReady) return transportError('emulator not ready');
   await waitForBridgeReady();
   // An array is positional; a plain object binds by declared argument name
   // (proposal-named-args-boot-config §3.4).
   const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
   try {
     return await executeGsRequest(path || '', argsJson);
-  } catch {
-    return null;
+  } catch (e) {
+    return transportError(`bridge request failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-// Human-readable reason from a gsEval result. The bridge encodes a C-side
-// V_ERROR as {"error": "..."}; null means the worker/module wasn't available;
-// anything else stringifies. Single home for the error-shape knowledge so
-// callers don't each re-implement the check.
+// True for any failure shape — the core's V_ERROR or a transport failure.
+export function isGsError(res: unknown): res is GsError {
+  return !!res && typeof res === 'object' && 'error' in res;
+}
+
+// "Did the call work?": not an error, and not a V_BOOL method's `false`.
+// A V_NONE success (null) counts as success.
+export function gsOk(res: unknown): boolean {
+  return !isGsError(res) && res !== false;
+}
+
+// Human-readable reason from a failed gsEval result. Single home for the
+// error-shape knowledge so callers don't each re-implement the check.
 export function gsErrorText(res: unknown): string {
-  if (res === null) return 'emulator not ready';
-  if (res && typeof res === 'object' && 'error' in res) {
-    return String((res as { error: unknown }).error);
-  }
+  if (isGsError(res)) return String(res.error);
+  if (res === false) return 'the operation reported failure';
+  if (res === null) return 'no result';
   return String(res);
 }
 
@@ -350,7 +378,9 @@ async function executeGsRequest(path: string, argsJson: string): Promise<unknown
   }
   cmdInFlight = true;
   try {
-    if (!Module) return null;
+    // Never write a request at heap address 0 (+offset): the bridge pointer
+    // is set before moduleReady, so this is a guard, not a code path.
+    if (!Module || !bridgePtr) return transportError('emulator not ready');
     Module.stringToUTF8(path, bridgePtr + OFF_PATH, PATH_SIZE);
     Module.stringToUTF8(argsJson, bridgePtr + OFF_ARGS, ARGS_SIZE);
     Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);

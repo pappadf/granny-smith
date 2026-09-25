@@ -76,8 +76,7 @@ interface PromIdentifyResult {
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
   // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
-  if (r === null || r === undefined) return null;
-  if (typeof r !== 'object' || 'error' in (r as object)) return null;
+  if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
   return r as RomIdentifyResult;
 }
 

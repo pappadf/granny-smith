@@ -7,7 +7,14 @@
 // `lib/disasm.ts` parses the raw `debug.disasm` output; this file owns
 // the gsEval dispatch.
 
-import { gsEval, shutdownEmulator, isModuleReady, restartEmulator } from './emulator';
+import {
+  gsEval,
+  gsOk,
+  isGsError,
+  shutdownEmulator,
+  isModuleReady,
+  restartEmulator,
+} from './emulator';
 import { parseDisasmBlock, type DisasmRow } from '@/lib/disasm';
 import { bumpDebugRefresh } from '@/state/debug.svelte';
 
@@ -179,7 +186,7 @@ export async function readRegisters(): Promise<Registers | null> {
     gsEval('machine.cpu.usp'),
     gsEval('machine.cpu.ssp'),
   ]);
-  if (reads.some((x) => x === null || x === undefined)) {
+  if (reads.some((x) => x === null || x === undefined || isGsError(x))) {
     // Treat as not-ready; the C side may not have a machine yet.
     return null;
   }
@@ -199,13 +206,13 @@ export async function writeRegister(name: string, value: number): Promise<boolea
   // Use the typed setter form via gsEval — the bridge dispatcher parses
   // `path = value` per docs/shell.md.
   const r = await gsEval(`machine.cpu.${name} = ${hex}`);
-  return r !== null;
+  return gsOk(r);
 }
 
 export async function peekL(addr: number): Promise<number | null> {
   if (!isModuleReady()) return null;
   const r = await gsEval('machine.memory.peek.l', [addr >>> 0]);
-  if (r === null || r === undefined) return null;
+  if (r === null || r === undefined || isGsError(r)) return null;
   return coerceNum(r);
 }
 
@@ -268,7 +275,7 @@ export async function addBreakpoint(addr: number, condition?: string): Promise<b
   const args: unknown[] = [addr >>> 0];
   if (condition && condition.trim().length) args.push(condition.trim());
   const r = await gsEval('debug.breakpoints.add', args);
-  return r !== null;
+  return gsOk(r);
 }
 
 export async function removeBreakpoint(addr: number): Promise<boolean> {
@@ -278,7 +285,7 @@ export async function removeBreakpoint(addr: number): Promise<boolean> {
   // `remove(id)` exists. For Phase 6 we accept that "Remove" maps
   // onto the address-based deletion path.
   const r = await gsEval('debug.breakpoints.add', [addr >>> 0, '--remove']);
-  return r !== null;
+  return gsOk(r);
 }
 
 export async function continueExec(): Promise<void> {
