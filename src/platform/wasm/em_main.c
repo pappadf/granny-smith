@@ -1221,20 +1221,18 @@ static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVis
     return EM_FALSE;
 }
 
-// Beforeunload callback
-static const char *background_beforeunload_callback(int eventType, const void *reserved, void *userData) {
-    (void)eventType;
-    (void)reserved;
-    maybe_request_background_checkpoint((const char *)userData, true);
-    return NULL;
-}
-
-// Install background checkpoint handlers
+// Install background checkpoint handlers.  Only visibilitychange: it is
+// delivered to this (the emulator) thread, and browsers fire it -> hidden when
+// a tab is closed or navigated away, so an unload is covered.  There is
+// deliberately no beforeunload handler: Emscripten runs that callback on the
+// browser main thread (it must return synchronously), which put a whole
+// checkpoint -- system_checkpoint and WasmFS fopen/fwrite/rename -- on the
+// main thread while the worker could be mid-tick (execution-model proposal
+// §1.12.1, removed in its Phase 0).
 static void install_background_checkpoint_handlers(void) {
     if (g_background_handlers_installed)
         return;
     emscripten_set_visibilitychange_callback((void *)"visibilitychange", EM_FALSE, background_visibility_callback);
-    emscripten_set_beforeunload_callback((void *)"beforeunload", background_beforeunload_callback);
     g_background_handlers_installed = true;
 }
 
