@@ -12,7 +12,7 @@
 // file that does not validate as its slot's category is attached from /tmp
 // as before, with a warning that it will not survive a reload.
 
-import { gsEval, getModule, isModuleReady, applyCapabilities } from './emulator';
+import { gsEval, gsErrorText, getModule, isModuleReady, applyCapabilities } from './emulator';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
@@ -105,7 +105,16 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   // One boot document: the core validates model/ram/rom together and
   // installs the ROM itself (proposal-named-args-boot-config §4).
-  await gsEval('machine.boot', { model: chosen, ram: ramKb, rom: romPath });
+  const booted = await gsEval('machine.boot', { model: chosen, ram: ramKb, rom: romPath });
+  if (booted !== true) {
+    // A rejected document leaves the previous machine (or none) in place:
+    // do not attach media to it or report a boot (N-08).
+    showNotification(
+      `Could not boot ${chosen} from URL parameters: ${gsErrorText(booted)}`,
+      'error',
+    );
+    return false;
+  }
 
   for (const fd of params.floppies) {
     const p = paths.get(fd.slot);

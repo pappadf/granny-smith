@@ -738,29 +738,12 @@ export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
 
 // Save State button path. Writes to /tmp/saved-state-<ts>.bin, then triggers
 // a browser download via the C-side `download` shell command.
-export async function saveCheckpoint(): Promise<string> {
-  const ts = compactTimestamp();
-  const tmpPath = `/tmp/saved-state-${ts}.bin`;
-  await gsEval('checkpoint.save', [tmpPath]);
-  await gsEval('download', [tmpPath]);
-  return tmpPath;
-}
-
 // --- Small helpers ------------------------------------------------------
 
 function ramStringToKb(ram: string): number {
   const m = /(\d+)\s*MB/i.exec(ram || '');
   if (!m) return 4096;
   return parseInt(m[1], 10) * 1024;
-}
-
-function compactTimestamp(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
 }
 
 export { ramStringToKb };

@@ -4,7 +4,6 @@ export {
   pauseEmulator,
   resumeEmulator,
   applySchedulerMode,
-  saveCheckpoint,
   bootstrap,
   isModuleReady,
   whenModuleReady,
@@ -61,7 +60,13 @@ export {
 } from './opfs';
 export { acceptFiles, processDataTransfer } from './upload';
 export { processUrlMedia, parseUrlMediaParams } from './urlMedia';
-export { maybeOfferBackgroundCheckpoint, isResumePending, resolveResume } from './checkpoint';
+export {
+  maybeOfferBackgroundCheckpoint,
+  isResumePending,
+  resolveResume,
+  saveCheckpoint,
+  type SaveCheckpointResult,
+} from './checkpoint';
 export type {
   MachineConfig,
   RomInfo,

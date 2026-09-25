@@ -460,7 +460,13 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
     if (parsed.ram_default) ramKb = parsed.ram_default;
   }
   // One boot document — the core validates and installs the ROM itself.
-  await gsEval('machine.boot', { model, ram: ramKb, rom: romPath });
+  // A rejected document leaves the previous machine (or none) in place, so
+  // stop here rather than configure and "boot" it (N-08).
+  const booted = await gsEval('machine.boot', { model, ram: ramKb, rom: romPath });
+  if (booted !== true) {
+    showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
+    return;
+  }
   // Seed a valid PRAM, as every boot path does.
   await seedPram(model, 0);
   machine.model = model;

@@ -92,8 +92,9 @@
   async function onSave() {
     saving = true;
     try {
-      const path = await saveCheckpoint();
-      showNotification(`State saved (${path})`, 'info');
+      const res = await saveCheckpoint();
+      if (res.ok) showNotification(`State saved (${res.name})`, 'info');
+      else showNotification(`Save State failed (${res.step}): ${res.message}`, 'error');
     } finally {
       // Match prototype's 400 ms re-enable delay (app.js:962).
       setTimeout(() => (saving = false), 400);

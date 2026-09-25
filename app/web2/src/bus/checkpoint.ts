@@ -9,7 +9,7 @@
 //   4. On Resume, gsEval('checkpoint.load') runs and the bus updates
 //      machine.status from scheduler.running.
 
-import { gsEval } from './emulator';
+import { gsEval, gsErrorText } from './emulator';
 import { machine } from '@/state/machine.svelte';
 import {
   checkpointPrompt,
@@ -51,4 +51,38 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
     'info',
   );
   return true;
+}
+
+// --- Save State (the toolbar's download) ---------------------------------
+
+// The outcome of Save State: the name the browser downloads the file as, or
+// which step failed and why.
+export type SaveCheckpointResult =
+  | { ok: true; name: string }
+  | { ok: false; step: 'save' | 'download'; message: string };
+
+export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
+  const name = `saved-state-${compactTimestamp()}.bin`;
+  const tmpPath = `/tmp/${name}`;
+  // Both methods return V_BOOL false on failure (a full quota, no machine,
+  // a download that could not read the file back) — check each.
+  const saved = await gsEval('checkpoint.save', [tmpPath]);
+  if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };
+  const downloaded = await gsEval('download', [tmpPath]);
+  // /tmp is memory-backed: a staged checkpoint left there holds the whole
+  // machine's state in the wasm heap for the rest of the session (N-22).
+  // The download has already copied it out, so remove it either way.
+  await gsEval('storage.rm', [tmpPath]);
+  if (downloaded !== true) return { ok: false, step: 'download', message: gsErrorText(downloaded) };
+  return { ok: true, name };
+}
+
+// Local-time YYYYMMDD-HHMMSS for a download name.
+function compactTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
 }
