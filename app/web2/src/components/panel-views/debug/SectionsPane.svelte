@@ -4,7 +4,6 @@
   import MemorySection from './MemorySection.svelte';
   import MmuSection from './MmuSection.svelte';
   import BreakpointsSection from './BreakpointsSection.svelte';
-  import WatchpointsSection from './WatchpointsSection.svelte';
   import CallStackSection from './CallStackSection.svelte';
 </script>
 
@@ -14,7 +13,6 @@
   <MemorySection />
   <MmuSection />
   <BreakpointsSection />
-  <WatchpointsSection />
   <CallStackSection />
 </div>
 

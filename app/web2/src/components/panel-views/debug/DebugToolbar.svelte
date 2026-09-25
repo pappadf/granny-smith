@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from '@/components/common/Icon.svelte';
   import { machine } from '@/state/machine.svelte';
-  import { continueExec, pauseExec, stepInto, stepOver, stopMachine, restart } from '@/bus/debug';
+  import { continueExec, pauseExec, stepInto, stopMachine, restart } from '@/bus/debug';
 
   const isRunning = $derived(machine.status === 'running');
   const isPaused = $derived(machine.status === 'paused');
@@ -44,16 +44,6 @@
     onclick={() => stepInto(1)}
   >
     <Icon name="step-into" size={14} />
-  </button>
-  <button
-    type="button"
-    class="tb-btn"
-    title="Step Over"
-    aria-label="Step Over"
-    disabled={stepDisabled}
-    onclick={() => stepOver()}
-  >
-    <Icon name="step-over" size={14} />
   </button>
   <button type="button" class="tb-btn" title="Stop" aria-label="Stop" onclick={() => stopMachine()}>
     <Icon name="stop" size={14} />

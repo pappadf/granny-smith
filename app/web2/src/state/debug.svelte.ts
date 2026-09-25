@@ -17,7 +17,6 @@ interface DebugState {
     memory: boolean;
     mmu: boolean;
     breakpoints: boolean;
-    watchpoints: boolean;
     callstack: boolean;
   };
   /** Last-rendered register values keyed by name (e.g. 'd0', 'pc'). Used
@@ -49,7 +48,6 @@ export const debug: DebugState = $state({
     memory: false,
     mmu: false,
     breakpoints: false,
-    watchpoints: false,
     callstack: false,
   },
   registersPrev: {},
@@ -93,7 +91,6 @@ export function resetDebugSections(): void {
     memory: false,
     mmu: false,
     breakpoints: false,
-    watchpoints: false,
     callstack: false,
   };
 }

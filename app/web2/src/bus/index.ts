@@ -42,7 +42,6 @@ export {
   continueExec,
   pauseExec,
   stepInto,
-  stepOver,
   stopMachine,
   restart,
   type DisasmRow,

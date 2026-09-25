@@ -319,12 +319,6 @@ export async function stepInto(n = 1): Promise<void> {
   bumpDebugRefresh();
 }
 
-export async function stepOver(): Promise<void> {
-  // C side doesn't expose step_over yet — fall back to single-step.
-  // Phase 7 polish.
-  return stepInto(1);
-}
-
 export async function stopMachine(): Promise<void> {
   await shutdownEmulator();
 }
