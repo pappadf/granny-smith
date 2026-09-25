@@ -703,7 +703,8 @@ void print_prompt(void) {}
 // request into shared globals, sets a pending flag, and polls a done
 // flag. The worker's `shell_poll()` (called from `em_main_tick`)
 // drains the queue and writes the result. ccall on `_em_*` exports is
-// forbidden.
+// forbidden -- and no longer possible: the Makefile stopped exporting
+// ccall/cwrap (11-WORK-ORDER A7), so only the bridge remains.
 //
 // The single shared-memory region. Layout in em.h, mirrored in
 // app/web2/src/bus/emulator.ts (offsets pinned by em.h's _Static_asserts).

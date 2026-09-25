@@ -251,7 +251,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -sOFFSCREENCANVAS_SUPPORT \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
-           -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8','wasmMemory'] \
+           -s EXPORTED_RUNTIME_METHODS=['FS','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8','wasmMemory'] \
            -s EXPORTED_FUNCTIONS="['_main','_get_js_bridge']" \
            -sINCOMING_MODULE_JS_API=arguments,canvas,locateFile,mainScriptUrlOrBlob,print,printErr \
            -s STACK_SIZE=5MB \
