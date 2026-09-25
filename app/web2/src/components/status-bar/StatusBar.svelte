@@ -1,6 +1,6 @@
 <script lang="ts">
   import { machine, type MachineStatus } from '@/state/machine.svelte';
-  import { activity } from '@/state/activity.svelte';
+  import { activity, bridgeBusy } from '@/state/activity.svelte';
   import { setCapsLock } from '@/bus/emulator';
   import DriveActivity from './DriveActivity.svelte';
   import Icon from '../common/Icon.svelte';
@@ -15,6 +15,7 @@
     running: 'Running',
     paused: 'Paused',
     stopped: 'Stopped',
+    crashed: 'Crashed',
   };
 
   const desc = $derived(
@@ -99,6 +100,11 @@
       </button>
     </div>
     <div class="statusbar-right">
+      {#if bridgeBusy.path}
+        <div class="sb-item sb-busy" title="The emulator is still working on a request">
+          <span class="label">Busy: {bridgeBusy.path} ({bridgeBusy.seconds} s)</span>
+        </div>
+      {/if}
       {#if activity.current}
         <div class="sb-item sb-upload" title="{activity.verb} in progress">
           <span class="upload-spinner"></span>

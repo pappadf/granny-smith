@@ -37,6 +37,7 @@ import { onPrinterAttach } from '@/printer/platen';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
 import { resetDebugSections } from '@/state/debug.svelte';
+import { bridgeBusy } from '@/state/activity.svelte';
 import type { MachineConfig } from './types';
 
 const BRIDGE_VERSION = 7;
@@ -90,6 +91,8 @@ interface EmscriptenModuleConfig {
   locateFile?(path: string): string;
   print?(s: string): void;
   printErr?(s: string): void;
+  // Called by the glue's abort() (needs "onAbort" in INCOMING_MODULE_JS_API).
+  onAbort?(what: unknown): void;
   onRunStateChange?(running: boolean): void;
   onScreenResize?(w: number, h: number, parW?: number, parH?: number): void;
   onLogEmit?(line: string): void;
@@ -230,7 +233,8 @@ async function bootstrapModule(canvas: HTMLCanvasElement, wasmArgs: string[]): P
     locateFile: (p: string) =>
       p.endsWith('.wasm') ? new URL(`main.wasm?v=${bust}`, document.baseURI).href : p,
     print: routePrintLine,
-    printErr: routePrintLine,
+    printErr: routeErrLine,
+    onAbort: (what: unknown) => markBridgeDead(`Aborted(${String(what ?? '')})`),
     onRunStateChange: handleRunStateChange,
     onScreenResize: handleScreenResize,
     onLogEmit: routeLogEmit,
@@ -308,6 +312,7 @@ export async function gsEval(
   path: string,
   args?: unknown[] | Record<string, unknown>,
 ): Promise<unknown> {
+  if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
   if (!Module || !moduleReady) return transportError('emulator not ready');
   await waitForBridgeReady();
   // An array is positional; a plain object binds by declared argument name
@@ -337,6 +342,84 @@ export function requestTooLarge(path: string, argsJson: string): string | null {
   if (argsBytes > ARGS_SIZE - 1)
     return `request arguments too large (${argsBytes} bytes > ${ARGS_SIZE - 1})`;
   return null;
+}
+
+// --- Slow is not dead (11-WORK-ORDER A6) ---------------------------------
+//
+// The bridge has one slot and no request id, so a slow request is never
+// abandoned on a timer: freeing the slot while the worker is still inside the
+// old request would hand its reply to the next caller and erase that caller's
+// request.  Instead a request that runs long raises a status-bar notice, and
+// only a real crash — a wasm trap or abort on the worker — ends the bridge.
+// (Cancel belongs to the execution-model proposal's job ids; D-5 declined a
+// stopgap.)
+
+// Paths that are legitimately long: the notice waits longer for them.
+const LONG_REQUEST =
+  /^(checkpoint\.|machine\.(boot|restart)|storage\.(cp|mv|hd_create)|archive\.|download$|vfs\.)/;
+const BUSY_AFTER_MS = 5_000;
+const BUSY_AFTER_LONG_MS = 30_000;
+// An ordinary request still in flight after this much visible time is not
+// slow, it is wedged (on wasm `scheduler.run` returns at once, so only a
+// runaway — a script loop that can never finish — gets here).  The caller is
+// rejected and the bridge marked dead; the slot is never reused, so no later
+// reply can be misattributed.  Known-long requests have no deadline.
+const DEADLINE_MS = 120_000;
+
+// Count visible time a request has been in flight; raise the notice past its
+// threshold.  Background tabs throttle the worker, so hidden time is not
+// counted.  Returns a stop function.
+export function watchRequest(path: string): () => void {
+  const limit = LONG_REQUEST.test(path) ? BUSY_AFTER_LONG_MS : BUSY_AFTER_MS;
+  let visibleMs = 0;
+  const tick = 1_000;
+  const timer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    visibleMs += tick;
+    if (visibleMs >= limit) {
+      bridgeBusy.path = path;
+      bridgeBusy.seconds = Math.round(visibleMs / 1000);
+    }
+    if (!LONG_REQUEST.test(path) && visibleMs >= DEADLINE_MS)
+      markBridgeDead(`'${path}' did not complete within ${DEADLINE_MS / 1000} s`);
+  }, tick);
+  return () => {
+    clearInterval(timer);
+    if (bridgeBusy.path === path) bridgeBusy.path = null;
+  };
+}
+
+// A dead worker: a wasm trap (the glue's worker.onerror prints "worker sent
+// an error!") or an explicit abort (Module.onAbort).  Once dead, every
+// in-flight and queued request fails at once instead of waiting forever,
+// and the page is told so it can say why (onEmulatorCrash).
+let bridgeDead: string | null = null;
+let resolveDead: ((reason: string) => void) | null = null;
+const deadSignal: Promise<string> = new Promise((res) => {
+  resolveDead = res;
+});
+const crashListeners: Array<(reason: string) => void> = [];
+
+export function onEmulatorCrash(cb: (reason: string) => void): void {
+  crashListeners.push(cb);
+}
+
+export function markBridgeDead(reason: string): void {
+  if (bridgeDead) return;
+  bridgeDead = reason;
+  machine.status = 'crashed';
+  resolveDead?.(reason);
+  for (const cb of crashListeners) cb(reason);
+}
+
+// printErr hook: recognise the glue's crash lines, then route as usual.
+const WORKER_CRASH = /worker sent an error!|^Aborted\(/;
+export function isWorkerCrashLine(line: string): boolean {
+  return WORKER_CRASH.test(line);
+}
+function routeErrLine(line: string): void {
+  if (isWorkerCrashLine(line)) markBridgeDead(line);
+  routePrintLine(line);
 }
 
 // True for any failure shape — the core's V_ERROR or a transport failure.
@@ -461,7 +544,10 @@ async function executeGsRequest(path: string, argsJson: string): Promise<unknown
     await new Promise<void>((r) => cmdWaiters.push(r));
   }
   cmdInFlight = true;
+  let stopWatch: (() => void) | null = null;
   try {
+    // A queued request that wakes after a crash fails at once.
+    if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
     // Never write a request at heap address 0 (+offset): the bridge pointer
     // is set before moduleReady, so this is a guard, not a code path.
     if (!Module || !bridgePtr) return transportError('emulator not ready');
@@ -469,9 +555,13 @@ async function executeGsRequest(path: string, argsJson: string): Promise<unknown
     Module.stringToUTF8(argsJson, bridgePtr + OFF_ARGS, ARGS_SIZE);
     Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
     Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, 1);
-    await waitForBridgeDone();
+    stopWatch = watchRequest(path);
+    // A dead worker never sets `done`: race the completion against the crash.
+    const crashed = await Promise.race([waitForBridgeDone().then(() => null), deadSignal]);
+    if (crashed !== null) return transportError(`emulator crashed: ${crashed}`);
     return readBridgeOutput();
   } finally {
+    stopWatch?.();
     cmdInFlight = false;
     const next = cmdWaiters.shift();
     if (next) next();

@@ -49,14 +49,18 @@ export function renderWebGLErrorPage(target: HTMLElement, result: WebGLCheckResu
 // bridge version mismatch, a module that fails to load, a worker that never
 // comes up).  Same card and plain-DOM approach as the WebGL page, so it works
 // even when the failure is in the app's own startup.
-export function renderStartupErrorPage(target: HTMLElement, reason: string): void {
+export function renderStartupErrorPage(
+  target: HTMLElement,
+  reason: string,
+  headline = 'The emulator could not start',
+): void {
   target.innerHTML = '';
   const root = document.createElement('div');
   root.className = 'gs-webgl-error';
   root.setAttribute('role', 'alert');
   root.innerHTML = `
     <div class="gs-webgl-error__card">
-      <h1>The emulator could not start</h1>
+      <h1>${escapeHtml(headline)}</h1>
       <p>Reloading usually fixes this, particularly right after an update (the page and the
       emulator it loads must come from the same build).</p>
       <p class="gs-webgl-error__detail">Details: <code>${escapeHtml(reason)}</code></p>

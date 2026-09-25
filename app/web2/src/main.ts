@@ -8,7 +8,7 @@ import { autoPickPanelPos, layout } from '@/state/layout.svelte';
 import { setOpfsBackend, BrowserOpfs } from '@/bus/opfs';
 import { maybeOfferBackgroundCheckpoint } from '@/bus/checkpoint';
 import { processUrlMedia, parseUrlMediaParams } from '@/bus/urlMedia';
-import { whenModuleReady } from '@/bus/emulator';
+import { whenModuleReady, onEmulatorCrash } from '@/bus/emulator';
 import { installEvalHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
@@ -64,6 +64,13 @@ function bootApp(target: HTMLElement): unknown {
       renderStartupErrorPage(target, e instanceof Error ? e.message : String(e));
       return;
     }
+
+    // A worker that dies later (a wasm trap, an abort) cannot be recovered in
+    // this page: every request now fails at once; say so and offer a reload.
+    onEmulatorCrash((reason) => {
+      void unmount(mounted);
+      renderStartupErrorPage(target, reason, 'The emulator stopped');
+    });
 
     // Expose a single boolean flag for the headless diagnostic harness
     // (scripts/ui2-diag.mjs) and other automation to wait on. Cheaper /

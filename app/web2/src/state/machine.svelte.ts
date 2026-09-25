@@ -1,7 +1,9 @@
 // Machine state — current emulator status, model info, drive activity glyphs,
 // scheduler mode, zoom level.
 
-export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped';
+// 'crashed': the emulator's worker died (a wasm trap or abort); nothing more
+// can run in this page (bus/emulator.ts markBridgeDead).
+export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped' | 'crashed';
 
 // Drive activity glyph state. `idle` = dim; `read` = white flash; `write` =
 // yellow flash. The flash decays on a 180 ms timeout (matches prototype).
