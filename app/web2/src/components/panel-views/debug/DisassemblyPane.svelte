@@ -36,7 +36,7 @@
     const start = pc > 0 ? Math.max(0, (pc - BACK_BYTES) >>> 0) : undefined;
     const frame = await loadDebugFrame(start, ROWS);
     if (!frame) return;
-    pc = frame.regs.pc;
+    pc = frame.pc;
     debug.currentPc = pc;
     rows = frame.rows;
     // Wait for the DOM to reflect the new rows, then anchor PC at the

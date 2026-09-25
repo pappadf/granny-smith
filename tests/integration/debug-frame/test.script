@@ -1,0 +1,48 @@
+# debug.frame's contract, per CPU family: the architecture tag, a register
+# file whose pc is the CPU's, a window whose first row is the PC, and, with
+# before=N, a window re-synchronised so its row N is exactly the PC (68K
+# instructions are 2-20 bytes, so decoding from an arbitrary earlier address
+# can step over the PC).
+
+def check_frame(arch) {
+    scheduler.run 3000000
+    let f = debug.frame(count=4)
+    assert $f.arch == $arch "frame arch"
+    assert $f.pc == machine.cpu.pc "frame pc is the CPU's"
+    assert $f.regs.pc == machine.cpu.pc "regs.pc is the CPU's"
+    assert len($f.rows) == 4 "row count"
+    assert $f.rows[0].addr == machine.cpu.pc "first row is the PC"
+    let g = debug.frame(count=8, before=3)
+    assert $g.rows[3].addr == machine.cpu.pc "before=3 puts the PC on row 3"
+    assert machine.cpu.instr_count > 0 "instr_count on every architecture"
+}
+
+# 68000 (the startup machine from TEST_ROM).
+check_frame("m68k")
+assert debug.frame(count=1).regs.d0 == machine.cpu.d0 "68K register names"
+
+# Lisa: 68000 behind the segment MMU.
+machine.boot model="lisa" rom="../../data/roms/lisa2-revh-098917b2.rom"
+check_frame("m68k")
+
+# 68030 with PMMU and FPU.
+machine.boot model="se30" rom="../../data/roms/iix-iicx-se30-97221136.rom"
+check_frame("m68k")
+assert len(debug.frame(count=1).fpu.fp) == 8 "68882 register file"
+
+# 68040.
+machine.boot model="q700" rom="../../data/roms/q700-q900-420dbff3.rom"
+check_frame("m68k")
+
+# PowerPC 601: before, debug.frame returned "CPU not initialised" here.
+machine.boot model="pm7100" rom="../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
+check_frame("ppc")
+assert debug.frame(count=1).regs.r1 == machine.cpu.r1 "PPC register names"
+assert len(debug.frame(count=1).fpu.fpr) == 32 "PPC FPU register file"
+
+# PowerPC 604.
+machine.boot model="pm8500" rom="../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom"
+check_frame("ppc")
+
+echo "debug-frame-ok"
+quit

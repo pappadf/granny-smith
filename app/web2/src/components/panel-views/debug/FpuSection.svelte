@@ -12,6 +12,8 @@
   // frame to carry an `fpu` block. The register data still comes from the
   // frame's optional `fpu` block once the machine is paused.
   let fpu = $state<FpuFrame | null>(null);
+  // The frame came back with no 68K FPU block on an FPU machine (PowerPC).
+  let unsupported = $state(false);
   // Per-register diff masks vs the previous refresh. Persist until the
   // next refresh produces a new diff.
   let fpChanged = $state<boolean[]>([]);
@@ -24,6 +26,7 @@
   async function refresh() {
     const frame = await loadDebugFrame();
     if (!frame) return;
+    unsupported = frame.arch !== 'm68k';
     const next = frame.fpu ?? null;
     if (fpu && next) {
       // Compare hex strings — covers any change in the underlying
@@ -89,6 +92,8 @@
           </div>
         </div>
       </div>
+    {:else if unsupported}
+      <p class="fpu-hint">The FPU view does not support this CPU yet.</p>
     {/if}
   </CollapsibleSection>
 {/if}

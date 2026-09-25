@@ -9,6 +9,8 @@
   import { fmtHex32, fmtHex16, parseHex } from '@/lib/hex';
 
   let regs = $state<Registers | null>(null);
+  // The frame came back but has no 68K register view (a PowerPC machine).
+  let unsupported = $state(false);
   // Highlight set: register names that just changed.
   let changed = $state<Record<string, boolean>>({});
 
@@ -20,7 +22,8 @@
     // future polish; the duplicate response is small (~5 KB) and the
     // C-side cost is sub-millisecond.
     const frame = await loadDebugFrame();
-    if (!frame) {
+    unsupported = !!frame && !frame.regs;
+    if (!frame || !frame.regs) {
       regs = null;
       return;
     }
@@ -144,6 +147,8 @@
 >
   {#if machine.status === 'running'}
     <p class="reg-hint">Pause the machine to inspect register state.</p>
+  {:else if unsupported}
+    <p class="reg-hint">The register view does not support this CPU yet.</p>
   {:else if !regs}
     <p class="reg-hint">No machine running.</p>
   {:else}

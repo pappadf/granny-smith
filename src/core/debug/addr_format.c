@@ -5,6 +5,7 @@
 #include "addr_format.h"
 
 #include "cpu.h"
+#include "debug.h"
 #include "mmu.h"
 #include "system.h"
 
@@ -18,6 +19,11 @@
 
 // Default display mode: auto (collapsed unless MMU is active)
 addr_display_mode_t g_addr_display_mode = ADDR_DISPLAY_AUTO;
+
+bool debug_cpu_is_supervisor(void) {
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    return (dif && dif->is_supervisor) ? dif->is_supervisor(dif->ctx) : true;
+}
 
 // Try to resolve a name as a CPU register, returning its value.
 // Returns true if name matched a register, false otherwise.
@@ -168,8 +174,7 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
     // that under TC.SRE=1 (separate user/supervisor roots) addresses dumped
     // while user code is running resolve through CRP, not SRP.  Also affects
     // breakpoint physical-page matching via the debug_check_pc_break caller.
-    cpu_t *cpu = system_cpu();
-    bool supervisor = cpu ? cpu_is_supervisor(cpu) : true;
+    bool supervisor = debug_cpu_is_supervisor();
 
     // Check transparent translation first
     if (mmu_check_tt(g_mmu, logical_addr, false, supervisor)) {

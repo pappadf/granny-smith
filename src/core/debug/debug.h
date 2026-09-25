@@ -18,6 +18,7 @@
 // === Forward Declarations ===
 struct cpu;
 struct object;
+struct value_map_builder;
 
 // === Main-CPU debug interface (PPC proposal §3.9b) ===
 // The handful of debugger paths that reach into the main CPU (PC reads for
@@ -51,6 +52,19 @@ typedef struct cpu_debug_if {
     // because on PDM the nanokernel relocates logical page 0 away from
     // physical 0 once the framebuffer claims it (§3.9e).
     uint32_t (*translate_mac)(void *ctx, uint32_t logical, bool *ok);
+    // --- for debug.frame, so it needs no architecture-specific code ---
+    // Short architecture tag: "m68k" or "ppc".
+    const char *arch;
+    // Put the core's register file into `regs` (name -> integer).
+    void (*regs)(void *ctx, struct value_map_builder *regs);
+    // Put the FPU register file into `fpu` and return true; return false,
+    // writing nothing, when the core has no FPU.
+    bool (*fpu)(void *ctx, struct value_map_builder *fpu);
+    // Instruction-side logical→physical, for disassembly rows.  NULL means
+    // the same as `translate` (68K); PPC's instruction and data BATs differ.
+    uint32_t (*translate_code)(void *ctx, uint32_t logical, bool *ok);
+    // True in supervisor state: which MMU context a debugger read uses.
+    bool (*is_supervisor)(void *ctx);
 } cpu_debug_if_t;
 
 // Resolve a 68k low-memory address through the mac-world translation

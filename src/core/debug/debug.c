@@ -354,8 +354,7 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
         // so that under TC.SRE=1 (separate user/supervisor roots) a logpoint
         // installed while user code is running watches the user mapping.
         if (g_mmu && g_mmu->enabled) {
-            cpu_t *cpu = system_cpu();
-            bool supervisor = cpu ? (cpu->supervisor != 0) : true;
+            bool supervisor = debug_cpu_is_supervisor();
             uint32_t phys_start = mmu_translate_debug(g_mmu, addr, supervisor) >> PAGE_SHIFT;
             uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, supervisor) >> PAGE_SHIFT;
             if (phys_end < phys_start) {
@@ -3206,192 +3205,120 @@ static const arg_decl_t debug_disasm_args[] = {
      .doc = "Number of instructions when addr is given as the first argument."},
 };
 
-// Side-effect-free conversion of an 80-bit extended-precision register
-// to a host double for display. The FPU's own fpu_to_double helper sets
-// inexact / SNaN bits in fpsr — we don't want that for an observer that
-// just reads register state. Precision loss in normal range is fine for
-// human-readable display; tests/tools that need bit-exact bytes can
-// consume the hex form instead.
-static double fp80_to_display_double(float80_reg_t f) {
-    int sign = FP80_SIGN(f);
-    uint16_t exp = FP80_EXP(f);
-    if (exp == 0 && f.mantissa == 0)
-        return sign ? -0.0 : 0.0;
-    if (exp == 0x7FFF) {
-        if (f.mantissa == 0 || (f.mantissa & ~(1ULL << 63)) == 0)
-            return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
-        return (double)0.0 / 0.0;
+// Choose where a disassembly window starts so that `before` rows precede
+// the PC and one row lands exactly on it.  68K instructions are 2-20 bytes,
+// so decoding forward from an arbitrary earlier address can step over the
+// PC; this tries even start offsets behind the PC and keeps the first that
+// re-synchronises on it after exactly `before` instructions (else the one
+// with the most rows that still lands on it, else the PC itself).  On PPC
+// every instruction is 4 bytes and the first aligned candidate wins.
+static uint32_t frame_anchor(const cpu_debug_if_t *dif, uint32_t pc, int before) {
+    char buf[128];
+    uint32_t best = pc;
+    int best_rows = 0;
+    for (uint32_t back = 2; back <= (uint32_t)before * 20; back += 2) {
+        uint32_t pos = pc - back;
+        int rows = 0;
+        while (pos < pc && rows <= before) {
+            int n = dif->disasm(dif->ctx, pos, buf, sizeof(buf));
+            pos += (uint32_t)(n > 0 ? n : 2);
+            rows++;
+        }
+        if (pos != pc || rows > before)
+            continue; // stepped over the PC, or too far back
+        if (rows == before)
+            return pc - back; // exactly `before` rows of context
+        if (rows > best_rows) {
+            best_rows = rows;
+            best = pc - back;
+        }
     }
-    int32_t true_exp = (int32_t)exp - 16383;
-    if (true_exp > 1023)
-        return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
-    if (true_exp < -1074)
-        return sign ? -0.0 : 0.0;
-    uint64_t mant52;
-    int double_exp;
-    if (true_exp >= -1022) {
-        mant52 = (f.mantissa >> 11) & 0x000FFFFFFFFFFFFFULL;
-        double_exp = true_exp + 1023;
-    } else {
-        // Subnormal in double precision.
-        int shift = -1022 - true_exp;
-        if (shift >= 53)
-            return sign ? -0.0 : 0.0;
-        mant52 = (f.mantissa >> (11 + shift)) & 0x000FFFFFFFFFFFFFULL;
-        double_exp = 0;
-    }
-    uint64_t bits = ((uint64_t)sign << 63) | ((uint64_t)double_exp << 52) | mant52;
-    double result;
-    memcpy(&result, &bits, sizeof(result));
-    return result;
+    return best;
 }
 
-// `debug.frame([addr], [count])` — one-shot bundled snapshot for the
-// debug UI. Bundles registers + a disassembly window + per-row MMU
-// translations into a single JSON payload so the JS-side panel can
-// render in one bridge round-trip instead of ~20 separate gsEval
-// calls (one per register + one per disasm + one per row translation).
-// Default: 32 rows starting at PC.
+// `debug.frame([addr], [count], [before])` — one-shot bundled snapshot for
+// the debug UI, on every CPU architecture.  Bundles the register file, a
+// disassembly window and per-row MMU translation into one map, so the panel
+// renders from one bridge round-trip.  Everything architecture-specific
+// comes from the core's cpu_debug_if_t (its register names, its FPU, its
+// instruction-side translation), so this works unchanged on a 68000, a
+// 68030/040 and a PowerPC 601/604; before, it read the 68K cpu_t and failed
+// on every PowerPC machine.
 //
-// Output shape (V_STRING containing JSON):
+// Output (a V_MAP):
 //   {
-//     "regs": {
-//       "d0": 0, "d1": 0, ..., "a7": 0,
-//       "pc": <int>, "sr": <int>, "usp": <int>, "ssp": <int>
-//     },
-//     "rows": [
-//       { "addr": <int>, "phys": <int>|null, "valid": true|false,
-//         "mnem": "RTS", "ops": "" },
-//       ...
-//     ],
-//     "fpu": {                              // present only when cpu->fpu != NULL
-//       "fp": [
-//         { "hex": "0000_0000000000000000", "val": "0" },
-//         ...                                // 8 entries
-//       ],
-//       "fpcr": <int>, "fpsr": <int>, "fpiar": <int>
-//     }
+//     "arch": "m68k" | "ppc",
+//     "pc":   <int>,
+//     "regs": { name: <int>, ... },     // the core's own names: d0..a7/pc/sr/usp/ssp,
+//                                       // or r0..r31/pc/lr/ctr/cr/xer/msr/srr0/srr1[/mq]
+//     "rows": [ { "addr", "phys" (int|null), "valid", "mnem", "ops" }, ... ],
+//     "fpu":  { ... }                   // only when the core has one:
+//                                       // 68K {fp:[{hex,val}]x8, fpcr, fpsr, fpiar}
+//                                       // PPC {fpr:[{hex,val}]x32, fpscr}
 //   }
 //
-// Address values are emitted as plain integers (not hex strings) so the
-// JS side does direct property access — no string→number conversion per
-// field. The gsEval bridge serializes this map to JSON exactly once.
+// With no `addr`, the window starts at the PC, or `before` instructions
+// ahead of it (re-synchronised so a row always lands on the PC).  Use named
+// arguments from JS: a single positional argument is `addr`, not `count`.
+// Address values are plain integers so the JS side needs no conversion.
 static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    cpu_t *cpu = system_cpu();
-    if (!cpu)
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!dif || !dif->get_pc || !dif->regs)
         return val_err("debug.frame: CPU not initialised");
 
-    // Same shape as debug.disasm: read by kind, so `frame(count=8)` works
-    // instead of failing with "missing argument 'addr'".
-    uint32_t addr = cpu_get_pc(cpu);
-    int64_t count = 32;
+    uint32_t pc = dif->get_pc(dif->ctx);
     bool have_addr = argc >= 1 && argv[0].kind == V_INT;
-    bool have_count = argc >= 2 && argv[1].kind == V_INT;
-    if (have_addr && have_count) {
-        addr = (uint32_t)argv[0].i;
-        count = argv[1].i;
-    } else if (have_addr) {
-        count = argv[0].i;
-    } else if (have_count) {
-        count = argv[1].i;
-    }
+    int64_t count = (argc >= 2 && argv[1].kind == V_INT) ? argv[1].i : 32;
+    int64_t before = (argc >= 3 && argv[2].kind == V_INT) ? argv[2].i : 0;
     if (count <= 0)
         count = 32;
     if (count > 256)
         count = 256;
+    if (before < 0)
+        before = 0;
+    if (before >= count)
+        before = count - 1;
+    uint32_t addr = have_addr ? (uint32_t)argv[0].i : (before ? frame_anchor(dif, pc, (int)before) : pc);
 
     value_map_builder_t *b = val_map_new();
+    val_map_put(b, "arch", val_str(dif->arch ? dif->arch : "unknown"));
+    val_map_put(b, "pc", val_int((int64_t)pc));
 
-    // Registers — all 16 GPRs + control regs in one shot.
     value_map_builder_t *regs = val_map_new();
-    char rname[4];
-    for (int i = 0; i < 8; i++) {
-        snprintf(rname, sizeof(rname), "d%d", i);
-        val_map_put(regs, rname, val_int((int64_t)cpu_get_dn(cpu, i)));
-    }
-    for (int i = 0; i < 8; i++) {
-        snprintf(rname, sizeof(rname), "a%d", i);
-        val_map_put(regs, rname, val_int((int64_t)cpu_get_an(cpu, i)));
-    }
-    val_map_put(regs, "pc", val_int((int64_t)cpu_get_pc(cpu)));
-    val_map_put(regs, "sr", val_int((int64_t)cpu_get_sr(cpu)));
-    val_map_put(regs, "usp", val_int((int64_t)cpu_get_usp(cpu)));
-    val_map_put(regs, "ssp", val_int((int64_t)cpu_get_ssp(cpu)));
+    dif->regs(dif->ctx, regs);
     val_map_put(b, "regs", val_map_finish(regs));
 
-    // Disasm rows + per-row MMU translation. Each row carries logical
-    // addr, physical addr (or null when invalid), validity flag,
-    // mnemonic, and operands — everything the pane needs to render
-    // without further bridge round-trips.
+    // Disasm rows + per-row translation, instruction side (the IBATs on PPC).
+    uint32_t (*xlate)(void *, uint32_t, bool *) = dif->translate_code ? dif->translate_code : dif->translate;
     value_t *rows = NULL;
     size_t n_rows = 0, cap_rows = 0;
     char mnem[32], ops[80];
     for (int i = 0; i < (int)count; i++) {
         value_map_builder_t *row = val_map_new();
         val_map_put(row, "addr", val_int((int64_t)addr));
-
         bool valid = true;
-        uint32_t phys = debug_translate_address(addr, NULL, NULL, &valid);
+        uint32_t phys = xlate ? xlate(dif->ctx, addr, &valid) : addr;
         val_map_put(row, "phys", valid ? val_int((int64_t)phys) : val_none());
         val_map_put(row, "valid", val_bool(valid));
-
         int n = disasm_at(addr, mnem, ops); // bytes consumed
-
         val_map_put(row, "mnem", val_str(mnem));
         val_map_put(row, "ops", val_str(ops));
         val_list_push(&rows, &n_rows, &cap_rows, val_map_finish(row));
-
         addr += (uint32_t)n;
     }
     val_map_put(b, "rows", val_list(rows, n_rows));
 
-    // FPU block — only emitted when the running CPU model has an FPU.
-    // Each fp[i] is the raw 80-bit register as a hex string plus a host
-    // double rendered as decimal, so the UI can show both side by side.
-    fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-    if (fpu) {
+    // FPU block — only when the core has one.
+    if (dif->fpu) {
         value_map_builder_t *fb = val_map_new();
-
-        value_t *fps = NULL;
-        size_t n_fps = 0, cap_fps = 0;
-        char hexbuf[24];
-        char valbuf[40];
-        for (int i = 0; i < 8; i++) {
-            value_map_builder_t *fpb = val_map_new();
-            // 4 hex digits of exponent (with sign bit) + underscore + 16
-            // hex digits of mantissa. Underscore makes scanning easier.
-            snprintf(hexbuf, sizeof(hexbuf), "%04X_%016llX", fpu->fp[i].exponent,
-                     (unsigned long long)fpu->fp[i].mantissa);
-            val_map_put(fpb, "hex", val_str(hexbuf));
-
-            // Decimal display — handle special values explicitly and keep
-            // the value a string (Inf/NaN aren't legal JSON numbers).
-            uint16_t e = FP80_EXP(fpu->fp[i]);
-            int sign = FP80_SIGN(fpu->fp[i]);
-            if (e == 0 && fpu->fp[i].mantissa == 0) {
-                snprintf(valbuf, sizeof(valbuf), sign ? "-0" : "0");
-            } else if (e == 0x7FFF) {
-                if (fpu->fp[i].mantissa == 0 || (fpu->fp[i].mantissa & ~(1ULL << 63)) == 0) {
-                    snprintf(valbuf, sizeof(valbuf), sign ? "-Inf" : "Inf");
-                } else {
-                    snprintf(valbuf, sizeof(valbuf), "NaN");
-                }
-            } else {
-                double d = fp80_to_display_double(fpu->fp[i]);
-                snprintf(valbuf, sizeof(valbuf), "%.17g", d);
-            }
-            val_map_put(fpb, "val", val_str(valbuf));
-            val_list_push(&fps, &n_fps, &cap_fps, val_map_finish(fpb));
+        if (dif->fpu(dif->ctx, fb))
+            val_map_put(b, "fpu", val_map_finish(fb));
+        else {
+            value_t unused = val_map_finish(fb);
+            value_free(&unused);
         }
-        val_map_put(fb, "fp", val_list(fps, n_fps));
-
-        val_map_put(fb, "fpcr", val_int((int64_t)fpu->fpcr));
-        val_map_put(fb, "fpsr", val_int((int64_t)fpu->fpsr));
-        val_map_put(fb, "fpiar", val_int((int64_t)fpu->fpiar));
-
-        val_map_put(b, "fpu", val_map_finish(fb));
     }
 
     return val_map_finish(b);
@@ -3404,6 +3331,10 @@ static const arg_decl_t debug_frame_args[] = {
      .default_value = &obj_arg_unset,
      .doc = "Start address (default PC)"},
     {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Number of rows (default 32)"},
+    {.name = "before",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Rows to show ahead of the PC when addr is omitted (default 0)"},
 };
 
 // `debug.step([n])` — single-step n instructions (default 1) and stop.
@@ -3450,7 +3381,7 @@ static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "frame",
      .doc = "Bundled snapshot for the debug UI: registers + disasm window + per-row MMU translation, "
-            "returned as a typed map. Default: 32 rows starting at PC.",                                           .method = {.args = debug_frame_args, .nargs = 2, .result = V_MAP, .fn = debug_method_frame}},
+            "returned as a typed map. Default: 32 rows starting at PC.",                                           .method = {.args = debug_frame_args, .nargs = 3, .result = V_MAP, .fn = debug_method_frame}},
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Run N instructions (default 1) and stop, through the frame loop exactly as scheduler.run N does "

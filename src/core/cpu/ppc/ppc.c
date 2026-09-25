@@ -907,9 +907,79 @@ static uint32_t ppc_dbgif_translate_mac(void *ctx, uint32_t logical, bool *ok) {
     return ppc_mmu_translate_mac((ppc_t *)ctx, logical, ok);
 }
 
+// The PPC register file for debug.frame: the GPRs, PC and the user and
+// supervisor control registers a debugger reads first.  The segment and BAT
+// registers stay on machine.cpu (the MMU view reads them there).
+static void ppc_dbgif_regs(void *ctx, struct value_map_builder *regs) {
+    ppc_t *p = (ppc_t *)ctx;
+    char rname[4];
+    for (int i = 0; i < 32; i++) {
+        snprintf(rname, sizeof(rname), "r%d", i);
+        val_map_put(regs, rname, val_int((int64_t)p->gpr[i]));
+    }
+    val_map_put(regs, "pc", val_int((int64_t)p->pc));
+    val_map_put(regs, "lr", val_int((int64_t)p->lr));
+    val_map_put(regs, "ctr", val_int((int64_t)p->ctr));
+    val_map_put(regs, "cr", val_int((int64_t)p->cr));
+    val_map_put(regs, "xer", val_int((int64_t)p->xer));
+    val_map_put(regs, "msr", val_int((int64_t)p->msr));
+    val_map_put(regs, "srr0", val_int((int64_t)p->srr0));
+    val_map_put(regs, "srr1", val_int((int64_t)p->srr1));
+    if (p->cpu_model == CPU_MODEL_PPC601)
+        val_map_put(regs, "mq", val_int((int64_t)p->mq)); // POWER MQ: 601 only
+}
+
+// The FPU register file for debug.frame: fpr0-fpr31 (IEEE doubles) as raw
+// hex plus a decimal rendering, and FPSCR.  Every 601 and 604 has an FPU.
+static bool ppc_dbgif_fpu(void *ctx, struct value_map_builder *fb) {
+    ppc_t *p = (ppc_t *)ctx;
+    value_t *fps = NULL;
+    size_t n_fps = 0, cap_fps = 0;
+    char hexbuf[20];
+    char valbuf[40];
+    for (int i = 0; i < 32; i++) {
+        value_map_builder_t *fpb = val_map_new();
+        snprintf(hexbuf, sizeof(hexbuf), "%016llX", (unsigned long long)p->fpr[i]);
+        val_map_put(fpb, "hex", val_str(hexbuf));
+        double d;
+        memcpy(&d, &p->fpr[i], sizeof(d));
+        // Inf/NaN aren't legal JSON numbers: keep the value a string.
+        if (d != d)
+            snprintf(valbuf, sizeof(valbuf), "NaN");
+        else if (d > 1.7976931348623157e308 || d < -1.7976931348623157e308)
+            snprintf(valbuf, sizeof(valbuf), "%s", d < 0 ? "-Inf" : "Inf");
+        else
+            snprintf(valbuf, sizeof(valbuf), "%.17g", d);
+        val_map_put(fpb, "val", val_str(valbuf));
+        val_list_push(&fps, &n_fps, &cap_fps, val_map_finish(fpb));
+    }
+    val_map_put(fb, "fpr", val_list(fps, n_fps));
+    val_map_put(fb, "fpscr", val_int((int64_t)p->fpscr));
+    return true;
+}
+
+// Instruction-side translation for disassembly rows (the IBATs / fetch rules).
+static uint32_t ppc_dbgif_translate_code(void *ctx, uint32_t logical, bool *ok) {
+    return ppc_mmu_translate_debug((ppc_t *)ctx, logical, false, ok);
+}
+
+// Supervisor state: MSR[PR] clear.
+static bool ppc_dbgif_is_supervisor(void *ctx) {
+    return (((ppc_t *)ctx)->msr & PPC_MSR_PR) == 0;
+}
+
 cpu_debug_if_t ppc_debug_if(ppc_t *p) {
-    cpu_debug_if_t dif = {
-        p, ppc_dbgif_get_pc, ppc_dbgif_set_pc, ppc_dbgif_disasm, ppc_dbgif_translate, ppc_dbgif_translate_mac};
+    cpu_debug_if_t dif = {.ctx = p,
+                          .get_pc = ppc_dbgif_get_pc,
+                          .set_pc = ppc_dbgif_set_pc,
+                          .disasm = ppc_dbgif_disasm,
+                          .translate = ppc_dbgif_translate,
+                          .translate_mac = ppc_dbgif_translate_mac,
+                          .arch = "ppc",
+                          .regs = ppc_dbgif_regs,
+                          .fpu = ppc_dbgif_fpu,
+                          .translate_code = ppc_dbgif_translate_code,
+                          .is_supervisor = ppc_dbgif_is_supervisor};
     return dif;
 }
 
@@ -1069,6 +1139,14 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
         PPC_ATTR("dbat" #N "l", PA_DBAT0U + 2 * (N) + 1,                                                               \
                  "DBAT " #N " lower — block physical address and protection bits")
 
+// Read `instr_count`: the scheduler's retired-instruction count, which is
+// architecture-neutral (68K exposes the same attribute).
+static value_t ppc_attr_instr_count(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, cpu_instr_count());
+}
+
 // clang-format off
 static const member_t ppc_members[] = {
     PPC_ATTR("pc",    PA_PC,    "Program counter — address of the next instruction to execute"),
@@ -1100,6 +1178,9 @@ static const member_t ppc_members[] = {
     PPC_DBAT(0), PPC_DBAT(1), PPC_DBAT(2), PPC_DBAT(3),
     PPC_ATTR("tbu", PA_RTCU, "Timebase upper half (604); the same storage as rtcu"),
     PPC_ATTR("tbl", PA_RTCL, "Timebase lower half (604); the same storage as rtcl"),
+    {.kind = M_ATTR, .name = "instr_count", .flags = VAL_RO,
+     .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
+     .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
 };
 // clang-format on
 

@@ -59,11 +59,16 @@ export interface FpuFrame {
 // + per-row gsEval fan-out the Debug view used to do (~21 round-trips)
 // with a single bridge call.
 export interface DebugFrame {
-  regs: Registers;
+  // The core's architecture tag: 'm68k' or 'ppc'.
+  arch: string;
+  pc: number;
+  // Every register the core reported, by its own names.
+  rawRegs: Record<string, number>;
+  // The 68K register view — null on any other architecture, never a 68K
+  // shape filled with zeros for registers the core does not have.
+  regs: Registers | null;
   rows: DebugFrameRow[];
-  // Present only when the running CPU model has an FPU (68030 with
-  // built-in 68882 — SE/30, IIcx, IIfx). 68000 machines (Plus, SE)
-  // never see this field.
+  // The 68K FPU block, when the CPU has one (68030 with 68882, 68040).
   fpu?: FpuFrame;
 }
 
@@ -117,22 +122,35 @@ export async function disasmAt(addr: number, count: number): Promise<DisasmRow[]
 // Returns null on parse failure or when the module isn't ready.
 export async function loadDebugFrame(addr?: number, count = 32): Promise<DebugFrame | null> {
   if (!isModuleReady()) return null;
-  const args: number[] = addr === undefined ? [] : [addr >>> 0, count];
-  if (addr === undefined && count !== 32) args.push(0, count);
+  // Named arguments: a lone positional argument is `addr` to the core, so
+  // `[0, n]` used to disassemble from address 0 (N-32).
+  const args: Record<string, number> = { count };
+  if (addr !== undefined) args.addr = addr >>> 0;
   // debug.frame returns a native nested object (V_MAP through the gsEval
   // bridge) — no inner JSON.parse.
-  const parsed = await gsEval('debug.frame', args.length ? args : undefined);
-  if (!parsed || typeof parsed !== 'object') return null;
-  const obj = parsed as { regs?: Record<string, number>; rows?: unknown[] };
-  if (!obj.regs || !Array.isArray(obj.rows)) return null;
-  const regs: Registers = {
-    d: Array.from({ length: 8 }, (_, i) => coerceNum(obj.regs![`d${i}`])),
-    a: Array.from({ length: 8 }, (_, i) => coerceNum(obj.regs![`a${i}`])),
-    pc: coerceNum(obj.regs.pc),
-    sr: coerceNum(obj.regs.sr),
-    usp: coerceNum(obj.regs.usp),
-    ssp: coerceNum(obj.regs.ssp),
+  const parsed = await gsEval('debug.frame', args);
+  if (!parsed || typeof parsed !== 'object' || isGsError(parsed)) return null;
+  const obj = parsed as {
+    arch?: unknown;
+    pc?: unknown;
+    regs?: Record<string, unknown>;
+    rows?: unknown[];
   };
+  if (!obj.regs || !Array.isArray(obj.rows)) return null;
+  const arch = typeof obj.arch === 'string' ? obj.arch : 'm68k';
+  const rawRegs: Record<string, number> = {};
+  for (const [k, v] of Object.entries(obj.regs)) rawRegs[k] = coerceNum(v);
+  const regs: Registers | null =
+    arch === 'm68k'
+      ? {
+          d: Array.from({ length: 8 }, (_, i) => rawRegs[`d${i}`] ?? 0),
+          a: Array.from({ length: 8 }, (_, i) => rawRegs[`a${i}`] ?? 0),
+          pc: rawRegs.pc ?? 0,
+          sr: rawRegs.sr ?? 0,
+          usp: rawRegs.usp ?? 0,
+          ssp: rawRegs.ssp ?? 0,
+        }
+      : null;
   const rows: DebugFrameRow[] = obj.rows
     .map((row) => {
       if (!row || typeof row !== 'object') return null;
@@ -157,7 +175,7 @@ export async function loadDebugFrame(addr?: number, count = 32): Promise<DebugFr
   // running CPU model has an FPU; on Plus / SE the field is missing.
   let fpu: FpuFrame | undefined;
   const fpuObj = (parsed as { fpu?: unknown }).fpu;
-  if (fpuObj && typeof fpuObj === 'object') {
+  if (arch === 'm68k' && fpuObj && typeof fpuObj === 'object') {
     const fpuRaw = fpuObj as { fp?: unknown; fpcr?: unknown; fpsr?: unknown; fpiar?: unknown };
     const fpList = Array.isArray(fpuRaw.fp) ? fpuRaw.fp : [];
     const fp: FpuRegister[] = fpList.map((entry) => {
@@ -173,7 +191,7 @@ export async function loadDebugFrame(addr?: number, count = 32): Promise<DebugFr
     };
   }
 
-  return { regs, rows, fpu };
+  return { arch, pc: coerceNum(obj.pc ?? rawRegs.pc), rawRegs, regs, rows, fpu };
 }
 
 export async function readRegisters(): Promise<Registers | null> {

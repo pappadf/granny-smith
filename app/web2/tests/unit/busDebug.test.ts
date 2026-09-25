@@ -10,6 +10,7 @@ const {
   removeBreakpointAt,
   writeRegister,
   stepInto,
+  loadDebugFrame,
 } = await import('@/bus/debug');
 const { debug } = await import('@/state/debug.svelte');
 
@@ -101,5 +102,28 @@ describe('bus/debug against the real object-model paths', () => {
     await stepInto(1);
     expect(bridge.calls).toEqual([{ path: 'debug.step', args: [1] }]);
     expect(debug.refreshGen).toBe(gen + 1);
+  });
+
+  it('asks for the frame by named arguments', async () => {
+    bridge.reply('debug.frame', { arch: 'm68k', pc: 0x400, regs: { pc: 0x400 }, rows: [] });
+    await loadDebugFrame();
+    await loadDebugFrame(0x1000, 8);
+    expect(bridge.calls.map((c) => c.args)).toEqual([{ count: 32 }, { count: 8, addr: 0x1000 }]);
+  });
+
+  it('never fills a 68K register view on another architecture', async () => {
+    bridge.reply('debug.frame', {
+      arch: 'ppc',
+      pc: 0xfff0345c,
+      regs: { r1: 0x1234, pc: 0xfff0345c, lr: 0 },
+      rows: [{ addr: 0xfff0345c, phys: 0xfff0345c, valid: true, mnem: 'b', ops: '' }],
+      fpu: { fpr: [], fpscr: 0 },
+    });
+    const f = await loadDebugFrame();
+    expect(f?.arch).toBe('ppc');
+    expect(f?.regs).toBeNull(); // not d0..a7 of zeros
+    expect(f?.rawRegs.r1).toBe(0x1234);
+    expect(f?.pc).toBe(0xfff0345c);
+    expect(f?.fpu).toBeUndefined(); // the 68K FPU shape is not forced onto the PPC block
   });
 });
