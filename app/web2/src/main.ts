@@ -9,6 +9,7 @@ import { setOpfsBackend, BrowserOpfs } from '@/bus/opfs';
 import { maybeOfferBackgroundCheckpoint } from '@/bus/checkpoint';
 import { processUrlMedia, parseUrlMediaParams } from '@/bus/urlMedia';
 import { whenModuleReady } from '@/bus/emulator';
+import { installEvalHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage } from '@/lib/webglErrorPage';
 
@@ -60,6 +61,10 @@ function bootApp(target: HTMLElement): unknown {
     // (scripts/ui2-diag.mjs) and other automation to wait on. Cheaper /
     // more explicit than scraping the terminal for the prompt.
     (window as unknown as { __gsReady?: boolean }).__gsReady = true;
+
+    // Under automation only, let specs read core state without typing into
+    // the terminal (bus/testHook.ts).
+    installEvalHookForAutomation();
 
     const resumed = await maybeOfferBackgroundCheckpoint();
     if (resumed) return;
