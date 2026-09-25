@@ -200,12 +200,16 @@ export async function readRegisters(): Promise<Registers | null> {
   };
 }
 
+// A register name is one identifier: it becomes a path segment, so anything
+// else (a space, '=', '.') would address something other than a register.
+const REGISTER_NAME = /^[a-z][a-z0-9_]*$/;
+
 export async function writeRegister(name: string, value: number): Promise<boolean> {
-  if (!isModuleReady()) return false;
-  const hex = `0x${(value >>> 0).toString(16)}`;
-  // Use the typed setter form via gsEval — the bridge dispatcher parses
-  // `path = value` per docs/shell.md.
-  const r = await gsEval(`machine.cpu.${name} = ${hex}`);
+  if (!isModuleReady() || !REGISTER_NAME.test(name)) return false;
+  // The typed setter: an attribute path plus exactly one argument.  A
+  // "path = value" string is shell syntax, not a gsEval path — the core
+  // rejects it, which is how every register edit used to fail silently.
+  const r = await gsEval(`machine.cpu.${name}`, [value >>> 0]);
   return gsOk(r);
 }
 
@@ -245,31 +249,34 @@ export async function peekPhysBytes(addr: number, count: number): Promise<Uint8A
 
 export async function listBreakpoints(): Promise<Breakpoint[]> {
   if (!isModuleReady()) return [];
-  // Try the typed `count` + per-entry walk first. Fall back to the
-  // shell `list` method if the indexed children walk doesn't return a
-  // recognizable shape.
-  const countV = await gsEval('debug.breakpoints.entries.count');
-  if (typeof countV === 'number' && countV >= 0) {
-    const out: Breakpoint[] = [];
-    for (let i = 0; i < countV; i++) {
-      const id = await gsEval(`debug.breakpoints.entries[${i}].id`);
-      const addr = await gsEval(`debug.breakpoints.entries[${i}].addr`);
-      const enabled = await gsEval(`debug.breakpoints.entries[${i}].enabled`);
-      const cond = await gsEval(`debug.breakpoints.entries[${i}].condition`);
-      const hits = await gsEval(`debug.breakpoints.entries[${i}].hit_count`);
-      out.push({
-        id: coerceNum(id),
-        addr: coerceNum(addr),
-        enabled: enabled === true || enabled === 1 || enabled === '1',
-        condition: typeof cond === 'string' && cond.length ? cond : undefined,
-        hits: coerceNum(hits),
-      });
-    }
-    return out;
+  // Enumerate by id, not by count: ids are stable and never reused, so after
+  // one removal `count` no longer indexes the live entries.  meta.indices
+  // returns exactly the live ids.  (`debug.breakpoints.entries.count` never
+  // resolved at all: the synthetic count hangs off the collection's owner.)
+  const ids = await gsEval('debug.breakpoints.meta.indices', ['entries']);
+  if (!Array.isArray(ids)) return [];
+  const out: Breakpoint[] = [];
+  for (const raw of ids) {
+    const id = coerceNum(raw);
+    const base = `debug.breakpoints.entries[${id}]`;
+    const addr = await gsEval(`${base}.addr`);
+    if (isGsError(addr)) continue; // removed between the listing and this read
+    const enabled = await gsEval(`${base}.enabled`);
+    const cond = await gsEval(`${base}.condition`);
+    const hits = await gsEval(`${base}.hit_count`);
+    out.push({
+      id,
+      addr: coerceNum(addr),
+      enabled: enabled === true,
+      condition: typeof cond === 'string' && cond.length ? cond : undefined,
+      hits: coerceNum(hits),
+    });
   }
-  return [];
+  return out;
 }
 
+// Add a breakpoint.  The core returns the existing entry for an address that
+// already has one, so a repeated add never stacks a duplicate.
 export async function addBreakpoint(addr: number, condition?: string): Promise<boolean> {
   if (!isModuleReady()) return false;
   const args: unknown[] = [addr >>> 0];
@@ -278,14 +285,18 @@ export async function addBreakpoint(addr: number, condition?: string): Promise<b
   return gsOk(r);
 }
 
-export async function removeBreakpoint(addr: number): Promise<boolean> {
+// Remove the breakpoint with stable id `id`.
+export async function removeBreakpoint(id: number): Promise<boolean> {
   if (!isModuleReady()) return false;
-  // The shell form is `break --remove <addr>`; on the object surface
-  // we go through the collection's `clear` method until a typed
-  // `remove(id)` exists. For Phase 6 we accept that "Remove" maps
-  // onto the address-based deletion path.
-  const r = await gsEval('debug.breakpoints.add', [addr >>> 0, '--remove']);
+  const r = await gsEval(`debug.breakpoints.entries[${id}].remove`);
   return gsOk(r);
+}
+
+// Remove the breakpoint at `addr`, for callers that know an address but not
+// an id (the Disassembly pane's context menu).  False when there is none.
+export async function removeBreakpointAt(addr: number): Promise<boolean> {
+  const hit = (await listBreakpoints()).find((b) => b.addr === addr >>> 0);
+  return hit ? removeBreakpoint(hit.id) : false;
 }
 
 export async function continueExec(): Promise<void> {

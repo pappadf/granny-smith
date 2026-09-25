@@ -76,6 +76,10 @@ struct breakpoint {
     // Hit counter — exposed via debug.breakpoints[N].hit_count.
     uint32_t hit_count;
 
+    // A disabled breakpoint stays in the list but never stops (or counts).
+    // Stored inverted so calloc's zero is "enabled".
+    bool disabled;
+
     // Sparse stable id and the per-entry object_t that backs
     // `debug.breakpoints[id]`. The object is owned by this breakpoint;
     // freeing it fires invalidators on any held nodes.
@@ -737,6 +741,11 @@ int debug_break_and_trace(void) {
         // Check for breakpoints at current PC
         breakpoint_t *bp = debug->breakpoints;
         while (bp != NULL) {
+            // A disabled breakpoint is kept but ignored.
+            if (bp->disabled) {
+                bp = bp->next;
+                continue;
+            }
             bool hit = false;
             if (bp->space == ADDR_LOGICAL) {
                 // Logical breakpoint: compare directly with PC
@@ -913,6 +922,8 @@ void list_breakpoints(debug_t *debug) {
             printf("  #%d: $%08X", count, (unsigned int)bp->addr);
         if (bp->condition)
             printf("  if %s", bp->condition);
+        if (bp->disabled)
+            printf("  (disabled)");
         printf("\n");
         bp = bp->next;
         count++;
@@ -2419,6 +2430,28 @@ static value_t bp_attr_condition_set(struct object *self, const member_t *m, val
     return val_none();
 }
 
+// Read `enabled`.
+static value_t bp_attr_enabled(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    return val_bool(!bp->disabled);
+}
+
+// Write `enabled`: false keeps the breakpoint but stops it firing.
+static value_t bp_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp) {
+        value_free(&in);
+        return val_err("breakpoint detached");
+    }
+    bp->disabled = !val_as_bool(&in);
+    value_free(&in);
+    return val_none();
+}
+
 static value_t bp_attr_hit_count(struct object *self, const member_t *m) {
     (void)m;
     breakpoint_t *bp = bp_from(self);
@@ -2467,6 +2500,11 @@ static const member_t bp_entry_members[] = {
      .flags = 0,
      .doc = "Expression that must evaluate true for the breakpoint to stop; empty = always stop",
      .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}       },
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = 0,
+     .doc = "False keeps the breakpoint listed but stops it firing",
+     .attr = {.type = V_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}             },
     {.kind = M_ATTR,
      .name = "hit_count",
      .flags = VAL_RO,
@@ -2697,7 +2735,14 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     // dereferenced an index as a pointer.  It never fired only because the
     // slot had no default and so was unreachable by name at all.
     addr_space_t space = (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
-    breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, space);
+    // One breakpoint per (address, space): a second add returns the existing
+    // entry (a new condition, if given, replaces its old one) instead of
+    // stacking a duplicate that would fire twice and need removing twice.
+    breakpoint_t *bp = debug->breakpoints;
+    while (bp && !(bp->addr == (uint32_t)addr && bp->space == space))
+        bp = bp->next;
+    if (!bp)
+        bp = set_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
     if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
@@ -2908,8 +2953,8 @@ static const arg_decl_t lp_add_args[] = {
 static const member_t bp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .doc = "Add a breakpoint (logical-space by default; pass space=\"physical\" for the 68030 PMMU path)",
-     .method = {.args = bp_add_args, .nargs = 3, .result = V_OBJECT, .fn = bp_method_add}},
+     .doc = "Add a breakpoint (logical-space by default; pass space=\"physical\" for the 68030 PMMU path); "
+            "adding an address that already has one returns that entry", .method = {.args = bp_add_args, .nargs = 3, .result = V_OBJECT, .fn = bp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
      .doc = "Remove every breakpoint",

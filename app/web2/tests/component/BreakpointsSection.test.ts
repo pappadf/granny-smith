@@ -15,9 +15,9 @@ vi.mock('@/bus/debug', () => ({
     bpList.push({ id: bpList.length + 1, addr, enabled: true, condition: cond, hits: 0 });
     return true;
   }),
-  removeBreakpoint: vi.fn(async (addr: number) => {
-    removes.push(addr);
-    bpList = bpList.filter((b) => b.addr !== addr);
+  removeBreakpoint: vi.fn(async (id: number) => {
+    removes.push(id);
+    bpList = bpList.filter((b) => b.id !== id);
     return true;
   }),
 }));

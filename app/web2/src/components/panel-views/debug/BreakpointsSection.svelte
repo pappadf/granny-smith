@@ -73,7 +73,7 @@
   }
 
   async function doRemove(row: Breakpoint) {
-    const ok = await removeBreakpoint(row.addr);
+    const ok = await removeBreakpoint(row.id);
     if (!ok) {
       showNotification('Failed to remove breakpoint', 'error');
       return;

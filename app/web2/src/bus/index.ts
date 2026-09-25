@@ -39,6 +39,7 @@ export {
   listBreakpoints,
   addBreakpoint,
   removeBreakpoint,
+  removeBreakpointAt,
   continueExec,
   pauseExec,
   stepInto,

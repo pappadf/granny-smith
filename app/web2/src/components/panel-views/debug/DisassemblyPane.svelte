@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { loadDebugFrame, addBreakpoint, removeBreakpoint, type DebugFrameRow } from '@/bus/debug';
+  import {
+    loadDebugFrame,
+    addBreakpoint,
+    removeBreakpointAt,
+    type DebugFrameRow,
+  } from '@/bus/debug';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { machine } from '@/state/machine.svelte';
@@ -102,7 +107,7 @@
       {
         label: `Remove breakpoint at $${fmtHex32(row.addr)}`,
         action: async () => {
-          const ok = await removeBreakpoint(row.addr);
+          const ok = await removeBreakpointAt(row.addr);
           if (!ok) showNotification('Failed to remove breakpoint', 'error');
         },
       },

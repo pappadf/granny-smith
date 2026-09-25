@@ -373,8 +373,12 @@ full surface.
 - **`debug.disasm([addr], [count])`** — pretty-prints to stdout,
   returns `V_BOOL` (truthy for shell `assert ${…}` use). The web2
   Disasm pane uses `debug.frame` instead.
-- **`debug.breakpoints.add(addr [, condition])`** /
-  **`debug.breakpoints.add(addr, "--remove")`** — set / clear.
+- **`debug.breakpoints.add(addr [, condition])`** — set (a second add at
+  the same address returns the existing entry);
+  **`debug.breakpoints.meta.indices("entries")`** — the live ids (ids are
+  never reused, so never walk by `count`);
+  **`debug.breakpoints.entries[id].{addr,enabled,condition,hit_count}`** and
+  **`.remove()`** — read, toggle, and clear one entry.
 - **`memory.peek.{b,w,l}(addr)`** — single-byte / word / long read.
 - **`memory.peek.bytes(addr, count)`** — bulk read, `V_BYTES`, capped
   at 4 KB. The Memory pane uses this so a 128-byte refresh is one
