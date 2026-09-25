@@ -6,31 +6,29 @@
 // (Playwright/CDP cannot drive native HTML5 drag-and-drop) while letting the
 // component's real handlers, bus/fsOps, the worker and OPFS all run for real.
 
-import { type Page, type Locator } from "@playwright/test";
-import * as fs from "node:fs";
+import { type Page, type Locator } from '@playwright/test';
+import * as fs from 'node:fs';
 
 // Load the web2 app and wait for the WASM module / worker bridge to come up.
 // No ROM, no machine: the Filesystem tab, object-model shell and OPFS are all
 // live at module-ready, independent of any emulated machine.
 export async function gotoWeb2(page: Page): Promise<void> {
-  await page.goto("/index.html");
+  await page.goto('/index.html');
   // A boot that cannot start sets __gsBootError: fail with its reason at
   // once rather than time out without one.
   await page.waitForFunction(
     () => {
       const w = window as { __gsReady?: boolean; __gsBootError?: string };
-      return w.__gsReady === true || typeof w.__gsBootError === "string";
+      return w.__gsReady === true || typeof w.__gsBootError === 'string';
     },
     undefined,
     { timeout: 60_000 },
   );
-  const bootError = await page.evaluate(
-    () => (window as { __gsBootError?: string }).__gsBootError,
-  );
+  const bootError = await page.evaluate(() => (window as { __gsBootError?: string }).__gsBootError);
   if (bootError) throw new Error(`emulator did not start: ${bootError}`);
   // First visit shows a non-dismissible "preview build" modal whose backdrop
   // intercepts clicks. Dismiss it via its Continue button before doing anything.
-  const cont = page.getByRole("button", { name: "Continue" });
+  const cont = page.getByRole('button', { name: 'Continue' });
   if (await cont.isVisible().catch(() => false)) await cont.click();
 }
 
@@ -38,26 +36,18 @@ export async function gotoWeb2(page: Page): Promise<void> {
 // input). This is exactly what the shipped upload path does — writeToOPFS()
 // writes through the page's navigator.storage — so the worker's vfs.list
 // reads it back fine. No machine / boot involved.
-export async function stageOpfsFile(
-  page: Page,
-  opfsPath: string,
-  hostFile: string,
-): Promise<void> {
-  const data = fs.readFileSync(hostFile).toString("base64");
+export async function stageOpfsFile(page: Page, opfsPath: string, hostFile: string): Promise<void> {
+  const data = fs.readFileSync(hostFile).toString('base64');
   await page.evaluate(
     async ({ path, data }: { path: string; data: string }) => {
       const bin = atob(data);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       // /opfs is the navigator.storage root in the app; strip it and walk.
-      const rel = path
-        .replace(/^\/opfs\/?/, "")
-        .split("/")
-        .filter(Boolean);
+      const rel = path.replace(/^\/opfs\/?/, '').split('/').filter(Boolean);
       const fileName = rel.pop() as string;
       let dir = await navigator.storage.getDirectory();
-      for (const part of rel)
-        dir = await dir.getDirectoryHandle(part, { create: true });
+      for (const part of rel) dir = await dir.getDirectoryHandle(part, { create: true });
       const fh = await dir.getFileHandle(fileName, { create: true });
       const w = await fh.createWritable();
       await w.write(bytes);
@@ -79,17 +69,13 @@ export async function stageOpfsFileStreaming(
 ): Promise<void> {
   const CHUNK = 8 * 1024 * 1024;
   const size = fs.statSync(hostFile).size;
-  const fd = fs.openSync(hostFile, "r");
+  const fd = fs.openSync(hostFile, 'r');
   try {
     await page.evaluate(async (path: string) => {
-      const rel = path
-        .replace(/^\/opfs\/?/, "")
-        .split("/")
-        .filter(Boolean);
+      const rel = path.replace(/^\/opfs\/?/, '').split('/').filter(Boolean);
       const fileName = rel.pop() as string;
       let dir = await navigator.storage.getDirectory();
-      for (const part of rel)
-        dir = await dir.getDirectoryHandle(part, { create: true });
+      for (const part of rel) dir = await dir.getDirectoryHandle(part, { create: true });
       const fh = await dir.getFileHandle(fileName, { create: true });
       const w = await fh.createWritable();
       (window as unknown as { __stageWritable?: unknown }).__stageWritable = w;
@@ -97,13 +83,10 @@ export async function stageOpfsFileStreaming(
     const buf = Buffer.alloc(CHUNK);
     for (let off = 0; off < size; off += CHUNK) {
       const n = fs.readSync(fd, buf, 0, Math.min(CHUNK, size - off), off);
-      const b64 = buf.subarray(0, n).toString("base64");
+      const b64 = buf.subarray(0, n).toString('base64');
       await page.evaluate(async (data: string) => {
-        const w = (
-          window as unknown as {
-            __stageWritable: { write(c: Uint8Array): Promise<void> };
-          }
-        ).__stageWritable;
+        const w = (window as unknown as { __stageWritable: { write(c: Uint8Array): Promise<void> } })
+          .__stageWritable;
         const bin = atob(data);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -124,21 +107,13 @@ export async function stageOpfsFileStreaming(
 
 // Stage inline bytes as an OPFS file (for plain-file tests that need no real
 // host fixture). Same navigator.storage write the upload path uses.
-export async function stageOpfsText(
-  page: Page,
-  opfsPath: string,
-  text: string,
-): Promise<void> {
+export async function stageOpfsText(page: Page, opfsPath: string, text: string): Promise<void> {
   await page.evaluate(
     async ({ path, text }: { path: string; text: string }) => {
-      const rel = path
-        .replace(/^\/opfs\/?/, "")
-        .split("/")
-        .filter(Boolean);
+      const rel = path.replace(/^\/opfs\/?/, '').split('/').filter(Boolean);
       const fileName = rel.pop() as string;
       let dir = await navigator.storage.getDirectory();
-      for (const part of rel)
-        dir = await dir.getDirectoryHandle(part, { create: true });
+      for (const part of rel) dir = await dir.getDirectoryHandle(part, { create: true });
       const fh = await dir.getFileHandle(fileName, { create: true });
       const w = await fh.createWritable();
       await w.write(new TextEncoder().encode(text));
@@ -151,50 +126,40 @@ export async function stageOpfsText(
 // Create an empty OPFS directory (e.g. a move destination).
 export async function mkdirOpfs(page: Page, opfsPath: string): Promise<void> {
   await page.evaluate(async (path: string) => {
-    const rel = path
-      .replace(/^\/opfs\/?/, "")
-      .split("/")
-      .filter(Boolean);
+    const rel = path.replace(/^\/opfs\/?/, '').split('/').filter(Boolean);
     let dir = await navigator.storage.getDirectory();
-    for (const part of rel)
-      dir = await dir.getDirectoryHandle(part, { create: true });
+    for (const part of rel) dir = await dir.getDirectoryHandle(part, { create: true });
   }, opfsPath);
 }
 
 // Open the Filesystem panel tab and wait for the /opfs root row.
 export async function openFilesystemTab(page: Page): Promise<void> {
   await page.locator('button.ptab[data-tab="filesystem"]').click();
-  await row(page, "/opfs").first().waitFor({ state: "visible" });
+  await row(page, '/opfs').first().waitFor({ state: 'visible' });
 }
 
 // Anchor a label to a full, exact match so "Installer" can't also match
 // "Installer Script".
 function exact(text: string): RegExp {
-  return new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  return new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 }
 
 // A tree row located by its exact visible label.
 export function row(scope: Page | Locator, label: string): Locator {
-  return scope
-    .locator(".tree-row")
-    .filter({ has: scope.locator(".label", { hasText: exact(label) }) });
+  return scope.locator('.tree-row').filter({ has: scope.locator('.label', { hasText: exact(label) }) });
 }
 
 // Expand a branch row (folder / disk image) by clicking its twistie, then
 // wait for one of its children to render. Lazy children (image descent) are a
 // worker round-trip, so this awaits the child rather than the click alone.
-export async function expand(
-  page: Page,
-  label: string,
-  childLabel: string,
-): Promise<void> {
-  await row(page, label).first().locator(".twistie").click();
-  await row(page, childLabel).first().waitFor({ state: "visible" });
+export async function expand(page: Page, label: string, childLabel: string): Promise<void> {
+  await row(page, label).first().locator('.twistie').click();
+  await row(page, childLabel).first().waitFor({ state: 'visible' });
 }
 
 // Collapse a branch row.
 export async function collapse(page: Page, label: string): Promise<void> {
-  await row(page, label).first().locator(".twistie").click();
+  await row(page, label).first().locator('.twistie').click();
 }
 
 // Synthesise an internal tree drag: dispatch dragstart on the real source row
@@ -207,46 +172,29 @@ export async function collapse(page: Page, label: string): Promise<void> {
 // target with preventDefault — so this helper enforces the same contract:
 // if the app's handleDragOver rejects the target, it throws instead of
 // dropping anyway, keeping the e2e honest about the drop-acceptance gate.
-export async function treeDrag(
-  page: Page,
-  source: Locator,
-  target: Locator,
-): Promise<void> {
+export async function treeDrag(page: Page, source: Locator, target: Locator): Promise<void> {
   const src = await source.elementHandle();
   const tgt = await target.elementHandle();
-  if (!src || !tgt) throw new Error("treeDrag: source or target row not found");
+  if (!src || !tgt) throw new Error('treeDrag: source or target row not found');
   const accepted = await page.evaluate(
     ({ s, t }) => {
       const dt = new DataTransfer();
       const fire = (el: Element, type: string) =>
-        el.dispatchEvent(
-          new DragEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            dataTransfer: dt,
-          }),
-        );
-      fire(s, "dragstart"); // real handleDragStart writes the payload into dt
-      fire(t, "dragenter");
+        el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+      fire(s, 'dragstart'); // real handleDragStart writes the payload into dt
+      fire(t, 'dragenter');
       // dispatchEvent returns false iff a handler called preventDefault —
       // i.e. handleDragOver accepted this drop target.
       const ok = !t.dispatchEvent(
-        new DragEvent("dragover", {
-          bubbles: true,
-          cancelable: true,
-          dataTransfer: dt,
-        }),
+        new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }),
       );
-      if (ok) fire(t, "drop"); // real handleDrop runs the copy/move
-      fire(s, "dragend");
+      if (ok) fire(t, 'drop'); // real handleDrop runs the copy/move
+      fire(s, 'dragend');
       return ok;
     },
     { s: src, t: tgt },
   );
-  if (!accepted)
-    throw new Error(
-      "treeDrag: target rejected the drop (dragover not accepted)",
-    );
+  if (!accepted) throw new Error('treeDrag: target rejected the drop (dragover not accepted)');
 }
 
 // Synthesise an external file drop onto a real folder row: a DataTransfer
@@ -259,25 +207,19 @@ export async function dropFileOnRow(
   text: string,
 ): Promise<void> {
   const el = await target.elementHandle();
-  if (!el) throw new Error("dropFileOnRow: target row not found");
+  if (!el) throw new Error('dropFileOnRow: target row not found');
   await page.evaluate(
     ({ el, name, text }) => {
       const file = new File([new TextEncoder().encode(text)], name, {
-        type: "application/octet-stream",
+        type: 'application/octet-stream',
       });
       const dt = new DataTransfer();
       dt.items.add(file);
       const fire = (type: string) =>
-        el.dispatchEvent(
-          new DragEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            dataTransfer: dt,
-          }),
-        );
-      fire("dragenter");
-      fire("dragover");
-      fire("drop");
+        el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+      fire('dragenter');
+      fire('dragover');
+      fire('drop');
     },
     { el, name: fileName, text },
   );
