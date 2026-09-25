@@ -173,6 +173,7 @@
 
   // Discovery state.
   let scanning = $state(true);
+  let startError = $state<string | null>(null); // the emulator failed to start
   let allRoms = $state<RomEntry[]>([]);
   // VROMs in OPFS, each identified to the card it provides.
   let allVroms = $state<VromEntry[]>([]);
@@ -726,7 +727,15 @@
 
   onMount(() => {
     void (async () => {
-      await whenModuleReady();
+      try {
+        await whenModuleReady();
+      } catch (e) {
+        // No emulator: nothing can be scanned or booted — say so instead of
+        // leaving the dialog on "Scanning ROMs…" forever.
+        startError = e instanceof Error ? e.message : String(e);
+        scanning = false;
+        return;
+      }
       await refreshOpfs();
     })();
   });
@@ -901,7 +910,12 @@
   <a href="#back" class="back-link" onclick={onBack}>← Back</a>
   <h2 class="config-title">New Machine</h2>
   <form class="config-form" onsubmit={onSubmit}>
-    {#if scanning}
+    {#if startError}
+      <div class="form-row">
+        <span class="form-label">Machine Model</span>
+        <div class="form-help">The emulator did not start: {startError}</div>
+      </div>
+    {:else if scanning}
       <div class="form-row">
         <span class="form-label">Machine Model</span>
         <div class="form-help">Scanning ROMs…</div>

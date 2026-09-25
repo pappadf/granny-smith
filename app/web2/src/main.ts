@@ -1,6 +1,6 @@
 import './styles/tokens.css';
 import './styles/reset.css';
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import App from './App.svelte';
 import { loadPersistedState } from '@/state/persist.svelte';
 import { applyThemeToHtml, theme } from '@/state/theme.svelte';
@@ -11,7 +11,7 @@ import { processUrlMedia, parseUrlMediaParams } from '@/bus/urlMedia';
 import { whenModuleReady } from '@/bus/emulator';
 import { installEvalHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
-import { renderWebGLErrorPage } from '@/lib/webglErrorPage';
+import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
 
 // Synchronous before-mount work: avoid theme flash + auto-pick layout.
 loadPersistedState();
@@ -55,7 +55,15 @@ function bootApp(target: HTMLElement): unknown {
   const mediaParams = parseUrlMediaParams(urlParams);
 
   void (async () => {
-    await whenModuleReady();
+    try {
+      await whenModuleReady();
+    } catch (e) {
+      // The emulator cannot start: replace the half-alive UI with a blocking
+      // page that says why, as the WebGL probe does before mount.
+      void unmount(mounted);
+      renderStartupErrorPage(target, e instanceof Error ? e.message : String(e));
+      return;
+    }
 
     // Expose a single boolean flag for the headless diagnostic harness
     // (scripts/ui2-diag.mjs) and other automation to wait on. Cheaper /

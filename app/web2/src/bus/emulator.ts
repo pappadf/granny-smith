@@ -119,14 +119,63 @@ const cmdWaiters: Array<() => void> = [];
 // Single-source-of-truth ready signal. Consumers `await whenModuleReady()`
 // rather than polling isModuleReady() — bootstrap() resolves this exactly
 // when moduleReady flips to true (and the machine.register bridge call
-// has completed).
+// has completed), and REJECTS it when the emulator cannot start: a bridge
+// version mismatch, a module that fails to load, or a worker that never
+// comes up.  Before this, a failure left the promise pending forever — URL
+// media never ran, the New Machine dialog stayed on "Scanning ROMs…", and a
+// worker that never started produced no message at all (F-37, N-58).
+export type BootState =
+  | { phase: 'starting' }
+  | { phase: 'ready' }
+  | { phase: 'failed'; reason: string };
+let bootState: BootState = { phase: 'starting' };
 let resolveReady: (() => void) | null = null;
-const readyPromise: Promise<void> = new Promise((res) => {
+let rejectReady: ((e: Error) => void) | null = null;
+const readyPromise: Promise<void> = new Promise((res, rej) => {
   resolveReady = res;
+  rejectReady = rej;
 });
+// A failure may land before anyone awaits: never report it as unhandled.
+readyPromise.catch(() => undefined);
 
 export function whenModuleReady(): Promise<void> {
   return readyPromise;
+}
+
+export function getBootState(): BootState {
+  return bootState;
+}
+
+// Mark the boot failed, once, and say why to every waiter — including
+// automation, which waits on window.__gsReady or __gsBootError.
+function failBoot(reason: string): void {
+  if (bootState.phase !== 'starting') return;
+  bootState = { phase: 'failed', reason };
+  (window as unknown as { __gsBootError?: string }).__gsBootError = reason;
+  rejectReady?.(new Error(reason));
+}
+
+// The worker sets the bridge's `ready` word once it can dispatch.  A pthread
+// that never starts (a stale worker script, a crash at load) never sets it,
+// and nothing else would ever notice.  Wait in slices and fail after this
+// much *visible* time: a background tab throttles the worker, so hidden time
+// is not evidence of anything.
+const WORKER_READY_BUDGET_MS = 30_000;
+async function waitForWorkerReady(): Promise<void> {
+  if (!Module || !bridgePtr) throw new Error('emulator module not loaded');
+  const idx = (bridgePtr + OFF_READY) >> 2;
+  let visibleMs = 0;
+  while (Atomics.load(Module.HEAP32, idx) === 0) {
+    const slice = 1_000;
+    const w = Atomics.waitAsync(Module.HEAP32, idx, 0, slice);
+    const outcome = w.async ? await w.value : w.value;
+    if (outcome !== 'timed-out') continue;
+    if (document.visibilityState === 'visible') visibleMs += slice;
+    if (visibleMs >= WORKER_READY_BUDGET_MS)
+      throw new Error(
+        `the emulator worker did not start within ${WORKER_READY_BUDGET_MS / 1000} s`,
+      );
+  }
 }
 
 // Run-state mirror so we can ignore redundant transitions.
@@ -141,7 +190,17 @@ let lastScreenParH = 0;
 // Initialise the WASM module. The canvas is handed to Emscripten; subsequent
 // resize callbacks update machine.screen so ScreenView can reflow.
 export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = []): Promise<void> {
-  if (moduleReady) return;
+  if (moduleReady || bootState.phase === 'failed') return;
+  try {
+    await bootstrapModule(canvas, wasmArgs);
+  } catch (e) {
+    failBoot(e instanceof Error ? e.message : String(e));
+    throw e;
+  }
+}
+
+// bootstrap()'s body: load the module, check the bridge, wait for the worker.
+async function bootstrapModule(canvas: HTMLCanvasElement, wasmArgs: string[]): Promise<void> {
   const bust = Date.now();
   // Resolve main.mjs / main.wasm against the document base URL, not
   // origin-rooted. Dynamic `import()` resolves relative URLs against
@@ -202,6 +261,10 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     if (Module && bridgePtr)
       Atomics.store(Module.HEAP32, (bridgePtr + OFF_GPU_AVAILABLE) >> 2, ok ? 1 : 0);
   });
+  // Nothing is sent until the worker says it can dispatch; a worker that
+  // never comes up fails the boot here instead of parking the first
+  // request forever.
+  await waitForWorkerReady();
   moduleReady = true;
 
   // Activate per-machine checkpoint directory before anything that opens
@@ -211,6 +274,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
 
   // Resolve the public ready signal — TerminalPane (and anyone else
   // who needs the bridge live) is awaiting this.
+  bootState = { phase: 'ready' };
   resolveReady?.();
 }
 

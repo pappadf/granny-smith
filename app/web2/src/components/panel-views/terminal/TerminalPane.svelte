@@ -469,7 +469,15 @@
       // ready signal — no polling, no settle guess.
       showPrompt(true);
       void (async () => {
-        await whenModuleReady();
+        try {
+          await whenModuleReady();
+        } catch (e) {
+          if (!destroyed)
+            xterm?.write(
+              `\r\n\x1b[31memulator did not start: ${e instanceof Error ? e.message : e}\x1b[0m\r\n`,
+            );
+          return;
+        }
         if (destroyed) return;
         await seedPrompt();
         if (!destroyed) showPrompt(true);

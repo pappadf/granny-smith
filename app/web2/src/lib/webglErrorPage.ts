@@ -45,6 +45,33 @@ export function renderWebGLErrorPage(target: HTMLElement, result: WebGLCheckResu
   btn?.addEventListener('click', () => location.reload());
 }
 
+// Renders a full-page block error when the emulator cannot start at all (a
+// bridge version mismatch, a module that fails to load, a worker that never
+// comes up).  Same card and plain-DOM approach as the WebGL page, so it works
+// even when the failure is in the app's own startup.
+export function renderStartupErrorPage(target: HTMLElement, reason: string): void {
+  target.innerHTML = '';
+  const root = document.createElement('div');
+  root.className = 'gs-webgl-error';
+  root.setAttribute('role', 'alert');
+  root.innerHTML = `
+    <div class="gs-webgl-error__card">
+      <h1>The emulator could not start</h1>
+      <p>Reloading usually fixes this, particularly right after an update (the page and the
+      emulator it loads must come from the same build).</p>
+      <p class="gs-webgl-error__detail">Details: <code>${escapeHtml(reason)}</code></p>
+      <button type="button" class="gs-webgl-error__retry">Reload</button>
+    </div>
+  `;
+  target.appendChild(root);
+  const style = document.createElement('style');
+  style.textContent = CSS;
+  target.appendChild(style);
+  root
+    .querySelector<HTMLButtonElement>('.gs-webgl-error__retry')
+    ?.addEventListener('click', () => location.reload());
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

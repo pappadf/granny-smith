@@ -49,7 +49,10 @@
     // moduleReady guard.
     void bootstrap(canvas).catch((err) => {
       console.error('emulator bootstrap failed', err);
-      showNotification('Emulator failed to start (see console)', 'error');
+      showNotification(
+        `Emulator failed to start: ${err instanceof Error ? err.message : err}`,
+        'error',
+      );
     });
   });
 </script>
