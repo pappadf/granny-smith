@@ -63,6 +63,7 @@ expect_not "ASSERT FAILED" "all in-script assertions must pass"
 # Breakpoint entries (dedupe, meta.indices, enabled, remove by id): the
 # section ends with a marker, so an assert that aborts it cannot pass.
 expect "bp-contract-ok" "breakpoint entry contract section must run to its end"
+expect "step-matches-run-ok" "debug.step N must match scheduler.run N across VBLs"
 
 # Format specs in ${expr:fmt}. The literal $ is doubled here so the
 # shell that runs run.sh doesn't expand the value before grep sees it.

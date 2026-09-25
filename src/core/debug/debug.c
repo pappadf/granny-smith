@@ -3418,8 +3418,19 @@ static value_t debug_method_step(struct object *self, const member_t *m, int arg
     scheduler_t *s = system_scheduler();
     if (!s)
         return val_err("debug.step: scheduler not initialised");
-    scheduler_run_instructions(s, (int)count);
-    scheduler_stop(s);
+    // Arm the same instruction budget `scheduler.run N` does and drive it
+    // through scheduler_run_frame -- the loop the headless pump runs -- so
+    // stepped time pulses VBL and consumes frame_cycles_left exactly as
+    // running does.  It used to call scheduler_run_instructions, which
+    // advanced cpu_cycles with the VBL line dead: N stepped instructions did
+    // not match N run ones (execution-model proposal §1.12.2, Phase 0).
+    // Still synchronous, so `while cond { debug.step 1 }` works in the browser
+    // terminal too, where nothing pumps between statements; returning at once
+    // with a mode is the proposal's Phase 2.
+    if (!scheduler_run_with_budget(s, (uint64_t)count))
+        return val_err("debug.step: instruction count too large");
+    while (scheduler_is_running(s))
+        scheduler_run_frame(s, global_emulator);
     return val_bool(true);
 }
 
@@ -3442,8 +3453,8 @@ static const member_t debug_members[] = {
             "returned as a typed map. Default: 32 rows starting at PC.",                                           .method = {.args = debug_frame_args, .nargs = 2, .result = V_MAP, .fn = debug_method_frame}},
     {.kind = M_METHOD,
      .name = "step",
-     .doc = "Single-step N instructions and stop (default 1)",
-     .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}                                                                                                               },
+     .doc = "Run N instructions (default 1) and stop, through the frame loop exactly as scheduler.run N does "
+            "(VBL and timers keep running)",                                                                       .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step} },
     {.kind = M_METHOD,
      .name = "exceptions",
      .doc = "Dump the 256-entry exception trace ring (always-on). Optional filter=1 hides routine traps/IRQs.",

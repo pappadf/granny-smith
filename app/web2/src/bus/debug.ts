@@ -311,12 +311,11 @@ export async function pauseExec(): Promise<void> {
 
 export async function stepInto(n = 1): Promise<void> {
   if (!isModuleReady()) return;
-  await gsEval('debug.step', [n]);
-  // debug.step runs N instructions then scheduler_stop(). When the
-  // machine was already paused, scheduler_stop is a no-op (no run-state
-  // transition), so Module.onRunStateChange never fires and the Debug
-  // panes wouldn't otherwise know to re-fetch. Bumping refreshGen
-  // forces a reactive re-render.
+  // debug.step runs N instructions through the frame loop (VBL and timers
+  // keep running) and stops before it returns.
+  if (!gsOk(await gsEval('debug.step', [n]))) return;
+  // The run starts and stops inside one call, so Module.onRunStateChange
+  // need not fire; bumping refreshGen makes the Debug panes re-fetch.
   bumpDebugRefresh();
 }
 

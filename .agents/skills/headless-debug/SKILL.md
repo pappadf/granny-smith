@@ -127,8 +127,9 @@ machine.restart                # power-cycle from machine.config, keeps media
 machine.boot model="iicx" rom="tests/data/roms/iix-iicx-se30-97221136.rom" ram=8192
 ```
 
-- `debug.step` services no interrupts (VBL, VIA timers): `Ticks` does not move.
-  Use `scheduler.run N` when interrupt-driven code must progress.
+- `debug.step N` runs through the frame loop exactly as `scheduler.run N`
+  does: VBL and VIA timers keep running and `Ticks` moves, so stepping and
+  running from the same state end in the same place.
 - `scheduler.run N` can retire fewer than N instructions when the guest
   sits in `STOP`; loop on `machine.cpu.instr_count` for an exact count.
 - `machine.boot` is a complete document: `model=` and `rom=` are required,

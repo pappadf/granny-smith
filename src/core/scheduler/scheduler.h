@@ -201,6 +201,12 @@ void scheduler_start(struct scheduler *restrict s);
 // Stop the scheduler immediately, halting CPU execution
 void scheduler_stop(struct scheduler *restrict scheduler);
 
+// Start running with a stop scheduled after `instructions` more instructions
+// (0 = until stopped).  scheduler_run_frame does the executing: the
+// platform's loop for scheduler.run N, a loop inside the call for debug.step N.
+// Returns false if the count overflows.
+bool scheduler_run_with_budget(struct scheduler *s, uint64_t instructions);
+
 // Set the scheduler running state
 void scheduler_set_running(struct scheduler *restrict scheduler, bool running);
 

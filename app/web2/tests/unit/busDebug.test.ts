@@ -3,8 +3,15 @@ import { bridge } from '../helpers/bridgeMock';
 
 vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).emulatorModule());
 
-const { listBreakpoints, addBreakpoint, removeBreakpoint, removeBreakpointAt, writeRegister } =
-  await import('@/bus/debug');
+const {
+  listBreakpoints,
+  addBreakpoint,
+  removeBreakpoint,
+  removeBreakpointAt,
+  writeRegister,
+  stepInto,
+} = await import('@/bus/debug');
+const { debug } = await import('@/state/debug.svelte');
 
 // Teach the double two sparse breakpoints, ids 2 and 5 (0, 1, 3, 4 removed).
 function twoBreakpoints(): void {
@@ -86,5 +93,13 @@ describe('bus/debug against the real object-model paths', () => {
 
   it('reports a register the core refuses', async () => {
     expect(await writeRegister('r99', 1)).toBe(false);
+  });
+
+  it('steps, and makes the panes re-fetch', async () => {
+    bridge.reply('debug.step', true);
+    const gen = debug.refreshGen;
+    await stepInto(1);
+    expect(bridge.calls).toEqual([{ path: 'debug.step', args: [1] }]);
+    expect(debug.refreshGen).toBe(gen + 1);
   });
 });

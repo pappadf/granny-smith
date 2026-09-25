@@ -679,7 +679,7 @@ static void run_stop_event(void *source, uint64_t data) {
 
 // Schedule a stop after `instructions` more instructions of execution.
 // Returns false on overflow / zero-count / scheduler not initialised.
-static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
+bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     GS_ASSERT(s != NULL);
     uint32_t eff_x256 = s->cpi_eff_x256;
 

@@ -124,4 +124,26 @@ echo "bp-contract-ok"
 
 debug.disasm 0x400090 3
 
+# === debug.step runs through the frame loop =============================
+#
+# N stepped instructions must be N run ones: debug.step arms the same budget
+# scheduler.run does, so VBL pulses while stepping.  Before, stepping ran the
+# guest with the VBL line dead and the two diverged within a few frames
+# (execution-model proposal §1.12.2).  600000 Plus instructions span several
+# VBLs.  (Last in the script: it restarts the machine.)
+
+machine.restart
+machine.rtc.time = 3000000000
+scheduler.run 400000
+debug.step 600000
+let step_pc = machine.cpu.pc
+let step_n = machine.cpu.instr_count
+machine.restart
+machine.rtc.time = 3000000000
+scheduler.run 400000
+scheduler.run 600000
+assert machine.cpu.instr_count == $step_n "same instruction count"
+assert machine.cpu.pc == $step_pc "debug.step N must end where scheduler.run N does"
+echo "step-matches-run-ok"
+
 quit
