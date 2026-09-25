@@ -301,6 +301,11 @@ static int json_parse_value(const char **pp, value_t *out) {
     return -1;
 }
 
+// True when only whitespace remains from `p` to the end of the document.
+static bool json_at_end(const char *p) {
+    return *json_skip_ws(p) == '\0';
+}
+
 // Free a parallel names array produced by the object form.
 static void free_arg_names(char **names, int argc) {
     if (!names)
@@ -315,9 +320,9 @@ static void free_arg_names(char **names, int argc) {
 // rejected. Writes parallel names/argv arrays.
 static int json_parse_object_args(const char *p, value_t **out_argv, int *out_argc, char ***out_names) {
     p = json_skip_ws(p + 1);
-    if (*p == '}') {
-        return 0;
-    }
+    if (*p == '}')
+        return json_at_end(p + 1) ? 0 : -1;
+    bool closed = false; // saw the closing '}'
     int cap = 4, n = 0;
     value_t *argv = (value_t *)calloc(cap, sizeof(value_t));
     char **names = (char **)calloc(cap, sizeof(char *));
@@ -366,8 +371,18 @@ static int json_parse_object_args(const char *p, value_t **out_argv, int *out_ar
             continue;
         }
         if (*p == '}') {
+            p++;
+            closed = true;
             break;
         }
+        free_args(argv, n);
+        free_arg_names(names, n);
+        return -1;
+    }
+    // A document that ends before its '}' was cut short (a request truncated
+    // in transit ends right after a ','): refuse it rather than run the call
+    // with its trailing arguments silently dropped.  Nothing may follow '}'.
+    if (!closed || !json_at_end(p)) {
         free_args(argv, n);
         free_arg_names(names, n);
         return -1;
@@ -391,7 +406,8 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
         return -1;
     p = json_skip_ws(p + 1);
     if (*p == ']')
-        return 0;
+        return json_at_end(p + 1) ? 0 : -1;
+    bool closed = false; // saw the closing ']'
     int cap = 4, n = 0;
     value_t *argv = (value_t *)calloc(cap, sizeof(value_t));
     if (!argv)
@@ -418,8 +434,15 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
         }
         if (*p == ']') {
             p++;
+            closed = true;
             break;
         }
+        free_args(argv, n);
+        return -1;
+    }
+    // Same rule as the object form: unterminated, or anything after ']',
+    // is not a document this parser accepts.
+    if (!closed || !json_at_end(p)) {
         free_args(argv, n);
         return -1;
     }

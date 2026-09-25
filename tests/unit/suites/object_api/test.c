@@ -181,10 +181,49 @@ TEST(test_enumerate_with_meta_indices) {
     fixture_down(a, b);
 }
 
+// A request cut short in transit (the web bridge's fixed-size args buffer
+// truncates at a code-point boundary, often right after a ',') must be
+// refused, never run with its trailing arguments silently dropped (N-46).
+TEST(test_truncated_args_are_refused) {
+    struct object *a, *b;
+    fixture_up(&a, &b);
+    const char *bad[] = {
+        "[8738,", // array cut after a comma
+        "[", // bare opener
+        "[8738", // no closing bracket
+        "[8738]x", // garbage after the document
+        "{\"v\":1,", // object cut after a comma
+        "{", // bare opener
+        "{\"v\":1} [2]", // a second document
+        "[]x", // empty array, then garbage
+        "{}x", // empty object, then garbage
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        g_pc = 0;
+        ASSERT_EQ_INT(-1, gs_eval("a.pc", bad[i], out, sizeof(out)));
+        ASSERT_TRUE(strstr(out, "args_json") != NULL);
+        ASSERT_EQ_INT(0, (int)g_pc); // nothing was written
+    }
+    fixture_down(a, b);
+}
+
+// Well-formed documents, with surrounding whitespace, still parse.
+TEST(test_wellformed_args_still_parse) {
+    struct object *a, *b;
+    fixture_up(&a, &b);
+    ASSERT_EQ_INT(0, gs_eval("a.pc", " [ 8738 ] ", out, sizeof(out)));
+    ASSERT_EQ_INT(0x2222, (int)g_pc);
+    ASSERT_EQ_INT(0, gs_eval("bucket.meta.indices", "[\"devices\"]\n", out, sizeof(out)));
+    ASSERT_EQ_INT(0, gs_eval("a.pc", "[]", out, sizeof(out))); // no args: a read
+    fixture_down(a, b);
+}
+
 int main(void) {
     RUN(test_shell_assignment_is_not_a_path);
     RUN(test_typed_setter_writes);
     RUN(test_count_is_on_the_owner);
     RUN(test_enumerate_with_meta_indices);
+    RUN(test_truncated_args_are_refused);
+    RUN(test_wellformed_args_still_parse);
     return 0;
 }

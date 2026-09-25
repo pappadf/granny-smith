@@ -78,7 +78,8 @@ interface EmscriptenModule {
     close(stream: unknown): void;
   };
   _get_js_bridge(): number;
-  stringToUTF8(s: string, ptr: number, max: number): void;
+  // Returns the bytes written, excluding the terminating NUL.
+  stringToUTF8(s: string, ptr: number, max: number): number;
   UTF8ToString(ptr: number): string;
 }
 
@@ -248,11 +249,30 @@ export async function gsEval(
   // An array is positional; a plain object binds by declared argument name
   // (proposal-named-args-boot-config §3.4).
   const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
+  // Refuse before touching the shared slot: a too-large request is the
+  // caller's error, not the bridge's, so it carries no `transport` flag.
+  const tooLarge = requestTooLarge(path || '', argsJson);
+  if (tooLarge) return { error: tooLarge };
   try {
     return await executeGsRequest(path || '', argsJson);
   } catch (e) {
     return transportError(`bridge request failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+// Why a request cannot be sent, or null if it fits.  The bridge's path and
+// args buffers are fixed-size (em.h), and stringToUTF8 silently truncates to
+// fit — an args document cut after a ',' used to run with its trailing
+// arguments dropped.  Measure in UTF-8 bytes, leaving room for the NUL.
+const utf8 = new TextEncoder();
+export function requestTooLarge(path: string, argsJson: string): string | null {
+  const pathBytes = utf8.encode(path).length;
+  if (pathBytes > PATH_SIZE - 1)
+    return `request path too large (${pathBytes} bytes > ${PATH_SIZE - 1})`;
+  const argsBytes = utf8.encode(argsJson).length;
+  if (argsBytes > ARGS_SIZE - 1)
+    return `request arguments too large (${argsBytes} bytes > ${ARGS_SIZE - 1})`;
+  return null;
 }
 
 // True for any failure shape — the core's V_ERROR or a transport failure.
