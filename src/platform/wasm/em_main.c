@@ -800,7 +800,20 @@ void em_main_tick(void) {
     // Poll for pending shell commands every tick.  This must run regardless
     // of running state so that drag-and-drop media inserts, checkpoint
     // commands, etc. execute while the emulator is running.
-    shell_poll();
+    //
+    // While paused nothing above repaints, yet a served request can change
+    // what is on screen: a debug.step, a memory.poke into the framebuffer, a
+    // CLUT write, a media change.  So repaint after a served request -- and
+    // only then: an idle paused tick costs nothing, and em_video_update
+    // compares before uploading, so a request that changed nothing uploads
+    // nothing (11-WORK-ORDER D8, F-28).
+    // Re-fetch the scheduler: the request may have booted or restarted the
+    // machine, freeing the one fetched above.
+    if (shell_poll()) {
+        scheduler_t *after = system_scheduler();
+        if (!(after && scheduler_is_running(after)))
+            em_video_update();
+    }
 
     // Push a run-state notification to JS on every transition
     // (including the first tick). The callback is installed via

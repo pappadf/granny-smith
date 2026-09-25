@@ -112,3 +112,35 @@ test("breakpoints are listed, and Remove removes", async ({ page }) => {
   await expect(rows).toHaveCount(0, { timeout: 10_000 });
   expect(await gsEvalInPage(page, "debug.breakpoints.count")).toBe(0);
 });
+
+// A paused machine repaints after a request that changes the screen (D8).
+// Before, video was refreshed only while the scheduler ran, so a poke into the
+// framebuffer (or a step) stayed invisible until the next resume.
+test("a paused machine repaints after a framebuffer poke", async ({ page }) => {
+  test.setTimeout(120_000);
+  await bootPlusPaused(page);
+  const screen = page.locator("#screen");
+  const before = await screen.screenshot();
+
+  // Invert a band of the Plus framebuffer (ScrnBase is the low-memory global
+  // at $824): 40 rows x 64 bytes, one shell.run so it is one request.
+  const base = (await gsEvalInPage(
+    page,
+    "machine.memory.peek.l",
+    [0x824],
+  )) as number;
+  const script =
+    `for i in 0..640 { machine.memory.poke.l(${base + 64 * 100} + $i * 4, ` +
+    `machine.memory.peek.l(${base + 64 * 100} + $i * 4) ^ 0xFFFFFFFF) }`;
+  await gsEvalInPage(page, "shell.run", [script]);
+
+  await expect
+    .poll(async () => Buffer.compare(before, await screen.screenshot()) !== 0, {
+      timeout: 10_000,
+    })
+    .toBe(true);
+  // Still paused: the repaint did not come from resuming.
+  await expect(page.locator(".gs-statusbar .sb-state .label")).toHaveText(
+    "Paused",
+  );
+});
