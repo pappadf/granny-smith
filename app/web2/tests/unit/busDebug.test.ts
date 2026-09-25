@@ -124,6 +124,7 @@ describe('bus/debug against the real object-model paths', () => {
     expect(f?.regs).toBeNull(); // not d0..a7 of zeros
     expect(f?.rawRegs.r1).toBe(0x1234);
     expect(f?.pc).toBe(0xfff0345c);
-    expect(f?.fpu).toBeUndefined(); // the 68K FPU shape is not forced onto the PPC block
+    // The PPC FPU block maps onto the generic shape, not the 68K one.
+    expect(f?.fpu).toEqual({ prefix: 'FPR', data: [], control: [{ name: 'fpscr', value: 0 }] });
   });
 });

@@ -1,62 +1,36 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import { loadDebugFrame, type FpuFrame } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
+  import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32 } from '@/lib/hex';
 
   // The section's presence is gated on the static capability machine.fpu
   // (capabilities.cpu.fpu), so it appears immediately for FPU machines and
-  // never for 68000 machines (Plus / SE) — no waiting for the first debug
-  // frame to carry an `fpu` block. The register data still comes from the
-  // frame's optional `fpu` block once the machine is paused.
-  let fpu = $state<FpuFrame | null>(null);
-  // The frame came back with no 68K FPU block on an FPU machine (PowerPC).
-  let unsupported = $state(false);
-  // Per-register diff masks vs the previous refresh. Persist until the
-  // next refresh produces a new diff.
-  let fpChanged = $state<boolean[]>([]);
-  let ctlChanged = $state<{ fpcr: boolean; fpsr: boolean; fpiar: boolean }>({
-    fpcr: false,
-    fpsr: false,
-    fpiar: false,
-  });
+  // never for 68000 machines (Plus / SE).  The data comes from the shared
+  // frame's FPU block, in one shape for every architecture: 68K fp0-fp7 and
+  // FPCR/FPSR/FPIAR, or PPC fpr0-fpr31 and FPSCR.
+  const fpu = $derived(debugFrame.current?.fpu ?? null);
 
-  async function refresh() {
-    const frame = await loadDebugFrame();
-    if (!frame) return;
-    unsupported = frame.arch !== 'm68k';
-    const next = frame.fpu ?? null;
-    if (fpu && next) {
-      // Compare hex strings — covers any change in the underlying
-      // 80-bit register without dragging the host float conversion
-      // into the diff path.
-      const fpMask = new Array<boolean>(8);
-      for (let i = 0; i < 8; i++) {
-        fpMask[i] = (fpu.fp[i]?.hex ?? '') !== (next.fp[i]?.hex ?? '');
-      }
-      fpChanged = fpMask;
-      ctlChanged = {
-        fpcr: fpu.fpcr !== next.fpcr,
-        fpsr: fpu.fpsr !== next.fpsr,
-        fpiar: fpu.fpiar !== next.fpiar,
-      };
-    } else {
-      fpChanged = [];
-      ctlChanged = { fpcr: false, fpsr: false, fpiar: false };
-    }
-    fpu = next;
-  }
-
-  onMount(() => {
-    void refresh();
-  });
-
+  // Changed since the previous frame, by register; persists until the next.
+  let prev: { data: string[]; control: Record<string, number> } | null = null;
+  let dataChanged = $state<boolean[]>([]);
+  let ctlChanged = $state<Record<string, boolean>>({});
   $effect(() => {
-    void machine.status;
-    void debug.refreshGen;
-    if (machine.status === 'paused' || machine.status === 'running') void refresh();
+    const next = fpu;
+    if (!next) {
+      prev = null;
+      dataChanged = [];
+      ctlChanged = {};
+      return;
+    }
+    const data = next.data.map((r) => r.hex);
+    const control = Object.fromEntries(next.control.map((c) => [c.name, c.value]));
+    dataChanged = prev ? data.map((h, i) => h !== prev!.data[i]) : [];
+    ctlChanged = prev
+      ? Object.fromEntries(next.control.map((c) => [c.name, prev!.control[c.name] !== c.value]))
+      : {};
+    prev = { data, control };
   });
 </script>
 
@@ -68,32 +42,26 @@
       <div class="fpu-group">
         <h4 class="fpu-group-title">Data</h4>
         <div class="fpu-rows">
-          {#each fpu.fp as r, i (i)}
-            <span class="fpu-name" class:changed={fpChanged[i]}>FP{i}</span>
-            <span class="fpu-hex" class:changed={fpChanged[i]}>{r.hex}</span>
-            <span class="fpu-val" class:changed={fpChanged[i]} title={r.val}>{r.val}</span>
+          {#each fpu.data as r, i (i)}
+            <span class="fpu-name" class:changed={dataChanged[i]}>{fpu.prefix}{i}</span>
+            <span class="fpu-hex" class:changed={dataChanged[i]}>{r.hex}</span>
+            <span class="fpu-val" class:changed={dataChanged[i]} title={r.val}>{r.val}</span>
           {/each}
         </div>
       </div>
       <div class="fpu-group">
         <h4 class="fpu-group-title">Control</h4>
         <div class="fpu-ctl">
-          <div class="fpu-ctl-row" class:changed={ctlChanged.fpcr}>
-            <span class="fpu-name">FPCR</span>
-            <span class="fpu-hex">{fmtHex32(fpu.fpcr)}</span>
-          </div>
-          <div class="fpu-ctl-row" class:changed={ctlChanged.fpsr}>
-            <span class="fpu-name">FPSR</span>
-            <span class="fpu-hex">{fmtHex32(fpu.fpsr)}</span>
-          </div>
-          <div class="fpu-ctl-row" class:changed={ctlChanged.fpiar}>
-            <span class="fpu-name">FPIAR</span>
-            <span class="fpu-hex">{fmtHex32(fpu.fpiar)}</span>
-          </div>
+          {#each fpu.control as c (c.name)}
+            <div class="fpu-ctl-row" class:changed={ctlChanged[c.name]}>
+              <span class="fpu-name">{c.name.toUpperCase()}</span>
+              <span class="fpu-hex">{fmtHex32(c.value)}</span>
+            </div>
+          {/each}
         </div>
       </div>
-    {:else if unsupported}
-      <p class="fpu-hint">The FPU view does not support this CPU yet.</p>
+    {:else}
+      <p class="fpu-hint">No machine running.</p>
     {/if}
   </CollapsibleSection>
 {/if}

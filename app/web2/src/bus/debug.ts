@@ -48,11 +48,13 @@ export interface FpuRegister {
   val: string;
 }
 
+// The FPU register file in an architecture-neutral shape: the data
+// registers (68K fp0-fp7 as 80-bit extended, PPC fpr0-fpr31 as doubles) and
+// the control registers by name (68K fpcr/fpsr/fpiar, PPC fpscr).
 export interface FpuFrame {
-  fp: FpuRegister[]; // 8 entries, fp0..fp7
-  fpcr: number;
-  fpsr: number;
-  fpiar: number;
+  prefix: string; // display name of the data registers: 'FP' or 'FPR'
+  data: FpuRegister[];
+  control: Array<{ name: string; value: number }>;
 }
 
 // Bundled snapshot returned by `debug.frame`. Replaces the per-register
@@ -79,9 +81,6 @@ export interface Breakpoint {
   condition?: string;
   hits: number;
 }
-
-const REG_DS = ['d0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7'];
-const REG_AS = ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'];
 
 function coerceNum(v: unknown): number {
   if (typeof v === 'number') return v >>> 0;
@@ -120,12 +119,19 @@ export async function disasmAt(addr: number, count: number): Promise<DisasmRow[]
 // Fetch the bundled debug frame in a single bridge round-trip. Default
 // is 32 rows starting at PC. When `addr` is omitted the C side uses PC.
 // Returns null on parse failure or when the module isn't ready.
-export async function loadDebugFrame(addr?: number, count = 32): Promise<DebugFrame | null> {
+// `before` (with no addr): how many rows to show ahead of the PC; the core
+// re-synchronises the window so a row always lands exactly on the PC.
+export async function loadDebugFrame(
+  addr?: number,
+  count = 32,
+  before = 0,
+): Promise<DebugFrame | null> {
   if (!isModuleReady()) return null;
   // Named arguments: a lone positional argument is `addr` to the core, so
   // `[0, n]` used to disassemble from address 0 (N-32).
   const args: Record<string, number> = { count };
   if (addr !== undefined) args.addr = addr >>> 0;
+  else if (before > 0) args.before = before;
   // debug.frame returns a native nested object (V_MAP through the gsEval
   // bridge) — no inner JSON.parse.
   const parsed = await gsEval('debug.frame', args);
@@ -173,49 +179,25 @@ export async function loadDebugFrame(addr?: number, count = 32): Promise<DebugFr
 
   // Parse the optional FPU block. The C side emits it only when the
   // running CPU model has an FPU; on Plus / SE the field is missing.
+  // The core's FPU block, when the CPU has one: 68K {fp, fpcr, fpsr, fpiar},
+  // PPC {fpr, fpscr}.  Mapped onto one shape so the pane needs no per-arch code.
   let fpu: FpuFrame | undefined;
   const fpuObj = (parsed as { fpu?: unknown }).fpu;
-  if (arch === 'm68k' && fpuObj && typeof fpuObj === 'object') {
-    const fpuRaw = fpuObj as { fp?: unknown; fpcr?: unknown; fpsr?: unknown; fpiar?: unknown };
-    const fpList = Array.isArray(fpuRaw.fp) ? fpuRaw.fp : [];
-    const fp: FpuRegister[] = fpList.map((entry) => {
+  if (fpuObj && typeof fpuObj === 'object') {
+    const raw = fpuObj as Record<string, unknown>;
+    const list = Array.isArray(raw.fp) ? raw.fp : Array.isArray(raw.fpr) ? raw.fpr : [];
+    const data: FpuRegister[] = list.map((entry) => {
       if (!entry || typeof entry !== 'object') return { hex: '', val: '' };
       const e = entry as { hex?: unknown; val?: unknown };
       return { hex: String(e.hex ?? ''), val: String(e.val ?? '') };
     });
-    fpu = {
-      fp,
-      fpcr: coerceNum(fpuRaw.fpcr),
-      fpsr: coerceNum(fpuRaw.fpsr),
-      fpiar: coerceNum(fpuRaw.fpiar),
-    };
+    const control = Object.entries(raw)
+      .filter(([k, v]) => k !== 'fp' && k !== 'fpr' && typeof v === 'number')
+      .map(([name, v]) => ({ name, value: coerceNum(v) }));
+    fpu = { prefix: Array.isArray(raw.fpr) ? 'FPR' : 'FP', data, control };
   }
 
   return { arch, pc: coerceNum(obj.pc ?? rawRegs.pc), rawRegs, regs, rows, fpu };
-}
-
-export async function readRegisters(): Promise<Registers | null> {
-  if (!isModuleReady()) return null;
-  const reads = await Promise.all([
-    ...REG_DS.map((n) => gsEval(`machine.cpu.${n}`)),
-    ...REG_AS.map((n) => gsEval(`machine.cpu.${n}`)),
-    gsEval('machine.cpu.pc'),
-    gsEval('machine.cpu.sr'),
-    gsEval('machine.cpu.usp'),
-    gsEval('machine.cpu.ssp'),
-  ]);
-  if (reads.some((x) => x === null || x === undefined || isGsError(x))) {
-    // Treat as not-ready; the C side may not have a machine yet.
-    return null;
-  }
-  return {
-    d: reads.slice(0, 8).map(coerceNum),
-    a: reads.slice(8, 16).map(coerceNum),
-    pc: coerceNum(reads[16]),
-    sr: coerceNum(reads[17]),
-    usp: coerceNum(reads[18]),
-    ssp: coerceNum(reads[19]),
-  };
 }
 
 // A register name is one identifier: it becomes a path segment, so anything
@@ -229,6 +211,17 @@ export async function writeRegister(name: string, value: number): Promise<boolea
   // rejects it, which is how every register edit used to fail silently.
   const r = await gsEval(`machine.cpu.${name}`, [value >>> 0]);
   return gsOk(r);
+}
+
+// A 32-bit read of a LOGICAL address, whatever the architecture: on 68K
+// machine.memory.peek goes through the MMU; on PPC it is physical, so read
+// through the core's own translation (machine.cpu.mmu.peek) instead.
+export async function peekLogicalL(addr: number, arch: string): Promise<number | null> {
+  if (arch !== 'ppc') return peekL(addr);
+  if (!isModuleReady()) return null;
+  const r = await gsEval('machine.cpu.mmu.peek', [addr >>> 0, 4]);
+  if (r === null || r === undefined || isGsError(r)) return null;
+  return coerceNum(r);
 }
 
 export async function peekL(addr: number): Promise<number | null> {

@@ -17,36 +17,29 @@ import * as path from 'node:path';
 import { gsEvalInPage } from '../helpers/web2-eval';
 
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
+const PDM_ROM = path.resolve(__dirname, '../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom');
 
-// Boot a Plus from a URL parameter (the ROM fetch is served from disk), wait
-// for it to run, then pause it so the Debug view shows state.
-async function bootPlusPaused(page: Page): Promise<void> {
-  const body = fs.readFileSync(PLUS_ROM);
-  await page.route('**/url-plus.rom', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/octet-stream',
-      body,
-    }),
+// Boot a machine from a URL parameter (the ROM fetch is served from disk),
+// wait for it to run, then pause it so the Debug view shows state.
+async function bootPaused(page: Page, rom: string, model: string): Promise<void> {
+  const body = fs.readFileSync(rom);
+  await page.route('**/url-machine.rom', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/octet-stream', body }),
   );
-  await page.goto('/index.html?rom=url-plus.rom&model=plus');
-  await page.waitForFunction(
-    () => (window as { __gsReady?: boolean }).__gsReady === true,
-    undefined,
-    {
-      timeout: 60_000,
-    },
-  );
-  await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running', {
+  await page.goto(`/index.html?rom=url-machine.rom&model=${model}`);
+  await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
     timeout: 60_000,
   });
+  await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running', { timeout: 60_000 });
   const cont = page.getByRole('button', { name: 'Continue' });
   if (await cont.isVisible().catch(() => false)) await cont.click();
   await gsEvalInPage(page, 'scheduler.stop');
-  await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Paused', {
-    timeout: 15_000,
-  });
+  await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Paused', { timeout: 15_000 });
   await page.locator('button.ptab[data-tab="debug"]').click();
+}
+
+async function bootPlusPaused(page: Page): Promise<void> {
+  await bootPaused(page, PLUS_ROM, 'plus');
 }
 
 // Open one collapsible Debug section by its title.
@@ -129,4 +122,18 @@ test('a paused machine repaints after a framebuffer poke', async ({ page }) => {
     .toBe(true);
   // Still paused: the repaint did not come from resuming.
   await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Paused');
+});
+
+// The Debug view on a PowerPC machine (D2/D4).  Before, debug.frame failed on
+// every PPC model and the Registers pane said "No machine running" while it
+// was paused.
+test('a PowerPC machine shows its own register file', async ({ page }) => {
+  test.setTimeout(150_000);
+  await bootPaused(page, PDM_ROM, 'pm7100');
+  await openSection(page, 'Registers');
+  const r1 = page.getByLabel('R1 register value');
+  await expect(r1).toBeVisible({ timeout: 15_000 });
+  const core = (await gsEvalInPage(page, 'machine.cpu.r1')) as number;
+  await expect(r1).toHaveValue(core.toString(16).toUpperCase().padStart(8, '0'));
+  await expect(page.getByLabel('D0 register value')).toHaveCount(0);
 });

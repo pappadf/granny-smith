@@ -30,7 +30,6 @@ export {
 } from './systemTree';
 export {
   disasmAt,
-  readRegisters,
   writeRegister,
   peekL,
   peekBytes,

@@ -3,6 +3,18 @@
   import DisassemblyPane from './DisassemblyPane.svelte';
   import SectionsPane from './SectionsPane.svelte';
   import { layout } from '@/state/layout.svelte';
+  import { machine } from '@/state/machine.svelte';
+  import { debug } from '@/state/debug.svelte';
+  import { refreshDebugFrame, clearDebugFrame } from '@/state/debugFrame.svelte';
+
+  // One debug.frame per pause and per step, shared by every pane
+  // (state/debugFrame.svelte.ts).  Nothing is fetched while running: the
+  // frame would be stale before it arrived, and the panes say "pause".
+  $effect(() => {
+    void debug.refreshGen;
+    if (machine.status === 'paused') void refreshDebugFrame();
+    else if (machine.status !== 'running') clearDebugFrame();
+  });
 
   // Spec §4.3.5.2:
   //   panel-bottom → horizontal split, Sections LEFT, Disassembly RIGHT

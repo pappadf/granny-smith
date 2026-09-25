@@ -1,82 +1,74 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
-  import { loadDebugFrame, writeRegister, type Registers } from '@/bus/debug';
+  import { writeRegister } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { debug, toggleSection, inspectMemoryAt } from '@/state/debug.svelte';
+  import { debug, toggleSection, inspectMemoryAt, bumpDebugRefresh } from '@/state/debug.svelte';
+  import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, fmtHex16, parseHex } from '@/lib/hex';
 
-  let regs = $state<Registers | null>(null);
-  // The frame came back but has no 68K register view (a PowerPC machine).
-  let unsupported = $state(false);
-  // Highlight set: register names that just changed.
-  let changed = $state<Record<string, boolean>>({});
+  // Per-architecture layouts: which registers, grouped how.  Anything the
+  // core reports that a layout does not name lands in a trailing group, and
+  // an architecture with no layout at all gets one generic grid — so a new
+  // core (or the DSP, D7) renders without a table, never as blanks.
+  const LAYOUTS: Record<string, Array<{ title: string; names: string[] }>> = {
+    m68k: [
+      { title: 'Data', names: ['d0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7'] },
+      { title: 'Address', names: ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'] },
+      { title: 'Control', names: ['pc', 'sr', 'usp', 'ssp'] },
+    ],
+    ppc: [
+      { title: 'General', names: Array.from({ length: 32 }, (_, i) => `r${i}`) },
+      {
+        title: 'Special',
+        names: ['pc', 'lr', 'ctr', 'cr', 'xer', 'msr', 'srr0', 'srr1', 'mq'],
+      },
+    ],
+  };
+  // Registers shown but not editable from here.
+  const READ_ONLY = new Set(['sr']);
+  // Registers the core formats as 16 bits.
+  const WIDTH16 = new Set(['sr']);
 
-  async function refresh() {
-    // Reuse the bundled debug.frame call (one bridge round-trip for
-    // registers + disasm + MMU). DisassemblyPane fires the same call
-    // independently — total per-pause cost is 2 bridge calls, down
-    // from ~40 (20 here, 20+1 there). Sharing a single fetch is a
-    // future polish; the duplicate response is small (~5 KB) and the
-    // C-side cost is sub-millisecond.
-    const frame = await loadDebugFrame();
-    unsupported = !!frame && !frame.regs;
-    if (!frame || !frame.regs) {
-      regs = null;
-      return;
-    }
-    const next = frame.regs;
-    if (regs) {
-      // Highlight registers that just changed and KEEP the highlight
-      // until the next refresh — `changed` is fully replaced below,
-      // so the next step naturally clears the previous flash and
-      // marks only the newly-changed registers. No auto-decay timer,
-      // so single-stepping feels instant.
-      const prevMap = flattenRegs(regs);
-      const nextMap = flattenRegs(next);
-      const flashed: Record<string, boolean> = {};
-      for (const k of Object.keys(nextMap)) {
-        if (prevMap[k] !== nextMap[k]) flashed[k] = true;
-      }
-      changed = flashed;
-    }
-    regs = next;
-    debug.registersPrev = flattenRegs(next);
-  }
-
-  function flattenRegs(r: Registers): Record<string, number> {
-    const out: Record<string, number> = {};
-    for (let i = 0; i < 8; i++) out[`d${i}`] = r.d[i] ?? 0;
-    for (let i = 0; i < 8; i++) out[`a${i}`] = r.a[i] ?? 0;
-    out.pc = r.pc;
-    out.sr = r.sr;
-    out.usp = r.usp;
-    out.ssp = r.ssp;
+  const frame = $derived(debugFrame.current);
+  const values = $derived(frame?.rawRegs ?? null);
+  const groups = $derived.by(() => {
+    if (!frame || !values) return [];
+    const layout = LAYOUTS[frame.arch] ?? [];
+    const named = new Set(layout.flatMap((g) => g.names));
+    const out = layout
+      .map((g) => ({ title: g.title, names: g.names.filter((n) => n in values) }))
+      .filter((g) => g.names.length);
+    const rest = Object.keys(values).filter((n) => !named.has(n));
+    if (rest.length) out.push({ title: layout.length ? 'Other' : 'Registers', names: rest });
     return out;
-  }
-
-  onMount(() => {
-    void refresh();
   });
 
-  // Re-fetch when the machine pauses (post-step / breakpoint hit).
-  // Also watches `debug.refreshGen` — Steps don't change run-state
-  // (paused → paused) so we need an explicit "PC moved" signal to
-  // trigger a re-fetch.
+  // Highlight the registers that changed since the previous frame; the
+  // highlight lasts until the next frame, so single-stepping reads well.
+  let prev: Record<string, number> | null = null;
+  let changed = $state<Record<string, boolean>>({});
   $effect(() => {
-    void machine.status;
-    void debug.refreshGen;
-    if (machine.status === 'paused' || machine.status === 'running') {
-      void refresh();
+    const next = values;
+    if (!next) {
+      prev = null;
+      changed = {};
+      return;
     }
+    const flashed: Record<string, boolean> = {};
+    if (prev) for (const k of Object.keys(next)) if (prev[k] !== next[k]) flashed[k] = true;
+    changed = flashed;
+    prev = { ...next };
+    debug.registersPrev = prev;
   });
 
   async function commit(name: string, raw: string, ev: Event) {
     const target = ev.target as HTMLInputElement;
     const value = parseHex(raw);
-    if (value === null) {
+    // Only a register this frame reported can be written: the name becomes
+    // a path segment of machine.cpu.
+    if (value === null || !values || !(name in values)) {
       target.classList.add('invalid');
       setTimeout(() => target.classList.remove('invalid'), 400);
       showNotification(`Invalid hex value for ${name.toUpperCase()}`, 'error');
@@ -84,7 +76,7 @@
     }
     const ok = await writeRegister(name, value);
     if (!ok) showNotification(`Failed to write ${name.toUpperCase()}`, 'error');
-    await refresh();
+    bumpDebugRefresh();
   }
 
   function onKey(name: string, ev: KeyboardEvent) {
@@ -100,21 +92,18 @@
   }
 
   function currentValueFor(name: string): string {
-    if (!regs) return '00000000';
-    if (name === 'sr') return fmtHex16(regs.sr);
-    const flat = flattenRegs(regs);
-    return fmtHex32(flat[name] ?? 0);
+    const v = values?.[name] ?? 0;
+    return WIDTH16.has(name) ? fmtHex16(v) : fmtHex32(v);
   }
 
   function widthChFor(name: string): number {
-    return name === 'sr' ? 4 : 8;
+    return WIDTH16.has(name) ? 4 : 8;
   }
 
   function onRegContext(name: string, ev: MouseEvent) {
-    if (name === 'sr') return; // SR is non-editable + no context menu
+    if (READ_ONLY.has(name)) return; // no context menu on status registers
     ev.preventDefault();
-    const flat = regs ? flattenRegs(regs) : {};
-    const value = flat[name] ?? 0;
+    const value = values?.[name] ?? 0;
     const valueText = `$${fmtHex32(value)}`;
     const upper = name.toUpperCase();
     const items: ContextMenuItem[] = [
@@ -131,13 +120,6 @@
     ];
     openContextMenu(items, ev.clientX, ev.clientY);
   }
-
-  // Three groups, each rendered as a 2-column grid.
-  const GROUPS = [
-    { title: 'Data', names: ['d0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7'] },
-    { title: 'Address', names: ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'] },
-    { title: 'Control', names: ['pc', 'sr', 'usp', 'ssp'] },
-  ];
 </script>
 
 <CollapsibleSection
@@ -147,12 +129,10 @@
 >
   {#if machine.status === 'running'}
     <p class="reg-hint">Pause the machine to inspect register state.</p>
-  {:else if unsupported}
-    <p class="reg-hint">The register view does not support this CPU yet.</p>
-  {:else if !regs}
-    <p class="reg-hint">No machine running.</p>
+  {:else if !frame}
+    <p class="reg-hint">{debugFrame.loading ? 'Reading registers…' : 'No machine running.'}</p>
   {:else}
-    {#each GROUPS as group (group.title)}
+    {#each groups as group (group.title)}
       <div class="reg-group">
         <h4 class="reg-group-title">{group.title}</h4>
         <div
@@ -170,7 +150,7 @@
                 value={currentValueFor(name)}
                 size={widthChFor(name)}
                 style="width: {widthChFor(name)}ch;"
-                readonly={name === 'sr'}
+                readonly={READ_ONLY.has(name)}
                 aria-label={`${name.toUpperCase()} register value`}
                 onkeydown={(ev) => onKey(name, ev)}
               />

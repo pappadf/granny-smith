@@ -1,11 +1,7 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
-  import {
-    loadDebugFrame,
-    addBreakpoint,
-    removeBreakpointAt,
-    type DebugFrameRow,
-  } from '@/bus/debug';
+  import { tick } from 'svelte';
+  import { addBreakpoint, removeBreakpointAt, type DebugFrameRow } from '@/bus/debug';
+  import { debugFrame, ROWS_BEFORE_PC } from '@/state/debugFrame.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { machine } from '@/state/machine.svelte';
@@ -13,38 +9,25 @@
   import { fmtHex32 } from '@/lib/hex';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
 
-  const ROWS = 32;
-  // Bytes to fetch *before* PC. 68K instructions are variable length so
-  // PC ends up at a variable row index (usually 4–8). The scroll
-  // anchor below normalises that visually — PC always sits at line 5
-  // from the top regardless of how many bytes the leading instructions
-  // consume.
-  const BACK_BYTES = 16;
-  // Row position (1-indexed) where the PC row should appear after a
-  // refresh. Pre-PC rows stay scrollable for context.
-  const PC_ANCHOR_LINE = 5;
+  // The PC sits on this (1-indexed) line after a refresh: the shared frame
+  // is fetched with ROWS_BEFORE_PC rows ahead of the PC, re-synchronised by
+  // the core so a row always lands exactly on it (68K instructions are
+  // variable-length).  Before, this pane chose its window from the PREVIOUS
+  // PC, so after a breakpoint hit or a far jump it showed the old code with
+  // no PC marker, and decoding from pc-16 could step over the PC (N-27).
+  const PC_ANCHOR_LINE = ROWS_BEFORE_PC + 1;
   // Single source of truth for row height — must match `.row { height: ... }`.
   const ROW_HEIGHT_PX = 22;
 
-  let rows = $state<DebugFrameRow[]>([]);
-  let pc = $state(0);
+  const rows = $derived<DebugFrameRow[]>(debugFrame.current?.rows ?? []);
+  const pc = $derived(debugFrame.current?.pc ?? 0);
 
-  async function refresh() {
-    // One bridge round-trip: registers + disasm rows + real per-row
-    // MMU translation. Replaces the previous ~21-call fan-out
-    // (readRegisters + disasmAt + mockMmu lookups per row).
-    const start = pc > 0 ? Math.max(0, (pc - BACK_BYTES) >>> 0) : undefined;
-    const frame = await loadDebugFrame(start, ROWS);
-    if (!frame) return;
-    pc = frame.pc;
+  // A new frame: record the PC and anchor it once the rows are in the DOM.
+  $effect(() => {
+    void debugFrame.current;
     debug.currentPc = pc;
-    rows = frame.rows;
-    // Wait for the DOM to reflect the new rows, then anchor PC at the
-    // configured line. Without this, scrollTop is computed against
-    // stale layout.
-    await tick();
-    anchorPcRow();
-  }
+    void tick().then(anchorPcRow);
+  });
 
   // Scroll the pane so the PC row sits at the configured anchor line.
   // No-op when PC isn't in the current window (start-of-day before the
@@ -56,19 +39,6 @@
     const target = (pcIdx - (PC_ANCHOR_LINE - 1)) * ROW_HEIGHT_PX;
     paneEl.scrollTop = Math.max(0, target);
   }
-
-  onMount(() => {
-    void refresh();
-  });
-
-  $effect(() => {
-    // Re-fetch on pause / running transitions and after each Step.
-    // `refreshGen` is bumped by stepInto so Steps trigger a refresh
-    // even when the status is unchanged (paused → paused).
-    void machine.status;
-    void debug.refreshGen;
-    void refresh();
-  });
 
   function bannerLabel(): string {
     const model = machine.model ?? 'Machine';
@@ -195,7 +165,7 @@
   {#if machine.status === 'running'}
     <p class="hint">Pause the machine to see the disasm listing.</p>
   {:else if rows.length === 0}
-    <p class="hint">Pause the machine to see the disasm listing.</p>
+    <p class="hint">{debugFrame.loading ? 'Disassembling…' : 'No machine running.'}</p>
   {:else}
     {#each rows as row, i (row.addr * 100 + i)}
       {@const isPc = row.addr === pc}
