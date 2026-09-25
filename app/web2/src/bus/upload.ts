@@ -10,13 +10,19 @@
 //   5. Persist to the right /opfs/images/<category>/ via gsEval('storage.cp').
 //   6. Cleanup the staging copy.
 //
-// STAGING (see stageUpload): the write runs ON THE WORKER — Module.FS is proxied
-// to the runtime thread, whose WasmFS drives OPFS via createSyncAccessHandle,
-// the only browser-portable OPFS write path. Writing staging from the MAIN
-// thread — the old approach — failed two ways: Safari's OPFS rejects main-thread
-// createWritable() with "UnknownError", and on Chromium the worker's WasmFS
-// can't see a main-thread OPFS write, so the follow-up storage.cp can't find the
-// file and strands it in /opfs/upload. The file is sliced and written chunk by
+// STAGING (see stageUpload): the write goes THROUGH WASMFS, the same filesystem
+// the emulator uses.  Under WASMFS a Module.FS call runs on the calling (main)
+// thread, and WasmFS's OPFS backend hands the actual OPFS I/O to its own worker
+// thread, which uses createSyncAccessHandle — the only browser-portable OPFS
+// write path.  The main thread blocks, servicing proxied calls, until each
+// chunk lands: that is jank while a large upload streams, not a deadlock (the
+// emulator thread's sync MAIN_THREAD_EM_ASM calls are serviced meanwhile —
+// 11-WORK-ORDER A8, refuting N-61).  Moving the writes off the main thread is
+// the execution-model proposal's I/O worker.  Writing staging with the page's
+// own navigator.storage — the old approach — failed two ways: Safari's OPFS
+// rejects main-thread createWritable() with "UnknownError", and on Chromium the
+// emulator's WasmFS can't see an out-of-band OPFS write, so the follow-up
+// storage.cp can't find the file and strands it in /opfs/upload. The file is sliced and written chunk by
 // chunk, so uploads of any size (including hundreds-of-MB CD-ROMs) never buffer
 // the whole file. This mirrors how move/delete route through the worker
 // (storage.mv/storage.rm).
@@ -60,11 +66,11 @@ async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
 // hundreds-of-MB CD-ROM images — never buffer the whole file anywhere.
 const STAGE_CHUNK_BYTES = 4 * 1024 * 1024;
 
-// Write a File to an OPFS path, chunk by chunk, ON THE WORKER: Module.FS is
-// proxied to the runtime thread, whose WasmFS drives OPFS via
-// createSyncAccessHandle — the only browser-portable OPFS write path.
-// Main-thread createWritable() throws "UnknownError" on Safari, and a
-// main-thread OPFS write isn't visible to the worker's WasmFS on Chromium
+// Write a File to an OPFS path, chunk by chunk, through WasmFS (see STAGING
+// above): the FS call runs here, WasmFS's own OPFS worker does the
+// createSyncAccessHandle I/O, and this thread blocks per chunk.
+// Main-thread createWritable() throws "UnknownError" on Safari, and an
+// out-of-band OPFS write isn't visible to the emulator's WasmFS on Chromium
 // (stranding the file). Slicing the File and writing chunk-by-chunk means
 // nothing buffers the whole file, so any size (incl. large CD-ROMs) works.
 // Returns true on success.
