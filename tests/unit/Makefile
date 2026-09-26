@@ -5,6 +5,16 @@
 # Discover test directories under suites/ (each must contain a Makefile)
 TEST_DIRS := $(sort $(dir $(wildcard suites/*/Makefile)))
 TESTS := $(patsubst %/,%,$(TEST_DIRS))
+
+# Every suite builds through common.mk, so a change to it (a flag, a stub,
+# a sanitizer mode) reaches all of them.  The one exception is a shell
+# driver, not a C suite: peeler_corpus runs the archive library's own test
+# script.  A new suite that writes its own build rules fails here.
+COMMON_MK_EXEMPT := suites/peeler_corpus
+BYPASSING := $(filter-out $(COMMON_MK_EXEMPT),$(foreach t,$(TESTS),$(if $(shell grep -l '^include ../../common.mk' $(t)/Makefile),,$(t))))
+ifneq ($(strip $(BYPASSING)),)
+$(error suites that do not include common.mk: $(BYPASSING))
+endif
 BUILD_DIR := build
 
 .PHONY: all run run-wasm32 list clean $(TESTS) test-%

@@ -4,76 +4,19 @@
 # StartPSC/StopPSCRead (SCSI HAL), InitRecv/PrimeXmitRS (MACE), and the
 # New Age FDC read/write dance.
 
-TEST_NAME := psc
-
-UNIT_ROOT      := $(abspath ../../)
-WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
-EMU_ROOT       := $(WORKSPACE_ROOT)/src
-
-BUILD_DIR := $(UNIT_ROOT)/build
-OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
-TARGET    := $(BUILD_DIR)/$(TEST_NAME)
-
-CC ?= gcc
+TEST_NAME    := psc
+TEST_SRCS    := test.c
+TEST_HARNESS := none
+STUBS        := machine_object assert checkpoint
+EXTRA_SRCS   := ../../../../src/core/peripherals/dma_mem.c \
+                ../../../../src/machines/av/psc.c \
+                ../../../../src/core/object/object.c \
+                ../../../../src/core/object/parse.c \
+                ../../../../src/core/object/value.c \
+                ../../../../src/core/object/meta.c \
+                ../../../../src/core/peripherals/irq_controller.c
 # -fsanitize=bounds: the sound block is indexed by address bits into a
 # fixed latch array, and a lane past its end must trap here, not read the
 # next member.
-BASE_CFLAGS := -O0 -g -Wall -Wextra -fsanitize=bounds -fno-sanitize-recover=bounds
-INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
-                 -I$(EMU_ROOT)/core \
-                 -I$(EMU_ROOT)/core/cpu \
-                 -I$(EMU_ROOT)/core/memory \
-                 -I$(EMU_ROOT)/core/peripherals \
-                 -I$(EMU_ROOT)/core/peripherals/nubus \
-                 -I$(EMU_ROOT)/core/scheduler \
-                 -I$(EMU_ROOT)/core/debug \
-                 -I$(EMU_ROOT)/core/storage \
-                 -I$(EMU_ROOT)/core/shell \
-                 -I$(EMU_ROOT)/core/object \
-                 -I$(EMU_ROOT)/core/vfs \
-                 -I$(EMU_ROOT)/machines \
-                 -I$(EMU_ROOT)/machines/mac030 \
-                 -I$(EMU_ROOT)/machines/av \
-                 -DUNIT_TEST_PLATFORM_OVERRIDE \
-                 -include $(UNIT_ROOT)/support/platform.h \
-                 -include $(UNIT_ROOT)/support/log.h
-
-CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
-LDFLAGS ?= -fsanitize=bounds
-
-SRCS := $(CURDIR)/test.c \
-        $(EMU_ROOT)/core/peripherals/dma_mem.c \
-        $(EMU_ROOT)/machines/av/psc.c \
-        $(EMU_ROOT)/core/object/object.c \
-        $(EMU_ROOT)/core/object/parse.c \
-        $(EMU_ROOT)/core/object/value.c \
-        $(EMU_ROOT)/core/object/meta.c \
-        $(EMU_ROOT)/core/peripherals/irq_controller.c \
-        $(UNIT_ROOT)/support/stub_machine_object.c \
-        $(UNIT_ROOT)/support/stub_assert.c \
-        $(UNIT_ROOT)/support/stub_checkpoint.c
-
-ALL_SRCS := $(abspath $(SRCS))
-
-OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))
-DEP := $(OBJ:.o=.d)
-
-.PHONY: all run clean
-
-all: $(TARGET)
-
-$(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-$(TARGET): $(OBJ)
-	@mkdir -p $(dir $@)
-	$(CC) $(OBJ) $(LDFLAGS) -o $@
-
-run: $(TARGET)
-	@$(TARGET)
-
-clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
-
--include $(DEP)
+SANITIZE     := -fsanitize=bounds -fno-sanitize-recover=bounds
+include ../../common.mk

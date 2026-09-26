@@ -7,85 +7,24 @@
 # had to be found through a full boot.
 #
 # This suite is the reason the move was worth doing.
-TEST_NAME := scsi_mesh
-
-UNIT_ROOT      := $(abspath ../../)
-WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
-EMU_ROOT       := $(WORKSPACE_ROOT)/src
-
-BUILD_DIR := $(UNIT_ROOT)/build
-OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
-TARGET    := $(BUILD_DIR)/$(TEST_NAME)
-
-CC ?= gcc
-BASE_CFLAGS := -O0 -g -Wall -Wextra
-INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
-                 -I$(EMU_ROOT)/core \
-                 -I$(EMU_ROOT)/core/cpu \
-                 -I$(EMU_ROOT)/core/memory \
-                 -I$(EMU_ROOT)/core/peripherals \
-                 -I$(EMU_ROOT)/core/peripherals/nubus \
-                 -I$(EMU_ROOT)/core/peripherals/pci \
-                 -I$(EMU_ROOT)/core/peripherals/pci/cards \
-                 -I$(EMU_ROOT)/core/scheduler \
-                 -I$(EMU_ROOT)/core/debug \
-                 -I$(EMU_ROOT)/core/storage \
-                 -I$(EMU_ROOT)/core/network \
-                 -I$(EMU_ROOT)/core/shell \
-                 -I$(EMU_ROOT)/core/object \
-                 -I$(EMU_ROOT)/core/vfs \
-                 -I$(EMU_ROOT)/machines \
-                 -DUNIT_TEST_PLATFORM_OVERRIDE \
-                 -include $(UNIT_ROOT)/support/platform.h \
-                 -include $(UNIT_ROOT)/support/log.h
-
-CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
-LDFLAGS ?=
-
+TEST_NAME    := scsi_mesh
+TEST_SRCS    := test.c
 # The test supplies the mock bus, the mock guest memory and a recording
-# checkpoint stream itself, so no stub modules are linked in.
-#
+# checkpoint stream itself; from support/ it takes only the assert stub.
+TEST_HARNESS := none
+STUBS        := assert
 # scsi_msgsession.c is the real IDENTIFY/SDTR/WDTR parser, shared with the
 # 53C8xx SCRIPTS engine: pure logic, no emulator dependencies, so the suite
 # links the actual code rather than a stub.
-#
-# (The paragraph that used to sit here described sym53c825.c's register file,
-# copied from the scripts53c8xx suite's Makefile.  That file is not in this
-# suite and never was.)
-SRCS := $(CURDIR)/test.c \
-        $(EMU_ROOT)/core/peripherals/scsi.c \
-        $(EMU_ROOT)/core/peripherals/scsi_bus.c \
-        $(EMU_ROOT)/core/peripherals/scsi_cdrom.c \
-        $(EMU_ROOT)/core/peripherals/scsi_mesh.c \
-        $(EMU_ROOT)/core/peripherals/scsi_msgsession.c \
-        $(EMU_ROOT)/core/object/object.c \
-        $(EMU_ROOT)/core/object/parse.c \
-        $(EMU_ROOT)/core/object/value.c \
-        $(EMU_ROOT)/core/object/meta.c \
-        $(EMU_ROOT)/core/object/api.c \
-        $(EMU_ROOT)/core/object/value_format.c \
-        $(UNIT_ROOT)/support/stub_assert.c
-
-ALL_SRCS := $(abspath $(SRCS))
-OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))
-DEP := $(OBJ:.o=.d)
-
-.PHONY: all run clean
-
-all: $(TARGET)
-
-$(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-$(TARGET): $(OBJ)
-	@mkdir -p $(dir $@)
-	$(CC) $(OBJ) $(LDFLAGS) -o $@
-
-run: $(TARGET)
-	@$(TARGET)
-
-clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
-
--include $(DEP)
+EXTRA_SRCS   := ../../../../src/core/peripherals/scsi.c \
+                ../../../../src/core/peripherals/scsi_bus.c \
+                ../../../../src/core/peripherals/scsi_cdrom.c \
+                ../../../../src/core/peripherals/scsi_mesh.c \
+                ../../../../src/core/peripherals/scsi_msgsession.c \
+                ../../../../src/core/object/object.c \
+                ../../../../src/core/object/parse.c \
+                ../../../../src/core/object/value.c \
+                ../../../../src/core/object/meta.c \
+                ../../../../src/core/object/api.c \
+                ../../../../src/core/object/value_format.c
+include ../../common.mk
