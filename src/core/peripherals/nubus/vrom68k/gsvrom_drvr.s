@@ -213,13 +213,12 @@ CtlNoop:
 	rts
 
 | PAGES.  Everything below that touches pvPage / DRSetPage is assembled
-| ONLY for a personality that declares more than one (GS_NPAGES), so a
-| single-page card's DRVR comes out byte-for-byte as it did before the
-| page support existed.  That is not tidiness: the 8*24 GC's accelerator
-| bring-up is sensitive to this fragment's LENGTH -- four bytes of nop in
-| CtlSetMode is enough to stop GC-OS starting (measured) -- so a
-| single-page personality must not pay for a mechanism it cannot use.
-| The sensitivity itself is a separate, pre-existing defect.
+| only for a personality that declares more than one (GS_NPAGES): a
+| single-page card has no SetPage op and no page to track, so it
+| carries none of the page code.  This fragment's byte length is
+| otherwise free to change -- the 8*24 GC bring-up failures once blamed
+| on it were SecondaryInit dereferencing an uninitialised refNum (see
+| gsvrom_sinit.s), whose fate depended on the system-heap layout.
 |
 | csCode 0 — Reset: default 1-bpp mode, page 0, gray screen.  A card with
 | more than one page must switch page 0 in here (Designing Cards and
