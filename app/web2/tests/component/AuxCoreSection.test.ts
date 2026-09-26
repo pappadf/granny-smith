@@ -42,7 +42,7 @@ describe('AuxCoreSection', () => {
   it("reads the core's own frame when opened, and renders it with the shared layout", async () => {
     const { container, getByText } = render(AuxCoreSection, { props: { cpu: DSP } });
     expect(frameCalls).toEqual([]); // closed: nothing fetched
-    await fireEvent.click(container.querySelector('header.header') as HTMLElement);
+    await fireEvent.click(container.querySelector('header.header .toggle') as HTMLElement);
     await waitFor(() => expect(container.querySelectorAll('.aux-row').length).toBe(2));
     expect(frameCalls.every((c) => c.core === 'dsp')).toBe(true);
     // The DSP3210 layout: 16-bit control registers at their width.

@@ -14,14 +14,19 @@
   let { title, open, onToggle, count, actions, children }: Props = $props();
 </script>
 
+<!-- The toggle is a real button, reachable by Tab and Enter/Space (the header
+     used to be role="button" with tabindex -1, so no keyboard could open a
+     section), and the header actions are its siblings, never nested inside
+     it. -->
 <section class="section gs-collapsible" class:open>
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <header class="header" onclick={onToggle} role="button" tabindex="-1" aria-expanded={open}>
-    <span class="twistie" class:open><Icon name="chevron" size={12} /></span>
-    <span class="title">{title}</span>
-    {#if typeof count === 'number'}
-      <span class="count">{count}</span>
-    {/if}
+  <header class="header">
+    <button type="button" class="toggle" onclick={onToggle} aria-expanded={open}>
+      <span class="twistie" class:open><Icon name="chevron" size={12} /></span>
+      <span class="title">{title}</span>
+      {#if typeof count === 'number'}
+        <span class="count">{count}</span>
+      {/if}
+    </button>
     {#if actions}
       <span class="actions">{@render actions()}</span>
     {/if}
@@ -50,14 +55,32 @@
     height: 22px;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 8px;
-    cursor: pointer;
+    padding: 0 8px 0 0;
     user-select: none;
     background: var(--gs-bg);
   }
   .header:hover {
     background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+  }
+  /* Fills the header, so a click anywhere but the actions toggles. */
+  .toggle {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 0 0 8px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .toggle:focus-visible {
+    outline: 1px solid var(--gs-focus, #0969da);
+    outline-offset: -1px;
   }
   .twistie {
     display: inline-flex;

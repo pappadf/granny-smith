@@ -121,6 +121,7 @@
           type="button"
           class="mem-mode-btn"
           class:active={debug.memoryMode === 'logical'}
+          aria-pressed={debug.memoryMode === 'logical'}
           onclick={() => setMode('logical')}
         >
           Logical
@@ -129,6 +130,7 @@
           type="button"
           class="mem-mode-btn"
           class:active={debug.memoryMode === 'physical'}
+          aria-pressed={debug.memoryMode === 'physical'}
           onclick={() => setMode('physical')}
         >
           Physical

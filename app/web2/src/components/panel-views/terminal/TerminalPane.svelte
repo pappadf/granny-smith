@@ -500,7 +500,12 @@
   });
 </script>
 
-<div class="terminal-host" bind:this={containerEl}></div>
+<div
+  class="terminal-host"
+  role="region"
+  aria-label="Emulator shell terminal"
+  bind:this={containerEl}
+></div>
 
 <style>
   .terminal-host {

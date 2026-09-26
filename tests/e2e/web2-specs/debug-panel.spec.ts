@@ -54,8 +54,8 @@ async function readReg(page: Page, name: string): Promise<number> {
 
 // Open one collapsible Debug section by its title.
 async function openSection(page: Page, title: string): Promise<void> {
-  const header = page.locator('header.header', { hasText: title });
-  if ((await header.getAttribute('aria-expanded')) !== 'true') await header.click();
+  const toggle = page.locator('header.header', { hasText: title }).locator('button.toggle');
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
 }
 
 test('a register edit reaches the core', async ({ page }) => {

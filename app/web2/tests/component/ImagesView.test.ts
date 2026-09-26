@@ -36,7 +36,7 @@ describe('ImagesView', () => {
     await waitFor(() => {
       expect(container.querySelectorAll('.image-row').length).toBeGreaterThan(0);
     });
-    const romHeader = Array.from(container.querySelectorAll('.header')).find((h) =>
+    const romHeader = Array.from(container.querySelectorAll('.header .toggle')).find((h) =>
       h.textContent?.includes('ROM'),
     ) as HTMLElement;
     await fireEvent.click(romHeader);

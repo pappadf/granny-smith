@@ -101,16 +101,12 @@
   onToggle={() => toggleSection('breakpoints')}
 >
   {#snippet actions()}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <span
-      role="button"
-      tabindex="-1"
+    <button
+      type="button"
       class="add-btn"
       title="Add breakpoint"
-      onclick={(ev: MouseEvent) => {
-        ev.stopPropagation();
-        showAdd = true;
-      }}>+</span
+      aria-label="Add breakpoint"
+      onclick={() => (showAdd = true)}>+</button
     >
   {/snippet}
   {#if showAdd}
@@ -161,12 +157,16 @@
     justify-content: center;
     width: 18px;
     height: 18px;
+    padding: 0;
+    border: none;
+    background: transparent;
     color: var(--gs-fg-muted);
     cursor: pointer;
     font-size: 14px;
     line-height: 1;
   }
-  .add-btn:hover {
+  .add-btn:hover,
+  .add-btn:focus-visible {
     color: var(--gs-fg-bright);
   }
   .add-row {

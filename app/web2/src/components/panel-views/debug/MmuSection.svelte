@@ -36,6 +36,7 @@
               type="button"
               class="su-btn"
               class:active={debug.mmuSupervisor}
+              aria-pressed={debug.mmuSupervisor}
               onclick={() => (debug.mmuSupervisor = true)}
               title="Supervisor root"
             >
@@ -45,6 +46,7 @@
               type="button"
               class="su-btn"
               class:active={!debug.mmuSupervisor}
+              aria-pressed={!debug.mmuSupervisor}
               onclick={() => (debug.mmuSupervisor = false)}
               title="User root"
             >

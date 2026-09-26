@@ -72,10 +72,16 @@
       (style.width / style.height) is what drives layout and is safe
       to update reactively.
     -->
+    <!-- role="application": a focusable surface that passes every key and
+         pointer event to the emulated machine, so assistive tech should not
+         intercept them; it is named for what it is. -->
+    <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
     <canvas
       id="screen"
       bind:this={canvas}
       tabindex="0"
+      role="application"
+      aria-label="Emulated machine screen"
       width="512"
       height="342"
       style="width: {cssWidth}px; height: {cssHeight}px"
@@ -83,6 +89,7 @@
     <canvas
       id="screen3d"
       class="overlay"
+      aria-hidden="true"
       bind:this={canvas3d}
       width="640"
       height="480"

@@ -236,16 +236,15 @@
 >
   <CollapsibleSection title={CATEGORY_LABELS[cat]} {open} {onToggle} count={entries.length}>
     {#snippet actions()}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <span
+      <button
+        type="button"
         class="upload-btn"
-        role="button"
-        tabindex="-1"
         title="Upload {CATEGORY_LABELS[cat]} image"
+        aria-label="Upload {CATEGORY_LABELS[cat]} image"
         onclick={onUploadClick}
       >
         <Icon name="upload" size={14} />
-      </span>
+      </button>
     {/snippet}
     {#if loading && entries.length === 0}
       <p class="empty">Loading…</p>
@@ -277,6 +276,9 @@
     justify-content: center;
     width: 22px;
     height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
     color: var(--gs-fg-muted);
     opacity: 0.6;
     transition:
