@@ -1479,7 +1479,7 @@ static const member_t checkpoint_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_probe}},
     {.kind = M_METHOD,
      .name = "clear",
-     .doc = "Remove all checkpoint files for the active machine",
+     .doc = "Remove all checkpoint files for the active machine, and the image deltas no open image holds",
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}},
     {.kind = M_METHOD,
      .name = "load",

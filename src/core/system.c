@@ -892,8 +892,26 @@ int gs_background_checkpoint(const char *reason) {
 }
 
 // Clear checkpoint files inside the current machine directory: drops
+// True when `path` is the delta or journal of an image the machine holds
+// open: clearing must not pull a live file from under it.
+static bool image_file_in_use(const char *path) {
+    config_t *cfg = global_emulator;
+    for (int i = 0; cfg && i < cfg->n_images; i++) {
+        const image_t *img = cfg->images[i];
+        if (!img)
+            continue;
+        if ((img->delta_path && strcmp(img->delta_path, path) == 0) ||
+            (img->journal_path && strcmp(img->journal_path, path) == 0))
+            return true;
+    }
+    return false;
+}
+
 // state.checkpoint, any leftover *.tmp, and (defensive) any legacy
-// sequence-numbered *.checkpoint / *.pending / *.complete files.  The
+// sequence-numbered *.checkpoint / *.pending / *.complete files, plus the
+// image deltas and journals of the discarded state: a delta the checkpoint
+// no longer refers to can never be reached again, and each session left
+// one behind, a disk-sized file the browser's site data hid (#149).  The
 // machine directory itself is left in place.
 static int clear_checkpoint_files(void) {
     const char *dir_path = checkpoint_machine_dir();
@@ -919,8 +937,13 @@ static int clear_checkpoint_files(void) {
             match = true; // legacy
         else if (strstr(name, ".complete") || strstr(name, ".pending"))
             match = true; // legacy
+        else if ((len >= 6 && strcmp(name + len - 6, ".delta") == 0) ||
+                 (len >= 8 && strcmp(name + len - 8, ".journal") == 0))
+            match = true; // an image delta or journal, unless still open below
         if (match) {
             snprintf(path, sizeof(path), "%s/%s", dir_path, name);
+            if (image_file_in_use(path))
+                continue;
             if (unlink(path) == 0)
                 removed++;
         }
