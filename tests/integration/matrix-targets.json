@@ -1115,6 +1115,16 @@
       "suite": "suite-tnt"
     },
     {
+      "machine": "pm7500",
+      "system": "7.6",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
       "machine": "ans500",
       "system": "OF 1.1.22",
       "card": "cirrus_54m30",

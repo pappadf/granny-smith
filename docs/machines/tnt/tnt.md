@@ -342,6 +342,28 @@ community's "BoxID bits 11-12" reading:
   assigns Control's BARs; the 9500 correctly gets neither node (no
   onboard video on the real machine).
 
+**BoxID bit 8 — the factory-test strap — idles HIGH, and POST tests it
+on every boot but the first.** POST (`HWInit`, `$FFF20428`) keeps a log in
+Grand Central's NVRAM at `$1040`–`$125F`: a `'RobG'` signature at `$117C`,
+a boot counter at `$1180` it increments each boot, its saved return address
+at `$1254`. On a boot that finds the signature already there — every boot
+after the first on a formatted store, since nothing but Open Firmware's
+virgin-store format ever clears the region — it reads BoxID (`lwbrx
+$F301A000`, `andi. r6,r6,$100`, `$FFF201FC`) and a CLEAR bit 8 calls
+`$FFF21650`: the ROM's **Serial Test Manager** (`*   Serial Test Manager
+*` on ttya, `T0`..`T7`/`A`/`Q`/`X) Exit STM` menu, a `>` prompt, a `getc`
+with no timeout). Open Firmware never runs, no device tree is built,
+Control's BARs are never assigned, the screen stays black. The Macintosh
+profiles kept the bit clear on an earlier reading of the strap as "set =
+test monitor", which the ladder rows never contradicted because they boot
+a virgin store, where POST takes the fresh-log path and never tests the
+bit; the Network Server board found the law first (`ans500.c`). The
+symptom was #115 — "256 colours leaves Control uninitialised" — which was
+really "the second `machine.restart` on any store never boots"; the colour
+depth was the innocent bystander that made the reporter restart.
+`suite-tnt`'s `pm7500-76-8bpp-restart` holds it: a formatted store, the
+depth pinned through `machine.nvram`, a power-cycle, the Finder at 8 bpp.
+
 Known open items:
 
 - ~~The 68k startup chime STILL does not play by the T11 desktop~~ —
@@ -560,6 +582,20 @@ A row that wants the same chip across two cold boots says so with
 `machine.restart` (the DIMM table in `suite-ans`'s `ans500-diag-floppy`,
 `ans_boot_serial`'s console setting); `machine.board.clear_nvram()` is
 still the battery pull.
+
+**The store is a test lever: `machine.nvram`.** Every TNT board exposes
+the 8 KB store flat — `peek(addr)`, `poke(addr, bytes)`, `dump(addr, n)`,
+`snapshot()`, `restore(bytes)`, `clear()` — the shape `machine.rtc.pram`
+has on the 68k machines, so a row can pin what lives there instead of
+driving a control panel: the Mac OS XPRAM image at `$1300` + PRAM address
+(`$1377` = Default OS, `$1310` = the `$A8` signature), the Name Registry's
+persistent properties above it (the Control driver's `gprf` record at
+`$1409`, whose byte at `$1410` is the Monitors depth: 0 = 256 colours,
+2 = millions), POST's log at `$1040`–`$125F` ("Machine identity" above),
+and Open Firmware's environment in the top bank. The store the object
+edits is the live chip, so a poke followed by `machine.restart` is what
+the machine boots on; a poke followed by `machine.boot` is lost with the
+rest of the old machine.
 
 The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
 than its relocatable BAR, because this board installs no pull-down on MD51

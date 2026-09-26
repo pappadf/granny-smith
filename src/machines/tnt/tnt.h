@@ -375,6 +375,7 @@ typedef struct tnt_state {
     tnt_gbus_t gbus;
     tnt_lcd_t lcd;
     struct object *gc_object; // machine.gc node (grand_central.c)
+    struct object *nvram_object; // machine.nvram node (grand_central.c)
     struct object *board_object; // machine.board node (gbus.c)
     struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
