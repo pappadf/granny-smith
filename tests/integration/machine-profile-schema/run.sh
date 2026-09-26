@@ -13,16 +13,15 @@ SCRIPT="$WORK_DIR/profiles.script"
 ACTUAL="$WORK_DIR/schema.actual"
 mkdir -p "$WORK_DIR"
 
-# Every model in machine.c's builtin_machines[].  Keep in sync when a machine
-# is registered: a missing model is silently un-snapshotted, which is how the
-# Quadras went uncovered from the mcu/ family landing until 2026-07.
-MODELS="plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 lisa macxl"
-
-: > "$SCRIPT"
-for m in $MODELS; do
-    echo "echo \"\${machine.profile(\"$m\")}\"" >> "$SCRIPT"
-done
-echo "quit" >> "$SCRIPT"
+# Every registered model, read from the emulator itself (machine.models),
+# so a newly registered machine cannot be silently left out.
+cat > "$SCRIPT" <<'SCRIPT'
+let ms = machine.models
+for m in $ms {
+    echo "${machine.profile($m)}"
+}
+quit
+SCRIPT
 
 "$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=max > "$OUT" 2>&1
 

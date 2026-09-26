@@ -233,6 +233,22 @@ static value_t attr_machine_id(struct object *self, const member_t *m) {
     return val_str(p->id ? p->id : "");
 }
 
+// `machine.models` — every registered model id, in registry order.  Answers
+// without a running machine, so a script can iterate the roster instead of
+// keeping its own copy of it.
+static value_t attr_machine_models(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    size_t n = 0;
+    const hw_profile_t *const *list = machine_list(&n);
+    value_t *items = n ? (value_t *)calloc(n, sizeof(value_t)) : NULL;
+    if (n && !items)
+        return val_err("machine.models: out of memory");
+    for (size_t i = 0; i < n; i++)
+        items[i] = val_str(list[i]->id);
+    return val_list(items, n);
+}
+
 static value_t attr_machine_name(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -1428,6 +1444,11 @@ static const arg_decl_t machine_eject_media_args[] = {
 };
 
 static const member_t machine_members[] = {
+    {.kind = M_ATTR,
+     .name = "models",
+     .doc = "Every registered model id, in registry order (no machine needed)",
+     .flags = VAL_RO,
+     .attr = {.type = V_LIST, .get = attr_machine_models, .set = NULL}},
     {.kind = M_ATTR,
      .name = "id",
      .doc = "Active machine's model id (\"plus\" / \"se30\" / …)",

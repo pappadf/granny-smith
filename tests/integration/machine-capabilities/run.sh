@@ -6,29 +6,31 @@
 # fields.  Each model's profile is a single JSON line containing
 # "id":"<model>", so we isolate a model's line by that key.
 #
-# MODELS= is deliberately NOT "every registered model": every assertion here is
-# hand-written and names its model explicitly, so adding a model to the list
-# alone buys no coverage — it just dumps a JSON line nothing inspects.  A new
-# machine earns coverage here only by having assertions written for it.  (The
-# shape of the profile JSON *is* checked for every registered model, by the
-# sibling machine-profile-schema test.)
+# Every assertion here is hand-written and names its model, so listing a model
+# buys no coverage by itself.  What the test does enforce is a floor: it dumps
+# every registered model (machine.models) and fails if any has no assertion at
+# all -- which is how the three MCU Quadras went uncovered here while the
+# sibling machine-profile-schema test already carried them.
 set -euo pipefail
 
 OUT="$WORK_DIR/profiles.txt"
 SCRIPT="$WORK_DIR/profiles.script"
 mkdir -p "$WORK_DIR"
 
-MODELS="plus se30 iicx iix iifx iici iisi q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 lisa macxl"
-
-: > "$SCRIPT"
-for m in $MODELS; do
-    echo "echo \"\${machine.profile(\"$m\")}\"" >> "$SCRIPT"
-done
-echo "quit" >> "$SCRIPT"
+# Every registered model, read from the emulator itself (machine.models),
+# so a newly registered machine cannot be silently left out.
+cat > "$SCRIPT" <<'SCRIPT'
+let ms = machine.models
+for m in $ms {
+    echo "${machine.profile($m)}"
+}
+quit
+SCRIPT
 
 "$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=max > "$OUT" 2>&1
 
 fail=0
+declare -A count=()
 
 # Return the single JSON line for a model id.
 profile_line() {
@@ -45,7 +47,10 @@ assert_contains() {
         fail=1
         return
     fi
-    if ! printf '%s' "$line" | grep -qF "$needle"; then
+    count[$model]=$(( ${count[$model]:-0} + 1 ))
+    # A here-string, not printf | grep -q: under pipefail, grep -q exiting at
+    # the first match can SIGPIPE the printf and fail a passing assertion.
+    if ! grep -qF -- "$needle" <<<"$line"; then
         echo "FAIL: $model: expected $desc ($needle)"
         fail=1
     fi
@@ -61,7 +66,8 @@ assert_not_contains() {
         fail=1
         return
     fi
-    if printf '%s' "$line" | grep -qF "$needle"; then
+    count[$model]=$(( ${count[$model]:-0} + 1 ))
+    if grep -qF -- "$needle" <<<"$line"; then
         echo "FAIL: $model: expected NOT $desc ($needle)"
         fail=1
     fi
@@ -72,7 +78,8 @@ assert_absent() {
     local model="$1" needle="$2" desc="$3"
     local line
     line=$(profile_line "$model")
-    if printf '%s' "$line" | grep -qF "$needle"; then
+    count[$model]=$(( ${count[$model]:-0} + 1 ))
+    if grep -qF -- "$needle" <<<"$line"; then
         echo "FAIL: $model: unexpected $desc ($needle)"
         fail=1
     fi
@@ -163,8 +170,10 @@ for m in q840av q660av; do
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets"
     assert_contains "$m" '"has_cdrom":true' "$m offers a CD-ROM bay"
-    # The New Age FDC is stubbed as 'no drive', so no floppy slot is offered.
-    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive"
+    # A GAP, pinned so that closing it shows up here: the real machines have
+    # a SuperDrive, but the New Age FDC is not modeled (a 'no drive' stub),
+    # so the profile offers no floppy slot (#178).
+    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy slot (New Age unmodeled, #178)"
 done
 # --- PDM family (Power Macintosh 6100/7100/8100): the first PowerPC
 # machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug
@@ -301,6 +310,45 @@ for m in q840av q660av; do
     for card in mdc_8_24 display_card_24ac 824gc; do
         assert_absent "$m" "\"id\":\"$card\"" "$m has no socket for $card"
     done
+done
+
+# The three MCU Quadras.  The profile states their CPU, clocks, sockets and
+# media; it does not carry an IOP flag or a DAFB monitor list, so those are
+# not asserted here.  No RAM ceiling is pinned: the 900's 64 MB and the 950's
+# 256 MB on the same board are unsettled (#184).
+for m in q700 q900 q950; do
+    assert_contains "$m" '"cpu":{"model":68040,"address_bits":32,"fpu":true}' "$m has a 68040 with FPU"
+    assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"
+    assert_contains "$m" '"nubus":true,"pci":false' "$m is a NuBus machine"
+    assert_contains "$m" '"video_in":false,"audio_in":false,"aux_cpus":[]' "$m has no video/audio input or aux CPU"
+    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m has one SuperDrive"
+    assert_contains "$m" '"cdrom":{"bus":"scsi","id":3,"label":"CD-ROM"}' "$m seats its CD at SCSI 3"
+    # A GAP, pinned so that closing it shows up here: the 900/950 have two
+    # 53C96 buses, and the model builds the second (machine.scsi2), but the
+    # profile offers bays on the internal bus only (#185).
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers one SCSI bus"
+done
+assert_contains q700 '"freq":25000000' "q700 runs at 25 MHz"
+assert_contains q900 '"freq":25000000' "q900 runs at 25 MHz"
+assert_contains q950 '"freq":33333333' "q950 runs at 33 MHz"
+# NuBus sockets: two on the 700 ($D, $E), five on the 900/950 tower ($A-$E).
+assert_contains q700 '"video_slots":[{"slot":"D"' "q700's first socket is D"
+assert_contains q700 '{"slot":"E"' "q700 has socket E"
+assert_absent q700 '{"slot":"A"' "q700 has no socket A"
+for m in q900 q950; do
+    for s in A B C D E; do
+        assert_contains "$m" "{\"slot\":\"$s\"" "$m has socket $s"
+    done
+done
+
+# The floor: every registered model carries at least one assertion above.
+models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
+[ -n "$models" ] || { echo "FAIL: machine.models dumped no profiles"; fail=1; }
+for m in $models; do
+    if [ "${count[$m]:-0}" -eq 0 ]; then
+        echo "FAIL: $m: registered, but no capability assertion names it"
+        fail=1
+    fi
 done
 
 if [ "$fail" -ne 0 ]; then
