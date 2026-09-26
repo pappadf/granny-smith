@@ -249,9 +249,10 @@ static void print_usage(const char *program) {
     printf("Arguments:\n");
     printf("  rom=<file>      ROM image file (required)\n");
     printf("  ram=<kb>        RAM size in kilobytes (default: machine-specific)\n");
-    printf("  hd=<file>       Hard disk image file (optional, can specify multiple)\n");
-    printf("  cdrom=<file>    CD-ROM image file (optional; SCSI ID comes from the model's\n");
-    printf("                  CD bay -- 3 on a Macintosh, 0 on a Network Server)\n");
+    printf("  hd=<file>       Hard disk image (optional, repeatable): each goes into the model's\n");
+    printf("                  next hard-disk bay, the boot bay first (the ProFile on a Lisa)\n");
+    printf("  cdrom=<file>    CD-ROM image (optional, once): into the model's CD bay --\n");
+    printf("                  SCSI ID 3 on a Macintosh, 0 on a Network Server\n");
     printf("  fd=<file>       Floppy disk image file (optional, can specify multiple)\n");
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
@@ -916,9 +917,9 @@ int main(int argc, char *argv[]) {
     int hd_count = 0;
     const char *cdrom_files[8] = {NULL}; // cdrom=<file> arguments
     int cdrom_count = 0;
-    const char *fd_files[2] = {NULL};
+    const char *fd_files[FLOPPY_NUM_DRIVES] = {NULL};
     int fd_count = 0;
-    const char *fd_explicit[2] = {NULL}; // fd0= and fd1= explicit drive assignments
+    const char *fd_explicit[FLOPPY_NUM_DRIVES] = {NULL}; // fd0= and fd1= explicit drive assignments
     const char *script_file = NULL;
     const char *speed_mode = "paced";
     uint64_t max_cycles = 0;
@@ -1056,7 +1057,7 @@ int main(int argc, char *argv[]) {
         }
 
         if ((value = parse_arg(arg, "fd")) != NULL) {
-            if (fd_count < 2) {
+            if (fd_count < FLOPPY_NUM_DRIVES) {
                 fd_files[fd_count++] = value;
             } else {
                 fprintf(stderr, "Warning: Too many FD images, ignoring: %s\n", value);
@@ -1280,31 +1281,58 @@ int main(int argc, char *argv[]) {
             scheduler_stop(s);
     }
 
-    // Attach hard disk images
+    // Hard disks, one per hd=, into the model's hard-disk bays in attach
+    // order -- the boot bay first, then the rest as declared -- on whatever
+    // bus each bay is on (machine.scsi, machine.scsi2, or the Lisa's ProFile).
+    // The web frontend attaches through the same bays (machine.attach_hd), so
+    // the two front ends put a disk in the same place.  This used to put hd=N
+    // at SCSI id N on the first bus whatever the model: on a Lisa that handed
+    // a NULL bus to the SCSI layer and crashed (N-01), on a Network Server it
+    // put the first disk beside the boot bay (F-15), and a fourth disk on a
+    // Mac landed on the CD bay (N-07).  A disk that cannot be placed stops the
+    // run: a test must not go on against a machine it did not ask for.
+    const hw_profile_t *active = profile; // the model machine_boot_apply just built
+    media_bay_t bays[MEDIA_HD_BAYS_MAX];
+    int n_bays = profile_hd_bays(active, bays, MEDIA_HD_BAYS_MAX);
+    char attach_err[256];
     for (int i = 0; i < hd_count; i++) {
-        add_scsi_drive(global_emulator, hd_files[i], i);
+        if (i >= n_bays) {
+            fprintf(stderr, "Error: %s has %d hard-disk bay(s); none left for hd=%s\n", active->name, n_bays,
+                    hd_files[i]);
+            return 1;
+        }
+        if (system_media_attach_path(global_emulator, &bays[i], false, hd_files[i], attach_err, sizeof(attach_err)) !=
+            0) {
+            fprintf(stderr, "Error: hd=%s: %s\n", hd_files[i], attach_err);
+            return 1;
+        }
         if (!quiet)
-            printf("Attached HD[%d]: %s\n", i, hd_files[i]);
+            printf("Attached HD[%d]: %s (%s)\n", i, hd_files[i], bays[i].label);
     }
 
-    // Attach CD-ROM images, seeded from the MODEL's own CD bay rather than a
-    // hardcoded 3.  hw_profile_t.cdrom_id is a per-model fact -- 3 on every
-    // Macintosh, 0 on the Network Servers, where bay 0 is Apple's expected
-    // CD-ROM position and the documented Service-mode install path.  The web
-    // dialog has always read it through machine.profile; this path hardcoded
-    // 3, so the two front ends disagreed on exactly the models where the
-    // answer is not 3, and an ANS install disc could not be placed with `cd=`
-    // at all (F-11).
-    int cdrom_base = profile ? profile->cdrom_id : 3;
-    for (int i = 0; i < cdrom_count; i++) {
-        int cdrom_id = cdrom_base + i;
-        add_scsi_cdrom(global_emulator, cdrom_files[i], cdrom_id);
+    // The CD, into the model's CD bay (profile_cdrom_bay: its cdrom_id -- 3 on
+    // every Macintosh, 0 on the Network Servers), on a model that has one.
+    // There is one bay, so one cdrom=.
+    if (cdrom_count > 1) {
+        fprintf(stderr, "Error: %s has one CD-ROM bay; got %d cdrom= arguments\n", active->name, cdrom_count);
+        return 1;
+    }
+    if (cdrom_count == 1) {
+        media_bay_t cd;
+        if (!profile_cdrom_bay(active, &cd)) {
+            fprintf(stderr, "Error: %s has no CD-ROM bay for cdrom=%s\n", active->name, cdrom_files[0]);
+            return 1;
+        }
+        if (system_media_attach_path(global_emulator, &cd, true, cdrom_files[0], attach_err, sizeof(attach_err)) != 0) {
+            fprintf(stderr, "Error: cdrom=%s: %s\n", cdrom_files[0], attach_err);
+            return 1;
+        }
         if (!quiet)
-            printf("Attached CD-ROM[%d]: %s (SCSI ID %d)\n", i, cdrom_files[i], cdrom_id);
+            printf("Attached CD-ROM: %s (SCSI ID %d)\n", cdrom_files[0], cd.unit);
     }
 
     // Insert explicit fd0=/fd1= floppy images into their designated drives
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < FLOPPY_NUM_DRIVES; i++) {
         if (!fd_explicit[i])
             continue;
         int rc = system_fd_insert(fd_explicit[i], i, true);

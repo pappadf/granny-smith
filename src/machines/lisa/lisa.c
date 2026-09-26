@@ -528,6 +528,32 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     }
 }
 
+// The runtime attach/eject verbs' view: the one Sony drive and the ProFile.
+static bool lisa_media_present(config_t *cfg, media_bus_t bus, int unit) {
+    lisa_state_t *ls = lisa_state(cfg);
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return unit == 0 && ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
+    case MEDIA_BUS_PROFILE:
+        return ls && ls->profile && lisa_profile_attached(ls->profile);
+    default:
+        return false;
+    }
+}
+
+static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!lisa_media_present(cfg, bus, unit))
+        return -1;
+    if (bus == MEDIA_BUS_FLOPPY) {
+        lisa_fdc_eject(ls->fdc);
+        return 0;
+    }
+    lisa_profile_detach(ls->profile);
+    lisa_profile_update_lines(cfg);
+    return 0;
+}
+
 // ============================================================
 // `floppy` object surface (insert/eject the one Sony drive at runtime)
 // ============================================================
@@ -1239,19 +1265,11 @@ static const struct floppy_slot lisa_floppy_slots[] = {
     {0},
 };
 
-// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so this SCSI
-// table stays empty: the parallel disk is its own device (lisa_profile.c), and
-// the profile advertises it via `.hd_bus = HD_BUS_PROFILE`.  The config UI reads
-// hd_bus to label the HD row "ProFile" and attach through profile.attach rather
-// than scsi.attach_hd.
-static const struct scsi_slot lisa_scsi_slots[] = {
-    {0},
-};
-
-static const scsi_bus_decl_t lisa_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = lisa_scsi_slots},
-    {0},
-};
+// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so the
+// profile declares no SCSI bus at all (it used to declare an empty
+// "machine.scsi" that did not resolve, N-10): the parallel disk is its own
+// device (lisa_profile.c), advertised via `.hd_bus = HD_BUS_PROFILE`, and its
+// bay is derived from that (profile_hd_bays -> "profile").
 
 // Apple Lisa 2 hardware profile.
 static const machine_substrate_t lisa_substrate = {
@@ -1272,6 +1290,8 @@ static const machine_substrate_t lisa_substrate = {
     .input_mouse_button = lisa_input_mouse_button,
     .media_detach = lisa_media_detach,
     .media_attach = lisa_media_attach,
+    .media_present = lisa_media_present,
+    .media_eject = lisa_media_eject,
 };
 
 const hw_profile_t machine_lisa = {
@@ -1290,7 +1310,7 @@ const hw_profile_t machine_lisa = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = lisa_scsi_buses,
+    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,
@@ -1320,7 +1340,7 @@ const hw_profile_t machine_macxl = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = lisa_scsi_buses,
+    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,

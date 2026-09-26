@@ -938,6 +938,23 @@ static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
     return system_media_attach_std(cfg, slot);
 }
 
+// The runtime attach/eject verbs' view of the same second bus.
+static bool tnt_media_present(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_present_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_present_std(cfg, bus, unit);
+}
+
+static int tnt_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_eject_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_eject_std(cfg, bus, unit);
+}
+
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand
 // Central external it reaches (23-25 on Bandit 1, 27-29 on Bandit 2 — the
 // 9500's own published external-interrupt assignment); the lines are
@@ -1139,4 +1156,6 @@ const machine_substrate_t tnt_substrate = {
     .display = tnt_display,
     .media_detach = tnt_media_detach,
     .media_attach = tnt_media_attach,
+    .media_present = tnt_media_present,
+    .media_eject = tnt_media_eject,
 };

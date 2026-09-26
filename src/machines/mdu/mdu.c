@@ -211,4 +211,6 @@ const machine_substrate_t mdu_substrate = {
     .input_mouse_button = mac_input_mouse_button,
     .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
+    .media_present = system_media_present_std,
+    .media_eject = system_media_eject_std,
 };

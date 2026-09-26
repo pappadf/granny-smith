@@ -26,6 +26,7 @@ struct config;
 struct nubus_slot_decl;
 struct image;
 struct object;
+struct scsi;
 
 // Floppy drive capabilities form a strict superset hierarchy:
 //   FLOPPY_400K reads 400K only.
@@ -200,6 +201,31 @@ typedef struct media_slot {
 // 1 ProFile.
 #define MEDIA_SLOTS_MAX 20
 
+// A ProFile block: 512 data bytes plus a 20-byte tag.  A property of the
+// ProFile protocol (MEDIA_BUS_PROFILE), whatever machine the drive is on.
+#define PROFILE_BLOCK_SIZE 532
+
+// A place a medium goes: a bus and a unit on it (floppy drive index, SCSI id,
+// or 0 for the one ProFile), with the profile's label for it.  Derived from
+// the profile (profile_hd_bays, profile_cdrom_bay) so that no caller -- the
+// web frontend, headless, a script -- branches on hd_bus or knows which bus
+// a machine's disks hang off.
+typedef struct media_bay {
+    media_bus_t bus;
+    int unit;
+    const char *label;
+} media_bay_t;
+
+// Most hard-disk bays any profile declares (seven ids on each of two buses).
+#define MEDIA_HD_BAYS_MAX 14
+
+// Wire name of a bus, as the profile and the attach verbs spell it:
+// "floppy", "scsi", "scsi2", "profile".  The SCSI names are the bus objects'
+// own (machine.scsi, machine.scsi2).
+const char *media_bus_name(media_bus_t bus);
+// The reverse; false for an unknown name.
+bool media_bus_parse(const char *name, media_bus_t *out);
+
 // Machine lifecycle + host-input vtable.  The behavior half of a machine
 // (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
 // these.  system.c / nubus.c / pci.c dispatch through it; every hook is
@@ -326,6 +352,14 @@ typedef struct machine_substrate {
     // implements its own (parallel FDC + ProFile).
     int (*media_detach)(struct config *cfg, media_slot_t *out, int max);
     int (*media_attach)(struct config *cfg, const media_slot_t *slot);
+    // The runtime half of the same dispatch, for the machine-level attach and
+    // eject verbs (machine.attach_hd / attach_cdrom / eject_media):
+    // media_present says whether a medium is in (bus, unit) now; media_eject
+    // takes it out (0 = ejected, -1 = no such bay or nothing there, -2 = the
+    // guest has locked the door).  Macs bind system_media_present_std /
+    // system_media_eject_std; a second SCSI bus or a ProFile adds its own.
+    bool (*media_present)(struct config *cfg, media_bus_t bus, int unit);
+    int (*media_eject)(struct config *cfg, media_bus_t bus, int unit);
 
     // How many key-transition bytes this machine's keyboard queue holds
     // before it starts dropping, which is what keyboard.type costs itself
@@ -500,6 +534,32 @@ const hw_profile_t *machine_find(const char *id);
 
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
 const hw_profile_t *const *machine_list(size_t *out_count);
+
+// The profile's hard-disk bays in attach order: the boot bay first (the one
+// flagged `boot`, else the first declared), then the rest as declared, across
+// every SCSI bus -- or the one ProFile on a machine whose disk is not SCSI.
+// Writes up to `max` into `out` and returns the count.
+int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max);
+// The first of those: where "the hard disk" goes.  False with no bay at all.
+bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out);
+// The CD-ROM bay, on a machine that has one (has_cdrom); false otherwise.
+bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
+
+// === Machine-level attach and eject (system.c) =============================
+// Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)
+// and attach it through the substrate's media_attach.  Refuses an occupied
+// bay.  0 on success; -1 with the reason in `err`.
+int system_media_attach_path(struct config *cfg, const media_bay_t *bay, bool cdrom, const char *path, char *err,
+                             size_t errlen);
+// Take the medium out of (bus, unit) through the substrate's media_eject:
+// 0 ejected, -1 no such bay or nothing there, -2 the guest has locked it.
+int system_media_eject(struct config *cfg, media_bus_t bus, int unit);
+// The standard media_present / media_eject over cfg->floppy and cfg->scsi,
+// and the per-bus halves a substrate with a second SCSI bus reuses.
+bool system_media_present_std(struct config *cfg, media_bus_t bus, int unit);
+int system_media_eject_std(struct config *cfg, media_bus_t bus, int unit);
+bool system_media_present_scsi_bus(struct scsi *bus, int unit);
+int system_media_eject_scsi_bus(struct scsi *bus, int unit);
 
 // === Object-model topology (proposal-system-object-model.md §5.1) ==========
 // The single `machine` container node — all emulated hardware nests under it

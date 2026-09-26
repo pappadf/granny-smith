@@ -1003,6 +1003,84 @@ void mac_reset(config_t *restrict sim) {
     scc_reset(sim->scc);
 }
 
+// Open `path` as the medium a bay on `bus` takes and fill in `slot` -- the
+// image handle plus, on SCSI, the identity the device presents -- ready for
+// a substrate's media_attach.  One open for every attach path: a hard disk
+// as the closest catalog drive over a base+delta image, a CD-ROM read-only
+// at 2048-byte blocks, a ProFile at its 532-byte block.  slot->unit is left
+// 0 for the caller.  Returns false (and says why) when the file cannot be
+// opened.
+static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot_t *slot) {
+    *slot = (media_slot_t){.bus = bus};
+    if (!path || !*path) {
+        printf("Cannot attach: no image path\n");
+        return false;
+    }
+    if (bus == MEDIA_BUS_PROFILE) {
+        const image_geometry_t geom = {.block_size = PROFILE_BLOCK_SIZE};
+        slot->img = image_create_with_geometry(path, pick_delta_dir(path), geom);
+        if (!slot->img)
+            printf("Failed to open ProFile image: %s\n", path);
+        return slot->img != NULL;
+    }
+    if (cdrom) {
+        // CD-ROM images are always opened read-only
+        slot->img = image_open_readonly(path);
+        if (!slot->img) {
+            printf("Failed to open CD-ROM image: %s\n", path);
+            return false;
+        }
+        slot->img->type = image_cdrom;
+        // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
+        // sector, not a property of the disc — so serve every disc at 2048 and let
+        // the guest ask for anything else.  A host that wants 512-byte addressing
+        // issues MODE SELECT with a block descriptor, which scsi_cdrom_mode_select
+        // already honours; A/UX does exactly that when it mounts its install CD.
+        //
+        // Do NOT adopt the sbBlkSize the disc's Driver Descriptor Map records
+        // (block 0, 'ER' signature, bytes 2-3).  That field is the unit the
+        // PARTITION MAP is addressed in — 512 on an HFS disc, including a raw hard
+        // disk image burned to CD — and not the drive's block length.  Conflating
+        // the two hands the Apple CD-ROM driver a 512-byte device when it is
+        // addressing 2048-byte sectors, so every sector number it computes lands a
+        // quarter of the way into the disc: it reads byte 8192 looking for the
+        // ISO 9660 descriptor at sector 16, never finds the partition map, and the
+        // Finder offers to initialize the disc.  Mapping the map's 512-byte units
+        // onto 2048-byte sectors is the driver's job, and it does it in software.
+        slot->scsi_type = scsi_dev_cdrom;
+        slot->block_size = 2048;
+        slot->read_only = true;
+        snprintf(slot->vendor, sizeof(slot->vendor), "SONY");
+        snprintf(slot->product, sizeof(slot->product), "CD-ROM CDU-8002");
+        snprintf(slot->revision, sizeof(slot->revision), "1.8g");
+        printf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks)\n", path,
+               disk_size(slot->img), slot->block_size);
+        return true;
+    }
+    slot->img = image_create(path, pick_delta_dir(path));
+    if (!slot->img) {
+        printf("Failed to open image: %s\n", path);
+        return false;
+    }
+    size_t sz = disk_size(slot->img);
+    // Find the closest drive model from the catalog
+    const struct drive_model *best = drive_catalog_find_closest(sz);
+    if (!best) {
+        LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", path);
+        image_close(slot->img);
+        slot->img = NULL;
+        return false;
+    }
+    LOG(1, "Attaching SCSI drive: %s as %s %s (size: %zu bytes)", path, best->vendor, best->product, sz);
+    slot->scsi_type = scsi_dev_hd;
+    slot->block_size = 512;
+    slot->read_only = false;
+    snprintf(slot->vendor, sizeof(slot->vendor), "%s", best->vendor);
+    snprintf(slot->product, sizeof(slot->product), "%s", best->product);
+    snprintf(slot->revision, sizeof(slot->revision), "%s", best->revision);
+    return true;
+}
+
 // Add a SCSI hard disk to the configuration.
 bool add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
     return add_scsi_drive_on(config, config ? config->scsi : NULL, filename, scsi_id);
@@ -1014,29 +1092,19 @@ bool add_scsi_drive(struct config *restrict config, const char *filename, int sc
 // two fast/wide 53C825A channels carrying the backplane's bays between
 // them, reachable as `machine.scsi` and `machine.scsi2`.  Passing the bus
 // explicitly is what lets `machine.scsi2.attach_hd` mean what it says.
+//
+// A NULL bus is refused: the Lisa has no SCSI at all, and `hd=` on a Lisa
+// used to hand NULL to scsi_add_device and crash the harness (N-01).
 bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
-    image_t *img = image_create(filename, pick_delta_dir(filename));
-    if (!img) {
-        printf("Failed to open image: %s\n", filename);
+    if (!bus) {
+        printf("Cannot attach %s: this machine has no SCSI bus\n", filename);
         return false;
     }
-
-    size_t sz = disk_size(img);
-
-    // Find the closest drive model from the catalog
-    const struct drive_model *best = drive_catalog_find_closest(sz);
-    if (!best) {
-        LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", filename);
-        image_close(img);
+    media_slot_t slot;
+    if (!media_open(MEDIA_BUS_SCSI, false, filename, &slot))
         return false;
-    }
-
-    LOG(1, "Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)", filename, best->vendor, best->product,
-        sz, scsi_id);
-
-    add_image(config, img);
-    scsi_add_device(bus, scsi_id, best->vendor, best->product, best->revision, img, scsi_dev_hd, 512, false);
-    return true;
+    slot.unit = scsi_id;
+    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
 }
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
@@ -1046,39 +1114,15 @@ bool add_scsi_cdrom(struct config *restrict config, const char *filename, int sc
 
 // ...on a NAMED bus; see add_scsi_drive_on.
 bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
-    // CD-ROM images are always opened read-only
-    image_t *img = image_open_readonly(filename);
-    if (!img) {
-        printf("Failed to open CD-ROM image: %s\n", filename);
+    if (!bus) {
+        printf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
         return false;
     }
-
-    img->type = image_cdrom;
-
-    // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
-    // sector, not a property of the disc — so serve every disc at 2048 and let
-    // the guest ask for anything else.  A host that wants 512-byte addressing
-    // issues MODE SELECT with a block descriptor, which scsi_cdrom_mode_select
-    // already honours; A/UX does exactly that when it mounts its install CD.
-    //
-    // Do NOT adopt the sbBlkSize the disc's Driver Descriptor Map records
-    // (block 0, 'ER' signature, bytes 2-3).  That field is the unit the
-    // PARTITION MAP is addressed in — 512 on an HFS disc, including a raw hard
-    // disk image burned to CD — and not the drive's block length.  Conflating
-    // the two hands the Apple CD-ROM driver a 512-byte device when it is
-    // addressing 2048-byte sectors, so every sector number it computes lands a
-    // quarter of the way into the disc: it reads byte 8192 looking for the
-    // ISO 9660 descriptor at sector 16, never finds the partition map, and the
-    // Finder offers to initialize the disc.  Mapping the map's 512-byte units
-    // onto 2048-byte sectors is the driver's job, and it does it in software.
-    uint16_t cd_block_size = 2048;
-
-    printf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks, SCSI ID: %d)\n",
-           filename, disk_size(img), cd_block_size, scsi_id);
-
-    add_image(config, img);
-    scsi_add_device(bus, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
-    return true;
+    media_slot_t slot;
+    if (!media_open(MEDIA_BUS_SCSI, true, filename, &slot))
+        return false;
+    slot.unit = scsi_id;
+    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
 }
 
 // === machine.restart media transfer (proposal-boot-vs-reset §3.3) ==========
@@ -1157,6 +1201,79 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
     return 0;
+}
+
+// === Machine-level attach and eject (11-WORK-ORDER M2) =====================
+//
+// One verb for "put this disk in that bay", whatever bus the bay is on: the
+// same substrate dispatch machine.restart hands media back through
+// (media_attach), fed by media_open instead of a transferred handle.  Before,
+// every caller branched on hd_bus itself and chose between scsi.attach_hd,
+// scsi2.attach_hd and hd.attach -- and several chose wrong.
+
+bool system_media_present_scsi_bus(struct scsi *bus, int unit) {
+    return bus && unit >= 0 && unit <= 6 && scsi_device_image(bus, (unsigned)unit) != NULL;
+}
+
+int system_media_eject_scsi_bus(struct scsi *bus, int unit) {
+    if (!bus || unit < 0 || unit > 6)
+        return -1;
+    int rc = scsi_eject_device(bus, unit);
+    return rc == 1 ? 0 : rc == -2 ? -2 : -1;
+}
+
+bool system_media_present_std(config_t *cfg, media_bus_t bus, int unit) {
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return sys_fd_is_inserted(cfg, unit);
+    case MEDIA_BUS_SCSI:
+        return system_media_present_scsi_bus(cfg->scsi, unit);
+    default:
+        return false;
+    }
+}
+
+int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return (cfg->floppy && unit >= 0 && floppy_drive_eject(cfg->floppy, (unsigned)unit)) ? 0 : -1;
+    case MEDIA_BUS_SCSI:
+        return system_media_eject_scsi_bus(cfg->scsi, unit);
+    default:
+        return -1;
+    }
+}
+
+int system_media_attach_path(config_t *cfg, const media_bay_t *bay, bool cdrom, const char *path, char *err,
+                             size_t errlen) {
+    const machine_substrate_t *sub = (cfg && cfg->machine) ? cfg->machine->substrate : NULL;
+    if (!sub || !sub->media_attach) {
+        snprintf(err, errlen, "no machine is running");
+        return -1;
+    }
+    if (sub->media_present && sub->media_present(cfg, bay->bus, bay->unit)) {
+        snprintf(err, errlen, "%s is occupied; eject it first", bay->label ? bay->label : "the bay");
+        return -1;
+    }
+    media_slot_t slot;
+    if (!media_open(bay->bus, cdrom, path, &slot)) {
+        snprintf(err, errlen, "cannot open '%s'", path ? path : "");
+        return -1;
+    }
+    slot.unit = bay->unit;
+    if (sub->media_attach(cfg, &slot) != 0) {
+        image_close(slot.img);
+        snprintf(err, errlen, "%s cannot take '%s'", bay->label ? bay->label : "the bay", path);
+        return -1;
+    }
+    return 0;
+}
+
+int system_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    const machine_substrate_t *sub = (cfg && cfg->machine) ? cfg->machine->substrate : NULL;
+    if (!sub || !sub->media_eject)
+        return -1;
+    return sub->media_eject(cfg, bus, unit);
 }
 
 // Save current machine state to a checkpoint file.

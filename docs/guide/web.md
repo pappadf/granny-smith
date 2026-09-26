@@ -387,8 +387,16 @@ full surface.
   at 4 KB. The Memory pane uses this so a 128-byte refresh is one
   bridge call.
 - **`floppy.drives[i].insert(path, writable)` / `.eject` / `.present`**
-- **`scsi.attach_hd(path, id)` / `scsi.attach_cdrom(path, id)` /
-  `scsi.detach_hd(id)` / `scsi.detach_cdrom(id)`**
+- **`machine.attach_hd(path, [bay])` / `machine.attach_cdrom(path)` /
+  `machine.eject_media(bus, [id])`** — media by bay, on whatever bus the
+  bay is (`machine.scsi`, `machine.scsi2`, the Lisa's ProFile).  `bay`
+  indexes `machine.profile(id).hd_bays` (0, the default, is the boot bay);
+  the CD goes to `profile.cdrom`.  Each attach answers the bay it used,
+  `{bus, id, label}`, which is what `eject_media` takes; an occupied bay,
+  a bay the model does not have, and a CD on a model with no CD bay are
+  refused.  The per-bus `machine.scsi.attach_hd(path, id)` /
+  `attach_cdrom(path, id)` and `machine.scsi.device[id].eject()` remain
+  for scripts that mean one SCSI id on one bus.
 - **`checkpoint.save(path)` / `checkpoint.load(path)`**
 
 ## Filesystem Layout
