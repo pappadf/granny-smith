@@ -5,7 +5,7 @@
 // Macintosh IIx machine implementation.  Sister of iicx.c — shares the
 // GLUE-driven I/O map, dual-VIA / 68030 / Universal-ROM family, and the
 // page table / ROM overlay helpers via iicx_internal.h.  See
-// proposal-machine-iicx-iix.md §3.4.
+// docs/machines/glue/iicx.md, which covers the IIx differences.
 //
 // Diff vs iicx.c at a glance:
 //   * Slot table: six NuBus slots ($9..$E) — slot $9 is VIDEO with
@@ -86,7 +86,7 @@ static const nubus_slot_decl_t iix_slots[] = {
 // Machine-ID straps: VIA1 PA6 = 0 and VIA2 PB3 = 0 identify the IIx.  Both are
 // driven because both differ from the VIA's idle-high power-on state; the
 // slot-IRQ PA lines and the CA1/CA2/CB2 control lines this used to park are
-// that state already (F-50).
+// that state already.
 static void iix_setup_id(config_t *cfg) {
     via_input(cfg->via1, 0, 6, 0); // VIA1 PA6
     via_input(cfg->via2, 1, 3, 0); // PB3

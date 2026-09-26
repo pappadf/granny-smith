@@ -3,12 +3,11 @@
 
 // q700.c
 // Macintosh Quadra 700 ("Spike", 25 MHz 68040, October 1991) — the desktop
-// member of the MCU/DAFB family and Granny Smith's first 68040 machine
-// (proposal-machine-quadra-700-900-950.md).  Low-speed I/O is direct and
-// IIci-like (ref §14): VIA1+VIA2, classic RTC/PRAM, VIA-shifter ADB
-// transceiver, direct SCC and SWIM.  No IOPs, no Caboose, one SCSI bus.
-// Shares the 420DBFF3 ROM with the Quadra 900 (model sense on VIA1 PA
-// distinguishes them; ref §7.4).
+// member of the MCU/DAFB family and Granny Smith's first 68040 machine.
+// Low-speed I/O is direct and IIci-like (ref §14): VIA1+VIA2, classic
+// RTC/PRAM, VIA-shifter ADB transceiver, direct SCC and SWIM.  No IOPs, no
+// Caboose, one SCSI bus.  Shares the 420DBFF3 ROM with the Quadra 900 (model
+// sense on VIA1 PA distinguishes them; ref §7.4).
 
 #include "mcu.h"
 
@@ -76,7 +75,7 @@ static void q700_via1_output(void *context, uint8_t port, uint8_t output) {
 }
 
 // VIA2 outputs: PB4/PB3/PB0 drive the DFAC serial control on the Q700
-// (ref §13.6) — logged until the audio path lands in Phase D.
+// (ref §13.6) — logged only.
 static void q700_via2_output(void *context, uint8_t port, uint8_t output) {
     (void)context;
     (void)port;
@@ -148,14 +147,13 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
-    // SONIC Ethernet (Phase F; ~20 MHz part on the Q700, no wire in v1).
+    // SONIC Ethernet (~20 MHz part on the Q700, no wire in v1).
     st->sonic = sonic_init(cp);
     sonic_set_irq_callback(st->sonic, q700_sonic_irq, cfg);
-    // SONIC bus-master DMA: the shared guest-physical port.  This machine
-    // carried its own byte-identical copy of it until F-16.
+    // SONIC bus-master DMA: the shared guest-physical port.
     sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
-    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core until Phase D
+    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);

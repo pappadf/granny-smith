@@ -25,12 +25,11 @@
 // corpus for these exact machines (Linux powermac, NetBSD macppc,
 // OSF/Apple MkLinux DR3).  Per-register citations in the .c files.
 //
-// Built through Phase C (proposal-powermac-7500-8500-9500 §7): Phase B —
-// the machine skeleton and boot-ladder rungs T1-T8 (memory map,
-// Hammerhead, Bandit config space, Grand Central decode + interrupt
-// block, BoxID, banked NVRAM, Cuda/VIA); Phase C — the DBDMA engine
-// (dbdma.c) behind the island's +$8000 channel window.  MESH, AWACS,
-// Control video and the rest of the datapaths are later phases.
+// The substrate: the machine skeleton (memory map, Hammerhead, Bandit
+// config space, Grand Central decode + interrupt block, BoxID, banked
+// NVRAM, Cuda/VIA) and the DBDMA engine (dbdma.c) behind the island's
+// +$8000 channel window, which MESH, AWACS, the floppy and the other
+// datapaths run through.
 
 #ifndef GS_MACHINES_TNT_H
 #define GS_MACHINES_TNT_H
@@ -355,7 +354,7 @@ typedef struct tnt_state {
     // derived views are rebuilt from the registers on restore.
     tnt_control_t control;
     // machine.video -- the framebuffer node every display source exposes
-    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    // (display_class.h).
     display_fb_node_t control_fb_node;
     struct object *control_video_node;
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
@@ -501,7 +500,7 @@ void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // Events on assertion, recomputes the CPU line.
 void tnt_gc_set_source(config_t *cfg, int n, bool level);
 
-// machine.gc — the interrupt-controller node (05-chipsets-irq F-26).
+// machine.gc — the interrupt-controller node.
 // Attached once at machine construction, not from tnt_gc_init (which also
 // runs on a reset).
 void tnt_gc_attach_object(config_t *cfg);

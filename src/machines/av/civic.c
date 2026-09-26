@@ -99,7 +99,7 @@ struct av_civic {
     uint8_t *compose; // 640x480 XRGB scanout while the video-in overlay is on
     display_t display;
     // machine.video -- the framebuffer node every display source exposes
-    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    // (display_class.h).
     display_fb_node_t fb_node;
     struct object *video_node;
     rgba8_t disp_clut[256]; // derived CLUT the display consumes
@@ -294,8 +294,8 @@ static void civic_update_display(av_civic_t *cv) {
     uint32_t bpp = 1u << code;
     // CIVIC's timing generator is not programmed with a mode line in this
     // model; the raster is whatever the attached monitor's sense code means,
-    // which is the same table every other part reads (04-video F-17) rather
-    // than a literal here.
+    // which is the same table every other part reads rather than a literal
+    // here.
     const display_timing_t *timing = display_timing_for_sense(AV_CIVIC_SENSE_CODE);
     uint32_t width = timing ? timing->width : 640;
     uint32_t height = timing ? timing->height : 480;
@@ -310,10 +310,10 @@ static void civic_update_display(av_civic_t *cv) {
     // that used to be here threw bit 8 away, capping the scan base at
     // 255 << 5 = 8,160 instead of 511 << 5 = 16,352, so a driver that
     // double-buffers by flipping the high bit scanned the wrong half
-    // (04-video F-48).  The width and the mask could not both be right.
+    // The width and the mask could not both be right.
     //
     // Dropping it is safe because the descriptor is decided against the store
-    // below rather than assumed to fit (F-24).
+    // below rather than assumed to fit.
     uint32_t base = civic_get(cv, SLOT_BASEADDR, 9) << 5;
 
     display_t *d = &cv->display;
@@ -346,7 +346,7 @@ static void civic_update_display(av_civic_t *cv) {
         // The graphics plane, addressed by guest registers.  `base` was masked
         // into range but `stride` -- row_words * 32, from an 8-bit register --
         // never was, and nothing compared base + stride*height against the
-        // store (04-video F-24).  Decide them together; a descriptor the VRAM
+        // store.  Decide them together; a descriptor the VRAM
         // cannot back scans nothing rather than reading past the end.
         uint32_t off = base % AV_CIVIC_VRAM_SIZE;
         display_set_scanout(d, cv->vram, AV_CIVIC_VRAM_SIZE, off, stride, width, height, NULL, 0);
@@ -724,7 +724,7 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
         display_blank_raster(&cv->display);
     if (cp) {
         // Two OUTPUTS derived from the state just loaded, neither of which is
-        // in the stream because neither is state (04-video F-39).
+        // in the stream because neither is state.
         //
         // The shared slot line: vbl_flag / vdc_flag came back set, but nothing
         // drove av_psc_slot_source, so a restored pending latch never reaches

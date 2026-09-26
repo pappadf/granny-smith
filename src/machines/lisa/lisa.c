@@ -8,10 +8,6 @@
 // (lisa_mmu.c), the COPS keyboard/mouse/clock microcontroller, an intelligent
 // 6504A floppy controller, and a parallel-port hard disk — none of which are
 // Mac architecture.  See docs/machines/lisa/lisa.md for the hardware reference.
-//
-// This first cut (Step 2) is intentionally minimal: 68000 + RAM + 16 KB boot
-// ROM + the segment MMU, enough to run the power-on self-tests headlessly.
-// Video, COPS, floppy, and the parallel disk arrive in later steps.
 
 #include "machine.h"
 #include "machine_teardown.h"
@@ -78,7 +74,7 @@ typedef struct lisa_state {
     // Which keys the host holds down, by ADB raw code.  A repeated down (a
     // host's auto-repeat) or an up with no down is not a key transition, and
     // the COPS must not report one -- the ADB and Plus keyboards suppress the
-    // same (N-36).  Host-side state, so not checkpointed.
+    // same.  Host-side state, so not checkpointed.
     bool key_held[128];
 } lisa_state_t;
 
@@ -167,7 +163,7 @@ static void lisa_refresh_framebuffer(config_t *cfg) {
     // against installed RAM here rather than resting on lisa_mmu_video_base's
     // `base & (ram_size - 1)` fallback, which is only a bound because every
     // Lisa RAM size happens to be a power of two and the raster happens to be
-    // smaller than the alignment (04-video F-31).  A base the RAM cannot back
+    // smaller than the alignment.  A base the RAM cannot back
     // scans nothing -- lisa_display() then reports no display for that frame,
     // and the next latch write that lands in range brings it back.
     display_set_scanout(&ls->display, ram_native_pointer(cfg->mem_map, 0), memory_ram_size(cfg->mem_map), base,
@@ -496,8 +492,8 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
     return ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
 }
 
-// hw_profile_t.media_detach / media_attach — machine.restart handle transfer
-// (proposal-boot-vs-reset §3.3).  The Lisa has no cfg->floppy/cfg->scsi, so
+// hw_profile_t.media_detach / media_attach — machine.restart handle
+// transfer.  The Lisa has no cfg->floppy/cfg->scsi, so
 // the std core implementation covers nothing here: the Sony disk lives in
 // the 6504A FDC (owned by cfg->images) and the hard disk is the parallel
 // ProFile (which owns its image itself, hence take/attach_image).
@@ -661,7 +657,7 @@ static void lisa_register_floppy_object(config_t *cfg) {
     object_set_order(ls->fd_obj, 80);
     object_attach(machine_object(), ls->fd_obj);
     // Named "drive" (singular) to match the standard floppy collection
-    // (machine.floppy.drive[N]) after the proposal-system-object-model rename.
+    // (machine.floppy.drive[N]).
     ls->fd_drives_obj = object_new(&lisa_fd_drives_class, cfg, "drive");
     if (ls->fd_drives_obj)
         object_attach(ls->fd_obj, ls->fd_drives_obj);
@@ -863,7 +859,7 @@ static void lisa_register_profile_object(config_t *cfg) {
     // Named "hd" (not "profile") under the machine node: a child named
     // "profile" would be shadowed by the machine class's `profile` *method*
     // (the resolver finds members before attached children). The ProFile is
-    // the Lisa's hard disk, so machine.hd reads correctly (proposal §2.2).
+    // the Lisa's hard disk, so machine.hd reads correctly.
     ls->hd_obj = object_new(&lisa_hd_class, cfg, "hd");
     if (ls->hd_obj) {
         object_set_label(ls->hd_obj, "ProFile");
@@ -1141,7 +1137,7 @@ static void lisa_teardown(config_t *cfg) {
     }
 
     // via1, via2, scc, the scheduler, the CPU, the memory map and the
-    // debugger, in the one order documented once (05-chipsets-irq F-17).
+    // debugger, in the one order documented once.
     // The Lisa builds no scsi and no rtc; the chain NULL-checks its way past
     // both.  Note it also deletes the scheduler LAST of those, which is what
     // keeps the device destructors' scheduler_forget_source calls valid.
@@ -1157,15 +1153,14 @@ static void lisa_teardown(config_t *cfg) {
 // Checkpoint
 // ============================================================
 
-// The Lisa is the one family NOT on machine_checkpoint_save_core
-// (05-chipsets-irq F-18), and not by omission: its construction order
-// genuinely differs.  It has no RTC -- the COPS keeps the time -- no
-// AppleTalk at this point, and it builds the SCC last, after both VIAs, the
-// COPS, the image list, the FDC and the ProFile.  Since save order IS
-// construction order (the stream is positional and each *_init consumes its
-// own block as it builds), adopting the shared prefix would mean reordering
-// lisa_init for no gain.  The first four lines below are the shared ones and
-// are deliberately kept in step with it.
+// The Lisa is the one family NOT on machine_checkpoint_save_core, and not by
+// omission: its construction order genuinely differs.  It has no RTC -- the
+// COPS keeps the time -- no AppleTalk at this point, and it builds the SCC
+// last, after both VIAs, the COPS, the image list, the FDC and the ProFile.
+// Since save order IS construction order (the stream is positional and each
+// *_init consumes its own block as it builds), adopting the shared prefix would
+// mean reordering lisa_init for no gain.  The first four lines below are the
+// shared ones and are deliberately kept in step with it.
 static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     memory_map_checkpoint(cfg->mem_map, cp);
     cpu_checkpoint(cfg->cpu, cp);
@@ -1190,8 +1185,7 @@ static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // ============================================================
 
 // Pulse the Status Register vertical-retrace bit each frame so the ROM video
-// test and (later) the OS VBL handler observe a retrace.  Video interrupt
-// delivery is wired in Step 3 along with the display.
+// test and the OS VBL handler observe a retrace.
 // End of the vertical-retrace window: clear the Status Register VBL bit.
 static void lisa_vbl_off(void *source, uint64_t data) {
     (void)data;
@@ -1275,7 +1269,7 @@ static const struct floppy_slot lisa_floppy_slots[] = {
 
 // The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so the
 // profile declares no SCSI bus at all (it used to declare an empty
-// "machine.scsi" that did not resolve, N-10): the parallel disk is its own
+// "machine.scsi" that did not resolve): the parallel disk is its own
 // device (lisa_profile.c), advertised via `.hd_bus = HD_BUS_PROFILE`, and its
 // bay is derived from that (profile_hd_bays -> "profile").
 
@@ -1332,7 +1326,7 @@ const hw_profile_t machine_lisa = {
 // the Lisa 2 profile with a different ROM-compatibility id and name — the chip
 // models, callbacks, and 720×364 framebuffer are identical (the square-pixel
 // kit only changes the dot clock, which a frame-accurate model ignores).
-// docs/machines/lisa/lisa.md §1.1 / proposal-machine-lisa-xl.md §3.2.
+// See docs/machines/lisa/lisa.md §1.1.
 const hw_profile_t machine_macxl = {
     .name = "Macintosh XL",
     .id = "macxl",

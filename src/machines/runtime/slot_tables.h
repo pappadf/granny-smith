@@ -5,12 +5,11 @@
 // The floppy and SCSI slot tables that more than one machine family declares
 // identically.
 //
-// These were 27 byte-identical `static const` copies across 15 files (the
-// 2026-09-03 review's F-31), which is not merely repetition: a new machine got
-// its tables by hand-copying them from a neighbour, and two review findings --
-// F-01 (the TNT declared no floppy table at all) and F-17 (the ANS's table
-// contradicted its own comment) -- are that copy going wrong.  Referencing a
-// table cannot go wrong the same way.
+// These were 27 byte-identical `static const` copies across 15 files, which is
+// not merely repetition: a new machine got its tables by hand-copying them from
+// a neighbour, and two known bugs -- the TNT declared no floppy table at all,
+// and the ANS's table contradicted its own comment -- are that copy going
+// wrong.  Referencing a table cannot go wrong the same way.
 //
 // A machine whose slots genuinely differ keeps its own: the Plus and Lisa
 // (800K drives), the TNT family (its own "Internal HD0/HD1" pair in tnt.h,

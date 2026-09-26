@@ -3,10 +3,9 @@
 
 // q900.c
 // Macintosh Quadra 900 ("Eclipse", 25 MHz 68040, October 1991) — the tower
-// member of the MCU/DAFB family (proposal-machine-quadra-700-900-950.md
-// Phase G).  Shares the 420DBFF3 ROM with the Quadra 700; the ROM picks the
-// tower paths from the VIA1 PA model sense (PA & $56 == $50) and the box's
-// ProductInfo flags (UniversalTables.a InfoQuadra900):
+// member of the MCU/DAFB family.  Shares the 420DBFF3 ROM with the Quadra 700;
+// the ROM picks the tower paths from the VIA1 PA model sense (PA & $56 == $50)
+// and the box's ProductInfo flags (UniversalTables.a InfoQuadra900):
 //   * ClockEgret + Caboose — RTC/PRAM/power/keyswitch behind an
 //     Egret-protocol system manager on VIA1's SR + PB3/PB4/PB5 handshake
 //     (the "Caboose" firmware is Egret-compatible; ref §15.14 [A][R])
@@ -209,8 +208,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // SONIC Ethernet (20 MHz-class part on the Q900; no wire in v1).
     st->sonic = sonic_init(cp);
     sonic_set_irq_callback(st->sonic, q900_sonic_irq, cfg);
-    // SONIC bus-master DMA: the shared guest-physical port.  This machine
-    // carried its own byte-identical copy of it until F-16.
+    // SONIC bus-master DMA: the shared guest-physical port.
     sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core

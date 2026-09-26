@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // platform.h
-// The one platform header (S1): what core code may assume of any host.
+// The one platform header: what core code may assume of any host.
 //
 // Every target -- the browser (wasm), headless, the tools and the unit tier
 // -- includes this, and each supplies only its clock, as `platform_clock.h`

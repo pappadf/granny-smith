@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // awacs.c
-// The TNT AWACS sound face (proposal §5.8, ladder rung T10): five 32-bit
+// The TNT AWACS sound face: five 32-bit
 // little-endian registers on $10 centres at island +$14000, the shared
 // ASCO codec shadows (core/peripherals/awacs.c) behind the NEWECMD
 // command port, and the output datapath — DBDMA channel 8 pulling a
@@ -350,7 +350,7 @@ void tnt_awacs_init(config_t *cfg) {
     // its beep — observed, and stable for the whole parked boot — so
     // opening there keeps a boot-long capture free of the mid-capture
     // rate switch that invalidates golden matching.  Revisit when the
-    // 68k chime first plays (it did not by the Phase-D wall).
+    // 68k chime first plays.
     audio_out_open(22050, 2);
 
     // The channel-8 device port (replaces nothing: attached at build).

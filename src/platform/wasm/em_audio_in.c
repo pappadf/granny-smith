@@ -22,9 +22,9 @@
 // ALLOW_MEMORY_GROWTH.
 //
 // Why the conditioning lives here and not in JS: it is the same chain the
-// offline asset generator applies (debug-plaintalk/scripts/gen-sr-asset.py),
-// so the PlainTalk contract is expressed once, in one language, and the
-// live path and the recorded assets arrive at the guest looking alike.
+// offline asset generator applies, so the PlainTalk contract is expressed
+// once, in one language, and the live path and the recorded assets arrive
+// at the guest looking alike.
 // JS is left with capture and rate conversion only.
 
 #include "em.h"
@@ -129,7 +129,7 @@ void em_audio_in_init(void) {
 // (= 4.073 Vpp) at 0 dB gain, which the driver runs at +6..+7.5 dB — so
 // full scale referred to the jack is 1.7-2.0 Vpp.  Getting this wrong is
 // not cosmetic: assets 6-12 dB hot made Casper's AGC wind the codec gain
-// down and the recognizer never matched (sr-test-audio-assets.md §2).
+// down and the recognizer never matched.
 //
 // Browser microphones vary by tens of dB, so two things are applied here:
 //
@@ -150,8 +150,7 @@ void em_audio_in_init(void) {
 //      channel — and the acceptance region measured on the real recognizer
 //      is lopsided around flat input: +2..4 dB of extra brightness is total
 //      failure while 12 dB of darkening still recognizes, i.e. flat sits at
-//      the models' bright EDGE (debug-plaintalk/re/02-acceptance-region-
-//      probe.md).  This filter moves every host's audio toward the channel
+//      the models' bright EDGE.  This filter moves every host's audio toward the channel
 //      the models expect; it is host-independent because every host delivers
 //      roughly flat digital audio.
 //   4. A SLOW spectral-tilt normaliser.  Microphones differ in brightness
@@ -166,7 +165,7 @@ void em_audio_in_init(void) {
 //
 // Deliberately NOT done here: adding a noise floor (singer.c already models
 // the converter's own, and a live mic brings its own room tone), and peak
-// normalisation (it is what flattens speech dynamics — see the §2 contract).
+// normalisation (it is what flattens speech dynamics).
 
 // Full scale referred to the mic jack, in volts peak-to-peak:
 // 1.44 V RMS * 2*sqrt(2) / 10^(7.5/20).
@@ -199,7 +198,7 @@ void em_audio_in_init(void) {
 #define GS_MIC_VOICED_OVER_FLOOR 6.0f
 
 // The PlainTalk channel model: one-pole darkening y = (1-a)x + a*y'.
-// Calibrated against the recognizer itself (re/02-acceptance-region-probe.md):
+// Calibrated against the recognizer itself:
 // the value must keep the reference voice recognized while moving flat input
 // away from the models' bright edge.  DC gain is unity and the loss at
 // 500 Hz is ~0.1 dB, so the level normaliser's target math is unaffected.

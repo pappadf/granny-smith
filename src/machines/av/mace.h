@@ -8,7 +8,7 @@
 //
 // The `.ENET` driver runs three loopback self-tests at open; with no
 // datapath they fail and the driver does not load.  That is harmless for
-// booting (IMPLEMENTATION.md §7) and is the documented Phase-G contract.
+// booting and is the intended no-Ethernet contract.
 
 #ifndef GS_MACHINES_AV_MACE_H
 #define GS_MACHINES_AV_MACE_H

@@ -22,9 +22,8 @@ struct config;
 //
 // The AV and MCU families each carried a private copy of this: 110 lines that
 // were byte-identical apart from one log prefix, once the `av_`/`mcu_` names
-// were normalised.  The 2026-09-03 code review's 05-chipsets-irq F-19 called
-// them "near-verbatim clones" differing in "the aperture bounds and whether
-// the image mirrors every 1 MiB"; neither delta was real -- the bounds already
+// were normalised.  They looked like clones differing in the aperture bounds
+// and in whether the image mirrors every 1 MiB; neither delta was real -- the bounds already
 // came from the board descriptor's rom_base/rom_end in both, and both mirrored
 // by `% rom_pages`.  So there was nothing to parameterise except the names.
 //

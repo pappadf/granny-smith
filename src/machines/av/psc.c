@@ -2,10 +2,10 @@
 // Copyright (c) pappadf
 
 // psc.c
-// PSC interrupt controller + sound/DSP latches (Phase B scope; the DMA
-// engine arrives in Phase D).  See psc.h for the contract references.
+// PSC interrupt controller, sound/DSP latches and the DMA engine.  See psc.h
+// for the contract references.
 //
-// Modelling rules that are load-bearing (psc.md §5, IMPLEMENTATION.md §9):
+// Modelling rules that are load-bearing (psc.md §5):
 //   * every interrupt register read is repeat-stable (values change only on
 //     CPU-synchronous events — the ROM's double-read loops terminate)
 //   * IER writes are VIA-style sense-bit ($80|bits sets, bits clears)
@@ -91,7 +91,7 @@ struct av_psc {
     dma_mem_port_t mem; // guest-physical port for DMA (dma_mem.h)
     av_psc_dsp_fn dsp_fn; // dspOverRun latch observer (the DSP glue)
     void *dsp_ctx;
-    struct object *object; // machine.psc (F-26); after the blob, never saved
+    struct object *object; // machine.psc; after the blob, never saved
 };
 
 static inline av_psc_t *psc_of(config_t *cfg) {
@@ -189,7 +189,7 @@ void av_psc_dsp_frame_overrun(av_psc_t *psc) {
 
 uint8_t av_psc_via2_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    uint32_t off = win_off; // decoded by the engine; was (addr & island mask) - base
     (void)addr;
     switch (off) {
     case 0x1A00: {
@@ -222,7 +222,7 @@ uint8_t av_psc_via2_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
 
 void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    uint32_t off = win_off; // decoded by the engine; was (addr & island mask) - base
     (void)addr;
     switch (off) {
     case 0x1A00:
@@ -348,7 +348,7 @@ static int psc_dma_transfer(av_psc_t *psc, int n, const uint8_t *in, uint8_t *ou
     }
     uint32_t count = (uint32_t)len < remain ? (uint32_t)len : remain;
     // One block call, not a byte loop: the port decides whether that is a
-    // memcpy or the same byte loop (F-16).
+    // memcpy or the same byte loop.
     if (to_memory)
         dma_mem_write_block(&psc->mem, ch->addr[s], in, count);
     else
@@ -468,7 +468,7 @@ static uint64_t psc_utsc(config_t *cfg) {
 
 uint8_t av_psc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    uint32_t off = win_off; // decoded by the engine; was (addr & island mask) - base
     (void)addr;
 
     // Level 3-6 interrupt register pairs ($130..$164, byte-wide).
@@ -544,7 +544,7 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
 
 void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    uint32_t off = win_off; // decoded by the engine; was (addr & island mask) - base
     (void)addr;
 
     if (off >= 0x130 && off <= 0x167) {
@@ -642,7 +642,7 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
 // Lifecycle
 // ============================================================
 
-// === Object node: machine.psc (05-chipsets-irq F-26) ========================
+// === Object node: machine.psc ===============================================
 //
 // On the AV machines the PSC is both the VIA2 replacement and the level
 // controller for IPL 3-6, so one node has to show two register families.

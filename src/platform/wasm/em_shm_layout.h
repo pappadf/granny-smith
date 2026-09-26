@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // em_shm_layout.h
-// The shared-heap layouts of the browser's three media transports (T1): the
+// The shared-heap layouts of the browser's three media transports: the
 // camera frame slots (em_camera.c), the microphone ring (em_audio_in.c) and
 // the audio-out ring (em_audio.c).
 //

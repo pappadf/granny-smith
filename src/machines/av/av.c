@@ -189,7 +189,7 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 #define AV_SCC_IO_PENALTY 2
 // Every other window on the island is a handler row, and every one of them
 // completes a bus cycle -- so all of them pay the island's turnaround, the
-// way the IIfx table has always charged its handler rows (F-49).
+// way the IIfx table has always charged its handler rows.
 #define AV_IO_PENALTY 2
 
 // 53C96 window handlers (defined with the SCSI wiring below).
@@ -290,7 +290,7 @@ static void av_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 // No pseudo-DMA on this platform (pdmaAddr = 0) — data moves through PSC
 // channel 0, which the SCSI HAL POLLS (it never installs a channel-0
 // handler).  The chip IRQ is level-sensitive into the PSC-VIA2 window,
-// bits 3 and mirror 0 (curio.md §2, IMPLEMENTATION.md §5).
+// bits 3 and mirror 0 (curio.md §2).
 
 static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -385,7 +385,7 @@ static void av_scsi_pump_event(void *source, uint64_t data) {
             running = true; // a pass that did work is asked again next tick
         // Did the loop stop because the TARGET ran out?  Same rule the AMIC
         // pump applies, and for the same reason -- this path had the identical
-        // structure and never asked (03-scsi F-42).
+        // structure and never asked.
         scsi_53c96_dma_end_if_short(st->scsi96, moved, mem_to_scsi, av_scsi_data_phase(cfg));
     }
     // Re-arm only while there is something to pump.
@@ -539,7 +539,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Port B: PB3 is Cuda TREQ (active-low, idle high).
     via_input(cfg->via1, 1, 3, 1);
     // CA1 (60 Hz) and the Cuda CB1/CB2 lines idle high -- the VIA's own
-    // power-on state now, so this no longer has to say so (F-50).
+    // power-on state, so this does not have to say so.
 
     // The PSC interrupt controller + DMA engine (VIA2 window, L3-L6,
     // sndPhase, the 7 channels).
@@ -548,7 +548,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the PSC");
         return -1;
     }
-    av_psc_set_memory_port(st->psc, &dma_mem_port_physical); // the pair that lived here is shared now (F-16)
+    av_psc_set_memory_port(st->psc, &dma_mem_port_physical); // the shared physical-memory pair
 
     // The DSP3210 aux core on the PSC's dspOverRun reset latch, and the
     // Singer sound frame engine that feeds it EXT1 ticks.

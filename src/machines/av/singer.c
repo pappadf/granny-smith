@@ -238,7 +238,7 @@ static bool singer_ain_connected(av_singer_t *s) {
 // exact zeros drives that normalisation through a division by zero.  The
 // resulting infinities land in the endpoint detector's running cepstral mean,
 // which saturates and never recovers, so the recognizer stops detecting
-// speech for the rest of the session (debug-plaintalk, rung 7).
+// speech for the rest of the session.
 //
 // Deterministic — a pure function of the checkpointed sample counter, so
 // captures stay byte-identical across hosts and across checkpoint restore.
@@ -331,10 +331,9 @@ static const char *ain_src_name(uint8_t mode);
 //   level    Voiced RMS of the SOURCE, ahead of the codec's A/D gain.  The
 //            PlainTalk contract puts typical voiced speech at 100-200 mVpp
 //            (TIL15884), which is ~1400 counts of voiced RMS here; the
-//            asset that works measures 1143.  Rung 7 found assets 6-12 dB
-//            hot were rejected because the guest's AGC winds the codec gain
-//            down in response (sr-test-audio-assets.md §2), so the window
-//            is deliberately tight.
+//            asset that works measures 1143.  Assets 6-12 dB hot were
+//            rejected because the guest's AGC winds the codec gain down in
+//            response, so the window is deliberately tight.
 //   clip     Source peak times the CURRENT A/D gain ladder setting.  This
 //            catches the trap a plain level meter cannot: a source that
 //            looks fine on its own (peak 21145, no railed samples) is hard
@@ -659,13 +658,13 @@ static void singer_frame_event(void *source, uint64_t data) {
     if (com & SND_FRM_INT_EN) {
         // Frame overrun: the previous tick's EXT1 is still latched — the
         // kernel never serviced it.  Sticky $21C bit 2 + L5 bit 1; the
-        // host's FRMOVRNhndlr kills the DSP, no restart (B3).
+        // host's FRMOVRNhndlr kills the DSP, no restart.
         if (st->dsp && av_dsp_running(st->dsp) && av_dsp_ext1_pending(st->dsp)) {
             s->overruns++;
             LOG(1, "frame overrun (frame %llu)", (unsigned long long)frame);
             av_psc_dsp_frame_overrun(st->psc);
         }
-        // The host IFR bit and the DSP tick are the SAME gated tick (B2).
+        // The host IFR bit and the DSP tick are the SAME gated tick.
         av_psc_via2_latch(st->psc, AV_PSC_VIA2_SNDFRM);
         if (st->dsp)
             av_dsp_ext1_tick(st->dsp);

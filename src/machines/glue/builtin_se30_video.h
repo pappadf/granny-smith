@@ -3,7 +3,7 @@
 
 // builtin_se30_video.h
 // SE/30 built-in video as a NuBus card living in slot $E.  See
-// proposal-machine-iicx-iix.md §3.2.5 ("Built-in SE/30 video").  The card
+// docs/machines/glue/se30.md.  The card
 // owns 64 KB VRAM at $FEE00000, a 32 KB declaration ROM at $FEFF8000
 // (real `builtin-se30-video-4f71ff1a.vrom` if available, synthesised fallback otherwise),
 // drives the slot-$E VBL pseudo-IRQ, and exposes a 512×342×1bpp
@@ -22,7 +22,7 @@
 // driver.  The bus controller calls .factory once per BUILTIN slot.
 extern const nubus_card_kind_t builtin_se30_video_kind;
 // Generic sibling ("se30") with the built-in GS declaration ROM — the
-// SE/30 profile default (proposal-generic-nubus-vrom.md sec. 7.4).
+// SE/30 profile default (docs/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t builtin_se30_video_generic_kind;
 
 // === SE/30-specific hooks the machine calls into ============================

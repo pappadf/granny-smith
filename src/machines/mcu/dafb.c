@@ -63,11 +63,11 @@ LOG_USE_CATEGORY_NAME("video");
 #define AC842_PCBR0 0x220u
 // DP8531 (+$300): register = (offset >> 4) & 0xF; commit on reg 15
 
-// Phase C fallback frame period until the ROM programs real timing.
+// Fallback frame period until the ROM programs real timing.
 // Until the Swatch timing registers are programmed there is no mode line to
 // derive a refresh from, so the fallback is the machine's own 60.15 Hz
 // retrace -- taken from scheduler.h rather than re-rounded here, which is
-// where the old 16625000 literal lost 103 ns a frame (04-video F-17).
+// where the old 16625000 literal lost 103 ns a frame.
 #define DAFB_FALLBACK_FRAME_NS MAC_VBL_PERIOD_NS
 
 struct dafb {
@@ -80,7 +80,7 @@ struct dafb {
     // Scanout state
     display_t display;
     // machine.video -- the framebuffer node every display source exposes
-    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    // (display_class.h).
     display_fb_node_t fb_node;
     struct object *video_node;
     rgba8_t clut[256];
@@ -595,8 +595,8 @@ static void dafb_write32(void *ctx, uint32_t offset, uint32_t value) {
 // side effects ONCE PER REGISTER.
 //
 // dafb_write16 used to be two dafb_write8 calls, and each of those ran
-// log_touch + reg_write_effects on a PARTIALLY ASSEMBLED register (04-video
-// F-46).  reg_write_effects is not idempotent, so that was not merely noisy:
+// log_touch + reg_write_effects on a PARTIALLY ASSEMBLED register.
+// reg_write_effects is not idempotent, so that was not merely noisy:
 //
 //   - ac842_write(AC842_DATA) does `dac_phase++` unconditionally, so one guest
 //     word write to the CLUT data port consumed TWO palette components -- and
@@ -655,7 +655,7 @@ static const memory_interface_t dafb_reg_iface = {
 // stride, format and bits, and the CLUT at whatever the guest had programmed.
 // Worse, with regs zeroed the next reconfigure() bails at its mid-mode-set
 // guard (`hfp <= hal`), so the stale mode persisted indefinitely rather than
-// being re-derived (04-video F-38).
+// being re-derived.
 //
 // `cold` follows the same rule as the NuBus cards' set_poweron_defaults: VRAM
 // keeps the previous frame across a warm /RESET, so only a cold build blanks
@@ -725,7 +725,7 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         // with SWATCH_INTR_STATUS & _ENABLE non-zero has to re-assert it here,
         // or the level is lost -- and update_irq's `active != irq_line` edge
         // filter means a later status change may not re-raise it either.  The
-        // Quadra's whole VBL chain hangs off this level (04-video F-38).
+        // Quadra's whole VBL chain hangs off this level.
         update_irq(dafb);
     }
     return dafb;
@@ -833,8 +833,8 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
 //
 // This used to be a file-static "pending" slot that machine.c poked by name
 // and mcu.c consumed destructively -- a second mirror of the JMFB one, which
-// existed only because core could not reach a machine header to set both
-// (proposal-construction-inputs §1.6).  machine_build_opts_t lives in core,
+// existed only because core could not reach a machine header to set both.
+// machine_build_opts_t lives in core,
 // so both now read one value and neither consumes it.
 uint8_t dafb_sense_for_build(const struct config *cfg) {
     int s = cfg->build_opts.video_sense;
@@ -888,7 +888,7 @@ void dafb_reset(dafb_t *dafb) {
         dafb->irq_cb(dafb->irq_ctx, false);
     // ...and the presentation state that is DERIVED from those registers.
     // Zeroing the register file is not a reset of the chip if the descriptor
-    // it produced survives (04-video F-38).
+    // it produced survives.
     dafb_poweron_display(dafb, /*cold*/ false);
 }
 

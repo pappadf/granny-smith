@@ -10,7 +10,7 @@
 // can interrupt without a datapath), the empty FIFO frame counts, and the
 // BIU config.  No transmit or receive path exists, so the driver's
 // loopback self-tests fail and `.ENET` does not load — the documented
-// no-Ethernet contract (IMPLEMENTATION.md §7).
+// no-Ethernet contract.
 
 #include "mace.h"
 

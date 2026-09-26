@@ -7,9 +7,7 @@
 // 6522 core instance, a pseudo-VIA2/RBV-style slot+device bank, and the
 // top-level interrupt control register driving the 601's single INT line),
 // the DMA-engine register file, and the VBL raster.  The sound block
-// dispatches to awacs.c, video control and the Ariel CLUT to ariel.c;
-// remaining DMA datapaths (SCSI, floppy, SCC, Ethernet) land with their
-// ladder rungs in later phases.
+// dispatches to awacs.c, video control and the Ariel CLUT to ariel.c.
 //
 // Register truth: Apple, "Power Macintosh Computers" Developer Note (1994)
 // Fig 2-2 and pp. 15-23, the 8100 schematic set, and the shipping 1994-03
@@ -932,7 +930,7 @@ static void icr_write(config_t *cfg, uint32_t off, uint8_t value) {
 // Island dispatch
 // ============================================================
 
-// === Object node: machine.amic (05-chipsets-irq F-26) =======================
+// === Object node: machine.amic ==============================================
 //
 // A 6100/7100/8100 routes everything through the AMIC's six-bit ICR and its
 // pseudo-VIA2 bank, and neither was reachable from the shell.  The AMIC has
@@ -1089,12 +1087,11 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
         return dma_read(cfg, offset - OFF_DMA);
     case OFF_EPROM:
     case OFF_MACE:
-        // Declared in the decode, nothing behind them yet.  05-chipsets-irq
-        // F-25 suggests deleting the two defines; two proposals say not to
-        // (multi-cpu §11.5 wants Grand Central's OFF_EPROM wired as an IPI,
-        // localtalk-networking keeps MACE as a stub with a real model as
-        // future work), and the finding's own alternative is to float them
-        // to $FF the way io_unmapped_read does on the five mac030 families.
+        // Declared in the decode, nothing behind them yet.  The two defines
+        // stay (Grand Central's OFF_EPROM is the candidate IPI doorbell for
+        // multi-processor work, and MACE is a stub until a real model lands);
+        // the obvious alternative to reading 0 is to float them to $FF the
+        // way io_unmapped_read does on the five mac030 families.
         //
         // THE CORPUS SAYS OTHERWISE, and it was measured: these windows are
         // live traffic, not dead decode -- the EPROM read once and MACE read
@@ -1102,9 +1099,8 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
         // high passes suite-pdm but breaks mklinux-boot's pm7100 row, which
         // no longer reaches the login screen: MkLinux probes for Ethernet
         // here and an all-ones ID PROM is a different answer from an empty
-        // one.  So they read 0, deliberately, until the PDM address-map
-        // shading the wider float-vs-fault audit is blocked on says
-        // otherwise -- which is the audit's own gate, reached empirically.
+        // one.  So they read 0, deliberately, until better evidence about
+        // the PDM address map says otherwise.
         return 0;
     default:
         LOG(2, "read of unwired island offset $%05X", offset);

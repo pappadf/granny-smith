@@ -3,7 +3,7 @@
 
 // av.h
 // The Cyclone/Tempest AV family (Quadra 840AV / Centris 660AV): the 68040 +
-// YMCA + PSC + CIVIC/Sebastian + Cuda generation (proposal-quadra-av.md).
+// YMCA + PSC + CIVIC/Sebastian + Cuda generation.
 // Chip-named like mcu/, mdu/, oss/ — YMCA is the memory controller that
 // defines the generation, but the family is best known by its "AV" branding.
 //
@@ -114,7 +114,7 @@ typedef struct av_state {
     struct av_vdc *vdc; // video digitizer: DMSD + VDC models + frame engine
     struct av_new_age *fdc; // New Age floppy controller stub
     struct av_mace *mace; // MACE Ethernet register stub
-    struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio (Phase E)
+    struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio
 
     mac030_rom_overlay_t overlay; // ROM-at-zero until the aperture is touched
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs on the CPU

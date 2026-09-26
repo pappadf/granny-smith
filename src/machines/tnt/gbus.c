@@ -135,7 +135,7 @@ static void eprom_fill(tnt_gbus_t *g) {
 // processor is the primary … or if the processor is the secondary it will
 // enter a spin-wait for an interprocessor interrupt") — raising it would
 // interrupt the only CPU with a message from nobody.  So it is counted and
-// left unraised.  Building MP (proposal §11 follow-up 2) turns this into
+// left unraised.  Building MP turns this into
 // one tnt_gc_pulse_event(cfg, ANS_INT_SECTOPRI) call.
 static void eprom_doorbell(config_t *cfg) {
     tnt_gbus_t *g = gb(cfg);
@@ -527,7 +527,7 @@ void tnt_gbus_init(config_t *cfg) {
     // Both keyswitches default to LOCKED, which is what the Theory of
     // Operations requires: the rear key locked is a power-on precondition,
     // and Locked is the front switch's normal running position.  Every
-    // non-default is logged at construction (R9).
+    // non-default is logged at construction.
     g->keyswitch = ANS_KEY_LOCKED;
     g->rear_locked = 1;
     tnt_gbus_reset(cfg);

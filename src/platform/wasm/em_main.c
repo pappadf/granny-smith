@@ -279,7 +279,7 @@ static double ticks_per_second = 0;
 //     guaranteed to behave correctly from another thread
 //   - Mutexes inside the runtime can deadlock or stall for many seconds
 //
-// Real-world fallout from violating this rule (M10c regression, 2026-05-02):
+// Real-world fallout from violating this rule (a regression, 2026-05-02):
 // `Module.ccall('em_gs_eval', ...)` was used for the typed object-model
 // bridge (`gsEval` / `gsInspect`) and ran shell_dispatch() on the main
 // thread.  E2E tests using checkpoint --save / --load via gsEval saw
@@ -294,7 +294,7 @@ static double ticks_per_second = 0;
 // flag. The worker's `shell_poll()` (called from `em_main_tick`)
 // drains the queue and writes the result. ccall on `_em_*` exports is
 // forbidden -- and no longer possible: the Makefile stopped exporting
-// ccall/cwrap (A7), so only the bridge remains.
+// ccall/cwrap, so only the bridge remains.
 //
 // The single shared-memory region. Layout in em.h, mirrored in
 // app/web2/src/bus/emulator.ts (offsets pinned by em.h's _Static_asserts).
@@ -308,9 +308,8 @@ EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
 }
 
 int shell_poll(void) {
-    // Drain the bridge slot. After folding the shell into the object
-    // model (proposal-shell-as-object-model-citizen.md), exactly one
-    // request kind remains:
+    // Drain the bridge slot. With the shell folded into the object
+    // model, exactly one request kind remains:
     //   1 = gs_eval(path, args)  — typed object-model call. Includes
     //                              free-form shell lines via
     //                              `shell.run`, schema queries via
@@ -335,8 +334,7 @@ int shell_poll(void) {
 }
 
 // Tab-complete and shell-line dispatch used to live here behind separate
-// `pending` kinds. Both have been folded into gs_eval after the
-// proposal-shell-as-object-model-citizen refactor: tab completion goes
+// `pending` kinds. Both have been folded into gs_eval: tab completion goes
 // through `meta.complete`, free-form lines through `shell.run`. Nothing
 // in this file needs to know about them anymore.
 
@@ -345,7 +343,7 @@ void em_main_tick(void) {
     tick_counter++;
 
     // Calculate performance metrics every PERF_UPDATE_INTERVAL ticks and
-    // push them to the UI (perf proposal P12: MIPS from instr_count deltas —
+    // push them to the UI (MIPS from instr_count deltas —
     // without this, nothing in web2 would reveal a throughput regression).
     if (tick_counter % PERF_UPDATE_INTERVAL == 0) {
         double current_time = emscripten_get_now();
@@ -396,7 +394,7 @@ void em_main_tick(void) {
     // CLUT write, a media change.  So repaint after a served request -- and
     // only then: an idle paused tick costs nothing, and em_video_update
     // compares before uploading, so a request that changed nothing uploads
-    // nothing (D8, F-28).
+    // nothing.
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
     if (shell_poll()) {
@@ -614,7 +612,7 @@ int gs_download(const char *path) {
     fclose(f);
     if (nread != file_size) {
         // Short read silently truncating the download would corrupt the
-        // user's saved file.  Fail loudly instead. (F-1891)
+        // user's saved file.  Fail loudly instead.
         printf("download: short read on '%s' (%zu of %zu bytes)\n", path, nread, file_size);
         free(buf);
         return -1;
@@ -632,7 +630,7 @@ int gs_download(const char *path) {
 // ============================================================================
 // Background Checkpoint System
 // ============================================================================
-// Per-machine layout (proposal-checkpoint-storage-isolation.md):
+// Per-machine layout (docs/guide/ARCHITECTURE.md):
 //   /opfs/checkpoints/<machine_id>-<created>/state.checkpoint      (current)
 //   /opfs/checkpoints/<machine_id>-<created>/state.checkpoint.tmp  (in-flight)
 // One file per machine; tmp+rename is the atomic swap.
@@ -699,7 +697,7 @@ int main(void) {
 
     // Single OPFS mount at /opfs — everything under it persists.
     // The root stays memory-backed (wasmfs_create_opfs_backend() cannot run
-    // during global constructors on the main thread; see wasmfs-opfs-root-limitation.md).
+    // during global constructors on the main thread).
     // The web app creates its directory structure under /opfs; users can also
     // create arbitrary paths under /opfs for their own persistent storage.
     backend_t opfs = wasmfs_create_opfs_backend();

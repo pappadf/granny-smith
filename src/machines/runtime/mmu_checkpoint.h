@@ -4,8 +4,8 @@
 // mmu_checkpoint.h
 // Family-agnostic save/restore of the seven guest-visible 68030 PMMU
 // registers (tc / crp / srp / tt0 / tt1 / mmusr / enabled).  This block was
-// byte-identical in every II-family machine's checkpoint path (proposal
-// §1.1); extracting it keeps save and restore in lockstep in one place.
+// byte-identical in every II-family machine's checkpoint path; extracting it
+// keeps save and restore in lockstep in one place.
 
 #ifndef GS_MACHINES_RUNTIME_MMU_CHECKPOINT_H
 #define GS_MACHINES_RUNTIME_MMU_CHECKPOINT_H

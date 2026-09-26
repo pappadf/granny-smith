@@ -5,8 +5,7 @@
 // Macintosh IIsi ("Erickson", 20 MHz 68030, 1990) machine implementation.
 // Architecturally the IIci with the Egret companion chip added: Egret rides
 // VIA1's shift register and takes over ADB, the RTC, parameter RAM, the
-// 1-second tick, and soft power-off.  See proposal-machine-iici-iisi.md and
-// docs/iisi.md.
+// 1-second tick, and soft power-off.  See docs/machines/mdu/iisi.md.
 //
 // Diff vs iici.c at a glance:
 //   * VIA1 port B + shift register drive the Egret companion (egret.c) instead
@@ -219,7 +218,7 @@ static const nubus_slot_decl_t iisi_slots[] = {
     {0},
 };
 
-// The IIsi board descriptor (proposal §4.2.2): MDU+RBV hardware data, consumed
+// The IIsi board descriptor: MDU+RBV hardware data, consumed
 // at init by the shared helpers.  Shares the MDU window table + 18-bit mirror
 // with the IIci; ROM at $40800000.  (The IIsi's two-bank RAM layout is set up
 // in iisi_init after mac030_build_mmu — it isn't board-descriptor data.)
@@ -332,7 +331,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // mdu_checkpoint_save right after the RBV chip.  Restored here rather than
     // at nubus_init because the framebuffer pointer above must be attached
     // first — this machine's framebuffer is main RAM, so the card must already
-    // know it does not own the buffer (ledger §2).
+    // know it does not own the buffer.
     if (checkpoint)
         nubus_checkpoint_restore(cfg->nubus, checkpoint);
 

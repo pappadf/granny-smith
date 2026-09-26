@@ -371,7 +371,7 @@ static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 #define MCU_SWIM_IO_PENALTY 5 // current MAME charges 5 CPU cycles [R]
 // The handler-row chips (MAC PROM, SONIC, the MCU's own registers, the 53C96
 // and its pseudo-DMA aperture, YANCC) sit on the same island as the SCC and
-// EASC and pay the same turnaround.  They were charging nothing (F-49).
+// EASC and pay the same turnaround.
 #define MCU_IO_PENALTY 2
 
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
@@ -453,7 +453,6 @@ void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
 
 // DAFB video interrupt -> VIA2 PA6 (active-low) through the family /SLOTIRQ
 // aggregate on CA1 (ref S11.18/S13.3), alongside the NuBus slot sources.
-// This was two byte-identical per-machine callbacks until F-40.
 static void mcu_dafb_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     mcu_slot_irq_source(cfg, 6, active);
@@ -594,7 +593,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     if (board->build_devices(cfg, cp) != 0)
         return -1;
 
-    // NuBus (Phase F): seat the declared slot cards; their windows layer
+    // NuBus: seat the declared slot cards; their windows layer
     // over the bus-error range, and slot IRQs route through the substrate's
     // nubus_slot_irq into the VIA2 PA aggregate.
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);

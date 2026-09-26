@@ -82,16 +82,15 @@ void machine_teardown_config_devices(config_t *cfg) {
         //
         // Measured before adding it: a pm7100 teardown left one event queued
         // (amic), which the backstop below reported but nothing cleaned.
-        // These are not the use-after-free half of F-27 -- `cfg` outlives
+        // These are not the use-after-free kind -- `cfg` outlives
         // them -- but they are the half that made the backstop's count noisy,
         // and a count that is never zero cannot detect the dangerous kind.
         scheduler_forget_source(cfg->scheduler, cfg);
 
-        // Backstop (proposal-scheduler-source-lifetime §4): by here every
-        // destructor above should have dropped what it owned, so anything
-        // still queued is a destructor that missed.  Say so rather than
-        // sweeping it silently -- a silent sweep would make the per-device
-        // rule untestable, which is the opposite of the point.
+        // Backstop: by here every destructor above should have dropped what it
+        // owned, so anything still queued is a destructor that missed.  Say so
+        // rather than sweeping it silently -- a silent sweep would make the
+        // per-device rule untestable, which is the opposite of the point.
         int left = scheduler_pending_device_events(cfg->scheduler);
         if (left > 0)
             LOG(1,

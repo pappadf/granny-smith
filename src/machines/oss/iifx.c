@@ -247,7 +247,7 @@ typedef struct iifx_state {
     //   The DMAEN gate naturally restricts the chip-internal cur_addr
     //   behaviour to A/UX-driven bus-master transfers.
     //
-    //   A 2026-05-26 byte-level trace audit (see doc-111) ESTABLISHED
+    //   A 2026-05-26 byte-level trace audit ESTABLISHED
     //   that this chip-faithful model alone CANNOT load libc1_s
     //   correctly: A/UX writes $100 = $2EBA00 byte-identically before
     //   every arm of the 10-arm exec-load, with no other chip-bus
@@ -864,11 +864,11 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     // issue time.  $0C0/$100 emit only on the final byte so the assembled
     // 32-bit value appears; $020/$050/$070 are byte-wide registers.
     //
-    // Gated on the `board` log category at level 9, not on GS_IIFX_SHIM_TRACE
-    // (05-chipsets-irq F-41).  `debug.log board 9` turns it on, `file=` can
-    // redirect it, and it is visible in the object model -- none of which an
-    // env var offered.  Unlike the other overrides that finding names, this
-    // one only ever produced output and never changed emulated behaviour.
+    // Gated on the `board` log category at level 9, not on GS_IIFX_SHIM_TRACE.
+    // `debug.log board 9` turns it on, `file=` can redirect it, and it is
+    // visible in the object model -- none of which an env var offered.  Unlike
+    // the other env-var overrides this replaced, this one only ever produced
+    // output and never changed emulated behaviour.
     if (log_would_log(_log_get_local_category(), 9)) {
         extern uint64_t cpu_instr_count(void);
         unsigned long long ic = (unsigned long long)cpu_instr_count();
@@ -1402,7 +1402,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
     // itself throughout the 64 MB RAM decode window.  The boot ROM sizes
     // memory by probing down from the window top and reading where the
     // address wraps; with a bare linear map the probe reads unmapped $FF
-    // instead of a wrap and POST stalls (ledger §11 — 4 and 8 MB stalled
+    // instead of a wrap and POST stalls (4 and 8 MB stalled
     // while 16/32/64 MB happened to survive the descending probe).
     //
     // Unlike the two-bank MDU machines (iici.c, iisi.c) there is no second
@@ -1466,7 +1466,7 @@ static const nubus_slot_decl_t iifx_slots[] = {
     {0},
 };
 
-// The IIfx board descriptor (proposal §4.2.2): OSS+FMC hardware data, consumed
+// The IIfx board descriptor: OSS+FMC hardware data, consumed
 // at init by the shared helpers.  ROM at $40000000; the 18-bit $40000 I/O
 // mirror; the IIfx window table (device-rows + handler-rows); 0xFF on an
 // unmapped read.

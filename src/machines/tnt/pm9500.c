@@ -34,7 +34,7 @@ static const scsi_bus_decl_t pm9500_scsi_buses[] = {
     {0},
 };
 
-// PCI topology (proposal-pci-architecture §6.1).  Six sockets — three on
+// PCI topology.  Six sockets — three on
 // each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
 // FCode instantiates twice) — with their strapped INTA-D lines on Grand
 // Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
@@ -44,9 +44,9 @@ static const scsi_bus_decl_t pm9500_scsi_buses[] = {
 // The slot LABELS come from each bridge's own `slot-names` property, dumped
 // live from a real 9500 under Open Firmware (Apple Technote 1062):
 // Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
-// `0000E000 "D2" "E2" "F2"`.  Phase 1 declared the second bank D1/E1/F1,
-// having judged the strings "not decidable from the token stream"; the
-// ROM's own property decides them.
+// `0000E000 "D2" "E2" "F2"`.  An earlier model declared the second bank
+// D1/E1/F1, having judged the strings "not decidable from the token
+// stream"; the ROM's own property decides them.
 static const pci_slot_decl_t pm9500_pci_slots[] = {
     {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
     {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},

@@ -5,7 +5,7 @@
 // Macintosh IIci ("Aurora", 25 MHz 68030, 1989) machine implementation.
 // Architecturally the IIcx with VIA2 replaced by the RBV chip and built-in
 // video reading from the slot-$B framebuffer aperture.  See
-// proposal-machine-iici-iisi.md and docs/machines/mdu/iici.md.
+// docs/machines/mdu/iici.md.
 //
 // Diff vs iicx.c at a glance:
 //   * I/O island: VIA2 ($2000) dropped; VDAC ($24000) and RBV ($26000)
@@ -127,7 +127,7 @@ static void iici_memory_layout_init(config_t *cfg) {
     // installed size throughout its 64 MB window — the boot ROM sizes a bank
     // by probing down from the window top and then classifying the wrap, so
     // the mirror is load-bearing (a linear map with no wrap mis-sizes every
-    // configuration the descending probe can't stumble onto; ledger §3).
+    // configuration the descending probe can't stumble onto).
     // Same model as the IIsi, whose Bank A is soldered 1 MB.
     uint32_t bank_a_size, bank_b_size;
     iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
@@ -257,7 +257,7 @@ static const nubus_slot_decl_t iici_slots[] = {
     {0},
 };
 
-// The IIci board descriptor (proposal §4.2.2): MDU+RBV hardware data, consumed
+// The IIci board descriptor: MDU+RBV hardware data, consumed
 // at init by the shared helpers.  ROM at $40800000; the 18-bit $40000 I/O
 // mirror; the shared MDU window table.
 static const mac030_board_desc_t iici_board_desc = {
@@ -335,7 +335,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
     // Card-side display state (VRAM, palette, mode) — written by
     // mdu_checkpoint_save immediately after the RBV chip, so it reads back
-    // here, before the MMU tail below (ledger §2).
+    // here, before the MMU tail below.
     if (checkpoint)
         nubus_checkpoint_restore(cfg->nubus, checkpoint);
 

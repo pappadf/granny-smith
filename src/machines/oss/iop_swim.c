@@ -693,9 +693,9 @@ static bool swim_validate_drive(iop_t *iop, int *out_floppy_idx, uint8_t *out_dr
 // whole floppy family.
 //
 // Derived from image_t::type, which is what classify_image() produced; a 720K
-// image is misclassified as a hard disk there (02-floppy F-04), so it reaches
-// this function as "not a floppy" and reports no formats at all.  Fixing that
-// belongs to the media descriptor in proposal-floppy-controller-unification.
+// image is misclassified as a hard disk there, so it reaches this function
+// as "not a floppy" and reports no formats at all.  Fixing that belongs to
+// the image's media descriptor, not to this controller.
 static void swim_format_masks(const image_t *img, uint16_t *current, uint16_t *allowed) {
     uint16_t cur = 0;
     uint16_t all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) |
@@ -1008,7 +1008,7 @@ static int16_t swim_do_format(iop_t *iop, floppy_t *floppy, int idx, image_t *im
     }
 
     // The medium was rewritten behind the controller's back, so the GCR track
-    // cache must not go on serving pre-format nibbles (02-floppy F-28).
+    // cache must not go on serving pre-format nibbles.
     floppy_drive_drop_tracks(floppy, (unsigned)idx);
     return rc;
 }
@@ -1191,12 +1191,12 @@ static void swim_adb_response(void *source, uint64_t data) {
 
     if (is_autopoll) {
         // Device selection is adb_autopoll_next's, shared with Egret and
-        // Cuda (R-2), and it implements the ERS's rules: MRU order over
+        // Cuda, and it implements the ERS's rules: MRU order over
         // addresses 0..15, with the fallback that polls everything when SRQ
         // persists.  The walk this replaced was `((start - 1 + step) % 15) + 1`
         // -- numeric, and over 1..15, so ADDRESS 0 WAS NEVER POLLED at all,
         // though the DevMap test three lines below it was already bit-per-
-        // address over 0..15 (N-05).  The MRU cursor lives in adb_t now, so
+        // address over 0..15.  The MRU cursor lives in adb_t now, so
         // the cursor byte in IOP model RAM is retired.
         uint16_t devmap = ((uint16_t)iop->ram[SWIM_MODEL_DEVMAP + 0] << 8) | iop->ram[SWIM_MODEL_DEVMAP + 1];
         uint8_t talk_r0 = 0;

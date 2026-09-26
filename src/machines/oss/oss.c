@@ -58,7 +58,7 @@ struct oss {
     oss_control_fn control_cb;
     void *cb_context;
     struct scheduler *scheduler; // counter time base; not checkpointed
-    struct object *object; // machine.oss (F-26); after the blob, never saved
+    struct object *object; // machine.oss; after the blob, never saved
 };
 
 // Notifies the owning machine that CPU IPL may need recomputing.
@@ -87,13 +87,13 @@ static void clear_status_byte(oss_t *oss, uint32_t lane, uint8_t value) {
 // The counter advances with EMULATED TIME.  It used to be incremented once per
 // byte read -- so reading it as eight byte accesses advanced it eight times, a
 // 32-bit read four times, and its rate was a function of the guest's own
-// access pattern rather than of time (05-chipsets-irq F-14).  Every other
+// access pattern rather than of time.  Every other
 // timer in the tree is scheduler-derived: VIA T1/T2, the RBV and DAFB Swatch,
 // the PSC's sndPhase/UTSC, the PPC decrementer.  The OSS was the outlier.
 //
 // RATE IS UNATTESTED.  Neither the F19 theory-of-operation volumes nor
 // docs/machines/oss/iifx.md states what clock drives it, so this follows the
-// precedent the finding names -- psc_utsc(), which is scheduler_time_ns()/1000
+// precedent of psc_utsc(), which is scheduler_time_ns()/1000
 // -- and ticks at 1 MHz.  Nothing in the corpus reads the counter at all
 // (measured across iifx-mactest, iifx-marathon and iifx-install-76: zero
 // reads), so no behaviour depends on the choice today; a source that settles
@@ -227,7 +227,7 @@ static void oss_write_uint32(void *device, uint32_t addr, uint32_t value) {
 }
 
 // Creates an OSS instance with ROM-like default source priorities.
-// === Object node: machine.oss (05-chipsets-irq F-26) ========================
+// === Object node: machine.oss ===============================================
 //
 // The IIfx has no VIA2 and no RBV; the OSS *is* its interrupt controller, so
 // before this node an IRQ storm on a IIfx was not inspectable at all.  The
@@ -431,9 +431,9 @@ void oss_delete(oss_t *oss) {
 // One blob of everything before the first pointer, the idiom via.c, rbv.c,
 // psc.c, new_age.c and civic.c already use and swim3.h:51-53 documents.
 // This was six per-field calls whose order had to be kept in step BY HAND
-// with six more in oss_init -- the idiom 05-chipsets-irq F-37 calls the most
-// error-prone of the three in the tree, and the one F-08's missing field
-// lived in.  A field added to the struct prefix is now carried automatically
+// with six more in oss_init -- the most error-prone of the three idioms in
+// the tree, and the one the IOP's lost `host_irq` field lived in.  A field
+// added to the struct prefix is now carried automatically
 // instead of being silently dropped.
 void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint) {
     if (!oss || !checkpoint)

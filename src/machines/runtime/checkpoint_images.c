@@ -43,8 +43,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     // Bounded and terminated by the reader rather than by the writer's
     // promise: `name` goes on to access(), image_open_with_geometry() and
     // printf("%s"), so a file that omits the NUL used to read off the end of
-    // the allocation (F-23), and an unbounded length drove the malloc (F-22's
-    // shape one layer up).
+    // the allocation, and an unbounded length drove the malloc.
     char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
     char writable = 0;
     system_read_checkpoint_data(cp, &writable, sizeof(writable));
@@ -103,7 +102,7 @@ void mac_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp) {
     // The count comes off disk and used to be the loop bound directly: a
     // corrupt 0xFFFFFFFF ran four billion iterations, each one re-entering the
     // restore, calling storage_restore_from_checkpoint and logging a line --
-    // an effective hang plus a log flood rather than an error (F-24).
+    // an effective hang plus a log flood rather than an error.
     uint32_t count = 0;
     if (!checkpoint_read_count(cp, &count, MAX_IMAGES, "images"))
         return;

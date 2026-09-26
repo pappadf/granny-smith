@@ -6,9 +6,9 @@
 // and the dual-VIA / 68030 / Universal-ROM family with the SE/30, but
 // replaces the slot-$E built-in video with a real NuBus slot at $9
 // (defaulting to the Apple Macintosh Display Card 8•24).  See
-// proposal-machine-iicx-iix.md §3.4.
+// docs/machines/glue/iicx.md.
 //
-// Diff vs se30.c at a glance (per proposal §3.4):
+// Diff vs se30.c at a glance:
 //   * Slot table: $9 = VIDEO with mdc_8_24 default, $A/$B = EMPTY,
 //     no slot $E.
 //   * Machine-ID bits: PA6 = 1, PB3 = 1 (vs SE/30 PA6 = 1, PB3 = 0).
@@ -17,7 +17,7 @@
 //   * Sound-jack-detect via VIA2 PB6 (`v2SndJck`) — input only.
 //   * No buffer-select handling on VIA1 PA6 (no built-in framebuffer).
 //
-// The family-shared lifecycle + I/O dispatch live in mac030/ (the §4.2 GLUE
+// The family-shared lifecycle + I/O dispatch live in mac030/ (the GLUE
 // substrate); this file is the IIcx's per-machine deltas (board descriptor +
 // VIA/ID hooks) on top of it.  iix.c reuses these via iicx_internal.h.
 
@@ -171,7 +171,7 @@ static const nubus_slot_decl_t iicx_slots[] = {
 // ============================================================
 
 // Machine-ID straps.  The IIcx is VIA1 PA6 = 1 and VIA2 PB3 = 1; only PB3 is
-// written, because PA6 = 1 is now the VIA's idle-high power-on state (F-50) --
+// written, because PA6 = 1 is now the VIA's idle-high power-on state --
 // the IIx, which needs PA6 = 0, is the one that has to drive it.
 //
 // This used to write VIA2 PA0-PA5 and the CA1/CA2/CB2 control lines too, all

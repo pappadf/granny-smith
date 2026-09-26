@@ -2,15 +2,14 @@
 // Copyright (c) pappadf
 
 // dsp.c
-// The AV family's DSP3210 — see dsp.h.  Execution model per
-// proposal-heterogeneous-multi-cpu.md §3: the DSP runs in burst events on
-// the one scheduler queue; `ratio_x256` converts elapsed main-CPU cycles
-// into a DSP instruction budget (aux_freq / (4 CKI × main_freq), carry
+// The AV family's DSP3210 — see dsp.h.  Execution model: the DSP runs in
+// burst events on the one scheduler queue; `ratio_x256` converts elapsed
+// main-CPU cycles into a DSP instruction budget (aux_freq / (4 CKI × main_freq), carry
 // kept exact), a 4096-cycle quantum re-arms while the core is runnable,
 // and an idle core (held in reset, or parked in waiti with nothing
 // pending) costs zero events until a kick.
 //
-// Board wiring (dsp3210.md §8 + dsp3210-plaintalk findings):
+// Board wiring (docs/machines/av/dsp.md):
 //   * bus hooks — guest-physical through the bus resolver (the PSC-DMA
 //     pattern; the CPU MMU is deliberately not in the path); the host
 //     decoder never maps the on-chip $5003xxxx window (the core decodes

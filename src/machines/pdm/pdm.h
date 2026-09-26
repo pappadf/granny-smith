@@ -3,7 +3,7 @@
 
 // pdm.h
 // The PDM family (Power Macintosh 6100/7100/8100) — the first machines whose
-// main CPU is the PowerPC 601 (proposal-powerpc-601-pdm.md Phase C).
+// main CPU is the PowerPC 601.
 //
 // Board model: HMC (memory controller: serial config, RAM bank windows,
 // machine ID) + AMIC (everything I/O: decode, pseudo-VIA1/2, interrupt
@@ -13,10 +13,10 @@
 // use the underlying primary documents (Apple Developer Notes, schematics,
 // MPC601 UM).
 //
-// Phase C scope: the machine skeleton and the HWInit boot ladder (rungs
-// L1-L12) — memory map with all ROM alias windows, HMC with both boot-time
-// measurement mechanisms, the AMIC register file (datapaths stubbed), and
-// Cuda on the pseudo-VIA1 transport.
+// The core of the substrate is the machine skeleton that carries the HWInit
+// boot ladder (pdm-rom-ladder rungs L1-L12): the memory map with all ROM
+// alias windows, the HMC with both boot-time measurement mechanisms, the
+// AMIC register file, and Cuda on the pseudo-VIA1 transport.
 
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
@@ -53,7 +53,7 @@ typedef struct pdm_board_desc {
     int bank_count; // SIMM bank windows this board decodes
     // Extra bus cycles charged per load while the HMC wait-state config bit
     // is set — sized so HWInit's bus-ratio measurement lands on the real
-    // machine's CPU:bus ratio (proposal §5.2; pinned at rung L7).
+    // machine's CPU:bus ratio (pinned at pdm-rom-ladder rung L7).
     uint32_t wait_state_penalty;
     // 8100 only: the discrete 53CF96 on the fast internal bus (SCSI bus 0,
     // register file at island +$11000, AMIC DMA channel B).
@@ -91,7 +91,7 @@ typedef struct pdm_via2 {
 } pdm_via2_t;
 
 // One AMIC DMA channel's software-visible register set (control byte plus
-// the address/count bytes the drivers program; datapaths are later phases).
+// the address/count bytes the drivers program).
 typedef struct pdm_dma_ch {
     uint32_t addr;
     uint16_t count;
@@ -204,7 +204,7 @@ typedef struct pdm_video {
     // pdm_video_init leaves it alone instead of taking the staged default.
     bool sense_restored;
     // machine.video -- the framebuffer node every display source exposes
-    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    // (display_class.h).
     display_fb_node_t fb_node;
     struct object *video_node;
 } pdm_video_t;
@@ -260,7 +260,7 @@ typedef struct pdm_state {
     // Memory interfaces registered with the map
     memory_interface_t io_interface; // $50F00000..$50F4FFFF island
     memory_interface_t id_interface; // $5FFFF000 machine-ID page
-    memory_interface_t wait_interface; // page-0 wait-state forwarder (§5.2)
+    memory_interface_t wait_interface; // page-0 wait-state forwarder
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
 
     // Derived presentation state, never checkpointed
@@ -310,7 +310,7 @@ void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-
-// sensitive; called after every flag/enable write — proposal §4.6).
+// sensitive; called after every flag/enable write).
 void pdm_amic_recompute(config_t *cfg);
 // External source lines into the ICR (bit numbers per the dossier)
 #define PDM_ICR_VIA1 0
@@ -321,7 +321,7 @@ void pdm_amic_recompute(config_t *cfg);
 #define PDM_ICR_NMI  5
 void pdm_amic_set_source(config_t *cfg, int bit, bool level);
 
-// machine.amic — the interrupt-controller node (05-chipsets-irq F-26).
+// machine.amic — the interrupt-controller node.
 // Attached from machine construction, not from pdm_amic_init: that memsets
 // the whole AMIC and also runs on a reset.
 void pdm_amic_attach_object(config_t *cfg);

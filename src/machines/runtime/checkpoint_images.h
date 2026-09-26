@@ -5,7 +5,7 @@
 // Family-agnostic save/restore of cfg->images[] into a checkpoint stream.
 // Previously glue030_checkpoint_{save,restore}_images — but the logic is in
 // no way GLUE-specific (it serialises the generic image list), so it lives in
-// runtime/ for use by any machine substrate (proposal §4.2.1 / §4.3).
+// runtime/ for use by any machine substrate.
 
 #ifndef GS_MACHINES_RUNTIME_CHECKPOINT_IMAGES_H
 #define GS_MACHINES_RUNTIME_CHECKPOINT_IMAGES_H

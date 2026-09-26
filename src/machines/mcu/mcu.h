@@ -3,9 +3,8 @@
 
 // mcu.h
 // The MCU/Orwell family (Quadra 700/900/950): the 68040 + MCU + JDB/Relayer +
-// YANCC + stand-alone-DAFB generation (proposal-machine-quadra-700-900-950.md
-// §5).  Chip-named like glue/, mdu/, oss/ — MCU is the memory controller that
-// defines the generation.
+// YANCC + stand-alone-DAFB generation.  Chip-named like glue/, mdu/, oss/ —
+// MCU is the memory controller that defines the generation.
 //
 // Family traits this substrate implements:
 //   * access-triggered ROM-at-zero overlay: the MCU maps the 1 MiB boot ROM
@@ -115,14 +114,14 @@ typedef struct mcu_board {
 // Unified MCU-family machine state.
 typedef struct mcu_state {
     struct adb *adb;
-    struct asc *asc; // EASC (ASC-compatible core until Phase D)
+    struct asc *asc; // EASC (ASC-compatible core)
     struct floppy *floppy;
-    struct dafb *dafb; // DAFB video (register stub until Phase D)
-    struct scsi_53c96 *scsi96; // NCR 53C96 (bus/targets attach in Phase E)
-    struct sonic *sonic; // DP83932 SONIC Ethernet (Phase F; no wire in v1)
+    struct dafb *dafb; // DAFB video
+    struct scsi_53c96 *scsi96; // NCR 53C96
+    struct sonic *sonic; // DP83932 SONIC Ethernet (no wire in v1)
     uint8_t sonic_byte2; // high byte latched from an in-flight register write
 
-    // --- Tower (Q900/Q950) devices — NULL on the Q700 (Phase G) ---
+    // --- Tower (Q900/Q950) devices — NULL on the Q700 ---
     struct egret *caboose; // Egret-protocol system manager ("Caboose" firmware; ref §15.14)
     struct iop *scc_iop; // SCC behind an Apple PIC/IOP at island $C000 (ref §6.3)
     struct iop *swim_iop; // SWIM/ADB behind the second IOP at island $1E000
@@ -168,9 +167,8 @@ extern const mac030_io_range_t mcu_q900_io_ranges[];
 
 // Bind the family device set + board tables into the shared I/O engine.
 // Bind the MCU's I/O dispatcher.  Deliberately NOT a call through to
-// mac030_glue_io_bind, even though desc->common is now the same type it takes
-// (F-32 removed that barrier, and F-36 proposes the merge): the two bind
-// different device sets.  The GLUE version also binds MAC030_DEV_SCSI, and
+// mac030_glue_io_bind, even though desc->common is now the same type it
+// takes: the two bind different device sets.  The GLUE version also binds MAC030_DEV_SCSI, and
 // neither this family's window table nor the AV's ever routes to that device
 // index -- both decode a 53C96 through their own windows instead -- so
 // delegating would install a handle nothing consults.  Merging these is a

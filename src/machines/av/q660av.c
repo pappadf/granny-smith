@@ -5,7 +5,7 @@
 // Macintosh Centris/Quadra 660AV ("Tempest", 25 MHz 68040, July 1993) — the
 // pizza-box sibling of the Quadra 840AV (renamed "Quadra 660AV" late in
 // life).  Same 2 MB $5BF10FD1 ROM and chipset; the deltas are pure data
-// (proposal-quadra-av.md §2, the q950.c pattern):
+// (the q950.c pattern):
 //   * 25 MHz full 68040 (not LC)
 //   * YMCA strap nibble $B (Tempest25), BoxFlag 54, Gestalt 60
 //   * MUNI optional and absent by default — MUNI_Control bus-errors so the

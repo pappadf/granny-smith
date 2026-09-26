@@ -470,15 +470,13 @@ bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path) {
 // docs/machines/lisa/pram_format.md, reverse-engineered from LisaOS and
 // boot-ROM source and verified byte-for-byte against two captured images.
 //
-// This store is synthesised HERE, in the device model that owns it, per
-// proposal-reset-and-nonvolatile-state §4.1: "The store is synthesised in the
-// device model, in code.  The initialiser writes the signature, the partition
-// headers, the checksums and the defaults ... a factory-fresh chip, built by
-// the model that owns it."  Until 2026-09-21 it was synthesised by
-// tests/integration/suite-lisa/seed_pram.py -- 90 lines of Python OUTSIDE the
-// emulator that reimplemented the ROM's own checksum -- and delivered through
-// a path-taking pram_load, which made it the only file-backed non-volatile
-// store in the tree.
+// This store is synthesised HERE, in code, by the device model that owns it:
+// the initialiser writes the signature, the partition headers, the checksums
+// and the defaults, so a cold build is a factory-fresh chip.  Until 2026-09-21
+// it was synthesised by tests/integration/suite-lisa/seed_pram.py -- 90 lines
+// of Python OUTSIDE the emulator that reimplemented the ROM's own checksum --
+// and delivered through a path-taking pram_load, which made it the only
+// file-backed non-volatile store in the tree.
 
 // VFYCHKSM / prom_cksum ($FE00BC), pram_format.md §5: a 16-bit add-then-
 // rotate-left-1 sum over all 32 big-endian words.  PRAM is valid iff the sum

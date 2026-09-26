@@ -229,8 +229,8 @@ void tnt_hh_init(config_t *cfg) {
     //
     // A GS_HH_L2CFG env-var override used to sit here, cut for the 604
     // boot-wall hunt, letting the environment rewrite the strap and latch an
-    // `l2cfg_sticky` flag that made the register ignore writes.  Removed
-    // (05-chipsets-irq F-41).  Three things were wrong with it: emulated
+    // `l2cfg_sticky` flag that made the register ignore writes.  Removed.
+    // Three things were wrong with it: emulated
     // hardware behaviour depended on the process environment, so a run was
     // not reproducible; it contradicted the rule that a machine's facts come
     // from its profile (mac030_glue.h:57-60, ARCHITECTURE.md:492); and

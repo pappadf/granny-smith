@@ -8,7 +8,7 @@
 // machine_substrate_t vtable slots straight at these; the Lisa implements its
 // own (COPS keyboard/mouse + parallel FDC).
 //
-// This is the "one uniform path" of proposal §4.4: the former machine-level
+// This is the one uniform path: the former machine-level
 // escape-hatch with a NULL-and-fallback in the shell commands (Lisa overrides,
 // else an inline Mac default) is gone — every substrate now implements the
 // methods, and the dispatch is an unconditional vtable call.

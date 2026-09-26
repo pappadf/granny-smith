@@ -200,7 +200,7 @@ void tnt_control_update(config_t *cfg) {
     // geometry together, so a scan the 4 MB store cannot back (CR_PITCH is
     // 12 bits wide, which reaches 12 MB at 32 bpp) falls to the blank buffer
     // with a height the blank buffer can actually serve, instead of keeping
-    // the large geometry over a clamped fill (04-video F-26).
+    // the large geometry over a clamped fill.
     bool blanked = (c->reg[CR_CTRL] & 0x400u) || pitch == 0;
     display_set_scanout(&st->display, blanked ? NULL : st->vram, TNT_VRAM_SIZE, base, stride, width, height, st->blank,
                         TNT_VRAM_SIZE);
@@ -218,8 +218,7 @@ void tnt_control_update(config_t *cfg) {
     st->display.clut_dirty = true;
     // Control derives its raster from the CRTC, which is right for a
     // programmable timing generator -- but naming the standard timing it
-    // landed on makes a misprogrammed mode line obvious in the log
-    // (04-video F-17).
+    // landed on makes a misprogrammed mode line obvious in the log.
     const char *timing = display_timing_name(width, height);
     LOG(2, "Control: mode: %ux%u%s%s %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height,
         timing ? " " : "", timing ? timing : "", bpp, st->display.stride, c->reg[CR_MODE], c->rad_ctrl,
@@ -362,11 +361,9 @@ static void control_vbl_sync(config_t *cfg) {
 // The faithful model is neither constant: on the real chip the rate is
 // pixel_clock / (htotal x vtotal), and this file already derives GEOMETRY from
 // the blank-pair registers.  Deriving the period from them too is a fidelity
-// improvement filed separately -- it moves guest-visible timing on every TNT
-// machine, which does not belong inside a de-duplication pass
-// (proposal-video-shared-model.md S3.3, and 04-video F-12, whose "four nominal
-// VBL periods" counts this one as drift from MAC_VBL_PERIOD when it is not
-// measuring the same thing).
+// improvement left for its own change, because it moves guest-visible timing
+// on every TNT machine.  Nor is this 60 a drifted copy of MAC_VBL_PERIOD: the
+// two are not measuring the same thing.
 static void control_vbl_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
@@ -402,7 +399,7 @@ static uint32_t control_vcount(config_t *cfg) {
         vtotal = 525u;
     uint64_t frame = cfg->machine->freq / 60u;
     if (!frame)
-        return 0; // a machine with no clock yet -- % 0 is undefined (04-video F-47)
+        return 0; // a machine with no clock yet -- % 0 is undefined
     uint64_t pos = scheduler_cpu_cycles(cfg->scheduler) % frame;
     return (uint32_t)(pos * vtotal / frame);
 }
@@ -527,7 +524,7 @@ static void vram_write8(void *ctx, uint32_t offset, uint8_t value) {
 // memory space it claims.  The generic type-0 header (config_space.c)
 // does all of that: the sizing mask, the latches and the decode.
 //
-// DOCUMENTED FIDELITY DEVIATION (proposal-pci-architecture §6.2 / §14 Q6):
+// DOCUMENTED FIDELITY DEVIATION:
 // Control's real vendor/device ids are unrecorded anywhere we have.  What
 // the shipping ROM actually reads out of $00-$0C through Chaos is CHAOS's
 // own header, because Chaos's restricted config space is all this model

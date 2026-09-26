@@ -572,9 +572,9 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
             break; // no slave byte / no bus: header-only acknowledgement
         uint8_t slave = data[0];
         if (!av_vdc_i2c_slave_known(slave)) {
-            // Only the DMSD and VDC are on the bus; the real handler's
-            // behavior for other addresses was never analysed (GAPS.md
-            // §2.4) — reject loudly so a guest probing one is visible.
+            // Only the DMSD and VDC are on the bus; the real handler's behavior
+            // for other addresses was never analysed — reject loudly so a guest
+            // probing one is visible.
             LOG(1, "RdWrIIC to unknown I2C slave $%02X rejected", slave);
             cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
             return;
@@ -853,7 +853,7 @@ static void cuda_reset_event(void *source, uint64_t data) {
     // Level 2: the bus AND the CPU.  This used to call the bus half alone,
     // which on the AV families left the 68040 executing from wherever it was
     // while the ROM overlay came back under it -- RAM yanked out from beneath
-    // $00000000 with the machine still running (05-chipsets-irq F-04).  It
+    // $00000000 with the machine still running.  It
     // survived on PDM and TNT only because their substrate handlers called
     // ppc_reset() from inside the bus half, which is now where it is not.
     system_machine_reset();
@@ -898,7 +898,7 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
         cuda->state, cuda->push_pending, cuda->last_pb);
     if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
         // The device-selection rules live in adb.c, shared with Egret and the
-        // SWIM IOP (R-2).  Cuda has no WrDevList in this model -- the host
+        // SWIM IOP.  Cuda has no WrDevList in this model -- the host
         // can read the device list but not set a polling mask -- so 0 here
         // means every address is eligible, and the scan finds the devices
         // wherever Listen R3 has most recently moved them (Copland moves

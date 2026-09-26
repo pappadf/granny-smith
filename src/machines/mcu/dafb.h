@@ -72,7 +72,7 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
 // The monitor sense this build should use, from cfg->build_opts.
 uint8_t dafb_sense_for_build(const struct config *cfg);
 
-// Board revision facts (Phase H).  `version` is served in DAFB_Test bits
+// Board revision facts.  `version` is served in DAFB_Test bits
 // 11:9 (ref §11.8 [R]; Q700/Q900 = 0, Q950 "DAFB 3" = 3 — the driver's
 // 16bpp-always-allowed check reads it on 33 MHz machines).  `ac842a`
 // selects the AC842a RAMDAC model: a real PCBR1 behind AddrReg==1 (the

@@ -98,17 +98,16 @@ static uint32_t bandit_addr_select(const tnt_bandit_t *b) {
     switch (b->base) {
     case TNT_BANDIT1_BASE:
         // 256 MB PCI memory at $80000000; 16 MB windows $F2 (the bridge
-        // itself — its config ports AND, since Phase 2, its 8 MB PCI I/O
+        // itself — its config ports AND its 8 MB PCI I/O
         // window at the same base) and $F3 (pass-through memory, the
         // Grand Central island).
         return (0x0100u << 16) | 0x000Cu;
     case TNT_BANDIT2_BASE:
     default:
-        // Second bridge: $F4 (config ports + PCI I/O) and $F5
-        // (pass-through memory), plus — when it took the window — the
-        // 256 MB of PCI memory at $90000000 that Apple's own dump of a
-        // real 9500 shows it forwarding (TN1062; proposal-pci-architecture
-        // §14 Q5).  The register and the decode stay consistent by
+        // Second bridge: $F4 (config ports + PCI I/O) and $F5 (pass-through
+        // memory), plus — when it took the window — the 256 MB of PCI memory at
+        // $90000000 that Apple's own dump of a real 9500 shows it forwarding
+        // (TN1062).  The register and the decode stay consistent by
         // construction: it advertises the memory range only if
         // tnt_bandit_claim_memory() actually claimed it.
         return ((b->claims_mem ? 0x0200u : 0u) << 16) | 0x0030u;
@@ -314,7 +313,7 @@ static tnt_bandit_t *bridge_add(config_t *cfg, uint32_t base, bool is_chaos, int
     // gets none: through its restricted config space only $00-$0C are
     // readable, and today's model answers those from the CONTROL device
     // seated at the same IDSEL — the documented Chaos/Control conflation
-    // (control.c, proposal §6.2 / §14 Q6).
+    // (control.c, the DOCUMENTED FIDELITY DEVIATION note).
     if (!is_chaos) {
         b->self_dev.ops = &bandit_self_ops;
         b->self_dev.decl = &bandit_self_decl;
@@ -348,8 +347,8 @@ void tnt_bandit_init(config_t *cfg) {
     // through the window 128 times.  NOT at $F3000000: the same property
     // lists that as 16 MB of pass-through MEMORY (see TNT_GC_BASE).
     //
-    // Phase 1 deliberately left this unclaimed, reasoning that it would
-    // land with the first card declaring an I/O BAR.  The Mach64 GX
+    // An earlier model deliberately left this unclaimed, reasoning that it
+    // would land with the first card declaring an I/O BAR.  The Mach64 GX
     // declares none and uses I/O space absolutely: CONFIG_CNTL — the
     // register that ENABLES the memory aperture — is the one mach64
     // register with no memory-mapped alias (ATI RRG ch. 1), so the card is
@@ -380,8 +379,7 @@ void tnt_bandit_init(config_t *cfg) {
 // 7500/8500 has Chaos and no second Bandit, a 9500 has a second Bandit
 // and no Chaos ("bridge 0 — Chaos/VCI on 7500/8500; absent on 9500").
 // Apple's dump of a real 9500 under Open Firmware 1.0.5 shows Bandit 2
-// forwarding it (TN1062), which is what proposal-pci-architecture §14 Q5
-// asked.
+// forwarding it (TN1062).
 //
 // Our pm9500 carries both, because Chaos is still the stand-in host for
 // the onboard video the real machine does not have — and that stand-in
@@ -392,9 +390,8 @@ void tnt_bandit_init(config_t *cfg) {
 // empty, the range is free and Bandit 2 takes it.  That is why this runs
 // after pci_seat_slots() instead of beside the other windows.
 //
-// When Chaos leaves pm9500 for good (proposal-pci-mach64-gx-spinnaker §5
-// step 2, deliberately a separate PR), the condition collapses to "Bandit
-// 2 always claims it" with no other change.
+// When Chaos leaves pm9500 for good, the condition collapses to "Bandit 2
+// always claims it" with no other change.
 void tnt_bandit_claim_memory(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_bandit_t *bandit1 = NULL, *bandit2 = NULL;

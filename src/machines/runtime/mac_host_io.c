@@ -5,7 +5,7 @@
 // Default Macintosh host-IO substrate methods — see mac_host_io.h.  These are
 // the verbatim logic that formerly lived inline in the keyboard.press /
 // mouse.move|click shell commands and the cfg->floppy branch of sys_fd_*, now
-// reached uniformly through the substrate vtable (proposal §4.4).
+// reached uniformly through the substrate vtable.
 
 #include "mac_host_io.h"
 

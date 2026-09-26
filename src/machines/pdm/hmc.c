@@ -15,7 +15,7 @@
 //   - the wait-state bit (bit 8) that HWInit's bus-ratio measurement
 //     toggles: while set, physical page 0 takes a slow path that charges
 //     extra bus cycles per access, so the measured delta yields the real
-//     machine's CPU:bus ratio (proposal §5.2).
+//     machine's CPU:bus ratio.
 //   - the machine-ID register at $5FFFFFFC (byte-readable; a 32-bit read
 //     must NOT show the $A55A signature — the ROM's long-probe has to fail).
 //
@@ -153,7 +153,7 @@ void pdm_hmc_remap(config_t *cfg) {
 }
 
 // ============================================================
-// Wait-state slow path for the bus-ratio measurement (§5.2)
+// Wait-state slow path for the bus-ratio measurement
 // ============================================================
 // While the DRAM timing field (bits 2-15) is all zero — the power-on state
 // and the ROM's $00090000 test pattern — physical page 0 is remapped to

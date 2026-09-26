@@ -5,8 +5,7 @@
 // The MDU+RBV family's I/O dispatch table, shared by the IIci and IIsi.  These
 // two decode the canonical $50Fxxxxx island identically (VIA1 / SCC / SCSI
 // {DRQ,REG,BLIND} / ASC / SWIM / VDAC / RBV, 18-bit $40000 mirror) — the IIsi
-// dispatcher was a 0-substantive-diff prefix-rename of the IIci's (proposal
-// §1.1).
+// dispatcher was a 0-substantive-diff prefix-rename of the IIci's.
 //
 // The decode runs on the shared mac030 I/O engine (mac030_glue_io.h): this file
 // just supplies the MDU window table + mirror + device set via mdu_io_bind.
@@ -44,7 +43,7 @@ void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *de
                  struct nubus_card *video_card);
 
 // The MDU family's ordered window table (sentinel-terminated).  Exposed for the
-// address-map unit test (§6.1) and for MDU machines' board descriptors.
+// address-map unit test and for MDU machines' board descriptors.
 extern const mac030_io_range_t mdu_io_ranges_tbl[];
 const mac030_io_range_t *mdu_io_ranges(void);
 

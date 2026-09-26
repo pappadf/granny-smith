@@ -252,19 +252,19 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // The sound chip is built AFTER the VIA now, and the save half moved with
     // it: construction order IS restore order, and the shared checkpoint
-    // prefix ends at the VIAs (05-chipsets-irq F-18).  Neither depends on the
+    // prefix ends at the VIAs.  Neither depends on the
     // other -- sound_init takes the map and the scheduler, via_init takes the
     // map, the scheduler and this machine's hooks -- so the swap is only
     // about where their blocks sit in the stream.
     ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
-                            // class can find it via cfg->sound (M7f)
+                            // class can find it via cfg->sound
 
     // VIA1 PA3 is the SCC's W/REQ line on a Plus, and it is held LOW at boot
     // until the SCC comes out of reset.  This used to be the core VIA's port-A
     // default (0xF7), which made one machine's boot condition every machine's
     // -- and on the II family the same pin is a NuBus slot /NMRQ, so each of
-    // them had to raise it back up or slot $C asserted forever (F-50).
+    // them had to raise it back up or slot $C asserted forever.
     via_input(cfg->via1, /*port A*/ 0, /*PA3*/ 3, 0);
 
     rtc_set_via(cfg->rtc, cfg->via1);
@@ -354,7 +354,7 @@ static void plus_teardown(config_t *cfg) {
     // Machine-owned devices first, then the shared delete-chain.  This is the
     // shape mac030_glue_teardown uses and the other six families already
     // follow; the Plus and the Lisa were the two that still hand-rolled the
-    // whole thing (05-chipsets-irq F-17).
+    // whole thing.
     //
     // ORDER IS LOAD-BEARING and this is why: the floppy used to be deleted
     // AFTER scheduler_delete here.  That was harmless while floppy_delete only
@@ -400,7 +400,7 @@ static void plus_teardown(config_t *cfg) {
 // Save complete Plus machine state to an open checkpoint stream.
 // Order must match the restore path in plus_init().
 static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    // The shared core prefix (05-chipsets-irq F-18): mem_map, CPU,
+    // The shared core prefix: mem_map, CPU,
     // scheduler, cfg->irq, RTC, SCC, AppleTalk, VIA1.  The Plus's own copy
     // of those eight differed only in interposing the sound chip before the
     // VIA; plus_init's construction moved with this.

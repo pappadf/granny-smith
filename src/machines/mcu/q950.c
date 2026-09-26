@@ -3,9 +3,8 @@
 
 // q950.c
 // Macintosh Quadra 950 ("Zydeco", 33 MHz 68040, March 1992) — the faster
-// tower (proposal-machine-quadra-700-900-950.md Phase H).  Sister of the
-// Quadra 900: same Eclipse board architecture (Caboose, two PIC/IOPs,
-// dual 53C96, five NuBus '90 slots), so every hook comes from
+// tower.  Sister of the Quadra 900: same Eclipse board architecture (Caboose,
+// two PIC/IOPs, dual 53C96, five NuBus '90 slots), so every hook comes from
 // q900_internal.h.  Deltas (ref §18.3, UniversalTables.a InfoQuadra950):
 //   * 33.33 MHz CPU clock; VIA2 PB5 speed sense reads 1 (33 MHz)
 //   * model sense $90: PA & $56 == $10 (PA6 = 0, PA4 = 1)

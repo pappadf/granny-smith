@@ -312,8 +312,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
     // 1.0 — the 601 is near-1-CPI on HWInit's measurement loop, and 1.0
-    // makes the measured clock land exactly on the snap-table value
-    // (proposal §5.2).
+    // makes the measured clock land exactly on the snap-table value.
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
     // No 68k MMU owns this machine's page table, so host-backed regions that
     // core code registers on the bus map — a NuBus card's VRAM and
@@ -329,7 +328,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 1);
-    // The 601's RTC input: 7.8336 MHz on every PDM board (601 proposal §3.7).
+    // The 601's RTC input: 7.8336 MHz on every PDM board.
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
@@ -349,8 +348,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU
     // clock divides integrally by that — the rounded divisor is display-only
     // and via_set_exact_clock installs the reduced 783360/freq rational so
-    // guest-measured timer rates are exactly φ2-equivalent (the dossier's
-    // hard constraint, owed by rung L17).
+    // guest-measured timer rates are exactly φ2-equivalent (checked at
+    // pdm-rom-ladder rung L17).
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", pdm_via1_output, pdm_via1_shift_out, pdm_via1_irq, cfg, cp);
@@ -421,7 +420,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
         // so a machine saved with monitor=none came back as hires and its
         // display topology changed underneath it: pdm_video_display returns
         // NULL on PDM_SENSE_NONE, which is what lets a NuBus card be the only
-        // screen (04-video F-40).  DAFB solved the same problem by riding its
+        // screen.  DAFB solved the same problem by riding its
         // sense in the device's own stream.
         system_read_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
         st->video.sense_restored = true;
@@ -470,9 +469,8 @@ static void pdm_bus_reset(config_t *cfg) {
     // CPU half and belongs to level 2 (system_machine_reset), not to the
     // board's /RESET net -- this used to call ppc_reset() from here, which is
     // why the Cuda path happened to work on PDM and TNT while leaving the AV
-    // families' 68040 running (05-chipsets-irq F-04).  (The 68k-RESET warm
-    // path re-enters HWInit with MSR[IR] on and AMIC state SURVIVING — that
-    // path is guest-driven and becomes a first-class test row in Phase D.)
+    // families' 68040 running.  (The 68k-RESET warm path re-enters HWInit
+    // with MSR[IR] on and AMIC state SURVIVING — that path is guest-driven.)
     // Note pdm_amic_init memsets the whole AMIC.  The SWIM3 model is
     // deliberately NOT inside pdm_amic_t (pdm.h), so this cannot clear the
     // chip's bound fd/sched/backend pointers the way it once did.
@@ -483,7 +481,7 @@ static void pdm_bus_reset(config_t *cfg) {
     scc_reset(cfg->scc);
     // The floppy CONTROLLER.  cfg->floppy (the drive and its media) is reset
     // by the shared chain; the SWIM3 is this family's controller and was the
-    // one in the tree that survived a reset (`W-01`).
+    // one in the tree that survived a reset.
     swim3_reset(&st->swim3);
     for (int i = 0; i < 2; i++)
         if (st->scsi96[i])
@@ -543,7 +541,7 @@ static void pdm_teardown(config_t *cfg) {
 
 static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     pdm_state_t *st = pdm_st(cfg);
-    // The shared core prefix (05-chipsets-irq F-18).  Byte-identical to the
+    // The shared core prefix.  Byte-identical to the
     // seven lines that used to be written out here: this machine has cfg->ppc
     // and no cfg->via2, so the helper takes the ppc block, skips cfg->irq and
     // passes straight through the second VIA.
@@ -568,8 +566,7 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // in a user-shareable save file, and made two saves of the same guest
     // state differ -- which defeats any diff-based checkpoint testing.  The
     // restore re-binds through *_swim3_bind either way, so the values were
-    // harmless; the leak and the non-reproducibility were not
-    // (05-chipsets-irq F-09).
+    // harmless; the leak and the non-reproducibility were not.
     system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
     system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
@@ -610,7 +607,7 @@ static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
 
 // A drive the family does not have holds no disk.  This used to answer
 // "occupied" so the core's drive auto-select would never pick drive 1; the
-// auto-select is now bounded by the profile's floppy_slots (N-06, #177), so
+// auto-select is now bounded by the profile's floppy_slots (#177), so
 // the answer can be the true one.
 static bool pdm_fd_present(config_t *cfg, int drive) {
     if (!cfg->floppy || drive != 0)

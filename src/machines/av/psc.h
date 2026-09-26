@@ -130,8 +130,7 @@ void av_psc_dsp_frame_overrun(av_psc_t *psc);
 
 // The guest-physical port the engine transfers through -- the shared
 // dma_mem_port_t (the CPU MMU is deliberately not in the path; unit tests
-// install an array-backed port instead).  This used to be a third private
-// pair of hook typedefs (05-chipsets-irq F-16).
+// install an array-backed port instead).
 void av_psc_set_memory_port(av_psc_t *psc, const dma_mem_port_t *port); // copied; NULL unbinds
 
 // Device-side DMA ports: move up to `len` bytes between the channel's

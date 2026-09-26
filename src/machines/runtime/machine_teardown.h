@@ -4,8 +4,8 @@
 // machine_teardown.h
 // The one config_t-owned teardown chain, shared by every machine family.
 //
-// Before this existed, seven families each carried a hand-written copy of it
-// (the 2026-09-03 review's F-27).  Measured with comments and whitespace
+// Before this existed, seven families each carried a hand-written copy of
+// it.  Measured with comments and whitespace
 // stripped, four of the five 68k copies differed from the GLUE one only in
 // whether they had a VIA2 -- which the NULL guard below already covers -- and
 // the MCU's was byte-identical.  A change to the chain had to be made seven

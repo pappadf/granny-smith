@@ -3,7 +3,7 @@
 
 // q840av.c
 // Macintosh Quadra 840AV ("Cyclone", 40 MHz 68040, July 1993) — the desktop
-// flagship of the AV family and its first leaf (proposal-quadra-av.md).
+// flagship of the AV family and its first leaf.
 // YMCA strap nibble $F, BoxFlag 72, Gestalt 78; MUNI present with three
 // NuBus '90 slots C/D/E (declared but unpopulated — no AV declaration-ROM
 // work in scope).  Shares the 2 MB $5BF10FD1 ROM with the Centris 660AV;
@@ -24,7 +24,7 @@
 static const uint32_t q840av_ram_options_kb[] = {8192, 16384, 32768, 65536, 131072, 0};
 
 // New Age reports "no drive" (ST3 = $FF) — no floppy slots offered until a
-// real New Age model lands (proposal §3.1).
+// real New Age model lands.
 static const struct floppy_slot q840av_floppy_slots[] = {
     {0},
 };
