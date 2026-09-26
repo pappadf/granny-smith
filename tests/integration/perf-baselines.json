@@ -24,12 +24,24 @@
       "instr": 48024070,
       "tolerance": 0.2
     },
+    "mklinux-boot/pm6100": {
+      "instr": 1979983600,
+      "tolerance": 0.2
+    },
     "mklinux-boot/pm7100": {
       "instr": 4959983600,
       "tolerance": 0.2
     },
     "mklinux-boot/pm7500": {
       "instr": 4750000000,
+      "tolerance": 0.2
+    },
+    "mklinux-boot/pm8100": {
+      "instr": 2779983600,
+      "tolerance": 0.2
+    },
+    "pm8100-24ac-sysinfo/bench": {
+      "instr": 10302983600,
       "tolerance": 0.2
     },
     "quadra-dual-card/dual": {

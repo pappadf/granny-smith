@@ -244,7 +244,7 @@ def row_pdm_nubus_empty() {
     # guest-side proof that the faults were RECOVERED, not merely taken.
     assert debug.mac.globals.read("SInfoPtr") != 0 "Slot Manager built no sInfo list"
     assert machine.screen.checksum() != 0 "no picture after the slot scan"
-    report_row("rom", "bart", "empty sockets")
+    report_row("rom", "bart", "rom-stage empty sockets")
 }
 
 # ---- pdm-nubus-checkpoint ---------------------------------------------------
@@ -273,7 +273,7 @@ def row_pdm_nubus_checkpoint() {
     # ...and the restored machine is live, not frozen.
     scheduler.run 20000000
     assert machine.screen.checksum() == $before "picture changed after running on"
-    report_row("rom", "24ac", "nubus checkpoint")
+    report_row("rom", "24ac", "rom-stage nubus checkpoint")
 }
 
 # ---- cd-device --------------------------------------------------------------
@@ -295,7 +295,7 @@ def row_pdm_cd_device() {
     assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)"
     # The HD slots the same bus already served must be undisturbed by it.
     assert try(machine.scsi.device[0].type, none) == none "cd-device: something is attached at SCSI 0"
-    report_row("7.5", "curio", "cd-device")
+    report_row("rom", "curio", "rom-stage cd-device")
 }
 
 # ---- pdm-floppy-mount -------------------------------------------------------

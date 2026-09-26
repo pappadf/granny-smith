@@ -914,6 +914,146 @@
       "depth": 8,
       "addr32": true,
       "suite": "suite-av"
+    },
+    {
+      "machine": "pm6100",
+      "system": "7.5",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm7100",
+      "system": "7.5",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm8100",
+      "system": "7.5",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm7100",
+      "system": "7.5",
+      "card": "swim3",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm7100",
+      "system": "7.6",
+      "card": "swim3",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm7100",
+      "system": "rom",
+      "card": "curio",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm8100",
+      "system": "7.5",
+      "card": "24ac",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm8100",
+      "system": "rom",
+      "card": "24ac",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm8100",
+      "system": "rom",
+      "card": "bart",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-pdm"
+    },
+    {
+      "machine": "pm6100",
+      "system": "DR3",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "mklinux-boot"
+    },
+    {
+      "machine": "pm7100",
+      "system": "DR3",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "mklinux-boot"
+    },
+    {
+      "machine": "pm8100",
+      "system": "DR3",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "mklinux-boot"
+    },
+    {
+      "machine": "pm7500",
+      "system": "DR3",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": null,
+      "suite": "mklinux-boot"
+    },
+    {
+      "machine": "pm8100",
+      "system": "7.5",
+      "card": "ariel+24ac",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "pm8100-24ac-sysinfo"
     }
   ]
 }

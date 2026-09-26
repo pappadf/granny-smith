@@ -417,3 +417,10 @@ def mips_floor(label, t0, floor_mips) {
 def report_row(system, card, feature) {
     echo "@@COV {\"machine\":\"${machine.id}\",\"ram\":${machine.ram},\"system\":\"${$system}\",\"card\":\"${$card}\",\"width\":${machine.screen.width},\"height\":${machine.screen.height},\"depth\":${machine.screen.depth},\"addr32\":${debug.mac.globals.read("MMU32bit") == 1},\"feature\":\"${$feature}\"}"
 }
+
+# The same record for a row running an OS other than Mac OS (MkLinux, AIX,
+# Open Firmware): addr32 is the Mac OS global MMU32bit, which such an OS does
+# not have, so it is reported as null rather than as a false reading.
+def report_row_foreign(system, card, feature) {
+    echo "@@COV {\"machine\":\"${machine.id}\",\"ram\":${machine.ram},\"system\":\"${$system}\",\"card\":\"${$card}\",\"width\":${machine.screen.width},\"height\":${machine.screen.height},\"depth\":${machine.screen.depth},\"addr32\":null,\"feature\":\"${$feature}\"}"
+}
