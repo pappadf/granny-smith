@@ -1,16 +1,24 @@
 ## Shared build logic for unit test sub-makefiles
 #
 # Usage inside a test directory Makefile (under suites/<name>/):
-#   TEST_NAME    := mytest           # (required) test binary name
-#   TEST_SRCS    := test.c           # (required) test sources (relative to test dir)
-#   TEST_HARNESS := isolated         # (required) isolated or cpu
-#   EXTRA_SRCS   := ../../../src/... # (optional) additional source files
-#   EXTRA_CFLAGS := -DFOO            # (optional) additional compiler flags
+#   TEST_NAME     := mytest           # (required) test binary name
+#   TEST_SRCS     := test.c           # (required) test sources (relative to test dir)
+#   TEST_HARNESS  := isolated         # isolated (default), cpu, or none
+#   EXTRA_SRCS    := ../../../src/... # (optional) additional source files
+#   EXTRA_CFLAGS  := -DFOO            # (optional) additional compiler flags
+#   EXTRA_LDFLAGS := -lz              # (optional) additional link flags
+#   STUBS         := assert           # (optional) support/stub_<name>.c to add
+#   OMIT_STUBS    := memory           # (optional) harness stubs to leave out
+#   SANITIZE      := -fsanitize=...   # (optional) sanitizer flags, compile + link
+#   INCLUDE_FLAGS := -I...            # (optional) replaces the default list
+#   RUN_ENV       := VAR=value        # (optional) environment for the run
 #   include ../../common.mk
 #
 # Harness modes:
 #   isolated  Pure unit tests, no emulator subsystems (only stubs)
 #   cpu       CPU tests with real memory and CPU
+#   none      No harness and no default stubs: the test supplies main() and
+#             its own mocks, and names any support stubs it wants in STUBS
 #
 # Dependency tracking: automatic via -MMD -MP.
 # Header changes trigger correct recompilations.
@@ -33,7 +41,9 @@ EMU_ROOT       := $(WORKSPACE_ROOT)/src
 
 BUILD_DIR  ?= $(UNIT_ROOT)/build
 OBJ_DIR    := $(BUILD_DIR)/obj/$(TEST_NAME)
-TARGET     := $(BUILD_DIR)/$(TEST_NAME)
+# TARGET_EXT names the wasm32 run's output (.js) apart from the native one.
+TARGET_EXT ?=
+TARGET     := $(BUILD_DIR)/$(TEST_NAME)$(TARGET_EXT)
 
 # -- Compiler and flags --
 
@@ -44,36 +54,42 @@ endif
 
 BASE_CFLAGS := -O0 -g -Wall -Wextra
 
-INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
-                 -I$(EMU_ROOT)/core \
-                 -I$(EMU_ROOT)/core/cpu \
-                 -I$(EMU_ROOT)/core/memory \
-                 -I$(EMU_ROOT)/core/peripherals \
-                 -I$(EMU_ROOT)/core/peripherals/nubus \
-                 -I$(EMU_ROOT)/core/scheduler \
-                 -I$(EMU_ROOT)/core/debug \
-                 -I$(EMU_ROOT)/core/storage \
-                 -I$(EMU_ROOT)/core/network \
-                 -I$(EMU_ROOT)/core/shell \
-                 -I$(EMU_ROOT)/core/object \
-                 -I$(EMU_ROOT)/core/vfs \
-                 -I$(EMU_ROOT)/machines \
+# The core and machine header directories are the ones both product builds
+# use (src/sources.mk); the unit build puts its support shims first and
+# builds against the wasm platform headers.  A suite that deliberately
+# compiles against a narrower set sets INCLUDE_FLAGS itself.
+CORE_DIR     := $(EMU_ROOT)/core
+MACHINES_DIR := $(EMU_ROOT)/machines
+PEELER_DIR   := $(EMU_ROOT)/peeler
+include $(WORKSPACE_ROOT)/src/sources.mk
+
+INCLUDE_FLAGS ?= -I$(UNIT_ROOT)/support \
+                 $(CORE_INCLUDES) \
                  -I$(EMU_ROOT)/platform/wasm \
-                 -I$(EMU_ROOT)/peeler/include \
-                 -I$(EMU_ROOT)/peeler/lib \
+                 $(PEELER_INCLUDES) \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
 
-CFLAGS  := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
+SANITIZE ?=
+
+CFLAGS  := $(BASE_CFLAGS) $(SANITIZE) $(INCLUDE_FLAGS)
 LDFLAGS ?=
-LDFLAGS += -rdynamic -lm
+LDFLAGS += -rdynamic -lm $(SANITIZE)
+EXTRA_LDFLAGS ?=
 
 # -- Harness and stub configuration --
 
 EMU_SRCS ?=
+STUBS ?=
+OMIT_STUBS ?=
 
-ifeq ($(TEST_HARNESS),isolated)
+ifeq ($(TEST_HARNESS),none)
+  HARNESS_SRCS :=
+  STUB_SRCS :=
+  COMMON_SRCS :=
+
+else ifeq ($(TEST_HARNESS),isolated)
   # Isolated mode: stub-only harness, no real emulator subsystems
   HARNESS_SRCS := $(UNIT_ROOT)/support/harness_common.c \
                   $(UNIT_ROOT)/support/harness_isolated.c
@@ -117,8 +133,13 @@ else ifeq ($(TEST_HARNESS),cpu)
   COMMON_SRCS := $(HARNESS_SRCS) $(STUB_SRCS)
 
 else
-  $(error Invalid TEST_HARNESS '$(TEST_HARNESS)'. Use: isolated or cpu)
+  $(error Invalid TEST_HARNESS '$(TEST_HARNESS)'. Use: isolated, cpu or none)
 endif
+
+# Harness stubs a suite replaces with the real module (e.g. memory), and
+# support stubs it adds by name.
+COMMON_SRCS := $(filter-out $(foreach s,$(OMIT_STUBS),$(UNIT_ROOT)/support/stub_$(s).c),$(COMMON_SRCS)) \
+               $(foreach s,$(STUBS),$(UNIT_ROOT)/support/stub_$(s).c)
 
 # -- Source and object file collection --
 # All source paths are converted to absolute, then mapped to object
@@ -140,6 +161,17 @@ DEP := $(OBJ:.o=.d)
 
 all: $(TARGET)
 
+# Objects depend on the flags they were compiled with: a stamp named after a
+# hash of the compile flags, so changing EXTRA_CFLAGS, SANITIZE or CC
+# rebuilds the suite instead of linking objects compiled the old way.
+FLAGS_HASH  := $(shell printf '%s' '$(subst ','\'',$(CC) $(CFLAGS) $(EXTRA_CFLAGS))' | md5sum | cut -c1-12)
+FLAGS_STAMP := $(OBJ_DIR)/flags-$(FLAGS_HASH).stamp
+$(FLAGS_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(OBJ_DIR)/flags-*.stamp
+	@touch $@
+$(OBJ): $(FLAGS_STAMP)
+
 # Compile: workspace source -> object under OBJ_DIR
 $(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
 	@mkdir -p $(dir $@)
@@ -149,7 +181,7 @@ $(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	@echo "[LD ] $@"
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ) -o $@ $(LDFLAGS) $(EXTRA_LDFLAGS)
 
 # Include auto-generated header dependency files
 -include $(DEP)
@@ -161,8 +193,9 @@ $(TARGET): $(OBJ)
 # stops at it with "Permission denied".
 EXEC_WRAPPER ?=
 EXEC_WRAPPER_BIN := $(if $(EXEC_WRAPPER),$(shell command -v $(EXEC_WRAPPER)))
+RUN_ENV ?=
 run: $(TARGET)
-	$(EXEC_WRAPPER_BIN) $(TARGET)
+	$(RUN_ENV) $(EXEC_WRAPPER_BIN) $(TARGET)
 
 # Clean this test's artifacts
 clean:
