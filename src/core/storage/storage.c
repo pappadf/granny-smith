@@ -563,10 +563,14 @@ int storage_clear_rollback(storage_t *storage) {
         delta_flush_bitmaps(storage);
         storage->bitmap_dirty = false;
 
+        // Same rule as storage_apply_rollback: a journal that cannot be truncated
+        // keeps its count, so the in-memory index matches what is on disk.
         if (storage->journal_count > 0 && storage->journal_fp) {
             int fd = fileno(storage->journal_fp);
-            if (fd >= 0)
-                ftruncate(fd, 0);
+            if (fd >= 0 && ftruncate(fd, 0) != 0) {
+                LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+                return GS_ERROR;
+            }
             fseeko(storage->journal_fp, 0, SEEK_SET);
             storage->journal_count = 0;
         }
@@ -824,8 +828,10 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
 
     if (storage->journal_fp) {
         int fd = fileno(storage->journal_fp);
-        if (fd >= 0)
-            ftruncate(fd, 0);
+        if (fd >= 0 && ftruncate(fd, 0) != 0) {
+            LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+            return GS_ERROR;
+        }
         fseeko(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;
