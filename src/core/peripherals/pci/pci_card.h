@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// card.h
+// pci_card.h
 // PCI device abstraction — the analogue of nubus/card.h, and the only
 // header a pluggable card driver under pci/cards/ needs.  See
 // docs/core/peripherals/pci.md.

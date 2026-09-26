@@ -9,9 +9,9 @@
 // enabled -- or the conversion never runs and the test passes whatever the code
 // does.
 
-#include "card.h"
 #include "display.h"
 #include "pci.h"
+#include "pci_card.h"
 #include "system_config.h"
 #include "test_assert.h"
 

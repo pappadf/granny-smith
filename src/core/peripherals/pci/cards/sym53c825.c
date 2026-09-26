@@ -76,7 +76,6 @@
 // reassembles in CHIP order — which is precisely the swap the ROM's
 // `-flip` words are compensating for, seen from the other side.
 
-#include "card.h"
 #include "log.h"
 #include "pci.h"
 #include "sym53c8xx.h"

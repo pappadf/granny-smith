@@ -30,8 +30,8 @@
 #ifndef PCI_H
 #define PCI_H
 
-#include "card.h"
 #include "common.h"
+#include "pci_card.h"
 
 #include <stdbool.h>
 #include <stdint.h>

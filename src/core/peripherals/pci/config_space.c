@@ -15,8 +15,8 @@
 
 #include "config_space.h"
 
-#include "card.h"
 #include "pci.h"
+#include "pci_card.h"
 
 #include <string.h>
 

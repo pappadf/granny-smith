@@ -61,7 +61,6 @@
 // Guide nobody has.  See voodoo2.md for the convention and the
 // divergence list.
 
-#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"

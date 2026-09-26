@@ -9,7 +9,7 @@ module — see "Why not one expansion-bus abstraction" below.
 | File | What it holds |
 |---|---|
 | `pci.h` / `pci.c` | bus controller: buses, devices, decode windows, config dispatch, slot table, kind registry, staged config, lifecycle and interrupt fan-outs |
-| `card.h` | `pci_device_t` / `pci_device_ops_t` / `pci_card_kind_t` — the only header a card driver under `cards/` needs |
+| `pci_card.h` | `pci_device_t` / `pci_device_ops_t` / `pci_card_kind_t` — the only header a card driver under `cards/` needs |
 | `config_space.h` / `config_space.c` | the generic type-0 header: IDs, class, command/status, BAR latch + sizing, expansion-ROM BAR, interrupt line |
 | `pci_class.c` | the `machine.pci.slot[N]` object surface |
 | `cards/` | pluggable card drivers (empty today) |
