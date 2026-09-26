@@ -502,9 +502,8 @@ ui2-e2e:
 ui2-diag: ui2
 	@/usr/bin/env node scripts/ui2-diag.mjs
 
-# run2 is an alias for `run` for muscle-memory continuity. The Phase 7
-# retire pass made `run` itself serve the new UI; this alias can be
-# dropped in a future cleanup.
+# run2 is an alias for `run` for muscle-memory continuity. `run` itself
+# now serves the new UI; this alias can be dropped in a future cleanup.
 run2: run
 
 # -- Clean (everything) --

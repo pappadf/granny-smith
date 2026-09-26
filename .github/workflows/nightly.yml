@@ -1,8 +1,8 @@
 name: Nightly
 
-# The long half of the integration suite, split out of the PR gate per
-# proposal-integration-test-rework §5.4. PR/push runs the unit and matrix
-# tiers (see tests.yml); this workflow runs:
+# The long half of the integration suite, split out of the PR gate (tiers:
+# docs/guide/TESTING.md). PR/push runs the unit and matrix tiers (see
+# tests.yml); this workflow runs:
 #
 #   * the extended tier — MacTest diagnostics, the installers and their
 #     artifact-producing flows, app choreography (Marathon, MusicWorks),
@@ -12,7 +12,7 @@ name: Nightly
 #     cycles cannot plausibly have run to completion. It now runs the unit
 #     tier plus one representative boot, with the perf floors switched off
 #     (PERF_FLOORS=off) because a 20-50x slowdown makes throughput asserts
-#     meaningless — the latent contradiction §5.8 called out.
+#     meaningless.
 #
 # Nightly also runs the suites in KEEP_GOING mode so a red row does not hide
 # every row after it: the coverage and milestone report at the end is only
@@ -88,7 +88,7 @@ jobs:
       - name: Build headless emulator
         run: make -f Makefile.headless
 
-      # KEEP_GOING so one red row does not truncate the report (§5.7).
+      # KEEP_GOING so one red row does not truncate the report.
       - name: Run integration tests (${{ github.event.inputs.tier || 'extended' }} tier)
         run: |
           # PLATEN=1: without the bridge the printer rows skip (see
@@ -97,7 +97,7 @@ jobs:
             TEST_VARS="KEEP_GOING=1" 2>&1 | tee /tmp/it-nightly.log
           exit "${PIPESTATUS[0]}"
 
-      # Valgrind, rescoped (§5.4): the unit tier plus one representative boot,
+      # Valgrind, rescoped: the unit tier plus one representative boot,
       # with throughput floors off because Valgrind makes them meaningless.
       - name: Valgrind (unit tier + one boot)
         if: always()

@@ -5,7 +5,7 @@ Usage: bin2c.py --out header.h --guard NAME name=path [name=path ...]
 
 Emits, per file:  static const uint8_t <name>[<size>] = { ... };
 Deterministic output (input order, fixed formatting).  Generated into
-build/ — never committed (runtime-vrom proposal §3.2)."""
+build/ — never committed."""
 
 import argparse
 

@@ -259,7 +259,7 @@ int main(int argc, char *argv[]) {
         // split mnemonic and operands at the tab character,
         // matching the emulator's debug.c disasm() function
         // Bounded: the split never writes past mnemonic[] whatever the
-        // decoder returns (F-34; unreachable today, measured, but unbounded).
+        // decoder returns (unreachable today, measured, but unbounded).
         if (disasm_buf[0] == '\0') {
             snprintf(mnemonic, sizeof(mnemonic), "ILLEGAL");
             operands[0] = '\0';

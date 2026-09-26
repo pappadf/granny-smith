@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) pappadf
 #
-# migrate_shell_v2.py — mechanical v1 → v2 shell-script migration
-# (proposal-shell-control-flow-and-functions.md §9).
+# migrate_shell_v2.py — mechanical v1 → v2 shell-script migration.
 #
 # Rules applied per script:
 #   1. `NAME = ${expr}` / `NAME = literal`  →  `let NAME = expr'`

@@ -11,9 +11,8 @@ Statically parses tests/integration/*/config.mk and test.script (plus any
 as GitHub-flavored markdown.  Scripts are segmented at `machine.boot`
 statements so multi-boot matrix tests attribute media/video to the machine
 that actually boots them.  Heuristic by design: once suites self-report
-coverage rows at runtime (proposal-integration-test-rework.md §5.6), that
-JSONL replaces the script-side guesswork here; the pivots and rendering
-stay.
+coverage rows at runtime, that JSONL replaces the script-side guesswork
+here; the pivots and rendering stay.
 
 Usage:  scripts/test-matrix.py [--tests] [--video] [--pivot] [tests/integration]
 """
@@ -223,7 +222,7 @@ def emit_pivot(tests, pairs_of, title):
 
 
 
-# === Runtime coverage (§5.6 layer 2) ========================================
+# === Runtime coverage (layer 2) ==============================================
 #
 # Layer 1 (everything above) parses scripts statically and is heuristic by
 # design. Layer 2 reads what the suites REPORTED at runtime: each row that
@@ -231,9 +230,8 @@ def emit_pivot(tests, pairs_of, title):
 # machine, so the achieved set cannot drift from what actually ran.
 #
 # The declared roster in matrix-targets.json is the other half: it is
-# hand-authored from the proposal's §7 assignment tables and says which
-# cells the suite is REQUIRED to cover and which suite owes each one. It is
-# never generated from a run — a contract derived from what happened would
+# hand-authored and says which cells the suite is REQUIRED to cover and which
+# suite owes each one. It is never generated from a run — a contract derived from what happened would
 # be satisfied by whatever happened.
 
 COV_KEYS = ("machine", "system", "card", "width", "height", "depth", "addr32")
@@ -270,7 +268,7 @@ def read_targets(path):
 
 
 def check_perf(baseline_path, log_paths):
-    """Gate per-row instruction spend against perf-baselines.json (§5.8).
+    """Gate per-row instruction spend against perf-baselines.json.
 
     The spend is deterministic per build — same guest work, same count — so a
     row outside its tolerance band is a real change, not flake, and fails like
@@ -318,15 +316,15 @@ def owner_tier(suite_root, suite):
 def check_coverage(target_path, log_paths, suite_root, tier=None):
     """Diff achieved (@@COV) against declared (matrix-targets.json).
 
-    Exit semantics (§5.6): a declared cell that was not covered fails; a
+    Exit semantics: a declared cell that was not covered fails; a
     covered cell nobody declared is a warning telling the author to claim
     it. Two declared-but-uncovered cases are warnings instead of failures,
     because neither means coverage regressed:
       * the owing suite does not exist yet (branch work in progress) —
         derived from the filesystem, so it cannot be faked with a flag;
       * the cell is media_gated and its row printed a "skip:" line,
-        i.e. the private test data is not present in this checkout (§9's
-        landable-before-data rule);
+        i.e. the private test data is not present in this checkout (a row
+        may land before its data does);
       * the cell carries a `blocked` reason — an emulator defect makes it
         unreachable today (the cell-level twin of a milestone row). The
         reason is printed on every run so the debt stays visible, and
