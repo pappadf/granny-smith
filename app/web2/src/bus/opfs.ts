@@ -110,9 +110,15 @@ class MockOpfs implements OpfsBackend {
       hd: ['hd1.img', 'hd2.img'],
       cd: ['system7.iso'],
     };
-    return fixtures[cat].map((name) => ({
+    // ...plus whatever a test added to the category directory.
+    const dir = `/opfs/images/${cat}/`;
+    const added = [...this.files.keys()]
+      .filter((p) => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
+      .map((p) => p.slice(dir.length))
+      .filter((name) => !fixtures[cat].includes(name));
+    return [...fixtures[cat], ...added].map((name) => ({
       name,
-      path: `/opfs/images/${cat}/${name}`,
+      path: `${dir}${name}`,
       kind: 'file' as const,
     }));
   }
@@ -127,6 +133,11 @@ class MockOpfs implements OpfsBackend {
 
   async writeJson(path: string, value: unknown): Promise<void> {
     this.json.set(path, value);
+  }
+
+  // Tests: a file appears, as an upload would leave it.
+  addFile(path: string, size = 0): void {
+    this.files.set(path, { size });
   }
 
   async readFile(path: string): Promise<Blob> {

@@ -104,8 +104,7 @@
     if (!ev.dataTransfer?.files?.length) return;
     ev.preventDefault();
     const files = Array.from(ev.dataTransfer.files);
-    const ok = await acceptFilesAsCategory(files, mediaIdFor(cat));
-    if (ok) await refresh();
+    if ((await acceptFilesAsCategory(files, mediaIdFor(cat))) !== null) await refresh();
   }
 
   function onRowContext(entry: OpfsEntry, ev: MouseEvent) {

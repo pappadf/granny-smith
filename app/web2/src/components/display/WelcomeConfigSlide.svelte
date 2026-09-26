@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { initEmulator, opfs, gsEval, whenModuleReady } from '@/bus';
@@ -552,7 +552,18 @@
     setWelcomeSlide('home');
   }
 
-  async function interceptIfUpload(value: string, category: ImageCategory): Promise<string | null> {
+  // The slot's new value for a dropdown pick: the pick itself, or for
+  // "Upload image…" the uploaded image -- or, when the upload was cancelled
+  // or rejected, the previous value.  In that last case the state does not
+  // change, so Svelte leaves the DOM showing the sentinel: write the
+  // <select>'s value back ourselves.  (A cancel used to wipe the slot, and a
+  // successful upload left it at (none), N-53.)
+  async function interceptIfUpload(
+    select: HTMLSelectElement,
+    previous: string,
+    category: ImageCategory,
+  ): Promise<string> {
+    const value = select.value;
     if (value !== UPLOAD_SENTINEL) return value;
     // Map the dropdown's category (uses 'cd' as the ImageCategory key)
     // to the upload pipeline's MediaTypeId ('cdrom') and pick strictly:
@@ -560,9 +571,14 @@
     // or it's rejected. Prevents accidentally classifying an HD image
     // as a floppy via the auto-detect order.
     const mediaId: MediaTypeId = category === 'cd' ? 'cdrom' : (category as MediaTypeId);
-    await pickAndUploadAs(mediaId);
+    const persisted = await pickAndUploadAs(mediaId);
     await refreshOpfs();
-    return null;
+    await tick(); // the new option is in the DOM before the value names it
+    const paths = category === 'fd' ? fdPaths : category === 'hd' ? hdPaths : cdPaths;
+    const name = persisted ? Object.keys(paths).find((n) => paths[n] === persisted) : undefined;
+    const next = name ?? previous;
+    select.value = next;
+    return next;
   }
 
   async function onFdChange(e: Event, slotIndex: number) {
@@ -577,9 +593,10 @@
       createOpen = true;
       return;
     }
-    const result = await interceptIfUpload(v, 'fd');
+    const select = e.target as HTMLSelectElement;
+    const result = await interceptIfUpload(select, floppies[slotIndex] ?? NONE_SENTINEL, 'fd');
     const next = floppies.slice();
-    next[slotIndex] = result ?? NONE_SENTINEL;
+    next[slotIndex] = result;
     floppies = next;
   }
   async function onHdChange(e: Event) {
@@ -590,8 +607,7 @@
       createOpen = true;
       return;
     }
-    const result = await interceptIfUpload(v, 'hd');
-    hd = result ?? NONE_SENTINEL;
+    hd = await interceptIfUpload(e.target as HTMLSelectElement, hd, 'hd');
   }
 
   // A blank image was created in /opfs/images/{hd,fd}/. Re-scan so the
@@ -608,9 +624,7 @@
     }
   }
   async function onCdChange(e: Event) {
-    const v = (e.target as HTMLSelectElement).value;
-    const result = await interceptIfUpload(v, 'cd');
-    cd = result ?? NONE_SENTINEL;
+    cd = await interceptIfUpload(e.target as HTMLSelectElement, cd, 'cd');
   }
 
   async function onSubmit(e: Event) {

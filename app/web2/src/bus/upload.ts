@@ -168,15 +168,16 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
 // Category-strict entry — used by the New Machine dialog dropdowns and
 // the Images-tab per-category drop targets. Validates the staged file
 // AS THIS SPECIFIC category only; rejects (with a toast) anything that
-// doesn't match. Single-file flow.
+// doesn't match. Single-file flow.  Returns the persisted path, or null
+// when nothing was stored.
 export async function acceptFilesAsCategory(
   files: File[],
   category: MediaTypeId,
-): Promise<boolean> {
-  if (!files.length) return false;
+): Promise<string | null> {
+  if (!files.length) return null;
   if (!isModuleReady()) {
     showNotification('Emulator still starting; please retry', 'warning');
-    return false;
+    return null;
   }
   const file = files[0];
   startActivity(file.name);
@@ -184,20 +185,20 @@ export async function acceptFilesAsCategory(
     const staging = await stageUpload(file);
     if (!staging) {
       showNotification(`Upload failed: ${file.name}`, 'error');
-      return false;
+      return null;
     }
     const descriptor = MEDIA_TYPES[category];
     const result = await descriptor.validate(staging, gsEval);
     if (!result.valid) {
       showNotification(`'${file.name}' is not a valid ${descriptor.label}`, 'error');
       await discardStaging(staging);
-      return false;
+      return null;
     }
     const persisted = await persist(staging, file.name, descriptor, result.info);
-    if (!persisted) return false;
+    if (!persisted) return null;
     if (category === 'rom') await maybeBootFromRom(persisted);
     else await autoMountIfEmpty(persisted, category);
-    return true;
+    return persisted;
   } finally {
     endActivity();
   }
@@ -485,23 +486,32 @@ async function loadCheckpointFile(file: File): Promise<void> {
 }
 
 // Programmatic file-picker entry — Welcome's "Upload ROM..." button calls
-// this. Wraps an invisible `<input type="file">` click.
-export function openFilePicker(accept = ''): Promise<File[]> {
+// this. Wraps an invisible `<input type="file">` click.  Resolves with the
+// chosen files, or [] when the user cancels the dialog: `cancel` fires
+// instead of `change` then (every browser that can run the emulator has it),
+// and without it the promise stayed pending and the input leaked (F-36).
+// There is deliberately no focus-based fallback: a window refocus can land
+// before `change` and would drop a real selection.
+export function openFilePicker(accept = '', multiple = true): Promise<File[]> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     if (accept) input.accept = accept;
-    input.multiple = true;
+    input.multiple = multiple;
     input.style.display = 'none';
-    input.addEventListener(
-      'change',
-      () => {
-        const files = input.files ? Array.from(input.files) : [];
-        document.body.removeChild(input);
-        resolve(files);
-      },
-      { once: true },
-    );
+    let done = false;
+    const cleanup = (files: File[]) => {
+      if (done) return;
+      done = true;
+      input.removeEventListener('change', onChange);
+      input.removeEventListener('cancel', onCancel);
+      input.remove();
+      resolve(files);
+    };
+    const onChange = () => cleanup(input.files ? Array.from(input.files) : []);
+    const onCancel = () => cleanup([]);
+    input.addEventListener('change', onChange);
+    input.addEventListener('cancel', onCancel);
     document.body.appendChild(input);
     input.click();
   });
@@ -521,12 +531,12 @@ export async function pickAndUpload(accept = '', opts: AcceptFilesOptions = {}):
 
 // Category-strict picker variant — the New Machine dialog uses this so
 // picking "Upload image..." in (say) the floppy slot only accepts a
-// floppy. Returns the persistDir-relative path of the persisted file
-// (when the upload succeeds), or null when the user cancelled or the
-// file was rejected.
-export async function pickAndUploadAs(category: MediaTypeId, accept = ''): Promise<boolean> {
-  const files = await openFilePicker(accept);
-  if (!files.length) return false;
+// floppy. One file.  Returns the path of the persisted file (when the
+// upload succeeds), or null when the user cancelled or the file was
+// rejected.
+export async function pickAndUploadAs(category: MediaTypeId, accept = ''): Promise<string | null> {
+  const files = await openFilePicker(accept, false);
+  if (!files.length) return null;
   return acceptFilesAsCategory(files, category);
 }
 
