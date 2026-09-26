@@ -50,8 +50,13 @@ LOG_USE_CATEGORY_NAME("ckpt");
 // on 32-bit (WASM) builds.
 #define CHECKPOINT_MAX_ALLOC ((size_t)1024 * 1024 * 1024)
 
-// Persistent write buffer for quick checkpoints (allocated once, reused)
+// Persistent write buffer for quick checkpoints (allocated once, reused).
+// Its real capacity is remembered next to it: buf_append grows the buffer
+// with realloc, and a checkpoint opened later must start from that grown
+// capacity, not from QUICK_BUF_CAPACITY, or every save on a machine larger
+// than 8 MB pays a shrink-then-regrow realloc (and its copies) again.
 static uint8_t *g_quick_write_buf = NULL;
+static size_t g_quick_write_cap = 0;
 
 // === RLE Compression ===
 // Format: sequence of chunks, each either:
@@ -191,9 +196,12 @@ static bool buf_append(checkpoint_t *cp, const void *data, size_t len) {
         }
         cp->buf = new_buf;
         cp->buf_cap = new_cap;
-        // Update the static pointer so it stays valid for future checkpoints
-        if (!cp->buf_owned)
+        // Update the static pointer and capacity so future checkpoints start
+        // from the grown buffer instead of growing it again
+        if (!cp->buf_owned) {
             g_quick_write_buf = new_buf;
+            g_quick_write_cap = new_cap;
+        }
     }
     memcpy(cp->buf + cp->buf_used, data, len);
     cp->buf_used += len;
@@ -871,9 +879,10 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
                 free(cp);
                 return NULL;
             }
+            g_quick_write_cap = QUICK_BUF_CAPACITY;
         }
         cp->buf = g_quick_write_buf;
-        cp->buf_cap = QUICK_BUF_CAPACITY;
+        cp->buf_cap = g_quick_write_cap;
         cp->buf_used = 0;
         cp->buf_owned = false; // static buffer, not freed on close
     } else {
