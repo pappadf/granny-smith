@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { bootstrap, whenModuleReady, getBootState } from '@/bus/emulator';
 
-// A boot that cannot start must say so (11-WORK-ORDER A5, F-37): whenModuleReady
+// A boot that cannot start must say so (A5, F-37): whenModuleReady
 // rejects with the reason, the boot state records it, and automation gets
 // window.__gsBootError.  Before, the promise stayed pending forever.
 //

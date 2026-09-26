@@ -93,7 +93,7 @@ const char *hd_bus_to_string(hd_bus_t bus) {
     return "scsi";
 }
 
-// === Media bays (11-WORK-ORDER M1) =========================================
+// === Media bays (M1) =========================================
 // Where a hard disk or a CD goes is a fact the profile already holds -- the
 // buses with their bays, the `boot` flag, hd_bus, has_cdrom/cdrom_id -- but
 // every consumer derived it for itself, and they disagreed: headless put
@@ -1345,7 +1345,7 @@ static const arg_decl_t machine_profile_args[] = {
     {.name = "id", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30)"},
 };
 
-// === machine.attach_hd / attach_cdrom / eject_media (11-WORK-ORDER M2) ======
+// === machine.attach_hd / attach_cdrom / eject_media (M2) ======
 // Media by bay, not by bus: the running machine's profile says where a hard
 // disk or a CD goes (profile_hd_bays / profile_cdrom_bay), and the substrate
 // attaches it there, on whatever bus that is -- machine.scsi, machine.scsi2 or

@@ -2,7 +2,7 @@
 // Section expansion lives here (Phase 7 will tee this to OPFS).
 
 // Map and Descriptors return when the core can walk a table (they showed
-// fixtures before, 11-WORK-ORDER D5).
+// fixtures before, D5).
 export type MmuSubtab = 'state' | 'translate';
 export type MemoryMode = 'logical' | 'physical';
 

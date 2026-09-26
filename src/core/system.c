@@ -1208,7 +1208,7 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     return 0;
 }
 
-// === Machine-level attach and eject (11-WORK-ORDER M2) =====================
+// === Machine-level attach and eject (M2) =====================
 //
 // One verb for "put this disk in that bay", whatever bus the bay is on: the
 // same substrate dispatch machine.restart hands media back through

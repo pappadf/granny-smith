@@ -81,7 +81,7 @@ assert len(debug.breakpoints.entries) == 0 "cleared collection reads as empty li
 
 # === breakpoint entries: dedupe, enumerate, enable, remove ==============
 #
-# What web2's Breakpoints panel relies on (11-WORK-ORDER D1).  Ids are
+# What web2's Breakpoints panel relies on (D1).  Ids are
 # stable and never reused, so a list is walked with meta.indices, never
 # with count; a second add at one address returns the existing entry; a
 # disabled entry stays listed but does not fire.
@@ -128,8 +128,8 @@ debug.disasm 0x400090 3
 #
 # N stepped instructions must be N run ones: debug.step arms the same budget
 # scheduler.run does, so VBL pulses while stepping.  Before, stepping ran the
-# guest with the VBL line dead and the two diverged within a few frames
-# (execution-model proposal §1.12.2).  600000 Plus instructions span several
+# guest with the VBL line dead and the two diverged within a few frames.
+# 600000 Plus instructions span several
 # VBLs.  (Last in the script: it restarts the machine.)
 
 machine.restart

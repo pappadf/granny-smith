@@ -1142,7 +1142,7 @@ static value_t attr_mmu_enabled(struct object *self, const member_t *m) {
 //
 // The same two methods exist on every MMU kind (68030, 68040, PowerPC, the
 // Lisa's segment MMU), with the same result shapes, so a debugger needs no
-// per-kind code to label an address or read memory (11-WORK-ORDER D3).
+// per-kind code to label an address or read memory (D3).
 
 // Whether a 68040 transparent-translation register maps `addr` for this
 // privilege: enabled, base/mask match on A31-A24, and the S field allows it.

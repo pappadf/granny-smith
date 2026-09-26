@@ -5,7 +5,7 @@ vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).em
 
 const { saveCheckpoint } = await import('@/bus/checkpoint');
 
-// Every success message checks its result (11-WORK-ORDER A2).
+// Every success message checks its result (A2).
 describe('Save State (F-42, N-22)', () => {
   beforeEach(() => bridge.reset());
 

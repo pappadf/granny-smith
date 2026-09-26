@@ -1,4 +1,4 @@
-// One attach helper for every frontend path (11-WORK-ORDER M5).
+// One attach helper for every frontend path (M5).
 //
 // initEmulator, the URL parameters, the drop auto-mount and the Images panel
 // each attached media for themselves: a CD at SCSI id 3 on every model (id 0

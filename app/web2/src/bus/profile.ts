@@ -1,4 +1,4 @@
-// The one reader of `machine.profile(id)` (11-WORK-ORDER M4, F-11, F-49).
+// The one reader of `machine.profile(id)` (M4, F-11, F-49).
 //
 // Five call sites used to fetch the profile each for itself — the config
 // dialog, capabilities, the URL path, the ROM-drop boot, the default HD bay —

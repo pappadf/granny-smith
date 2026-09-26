@@ -285,8 +285,7 @@ export function isModuleReady(): boolean {
 
 // --- gsEval -------------------------------------------------------------
 
-// The result contract (11-WORK-ORDER A1; the execution-model proposal's
-// Phase 0 shape):
+// The result contract (A1):
 //   - a value     — the method or attribute's result;
 //   - null        — ONLY a successful method that returns nothing (V_NONE);
 //   - { error }   — failure.  A C-side V_ERROR carries the core's message;
@@ -341,15 +340,15 @@ export function requestTooLarge(path: string, argsJson: string): string | null {
   return null;
 }
 
-// --- Slow is not dead (11-WORK-ORDER A6) ---------------------------------
+// --- Slow is not dead (A6) ---------------------------------
 //
 // The bridge has one slot and no request id, so a slow request is never
 // abandoned on a timer: freeing the slot while the worker is still inside the
 // old request would hand its reply to the next caller and erase that caller's
 // request.  Instead a request that runs long raises a status-bar notice, and
 // only a real crash — a wasm trap or abort on the worker — ends the bridge.
-// (Cancel belongs to the execution-model proposal's job ids; D-5 declined a
-// stopgap.)
+// (Cancelling a request needs a per-request id the bridge does not have; an
+// out-of-band interrupt word was considered as a stopgap and declined.)
 
 // Paths that are legitimately long: the notice waits longer for them.
 const LONG_REQUEST =

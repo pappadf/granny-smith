@@ -3419,10 +3419,10 @@ static value_t debug_method_step(struct object *self, const member_t *m, int arg
     // stepped time pulses VBL and consumes frame_cycles_left exactly as
     // running does.  It used to call scheduler_run_instructions, which
     // advanced cpu_cycles with the VBL line dead: N stepped instructions did
-    // not match N run ones (execution-model proposal §1.12.2, Phase 0).
-    // Still synchronous, so `while cond { debug.step 1 }` works in the browser
-    // terminal too, where nothing pumps between statements; returning at once
-    // with a mode is the proposal's Phase 2.
+    // not match N run ones.  Still synchronous, so `while cond { debug.step 1 }`
+    // works in the browser terminal too, where nothing pumps between
+    // statements; returning at once would need an asynchronous step, which
+    // does not exist yet.
     if (!scheduler_run_with_budget(s, (uint64_t)count))
         return val_err("debug.step: instruction count too large");
     while (scheduler_is_running(s))

@@ -1,4 +1,4 @@
-# Integration test: debug.frame on every CPU architecture (11-WORK-ORDER D2),
+# Integration test: debug.frame on every CPU architecture (D2),
 # and the same frame on machine.cpu and the AV DSP3210 (D7).
 # The web Debug view renders from debug.frame; it used to read the 68K
 # cpu_t and failed on every PowerPC machine.  This row boots one machine per

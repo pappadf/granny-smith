@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { gsEval, gsOk, isGsError, gsErrorText } from '@/bus/emulator';
 
-// The gsEval result contract (11-WORK-ORDER A1): null is only a V_NONE
+// The gsEval result contract (A1): null is only a V_NONE
 // success; every failure — the core's or the bridge's — is an { error } shape.
 describe('gsEval result contract', () => {
   it('reports a module that is not ready as a transport error, not null', async () => {

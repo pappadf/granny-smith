@@ -1,4 +1,4 @@
-// The MMU, as the core exposes it on every MMU kind (11-WORK-ORDER D3/D5).
+// The MMU, as the core exposes it on every MMU kind (D3/D5).
 //
 // machine.cpu.mmu.translate and .peek have the same signatures and result
 // shapes on the 68030, the 68040, the PowerPC 601/604 and the Lisa's segment

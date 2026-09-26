@@ -704,7 +704,7 @@ void print_prompt(void) {}
 // flag. The worker's `shell_poll()` (called from `em_main_tick`)
 // drains the queue and writes the result. ccall on `_em_*` exports is
 // forbidden -- and no longer possible: the Makefile stopped exporting
-// ccall/cwrap (11-WORK-ORDER A7), so only the bridge remains.
+// ccall/cwrap (A7), so only the bridge remains.
 //
 // The single shared-memory region. Layout in em.h, mirrored in
 // app/web2/src/bus/emulator.ts (offsets pinned by em.h's _Static_asserts).
@@ -806,7 +806,7 @@ void em_main_tick(void) {
     // CLUT write, a media change.  So repaint after a served request -- and
     // only then: an idle paused tick costs nothing, and em_video_update
     // compares before uploading, so a request that changed nothing uploads
-    // nothing (11-WORK-ORDER D8, F-28).
+    // nothing (D8, F-28).
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
     if (shell_poll()) {
@@ -1236,12 +1236,14 @@ static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVis
 
 // Install background checkpoint handlers.  Only visibilitychange: it is
 // delivered to this (the emulator) thread, and browsers fire it -> hidden when
-// a tab is closed or navigated away, so an unload is covered.  There is
-// deliberately no beforeunload handler: Emscripten runs that callback on the
-// browser main thread (it must return synchronously), which put a whole
-// checkpoint -- system_checkpoint and WasmFS fopen/fwrite/rename -- on the
-// main thread while the worker could be mid-tick (execution-model proposal
-// §1.12.1, removed in its Phase 0).
+// a tab is closed or navigated away.  That save is asynchronous, so on an
+// unload it may not finish before the page goes: a reload does not reliably
+// find a checkpoint from it.  There is deliberately no beforeunload handler:
+// Emscripten runs that callback on the browser main thread (it must return
+// synchronously), which put a whole checkpoint -- system_checkpoint and
+// WasmFS fopen/fwrite/rename -- on the main thread while the worker could be
+// mid-tick.  Blocking the main thread instead, waiting for the worker, could
+// stall the save itself: the worker's tick is driven by requestAnimationFrame.
 static void install_background_checkpoint_handlers(void) {
     if (g_background_handlers_installed)
         return;

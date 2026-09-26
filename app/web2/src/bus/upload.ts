@@ -17,8 +17,8 @@
 // write path.  The main thread blocks, servicing proxied calls, until each
 // chunk lands: that is jank while a large upload streams, not a deadlock (the
 // emulator thread's sync MAIN_THREAD_EM_ASM calls are serviced meanwhile —
-// 11-WORK-ORDER A8, refuting N-61).  Moving the writes off the main thread is
-// the execution-model proposal's I/O worker.  Writing staging with the page's
+// A8, refuting N-61).  Moving the writes off the main thread needs an I/O
+// worker, which the bridge does not have yet.  Writing staging with the page's
 // own navigator.storage — the old approach — failed two ways: Safari's OPFS
 // rejects main-thread createWritable() with "UnknownError", and on Chromium the
 // emulator's WasmFS can't see an out-of-band OPFS write, so the follow-up

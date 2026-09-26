@@ -804,7 +804,7 @@ bool lisa_mmu_debug_write(uint32_t addr, unsigned size, bool supervisor, uint32_
 //
 // The segment MMU is real hardware with its own translation; before this node
 // it had no object at all and the debugger showed every address as mapped to
-// itself (11-WORK-ORDER D3, D-7, N-28).  translate/peek have the same
+// itself (D3, D-7, N-28).  translate/peek have the same
 // signatures and result shapes as every other MMU kind's.
 
 // Instance data: the lisa_mmu_t.

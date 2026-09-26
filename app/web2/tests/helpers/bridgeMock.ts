@@ -1,4 +1,4 @@
-// A recording stand-in for the gsEval bridge (11-WORK-ORDER unit 0.2).
+// A recording stand-in for the gsEval bridge (unit 0.2).
 //
 // Component tests mock whole bus functions (writeRegister, removeBreakpoint…),
 // so a bus function that sends the core a path it never resolves still passes

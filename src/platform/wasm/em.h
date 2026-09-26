@@ -61,7 +61,7 @@ void em_print_host_callstack(void);
 //
 // The int32 words are shared with JS's Atomics.* and are therefore accessed
 // only through __atomic_* on this side — never plain loads or stores, which
-// carry no ordering with JS's writes (11-WORK-ORDER A4, F-25).  `version` is
+// carry no ordering with JS's writes (A4, F-25).  `version` is
 // the exception: a static initialiser, fixed before JS can see the struct.
 //
 // Request protocol — exactly one kind, serialised by the JS-side

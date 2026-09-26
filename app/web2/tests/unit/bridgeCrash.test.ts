@@ -9,7 +9,7 @@ import {
 import { machine } from '@/state/machine.svelte';
 import { bridgeBusy } from '@/state/activity.svelte';
 
-// 11-WORK-ORDER A6: slow is not dead.  A long request raises a notice and is
+// A6: slow is not dead.  A long request raises a notice and is
 // never abandoned; a crashed worker fails every request at once.
 
 describe('the busy notice', () => {

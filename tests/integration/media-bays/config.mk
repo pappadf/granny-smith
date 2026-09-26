@@ -1,5 +1,5 @@
 # Integration test: media go to the model's bays, from the command line and
-# from the object model alike (11-WORK-ORDER M1-M3).
+# from the object model alike (M1-M3).
 #
 # Where a hard disk or a CD goes is in the profile -- the buses with their
 # bays, the `boot` flag, has_cdrom/cdrom_id -- but headless put hd=N at SCSI

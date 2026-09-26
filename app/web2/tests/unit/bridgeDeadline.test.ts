@@ -4,7 +4,7 @@ import { machine } from '@/state/machine.svelte';
 
 // Its own file: marking the bridge dead is once per page (module), and the
 // crash tests in bridgeCrash.test.ts need a live one.
-describe('the deadline (11-WORK-ORDER A6)', () => {
+describe('the deadline (A6)', () => {
   afterEach(() => vi.useRealTimers());
 
   it('marks an ordinary request wedged past 120 visible seconds as a dead bridge', () => {

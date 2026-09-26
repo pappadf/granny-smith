@@ -1,4 +1,4 @@
-# Integration test: hd= on a Lisa attaches the ProFile (11-WORK-ORDER M3).
+# Integration test: hd= on a Lisa attaches the ProFile (M3).
 #
 # The Lisa's hard disk is the parallel-port ProFile, not SCSI.  hd= used to
 # hand the SCSI layer the Lisa's NULL bus and crash the harness (N-01); it
