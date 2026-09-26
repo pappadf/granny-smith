@@ -480,8 +480,53 @@ void trigger_vbl(struct config *restrict config) {
 // Insert a floppy disk image into the first free (or preferred) drive.
 // writable: 1=writable, 0=read-only, -1=default (writable).
 // preferred: drive number (0 or 1), or -1 for auto-select.
+// The machine's floppy drives: its profile's floppy_slots, never more than
+// the controller's two.  Drive selection is bounded by this, not by
+// FLOPPY_NUM_DRIVES -- a one-drive Mac has no drive 1 to pick (N-06).
+static int sys_fd_count(config_t *cfg) {
+    int n = profile_floppy_count(cfg->machine);
+    return n > FLOPPY_NUM_DRIVES ? FLOPPY_NUM_DRIVES : n;
+}
+
+// The drive to put a disk in: `preferred` when it exists and is free, else
+// with preferred == -1 the first free one.  -1 with the reason printed when
+// there is none.  An explicit drive is a request, not a hint: fail rather than
+// silently load the disk into another drive (a caller feeding a guest that
+// is waiting on drive 1 must never have its disk land in drive 0).
+static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
+    int n = sys_fd_count(cfg);
+    if (preferred < -1 || preferred >= n) {
+        printf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
+        return -1;
+    }
+    if (preferred != -1) {
+        if (sys_fd_is_inserted(cfg, preferred)) {
+            printf("%s: floppy drive %d is already occupied.\n", who, preferred);
+            return -1;
+        }
+        return preferred;
+    }
+    for (int d = 0; d < n; d++)
+        if (!sys_fd_is_inserted(cfg, d))
+            return d;
+    if (n == 0)
+        printf("%s: this machine has no floppy drive.\n", who);
+    else
+        printf("%s: no free floppy drive.\n", who);
+    return -1;
+}
+
 static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     bool writable = (writable_flag != 0); // default to writable unless explicitly 0
+
+    config_t *config = global_emulator;
+    if (!config) {
+        printf("fd insert: emulator config not initialized.\n");
+        return -1;
+    }
+    int target = sys_fd_pick(config, preferred, "fd insert");
+    if (target < 0)
+        return -1;
 
     image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
     if (!disk) {
@@ -489,53 +534,15 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
         return -1;
     }
 
-    config_t *config = global_emulator;
-    if (!config) {
-        printf("fd insert: emulator config not initialized.\n");
-        return -1;
-    }
-
-    bool d0_free = !sys_fd_is_inserted(config, 0);
-    bool d1_free = !sys_fd_is_inserted(config, 1);
-
-    // An explicit drive is a request, not a hint: fail rather than silently
-    // load the disk into the other drive (a caller feeding a guest that is
-    // waiting on drive 1 must never have its disk land in drive 0).
-    //
-    // Validate it against the documented contract first.  The occupancy test
-    // below is a two-way branch on `preferred == 0`, so any other value takes
-    // the drive-1 arm and then falls through into `target = preferred`
-    // verbatim -- which is how an out-of-range drive would reach
-    // floppy_insert.
-    if (preferred < -1 || preferred >= FLOPPY_NUM_DRIVES) {
-        printf("fd insert: no such floppy drive %d.\n", preferred);
+    // Register the image only once the drive has taken it.  This ignored the
+    // insert's result and printed "inserted" whatever the drive said, so a
+    // drive that refused left an orphan on the image list and a success claim.
+    if (sys_fd_insert(config, target, disk) != 0) {
+        printf("fd insert: floppy drive %d refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
-    if (preferred != -1) {
-        if (preferred == 0 ? !d0_free : !d1_free) {
-            printf("fd insert: floppy drive %d is already occupied.\n", preferred);
-            image_close(disk);
-            return -1;
-        }
-    }
-
-    // No drive requested: fall back to the first free one.
-    int target = preferred;
-    if (target == -1) {
-        if (d0_free) {
-            target = 0;
-        } else if (d1_free) {
-            target = 1;
-        } else {
-            printf("fd insert: both floppy drives are already occupied.\n");
-            image_close(disk);
-            return -1;
-        }
-    }
-
     add_image(config, disk);
-    sys_fd_insert(config, target, disk);
     printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
     return 0;
 }
@@ -579,22 +586,12 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
         return -1;
     }
 
-    bool d0_free = !sys_fd_is_inserted(config, 0);
-    bool d1_free = !sys_fd_is_inserted(config, 1);
-
-    int target = -1;
-    if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
-        target = preferred;
-    } else if (d0_free) {
-        target = 0;
-    } else if (d1_free) {
-        target = 1;
-    }
-
-    if (target == -1) {
-        printf("fd create: both floppy drives are already occupied.\n");
+    // The preferred drive when it exists and is free, else the first free one.
+    int target = (preferred >= 0 && preferred < sys_fd_count(config) && !sys_fd_is_inserted(config, preferred))
+                     ? preferred
+                     : sys_fd_pick(config, -1, "fd create");
+    if (target < 0)
         return -1;
-    }
 
     int rc = image_create_blank_floppy(path, false, high_density);
     if (rc != 0) {
@@ -611,8 +608,12 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
         return -1;
     }
 
+    if (sys_fd_insert(config, target, disk) != 0) {
+        printf("fd create: floppy drive %d refused %s.\n", target, path);
+        image_close(disk);
+        return -1;
+    }
     add_image(config, disk);
-    sys_fd_insert(config, target, disk);
     printf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K", target);
     return 0;
 }
@@ -872,6 +873,10 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         free(cfg);
         return NULL;
     }
+
+    // The floppy controller learns how many drives this machine cables.
+    if (cfg->floppy)
+        floppy_set_drive_count(cfg->floppy, sys_fd_count(cfg));
 
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {

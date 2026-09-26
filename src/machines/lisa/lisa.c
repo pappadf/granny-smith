@@ -484,7 +484,7 @@ static int lisa_fd_insert(config_t *cfg, int drive, struct image *disk) {
 static bool lisa_fd_present(config_t *cfg, int drive) {
     lisa_state_t *ls = lisa_state(cfg);
     if (drive != 0)
-        return true; // only drive 0 exists; report others "occupied"
+        return false; // only drive 0 exists; the others hold nothing
     return ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
 }
 

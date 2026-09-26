@@ -544,6 +544,8 @@ int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max);
 bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out);
 // The CD-ROM bay, on a machine that has one (has_cdrom); false otherwise.
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
+// How many floppy drives the machine has (its floppy_slots).
+int profile_floppy_count(const hw_profile_t *p);
 
 // === Machine-level attach and eject (system.c) =============================
 // Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)

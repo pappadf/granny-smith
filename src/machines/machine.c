@@ -168,6 +168,13 @@ bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
     return true;
 }
 
+int profile_floppy_count(const hw_profile_t *p) {
+    int n = 0;
+    for (const struct floppy_slot *s = p ? p->floppy_slots : NULL; s && s->label; s++)
+        n++;
+    return n;
+}
+
 // A bay as the profile exports it: {bus, id, label}.
 static value_t media_bay_value(const media_bay_t *bay) {
     value_map_builder_t *b = val_map_new();

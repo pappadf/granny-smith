@@ -1135,9 +1135,11 @@ static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
     return floppy_insert(cfg->floppy, drive, disk);
 }
 
+// A drive the board does not have holds no disk (see pdm_fd_present: the
+// auto-select no longer needs a phantom "occupied" to stay off drive 1).
 static bool tnt_fd_present(config_t *cfg, int drive) {
     if (!cfg->floppy || drive != 0)
-        return true; // no such bay: report it occupied so nothing targets it
+        return false;
     return floppy_is_inserted(cfg->floppy, drive);
 }
 

@@ -318,8 +318,8 @@ def row_pdm_floppy_mount() {
     assert machine.floppy.type == "swim3" "floppy controller type ${machine.floppy.type}, want swim3"
     assert !machine.floppy.drive[0].present "FD0 occupied before the insert"
 
-    # The family has ONE bay, so drive 1 must stay absent whatever happens.
-    assert !machine.floppy.drive[1].present "FD1 reports a disk on a family with one bay"
+    # The family has ONE bay, so there is no drive 1 to put a disk in (N-06).
+    assert try(machine.floppy.drive[1].present, "none") == "none" "FD1 exists on a family with one bay"
 
     machine.floppy.drive[0].insert "${$fd_144}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"

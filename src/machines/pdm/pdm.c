@@ -608,9 +608,13 @@ static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
     return floppy_insert(cfg->floppy, drive, disk);
 }
 
+// A drive the family does not have holds no disk.  This used to answer
+// "occupied" so the core's drive auto-select would never pick drive 1; the
+// auto-select is now bounded by the profile's floppy_slots (N-06, #177), so
+// the answer can be the true one.
 static bool pdm_fd_present(config_t *cfg, int drive) {
     if (!cfg->floppy || drive != 0)
-        return true; // no such bay: report it occupied so nothing targets it
+        return false;
     return floppy_is_inserted(cfg->floppy, drive);
 }
 

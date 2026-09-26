@@ -48,6 +48,10 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint);
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk);
 // Returns whether a disk is currently inserted in the specified drive
 bool floppy_is_inserted(floppy_t *floppy, int drive);
+// How many drives the machine has (its profile's floppy_slots, at most
+// FLOPPY_NUM_DRIVES).  Drives past it are not in the object model and refuse
+// an insert.  Default: FLOPPY_NUM_DRIVES.
+void floppy_set_drive_count(floppy_t *floppy, int n);
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
 // The SWIM register file, addressed by INDEX (0-15).  Whoever owns the bus
