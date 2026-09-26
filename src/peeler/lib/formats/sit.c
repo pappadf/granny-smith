@@ -248,7 +248,7 @@ static void entry_list_free(sit_entry_list_t *list) {
 // rejects it -- by accident.  On wasm32 the pointer wraps back inside the
 // buffer, the test passes, and the resource fork is decoded with a ~4 GiB
 // length: a dropped .sit trapped the shipping build with "memory access out
-// of bounds" (09-storage F-15).  The resource fork's own extent was never
+// of bounds".  The resource fork's own extent was never
 // checked at all; only its end, as the data fork's start.
 static bool sit_forks_fit(size_t off, uint32_t rsrc_len, uint32_t data_len,
                           size_t total, size_t *data_off) {
@@ -805,10 +805,10 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         // sit.md § 5.3 — header 1 is 48 fixed bytes, then the name, then an
         // optional comment, and h1_len is its whole extent.  Anything shorter
         // is not a header.  Unchecked, the CRC step below zeroed bytes 32–33
-        // of a malloc(h1_len) -- a heap write past the end for h1_len < 34
-        // (09-storage F-02) -- and a skip marker with h1_len == 0 left the
-        // cursor where it was, forever (F-06).  With this bound in place the
-        // name read below cannot leave the header either.
+        // of a malloc(h1_len) -- a heap write past the end for h1_len < 34 --
+        // and a skip marker with h1_len == 0 left the cursor where it was,
+        // forever.  With this bound in place the name read below cannot leave
+        // the header either.
         if ((size_t)h1_len < 48 + (size_t)namelen) {
             *err = make_err("SIT5: header1 length %u is shorter than its fixed fields and name",
                             (unsigned)h1_len);
