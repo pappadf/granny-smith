@@ -29,6 +29,9 @@ static const uint32_t q950_ram_options_kb[] = {8192, 16384, 20480, 32768, 65536,
 
 static const scsi_bus_decl_t q950_scsi_buses[] = {
     {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
+    // The external 53C96 chain (machine.scsi2): declared so a device can be
+    // placed on it (#185).  Nothing sits there by default.
+    {.object = "scsi2", .label = "External SCSI", .slots = mac_scsi_slots_ext01},
     {0},
 };
 

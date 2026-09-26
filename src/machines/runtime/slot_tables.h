@@ -34,4 +34,8 @@ extern const struct floppy_slot mac_floppy_slots_1hd[];
 // 68k Mac and the PDM family present.
 extern const struct scsi_slot mac_scsi_slots_hd01[];
 
+// External SCSI 0 (id 0) + 1 (id 1) -- an electrically separate second bus
+// with no bays of its own: the Quadra 900/950's external 53C96 chain.
+extern const struct scsi_slot mac_scsi_slots_ext01[];
+
 #endif // GS_MACHINES_RUNTIME_SLOT_TABLES_H

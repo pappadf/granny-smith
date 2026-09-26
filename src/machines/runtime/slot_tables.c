@@ -22,3 +22,9 @@ const struct scsi_slot mac_scsi_slots_hd01[] = {
     {.label = "SCSI HD1", .id = 1},
     {0},
 };
+
+const struct scsi_slot mac_scsi_slots_ext01[] = {
+    {.label = "External SCSI 0", .id = 0},
+    {.label = "External SCSI 1", .id = 1},
+    {0},
+};
