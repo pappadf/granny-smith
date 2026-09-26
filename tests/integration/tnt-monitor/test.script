@@ -1,0 +1,32 @@
+# The port and its monitors are published through the profile.
+let bv = machine.profile("pm7500").builtin_video
+assert len($bv.monitors) == 5 "the Control port lists five monitors"
+assert len(machine.profile("pm8500").builtin_video.monitors) == 5 "so does the 8500's"
+
+# Open Firmware reads the sense lines and mode-sets Control for the monitor
+# it finds; the ROM ladder puts the native driver's mode set inside 720 M
+# instructions.
+machine.boot model="pm7500" ram=32768 monitor="twopage" rom="${$ROM}"
+scheduler.run 720000000
+assert machine.screen.width == 1152 "twopage: 1152 pixels across (got ${machine.screen.width})"
+assert machine.screen.height == 870 "twopage: 870 lines (got ${machine.screen.height})"
+
+# A power cycle keeps the strap: the monitor stays plugged in.
+machine.restart
+scheduler.run 720000000
+assert machine.screen.width == 1152 "after restart: still 1152 across"
+assert machine.screen.height == 870 "after restart: still 870 lines"
+
+machine.boot model="pm7500" ram=32768 monitor="portrait" rom="${$ROM}"
+scheduler.run 720000000
+assert machine.screen.width == 640 "portrait: 640 pixels across (got ${machine.screen.width})"
+assert machine.screen.height == 870 "portrait: 870 lines (got ${machine.screen.height})"
+
+# The default is still the 13"/14" strap.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}"
+scheduler.run 720000000
+assert machine.screen.width == 640 "default: 640 pixels across"
+assert machine.screen.height == 480 "default: 480 lines"
+
+echo "tnt-monitor-ok"
+quit

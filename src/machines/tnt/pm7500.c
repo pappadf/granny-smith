@@ -106,6 +106,8 @@ const hw_profile_t machine_pm7500 = {
 
     .pci_slots = pm7500_pci_slots,
 
+    .builtin_video = &tnt_builtin_video,
+
     .substrate = &tnt_substrate,
     .board = &pm7500_board,
 };

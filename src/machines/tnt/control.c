@@ -97,11 +97,66 @@ LOG_USE_CATEGORY_NAME("video");
 // Pixel 0 sits 16 bytes into the framebuffer (controlfb's CTRLFB_OFF).
 #define CONTROL_FB_OFF 16u
 
-// The monitor on the sense lines: an AppleColor Hi-Res 13"/14" strap —
-// line C tied to ground, A/B floating.  Raw sense 6, extended walk $2B,
-// which selects the 640x480 timing set in the ROM's own mode table (the
-// $2B literal sits at the head of the OpenFW timing-table list).
-#define CONTROL_MONITOR_GROUNDED 0x1u // bit mask, lines {A,B,C} = bits {2,1,0}... C = bit 0
+// The default monitor on the sense lines: an AppleColor Hi-Res 13"/14"
+// strap — line C tied to ground, A/B floating.  Raw sense 6, extended walk
+// $2B, which selects the 640x480 timing set in the ROM's own mode table (the
+// $2B literal sits at the head of the OpenFW timing-table list).  The pick
+// lives in tnt_control_t.mon_grounded (bit mask, lines {A,B,C} = bits
+// {2,1,0}); this was a compile-time constant, pinning every TNT machine to
+// 640x480 whatever the guest asked for (#146).
+#define CONTROL_MONITOR_SENSE_DEFAULT 0x6u
+
+// The monitors the built-in port can present, by the 3-bit passive sense
+// code (display_timing.h): the ROM's extended walk reads the grounded lines
+// and picks the timing set.  Restricted to the eight passive codes, as the
+// PDM's list is: monitors Apple told apart by per-line strapping are not
+// modelled.  Grounding all three (sense 0) is what makes Open Firmware
+// program 1152x870.
+typedef struct control_monitor_kind {
+    const char *id; // config token ("hires", "twopage", ...)
+    const char *name; // human-readable, for the object model
+    uint8_t sense; // the 3-bit strap this monitor presents
+} control_monitor_kind_t;
+
+static const control_monitor_kind_t control_monitors[] = {
+    {"hires",    "AppleColor Hi-Res RGB 13\"/14\" (640x480)",  0x6u},
+    {"twopage",  "21\" RGB Workstation / Two-Page (1152x870)", 0x0u},
+    {"portrait", "Macintosh Portrait Display (640x870)",       0x1u},
+    {"rubik",    "Macintosh 12\" RGB (512x384)",               0x2u},
+    {"none",     "No monitor connected",                       0x7u},
+    {NULL,       NULL,                                         0   },
+};
+
+// hw_profile_t.builtin_video (machine_profile.h): two thin adapters over
+// control_monitors so the machine registry can publish and validate this
+// port without reaching into the family.
+static bool control_builtin_monitor_at(size_t i, const char **id, const char **name) {
+    size_t n = 0;
+    for (const control_monitor_kind_t *m = control_monitors; m->id; m++, n++) {
+        if (n == i) {
+            *id = m->id;
+            *name = m->name;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool control_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
+    for (const control_monitor_kind_t *m = control_monitors; m->id; m++) {
+        if (strcmp(m->id, id) == 0) {
+            *out_sense = m->sense;
+            return true;
+        }
+    }
+    return false;
+}
+
+const builtin_video_desc_t tnt_builtin_video = {
+    .display_name = "Built-in video (Control)",
+    .monitor_at = control_builtin_monitor_at,
+    .monitor_sense = control_builtin_monitor_sense,
+};
 
 static tnt_control_t *ctl(config_t *cfg) {
     return &tnt_st(cfg)->control;
@@ -427,7 +482,7 @@ static uint32_t control_sense_read(config_t *cfg) {
         uint32_t drive_off = (v >> (5 - i)) & 1u;
         uint32_t level = (v >> (2 - i)) & 1u;
         uint32_t line = drive_off ? 1u : level;
-        if ((CONTROL_MONITOR_GROUNDED >> (2 - i)) & 1u)
+        if ((c->mon_grounded >> (2 - i)) & 1u)
             line = 0; // the monitor straps this line to ground
         lines |= line << (8 - i);
     }
@@ -820,6 +875,12 @@ static uint64_t control_fb_base(void *owner) {
 
 int tnt_control_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
+    // The built-in port's monitor, from the boot document's `monitor=` (the
+    // registry resolved it to a sense code); a restore overwrites the whole
+    // chip afterwards, so the saved strap wins there.
+    int want = cfg->build_opts.video_sense;
+    uint8_t sense = (want >= 0 && want <= 7) ? (uint8_t)want : CONTROL_MONITOR_SENSE_DEFAULT;
+    st->control.mon_grounded = (uint8_t)(~sense & 7u);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);
     st->compose = calloc(1, TNT_VRAM_SIZE);
