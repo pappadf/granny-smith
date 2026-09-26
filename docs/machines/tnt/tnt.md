@@ -594,6 +594,10 @@ display-enable bit before touching the CRTC or the palette — so it is
 derived from the scheduler's clock, which keeps a run deterministic and
 keeps a waiting loop from becoming a hang.
 
+The card's register decode, what it does with a mode it cannot present, and
+its unit tests are on the card's own page,
+[`cirrus54m30.md`](../../core/peripherals/pci/cards/cirrus54m30.md).
+
 ## The floppy
 
 The SWIM3 at Grand Central `+$15000` is the same chip the 6100/7100/8100

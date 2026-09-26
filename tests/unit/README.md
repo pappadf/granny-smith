@@ -74,11 +74,11 @@ include ../../common.mk
 
 ## Harness modes
 
-| Mode | Suites | What it links | `main()` |
-|---|---|---|---|
-| `isolated` | 50 | `harness_isolated.c` and the default stubs: platform, shell, checkpoint, system, memory, debugger, peripherals, assert | The suite's, calling `test_harness_init()` |
-| `cpu` | 12 | `harness_cpu.c`, the real 68k CPU, FPU, memory, MMU and object-model sources, and the same stubs minus memory plus `stub_lisa_mmu.c` | The suite's, calling `test_harness_init()` |
-| `none` | 35 | Nothing but what the suite names in `EXTRA_SRCS` and `STUBS` | The suite's; it brings its own mocks |
+| Mode | What it links | `main()` |
+|---|---|---|
+| `isolated` | `harness_isolated.c` and the default stubs: platform, shell, checkpoint, system, memory, debugger, peripherals, assert | The suite's, calling `test_harness_init()` |
+| `cpu` | `harness_cpu.c`, the real 68k CPU, FPU, memory, MMU and object-model sources, and the same stubs minus memory plus `stub_lisa_mmu.c` | The suite's, calling `test_harness_init()` |
+| `none` | Nothing but what the suite names in `EXTRA_SRCS` and `STUBS` | The suite's; it brings its own mocks |
 
 The two harnessed modes give the test a `test_context_t` that owns the CPU,
 memory and scheduler, and `stub_system.c` routes `system_memory()`,
