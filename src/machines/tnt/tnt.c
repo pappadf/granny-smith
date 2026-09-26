@@ -504,7 +504,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     uint32_t tick_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram); // NULL: NVRAM is a later phase
 
     // The ESCC cell behind the Grand Central decode, reachable through two
     // apertures (legacy +$12000 for the 68k Serial Driver, ESCC +$13000

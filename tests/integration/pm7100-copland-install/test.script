@@ -67,10 +67,9 @@ def phase3_install_75() {
     machine.scsi.attach_hd "${$target}" 1
     machine.scsi.attach_cdrom "${$ddk_cd}" 3
 
-    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, skip the 20 s
-    # WaitForPollDrive spin-up window, then boot blocks through to the Finder.
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan (no spin-up
+    # wait: the machine's PRAM disables it), then boot blocks to the Finder.
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
     scheduler.run 1200000000
     wait_stable(900000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot"

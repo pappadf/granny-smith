@@ -54,6 +54,8 @@ struct rtc {
     // RTC of the Plus/SE.  Selects how the legacy one-byte PRAM commands map
     // onto physical PRAM bytes (see read_cmd/write_cmd).
     bool extended;
+    // The machine's power-up PRAM (rtc.h), for rtc.pram.validate's token.
+    const pram_defaults_t *defaults;
 };
 
 static const class_desc_t rtc_pram_class;
@@ -393,19 +395,16 @@ void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
     LOG(1, "rtc_set_seconds: seconds=%u", rtc->seconds);
 }
 
-// === Validity tokens — see docs/core/memory/pram.md §2..§3 ==============================
-// `_InitUtil` checks two independent tokens at cold boot.  If either is
-// missing it re-initialises the relevant region from a hardcoded default
-// table, which clobbers any seeded slot-PRAM bytes the test wanted to
-// preserve.  `rtc.pram.validate()` writes both tokens so seeded state
-// survives `_InitUtil`.
-#define RTC_PRAM_VALIDITY_LOW_OFFSET   0x00 // low-PRAM validator byte
-#define RTC_PRAM_VALIDITY_LOW_VALUE    0xA8
-#define RTC_PRAM_VALIDITY_XPRAM_OFFSET 0x0C // 'NuMc' marker, 4 bytes BE
-#define RTC_PRAM_VALIDITY_XPRAM_BYTE_0 0x4E // 'N'
-#define RTC_PRAM_VALIDITY_XPRAM_BYTE_1 0x75 // 'u'
-#define RTC_PRAM_VALIDITY_XPRAM_BYTE_2 0x4D // 'M'
-#define RTC_PRAM_VALIDITY_XPRAM_BYTE_3 0x63 // 'c'
+// === Validity token — see docs/core/memory/pram.md §2..§3 ===============
+// `_InitUtil` checks two independent tokens at cold boot and re-initialises
+// the region whose token is missing.  `rtc.pram.validate()` stamps the XPRAM
+// one ($0C..$0F) so seeded XPRAM survives.  It does NOT stamp the low-PRAM
+// one: that is the SysParam validity byte, which on the extended RTC lives at
+// physical $10 (legacy_pram_addr), not $00 -- where validate used to write it,
+// into a reserved XPRAM byte (N-14).  SysParam is left for each ROM to
+// initialise with its own defaults.
+#define RTC_PRAM_VALIDITY_XPRAM_OFFSET 0x0C // 4 bytes BE
+#define RTC_PRAM_TOKEN_NUMC            0x4E754D63u // 'NuMc'
 
 // === M7b — object-model views ===============================================
 
@@ -436,7 +435,21 @@ bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value) {
     return true;
 }
 
-rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, bool extended) {
+void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d) {
+    if (!pram || !d)
+        return;
+    pram[0x0C] = (uint8_t)(d->xpram_token >> 24);
+    pram[0x0D] = (uint8_t)(d->xpram_token >> 16);
+    pram[0x0E] = (uint8_t)(d->xpram_token >> 8);
+    pram[0x0F] = (uint8_t)d->xpram_token;
+    if (d->startmgr)
+        memcpy(pram + PRAM_STARTMGR_BASE, d->startmgr, PRAM_STARTMGR_LEN);
+    pram[PRAM_MMFLAGS] = d->mmflags | d->mmflags_booted;
+    pram[PRAM_STARTMGR_WAIT] |= PRAM_STARTMGR_NO_WAIT;
+}
+
+rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, bool extended,
+                const pram_defaults_t *defaults) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));
     if (rtc == NULL)
         return NULL;
@@ -445,6 +458,8 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
 
     rtc->scheduler = scheduler;
     rtc->extended = extended; // fixed machine property; set after any checkpoint restore below
+    rtc->defaults = defaults;
+    pram_defaults_apply(rtc->pram, defaults); // a checkpoint below restores over it
 
     rtc->seconds = wall_clock_seconds();
 
@@ -751,12 +766,51 @@ static value_t rtc_pram_method_validate(struct object *self, const member_t *m, 
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
-    if (!rtc_pram_write(rtc, RTC_PRAM_VALIDITY_LOW_OFFSET, RTC_PRAM_VALIDITY_LOW_VALUE) ||
-        !rtc_pram_write(rtc, RTC_PRAM_VALIDITY_XPRAM_OFFSET + 0, RTC_PRAM_VALIDITY_XPRAM_BYTE_0) ||
-        !rtc_pram_write(rtc, RTC_PRAM_VALIDITY_XPRAM_OFFSET + 1, RTC_PRAM_VALIDITY_XPRAM_BYTE_1) ||
-        !rtc_pram_write(rtc, RTC_PRAM_VALIDITY_XPRAM_OFFSET + 2, RTC_PRAM_VALIDITY_XPRAM_BYTE_2) ||
-        !rtc_pram_write(rtc, RTC_PRAM_VALIDITY_XPRAM_OFFSET + 3, RTC_PRAM_VALIDITY_XPRAM_BYTE_3))
-        return val_err("rtc.pram.validate: PRAM is write-protected");
+    // The machine's own token: the Plus ROM checks 'Bugs', not 'NuMc'.
+    uint32_t token = rtc->defaults ? rtc->defaults->xpram_token : RTC_PRAM_TOKEN_NUMC;
+    for (int i = 0; i < 4; i++)
+        if (!rtc_pram_write(rtc, (uint8_t)(RTC_PRAM_VALIDITY_XPRAM_OFFSET + i), (uint8_t)(token >> (24 - 8 * i))))
+            return val_err("rtc.pram.validate: PRAM is write-protected");
+    return val_none();
+}
+
+// `rtc.pram.boot_device` — the Start Manager's default startup device
+// (PRAMInitTbl $77..$7B, pram.md §4.2) as the SCSI id it names: $77 = the
+// default OS (Macintosh), $78..$7B = the SCSI driver refnum -(33 + id).  The
+// formula lives here so no caller spells PRAM bytes (F-04: the web wrote
+// them itself, always for id 0).  Reads back -1 when the bytes name no SCSI
+// driver.
+#define PRAM_DEFAULT_OS   0x77
+#define PRAM_BOOT_REFNUM  0x78
+#define PRAM_OS_MACINTOSH 0x01
+
+static value_t rtc_pram_attr_boot_device_get(struct object *self, const member_t *m) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc)
+        return val_err("rtc not available");
+    uint32_t refnum = 0;
+    for (int i = 0; i < 4; i++)
+        refnum = (refnum << 8) | rtc_pram_read(rtc, (uint8_t)(PRAM_BOOT_REFNUM + i));
+    int32_t id = -33 - (int32_t)refnum;
+    return val_int(id >= 0 && id <= 7 ? id : -1);
+}
+
+static value_t rtc_pram_attr_boot_device_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    int64_t id = in.kind == V_INT ? in.i : (int64_t)in.u;
+    value_free(&in);
+    if (!rtc)
+        return val_err("rtc not available");
+    if (id < 0 || id > 7)
+        return val_err("rtc.pram.boot_device: SCSI id %lld is not 0..7", (long long)id);
+    uint32_t refnum = (uint32_t)(-33 - (int32_t)id);
+    bool ok = rtc_pram_write(rtc, PRAM_DEFAULT_OS, PRAM_OS_MACINTOSH);
+    for (int i = 0; ok && i < 4; i++)
+        ok = rtc_pram_write(rtc, (uint8_t)(PRAM_BOOT_REFNUM + i), (uint8_t)(refnum >> (24 - 8 * i)));
+    if (!ok)
+        return val_err("rtc.pram.boot_device: PRAM is write-protected");
     return val_none();
 }
 
@@ -798,8 +852,12 @@ static const member_t rtc_pram_members[] = {
      .method = {.args = rtc_pram_restore_args, .nargs = 1, .result = V_NONE, .fn = rtc_pram_method_restore}},
     {.kind = M_METHOD,
      .name = "validate",
-     .doc = "Stamp the boot-ROM validity tokens ($00=$A8, $0C-$0F='NuMc')",
+     .doc = "Stamp the XPRAM validity token ($0C-$0F: 'NuMc', or the Plus's 'Bugs')",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = rtc_pram_method_validate}                },
+    {.kind = M_ATTR,
+     .name = "boot_device",
+     .doc = "Start Manager default startup device, as a SCSI id (writes $77..$7B; -1 = none)",
+     .attr = {.type = V_INT, .get = rtc_pram_attr_boot_device_get, .set = rtc_pram_attr_boot_device_set}   },
 };
 
 static const class_desc_t rtc_pram_class = {

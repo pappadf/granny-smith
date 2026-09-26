@@ -29,6 +29,7 @@
 #include "mmu.h"
 #include "nubus.h"
 #include "oss.h"
+#include "pram_defaults.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
@@ -1722,5 +1723,6 @@ const hw_profile_t machine_iifx = {
 
     .nubus_slots = iifx_slots,
 
+    .pram = &pram_defaults_mac_ii,
     .substrate = &iifx_substrate,
 };

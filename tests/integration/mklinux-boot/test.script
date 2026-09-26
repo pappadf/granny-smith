@@ -63,16 +63,14 @@ def power_on(model, ram_kb) {
     machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
     machine.rtc.time = 0xE1200000
     machine.scsi.attach_hd "${$disk}" 0
-    # suite-pdm's boot_pdm_75() head: chip init and bus scan, then the
-    # documented Ticks poke past the 20 s drive-spin-up window.
+    # suite-pdm's boot_pdm_75() head: chip init and bus scan (no drive-spin-up
+    # wait: the machine's PRAM disables it).
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
 }
 
-# Same, for the PCI machine: its own ROM, and none of the PDM spin-up dance —
-# the Ticks poke above pokes a Mac OS low-memory global past the NuBus SCSI
-# scan's wait, which the TNT boot path does not perform.  (tnt-hd-boot does not
-# poke either.)
+# Same, for the PCI machine: its own ROM, and no PDM PRAM -- the TNT's NVRAM
+# is Open Firmware's, and its boot path does not perform the NuBus SCSI
+# scan's wait in the first place.
 def power_on_tnt(model, ram_kb) {
     machine.boot model="${$model}" ram=$ram_kb rom="${$tnt_rom}"
     machine.rtc.time = 0xE1200000

@@ -27,6 +27,7 @@
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
+#include "pram_defaults.h"
 #include "rtc.h"
 #include "scheduler.h"
 #include "via.h"
@@ -451,6 +452,7 @@ const hw_profile_t machine_se30 = {
     // nubus_init().
     .nubus_slots = se30_slots,
 
+    .pram = &pram_defaults_mac_ii,
     .substrate = &glue_substrate, // shared GLUE-family substrate
     .board = &se30_board,
 };

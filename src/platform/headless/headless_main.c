@@ -486,7 +486,10 @@ static void pump_scheduler_with_heartbeat(void) {
     // and the daemon poll for disconnect/new-data.  The frame-unit is the same
     // deterministic step web2 runs, so headless reproduces the web2 boot
     // bit-for-bit (only the pacing — max speed here, host-clock there —
-    // differs).  An instruction-budget `scheduler.run N` schedules a
+    // differs).  That includes the power-up PRAM: the machine is built with
+    // it (rtc.h pram_defaults_t) on both, where on the PDM machines the page
+    // used to seed its own and headless booted differently (F-03).  An
+    // instruction-budget `scheduler.run N` schedules a
     // run_stop_event; scheduler_run_frame's inner scheduler_run clamps to it, so
     // the budget stops mid-frame at exactly N and the loop below exits.
 

@@ -13,6 +13,7 @@
 #include "slot_tables.h"
 
 #include "nubus.h"
+#include "pram_defaults.h"
 
 // 8 MB soldered + fixed-window banks of {2,8,32} MB: up to 264 MB.
 static const uint32_t pm8100_ram_options_kb[] = {8192, 16384, 40960, 73728, 139264, 270336, 0};
@@ -63,6 +64,7 @@ const hw_profile_t machine_pm8100 = {
     .builtin_video = &pdm_builtin_video,
     .nubus_slots = pdm_nubus_slots_cde,
 
+    .pram = &pram_defaults_pdm,
     .substrate = &pdm_substrate,
     .board = &pm8100_board,
 };

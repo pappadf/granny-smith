@@ -332,7 +332,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The 601's RTC input: 7.8336 MHz on every PDM board (601 proposal §3.7).
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
 
     // The ESCC cell in Curio behind the AMIC island decode (escc-serial.md
     // §2: single base $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;

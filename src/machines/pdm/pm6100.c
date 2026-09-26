@@ -11,6 +11,7 @@
 // adapter — BART space bus-errors, which the base model's probe expects).
 
 #include "pdm.h"
+#include "pram_defaults.h"
 #include "slot_tables.h"
 
 // 8 MB soldered plus the SIMM-bank splits the HMC accepts ({2,8,32} MB
@@ -65,6 +66,7 @@ const hw_profile_t machine_pm6100 = {
     .builtin_video = &pdm_builtin_video,
     .nubus_slots = NULL,
 
+    .pram = &pram_defaults_pdm,
     .substrate = &pdm_substrate,
     .board = &pm6100_board,
 };

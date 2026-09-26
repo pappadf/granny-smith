@@ -13,6 +13,7 @@
 
 #include "machine.h"
 #include "nubus.h"
+#include "pram_defaults.h"
 #include "slot_tables.h"
 
 #include <stdint.h>
@@ -86,6 +87,7 @@ const hw_profile_t machine_q840av = {
 
     .nubus_slots = NULL,
 
+    .pram = &pram_defaults_av,
     .substrate = &av_substrate,
     .board = &q840av_board,
 };

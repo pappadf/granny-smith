@@ -38,6 +38,7 @@
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
+#include "pram_defaults.h"
 #include "rbv.h"
 #include "rtc.h"
 #include "scheduler.h"
@@ -413,6 +414,7 @@ const hw_profile_t machine_iici = {
 
     .nubus_slots = iici_slots,
 
+    .pram = &pram_defaults_iici,
     .substrate = &mdu_substrate, // shared MDU+RBV-family substrate
     .board = &iici_board,
 };

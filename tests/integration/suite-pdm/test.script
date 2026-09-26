@@ -37,18 +37,16 @@
 #     it now shows a fixed 0xE0000000 time instead of the host's, once the
 #     Cuda Mode3Clock tick delivers the RTC to the OS (the clock region is
 #     masked by check_ex regardless, but a deterministic clock is correct).
-#   * After 360 M instructions the boot is parked in the Start Manager's
-#     WaitForPollDrive loop (the drive-spin-up window: FindStartupDevice
-#     polls ITTBOOT every 15 ticks until the PRAM timeout, default 20 s).
-#     Jumping Ticks past the deadline skips ~1.2 G instructions of pure
-#     waiting per row; the natural timeout path was verified equivalent
-#     (handover-pdm-phase-g §9.2) — the give-up path then falls back to
-#     the drive queue, finds the driver's DQE, and boots from it.  The
-#     poke writes PHYSICAL Ticks: 68k-logical $16A + $97000 — the offset
-#     is the 604 KB framebuffer carve at physical 0 (RAM-size
-#     independent; the sensed monitor sets it, and all rows run the
-#     default 14" Hi-Res).
-#   * ~1.2 G more instructions cover boot blocks, CFM init, the
+#   * No drive-spin-up wait.  On blank PRAM the Start Manager's
+#     WaitForPollDrive polls ITTBOOT every 15 ticks until a 20 s timeout —
+#     and on these single-Curio machines the poll can never succeed, so the
+#     wait always ran to expiry.  The rows used to jump physical Ticks past
+#     the deadline; now the machine is built with PRAM that disables the
+#     wait ($01 bit 7, rtc.h pram_defaults_t), exactly as the web build
+#     has always booted, so BootDrive is set by 450 M.  The disk's SCSI id
+#     is named as the startup device through machine.rtc.pram.boot_device;
+#     the 7100 row puts its disk at id 2 to keep that honest.
+#   * ~1.1 G more instructions cover boot blocks, CFM init, the
 #     extensions parade, and the Finder through drawing the desktop;
 #     wait_stable absorbs the tail.
 #
@@ -75,17 +73,22 @@ let fd_144 = "../../data/apps/Norton-Utils-Disk-2.image"
 let fd_800 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 let fd_boot = "../../data/systems/SSW-7.6-1.4M/Install 1.img"
 
-# Boot `model` from the prepared 7.5 image to a stable Finder desktop.
-def boot_pdm_75(model, ram_kb) {
+# Boot `model` from the prepared 7.5 image, at SCSI id `id`, to a stable
+# Finder desktop.
+def boot_pdm_75(model, ram_kb, id) {
     machine.boot model=$model ram=$ram_kb rom="${$ROM}"
     machine.rtc.time = 0xE0000000
-    machine.scsi.attach_hd "${$hd_75}" 0
-    # Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.
-    scheduler.run 360000000
-    # Skip the 20 s spin-up window (see header).
-    machine.memory.poke.l 0x9716A 0x2000
+    machine.scsi.attach_hd "${$hd_75}" $id
+    # The Start Manager's default startup device is the disk's own id --
+    # the core writes the PRAM bytes, as the web page asks it to (F-04).
+    machine.rtc.pram.boot_device = $id
+    # Chip init, bus scan, driver load, DQE post -- and no spin-up wait: the
+    # machine's PRAM disables it (see header).  The Start Manager has
+    # committed to the disk by 450 M.
+    scheduler.run 450000000
+    assert debug.mac.globals.read("BootDrive") != 0 "${$model}: no startup device by 450 M"
     # Boot blocks -> CFM init -> extensions parade -> Finder desktop.
-    scheduler.run 1200000000
+    scheduler.run 1110000000
     wait_stable(300000000)
 }
 
@@ -100,8 +103,8 @@ def bart_exists() {
 }
 
 # Shared post-boot facts + the two goldens for one model row.
-def pdm_75_row(model, ram_kb, boxflag, want_bart) {
-    boot_pdm_75($model, $ram_kb)
+def pdm_75_row(model, ram_kb, boxflag, want_bart, id) {
+    boot_pdm_75($model, $ram_kb, $id)
     assert machine.id == $model "${$model}: machine.id != ${$model}"
     assert machine.ram == $ram_kb "${$model}: machine.ram != ${$ram_kb}"
     assert machine.screen.width == 640 "${$model}: not in 640x480"
@@ -125,9 +128,10 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart) {
 
 # The 6100 is the row where BART must be ABSENT: its bridge ships on an
 # optional PDS adapter, so the probe faults and the machine boots anyway.
-def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false) }
-def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true) }
-def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true) }
+def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false, 0) }
+# The disk at id 2, not 0: the startup device follows it (F-04).
+def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true, 2) }
+def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true, 0) }
 
 # ---- 8100-75-24ac -----------------------------------------------------------
 # The BART acceptance row: a Macintosh Display Card 24AC in NuBus slot $C of
@@ -153,7 +157,7 @@ def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true) }
 def row_8100_75_24ac() {
     machine.boot model="pm8100" ram=16384 rom="${$ROM}"
     machine.nubus.slot[12].card_id = "24ac"
-    boot_pdm_75("pm8100", 16384)
+    boot_pdm_75("pm8100", 16384, 0)
 
     assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "slot C card != 24AC"
     assert machine.nubus.slot[12].card.declrom.present "slot C declaration ROM not present"
@@ -314,7 +318,7 @@ def row_pdm_cd_device() {
 # window state, and the goldens should not depend on that.  Writes have their
 # own row below.
 def row_pdm_floppy_mount() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     assert machine.floppy.type == "swim3" "floppy controller type ${machine.floppy.type}, want swim3"
     assert !machine.floppy.drive[0].present "FD0 occupied before the insert"
 
@@ -355,7 +359,7 @@ def row_pdm_floppy_mount() {
 # into GCR mode and the headers starting; what the row asserts is the
 # outcome: an 800K System Tools disk mounts.
 def row_pdm_floppy_800k() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     machine.floppy.drive[0].insert "${$fd_800}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"
     # GCR: the driver's MFM attempts time out first, so the mount takes
@@ -387,7 +391,7 @@ def row_pdm_floppy_800k() {
 # was seen holding its writes long past the point where a 1.44 MB one had
 # flushed them.
 def row_pdm_floppy_write_eject() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     machine.floppy.drive[0].insert "${$fd_144}" true
     scheduler.run 600000000
     wait_stable(900000000)
@@ -437,7 +441,7 @@ def row_pdm_floppy_write_eject() {
 # pass each cover the whole surface at 300 rpm, which is what they cost on
 # real hardware too.
 def row_pdm_floppy_format() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     let blank = "${$WORK_DIR}/pdm-blank-1440.img"
     assert storage.fd_create($blank, true) "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true

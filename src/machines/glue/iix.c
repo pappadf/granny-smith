@@ -24,6 +24,7 @@
 #include "iicx_internal.h"
 #include "log.h"
 #include "nubus.h"
+#include "pram_defaults.h"
 #include "via.h"
 
 #include <assert.h>
@@ -154,6 +155,7 @@ const hw_profile_t machine_iix = {
 
     .nubus_slots = iix_slots,
 
+    .pram = &pram_defaults_mac_ii,
     .substrate = &glue_substrate, // shared GLUE-family substrate
     .board = &iix_board,
 };

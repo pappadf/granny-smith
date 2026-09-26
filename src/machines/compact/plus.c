@@ -28,6 +28,7 @@
 #include "machine_checkpoint.h"
 #include "memory.h"
 #include "mouse.h"
+#include "pram_defaults.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -233,7 +234,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
     }
 
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
+    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true, cfg->machine->pram);
 
     cfg->scc = scc_init(cfg->mem_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
 
@@ -584,5 +585,6 @@ const hw_profile_t machine_plus = {
     // Single VIA, no ADB, no NuBus
 
     // Lifecycle callbacks wired to Plus-specific implementations
+    .pram = &pram_defaults_plus,
     .substrate = &plus_substrate,
 };

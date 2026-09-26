@@ -343,14 +343,10 @@ def about_box_quad() {
 # from the card-seat row two rows earlier and never applied the portrait
 # sense, while passing in isolation.)
 
-# Universal-ROM ~13 s boot-drive-discovery bypass: hold Cmd-Shift-Power
-# in the KeyMap lowmem for one poll cycle ($017A poke, previously
-# copy-pasted into ~12 scripts).
-def skip_boot_wait() {
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 2000000
-    machine.memory.poke.w 0x017A 0
-}
+# (The Universal ROM's ~13 s boot-drive-discovery wait needs no bypass: a
+# machine is built with PRAM whose Start Manager byte already disables it —
+# rtc.h pram_defaults_t.  skip_boot_wait(), a KeyMap Cmd-Shift-Power poke,
+# is gone with it.  A row that wants the wait clears $01 bit 7.)
 
 # Assert the booted System's addressing mode (§3.4): MMU32bit ($0CB2)
 # is 0 in 24-bit mode, nonzero in 32-bit mode.

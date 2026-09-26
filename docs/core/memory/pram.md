@@ -182,19 +182,39 @@ even when the surrounding PRAM passes the `$A8` / 'NuMc' tests.
 ### Empirical confirmation
 
 We verified the validity-byte mechanism against our emulator. Starting
-the SE/30 from a cold-zeroed PRAM (`memset(rtc->pram, 0, 256)` in
-[rtc.c:344](../src/core/peripherals/rtc.c)) and running the ROM through
+the SE/30 from a cold-zeroed PRAM (an `rtc_init` with no defaults, as the
+machine was built before §8; [rtc.c](../../../src/core/peripherals/rtc.c)) and running the ROM through
 `_InitUtil`:
 
 ```
-$ rtc.pram_read 0x00       → 0xA8        ; old-PRAM validity byte
+$ rtc.pram_read 0x10       → 0xA8        ; SysParam validity byte (physical $10, §2)
 $ rtc.pram_read 0x0c..0x0f → 4E 75 4D 63 ; 'NuMc' XPRAM signature
 $ rtc.pram_read 0x76..0x7b → 00 01 FF FF FF DF
-$ rtc.pram_read 0x8a       → 0x80        ; MMFlags default
+$ rtc.pram_read 0x8a       → 0x00        ; MMFlags as this ROM writes it
 ```
 
-The three values match `PRAMInit[$00]`, `'NuMc'`, the first six bytes of
-`PRAMInitTbl`, and `MMFlagsDefault` exactly.
+The values match `PRAMInit[$00]`, `'NuMc'` and the first six bytes of
+`PRAMInitTbl`.  MMFlags is **not** the `$80` the System source's
+`MMFlagsDefault` names: every 68k ROM measured writes `$00` (the AV and PDM
+ROMs `$05`, §4.3).  (This section used to say `$00` for the validity byte and
+`$80` for MMFlags; the first was the logical offset read as physical, the
+second the source constant rather than the measurement.)
+
+### Measured per ROM family
+
+Each ROM booted from all-zero PRAM with no media, and the bytes its own cold
+init wrote read back (2026-09):
+
+| ROM family | XPRAM token | `$76..$89` (PRAMInitTbl) | `$8A` MMFlags |
+|---|---|---|---|
+| Plus | `'Bugs'` | not written | `$00` |
+| II / IIx / IIcx / SE/30, IIfx, Q700 / Q900, Q950 | `'NuMc'` | `00 01 FF FF FF DF`, rest 0 | `$00` |
+| IIci, IIsi | `'NuMc'` | the same, plus `$81 = $80` (default video device = built-in) | `$00` |
+| Q840AV / Q660AV | `'NuMc'` | standard | `$05` |
+| 6100 / 7100 / 8100 (PDM) | `'NuMc'` | standard | `$05` |
+
+`$01` stays `$00` through the init; the Start Manager sets bit 6 later, during
+its startup-drive wait.  These tables are what a machine is built with (§8).
 
 ## 4. Default values written when validity fails
 
@@ -260,9 +280,13 @@ MOVE.L  #MMPRAMloc,D0          ; offset $8A, length 1
 _WriteXPRam
 ```
 
-`MMFlagsDefault = $80` — the high bit enables 32-bit-clean Memory Manager
-behavior on machines that support it (it is patched off by older System
-versions if needed).
+The System source names `MMFlagsDefault = $80`, but that is not what the ROMs
+write: measured, every 68k ROM writes `$00` and the AV and PDM ROMs `$05` (the
+table in §3).  On a Power Macintosh **bit 5** is the Memory control panel's
+Modern Memory Manager switch; on blank MMFlags Mac OS 8.1 sets it itself and
+soft-restarts (the "double boot"), and 7.5 and 8.1 both leave it set once
+booted (7.5: `$65`), which is why the PDM construction default carries it
+(§8).
 
 **Bit 0 selects 24- vs 32-bit addressing** (measured 2026-07-28 on the IIfx and
 the IIci). Seed it *before* the boot and the System comes up in that mode:
@@ -276,17 +300,18 @@ the IIci). Seed it *before* the boot and the System comes up in that mode:
 System 7.6 writes `$05` once booted (bit 0 plus bit 2), so `$01` is the minimal
 value that selects the mode rather than a guess.
 
-The seed only takes if the **validity tokens are stamped first**
-(`rtc.pram.validate`, §3). Without them the ROM's `PRAMInit` rewrites `$8A`
-during boot — a poked value reads back `$00` afterwards — so the byte looks
-inert and a real selector can be mistakenly ruled out. That is exactly what
-happened during the integration-test rework, where MMFlags was written up as
-"ruled out by measurement" on the strength of an unstamped poke.
+The seed only takes while the **XPRAM token is present** (§3): without it the
+ROM's `PRAMInit` rewrites `$8A` during boot — a poked value reads back `$00`
+afterwards — so the byte looks inert and a real selector can be mistakenly
+ruled out. That is exactly what happened during the integration-test rework,
+where MMFlags was written up as "ruled out by measurement" on the strength of
+an unstamped poke.  A machine is now built with the token (§8), so a poke
+after `machine.boot` takes.
 
-Note that stamping validity also suppresses the ROM's default startup-device
-init, so this technique is free on a floppy boot and breaks a SCSI boot (the
-machine parks on the blinking "?" floppy). Selecting 32-bit for an HD-booted
-row needs a different approach.
+(Stamping the token by hand used to suppress the ROM's default startup-device
+init too, which broke a SCSI boot — the machine parked on the blinking "?"
+floppy.  The construction defaults carry the Start Manager table with the
+token, so that trap is gone.)
 
 Selecting the mode is not the same as the System tolerating it: forcing 32-bit
 under System 7.0.1 (the Disk Tools media) sets `MMU32bit = 1` and then Sad Macs
@@ -596,36 +621,44 @@ sResource ID, per the Start Manager source).
 
 ## 8. Summary — what this means for the emulator
 
-Our [rtc.c:344](../src/core/peripherals/rtc.c) `memset(rtc, 0, sizeof(rtc_t))`
-on cold boot is the right starting state: byte $00 is `$00 ≠ $A8`, bytes
-$0C..$0F are zero `≠ 'NuMc'`, every slot's BoardID is zero (which never
-matches a real card), so the ROM is guaranteed to take both the
-"low-PRAM rewrite" path and the "XPRAM rewrite" path on first boot, and
-the Slot Manager is guaranteed to take the "card has changed" path for
-every slot. Subsequent boots reload the same image and find everything
-valid, and the saved video mode persists — exactly matching real
-hardware behavior.
+**A machine is built with PRAM that has booted before** (`rtc.h`
+`pram_defaults_t`; the tables are
+[`pram_defaults.c`](../../../src/machines/runtime/pram_defaults.c)).  A real
+Mac's PRAM is battery-backed and almost never blank; ours is created with the
+machine, so at construction the RTC writes:
 
-If you want to **seed PRAM** to a specific saved configuration (for fast
-boot tests, or to skip the Monitors-cdev round trip in an integration
-test), the minimum write set is:
+- the ROM family's **XPRAM token** at `$0C..$0F` (`'NuMc'`; the Plus's is
+  `'Bugs'`), so `_InitUtil` keeps the rest of XPRAM;
+- its **Start Manager table** at `$76..$89` (§3, "Measured per ROM family"):
+  default OS Macintosh, startup device SCSI id 0;
+- its **MMFlags** at `$8A` as the ROM writes it, plus what a booted System
+  leaves set (bit 5 on the PDM family, §4.3);
+- **`$01` bit 7**, the Start Manager's "no dynamic startup-drive wait" — a
+  deliberate departure from a factory-fresh chip, whose first boot waits up
+  to 20 s for drives to spin up (and on the single-Curio PDM machines always
+  to the end, because its poll cannot succeed).  A row that wants the wait
+  path clears the bit after construction and keeps the token.
+
+The **SysParam block is left invalid** (its validity byte, physical `$10`,
+is not `$A8`), so each ROM still writes its own SysParam defaults — they
+differ per family (§9.2).  A checkpoint restores over all of it; the Open
+Firmware machines start from zero until their NVRAM partition format is
+modelled.
+
+The startup device is a core setter, `machine.rtc.pram.boot_device = <SCSI
+id>` (`$77` and the `$78..$7B` driver refnum `-(33 + id)`); the web page
+sets it to the disk it attached.  `machine.rtc.pram.validate` re-stamps the
+family's XPRAM token and nothing else — it used to write `$A8` to physical
+`$00`, which is a reserved XPRAM byte, not the SysParam validity byte.
+
+To **seed** a specific saved configuration on top (a video mode, 32-bit
+addressing), poke it after `machine.boot`, before the machine runs:
 
 ```python
-# 1. Validity tokens
-pram[0x00]            = 0xA8
-pram[0x0C:0x10]       = b'NuMc'
+# The token and the Start Manager table are already there.
 
-# 2. Start Manager defaults at $76..$89 (see §4.2 table)
-pram[0x76:0x8A]       = bytes([0x00, 0x01,
-                               0xFF, 0xFF, 0xFF, 0xDF,
-                               0x00, 0x00,
-                               0x00, 0x00,
-                               0x00, 0x00,
-                               0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                               0x00, 0x00])
-pram[0x8A]            = 0x80   # MMFlagsDefault
-
-# 3. SCSI XPRAM word at $02..$03 — host ID 7, no-reset bit set
+# 3. SCSI XPRAM word at $02..$03 — host ID 7, no-reset bit set (the ROM
+#    repairs this field itself; see §3)
 pram[0x02:0x04]       = b'\x4F\x48'
 
 # 4. Per-slot video — slot $9
@@ -645,10 +678,10 @@ pram[slot9 + 4:8]     = b'\x00\x00\x00\x00'
 pram[0x80:0x82]       = b'\x09\x80'           # high byte=slot, low byte=sRsrc id
 ```
 
-Skipping step 1 means the ROM will rewrite *everything* on next boot,
-including any per-slot mode you carefully prepared. Skipping step 4's
-BoardID match means the Slot Manager will reset that slot's mode bytes
-to the card defaults during boot.
+Skipping step 4's BoardID match means the Slot Manager will reset that slot's
+mode bytes to the card defaults during boot.  (The video cards do this
+themselves for a mode picked in the New Machine dialog: they write only the
+slot record; the token and the table are the RTC's.)
 
 ## 9. Empirical findings — IIcx + Apple Display Card 8•24 (JMFB)
 

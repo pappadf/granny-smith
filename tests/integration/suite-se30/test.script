@@ -28,13 +28,13 @@ let sys_701 = "../../data/systems/System_7_0_1.image"
 let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 
 # ---- se30-nomedia -----------------------------------------------------------
-# With no media the ROM runs its full drive-discovery timeout and then
-# draws the floppy "?" icon. The budget is FIXED deliberately (§5.2's
-# run_exact class, not padding): the icon BLINKS, so the golden is
-# animation-phase-sensitive — a settle wait never converges and a
-# polling wait would only ever sample multiples of its step. The 335 M
-# figure also covers the ROM's own discovery timeout, which is part of
-# what this row pins.
+# With no media the ROM finds no startup device and draws the floppy "?"
+# icon (the machine's PRAM skips the drive-discovery wait, so it gets there
+# at once). The budget is FIXED deliberately (§5.2's run_exact class, not
+# padding): the icon BLINKS, so the golden is animation-phase-sensitive — a
+# settle wait never converges and a polling wait would only ever sample
+# multiples of its step. The 335 M figure is the budget the row has always
+# had; it now lands in the icon's "?" phase.
 def row_se30_nomedia() {
     machine.boot model="se30" ram=1024 rom="${$ROM}"
     scheduler.run 335000000
@@ -63,14 +63,13 @@ def row_se30_chime() {
 # ---- se30-608-fd ------------------------------------------------------------
 # The direct-SWIM transport row (800K GCR straight off the SWIM, no IOP
 # in the path) — moved here from boot-matrix, which keeps only its Plus
-# and IIcx rows. The Universal ROM's ~13 s drive-discovery wait is
-# short-circuited by the shared KeyMap poke.
+# and IIcx rows. The Universal ROM's ~13 s drive-discovery wait is skipped
+# by the machine's own PRAM (no KeyMap poke any more).
 def row_se30_608_fd() {
     machine.boot model="se30" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"
     let t0 = scheduler.host_user_ns
     scheduler.run 40000000
-    skip_boot_wait()
     let spent = wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
     assert machine.ram == 2048 "se30-608-fd: machine.ram != 2048"
     assert machine.screen.width == 512 "se30-608-fd: width != 512"
@@ -90,7 +89,6 @@ def row_se30_71_fd() {
     machine.boot model="se30" ram=4096 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     scheduler.run 40000000
-    skip_boot_wait()
     scheduler.run 600000000
     # wait_stable (not wait_match) because this row interacts afterwards:
     # the settle point is identical in capture and verify runs, so the
@@ -113,7 +111,6 @@ def row_se30_701_gsvrom() {
     machine.boot model="se30" ram=8192 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 50000000
-    skip_boot_wait()
     # golden-collision-ok: se30-7.0.1-512x342-gsvrom-finder.png se30-7.1-512x342-finder.png
     # - System_7_0_1.image and the 7.1 Disk Tools disk are both volumes named
     # "Disk Tools", and at 512x342 mono the 7.0.1 and 7.1 Finders draw an
@@ -140,7 +137,6 @@ def row_se30_75_hd() {
     machine.boot model="se30" ram=16384 rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
-    skip_boot_wait()
     scheduler.run 700000000
     # 7.5 puts a clock in the menu bar, so the golden excludes that
     # corner (the RTC is pinned above, but the displayed minute still
@@ -161,7 +157,6 @@ def row_se30_checkpoint() {
     machine.boot model="se30" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"
     scheduler.run 40000000
-    skip_boot_wait()
     wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
     assert checkpoint.save("${$WORK_DIR}/suite-se30.gsc") "se30-checkpoint: save failed"
     machine.boot model="se30" ram=1024 rom="${$ROM}"

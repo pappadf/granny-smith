@@ -58,7 +58,6 @@ machine.boot model="pm8100" ram=16384 rom="${$ROM}"
 machine.rtc.time = 0xE0000000
 machine.scsi.attach_hd "../../data/systems/system_7_5_0_77mb_mode32_24ac.img" 0
 scheduler.run 360000000
-machine.memory.poke.l 0x9716A 0x2000
 scheduler.run 1200000000
 wait_stable(300000000)
 

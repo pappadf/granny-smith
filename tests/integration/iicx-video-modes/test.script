@@ -13,11 +13,12 @@
 # the time Welcome paints, so the splash exercises the same depth /
 # stride / CLUT plumbing as a Finder match would.)
 #
-# Boot-to-Welcome budget = 62.5M cycles (50M before the wait routine
-# is entered + a 1.5M settle gap around a $017A modifier-key poke that
-# short-circuits the Universal-ROM boot-drive-discovery wait + 11M to
-# land inside the ~7M-wide stable Welcome window).  See the comment
-# at the first `memory.poke.w 0x017A 0x8805` below for the mechanics.
+# Boot-to-Welcome budget = 49M instructions.  The PRAM a machine is built
+# with already disables the Start Manager's startup-drive wait (rtc.h
+# pram_defaults_t), so the ROM goes straight to the floppy; 49M sits in the
+# middle of the stable Welcome window, measured at 45..52M for every cell.  (This used
+# to be 62.5M around a $017A Cmd-Shift-Power poke that short-circuited the
+# ~13 s wait by hand.)
 #
 # Seeded slot-9 sPRAMRec (8 bytes packed as one big-endian literal):
 #
@@ -28,10 +29,10 @@
 #                                  per the JMFB VROM mode catalog)
 #   $4B..$4D = 00 00 00           specialFlag / clock / pad
 #
-# `rtc.pram.validate` stamps the two boot-ROM validity tokens
-# ($00=$A8 + $0C-$0F='NuMc') so `_InitUtil` skips its cold-init pass;
-# without those tokens the seeded slot-PRAM gets clobbered (see
-# docs/core/memory/pram.md §3).
+# `rtc.pram.validate` stamps the XPRAM validity token ($0C-$0F='NuMc') so
+# `_InitUtil` skips its XPRAM cold-init pass; without it the seeded
+# slot-PRAM gets clobbered (docs/core/memory/pram.md §3).  A machine is
+# built with the token already, so the call only restates it.
 #
 # (sense → sister sRsrcID) mapping derived empirically — see Section
 # 6b of the JMFB VROM disasm for the full catalog.  PrimaryInit picks
@@ -69,22 +70,8 @@
 
 # === Depth × Resolution matrix — one cold boot per (sense, depth) =============
 #
-# Each iteration uses the same five-line boot prefix:
-#
-#   scheduler.run 50000000         # past Universal-ROM wait-routine entry
-#   memory.poke.w 0x017A 0x8805    # synthesise Cmd-Shift-Power in $017A
-#                                  # (KeyMap mods) — short-circuits the
-#                                  # boot-drive-discovery wait at $40801610
-#                                  # which would otherwise burn ~16.8 s of
-#                                  # guest time before failing through to
-#                                  # the real boot.
-#   scheduler.run 1500000          # one inner 15-tick poll picks up $8805
-#                                  # and the wait routine returns via the
-#                                  # programmer's-key branch
-#   memory.poke.w 0x017A 0         # clear the modifier so System 7's INIT
-#                                  # loader doesn't see Cmd held (which
-#                                  # would pop a "rebuild desktop?" dialog)
-#   scheduler.run 11000000         # land in the Welcome splash stable window
+# Each iteration: boot, insert the floppy, seed the slot record, and run
+# 49M instructions into the Welcome splash (see the header).
 
 # --- 13" RGB (sense $6) at 1/2/4/8 bpp ---
 include "../lib/mac.script"   # report_row (§5.6 coverage records)
@@ -93,29 +80,21 @@ machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 49000000
 assert machine.id == "iicx" "machine.id != iicx"
 assert machine.screen.width == 640 "13in_rgb 1bpp width != 640"
 assert machine.screen.height == 480 "13in_rgb 1bpp height != 480"
 assert machine.rtc.pram.peek(0x48) == 0x80 "13in_rgb 1bpp savedMode rewritten by ROM"
 assert machine.memory.peek.l(0xf9200208) == 0x80 "13in_rgb 1bpp CLUTPBCR != 0x80"
 assert machine.memory.peek.l(0xf920000c) == 0x14 "13in_rgb 1bpp RowWords != 0x14"
-machine.screen.match welcome-13in_rgb-640x480-1bpp.png
+check("welcome-13in_rgb-640x480-1bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 640x480x1 13in_rgb")
 
 machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 49000000
 assert machine.rtc.pram.peek(0x48) == 0x81 "13in_rgb 2bpp savedMode rewritten by ROM"
 assert machine.memory.peek.l(0xf9200208) == 0x88 "13in_rgb 2bpp CLUTPBCR != 0x88"
 assert machine.memory.peek.l(0xf920000c) == 0x28 "13in_rgb 2bpp RowWords != 0x28"
@@ -124,37 +103,29 @@ assert machine.memory.peek.l(0xf920000c) == 0x28 "13in_rgb 2bpp RowWords != 0x28
 # pixels at both depths. The depth change is proven by the three asserts above
 # (savedMode 0x80 vs 0x81, CLUT PBCR, RowWords), not by the frame; the golden
 # only pins that the raster still scans out correctly.
-machine.screen.match welcome-13in_rgb-640x480-2bpp.png
+check("welcome-13in_rgb-640x480-2bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 640x480x2 13in_rgb")
 
 machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a6a6000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 63000000
+scheduler.run 49000000
 assert machine.rtc.pram.peek(0x48) == 0x82 "13in_rgb 4bpp savedMode rewritten by ROM"
 assert machine.memory.peek.l(0xf9200208) == 0x90 "13in_rgb 4bpp CLUTPBCR != 0x90"
 assert machine.memory.peek.l(0xf920000c) == 0x50 "13in_rgb 4bpp RowWords != 0x50"
-machine.screen.match welcome-13in_rgb-640x480-4bpp.png
+check("welcome-13in_rgb-640x480-4bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 640x480x4 13in_rgb")
 
 machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a6a6000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 49000000
 assert machine.rtc.pram.peek(0x48) == 0x83 "13in_rgb 8bpp savedMode rewritten by ROM"
 assert machine.memory.peek.l(0xf9200208) == 0x98 "13in_rgb 8bpp CLUTPBCR != 0x98"
 assert machine.memory.peek.l(0xf920000c) == 0xa0 "13in_rgb 8bpp RowWords != 0xa0"
-machine.screen.match welcome-13in_rgb-640x480-8bpp.png
+check("welcome-13in_rgb-640x480-8bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 640x480x8 13in_rgb")
 
 # --- 12" RGB (sense $2) at 1/2/4/8 bpp ---
@@ -162,59 +133,38 @@ machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a2a2000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 49000000
 assert machine.screen.width == 512 "12in_rgb 1bpp width != 512"
 assert machine.screen.height == 384 "12in_rgb 1bpp height != 384"
 assert machine.rtc.pram.peek(0x48) == 0x80 "12in_rgb 1bpp savedMode rewritten by ROM"
-machine.screen.match welcome-12in_rgb-512x384-1bpp.png
+check("welcome-12in_rgb-512x384-1bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 512x384x1 12in_rgb")
 
 machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a2a2000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 49000000
 assert machine.rtc.pram.peek(0x48) == 0x81 "12in_rgb 2bpp savedMode rewritten by ROM"
-machine.screen.match welcome-12in_rgb-512x384-2bpp.png
+check("welcome-12in_rgb-512x384-2bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 512x384x2 12in_rgb")
 
 machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a2a2000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 49000000
 assert machine.rtc.pram.peek(0x48) == 0x82 "12in_rgb 4bpp savedMode rewritten by ROM"
-machine.screen.match welcome-12in_rgb-512x384-4bpp.png
+check("welcome-12in_rgb-512x384-4bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 512x384x4 12in_rgb")
 
 machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a2a2000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-# MEASURED, and 5x the sibling budget: at +11 M this cell is still on the bare
-# desktop pattern, which is static — so the golden captured here used to be a
-# screen with nothing on it while its 1/2/4 bpp siblings had the splash. The
-# Welcome dialog is up at +60 M. Runs are bit-reproducible, so a fixed instant
-# is exact; the sibling tile-diversity mismatch is what exposed it.
-scheduler.run 60000000
+scheduler.run 49000000
 assert machine.rtc.pram.peek(0x48) == 0x83 "12in_rgb 8bpp savedMode rewritten by ROM"
-machine.screen.match welcome-12in_rgb-512x384-8bpp.png
+check("welcome-12in_rgb-512x384-8bpp.png")
 report_row("7.0.1", "jmfb", "rom-stage 512x384x8 12in_rgb")
 
 # --- 15" Portrait B&W (sense $1) and 21" RGB Kong (sense $0) ---

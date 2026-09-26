@@ -1,0 +1,79 @@
+# The PRAM a machine is built with, read at instruction 0 (pram.md §4, §8).
+# A real Mac's PRAM has almost always booted before; ours is created with the
+# machine, so the RTC gives it the store such a Mac would have.  The values
+# are each ROM's own, measured: what its _InitUtil writes into invalid XPRAM.
+
+let R = "../../data/roms"
+
+def assert_token(model, a, b, c, d) {
+    assert machine.rtc.pram.peek(0x0C) == $a "${$model}: XPRAM token byte 0"
+    assert machine.rtc.pram.peek(0x0D) == $b "${$model}: XPRAM token byte 1"
+    assert machine.rtc.pram.peek(0x0E) == $c "${$model}: XPRAM token byte 2"
+    assert machine.rtc.pram.peek(0x0F) == $d "${$model}: XPRAM token byte 3"
+}
+
+# 'NuMc', PRAMInitTbl with default OS Mac and startup device SCSI id 0, the
+# ROM's cold MMFlags, the no-wait bit -- and SysParam still invalid (its
+# validity byte is physical $10 on the extended RTC), for the ROM to fill.
+def assert_mac_pram(model, rom, mmflags, video81) {
+    machine.boot model=$model rom="${$R}/${$rom}"
+    assert scheduler.instr_count == 0 "${$model}: the machine ran before the read"
+    assert_token($model, 0x4E, 0x75, 0x4D, 0x63)
+    assert machine.rtc.pram.peek(0x77) == 0x01 "${$model}: default OS != Macintosh"
+    assert machine.rtc.pram.boot_device == 0 "${$model}: startup device != SCSI id 0"
+    assert machine.rtc.pram.peek(0x81) == $video81 "${$model}: default video device byte"
+    assert machine.rtc.pram.peek(0x8A) == $mmflags "${$model}: MMFlags ${machine.rtc.pram.peek(0x8A)}, want ${$mmflags}"
+    assert (machine.rtc.pram.peek(0x01) & 0x80) != 0 "${$model}: Start Manager wait not disabled"
+    assert machine.rtc.pram.peek(0x10) != 0xA8 "${$model}: SysParam marked valid"
+}
+
+assert_mac_pram("iix", "iix-iicx-se30-97221136.rom", 0x00, 0x00)
+assert_mac_pram("iicx", "iix-iicx-se30-97221136.rom", 0x00, 0x00)
+assert_mac_pram("se30", "iix-iicx-se30-97221136.rom", 0x00, 0x00)
+assert_mac_pram("iifx", "iifx-4147dd77.rom", 0x00, 0x00)
+assert_mac_pram("q700", "q700-q900-420dbff3.rom", 0x00, 0x00)
+assert_mac_pram("q900", "q700-q900-420dbff3.rom", 0x00, 0x00)
+assert_mac_pram("q950", "q950-3dc27823.rom", 0x00, 0x00)
+# The IIci and IIsi ROMs name the built-in video as the default video device.
+assert_mac_pram("iici", "iici-368cadfe.rom", 0x00, 0x80)
+assert_mac_pram("iisi", "iisi-36b7fb6c.rom", 0x00, 0x80)
+# The AV ROM's cold MMFlags is $05.
+assert_mac_pram("q840av", "q840av-q660av-5bf10fd1.rom", 0x05, 0x00)
+assert_mac_pram("q660av", "q840av-q660av-5bf10fd1.rom", 0x05, 0x00)
+# PDM: the ROM's $05 plus bit 5, which both 7.5 and 8.1 leave set once
+# booted -- on blank MMFlags 8.1 sets it itself and restarts (the double
+# boot).
+assert_mac_pram("pm6100", "pm6100-pm7100-pm8100-9feb69b3.rom", 0x25, 0x00)
+assert_mac_pram("pm7100", "pm6100-pm7100-pm8100-9feb69b3.rom", 0x25, 0x00)
+assert_mac_pram("pm8100", "pm6100-pm7100-pm8100-9feb69b3.rom", 0x25, 0x00)
+
+# The Plus ROM's token is 'Bugs', and it keeps no Start Manager table.
+machine.boot model="plus" rom="${$R}/plus-v3-4d1f8172.rom"
+assert_token("plus", 0x42, 0x75, 0x67, 0x73)
+assert machine.rtc.pram.peek(0x77) == 0 "plus: a Start Manager table it does not have"
+assert machine.rtc.pram.peek(0x8A) == 0 "plus: MMFlags"
+
+# Open Firmware machines start from zero: their NVRAM wants its partition
+# format first.
+machine.boot model="pm7500" rom="${$R}/pm7500-pm8500-pm9500-96cd923d.rom"
+assert machine.rtc.pram.peek(0x0C) == 0 "pm7500: an XPRAM token on an Open Firmware machine"
+
+# The ROM keeps the store: the XPRAM token and the table survive its init,
+# and it writes its own SysParam.
+machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom"
+scheduler.run 30000000
+assert_token("se30 booted", 0x4E, 0x75, 0x4D, 0x63)
+assert machine.rtc.pram.boot_device == 0 "se30 booted: the ROM rewrote the startup device"
+assert machine.rtc.pram.peek(0x10) == 0xA8 "se30 booted: the ROM did not initialise SysParam"
+
+# The startup device follows a disk elsewhere, through the core's formula --
+# set as the page does, before the machine runs (a running System has the
+# PRAM write-protected, and the setter honours that like any PRAM write).
+assert machine.rtc.read_only "se30 booted: the ROM left the PRAM writable"
+machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom"
+machine.rtc.pram.boot_device = 5
+assert machine.rtc.pram.boot_device == 5 "boot_device does not read back"
+assert machine.rtc.pram.peek(0x7B) == 0xDA "boot_device: refnum -(33+5) low byte"
+
+echo "pram-construction: all checks passed"
+quit

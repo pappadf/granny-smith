@@ -19,6 +19,7 @@
 
 #include "machine.h"
 #include "nubus.h"
+#include "pram_defaults.h"
 #include "slot_tables.h"
 
 #include <stdint.h>
@@ -81,6 +82,7 @@ const hw_profile_t machine_q950 = {
 
     .nubus_slots = q900_nubus_slots, // same Eclipse board (q900_internal.h)
 
+    .pram = &pram_defaults_mac_ii,
     .substrate = &mcu_substrate,
     .board = &q950_board,
 };

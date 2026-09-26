@@ -1064,16 +1064,9 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         rtc_t *rtc = system_rtc();
         if (rtc) {
             uint8_t spDepth = spdepth_for_bpp(seeded_depth_bpp);
-            rtc_pram_write(rtc, 0x0C, 0x4E); // 'NuMc' XPRAM validity signature
-            rtc_pram_write(rtc, 0x0D, 0x75);
-            rtc_pram_write(rtc, 0x0E, 0x4D);
-            rtc_pram_write(rtc, 0x0F, 0x63);
-            static const uint8_t pram_init_tbl[] = {
-                0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xDF, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            };
-            for (size_t i = 0; i < sizeof(pram_init_tbl); i++)
-                rtc_pram_write(rtc, (uint8_t)(0x76 + i), pram_init_tbl[i]);
+            // The XPRAM token and the Start Manager table (PRAMInitTbl) are the
+            // RTC's, stamped at construction (rtc.h pram_defaults_t), so the boot
+            // ROM keeps the slot record below; only that record is the card's.
             uint8_t off = (uint8_t)(0x46 + (card->slot - 9) * 8);
             rtc_pram_write(rtc, off + 0, 0x00);
             rtc_pram_write(rtc, off + 1, 0x2C); // BoardID = $2C (8•24 GC)

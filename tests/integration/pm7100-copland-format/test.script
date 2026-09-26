@@ -32,11 +32,10 @@
 #     Finder auto-opens it; that window is what makes Drive Setup reachable in
 #     phase 2, and the golden is what proves it arrived.
 #
-# The boot recipe is suite-pdm's boot_pdm_75(): pinned RTC, 360 M instructions
-# to the Start Manager's WaitForPollDrive loop, a Ticks poke past the 20 s
-# drive-spin-up window (physical $16A + $97000 — the 604 KB framebuffer carve),
-# then ~1.2 G through boot blocks, CFM init, the extensions parade and the
-# Finder.  Measured spend for the whole phase: ~1.64 G instructions.
+# The boot recipe is suite-pdm's boot_pdm_75(): pinned RTC, then ~1.56 G
+# instructions through chip init, the bus scan (no drive-spin-up wait: the
+# machine's PRAM disables it), boot blocks, CFM init, the extensions parade
+# and the Finder.
 
 include "../lib/mac.script"
 
@@ -90,8 +89,6 @@ def phase1_host_desktop() {
 
     # Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.
     scheduler.run 360000000
-    # Skip the 20 s spin-up window (suite-pdm's documented Ticks poke).
-    machine.memory.poke.l 0x9716A 0x2000
     # Boot blocks -> CFM init -> extensions parade -> Finder desktop.
     scheduler.run 1200000000
     wait_stable(900000000)

@@ -299,6 +299,14 @@ comparing.
 
 ### PRAM Layout
 
+**Power-up contents.** The emulated PRAM is created with the machine, not
+battery-backed, so `rtc_init` fills it with what a Mac that has booted before
+would hold: the ROM family's XPRAM token, Start Manager table and MMFlags,
+and the no-startup-drive-wait bit (`rtc.h` `pram_defaults_t`; per-family
+values, and why, in [pram.md](../memory/pram.md) §3 and §8).  SysParam is left
+for the ROM to initialise.  A checkpoint restores over it.
+
+
 The original RTC chip provides 20 bytes of traditional PRAM (4 at 0x08–0x0B
 plus 16 at 0x10–0x1F), while extended addressing allows access to the full 256
 bytes. These 20 bytes are copied to low memory at addresses **$1F8–$20B** during

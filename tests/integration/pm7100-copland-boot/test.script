@@ -47,10 +47,9 @@ def boot_image(image, latch) {
     if $latch {
         machine.adb.keyboard.down "capslock"
     }
-    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, skip the 20 s
-    # WaitForPollDrive spin-up window, then boot blocks onward.
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan (no spin-up
+    # wait: the machine's PRAM disables it), then boot blocks onward.
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
     scheduler.run 1200000000
 }
 

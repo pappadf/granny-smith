@@ -378,6 +378,8 @@ typedef struct machine_substrate {
 
 // Machine descriptor: static metadata for each emulated machine model.  The
 // behavior (lifecycle + host input) lives on the bound machine_substrate_t.
+struct pram_defaults; // rtc.h
+
 typedef struct hw_profile {
     // Identity
     const char *name; // Human-readable, e.g. "Macintosh Plus"
@@ -495,6 +497,12 @@ typedef struct hw_profile {
     // which is a statement about how many machines share the board, not about
     // how much code the family writes for itself.
     //
+    // The PRAM the machine powers up with (rtc.h pram_defaults_t; the
+    // tables are machines/runtime/pram_defaults.c).  NULL: all zero -- the
+    // Open Firmware machines, whose NVRAM wants its partition format first,
+    // and the Lisa, which has no such chip.
+    const struct pram_defaults *pram;
+
     // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
     // included, builds through mac030_build_core + mac030_build_lowspeed,
     // checkpoints through machine_checkpoint_save_core, and tears down through
