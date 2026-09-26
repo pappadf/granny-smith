@@ -16,6 +16,10 @@ that actually boots them.  Heuristic by design: once suites self-report
 coverage rows at runtime, that JSONL replaces the script-side guesswork
 here; the pivots and rendering stay.
 
+The machine roster and each fixture ROM's default model are read from the
+source (builtin_machines[] and the profiles' .id; rom.c's compatible lists),
+so a new model or ROM needs no edit here.
+
 Usage:  scripts/test-matrix.py [--tests] [--video] [--pivot] [tests/integration]
 """
 
@@ -24,19 +28,42 @@ import re
 import sys
 from pathlib import Path
 
-MACHINES = {"plus", "se30", "iix", "iicx", "iici", "iisi", "iifx",
-            "q700", "q900", "q950", "q840av", "q660av",
-            "pm6100", "pm7100", "pm8100", "pm7500", "pm8500", "pm9500",
-            "lisa", "macxl"}
+SRC = Path(__file__).resolve().parent.parent / "src"
 
-# first entry of each ROM's compatible-model list (src/core/memory/rom.c)
-ROM_MACHINE = [
-    ("plus-", "plus"), ("iix-iicx-se30", "se30"), ("iici-", "iici"),
-    ("iisi-", "iisi"), ("iifx-", "iifx"), ("q700-q900", "q700"),
-    ("q950-", "q950"), ("q840av-q660av", "q840av"),
-    ("pm6100-pm7100-pm8100", "pm6100"), ("pm7500-pm8500-pm9500", "pm7500"),
-    ("lisa2-", "lisa"), ("macxl-", "macxl"),
-]
+
+def machine_roster():
+    """The registered model ids, read from the source the way machine.models
+    reports them: builtin_machines[] in src/machines/machine.c names each
+    profile, and the profile's .id is the model id."""
+    table = (SRC / "machines/machine.c").read_text(errors="replace")
+    body = re.search(r"builtin_machines\[\]\s*=\s*\{(.*?)\};", table, re.S).group(1)
+    wanted = set(re.findall(r"&(machine_\w+)", body))
+    ids = {}
+    for f in (SRC / "machines").rglob("*.c"):
+        text = f.read_text(errors="replace")
+        for var, block in re.findall(r"hw_profile_t\s+(machine_\w+)\s*=\s*\{(.*?)\n\};", text, re.S):
+            m = re.search(r'\.id\s*=\s*"([^"]+)"', block)
+            if var in wanted and m:
+                ids[var] = m.group(1)
+    missing = wanted - ids.keys()
+    if missing:
+        sys.exit(f"test-matrix: no .id found for {sorted(missing)}")
+    return set(ids.values())
+
+
+def rom_defaults():
+    """ROM checksum -> the model a boot picks when none is named: the first
+    entry of that ROM's compatible list in src/core/memory/rom.c."""
+    text = (SRC / "core/memory/rom.c").read_text(errors="replace")
+    lists = {name: re.findall(r'"([^"]+)"', items)
+             for name, items in re.findall(r"static const char \*const (\w+)\[\]\s*=\s*\{([^}]*)\}", text)}
+    return {int(ck, 16): lists[name][0]
+            for name, ck in re.findall(r'\{+\s*"(?:[^"\\]|\\.)*",\s*(\w+),\s*(0x[0-9A-Fa-f]{8})', text)
+            if lists.get(name)}
+
+
+MACHINES = machine_roster()
+ROM_DEFAULT = rom_defaults()
 
 # media path fragment -> system-software label
 MEDIA_SYSTEM = [
@@ -148,6 +175,12 @@ def parse_script(test, text):
         if "machine.boot" in line:
             test.note_args(line, is_boot=True)
             continue
+        # A row helper that boots the model it is handed, e.g.
+        # tnt_hd_boot("pm8500", ...): its quoted model argument is the
+        # machine for what follows.
+        m = re.search(r'\b\w+\(\s*"([a-z0-9]+)"', line)
+        if m and m.group(1) in MACHINES:
+            test.machine = m.group(1)
         m = re.search(r'\.insert\s+("[^"]+"|\S+)', line)
         if m:
             test.note_media(unquote(m.group(1)), "fd")
@@ -176,7 +209,9 @@ def parse_test(d):
             fields[m.group(1)] = m.group(2)
             if m.group(1) == "ROM":
                 rom = m.group(2).strip()
-    default = next((mach for frag, mach in ROM_MACHINE if frag in rom), None)
+    # Fixture ROMs are named <models>-<checksum>.rom (scripts/rom_naming.py).
+    ck = re.search(r"([0-9a-fA-F]{8})\.rom\b", rom)
+    default = ROM_DEFAULT.get(int(ck.group(1), 16)) if ck else None
     # model= in TEST_ARGS overrides the ROM-derived default
     args_model = re.search(r'model=(\S+)', fields.get("ARGS", ""))
     if args_model and unquote(args_model.group(1)) in MACHINES:
@@ -212,7 +247,9 @@ def emit_pivot(tests, pairs_of, title):
     for t in tests:
         for pair in pairs_of(t):
             pair_tests.setdefault(pair, []).append(t.name)
-    rows = sorted({m for m, _ in pair_tests})
+    # Every registered model gets a row, so one no test covers shows as an
+    # empty row rather than not at all.
+    rows = sorted(MACHINES | {m for m, _ in pair_tests if m != "?"})
     cols = sorted({c for _, c in pair_tests})
     print(f"\n### {title}\n")
     print("| " + " | ".join([""] + cols) + " |")
