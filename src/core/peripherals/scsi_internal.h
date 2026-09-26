@@ -175,6 +175,9 @@
 // vocabulary and does not appear anywhere in this drive's tables.
 #define ASC_SONY_PREVENT_BIT_SET 0x80
 #define ASC_INCOMPATIBLE_MEDIUM  0x30
+// X3.131-1994 table 71: 11h/00h UNRECOVERED READ ERROR -- the READ-side
+// counterpart of WRITE FAULT, for an in-range read the backing store failed.
+#define ASC_UNRECOVERED_READ_ERROR 0x11
 
 // FORMAT UNIT's defect list header: reserved, reserved, then a 16-bit length
 // of the defect descriptors that follow (X3.131-1986 table 8-5).  The target
@@ -444,7 +447,7 @@ struct scsi_5380 {
 // Narrowing the first list is the measure of progress on that.
 
 // Bus internals the 5380 still reaches for.
-int cmd_size(uint8_t opcode);
+size_t cmd_size(uint8_t opcode);
 void command_complete(scsi_t *scsi);
 uint8_t next_byte(scsi_t *scsi);
 void phase_arbitration(scsi_t *scsi);

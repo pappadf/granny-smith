@@ -80,7 +80,7 @@ LOG_USE_CATEGORY_NAME("scsi");
 // spills the tail of the CDB into whichever phase follows.  An opcode we do not
 // implement still has to be *counted* correctly, so that run_cmd can decline it
 // with ILLEGAL REQUEST / INVALID OPCODE instead of corrupting the next phase.
-int cmd_size(uint8_t opcode) {
+size_t cmd_size(uint8_t opcode) {
     switch (opcode >> 5) {
     case 0:
         return 6;
@@ -706,8 +706,14 @@ void run_cmd(scsi_t *scsi) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
             phase_data_in(scsi, (int)byte_cnt);
+            // The range is already known to fit, so a short read is a backing-store
+            // failure: report it as a MEDIUM ERROR, never as GOOD over stale bytes
+            // (an assert() here was compiled out by -DNDEBUG in the release build).
             size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
-            assert(n == byte_cnt);
+            if (n != byte_cnt) {
+                LOG(1, "SCSI READ: storage gave %zu of %zu bytes at offset %zu", n, byte_cnt, byte_off);
+                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+            }
         }
         break;
     }
@@ -767,8 +773,12 @@ void run_cmd(scsi_t *scsi) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
             phase_data_in(scsi, (int)byte_cnt);
+            // A short read is a backing-store failure, as for READ(6) above.
             size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
-            assert(n == byte_cnt);
+            if (n != byte_cnt) {
+                LOG(1, "SCSI READ_10: storage gave %zu of %zu bytes at offset %zu", n, byte_cnt, byte_off);
+                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+            }
         }
         break;
     }
