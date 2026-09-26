@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning everything from Lisa 2 to Power Macintosh 9500 and more that 15 computer models in between.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning 22 computer models, from the Lisa 2 to the Power Macintosh 9500 and the Apple Network Server.
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
@@ -69,14 +69,14 @@ Two principles guide the project: **stay true to the hardware**, and **keep it s
 
 True to the hardware means that compatibility is achieved by behaving like the real underlying hardware, not by patching around differences. Machines boot their original, unpatched ROMs, and every needed on-board device the software touches is modeled. Chip behaviour is pinned against Apple documentation, chip datasheets, Apple's own system software sources.
 
-Keeping it simple means for users that the emulator runs in the browser with no installation. For developers, it means a highly portable C99 core with no special runtime requirements, no JIT or code generators, relying on the compiler and modern hardware to acheive "enough" performance. Extensive automated tests keep verification simple, and the entire project has been created to be AI agent friendly.
+Keeping it simple means for users that the emulator runs in the browser with no installation. For developers, it means a highly portable C11 core with no special runtime requirements, no JIT or code generators, relying on the compiler and modern hardware to achieve "enough" performance. Extensive automated tests keep verification simple, and the entire project has been created to be AI agent friendly.
 
 ## Getting Started
 
 You will need a ROM image and a bootable system disk image for the machine you want to run.
 
 1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/latest/)** in any modern browser
-2. On first launch, upload a ROM for your chosen model (anything from the Macintosh Plus to the Power Macintosh 8100, or a Lisa); it is persisted in the browser's OPFS storage, so you only need to do this once
+2. On first launch, upload a ROM for your chosen model (any of the models above); it is persisted in the browser's OPFS storage, so you only need to do this once
 3. In the **Machine Configuration** dialog, pick a model, choose RAM, and attach disk images to the floppy / SCSI / CD slots (and display cards to NuBus slots)
 4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
 5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
@@ -90,8 +90,8 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 - **Safari** - known rendering and audio issues; not currently supported
 - **Firefox** - works partially; some compatibility problems remain
 - **Ethernet** - the Quadras' SONIC and the AV machines' MACE controllers are modeled at the register/self-test level but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
-- **Sound input** - not modeled on any machine; the Quadras' EASC currently runs as an ASC-compatible core, and the AV machines' Singer/AWACS sound is not modeled at all
-- **LaserWriter** - printing works in the headless build when it is compiled with `PLATEN=1`, which links the EfterScript session library to interpret the job and produce a PDF; the default build still only spools the job, and the browser build does not yet link the interpreter (see `docs/core/network/laserwriter.md`)
+- **Sound input** - modeled on the AV machines (Singer): the browser microphone reaches the guest's Sound control panel and PlainTalk speech recognition. The PDM and TNT machines' AWACS plays sound but its input is not modeled, and the Quadras' EASC runs as an ASC-compatible core
+- **LaserWriter** - a print job is interpreted into a PDF by the EfterScript session library: in the browser by default (the interpreter runs in its own worker), in the headless build when it is compiled with `PLATEN=1`; otherwise the job is only spooled (see `docs/core/network/laserwriter.md`)
 
 ## A Note on AI
 

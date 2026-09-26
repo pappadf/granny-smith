@@ -32,14 +32,14 @@ The easiest way to get started is with the preconfigured devcontainer, which inc
    cd emsdk && ./emsdk install 6.0.7 && ./emsdk activate 6.0.7
    source ./emsdk_env.sh
    ```
-2. Install Node.js 18+ and npm
+2. Install Node.js 20.9+ and npm (the frontend's `engines` floor; the dev container ships 22), and m68k binutils (`binutils-m68k-linux-gnu`), which assemble the generic declaration-ROM fragments
 3. Install Playwright (for end-to-end tests):
    ```bash
    cd tests/e2e && npm ci
    npx playwright install --with-deps chromium
    ```
 
-**Required tools:** `emcc` (6.0.7), `make`, `node` (18+), `python3`, `git`
+**Required tools:** `emcc` (6.0.7), `make`, `node` (20.9+), `python3`, `git`, `binutils-m68k-linux-gnu`. The dev container (`.devcontainer/Dockerfile`) has all of them.
 
 ### Building
 
@@ -62,13 +62,16 @@ Or use `scripts/dev_server.py` directly. The dev server sets the required COOP/C
 ## Testing
 
 ```bash
-make integration-test                  # Headless integration tests (~1–2 min)
-make -C tests/unit run                 # CPU unit tests (~1–5 min)
+make -j$(nproc) -C tests/unit run      # Unit tests
+make integration-test TIER=unit        # The fast integration tier
+make integration-test -j$(nproc)       # All integration tiers (long)
 make test                              # Unit + integration tests
 
 # End-to-end tests (requires Playwright + test data)
 make ui2-e2e
 ```
+
+What each tier covers, what it needs and how long it takes: [docs/guide/TESTING.md](docs/guide/TESTING.md).
 
 Please ensure all existing tests pass before submitting a PR. Add tests for new functionality where practical.
 
@@ -95,9 +98,9 @@ Please ensure all existing tests pass before submitting a PR. Add tests for new 
 
 ## Code Style
 
-Please follow the conventions in [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md). Key points:
+Please follow the conventions in [docs/guide/STYLE_GUIDE.md](docs/guide/STYLE_GUIDE.md). Key points:
 
-- C99 standard
+- C11 (GNU dialect: the WASM build's `EM_ASM` needs it)
 - `snake_case` for all identifiers
 - Use `//` for short, inline comments
 - Each function and structure gets a one-line comment above it describing its purpose
@@ -127,7 +130,7 @@ If the CI formatting check fails, the pre-commit hooks will catch it locally bef
 | `docs/` | Architecture and hardware documentation |
 | `tests/` | Unit, integration, and end-to-end tests |
 | `scripts/` | Build and helper scripts |
-| `third-party/` | External libraries (peeler, single-step-tests) |
+| `third-party/` | CPU test corpora (git submodules: single-step-tests, powerpc-test) |
 
 For a deeper overview, see [AGENTS.md](AGENTS.md).
 
