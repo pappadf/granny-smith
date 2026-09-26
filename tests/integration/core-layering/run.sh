@@ -83,7 +83,9 @@ fail=0
 while IFS= read -r line; do
     [ -z "$line" ] && continue
     name=$(echo "$line" | sed 's/.*class_desc_t \([a-z_0-9]*\) = {.*/\1/')
-    if ! echo "$ALLOWED_EXTERNAL_CLASSES" | grep -qx "$name"; then
+    # A here-string, not `echo | grep -q`: under pipefail, grep -q exiting at
+    # the first match can SIGPIPE the echo and fail the whole test.
+    if ! grep -qx "$name" <<<"$ALLOWED_EXTERNAL_CLASSES"; then
         echo "NON-STATIC CLASS: $line"
         echo "    '$name' has no cross-file consumer; make it 'static const'."
         fail=1
