@@ -37,7 +37,10 @@ TARGET     := $(BUILD_DIR)/$(TEST_NAME)
 
 # -- Compiler and flags --
 
-CC ?= gcc
+# make's built-in CC=cc outranks `CC ?=`; replace only that default.
+ifeq ($(origin CC),default)
+CC := gcc
+endif
 
 BASE_CFLAGS := -O0 -g -Wall -Wextra
 

@@ -16,37 +16,31 @@
 #                              unit, integration, e2e)
 #   help                       Show available targets
 
-# -- Emscripten compiler + version guard --
+# -- Emscripten compiler + version check --
 
-CC ?= emcc
-ifneq ($(notdir $(CC)),emcc)
-	ifneq (,$(shell command -v emcc 2>/dev/null))
-		override CC := emcc
-	endif
+# make's built-in CC=cc outranks `CC ?= emcc`, and an environment CC (often
+# gcc) would too, so the WASM compiler is set outright unless given on the
+# command line.
+ifneq ($(origin CC),command line)
+CC := emcc
 endif
 EMSDK_REQUIRED_VERSION := 6.0.7
 
-# Targets that do not require the Emscripten toolchain
-NON_EMCC_TARGETS := clean help headless unit-test \
-                    integration-test integration-test-valgrind e2e-test test
+.DEFAULT_GOAL := all
 
-# Only validate emcc when a WASM build target is requested
-ifeq (,$(filter $(NON_EMCC_TARGETS),$(MAKECMDGOALS)))
-ifeq (,$(shell command -v $(CC) 2>/dev/null))
-$(error emcc not found. Run scripts/setup_emsdk.sh $(EMSDK_REQUIRED_VERSION))
-endif
-EMCC_VERSION_LINE := $(shell $(CC) --version 2>/dev/null | head -n1)
-EMCC_VERSION := $(shell echo "$(EMCC_VERSION_LINE)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
-ifeq ($(strip $(EMCC_VERSION_LINE)),)
-$(error Unable to execute $(CC); ensure Emscripten environment is loaded)
-endif
-ifeq ($(findstring emcc,$(EMCC_VERSION_LINE)),)
-$(error Compiler is '$(EMCC_VERSION_LINE)'. Expected emcc.)
-endif
-ifneq ($(EMCC_VERSION),$(EMSDK_REQUIRED_VERSION))
-$(warning emcc version $(EMCC_VERSION) != required $(EMSDK_REQUIRED_VERSION))
-endif
-endif
+# Checked when something is actually compiled or linked with it -- an
+# order-only prerequisite of the WASM objects, the module and the platen
+# module -- not at parse time, so goals that never run emcc (headless, the
+# test targets, integration-test-<name>, ui2*) need no exemption list.
+.PHONY: check-emcc
+check-emcc:
+	@command -v $(CC) >/dev/null 2>&1 || { \
+		echo "emcc not found. Run scripts/setup_emsdk.sh $(EMSDK_REQUIRED_VERSION)"; exit 1; }
+	@line=$$($(CC) --version 2>/dev/null | head -n1); \
+	case "$$line" in *emcc*) ;; *) echo "Compiler is '$$line'. Expected emcc."; exit 1;; esac; \
+	ver=$$(echo "$$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1); \
+	[ "$$ver" = "$(EMSDK_REQUIRED_VERSION)" ] || \
+		echo "warning: emcc version $$ver != required $(EMSDK_REQUIRED_VERSION)"
 
 # -- Directories --
 
@@ -226,7 +220,7 @@ endif
 # The interpreter worker's module, from the fetched release archive.
 platen-module: $(PLATEN_MODULE_JS)
 
-$(PLATEN_MODULE_JS): $(PLATEN_LIB_WASM)
+$(PLATEN_MODULE_JS): $(PLATEN_LIB_WASM) | check-emcc
 	@mkdir -p $(dir $@)
 	@echo "Linking the platen module ($(PLATEN_VERSION)) with $(CC)"
 	$(CC) $(PLATEN_MODULE_LDFLAGS) $< -o $@
@@ -260,10 +254,10 @@ $(FLAGS_STAMP):
 	@mkdir -p $(dir $@)
 	@rm -f $(OBJ_DIR)/flags-*.stamp $(OBJ_DIR)/platen-*.stamp
 	@touch $@
-$(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS)
+$(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS) | check-emcc
 
 # Link all objects into the final WASM module
-$(OUTPUT): $(OBJ)
+$(OUTPUT): $(OBJ) | check-emcc
 	@mkdir -p $(dir $@)
 	@echo "Linking ($(MODE)) with $(CC)"
 	$(CC) $(LDFLAGS) $(OBJ) $(PLATEN_LDLIBS) -o $@
