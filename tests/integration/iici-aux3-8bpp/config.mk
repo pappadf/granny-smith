@@ -1,30 +1,23 @@
-# RE-HOSTED IIfx -> IIci (MILESTONE class): this becomes RBV-under-A/UX, a
-# video path nothing exercises. The IIci rather than the IIsi because A/UX
-# requires an FPU and the IIci has a standard 68882. Expected to surface real gaps, so it is run-not-fatal until it
-# passes; promotion is a reviewed edit.
-# Integration test configuration: IIci A/UX 3.0.1 HD Boot at 8 bpp (via RBV)
+# Integration test configuration: IIci A/UX 3.0.1 HD boot at 8 bpp, on the
+# built-in RBV video (MILESTONE class: run, reported, not fatal).
 #
-# 8-bpp sibling of iifx-aux3-boot (which runs the JMFB's default 1 bpp).
-# Exists because 8-bit colour is the configuration that exposed two distinct
-# IIfx bugs, previously pinned only by the legacy web-UI e2e
-# (tests/e2e/specs/iifx-aux3-boot/iifx-aux3-login.spec.ts, retired with the
-# legacy UI):
-#   1. jmfb.c PRAM seeding — selecting a video mode makes the JMFB factory
-#      seed slot-PRAM AND stamp the boot-ROM PRAM validity tokens; a
-#      regression there (the token stamp suppressing the ROM's default
-#      startup-device PRAM init) left D3=0 at SCSILoad → no boot driver →
-#      Mac-OS no-boot floppy.
-#   2. CPU instruction-fetch fault handling — 8bpp's larger framebuffer
-#      raises memory pressure, so A/UX exec'ing /etc/init demand-pages
-#      init's text page from disk; f_trap once routed that PMMU
-#      instruction-fetch fault through the non-retry exception_bus_error,
-#      whose same-PC double-fault→HALT heuristic falsely fired → HALT →
-#      GLU reset → ROM POST hang.  Fixed via exception_bus_error_retry.
+# RBV-under-A/UX is a video path nothing else exercises.  The IIci rather
+# than the IIsi because A/UX requires an FPU and the IIci has a 68882.  The
+# row seeds the RBV to 8 bpp through its slot-PRAM record, as suite-iici's
+# iici-701-depths does (PRAM $56, BoardID $001F, depth spID $83; see
+# test.script), and expects the graphical login window at 8 bpp.
 #
-# The video mode is seeded the production way (machine.nubus.video_mode
-# before machine.boot — exactly what the web2 New Machine dialog does), so
-# no hd= in TEST_ARGS: the script re-boots with the seed and attaches the
-# HD itself.  See test.script.
+# It does not get there today: the guest draws at 8 bpp while the RBV scans
+# out, and machine.screen reports, 1 bpp (#183).  Under System 7.0.1 the same
+# seed gives a correct 8-bpp desktop, so the defect is on the A/UX path.  The
+# row reproduces it nightly; promotion to enforced is a reviewed edit here
+# plus removing the cell's blocked marker in matrix-targets.json.
+#
+# The 8-bpp configuration also exposed two IIfx defects when this test ran on
+# that machine, both fixed: the JMFB's PRAM seeding (the token stamp once
+# suppressed the ROM's startup-device init, so SCSILoad found no boot
+# driver), and PMMU instruction-fetch faults routed through the non-retry bus
+# error path (a false double-fault HALT when A/UX demand-paged /etc/init).
 
 TEST_NAME := IIci A/UX 3.0.1 HD Boot at 8 bpp (reaches graphical login)
 TEST_DESC := Boot IIci (16 MB, built-in RBV at 8 bpp) from the A/UX 3.0.1 HD image; expect the graphical login window, pixel-exact.

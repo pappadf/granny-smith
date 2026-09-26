@@ -370,6 +370,10 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
     # fail the build; the unit tier has no coverage check (its tests boot no
     # guest to speak of), so a cell owned there could never fail.
     unit_owned = [c for c in declared if owner_tier(suite_root, c.get("suite", "")) == "unit"]
+    # A blocked cell that the run covered is a stale marker: whatever made it
+    # unreachable no longer does.  Say so, so the marker (and the reason
+    # written on it) comes off rather than going stale unnoticed.
+    unblocked = [c for k, c in by_key_declared.items() if c.get("blocked") and k in by_key_achieved]
 
     pending, gated, blocked, other_tier, failed = [], [], [], [], []
     for c in missing:
@@ -392,7 +396,8 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
                          ("not covered — blocked by an emulator defect", blocked),
                          ("not covered — owed by another tier (not in this run)", other_tier),
                          ("not covered — media absent (skipped)", gated),
-                         ("covered but undeclared (claim it)", extra)):
+                         ("covered but undeclared (claim it)", extra),
+                         ("blocked but covered (remove the blocked marker)", unblocked)):
         if group:
             print(f"\n{label}: {len(group)}")
             for c in sorted(group, key=cell_key):

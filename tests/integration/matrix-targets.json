@@ -485,17 +485,6 @@
     },
     {
       "machine": "iisi",
-      "system": "6.0.8",
-      "card": "v8",
-      "width": 640,
-      "height": 480,
-      "depth": 8,
-      "addr32": false,
-      "suite": "suite-iisi",
-      "blocked": "No row asserts the IIsi's built-in video depths yet. Its video sResource record lives at PRAM $6E (slot $E, BoardID $0028), not at the IIci's $56, so the IIci's depth seeds do nothing here; seeded at $6E the IIsi reaches 8 bpp."
-    },
-    {
-      "machine": "iisi",
       "system": "7.0.1",
       "card": "v8",
       "width": 640,
@@ -1054,6 +1043,36 @@
       "depth": 8,
       "addr32": true,
       "suite": "pm8100-24ac-sysinfo"
+    },
+    {
+      "machine": "iisi",
+      "system": "7.0.1",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 2,
+      "addr32": false,
+      "suite": "suite-iisi"
+    },
+    {
+      "machine": "iisi",
+      "system": "7.0.1",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 4,
+      "addr32": false,
+      "suite": "suite-iisi"
+    },
+    {
+      "machine": "iisi",
+      "system": "7.0.1",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iisi"
     }
   ]
 }

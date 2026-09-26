@@ -14,13 +14,9 @@
 #                   EGRET transceiver (9 MB)
 #   iisi-75-hd      **IIsi x 7.5**: the pure-redistribution gap that could
 #                   not close by moving anything — one cheap boot row
+#   iisi-701-depths **IIsi x 7.0.1 at 2, 4 and 8 bpp** on the V8
 #
 # The IIsi is builtin-video only, so every row runs the V8 at 640x480.
-# Depth rows (V8 at 2/4/8 bpp) are NOT here: built-in video exposes no
-# declaration ROM, so the guest sees no depth mode list and stays at
-# 1 bpp no matter what the slot-PRAM record says (measured 2026-07-28).
-# Tracked as an emulator defect; the depth rows get written once it is
-# fixed.
 
 include "../lib/mac.script"
 
@@ -158,10 +154,52 @@ def row_iisi_75_hd() {
 
 # ---- row dispatch -----------------------------------------------------------
 
+# ---- iisi-701-depths --------------------------------------------------------
+# The V8 built-in video at 2, 4 and 8 bpp.  These were once recorded as
+# unreachable ("built-in video exposes no depth mode list"), because seeds
+# written for the IIci did nothing here.  The IIsi's record is elsewhere:
+# its built-in video is slot $E, so its sPRAMRec is PRAM $6E..$75, and its
+# BoardID is $0028.  Within the record, byte 2 ($70) is the saved depth spID
+# and byte 3 ($71) the video sRsrc spID; an unseeded 7.0.1 boot leaves
+# 00 28 80 86 there, $86 being what the ROM computes for this monitor.
+#
+# pram.validate first, or PRAMInit rewrites the record during boot.
+def boot_iisi_701_at_depth(spid) {
+    machine.boot model="iisi" ram=17408 rom="${$ROM}"
+    machine.floppy.drive[0].insert "${$sys_701}"
+    machine.rtc.pram.validate
+    if $spid == 0x81 { machine.rtc.pram.poke 0x6E 0x0028818600000000:8 }
+    if $spid == 0x82 { machine.rtc.pram.poke 0x6E 0x0028828600000000:8 }
+    if $spid == 0x83 { machine.rtc.pram.poke 0x6E 0x0028838600000000:8 }
+    scheduler.run 300000000
+    wait_stable(900000000)
+    assert machine.rtc.pram.peek(0x70) == $spid "iisi-701-depths: savedMode rewritten by the ROM (wanted ${$spid:02x})"
+    assert machine.screen.width == 640 "iisi-701-depths: width != 640"
+    assert machine.screen.height == 480 "iisi-701-depths: height != 480"
+}
+def row_iisi_701_depths() {
+    boot_iisi_701_at_depth(0x81)
+    assert machine.screen.depth == 2 "iisi-701-depths: savedMode $81 gave depth ${machine.screen.depth}, want 2"
+    check("goldens/iisi-7.0.1-640x480x2-finder.png")
+    report_row("7.0.1", "v8", "fd-boot 2bpp")
+
+    boot_iisi_701_at_depth(0x82)
+    assert machine.screen.depth == 4 "iisi-701-depths: savedMode $82 gave depth ${machine.screen.depth}, want 4"
+    check("goldens/iisi-7.0.1-640x480x4-finder.png")
+    report_row("7.0.1", "v8", "fd-boot 4bpp")
+
+    boot_iisi_701_at_depth(0x83)
+    assert machine.screen.depth == 8 "iisi-701-depths: savedMode $83 gave depth ${machine.screen.depth}, want 8"
+    check("goldens/iisi-7.0.1-640x480x8-finder.png")
+    report_row("7.0.1", "v8", "fd-boot 8bpp")
+    report_perf("suite-iisi/iisi-701-depths", scheduler.instr_count)
+}
+
 if row_on("iisi-chime") { row_end("iisi-chime", try(row_iisi_chime(), "FAILED")) }
 if row_on("iisi-701-fd") { row_end("iisi-701-fd", try(row_iisi_701_fd(), "FAILED")) }
 if row_on("iisi-608-hd") { row_end("iisi-608-hd", try(row_iisi_608_hd(), "FAILED")) }
 if row_on("iisi-71-kbd") { row_end("iisi-71-kbd", try(row_iisi_71_kbd(), "FAILED")) }
+if row_on("iisi-701-depths") { row_end("iisi-701-depths", try(row_iisi_701_depths(), "FAILED")) }
 if row_on("iisi-75-hd") {
     if have_media($hd_75) {
         row_end("iisi-75-hd", try(row_iisi_75_hd(), "FAILED"))

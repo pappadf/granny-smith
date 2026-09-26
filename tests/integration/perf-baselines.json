@@ -220,6 +220,10 @@
       "instr": 60000000,
       "tolerance": 0.2
     },
+    "suite-iisi/iisi-701-depths": {
+      "instr": 370168936,
+      "tolerance": 0.2
+    },
     "suite-iisi/iisi-701-fd": {
       "instr": 210237070,
       "tolerance": 0.2
