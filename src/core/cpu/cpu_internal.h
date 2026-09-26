@@ -477,7 +477,7 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint8_t d_set = 0, a_set = 0;
     for (i = 0; i < 8; i++)
         if (register_mask & (1 << i)) {
-            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
             if (g_bus_error_pending)
                 return;
@@ -486,7 +486,7 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         }
     for (i = 0; i < 8; i++)
         if (register_mask & (0x100 << i)) {
-            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
             if (g_bus_error_pending)
                 return;
@@ -1255,7 +1255,7 @@ static inline void f_trap(cpu_t *restrict cpu) {
         return;
     }
     uint32_t fetch_page = cpu->instruction_pc >> PAGE_SHIFT;
-    if (__builtin_expect(g_active_read && (int)fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
+    if (__builtin_expect(g_active_read && fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
         // Instruction page has no SoA entry — fetch returned $FF from unmapped
         // physical memory.  Treat as bus error (matching real hardware behavior).
         cpu->pc = cpu->instruction_pc;

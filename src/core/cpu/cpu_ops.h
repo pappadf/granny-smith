@@ -216,7 +216,6 @@
 
 #define SUB_DN_EA(bits)                                                                                                \
     LOAD_EA(bits, dst, (ea_memory & ea_alterable));                                                                    \
-    UINT(bits) src = DN;                                                                                               \
     SUB(bits, dst, (UINT(bits))DN, res);                                                                               \
     STORE_EA(bits, res);
 

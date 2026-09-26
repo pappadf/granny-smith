@@ -671,6 +671,7 @@ static int num_events_in_queue(struct scheduler *restrict s) {
 
 // Event callback used by the run command to stop execution after a fixed instruction budget
 static void run_stop_event(void *source, uint64_t data) {
+    (void)data;
     scheduler_t *s = (scheduler_t *)source;
     GS_ASSERT(s != NULL);
     scheduler_stop(s);
@@ -955,18 +956,18 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
         memset(events_to_save[i].pad, 0, sizeof(events_to_save[i].pad));
 
         // Look up names by source+callback pair
-        bool found = false;
-        for (int j = 0; j < scheduler->num_event_types; j++) {
+        int j;
+        for (j = 0; j < scheduler->num_event_types; j++) {
             if (scheduler->event_types[j].callback == e->callback && scheduler->event_types[j].source == e->source) {
                 memcpy(events_to_save[i].source_name, scheduler->event_types[j].source_name,
                        sizeof(events_to_save[i].source_name));
                 memcpy(events_to_save[i].event_name, scheduler->event_types[j].event_name,
                        sizeof(events_to_save[i].event_name));
-                found = true;
                 break;
             }
         }
-        GS_ASSERTF(found, "event at timestamp %llu has no registered type", (unsigned long long)e->timestamp);
+        GS_ASSERTF(j < scheduler->num_event_types, "event at timestamp %llu has no registered type",
+                   (unsigned long long)e->timestamp);
 
         e = e->next;
     }
@@ -1111,6 +1112,10 @@ event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_
     // too: a bare "both cycles and ns are 0" identifies the scheduler, which
     // is never the buggy component, and leaves you grepping ~30 call sites
     // for the one whose delay computed to zero.
+    //
+    // Only the asserts read the result, so GS_FAST (which compiles them out)
+    // skips the lookup too.
+#ifndef GS_FAST
     const char *event_name = "<unregistered>";
     bool registered = false;
     for (int i = 0; i < scheduler->num_event_types; i++) {
@@ -1126,6 +1131,7 @@ event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_
     GS_ASSERTF(cycles != 0 || ns != 0, "scheduler_new_cpu_event(%s): both cycles and ns are 0", event_name);
     GS_ASSERTF(!(cycles != 0 && ns != 0), "scheduler_new_cpu_event(%s): both cycles and ns are set (%llu, %llu)",
                event_name, (unsigned long long)cycles, (unsigned long long)ns);
+#endif
 
     CHECK_INVARIANTS(scheduler);
     validate_cpu_events(scheduler);

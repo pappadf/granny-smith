@@ -306,7 +306,7 @@ extern uint64_t g_last_user_crp;
 // set the flag false explicitly for exactly this reason.
 static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write) {
     uint32_t page_index = emu_page >> PAGE_SHIFT;
-    if ((int)page_index < g_page_count) {
+    if (page_index < g_page_count) {
         uintptr_t *active = write ? g_active_write : g_active_read;
         if (active && active[page_index] == 0) {
             // For closer ranges (e.g. $006DB000 from corrupted page tables) the

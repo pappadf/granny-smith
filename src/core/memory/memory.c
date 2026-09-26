@@ -560,7 +560,7 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
             // logpointed.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
             uint32_t phys_page = phys >> PAGE_SHIFT;
-            if ((int)phys_page < g_page_count) {
+            if (phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev)
                     return dev_read_n(phys_pe, addr, phys - phys_pe->base_addr, size);
@@ -671,7 +671,7 @@ uint8_t memory_debug_read_uint8(uint32_t addr) {
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
         return 0xFF;
     uint32_t page = phys >> PAGE_SHIFT;
-    if ((int)page >= g_page_count)
+    if (page >= g_page_count)
         return 0xFF;
     page_entry_t *pe = &g_page_table[page];
     if (pe->host_base)
@@ -692,7 +692,7 @@ uint16_t memory_debug_read_uint16(uint32_t addr) {
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
             return 0xFFFF;
         uint32_t page = phys >> PAGE_SHIFT;
-        if ((int)page < g_page_count) {
+        if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base)
                 return LOAD_BE16(pe->host_base + (phys & PAGE_MASK));
@@ -713,7 +713,7 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
             return 0xFFFFFFFFu;
         uint32_t page = phys >> PAGE_SHIFT;
-        if ((int)page < g_page_count) {
+        if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base)
                 return LOAD_BE32(pe->host_base + (phys & PAGE_MASK));
@@ -773,7 +773,7 @@ void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len) {
                       mmu_translate_checked(g_mmu, a, g_active_read == g_supervisor_read, &phys);
             if (ok) {
                 uint32_t page = phys >> PAGE_SHIFT;
-                if ((int)page < g_page_count) {
+                if (page < g_page_count) {
                     page_entry_t *pe = &g_page_table[page];
                     if (pe->host_base && !pe->dev) {
                         memcpy(dst, pe->host_base + (phys & PAGE_MASK), chunk);
@@ -807,7 +807,7 @@ bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
         return false;
     uint32_t page = phys >> PAGE_SHIFT;
-    if ((int)page >= g_page_count)
+    if (page >= g_page_count)
         return false;
     page_entry_t *pe = &g_page_table[page];
     if (pe->host_base) {
@@ -832,7 +832,7 @@ bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
             return false;
         uint32_t page = phys >> PAGE_SHIFT;
-        if ((int)page < g_page_count) {
+        if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base) {
                 if (!pe->writable)
@@ -861,7 +861,7 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
             return false;
         uint32_t page = phys >> PAGE_SHIFT;
-        if ((int)page < g_page_count) {
+        if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             if (pe->host_base) {
                 if (!pe->writable)
@@ -978,7 +978,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             // by a logpoint.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
             uint32_t phys_page = phys >> PAGE_SHIFT;
-            if ((int)phys_page < g_page_count) {
+            if (phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev) {
                     dev_write_n(phys_pe, addr, phys - phys_pe->base_addr, value, size);
@@ -1307,6 +1307,7 @@ static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const mem
 // Remove a memory-mapped device from the memory map
 void memory_map_remove(memory_map_t *memory_map, uint32_t addr, uint32_t size, const char *name,
                        memory_interface_t *iface, void *device) {
+    (void)size; // the mapping is found by device and address; its own size is used
     (void)name;
     (void)iface;
     if (!memory_map || !memory_map->map)
@@ -1909,7 +1910,7 @@ static value_t method_mem_translate(struct object *self, const member_t *m, int 
     if (!g_mmu || !g_mmu->enabled) {
         uint32_t page = addr >> PAGE_SHIFT;
         const char *backing = "unmapped";
-        if ((int)page < g_page_count) {
+        if (page < g_page_count) {
             page_entry_t *pe = &g_page_table[page];
             backing = pe->host_base ? "ram/rom" : (pe->dev ? "device" : "unmapped");
         }
@@ -1921,7 +1922,7 @@ static value_t method_mem_translate(struct object *self, const member_t *m, int 
     bool ok_u = mmu_translate_checked(g_mmu, addr, false, &pa_u);
     const char *backing_s = "unmapped";
     uint32_t page_s = pa_s >> PAGE_SHIFT;
-    if (ok_s && (int)page_s < g_page_count) {
+    if (ok_s && page_s < g_page_count) {
         page_entry_t *pe = &g_page_table[page_s];
         backing_s = pe->host_base ? "ram/rom" : (pe->dev ? "device" : "unmapped");
     }

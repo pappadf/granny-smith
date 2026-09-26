@@ -286,6 +286,8 @@ resource_map *read_resource_map(void) {
  * name, memory layout (heap and stack), and other relevant details.
  */
 uint64_t cmd_process_info(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     printf("--- Current Application Info ---\n");
 
     // 1. Get the Application Name
@@ -784,6 +786,7 @@ static int trace_mouse_have_last = 0; // whether we have a previous sample
 static int16_t trace_mouse_last_h = 0;
 static int16_t trace_mouse_last_v = 0;
 static void trace_mouse_tick(void *source, uint64_t data) {
+    (void)source;
     (void)data;
     if (!trace_mouse_active)
         return; // Do not reschedule if stopped during callback

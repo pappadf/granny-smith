@@ -581,11 +581,6 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
     }
 }
 
-static const char *disasm_cache_scope(unsigned c) {
-    static const char *caches[4] = {"", "L", "P", "A"};
-    return caches[c & 3];
-}
-
 // FPU arithmetic opcode → mnemonic
 static const char *disasm_fpu_opname(unsigned op) {
     switch (op) {
@@ -1247,7 +1242,6 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
     if (0) {                                                                                                           \
     illegal:;                                                                                                          \
     }                                                                                                                  \
-    done:                                                                                                              \
     if (buf && (buf[0] == '\0' || strstr(buf, "<illegal>") != NULL)) {                                                 \
         sprintf(buf, "DC.W\t$%04X", (unsigned int)instr[0]);                                                           \
         return 1;                                                                                                      \

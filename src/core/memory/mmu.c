@@ -665,7 +665,7 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
             continue; // resolver-only: device windows may overlap the alias range
         uint32_t pages = r->size >> PAGE_SHIFT;
         uint32_t start = r->phys_base >> PAGE_SHIFT;
-        for (uint32_t p = 0; p < pages && (int)(start + p) < g_page_count; p++)
+        for (uint32_t p = 0; p < pages && start + p < g_page_count; p++)
             fill(start + p, r->host + (p << PAGE_SHIFT), r->writable);
         // Mode-24 (24-bit Memory Manager) slot window: slot s ($9..$E) has a
         // 1 MB region at $00s00000 mirroring the start of its 32-bit slot
@@ -679,7 +679,7 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
                     alias_bytes = r->size;
                 uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
                 uint32_t start24 = ((uint32_t)slot << 20) >> PAGE_SHIFT; // $00s00000
-                for (uint32_t p = 0; p < alias_pages && (int)(start24 + p) < g_page_count; p++)
+                for (uint32_t p = 0; p < alias_pages && start24 + p < g_page_count; p++)
                     fill(start24 + p, r->host + (p << PAGE_SHIFT), true);
             }
         }
@@ -725,7 +725,7 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
 
     bool host_writable = writable && phys_is_writable(mmu, physical_page);
     uint32_t page_index = logical_page >> PAGE_SHIFT;
-    if ((int)page_index >= g_page_count)
+    if (page_index >= g_page_count)
         return;
 
     // Memory logpoints force the slow path — see mmu_fill_soa_entry.
@@ -966,7 +966,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
         // pseudo-slots like slot $F.  Writes are always silently dropped.
         if (!write) {
             uint32_t page_index = emu_page >> PAGE_SHIFT;
-            if ((int)page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
+            if (page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
                 memory_addr_faults_when_unmapped(logical_addr)) {
                 // TT + unmapped physical = plain bus timeout; ROM handlers
                 // expect skip semantics (Format $A).

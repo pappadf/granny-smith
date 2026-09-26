@@ -19,11 +19,7 @@
 
 #include "ppc_softfp.h"
 
-#include "log.h"
-
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("ppc");
 
 // === single <-> double conversion ==========================================
 

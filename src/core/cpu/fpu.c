@@ -92,24 +92,6 @@ static inline void uint64_mul128(uint64_t a, uint64_t b, uint64_t *hi, uint64_t 
 #endif
 }
 
-// 128-bit right shift by n bits (0 <= n < 128)
-static inline void uint128_shr(uint64_t *hi, uint64_t *lo, int n) {
-    if (n == 0)
-        return;
-    if (n >= 128) {
-        *hi = 0;
-        *lo = 0;
-        return;
-    }
-    if (n >= 64) {
-        *lo = *hi >> (n - 64);
-        *hi = 0;
-    } else {
-        *lo = (*lo >> n) | (*hi << (64 - n));
-        *hi >>= n;
-    }
-}
-
 // 128-bit right shift with sticky bit: shifted-out nonzero bits OR into lsb
 static inline void uint128_shr_sticky(uint64_t *hi, uint64_t *lo, int n) {
     if (n == 0)
@@ -137,24 +119,6 @@ static inline void uint128_shr_sticky(uint64_t *hi, uint64_t *lo, int n) {
     }
     if (sticky)
         *lo |= 1;
-}
-
-// 128-bit left shift by n bits (0 <= n < 128)
-static inline void uint128_shl(uint64_t *hi, uint64_t *lo, int n) {
-    if (n == 0)
-        return;
-    if (n >= 128) {
-        *hi = 0;
-        *lo = 0;
-        return;
-    }
-    if (n >= 64) {
-        *hi = *lo << (n - 64);
-        *lo = 0;
-    } else {
-        *hi = (*hi << n) | (*lo >> (64 - n));
-        *lo <<= n;
-    }
 }
 
 // Count leading zeros in 64-bit value
@@ -1314,8 +1278,6 @@ static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1,
     val.exponent = 63 - lz; // true binary exponent for integer value
 
     // Scale by 10^adj_exp
-    // Save FPSR: intermediate ops must not leak INEX2 into caller
-    uint32_t saved_fpsr = fpu->fpsr;
     if (adj_exp != 0) {
         // Use extended precision, round-to-nearest for intermediate computation
         uint32_t saved_fpcr = fpu->fpcr;
