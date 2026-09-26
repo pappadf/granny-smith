@@ -289,8 +289,8 @@ async function probeAndPersist(
   // (the HD probe accepts anything that just opens and isn't floppy-
   // sized, so it will happily classify a 32 KB VROM as a tiny "hard
   // disk" if VROM hasn't already claimed the file).
-  //   rom    — exact size match against the ROM catalog
-  //   vrom   — exact 32 KB match
+  //   rom    — machine.rom.identify: checksum against the ROM catalog
+  //   vrom   — machine.vrom.identify: Format-Block CRC against the catalog
   //   prom   — $55AA + a reachable PCIR + Open Firmware code type
   //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
   //   cdrom  — ISO 9660 / HFS / APM signature inside the file

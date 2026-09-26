@@ -274,8 +274,8 @@
   // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
   // asymmetry): a card declares requires_vrom, not the machine.
   let needsVrom = $derived(selectedCard?.requires_vrom === true);
-  // The vROM file handed to the core for the selected card (an explicit
-  // machine.vrom.load — the preferred offer); it also gates "is this card
+  // The vROM file handed to the core for the selected card (machine.boot's
+  // vrom= argument, the explicit pick that wins the offer order); it also gates "is this card
   // installable". Without it the card factory falls back to whatever the
   // platform offered from the OPFS store (content-matched).
   let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);

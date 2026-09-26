@@ -1213,26 +1213,12 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
     return val_bool(true);
 }
 
-// machine.restart — power-cycle the running machine: rebuild the machine
-// described by the built-from record, taking no configuration arguments, and
-// keep the mounted media attached by transferring the open image handles across
-// the teardown.  Errors when no machine is running.  Host-side runtime state
-// that is not construction configuration (volume, host capture sources) is out
-// of scope — the frontend re-asserts it.  Scheduler pacing is the exception
-// every rebuild keeps: it is the harness's setting, not the machine's.
-// Level 2 -- a warm reset: the board's /RESET net plus the CPU back to its
-// reset vector, with the machine left standing.  Nothing is torn down and
-// nothing is rebuilt, so RAM, the PRAM/NVRAM, mounted media and the object
-// tree all survive; this is the reset button, not machine.restart.
-//
-// Why this had to exist: the machine object exposed only `boot` and
-// `restart`, both of which construct a new machine, so there was NO VERB for
-// level 2 at all.  A test that wanted "reboot this
-// machine, keeping its NVRAM" had to drive the guest's own restart through
-// the UI or use machine.restart, which tears the machine down -- and that is
-// exactly why the TNT NVRAM carry was invented.  The reset button is real
-// hardware on every machine modelled here and was not reachable from
-// anywhere.
+// machine.reset — level 2, a warm reset: the board's /RESET net plus the CPU
+// back to its reset vector, with the machine left standing.  Nothing is torn
+// down and nothing is rebuilt, so RAM, the PRAM/NVRAM, mounted media and the
+// object tree all survive; this is the reset button.  machine.boot and
+// machine.restart both construct a new machine, so this is the only verb that
+// reboots a machine and keeps its NVRAM.
 static value_t machine_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -1244,6 +1230,13 @@ static value_t machine_method_reset(struct object *self, const member_t *m, int 
     return val_bool(true);
 }
 
+// machine.restart — power-cycle the running machine: rebuild the machine
+// described by the built-from record, taking no configuration arguments, and
+// keep the mounted media attached by transferring the open image handles across
+// the teardown.  Errors when no machine is running.  Host-side runtime state
+// that is not construction configuration (volume, host capture sources) is out
+// of scope — the frontend re-asserts it.  Scheduler pacing is the exception
+// every rebuild keeps: it is the harness's setting, not the machine's.
 static value_t machine_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;

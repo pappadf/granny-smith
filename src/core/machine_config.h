@@ -36,7 +36,7 @@ typedef struct {
     char card_id[MC_ID_MAX];
     char path[MC_PATH_MAX];
     uint32_t crc; // Format-Block CRC (content identity)
-    bool explicit_pick; // true when the vrom= / vrom.load explicit pick won
+    bool explicit_pick; // true when machine.boot's vrom= explicit pick won
 } machine_config_vrom_t;
 
 #define MC_MAX_VROMS 8
@@ -101,7 +101,7 @@ typedef struct machine_config_record {
 // required).
 typedef struct boot_config {
     const char *model;
-    uint32_t ram_kb; // 0 = inherit / profile default
+    uint32_t ram_kb; // 0 = the profile's ram_default
     const char *rom;
     const char *rom2;
     const char *vrom;

@@ -778,8 +778,8 @@ static memory_interface_t s_gc824_mem_iface = {
 // === VROM load ==============================================================
 // Content-driven (Format-Block CRC): loads whichever of the three known GC
 // declaration ROMs (v1.1 64 KB / v1.0 / alpha 32 KB) is actually present —
-// the explicit machine.vrom.load path first (any filename), then the catalog
-// names in the standard locations.  A 32 KB revision lands in the top half of
+// the explicit machine.boot vrom= first (any filename), then the other
+// offered candidates in catalog order (see vrom.h).  A 32 KB revision lands in the top half of
 // the 256 KB bus window (the Format Block always ends at the slot top).
 static bool load_vrom(display_card_824gc_priv_t *p) {
     char *path = NULL;
@@ -1002,7 +1002,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             LOG(0, "8*24 GC: 8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
     } else if (!load_vrom(p))
-        LOG(0, "8*24 GC: no 8•24 GC declaration ROM offered (machine.vrom.load a GC vROM, "
+        LOG(0, "8*24 GC: no 8•24 GC declaration ROM offered (pass a GC vROM as machine.boot vrom=, "
                "or make one available where the platform offers vROM files); "
                "declaration ROM is zero-filled");
 

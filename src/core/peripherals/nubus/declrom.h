@@ -172,8 +172,8 @@ bool declrom_layout_chip(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf
 // its byteLanes byte (see declrom_layout_chip; the Format Block always ends
 // at the slot top, so a smaller ROM revision occupies the top of a window
 // sized for the largest one).  Candidates come exclusively from the offer
-// registry the platform populated before boot (vrom_offer / vrom.load — see
-// vrom.h): they are tried in pick order (explicit vrom.load first, then the
+// registry the platform populated before boot (vrom.offer / machine.boot vrom= — see
+// vrom.h): they are tried in pick order (explicit vrom= first, then the
 // catalog's preferred revision, then catalog order).  Core never fabricates
 // a search path.
 // On success returns true and stores a freshly-strdup'd copy of the path it

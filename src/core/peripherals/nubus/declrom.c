@@ -960,7 +960,7 @@ bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_si
         return false;
 
     // Walk the offer registry's candidates for this card in pick order
-    // (explicit vrom.load first, then catalog-preferred, then catalog order —
+    // (explicit vrom= first, then catalog-preferred, then catalog order —
     // see vrom_offer_find).  Every candidate was already content-identified
     // at offer time; the first one that lays out cleanly wins.  Core never
     // builds a path here — the platform offered every one of these.

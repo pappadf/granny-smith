@@ -262,7 +262,7 @@ bool vrom_card_resolvable(const char *card_id) {
 }
 
 // ============================================================================
-// Explicit pick (vrom.load)
+// Explicit pick (machine.boot vrom=)
 // ============================================================================
 
 int vrom_set_path(const char *path) {

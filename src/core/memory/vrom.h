@@ -66,7 +66,7 @@ void vrom_offer_dir(const char *dir, const char *ext);
 void vrom_offer_clear(void);
 
 // Enumerate the offered candidates that provide the card `card_id`, in pick
-// order: the explicit vrom.load offer first, then catalog `preferred` rows,
+// order: the explicit vrom= offer first, then catalog `preferred` rows,
 // then remaining catalog order.  Returns the idx'th candidate's path
 // (borrowed; valid until the registry changes) and its chip size via
 // *out_chip_size (optional), or NULL when exhausted.

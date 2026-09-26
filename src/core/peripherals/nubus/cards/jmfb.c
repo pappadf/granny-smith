@@ -330,9 +330,9 @@ static memory_interface_t s_jmfb_mem_iface = {
 // === Card vtable ============================================================
 
 // Load the 8•24 declaration ROM (32 KB chip image) through the shared
-// content-driven declrom loader (vrom.c Format-Block-CRC catalog): the
-// explicit machine.vrom.load path first (any filename), then the catalog
-// name in the standard vrom paths + the ROM directory; validates the
+// content-driven declrom loader: the offered candidates in pick order (the
+// explicit machine.boot vrom= first, any filename, then the Format-Block-CRC
+// catalog order; see vrom.h); validates the
 // byteLanes byte and lays the chip out into p->vrom (sized
 // JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on success.
 static bool load_vrom(jmfb_priv_t *p) {

@@ -124,8 +124,8 @@ boots.
 
 ## Where the files come from
 
-* **headless** — `offer_sibling_proms()` enumerates the directory of the
-  ROM file it was given and offers every `*.prom`. A test script's
+* **headless** — `offer_sibling_card_roms()` enumerates the directory of
+  the ROM file it was given and offers every `*.vrom` and `*.prom`. A test script's
   `rom="${$ROM}"` therefore makes the card ROMs discoverable with no path
   knowledge anywhere in core.
 * **web2** — `/opfs/images/prom/` is created at startup beside the other

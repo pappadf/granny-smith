@@ -1293,14 +1293,14 @@ int main(int argc, char *argv[]) {
 
     // Probe the ROM to find compatible machines, then explicitly boot one.
     // ROM identity does not pick the machine — multiple Mac models share the
-    // same ROM (Universal IIx/IIcx/SE/30), so the user picks via --model.
+    // same ROM (Universal IIx/IIcx/SE/30), so the user picks via model=.
     rom_file_info_t rom_fi = {0};
     if (rom_probe_file(rom_file, &rom_fi) != 0 || !rom_fi.info) {
         fprintf(stderr, "Error: ROM file %s could not be identified\n", rom_file);
         return 1;
     }
 
-    // Resolve target machine: --model overrides; else use the first entry in
+    // Resolve target machine: model= overrides; else use the first entry in
     // the ROM's compatible list (the family default, e.g. SE/30 for Universal).
     const char *target_model = model_override;
     if (!target_model) {
@@ -1315,7 +1315,7 @@ int main(int argc, char *argv[]) {
             }
         }
         if (!ok) {
-            fprintf(stderr, "Error: --model %s is not compatible with this ROM (%s).\n", target_model,
+            fprintf(stderr, "Error: model=%s is not compatible with this ROM (%s).\n", target_model,
                     rom_fi.info->family_name);
             fprintf(stderr, "Compatible models:");
             for (const char *const *p = rom_fi.info->compatible; *p; p++)
