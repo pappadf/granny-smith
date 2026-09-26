@@ -34,10 +34,23 @@ try {
 const target = document.getElementById('app');
 if (!target) throw new Error('#app mount point missing from index.html');
 
-const app = bootApp(target);
-export default app;
+void bootApp(target);
 
-function bootApp(target: HTMLElement): unknown {
+// The browser's origin-private file system holds every ROM, disk image and
+// checkpoint, and the core mounts it as /opfs: without it nothing can boot.
+// It is missing in some private-browsing modes and when site storage is
+// blocked, where BrowserOpfs used to turn every failure into an empty list.
+async function probeOpfs(): Promise<string | null> {
+  try {
+    if (!navigator.storage?.getDirectory) return 'navigator.storage.getDirectory is not available';
+    await navigator.storage.getDirectory();
+    return null;
+  } catch (e) {
+    return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  }
+}
+
+async function bootApp(target: HTMLElement): Promise<unknown> {
   // Probe WebGL 2 before mounting. The emulator worker can't recover from
   // a missing GPU context — show a full-page block so the user isn't
   // stuck in a half-broken UI (Display dead, terminal alive).
@@ -47,8 +60,18 @@ function bootApp(target: HTMLElement): unknown {
     return null;
   }
 
-  // Swap MockOpfs for the real browser OPFS implementation. Tests stay on
-  // MockOpfs via tests/setup.ts.
+  const opfsFailure = await probeOpfs();
+  if (opfsFailure) {
+    renderStartupErrorPage(
+      target,
+      opfsFailure,
+      'Browser storage is unavailable',
+      'The emulator keeps ROMs, disk images and saved states in this site’s browser storage (OPFS). Allow site data for this page, or leave private browsing, then reload.',
+    );
+    return null;
+  }
+
+  // The real browser OPFS (tests install MockOpfs via tests/setup.ts).
   setOpfsBackend(new BrowserOpfs());
 
   const mounted = mount(App, { target });

@@ -1,7 +1,8 @@
 import { render, waitFor, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import ImagesView from '@/components/panel-views/images/ImagesView.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import { images } from '@/state/images.svelte';
 
 beforeEach(() => {

@@ -8,7 +8,8 @@ import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 
 const pick = vi.hoisted(() => ({ result: null as string | null, calls: 0 }));
 let opfs: MockOpfs;

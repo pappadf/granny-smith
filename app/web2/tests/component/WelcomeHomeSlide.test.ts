@@ -4,7 +4,8 @@ import WelcomeHomeSlide from '@/components/display/WelcomeHomeSlide.svelte';
 import { _resetForTests, toasts } from '@/state/toasts.svelte';
 import { layout, setWelcomeSlide } from '@/state/layout.svelte';
 import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 
 beforeEach(() => {
   _resetForTests();

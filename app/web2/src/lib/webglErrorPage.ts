@@ -53,6 +53,7 @@ export function renderStartupErrorPage(
   target: HTMLElement,
   reason: string,
   headline = 'The emulator could not start',
+  advice = 'Reloading usually fixes this, particularly right after an update (the page and the emulator it loads must come from the same build).',
 ): void {
   target.innerHTML = '';
   const root = document.createElement('div');
@@ -61,8 +62,7 @@ export function renderStartupErrorPage(
   root.innerHTML = `
     <div class="gs-webgl-error__card">
       <h1>${escapeHtml(headline)}</h1>
-      <p>Reloading usually fixes this, particularly right after an update (the page and the
-      emulator it loads must come from the same build).</p>
+      <p>${escapeHtml(advice)}</p>
       <p class="gs-webgl-error__detail">Details: <code>${escapeHtml(reason)}</code></p>
       <button type="button" class="gs-webgl-error__retry">Reload</button>
     </div>

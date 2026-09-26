@@ -16,7 +16,8 @@ import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
 import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import { initEmulator } from '@/bus/boot';
 
 const PDM_ROM = '/opfs/images/rom/pm6100-pm7100-pm8100-9feb69b3.rom';

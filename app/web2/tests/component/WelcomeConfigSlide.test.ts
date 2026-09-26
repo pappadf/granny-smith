@@ -4,7 +4,8 @@ import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
 import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
 import { layout, setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 
 // The Configuration slide drives the model dropdown by calling
 // `machine.rom.identify` on every ROM in OPFS, then `machine.profile` to get the

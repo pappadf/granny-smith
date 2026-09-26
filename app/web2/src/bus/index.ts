@@ -47,7 +47,6 @@ export {
 export {
   opfs,
   setOpfsBackend,
-  MockOpfs,
   BrowserOpfs,
   writeToOPFS,
   removeFromOPFS,

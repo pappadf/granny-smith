@@ -2,7 +2,8 @@ import { render } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import DisplayContent from '@/components/display/DisplayContent.svelte';
 import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 
 beforeEach(() => {
   machine.status = 'no-machine';

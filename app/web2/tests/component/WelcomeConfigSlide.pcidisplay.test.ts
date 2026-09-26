@@ -15,7 +15,8 @@ import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
 import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import { initEmulator } from '@/bus/boot';
 
 const TNT_ROM = '/opfs/images/rom/pm7500-pm8500-pm9500-96cd923d.rom';

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { MockOpfs, BrowserOpfs, setOpfsBackend, opfs } from '@/bus/opfs';
+import { BrowserOpfs, setOpfsBackend, opfs } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import type { OpfsEntry } from '@/bus/types';
 
 beforeEach(() => setOpfsBackend(new MockOpfs()));
