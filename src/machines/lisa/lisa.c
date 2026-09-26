@@ -75,6 +75,11 @@ typedef struct lisa_state {
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
     struct object *hd_obj; // `profile` object (parallel hard disk)
     struct object *power_obj; // `power` object (soft power-off switch)
+    // Which keys the host holds down, by ADB raw code.  A repeated down (a
+    // host's auto-repeat) or an up with no down is not a key transition, and
+    // the COPS must not report one -- the ADB and Plus keyboards suppress the
+    // same (N-36).  Host-side state, so not checkpointed.
+    bool key_held[128];
 } lisa_state_t;
 
 // Video geometry, 1 bpp MSB-first (docs/machines/lisa/lisa.md §8).  The unmodified Lisa 2 has
@@ -378,6 +383,9 @@ static int lisa_input_key(config_t *cfg, int adb_code, bool down) {
     uint8_t code = lisa_keycode_for_adb(adb_code);
     if (code == LISA_NO_KEY)
         return -1; // a key this keyboard does not have
+    if (ls->key_held[adb_code] == down)
+        return 0; // no transition: a repeat, or an up without its down
+    ls->key_held[adb_code] = down;
     cops_inject_key(ls->cops, (uint8_t)(down ? (code | 0x80) : (code & 0x7F)));
     return 0;
 }
