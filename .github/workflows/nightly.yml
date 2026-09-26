@@ -29,6 +29,17 @@ on:
         required: false
         default: 'extended'
 
+# Least privilege: the default GITHUB_TOKEN may write to the repository,
+# and nothing here needs to. packages: read pulls the dev container.
+permissions:
+  contents: read
+  packages: read
+
+# A dispatch while the scheduled run is going waits rather than cancelling it.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
 # Every `run:` uses bash, not the container's default sh. Steps here pipe into
 # tee and then `exit "${PIPESTATUS[0]}"` to surface the real command's status
 # rather than tee's — PIPESTATUS is a bashism, and under dash it expands to
@@ -49,9 +60,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      # No submodules: the nightly runs integration tiers only.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          persist-credentials: false
 
       - name: Verify 7z presence
         shell: bash

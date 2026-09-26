@@ -17,6 +17,18 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
+# Least privilege: the default GITHUB_TOKEN may write to the repository,
+# and nothing here needs to. packages: read pulls the dev container.
+permissions:
+  contents: read
+  packages: read
+
+# One run per branch: a push to a PR supersedes the run still going on its
+# previous commit. Every commit on main keeps its own run and verdict.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Every `run:` uses bash, not the container's default sh. Steps here pipe into
 # tee and then `exit "${PIPESTATUS[0]}"` to surface the real command's status
 # rather than tee's — PIPESTATUS is a bashism, and under dash it expands to
@@ -43,9 +55,12 @@ jobs:
     # Secrets are not available to fork PRs, so external PRs see an empty value.
 
     steps:
+      # Submodules: the unit suites build against single-step-tests and
+      # powerpc-test.
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          persist-credentials: false
 
       # 7z extracts the large binary archives (CD-ROM images and the like).
       # The devcontainer Dockerfile installs `7zip`, so this VERIFIES rather
@@ -106,14 +121,9 @@ jobs:
         run: |
           node -v
           npm -v
-          emcc -v | head -n 5
           g++ --version | head -n 1
           cmake --version | head -n 1
           ninja --version
-
-      - name: Install dependencies (root)
-        run: |
-          if [ -f package-lock.json ]; then npm ci; fi
 
       - name: Build (clean)
         shell: bash
@@ -272,12 +282,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      # `submodules: recursive` pulls the remaining submodules (e.g.
-      # single-step-tests). Peeler is now in-tree under src/peeler, so the
-      # WASM build no longer depends on a submodule checkout.
+      # No submodules: nothing in this job builds the unit suites.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          persist-credentials: false
 
       # 7z extracts the large binary archives (e.g. the A/UX HD) the functional
       # web2 e2e specs boot from (see the matching step in the test job).
