@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "meta.h"
+#include "job/job.h"
 
 // === Object representation ==================================================
 //
@@ -1616,7 +1617,7 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
 }
 #endif
 
-value_t node_get(node_t n) {
+static value_t node_get_here(node_t n) {
     if (!node_valid(n))
         return val_err("invalid node");
     if (!n.member)
@@ -1699,7 +1700,7 @@ value_t node_get(node_t n) {
     return val_err("unknown member kind");
 }
 
-value_t node_set(node_t n, value_t v) {
+static value_t node_set_here(node_t n, value_t v) {
     if (!node_valid(n)) {
         value_free(&v);
         return val_err("invalid node");
@@ -1728,7 +1729,7 @@ value_t node_set(node_t n, value_t v) {
     return out;
 }
 
-value_t node_call(node_t n, int argc, const value_t *argv) {
+static value_t node_call_here(node_t n, int argc, const value_t *argv) {
     if (!node_valid(n))
         return val_err("invalid node");
     if (!n.member || n.member->kind != M_METHOD)
@@ -1758,6 +1759,62 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
     }
 #endif
     return out;
+}
+
+// === The seam ================================================================
+//
+// node_get / node_set / node_call are the only way to reach guest state,
+// and guest state belongs to the emulator thread.  A caller on any other
+// thread -- the interpreter on the job thread -- is handed over through
+// job_on_emulator (job/job.h) and waits; on the emulator thread the
+// call is direct.  Path resolution (object_resolve) walks the tree's
+// structure only and stays where the caller is.
+
+typedef struct {
+    node_t n;
+    int argc;
+    const value_t *argv;
+    value_t in;
+    value_t out;
+} node_marshal_t;
+
+static void marshal_get(void *p) {
+    node_marshal_t *m = (node_marshal_t *)p;
+    m->out = node_get_here(m->n);
+}
+
+static void marshal_set(void *p) {
+    node_marshal_t *m = (node_marshal_t *)p;
+    m->out = node_set_here(m->n, m->in);
+}
+
+static void marshal_call(void *p) {
+    node_marshal_t *m = (node_marshal_t *)p;
+    m->out = node_call_here(m->n, m->argc, m->argv);
+}
+
+value_t node_get(node_t n) {
+    if (job_on_emulator_thread())
+        return node_get_here(n);
+    node_marshal_t m = {.n = n};
+    job_on_emulator(marshal_get, &m);
+    return m.out;
+}
+
+value_t node_set(node_t n, value_t v) {
+    if (job_on_emulator_thread())
+        return node_set_here(n, v);
+    node_marshal_t m = {.n = n, .in = v};
+    job_on_emulator(marshal_set, &m);
+    return m.out;
+}
+
+value_t node_call(node_t n, int argc, const value_t *argv) {
+    if (job_on_emulator_thread())
+        return node_call_here(n, argc, argv);
+    node_marshal_t m = {.n = n, .argc = argc, .argv = argv};
+    job_on_emulator(marshal_call, &m);
+    return m.out;
 }
 
 // Append the method's declared fixed-argument names to buf as a

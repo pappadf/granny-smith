@@ -9,7 +9,8 @@ TEST_NAME    := atalk_link
 TEST_SRCS    := test.c link_harness.c stub_upper.c
 TEST_HARNESS := none
 STUBS        := assert
-EXTRA_SRCS   := ../../../../src/core/network/appletalk.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/network/appletalk.c \
                 ../../../../src/core/network/appletalk_asp.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \

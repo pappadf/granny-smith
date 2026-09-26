@@ -25,6 +25,8 @@
 #include "scheduler.h"
 #include "script.h"
 #include "shell.h"
+#include "event/gs_event.h"
+#include "job/job.h"
 
 #include "shell_internal.h"
 #include "shell_var.h"
@@ -269,10 +271,19 @@ static value_t shell_method_interrupt(struct object *self, const member_t *m, in
     (void)m;
     (void)argc;
     (void)argv;
-    scheduler_t *s = system_scheduler();
-    if (s)
-        scheduler_stop(s);
-    script_interrupt();
+    // "Cancel my job, or stop my mode": the client being served owns what
+    // it interrupts and nothing else.  Outside a request (client 0: the
+    // headless REPL's own line) it is the old unconditional stop.
+    uint32_t client = gs_current_client();
+    if (client == 0) {
+        scheduler_t *s = system_scheduler();
+        if (s)
+            scheduler_stop(s);
+        script_interrupt();
+        return val_none();
+    }
+    job_cancel_client(client);
+    job_glue_stop_modes(client);
     return val_none();
 }
 

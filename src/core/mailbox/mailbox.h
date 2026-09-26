@@ -108,9 +108,9 @@
 
 // Record kinds.  0 is the PAD (mailbox_ring.h).
 #define GS_MBX_REQ_EVAL      1u
-#define GS_MBX_REQ_SCRIPT    2u // reserved: Phase 2
-#define GS_MBX_REQ_CANCEL    3u // reserved: Phase 2
-#define GS_MBX_REQ_MODE_STOP 4u // reserved: Phase 2
+#define GS_MBX_REQ_SCRIPT    2u // run a script as a job; the result comes when it ends
+#define GS_MBX_REQ_CANCEL    3u // cancel a job of this client
+#define GS_MBX_REQ_MODE_STOP 4u // stop a mode by owner (0: any)
 #define GS_MBX_REQ_ACK_BUF   5u // reserved: Phase 4
 #define GS_MBX_EVT_RESULT    16u
 #define GS_MBX_EVT_PROGRESS  17u // reserved: Phase 4
@@ -125,6 +125,19 @@
 #define GS_MBX_EVAL_PATH_LEN 3
 #define GS_MBX_EVAL_ARGS_LEN 4
 #define GS_MBX_EVAL_WORDS    5
+// REQ_SCRIPT payload words: {id, client, deadline_ms, src_len} + src.
+#define GS_MBX_SCRIPT_ID       0
+#define GS_MBX_SCRIPT_CLIENT   1
+#define GS_MBX_SCRIPT_DEADLINE 2
+#define GS_MBX_SCRIPT_SRC_LEN  3
+#define GS_MBX_SCRIPT_WORDS    4
+#define GS_MBX_SCRIPT_MAX      (256u << 10)
+// REQ_CANCEL payload words: {id, client, target_id}.
+// REQ_MODE_STOP payload words: {id, client, owner}.
+#define GS_MBX_CTL_ID     0
+#define GS_MBX_CTL_CLIENT 1
+#define GS_MBX_CTL_ARG    2
+#define GS_MBX_CTL_WORDS  3
 // EVT_RESULT payload words.
 #define GS_MBX_RESULT_ID       0
 #define GS_MBX_RESULT_OK       1
@@ -189,7 +202,8 @@ void gs_mailbox_heartbeat(gs_mailbox_t *m);
 // platform wakes the client on EVT_HEAD when that is non-zero.
 int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void));
 
-// True when a request is waiting (a cheap peek for the idle wait).
+// True when a request, a job's call or a job's result is waiting (a cheap
+// peek for the idle wait).
 bool gs_mailbox_has_requests(const gs_mailbox_t *m);
 
 // Writes one core event (`kind` is GS_MBX_EVT_STATE / NOTIFY / LOG, the
@@ -202,6 +216,11 @@ bool gs_mailbox_emit(gs_mailbox_t *m, uint32_t kind, const char *json);
 
 // The client whose request is being served, 0 outside a drain.
 uint32_t gs_mailbox_current_client(const gs_mailbox_t *m);
+
+// Writes one EVT_RESULT (not published: the drain publishes).  False when
+// the event ring has no room.  For the job layer, whose results arrive
+// when a job ends rather than when a request is served.
+bool gs_mailbox_write_result(gs_mailbox_t *m, uint32_t id, bool ok, const char *json, uint32_t len);
 
 // Platform hook: wake whoever waits on a control word (the client parks in
 // Atomics.waitAsync on EVT_HEAD and READY).  Weak no-op by default.

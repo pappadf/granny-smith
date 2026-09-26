@@ -56,12 +56,17 @@ export const STATUS_LOST = 2;
 
 // Record kinds.
 export const REQ_EVAL = 1;
+export const REQ_SCRIPT = 2;
+export const REQ_CANCEL = 3;
+export const REQ_MODE_STOP = 4;
 export const EVT_RESULT = 16;
 export const EVT_STATE = 18;
 export const EVT_NOTIFY = 19;
 export const EVT_LOG = 20;
 
 // REQ_EVAL payload words: {id, client, deadline_ms, path_len, args_len} + path + args.
+// REQ_SCRIPT payload words: {id, client, deadline_ms, src_len} + src.
+// REQ_CANCEL payload words: {id, client, target_id}; REQ_MODE_STOP: {id, client, owner}.
 // EVT_RESULT payload words: {id, ok, json_len} + json.
 // EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json.
 const EVAL_WORDS = 5;
@@ -75,6 +80,7 @@ const EVENT_WORDS = 1;
 // The core's limits (mailbox.h): a longer request is the caller's error.
 export const PATH_MAX = 1023;
 export const ARGS_MAX = 128 << 10;
+export const SCRIPT_MAX = 256 << 10;
 
 export interface MailboxResult {
   ok: boolean;
@@ -209,24 +215,74 @@ export class Mailbox {
   // Posts one gs_eval request and resolves with its answer.  `deadlineMs`
   // 0 means none; otherwise the promise rejects with 'deadline' after that
   // much wall time and the late answer, if it ever comes, is dropped.
-  // Rejects with 'lost' / 'detached' when the mailbox is gone.
-  async request(path: string, argsJson: string, deadlineMs: number): Promise<MailboxResult> {
-    if (this.failed) throw this.failed;
+  // Rejects with 'lost' / 'detached' when the mailbox is gone.  `client`
+  // names who asks (default: this mailbox's client); a mode a request
+  // starts belongs to it.
+  async request(
+    path: string,
+    argsJson: string,
+    deadlineMs: number,
+    client = this.client,
+  ): Promise<MailboxResult> {
     const pathBytes = utf8.encode(path);
     const argsBytes = utf8.encode(argsJson);
     if (pathBytes.length > PATH_MAX)
       throw new RangeError(`request path too large (${pathBytes.length} bytes > ${PATH_MAX})`);
     if (argsBytes.length > ARGS_MAX)
       throw new RangeError(`request arguments too large (${argsBytes.length} bytes > ${ARGS_MAX})`);
+    return this.post(
+      REQ_EVAL,
+      client,
+      deadlineMs,
+      [pathBytes.length, argsBytes.length],
+      [pathBytes, argsBytes],
+    );
+  }
+
+  // Posts a script as a job: the answer comes when the job ends (the
+  // shell's prompt, or an error), however long that takes -- no deadline.
+  // `onId` receives the request id first, so the caller can cancel it.
+  async script(src: string, client: number, onId?: (id: number) => void): Promise<MailboxResult> {
+    const bytes = utf8.encode(src);
+    if (bytes.length > SCRIPT_MAX)
+      throw new RangeError(`script too large (${bytes.length} bytes > ${SCRIPT_MAX})`);
+    return this.post(REQ_SCRIPT, client, 0, [bytes.length], [bytes], onId);
+  }
+
+  // Cancels a job of `client` by its request id.  Resolves true if one was.
+  async cancel(client: number, targetId: number): Promise<boolean> {
+    const r = await this.post(REQ_CANCEL, client, 10_000, [targetId], []);
+    return r.ok && r.json === 'true';
+  }
+
+  // Stops a running mode owned by `owner` (0: any).  Resolves true if one was.
+  async modeStop(client: number, owner: number): Promise<boolean> {
+    const r = await this.post(REQ_MODE_STOP, client, 10_000, [owner], []);
+    return r.ok && r.json === 'true';
+  }
+
+  private async post(
+    kind: number,
+    client: number,
+    deadlineMs: number,
+    tailWords: number[],
+    texts: Uint8Array[],
+    onId?: (id: number) => void,
+  ): Promise<MailboxResult> {
+    if (this.failed) throw this.failed;
     const id = this.nextId++;
     if (this.nextId > 0x7fffffff) this.nextId = 1;
-    const words = [id, this.client, deadlineMs >>> 0, pathBytes.length, argsBytes.length];
+    const words =
+      kind === REQ_EVAL || kind === REQ_SCRIPT
+        ? [id, client, deadlineMs >>> 0, ...tailWords]
+        : [id, client, ...tailWords];
+    onId?.(id);
     // Write, waiting for room if the ring is full (the core drains every
     // frame, so this is rare; a full ring is a burst, not a stall).
     for (;;) {
       if (this.failed) throw this.failed;
       const tail = Atomics.load(this.ctrl, C_REQ_TAIL) >>> 0;
-      const next = ringWrite(this.req, this.wr, tail, REQ_EVAL, words, [pathBytes, argsBytes]);
+      const next = ringWrite(this.req, this.wr, tail, kind, words, texts);
       if (next >= 0) {
         this.wr = next;
         break;

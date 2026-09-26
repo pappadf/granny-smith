@@ -10,12 +10,14 @@
 
 #include "common.h"
 #include "test_assert.h"
+#include "job/job.h"
 #include "mailbox/mailbox.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static uint8_t *g_region;
 static gs_mailbox_t g_m;
@@ -55,6 +57,7 @@ static int stub_eval(const char *path, const char *args, char *out, size_t out_s
 }
 
 static void fresh(void) {
+    job_layer_init(); // this thread plays the emulator thread
     free(g_region);
     size_t bytes = gs_mailbox_region_bytes(GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES);
     g_region = (uint8_t *)malloc(bytes);
@@ -144,6 +147,67 @@ static int emitting_eval(const char *path, const char *args, char *out, size_t o
     g_client_seen = gs_mailbox_current_client(&g_m);
     gs_mailbox_emit(&g_m, GS_MBX_EVT_STATE, "{\"event\":\"mode_ended\"}");
     return stub_eval(path, args, out, out_size);
+}
+
+// The job glue (job.h): scripts "run" by recording their text; a mode is a
+// flag per owner the test flips.
+static char g_last_script[256];
+static int g_scripts;
+static uint32_t g_mode_owner; // 0: no mode running
+static uint32_t g_mode_id;
+static int g_stops;
+int job_glue_run_source_threaded(const char *src);
+int job_glue_run_source(const char *src, bool interactive) {
+    (void)interactive;
+    if (strcmp(src, "threaded") == 0)
+        return job_glue_run_source_threaded(src);
+    g_scripts++;
+    snprintf(g_last_script, sizeof g_last_script, "%s", src);
+    return strncmp(src, "fail", 4) == 0 ? -1 : 0;
+}
+bool job_glue_mode_waits(uint32_t client) {
+    return g_mode_owner != 0 && g_mode_owner == client;
+}
+uint32_t job_glue_mode_id(void) {
+    return g_mode_id;
+}
+bool job_glue_stop_mode(uint32_t client, uint32_t mode_id) {
+    if (g_mode_id != mode_id)
+        return false;
+    return job_glue_stop_modes(client);
+}
+bool job_glue_stop_modes(uint32_t client) {
+    g_stops++;
+    if (g_mode_owner && (client == 0 || g_mode_owner == client)) {
+        g_mode_owner = 0;
+        return true;
+    }
+    return false;
+}
+
+// The client posts a REQ_SCRIPT / REQ_CANCEL / REQ_MODE_STOP.
+static bool post_script(uint32_t id, const char *src) {
+    uint32_t n = (uint32_t)strlen(src);
+    uint32_t at = mbx_reserve(&g_req, GS_MBX_REQ_SCRIPT, MBX_HDR_BYTES + 4u * GS_MBX_SCRIPT_WORDS + ((n + 3u) & ~3u));
+    if (at == UINT32_MAX)
+        return false;
+    uint8_t *p = mbx_payload(&g_req, at);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_ID, id);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_CLIENT, 2);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_DEADLINE, 0);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_SRC_LEN, n);
+    memcpy(p + 4 * GS_MBX_SCRIPT_WORDS, src, n);
+    mbx_publish(&g_req);
+    return true;
+}
+static void post_ctl(uint32_t kind, uint32_t id, uint32_t client, uint32_t arg) {
+    uint32_t at = mbx_reserve(&g_req, kind, MBX_HDR_BYTES + 4u * GS_MBX_CTL_WORDS);
+    ASSERT_TRUE(at != UINT32_MAX);
+    uint8_t *p = mbx_payload(&g_req, at);
+    WR_LE32(p + 4 * GS_MBX_CTL_ID, id);
+    WR_LE32(p + 4 * GS_MBX_CTL_CLIENT, client);
+    WR_LE32(p + 4 * GS_MBX_CTL_ARG, arg);
+    mbx_publish(&g_req);
 }
 
 static double fake_now_us(void) {
@@ -310,7 +374,7 @@ TEST(a_malformed_request_is_answered_not_dropped) {
     WR_LE32(p + 4 * GS_MBX_EVAL_ARGS_LEN, 0);
     mbx_publish(&g_req);
     // And a kind this build does not serve, with an id.
-    at = mbx_reserve(&g_req, GS_MBX_REQ_SCRIPT, MBX_HDR_BYTES + 4);
+    at = mbx_reserve(&g_req, 9u, MBX_HDR_BYTES + 4);
     WR_LE32(mbx_payload(&g_req, at), 10);
     mbx_publish(&g_req);
     ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
@@ -323,7 +387,7 @@ TEST(a_malformed_request_is_answered_not_dropped) {
     ASSERT_TRUE(strstr(json, "lengths exceed") != NULL);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 10);
-    ASSERT_TRUE(strstr(json, "unsupported request kind 2") != NULL);
+    ASSERT_TRUE(strstr(json, "unsupported request kind 9") != NULL);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_BAD], 2);
 }
 
@@ -399,12 +463,140 @@ TEST(an_event_with_no_room_is_dropped_and_counted_never_blocking) {
         written++;
     ASSERT_TRUE(written >= 1);
     ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_DROPPED], 1);
-    ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_EVENTS], written);
+    ASSERT_EQ_INT((int)g_ctrl[GS_MBX_C_STAT_EVENTS], written);
     // The client reads one; the next emit fits again.
     uint8_t buf[8];
     uint32_t len;
     ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_LOG);
     ASSERT_TRUE(gs_mailbox_emit(&g_m, GS_MBX_EVT_LOG, big));
+}
+
+TEST(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt) {
+    fresh();
+    ASSERT_TRUE(!job_thread_running());
+    g_scripts = 0;
+    ASSERT_TRUE(post_script(21, "echo hi"));
+    ASSERT_TRUE(post_script(22, "fail me"));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
+    ASSERT_EQ_INT(g_scripts, 2);
+    ASSERT_TRUE(strcmp(g_last_script, "fail me") == 0);
+    uint32_t id, ok;
+    char json[512];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 21);
+    ASSERT_EQ_INT(ok, 1);
+    // The answer is the prompt: the stub leaf answered "shell.prompt".
+    ASSERT_TRUE(strstr(json, "shell.prompt") != NULL);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 22);
+    ASSERT_EQ_INT(ok, 0);
+    ASSERT_TRUE(strstr(json, "command failed") != NULL);
+}
+
+TEST(cancel_and_mode_stop_are_answered_and_stop_only_the_owner) {
+    fresh();
+    g_stops = 0;
+    g_mode_owner = 2;
+    // A stop by another owner leaves the mode alone; the owner's stops it.
+    post_ctl(GS_MBX_REQ_MODE_STOP, 31, 1, 1);
+    post_ctl(GS_MBX_REQ_MODE_STOP, 32, 1, 2);
+    // Cancelling a job that does not exist answers false.
+    post_ctl(GS_MBX_REQ_CANCEL, 33, 2, 99);
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 3);
+    uint32_t id, ok;
+    char json[64];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 31);
+    ASSERT_TRUE(strcmp(json, "false") == 0);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 32);
+    ASSERT_TRUE(strcmp(json, "true") == 0);
+    ASSERT_EQ_INT(g_mode_owner, 0);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 33);
+    ASSERT_TRUE(strcmp(json, "false") == 0);
+}
+
+// With a real job thread: the script's call reaches the emulator thread
+// through the drain, a call that starts a mode holds the job until the
+// mode ends, and a cancel unwinds it.
+static int g_calls_served;
+static void seam_probe(void *ud) {
+    g_calls_served++;
+    *(uint32_t *)ud = gs_mailbox_current_client(&g_m);
+    // "scheduler.run": the leaf opens a mode owned by the caller.
+    g_mode_id++;
+    g_mode_owner = gs_mailbox_current_client(&g_m);
+}
+static volatile int g_job_phase;
+int job_glue_run_source_threaded(const char *src) {
+    (void)src;
+    uint32_t client_seen = 0;
+    g_job_phase = 1;
+    job_on_emulator(seam_probe, &client_seen); // returns once the mode has ended
+    g_job_phase = client_seen == 2 ? 2 : -1;
+    if (job_current_cancelled())
+        return -1;
+    return 0;
+}
+
+TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
+    fresh();
+    ASSERT_TRUE(job_thread_start(256u << 10));
+    g_calls_served = 0;
+    g_job_phase = 0;
+    g_mode_owner = 0;
+    // The glue runs scripts inline in the other tests; here the job thread
+    // runs one that posts a call.  Swap the runner by script text.
+    ASSERT_TRUE(post_script(41, "threaded"));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0); // queued, no answer yet
+    // Wait for the job thread to post its call, then serve it.
+    for (int i = 0; i < 20000 && !job_layer_has_work(); i++)
+        usleep(100);
+    ASSERT_TRUE(job_layer_has_work());
+    gs_mailbox_drain(&g_m, 0, NULL);
+    ASSERT_EQ_INT(g_calls_served, 1);
+    ASSERT_EQ_INT(g_mode_owner, 2);
+    // The mode runs: the job stays held, no result.
+    usleep(2000);
+    gs_mailbox_drain(&g_m, 0, NULL);
+    ASSERT_EQ_INT(g_job_phase, 1);
+    // The mode ends: the next drain releases the job, which finishes.
+    g_mode_owner = 0;
+    uint32_t id = 0, ok = 0;
+    char json[256];
+    for (int i = 0; i < 20000 && take(&id, &ok, json, sizeof json) == 0; i++) {
+        gs_mailbox_drain(&g_m, 0, NULL);
+        usleep(100);
+    }
+    ASSERT_EQ_INT(id, 41);
+    ASSERT_EQ_INT(ok, 1);
+    ASSERT_EQ_INT(g_job_phase, 2);
+    // Cancel: a queued job finishes at once as cancelled, and stops the
+    // client's modes.
+    g_stops = 0;
+    ASSERT_TRUE(post_script(42, "threaded"));
+    post_ctl(GS_MBX_REQ_CANCEL, 43, 2, 42);
+    gs_mailbox_drain(&g_m, 0, NULL);
+    for (int i = 0; i < 20000 && take(&id, &ok, json, sizeof json) == 0; i++) {
+        gs_mailbox_drain(&g_m, 0, NULL);
+        usleep(100);
+    }
+    // The cancel's own answer and the job's come back; order depends on
+    // which the drain wrote first.
+    uint32_t id2 = 0, ok2 = 0;
+    char json2[256];
+    for (int i = 0; i < 20000 && take(&id2, &ok2, json2, sizeof json2) == 0; i++) {
+        gs_mailbox_drain(&g_m, 0, NULL);
+        usleep(100);
+    }
+    const char *job_json = id == 42 ? json : json2;
+    uint32_t job_ok = id == 42 ? ok : ok2;
+    ASSERT_TRUE((id == 42 && id2 == 43) || (id == 43 && id2 == 42));
+    ASSERT_EQ_INT(job_ok, 0);
+    ASSERT_TRUE(strstr(job_json, "cancelled") != NULL);
+    // A queued job started no mode, so the cancel stopped none.
+    ASSERT_EQ_INT(g_stops, 0);
 }
 
 int main(void) {
@@ -419,5 +611,8 @@ int main(void) {
     RUN(both_rings_wrap_across_thousands_of_round_trips);
     RUN(an_event_is_published_at_once_and_ordered_before_the_result);
     RUN(an_event_with_no_room_is_dropped_and_counted_never_blocking);
+    RUN(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt);
+    RUN(cancel_and_mode_stop_are_answered_and_stop_only_the_owner);
+    RUN(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode);
     return 0;
 }

@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "em.h"
+#include "job/job.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -837,6 +838,14 @@ int main(void) {
     // against the empty default root class. The notify wakes any JS
     // thread parked in Atomics.waitAsync on that word.
     gs_mailbox_set_ready(&g_mailbox);
+
+    // The job thread: scripts run there, not here (job/job.h).  Created
+    // now, not at the first script -- pthread_create from this pthread is
+    // proxied to the browser's main thread, and the Worker takes tens of
+    // milliseconds to come up.  512 KB of stack covers the interpreter's
+    // recursion (16 frames of functions, the expression parser).
+    if (!job_thread_start(512u << 10))
+        fprintf(stderr, "job thread could not be started; scripts run inline\n");
 
     // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();

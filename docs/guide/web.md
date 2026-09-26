@@ -259,6 +259,46 @@ before its own result. The page's run/paused state follows these events;
 the older `Module.onRunStateChange` push reports the same transitions to
 the same handler until it is removed.
 
+### Jobs: scripts off the emulator thread
+
+A terminal line is not a `shell.run` call any more. The page posts it as a
+`REQ_SCRIPT` record (`{id, client, deadline_ms, src_len} + src`) and the
+core queues it as a **job** for the one **job thread** (`src/core/job/job.h`),
+created at boot right after `READY`. The interpreter runs there, on its
+own stack, and touches nothing but its own memory: every read or write of
+the object tree (`node_get` / `node_set` / `node_call`, and the REPL's
+printing of a result) is handed to the emulator thread through the
+**seam**, `job_on_emulator()`, and served in the same drain that serves
+the page — at the next frame boundary while the machine runs, within a
+millisecond while it is stopped. A leaf that starts a *bounded* mode
+(`scheduler.run N`, `debug.step N`) holds the job until that mode ends, so
+`scheduler.run N` inside a script means "run N"; an unbounded
+`scheduler.run` returns at once. The job's answer is an `EVT_RESULT`
+carrying the shell's new prompt (what `shell.run` returned), or
+`{"error"}` when the script failed or was cancelled. A build without a
+job thread (headless today, the unit suites) runs the script inline in
+the drain, with the same interface.
+
+Scripts are FIFO — one runs at a time per process; `REQ_EVAL` leaves from
+any client are served alongside. The scope stack, alias table and
+function table are shared behind one lock (`job_tables_lock`), taken per
+operation; function bodies are reference-counted, so a redefinition or
+removal from another client cannot free a body a job is executing.
+
+`REQ_CANCEL {id, client, target_id}` cancels a job of that client: a
+queued one finishes at once, a running one unwinds at its next statement
+(`E_CANCELLED` → `{"error":"cancelled"}`), and the mode it started, if
+one is running, is stopped. `REQ_MODE_STOP {id, client, owner}` stops a
+running mode by owner (0: any); both answer `true` / `false`.
+
+**Ctrl-C, exactly.** The terminal is client 2 (the rest of the page is
+client 1). Ctrl-C cancels the terminal's foreground job if it has one;
+else stops a run *the terminal* started (`REQ_MODE_STOP {owner: 2}`);
+else prints `^C  (nothing to interrupt; Pause stops the machine)` — a
+machine running because the toolbar or a resume started it is not the
+terminal's to stop. `shell.interrupt` remains as a leaf with the same
+meaning for the client that calls it.
+
 ### Wake-ups and the idle wait
 
 The page stores `REQ_HEAD` and `Atomics.notify`s it; the core stores

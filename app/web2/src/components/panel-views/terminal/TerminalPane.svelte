@@ -296,7 +296,10 @@
       inputState.active = false;
     }
     try {
-      await shellInterrupt();
+      // Cancels the line still running, or stops a run this terminal
+      // started; a machine running for other reasons is not ours to stop.
+      const did = await shellInterrupt();
+      if (did === 'nothing') writeLine('^C  (nothing to interrupt; Pause stops the machine)');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeLine(`Interrupt failed: ${msg}`);

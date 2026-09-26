@@ -24,6 +24,7 @@
 #include "value.h"
 #include "vfs.h"
 #include "worker_thread.h"
+#include "job/job.h"
 
 #include <inttypes.h>
 
@@ -278,8 +279,14 @@ static void format_value_print(const value_t *v) {
 
 // Public print surface for the script interpreter (REPL result
 // printing).
+// Printing reads attributes (an object renders as its attribute table),
+// so it runs on the emulator thread: a job hands it over (job/job.h).
+static void print_value_here(void *p) {
+    format_value_print((const value_t *)p);
+}
+
 void shell_print_value(const value_t *v) {
-    format_value_print(v);
+    job_on_emulator(print_value_here, (void *)v);
 }
 
 // Dispatch interactively and return integer result. The line runs
@@ -350,6 +357,7 @@ int shell_init(void) {
         return 0;
 
     log_init();
+    job_layer_init(); // this is the emulator thread
     shell_var_init();
 
     // Wire the Meta class's `complete(line, cursor)` method to the

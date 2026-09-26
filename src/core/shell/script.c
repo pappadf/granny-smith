@@ -13,6 +13,7 @@
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
+#include "job/job.h"
 
 #include "alias.h"
 #include "expr.h"
@@ -1050,9 +1051,11 @@ void script_expr_ctx(expr_ctx_t *out) {
 // Include stack (`include "path"`, script_run_file): the chain of files
 // currently executing, innermost last. Drives relative-path resolution,
 // the cycle guard, and file attribution in diagnostics.
+// Per thread: a job on the job thread and an inline script on the emulator
+// thread (a breakpoint action, shell.eval) each have their own chain.
 #define INCLUDE_MAX_DEPTH 16
-static char *g_include_stack[INCLUDE_MAX_DEPTH];
-static int g_include_depth = 0;
+static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
+static _Thread_local int g_include_depth = 0;
 
 static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     char buf[512];
@@ -1636,6 +1639,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     }
 
     value_t result = exec_command_tail(p, &ectx, node, fn);
+    shell_func_release(fn);
     if (val_is_error(&result)) {
         exec_error(cx, st->line, "%s", result.err ? result.err : "command failed");
         value_free(&result);
@@ -1798,7 +1802,7 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
     while (1) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             return;
@@ -1879,7 +1883,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     }
 
     for (size_t i = 0; i < count; i++) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             break;
@@ -2102,12 +2106,19 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
 }
 
+// The statement boundary: where a job notices it was cancelled (job/job.h)
+// and unwinds, and, for an inline script on a platform that still pumps
+// between statements, where the pump runs.
+static bool stop_requested(void) {
+    if (job_current())
+        return job_current_cancelled();
+    return g_pump_hook && g_pump_hook();
+}
+
 static void exec_block(script_block_t *b, exec_ctx_t *cx) {
     for (int i = 0; i < b->n && cx->sig == SIG_NONE; i++) {
         exec_stmt(b->stmts[i], cx);
-        // Give the platform a chance to drive the scheduler after each
-        // statement (`scheduler.run N` schedules; the pump executes).
-        if (cx->sig == SIG_NONE && g_pump_hook && g_pump_hook())
+        if (cx->sig == SIG_NONE && stop_requested())
             cx->sig = SIG_QUIT;
     }
 }
@@ -2145,6 +2156,18 @@ int script_run_line(const char *line) {
         return -1;
     }
     int rc = script_exec(s, true);
+    script_free(s);
+    return rc;
+}
+
+int script_run_text(const char *src, bool interactive) {
+    char err[256];
+    script_t *s = script_parse(src, err, sizeof(err));
+    if (!s) {
+        fprintf(stderr, "%s\n", err);
+        return -1;
+    }
+    int rc = script_exec(s, interactive);
     script_free(s);
     return rc;
 }

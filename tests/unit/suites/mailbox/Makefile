@@ -8,6 +8,8 @@ TEST_SRCS    := test.c
 TEST_HARNESS := none
 STUBS        := assert
 EXTRA_SRCS   := ../../../../src/core/mailbox/mailbox.c \
-                ../../../../src/core/mailbox/mailbox_ring.c
+                ../../../../src/core/mailbox/mailbox_ring.c \
+                ../../../../src/core/job/job.c \
+                ../../../../src/core/job/seam.c
 EXTRA_CFLAGS := -DGS_MBX_REQ_BYTES=4096u -DGS_MBX_EVT_BYTES=4096u
 include ../../common.mk

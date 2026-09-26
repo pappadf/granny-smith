@@ -225,6 +225,14 @@ bool scheduler_stop_owned(struct scheduler *restrict scheduler, uint32_t owner);
 // The client that started the current (or last) mode, 0 for none.
 uint32_t scheduler_run_owner(struct scheduler *restrict scheduler);
 
+// The id of the current (or last) mode, counted from 1; 0 before any.
+uint32_t scheduler_mode_id(struct scheduler *restrict scheduler);
+
+// Whether the current mode has an instruction budget (it ends by itself).
+// A job waits for a bounded mode it started; an unbounded run returns at
+// once -- there is nothing to wait for.
+bool scheduler_mode_bounded(struct scheduler *restrict scheduler);
+
 // Start running with a stop scheduled after `instructions` more instructions
 // (0 = until stopped).  scheduler_run_frame does the executing: the
 // platform's loop for scheduler.run N, a loop inside the call for debug.step N.

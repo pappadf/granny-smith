@@ -19,7 +19,8 @@ TEST_HARNESS := none
 # The test supplies a recording checkpoint stream and its own link stubs;
 # from support/ it takes only the assert stub.
 STUBS        := assert
-EXTRA_SRCS   := ../../../../src/core/peripherals/scsi.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/peripherals/scsi_53c96.c \

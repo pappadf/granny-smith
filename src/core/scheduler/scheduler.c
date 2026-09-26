@@ -225,6 +225,7 @@ struct scheduler {
     uint32_t mode_seq; // id of the current mode, counted from 1
     sched_stop_reason_t stop_reason;
     bool mode_open;
+    bool mode_bounded; // the mode has an instruction budget
     bool in_frame; // inside scheduler_run_frame: a stop there is reported at its end
 
     // Pointers last
@@ -697,6 +698,7 @@ static void open_mode(struct scheduler *s, uint64_t instructions) {
     s->stop_reason = SCHED_STOP_NONE;
     s->mode_seq++;
     s->mode_open = true;
+    s->mode_bounded = instructions != 0;
     s->running = true;
     gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"mode_started\",\"mode\":%u,\"owner\":%u,\"budget\":%llu}",
                    (unsigned)s->mode_seq, (unsigned)s->run_owner, (unsigned long long)instructions);
@@ -1409,6 +1411,14 @@ bool scheduler_stop_owned(struct scheduler *restrict scheduler, uint32_t owner) 
 
 uint32_t scheduler_run_owner(struct scheduler *restrict scheduler) {
     return scheduler ? scheduler->run_owner : 0;
+}
+
+uint32_t scheduler_mode_id(struct scheduler *restrict scheduler) {
+    return scheduler ? scheduler->mode_seq : 0;
+}
+
+bool scheduler_mode_bounded(struct scheduler *restrict scheduler) {
+    return scheduler && scheduler->mode_bounded;
 }
 
 // Set the scheduler running state -- the flag only, no mode opens or ends.

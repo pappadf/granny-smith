@@ -47,6 +47,10 @@ int script_run_line(const char *line);
 // shell.script_run, the headless script= runner). Returns 0 / -1.
 int script_run_source(const char *src);
 
+// Parse and run `src` with or without REPL result printing.  What a job
+// runs (job/job.h).
+int script_run_text(const char *src, bool interactive);
+
 // Parse + execute a script file with the include stack maintained: an
 // `include "path"` inside the file resolves relative to the file's own
 // directory, and diagnostics carry the file name. Returns 0 / -1.

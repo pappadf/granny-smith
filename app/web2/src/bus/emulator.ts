@@ -490,17 +490,44 @@ let cachedPrompt: string | null = null;
 // allowed in src/bus/** — the no-restricted-syntax rule pins that, and
 // the disable below is the single sanctioned exception (forwarded from
 // TerminalPane.svelte, the only legitimate caller).
+// The terminal is its own client: a run it starts (`scheduler.run`) is
+// its mode, and its Ctrl-C stops that and nothing else.
+export const CLIENT_TERMINAL = 2;
+
+// The terminal's foreground job: the script of the line it last
+// submitted, until its result arrives.  Ctrl-C cancels it.
+let foregroundJob: number | null = null;
+
+// Runs a terminal line as a script job (REQ_SCRIPT): the answer is the
+// shell's new prompt when the job ends -- after every `scheduler.run` in
+// it has run to its stop -- or an error.  Returns 0 on success, -1 on
+// failure (the interpreter has printed the reason).
 export async function gsEvalLine(line: string): Promise<number> {
-  if (!moduleReady) return -1;
+  if (!moduleReady || !mailbox) return -1;
   const text = (line ?? '').toString();
   if (!text.trim()) return 0;
-  // eslint-disable-next-line no-restricted-syntax
-  const r = await gsEval('shell.run', [text]);
-  if (typeof r === 'string') {
-    cachedPrompt = r.length ? r : null;
-    return 0;
+  const stopWatch = watchRequest('shell.run');
+  try {
+    const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
+      foregroundJob = id;
+    });
+    if (r.ok) {
+      const prompt: unknown = JSON.parse(r.json);
+      if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
+      return 0;
+    }
+    return -1;
+  } catch {
+    return -1;
+  } finally {
+    foregroundJob = null;
+    stopWatch();
   }
-  return -1;
+}
+
+// True while a terminal line is still running.
+export function hasForegroundJob(): boolean {
+  return foregroundJob !== null;
 }
 
 export function getRuntimePrompt(): string | null {
@@ -517,9 +544,18 @@ export async function seedPrompt(): Promise<void> {
   if (typeof r === 'string' && r.length) cachedPrompt = r;
 }
 
-export async function shellInterrupt(): Promise<void> {
-  if (!moduleReady) return;
-  await gsEval('shell.interrupt');
+// Ctrl-C, exactly: cancel the terminal's foreground job if it has one;
+// else stop a run the terminal itself started; else nothing (the machine
+// running because the toolbar or a resume started it is not the
+// terminal's to stop).  Returns what it did.
+export async function shellInterrupt(): Promise<'cancelled' | 'stopped' | 'nothing'> {
+  if (!moduleReady || !mailbox) return 'nothing';
+  if (foregroundJob !== null) {
+    const id = foregroundJob;
+    await mailbox.cancel(CLIENT_TERMINAL, id);
+    return 'cancelled';
+  }
+  return (await mailbox.modeStop(CLIENT_TERMINAL, CLIENT_TERMINAL)) ? 'stopped' : 'nothing';
 }
 
 export interface CompletionResult {
