@@ -65,7 +65,8 @@ typedef bool (*script_pump_fn)(void);
 void script_set_pump_hook(script_pump_fn fn);
 
 // Ctrl-C for loops: the interpreter checks this once per iteration and
-// unwinds with an error. Wired to `shell.interrupt`.
+// unwinds with an error. Wired to `shell.interrupt`.  It cancels the script
+// in flight only: script_exec clears it when the top-level script ends.
 void script_interrupt(void);
 
 // Fill an expr_ctx bound to the object root and the shell binding
