@@ -15,6 +15,7 @@
 #include "checkpoint.h"
 #include "common.h"
 #include "debug.h"
+#include "drive_activity.h"
 #include "image.h"
 #include "keyboard.h"
 #include "platform.h"
@@ -188,6 +189,10 @@ const struct cpu_debug_if *system_cpu_debug_if(void);
 // The active machine configuration (NULL before setup).  Used by the keyboard /
 // mouse object methods to find a machine-specific host-input hook.
 config_t *system_config(void);
+
+// Per-kind (DRIVE_KIND_*) sums of the attached images' read / write call
+// counters, for the drive-activity lights (storage/drive_activity.h).
+void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DRIVE_KIND_COUNT]);
 
 // Host-input dispatch through the machine's substrate (a Mac's ADB or M0110A,
 // the Lisa's COPS).  Each returns 0 when the machine took the request and -1

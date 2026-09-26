@@ -1,14 +1,13 @@
 import { render } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import DisplayContent from '@/components/display/DisplayContent.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 
 beforeEach(() => {
   machine.status = 'no-machine';
   setOpfsBackend(new MockOpfs());
-  stopDriveActivityMock();
 });
 
 describe('DisplayContent routing', () => {

@@ -82,9 +82,15 @@
           <span class="label">{machine.mips.toFixed(1)} MIPS</span>
         </div>
       {/if}
-      <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
-      <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
-      <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      {#if machine.drives.hd}
+        <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
+      {/if}
+      {#if machine.drives.fd}
+        <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
+      {/if}
+      {#if machine.drives.cd}
+        <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      {/if}
       <DriveActivity label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
       <button
         class="sb-item sb-caps"

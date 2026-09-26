@@ -5,7 +5,7 @@ import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 import { _resetForTests } from '@/state/toasts.svelte';
 import { layout } from '@/state/layout.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import type { OpfsBackend } from '@/bus/opfs';
 import type { OpfsEntry, ImageCategory, RomInfo } from '@/bus/types';
 
@@ -111,7 +111,6 @@ beforeEach(() => {
   _resetForTests();
   layout.welcomeSlide = 'configuration';
   machine.status = 'no-machine';
-  stopDriveActivityMock();
 });
 
 describe('WelcomeConfigSlide OPFS scan', () => {

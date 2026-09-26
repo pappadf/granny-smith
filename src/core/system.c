@@ -331,6 +331,23 @@ config_t *system_config(void) {
     return global_emulator;
 }
 
+// Per-kind sums of the tracked images' I/O counters -- the images the
+// machine's drives were given; host-side browsing opens its own handles and
+// never counts.  An ejected image does no I/O, so it never lights.
+void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DRIVE_KIND_COUNT]) {
+    for (int k = 0; k < DRIVE_KIND_COUNT; k++)
+        reads[k] = writes[k] = 0;
+    config_t *cfg = global_emulator;
+    for (int i = 0; cfg && i < cfg->n_images; i++) {
+        const image_t *img = cfg->images[i];
+        if (!img)
+            continue;
+        int k = image_is_floppy(img->type) ? DRIVE_KIND_FD : img->type == image_cdrom ? DRIVE_KIND_CD : DRIVE_KIND_HD;
+        reads[k] += img->reads;
+        writes[k] += img->writes;
+    }
+}
+
 // Host-input dispatch through the machine substrate (proposal §4.4).  Every
 // substrate implements these — Macs route to the shared mac_input_* helpers
 // (keyboard / Toolbox cursor), the Lisa to its COPS — so there is one uniform

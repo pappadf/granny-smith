@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import WelcomeHomeSlide from '@/components/display/WelcomeHomeSlide.svelte';
 import { _resetForTests, toasts } from '@/state/toasts.svelte';
 import { layout, setWelcomeSlide } from '@/state/layout.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 
@@ -14,7 +14,6 @@ beforeEach(() => {
   machine.status = 'no-machine';
   machine.model = null;
   machine.ram = null;
-  stopDriveActivityMock();
 });
 
 describe('WelcomeHomeSlide', () => {

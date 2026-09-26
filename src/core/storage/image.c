@@ -989,6 +989,7 @@ const char *image_path(const image_t *image) {
 size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
+    disk->reads++; // the activity light's only cost on this path
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
     // An undersized / truncated image (a host file shorter than the media it
@@ -1022,6 +1023,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
+    disk->writes++;
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
     // Symmetric with disk_read_data: a write past the end of an undersized

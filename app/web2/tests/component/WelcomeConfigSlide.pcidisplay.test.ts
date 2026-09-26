@@ -12,7 +12,7 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
@@ -221,7 +221,6 @@ beforeEach(async () => {
   machine.model = null;
   machine.ram = null;
   setWelcomeSlide('configuration');
-  stopDriveActivityMock();
   vi.mocked(initEmulator).mockClear();
 });
 

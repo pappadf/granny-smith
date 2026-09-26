@@ -82,6 +82,17 @@ static value_t storage_image_attr_writable(struct object *self, const member_t *
     return val_bool(img ? img->writable : false);
 }
 
+static value_t storage_image_attr_reads(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_uint(8, img ? img->reads : 0);
+}
+static value_t storage_image_attr_writes(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_uint(8, img ? img->writes : 0);
+}
+
 // Designated-initialiser table keyed by `image_type` so a future enum
 // reorder (or a value inserted out of order) keeps the labels aligned.
 static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
@@ -104,32 +115,42 @@ static const member_t storage_image_members[] = {
      .name = "index",
      .flags = VAL_RO,
      .doc = "Position in storage.images; stable only while no image is added or removed",
-     .attr = {.type = V_INT, .get = storage_image_attr_index, .set = NULL}      },
+     .attr = {.type = V_INT, .get = storage_image_attr_index, .set = NULL}                                      },
     {.kind = M_ATTR,
      .name = "filename",
      .flags = VAL_RO,
      .doc = "Last path component, for display",
-     .attr = {.type = V_STRING, .get = storage_image_attr_filename, .set = NULL}},
+     .attr = {.type = V_STRING, .get = storage_image_attr_filename, .set = NULL}                                },
     {.kind = M_ATTR,
      .name = "path",
      .flags = VAL_RO,
      .doc = "Full host path or storage URI the image was opened from",
-     .attr = {.type = V_STRING, .get = storage_image_attr_path, .set = NULL}    },
+     .attr = {.type = V_STRING, .get = storage_image_attr_path, .set = NULL}                                    },
     {.kind = M_ATTR,
      .name = "raw_size",
      .flags = VAL_RO,
      .doc = "Logical size of the image in bytes, before any container or compression layer",
-     .attr = {.type = V_UINT, .get = storage_image_attr_raw_size, .set = NULL}  },
+     .attr = {.type = V_UINT, .get = storage_image_attr_raw_size, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "writable",
      .flags = VAL_RO,
      .doc = "True when guest writes reach the image (directly or through a checkpoint delta)",
-     .attr = {.type = V_BOOL, .get = storage_image_attr_writable, .set = NULL}  },
+     .attr = {.type = V_BOOL, .get = storage_image_attr_writable, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "type",
      .flags = VAL_RO,
      .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
-     .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}      },
+     .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}                                      },
+    {.kind = M_ATTR,
+     .name = "reads",
+     .flags = VAL_RO,
+     .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
+     .attr = {.type = V_UINT, .get = storage_image_attr_reads, .set = NULL, .presentation_flags = VAL_VOLATILE} },
+    {.kind = M_ATTR,
+     .name = "writes",
+     .flags = VAL_RO,
+     .doc = "Drive writes to the image since it was opened",
+     .attr = {.type = V_UINT, .get = storage_image_attr_writes, .set = NULL, .presentation_flags = VAL_VOLATILE}},
 };
 
 static const class_desc_t storage_image_class = {

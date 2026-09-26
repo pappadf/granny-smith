@@ -62,6 +62,9 @@ interface MachineState {
   // most everything else is square 1:1). Reported by the core via onScreenResize.
   screen: { width: number; height: number; parW: number; parH: number };
   driveActivity: { hd: DriveActivity; fd: DriveActivity; cd: DriveActivity };
+  // Which lights this model has at all (from its profile: hard-disk bays,
+  // floppy slots, a CD bay) -- no CD light on a CD-less Plus.
+  drives: { hd: boolean; fd: boolean; cd: boolean };
   // Last successful quick/background checkpoint, pushed from the core
   // (bus/emulator.ts handleCheckpointSaved): wall-clock stamp + save
   // duration. null until the first save after page load; the status bar
@@ -99,6 +102,7 @@ export const machine: MachineState = $state({
   auxCpus: [],
   screen: { width: 512, height: 342, parW: 1, parH: 1 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
+  drives: { hd: false, fd: false, cd: false },
   checkpoint: null,
   scheduler: 'live',
   capsLock: false,
@@ -145,44 +149,23 @@ export function setCheckpointSaved(ms: number): void {
   machine.checkpoint = { at: Date.now(), ms };
 }
 
-// ---- Drive activity mock ----
+// ---- Drive activity ----
 //
-// Replicates the prototype's setInterval at app.js:2465-2471 — once a machine
-// is running, flash a random drive read every 1500 ms; each flash is cleared
-// after 180 ms. Phase 3 replaces this with real drive-activity callbacks from
-// the C side.
+// Core-pushed, on a state edge only (Module.onDriveActivity, em_main.c): the
+// core counts every disk read and write, samples the per-kind sums once per
+// tick and holds a light on for a minimum visible time
+// (src/core/storage/drive_activity.c).  kind: 0 hd, 1 fd, 2 cd; state:
+// 0 idle, 1 read, 2 write.  It replaces a mock that was never started.
+const DRIVE_KINDS = ['hd', 'fd', 'cd'] as const;
+const DRIVE_STATES: readonly DriveActivity[] = ['idle', 'read', 'write'];
 
-const FLASH_INTERVAL_MS = 1500;
-const FLASH_HOLD_MS = 180;
-
-let driveTimer: ReturnType<typeof setInterval> | null = null;
-let flashClearTimer: ReturnType<typeof setTimeout> | null = null;
-
-export function startDriveActivityMock(): void {
-  if (driveTimer !== null) return;
-  driveTimer = setInterval(() => {
-    if (machine.status !== 'running') return;
-    const drives = ['hd', 'fd', 'cd'] as const;
-    const pick = drives[Math.floor(Math.random() * drives.length)];
-    machine.driveActivity[pick] = 'read';
-    if (flashClearTimer !== null) clearTimeout(flashClearTimer);
-    flashClearTimer = setTimeout(() => {
-      machine.driveActivity[pick] = 'idle';
-      flashClearTimer = null;
-    }, FLASH_HOLD_MS);
-  }, FLASH_INTERVAL_MS);
+export function setDriveActivity(kind: number, state: number): void {
+  const k = DRIVE_KINDS[kind];
+  const s = DRIVE_STATES[state];
+  if (k && s) machine.driveActivity[k] = s;
 }
 
-export function stopDriveActivityMock(): void {
-  if (driveTimer !== null) {
-    clearInterval(driveTimer);
-    driveTimer = null;
-  }
-  if (flashClearTimer !== null) {
-    clearTimeout(flashClearTimer);
-    flashClearTimer = null;
-  }
-  machine.driveActivity.hd = 'idle';
-  machine.driveActivity.fd = 'idle';
-  machine.driveActivity.cd = 'idle';
+// Every light off (a new machine).
+export function resetDriveActivity(): void {
+  for (const k of DRIVE_KINDS) machine.driveActivity[k] = 'idle';
 }

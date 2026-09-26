@@ -262,7 +262,13 @@ The Svelte app is organised under
   Debug (Disassembly + Registers + FPU + Memory + MMU + Breakpoints +
   Watchpoints + Call Stack).
 - **Status bar** ([`status-bar/`](../app/web2/src/components/status-bar/))
-  — machine state, drive activity, in-flight upload progress.
+  — machine state, drive activity, in-flight upload progress. The HD /
+  FD / CD lights are real: the core counts every drive read and write on
+  the image (`storage.images[i].reads` / `.writes`), the worker tick sums
+  them per kind and pushes `Module.onDriveActivity(kind, state)` only when
+  a light changes, holding each on at least 100 ms
+  ([`drive_activity.c`](../src/core/storage/drive_activity.c)). A model
+  shows only the lights its profile has drives for.
 - **Common** ([`common/`](../app/web2/src/components/common/)) —
   CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu, Icon
   (codicon sprite at [`public/icons/sprite.svg`](../app/web2/public/icons/sprite.svg)).

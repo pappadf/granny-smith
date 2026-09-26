@@ -9,6 +9,7 @@ import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './m
 import type { MachineConfig } from './types';
 import {
   machine,
+  resetDriveActivity,
   setSchedulerMode,
   type MmuKind,
   type AuxCpu,
@@ -36,9 +37,15 @@ export async function applyCapabilities(model: string): Promise<void> {
   let videoIn = false;
   let audioIn = false;
   let auxCpus: AuxCpu[] = [];
+  let drives = { hd: false, fd: false, cd: false };
   try {
     const parsed = await getProfile(model);
     if (parsed) {
+      drives = {
+        hd: parsed.hd_bays.length > 0,
+        fd: parsed.floppy_slots.length > 0,
+        cd: parsed.cdrom !== null || parsed.has_cdrom,
+      };
       const k = parsed.capabilities?.mmu?.kind;
       const KINDS: readonly MmuKind[] = [
         '68030_pmmu',
@@ -62,6 +69,8 @@ export async function applyCapabilities(model: string): Promise<void> {
   machine.videoIn = videoIn;
   machine.audioIn = audioIn;
   machine.auxCpus = auxCpus;
+  machine.drives = drives;
+  resetDriveActivity();
 }
 
 // capabilities.aux_cpus -> AuxCpu[].  A name becomes a path segment

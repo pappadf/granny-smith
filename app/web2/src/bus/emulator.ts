@@ -13,6 +13,7 @@ import {
   setSchedulerMode,
   setAcceleratedSpeed,
   setCheckpointSaved,
+  setDriveActivity,
   setPerfStats,
   type MachineStatus,
   type SchedulerMode,
@@ -100,6 +101,7 @@ interface EmscriptenModuleConfig {
   onSchedulerSpeed?(speedX256: number): void;
   onPerfUpdate?(mipsX100: number, tpsX10: number): void;
   onCheckpointSaved?(elapsedMsX100: number): void;
+  onDriveActivity?(kind: number, state: number): void;
   onVideoInReady?(ptr: number): void;
   onVideoInState?(active: boolean): void;
   onAudioInReady?(ptr: number): void;
@@ -243,6 +245,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onSchedulerSpeed: handleSchedulerSpeed,
     onPerfUpdate: handlePerfUpdate,
     onCheckpointSaved: handleCheckpointSaved,
+    onDriveActivity: setDriveActivity,
     onVideoInReady,
     onVideoInState,
     onAudioInReady,

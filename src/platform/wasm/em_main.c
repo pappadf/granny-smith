@@ -443,6 +443,25 @@ void em_main_tick(void) {
         }
     }
 
+    // Push the HD / FD / CD activity lights (Module.onDriveActivity) on a
+    // state edge only: the counters are sampled here, once per tick, and
+    // drive_activity_update holds a light on for its minimum visible time.
+    {
+        static drive_activity_t lights;
+        uint64_t reads[DRIVE_KIND_COUNT], writes[DRIVE_KIND_COUNT];
+        system_drive_io_counts(reads, writes);
+        unsigned changed = drive_activity_update(&lights, reads, writes, emscripten_get_now());
+        for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
+            if (!(changed & (1u << k)))
+                continue;
+            // clang-format off
+            MAIN_THREAD_ASYNC_EM_ASM(
+                { if (typeof Module.onDriveActivity === 'function') Module.onDriveActivity($0, $1); },
+                k, (int)lights.light[k]);
+            // clang-format on
+        }
+    }
+
     // Push the accelerated-mode effective CPU speed (x256; 256 = 1x) to JS on
     // change, same diff-and-async pattern as the run-state push. The value is
     // 1x outside accelerated mode and the governor steps it only on a ≥2 s
