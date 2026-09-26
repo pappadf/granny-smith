@@ -53,114 +53,30 @@ tests/
 
 ## Unit Tests
 
-### Overview
+Each suite under `tests/unit/suites/` is one native binary that compiles only
+the emulator sources it tests and links stubs for everything else. A suite
+declares a **harness mode** in its Makefile:
 
-The unit test infrastructure uses **explicit test harnesses** and **dependency
-injection**. Tests declare their requirements through a harness mode, and the
-build system provides the appropriate stubs and real implementations.
-
-### Harness Modes
-
-Each test declares a harness mode in its Makefile via `TEST_HARNESS`:
-
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `isolated` | Pure stub-only environment | Tests that don't need emulator subsystems |
-| `cpu` | Real CPU + memory subsystems | CPU and disassembler tests |
-
-Example Makefile (in `suites/<name>/`):
-```makefile
-TEST_NAME := mytest
-TEST_SRCS := test.c
-TEST_HARNESS := isolated
-include ../../common.mk
-```
-
-### Test Context
-
-Tests using the harness work with a `test_context_t` structure:
-
-```c
-#include "harness.h"
-
-int main(void) {
-    test_context_t *ctx = test_harness_init();
-    cpu_t *cpu = test_get_cpu(ctx);
-    memory_map_t *mem = test_get_memory(ctx);
-    // ... run tests ...
-    test_harness_destroy(ctx);
-    return 0;
-}
-```
-
-### Running Unit Tests
+| Mode | What the suite gets |
+|------|---------------------|
+| `isolated` (default) | A `test_context_t` harness and stubs for every subsystem |
+| `cpu` | The same harness with the real 68k CPU, FPU, memory and MMU |
+| `none` | No harness and no default stubs: its own `main()` and mocks, plus any stubs it names |
 
 ```bash
-make -j$(nproc) -C tests/unit run # Build (in parallel) + run all
-make -C tests/unit list           # List discovered test names
-make -C tests/unit test-disasm    # Run disassembler test
+make -j$(nproc) -C tests/unit run   # build every suite in parallel, then run them all
+make -C tests/unit test-disasm      # build and run one suite
+make -C tests/unit list             # list the suites
 ```
 
-### Writing a New Unit Test
+`run` builds with `-k` and then runs every suite, so one failure, in the
+build or in a test, does not hide the rest; it exits non-zero if any suite
+failed. Within a suite the first failed `ASSERT_*` ends that binary.
 
-1. Create `tests/unit/suites/mytest/` with a `Makefile`:
-   ```makefile
-   TEST_NAME := mytest
-   TEST_SRCS := test.c
-   TEST_HARNESS := isolated
-   include ../../common.mk
-   ```
-2. Write `test.c`:
-   ```c
-   #include "test_assert.h"
-   #include "harness.h"
-
-   TEST(my_first_test) { ASSERT_TRUE(1 == 1); }
-   TEST(my_second_test) { ASSERT_EQ_INT(42, 42); }
-
-   int main(void) {
-       test_context_t *ctx = test_harness_init();
-       RUN(my_first_test);
-       RUN(my_second_test);
-       test_harness_destroy(ctx);
-       return 0;
-   }
-   ```
-3. Run: `make -C tests/unit test-mytest`
-
-### Assertion Macros
-
-From `test_assert.h`:
-
-- `TEST(name)` — Declare a test function
-- `RUN(testfn)` — Run a test and report pass/fail
-- `ASSERT_TRUE(expr)` — Assert expression is true
-- `ASSERT_EQ_INT(expected, actual)` — Assert integer equality
-
-### Stub Modules
-
-Stubs live in `tests/unit/support/` and are split into focused modules that can
-be selectively linked:
-
-| Stub Module | Contents |
-|-------------|----------|
-| `stub_platform.c` | `platform_bsr32()`, `platform_ntz32()`, timing functions |
-| `stub_shell.c` | `register_cmd()`, `shell_init()`, `shell_dispatch()` |
-| `stub_checkpoint.c` | `system_read_checkpoint_data_loc()`, `checkpoint_has_error()` |
-| `stub_system.c` | `system_memory()`, `system_cpu()`, etc. (uses harness context) |
-| `stub_memory.c` | Memory globals and access functions (for isolated mode) |
-| `stub_debugger.c` | `debugger_init()`, `debug_break_and_trace()` |
-| `stub_peripherals.c` | `floppy_new()` |
-| `stub_assert.c` | `gs_assert_fail()`, `init_tests()` |
-
-Each test picks the minimal subset of emulator `.c` files it needs via
-`EXTRA_SRCS`. Prefer adding a focused stub over pulling a large subsystem.
-
-### Disassembler Corpus
-
-`tests/unit/suites/disasm` expects a `disasm.txt` corpus. If absent, the test
-logs a skip message and passes. Set `REQUIRE_DISASM_CORPUS=1` to fail when
-missing.
+[tests/unit/README.md](../../tests/unit/README.md) is the reference for
+writing a suite: the Makefile variables, the three harness modes, every stub
+and what it provides, the assertion macros, and the disassembler corpus
+switch.
 
 ---
 

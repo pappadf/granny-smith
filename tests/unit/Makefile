@@ -26,7 +26,11 @@ all: $(TESTS)
 $(TESTS):
 	@echo "[MAKE] $@"; $(MAKE) -C $@ all
 
-run: $(TESTS)
+# Build with -k first, so one suite that fails to compile does not stop the
+# others building; the loop then runs every suite, and a suite whose build
+# failed fails again there and is reported with the rest.
+run:
+	@$(MAKE) --no-print-directory -k all || true
 	@failed=""; passed=0; total=0; \
 	for d in $(TESTS); do \
 	  total=$$((total + 1)); \
