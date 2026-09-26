@@ -13,7 +13,7 @@
 // as before, with a warning that it will not survive a reload.
 
 import { gsEval, gsErrorText, getModule, isModuleReady } from './emulator';
-import { applyCapabilities, syncMachineIdentity } from './boot';
+import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { setMounted } from '@/state/images.svelte';
 import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
@@ -127,10 +127,8 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   const cdPath = paths.get('cd');
   if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
 
-  await syncMachineIdentity();
-  await applyCapabilities(chosen);
-
-  await gsEval('scheduler.run');
+  await reconcileUiWithMachine('boot');
+  await prepareFreshMachine();
   showNotification(`Booted ${chosen} from URL parameters`, 'info');
   return true;
 }

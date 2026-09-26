@@ -28,7 +28,7 @@
 // (storage.mv/storage.rm).
 
 import { gsEval, gsErrorText, isModuleReady, getModule, seedPram } from './emulator';
-import { applyCapabilities, syncMachineIdentity } from './boot';
+import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
@@ -437,9 +437,8 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   }
   // Seed a valid PRAM, as every boot path does.
   await seedPram(model, 0);
-  await syncMachineIdentity();
-  await applyCapabilities(model);
-  await gsEval('scheduler.run');
+  await reconcileUiWithMachine('boot');
+  await prepareFreshMachine();
   showNotification(`Booted ${model} from uploaded ROM`, 'info');
 }
 
@@ -456,6 +455,7 @@ async function loadCheckpointFile(file: File): Promise<void> {
   showNotification(`Loading checkpoint ${file.name}…`, 'info');
   const ok = (await gsEval('checkpoint.load', [tmpPath])) === true;
   if (ok) {
+    await reconcileUiWithMachine('restore');
     showNotification(`Checkpoint loaded (${file.name})`, 'info');
   } else {
     showNotification(`Checkpoint load failed`, 'error');

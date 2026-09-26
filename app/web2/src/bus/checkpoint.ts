@@ -10,6 +10,7 @@
 //      machine.status from scheduler.running.
 
 import { gsEval, gsErrorText } from './emulator';
+import { reconcileUiWithMachine } from './boot';
 import { machine } from '@/state/machine.svelte';
 import {
   checkpointPrompt,
@@ -43,6 +44,7 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
     showNotification('Checkpoint load failed', 'error');
     return false;
   }
+  await reconcileUiWithMachine('restore');
 
   const running = (await gsEval('scheduler.running')) === true;
   machine.status = running ? 'running' : 'paused';

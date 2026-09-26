@@ -18,13 +18,8 @@ import {
   type SchedulerMode,
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
-import { onVideoInReady, onVideoInState, reapplyCameraSource } from '@/state/camera.svelte';
-import {
-  onAudioInReady,
-  onAudioInState,
-  onAudioInInjected,
-  reapplyMicrophoneSource,
-} from '@/state/microphone.svelte';
+import { onVideoInReady, onVideoInState } from '@/state/camera.svelte';
+import { onAudioInReady, onAudioInState, onAudioInInjected } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import {
   onVoodooGpuAttach,
@@ -597,7 +592,9 @@ function handleCheckpointSaved(elapsedMsX100: number): void {
   setCheckpointSaved((elapsedMsX100 | 0) / 100);
 }
 
-function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {
+// Also called with the live geometry after a checkpoint restore, where no
+// resize is pushed (bus/boot.ts reconcileUiWithMachine).
+export function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {
   const width = w | 0;
   const height = h | 0;
   // Pixel aspect ratio (display pixel width:height). 0/undefined => square 1:1.
@@ -688,31 +685,6 @@ export async function setCapsLock(on: boolean): Promise<void> {
     'capslock',
   ]);
   if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
-}
-
-// Power-cycle the running machine. machine.restart rebuilds the machine
-// from its built-from record — same model, RAM, card, ROM — and keeps the
-// mounted media attached by transferring the open image handles across the
-// teardown (proposal-boot-vs-reset §3.3), so no manual re-attachment is
-// needed here. Only runtime state that is not construction configuration
-// (camera/microphone source, scheduler mode) is re-asserted.
-export async function restartEmulator(): Promise<void> {
-  const ok = await gsEval('machine.restart');
-  if (ok !== true) {
-    showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
-    return;
-  }
-  // The rebuilt machine starts with blank PRAM again — re-seed it.
-  const id = await gsEval('machine.id');
-  if (typeof id === 'string' && id) await seedPram(id, 0);
-  // Re-assert the Caps Lock latch (the core also carries it across
-  // machine.restart; a re-latch of an already-down key is a no-op).
-  if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
-  await reapplyCameraSource();
-  await reapplyMicrophoneSource();
-  await applySchedulerMode(machine.scheduler);
-  await gsEval('scheduler.run');
-  showNotification('Machine restarted', 'info');
 }
 
 export async function shutdownEmulator(): Promise<void> {

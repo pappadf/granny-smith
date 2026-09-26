@@ -510,9 +510,10 @@
     appliedFor = modelId;
     ramKb = currentProfile.ram_default || (ramOptions[0] ?? 0);
     floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
-    // A CD picked for another model is not this one's (and this one may
-    // have no CD bay at all): it used to stay selected, hidden, and be
+    // Media picked for another model are not this one's (and this one may
+    // have no CD bay at all): the CD used to stay selected, hidden, and be
     // attached anyway (N-03).
+    hd = NONE_SENTINEL;
     cd = NONE_SENTINEL;
     // cardId / videoMode follow the card-selection effects above.
   });
