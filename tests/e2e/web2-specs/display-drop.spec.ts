@@ -18,6 +18,7 @@ import { test, expect, type Page } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
@@ -62,14 +63,6 @@ async function dropOnDisplay(page: Page, fileName: string, hostFile: string | Ui
 
 function toast(page: Page, text: string | RegExp) {
   return page.locator('.toast .msg').filter({ hasText: text });
-}
-
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
 }
 
 // Read machine.cpu.instr_count through the terminal with a unique key.

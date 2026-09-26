@@ -16,13 +16,28 @@ import { parseLogLine } from '@/lib/logParse';
 
 let terminalWrite: ((line: string) => void) | null = null;
 
+// Lines printed while no terminal exists (before the Terminal tab is first
+// opened), replayed when one registers -- boot output and a script's
+// results used to be dropped (N-57).  Bounded: the oldest go first.
+const BACKLOG_MAX = 2000;
+let backlog: string[] = [];
+
 // TerminalPane registers itself on mount; null on unmount.
 export function setTerminalSink(fn: ((line: string) => void) | null): void {
   terminalWrite = fn;
+  if (fn && backlog.length) {
+    const lines = backlog;
+    backlog = [];
+    for (const line of lines) fn(line);
+  }
 }
 
 export function routePrintLine(line: string): void {
   if (terminalWrite) terminalWrite(line);
+  else {
+    backlog.push(line);
+    if (backlog.length > BACKLOG_MAX) backlog.splice(0, backlog.length - BACKLOG_MAX);
+  }
   // Logs are populated exclusively from routeLogEmit (the C-side global
   // sink, installed at boot). We deliberately do NOT also parse from
   // print here — log.c writes the same formatted line to both

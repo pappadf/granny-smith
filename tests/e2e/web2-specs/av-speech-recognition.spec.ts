@@ -42,6 +42,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { buildFakeCaptureWav } from "../helpers/fake-audio";
+import { terminalRun as typeLine } from "../helpers/terminal";
+
+// A per-key delay: this machine keeps the main thread busy (a live
+// AudioWorklet), and a burst typed into it can lose characters.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { delay: 10 });
 
 const DATA = path.resolve(__dirname, "../../data");
 const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
@@ -83,28 +89,6 @@ test.use({
 });
 
 // --- terminal plumbing (identical to av-sound-record.spec.ts) ---------------
-
-async function focusTerminal(page: Page): Promise<void> {
-  const ta = page.locator(".xterm textarea.xterm-helper-textarea");
-  if ((await ta.count()) > 0) {
-    await ta.focus();
-    await page.waitForFunction(
-      () =>
-        document.activeElement instanceof HTMLTextAreaElement &&
-        document.activeElement.classList.contains("xterm-helper-textarea"),
-      undefined,
-      { timeout: 15_000 },
-    );
-    return;
-  }
-  await page.locator(".xterm").click();
-}
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  await focusTerminal(page);
-  await page.keyboard.type(line, { delay: 10 });
-  await page.keyboard.press("Enter");
-}
 
 async function readKey(page: Page, key: string): Promise<string | null> {
   const text = await page.locator(".xterm-rows").innerText();

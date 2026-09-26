@@ -32,6 +32,11 @@ import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 import { gsEvalInPage } from '../helpers/web2-eval';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const IICX_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
@@ -67,16 +72,6 @@ const MODES: VideoMode[] = (process.env.IICX_VIDEO_MODES?.split(',').map((s) => 
   DEFAULT_IDS)
   .map((id) => ALL_MODES.find((m) => m.id === id))
   .filter((m): m is VideoMode => !!m);
-
-// Type one shell line into the Terminal panel's xterm. A trailing settle
-// lets the async worker round-trip land before the next interaction.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
-}
 
 // Read machine.cpu.instr_count / scheduler.running through the terminal.
 // Each probe uses a fresh key so stale echoes can't satisfy the match. The

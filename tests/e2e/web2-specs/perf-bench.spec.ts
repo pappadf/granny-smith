@@ -28,6 +28,11 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
@@ -35,16 +40,6 @@ const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 const LABEL = process.env.PERF_LABEL ?? 'unlabeled';
 const WINDOWS = Number(process.env.PERF_WINDOWS ?? 3);
 const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 8);
-
-// Type one shell line into the Terminal panel's xterm (same pattern as
-// scheduler-accelerated.spec.ts).
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
-}
 
 // Atomically sample {instr_count, host_wall_ns} inside the worker via a
 // single echo expansion, keyed so stale terminal echoes can't match.

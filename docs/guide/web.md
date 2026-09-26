@@ -494,16 +494,23 @@ The same sequence as Module Bootstrapping above, end to end:
 
 [`TerminalPane.svelte`](../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
 dynamically imports `@xterm/xterm` and `@xterm/addon-fit` on first
-mount so they're code-split out of the main bundle. The terminal's
+mount so they're code-split out of the main bundle, and it stays mounted
+(hidden) once opened, so scrollback survives a tab switch. The terminal's
 input state machine (`{buffer, cursor, history}`) lives in the component.
-On Enter it calls
+All input arrives through xterm's `onData` — keys, pastes, IME text —
+and [`lineDiscipline.ts`](../app/web2/src/components/panel-views/terminal/lineDiscipline.ts)
+turns it into editing actions, which apply one at a time while the input
+line is live: whatever is typed while a command runs waits for the next
+prompt, and a multi-line paste runs line by line. On Enter the pane calls
 `gsEvalLine(line)`, which routes to the Shell class's `run` method;
 the next prompt is returned from `shell.run` and cached for the next
 `showPrompt()`. Stdout / stderr from `Module.print` lands in the same
-pane via [`bus/logSink.ts`](../app/web2/src/bus/logSink.ts).
+pane via [`bus/logSink.ts`](../app/web2/src/bus/logSink.ts), which holds
+what is printed before the terminal first opens and replays it then.
 
 Tab completion uses the typed `shell.complete(line, cursor)` method.
-Ctrl-C calls `shell.interrupt`.
+Ctrl-C calls `shell.interrupt` and drops the type-ahead; Cmd-C on macOS
+is the browser's copy.
 
 xterm's theme is fed from the design tokens `--gs-terminal-bg` /
 `--gs-terminal-fg` / `--gs-terminal-cursor`; an `$effect` watching

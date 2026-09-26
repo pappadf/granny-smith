@@ -29,9 +29,10 @@
 // as the legacy spec did. If the boot hangs or resets, no poll ever matches
 // and the test times out with the stuck frame in the failure screenshot.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const IIFX_ROM = path.join(DATA, 'roms', 'iifx-4147dd77.rom');
@@ -47,14 +48,6 @@ const LOGIN_REF = path.join(
   'iici-aux3-8bpp',
   'aux-login-8bpp.png',
 );
-
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
 
 test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', async ({ page }) => {
   test.setTimeout(12 * 60 * 1000);

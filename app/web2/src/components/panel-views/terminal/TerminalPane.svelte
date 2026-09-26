@@ -15,6 +15,7 @@
   import { machine } from '@/state/machine.svelte';
   import { theme } from '@/state/theme.svelte';
   import { registerTerminalInsert } from './terminalBridge';
+  import { parseTerminalData, type TermAction } from './lineDiscipline';
 
   // Resolve a CSS custom property against :root. Used to feed concrete
   // colours into xterm.js, which doesn't accept var(...) references.
@@ -32,14 +33,15 @@
 
   // xterm types kept opaque — the module is dynamic-imported so the
   // dependency is code-split and only loads when the Terminal tab first
-  // opens. Component tests mock the import via tests/setup.ts.
+  // opens. tests/component/TerminalPane.test.ts mocks it.
   interface XtermLike {
     open(el: HTMLElement): void;
     write(s: string): void;
     writeln(s: string): void;
     loadAddon(a: unknown): void;
-    onKey(handler: (e: { key: string; domEvent: KeyboardEvent }) => void): void;
+    onData(handler: (data: string) => void): void;
     focus(): void;
+    dispose(): void;
     scrollToBottom(): void;
     cols: number;
     options: {
@@ -102,6 +104,7 @@
     inputState.active = true;
     clearLine();
     xterm.write(inputState.prompt);
+    void pump(); // type-ahead waits for exactly this
   }
 
   // Reseed the rendered prompt on machine state transitions (boot, toolbar
@@ -301,6 +304,97 @@
     showPrompt(true);
   }
 
+  // --- Input queue -------------------------------------------------------
+  //
+  // Actions apply one at a time, and only while the input line is live: what
+  // is typed while a command runs waits for its prompt instead of being
+  // dropped (N-55), and a multi-line paste runs its lines in order.
+  const pending: TermAction[] = [];
+  let pumping = false;
+
+  async function pump(): Promise<void> {
+    if (pumping) return;
+    pumping = true;
+    try {
+      while (pending.length && xterm && !destroyed && inputState.active && isModuleReady())
+        await apply(pending.shift()!);
+    } finally {
+      pumping = false;
+    }
+  }
+
+  function insert(text: string) {
+    inputState.buffer =
+      inputState.buffer.slice(0, inputState.cursor) +
+      text +
+      inputState.buffer.slice(inputState.cursor);
+    inputState.cursor += text.length;
+    renderInput();
+  }
+
+  async function apply(a: TermAction): Promise<void> {
+    switch (a.kind) {
+      case 'insert':
+        insert(a.text);
+        return;
+      case 'submit':
+        await submitLine();
+        return;
+      case 'tab':
+        await doTabComplete();
+        return;
+      case 'backspace':
+        if (inputState.cursor > 0) {
+          inputState.buffer =
+            inputState.buffer.slice(0, inputState.cursor - 1) +
+            inputState.buffer.slice(inputState.cursor);
+          inputState.cursor--;
+          renderInput();
+        }
+        return;
+      case 'delete':
+        if (inputState.cursor < inputState.buffer.length) {
+          inputState.buffer =
+            inputState.buffer.slice(0, inputState.cursor) +
+            inputState.buffer.slice(inputState.cursor + 1);
+          renderInput();
+        }
+        return;
+      case 'left':
+        if (inputState.cursor > 0) {
+          inputState.cursor--;
+          renderInput();
+        }
+        return;
+      case 'right':
+        if (inputState.cursor < inputState.buffer.length) {
+          inputState.cursor++;
+          renderInput();
+        }
+        return;
+      case 'up':
+        recallHistory(-1);
+        return;
+      case 'down':
+        recallHistory(1);
+        return;
+      case 'home':
+        inputState.cursor = 0;
+        renderInput();
+        return;
+      case 'end':
+        inputState.cursor = inputState.buffer.length;
+        renderInput();
+        return;
+      case 'clear':
+        xterm?.write('\x1b[2J\x1b[H');
+        showPrompt(true);
+        return;
+      case 'interrupt':
+        return; // handled on arrival
+    }
+  }
+
   // Programmatic insert from the Command Browser. Replaces the current
   // input with `text + ' '` and focuses the terminal.
   function insertText(text: string) {
@@ -320,6 +414,7 @@
     void layout.panelSize.left;
     void layout.panelSize.right;
     void layout.panelCollapsed;
+    void layout.activeTab; // the pane stays mounted while hidden; refit when shown
     if (fitAddon) requestAnimationFrame(() => fitAddon?.fit());
   });
 
@@ -364,104 +459,20 @@
       // Allow CommandBrowser rows to push into the prompt.
       registerTerminalInsert((s: string) => insertText(s));
 
-      // Key handler — mirrors app/web/js/terminal.js.
-      xterm.onKey(async ({ key, domEvent }) => {
-        const ev = domEvent;
-        if (!isModuleReady()) return;
-
-        if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C')) {
-          ev.preventDefault();
-          await handleInterrupt();
-          return;
-        }
-        if (!inputState.active) return;
-        if (ev.key === 'Tab') {
-          ev.preventDefault();
-          await doTabComplete();
-          return;
-        }
-        if (ev.key === 'Enter') {
-          ev.preventDefault();
-          await submitLine();
-          return;
-        }
-        if (ev.key === 'Backspace') {
-          ev.preventDefault();
-          if (inputState.cursor > 0) {
-            inputState.buffer =
-              inputState.buffer.slice(0, inputState.cursor - 1) +
-              inputState.buffer.slice(inputState.cursor);
-            inputState.cursor--;
-            renderInput();
+      // The one input path (F-40): keys, pastes, IME and virtual keyboards
+      // all arrive as data.  Ctrl-C (xterm sends ^C for Ctrl only) interrupts
+      // at once and drops the type-ahead; Cmd-C sends nothing, so on macOS it
+      // is the browser's copy (N-54).
+      xterm.onData((data) => {
+        for (const action of parseTerminalData(data)) {
+          if (action.kind === 'interrupt') {
+            pending.length = 0;
+            if (isModuleReady()) void handleInterrupt();
+          } else {
+            pending.push(action);
           }
-          return;
         }
-        if (ev.key === 'Delete') {
-          ev.preventDefault();
-          if (inputState.cursor < inputState.buffer.length) {
-            inputState.buffer =
-              inputState.buffer.slice(0, inputState.cursor) +
-              inputState.buffer.slice(inputState.cursor + 1);
-            renderInput();
-          }
-          return;
-        }
-        if (ev.key === 'ArrowLeft') {
-          ev.preventDefault();
-          if (inputState.cursor > 0) {
-            inputState.cursor--;
-            renderInput();
-          }
-          return;
-        }
-        if (ev.key === 'ArrowRight') {
-          ev.preventDefault();
-          if (inputState.cursor < inputState.buffer.length) {
-            inputState.cursor++;
-            renderInput();
-          }
-          return;
-        }
-        if (ev.key === 'ArrowUp') {
-          ev.preventDefault();
-          recallHistory(-1);
-          return;
-        }
-        if (ev.key === 'ArrowDown') {
-          ev.preventDefault();
-          recallHistory(1);
-          return;
-        }
-        if (ev.key === 'Home') {
-          ev.preventDefault();
-          inputState.cursor = 0;
-          renderInput();
-          return;
-        }
-        if (ev.key === 'End') {
-          ev.preventDefault();
-          inputState.cursor = inputState.buffer.length;
-          renderInput();
-          return;
-        }
-        if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'l' || ev.key === 'L')) {
-          ev.preventDefault();
-          if (xterm) xterm.write('\x1b[2J\x1b[H');
-          inputState.buffer = '';
-          inputState.cursor = 0;
-          showPrompt(true);
-          return;
-        }
-        if (ev.ctrlKey || ev.metaKey) return;
-        if (key && key.length === 1 && key >= ' ') {
-          ev.preventDefault();
-          inputState.buffer =
-            inputState.buffer.slice(0, inputState.cursor) +
-            key +
-            inputState.buffer.slice(inputState.cursor);
-          inputState.cursor += key.length;
-          renderInput();
-        }
+        void pump();
       });
 
       // Seed the prompt once the WASM module's bridge is live. bootstrap()
@@ -493,8 +504,11 @@
 
   onDestroy(() => {
     destroyed = true;
+    pending.length = 0;
     setTerminalSink(null);
     registerTerminalInsert(null);
+    // Its DOM, observers, renderer and 5000 lines of scrollback (F-39).
+    xterm?.dispose();
     xterm = null;
     fitAddon = null;
   });

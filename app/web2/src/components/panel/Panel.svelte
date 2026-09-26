@@ -8,13 +8,25 @@
   import CheckpointsView from '../panel-views/checkpoints/CheckpointsView.svelte';
   import DebugView from '../panel-views/debug/DebugView.svelte';
   import LogsView from '../panel-views/logs/LogsView.svelte';
+
+  let terminalOpened = $state(false);
+  $effect(() => {
+    if (layout.activeTab === 'terminal') terminalOpened = true;
+  });
 </script>
 
 <aside class="gs-panel">
   <PanelHeader />
   <div class="gs-panel-content">
-    {#if layout.activeTab === 'terminal'}<TerminalView />
-    {:else if layout.activeTab === 'machine'}<SystemView />
+    <!-- The terminal stays mounted once opened, hidden while another tab
+         shows: its scrollback, and the output that arrives meanwhile, survive a
+         tab switch (N-57). -->
+    {#if terminalOpened}
+      <div class="terminal-keep" class:hidden={layout.activeTab !== 'terminal'}>
+        <TerminalView />
+      </div>
+    {/if}
+    {#if layout.activeTab === 'machine'}<SystemView />
     {:else if layout.activeTab === 'filesystem'}<FilesystemView />
     {:else if layout.activeTab === 'images'}<ImagesView />
     {:else if layout.activeTab === 'checkpoints'}<CheckpointsView />
@@ -40,5 +52,12 @@
     min-width: 0;
     position: relative;
     overflow: hidden;
+  }
+  .terminal-keep {
+    width: 100%;
+    height: 100%;
+  }
+  .terminal-keep.hidden {
+    display: none;
   }
 </style>

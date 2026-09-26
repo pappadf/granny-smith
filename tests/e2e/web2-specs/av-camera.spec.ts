@@ -29,6 +29,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const AV_ROM = path.join(DATA, 'roms', 'q840av-q660av-5bf10fd1.rom');
@@ -48,14 +49,6 @@ test.use({
     ],
   },
 });
-
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
 
 // Scan the xterm buffer for a probe key's answer.
 //

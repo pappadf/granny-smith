@@ -25,22 +25,17 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 // SE/30: 15.6672 MHz, authentic CPI 4.
 const SE30_HZ = 15_667_200;
-
-// Type one shell line into the Terminal panel's xterm. A trailing settle
-// lets the async worker round-trip land before the next interaction.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
-}
 
 // Probe the cycle and instruction counters with a fresh key per probe so
 // stale terminal echoes can't satisfy the match (same pattern as
