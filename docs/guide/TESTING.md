@@ -6,12 +6,18 @@ emulator), and browser-based end-to-end tests (Playwright).
 
 ## Quick Reference
 
-| Tier | Command | Duration | Test Data Required |
-|------|---------|----------|--------------------|
-| Unit | `make -C tests/unit run` | 1–5 min | No (uses `third-party/single-step-tests`) |
-| Integration | `make integration-test` | 10–20 min (`-j` shortens) | Yes |
-| E2E | `make e2e-test` | 10–15 min | Yes |
-| Unit + Integration | `make test` | 2–7 min | Partially |
+| Tier | Command | In CI | Test data |
+|------|---------|-------|-----------|
+| Unit | `make -j$(nproc) -C tests/unit run` | 2½ min native, then 40 s for the wasm32 rerun | No, but the `third-party/single-step-tests` and `third-party/powerpc-test` submodules must be initialised |
+| Integration, unit tier | `make integration-test TIER=unit -j$(nproc)` | 1 min | Yes |
+| Integration, matrix tier | `make integration-test TIER=matrix -j$(nproc)` | 17 min | Yes |
+| Integration, extended tier | `make integration-test TIER=extended` | 33 min, serial | Yes |
+| E2E | `make e2e-test` | 16 min, one worker | Yes |
+| Unit + every integration tier | `make test` | the sum of the rows above | Yes, for the integration part |
+
+The times are CI step times on GitHub's 4-core `ubuntu-24.04` runner
+(September 2026); `-j` is what CI passes, and a row without it runs serially
+there. Locally, `-j$(nproc)` works for every tier.
 
 Test data is fetched via `scripts/fetch-test-data.sh` (requires
 `GS_TEST_DATA_TOKEN`). See [TEST_DATA.md](TEST_DATA.md).
@@ -23,31 +29,27 @@ tests/
 ├── data/                           # Proprietary test assets (.gitignored)
 ├── unit/                           # Native C unit tests
 │   ├── Makefile                   #   Orchestrator (discovers suites/*/Makefile)
-│   ├── common.mk                 #   Shared build rules + harness selection
-│   ├── suites/                    #   All test suites
-│   │   ├── cpu/                   #     CPU single-step instruction tests
-│   │   ├── disasm/                #     Disassembler corpus test
-│   │   └── storage/               #     Storage subsystem tests
-│   └── support/                   #   Shared infrastructure
-│       ├── test_assert.h          #     Assertion macros
-│       ├── harness.h              #     Harness API
-│       ├── harness_*.c            #     Harness implementations
-│       ├── stub_*.c               #     Focused stub modules
-│       ├── platform.h             #     Platform header override
-│       └── log.h                  #     Logging header override
+│   ├── common.mk                  #   The build recipe every suite includes
+│   ├── suites/<name>/             #   One directory per suite
+│   └── support/                   #   Harnesses, stubs, header shims
 ├── integration/                    # Headless emulator integration tests
 │   ├── lib/                       #   Shared row/wait/golden library (include'd)
-│   ├── suite-plus/ suite-se30/ …  #   Per-machine suites (rows, goldens/)
-│   ├── checkpoint/                #   Cross-process checkpoint save/restore
-│   ├── object-*/ shell-*/ …       #   Unit-tier object-model + shell tests
-│   └── iicx-video-modes/          #   16-cell real-vROM JMFB sweep
+│   ├── suite-<family>/            #   Per-machine suites (rows, goldens/)
+│   └── <name>/                    #   One directory per test (config.mk, test.script)
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
     ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
     ├── ui-prod-smoke/             #   Production-bundle boot smoke
-    ├── helpers/web2-fs.ts         #   OPFS staging + drag helpers
-    ├── test_server.py             #   COOP/COEP static server
-    └── playwright.web2.config.ts  #   Main Playwright configuration
+    └── helpers/web2-fs.ts         #   OPFS staging + drag helpers
 ```
+
+The inventories are the tools, not this page:
+
+```bash
+make -C tests/unit list           # every unit suite
+make -C tests/integration list    # every integration test, with its tier and description
+```
+
+and [tests/e2e/README.md](../../tests/e2e/README.md) annotates every e2e spec.
 
 ---
 
@@ -238,7 +240,7 @@ Neither script changes how goldens are compared. Matching is byte-exact via
 | Trigger | Runs |
 |---|---|
 | PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, **plus the extended tier while the integration-test rework settles**, then the coverage contract and the perf baselines; all gate the build. The extended tier is normally nightly-only (§5.4) — it is on the PR gate temporarily so a regression in a long row is caught before merge rather than the next morning, and the step says how to revert it. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
-| Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier + one boot with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
+| Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier, one short run per PowerPC family the unit tier does not boot (`pdm-rom-ladder`, `tnt-pci-slots`) and one 68k boot, with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
 
 Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
 billions of guest cycles, `test-valgrind` across every test cannot run to
@@ -303,18 +305,11 @@ one shared helper is `tests/e2e/helpers/web2-fs.ts`. See
 > The legacy web UI and its `tests/e2e/specs/**` suite were retired; unique
 > coverage moved here or into the headless integration tests above.
 
-### Specs (`tests/e2e/web2-specs/`)
+### Specs
 
-| Spec | What it tests |
-|------|---------------|
-| `checkpoint-resume` | Checkpoint save → reload → resume; SE/30 profile restore |
-| `display-card-config` | New Machine dialog: video card selected by name |
-| `display-drop` | Drag-and-drop onto the Display: ROM boot, floppy mount, checkpoint restore |
-| `filesystem-tab` | Filesystem tab: descend image, copy/move/rename, unpack archive |
-| `iicx-video-modes` | Post-shader WebGL canvas baselines (monitor × depth) |
-| `iifx-aux3-realtime` | A/UX 3.0.1 boot to login under the real RAF scheduler |
-| `lisa-xenix-profile` | Lisa/XL ProFile-vs-SCSI config + boot |
-| `url-boot` | `?rom=…` URL-parameter boot |
+[tests/e2e/README.md](../../tests/e2e/README.md) lists every spec under
+`tests/e2e/web2-specs/` with what it tests; the Hygiene workflow
+(`scripts/check-doc-inventories.py`) fails if a spec is missing from it.
 
 Two more configs run separately: `ui-prod-smoke/` (production-bundle boot
 smoke, no data) and `playwright.webkit-local.config.ts`, which runs

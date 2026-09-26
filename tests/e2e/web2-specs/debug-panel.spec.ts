@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Debug view against a real machine (unit 0.4).
+// web2 e2e: the Debug view against a real machine.
 //
 // Until this spec there was no e2e coverage of the Debug view at all, and its
 // component tests mock the bus functions under test — so register editing

@@ -6,18 +6,24 @@
 Each check pairs a set of tracked files with the document that inventories
 them, and fails for every file the document does not mention by name:
 
-    tests/unit/support/stub_*.c    tests/unit/README.md (the stub table)
+    tests/unit/support/stub_*.c       tests/unit/README.md (the stub table)
+    tests/e2e/web2-specs/*.spec.ts    tests/e2e/README.md (the spec tree)
+
+A name counts when it appears as a whole token (so `stub_cpu.c` is not
+satisfied by `stub_cpu_x.c`), in backticks or not.
 
 Usage: scripts/check-doc-inventories.py      Exit: 0 clean, 1 drift.
 """
 
 import os
+import re
 import subprocess
 import sys
 
 # (pattern of tracked files, the document that must name each one)
 INVENTORIES = [
     ("tests/unit/support/stub_*.c", "tests/unit/README.md"),
+    ("tests/e2e/web2-specs/*.spec.ts", "tests/e2e/README.md"),
 ]
 
 
@@ -36,7 +42,7 @@ def main():
             missing.append(f"{pattern}: matches no tracked file (stale inventory entry?)")
         for path in files:
             name = os.path.basename(path)
-            if f"`{name}`" not in text:
+            if not re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", text):
                 missing.append(f"{doc}: does not name `{name}` ({path})")
     for m in missing:
         print(m)
