@@ -547,7 +547,10 @@ calls this "a gap, not hardware" (`system.c:292`).
   gap. The web frontend works around one piece of it by writing the
   startup device again after a restart (`app/web2/src/bus/boot.ts:265`).
   `tnt_nvram_clear` erases the store together with the carry
-  (`tnt.c:458`).
+  (`tnt.c:458`). The store is exposed as `machine.nvram` (`peek`, `poke`,
+  `dump`, `snapshot`, `restore`, `clear`) — the TNT twin of
+  `machine.rtc.pram`, so a row pins a setting there and power-cycles
+  (docs/machines/tnt/tnt.md, "The store is a test lever").
 - *Media transfer by substrate.* Floppies and `machine.scsi` go through
   the standard pair (`system_media_detach_std` /
   `system_media_attach_std`, `system.c:1398`/`1440`). The TNT family also
