@@ -160,6 +160,7 @@ struct display_card_824gc_priv {
     //     caches are gone; a checkpoint restore is not such a moment.
     //   * gc_cur_wt / gc_cur_strike -- point INTO those caches; recomputed
     //   * display / card / ctx_* -- embed pointers card_init rebuilds
+    //   * blank / mon_w -- allocated / fixed at card_init
     //   * force_decline -- a harness switch, not guest state (see below)
     // ==================================================================
 
@@ -175,6 +176,10 @@ struct display_card_824gc_priv {
     uint32_t vrom_size;
     display_t display;
     jmfb_bind_t jmfb_bind; // what `jmfb` acts on; rebuilt at init, never checkpointed
+    // A refused VidComm scanout shows this instead (display_set_scanout);
+    // GC824_DRAM_SIZE bytes, like the DRAM a mode would have scanned.
+    uint8_t *blank;
+    uint32_t mon_w; // the monitor's visible width (the height is jmfb.raster_h)
 
     // --- Accelerator (super-slot space) ---
     uint8_t *sram; // GC824_SRAM_SIZE (firmware code sink; plain RAM)

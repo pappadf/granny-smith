@@ -52,8 +52,11 @@ LOG_USE_CATEGORY_NAME("video");
 // glTexSubImage2D still read stride*height back OUT of it, so a mode past the
 // ceiling (DAFB reaches stride 16380 x 2048, the Mach64 32736) read past the
 // static array either way -- and half a frame is not a useful degradation
-// (04-video F-19).  The producers keep stride*height inside the buffer they
-// point at (display_set_scanout), so this is the consumer's own ceiling.
+// (04-video F-19).  Past that ceiling it is the producers' job to keep
+// stride*height inside the buffer they point at: most through
+// display_set_scanout (the 8*24 GC's VidComm too, since N-52), the Voodoo2 by
+// clamping its screen to its scanout allocation (N-51).  This is the
+// consumer's own ceiling, not the guarantee that a descriptor is backed.
 static bool fb_fits_scratch(const display_t *d) {
     return (uint64_t)d->stride * d->height <= MAX_FB_BYTES;
 }

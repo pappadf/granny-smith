@@ -413,11 +413,23 @@ static void gc_drain_queue(display_card_824gc_priv_t *p) {
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, p->queue_base + pub);
 }
 
+// The depths a VidComm request may name: what format_for_bpp decodes, with
+// 24 (programMode's name for the direct 32-bit mode) folded to 32.  Its
+// default case maps anything else to 8 bpp, so it cannot be the check.
+static bool gc_vidcomm_depth_ok(uint32_t bpp) {
+    return bpp == 1 || bpp == 2 || bpp == 4 || bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32;
+}
+
 // VidComm mode change: the video driver published new geometry (see the
 // header block).  Apply it to the display and clear the ack byte the host
 // polls.  The FB base stays inside the DRAM aperture at every shipped mode
 // (0x11400 at both 1 and 8 bpp — guest-probed); reject anything that doesn't
-// decode rather than tearing the display.
+// decode rather than tearing the display.  Decoding is not enough: the
+// raster must also FIT the 2 MB DRAM, which is display_set_scanout's call --
+// a 1152x870 monitor at 32 bpp is 4608 x 870 ~ 4 MB, a legitimate-looking
+// request the DRAM cannot back.  This path used to set bits and stride
+// directly, and the renderer (and this card's own drawing engine) read and
+// wrote past the DRAM (N-52).
 static void gc_vidcomm(display_card_824gc_priv_t *p) {
     uint32_t vc = GC824_DRAM_VIDCOMM;
     uint32_t fbbase = dram_be32(p, vc + GC824_VC_FBBASE);
@@ -426,22 +438,25 @@ static void gc_vidcomm(display_card_824gc_priv_t *p) {
     uint32_t scanlines = dram_be32(p, vc + GC824_VC_SCANLINES);
     dram_set_be32(p, vc + GC824_VC_GO, 0); // consume the request
     uint32_t fboff = fbbase & 0x0FFFFFFFu; // card-local
-    if (fboff >= GC824_DRAM_OFFSET && fboff - GC824_DRAM_OFFSET < GC824_DRAM_SIZE && rowbytes >= 8 &&
-        rowbytes <= 8192 && scanlines >= 1 && scanlines <= 2048) {
+    bool decodes = fboff >= GC824_DRAM_OFFSET && fboff - GC824_DRAM_OFFSET < GC824_DRAM_SIZE && rowbytes >= 8 &&
+                   rowbytes <= 8192 && scanlines >= 1 && scanlines <= 2048 && gc_vidcomm_depth_ok(bpp);
+    if (decodes) {
         int b = (bpp == 24) ? 32 : (int)bpp; // programMode folds 32 -> 24
-        p->display.format = format_for_bpp(b);
-        p->display.bits = p->dram + (fboff - GC824_DRAM_OFFSET);
-        p->display.stride = rowbytes;
         // `scanlines` is programMode's ADJUSTED scan count (the direct modes
         // add +5/+60 blank/overscan lines — 545 for 640×480×32) — a CRT
         // total, NOT the visible height.  The visible geometry is the
         // monitor's; only narrow the width if rowBytes can't hold it.
-        if (b > 0 && rowbytes * 8u / (uint32_t)b < p->display.width)
-            p->display.width = rowbytes * 8u / (uint32_t)b;
+        uint32_t width = p->mon_w;
+        if (rowbytes * 8u / (uint32_t)b < width)
+            width = rowbytes * 8u / (uint32_t)b;
+        uint32_t height = p->jmfb.raster_h ? p->jmfb.raster_h : 480u;
+        p->display.format = format_for_bpp(b);
+        bool fits = display_set_scanout(&p->display, p->dram, GC824_DRAM_SIZE, fboff - GC824_DRAM_OFFSET, rowbytes,
+                                        width, height, p->blank, GC824_DRAM_SIZE);
         p->display.shape_dirty = true;
         p->display.fb_dirty = true;
-        LOG(1, "8*24 GC: VidComm mode change: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp,
-            scanlines);
+        LOG(fits ? 1 : 0, "8*24 GC: VidComm mode change%s: fb=$%08x rowBytes=%u bpp=%u scanlines=%u",
+            fits ? "" : " does not fit the DRAM (blanked)", fbbase, rowbytes, bpp, scanlines);
     } else {
         LOG(0, "8*24 GC: VidComm mode change rejected: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp,
             scanlines);
@@ -941,17 +956,19 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     p->vrom = calloc(1, GC824_DECLROM_BUS_SIZE);
     p->sram = calloc(1, GC824_SRAM_SIZE);
     p->dram = calloc(1, GC824_DRAM_SIZE);
+    p->blank = calloc(1, GC824_DRAM_SIZE);
     p->regs = calloc(1, GC824_REGS_SIZE);
     p->gc_clipmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
     p->gc_blitmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
     p->gc_cliprgn = calloc(1, GC824_RGN_MAX);
     p->gc_visrgn = calloc(1, GC824_RGN_MAX);
-    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->regs || !p->gc_clipmask || !p->gc_blitmask ||
+    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->blank || !p->regs || !p->gc_clipmask || !p->gc_blitmask ||
         !p->gc_cliprgn || !p->gc_visrgn) {
         free(p->vram);
         free(p->vrom);
         free(p->sram);
         free(p->dram);
+        free(p->blank);
         free(p->regs);
         free(p->gc_clipmask);
         free(p->gc_blitmask);
@@ -1011,6 +1028,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         p->seeded_bpp = seeded_depth_bpp;
     }
     p->display.height = p->jmfb.raster_h;
+    p->mon_w = p->display.width;
     set_poweron_defaults(p);
 
     card->priv = p;
@@ -1082,6 +1100,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p->sram);
     free(p->dram);
+    free(p->blank);
     free(p->regs);
     free(p->gc_clipmask);
     free(p->gc_blitmask);
