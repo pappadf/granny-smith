@@ -929,6 +929,8 @@ int shell_poll(void) {
 // card ROMs (e.g. the integration harness's tests/data/roms, reached via the
 // absolute rom= path) discoverable without core knowing any directory.
 static void offer_sibling_card_roms(const char *rom_path) {
+    if (!rom_path || !*rom_path)
+        return;
     const char *slash = strrchr(rom_path, '/');
     char dir[1024];
     if (slash) {
@@ -947,6 +949,13 @@ static void offer_sibling_card_roms(const char *rom_path) {
 }
 
 // === The platform contract (src/platform/platform.h) =======================
+
+// A script's `machine.boot rom=<elsewhere>` gets the same walk the CLI's
+// rom= got at startup; without it a ROM booted from another directory found
+// none of the card ROMs beside it (#187).
+void platform_offer_sibling_card_roms(const char *rom_path) {
+    offer_sibling_card_roms(rom_path);
+}
 
 // The host callstack, for the failure handler: glibc's backtrace where there
 // is one (this lived in em_main.c's never-compiled native branch).

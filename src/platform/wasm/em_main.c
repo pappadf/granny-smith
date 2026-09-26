@@ -834,6 +834,12 @@ void em_print_host_callstack(void) {
         printf("(unavailable)\n");
 }
 
+// Nothing to walk: the browser's card ROMs live under /opfs/images/vrom and
+// /opfs/images/prom, offered at startup and on every upload (persistAs).
+void platform_offer_sibling_card_roms(const char *rom_path) {
+    (void)rom_path;
+}
+
 // Platform-specific callstack function (exposed to core via platform.h)
 void platform_print_host_callstack(void) {
     em_print_host_callstack();
