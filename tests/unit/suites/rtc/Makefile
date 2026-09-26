@@ -14,7 +14,9 @@ OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
 TARGET    := $(BUILD_DIR)/$(TEST_NAME)
 
 CC ?= gcc
-BASE_CFLAGS := -O0 -g -Wall -Wextra
+# _GNU_SOURCE as Makefile.headless: rtc.c parses the time attribute with
+# strptime, which glibc declares only under a feature-test macro.
+BASE_CFLAGS := -O0 -g -Wall -Wextra -D_GNU_SOURCE
 INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core \
                  -I$(EMU_ROOT)/core/cpu \

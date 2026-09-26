@@ -3563,9 +3563,9 @@ TEST(long_names_are_shortened_and_found_again) {
     write_file(long40, "forty");
     write_file("Thirty-one characters, exactly.", "31");
     uint32_t cnid = file_number(long40); // adopts it, by its host name
-    char expect[40];
+    char expect[16]; // "#" and at most 8 hex digits
     snprintf(expect, sizeof expect, "#%X", (unsigned)cnid);
-    char shortname[40];
+    char shortname[64]; // 31 in practice; sized for the compiler's worst case
     snprintf(shortname, sizeof shortname, "%.*s%s", (int)(31 - strlen(expect)), long40, expect);
     ASSERT_EQ_INT(31, (int)strlen(shortname));
 

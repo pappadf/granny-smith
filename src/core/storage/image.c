@@ -21,7 +21,6 @@
 #include "storage_util.h"
 #include "system.h"
 
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -173,9 +172,9 @@ void image_close(image_t *image) {
 }
 
 // Mint a 16-hex-char opaque id (8 random bytes).  Used both for image
-// instance ids and as scratch-name salt.
-static void mint_random_hex_id(char *out, size_t out_len) {
-    assert(out_len >= 17);
+// instance ids and as scratch-name salt.  `out` holds 16 chars + NUL; the
+// [static 17] lets the compiler reject a smaller buffer at the call site.
+static void mint_random_hex_id(char out[static 17]) {
     uint8_t bytes[8] = {0};
     bool got = false;
 #if !defined(_WIN32)
@@ -797,7 +796,7 @@ image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry
     // sidecars.
     gs_mkdir_p(image_scratch_dir());
     char id[17];
-    mint_random_hex_id(id, sizeof(id));
+    mint_random_hex_id(id);
     image->instance_path = NULL; // never serialized for read-only mounts
     image->delta_path = gs_str_printf("%s/%s.delta", image_scratch_dir(), id);
     image->journal_path = gs_str_printf("%s/%s.journal", image_scratch_dir(), id);
@@ -857,7 +856,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     }
 
     char id[17];
-    mint_random_hex_id(id, sizeof(id));
+    mint_random_hex_id(id);
 
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
     if (!image) {
@@ -955,7 +954,7 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     // image_close.  The image is ephemeral unless exported via image_export_to.
     gs_mkdir_p(image_scratch_dir());
     char id[17];
-    mint_random_hex_id(id, sizeof(id));
+    mint_random_hex_id(id);
     image->instance_path = NULL; // never serialized
     image->delta_path = gs_str_printf("%s/%s.delta", image_scratch_dir(), id);
     image->journal_path = gs_str_printf("%s/%s.journal", image_scratch_dir(), id);

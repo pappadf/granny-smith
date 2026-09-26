@@ -821,11 +821,6 @@ static uint32_t v2gpu_tex_resolve(v2_gpu_t *g, const v2_draw_state_t *st, int tm
 // Draw records
 // ============================================================
 
-static inline float v2gpu_f(uint32_t bits) {
-    float f;
-    memcpy(&f, &bits, sizeof(f));
-    return f;
-}
 static inline uint32_t v2gpu_bits(float f) {
     uint32_t u;
     memcpy(&u, &f, sizeof(u));

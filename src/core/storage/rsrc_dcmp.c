@@ -231,7 +231,7 @@ static int vt_remember(vt_t *vt, const uint8_t *data, size_t len) {
     if (vt->size < 4)
         return -1;
     uint16_t next_idx = RD_BE16(vt->buf);
-    if (next_idx + 2 > vt->size)
+    if ((size_t)next_idx + 2 > vt->size)
         return -1; // index list would collide with the data area
     // Previous entry's offset = end of the new string.
     uint16_t prev_off = RD_BE16(vt->buf + next_idx - 2);

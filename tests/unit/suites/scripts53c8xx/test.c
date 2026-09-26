@@ -978,7 +978,7 @@ TEST(test_memory_move_preserves_temp) {
     run_at(0x1000);
 
     ASSERT_EQ_INT((int)reg32(SYM825_TEMP), 0x1008);
-    ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x99999999);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSPS), (int)0x99999999u);
 }
 
 // NEGATIVE: "Both the source and destination addresses must start with the

@@ -707,7 +707,7 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         sit_entry_t *ent = entry_list_push(entries, err);
         if (!ent) return false;
 
-        strncpy(ent->name, path, sizeof(ent->name) - 1);
+        snprintf(ent->name, sizeof(ent->name), "%s", path);
         ent->mac_type     = ftype;
         ent->mac_creator  = fcreator;
         ent->finder_flags = fflags;
@@ -920,9 +920,8 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
             build_path(folder_full, sizeof(folder_full), ppath, namebuf);
             if (dmap_cnt < SIT5_MAX_DIRS) {
                 dmap[dmap_cnt].offset = cursor;
-                strncpy(dmap[dmap_cnt].path, folder_full,
-                        sizeof(dmap[dmap_cnt].path) - 1);
-                dmap[dmap_cnt].path[sizeof(dmap[dmap_cnt].path) - 1] = '\0';
+                snprintf(dmap[dmap_cnt].path, sizeof(dmap[dmap_cnt].path),
+                         "%s", folder_full);
                 dmap_cnt++;
             }
 
@@ -971,7 +970,7 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         sit_entry_t *ent = entry_list_push(entries, err);
         if (!ent) return false;
 
-        strncpy(ent->name, full_name, sizeof(ent->name) - 1);
+        snprintf(ent->name, sizeof(ent->name), "%s", full_name);
         ent->mac_type     = ftype;
         ent->mac_creator  = fcreator;
         ent->finder_flags = fflags;

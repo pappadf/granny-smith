@@ -233,6 +233,7 @@ static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_ca
 
 // Shift register completion callback - fires after 8 clock cycles
 static void sr_shift_complete_callback(void *source, uint64_t data) {
+    (void)data;
     via_t *via = (via_t *)source;
 
     // Only complete the shift if still pending (not cancelled by ACR change)
@@ -261,6 +262,7 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
 
 // Timer 1 timeout callback - handles one-shot and free-running modes
 static void t1_callback(void *source, uint64_t data) {
+    (void)data;
 
     via_t *via = (via_t *)source;
 
@@ -307,6 +309,7 @@ static void t1_callback(void *source, uint64_t data) {
 
 // Timer 2 timeout callback - handles one-shot interval timing
 static void t2_callback(void *source, uint64_t data) {
+    (void)data;
 
     via_t *via = (via_t *)source;
 

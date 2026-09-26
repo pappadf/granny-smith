@@ -779,7 +779,7 @@ typedef struct {
     uint64_t max_pf; // largest per-frame count ever observed
 } gov_trace_t;
 
-static gov_trace_t gov_drive(scheduler_t *s, double *now, int ticks, bool expect_monotonic) {
+static gov_trace_t gov_drive(double *now, int ticks, bool expect_monotonic) {
     gov_trace_t t = {0, 0, 1e9, 0};
     uint64_t prev_instr = cpu_instr_count();
     uint64_t prev_vbls = g_vbls;
@@ -823,7 +823,7 @@ TEST(test_governor_climbs_to_cap) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+    gov_trace_t t = gov_drive(&now, 25 * 60, true);
 
     ASSERT_TRUE(t.changes == 6); // rung 0 -> 6, one step at a time
     ASSERT_TRUE(t.min_gap > 1.8); // dwell slew limit respected (2 s nominal)
@@ -843,7 +843,7 @@ TEST(test_governor_slow_host_stays_authentic) {
     g_secs_per_instr = 0.95 * VBL_PERIOD / (double)pf1; // 1x utilization ~0.95
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 10 * 60, true);
+    gov_trace_t t = gov_drive(&now, 10 * 60, true);
 
     ASSERT_TRUE(t.changes == 0); // never climbed
     ASSERT_TRUE(t.final_pf == pf1); // authentic instructions per frame
@@ -862,11 +862,11 @@ TEST(test_governor_spike_backoff) {
     g_secs_per_instr = 0.06 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+    gov_trace_t t = gov_drive(&now, 25 * 60, true);
     ASSERT_TRUE((double)t.final_pf / (double)pf1 > 7.9); // reached the cap
 
     g_secs_per_instr *= 4.0; // spike: 8x now costs ~1.92 of the budget
-    gov_trace_t back = gov_drive(s, &now, 12 * 60, false);
+    gov_trace_t back = gov_drive(&now, 12 * 60, false);
     double settled = (double)back.final_pf / (double)pf1;
     ASSERT_TRUE(settled > 2.9 && settled < 3.1); // backed off to 3x
     ASSERT_TRUE(back.changes >= 3); // stepped down through the rungs
@@ -883,16 +883,16 @@ TEST(test_governor_audio_pressure) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 7 * 60, true);
+    gov_trace_t t = gov_drive(&now, 7 * 60, true);
     ASSERT_TRUE(t.final_pf > pf1); // climbed at least one rung
 
     uint64_t before = t.final_pf;
     g_audio_fill = 0.2; // ring draining: pressure regardless of utilization
-    gov_trace_t drop = gov_drive(s, &now, 3 * 60, false);
+    gov_trace_t drop = gov_drive(&now, 3 * 60, false);
     ASSERT_TRUE(drop.final_pf < before); // backed off
 
     g_audio_fill = 1.0; // ring healthy again: climbing resumes
-    gov_trace_t re = gov_drive(s, &now, 10 * 60, false);
+    gov_trace_t re = gov_drive(&now, 10 * 60, false);
     ASSERT_TRUE(re.final_pf > drop.final_pf);
     teardown(s);
 }
@@ -907,7 +907,7 @@ TEST(test_governor_max_speed_cap) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 15 * 60, true);
+    gov_trace_t t = gov_drive(&now, 15 * 60, true);
     double ratio = (double)t.final_pf / (double)pf1;
     ASSERT_TRUE(ratio > 2.9 && ratio < 3.1); // settled exactly at the 3x cap
     ASSERT_TRUE((double)t.max_pf / (double)pf1 < 3.1); // never above it

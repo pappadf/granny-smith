@@ -212,11 +212,10 @@ TEST(test_sparse_indices_survive_remove_and_re_add) {
     ASSERT_EQ_INT(2, c);
 
     // Resolve via the iterator before any churn.
-    int seen[8];
     int n_seen = 0;
     int idx = ring_next(ring, -1);
     while (idx != -1 && n_seen < 8) {
-        seen[n_seen++] = idx;
+        n_seen++;
         idx = ring_next(ring, idx);
     }
     ASSERT_EQ_INT(3, n_seen);

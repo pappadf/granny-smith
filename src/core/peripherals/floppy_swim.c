@@ -223,7 +223,6 @@ static void mfm_build_sector(floppy_t *floppy) {
 // Advances to the next MFM sector and builds its buffer
 static void mfm_advance_sector(floppy_t *floppy) {
     int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
-    image_t *img = floppy->disk[drv];
     int sectors_per_track = ism_mfm_spt(floppy, drv);
 
     floppy->mfm_cur_sector++;

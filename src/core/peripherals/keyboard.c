@@ -118,6 +118,7 @@ static void tx_to_via(keyboard_t *keyboard, uint8_t byte) {
 
 // Called when inquiry command times out with no key events
 static void keyboard_timeout_callback(void *source, uint64_t data) {
+    (void)data;
     keyboard_t *keyboard = (keyboard_t *)source;
 
     LOG(3, "keyboard_timeout_callback: inquiry timed out, sending NULL_RESPONSE 0x%02X", NULL_RESPONSE);
@@ -131,6 +132,7 @@ static void keyboard_timeout_callback(void *source, uint64_t data) {
 
 // Enters the data transfer phase after receiving a command
 static void keyboard_tx_callback(void *source, uint64_t data) {
+    (void)data;
     keyboard_t *keyboard = (keyboard_t *)source;
 
     LOG(3, "keyboard_tx_callback: active_cmd=0x%02X, queue_empty=%d", keyboard->active_cmd, queue_empty(keyboard));

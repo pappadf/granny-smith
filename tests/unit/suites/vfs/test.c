@@ -243,7 +243,7 @@ TEST(vfs_readdir_lists_entries) {
     write_file(a, "hello", 5);
     write_file(b, "world", 5);
 
-    char dir_path[PATH_MAX];
+    char dir_path[PATH_MAX + 64];
     snprintf(dir_path, sizeof(dir_path), "%s/%s", cwd, SANDBOX_DIR);
     vfs_dir_t *dir = NULL;
     const vfs_backend_t *be = NULL;

@@ -345,6 +345,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
 }
 
 static void one_second_interrupt(void *source, uint64_t data) {
+    (void)data;
     rtc_t *rtc = (rtc_t *)source;
 
     rtc->seconds++;

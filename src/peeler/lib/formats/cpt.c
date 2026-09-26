@@ -612,7 +612,7 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
         const uint8_t *m = data + *cursor;
         cp_entry_t fe;
         memset(&fe, 0, sizeof(fe));
-        strncpy(fe.name, full, sizeof(fe.name) - 1);
+        snprintf(fe.name, sizeof(fe.name), "%s", full);
 
         // Parse all 45 bytes of file metadata in field order
         size_t off = 0;
@@ -814,7 +814,7 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
         peel_file_t *f = &files[fi];
 
         // Copy metadata
-        strncpy(f->meta.name, e->name, sizeof(f->meta.name) - 1);
+        snprintf(f->meta.name, sizeof(f->meta.name), "%s", e->name);
         f->meta.mac_type     = e->type;
         f->meta.mac_creator  = e->creator;
         f->meta.finder_flags = e->finder_flags;

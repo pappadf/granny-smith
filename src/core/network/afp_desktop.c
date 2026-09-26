@@ -10,7 +10,6 @@
 #include "afp_applog.h"
 #include "afp_catalog.h"
 #include "afp_meta.h"
-#include "log.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -23,8 +22,6 @@
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
-
-LOG_USE_CATEGORY_NAME("afp");
 
 #define DT_ICON_MAGIC 0x47534932u // 'GSI2': afp_applog framing
 #define DT_APPL_MAGIC 0x47534132u // 'GSA2'
