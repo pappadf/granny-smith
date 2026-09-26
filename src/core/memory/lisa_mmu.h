@@ -62,10 +62,10 @@ bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
 // mode uses context 0, as the hardware does.
 bool lisa_mmu_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, uint32_t *phys, const char **space);
 
-// The object-model class of `machine.cpu.mmu` on the Lisa (instance data:
-// the lisa_mmu_t).  lisa.c binds it with cpu_attach_mmu_node.
-struct class_desc;
-extern const struct class_desc lisa_mmu_class;
+// Put this MMU in the object model as `machine.cpu.mmu`, the node every MMU
+// kind has (its translate/peek answer as the 68K and PowerPC ones do).
+struct cpu;
+void lisa_mmu_attach_object(lisa_mmu_t *m, struct cpu *cpu);
 
 // Save / restore descriptor RAM + latches (checkpoint parity).
 void lisa_mmu_checkpoint(lisa_mmu_t *m, checkpoint_t *cp);

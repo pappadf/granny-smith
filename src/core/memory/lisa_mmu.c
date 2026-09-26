@@ -919,8 +919,12 @@ static const member_t lisa_mmu_members[] = {
      .method = {.args = lisa_peek_args, .nargs = 3, .result = V_UINT, .fn = lisa_method_peek}},
 };
 
-const class_desc_t lisa_mmu_class = {
+static const class_desc_t lisa_mmu_class = {
     .name = "lisa_mmu",
     .members = lisa_mmu_members,
     .n_members = sizeof(lisa_mmu_members) / sizeof(lisa_mmu_members[0]),
 };
+
+void lisa_mmu_attach_object(lisa_mmu_t *m, struct cpu *cpu) {
+    cpu_attach_mmu_node(cpu, &lisa_mmu_class, m);
+}

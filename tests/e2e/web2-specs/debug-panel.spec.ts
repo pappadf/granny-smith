@@ -141,7 +141,7 @@ test('a PowerPC machine shows its own register file', async ({ page }) => {
   test.setTimeout(150_000);
   await bootPaused(page, PDM_ROM, 'pm7100');
   await openSection(page, 'Registers');
-  const r1 = page.getByLabel('R1 register value');
+  const r1 = page.getByLabel('R1 register value', { exact: true }); // not SRR1
   await expect(r1).toBeVisible({ timeout: 15_000 });
   const core = await readReg(page, 'r1');
   await expect(r1).toHaveValue(core.toString(16).toUpperCase().padStart(8, '0'));
