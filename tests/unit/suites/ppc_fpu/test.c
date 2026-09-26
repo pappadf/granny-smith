@@ -98,12 +98,12 @@ static double u2d(uint64_t u) {
     return d;
 }
 
-#define QNAN 0x7FF8000000000000ull
-#define SNAN 0x7FF0000000000001ull
-#define PINF 0x7FF0000000000000ull
-#define NINF 0xFFF0000000000000ull
-#define ONE  0x3FF0000000000000ull
-#define TWO  0x4000000000000000ull
+#define QNAN      0x7FF8000000000000ull
+#define SNAN_BITS 0x7FF0000000000001ull
+#define PINF      0x7FF0000000000000ull
+#define NINF      0xFFF0000000000000ull
+#define ONE       0x3FF0000000000000ull
+#define TWO       0x4000000000000000ull
 
 // === 1. Directed kernel semantics ===========================================
 
@@ -316,7 +316,7 @@ static void test_frsp(void) {
     CHECK(f & PPC_FPSCR_VXSNAN);
     // VE=1 suppresses
     f = PPC_FPSCR_VE;
-    CHECK(!ppc_sf_frsp(SNAN, &f, &frt));
+    CHECK(!ppc_sf_frsp(SNAN_BITS, &f, &frt));
     CHECK(f & PPC_FPSCR_FEX);
 }
 
@@ -370,7 +370,7 @@ static void test_fctiw(void) {
     CHECK(!(f & PPC_FPSCR_VXCVI));
     // NaN -> most negative + VXCVI (+VXSNAN for signaling)
     f = 0;
-    CHECK(ppc_sf_fctiw(SNAN, 0, &f, &frt));
+    CHECK(ppc_sf_fctiw(SNAN_BITS, 0, &f, &frt));
     CHECK_EQ64(frt, HI | 0x80000000ull);
     CHECK(f & PPC_FPSCR_VXCVI);
     CHECK(f & PPC_FPSCR_VXSNAN);
@@ -657,7 +657,7 @@ static uint32_t e_a(uint32_t primary, uint32_t d, uint32_t a, uint32_t b, uint32
 static void test_interpreter_integration(void) {
     // fadd. : CR1 gets FPSCR[0-3] (FX FEX VX OX)
     fresh();
-    P->fpr[1] = SNAN;
+    P->fpr[1] = SNAN_BITS;
     P->fpr[2] = ONE;
     memory_write_uint32(0x1000, e_a(63, 3, 1, 2, 0, 21, 1)); // fadd. f3,f1,f2
     run_at(0x1000, 1);
@@ -672,7 +672,7 @@ static void test_interpreter_integration(void) {
     P->msr |= PPC_MSR_FE0;
     ppc_update_active_maps(P);
     P->fpscr = PPC_FPSCR_VE;
-    P->fpr[1] = SNAN;
+    P->fpr[1] = SNAN_BITS;
     P->fpr[2] = ONE;
     P->fpr[3] = 0x1111111111111111ull;
     memory_write_uint32(0x1000, e_a(63, 3, 1, 2, 0, 21, 0)); // fadd f3,f1,f2
@@ -687,7 +687,7 @@ static void test_interpreter_integration(void) {
     // FE bits clear -> no exception even with FEX set
     fresh();
     P->fpscr = PPC_FPSCR_VE;
-    P->fpr[1] = SNAN;
+    P->fpr[1] = SNAN_BITS;
     P->fpr[2] = ONE;
     memory_write_uint32(0x1000, e_a(63, 3, 1, 2, 0, 21, 0));
     run_at(0x1000, 1);
@@ -745,7 +745,7 @@ static void test_interpreter_integration(void) {
     CHECK_EQ32(P->cr >> 28, 1u); // unordered
     fresh();
     P->fpscr = PPC_FPSCR_VE;
-    P->fpr[1] = SNAN;
+    P->fpr[1] = SNAN_BITS;
     P->fpr[2] = ONE;
     memory_write_uint32(0x1000, (63u << 26) | (0u << 23) | (1u << 16) | (2u << 11) | (32u << 1));
     run_at(0x1000, 1);

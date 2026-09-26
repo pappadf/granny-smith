@@ -12,7 +12,4 @@ EXTRA_SRCS   := ../../../../src/core/peripherals/rtc.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c
-# _GNU_SOURCE as Makefile.headless: rtc.c parses the time attribute with
-# strptime, which glibc declares only under a feature-test macro.
-EXTRA_CFLAGS := -D_GNU_SOURCE
 include ../../common.mk

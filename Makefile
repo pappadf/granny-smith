@@ -126,7 +126,20 @@ INCLUDES := $(CORE_INCLUDES) \
 # -MMD -MP generates .d dependency files alongside each .o so that
 # header changes trigger the correct recompilations.
 
-CFLAGS := -MMD -MP $(MODE_CFLAGS) \
+# -Wall -Wextra on every C build, minus one: -Wmissing-field-initializers
+# objects to positional initializers that stop before a struct's last
+# fields, and the I/O range and display timing tables are written that way
+# on purpose (mac030_io_range_t keeps its optional fields last "so
+# positional initializers stay valid").  WERROR=1 (set in CI) makes every
+# warning an error; it applies to compilation only, never to the link.
+WARN_CFLAGS := -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers
+WERROR ?= 0
+ifeq ($(WERROR),1)
+WARN_CFLAGS += -Werror
+endif
+
+# gnu11, not c11: EM_ASM does not compile in a strict ISO mode.
+CFLAGS := -MMD -MP $(MODE_CFLAGS) $(WARN_CFLAGS) \
           -pthread \
           -DGS_PLATEN_VERSION=\"$(PLATEN_VERSION)\" \
           $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
@@ -184,7 +197,9 @@ FLAGS_STAMP := $(OBJ_DIR)/flags-$(FLAGS_HASH).stamp
 # audio out, Voodoo2, printer) turns a pointer into a word index with a signed
 # `ptr >> 2`, which goes negative above 2 GB.  Raising the cap means switching
 # those to `>>> 2` first.
-LDFLAGS := $(MODE_CFLAGS) \
+# -pthread with ALLOW_MEMORY_GROWTH is deliberate (see the heap note below);
+# emcc's warning about it says nothing new.
+LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
            -s MODULARIZE=1 \
            -s EXPORT_NAME="createModule" \
            -sWASMFS \

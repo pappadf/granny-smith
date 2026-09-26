@@ -52,7 +52,16 @@ ifeq ($(origin CC),default)
 CC := gcc
 endif
 
-BASE_CFLAGS := -O0 -g -Wall -Wextra
+# The product builds' dialect and warnings (see Makefile), with the feature
+# macros headless uses: without _GNU_SOURCE glibc hides strptime and the
+# like, and the unit build saw different declarations than the product.
+# WERROR=1 (set in CI) makes every warning an error.
+BASE_CFLAGS := -O0 -g -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers \
+               -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
+WERROR ?= 0
+ifeq ($(WERROR),1)
+BASE_CFLAGS += -Werror
+endif
 
 # The core and machine header directories are the ones both product builds
 # use (src/sources.mk); the unit build puts its support shims first and

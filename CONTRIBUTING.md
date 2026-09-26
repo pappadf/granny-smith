@@ -49,6 +49,10 @@ make debug             # WASM debug build
 make headless          # Native headless CLI (no Emscripten required)
 ```
 
+Every build uses `-std=gnu11 -Wall -Wextra`, and CI adds `WERROR=1`, which
+makes any warning an error: build with `make WERROR=1` (and
+`make -f Makefile.headless WERROR=1`) before pushing.
+
 Output goes to the `build/` directory.
 
 ### Running Locally

@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           rm -rf build
-          make -f Makefile.headless PLATEN=1 -j"$(nproc)"
+          make -f Makefile.headless PLATEN=1 WERROR=1 -j"$(nproc)"
 
       - name: List build artifacts
         run: ls -l build/headless || true
@@ -154,7 +154,7 @@ jobs:
       # every suite has its own object directory.
       - name: Run unit tests (native)
         run: |
-          make -j"$(nproc)" --output-sync=target -C tests/unit run
+          make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
       # The parser and storage suites again, built with emcc and run under node:
       # the shipping build is wasm32, where size_t and long are 32 bits, and a
@@ -162,7 +162,7 @@ jobs:
       # ~10 s.
       - name: Run unit tests (wasm32)
         run: |
-          make -C tests/unit run-wasm32
+          make -C tests/unit run-wasm32 WERROR=1
 
       # Integration and e2e tests require proprietary test data.
       #
@@ -186,14 +186,14 @@ jobs:
         if: steps.fetch-data.outputs.has_test_data == 'true'
         timeout-minutes: 15
         run: |
-          make integration-test PLATEN=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
+          make integration-test PLATEN=1 WERROR=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
           exit "${PIPESTATUS[0]}"
 
       - name: Run integration tests (matrix tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         timeout-minutes: 30
         run: |
-          make integration-test PLATEN=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
+          make integration-test PLATEN=1 WERROR=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
           exit "${PIPESTATUS[0]}"
 
       # Extended tier on the PR gate as well as the nightly, TEMPORARILY.
@@ -210,7 +210,7 @@ jobs:
         if: steps.fetch-data.outputs.has_test_data == 'true'
         timeout-minutes: 120
         run: |
-          make integration-test PLATEN=1 TIER=extended TEST_VARS="KEEP_GOING=1" \
+          make integration-test PLATEN=1 WERROR=1 TIER=extended TEST_VARS="KEEP_GOING=1" \
             2>&1 | tee /tmp/it-extended.log
           exit "${PIPESTATUS[0]}"
 
@@ -385,7 +385,7 @@ jobs:
       # Full WASM build, then copy artifacts into dist/ so the
       # prod-smoke test below can actually bootstrap the bridge.
       - name: WASM build (for prod-smoke)
-        run: make
+        run: make WERROR=1
 
       - name: ui2 (copy WASM into app/web2/dist/)
         run: make ui2

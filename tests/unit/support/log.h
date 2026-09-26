@@ -78,13 +78,13 @@ static inline int log_would_log(const log_category_t *cat, int level) {
 }
 
 #define LOG_USE_CATEGORY(catptr)                                                                                       \
-    static inline log_category_t *_log_get_local_category(void) {                                                      \
+    static inline __attribute__((unused)) log_category_t *_log_get_local_category(void) {                              \
         return (catptr);                                                                                               \
     }
 
 #define LOG_USE_CATEGORY_NAME(name)                                                                                    \
     static log_category_t _log_dummy_cat;                                                                              \
-    static inline log_category_t *_log_get_local_category(void) {                                                      \
+    static inline __attribute__((unused)) log_category_t *_log_get_local_category(void) {                              \
         (void)(name);                                                                                                  \
         return &_log_dummy_cat;                                                                                        \
     }
