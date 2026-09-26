@@ -407,7 +407,7 @@ extern const machine_substrate_t tnt_substrate;
 
 // The family's one internal SuperDrive bay, shared by all five profiles
 // (tnt.c).  The SWIM3 + DBDMA-channel-1 datapath behind it is complete and
-// exercised by tests/integration/ans-diag-floppy.
+// exercised by tests/integration/suite-ans (ans500-diag-floppy).
 extern const struct scsi_slot tnt_scsi_slots_internal[];
 
 // The Shiner backplane, shared by both Network Server profiles (tnt.c).

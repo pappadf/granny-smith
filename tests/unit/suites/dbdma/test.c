@@ -327,7 +327,7 @@ TEST(test_stall_and_kick) {
 // Without this, a port that never returns short -- MESH pops straight off
 // the SCSI bus -- runs a whole data command inside the guest's
 // control-register store: measured at 61,440 bytes in one run_channel call
-// on tnt-hd-boot, against the 2 KB per firing the AV and PDM families
+// on suite-tnt's pm7500-76-hd, against the 2 KB per firing the AV and PDM families
 // already observe for the same job.  The burst makes the channel yield the
 // same way a short device return does, and the device's scheduler pump
 // kicks it back on the bus's cadence.

@@ -48,6 +48,18 @@
       "instr": 772706113,
       "tolerance": 0.2
     },
+    "suite-ans/ans500-diag-floppy": {
+      "instr": 11560000000,
+      "tolerance": 0.2
+    },
+    "suite-ans/ans500-of-console": {
+      "instr": 1750000000,
+      "tolerance": 0.2
+    },
+    "suite-ans/ans500-proto20-macos": {
+      "instr": 1500000000,
+      "tolerance": 0.2
+    },
     "suite-av/av-audio-in-device": {
       "instr": 6454290,
       "tolerance": 0.2
@@ -450,6 +462,22 @@
     },
     "suite-se30/se30-nomedia": {
       "instr": 270578364,
+      "tolerance": 0.2
+    },
+    "suite-tnt/pm7500-76-hd": {
+      "instr": 2500000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt/pm8500-76-hd": {
+      "instr": 2500000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt/pm9500-76-mach64": {
+      "instr": 4000000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt/tnt-voodoo2-display": {
+      "instr": 2540000000,
       "tolerance": 0.2
     },
     "tnt-pci-voodoo2": {

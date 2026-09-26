@@ -28,7 +28,7 @@
 # captured whatever was on screen when a row was failing.
 #
 # TWO ROMS.  The NuBus rows use TEST_ROM below; the 7500 row loads the TNT ROM
-# by path, the same fixture `tnt-hd-boot` uses.
+# by path, the same fixture `suite-tnt` uses.
 
 TEST_NAME := Power Macintosh — boot MkLinux DR3 from a single Mac OS + MkLinux disk
 TEST_DESC := Boot one 169 MB disk holding Mac OS 7.6 and MkLinux DR3 through the MkLinux Booter to a root login, on all four PowerPC models

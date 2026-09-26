@@ -214,9 +214,10 @@ two-buffer program parked on its STOP and its handler never ran: the
 firmware beep played (Open Firmware polls), the 68k startup chime and
 every later sound — alert beeps, the Sound control panel, Quake — were
 silence.  With levels, all of them play (`tests/unit/suites/tnt_gc`
-`test_mode1_dbdma_level_ack`; `tnt-hd-boot` asserts the chime).  For
-mode 0 (MkLinux/Linux) nothing changes: their handlers acknowledge by
-writing the event bits, which deasserts the level too.
+`test_mode1_dbdma_level_ack`; `suite-tnt`'s disk-boot rows assert the
+chime on all three models).  For mode 0 (MkLinux/Linux) nothing changes:
+their handlers acknowledge by writing the event bits, which deasserts the
+level too.
 
 ### PCI slot topology
 
@@ -544,8 +545,9 @@ torn store never reaches a boot: it sits in the ROM's serial-console read
 loop behind a black screen. Carrying such a store into the next
 `machine.boot` made that look like a broken model or an unbootable disk.
 A row that wants the same chip across two cold boots says so with
-`machine.restart` (ans-diag-floppy's DIMM table, `ans_boot_serial`'s
-console setting); `machine.board.clear_nvram()` is still the battery pull.
+`machine.restart` (the DIMM table in `suite-ans`'s `ans500-diag-floppy`,
+`ans_boot_serial`'s console setting); `machine.board.clear_nvram()` is
+still the battery pull.
 
 The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
 than its relocatable BAR, because this board installs no pull-down on MD51
@@ -627,15 +629,15 @@ model had to learn, each a defect until it did:
 
 Mac OS on the 7500/8500/9500 sees the change too: with the chip present
 the `.Sony` driver owns drive numbers 1–2 and the SCSI startup volume
-lands at `$23` rather than `$03` — the `tnt-hd-boot*` rows assert the
-new number.
+lands at `$23` rather than `$03` — `suite-tnt`'s disk-boot rows assert
+the new number.
 
 ## The diagnostic utility -- what it accepted, and what it found
 
-Apple's *Network Server Diagnostic Utility 1.1* (the floppy the
-`ans-diag-floppy` row boots) is a hardware test suite written against
-the real board by people with its schematics, and it exercises paths no
-operating system touches.  Its "complete system test" is the closest
+Apple's *Network Server Diagnostic Utility 1.1* (the floppy
+`suite-ans`'s `ans500-diag-floppy` row boots) is a hardware test suite
+written against the real board by people with its schematics, and it
+exercises paths no operating system touches.  Its "complete system test" is the closest
 thing this machine has to a conformance suite, so the model was fitted
 until it accepted the machine.  What it tests, and what each test cost:
 
@@ -671,8 +673,9 @@ boots twice.
 | `ans-pci-slots` | unit | six sockets and three builtins, IDSELs, the rewired interrupt map, the raw config-cycle identities including the `$14` Revision ID that gates machine identity |
 | `ans-device-tree` | matrix | `dev / ls`, node properties and device aliases against Apple's published Listing 6-1, driven over the serial console |
 | `ans-scsi` | matrix | the SCRIPTS engine, through Open Firmware's own `probe-scsi1` and `probe-scsi2`, on both fast/wide channels |
-| `ans-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
-| `ans-macos-2rom` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
+| `suite-ans` `ans500-of-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
+| `suite-ans` `ans500-proto20-macos` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
+| `suite-ans` `ans500-diag-floppy` | matrix, fixture-gated | the Diagnostic Utility booted from the internal floppy in Service position, driven from the ADB keyboard through its complete system test |
 | `ans-aix-boot` | extended, fixture-gated | the documented Service-keyswitch install path, up to `bootapple` launching off the AIX 4.1.5 Install CD |
 
 Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
@@ -884,5 +887,5 @@ still has to get right. Its C side has `bsc_ioctl_sleep` and
 `e_sleep_thread`: the configuration method issues an ioctl and **sleeps**,
 so a command that never completes shows up as a completely idle machine
 rather than as anything resembling a crash. The fourth lever remains
-`ans-macos-2rom`: any device can be cross-examined through a stack we do
-understand.
+`suite-ans`'s `ans500-proto20-macos` row: any device can be
+cross-examined through a stack we do understand.

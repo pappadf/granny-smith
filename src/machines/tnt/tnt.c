@@ -440,7 +440,7 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 // mid-run — leaves the store torn, and a machine built on a torn store
 // stops in the ROM's serial-console read loop with a black screen and
 // no way back short of restarting the process.  Rows that DO want the
-// same chip across two cold boots (ans-diag-floppy's DIMM table) say so
+// same chip across two cold boots (suite-ans's ans500-diag-floppy: its DIMM table) say so
 // with machine.restart.
 static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
 static bool tnt_nvram_carry_valid;

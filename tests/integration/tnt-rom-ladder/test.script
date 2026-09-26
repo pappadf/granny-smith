@@ -177,7 +177,7 @@ check("gray-desktop.png")
 # The T5 marker (the OF memory-sizing sequence against Hammerhead) stays
 # asserted transitively — MemTop and the kernel's 32 MB layout are
 # downstream of OF's sizing — and gets its own direct row when a
-# Hammerhead access log is fitted.  T12-T13 (SCSI, Finder) are tnt-hd-boot's.
+# Hammerhead access log is fitted.  T12-T13 (SCSI, Finder) are suite-tnt's.
 
 echo "tnt-rom-ladder: high-water rung T11 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} sound=${machine.sound.frames}f/${machine.sound.peak}pk scrn=${debug.mac.globals.read("ScrnBase"):08x})"
 quit

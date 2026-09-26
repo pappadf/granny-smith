@@ -1150,7 +1150,7 @@ TEST(test_script_read_of_a_status_register_sees_the_latch) {
 
 // The CTEST2 doorbell, which was the ONE side effect hand-copied into the
 // engine.  It has to keep working now that the copy is gone -- this is the
-// idiom both the AIX and Mac OS dispatchers use, and ans-macos-2rom spends it
+// idiom both the AIX and Mac OS dispatchers use, and suite-ans's ans500-proto20-macos row spends it
 // 22 times per run.
 TEST(test_script_read_of_ctest2_consumes_sigp) {
     setup();

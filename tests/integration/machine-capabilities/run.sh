@@ -237,7 +237,7 @@ assert_contains pm8100 '"freq":80000000' "pm8100 runs at 80 MHz"
 # The TNT family: the 7500 keeps the 601, the 8500/9500 are the first
 # 604 machines.  The internal MESH bus is wired, so the two HD slots
 # are offered, and the SWIM3 + DBDMA-channel-1 floppy datapath is
-# complete too -- ans-diag-floppy boots the Network Server Diagnostic
+# complete too -- suite-ans's ans500-diag-floppy boots the Network Server Diagnostic
 # Utility from drive 0 -- so the one internal SuperDrive is offered on
 # every board in the family.  No NuBus on a PCI machine; PCI slot
 # capability arrives with the pluggable-card follow-up.
@@ -272,7 +272,7 @@ for m in ans500 ans700; do
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"pci":true' "$m advertises PCI"
     assert_contains "$m" '"video_in":false' "$m has no video digitizer"
-    # The bay the diagnostic floppy goes in (ans-diag-floppy).
+    # The bay the diagnostic floppy goes in (suite-ans's ans500-diag-floppy).
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '"ram_max":524288' "$m caps RAM at the ROM's 512 MB decode limit (in KB, as every profile publishes it)"
     assert_contains "$m" '"has_cdrom":true' "$m boots its Install CD from a SCSI bay"

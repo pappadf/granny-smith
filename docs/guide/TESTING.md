@@ -199,7 +199,8 @@ tier runs nowhere.
 
 Machine families are covered by *suite* directories (`suite-plus`,
 `suite-se30`, `suite-iix`, `suite-iicx`, `suite-iici`, `suite-iisi`,
-`suite-quadra`): one daemon run, one row per (system, media, RAM,
+`suite-iifx`, `suite-quadra`, `suite-av`, `suite-lisa`, `suite-pdm`,
+`suite-tnt`, `suite-ans`): one daemon run, one row per (system, media, RAM,
 video) cell, re-instantiating via `machine.boot` between rows. A boot
 assertion belongs as a row in its machine's suite.
 

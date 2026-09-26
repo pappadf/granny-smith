@@ -61,8 +61,8 @@ Delivered in steps; this document grows as each one lands.
   (`system_restore` now re-seeds the PCI staged picks from the restored
   record, the exact NuBus parallel that was already there).  web2's
   Expansion Slots section gains the one non-display socket picker.
-  Gate: `tnt-pci-voodoo2-display` — take/release against a live 7.6
-  desktop with the release matching the pre-takeover golden
+  Gate: `suite-tnt`'s `tnt-voodoo2-display` row — take/release against a
+  live 7.6 desktop with the release matching the pre-takeover golden
   byte-identically, and a mid-drive checkpoint restoring to the same
   framebuffer checksum.
 - **Guest software (Mac OS 8.1 + `Quake 3Dfx`) — COMPLETE:

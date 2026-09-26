@@ -52,7 +52,7 @@ include "../lib/mac.script"
 let disk = "../../data/systems/mklinux_dr3_76_single_169mb.img"
 
 # The 7500 needs its own ROM, so it cannot come through TEST_ROM/$ROM.  Same
-# fixture tnt-hd-boot uses: the 1995-08 TNT ROM v1.
+# fixture suite-tnt uses: the 1995-08 TNT ROM v1.
 let tnt_rom = "../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom"
 
 # Power on with the disk attached and run to the point where the Booter's

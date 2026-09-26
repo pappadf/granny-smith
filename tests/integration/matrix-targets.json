@@ -1073,6 +1073,77 @@
       "depth": 8,
       "addr32": false,
       "suite": "suite-iisi"
+    },
+    {
+      "machine": "pm7500",
+      "system": "7.6",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "pm8500",
+      "system": "7.6",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "pm9500",
+      "system": "7.6",
+      "card": "mach64_gx",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "pm8500",
+      "system": "7.6",
+      "card": "control+voodoo2",
+      "width": 640,
+      "height": 480,
+      "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "ans500",
+      "system": "OF 1.1.22",
+      "card": "cirrus_54m30",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "suite-ans"
+    },
+    {
+      "machine": "ans500",
+      "system": "rom",
+      "card": "cirrus_54m30",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-ans"
+    },
+    {
+      "machine": "ans500",
+      "system": "diags 1.1",
+      "card": "cirrus_54m30",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "suite-ans",
+      "media_gated": true
     }
   ]
 }

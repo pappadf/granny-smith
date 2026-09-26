@@ -54,9 +54,9 @@ LOG_USE_CATEGORY_NAME("53c96");
 // Alignment Register, gated by CR2 bit 7 (DAE).  It only matters for initiator
 // synchronous data-in landing on a misaligned boundary.  No guest touches it --
 // instrumented reads and writes across suite-quadra, q900-checkpoint,
-// tnt-hd-boot and ans-scsi saw 0x0F neither read nor written, and 0x0D neither
+// suite-tnt's pm7500-76-hd and ans-scsi saw 0x0F neither read nor written, and 0x0D neither
 // read nor written either.  0x0E IS read (11 times in suite-quadra, once in
-// tnt-hd-boot, at raw address 0x0E rather than through decode aliasing); it
+// pm7500-76-hd, at raw address 0x0E rather than through decode aliasing); it
 // returns 0 from the default case, which is what it did before and what the
 // manual tells software to expect of a reserved address.
 
@@ -183,7 +183,7 @@ static void select_timeout_cb(void *source) {
 // The exception is a chip with NO bus attached, which is how the Power
 // Macintosh models its empty 53C94 chain (tnt.c attaches no bus at all, so
 // every select finds nothing).  There is no bus object to hold the event, so
-// the chip schedules it itself.  Losing this is what made tnt-hd-boot fail to
+// the chip schedules it itself.  Losing this is what made the 7500 disk boot fail to
 // find a boot drive: the timeout simply never arrived and the driver's scan
 // never finished.
 static uint64_t select_timeout_ns(scsi_53c96_t *c);

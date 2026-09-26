@@ -173,7 +173,7 @@ static uint64_t mesh_select_timeout_ns(const mesh_t *m) {
 //
 // This used to run synchronously inside the sequence-register write that
 // issued SELECT.  A Mac OS bus scan selects every target twice -- measured at
-// twelve time-outs per boot on tnt-hd-boot, all of them for targets that are
+// twelve time-outs per boot on suite-tnt's pm7500-76-hd, all of them for targets that are
 // simply not fitted -- so this is the ordinary path, not the error path, and
 // completing the whole select-fail-report-retry cycle inside the driver's own
 // doorbell write is what docs/machines/tnt/tnt.md warns about: "the interrupt
@@ -341,7 +341,7 @@ static void pump_in(mesh_t *m) {
 //
 // Why this exists.  The port used to drain the whole `remaining` count in one
 // call, so a DBDMA data command completed inside the guest's control-register
-// store, in zero emulated time.  Measured over tnt-hd-boot: up to **61,440
+// store, in zero emulated time.  Measured over suite-tnt's pm7500-76-hd: up to **61,440
 // bytes moved in a single run_channel call**, 30x the per-firing cap the other
 // two families observe and with no cadence at all.  That looks like DBDMA
 // needing a scheduler-paced pump; the measurement puts it one level down.
