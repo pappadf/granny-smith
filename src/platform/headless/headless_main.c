@@ -337,6 +337,7 @@ static int g_daemon_mode = 0;
 static int g_daemon_port = DAEMON_DEFAULT_PORT;
 static int g_listen_fd = -1;
 static int g_client_fd = -1;
+static bool g_client_lost = false; // a write to the client failed: stop serving it
 static int g_saved_stdout = -1;
 static int g_saved_stderr = -1;
 
@@ -397,28 +398,20 @@ static int daemon_create_listener(int port) {
     return fd;
 }
 
-// Check if the current daemon client has disconnected or sent new data.
-// Returns: 0 = still alive, nothing pending
-//          1 = new data pending (new command issued — e.g. "stop")
-//         -1 = client disconnected
-static int daemon_client_poll(int client_fd) {
+// Whether the daemon client is gone.  EOF is not that: a half-closing client
+// (nc -N, nc -q, Python's shutdown(SHUT_WR)) sends a FIN and still reads the
+// output, and a FIN cannot tell a half-close from a close -- the old check
+// peeked recv() == 0 and cancelled such a client's own scheduler.run.  Only
+// a failed write can tell, and it shows up as POLLERR/POLLHUP on the socket
+// once a write has drawn the peer's RST (the once-a-second heartbeat writes,
+// so a closed client is noticed within ~1-2 s), or as a failed fflush.
+static bool daemon_client_gone(int client_fd) {
     if (client_fd < 0)
-        return 0;
-    struct pollfd pfd = {.fd = client_fd, .events = POLLIN, .revents = 0};
-    if (poll(&pfd, 1, 0) <= 0)
-        return 0;
-    if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
-        return -1;
-    if (pfd.revents & POLLIN) {
-        // Peek without consuming — if it's EOF (recv returns 0), client closed
-        char peek;
-        ssize_t n = recv(client_fd, &peek, 1, MSG_PEEK | MSG_DONTWAIT);
-        if (n == 0)
-            return -1;
-        if (n > 0)
-            return 1;
-    }
-    return 0;
+        return false;
+    struct pollfd pfd = {.fd = client_fd, .events = 0, .revents = 0};
+    if (poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
+        return true;
+    return ferror(stdout) != 0;
 }
 
 // While a run is in flight the daemon is inside one client's dispatch, so a
@@ -474,10 +467,11 @@ static void daemon_serve_control_connection(void) {
 // Pump the scheduler until it stops, emitting periodic heartbeat lines (IMP-105).
 // In daemon mode the heartbeat prevents nc -w timeouts; in script/stdin modes it
 // lets callers follow progress. Emits once per second with instruction count.
-// Also: if the daemon client disconnects mid-run, stop the scheduler — a dead
+// Also: if the daemon client is gone mid-run, stop the scheduler — a dead
 // client has no way to see the result, and letting it run billions more
-// instructions is wasteful.  If the client sends any data mid-run (e.g. a
-// "stop" command), stop immediately so the next dispatch reads it.
+// instructions is wasteful.  Data arriving mid-run does NOT stop the run: it
+// is the client's next statement, and it waits its turn.  Stopping a run is
+// a second connection's job (daemon_serve_control_connection).
 static void pump_scheduler_with_heartbeat(void) {
     scheduler_t *sched = system_scheduler();
     config_t *cfg = global_emulator;
@@ -507,23 +501,16 @@ static void pump_scheduler_with_heartbeat(void) {
             last_heartbeat = now;
         }
 
-        // Daemon mode: check if the client disconnected or sent new data
+        // Daemon mode: is the client still there to read the result?
         if (g_daemon_mode && g_client_fd >= 0) {
-            int s = daemon_client_poll(g_client_fd);
-            if (s < 0) {
+            if (daemon_client_gone(g_client_fd)) {
                 // Client gone — cancel the run rather than execute billions
                 // more.  Cancel the script too: a shell `while` loop would
                 // otherwise start the next `scheduler.run` immediately and
                 // spin on forever with nobody left to read its output.
-                fprintf(stderr, "# client disconnected, stopping run\n");
+                g_client_lost = true;
                 scheduler_stop(sched);
                 script_interrupt();
-                break;
-            }
-            if (s > 0) {
-                // New data arrived (likely "stop") — break out so the caller
-                // reads and dispatches it.  We don't process the data here.
-                scheduler_stop(sched);
                 break;
             }
             // A second client with something to say about this run.
@@ -532,93 +519,209 @@ static void pump_scheduler_with_heartbeat(void) {
     }
 }
 
-// Handle a single client connection: read commands, execute, write output, close
-// Supports multiple newline-delimited commands per connection (IMP-104)
+// === Statements from a stream (S6) =========================================
+//
+// A statement is complete when it ends at a newline and is balanced
+// (script_needs_continuation).  The daemon, stdin and the REPL all feed lines
+// to one assembler and run each statement the moment it is complete.  The
+// daemon used to guess where a request ended BEFORE running anything -- read
+// until a newline plus 1 ms of silence, then run the lot -- and every one of
+// its defects was that guess: a 2 KB cap, a fragment dispatched half-read, a
+// second send lost, a block silently dropped.
+
+#define STMT_MAX (1u << 20) // 1 MB
+
+typedef struct stmt_asm {
+    char *buf;
+    size_t len, cap;
+} stmt_asm_t;
+
+// Feed one line (no newline).  Returns 1 when a.buf holds a complete statement
+// (run it, then stmt_reset), 0 when more lines are needed, -1 when the
+// statement would pass STMT_MAX (it has been discarded).  Blank lines outside
+// a statement are skipped.
+static int stmt_feed_line(stmt_asm_t *a, const char *line, size_t len) {
+    while (len > 0 && line[len - 1] == '\r')
+        len--;
+    if (len == 0 && a->len == 0)
+        return 0;
+    if (a->len + len + 2 > STMT_MAX) {
+        a->len = 0;
+        return -1;
+    }
+    if (a->len + len + 2 > a->cap) {
+        size_t cap = a->cap ? a->cap : 4096;
+        while (cap < a->len + len + 2)
+            cap *= 2;
+        char *grown = realloc(a->buf, cap);
+        if (!grown) {
+            a->len = 0;
+            return -1;
+        }
+        a->buf = grown;
+        a->cap = cap;
+    }
+    memcpy(a->buf + a->len, line, len);
+    a->len += len;
+    a->buf[a->len++] = '\n';
+    a->buf[a->len] = '\0';
+    return script_needs_continuation(a->buf) ? 0 : 1;
+}
+
+static void stmt_reset(stmt_asm_t *a) {
+    a->len = 0;
+    if (a->buf)
+        a->buf[0] = '\0';
+}
+
+static void stmt_free(stmt_asm_t *a) {
+    free(a->buf);
+    *a = (stmt_asm_t){0};
+}
+
+// Run one complete daemon statement, pump the run it starts, and report the
+// PC as a status line (IMP-308).
+static void daemon_run_statement(char *stmt) {
+    shell_dispatch(stmt);
+    pump_scheduler_with_heartbeat();
+    if (!g_client_lost && system_is_initialized() && debug_prompt_enabled()) {
+        char disasm_buf[160];
+        debugger_disasm_pc(disasm_buf, sizeof(disasm_buf));
+        if (disasm_buf[0] != '\0')
+            printf("%s\n", disasm_buf);
+    }
+    fflush(stdout);
+}
+
+// How long a client may stay silent, after its last statement has finished
+// and its output is flushed, before the daemon hangs up.  Not a latency: a
+// statement runs the moment it is complete.  `echo cmd | nc -w 2` keeps
+// working (the close lands well inside nc's timeout); `nc -N` just closes
+// sooner.
+#define DAEMON_IDLE_CLOSE_MS 500
+
+// Serve one client: run its statements as they complete, while reading on.
+// Supports any number of newline-delimited statements, in any number of
+// sends, of any size up to STMT_MAX (IMP-104).
 static void daemon_handle_client(int client_fd) {
     g_client_fd = client_fd;
-
-    // Read all available data from client (may contain multiple commands)
-    char buf[2048];
-    int total = 0;
-    while (total < (int)sizeof(buf) - 1) {
-        int n = read(client_fd, buf + total, sizeof(buf) - 1 - total);
-        if (n <= 0)
-            break;
-        total += n;
-        // Stop if we've seen at least one newline and no more data pending
-        if (memchr(buf, '\n', total)) {
-            // Check if more data is available
-            fd_set fds;
-            struct timeval tv = {0, 1000}; // 1ms
-            FD_ZERO(&fds);
-            FD_SET(client_fd, &fds);
-            if (select(client_fd + 1, &fds, NULL, NULL, &tv) <= 0)
-                break;
-        }
-    }
-
-    if (total <= 0) {
-        close(client_fd);
-        g_client_fd = -1;
-        return;
-    }
-
-    buf[total] = '\0';
-
-    // Redirect output to the client socket
+    g_client_lost = false;
     daemon_redirect_output(client_fd);
 
-    // Process each newline-delimited command (IMP-104). Lines
-    // accumulate while a multi-line block is open (unbalanced '{').
-    char acc[4096];
-    size_t acc_len = 0;
-    char *line = buf;
-    while (line && *line && !quit_requested) {
-        // Find end of current command
-        char *eol = strchr(line, '\n');
-        if (eol)
-            *eol = '\0';
+    stmt_asm_t stmt = {0};
+    char *pending = NULL; // bytes of a line not yet ended by a newline
+    size_t pending_len = 0, pending_cap = 0;
+    bool skipping = false; // dropping the rest of a line past STMT_MAX
+    bool eof = false;
+    double idle_since = host_time_ms();
+    char chunk[65536];
 
-        // Strip trailing carriage return
-        size_t len = strlen(line);
-        while (len > 0 && line[len - 1] == '\r')
-            line[--len] = '\0';
-
-        // Accumulate into the continuation buffer.
-        if (len > 0 && acc_len + len + 2 < sizeof(acc)) {
-            memcpy(acc + acc_len, line, len);
-            acc_len += len;
-            acc[acc_len++] = '\n';
-            acc[acc_len] = '\0';
-        }
-
-        // Skip empty buffers / open blocks
-        if (acc_len > 0 && !script_needs_continuation(acc)) {
-            // Execute the accumulated chunk
-            shell_dispatch(acc);
-            acc_len = 0;
-            acc[0] = '\0';
-
-            // If the scheduler is running after the command, pump until done
-            // with periodic heartbeat to prevent TCP client timeouts (IMP-105)
-            pump_scheduler_with_heartbeat();
-
-            // Emit current instruction as a status line (IMP-308)
-            if (system_is_initialized() && debug_prompt_enabled()) {
-                char disasm_buf[160];
-                debugger_disasm_pc(disasm_buf, sizeof(disasm_buf));
-                if (disasm_buf[0] != '\0')
-                    printf("%s\n", disasm_buf);
+    while (!quit_requested && !g_client_lost) {
+        // Run every statement the input already completes.
+        char *nl;
+        while (!quit_requested && !g_client_lost && pending_len && (nl = memchr(pending, '\n', pending_len)) != NULL) {
+            size_t line_len = (size_t)(nl - pending);
+            if (!skipping) {
+                int r = stmt_feed_line(&stmt, pending, line_len);
+                if (r < 0)
+                    printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
+                else if (r > 0) {
+                    daemon_run_statement(stmt.buf);
+                    stmt_reset(&stmt);
+                }
             }
+            skipping = false;
+            memmove(pending, nl + 1, pending_len - line_len - 1);
+            pending_len -= line_len + 1;
+            idle_since = host_time_ms();
+        }
+        if (quit_requested || g_client_lost)
+            break;
+
+        if (eof) {
+            // The last line may lack its newline; it is still a line.
+            if (pending_len && !skipping) {
+                int r = stmt_feed_line(&stmt, pending, pending_len);
+                pending_len = 0;
+                if (r < 0)
+                    printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
+                else if (r > 0) {
+                    daemon_run_statement(stmt.buf);
+                    stmt_reset(&stmt);
+                }
+            }
+            break;
         }
 
-        // Move to next command
-        line = eol ? eol + 1 : NULL;
+        // Wait for more, until the client has been idle long enough.
+        double idle = host_time_ms() - idle_since;
+        if (idle >= DAEMON_IDLE_CLOSE_MS)
+            break;
+        struct pollfd pfd = {.fd = client_fd, .events = POLLIN, .revents = 0};
+        int ready = poll(&pfd, 1, (int)(DAEMON_IDLE_CLOSE_MS - idle) + 1);
+        if (ready < 0 && errno != EINTR)
+            break;
+        if (ready <= 0)
+            continue;
+        ssize_t n = recv(client_fd, chunk, sizeof(chunk), 0);
+        if (n == 0) {
+            eof = true; // no more input -- not "client gone" (see daemon_client_gone)
+            continue;
+        }
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN)
+                continue;
+            g_client_lost = true;
+            break;
+        }
+        idle_since = host_time_ms();
+        if (pending_len + (size_t)n > STMT_MAX) {
+            // A line longer than any statement may be: drop it up to its end.
+            printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
+            stmt_reset(&stmt);
+            char *end = memchr(chunk, '\n', (size_t)n);
+            pending_len = 0;
+            if (!end) {
+                skipping = true;
+                continue;
+            }
+            skipping = true;
+            size_t rest = (size_t)n - (size_t)(end - chunk);
+            memmove(chunk, end, rest);
+            n = (ssize_t)rest;
+        }
+        if (pending_len + (size_t)n > pending_cap) {
+            size_t cap = pending_cap ? pending_cap : 65536;
+            while (cap < pending_len + (size_t)n)
+                cap *= 2;
+            char *grown = realloc(pending, cap);
+            if (!grown) {
+                printf("error: out of memory reading the request\n");
+                break;
+            }
+            pending = grown;
+            pending_cap = cap;
+        }
+        memcpy(pending + pending_len, chunk, (size_t)n);
+        pending_len += (size_t)n;
     }
 
-    // Flush and restore output before closing the connection
-    daemon_restore_output();
+    // An open block at the end of input is reported, never dropped.
+    if (!g_client_lost && (stmt.len || (pending_len && !skipping)))
+        printf("error: incomplete block at end of input; not run\n");
+    stmt_free(&stmt);
+    free(pending);
 
+    daemon_restore_output();
+    // Drain what the client still sends before closing: closing a socket with
+    // unread input sends an RST, which can destroy output the client has not
+    // read yet.
+    shutdown(client_fd, SHUT_WR);
+    for (int i = 0; i < 50; i++) {
+        struct pollfd pfd = {.fd = client_fd, .events = POLLIN, .revents = 0};
+        if (poll(&pfd, 1, 10) <= 0 || recv(client_fd, chunk, sizeof(chunk), 0) <= 0)
+            break;
+    }
     close(client_fd);
     g_client_fd = -1;
 }
@@ -699,16 +802,18 @@ static int run_script_file(const char *filename) {
     return 0;
 }
 
-// Run commands from stdin (IMP-803). Lines accumulate while a
-// multi-line block is open (unbalanced '{'), then submit as one chunk.
+// Run statements from stdin (IMP-803), each as soon as it is complete: a
+// line at a time through the statement assembler, so a multi-line block
+// runs when it closes.  getline, not a 1024-byte fgets: a longer line used to
+// be split into two statements (N-43).
 static int run_script_stdin(void) {
-    char line[1024];
-    char buf[8192];
-    size_t buf_len = 0;
-    char last_cmd[1024] = {0};
-    while (fgets(line, sizeof(line), stdin)) {
-        // Strip trailing newline
-        size_t len = strlen(line);
+    stmt_asm_t stmt = {0};
+    char *line = NULL;
+    size_t line_cap = 0;
+    char *last_cmd = NULL;
+    ssize_t n;
+    while (!quit_requested && (n = getline(&line, &line_cap, stdin)) >= 0) {
+        size_t len = (size_t)n;
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
             line[--len] = '\0';
 
@@ -716,43 +821,44 @@ static int run_script_stdin(void) {
         if (line[0] == '#')
             continue;
 
-        // Empty line repeats last command (IMP-806) — only outside a
+        // An empty line repeats the last command (IMP-806) -- only outside a
         // continuation.
-        if (len == 0 && buf_len == 0) {
-            if (last_cmd[0] == '\0')
+        if (len == 0 && stmt.len == 0) {
+            if (!last_cmd)
                 continue;
-            strncpy(line, last_cmd, sizeof(line) - 1);
-            line[sizeof(line) - 1] = '\0';
+            free(line);
+            line = strdup(last_cmd);
+            line_cap = line ? strlen(line) + 1 : 0;
+            if (!line)
+                break;
             len = strlen(line);
-        } else if (buf_len == 0) {
-            strncpy(last_cmd, line, sizeof(last_cmd) - 1);
-            last_cmd[sizeof(last_cmd) - 1] = '\0';
+        } else if (stmt.len == 0) {
+            free(last_cmd);
+            last_cmd = strdup(line);
         }
 
-        // Accumulate into the continuation buffer.
-        if (buf_len + len + 2 < sizeof(buf)) {
-            memcpy(buf + buf_len, line, len);
-            buf_len += len;
-            buf[buf_len++] = '\n';
-            buf[buf_len] = '\0';
+        int r = stmt_feed_line(&stmt, line, len);
+        if (r < 0) {
+            printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
+            g_script_exit_code = 1;
+            continue;
         }
-        if (script_needs_continuation(buf))
+        if (r == 0)
             continue;
 
-        printf("> %s\n", buf);
-        int result = script_run_line(buf); // interactive: results print
-        buf_len = 0;
-        buf[0] = '\0';
-
-        // Non-zero return code indicates error
-        if (result != 0) {
+        printf("> %s\n", stmt.buf);
+        int result = script_run_line(stmt.buf); // interactive: results print
+        stmt_reset(&stmt);
+        if (result != 0)
             g_script_exit_code = 1;
-        }
-
-        // Check if quit was requested
-        if (quit_requested)
-            break;
     }
+    if (stmt.len) {
+        printf("error: incomplete block at end of input; not run\n");
+        g_script_exit_code = 1;
+    }
+    stmt_free(&stmt);
+    free(line);
+    free(last_cmd);
     return 0;
 }
 
@@ -775,49 +881,39 @@ void print_prompt(void) {
     fflush(stdout);
 }
 
-// Poll for shell input (called from main loop). Lines accumulate while
-// a multi-line block is open (continuation prompt "... ").
-static char g_repl_buf[8192];
-static size_t g_repl_len = 0;
-
-bool shell_repl_continuing(void) {
-    return g_repl_len > 0;
-}
+// Poll for shell input (called from main loop): a line at a time through the
+// statement assembler, with the continuation prompt "... " while a block is
+// open.  getline, so a long line is one line (N-43).
+static stmt_asm_t g_repl;
 
 int shell_poll(void) {
     if (!stdin_has_data())
         return 0;
 
-    char line[1024];
-    if (fgets(line, sizeof(line), stdin) == NULL)
+    static char *line = NULL;
+    static size_t line_cap = 0;
+    ssize_t n = getline(&line, &line_cap, stdin);
+    if (n < 0)
         return 0;
-
-    // Strip trailing newline
-    size_t len = strlen(line);
+    size_t len = (size_t)n;
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
         line[--len] = '\0';
 
-    if (len == 0 && g_repl_len == 0)
+    int r = stmt_feed_line(&g_repl, line, len);
+    if (r < 0) {
+        printf("error: statement too long (over %u bytes); discarded\n", STMT_MAX);
         return 1;
-
-    if (g_repl_len + len + 2 < sizeof(g_repl_buf)) {
-        memcpy(g_repl_buf + g_repl_len, line, len);
-        g_repl_len += len;
-        g_repl_buf[g_repl_len++] = '\n';
-        g_repl_buf[g_repl_len] = '\0';
     }
-    if (script_needs_continuation(g_repl_buf)) {
-        if (!g_daemon_mode) {
+    if (r == 0) {
+        if (g_repl.len && !g_daemon_mode) {
             printf("... ");
             fflush(stdout);
         }
         return 1;
     }
 
-    shell_dispatch(g_repl_buf);
-    g_repl_len = 0;
-    g_repl_buf[0] = '\0';
-
+    shell_dispatch(g_repl.buf);
+    stmt_reset(&g_repl);
     return 1;
 }
 
@@ -1107,8 +1203,8 @@ int main(int argc, char *argv[]) {
     // Ignore SIGPIPE: in daemon mode stdout/stderr are dup2'd to the
     // client socket, so any printf after the client disconnects would
     // otherwise kill the daemon.  With SIG_IGN, write() returns -1 /
-    // EPIPE and the existing daemon_client_poll disconnect detection
-    // (in pump_scheduler_with_heartbeat) handles the rest gracefully.
+    // EPIPE, and daemon_client_gone (in pump_scheduler_with_heartbeat)
+    // notices the failed write and cancels the run.
     signal(SIGPIPE, SIG_IGN);
 
     if (!quiet) {
@@ -1414,12 +1510,9 @@ int main(int argc, char *argv[]) {
     }
 
     // Main loop
-    double last_time = host_time();
     uint64_t start_cycles = cpu_instr_count();
 
     while (g_running && !quit_requested) {
-        double now = host_time();
-
         // Check for max cycles limit
         if (max_cycles > 0) {
             uint64_t elapsed_cycles = cpu_instr_count() - start_cycles;
@@ -1438,7 +1531,6 @@ int main(int argc, char *argv[]) {
             // RAF loop runs, just unthrottled.  Looping one frame at a time keeps
             // the REPL responsive to Ctrl+C (g_interrupted) and the max-cycles
             // cap above; a run_stop_event / scheduler_stop ends the run.
-            (void)now;
             scheduler_run_frame(loop_sched, global_emulator);
         } else {
             // Poll for shell input when idle
@@ -1452,8 +1544,6 @@ int main(int argc, char *argv[]) {
             printf("\n[Interrupted]\n");
             print_prompt();
         }
-
-        last_time = now;
     }
 
     // Cleanup

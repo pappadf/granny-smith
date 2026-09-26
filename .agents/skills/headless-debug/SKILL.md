@@ -62,7 +62,12 @@ printf 'debug.step\nmachine.cpu.pc\n' | nc -w 3 localhost 6800
 ```
 
 - Use `nc -w <secs>`; give long runs a long `-w`. **Disconnecting cancels an
-  in-flight run.**
+  in-flight run** (within a second or two); half-closing (`nc -N`, `nc -q`)
+  does not — the daemon keeps running and answering.
+- Each statement runs the moment it is complete (newline, balanced braces),
+  however the input is chunked; pipelined statements wait their turn. The
+  daemon closes 500 ms after the client goes quiet with nothing running. An
+  unclosed block at the end is reported (`incomplete block at end of input`).
 - During `scheduler.run` the daemon prints `# running... N instructions`
   heartbeats; filter with `grep -v '^#'`.
 - While a run is in flight, another connection accepts only `stop`,
