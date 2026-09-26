@@ -21,6 +21,8 @@ interface DebugState {
     breakpoints: boolean;
     callstack: boolean;
   };
+  /** Open state of each auxiliary core's section, by its node name. */
+  auxOpen: Record<string, boolean>;
   /** Last-rendered register values keyed by name (e.g. 'd0', 'pc'). Used
    *  by RegistersSection to flash changed values for ~800 ms after a
    *  Step. */
@@ -52,6 +54,7 @@ export const debug: DebugState = $state({
     breakpoints: false,
     callstack: false,
   },
+  auxOpen: {},
   registersPrev: {},
   refreshGen: 0,
 });

@@ -1148,6 +1148,18 @@ static value_t ppc_attr_instr_count(struct object *self, const member_t *m) {
     return val_uint(8, cpu_instr_count());
 }
 
+// `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
+// the contract every CPU-like object shares (debug_frame_build; debug.frame
+// is the same call).
+static value_t ppc_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    ppc_t *p = ppc_from(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    cpu_debug_if_t dif = ppc_debug_if(p);
+    return debug_frame_build(&dif, "machine.cpu.frame", argc, argv);
+}
+
 // clang-format off
 static const member_t ppc_members[] = {
     PPC_ATTR("pc",    PA_PC,    "Program counter — address of the next instruction to execute"),
@@ -1182,6 +1194,9 @@ static const member_t ppc_members[] = {
     {.kind = M_ATTR, .name = "instr_count", .flags = VAL_RO,
      .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
      .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
+    {.kind = M_METHOD, .name = "frame",
+     .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
 };
 // clang-format on
 

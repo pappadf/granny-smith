@@ -6,44 +6,16 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection, inspectMemoryAt, bumpDebugRefresh } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
-  import { fmtHex32, fmtHex16, parseHex } from '@/lib/hex';
+  import { fmtHex32, parseHex } from '@/lib/hex';
+  import { registerGroups, registerBits, fmtRegister } from '@/lib/registerLayout';
 
-  // Per-architecture layouts: which registers, grouped how.  Anything the
-  // core reports that a layout does not name lands in a trailing group, and
-  // an architecture with no layout at all gets one generic grid — so a new
-  // core (or the DSP, D7) renders without a table, never as blanks.
-  const LAYOUTS: Record<string, Array<{ title: string; names: string[] }>> = {
-    m68k: [
-      { title: 'Data', names: ['d0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7'] },
-      { title: 'Address', names: ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'] },
-      { title: 'Control', names: ['pc', 'sr', 'usp', 'ssp'] },
-    ],
-    ppc: [
-      { title: 'General', names: Array.from({ length: 32 }, (_, i) => `r${i}`) },
-      {
-        title: 'Special',
-        names: ['pc', 'lr', 'ctr', 'cr', 'xer', 'msr', 'srr0', 'srr1', 'mq'],
-      },
-    ],
-  };
   // Registers shown but not editable from here.
   const READ_ONLY = new Set(['sr']);
-  // Registers the core formats as 16 bits.
-  const WIDTH16 = new Set(['sr']);
 
   const frame = $derived(debugFrame.current);
   const values = $derived(frame?.rawRegs ?? null);
-  const groups = $derived.by(() => {
-    if (!frame || !values) return [];
-    const layout = LAYOUTS[frame.arch] ?? [];
-    const named = new Set(layout.flatMap((g) => g.names));
-    const out = layout
-      .map((g) => ({ title: g.title, names: g.names.filter((n) => n in values) }))
-      .filter((g) => g.names.length);
-    const rest = Object.keys(values).filter((n) => !named.has(n));
-    if (rest.length) out.push({ title: layout.length ? 'Other' : 'Registers', names: rest });
-    return out;
-  });
+  const arch = $derived(frame?.arch ?? 'm68k');
+  const groups = $derived(frame && values ? registerGroups(frame.arch, values) : []);
 
   // Highlight the registers that changed since the previous frame; the
   // highlight lasts until the next frame, so single-stepping reads well.
@@ -92,12 +64,11 @@
   }
 
   function currentValueFor(name: string): string {
-    const v = values?.[name] ?? 0;
-    return WIDTH16.has(name) ? fmtHex16(v) : fmtHex32(v);
+    return fmtRegister(arch, name, values?.[name] ?? 0);
   }
 
   function widthChFor(name: string): number {
-    return WIDTH16.has(name) ? 4 : 8;
+    return registerBits(arch, name) / 4;
   }
 
   function onRegContext(name: string, ev: MouseEvent) {

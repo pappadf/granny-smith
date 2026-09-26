@@ -26,6 +26,14 @@ export type SchedulerMode = 'live' | 'accel' | 'turbo';
 // the wrong (68030) panels.
 export type MmuKind = 'none' | '68030_pmmu' | '68040' | 'ppc_601' | 'ppc_604' | 'lisa_segment';
 
+// An auxiliary CPU core (capabilities.aux_cpus): `name` is its object-model
+// node, machine.<name>, which answers the same `frame` as machine.cpu.
+export interface AuxCpu {
+  name: string;
+  arch: string;
+  freq: number;
+}
+
 interface MachineState {
   status: MachineStatus;
   model: string | null;
@@ -45,6 +53,9 @@ interface MachineState {
   // True iff the active machine has on-board audio input (capabilities.
   // audio_in — the AV family's Singer codec). Gates the microphone button.
   audioIn: boolean;
+  // The machine's auxiliary cores (capabilities.aux_cpus — the AV family's
+  // DSP3210), each rendered in the Debug view; empty on every other machine.
+  auxCpus: AuxCpu[];
   // width/height are the framebuffer pixel dimensions; parW/parH are the
   // monitor's pixel aspect ratio (display pixel width:height), so the renderer
   // can show non-square pixels correctly (the Lisa 2's 720x364 raster is 2:3,
@@ -85,6 +96,7 @@ export const machine: MachineState = $state({
   fpu: false,
   videoIn: false,
   audioIn: false,
+  auxCpus: [],
   screen: { width: 512, height: 342, parW: 1, parH: 1 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   checkpoint: null,

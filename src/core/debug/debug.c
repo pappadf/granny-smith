@@ -673,7 +673,7 @@ static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
     }
 
     if (strlen(buf) == 0) {
-        snprintf(mnemonic, sizeof(mnemonic), "ILLEGAL");
+        snprintf(mnemonic, 32, "ILLEGAL"); // the caller's buffer is 32 bytes
         operands[0] = '\0';
     } else {
         // Cap at 31 so we always have room for the trailing NUL even if
@@ -3263,37 +3263,57 @@ bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     return false;
 }
 
-// `debug.frame([addr], [count], [before])` — one-shot bundled snapshot for
-// the debug UI, on every CPU architecture.  Bundles the register file, a
-// disassembly window and per-row MMU translation into one map, so the panel
-// renders from one bridge round-trip.  Everything architecture-specific
-// comes from the core's cpu_debug_if_t (its register names, its FPU, its
-// instruction-side translation), so this works unchanged on a 68000, a
-// 68030/040 and a PowerPC 601/604; before, it read the 68K cpu_t and failed
-// on every PowerPC machine.
+// Split one disassembled instruction (the cpu_debug_if_t `disasm` text) into
+// the row's mnemonic and operands: at the tab, or -- for an algebraic
+// syntax with no mnemonic column, like the DSP3210's -- all of it as the
+// mnemonic.  An empty text is an illegal encoding.
+static void frame_split_disasm(const char *buf, char *mnem, size_t mnem_len, char *ops, size_t ops_len) {
+    if (!buf[0]) {
+        snprintf(mnem, mnem_len, "ILLEGAL");
+        ops[0] = '\0';
+        return;
+    }
+    const char *tab = strchr(buf, '\t');
+    if (!tab) {
+        snprintf(mnem, mnem_len, "%s", buf);
+        ops[0] = '\0';
+        return;
+    }
+    snprintf(mnem, mnem_len, "%.*s", (int)(tab - buf), buf);
+    snprintf(ops, ops_len, "%s", tab + 1);
+}
+
+// The frame of one CPU-like core -- `debug.frame`, `machine.cpu.frame` and
+// an auxiliary core's `frame` (machine.dsp) all answer this, so the Debug
+// view renders any of them with one component.  Bundles the register file,
+// a disassembly window and per-row translation into one map, one bridge
+// round-trip.  Everything architecture-specific comes from the core's
+// cpu_debug_if_t (its register names, its FPU, its instruction-side
+// translation), so it works unchanged on a 68000, a 68030/040, a PowerPC
+// 601/604 and the DSP3210; before, debug.frame read the 68K cpu_t and failed
+// on every PowerPC machine, and the DSP had no frame at all.
 //
 // Output (a V_MAP):
 //   {
-//     "arch": "m68k" | "ppc",
+//     "arch": "m68k" | "ppc" | "dsp3210",
 //     "pc":   <int>,
 //     "regs": { name: <int>, ... },     // the core's own names: d0..a7/pc/sr/usp/ssp,
-//                                       // or r0..r31/pc/lr/ctr/cr/xer/msr/srr0/srr1[/mq]
+//                                       // r0..r31/pc/lr/ctr/cr/xer/msr/srr0/srr1[/mq],
+//                                       // or the DSP's r1..r22/pc/ps/emr/pcw/dauc/ctr
 //     "rows": [ { "addr", "phys" (int|null), "valid", "mnem", "ops" }, ... ],
 //     "fpu":  { ... }                   // only when the core has one:
 //                                       // 68K {fp:[{hex,val}]x8, fpcr, fpsr, fpiar}
 //                                       // PPC {fpr:[{hex,val}]x32, fpscr}
+//                                       // DSP {a:[{hex,val}]x4} (the DAU accumulators)
 //   }
 //
 // With no `addr`, the window starts at the PC, or `before` instructions
 // ahead of it (re-synchronised so a row always lands on the PC).  Use named
 // arguments from JS: a single positional argument is `addr`, not `count`.
 // Address values are plain integers so the JS side needs no conversion.
-static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    const cpu_debug_if_t *dif = system_cpu_debug_if();
-    if (!dif || !dif->get_pc || !dif->regs)
-        return val_err("debug.frame: CPU not initialised");
+value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, const value_t *argv) {
+    if (!dif || !dif->get_pc || !dif->regs || !dif->disasm)
+        return val_err("%s: CPU not initialised", who);
 
     uint32_t pc = dif->get_pc(dif->ctx);
     bool have_addr = argc >= 1 && argv[0].kind == V_INT;
@@ -3317,11 +3337,12 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     dif->regs(dif->ctx, regs);
     val_map_put(b, "regs", val_map_finish(regs));
 
-    // Disasm rows + per-row translation, instruction side (the IBATs on PPC).
+    // Disasm rows + per-row translation, instruction side (the IBATs on PPC);
+    // a core with no translation at all addresses physical memory directly.
     uint32_t (*xlate)(void *, uint32_t, bool *) = dif->translate_code ? dif->translate_code : dif->translate;
     value_t *rows = NULL;
     size_t n_rows = 0, cap_rows = 0;
-    char mnem[32], ops[80];
+    char buf[128], mnem[100], ops[100];
     for (int i = 0; i < (int)count; i++) {
         value_map_builder_t *row = val_map_new();
         val_map_put(row, "addr", val_int((int64_t)addr));
@@ -3329,11 +3350,13 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
         uint32_t phys = xlate ? xlate(dif->ctx, addr, &valid) : addr;
         val_map_put(row, "phys", valid ? val_int((int64_t)phys) : val_none());
         val_map_put(row, "valid", val_bool(valid));
-        int n = disasm_at(addr, mnem, ops); // bytes consumed
+        buf[0] = '\0';
+        int n = dif->disasm(dif->ctx, addr, buf, sizeof(buf)); // bytes consumed
+        frame_split_disasm(buf, mnem, sizeof(mnem), ops, sizeof(ops));
         val_map_put(row, "mnem", val_str(mnem));
         val_map_put(row, "ops", val_str(ops));
         val_list_push(&rows, &n_rows, &cap_rows, val_map_finish(row));
-        addr += (uint32_t)n;
+        addr += (uint32_t)(n > 0 ? n : 2);
     }
     val_map_put(b, "rows", val_list(rows, n_rows));
 
@@ -3351,10 +3374,18 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     return val_map_finish(b);
 }
 
-// debug.frame's default row count: a named `before` must be reachable past it.
+// `debug.frame([addr], [count], [before])` — the main CPU's frame; the same
+// as `machine.cpu.frame`, kept under debug for the tools that call it.
+static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    return debug_frame_build(system_cpu_debug_if(), "debug.frame", argc, argv);
+}
+
+// The frame's default row count: a named `before` must be reachable past it.
 static const value_t k_frame_count32 = {.kind = V_INT, .i = 32};
 
-static const arg_decl_t debug_frame_args[] = {
+const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {
     {.name = "addr",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -3407,27 +3438,27 @@ static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "log",
      .doc = "Configure a log category: debug.log(cat, level=, stdout=, file=, ts=, pc=)",
-     .method = {.args = debug_log_args, .nargs = 6, .result = V_BOOL, .fn = debug_method_log}                                                                                                                 },
+     .method = {.args = debug_log_args, .nargs = 6, .result = V_BOOL, .fn = debug_method_log}                                                                                                                },
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                           },
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                          },
     {.kind = M_METHOD,
      .name = "frame",
-     .doc = "Bundled snapshot for the debug UI: registers + disasm window + per-row MMU translation, "
-            "returned as a typed map. Default: 32 rows starting at PC.",                                           .method = {.args = debug_frame_args, .nargs = 3, .result = V_MAP, .fn = debug_method_frame}},
+     .doc = "The CPU's debug frame: registers, disassembly, per-row translation (= machine.cpu.frame)",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = debug_method_frame}                                                                                             },
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Run N instructions (default 1) and stop, through the frame loop exactly as scheduler.run N does "
-            "(VBL and timers keep running)",                                                                       .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step} },
+            "(VBL and timers keep running)",                                                                       .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}},
     {.kind = M_METHOD,
      .name = "exceptions",
      .doc = "Dump the 256-entry exception trace ring (always-on). Optional filter=1 hides routine traps/IRQs.",
-     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                   },
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                  },
     {.kind = M_METHOD,
      .name = "log_levels",
      .doc = "Every registered log category and its level as a map {<cat>: <level>}.",
-     .method = {.args = NULL, .nargs = 0, .result = V_MAP, .fn = debug_method_log_levels}                                                                                                                     },
+     .method = {.args = NULL, .nargs = 0, .result = V_MAP, .fn = debug_method_log_levels}                                                                                                                    },
 };
 
 static const class_desc_t debug_class = {

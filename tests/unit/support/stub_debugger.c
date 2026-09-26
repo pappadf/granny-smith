@@ -71,3 +71,14 @@ bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     *physical = false;
     return true;
 }
+// The frame builder the CPU classes' `frame` method calls, and its argument
+// table, which the member tables take the address of.
+#include "debug.h"
+const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {{.name = "addr"}, {.name = "count"}, {.name = "before"}};
+value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, const value_t *argv) {
+    (void)dif;
+    (void)who;
+    (void)argc;
+    (void)argv;
+    return (value_t){.kind = V_NONE};
+}

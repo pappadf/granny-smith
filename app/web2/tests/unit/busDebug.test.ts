@@ -105,14 +105,14 @@ describe('bus/debug against the real object-model paths', () => {
   });
 
   it('asks for the frame by named arguments', async () => {
-    bridge.reply('debug.frame', { arch: 'm68k', pc: 0x400, regs: { pc: 0x400 }, rows: [] });
+    bridge.reply('machine.cpu.frame', { arch: 'm68k', pc: 0x400, regs: { pc: 0x400 }, rows: [] });
     await loadDebugFrame();
     await loadDebugFrame(0x1000, 8);
     expect(bridge.calls.map((c) => c.args)).toEqual([{ count: 32 }, { count: 8, addr: 0x1000 }]);
   });
 
   it('never fills a 68K register view on another architecture', async () => {
-    bridge.reply('debug.frame', {
+    bridge.reply('machine.cpu.frame', {
       arch: 'ppc',
       pc: 0xfff0345c,
       regs: { r1: 0x1234, pc: 0xfff0345c, lr: 0 },
@@ -126,5 +126,27 @@ describe('bus/debug against the real object-model paths', () => {
     expect(f?.pc).toBe(0xfff0345c);
     // The PPC FPU block maps onto the generic shape, not the 68K one.
     expect(f?.fpu).toEqual({ prefix: 'FPR', data: [], control: [{ name: 'fpscr', value: 0 }] });
+  });
+
+  // An auxiliary core answers the same frame (D7): the AV DSP3210.
+  it("reads an auxiliary core's frame from its own node", async () => {
+    bridge.reply('machine.dsp.frame', {
+      arch: 'dsp3210',
+      pc: 0x50030000,
+      regs: { r1: 7, pc: 0x50030000, emr: 0x8000 },
+      rows: [{ addr: 0x50030000, phys: 0x50030000, valid: true, mnem: 'r1 = r2', ops: '' }],
+      fpu: { a: [{ hex: '40000000_81', val: '1' }] },
+    });
+    const f = await loadDebugFrame(undefined, 8, 2, 'dsp');
+    expect(bridge.calls).toEqual([{ path: 'machine.dsp.frame', args: { count: 8, before: 2 } }]);
+    expect(f?.arch).toBe('dsp3210');
+    expect(f?.regs).toBeNull();
+    expect(f?.rawRegs.emr).toBe(0x8000);
+    expect(f?.fpu).toEqual({ prefix: 'A', data: [{ hex: '40000000_81', val: '1' }], control: [] });
+  });
+
+  it('refuses a core name that is not one identifier, without calling the core', async () => {
+    expect(await loadDebugFrame(undefined, 8, 0, 'cpu.mmu')).toBeNull();
+    expect(bridge.calls).toEqual([]);
   });
 });

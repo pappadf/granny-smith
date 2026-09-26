@@ -29,7 +29,6 @@ export {
   type MethodInfo,
 } from './systemTree';
 export {
-  disasmAt,
   writeRegister,
   peekL,
   peekBytes,
@@ -42,7 +41,6 @@ export {
   stepInto,
   stopMachine,
   restart,
-  type DisasmRow,
   type Registers,
   type Breakpoint,
 } from './debug';

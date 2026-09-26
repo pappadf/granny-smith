@@ -4,8 +4,7 @@
 // scheduler/restart calls already in bus/emulator.ts so the Debug
 // toolbar only needs to import here.
 //
-// `lib/disasm.ts` parses the raw `debug.disasm` output; this file owns
-// the gsEval dispatch.
+// This file owns the gsEval dispatch.
 
 import {
   gsEval,
@@ -15,10 +14,7 @@ import {
   isModuleReady,
   restartEmulator,
 } from './emulator';
-import { parseDisasmBlock, type DisasmRow } from '@/lib/disasm';
 import { bumpDebugRefresh } from '@/state/debug.svelte';
-
-export type { DisasmRow };
 
 export interface Registers {
   d: number[]; // [D0..D7]
@@ -39,29 +35,30 @@ export interface DebugFrameRow {
   ops: string;
 }
 
-// One FPU data register, returned by `debug.frame` for CPUs that have
-// an FPU. `hex` is the raw 80-bit register (4 hex digits of exponent
-// with sign + underscore + 16 hex digits of mantissa). `val` is the
-// human-readable decimal (or special form like `Inf` / `-Inf` / `NaN`).
+// One floating-point data register of a frame's `fpu` block. `hex` is the
+// raw register as the core formats it (68K: 80-bit extended, exponent_
+// mantissa; PPC: the 64-bit double; DSP3210: the 40-bit accumulator,
+// mantissa_exponent). `val` is the human-readable decimal (or `Inf` /
+// `-Inf` / `NaN`).
 export interface FpuRegister {
   hex: string;
   val: string;
 }
 
 // The FPU register file in an architecture-neutral shape: the data
-// registers (68K fp0-fp7 as 80-bit extended, PPC fpr0-fpr31 as doubles) and
-// the control registers by name (68K fpcr/fpsr/fpiar, PPC fpscr).
+// registers (68K fp0-fp7, PPC fpr0-fpr31, the DSP3210's accumulators a0-a3)
+// and the control registers by name (68K fpcr/fpsr/fpiar, PPC fpscr).
 export interface FpuFrame {
-  prefix: string; // display name of the data registers: 'FP' or 'FPR'
+  prefix: string; // display name of the data registers: 'FP', 'FPR' or 'A'
   data: FpuRegister[];
   control: Array<{ name: string; value: number }>;
 }
 
-// Bundled snapshot returned by `debug.frame`. Replaces the per-register
-// + per-row gsEval fan-out the Debug view used to do (~21 round-trips)
-// with a single bridge call.
+// Bundled snapshot returned by `machine.<core>.frame` (debug.frame is the
+// main CPU's). Replaces the per-register + per-row gsEval fan-out the Debug
+// view used to do (~21 round-trips) with a single bridge call.
 export interface DebugFrame {
-  // The core's architecture tag: 'm68k' or 'ppc'.
+  // The core's architecture tag: 'm68k', 'ppc' or 'dsp3210'.
   arch: string;
   pc: number;
   // Every register the core reported, by its own names.
@@ -70,7 +67,7 @@ export interface DebugFrame {
   // shape filled with zeros for registers the core does not have.
   regs: Registers | null;
   rows: DebugFrameRow[];
-  // The 68K FPU block, when the CPU has one (68030 with 68882, 68040).
+  // The floating-point block, when the core has one (68882/68040, PPC, DSP).
   fpu?: FpuFrame;
 }
 
@@ -92,32 +89,14 @@ function coerceNum(v: unknown): number {
   return 0;
 }
 
-export async function disasmAt(addr: number, count: number): Promise<DisasmRow[]> {
-  if (!isModuleReady()) return [];
-  const r = await gsEval('debug.disasm', [addr >>> 0, count]);
-  if (Array.isArray(r)) {
-    // Structured result — coerce.
-    return r
-      .map((row) => {
-        if (typeof row === 'object' && row && 'addr' in row && 'mnem' in row) {
-          const obj = row as { addr: unknown; mnem: unknown; ops?: unknown; cmt?: unknown };
-          return {
-            addr: coerceNum(obj.addr),
-            mnem: String(obj.mnem ?? ''),
-            ops: String(obj.ops ?? ''),
-            cmt: String(obj.cmt ?? ''),
-          };
-        }
-        return null;
-      })
-      .filter((x): x is DisasmRow => x !== null);
-  }
-  if (typeof r === 'string') return parseDisasmBlock(r);
-  return [];
-}
+// A core's object-model node name — `cpu`, or an auxiliary core's
+// (capabilities.aux_cpus) — is one identifier: it becomes a path segment.
+const CORE_NAME = /^[a-z][a-z0-9_]*$/;
 
-// Fetch the bundled debug frame in a single bridge round-trip. Default
-// is 32 rows starting at PC. When `addr` is omitted the C side uses PC.
+// Fetch a core's frame, `machine.<core>.frame`, in a single bridge
+// round-trip: the main CPU by default, or an auxiliary core (the AV DSP) —
+// every CPU-like object answers the same contract. Default is 32 rows
+// starting at PC. When `addr` is omitted the C side uses PC.
 // Returns null on parse failure or when the module isn't ready.
 // `before` (with no addr): how many rows to show ahead of the PC; the core
 // re-synchronises the window so a row always lands exactly on the PC.
@@ -125,16 +104,18 @@ export async function loadDebugFrame(
   addr?: number,
   count = 32,
   before = 0,
+  core = 'cpu',
 ): Promise<DebugFrame | null> {
+  if (!CORE_NAME.test(core)) return null;
   if (!isModuleReady()) return null;
   // Named arguments: a lone positional argument is `addr` to the core, so
   // `[0, n]` used to disassemble from address 0 (N-32).
   const args: Record<string, number> = { count };
   if (addr !== undefined) args.addr = addr >>> 0;
   else if (before > 0) args.before = before;
-  // debug.frame returns a native nested object (V_MAP through the gsEval
-  // bridge) — no inner JSON.parse.
-  const parsed = await gsEval('debug.frame', args);
+  // The frame is a native nested object (V_MAP through the gsEval bridge) —
+  // no inner JSON.parse.
+  const parsed = await gsEval(`machine.${core}.frame`, args);
   if (!parsed || typeof parsed !== 'object' || isGsError(parsed)) return null;
   const obj = parsed as {
     arch?: unknown;
@@ -177,24 +158,26 @@ export async function loadDebugFrame(
     })
     .filter((x): x is DebugFrameRow => x !== null);
 
-  // Parse the optional FPU block. The C side emits it only when the
-  // running CPU model has an FPU; on Plus / SE the field is missing.
-  // The core's FPU block, when the CPU has one: 68K {fp, fpcr, fpsr, fpiar},
-  // PPC {fpr, fpscr}.  Mapped onto one shape so the pane needs no per-arch code.
+  // The core's floating-point block, only when it has one (absent on a
+  // Plus): 68K {fp, fpcr, fpsr, fpiar}, PPC {fpr, fpscr}, DSP3210 {a}.  The
+  // one list is the data registers, named after its key; every number is a
+  // control register.  Mapped onto one shape so the pane needs no per-arch
+  // code.
   let fpu: FpuFrame | undefined;
   const fpuObj = (parsed as { fpu?: unknown }).fpu;
   if (fpuObj && typeof fpuObj === 'object') {
     const raw = fpuObj as Record<string, unknown>;
-    const list = Array.isArray(raw.fp) ? raw.fp : Array.isArray(raw.fpr) ? raw.fpr : [];
+    const listKey = Object.keys(raw).find((k) => Array.isArray(raw[k])) ?? '';
+    const list = listKey ? (raw[listKey] as unknown[]) : [];
     const data: FpuRegister[] = list.map((entry) => {
       if (!entry || typeof entry !== 'object') return { hex: '', val: '' };
       const e = entry as { hex?: unknown; val?: unknown };
       return { hex: String(e.hex ?? ''), val: String(e.val ?? '') };
     });
     const control = Object.entries(raw)
-      .filter(([k, v]) => k !== 'fp' && k !== 'fpr' && typeof v === 'number')
+      .filter(([k, v]) => k !== listKey && typeof v === 'number')
       .map(([name, v]) => ({ name, value: coerceNum(v) }));
-    fpu = { prefix: Array.isArray(raw.fpr) ? 'FPR' : 'FP', data, control };
+    fpu = { prefix: listKey.toUpperCase(), data, control };
   }
 
   return { arch, pc: coerceNum(obj.pc ?? rawRegs.pc), rawRegs, regs, rows, fpu };

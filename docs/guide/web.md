@@ -366,10 +366,13 @@ full surface.
 - **`machine.restart`** — power-cycles the running machine: rebuilds it
   from its built-from record with the mounted media still attached.
 - **`rom.load(path)`** — loads a ROM into the booted machine.
-- **`debug.frame([addr], [count])`** — bundled JSON snapshot for the
-  Debug tab: 16 GPRs + control regs, disasm rows with per-row MMU
-  translation (`phys`/`valid`), optional `fpu` block. One round-trip
-  instead of ~21 per pause.
+- **`debug.frame([addr], [count], [before])`** — bundled snapshot for
+  the Debug tab, the same call as **`machine.cpu.frame`**: `{arch, pc,
+  regs, rows, fpu?}` — the core's own register names, disasm rows with
+  per-row MMU translation (`phys`/`valid`), optional `fpu` block.  One
+  round-trip per pause.  Every CPU-like object answers the same contract:
+  an auxiliary core listed in `capabilities.aux_cpus` has
+  `machine.<name>.frame` (the AV DSP3210's `machine.dsp.frame`).
 - **`debug.disasm([addr], [count])`** — pretty-prints to stdout,
   returns `V_BOOL` (truthy for shell `assert ${…}` use). The web2
   Disasm pane uses `debug.frame` instead.

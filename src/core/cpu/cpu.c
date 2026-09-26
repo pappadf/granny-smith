@@ -838,6 +838,18 @@ static value_t attr_cpu_instr_count(struct object *self, const member_t *m) {
     return val_uint(8, cpu_instr_count());
 }
 
+// `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
+// the contract every CPU-like object shares (debug_frame_build; debug.frame
+// is the same call).
+static value_t cpu_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    cpu_debug_if_t dif = cpu_debug_if(cpu);
+    return debug_frame_build(&dif, "machine.cpu.frame", argc, argv);
+}
+
 // CCR-bit attributes (cpu.c / cpu.v / cpu.z / cpu.n / cpu.x). 1-bit reads
 // and writes that round-trip through SR — the legacy `set z 1` interface
 // in typed form.
@@ -919,6 +931,9 @@ static const member_t cpu_members[] = {
     ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
     ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
     ATTR_RO("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
+    {.kind = M_METHOD, .name = "frame",
+     .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},
 };
 // clang-format on
 

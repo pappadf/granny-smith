@@ -81,9 +81,13 @@ all of this.
 ## Object node
 
 `machine.dsp`: `state` (`reset`/`running`/`idle`/`crashed`), `pc`, `ps`,
-`emr`, `pcw`, `sp` (r21), `evtp` (r22), `instr_count`; methods `step(n)`
-and `disasm(addr, count)` (reads through the DSP's own bus view, so
-on-chip RAM disassembles correctly).  No `$` aliases.
+`emr`, `pcw`, `sp` (r21), `evtp` (r22), `instr_count`; methods `step(n)`,
+`disasm(addr, count)` (prints a listing read through the DSP's own bus
+view, so on-chip RAM disassembles correctly) and `frame(addr, count,
+before)` — the same `{arch, pc, regs, rows, fpu}` map as
+`machine.cpu.frame`, with `arch` `"dsp3210"`, the registers r1..r22, pc,
+ps, emr, pcw, dauc and ctr, and the DAU accumulators as `fpu.a`.  The web
+Debug view renders it from `capabilities.aux_cpus`.  No `$` aliases.
 
 ## Checkpointing
 

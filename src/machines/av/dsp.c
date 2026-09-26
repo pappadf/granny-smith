@@ -33,6 +33,7 @@
 #include "dsp3210.h"
 #include "dsp3210_disasm.h"
 
+#include "debug.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "mmu.h"
@@ -373,6 +374,95 @@ static int dsp_peek_word(av_dsp_t *d, uint32_t addr, uint32_t *out) {
     return 0;
 }
 
+// --- the DSP's cpu_debug_if_t: the frame contract every CPU-like object
+// shares (debug.h), so machine.dsp.frame has the main CPU's shape and the
+// Debug view renders it with the same component.  No translate: the DSP
+// addresses guest-physical memory (and its on-chip window) directly. ---
+
+static uint32_t dsp_dbgif_get_pc(void *ctx) {
+    return ((av_dsp_t *)ctx)->core->pc;
+}
+
+// Whole-text disassembly: the DSP3210's syntax is algebraic ("a0 = a1 *
+// *r2++"), with no mnemonic column to split at a tab.
+static int dsp_dbgif_disasm(void *ctx, uint32_t pc, char *buf, size_t buflen) {
+    av_dsp_t *d = (av_dsp_t *)ctx;
+    uint32_t w;
+    if (dsp_peek_word(d, pc & ~3u, &w)) {
+        snprintf(buf, buflen, "<bus error>");
+        return 4;
+    }
+    dsp3210_insn ins;
+    dsp3210_disassemble(w, pc & ~3u, &ins);
+    snprintf(buf, buflen, "%s", ins.text);
+    return 4;
+}
+
+static void dsp_dbgif_regs(void *ctx, struct value_map_builder *regs) {
+    dsp3210_t *c = ((av_dsp_t *)ctx)->core;
+    char rname[4];
+    for (int i = 1; i < 23; i++) { // r0 is hardwired zero
+        snprintf(rname, sizeof(rname), "r%d", i);
+        val_map_put(regs, rname, val_int((int64_t)c->r[i]));
+    }
+    val_map_put(regs, "pc", val_int((int64_t)c->pc));
+    val_map_put(regs, "ps", val_int((int64_t)c->ps));
+    val_map_put(regs, "emr", val_int((int64_t)c->emr));
+    val_map_put(regs, "pcw", val_int((int64_t)c->pcw));
+    val_map_put(regs, "dauc", val_int((int64_t)c->dauc));
+    val_map_put(regs, "ctr", val_int((int64_t)c->ctr));
+}
+
+// The DAU accumulators a0..a3 as the frame's floating-point block: `hex` is
+// the stored 40 bits, mantissa+guard (bits 39-8) then exponent (7-0).
+static bool dsp_dbgif_fpu(void *ctx, struct value_map_builder *fpu) {
+    dsp3210_t *c = ((av_dsp_t *)ctx)->core;
+    value_t *list = NULL;
+    size_t n = 0, cap = 0;
+    for (int i = 0; i < 4; i++) {
+        int64_t mant;
+        int exp;
+        dsp3210_acc_raw(c, i, &mant, &exp);
+        char hex[16], val[32];
+        snprintf(hex, sizeof(hex), "%08x_%02x", (unsigned)(uint32_t)mant, (unsigned)(exp & 0xff));
+        snprintf(val, sizeof(val), "%.9g", dsp3210_acc_get(c, i));
+        value_map_builder_t *e = val_map_new();
+        val_map_put(e, "hex", val_str(hex));
+        val_map_put(e, "val", val_str(val));
+        val_list_push(&list, &n, &cap, val_map_finish(e));
+    }
+    val_map_put(fpu, "a", val_list(list, n));
+    return true;
+}
+
+static cpu_debug_if_t dsp_debug_if(av_dsp_t *d) {
+    cpu_debug_if_t dif = {.ctx = d,
+                          .get_pc = dsp_dbgif_get_pc,
+                          .set_pc = NULL,
+                          .disasm = dsp_dbgif_disasm,
+                          .translate = NULL,
+                          .translate_mac = NULL,
+                          .arch = "dsp3210",
+                          .regs = dsp_dbgif_regs,
+                          .fpu = dsp_dbgif_fpu,
+                          .translate_code = NULL,
+                          .is_supervisor = NULL};
+    return dif;
+}
+
+// `machine.dsp.frame([addr], [count], [before])` -- the same frame as
+// machine.cpu.frame, for the DSP.
+static value_t dsp_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    av_dsp_t *d = dsp_self(self);
+    if (!d)
+        return val_err("dsp not available");
+    cpu_debug_if_t dif = dsp_debug_if(d);
+    return debug_frame_build(&dif, "machine.dsp.frame", argc, argv);
+}
+
+// `machine.dsp.disasm([addr], [count])` prints a listing and answers true,
+// as debug.disasm does for the main CPU; the typed rows are frame's.
 static value_t dsp_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     av_dsp_t *d = dsp_self(self);
@@ -384,27 +474,18 @@ static value_t dsp_method_disasm(struct object *self, const member_t *m, int arg
     uint32_t count = (argc >= 2 && argv[1].kind == V_UINT) ? (uint32_t)argv[1].u : 16;
     if (count > 256)
         count = 256;
-    size_t cap = (size_t)count * 160 + 1;
-    char *buf = malloc(cap);
-    if (!buf)
-        return val_err("out of memory");
-    size_t len = 0;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t a = (addr & ~3u) + 4 * i;
         uint32_t w;
         if (dsp_peek_word(d, a, &w)) {
-            len += (size_t)snprintf(buf + len, cap - len, "%08x: <bus error>\n", a);
+            printf("%08x: <bus error>\n", a);
             break;
         }
         dsp3210_insn ins;
         dsp3210_disassemble(w, a, &ins);
-        len += (size_t)snprintf(buf + len, cap - len, "%08x: %08x  %s\n", a, w, ins.text);
-        if (len + 160 >= cap)
-            break;
+        printf("%08x: %08x  %s\n", a, w, ins.text);
     }
-    value_t v = val_str(buf);
-    free(buf);
-    return v;
+    return val_bool(true);
 }
 
 static const arg_decl_t dsp_step_args[] = {
@@ -474,8 +555,12 @@ static const member_t av_dsp_members[] = {
      .method = {.args = dsp_step_args, .nargs = 1, .result = V_UINT, .fn = dsp_method_step}},
     {.kind = M_METHOD,
      .name = "disasm",
-     .doc = "Disassemble N instructions through the DSP's own bus view",
-     .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_STRING, .fn = dsp_method_disasm}},
+     .doc = "Print a disassembly of N instructions through the DSP's own bus view",
+     .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_BOOL, .fn = dsp_method_disasm}},
+    {.kind = M_METHOD,
+     .name = "frame",
+     .doc = "Debug frame, the same shape as machine.cpu.frame: {arch, pc, regs, rows, fpu}",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = dsp_method_frame}},
 };
 
 static const class_desc_t av_dsp_class = {

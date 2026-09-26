@@ -16,6 +16,7 @@ import {
   setPerfStats,
   type MachineStatus,
   type MmuKind,
+  type AuxCpu,
   type SchedulerMode,
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
@@ -676,12 +677,14 @@ export async function defaultHdId(): Promise<number> {
 // six; this used to keep two and collapse the 68040 and PowerPC MMUs to
 // "none", F-05), and `mmuEnabled` means "has an MMU of any kind" — every
 // kind answers the same machine.cpu.mmu.translate/peek (bus/mmu.ts).  `fpu`
-// gates the FPU panel.
+// gates the FPU panel; `auxCpus` lists the auxiliary cores the Debug view
+// renders (it was exported and read by nothing, F-08).
 export async function applyCapabilities(model: string): Promise<void> {
   let kind: MmuKind = 'none';
   let fpu = false;
   let videoIn = false;
   let audioIn = false;
+  let auxCpus: AuxCpu[] = [];
   try {
     // machine.profile returns a native nested object (V_MAP through the
     // gsEval bridge) — no inner JSON.parse.
@@ -693,6 +696,7 @@ export async function applyCapabilities(model: string): Promise<void> {
           cpu?: { fpu?: boolean };
           video_in?: boolean;
           audio_in?: boolean;
+          aux_cpus?: unknown;
         };
       };
       const k = parsed.capabilities?.mmu?.kind;
@@ -707,6 +711,7 @@ export async function applyCapabilities(model: string): Promise<void> {
       fpu = parsed.capabilities?.cpu?.fpu === true;
       videoIn = parsed.capabilities?.video_in === true;
       audioIn = parsed.capabilities?.audio_in === true;
+      auxCpus = parseAuxCpus(parsed.capabilities?.aux_cpus);
     }
   } catch {
     /* leave kind = 'none', fpu = false, videoIn/audioIn = false */
@@ -716,6 +721,25 @@ export async function applyCapabilities(model: string): Promise<void> {
   machine.fpu = fpu;
   machine.videoIn = videoIn;
   machine.audioIn = audioIn;
+  machine.auxCpus = auxCpus;
+}
+
+// capabilities.aux_cpus -> AuxCpu[].  A name becomes a path segment
+// (machine.<name>.frame), so only a plain identifier is accepted.
+export function parseAuxCpus(raw: unknown): AuxCpu[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AuxCpu[] = [];
+  for (const e of raw) {
+    if (!e || typeof e !== 'object') continue;
+    const { name, arch, freq } = e as { name?: unknown; arch?: unknown; freq?: unknown };
+    if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/.test(name)) continue;
+    out.push({
+      name,
+      arch: typeof arch === 'string' ? arch : '',
+      freq: typeof freq === 'number' ? freq : 0,
+    });
+  }
+  return out;
 }
 
 // === PRAM seeding ============================================================

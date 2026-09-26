@@ -205,7 +205,8 @@ find.bytes "4e 75" 0x408980 0x408990   # space-separated 2-digit hex
 ```
 debug.exceptions                       # last 256 exceptions (vector, pc, sr, fault addr)
 debug.exceptions filter=1              # hide routine traps/IRQs
-let f = debug.frame()                  # regs + 32 disasm rows + MMU translation
+let f = debug.frame()                  # regs + 32 disasm rows + MMU translation (= machine.cpu.frame)
+machine.dsp.frame(count=8)             # the same map for the AV DSP3210 (any aux core)
 ($f.regs.pc)
 machine.cpu.mmu                        # tc crp srp tt0 tt1 mmusr enabled (68030)
 machine.irq
