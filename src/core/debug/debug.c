@@ -41,6 +41,7 @@
 static const class_desc_t debug_class;
 static const class_desc_t bp_collection_class;
 static const class_desc_t lp_collection_class;
+static const class_desc_t wp_collection_class;
 static const class_desc_t debug_mac_class;
 static const class_desc_t debug_mac_globals_class;
 
@@ -129,6 +130,13 @@ struct logpoint {
     // 0x4244E607 to this page") where most accesses on a hot page are noise.
     bool value_filter_active;
     uint32_t value_filter;
+
+    // A watchpoint: a memory logpoint that stops the machine after the
+    // accessing instruction instead of logging (debug.watchpoints, #180).
+    // Listed by its own collection, never by debug.logpoints.
+    bool stops;
+    // A disabled watchpoint is kept but ignored (the entry's `enabled`).
+    bool disabled;
 
     // Sparse stable id and the per-entry object_t. Same shape as the
     // breakpoint struct above.
@@ -309,8 +317,12 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 // are watched, so an access via an alias of the same physical page still
 // fires the hook.  When space == ADDR_PHYSICAL only the physical watch is
 // installed (no logical-page watch) — the caller observes every alias.
-logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
-                                log_category_t *category, int level) {
+static struct object *make_watchpoint_object(logpoint_t *lp);
+
+// The installer behind set_memory_logpoint and the watchpoint add: `stops`
+// makes the entry a watchpoint (its own entry class, the stopping hook path).
+static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space,
+                                           int kind, log_category_t *category, int level, bool stops) {
     // calloc, and the no-range sentinel set explicitly below, matching
     // set_logpoint.  This used to malloc and then assign 14 of the 16 fields
     // by hand, leaving start_phys/end_phys as heap garbage.  Inert today only
@@ -337,8 +349,9 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     lp->end_phys_page = 0;
     lp->value_filter_active = false;
     lp->value_filter = 0;
+    lp->stops = stops;
     lp->id = debug->next_logpoint_id++;
-    lp->entry_object = gs_classes_make_logpoint_object(lp);
+    lp->entry_object = stops ? make_watchpoint_object(lp) : gs_classes_make_logpoint_object(lp);
     lp->next = debug->logpoints;
     debug->logpoints = lp;
     debug->active = true;
@@ -395,6 +408,11 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
         lp->end_phys_page = end_page;
     }
     return lp;
+}
+
+logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
+                                log_category_t *category, int level) {
+    return install_memory_logpoint(debug, addr, end_addr, space, kind, category, level, false);
 }
 
 // Expand a logpoint message template at fire time.
@@ -590,7 +608,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
     uint32_t phys_addr = addr;
     bool phys_computed = false;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        if (lp->kind == LP_KIND_PC)
+        if (lp->kind == LP_KIND_PC || lp->disabled)
             continue;
         bool match_kind = (lp->kind == LP_KIND_RW) || (is_write && lp->kind == LP_KIND_WRITE) ||
                           (!is_write && lp->kind == LP_KIND_READ);
@@ -635,6 +653,23 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                 continue;
         }
         lp->hit_count++;
+        if (lp->stops) {
+            // A watchpoint: report the access and stop the machine once the
+            // instruction completes (debug_break_and_trace).  The first hit
+            // inside one instruction is the one reported.
+            if (!debug->watch_hit) {
+                const cpu_debug_if_t *dif = system_cpu_debug_if();
+                uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
+                printf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id, is_write ? "WRITE" : "READ",
+                       addr,
+                       (size == 1)   ? 'b'
+                       : (size == 2) ? 'w'
+                                     : 'l',
+                       (int)(size * 2), value, pc);
+                debug->watch_hit = true;
+            }
+            continue;
+        }
         char formatted[256];
         if (lp->message) {
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
@@ -740,6 +775,13 @@ int debug_break_and_trace(void) {
         return false;
     bool stop = false;
     uint32_t current_pc = dif->get_pc(dif->ctx);
+
+    // A watchpoint fired inside the instruction that just executed: stop
+    // here, on the instruction after the access (#180).
+    if (debug->watch_hit) {
+        debug->watch_hit = false;
+        stop = true;
+    }
 
     // If we have a last_breakpoint_pc set, this means we need to skip checking
     // for breakpoints at that specific PC address one time (to allow resuming execution)
@@ -1786,18 +1828,32 @@ static int delete_logpoint_by_id(debug_t *debug, int id) {
 
 // Delete all logpoints; returns the number deleted (matches the
 // breakpoint counterpart so typed wrappers can report the count).
-int delete_all_logpoints(debug_t *debug) {
+// Remove every entry of one collection -- the logpoints (stops == false) or
+// the watchpoints (stops == true) -- and keep the other's.
+static int delete_all_where(debug_t *debug, bool stops) {
     int count = 0;
-    logpoint_t *lp = debug ? debug->logpoints : NULL;
-    while (lp) {
-        logpoint_t *next = lp->next;
+    if (!debug)
+        return 0;
+    logpoint_t **pp = &debug->logpoints;
+    while (*pp) {
+        logpoint_t *lp = *pp;
+        if (lp->stops != stops) {
+            pp = &lp->next;
+            continue;
+        }
+        *pp = lp->next;
         free_logpoint(lp);
-        lp = next;
         count++;
     }
-    if (debug)
-        debug->logpoints = NULL;
     return count;
+}
+
+int delete_all_logpoints(debug_t *debug) {
+    return delete_all_where(debug, false);
+}
+
+int delete_all_watchpoints(debug_t *debug) {
+    return delete_all_where(debug, true);
 }
 
 // ============================================================================
@@ -1842,13 +1898,24 @@ int debug_breakpoint_count(debug_t *debug) {
     return n;
 }
 
-int debug_logpoint_count(debug_t *debug) {
+// The two collections split one list: the logpoints are the entries that do
+// not stop, the watchpoints the ones that do.
+static int logpoint_count_where(debug_t *debug, bool stops) {
     int n = 0;
     if (!debug)
         return 0;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
-        n++;
+        if (lp->stops == stops)
+            n++;
     return n;
+}
+
+int debug_logpoint_count(debug_t *debug) {
+    return logpoint_count_where(debug, false);
+}
+
+int debug_watchpoint_count(debug_t *debug) {
+    return logpoint_count_where(debug, true);
 }
 
 // next(prev) — return the smallest live id strictly greater than `prev`
@@ -1868,17 +1935,25 @@ int debug_breakpoint_next_id(debug_t *debug, int prev_id) {
     return best;
 }
 
-int debug_logpoint_next_id(debug_t *debug, int prev_id) {
+static int logpoint_next_id_where(debug_t *debug, int prev_id, bool stops) {
     if (!debug)
         return -1;
     int best = -1;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        if (lp->id <= prev_id)
+        if (lp->stops != stops || lp->id <= prev_id)
             continue;
         if (best < 0 || lp->id < best)
             best = lp->id;
     }
     return best;
+}
+
+int debug_logpoint_next_id(debug_t *debug, int prev_id) {
+    return logpoint_next_id_where(debug, prev_id, false);
+}
+
+int debug_watchpoint_next_id(debug_t *debug, int prev_id) {
+    return logpoint_next_id_where(debug, prev_id, true);
 }
 
 bool debug_remove_breakpoint(debug_t *debug, int id) {
@@ -1979,6 +2054,9 @@ debug_t *debug_init(void) {
         debug->lp_collection_object = object_new(&lp_collection_class, debug, "logpoints");
         if (debug->lp_collection_object)
             object_attach(debug->object, debug->lp_collection_object);
+        debug->wp_collection_object = object_new(&wp_collection_class, debug, "watchpoints");
+        if (debug->wp_collection_object)
+            object_attach(debug->object, debug->wp_collection_object);
         debug->mac_object = object_new(&debug_mac_class, debug, "mac");
         if (debug->mac_object) {
             object_attach(debug->object, debug->mac_object);
@@ -2017,6 +2095,11 @@ void debug_cleanup(debug_t *debug) {
         object_detach(debug->lp_collection_object);
         object_delete(debug->lp_collection_object);
         debug->lp_collection_object = NULL;
+    }
+    if (debug->wp_collection_object) {
+        object_detach(debug->wp_collection_object);
+        object_delete(debug->wp_collection_object);
+        debug->wp_collection_object = NULL;
     }
     if (debug->bp_collection_object) {
         object_detach(debug->bp_collection_object);
@@ -2529,6 +2612,94 @@ struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
     return object_new(&logpoint_entry_class, lp, NULL);
 }
 
+// --- watchpoint entries -------------------------------------------------------
+//
+// A watchpoint is a stopping memory logpoint (struct logpoint, `stops`), so
+// the entry shares the logpoint accessors; what differs is the surface: a
+// `mode`, no message/level/category, and `enabled`.
+
+static value_t wpe_attr_space(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("watchpoint detached");
+    return val_enum(lp->space == ADDR_PHYSICAL ? 1 : 0, debug_space_values, DEBUG_SPACE_COUNT);
+}
+static value_t wpe_attr_enabled(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("watchpoint detached");
+    return val_bool(!lp->disabled);
+}
+// Write `enabled`: false keeps the watchpoint but stops it firing.
+static value_t wpe_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp) {
+        value_free(&in);
+        return val_err("watchpoint detached");
+    }
+    lp->disabled = !val_as_bool(&in);
+    value_free(&in);
+    return val_none();
+}
+
+static const member_t wp_entry_members[] = {
+    {.kind = M_ATTR,
+     .name = "addr",
+     .flags = VAL_RO,
+     .doc = "First address of the watched range",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}    },
+    {.kind = M_ATTR,
+     .name = "end_addr",
+     .flags = VAL_RO,
+     .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "mode",
+     .flags = VAL_RO,
+     .doc = "The access that stops the machine: \"read\", \"write\" or \"rw\"",
+     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}                                   },
+    {.kind = M_ATTR,
+     .name = "space",
+     .flags = VAL_RO,
+     .doc = "\"logical\" or \"physical\" -- which address `addr` is in",
+     .attr = {.type = V_ENUM, .get = wpe_attr_space, .set = NULL}                                  },
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = 0,
+     .doc = "False keeps the watchpoint listed but stops it firing",
+     .attr = {.type = V_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}                },
+    {.kind = M_ATTR,
+     .name = "hit_count",
+     .flags = VAL_RO,
+     .doc = "Times this watchpoint has fired since it was added",
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}                              },
+    {.kind = M_ATTR,
+     .name = "id",
+     .flags = VAL_RO,
+     .doc = "Stable identifier; survives the removal of other watchpoints (indices do not)",
+     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}                                      },
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this watchpoint",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}               },
+};
+
+static const class_desc_t watchpoint_entry_class = {
+    .name = "watchpoint",
+    .members = wp_entry_members,
+    .n_members = sizeof(wp_entry_members) / sizeof(wp_entry_members[0]),
+};
+
+static struct object *make_watchpoint_object(logpoint_t *lp) {
+    if (!lp)
+        return NULL;
+    return object_new(&watchpoint_entry_class, lp, NULL);
+}
+
 // --- collection objects -----------------------------------------------------
 //
 // `debug.breakpoints` is a real object_t* attached to `debug` at
@@ -2846,6 +3017,141 @@ static const class_desc_t lp_collection_class = {
     .name = "logpoints",
     .members = lp_collection_members,
     .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
+};
+
+// --- debug.watchpoints ---------------------------------------------------------
+//
+// A watchpoint is a memory logpoint that stops the machine (#180): the same
+// access hook and page refcounts, the same list, its own collection.  Only
+// the stopping entries answer here, and debug.logpoints never lists them.
+
+static struct object *wp_entries_get(struct object *self, int index) {
+    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
+    return (lp && lp->stops) ? logpoint_get_entry_object(lp) : NULL;
+}
+static int wp_entries_next(struct object *self, int prev_index) {
+    return debug_watchpoint_next_id(debug_from(self), prev_index);
+}
+
+// `debug.watchpoints.add addr=0x16A mode=write width=l` -- stops the machine
+// after the instruction that makes a matching access.  Returns the entry.
+static value_t wp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+
+    // argv: 0 addr, 1 mode, 2 width, 3 end, 4 space
+    uint32_t addr = (uint32_t)argv[0].u;
+
+    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s && argv[1].s[0]) ? argv[1].s : "write";
+    int kind;
+    if (strcmp(mode, "read") == 0)
+        kind = LP_KIND_READ;
+    else if (strcmp(mode, "write") == 0)
+        kind = LP_KIND_WRITE;
+    else if (strcmp(mode, "rw") == 0)
+        kind = LP_KIND_RW;
+    else
+        return val_err("watchpoints.add: mode must be read, write, or rw");
+
+    unsigned size = 0;
+    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+        const char *w = argv[2].s;
+        if (strcmp(w, "b") == 0)
+            size = 1;
+        else if (strcmp(w, "w") == 0)
+            size = 2;
+        else if (strcmp(w, "l") == 0)
+            size = 4;
+        else
+            return val_err("watchpoints.add: width must be b, w, or l");
+    }
+
+    // A width and no explicit range widen to every access overlapping the
+    // address, as logpoints.add does.
+    uint32_t end_addr = addr;
+    if (argc > 3 && argv[3].kind == V_UINT)
+        end_addr = (uint32_t)argv[3].u;
+    if (size > 0 && end_addr == addr)
+        end_addr = addr + size - 1;
+    if (end_addr < addr)
+        return val_err("watchpoints.add: end must not precede addr");
+
+    addr_space_t space = (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+
+    // The hit is printed, not logged, so the category only labels the entry.
+    log_category_t *category = log_get_category("memory");
+    if (!category)
+        category = log_register_category("memory");
+    logpoint_t *lp = install_memory_logpoint(debug, addr, end_addr, space, kind, category, 0, true);
+    if (!lp)
+        return val_err("watchpoints.add: allocation failed");
+    return val_obj(logpoint_get_entry_object(lp));
+}
+
+static value_t wp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    delete_all_watchpoints(debug);
+    return val_none();
+}
+
+static const value_t wp_def_mode = {.kind = V_STRING, .s = (char *)"write"};
+static const value_t wp_def_width = {.kind = V_STRING, .s = (char *)""};
+
+static const arg_decl_t wp_add_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "mode",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &wp_def_mode,
+     .doc = "write (default), read, or rw"},
+    {.name = "width",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &wp_def_width,
+     .doc = "b, w, or l: widen to every access overlapping addr"},
+    {.name = "end",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .default_value = &obj_arg_unset,
+     .doc = "range end, inclusive"},
+    {.name = "space",
+     .kind = V_ENUM,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .enum_values = debug_space_values,
+     .default_value = &def_space_logical,
+     .doc = "\"logical\" (default) or \"physical\""},
+};
+
+static const member_t wp_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Install a watchpoint: stop the machine after an instruction that reads or writes the address (named args)",
+     .method = {.args = wp_add_args, .nargs = 5, .result = V_OBJECT, .fn = wp_method_add}},
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Remove every watchpoint",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = wp_method_clear}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &watchpoint_entry_class,
+               .indexed = true,
+               .get = wp_entries_get,
+               .next = wp_entries_next,
+               .lookup = NULL}},
+};
+
+static const class_desc_t wp_collection_class = {
+    .name = "watchpoints",
+    .members = wp_collection_members,
+    .n_members = sizeof(wp_collection_members) / sizeof(wp_collection_members[0]),
 };
 
 // `debug.log(category, level=, stdout=, file=, ts=, pc=)` — per-subsystem

@@ -209,6 +209,15 @@ to not break this rule in the first place.
 - Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
   stream live with `debug.log exceptions 1`
 
+**Watchpoints (`debug.watchpoints`):** a memory logpoint that **stops** the machine
+after the instruction that makes the access, instead of logging:
+- `debug.watchpoints.add addr=<addr> [mode=write|read|rw] [width=b|w|l] [end=<addr>] [space=logical|physical]`
+  (mode defaults to `write`); the hit is printed with the address, value, access kind and PC
+- Entries carry `addr`, `end_addr`, `mode`, `space`, `enabled` (writable), `hit_count`, `id` and
+  `remove()`; the count is `debug.watchpoints.count`; `debug.watchpoints.clear` removes them all
+- Same page machinery as memory logpoints, and the same semantics on 68K and PowerPC; a
+  watchpoint is never listed under `debug.logpoints`
+
 **In Playwright E2E tests:** Use `await runCommand(page, 'debug.log <category> <level>')` or `await runCommand(page, 'debug.logpoints.add ...')` to enable logging or set logpoints programmatically.
 
 ## Coding Guidelines
