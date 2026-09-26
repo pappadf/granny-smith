@@ -31,6 +31,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { gsEvalInPage } from '../helpers/web2-eval';
 
 const DATA = path.resolve(__dirname, '../../data');
 const IICX_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
@@ -161,16 +162,20 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
       await chooser.setFiles(IICX_ROM);
       first = false;
     } else {
-      // Reload for a cold boot; the previous machine's beforeunload quick
-      // checkpoint triggers the resume prompt — decline it.
+      // Reload for a cold boot.  Snapshot first so the reload always finds a
+      // checkpoint and shows the resume prompt, which we decline: the save on
+      // tab-hide is asynchronous and may or may not finish before the page
+      // goes (there is no main-thread beforeunload save), so without this the
+      // prompt would appear only sometimes.  checkpoint.snapshot writes
+      // state.checkpoint (tmp+rename) before it answers.
+      expect(await gsEvalInPage(page, 'checkpoint.snapshot', ['test'])).toBe(true);
       await page.reload();
       await page.waitForFunction(
         () => (window as { __gsReady?: boolean }).__gsReady === true,
         undefined,
         { timeout: 60_000 },
       );
-      // The prior iteration left a running machine, so its beforeunload quick
-      // checkpoint reliably triggers the resume prompt. Wait for the modal and
+      // The snapshot above reliably triggers the resume prompt. Wait for the modal and
       // decline it, mirroring checkpoint-resume.spec's robust pattern: __gsReady
       // is set before checkpoint.probe resolves and the modal renders async, so
       // a single-shot isVisible() check races the modal and, when it loses, the

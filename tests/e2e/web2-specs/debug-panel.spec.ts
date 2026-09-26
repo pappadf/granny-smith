@@ -42,6 +42,16 @@ async function bootPlusPaused(page: Page): Promise<void> {
   await bootPaused(page, PLUS_ROM, 'plus');
 }
 
+// A register read as a number.  Register attributes carry the hex display
+// flag, and the JSON encoding turns a hex-flagged integer into a "0x..."
+// string (a bare 0x literal is not JSON), so both shapes are accepted.
+async function readReg(page: Page, name: string): Promise<number> {
+  const v = await gsEvalInPage(page, `machine.cpu.${name}`);
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && /^0x[0-9a-f]+$/i.test(v)) return parseInt(v, 16);
+  throw new Error(`machine.cpu.${name}: not a number: ${JSON.stringify(v)}`);
+}
+
 // Open one collapsible Debug section by its title.
 async function openSection(page: Page, title: string): Promise<void> {
   const header = page.locator('header.header', { hasText: title });
@@ -58,7 +68,7 @@ test('a register edit reaches the core', async ({ page }) => {
   await d0.fill('00001234');
   await d0.press('Enter');
 
-  await expect.poll(() => gsEvalInPage(page, 'machine.cpu.d0'), { timeout: 10_000 }).toBe(0x1234);
+  await expect.poll(() => readReg(page, 'd0'), { timeout: 10_000 }).toBe(0x1234);
   await expect(page.locator('.toast .msg').filter({ hasText: 'Failed to write' })).toHaveCount(0);
 });
 
@@ -133,7 +143,7 @@ test('a PowerPC machine shows its own register file', async ({ page }) => {
   await openSection(page, 'Registers');
   const r1 = page.getByLabel('R1 register value');
   await expect(r1).toBeVisible({ timeout: 15_000 });
-  const core = (await gsEvalInPage(page, 'machine.cpu.r1')) as number;
+  const core = await readReg(page, 'r1');
   await expect(r1).toHaveValue(core.toString(16).toUpperCase().padStart(8, '0'));
   await expect(page.getByLabel('D0 register value')).toHaveCount(0);
 });
