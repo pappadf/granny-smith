@@ -43,25 +43,47 @@ import { attachCdrom, insertFloppy } from './media';
 // hundreds-of-MB CD-ROM images — never buffer the whole file anywhere.
 const STAGE_CHUNK_BYTES = 4 * 1024 * 1024;
 
-// Write a File to an OPFS path, chunk by chunk, through WasmFS (see STAGING
-// above): the FS call runs here, WasmFS's own OPFS worker does the
-// createSyncAccessHandle I/O, and this thread blocks per chunk.
-// Main-thread createWritable() throws "UnknownError" on Safari, and an
-// out-of-band OPFS write isn't visible to the emulator's WasmFS on Chromium
-// (stranding the file). Slicing the File and writing chunk-by-chunk means
-// nothing buffers the whole file, so any size (incl. large CD-ROMs) works.
-// Returns true on success.
-async function streamFileToOpfs(opfsPath: string, file: File): Promise<boolean> {
+// The one chunked writer (R3): everything the page puts on the worker's
+// filesystem — an upload's File, a URL download's response body, a dropped
+// checkpoint — goes through here, to an OPFS path, a chunk at a time,
+// through WasmFS (see STAGING above): the FS call runs here, WasmFS's own
+// OPFS worker does the createSyncAccessHandle I/O, and this thread blocks per
+// chunk.  Main-thread createWritable() throws "UnknownError" on Safari, and
+// an out-of-band OPFS write isn't visible to the emulator's WasmFS on
+// Chromium (stranding the file).  Nothing buffers the whole file, so any size
+// (incl. large CD-ROMs) works — where the URL path and the dropped checkpoint
+// used to read the whole file into memory and write it to the memory-backed
+// /tmp, which is the wasm heap.  Returns true on success.
+export async function streamToOpfs(
+  opfsPath: string,
+  source: Blob | ReadableStream<Uint8Array> | Uint8Array,
+): Promise<boolean> {
   const mod = getModule();
   if (!mod) return false;
   let stream: unknown;
   try {
     stream = mod.FS.open(opfsPath, 'w');
-    for (let pos = 0; pos < file.size; ) {
-      const end = Math.min(pos + STAGE_CHUNK_BYTES, file.size);
-      const chunk = new Uint8Array(await file.slice(pos, end).arrayBuffer());
+    let pos = 0;
+    const put = (chunk: Uint8Array) => {
       mod.FS.write(stream, chunk, 0, chunk.length, pos);
-      pos = end;
+      pos += chunk.length;
+    };
+    if (source instanceof Uint8Array) {
+      // Already in memory (an unzipped entry): still written a chunk at a time.
+      for (let at = 0; at < source.length; at += STAGE_CHUNK_BYTES)
+        put(source.subarray(at, Math.min(at + STAGE_CHUNK_BYTES, source.length)));
+    } else if (source instanceof Blob) {
+      while (pos < source.size) {
+        const end = Math.min(pos + STAGE_CHUNK_BYTES, source.size);
+        put(new Uint8Array(await source.slice(pos, end).arrayBuffer()));
+      }
+    } else {
+      const reader = source.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value?.length) put(value);
+      }
     }
     return true;
   } catch (err) {
@@ -82,13 +104,13 @@ async function streamFileToOpfs(opfsPath: string, file: File): Promise<boolean> 
 // staged path (or null on failure). Callers cleanup via discardStaging().
 async function stageUpload(file: File): Promise<string | null> {
   const path = `${UPLOAD_DIR}/${sanitizeName(file.name) || 'image.img'}`;
-  return (await streamFileToOpfs(path, file)) ? path : null;
+  return (await streamToOpfs(path, file)) ? path : null;
 }
 
 // Best-effort removal of a staged file / unpacked-archive dir. Everything staging
 // touches is written by the worker (FS streaming above, archive.extract), so the
 // recursive rm runs worker-side too — keeping its WasmFS view coherent.
-async function discardStaging(path: string): Promise<void> {
+export async function discardStaging(path: string): Promise<void> {
   await gsEval('storage.rm', [path]);
 }
 
@@ -198,7 +220,7 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
     try {
       // Write straight to the chosen folder on the worker (Safari-safe, coherent
       // with its WasmFS). No staging/copy — targetDir may itself be /opfs/upload.
-      const ok = await streamFileToOpfs(finalPath, file);
+      const ok = await streamToOpfs(finalPath, file);
       showNotification(
         ok ? `'${file.name}' saved to ${targetDir}` : `Upload failed: ${file.name}`,
         ok ? 'info' : 'error',
@@ -443,17 +465,17 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
 }
 
 async function loadCheckpointFile(file: File): Promise<void> {
-  const tmpPath = `/tmp/dropped-${Date.now()}-${sanitizeName(file.name)}`;
-  // Stage to memory-backed /tmp first (cross-thread safe), then load.
-  const buf = new Uint8Array(await file.arrayBuffer());
-  const mod = getModule();
-  if (!mod) {
+  // Staged like any upload, a chunk at a time, under /opfs/upload, and
+  // deleted once loaded.  It used to be read whole into memory and written
+  // to the memory-backed /tmp, where it stayed for the session (N-22).
+  const staged = `${UPLOAD_DIR}/dropped-${Date.now()}-${sanitizeName(file.name)}`;
+  if (!(await streamToOpfs(staged, file))) {
     showNotification('Emulator not ready for checkpoint load', 'warning');
     return;
   }
-  mod.FS.writeFile(tmpPath, buf);
   showNotification(`Loading checkpoint ${file.name}…`, 'info');
-  const ok = (await gsEval('checkpoint.load', [tmpPath])) === true;
+  const ok = (await gsEval('checkpoint.load', [staged])) === true;
+  await discardStaging(staged);
   if (ok) {
     await reconcileUiWithMachine('restore');
     showNotification(`Checkpoint loaded (${file.name})`, 'info');

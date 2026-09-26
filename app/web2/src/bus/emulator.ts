@@ -68,6 +68,13 @@ interface EmscriptenModule {
       length: number,
       position?: number,
     ): number;
+    read(
+      stream: unknown,
+      buffer: Uint8Array<ArrayBufferLike>,
+      offset: number,
+      length: number,
+      position?: number,
+    ): number;
     close(stream: unknown): void;
   };
   _get_js_bridge(): number;

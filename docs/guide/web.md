@@ -457,8 +457,11 @@ invoked from `main.ts` after `whenModuleReady()` resolves:
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 
-Each fetch supports transparent `.zip` unzipping plus auto-extraction
-of Mac archives via `archive.extract`.
+Downloads run one at a time and stream to `/opfs/upload/` through the
+same chunked writer as uploads (`bus/upload.ts::streamToOpfs`), so an
+image is never held whole in memory — except a `.zip`, which is read
+back whole to unzip.  Mac archives are auto-extracted via
+`archive.extract`.
 
 ## Startup Flow
 

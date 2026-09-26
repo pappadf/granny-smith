@@ -1,16 +1,17 @@
 // URL-parameter media provisioning. Port of app/web/js/url-media.js.
 //
-// Usage: visit `?rom=/path/to/Plus.rom&fd0=/path/to/system.dsk&model=Macintosh+Plus`
+// Usage: visit `?rom=/path/to/Plus.rom&fd0=/path/to/system.dsk&model=plus`
 // and the page boots into a running machine without going through Welcome.
 //
-// Each parameter value is fetched (relative paths resolve against the page
-// origin), staged to /tmp/url_<slot>, optionally archive-extracted via the
-// C-side `archive.extract`, then persisted into /opfs/images/<category>/
-// the way an upload of that kind is (upload.ts persistAs) and mounted from
-// there.  The frontend owns where media lives; the core no longer copies
-// volatile paths into OPFS behind the caller's back (09-storage D-1).  A
-// file that does not validate as its slot's category is attached from /tmp
-// as before, with a warning that it will not survive a reload.
+// Each parameter value is fetched, one at a time (relative paths resolve
+// against the page origin), streamed to /opfs/upload/url_<slot>, optionally
+// archive-extracted via the C-side `archive.extract`, then persisted into
+// /opfs/images/<category>/ the way an upload of that kind is (upload.ts
+// persistAs) and mounted from there; the staging copy is then removed.  The
+// frontend owns where media lives; the core no longer copies volatile paths
+// into OPFS behind the caller's back (09-storage D-1).  A file that does not
+// validate as its slot's category is attached from its staging copy, with a
+// warning.
 
 import { gsEval, gsErrorText, getModule, isModuleReady } from './emulator';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
@@ -19,7 +20,8 @@ import type { SchedulerMode } from '@/state/machine.svelte';
 import { setMounted } from '@/state/images.svelte';
 import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
 import { identifyRom, type MediaTypeId } from '@/lib/media';
-import { persistAs } from './upload';
+import { persistAs, streamToOpfs, discardStaging } from './upload';
+import { UPLOAD_DIR } from '@/lib/opfsPaths';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 
@@ -91,20 +93,20 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   const params = parseUrlMediaParams(rawParams);
   if (!hasUrlMedia(params)) return false;
 
-  // Slot -> the path to attach it from.  Fetches run in parallel; each
-  // resolves to its persisted path (or its /tmp staging path, or undefined
-  // when the fetch failed).
+  // Slot -> the path to attach it from: its persisted path, or its staging
+  // path when it did not validate as its category, or undefined when the
+  // fetch failed.  One download at a time: in parallel, every large image
+  // was in flight at once (R3).
   const paths = new Map<string, string | undefined>();
-  const provision = async (slot: string, url: string, category: MediaTypeId) => {
+  const wanted: Array<[string, string, MediaTypeId]> = [];
+  if (params.rom) wanted.push(['rom', params.rom, 'rom']);
+  if (params.vrom) wanted.push(['vrom', params.vrom, 'vrom']);
+  for (const fd of params.floppies) wanted.push([fd.slot, fd.url, 'fd']);
+  for (const hd of params.hardDisks) wanted.push([hd.slot, hd.url, 'hd']);
+  if (params.cd) wanted.push(['cd', params.cd, 'cdrom']);
+  for (const [slot, url, category] of wanted) {
     paths.set(slot, await fetchAndPersist(slot, url, category));
-  };
-  const downloads: Array<Promise<void>> = [];
-  if (params.rom) downloads.push(provision('rom', params.rom, 'rom'));
-  if (params.vrom) downloads.push(provision('vrom', params.vrom, 'vrom'));
-  for (const fd of params.floppies) downloads.push(provision(fd.slot, fd.url, 'fd'));
-  for (const hd of params.hardDisks) downloads.push(provision(hd.slot, hd.url, 'hd'));
-  if (params.cd) downloads.push(provision('cd', params.cd, 'cdrom'));
-  await Promise.all(downloads);
+  }
 
   if (!params.rom) {
     // Without a ROM there's no machine to boot; insert floppies into the
@@ -185,9 +187,9 @@ function report(slot: string, path: string, r: MediaResult): void {
 }
 
 // Fetch a URL, stage it, and persist it as `category`.  Returns the path to
-// attach from: the persisted /opfs/images/<category>/ path, or the /tmp
-// staging path when the file does not validate as that category, or
-// undefined when the fetch failed.
+// attach from: the persisted /opfs/images/<category>/ path (the staging copy
+// is then removed), or the staging path when the file does not validate as
+// that category, or undefined when the fetch failed.
 async function fetchAndPersist(
   slot: string,
   url: string,
@@ -196,15 +198,42 @@ async function fetchAndPersist(
   const staged = await fetchAndStage(slot, url);
   if (!staged) return undefined;
   const persisted = await persistAs(staged.path, staged.name, category);
-  if (persisted) return persisted;
-  showNotification(`${slot}: not recognised as ${category}; using it unsaved`, 'warning');
+  if (persisted) {
+    await discardStaging(staged.path);
+    return persisted;
+  }
+  showNotification(
+    `${slot}: not recognised as ${category}; attaching the downloaded copy`,
+    'warning',
+  );
   return staged.path;
 }
 
-// Fetch a URL and stage its bytes into /tmp/url_<slot>. Handles ZIP wrapping
-// transparently (extract the first file inside). For Mac-archive extensions
-// (sit/hqx/cpt/bin/sea) the C side does the extraction once the file is in
-// /tmp.  Returns the staged path and the name to store it under, or null.
+// Whether the file at `path` starts with the ZIP signature.
+function stagedIsZip(path: string): boolean {
+  const mod = getModule();
+  if (!mod) return false;
+  let stream: unknown;
+  try {
+    stream = mod.FS.open(path, 'r');
+    const head = new Uint8Array(4);
+    mod.FS.read(stream, head, 0, 4, 0);
+    return isZipMagic(head);
+  } catch {
+    return false;
+  } finally {
+    if (stream !== undefined) mod.FS.close(stream);
+  }
+}
+
+// Fetch a URL and stage its bytes at /opfs/upload/url_<slot>, streamed
+// through the one chunked writer (upload.ts streamToOpfs) — it was read whole
+// into memory and written to the memory-backed /tmp.  A ZIP is the one
+// exception: unzipping needs the whole archive in memory, so a response that
+// turns out to be one is read back, unzipped, and its first file staged in
+// its place.  For Mac-archive extensions (sit/hqx/cpt/bin/sea) the C side
+// does the extraction.  Returns the staged path and the name to store it
+// under, or null.
 async function fetchAndStage(
   slot: string,
   url: string,
@@ -212,42 +241,37 @@ async function fetchAndStage(
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    let bytes: Uint8Array<ArrayBufferLike> = new Uint8Array(await res.arrayBuffer());
     const fileName = (url.split('/').pop() ?? '').split('?')[0] || slot;
+    const staged = `${UPLOAD_DIR}/url_${slot}`;
+    const body = res.body ?? (await res.blob());
+    if (!(await streamToOpfs(staged, body))) return null;
+
     const ct = res.headers.get('Content-Type') ?? '';
-    const looksLikeZip = isZipMagic(bytes) || /\.zip($|[?#])/i.test(url) || /zip/i.test(ct);
+    const looksLikeZip = /\.zip($|[?#])/i.test(url) || /zip/i.test(ct) || stagedIsZip(staged);
     if (looksLikeZip) {
-      const first = await unzipFirstFile(bytes);
+      const mod = getModule();
+      if (!mod) return null;
+      const first = await unzipFirstFile(mod.FS.readFile(staged));
       if (!first) {
         showNotification(`${slot}: zip is empty`, 'error');
+        await discardStaging(staged);
         return null;
       }
-      bytes = first.data;
+      if (!(await streamToOpfs(staged, first.data))) return null;
     }
-
-    const tmpPath = `/tmp/url_${slot}`;
-    const mod = getModule();
-    if (!mod) return null;
-    try {
-      mod.FS.unlink(tmpPath);
-    } catch {
-      /* not present yet */
-    }
-    mod.FS.writeFile(tmpPath, bytes);
 
     if (isMacArchive(fileName)) {
-      const fmt = await gsEval('archive.identify', [tmpPath]);
+      const fmt = await gsEval('archive.identify', [staged]);
       if (typeof fmt === 'string' && fmt.length > 0) {
-        const extractDir = `/tmp/url_${slot}_unpacked`;
-        const extracted = (await gsEval('archive.extract', [tmpPath, extractDir])) === true;
-        if (extracted) {
-          await gsEval('storage.find_media', [extractDir, tmpPath]);
-        }
+        const extractDir = `${UPLOAD_DIR}/url_${slot}_unpacked`;
+        const extracted = (await gsEval('archive.extract', [staged, extractDir])) === true;
+        if (extracted) await gsEval('storage.find_media', [extractDir, staged]);
+        await discardStaging(extractDir);
       }
     }
 
     showNotification(`${slot} downloaded${looksLikeZip ? ' (zip)' : ''}`, 'info');
-    return { path: tmpPath, name: sanitizeName(fileName) || slot };
+    return { path: staged, name: sanitizeName(fileName) || slot };
   } catch (e) {
     console.error(`[urlMedia] fetch ${slot} failed`, e);
     showNotification(`${slot} download failed`, 'error');
