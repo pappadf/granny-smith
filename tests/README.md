@@ -59,7 +59,7 @@ make test
 ### Unit tests (native C)
 
 ```bash
-make -C tests/unit run           # Build + run all
+make -j$(nproc) -C tests/unit run # Build (in parallel) + run all
 make -C tests/unit list          # List discovered test names```
 
 ### Integration tests (native headless emulator)

@@ -73,7 +73,7 @@ the devcontainer image.)
 - Output: `build/` directory with `index.html`, `main.mjs`, etc.
 
 **Run tests:**
-- Unit tests (CPU): `make -C tests/unit run` (~1–5 min) — uses `third-party/single-step-tests`
+- Unit tests: `make -j$(nproc) -C tests/unit run` (~1.5 min at -j8; ~6 min serial) — uses `third-party/single-step-tests` and `third-party/powerpc-test`
   (68k) and `third-party/powerpc-test` (601); both are submodules, so init them first
 - Integration tests: `make integration-test` (~10–20 min serial; add `-j$(nproc)` to parallelize, or `TIER=unit` / `TIER=matrix` for a subset — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)

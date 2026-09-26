@@ -53,7 +53,7 @@ tests/unit/
 From repo root (or inside `tests/unit/`):
 ```
 make -C tests/unit            # build all test binaries
-make -C tests/unit run        # build + run all (fails fast on first failure)
+make -j$(nproc) -C tests/unit run  # build in parallel, then run every suite
 make -C tests/unit list       # list discovered test names
 make -C tests/unit test-<name># build + run one test (e.g. test-disasm)
 make -C tests/unit clean      # remove build artifacts

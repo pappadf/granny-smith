@@ -96,7 +96,7 @@ int main(void) {
 ### Running Unit Tests
 
 ```bash
-make -C tests/unit run            # Build + run all
+make -j$(nproc) -C tests/unit run # Build (in parallel) + run all
 make -C tests/unit list           # List discovered test names
 make -C tests/unit test-disasm    # Run disassembler test
 ```
