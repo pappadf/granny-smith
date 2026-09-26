@@ -142,6 +142,62 @@ above. Removing them is its own piece of work:
 | `if (last_bus_error_pc != 0 && !supervisor && last_bus_error_pc != pc)` | all three 68K | clear the latch in the epilogue or at delivery, not per instruction |
 | `if (g_bus_error_pending) break;` after the fetch | `ppc_run` | fold into `ppc_fetch`'s existing false return |
 
+### Deferred bus errors: skip or retry
+
+The emulator never aborts an instruction mid-execution. When a memory
+access faults (unmapped page, failed MMU walk, device-signalled bus
+error), the slow path latches `g_bus_error_pending` with the faulting
+address, zeroes the burn-down counter through `g_bus_error_instr_ptr`,
+and returns a default — `$FF` for reads, dropped writes. The faulting
+instruction therefore **completes**, and the epilogue raises the
+exception once per sprint. A real 68030 instead aborts the bus cycle,
+saves full internal state in a Format $B frame, and restarts the
+instruction from scratch after the handler's RTE (MC68030UM §7.2).
+
+Because the instruction has already run, the saved PC in the exception
+frame decides the semantics, and the two consumers want opposite ones:
+
+| Frame | `saved_pc` | Semantics | Who needs it |
+|---|---|---|---|
+| Format `$A` | next instruction | **skip** — RTE resumes past the faulting access | ROM bus-error probes (NuBus slot detection): the ROM's handler deliberately advances past the probe |
+| Format `$B` | faulting instruction | **retry** — RTE restarts the instruction | OS kernels with demand paging: the handler maps the page and expects the access to complete on restart |
+
+The dispatch is `g_bus_error_is_pmmu` (`memory.h`), set by
+`mmu_handle_fault` according to which path produced the fault: a PMMU
+table-walk fault — invalid descriptor, supervisor-only, or
+write-protected page — sets it true and takes
+`exception_bus_error_retry()` (Format `$B`, `cpu->instruction_pc`);
+every other bus timeout leaves it false and takes
+`exception_bus_error()` (Format `$A`, skip).  Both epilogues (68030 and
+68040) dispatch on exactly that flag.
+
+**The retry path makes restart-cleanliness a per-op contract.**  Retry
+re-executes the instruction from scratch, so every op that modifies
+architectural state before a memory access must undo that state when
+`g_bus_error_pending` is set — otherwise the restart runs with
+already-incremented registers or committed stack moves.  The mechanism
+is staging plus rollback macros (`_move_src_an_save`, `_cmpm_ay_save`,
+…), now applied across MOVE src-An, CMPM, ADDX/SUBX, ABCD/SBCD, CAS,
+PACK/UNPK, PUSH/POP (SP committed only if no bus error), and MOVEM
+(`movem_to_register` stages register updates and bails before touching
+registers on a fault).  A new op with a faultable memory access must do
+the same.
+
+The retry function detects a **double bus error** the way real hardware
+does — not by comparing PCs (legitimate retry loops would false-trigger)
+but by checking whether the frame push or vector read itself faulted; a
+fault there halts like the real CPU's double-bus-error condition
+(MC68030UM §8.3.3).  An earlier design keyed the retry/skip choice on
+`VBR != 0` (kernel-installed vector table ⇒ retry); the PMMU-fault
+discriminator superseded it because it separates the two cases by cause
+rather than by heuristic.
+
+This is a pragmatic reconstruction, not a faithful one: real hardware
+aborts mid-instruction with saved pipeline state, while we complete the
+instruction and undo its effects op by op.  The per-op staging covers
+exactly the state the restart must not see; anything an op fails to
+stage is a latent wrong-state bug that only a retried fault exposes.
+
 ### Known exception: the DSP3210 has two decoders
 
 The AV families' DSP3210 is the one core that does **not** follow the shared
