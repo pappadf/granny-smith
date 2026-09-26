@@ -403,6 +403,10 @@ void em_main_tick(void) {
             em_video_update();
     }
 
+    // SPIKE (throwaway): hand the baton to the job thread every N ticks.
+    extern void spike_baton_tick(int tick);
+    spike_baton_tick(tick_counter);
+
     // Push a run-state notification to JS on every transition
     // (including the first tick). The callback is installed via
     // Module.onRunStateChange at module construction; ASYNC variant so
@@ -763,6 +767,10 @@ int main(void) {
     setup_pointer_lock();
 
     install_background_checkpoint_handlers();
+
+    // SPIKE (throwaway): job thread + baton, see em_spike_baton.c.
+    extern void spike_baton_start(void);
+    spike_baton_start();
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
