@@ -59,7 +59,6 @@ void frontend_force_redraw(void) {
 // startup from --shared-dir or $GS_SHARED_DIR.  The path literal lives here in
 // the platform layer, never in src/core (PR #69): core only ever executes the
 // tree operation it is handed.  Empty means "no default volume".
-#define GS_DEFAULT_SHARE_NAME "Shared"
 static char g_shared_dir[PATH_MAX];
 
 // Where the LaserWriter's documents land, from --print-dir or $GS_PRINT_DIR.
@@ -144,24 +143,6 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
     if (wrote != cap->ps_len)
         printf("laserwriter: short write to %s (%zu of %zu bytes)\n", path, wrote, cap->ps_len);
     printf("laserwriter: job %u PostScript%s -> %s\n", (unsigned)cap->job_id, cap->complete ? "" : " (cut off)", path);
-}
-
-// Publish the default share after every system_create.  A machine teardown
-// drops the volume table, so this has to re-run; failure is a warning, not a
-// fatal error.
-void system_post_create(config_t *cfg) {
-    (void)cfg;
-    if (!g_shared_dir[0])
-        return;
-    if (atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
-        return;
-    if (mkdir(g_shared_dir, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "warning: cannot create shared directory %s: %s\n", g_shared_dir, strerror(errno));
-        return;
-    }
-    char err[192];
-    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, g_shared_dir, err, sizeof(err)) < 0)
-        fprintf(stderr, "warning: default share: %s\n", err);
 }
 
 // VBL is
@@ -840,13 +821,13 @@ int shell_poll(void) {
     return 1;
 }
 
-// Offer every *.vrom file in the ROM file's directory to the core's
-// content-addressed vROM registry.  The platform owns the filesystem: it
-// enumerates candidates and offers their paths; core identifies each by
-// content and never fabricates a path itself.  This is what makes sibling
-// vROM files (e.g. the integration harness's tests/data/roms, reached via
-// the absolute rom= path) discoverable without core knowing any directory.
-static void offer_sibling_vroms(const char *rom_path) {
+// Offer the ROM file's sibling *.vrom and *.prom files to the core's
+// content-addressed registries.  The platform owns the filesystem: it names
+// the directory; core walks it (offer_registry_add_dir), identifies each file
+// by content and never fabricates a path itself.  This is what makes sibling
+// card ROMs (e.g. the integration harness's tests/data/roms, reached via the
+// absolute rom= path) discoverable without core knowing any directory.
+static void offer_sibling_card_roms(const char *rom_path) {
     const char *slash = strrchr(rom_path, '/');
     char dir[1024];
     if (slash) {
@@ -860,58 +841,8 @@ static void offer_sibling_vroms(const char *rom_path) {
     } else {
         strcpy(dir, "."); // bare filename → the current directory
     }
-    DIR *d = opendir(dir);
-    if (!d)
-        return;
-    struct dirent *entry;
-    char path[1200];
-    while ((entry = readdir(d)) != NULL) {
-        const char *name = entry->d_name;
-        size_t len = strlen(name);
-        // Only *.vrom candidates — the offer itself content-verifies them.
-        if (len < 6 || strcmp(name + len - 5, ".vrom") != 0)
-            continue;
-        if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
-            continue;
-        vrom_offer(path);
-    }
-    closedir(d);
-}
-
-// The same for PCI expansion ROMs: enumerate the ROM file's directory and
-// offer every *.prom to core, which identifies each by content and keeps
-// the ones it recognises.  A test script's rom="${$ROM}" therefore makes
-// the card ROMs discoverable with no path knowledge anywhere in core —
-// the platform owns the filesystem, core owns identity.
-static void offer_sibling_proms(const char *rom_path) {
-    const char *slash = strrchr(rom_path, '/');
-    char dir[1024];
-    if (slash) {
-        size_t dir_len = (size_t)(slash - rom_path);
-        if (dir_len == 0)
-            dir_len = 1; // ROM at filesystem root -> "/"
-        if (dir_len >= sizeof(dir))
-            return;
-        memcpy(dir, rom_path, dir_len);
-        dir[dir_len] = '\0';
-    } else {
-        strcpy(dir, "."); // bare filename -> the current directory
-    }
-    DIR *d = opendir(dir);
-    if (!d)
-        return;
-    struct dirent *entry;
-    char path[1200];
-    while ((entry = readdir(d)) != NULL) {
-        const char *name = entry->d_name;
-        size_t len = strlen(name);
-        if (len < 6 || strcmp(name + len - 5, ".prom") != 0)
-            continue;
-        if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
-            continue;
-        prom_offer(path);
-    }
-    closedir(d);
+    vrom_offer_dir(dir, ".vrom");
+    prom_offer_dir(dir, ".prom");
 }
 
 // === The platform contract (src/platform/platform.h) =======================
@@ -971,6 +902,7 @@ int main(int argc, char *argv[]) {
     const char *fd_explicit[FLOPPY_NUM_DRIVES] = {NULL}; // fd0= and fd1= explicit drive assignments
     const char *script_file = NULL;
     const char *speed_mode = "paced";
+    enum schedule_mode speed = schedule_paced;
     uint64_t max_cycles = 0;
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
@@ -1031,6 +963,11 @@ int main(int argc, char *argv[]) {
 
         if (strncmp(arg, "--speed=", 8) == 0) {
             speed_mode = arg + 8;
+            // An unknown mode is an error, not a silent paced run.
+            if (!scheduler_mode_from_string(speed_mode, &speed)) {
+                fprintf(stderr, "Error: unknown --speed '%s' (paced, accelerated or turbo)\n", speed_mode);
+                return 1;
+            }
             continue;
         }
 
@@ -1226,6 +1163,7 @@ int main(int argc, char *argv[]) {
         if (env_dir && *env_dir)
             snprintf(g_shared_dir, sizeof(g_shared_dir), "%s", env_dir);
     }
+    system_set_default_share(g_shared_dir); // core publishes it after each machine build
 
     // $GS_PRINT_DIR is the fallback for --print-dir.  A directory without the
     // interpreter linked would never receive anything; say so up front.
@@ -1295,8 +1233,7 @@ int main(int argc, char *argv[]) {
     // Offer the ROM's sibling *.vrom files to the content-addressed registry
     // BEFORE the boot so the card factories can match them during machine
     // bring-up (offers persist across machine.boot).
-    offer_sibling_vroms(rom_file);
-    offer_sibling_proms(rom_file);
+    offer_sibling_card_roms(rom_file);
 
     // Startup is the same boot-document path scripts use (machine.boot):
     // CLI args fill the document, machine_boot_apply validates and
@@ -1321,10 +1258,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Failed to initialize emulator\n");
         return 1;
     }
-
-    // VBL was already armed by the system_post_create override above —
-    // it ran from inside system_create, which the rom_load path or the
-    // earlier system_create call has already kicked.
 
     // In daemon mode, stop the scheduler that se30_init/plus_init auto-started.
     // The agent will explicitly send "run" or "s" commands to control execution.
@@ -1409,24 +1342,15 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Set scheduler pacing mode. Legacy three-mode names stay accepted:
-    // realtime/hardware → paced, max → turbo. (Headless execution is
-    // budget-driven and never consults the *pacing*; this keeps the flag
-    // surface consistent with the WASM target. 'accelerated' does change
-    // execution — frame-units retire more instructions at the lowered
-    // effective CPI; scheduler.speed picks the multiplier.)
+    // Set scheduler pacing mode (validated at parse time, the same names
+    // scheduler.mode takes).  Headless execution is budget-driven and never
+    // consults the *pacing*; this keeps the flag surface consistent with the
+    // WASM target.  'accelerated' does change execution — frame-units retire
+    // more instructions at the lowered effective CPI; scheduler.speed picks
+    // the multiplier.
     scheduler_t *sched = system_scheduler();
-    if (sched) {
-        if (strcmp(speed_mode, "turbo") == 0 || strcmp(speed_mode, "max") == 0) {
-            scheduler_set_mode(sched, schedule_unthrottled);
-        } else if (strcmp(speed_mode, "accelerated") == 0 || strcmp(speed_mode, "accel") == 0) {
-            scheduler_set_mode(sched, schedule_accelerated);
-        } else if (strcmp(speed_mode, "paced") == 0 || strcmp(speed_mode, "realtime") == 0 ||
-                   strcmp(speed_mode, "real") == 0 || strcmp(speed_mode, "hardware") == 0 ||
-                   strcmp(speed_mode, "hw") == 0) {
-            scheduler_set_mode(sched, schedule_paced);
-        }
-    }
+    if (sched)
+        scheduler_set_mode(sched, speed);
 
     // Run startup script if provided
     if (script_file) {

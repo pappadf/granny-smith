@@ -9,6 +9,7 @@
 
 #include "system_config.h" // full config_t definition (includes system.h transitively)
 
+#include "appletalk.h"
 #include "build_id.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
@@ -709,11 +710,31 @@ void setup_init() {
     image_init(NULL);
 }
 
-// Platform hook called after system_create completes.
-// The weak default is a no-op; the WASM platform overrides to install
-// the assertion callback (which requires the debug object to exist).
-__attribute__((weak)) void system_post_create(config_t *cfg) {
-    (void)cfg;
+// The default AppleShare volume (S5).  The platform registers its path once
+// (the browser: /opfs/shared; headless: --shared-dir or $GS_SHARED_DIR); core
+// publishes it after every machine build, because a machine's teardown drops
+// the volume table.  Both platforms used to carry the same provisioning in a
+// system_post_create override, with different mkdir modes and log styles.
+#define GS_DEFAULT_SHARE_NAME "Shared"
+static char g_default_share[1024];
+
+void system_set_default_share(const char *path) {
+    snprintf(g_default_share, sizeof(g_default_share), "%s", path ? path : "");
+}
+
+// Publish the default share.  Idempotent; a failure is a logged warning,
+// never a boot error — a user who removed the directory still gets a
+// running machine.
+static void provision_default_share(void) {
+    if (!g_default_share[0] || atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
+        return;
+    if (mkdir(g_default_share, 0755) != 0 && errno != EEXIST) {
+        LOG(0, "warning: default share: cannot create %s: %s", g_default_share, strerror(errno));
+        return;
+    }
+    char err[192];
+    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, g_default_share, err, sizeof(err)) < 0)
+        LOG(0, "warning: default share: %s", err);
 }
 
 // Background-checkpoint auto state. WASM-only at the moment — the
@@ -1131,8 +1152,8 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // runtime state. The legacy shell remains primary.
     root_install(cfg);
 
-    // Notify the platform (e.g., install assertion callback)
-    system_post_create(cfg);
+    // The volume table went with the previous machine: publish the share.
+    provision_default_share();
 
     // Cold boot: stamp out a manifest documenting what was set up.  Skipped
     // on checkpoint restore — the manifest is fixed at original creation

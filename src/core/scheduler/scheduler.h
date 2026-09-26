@@ -215,6 +215,10 @@ bool scheduler_is_running(struct scheduler *restrict s);
 
 // Set scheduler pacing mode (paced/unthrottled/accelerated)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
+// The one parser of a pacing-mode name (S4), for scheduler.mode and headless
+// --speed alike: "paced" (and the legacy real/realtime/hw/hardware),
+// "accelerated" (accel), "turbo" (max).  False for anything else.
+bool scheduler_mode_from_string(const char *name, enum schedule_mode *out);
 
 // Read the current pacing mode (paced when there is no scheduler)
 enum schedule_mode scheduler_get_mode(const struct scheduler *s);

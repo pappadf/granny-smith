@@ -62,6 +62,13 @@
 
 static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func);
 
+// The always-present AppleShare volume.  The path literal lives here, in the
+// platform layer, because core never fabricates or interprets a path (PR #69);
+// core publishes it after every machine build (system_set_default_share).
+// Under OPFS the directory — and the AppleDouble sidecars the AFP server
+// writes beside each file — persist across page reloads for free.
+#define GS_DEFAULT_SHARE_PATH "/opfs/shared"
+
 // ============================================================================
 // Pointer-lock and Input Handling
 // ============================================================================
@@ -698,41 +705,16 @@ int main(void) {
 
     // Offer every file in the persistent vROM store to the core's content-
     // addressed registry (names are irrelevant — each offer is identified by
-    // content).  The platform owns the filesystem; core never enumerates a
-    // directory or builds a path.  Mid-session uploads are offered by the
+    // content).  The platform names the directory; core walks it and never
+    // builds a path of its own.  Mid-session uploads are offered by the
     // web app's ingest path (machine.vrom.offer), so this startup pass only
     // needs to cover what already persisted.
-    DIR *vrom_dir = opendir("/opfs/images/vrom");
-    if (vrom_dir) {
-        struct dirent *entry;
-        char vrom_path[512];
-        while ((entry = readdir(vrom_dir)) != NULL) {
-            if (entry->d_name[0] == '.')
-                continue;
-            if (snprintf(vrom_path, sizeof(vrom_path), "/opfs/images/vrom/%s", entry->d_name) >= (int)sizeof(vrom_path))
-                continue;
-            vrom_offer(vrom_path);
-        }
-        closedir(vrom_dir);
-    }
-
+    vrom_offer_dir("/opfs/images/vrom", NULL);
     // ...and the same pass over the persistent PCI expansion-ROM store, for
     // the same reason: without it a .prom that persisted in an earlier
     // session is invisible after a reload, and the card it drives looks
     // uninstallable until the user uploads the file again.
-    DIR *prom_dir = opendir("/opfs/images/prom");
-    if (prom_dir) {
-        struct dirent *entry;
-        char prom_path[512];
-        while ((entry = readdir(prom_dir)) != NULL) {
-            if (entry->d_name[0] == '.')
-                continue;
-            if (snprintf(prom_path, sizeof(prom_path), "/opfs/images/prom/%s", entry->d_name) >= (int)sizeof(prom_path))
-                continue;
-            prom_offer(prom_path);
-        }
-        closedir(prom_dir);
-    }
+    prom_offer_dir("/opfs/images/prom", NULL);
 
     // Volatile scratch space on memory backend (visible from all threads).
     backend_t membk = wasmfs_create_memory_backend();
@@ -746,6 +728,7 @@ int main(void) {
     // them, and ?speed= documented as reaching --speed never did.)
     shell_init();
     setup_init();
+    system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
     // Route every log_emit through Module.onLogEmit so the new-UI Logs
     // view gets a structured stream parallel to stdout. shell_init has
@@ -768,9 +751,6 @@ int main(void) {
     setup_pointer_lock();
 
     install_background_checkpoint_handlers();
-
-    // Assertion callback is installed automatically by system_post_create()
-    // whenever a machine is created.
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
@@ -819,36 +799,6 @@ int gs_checkpoint_auto_set(bool enabled) {
     if (!enabled)
         checkpoint_tick_counter = 0;
     return 0;
-}
-
-// The always-present AppleShare volume.  The path literal lives here, in the
-// platform layer, because core never fabricates or interprets a path (PR #69);
-// `appletalk_server.c` only ever executes the tree operation it is handed.
-// Under OPFS the directory — and the AppleDouble sidecars the AFP server
-// writes beside each file — persist across page reloads for free.
-#define GS_DEFAULT_SHARE_NAME "Shared"
-#define GS_DEFAULT_SHARE_PATH "/opfs/shared"
-
-// Publish the default share.  Idempotent: a machine teardown drops the volume
-// table, so this runs again on every system_create.  Failure is a logged
-// warning, never a boot error — a user who removed the directory should still
-// get a running machine.
-static void provision_default_share(void) {
-    if (atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
-        return;
-    if (mkdir(GS_DEFAULT_SHARE_PATH, 0777) != 0 && errno != EEXIST) {
-        printf("[C] default share: cannot create %s (%s)\n", GS_DEFAULT_SHARE_PATH, strerror(errno));
-        return;
-    }
-    char err[192];
-    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, GS_DEFAULT_SHARE_PATH, err, sizeof(err)) < 0)
-        printf("[C] default share: %s\n", err);
-}
-
-// Platform hook: publish the default share after each system_create.
-void system_post_create(config_t *cfg) {
-    (void)cfg;
-    provision_default_share();
 }
 
 // ============================================================================

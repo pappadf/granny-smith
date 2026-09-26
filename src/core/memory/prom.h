@@ -78,6 +78,8 @@ prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *
 // expected.  Offers persist across machine.boot.
 
 void prom_offer(const char *path);
+// Offer every file in `dir` ending in `ext` (NULL: any), skipping dotfiles.
+void prom_offer_dir(const char *dir, const char *ext);
 void prom_offer_clear(void);
 
 // Enumerate the offered candidates providing `card_id`, in pick order: the

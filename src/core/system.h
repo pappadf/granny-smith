@@ -90,6 +90,10 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const struct m
 // One-time global initialisation: logging categories, image system, shell commands.
 extern void setup_init(void);
 
+// Register the directory the default "Shared" AppleShare volume serves
+// (NULL or "": none).  Core publishes it after every machine build.
+void system_set_default_share(const char *path);
+
 // Create an emulator instance for the given machine profile.
 // If checkpoint is non-NULL, device state is restored from that checkpoint.
 // Sets global_emulator and returns the new config handle.
