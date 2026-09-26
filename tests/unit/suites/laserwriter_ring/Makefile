@@ -10,6 +10,7 @@
 TEST_NAME := laserwriter_ring
 TEST_SRCS := test.c
 TEST_HARNESS := isolated
-EXTRA_SRCS := ../../../../src/core/network/laserwriter_transport_ring.c
+EXTRA_SRCS := ../../../../src/core/network/laserwriter_transport_ring.c \
+              ../../../../src/core/mailbox/mailbox_ring.c
 EXTRA_CFLAGS := -DLWRING_OUT_BYTES=8192u -DLWRING_IN_BYTES=4096u
 include ../../common.mk
