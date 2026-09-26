@@ -302,6 +302,20 @@ TEST(test_no_dma_above_rom_base) {
     ASSERT_TRUE(!(r16(CTRL(0)) & HW_BERR));
 }
 
+// 7. The sound block's last longword: dspOverRun is lane 0 of $21C, and
+// lanes 1-3 hold nothing.  They once read past the end of the sound-latch
+// array into the next member.
+TEST(test_dsp_overrun_lanes) {
+    w8(0x21C, 0x87); // sense convention: set bits 0-2
+    ASSERT_EQ_INT(r8(0x21C) & 0x07, 0x07);
+    for (uint32_t off = 0x21D; off <= 0x21F; off++) {
+        w8(off, 0xA5); // dropped
+        ASSERT_EQ_INT(r8(off), 0);
+    }
+    w8(0x21C, 0x07); // clear them again
+    ASSERT_EQ_INT(r8(0x21C) & 0x07, 0);
+}
+
 int main(void) {
     s_cfg.machine_context = &s_st;
     s_st.psc = av_psc_init(&s_cfg, NULL);
@@ -315,6 +329,7 @@ int main(void) {
     RUN(test_fdc_double_buffer);
     RUN(test_write_direction);
     RUN(test_no_dma_above_rom_base);
+    RUN(test_dsp_overrun_lanes);
 
     fprintf(stderr, "psc: all tests passed\n");
     return 0;

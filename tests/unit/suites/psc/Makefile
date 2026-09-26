@@ -15,7 +15,10 @@ OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
 TARGET    := $(BUILD_DIR)/$(TEST_NAME)
 
 CC ?= gcc
-BASE_CFLAGS := -O0 -g -Wall -Wextra
+# -fsanitize=bounds: the sound block is indexed by address bits into a
+# fixed latch array, and a lane past its end must trap here, not read the
+# next member.
+BASE_CFLAGS := -O0 -g -Wall -Wextra -fsanitize=bounds -fno-sanitize-recover=bounds
 INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core \
                  -I$(EMU_ROOT)/core/cpu \
@@ -36,7 +39,7 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -include $(UNIT_ROOT)/support/log.h
 
 CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
-LDFLAGS ?=
+LDFLAGS ?= -fsanitize=bounds
 
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/dma_mem.c \

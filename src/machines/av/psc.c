@@ -525,8 +525,8 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
         return psc->snd[off & 0x1F];
     case 0x20C: // sndPhase — computed free-runner
         return be_lane8(psc_snd_phase(psc), off);
-    case 0x21C:
-        return (off & 3) == 0 ? psc->dsp_overrun : psc->snd[off & 0x1F];
+    case 0x21C: // dspOverRun on lane 0; lanes 1-3 latch nothing (writes drop)
+        return (off & 3) == 0 ? psc->dsp_overrun : 0;
     case 0x300: // UTSC least-significant longword
         return be_lane8((uint32_t)psc_utsc(cfg), off);
     case 0x304: // UTSC most-significant (16 valid bits)
