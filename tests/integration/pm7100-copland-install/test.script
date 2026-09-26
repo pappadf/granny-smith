@@ -1,8 +1,12 @@
 # Integration test: Power Macintosh 7100 — install System 7.5.0 onto the volume
 # Copland D11E4 will be installed into.
 #
-# Phase 3 of the bring-up plan §6.2.  See config.mk for the phase map and why
+# Phase 3 of the Copland install.  See config.mk for the phase map and why
 # this is a separate test from pm7100-copland-format.
+#
+# MEDIA: not redistributable and not part of the test data.  Everything below
+# `copland_root` is read from $GS_EXTRA_MEDIA_DIR/copland/, and the test skips
+# cleanly without it.
 #
 # The bus:
 #
@@ -20,7 +24,7 @@
 
 include "../lib/mac.script"
 
-let copland_root = "../../../local/gs-docs/projects/copland"
+let copland_root = "${$EXTRA_MEDIA}/copland"
 let media = "${$copland_root}/media"
 let ddk_cd = "${$copland_root}/images/copland_d11e4_jun_1996_mac_os_8_ddk_0.4_original_cd_image.dmg"
 let ssw75 = "${$media}/ssw75-1.4M"
@@ -199,7 +203,7 @@ if have_media($target) && have_media("${$ssw75}/Install Disk 7.img") && have_med
     phase3_export()
     report_row("7.5", "ariel", "copland-install-phase3 ssw75-floppy-install")
 } else {
-    echo "skip: pm7100-copland-install (Copland media not present — see the bring-up plan §6.0)"
+    echo "skip: pm7100-copland-install (Copland media not present — set GS_EXTRA_MEDIA_DIR)"
 }
 
 quit

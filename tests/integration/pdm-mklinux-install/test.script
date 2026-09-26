@@ -14,10 +14,10 @@
 #   4  export, verify, publish
 #
 # THE HAND-OFF is where one emulator defect stood: a BAT register write must
-# not steer instruction fetch until the processor context-synchronizes
-# (gs-docs projects/mklinux/notes/bat-context-sync.md).  DR3's start.s writes
-# `mtibatu 0` then `mtibatl 0` with nothing but a trailing sync/isync, and the
-# half-written pair relocates the kernel's own text off the end of RAM.
+# not steer instruction fetch until the processor context-synchronizes.
+# DR3's start.s writes `mtibatu 0` then `mtibatl 0` with nothing but a
+# trailing sync/isync, and the half-written pair relocates the kernel's own
+# text off the end of RAM.
 #
 # EVERY SCREEN IS WAITED FOR, NOT BUDGETED FOR.  `screen()` runs in quanta
 # until the frame equals the golden and then lets the guest finish painting.
@@ -32,18 +32,18 @@
 #     after each match is what makes the typing land.
 #
 # KEYBOARD: DR3's ADB driver reads the arrow cluster at $3B-$3E and claims
-# $7B-$7E as the right-hand modifiers, so arrows are pressed as raw keycodes
-# (notes/dr3-guest-quirks.md).  And on the Root Password screen focus starts on
-# **Ok**, not on the field — one Tab reaches it, and typing without that Tab
-# goes nowhere at all.
+# $7B-$7E as the right-hand modifiers, so arrows are pressed as raw keycodes.
+# And on the Root Password screen focus starts on **Ok**, not on the field —
+# one Tab reaches it, and typing without that Tab goes nowhere at all.
 #
-# MEDIA: the DR3 disc and the drive `pdm-mklinux-disk` publishes both live
-# under local/gs-docs/projects/mklinux/, so this test SKIPS cleanly where they
-# are absent.
+# MEDIA: the DR3 disc and the drive `pdm-mklinux-disk` publishes are not
+# redistributable and not part of the test data.  Both are read from
+# $GS_EXTRA_MEDIA_DIR/mklinux/media/, and this test SKIPS cleanly where they
+# are absent; the finished image is published back to the same directory.
 
 include "../lib/mac.script"
 
-let mkl_root = "../../../local/gs-docs/projects/mklinux"
+let mkl_root = "${$EXTRA_MEDIA}/mklinux"
 let dr3_iso = "${$mkl_root}/media/MkLinux-DR3/MkLinux-DR3.iso"
 let drive = "${$mkl_root}/media/mklinux_single_macos_169mb.img"
 
@@ -175,8 +175,8 @@ def phase2_installer() {
     screen("installation-path.png", 6000000000)
     press("Return") # Install, not Upgrade
     # One drive, and MkLinux's own SCSI driver names it.  Nothing is edited
-    # here — DR3's installer cannot partition from this screen at all
-    # (notes/dr3-guest-quirks.md) and does not need to.
+    # here — DR3's installer cannot partition from this screen at all, and
+    # does not need to.
     screen("partition-disks.png", 3000000000)
 
     press("Return") # Done
@@ -427,7 +427,7 @@ if have_media($dr3_iso) && have_media($drive) {
     phase4_publish()
     report_row("DR3", "ariel", "mklinux-install mach-handoff redhat-installer lilo-conf")
 } else {
-    echo "skip: pdm-mklinux-install (the DR3 disc or the built drive is not present — see gs-docs projects/mklinux)"
+    echo "skip: pdm-mklinux-install (the DR3 disc or the built drive not present — set GS_EXTRA_MEDIA_DIR)"
 }
 
 quit

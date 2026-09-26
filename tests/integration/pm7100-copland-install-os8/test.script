@@ -1,6 +1,10 @@
 # Integration test: Power Macintosh 7100 — install Mac OS 8 D11E4 (Copland).
 #
-# Phase 4-5 of the bring-up plan §6.2.  See config.mk for the phase map.
+# Phase 4-5 of the Copland install.  See config.mk for the phase map.
+#
+# MEDIA: not redistributable and not part of the test data.  Everything below
+# `copland_root` is read from $GS_EXTRA_MEDIA_DIR/copland/, and the test skips
+# cleanly without it.
 #
 # The bus:
 #
@@ -12,7 +16,7 @@
 
 include "../lib/mac.script"
 
-let copland_root = "../../../local/gs-docs/projects/copland"
+let copland_root = "${$EXTRA_MEDIA}/copland"
 let media = "${$copland_root}/media"
 let ddk_cd = "${$copland_root}/images/copland_d11e4_jun_1996_mac_os_8_ddk_0.4_original_cd_image.dmg"
 let target = "${$media}/copland_target_75_230mb.img"
@@ -48,9 +52,9 @@ def open_installer() {
     wait_stable(600000000)
     check_ex("cd-d11e4-folder.png", 0, 440, 20, 640)
 
-    # `Install Mac OS` is a 'kajr' installation SCRIPT, not an application
-    # (plan §5) — double-clicking it launches the `Installer` sitting beside it
-    # in the same folder, with this script's rules loaded.
+    # `Install Mac OS` is a 'kajr' installation SCRIPT, not an application —
+    # double-clicking it launches the `Installer` sitting beside it in the same
+    # folder, with this script's rules loaded.
     double_click(87, 137)
     scheduler.run 800000000
     wait_stable(3000000000)
@@ -119,9 +123,9 @@ def export_volume() {
     echo "System Folder (${len($sysf)} items): ${$sysf}"
 
     # Copland installs BESIDE the 7.5 System, it does not replace it: the
-    # machine boots 7.5 normally and Copland only on a Caps Lock latch (plan
-    # §6.3).  So both folders must be here — one missing means the wrong thing
-    # happened, in either direction.
+    # machine boots 7.5 normally and Copland only on a Caps Lock latch.  So
+    # both folders must be here — one missing means the wrong thing happened,
+    # in either direction.
     assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder") "no Mac OS Folder — Copland did not land on the target volume"
     assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System Folder/System") "the 7.5 System is gone — Copland should install alongside it, not over it"
     assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System 7.5 --Read Me") "the 7.5 install this started from is not intact"
@@ -158,7 +162,7 @@ if have_media($target) && have_media($ddk_cd) && have_media($host_hd) {
     export_volume()
     report_row("7.5+D11E4", "ariel", "copland-install-phase4 os8-ddk-cd-install")
 } else {
-    echo "skip: pm7100-copland-install-os8 (Copland media not present — see the bring-up plan §6.0)"
+    echo "skip: pm7100-copland-install-os8 (Copland media not present — set GS_EXTRA_MEDIA_DIR)"
 }
 
 quit

@@ -31,10 +31,13 @@
 # install on an 871 MB root leaves 162 MiB of the file non-zero, on 96 MB it
 # leaves 89 MiB including all of System 7.5.
 #
-# MEDIA: the DR3 disc lives in local/gs-docs/projects/mklinux/ and is not in
-# gs-test-data (a 663 MB hybrid ISO), so this test SKIPS cleanly where it is
-# absent.  Everything else it needs — the stock 7.5 volume — is pinned test
-# data.  `mklinux-boot` has no such dependency and runs everywhere.
+# MEDIA: the DR3 disc (a 663 MB hybrid ISO) is not redistributable and not
+# part of the test data.  The test reads it from
+# $GS_EXTRA_MEDIA_DIR/mklinux/media/MkLinux-DR3/ and SKIPS cleanly where it is
+# absent; the finished drive is published back to
+# $GS_EXTRA_MEDIA_DIR/mklinux/media/.  Everything else it needs — the stock
+# 7.5 volume — is pinned test data.  `mklinux-boot` has no such dependency and
+# runs everywhere.
 #
 # ⚠️ The 7.5 volume is attached read/write and accumulates delta writes.  Under
 # the harness those land in the per-test GS_STORAGE_CACHE and tests/data is
@@ -43,7 +46,7 @@
 
 include "../lib/mac.script"
 
-let mkl_root = "../../../local/gs-docs/projects/mklinux"
+let mkl_root = "${$EXTRA_MEDIA}/mklinux"
 let dr3_iso = "${$mkl_root}/media/MkLinux-DR3/MkLinux-DR3.iso"
 let host_hd = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 let target = "${$WORK_DIR}/mklinux-single.img"
@@ -440,7 +443,7 @@ if have_media($dr3_iso) {
     phase6_publish()
     report_row("7.5", "ariel", "mklinux-disk drive-setup pdisk bless mac-files")
 } else {
-    echo "skip: pdm-mklinux-disk (the DR3 disc is not present — see gs-docs projects/mklinux)"
+    echo "skip: pdm-mklinux-disk (the DR3 disc not present — set GS_EXTRA_MEDIA_DIR)"
 }
 
 quit

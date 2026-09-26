@@ -1,5 +1,4 @@
 # Integration test: booting AIX 4.1.5 for Apple Network Servers
-# (proposal-apple-network-server-500-700 §6, ladder rungs S9-S11)
 #
 # The first commercial Unix this repository boots as a machine's PRIMARY
 # operating system, and the first guest that is neither Apple's nor open:
@@ -18,9 +17,9 @@
 #
 # WHAT THE MEDIA IS.  `AIX_415_Install_CD.iso`, volume AIX_INSTALLATION_CD,
 # an ISO9660 whose block 0 carries the EBCDIC `IBMA` IPL record that the
-# firmware's `aix-boot` package recognises.  It is 603 MB and cannot be
-# committed (proposal §13 R8), so this row is FIXTURE-GATED: it fails
-# loudly with the path it wanted rather than skipping silently.
+# firmware's `aix-boot` package recognises.  It is 603 MB, not
+# redistributable and not part of the test data: the row reads it from
+# $GS_EXTRA_MEDIA_DIR/ans-500-700/images/ and skips cleanly without it.
 
 TEST_NAME := ANS AIX boot
 TEST_DESC := Boots the AIX 4.1.5 Install CD through Open Firmware's documented Service-keyswitch path

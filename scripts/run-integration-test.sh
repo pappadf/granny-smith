@@ -3,8 +3,7 @@
 #
 # Extracted from the tests/integration Makefile pattern rules so the
 # runner logic exists exactly once: the plain and valgrind flavors
-# differ only in the WRAPPER variable (proposal-integration-test-rework
-# §5.3). Invoked with CWD = tests/integration and the test directory
+# differ only in the WRAPPER variable. Invoked with CWD = tests/integration and the test directory
 # name as $1.
 #
 # Environment (absolute paths, exported by the Makefile):
@@ -15,6 +14,10 @@
 #   WORK_DIR          per-test scratch dir (created fresh here)
 #   WRAPPER           optional command prefix (e.g. "valgrind --quiet ...")
 #   TEST_VARS         optional extra shell --var definitions ("ROW=x REGEN=1")
+#   GS_EXTRA_MEDIA_DIR  optional: a directory of media that is not
+#                     redistributable and so not in the test data.  Scripts
+#                     see it as $EXTRA_MEDIA and skip rows whose media is
+#                     absent; unset, it names a directory that cannot exist.
 #
 # A TEST_RUNNER script additionally receives TEST_VAR_ARGS — TEST_VARS
 # pre-formatted as "--var K=V ..." — to splice into its own emulator
@@ -60,6 +63,7 @@ rm -rf "$WORK_DIR"
 mkdir -p "$TEST_RESULTS_DIR" "$WORK_DIR"
 rm -f "$TEST_RESULTS_DIR/status"
 export GS_STORAGE_CACHE="$WORK_DIR/storage-cache"
+EXTRA_MEDIA="${GS_EXTRA_MEDIA_DIR:-$WORK_DIR/no-extra-media}"
 
 # Substitute the Makefile-style placeholders used in config.mk values.
 expand() {
@@ -108,6 +112,7 @@ if [ -n "$TEST_RUNNER" ]; then
     HEADLESS_BIN="$RUNNER_BIN" ROM_PATH="$ROM_PATH" \
         DUMP_BIN="$DUMP_BIN" \
         TEST_DATA="$TEST_DATA" TEST_TMPDIR="$TEST_TMPDIR" \
+        EXTRA_MEDIA="$EXTRA_MEDIA" \
         TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
         WORK_DIR="$WORK_DIR" \
         STORAGE_CACHE="$GS_STORAGE_CACHE" \
@@ -116,7 +121,7 @@ if [ -n "$TEST_RUNNER" ]; then
 else
     # shellcheck disable=SC2086 — args and vars are intentionally word-split
     # $ROM mirrors the startup rom= so scripts can re-boot with an explicit
-    # rom="${$ROM}" (machine.boot inherits nothing — proposal-boot-vs-reset).
+    # rom="${$ROM}" (machine.boot inherits nothing from the running machine).
     # $TEST_DATA is the fixture root, for rows that name a second file by
     # path (a card's expansion ROM, a second disk image).
     ${WRAPPER:-} "$HEADLESS_BIN" \
@@ -127,6 +132,7 @@ else
         --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
         --var ROM="$ROM_PATH" \
         --var TEST_DATA="$TEST_DATA" \
+        --var EXTRA_MEDIA="$EXTRA_MEDIA" \
         $VAR_ARGS \
         --speed=max || fail
 fi
