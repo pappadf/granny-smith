@@ -251,6 +251,36 @@ static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
 static double ticks_per_second = 0;
 
+// Per-tick wall-clock samples for the last PERF_UPDATE_INTERVAL ticks: the
+// whole em_main_tick, and the part of it spent inside shell_poll serving a
+// bridge request.  The MIPS/ticks-per-second figures above are rates
+// averaged over the window and cannot show a single long tick -- a 300 ms
+// checkpoint or a slow bridge request inside an otherwise 60 Hz window --
+// which is exactly what a frame stutter is.  Pushed with the perf update as
+// the window's max and median (microseconds) so the status bar can show
+// them and a spec can assert on them.
+static double tick_wall_ms[PERF_UPDATE_INTERVAL];
+static double tick_poll_ms[PERF_UPDATE_INTERVAL];
+static double tick_poll_ms_current; // set by em_main_tick, read by tick()
+
+// max and median of `n` samples, without disturbing the ring
+static void perf_window_stats(const double *samples, int n, double *max_out, double *p50_out) {
+    double sorted[PERF_UPDATE_INTERVAL];
+    memcpy(sorted, samples, sizeof(double) * n);
+    // insertion sort: n is 60
+    for (int i = 1; i < n; i++) {
+        double v = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > v) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = v;
+    }
+    *max_out = sorted[n - 1];
+    *p50_out = sorted[n / 2];
+}
+
 // ============================================================================
 // Shared-heap Command Queue (and gs_eval queue)
 // ============================================================================
@@ -354,10 +384,14 @@ void em_main_tick(void) {
             double elapsed_ms = current_time - last_time;
             ticks_per_second = (PERF_UPDATE_INTERVAL * 1000.0) / elapsed_ms;
             double mips = (double)(instr_now - last_instr) / (elapsed_ms * 1000.0);
+            double tick_max, tick_p50, poll_max, poll_p50;
+            perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
+            perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
             // clang-format off
             MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onPerfUpdate === 'function') Module.onPerfUpdate($0, $1); },
-                (int)(mips * 100.0), (int)(ticks_per_second * 10.0));
+                { if (typeof Module.onPerfUpdate === 'function') Module.onPerfUpdate($0, $1, $2, $3, $4); },
+                (int)(mips * 100.0), (int)(ticks_per_second * 10.0),
+                (int)(tick_max * 1000.0), (int)(tick_p50 * 1000.0), (int)(poll_max * 1000.0));
             // clang-format on
         }
 
@@ -397,7 +431,10 @@ void em_main_tick(void) {
     // nothing.
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
-    if (shell_poll()) {
+    double poll_t0 = emscripten_get_now();
+    int served = shell_poll();
+    tick_poll_ms_current = emscripten_get_now() - poll_t0;
+    if (served) {
         scheduler_t *after = system_scheduler();
         if (!(after && scheduler_is_running(after)))
             em_video_update();
@@ -472,9 +509,16 @@ void em_main_tick(void) {
     }
 }
 
-// Exposed tick wrapper for Emscripten main loop
+// Exposed tick wrapper for Emscripten main loop.  Times the whole tick and
+// records it, with the shell_poll share em_main_tick measured, into the
+// perf window (see tick_wall_ms).
 void tick(void) {
+    double t0 = emscripten_get_now();
+    tick_poll_ms_current = 0;
     em_main_tick();
+    int slot = tick_counter % PERF_UPDATE_INTERVAL;
+    tick_wall_ms[slot] = emscripten_get_now() - t0;
+    tick_poll_ms[slot] = tick_poll_ms_current;
 }
 
 // Forward formatted log lines to the JS-side Module.onLogEmit callback.

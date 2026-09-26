@@ -86,6 +86,12 @@ interface MachineState {
   // main loop is achieving. 0 until the first push after machine start.
   mips: number;
   ticksPerSecond: number;
+  // Per-tick wall time over the last ~60 ticks (ms): the worst and the
+  // median em_main_tick, and the worst bridge-request share of a tick. A
+  // stutter is a tickMaxMs far above tickP50Ms; the rates above hide it.
+  tickMaxMs: number;
+  tickP50Ms: number;
+  pollMaxMs: number;
   zoom: number;
 }
 
@@ -108,6 +114,9 @@ export const machine: MachineState = $state({
   acceleratedSpeed: 1,
   mips: 0,
   ticksPerSecond: 0,
+  tickMaxMs: 0,
+  tickP50Ms: 0,
+  pollMaxMs: 0,
   zoom: 200,
 });
 
@@ -136,9 +145,16 @@ export function setAcceleratedSpeed(multiplier: number): void {
 }
 
 // Core-pushed live performance metrics (bus/emulator.ts handlePerfUpdate).
-export function setPerfStats(mips: number, ticksPerSecond: number): void {
+export function setPerfStats(
+  mips: number,
+  ticksPerSecond: number,
+  tick: { tickMaxMs: number; tickP50Ms: number; pollMaxMs: number },
+): void {
   machine.mips = mips;
   machine.ticksPerSecond = ticksPerSecond;
+  machine.tickMaxMs = tick.tickMaxMs;
+  machine.tickP50Ms = tick.tickP50Ms;
+  machine.pollMaxMs = tick.pollMaxMs;
 }
 
 // Core-pushed quick-checkpoint completion (bus/emulator.ts

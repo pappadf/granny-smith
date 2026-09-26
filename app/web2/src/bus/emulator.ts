@@ -99,7 +99,13 @@ interface EmscriptenModuleConfig {
   onLogEmit?(line: string): void;
   onFloppyChange?(drive: number, present: boolean): void;
   onSchedulerSpeed?(speedX256: number): void;
-  onPerfUpdate?(mipsX100: number, tpsX10: number): void;
+  onPerfUpdate?(
+    mipsX100: number,
+    tpsX10: number,
+    tickMaxUs: number,
+    tickP50Us: number,
+    pollMaxUs: number,
+  ): void;
   onCheckpointSaved?(elapsedMsX100: number): void;
   onDriveActivity?(kind: number, state: number): void;
   onVideoInReady?(ptr: number): void;
@@ -589,11 +595,23 @@ function handleSchedulerSpeed(speedX256: number): void {
   setAcceleratedSpeed((speedX256 | 0) / 256);
 }
 
-// Core-pushed performance metrics, ~1 Hz: emulated MIPS
-// from instr_count deltas and the RAF tick rate. Fixed-point on the wire
-// (x100 / x10) since MAIN_THREAD_ASYNC_EM_ASM carries ints.
-function handlePerfUpdate(mipsX100: number, tpsX10: number): void {
-  setPerfStats((mipsX100 | 0) / 100, (tpsX10 | 0) / 10);
+// Core-pushed performance metrics, ~1 Hz: emulated MIPS from instr_count
+// deltas, the RAF tick rate, and the last window's per-tick wall time (max
+// and median of em_main_tick, max of its shell_poll share) -- the rates
+// cannot show one long tick, the samples can. Fixed-point on the wire
+// (x100 / x10 / microseconds) since MAIN_THREAD_ASYNC_EM_ASM carries ints.
+function handlePerfUpdate(
+  mipsX100: number,
+  tpsX10: number,
+  tickMaxUs: number,
+  tickP50Us: number,
+  pollMaxUs: number,
+): void {
+  setPerfStats((mipsX100 | 0) / 100, (tpsX10 | 0) / 10, {
+    tickMaxMs: (tickMaxUs | 0) / 1000,
+    tickP50Ms: (tickP50Us | 0) / 1000,
+    pollMaxMs: (pollMaxUs | 0) / 1000,
+  });
 }
 
 // Core-pushed quick/background checkpoint completion (elapsed ms x100 —

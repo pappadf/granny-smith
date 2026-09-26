@@ -77,7 +77,11 @@
           class="sb-item sb-mips"
           title="Emulated CPU throughput: {machine.mips.toFixed(
             1,
-          )} million instructions/second ({machine.ticksPerSecond.toFixed(0)} ticks/s)"
+          )} million instructions/second ({machine.ticksPerSecond.toFixed(
+            0,
+          )} ticks/s); tick {machine.tickP50Ms.toFixed(1)} ms typical, {machine.tickMaxMs.toFixed(
+            1,
+          )} ms worst; bridge request {machine.pollMaxMs.toFixed(1)} ms worst"
         >
           <span class="label">{machine.mips.toFixed(1)} MIPS</span>
         </div>

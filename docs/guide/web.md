@@ -121,8 +121,12 @@ construction, not through the bridge slot:
   view clears its badge without polling.
 - **`Module.onSchedulerSpeed(speedX256)`** — the effective CPU speed in
   Accelerated mode (256 = 1×), on change; the status bar's multiplier.
-- **`Module.onPerfUpdate(mipsX100, tpsX10)`** — emulated MIPS and the
-  tick rate, about once a second.
+- **`Module.onPerfUpdate(mipsX100, tpsX10, tickMaxUs, tickP50Us, pollMaxUs)`**
+  — emulated MIPS and the tick rate, about once a second, plus the last
+  window's per-tick wall time: the worst and median `em_main_tick` and the
+  worst `shell_poll` share, in microseconds. The rates are averages and
+  cannot show a single long tick; the samples can (the status bar's MIPS
+  tooltip shows them).
 - **`Module.onCheckpointSaved(elapsedMsX100)`** — a background or quick
   checkpoint completed; the status bar's CP glyph flashes.
 - **`Module.onDriveActivity(kind, state)`** — an HD / FD / CD light
