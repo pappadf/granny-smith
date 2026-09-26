@@ -1470,7 +1470,7 @@ static const arg_decl_t checkpoint_snapshot_args[] = {
 static const member_t checkpoint_members[] = {
     {.kind = M_ATTR,
      .name = "auto",
-     .doc = "Background auto-checkpoint loop enabled (WASM only)",
+     .doc = "Automatic background checkpoints enabled: the periodic save and the tab-hidden save (WASM only)",
      .flags = 0,
      .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}},
     {.kind = M_METHOD,

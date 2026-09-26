@@ -648,8 +648,12 @@ void gs_checkpoint_saved(double elapsed_ms) {
     // clang-format on
 }
 
-// Request background checkpoint (with rate limiting)
+// Request background checkpoint (with rate limiting).  Honours checkpoint.auto
+// like the tick loop does: with automatic saving off, hiding the tab must not
+// write a checkpoint either (#148).  Explicit checkpoint.save is unaffected.
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
+    if (!checkpoint_auto_enabled)
+        return;
     int rc = system_quick_checkpoint(reason, false, rate_limit);
     if (rc != GS_SUCCESS) {
         printf("[checkpoint] background checkpoint failed (%s)\n", reason ? reason : "background");
