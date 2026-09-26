@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { MockOpfs, BrowserOpfs, setOpfsBackend, opfs } from '@/bus/opfs';
 import type { OpfsEntry } from '@/bus/types';
-import type { RecentEntry } from '@/bus/types';
 
 beforeEach(() => setOpfsBackend(new MockOpfs()));
 
@@ -24,16 +23,6 @@ describe('MockOpfs', () => {
       expect(list[0].path).toContain(`/opfs/images/${cat}/`);
     },
   );
-
-  it('readJson("/opfs/config/recent.json") returns prototype-style recents', async () => {
-    const recents = await opfs.readJson<RecentEntry[]>('/opfs/config/recent.json');
-    expect(Array.isArray(recents)).toBe(true);
-    expect(recents!.length).toBeGreaterThanOrEqual(1);
-    expect(recents![0]).toHaveProperty('model');
-    expect(recents![0]).toHaveProperty('ram');
-    expect(recents![0]).toHaveProperty('media');
-    expect(recents![0]).toHaveProperty('lastUsedAt');
-  });
 
   it('readJson returns null for unknown paths', async () => {
     expect(await opfs.readJson('/opfs/does/not/exist.json')).toBeNull();

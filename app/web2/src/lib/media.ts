@@ -80,6 +80,66 @@ async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdenti
   return r as RomIdentifyResult;
 }
 
+async function parseCardRomIdentify(
+  gsEval: GsEval,
+  what: 'vrom' | 'prom',
+  path: string,
+): Promise<PromIdentifyResult | null> {
+  // vrom.identify / prom.identify return a native object (V_MAP).
+  const r = await gsEval(`machine.${what}.identify`, [path]);
+  if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
+  return r as PromIdentifyResult;
+}
+
+// --- The identify wrappers, one each (F-49) ---------------------------------
+// rom.identify was wrapped four times and vrom/prom.identify twice each, with
+// three different result shapes.  These are the only ones.
+
+// A recognised CPU ROM: the models it boots.
+export interface RomIdentity {
+  path: string;
+  name: string;
+  checksum: string;
+  compatible: string[];
+  size: number;
+}
+
+// A recognised card ROM (a NuBus vROM or a PCI expansion ROM): the card it
+// provides and the cards it can drive.
+export interface CardRomIdentity {
+  path: string;
+  cardId: string;
+  compatible: string[];
+}
+
+// The ROM at `path`, or null when the core does not recognise it.
+export async function identifyRom(gsEval: GsEval, path: string): Promise<RomIdentity | null> {
+  const r = await parseRomIdentify(gsEval, path);
+  if (!r?.recognised || !Array.isArray(r.compatible)) return null;
+  return {
+    path,
+    name: r.name || path.split('/').pop() || path,
+    checksum: r.checksum ?? '',
+    compatible: r.compatible,
+    size: r.size ?? 0,
+  };
+}
+
+// The vROM (`what` = 'vrom') or PCI expansion ROM ('prom') at `path`, or null.
+export async function identifyCardRom(
+  gsEval: GsEval,
+  what: 'vrom' | 'prom',
+  path: string,
+): Promise<CardRomIdentity | null> {
+  const r = await parseCardRomIdentify(gsEval, what, path);
+  if (!r?.recognised || !r.card_id) return null;
+  return {
+    path,
+    cardId: r.card_id,
+    compatible: Array.isArray(r.compatible) ? r.compatible : [r.card_id],
+  };
+}
+
 export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
   rom: {
     id: 'rom',
@@ -101,11 +161,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Video ROM image',
     persistDir: VROMS_DIR,
     async validate(path, gsEval) {
-      // vrom.identify returns a native object (V_MAP) — no inner JSON.parse.
-      const r = await gsEval('machine.vrom.identify', [path]);
-      if (!r || typeof r !== 'object' || 'error' in (r as object)) return { valid: false };
-      const parsed = r as VromIdentifyResult;
-      if (!parsed.recognised) return { valid: false };
+      const parsed: VromIdentifyResult | null = await parseCardRomIdentify(gsEval, 'vrom', path);
+      if (!parsed?.recognised) return { valid: false };
       return {
         valid: true,
         info: {
@@ -131,11 +188,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'PCI expansion ROM',
     persistDir: PROMS_DIR,
     async validate(path, gsEval) {
-      // prom.identify returns a native object (V_MAP) — no inner JSON.parse.
-      const r = await gsEval('machine.prom.identify', [path]);
-      if (!r || typeof r !== 'object' || 'error' in (r as object)) return { valid: false };
-      const parsed = r as PromIdentifyResult;
-      if (!parsed.recognised) return { valid: false };
+      const parsed = await parseCardRomIdentify(gsEval, 'prom', path);
+      if (!parsed?.recognised) return { valid: false };
       return {
         valid: true,
         info: {

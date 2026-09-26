@@ -7,8 +7,6 @@ import {
   CD_DIR,
   CHECKPOINT_DIR,
   UPLOAD_DIR,
-  CONFIG_DIR,
-  RECENTS_PATH,
   bufferHasCheckpointSignature,
   fileHasCheckpointSignature,
 } from '@/lib/opfsPaths';
@@ -22,8 +20,6 @@ describe('OPFS path constants', () => {
     expect(CD_DIR).toBe('/opfs/images/cd');
     expect(CHECKPOINT_DIR).toBe('/opfs/checkpoints');
     expect(UPLOAD_DIR).toBe('/opfs/upload');
-    expect(CONFIG_DIR).toBe('/opfs/config');
-    expect(RECENTS_PATH).toBe('/opfs/config/recent.json');
   });
 });
 

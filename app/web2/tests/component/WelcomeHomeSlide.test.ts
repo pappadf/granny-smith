@@ -1,4 +1,4 @@
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import WelcomeHomeSlide from '@/components/display/WelcomeHomeSlide.svelte';
 import { _resetForTests, toasts } from '@/state/toasts.svelte';
@@ -49,29 +49,12 @@ describe('WelcomeHomeSlide', () => {
     expect(toasts.active[0].msg).toContain('Phase 5');
   });
 
-  it('renders the Recent card after loading recents from OPFS', async () => {
+  // Nothing in production ever wrote a recent list (N-13): no Recent card.
+  it('shows only the Start card', () => {
     const { container } = render(WelcomeHomeSlide);
-    await waitFor(() => {
-      const headings = Array.from(container.querySelectorAll('.card-heading')).map(
-        (h) => h.textContent,
-      );
-      expect(headings).toContain('Recent');
-    });
-    const recentCard = container.querySelectorAll('.card')[1];
-    const rows = recentCard.querySelectorAll('.card-row.recent');
-    expect(rows.length).toBeGreaterThan(0);
-  });
-
-  it('clicking a Recent entry invokes the bus (no-op without Module, but does not throw)', async () => {
-    const { container } = render(WelcomeHomeSlide);
-    const recentRow = await waitFor(() => {
-      const r = container.querySelector('.card-row.recent') as HTMLButtonElement | null;
-      if (!r) throw new Error('not yet');
-      return r;
-    });
-    await fireEvent.click(recentRow);
-    // Without a real Module bound, initEmulator's gsEval calls return null
-    // and machine state is unchanged. The interaction itself must not throw.
-    expect(machine.status).toBe('no-machine');
+    const headings = Array.from(container.querySelectorAll('.card-heading')).map(
+      (h) => h.textContent,
+    );
+    expect(headings).toEqual(['Start']);
   });
 });

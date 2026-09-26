@@ -17,16 +17,18 @@ import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
-import { initEmulator } from '@/bus/emulator';
+import { initEmulator } from '@/bus/boot';
 
 const PDM_ROM = '/opfs/images/rom/pm6100-pm7100-pm8100-9feb69b3.rom';
+
+// The boot itself is not under test: record the config it was handed.
+vi.mock('@/bus/boot', () => ({ initEmulator: vi.fn(async () => {}) }));
 
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
   return {
     ...actual,
     whenModuleReady: () => Promise.resolve(),
-    initEmulator: vi.fn(async () => {}),
     gsEval: async (path: string, args?: unknown[]) => {
       if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';

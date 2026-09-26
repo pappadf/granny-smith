@@ -15,8 +15,6 @@ import {
   setCheckpointSaved,
   setPerfStats,
   type MachineStatus,
-  type MmuKind,
-  type AuxCpu,
   type SchedulerMode,
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
@@ -37,9 +35,7 @@ import {
 import { onPrinterAttach } from '@/printer/platen';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
-import { resetDebugSections } from '@/state/debug.svelte';
 import { bridgeBusy } from '@/state/activity.svelte';
-import type { MachineConfig } from './types';
 
 const BRIDGE_VERSION = 7;
 const OFF_VERSION = 0;
@@ -641,107 +637,6 @@ export function getModuleHeap(): { u8: Uint8Array; i16: Int16Array; i32: Int32Ar
 
 // --- Lifecycle wrappers --------------------------------------------------
 
-// Remember the most recent boot config so `restart()` can re-apply it
-// without a C-side reset method. Cleared on shutdown so a stale config
-// from a previous machine doesn't restart unexpectedly.
-let lastBootConfig: MachineConfig | null = null;
-
-export function getLastBootConfig(): MachineConfig | null {
-  return lastBootConfig;
-}
-
-// The SCSI id a hard disk attached outside the dialog should take: the
-// running model's slot flagged `boot` (the Network Server's bay 2, where its
-// firmware looks for `disk2:aix`), else its first slot, else 0.
-export async function defaultHdId(): Promise<number> {
-  try {
-    const model = await gsEval('machine.id');
-    if (typeof model !== 'string' || !model) return 0;
-    const r = await gsEval('machine.profile', [model]);
-    if (!r || typeof r !== 'object' || 'error' in r) return 0;
-    const buses =
-      (r as { scsi_buses?: Array<{ slots?: Array<{ id?: number; boot?: boolean }> }> })
-        .scsi_buses ?? [];
-    const slots = buses.flatMap((bus) => bus.slots ?? []);
-    const pick = slots.find((s) => s.boot) ?? slots[0];
-    return typeof pick?.id === 'number' ? pick.id : 0;
-  } catch {
-    return 0;
-  }
-}
-
-// Read a model's capability probe from `machine.profile().capabilities` and
-// apply it to the shared machine state. Replaces the old display-name regex
-// that silently misclassified any MMU machine whose name didn't match the
-// hardcoded pattern. `mmuKind` is the full typed kind the core exports (all
-// six; this used to keep two and collapse the 68040 and PowerPC MMUs to
-// "none", F-05), and `mmuEnabled` means "has an MMU of any kind" — every
-// kind answers the same machine.cpu.mmu.translate/peek (bus/mmu.ts).  `fpu`
-// gates the FPU panel; `auxCpus` lists the auxiliary cores the Debug view
-// renders (it was exported and read by nothing, F-08).
-export async function applyCapabilities(model: string): Promise<void> {
-  let kind: MmuKind = 'none';
-  let fpu = false;
-  let videoIn = false;
-  let audioIn = false;
-  let auxCpus: AuxCpu[] = [];
-  try {
-    // machine.profile returns a native nested object (V_MAP through the
-    // gsEval bridge) — no inner JSON.parse.
-    const r = await gsEval('machine.profile', [model]);
-    if (r && typeof r === 'object' && !('error' in r)) {
-      const parsed = r as {
-        capabilities?: {
-          mmu?: { kind?: string };
-          cpu?: { fpu?: boolean };
-          video_in?: boolean;
-          audio_in?: boolean;
-          aux_cpus?: unknown;
-        };
-      };
-      const k = parsed.capabilities?.mmu?.kind;
-      const KINDS: readonly MmuKind[] = [
-        '68030_pmmu',
-        '68040',
-        'ppc_601',
-        'ppc_604',
-        'lisa_segment',
-      ];
-      if (KINDS.includes(k as MmuKind)) kind = k as MmuKind;
-      fpu = parsed.capabilities?.cpu?.fpu === true;
-      videoIn = parsed.capabilities?.video_in === true;
-      audioIn = parsed.capabilities?.audio_in === true;
-      auxCpus = parseAuxCpus(parsed.capabilities?.aux_cpus);
-    }
-  } catch {
-    /* leave kind = 'none', fpu = false, videoIn/audioIn = false */
-  }
-  machine.mmuKind = kind;
-  machine.mmuEnabled = kind !== 'none';
-  machine.fpu = fpu;
-  machine.videoIn = videoIn;
-  machine.audioIn = audioIn;
-  machine.auxCpus = auxCpus;
-}
-
-// capabilities.aux_cpus -> AuxCpu[].  A name becomes a path segment
-// (machine.<name>.frame), so only a plain identifier is accepted.
-export function parseAuxCpus(raw: unknown): AuxCpu[] {
-  if (!Array.isArray(raw)) return [];
-  const out: AuxCpu[] = [];
-  for (const e of raw) {
-    if (!e || typeof e !== 'object') continue;
-    const { name, arch, freq } = e as { name?: unknown; arch?: unknown; freq?: unknown };
-    if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/.test(name)) continue;
-    out.push({
-      name,
-      arch: typeof arch === 'string' ? arch : '',
-      freq: typeof freq === 'number' ? freq : 0,
-    });
-  }
-  return out;
-}
-
 // === PRAM seeding ============================================================
 // Never boot with blank PRAM.  A real Mac's PRAM is battery-backed; ours
 // starts empty on every machine.boot, so the guest takes its
@@ -781,92 +676,6 @@ export async function seedPram(model: string, scsiId = 0): Promise<void> {
   // reads as "the DR emulator is already selected" — without it 8.1 sets
   // the bit and soft-restarts on every boot.  System 7.5 ignores it.
   await gsEvalLine('machine.rtc.pram.poke 0x8A 0x25:1');
-}
-
-// Boot a machine from a config. Construction-time settings travel as ONE
-// machine.boot configuration document (named JSON-object args, proposal
-// proposal-named-args-boot-config §4) — the core validates everything
-// before tearing the old machine down, stages the vROM pick, seeds the
-// video card/sense/mode, and installs the ROM itself. Only runtime media
-// (floppies/HD/CD) remain imperative calls after the boot.
-export async function initEmulator(config: MachineConfig): Promise<void> {
-  const doc: Record<string, unknown> = {};
-  if (config.model) doc.model = config.model;
-  // Map the human-readable RAM string ('4 MB') to KB the boot path wants.
-  const ramKB = ramStringToKb(config.ram);
-  if (ramKB) doc.ram = ramKB;
-  // rom is required by machine.boot (the document inherits nothing); a
-  // missing one is rejected by the core with a clear error. For vrom,
-  // '(auto)' means "let the offer registry resolve" — omit the field.
-  if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
-  if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
-  if (config.videoCard) doc.video_card = config.videoCard;
-  // A PCI card is staged by id; '(auto)' for its expansion ROM means the
-  // same thing it does for a vROM — omit the field and let the core's
-  // offer registry content-match among the files the platform published.
-  if (config.pciCard) doc.pci_card = config.pciCard;
-  if (config.prom && config.prom !== '(auto)') doc.prom = config.prom;
-  if (config.pciOption) doc.pci_option = config.pciOption;
-  if (config.videoMode) doc.video_mode = config.videoMode;
-  if (config.monitor) doc.monitor = config.monitor;
-  const ok = await gsEval('machine.boot', doc);
-  if (ok !== true) {
-    showNotification(`Boot failed: ${gsErrorText(ok)}`, 'error');
-    return;
-  }
-  // Seed a valid PRAM before the machine runs (see seedPram above).
-  await seedPram(config.model, 0);
-  for (let i = 0; i < (config.floppies?.length ?? 0); i++) {
-    const path = config.floppies[i];
-    if (!path || path === '(none)') continue;
-    await gsEval(`machine.floppy.drive[${i}].insert`, [path, true]);
-  }
-  if (config.hd && config.hd !== '(none)') {
-    if (config.hdBus === 'profile') {
-      // Lisa/XL: the hard disk is the parallel-port ProFile, not a SCSI device.
-      await gsEval('machine.hd.attach', [config.hd, true]);
-    } else {
-      // A failed attach would boot the machine disk-less with no hint at
-      // all — surface it (the boot itself still proceeds).
-      const busObject = config.hdBusObject || 'scsi';
-      const hdOk = await gsEval(`machine.${busObject}.attach_hd`, [config.hd, config.hdId ?? 0]);
-      if (hdOk !== true) {
-        showNotification(`Hard disk attach failed: ${gsErrorText(hdOk)}`, 'error');
-      }
-    }
-  }
-  if (config.cd && config.cd !== '(none)') {
-    await gsEval('machine.scsi.attach_cdrom', [config.cd, 3]);
-  }
-
-  machine.model = config.modelName ?? config.model;
-  machine.ram = config.ram;
-  await applyCapabilities(config.model);
-  // machine.videoin / machine.audioin reset with the machine; re-assert the
-  // user's camera and microphone toggles (or drop them if the new model has
-  // no digitizer / no audio input).
-  await reapplyCameraSource();
-  await reapplyMicrophoneSource();
-
-  // The Caps Lock latch is host-keyboard state: a mechanically locking key
-  // is already down when the machine powers on. Latch it BEFORE the machine
-  // runs, so the ROM's ADB init finds the key down and reports it into
-  // KeyMap — that is the gate Copland D11E4's boot blocks test.
-  if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
-  // A fresh core boots paced; re-assert the user's toolbar selection so a
-  // pre-selected Turbo survives machine (re)creation.
-  await applySchedulerMode(machine.scheduler);
-  await gsEval('scheduler.run');
-  // onRunStateChange will flip machine.status to 'running' once the
-  // worker pushes the transition.
-  lastBootConfig = config;
-  // Every new boot starts with the Debug-tab sections collapsed —
-  // only the always-visible Disassembly pane shows by default.
-  // Persisted localStorage state is overwritten by this reset, which
-  // is the user-requested behaviour (each new machine gets a clean
-  // debug layout).
-  resetDebugSections();
-  showNotification('Machine started', 'info');
 }
 
 // Toggle the Caps Lock latch: UI state plus an immediate push to the live
@@ -910,7 +719,6 @@ export async function restartEmulator(): Promise<void> {
 export async function shutdownEmulator(): Promise<void> {
   await gsEval('scheduler.stop');
   machine.status = 'stopped' as MachineStatus;
-  lastBootConfig = null;
   showNotification('Machine stopped', 'info');
 }
 
@@ -944,12 +752,3 @@ export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
 
 // Save State button path. Writes to /tmp/saved-state-<ts>.bin, then triggers
 // a browser download via the C-side `download` shell command.
-// --- Small helpers ------------------------------------------------------
-
-function ramStringToKb(ram: string): number {
-  const m = /(\d+)\s*MB/i.exec(ram || '');
-  if (!m) return 4096;
-  return parseInt(m[1], 10) * 1024;
-}
-
-export { ramStringToKb };

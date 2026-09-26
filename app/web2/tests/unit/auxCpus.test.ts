@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAuxCpus } from '@/bus/emulator';
+import { parseAuxCpus } from '@/bus/boot';
 
 // capabilities.aux_cpus -> machine.auxCpus (F-08: exported, read by nothing).
 describe('parseAuxCpus', () => {

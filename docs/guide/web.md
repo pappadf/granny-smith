@@ -414,8 +414,7 @@ full surface.
 │   │   └── <machine-id>-<ts>/  Per-machine checkpoint dirs
 │   │       ├── state.checkpoint
 │   │       └── <id>.delta / <id>.journal   Writable image state
-│   ├── upload/                 Drag-and-drop staging
-│   └── config/                 e.g. recent.json
+│   └── upload/                 Drag-and-drop staging
 └── tmp/                        Memory mount (volatile)
 ```
 
@@ -442,9 +441,13 @@ invoked from `main.ts` after `whenModuleReady()` resolves:
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
   auto-boots.
 - `fdN=<url>` (`fd0`, `fd1`) — downloaded into `/opfs/images/fd/`,
-  inserted into `floppy.drives[N]`.
-- `hdN=<url>` — downloaded into `/opfs/images/hd/`, attached via
-  `scsi.attach_hd`.
+  inserted into floppy drive N, when the model has that drive.
+- `hdN=<url>` — downloaded into `/opfs/images/hd/`, attached to the
+  model's N-th hard-disk bay (`machine.attach_hd(path, N)`; `hd0` is the
+  boot bay, on whatever bus it is — SCSI, a Network Server's second
+  channel, the Lisa's ProFile).
+- `cd=<url>` — downloaded into `/opfs/images/cd/`, inserted into the
+  model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
   IIfx).
 - `speed=paced|turbo` — forwarded to the wasm module as `--speed=`

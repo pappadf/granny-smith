@@ -3,7 +3,7 @@
 // navigator.storage.getDirectory(). Components import `opfs` and call it like
 // any object; tests can swap the backend via setOpfsBackend().
 
-import type { CheckpointEntry, ImageCategory, OpfsEntry, RecentEntry, RomInfo } from './types';
+import type { CheckpointEntry, ImageCategory, OpfsEntry, RomInfo } from './types';
 import { CHECKPOINT_DIR, ROMS_DIR, FDHD_DIR } from '@/lib/opfsPaths';
 import { parseCheckpointDirName, formatCheckpointLabel } from '@/lib/checkpointMeta';
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
@@ -32,27 +32,7 @@ export interface OpfsBackend {
 // Backed by an in-memory map so the new move/delete/rename methods can mutate
 // observable state during tests.
 class MockOpfs implements OpfsBackend {
-  private json = new Map<string, unknown>([
-    [
-      '/opfs/config/recent.json',
-      [
-        {
-          model: 'Macintosh SE/30',
-          ram: '8 MB',
-          media: 'HD0: System 7.1, FD0: Install Disk',
-          rom: '/opfs/images/rom/se30.rom',
-          lastUsedAt: Date.now() - 3 * 60 * 60 * 1000,
-        },
-        {
-          model: 'Macintosh Plus',
-          ram: '4 MB',
-          media: 'HD0: hd1.img',
-          rom: '/opfs/images/rom/plus.rom',
-          lastUsedAt: Date.now() - 24 * 60 * 60 * 1000,
-        },
-      ] satisfies RecentEntry[],
-    ],
-  ]);
+  private json = new Map<string, unknown>();
 
   // Lightweight in-memory tree. Each entry maps OPFS path → kind. Files have
   // an associated size; directories have no entry but are implied by any
@@ -70,7 +50,6 @@ class MockOpfs implements OpfsBackend {
     }
     this.dirs.add('/opfs/checkpoints');
     this.dirs.add('/opfs/upload');
-    this.dirs.add('/opfs/config');
     this.files.set('/opfs/images/rom/plus-v3-4d1f8172.rom', { size: 128 * 1024 });
     this.files.set('/opfs/images/rom/iix-iicx-se30-97221136.rom', { size: 256 * 1024 });
     this.files.set('/opfs/images/vrom/ROM_97221136', { size: 256 * 1024 });

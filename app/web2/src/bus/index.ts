@@ -1,5 +1,5 @@
+export { initEmulator } from './boot';
 export {
-  initEmulator,
   shutdownEmulator,
   pauseEmulator,
   resumeEmulator,
@@ -62,11 +62,4 @@ export {
   saveCheckpoint,
   type SaveCheckpointResult,
 } from './checkpoint';
-export type {
-  MachineConfig,
-  RomInfo,
-  OpfsEntry,
-  RecentEntry,
-  ImageCategory,
-  CheckpointEntry,
-} from './types';
+export type { MachineConfig, RomInfo, OpfsEntry, ImageCategory, CheckpointEntry } from './types';

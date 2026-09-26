@@ -2,6 +2,7 @@
   import { machine, type MachineStatus } from '@/state/machine.svelte';
   import { activity, bridgeBusy } from '@/state/activity.svelte';
   import { setCapsLock } from '@/bus/emulator';
+  import { shortModel } from '@/lib/machine';
   import DriveActivity from './DriveActivity.svelte';
   import Icon from '../common/Icon.svelte';
 
@@ -21,10 +22,6 @@
   const desc = $derived(
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
   );
-
-  function shortModel(model: string): string {
-    return model.replace(/^Macintosh\s+/i, '');
-  }
 
   // Accelerated-mode CPU speed readout. The core pushes the applied multiplier
   // (1x in every other mode), so gate on the mode too. The governor's ladder

@@ -4,8 +4,15 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { initEmulator, opfs, gsEval, whenModuleReady } from '@/bus';
   import { pickAndUploadAs } from '@/bus/upload';
-  import type { MediaTypeId } from '@/lib/media';
-  import { DEFAULT_CONFIG } from '@/lib/machine';
+  import { getProfile, type MachineProfile } from '@/bus/profile';
+  import {
+    identifyRom,
+    identifyCardRom,
+    type MediaTypeId,
+    type RomIdentity,
+    type CardRomIdentity,
+  } from '@/lib/media';
+  import { formatRamKb } from '@/lib/machine';
   import type { ImageCategory, OpfsEntry } from '@/bus/types';
   import { images } from '@/state/images.svelte';
   import CreateImageDialog from './CreateImageDialog.svelte';
@@ -14,138 +21,18 @@
   const CREATE_SENTINEL = 'Create blank image...';
   const NONE_SENTINEL = '(none)';
 
-  // One identified ROM in OPFS. `compatible` is the list of model ids that
-  // the C side reports this ROM lights up (rom.identify); `name` is the
-  // human label baked into the image.
-  interface RomEntry {
-    path: string;
-    name: string;
-    checksum: string;
-    compatible: string[];
-  }
-
-  // Static configuration shape per model, returned by `machine.profile(id)`.
-  // The slide reads `name` for the dropdown label, `video_slots` to decide
-  // whether to show the Video ROM row (per-card requires_vrom) and to build
-  // the video-mode list, `ram_options` / `ram_default` to build the RAM
-  // dropdown, and `floppy_slots` for the floppy rows.
-  interface MachineProfile {
-    name?: string;
-    ram_options?: number[]; // KB
-    ram_default?: number; // KB
-    floppy_slots?: Array<{ label?: string; kind?: string }>;
-    scsi_buses?: Array<{
-      object?: string;
-      label?: string;
-      slots?: Array<{ label?: string; id?: number; boot?: boolean }>;
-    }>;
-    // How the hard disk attaches: 'scsi' (default) or 'profile' (Lisa/XL
-    // parallel-port ProFile). Drives the HD row label and the attach call.
-    hd_bus?: string;
-    has_cdrom?: boolean; // documented UX gate: show the SCSI CD-ROM row iff true
-    // Derived capability probe (proposal §4.4): the typed facts the UI reads
-    // instead of guessing from the model name.
-    capabilities?: {
-      cpu?: { model?: number; address_bits?: number; fpu?: boolean };
-      mmu?: { present?: boolean; kind?: string };
-      nubus?: boolean;
-    };
-    // The machine's own built-in video, when it is not a NuBus pseudo-card
-    // (the PDM family's Ariel scanout).  Present means the display can be
-    // driven EITHER by this port or by a NuBus card, and picking a card
-    // leaves this port unconnected — exactly what plugging the monitor into
-    // the card does on real hardware.  Absent (empty map) on every other
-    // machine, so nothing else changes shape.
-    builtin_video?: { id?: string; display_name?: string };
-    // Per-card video slot shape (proposal §4.4) — the single source for both
-    // the VROM requirement (per-card requires_vrom; see needsVrom) and the
-    // video-mode list (each card's monitors × depths; see videoModes).
-    // Stage 2 of the computed-card-compatibility proposal emits EVERY
-    // declared socket here (all offering the same computed card list); the
-    // dialog configures the first entry only (see configSlot).
-    video_slots?: Array<{
-      slot: string;
-      fixed: boolean;
-      default_card: string;
-      cards: Array<{
-        id: string;
-        display_name?: string;
-        requires_vrom: boolean;
-        monitors?: Array<{
-          id: string;
-          name?: string;
-          width?: number;
-          height?: number;
-          depths?: number[];
-        }>;
-      }>;
-    }>;
-    // PCI sockets, same shape idea as video_slots but for the PCI bus: each
-    // declared socket carries the cards the registry says fit it, and each
-    // card carries the UI grouping hint `class` ('display', 'other', ...)
-    // plus its own requires_prom.  A machine with no PCI bus omits this.
-    //
-    // The 9500 is the first machine whose display can ONLY come from here:
-    // its builtin_video and video_slots are both empty, so without a
-    // display-class PCI card there is nothing to draw on.
-    pci_slots?: Array<{
-      slot: number;
-      label?: string;
-      // Soldered down rather than a socket — not a user choice.
-      fixed: boolean;
-      // ...and a fixed slot that is only a STAND-IN: it exists solely
-      // because no socket has supplied a card of its class yet, because
-      // the real machine has nothing there.  The Power Macintosh 9500 is
-      // the case this exists for: its Control/Chaos entry is emulator
-      // scaffolding, not hardware, and calling it "on-board video" would
-      // state the opposite of what the machine is.
-      fallback?: boolean;
-      default_card?: string;
-      cards: Array<{
-        id: string;
-        display_name?: string;
-        class?: string;
-        requires_prom?: boolean;
-        // Options the CARD declares it will accept, so this dialog can
-        // render a control per option without knowing which card it is.
-        // They travel back as machine.boot's pci_option="key=value".
-        options?: Array<{
-          key: string;
-          label?: string;
-          default_value?: string;
-          values?: Array<{ id: string; label?: string }>;
-        }>;
-        monitors?: Array<{
-          id: string;
-          name?: string;
-          width?: number;
-          height?: number;
-          depths?: number[];
-        }>;
-      }>;
-    }>;
-  }
-
-  // One identified VROM in OPFS: which card it provides (probed via
-  // vrom.identify) so the dialog can speak in cards, not filenames. Any
-  // human-readable label comes from the card id via machine.profile
-  // (cardOptions) — the on-disk name is a content hash and never shown.
-  interface VromEntry {
-    path: string;
-    cardId: string; // nubus card-kind id this blob provides
-    compatible: string[]; // card ids this vROM can drive (usually [cardId])
-  }
-
-  // One identified PCI expansion ROM in OPFS: which card it provides
-  // (probed via prom.identify).  The sibling of VromEntry, kept separate for
-  // the same reason the two core modules are separate — a vROM and a PROM
-  // are different objects with different identity rules, and a card asks for
-  // one or the other, never "a ROM".
-  interface PromEntry {
-    path: string;
-    cardId: string; // PCI card-kind id this blob provides
-    compatible: string[];
-  }
+  // The model's configuration shape is bus/profile.ts's MachineProfile.
+  //
+  // One identified ROM in OPFS: the model ids it lights up (rom.identify).
+  type RomEntry = RomIdentity;
+  // One identified VROM in OPFS: which card it provides (vrom.identify), so
+  // the dialog speaks in cards, not filenames — the on-disk name is a content
+  // hash and never shown.
+  type VromEntry = CardRomIdentity;
+  // One identified PCI expansion ROM (prom.identify).  The sibling of
+  // VromEntry: a vROM and a PROM are different objects with different
+  // identity rules, and a card asks for one or the other, never "a ROM".
+  type PromEntry = CardRomIdentity;
 
   // The pseudo card-id standing for "the machine's own built-in video port".
   // Never a registry card id, so it can share the `cardId` state without
@@ -157,14 +44,11 @@
   // Local form state.
   let modelId = $state('');
   let cardId = $state(''); // selected NuBus video card-kind id
-  let ram = $state(DEFAULT_CONFIG.ram);
+  // RAM in KB, one of the profile's ram_options; 0 = the model's own default.
+  let ramKb = $state(0);
   let romPath = $state('');
   let floppies = $state<string[]>([]);
   let hd = $state(NONE_SENTINEL);
-  // The bay (SCSI id) the hard disk attaches at, when the model has more than
-  // one to offer; null = the model's default (the slot flagged `boot`, else
-  // the first).  Reset whenever the model changes, since the ids are its.
-  let hdIdOverride = $state<string | null>(null); // "<bus object>:<id>"
   let cd = $state(NONE_SENTINEL);
   let videoMode = $state('');
   // Chosen PCI card options, keyed by option key ("vram" -> "4m"). Cleared
@@ -199,7 +83,6 @@
   let romsForCurrentModel = $derived(modelId ? (romsByModel[modelId] ?? []) : []);
   let needsRomPicker = $derived(romsForCurrentModel.length > 1);
   let currentProfile = $derived(modelId ? profiles[modelId] : undefined);
-  let modelName = $derived(currentProfile?.name ?? modelId);
   // --- Video card selection (card-driven; the vROM is auto-resolved). ------
   // The dialog speaks in *cards* (Apple Macintosh Display Card 24AC), not vROM
   // filenames. The available cards + their requires_vrom / monitors come from
@@ -414,50 +297,23 @@
   let missingRomKind = $derived(
     slotCards.length > 0 && availableCards.length === 0 ? 'Video ROM' : 'PCI expansion ROM',
   );
-  // HD row label: the Lisa/XL parallel-port ProFile (hd_bus === 'profile') is
-  // not on the SCSI bus, so its label comes from the bus, not the bay list
-  // (which is empty for those machines). SCSI machines keep their bay label.
-  let hdSlotLabel = $derived(
-    currentProfile?.hd_bus === 'profile'
-      ? 'ProFile'
-      : (currentProfile?.scsi_buses?.[0]?.slots?.[0]?.label ?? 'SCSI HD 0'),
-  );
-  // Every bay the model lists, flattened across its buses and carrying the
-  // bus object each one attaches through.  A machine whose bays do not start
-  // at id 0 (the Network Server's run 1..3, and its firmware boots bay 2) is
-  // why the id is never assumed; a machine with two controllers (the same
-  // Network Servers) is why the bus travels with the bay rather than being
-  // inferred.  Ids repeat ACROSS buses, so `key` — not `id` — identifies a
-  // bay.
-  let hdSlots = $derived(
-    (currentProfile?.scsi_buses ?? []).flatMap((bus) =>
-      (bus.slots ?? [])
-        .filter(
-          (s): s is { label?: string; id: number; boot?: boolean } => typeof s.id === 'number',
-        )
-        .map((s) => ({
-          ...s,
-          busObject: bus.object ?? 'scsi',
-          key: `${bus.object ?? 'scsi'}:${s.id}`,
-        })),
-    ),
-  );
-  let hdDefault = $derived(hdSlots.find((s) => s.boot) ?? hdSlots[0]);
-  let hdKey = $derived(hdIdOverride ?? hdDefault?.key ?? 'scsi:0');
-  let hdSelected = $derived(hdSlots.find((s) => s.key === hdKey) ?? hdDefault);
-  let hdId = $derived(hdSelected?.id ?? 0);
-  let hdBusObject = $derived(hdSelected?.busObject ?? 'scsi');
+  // The model's hard-disk bays, as the core derives them (profile.hd_bays):
+  // the boot bay first, each on whatever bus it is — SCSI, a Network
+  // Server's second channel, the Lisa's ProFile.  The dialog picks an index;
+  // the core attaches there (machine.attach_hd), so nothing here knows a bus.
+  let hdSlots = $derived(currentProfile?.hd_bays ?? []);
+  let hdSlotLabel = $derived(hdSlots[0]?.label ?? 'Hard disk');
+  // Which bay, by index; 0 (the boot bay) until the user picks another.
+  // Reset whenever the model changes, since the bays are its.
+  let hdBay = $state(0);
   $effect(() => {
     void modelId;
-    hdIdOverride = null;
+    hdBay = 0;
   });
   // Only machines whose profile advertises a CD-ROM (has_cdrom) show the CD row.
   let hasCdrom = $derived(currentProfile?.has_cdrom === true);
-  let ramOptions = $derived.by(() => {
-    const opts = currentProfile?.ram_options ?? [];
-    if (opts.length) return opts.map(formatRamKb);
-    return ['1 MB', '2 MB', '4 MB', '8 MB', '16 MB'];
-  });
+  // RAM choices in KB, labelled for display (the value stays a number, F-01).
+  let ramOptions = $derived(currentProfile?.ram_options ?? []);
   let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
   // Video-mode list for the *selected card*: its monitors × supported depths.
   // Ids/labels match what the C side emits ("<monitor>_<depth>bpp"), so the
@@ -501,77 +357,10 @@
   let createKind = $state<'hd' | 'fd'>('hd');
   let createFdSlot = $state(0);
 
-  function formatRamKb(kb: number): string {
-    if (kb >= 1024 && kb % 1024 === 0) return `${kb / 1024} MB`;
-    if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MB`;
-    return `${kb} KB`;
-  }
-
-  async function identifyRom(path: string): Promise<RomEntry | null> {
-    // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
-    const r = await gsEval('machine.rom.identify', [path]);
-    if (!r || typeof r !== 'object' || 'error' in r) return null;
-    const parsed = r as {
-      recognised?: boolean;
-      compatible?: string[];
-      checksum?: string;
-      name?: string;
-    };
-    if (!parsed.recognised || !Array.isArray(parsed.compatible)) return null;
-    return {
-      path,
-      name: parsed.name ?? path.split('/').pop() ?? path,
-      checksum: parsed.checksum ?? '',
-      compatible: parsed.compatible,
-    };
-  }
-
-  // Probe one VROM file to the card it provides, mirroring identifyRom. The
-  // core (vrom.identify) owns the vROM→card mapping; the UI carries none.
-  async function identifyVrom(path: string): Promise<VromEntry | null> {
-    // vrom.identify returns a native object (V_MAP) — no inner JSON.parse.
-    const r = await gsEval('machine.vrom.identify', [path]);
-    if (!r || typeof r !== 'object' || 'error' in r) return null;
-    const parsed = r as {
-      recognised?: boolean;
-      card_id?: string;
-      compatible?: string[];
-    };
-    if (!parsed.recognised || !parsed.card_id) return null;
-    return {
-      path,
-      cardId: parsed.card_id,
-      compatible: Array.isArray(parsed.compatible) ? parsed.compatible : [parsed.card_id],
-    };
-  }
-
-  // Probe one PCI expansion ROM to the card it provides.  The sibling of
-  // identifyVrom, against the sibling core registry.
-  async function identifyProm(path: string): Promise<PromEntry | null> {
-    // prom.identify returns a native object (V_MAP) — no inner JSON.parse.
-    const r = await gsEval('machine.prom.identify', [path]);
-    if (!r || typeof r !== 'object' || 'error' in r) return null;
-    const parsed = r as {
-      recognised?: boolean;
-      card_id?: string;
-      compatible?: string[];
-    };
-    if (!parsed.recognised || !parsed.card_id) return null;
-    return {
-      path,
-      cardId: parsed.card_id,
-      compatible: Array.isArray(parsed.compatible) ? parsed.compatible : [parsed.card_id],
-    };
-  }
-
-  async function resolveProfile(id: string): Promise<MachineProfile> {
-    if (profiles[id]) return profiles[id];
-    // machine.profile returns a native nested object — no inner JSON.parse.
-    const r = await gsEval('machine.profile', [id]);
-    let parsed: MachineProfile = {};
-    if (r && typeof r === 'object' && !('error' in r)) parsed = r as MachineProfile;
-    profiles = { ...profiles, [id]: parsed };
-    return parsed;
+  async function resolveProfile(id: string): Promise<void> {
+    if (profiles[id]) return;
+    const p = await getProfile(id);
+    if (p) profiles = { ...profiles, [id]: p };
   }
 
   // Collapse a category listing to the unique filenames the dropdown offers,
@@ -605,22 +394,22 @@
       ]);
 
       // Identify every ROM in parallel. Drop the unrecognised ones.
-      const identified = (await Promise.all(roms.map((r) => identifyRom(r.path)))).filter(
+      const identified = (await Promise.all(roms.map((r) => identifyRom(gsEval, r.path)))).filter(
         (e): e is RomEntry => e !== null,
       );
       allRoms = identified;
 
       // Identify every VROM to the card it provides (drop unrecognised). The
       // card picker is then built from machine.profile filtered to these.
-      allVroms = (await Promise.all(vroms.map((v) => identifyVrom(v.path)))).filter(
-        (e): e is VromEntry => e !== null,
-      );
+      allVroms = (
+        await Promise.all(vroms.map((v) => identifyCardRom(gsEval, 'vrom', v.path)))
+      ).filter((e): e is VromEntry => e !== null);
 
       // ...and every PCI expansion ROM, which is what makes a display-class
       // PCI card offerable at all.
-      allProms = (await Promise.all(proms.map((p) => identifyProm(p.path)))).filter(
-        (e): e is PromEntry => e !== null,
-      );
+      allProms = (
+        await Promise.all(proms.map((p) => identifyCardRom(gsEval, 'prom', p.path)))
+      ).filter((e): e is PromEntry => e !== null);
 
       // Look up display names for every model surfaced by these ROMs.
       const seenIds: string[] = [];
@@ -719,9 +508,12 @@
   $effect(() => {
     if (!currentProfile || modelId === appliedFor) return;
     appliedFor = modelId;
-    const dflt = currentProfile.ram_default;
-    ram = dflt ? formatRamKb(dflt) : (ramOptions[0] ?? DEFAULT_CONFIG.ram);
+    ramKb = currentProfile.ram_default || (ramOptions[0] ?? 0);
     floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
+    // A CD picked for another model is not this one's (and this one may
+    // have no CD bay at all): it used to stay selected, hidden, and be
+    // attached anyway (N-03).
+    cd = NONE_SENTINEL;
     // cardId / videoMode follow the card-selection effects above.
   });
 
@@ -856,7 +648,6 @@
     const hasVideoModeChoice = videoModes.length > 1;
     await initEmulator({
       model: modelId,
-      modelName,
       rom: selected.path,
       vrom: vromPath,
       // The selected NuBus video card — the boot document's video_card=, so
@@ -892,13 +683,12 @@
       // will accept, so gate on selectedCard rather than on the negations.
       videoMode:
         fixedVideo || !selectedCard || !hasVideoModeChoice ? undefined : videoMode || undefined,
-      ram,
+      ramKb: ramKb || undefined,
       floppies: floppyPaths,
       hd: hdPath,
-      hdBus: currentProfile?.hd_bus === 'profile' ? 'profile' : 'scsi',
-      hdId,
-      hdBusObject,
-      cd: cdPath,
+      hdBay,
+      // Only a model with a CD bay gets a CD.
+      cd: hasCdrom ? cdPath : NONE_SENTINEL,
     });
     setWelcomeSlide('home');
   }
@@ -1055,9 +845,11 @@
       {/if}
       <div class="form-row">
         <label for="cfg-ram">RAM</label>
-        <select id="cfg-ram" bind:value={ram}>
-          {#each ramOptions as opt, i (i)}
-            <option>{opt}</option>
+        <select id="cfg-ram" bind:value={ramKb}>
+          {#each ramOptions as kb (kb)}
+            <option value={kb}>{formatRamKb(kb)}</option>
+          {:else}
+            <option value={0}>Model default</option>
           {/each}
         </select>
       </div>
@@ -1088,13 +880,9 @@
         <!-- Which bay it sits in: the firmware's default boot bay is preselected. -->
         <div class="form-row">
           <label for="cfg-hd-bay">Bay</label>
-          <select
-            id="cfg-hd-bay"
-            value={hdKey}
-            onchange={(e) => (hdIdOverride = (e.target as HTMLSelectElement).value)}
-          >
-            {#each hdSlots as slot (slot.key)}
-              <option value={slot.key}>{slot.label ?? `SCSI id ${slot.id}`}</option>
+          <select id="cfg-hd-bay" bind:value={hdBay}>
+            {#each hdSlots as slot, i (i)}
+              <option value={i}>{slot.label}</option>
             {/each}
           </select>
         </div>
@@ -1120,7 +908,7 @@
 <CreateImageDialog
   open={createOpen}
   kind={createKind}
-  bus={currentProfile?.hd_bus === 'profile' ? 'profile' : 'scsi'}
+  bus={hdSlots[0]?.bus === 'profile' ? 'profile' : 'scsi'}
   onClose={() => (createOpen = false)}
   onCreated={onImageCreated}
 />

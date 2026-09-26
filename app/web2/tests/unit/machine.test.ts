@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { shortModel, DEFAULT_CONFIG } from '@/lib/machine';
+import { shortModel, formatRamKb } from '@/lib/machine';
 
 // MMU presence (and every other per-model decision) must come from the C
 // capability probe — `machine.profile(id).capabilities` — never from a
@@ -41,16 +41,15 @@ describe('shortModel', () => {
   });
 });
 
-describe('DEFAULT_CONFIG', () => {
-  it('has all six required fields', () => {
-    expect(Object.keys(DEFAULT_CONFIG).sort()).toEqual(
-      ['cd', 'floppies', 'hd', 'model', 'ram', 'vrom'].sort(),
-    );
-  });
-
-  it('defaults to Macintosh Plus / 4 MB / hd1.img', () => {
-    expect(DEFAULT_CONFIG.model).toBe('Macintosh Plus');
-    expect(DEFAULT_CONFIG.ram).toBe('4 MB');
-    expect(DEFAULT_CONFIG.hd).toBe('hd1.img');
+// RAM is a number (KB) everywhere but the label (F-01): the dialog used to
+// send the label back, and three models' options did not parse as "N MB".
+describe('formatRamKb', () => {
+  it.each([
+    [512, '512 KB'],
+    [2560, '2.5 MB'],
+    [4096, '4 MB'],
+    [524288, '512 MB'],
+  ] as const)('%d -> %s', (kb, label) => {
+    expect(formatRamKb(kb)).toBe(label);
   });
 });

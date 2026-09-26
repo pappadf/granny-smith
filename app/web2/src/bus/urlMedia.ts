@@ -12,12 +12,15 @@
 // file that does not validate as its slot's category is attached from /tmp
 // as before, with a warning that it will not survive a reload.
 
-import { gsEval, gsErrorText, getModule, isModuleReady, applyCapabilities } from './emulator';
+import { gsEval, gsErrorText, getModule, isModuleReady } from './emulator';
+import { applyCapabilities, syncMachineIdentity } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
-import { machine } from '@/state/machine.svelte';
+import { setMounted } from '@/state/images.svelte';
 import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
-import type { MediaTypeId } from '@/lib/media';
+import { identifyRom, type MediaTypeId } from '@/lib/media';
 import { persistAs } from './upload';
+import { getProfile } from './profile';
+import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 
 export interface UrlMediaParams {
   rom: string | null;
@@ -82,10 +85,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   if (!params.rom) {
     // Without a ROM there's no machine to boot; insert floppies into the
     // existing machine if one is running (matches url-media.js:230-237).
-    for (const fd of params.floppies) {
-      const p = paths.get(fd.slot);
-      if (p) await gsEval('machine.floppy.drive[0].insert', [p, true]);
-    }
+    await insertUrlFloppies(params, paths);
     return false;
   }
 
@@ -93,19 +93,18 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // prefer the URL's `model=` if it's in the compatible list, else pick the
   // first compatible model.
   const romPath = paths.get('rom');
-  const info = romPath ? await romIdentify(romPath) : null;
-  if (!info || !info.compatible?.length) {
+  const info = romPath ? await identifyRom(gsEval, romPath) : null;
+  if (!info || !info.compatible.length) {
     showNotification('Unrecognised ROM in URL params', 'error');
     return false;
   }
   const chosen =
     params.model && info.compatible.includes(params.model) ? params.model : info.compatible[0];
-  const profile = await parseProfile(chosen);
-  const ramKb = profile?.ram_default ?? 4096;
 
-  // One boot document: the core validates model/ram/rom together and
-  // installs the ROM itself (proposal-named-args-boot-config §4).
-  const booted = await gsEval('machine.boot', { model: chosen, ram: ramKb, rom: romPath });
+  // One boot document: the core validates model/rom together, installs the
+  // ROM itself and boots the model's own default RAM (there was a 4096 KB
+  // fallback here, which two models cannot boot, F-01).
+  const booted = await gsEval('machine.boot', { model: chosen, rom: romPath });
   if (booted !== true) {
     // A rejected document leaves the previous machine (or none) in place:
     // do not attach media to it or report a boot (N-08).
@@ -116,28 +115,19 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     return false;
   }
 
-  for (const fd of params.floppies) {
-    const p = paths.get(fd.slot);
-    if (p) await gsEval('machine.floppy.drive[0].insert', [p, true]);
-  }
+  await insertUrlFloppies(params, paths);
+  // ?hdN= is the N-th hard-disk bay in the model's own order (hd0 is the boot
+  // bay), on whatever bus it is — not SCSI id N on the first bus (F-10).
   for (const hd of params.hardDisks) {
     const p = paths.get(hd.slot);
     if (!p) continue;
-    if (profile?.hd_bus === 'profile') {
-      // Lisa/XL: parallel-port ProFile, attached off the SCSI bus.
-      await gsEval('machine.hd.attach', [p, true]);
-    } else {
-      const id = parseInt(hd.slot.replace('hd', ''), 10);
-      await gsEval('machine.scsi.attach_hd', [p, id]);
-    }
+    const n = parseInt(hd.slot.replace('hd', ''), 10);
+    report(hd.slot, p, await attachHardDisk(p, n));
   }
   const cdPath = paths.get('cd');
-  if (cdPath) {
-    await gsEval('machine.scsi.attach_cdrom', [cdPath, 3]);
-  }
+  if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
 
-  machine.model = chosen;
-  machine.ram = `${ramKb / 1024} MB`;
+  await syncMachineIdentity();
   await applyCapabilities(chosen);
 
   await gsEval('scheduler.run');
@@ -145,29 +135,31 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   return true;
 }
 
-interface RomIdentifyResult {
-  recognised: boolean;
-  compatible: string[];
-  checksum: string;
-  name: string;
-  size: number;
+// ?fdN= goes into drive N — it always went into drive 0, so ?fd0=a&fd1=b
+// left b refused and dropped (F-09) — and only a drive the model has.
+async function insertUrlFloppies(
+  params: UrlMediaParams,
+  paths: Map<string, string | undefined>,
+): Promise<void> {
+  const model = await gsEval('machine.id');
+  const profile = typeof model === 'string' && model ? await getProfile(model) : null;
+  const drives = profile?.floppy_slots.length ?? 0;
+  for (const fd of params.floppies) {
+    const p = paths.get(fd.slot);
+    if (!p) continue;
+    const n = parseInt(fd.slot.replace('fd', ''), 10);
+    if (n >= drives) {
+      showNotification(`${fd.slot}: this machine has no floppy drive ${n + 1}`, 'error');
+      continue;
+    }
+    report(fd.slot, p, await insertFloppy(p, true, n));
+  }
 }
 
-async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
-  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
-  const r = await gsEval('machine.rom.identify', [path]);
-  if (!r || typeof r !== 'object') return null;
-  const parsed = r as Partial<RomIdentifyResult>;
-  if (parsed.recognised) return parsed as RomIdentifyResult;
-  return null;
-}
-
-async function parseProfile(
-  model: string,
-): Promise<{ ram_default?: number; hd_bus?: string } | null> {
-  const r = await gsEval('machine.profile', [model]);
-  if (!r || typeof r !== 'object' || 'error' in r) return null;
-  return r as { ram_default?: number; hd_bus?: string };
+// Record where a URL medium went, or say that it did not go in.
+function report(slot: string, path: string, r: MediaResult): void {
+  if (r.ok) setMounted(path, r.mount);
+  else showNotification(`${slot}: not attached: ${r.reason}`, 'error');
 }
 
 // Fetch a URL, stage it, and persist it as `category`.  Returns the path to

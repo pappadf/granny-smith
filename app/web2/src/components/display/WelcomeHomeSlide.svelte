@@ -1,20 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
-  import { initEmulator, opfs } from '@/bus';
   import { pickAndUpload } from '@/bus/upload';
-  import type { RecentEntry } from '@/bus/types';
   import Icon from '../common/Icon.svelte';
 
-  // Recent list — loaded from OPFS. MockOpfs (tests) returns prototype
-  // fixtures; BrowserOpfs (production) reads /opfs/config/recent.json
-  // once it exists.
-  let recents = $state<RecentEntry[]>([]);
-  onMount(async () => {
-    const loaded = await opfs.readJson<RecentEntry[]>('/opfs/config/recent.json');
-    if (loaded) recents = loaded;
-  });
+  // (A "Recent" card used to list /opfs/config/recent.json, which nothing in
+  // production ever wrote — only test fixtures, which held display names
+  // where machine.boot takes model ids, N-13.  It is gone until something
+  // records a machine worth relaunching.)
 
   function openConfigSlide() {
     setWelcomeSlide('configuration');
@@ -30,25 +23,6 @@
 
   function openCheckpointPicker() {
     showNotification('Open Checkpoint... arrives in Phase 5 (Checkpoints view)', 'warning');
-  }
-
-  async function launchRecent(r: RecentEntry) {
-    // machine.boot requires a rom in every document (nothing is inherited
-    // — proposal-boot-vs-reset §3.1), so a recent persisted without one
-    // cannot be relaunched directly.
-    if (!r.rom) {
-      showNotification('This recent entry has no ROM path — use New Machine...', 'warning');
-      return;
-    }
-    await initEmulator({
-      model: r.model,
-      ram: r.ram,
-      rom: r.rom,
-      vrom: '(auto)',
-      floppies: [],
-      hd: '',
-      cd: '',
-    });
   }
 </script>
 
@@ -72,22 +46,6 @@
       </button>
     </div>
   </section>
-  {#if recents.length > 0}
-    <section class="card">
-      <h3 class="card-heading">Recent</h3>
-      <div class="card-rows">
-        {#each recents as r (r.model + r.media + r.lastUsedAt)}
-          <button class="card-row recent" onclick={() => launchRecent(r)}>
-            <Icon name="mac" />
-            <span class="recent-text">
-              <span class="recent-main">{r.model} — {r.ram}</span>
-              <span class="recent-sub">{r.media}</span>
-            </span>
-          </button>
-        {/each}
-      </div>
-    </section>
-  {/if}
 </div>
 
 <style>
@@ -149,18 +107,5 @@
     width: 16px;
     height: 16px;
     color: var(--gs-fg);
-  }
-  .recent-text {
-    display: flex;
-    flex-direction: column;
-  }
-  .recent-main {
-    color: var(--gs-fg-bright);
-  }
-  .recent-sub {
-    color: var(--gs-fg);
-    opacity: 0.6;
-    font-size: 12px;
-    margin-top: 2px;
   }
 </style>

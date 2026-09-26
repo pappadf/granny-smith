@@ -27,39 +27,16 @@
 // the whole file. This mirrors how move/delete route through the worker
 // (storage.mv/storage.rm).
 
-import {
-  gsEval,
-  gsErrorText,
-  isModuleReady,
-  getModule,
-  applyCapabilities,
-  seedPram,
-} from './emulator';
-import { opfs } from './opfs';
+import { gsEval, gsErrorText, isModuleReady, getModule, seedPram } from './emulator';
+import { applyCapabilities, syncMachineIdentity } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName, isZipFile, isMacArchive } from '@/lib/archive';
 import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
-import { MEDIA_TYPES, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
-
-interface RomIdentifyResult {
-  recognised: boolean;
-  compatible: string[];
-  checksum: string;
-  name: string;
-  size: number;
-}
-
-async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
-  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
-  const r = await gsEval('machine.rom.identify', [path]);
-  if (!r || typeof r !== 'object') return null;
-  const parsed = r as Partial<RomIdentifyResult>;
-  if (parsed.recognised) return parsed as RomIdentifyResult;
-  return null;
-}
+import { MEDIA_TYPES, identifyRom, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
+import { attachCdrom, insertFloppy } from './media';
 
 // Bytes copied to the worker per FS.write. Bounds peak memory (one slice in the
 // JS heap + one in the WASM heap at a time) so uploads of any size — including
@@ -240,36 +217,26 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
 // outcome either way.
 async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
   if (category === 'fd') {
-    let sawEmptyDrive = false;
-    for (let i = 0; i < 2; i++) {
-      const present = await gsEval(`machine.floppy.drive[${i}].present`);
-      if (present === true) continue;
-      // A failed insert into an empty slot means the image couldn't be
-      // opened, not that the drives are full — keep the two apart.
-      sawEmptyDrive = true;
-      const ok =
-        (await gsEval(`machine.floppy.drive[${i}].insert`, [persistedPath, true])) === true;
-      if (ok) {
-        setMounted(persistedPath, { kind: 'fd', drive: i });
-        showNotification(`Inserted into floppy drive ${i + 1}`, 'info');
-        return;
-      }
+    // The first empty drive of the ones the machine has (bus/media.ts).
+    const r = await insertFloppy(persistedPath, true);
+    if (r.ok) {
+      setMounted(persistedPath, r.mount);
+      showNotification(`Inserted into floppy drive ${r.mount.drive + 1}`, 'info');
+    } else {
+      showNotification(`Image saved but not inserted: ${r.reason}`, 'warning');
     }
-    showNotification(
-      sawEmptyDrive
-        ? 'Image saved, but it could not be inserted (the image could not be opened)'
-        : 'Both floppy drives are full — image saved but not mounted',
-      'warning',
-    );
     return;
   }
   if (category === 'cdrom') {
-    const res = await gsEval('machine.scsi.attach_cdrom', [persistedPath, 3]);
-    if (res === true) {
-      setMounted(persistedPath, { kind: 'cd', drive: 3 });
+    // Into the model's CD bay; the core refuses an occupied bay and a model
+    // with none, where this used to attach at id 3 regardless and report
+    // success for any answer that was not null (N-04).
+    const r = await attachCdrom(persistedPath);
+    if (r.ok) {
+      setMounted(persistedPath, r.mount);
       showNotification('Inserted into CD-ROM drive', 'info');
     } else {
-      showNotification(`Image saved but not mounted: ${gsErrorText(res)}`, 'warning');
+      showNotification(`Image saved but not mounted: ${r.reason}`, 'warning');
     }
   }
 }
@@ -456,27 +423,21 @@ export async function persistAs(
 // info; the user can switch later.
 async function maybeBootFromRom(romPath: string): Promise<void> {
   if (machine.status === 'running' || machine.status === 'paused') return;
-  const info = await romIdentify(romPath);
+  const info = await identifyRom(gsEval, romPath);
   if (!info || !info.compatible.length) return;
   const model = info.compatible[0];
-  const profile = await gsEval('machine.profile', [model]);
-  let ramKb = 4096;
-  if (profile && typeof profile === 'object' && !('error' in profile)) {
-    const parsed = profile as { ram_default?: number };
-    if (parsed.ram_default) ramKb = parsed.ram_default;
-  }
-  // One boot document — the core validates and installs the ROM itself.
-  // A rejected document leaves the previous machine (or none) in place, so
-  // stop here rather than configure and "boot" it (N-08).
-  const booted = await gsEval('machine.boot', { model, ram: ramKb, rom: romPath });
+  // One boot document — the core validates, installs the ROM itself and
+  // boots the model's own default RAM.  A rejected document leaves the
+  // previous machine (or none) in place, so stop here rather than configure
+  // and "boot" it (N-08).
+  const booted = await gsEval('machine.boot', { model, rom: romPath });
   if (booted !== true) {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
     return;
   }
   // Seed a valid PRAM, as every boot path does.
   await seedPram(model, 0);
-  machine.model = model;
-  machine.ram = `${ramKb / 1024} MB`;
+  await syncMachineIdentity();
   await applyCapabilities(model);
   await gsEval('scheduler.run');
   showNotification(`Booted ${model} from uploaded ROM`, 'info');
@@ -524,8 +485,8 @@ export function openFilePicker(accept = ''): Promise<File[]> {
   });
 }
 
-// Used by Welcome's "Upload ROM..." button — opens the picker, runs the full
-// pipeline, then triggers a Recent refresh by re-reading OPFS.
+// Used by Welcome's "Upload ROM..." button — opens the picker and runs the
+// full pipeline (which bumps the image revision the dialogs re-scan on).
 //
 // The Welcome button passes { autoBootOnRom: false }: that surface is a
 // configuration entry point, not a "boot now" shortcut. The Display
@@ -534,8 +495,6 @@ export function openFilePicker(accept = ''): Promise<File[]> {
 export async function pickAndUpload(accept = '', opts: AcceptFilesOptions = {}): Promise<void> {
   const files = await openFilePicker(accept);
   if (files.length) await acceptFiles(files, opts);
-  // Touch the recent list so consumers re-scan.
-  void opfs.scanRoms().catch(() => undefined);
 }
 
 // Category-strict picker variant — the New Machine dialog uses this so

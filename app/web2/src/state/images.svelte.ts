@@ -4,12 +4,14 @@
 // event (onFloppyDriveChange below), so no polling is needed.
 
 import type { ImageCategory } from '@/bus/types';
-import { gsEval } from '@/bus/emulator';
 
-// What a mounted image is sitting in: its media category and the drive/bus
-// index it was inserted into (floppy drive index, or SCSI id for hd/cd).
+// What a mounted image is sitting in: its media category, the bus it is on
+// ('floppy', 'scsi', 'scsi2', 'profile' — as machine.attach_hd answers it)
+// and the unit on that bus (floppy drive index, or SCSI id).  bus/media.ts
+// ejects it from exactly there.
 export interface MountInfo {
   kind: ImageCategory;
+  bus?: string;
   drive: number;
 }
 
@@ -59,21 +61,6 @@ export function mountBadge(path: string): string | null {
   if (info.kind === 'hd') return 'Mounted';
   if (info.kind === 'fd' && images.fdDriveCount > 1) return `Inserted · Drive ${info.drive + 1}`;
   return 'Inserted';
-}
-
-// Probe how many floppy drives the active machine has, by reading present-state
-// at successive indices until one is out of range. Cached; call refresh=true
-// after a machine change to re-probe.
-export async function detectFdDriveCount(refresh = false): Promise<number> {
-  if (images.fdDriveCount >= 0 && !refresh) return images.fdDriveCount;
-  let count = 0;
-  for (let i = 0; i < 4; i++) {
-    const present = await gsEval(`machine.floppy.drive[${i}].present`);
-    if (typeof present !== 'boolean') break; // index out of range → no more drives
-    count++;
-  }
-  images.fdDriveCount = count;
-  return count;
 }
 
 // Handle a floppy drive present-state change pushed from C (Module.onFloppyChange,
