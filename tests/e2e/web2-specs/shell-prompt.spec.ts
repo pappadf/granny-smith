@@ -182,7 +182,9 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
     page.evaluate(
       () => (window as unknown as { __gsCoreEvents?: Ev[] }).__gsCoreEvents ?? [],
     );
-  const before = await events();
+  // Only the mode events: perf samples and speed changes interleave.
+  const modes = (evs: Ev[]) => evs.filter((e) => e.event.startsWith('mode_'));
+  const before = modes(await events());
   const stops = before.filter((e) => e.event === 'mode_ended');
   expect(stops.length).toBeGreaterThanOrEqual(2);
   expect(stops.every((e) => e.data.reason === 'stop_request')).toBe(true);
@@ -195,7 +197,7 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
       { timeout: 15_000 },
     )
     .toBeGreaterThanOrEqual(stops.length + 2);
-  const after = await events();
+  const after = modes(await events());
   const last = after[after.length - 1];
   expect(last.event).toBe('mode_ended');
   expect(last.data.reason).toBe('budget');
