@@ -516,21 +516,48 @@ Browsers gate WebAudio behind a user gesture. The audio worklet init
 runs lazily after the first pointer/key/click/touch event; the
 emulator can run silently before that without errors.
 
+The worklet is
+[`audio/gsAudio.worklet.ts`](../app/web2/src/audio/gsAudio.worklet.ts),
+bundled by Vite and handed to the core as `Module.gsAudioWorkletUrl`;
+its ring logic is the class in
+[`audio/audioRing.ts`](../app/web2/src/audio/audioRing.ts), which the
+unit tests drive directly. It reads int16 frames straight from
+`em_audio.c`'s ring in the shared heap. Each index has one writer: the
+emulator advances `write`, the worklet advances `read`, both
+free-running. The producer overwrites a full ring and the consumer
+resyncs when it has been lapped; a new stream is a `reset_gen` bump the
+consumer carries out, and only the worklet whose id is in `owner`
+consumes, so a replaced node cannot race its successor.
+
+## Shared-heap transports
+
+Four paths move data through the wasm heap instead of the bridge: the
+camera, the microphone, audio out and the Voodoo2/printer command
+rings. Each starts with a control block whose first two words are a
+magic and a version, followed by the `(offset, size)` pairs of what it
+carries; the C side fills the block before it announces the pointer,
+and JS derives every offset from it and refuses, with a toast, a block
+it does not recognise. The word indices live in
+[`em_shm_layout.h`](../src/platform/wasm/em_shm_layout.h) and are
+mirrored in [`bus/shmLayout.ts`](../app/web2/src/bus/shmLayout.ts); a
+unit test compares every mirrored header with its TS twin.
+
 ## Camera (AV video input)
 
 The AV machines' video digitizer can take its frames from the host
-webcam. The transport is the audio ring inverted: `em_camera.c` owns a
-static double-buffered frame slot pair plus an atomic header in the
-shared heap (static storage, so the address survives
-`ALLOW_MEMORY_GROWTH`) and announces its address once via
-`Module.onVideoInReady`. The **main thread** decodes each camera frame
-onto a 640×480 canvas, writes it into the *non-active* slot through
-`Module.HEAPU8` and flips the active index; the **worker** copies out of
-the active slot at field cadence through the `gs_video_in_frame` seam.
-The writer never touches the active slot, so tearing is impossible and
-staleness is at most one frame — no locks cross the thread boundary. The
-bridge is deliberately not involved: it caps at ~4 KB per call, and a
-frame is 1.2 MB.
+webcam. `em_camera.c` owns a static double-buffered frame slot pair
+behind its control block in the shared heap (static storage, so the
+address survives `ALLOW_MEMORY_GROWTH`) and announces its address once
+via `Module.onVideoInReady`. The **main thread** decodes each camera
+frame onto a 640×480 canvas, writes it into the *non-active* slot
+through `Module.HEAPU8`, flips the active index and bumps `seq`; the
+**worker** copies out of the active slot at field cadence through the
+`gs_video_in_frame` seam. Writing only the non-active slot does not by
+itself rule out a tear — a reader still copying slot A can see the
+writer finish B, flip, and start on A — so the reader checks `seq`
+after its copy and retries. Staleness is at most one frame and no locks
+cross the thread boundary. The bridge is deliberately not involved: it
+caps at ~4 KB per call, and a frame is 1.2 MB.
 
 The camera button in the display toolbar is the master toggle (its click
 is also the user gesture `getUserMedia` needs) and is shown only on

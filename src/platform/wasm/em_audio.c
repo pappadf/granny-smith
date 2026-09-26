@@ -31,6 +31,7 @@
 // ============================================================================
 
 #include "em.h"
+#include "em_shm_layout.h"
 
 #include <emscripten.h>
 #include <emscripten/emscripten.h>
@@ -44,6 +45,7 @@
 #include "platform.h"
 
 #include <stdatomic.h>
+#include <stddef.h>
 
 // ============================================================================
 // SharedArrayBuffer audio ring (emulator worker → AudioWorklet)
@@ -55,27 +57,45 @@
 #define GS_ARING_FRAMES 65536
 #define GS_ARING_MAX_CH 2
 
-// Header field indices, as seen by the worklet's Int32Array view.  Keep in
-// sync with the worklet code below.
-//   [0] write_idx      frames, masked; producer-owned (release-stored last)
-//   [1] read_idx       frames, masked; consumer-owned (producer CAS-advances
-//                      it only on overflow, overwrite-oldest semantics)
-//   [2] vol            0..7, latest producer volume
-//   [3] silent_pushes  consecutive all-equal pushes (silence-aware depth trim)
-//   [4] fill_pm        worklet→producer: ring fill vs target depth, per-mille
-//   [5] push_seq       bumped per push; the worklet's quiet-stream detector
+// The control block (em_shm_layout.h), then the frames.  One writer per
+// index (T4, F-35): the producer owns write_idx, the worklet owns read_idx,
+// both free-running.  A full ring is the consumer's to notice -- the producer
+// just keeps writing, and the worklet resyncs when it finds more than a
+// ring's worth outstanding.  A new stream is REQUESTED (reset_gen) and the
+// worklet carries it out.  read_idx used to have five writers: the worklet's
+// publish, its start-gate re-arm and depth trim, a rate-change message, and
+// the producer's overflow CAS and stream reset.
 typedef struct gs_audio_ring {
+    uint32_t magic, version;
+    uint32_t data_off, frames;
     _Atomic uint32_t write_idx;
     _Atomic uint32_t read_idx;
     _Atomic int32_t vol;
     _Atomic int32_t silent_pushes;
     _Atomic int32_t fill_pm;
     _Atomic uint32_t push_seq;
-    _Atomic uint32_t reserved[2]; // pad header to 32 bytes
+    _Atomic uint32_t reset_gen;
+    _Atomic uint32_t owner; // written by the page: the worklet allowed to consume
+    uint32_t reserved[4]; // pad the block to GS_ARING_HDR_BYTES
     int16_t data[GS_ARING_FRAMES * GS_ARING_MAX_CH];
 } gs_audio_ring_t;
 
-static gs_audio_ring_t g_aring; // the one shared ring
+_Static_assert(offsetof(gs_audio_ring_t, data) == GS_ARING_HDR_BYTES, "audio ring layout");
+_Static_assert(offsetof(gs_audio_ring_t, data_off) == GS_ARING_W_DATA_OFF * 4, "audio ring layout");
+_Static_assert(offsetof(gs_audio_ring_t, write_idx) == GS_ARING_W_WRITE * 4, "audio ring layout");
+_Static_assert(offsetof(gs_audio_ring_t, read_idx) == GS_ARING_W_READ * 4, "audio ring layout");
+_Static_assert(offsetof(gs_audio_ring_t, fill_pm) == GS_ARING_W_FILL_PM * 4, "audio ring layout");
+_Static_assert(offsetof(gs_audio_ring_t, push_seq) == GS_ARING_W_PUSH_SEQ * 4, "audio ring layout");
+_Static_assert(offsetof(gs_audio_ring_t, reset_gen) == GS_ARING_W_RESET_GEN * 4, "audio ring layout");
+_Static_assert(offsetof(gs_audio_ring_t, owner) == GS_ARING_W_OWNER * 4, "audio ring layout");
+
+static gs_audio_ring_t g_aring = {
+    .magic = GS_ARING_MAGIC,
+    .version = GS_ARING_VERSION,
+    .data_off = offsetof(gs_audio_ring_t, data),
+    .frames = GS_ARING_FRAMES,
+    .fill_pm = -1,
+}; // the one shared ring
 static int g_aring_channels = 1; // set by platform_audio_open
 static double g_last_push_time = -1.0; // producer-side freshness for ring_fill
 
@@ -117,138 +137,13 @@ EM_JS(void, gs_audio_init_js, (), {
     self.addEventListener('pointerdown', resumeOnGesture, true);
     self.addEventListener('keydown', resumeOnGesture, true);
 
-    // AudioWorklet processor — consumes int16 frames straight from the
-    // emulator's SharedArrayBuffer ring (the wasm heap): write/read indices,
-    // volume, silence count and the fill report all live in the ring header,
-    // accessed with Atomics. No per-push messages; the MessagePort carries
-    // only rare control traffic (rate changes).
-    var workletCode = [
-        "class GSAudioProcessor extends AudioWorkletProcessor {",
-        "  constructor(opts){",
-        "    super();",
-        "    var o=opts.processorOptions;",
-        "    this.ch=o.channels||1;",
-        "    this.srcRate=o.srcRate||22257;",
-        "    this.targetLatency=o.targetLatency||0.083;",
-        "    this.mask=(o.ringFrames||65536)-1;",
-        // Header (Int32) + frame data (Int16) views over the wasm heap SAB.
-        // The ring is static C storage: its address never changes, and shared
-        // WebAssembly.Memory grows in place, so the views stay valid.
-        "    this.hdr=new Int32Array(o.sab,o.ringPtr,8);",
-        "    this.data=new Int16Array(o.sab,o.ringPtr+32,(this.mask+1)*this.ch);",
-        "    this.underruns=0;",
-        "    this.targetFrames=Math.floor(this.targetLatency*this.srcRate);",
-        "    this.dstRate=sampleRate;",
-        "    this.step=this.srcRate/this.dstRate;",
-        "    this.errI=0; this.frac=0; this.lpfY=[0,0];",
-        "    var fc=8000; this.lpfA=1.0-Math.exp(-2*Math.PI*fc/this.dstRate);",
-        // DC blocker (speaker AC coupling): the ASC DAC output carries a large
-        // constant offset (offset-binary DAC, unused wavetable voices at rail),
-        // and the underrun/start-gate fill value is 0 — without DC removal
-        // every delivery hiccup steps between the offset and 0, an audible
-        // full-scale click. fc ~20 Hz: inaudible, settles in a few ms.
-        "    this.dcX=[0,0]; this.dcYv=[0,0];",
-        "    this.dcR=1-2*Math.PI*20/this.dstRate;",
-        "    this.quietQ=0; this.lastSeq=0;", // quanta since the push_seq moved
-        "    this.curGain=0; this.started=false;",
-        "    this.dead=false;", // set by {stop}: next process() returns false
-        "    var self2=this;",
-        "    this.port.onmessage=function(e){",
-        "      var d=e.data;",
-        "      if(d.stop){self2.dead=true;return;}",
-        "      if(d.rate){", // rate change = stream restart: flush, re-gate, ramp
-        "        self2.srcRate=d.rate;",
-        "        self2.step=self2.srcRate/self2.dstRate;",
-        "        self2.targetFrames=Math.floor(self2.targetLatency*self2.srcRate);",
-        "        Atomics.store(self2.hdr,1,Atomics.load(self2.hdr,0));", // rIdx=wIdx
-        "        self2.frac=0; self2.errI=0;",
-        "        self2.started=false; self2.curGain=0;",
-        "      }",
-        "    };",
-        "  }",
-        "  process(inputs,outputs){",
-        "    if(this.dead)return false;", // retired: stop touching the shared ring
-        "    var out=outputs[0]; var frames=out[0].length;",
-        "    var ch=this.ch; var oc=out.length<ch?out.length:ch;",
-        "    var hdr=this.hdr, mask=this.mask;",
-        "    var w=Atomics.load(hdr,0), r=Atomics.load(hdr,1);",
-        "    var rStart=r;",
-        "    var avail=(w-r)&mask;",
-        // Quiet-stream detector: quanta since the producer's push_seq moved.
-        "    var seq=Atomics.load(hdr,5);",
-        "    if(seq!==this.lastSeq){this.lastSeq=seq;this.quietQ=0;}else{this.quietQ++;}",
-        // Fill-level report every 32 quanta (~85 ms at 48 kHz): stored in the
-        // ring header, read by the emulator's adaptive governor as back-
-        // pressure (a draining ring = the real-time deadline being missed).
-        "    if(((this.statQ=(this.statQ||0)+1)&31)===0){",
-        "      Atomics.store(hdr,4,Math.max(0,Math.min(2000,Math.round(avail/(this.targetFrames||1)*1000))));",
-        "    }",
-        // Start gate: stay silent until the ring reaches the target depth, OR
-        // until the stream has evidently ended short of it (data pending but
-        // no push for 12 quanta ~32 ms) — so sounds shorter than the cushion
-        // still play out. An active producer pushes every ~3 ms, so the quiet
-        // threshold must sit above scheduling jank (tens of ms) or the gate
-        // opens mid-fill with a shallow ring and the crackle returns.
-        "    if(!this.started){",
-        "      var ready=avail>=this.targetFrames||(avail>0&&this.quietQ>=12);",
-        "      if(!ready){for(var c=0;c<out.length;c++)out[c].fill(0);return true;}",
-        "      this.started=true;",
-        "    }",
-        "    var ts=this.targetFrames;",
-        "    var targetGain=Math.min(Math.max(Atomics.load(hdr,2),0),7)/7;",
-        // PI controller trims the resample step ±2000 ppm toward target depth
-        "    var error=avail-ts;",
-        "    this.errI=this.errI*0.995+error*0.005;",
-        "    var adj=(error/ts)*0.005+(this.errI/ts)*0.001;",
-        "    if(adj>0.002)adj=0.002;else if(adj<-0.002)adj=-0.002;",
-        "    var stepAdj=this.step*(1+adj);",
-        "    var gainStep=(targetGain-this.curGain)/frames;",
-        "    for(var i=0;i<frames;i++){",
-        "      var have=(w-r)&mask;",
-        "      if(have<2){this.underruns++;this.curGain+=gainStep;for(var c=0;c<oc;c++)out[c][i]=0;continue;}",
-        "      var i0=this.frac|0; var i1=i0+1; if(i1>=have)i1=have-1;",
-        "      var b0=((r+i0)&mask)*ch, b1=((r+i1)&mask)*ch;",
-        "      var frac=this.frac-i0;",
-        "      this.curGain+=gainStep;",
-        "      for(var c=0;c<oc;c++){",
-        "        var s0=this.data[b0+c]/32768, s1=this.data[b1+c]/32768;",
-        "        var x=s0+(s1-s0)*frac;", // linear interpolation
-        "        this.lpfY[c]+=this.lpfA*(x-this.lpfY[c]);", // one-pole LPF
-        "        var lp=this.lpfY[c];",
-        "        var hp=lp-this.dcX[c]+this.dcR*this.dcYv[c];", // DC blocker
-        "        this.dcX[c]=lp; this.dcYv[c]=hp;",
-        "        out[c][i]=hp*this.curGain;",
-        "      }",
-        "      this.frac+=stepAdj;",
-        "      var consumed=this.frac|0;",
-        "      if(consumed>0){this.frac-=consumed;var wc=consumed<have?consumed:have;r=(r+wc)&mask;}",
-        "    }",
-        // Publish consumption with CAS from the value we started from: if the
-        // producer overflow-advanced read_idx meanwhile (overwrite-oldest),
-        // its newer value wins and we resync next quantum — glitch-level
-        // consequences only in an already-overflowing stream.
-        "    Atomics.compareExchange(hdr,1,rStart,r);",
-        // Re-arm the start gate when the stream runs dry (a sound ended, or a
-        // deep underrun): without this only the FIRST sound after page load
-        // gets the target-depth cushion — every later one plays against a
-        // near-empty ring and crackles on every scheduling hiccup. The <2
-        // remnant frame must be discarded (rIdx=wIdx): a nonzero depth would
-        // let the quiet-stream early-open defeat the gate for the next sound.
-        "    var w2=Atomics.load(hdr,0);",
-        "    if(this.started&&((w2-r)&mask)<2){",
-        "      this.started=false;Atomics.store(hdr,1,w2);this.frac=0;this.errI=0;",
-        "    }",
-        // Silence-aware depth trim: during sustained silence, clamp ring depth
-        // to the target so latency can't grow when the emulator outruns real time
-        "    if(Atomics.load(hdr,3)>=8){",
-        "      var depth=(w2-Atomics.load(hdr,1))&mask;",
-        "      if(depth>ts){Atomics.store(hdr,1,(Atomics.load(hdr,1)+depth-ts)&mask);}",
-        "    }",
-        "    return true;",
-        "  }",
-        "}",
-        "registerProcessor('gs-audio-worklet',GSAudioProcessor);"
-    ].join("\n");
+    // The AudioWorklet processor is app/web2's gsAudio.worklet.ts (its ring
+    // logic, audioRing.ts, is unit-tested there), bundled by the page and
+    // handed over as Module.gsAudioWorkletUrl.  It consumes int16 frames
+    // straight from the ring in the wasm heap (a SharedArrayBuffer), reading
+    // the layout from the ring's control block.  It used to be a JS string
+    // in this file, where nothing could test it.
+    ga.nextOwner = 0;
 
     // (Re)creates the worklet node for the pending stream parameters
     ga.makeNode = function() {
@@ -278,8 +173,12 @@ EM_JS(void, gs_audio_init_js, (), {
         try {
             // Hand the worklet the wasm heap (a SharedArrayBuffer under
             // -pthread) plus the ring's fixed address; it consumes frames
-            // and publishes fill reports through it with Atomics.
+            // and publishes fill reports through it with Atomics.  Only the
+            // worklet whose id is in the owner word consumes: a retired one
+            // that has not yet seen its {stop} cannot touch read_idx.
             var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
+            var owner = ++ga.nextOwner;
+            Atomics.store(new Int32Array(heap.buffer, p.ringPtr, 16), 11, owner); // GS_ARING_W_OWNER
             ga.node = new AudioWorkletNode(ga.ctx, 'gs-audio-worklet', {
                 numberOfInputs: 0,
                 numberOfOutputs: 1,
@@ -290,7 +189,7 @@ EM_JS(void, gs_audio_init_js, (), {
                     targetLatency: ga.targetLatency,
                     sab: heap.buffer,
                     ringPtr: p.ringPtr,
-                    ringFrames: p.ringFrames
+                    owner: owner
                 }
             });
             ga.node.connect(ga.ctx.destination);
@@ -308,14 +207,13 @@ EM_JS(void, gs_audio_init_js, (), {
         }
     };
 
-    // Create worklet module from blob URL, then honor any pending open
-    var blobURL = URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}));
-    ga.ctx.audioWorklet.addModule(blobURL)
+    // Load the worklet module the page bundled, then honor any pending open
+    if (!Module.gsAudioWorkletUrl) {
+        console.error('[audio] no worklet module (Module.gsAudioWorkletUrl unset): audio is off');
+        return;
+    }
+    ga.ctx.audioWorklet.addModule(Module.gsAudioWorkletUrl)
         .then(function() {
-            try {
-                URL.revokeObjectURL(blobURL);
-            } catch (e) {
-            }
             ga.modReady = true;
             ga.makeNode();
         })
@@ -335,7 +233,7 @@ EM_JS(void, gs_audio_resume_js, (), {
 // Open (or re-parameterize) the stream: same channel count = in-place rate
 // change (worklet restart), different channel count = node re-creation.
 // ring_ptr / ring_frames locate the shared ring inside the wasm heap.
-EM_JS(void, gs_audio_open_js, (int rate, int channels, uint32_t ring_ptr, int ring_frames), {
+EM_JS(void, gs_audio_open_js, (int rate, int channels, uint32_t ring_ptr), {
     gs_audio_init_js();
     var ga = Module.gsAudio;
     if (ga.node && ga.channels === channels) {
@@ -345,7 +243,7 @@ EM_JS(void, gs_audio_open_js, (int rate, int channels, uint32_t ring_ptr, int ri
         }
         return;
     }
-    ga.pend = {rate: rate, ch: channels, ringPtr: ring_ptr, ringFrames: ring_frames};
+    ga.pend = {rate: rate, ch: channels, ringPtr: ring_ptr};
     if (ga.modReady)
         ga.makeNode();
 });
@@ -395,10 +293,9 @@ static void gs_audio_resume(void) {
 static void gs_audio_open(int rate, int channels) {
     uint32_t ring_ptr = (uint32_t)(uintptr_t)&g_aring;
     if (emscripten_is_main_browser_thread()) {
-        gs_audio_open_js(rate, channels, ring_ptr, GS_ARING_FRAMES);
+        gs_audio_open_js(rate, channels, ring_ptr);
     } else {
-        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIIII, gs_audio_open_js, rate, channels, ring_ptr,
-                                                   GS_ARING_FRAMES);
+        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, gs_audio_open_js, rate, channels, ring_ptr);
     }
 }
 
@@ -435,10 +332,10 @@ void platform_audio_open(uint32_t src_rate_hz, int channels) {
     if (channels > GS_ARING_MAX_CH)
         channels = GS_ARING_MAX_CH;
     g_aring_channels = channels;
-    // Fresh stream: reset the ring so stale frames from a previous machine
-    // or stream shape can't play into the new one.
-    atomic_store_explicit(&g_aring.read_idx, atomic_load_explicit(&g_aring.write_idx, memory_order_relaxed),
-                          memory_order_relaxed);
+    // Fresh stream: ask the worklet to drop what is queued, so stale frames
+    // from a previous machine or stream shape can't play into the new one.
+    // (Asked, not done: read_idx is the worklet's alone.)
+    atomic_fetch_add_explicit(&g_aring.reset_gen, 1, memory_order_release);
     atomic_store_explicit(&g_aring.silent_pushes, 0, memory_order_relaxed);
     atomic_store_explicit(&g_aring.fill_pm, -1, memory_order_relaxed);
     gs_audio_open((int)src_rate_hz, channels);
@@ -468,18 +365,11 @@ void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
         }
     }
 
-    uint32_t w = atomic_load_explicit(&ring->write_idx, memory_order_relaxed);
-    uint32_t r = atomic_load_explicit(&ring->read_idx, memory_order_acquire);
-    uint32_t used = (w - r) & mask;
-    uint32_t free_frames = mask - used;
-    if (n > free_frames) {
-        // Overwrite-oldest (matches the old worklet-side behaviour): advance
-        // read_idx past the frames about to be clobbered.  CAS so a racing
-        // consumer update isn't stomped; on failure the consumer freed space.
-        uint32_t need = n - free_frames;
-        uint32_t r_new = (r + need) & mask;
-        atomic_compare_exchange_strong(&ring->read_idx, &r, r_new);
-    }
+    // Free-running: the slot is w & mask.  A full ring is not the
+    // producer's business: it overwrites the oldest frames, and the worklet,
+    // finding more than a ring's worth outstanding, resyncs to the newest.
+    uint32_t w_idx = atomic_load_explicit(&ring->write_idx, memory_order_relaxed);
+    uint32_t w = w_idx & mask;
 
     // Copy the frames in at most two contiguous spans.
     uint32_t first = GS_ARING_FRAMES - w;
@@ -491,7 +381,7 @@ void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
 
     // Publish: data first, then the release-store of write_idx the consumer
     // acquires — the worklet never reads frames it can't see completely.
-    atomic_store_explicit(&ring->write_idx, (w + n) & mask, memory_order_release);
+    atomic_store_explicit(&ring->write_idx, w_idx + n, memory_order_release);
     atomic_store_explicit(&ring->vol, vol_0_7 & 7, memory_order_relaxed);
     if (silent)
         atomic_fetch_add_explicit(&ring->silent_pushes, 1, memory_order_relaxed);

@@ -28,6 +28,8 @@ import {
   whenVoodooGpuReady,
 } from '@/gpu/voodoo2Gpu.svelte';
 import { onPrinterAttach } from '@/printer/platen';
+// The audio-out worklet, bundled on its own (em_audio.c loads it).
+import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
 import { bridgeBusy } from '@/state/activity.svelte';
@@ -98,15 +100,17 @@ interface EmscriptenModuleConfig {
   onSchedulerSpeed?(speedX256: number): void;
   onPerfUpdate?(mipsX100: number, tpsX10: number): void;
   onCheckpointSaved?(elapsedMsX100: number): void;
-  onVideoInReady?(ptr: number, w: number, h: number): void;
+  onVideoInReady?(ptr: number): void;
   onVideoInState?(active: boolean): void;
-  onAudioInReady?(ptr: number, len: number, rate: number): void;
+  onAudioInReady?(ptr: number): void;
   onAudioInState?(active: boolean): void;
   onAudioInInjected?(path: string): void;
   onVoodooGpuAttach?(ctrl: number, bytes: number): void;
   onVoodooGpuDetach?(ctrl: number): void;
   onVoodooGpuOverlay?(visible: number): void;
   onPrinterAttach?(ctrl: number, version: string): void;
+  // The audio-out AudioWorklet module (em_audio.c addModule()s it).
+  gsAudioWorkletUrl?: string;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -248,6 +252,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onVoodooGpuDetach,
     onVoodooGpuOverlay,
     onPrinterAttach,
+    gsAudioWorkletUrl,
   });
 
   bridgePtr = Module._get_js_bridge();

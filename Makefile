@@ -241,6 +241,11 @@ PLATEN_STAMP := $(OBJ_DIR)/platen-$(PLATEN).stamp
 
 # -- Link flags (objects -> final binary) --
 
+# ALLOW_MEMORY_GROWTH has no MAXIMUM_MEMORY, so the heap stays at wasm32's
+# 2 GB default.  Keep it there: every JS shared-heap transport (camera, mic,
+# audio out, Voodoo2, printer) turns a pointer into a word index with a signed
+# `ptr >> 2`, which goes negative above 2 GB.  Raising the cap means switching
+# those to `>>> 2` first.
 LDFLAGS := $(MODE_CFLAGS) \
            -s MODULARIZE=1 \
            -s EXPORT_NAME="createModule" \
@@ -254,7 +259,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
            -s EXPORTED_RUNTIME_METHODS=['FS','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8','wasmMemory'] \
            -s EXPORTED_FUNCTIONS="['_main','_get_js_bridge']" \
-           -sINCOMING_MODULE_JS_API=arguments,canvas,locateFile,mainScriptUrlOrBlob,onAbort,print,printErr \
+           -sINCOMING_MODULE_JS_API=canvas,locateFile,mainScriptUrlOrBlob,onAbort,print,printErr \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
            -s USE_WEBGL2=1 \

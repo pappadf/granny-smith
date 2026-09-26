@@ -106,7 +106,12 @@ consumes on **emulated** time, so the two clocks drift by definition — the
 consumer drops its own backlog when it falls behind, bounding latency, and
 reports "no source" on an underrun so the engine presents its noise floor
 rather than a torn buffer.  `rd` has exactly one writer and `wr` has exactly
-one writer; that, and nothing else, is what makes the ring lock-free.
+one writer; that, and nothing else, is what makes the ring lock-free.  So a
+reset (a new capture rate) is not the page zeroing both indices: it bumps a
+request word, and the consumer moves `rd` up to `wr` itself.  The ring is a
+power of two, twice `SINGER_MAX_FRAMES`, and both indices run free — the
+slot is the index masked, on both sides.  The index arithmetic is two small
+pure files (`em_mic_ring.c`, `state/micRing.ts`), each tested at the wrap.
 
 > **The lifecycle notification fires on the GUEST's gate.**  `pSndInEn`
 > changing drives `gs_audio_in_state`, exactly as the VDC clock drives

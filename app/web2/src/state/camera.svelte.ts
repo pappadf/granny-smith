@@ -1,12 +1,14 @@
 // Camera state — the browser side of the AV video-in path
 // (proposal-av-video-in.md §2.3; C side: src/platform/wasm/em_camera.c).
 //
-// Transport: em_camera.c owns a static double-buffered frame slot pair +
-// atomic header in the shared wasm heap and announces its address once via
-// Module.onVideoInReady. This module writes each decoded webcam frame into
-// the NON-active slot through the live heap views and then flips `active`;
-// the emulator worker copies out of the active slot at field cadence, so
-// tearing is impossible and staleness is at most one frame.
+// Transport: em_camera.c owns a static double-buffered frame slot pair
+// behind a control block (bus/shmLayout.ts) in the shared wasm heap and
+// announces its address once via Module.onVideoInReady. This module reads
+// the layout from the block, writes each decoded webcam frame into the
+// NON-active slot through the live heap views, flips `active`, then bumps
+// `seq`; the emulator worker copies out of the active slot at field cadence
+// and retries a copy a completed frame overlapped (a seqlock on `seq` -- the
+// slot flip alone does not rule a tear out). Staleness is at most one frame.
 //
 // Lifecycle & privacy: the camera light is on only while the guest actually
 // captures. `enabled` is the user's master toggle (the click is also the
@@ -16,6 +18,18 @@
 // stopped immediately when the guest is not capturing.
 
 import { gsEval, getModuleHeap } from '@/bus/emulator';
+import {
+  CAM_MAGIC,
+  CAM_VERSION,
+  CAM_W_ACTIVE,
+  CAM_W_CONNECTED,
+  CAM_W_HEIGHT,
+  CAM_W_SEQ,
+  CAM_W_SLOT_BYTES,
+  CAM_W_SLOT_OFF,
+  CAM_W_WIDTH,
+  shmBlockOk,
+} from '@/bus/shmLayout';
 import { machine } from './machine.svelte';
 import { showNotification } from './toasts.svelte';
 
@@ -34,12 +48,13 @@ export const camera: CameraState = $state({
   live: false,
 });
 
-// Shared-heap transport, announced by em_camera.c at startup.
-// Header Int32 layout: [0] connected, [1] active slot (-1 none), [2] seq.
+// Shared-heap transport, announced by em_camera.c at startup; the layout
+// comes from its control block.
 let shmPtr = 0;
 let shmW = 640;
 let shmH = 480;
-const HDR_BYTES = 16;
+let slotOff = 0;
+let slotBytes = 0;
 
 let stream: MediaStream | null = null;
 let videoEl: HTMLVideoElement | null = null;
@@ -48,10 +63,42 @@ let pumpStop: (() => void) | null = null;
 
 // --- Module callbacks (attached in bus/emulator.ts) ------------------------
 
-export function onVideoInReady(ptr: number, w: number, h: number): void {
-  shmPtr = ptr;
-  shmW = w;
-  shmH = h;
+// The block's address arrives while the module is still starting, so it is
+// read (and checked) on first use.
+let announcedPtr = 0;
+let layoutChecked = false;
+
+export function onVideoInReady(ptr: number): void {
+  announcedPtr = ptr;
+  layoutChecked = false;
+  shmPtr = 0;
+}
+
+// The transport's heap views, once its control block has been read and
+// found to be the layout this build speaks; null otherwise.
+function transport(): ReturnType<typeof getModuleHeap> {
+  const heap = getModuleHeap();
+  if (!heap || !announcedPtr) return null;
+  if (!layoutChecked) {
+    layoutChecked = true;
+    if (!shmBlockOk(heap.i32, announcedPtr, CAM_MAGIC, CAM_VERSION)) {
+      // A core from another build: writing through a guessed layout would
+      // corrupt the heap. Say so, and leave the camera off.
+      console.error('[camera] frame transport layout not recognised; camera disabled');
+      showNotification(
+        'Camera unavailable: this emulator build has a different frame layout',
+        'error',
+      );
+      return null;
+    }
+    const w = announcedPtr >> 2;
+    slotOff = Atomics.load(heap.i32, w + CAM_W_SLOT_OFF);
+    slotBytes = Atomics.load(heap.i32, w + CAM_W_SLOT_BYTES);
+    shmW = Atomics.load(heap.i32, w + CAM_W_WIDTH);
+    shmH = Atomics.load(heap.i32, w + CAM_W_HEIGHT);
+    shmPtr = announcedPtr;
+  }
+  return shmPtr ? heap : null;
 }
 
 export function onVideoInState(active: boolean): void {
@@ -62,15 +109,15 @@ export function onVideoInState(active: boolean): void {
 // --- Header helpers ---------------------------------------------------------
 
 function setConnected(v: boolean): void {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr) return;
-  Atomics.store(heap.i32, shmPtr >> 2, v ? 1 : 0);
+  const heap = transport();
+  if (!heap) return;
+  Atomics.store(heap.i32, (shmPtr >> 2) + CAM_W_CONNECTED, v ? 1 : 0);
 }
 
 function resetSlots(): void {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr) return;
-  Atomics.store(heap.i32, (shmPtr >> 2) + 1, -1); // active = none
+  const heap = transport();
+  if (!heap) return;
+  Atomics.store(heap.i32, (shmPtr >> 2) + CAM_W_ACTIVE, -1); // active = none
 }
 
 // --- The frame pump ---------------------------------------------------------
@@ -79,8 +126,8 @@ function resetSlots(): void {
 // camera image to the 4:3 target so arbitrary webcam aspect ratios fill the
 // guest frame.
 function pushFrame(ctx: CanvasRenderingContext2D, video: HTMLVideoElement): void {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr) return;
+  const heap = transport();
+  if (!heap) return;
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
@@ -95,15 +142,16 @@ function pushFrame(ctx: CanvasRenderingContext2D, video: HTMLVideoElement): void
   const img = ctx.getImageData(0, 0, shmW, shmH);
 
   const hdr = shmPtr >> 2;
-  const activeIdx = Atomics.load(heap.i32, hdr + 1);
+  const activeIdx = Atomics.load(heap.i32, hdr + CAM_W_ACTIVE);
   const writeIdx = activeIdx === 0 ? 1 : 0; // never touch the active slot
-  const slotPtr = shmPtr + HDR_BYTES + writeIdx * shmW * shmH * 4;
+  const slotPtr = shmPtr + slotOff + writeIdx * slotBytes;
   heap.u8.set(img.data, slotPtr);
-  Atomics.store(heap.i32, hdr + 1, writeIdx); // flip
-  Atomics.add(heap.i32, hdr + 2, 1); // seq++
+  Atomics.store(heap.i32, hdr + CAM_W_ACTIVE, writeIdx); // flip
+  Atomics.add(heap.i32, hdr + CAM_W_SEQ, 1); // seq++: the reader's seqlock
 }
 
 function startPump(video: HTMLVideoElement): void {
+  if (!transport()) return; // the frame geometry below comes from the block
   if (!canvasEl) {
     canvasEl = document.createElement('canvas');
     canvasEl.width = shmW;
