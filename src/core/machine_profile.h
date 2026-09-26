@@ -322,8 +322,13 @@ typedef struct machine_substrate {
     // then describe the fallback two lines later.)
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
-    // Key identity across the whole model is the ADB virtual keycode
-    // (0x00-0x7F), whatever the machine's own keyboard actually speaks.  That
+    // Key identity across the whole model is the ADB RAW keycode (0x00-0x7F):
+    // what an ADB keyboard transmits, not the Mac OS "virtual" code its
+    // driver turns that into.  The two agree for every key but the arrows
+    // (raw $3B-$3E, virtual $7B-$7E) and the right-hand modifiers (raw
+    // $7B-$7D): a name that resolved to the virtual left arrow, $7B, pressed
+    // Right Shift on every ADB Mac.  This holds whatever the machine's own
+    // keyboard actually speaks.  That
     // was already true for every Mac -- system_keyboard_update hands the same
     // int to the ADB transceiver or to the Plus's M0110A, which converts on
     // the wire with Guide 2e p.282's `(adb << 1) | 1` plus its keypad

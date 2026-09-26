@@ -851,7 +851,7 @@ bit 7 set) — the boot menu's "boot from ProFile" key — and `$F2` is `3`.
 `src/machines/lisa/lisa_keymap.c` carries this table, and beside it the
 **ADB keycode → Lisa keycode** map the substrate actually uses, so
 `keyboard.press("h")` and `keyboard.down "shift"` work on the Lisa the way they
-do on a Mac. Key identity across the model is the ADB virtual keycode
+do on a Mac. Key identity across the model is the ADB raw keycode
 (`machine_profile.h`'s `input_key`) — names are resolved once, above the
 substrate, and never reach a machine.
 

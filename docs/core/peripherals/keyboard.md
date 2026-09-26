@@ -10,15 +10,19 @@ shift-register behavior** and the **classic Mac OS keyboard-driver
 expectations**, so emulator authors can implement both the electrical/protocol
 layer and the OS-visible results.
 
-## Emulator API: ADB Virtual Key Codes
+## Emulator API: ADB Raw Key Codes
 
-This emulator uses **ADB virtual key codes** (from *Inside Macintosh* Vol V) as
+This emulator uses **ADB raw key codes** — what an ADB keyboard transmits — as
 the standard API between platform frontends and the keyboard emulation core.
+They equal the *Inside Macintosh* Vol V virtual key codes for every key except
+the arrows (raw `$3B`–`$3E` left/right/down/up, virtual `$7B`–`$7E`) and the
+right-hand modifiers (raw `$7B`–`$7D`); names resolve to the raw codes, so
+`"left"` is `$3B` (it was `$7B`, which pressed Right Shift on ADB Macs).
 This design allows easy future support for ADB-based Macintosh models (SE, II,
 etc.) while maintaining compatibility with the Mac Plus VIA-based protocol.
 
-The `keyboard_update()` function accepts ADB virtual key codes and translates
-them internally to Mac Plus raw transition bytes.
+The `keyboard_update()` function accepts ADB key codes (the arrows by either
+code) and translates them internally to Mac Plus raw transition bytes.
 
 ### The shell surface
 
@@ -48,7 +52,7 @@ It exposes five methods:
 its key. `debug_mac_resolve_key_name()` is the whole table.
 
 An integer means **the same key on every machine**: key identity across the
-model is the ADB virtual keycode (`machine_profile.h`'s `input_key`), names
+model is the ADB raw keycode (`machine_profile.h`'s `input_key`), names
 are resolved once above the substrate, and each machine translates from
 there — the Plus to M0110A wire codes, the Lisa to COPS keycodes
 (`lisa_keymap.c`). A key this keyboard has not got is an error rather than a
