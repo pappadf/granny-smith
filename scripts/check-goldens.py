@@ -31,7 +31,8 @@ script names (an orphan, which asserts nothing).
 files: two encodings of one frame are one claim.  And every tracked golden
 must be a PNG the emulator's reader (load_png_to_rgba, src/core/debug/debug.c)
 decodes as intended: 8-bit grey, RGB or RGBA, and every row's filter type 0,
-because that reader skips the filter byte rather than applying it.
+because that reader skips the filter byte rather than applying it.  It must
+also be deflated: stored (uncompressed) blocks cost a hundred times the space.
 
 Usage:  scripts/check-goldens.py [tests/integration]
 Exit:   0 clean, 1 collisions, unresolved references or orphans found.
@@ -104,6 +105,11 @@ def decode(path: Path):
             idat += body
     if not ihdr or not idat:
         return None, "no IHDR or IDAT"
+    # Stored (uncompressed) deflate: the emulator reads it, but a 640x480
+    # frame is 1.2 MB of it against ~12 KB deflated, and every checkout
+    # carries it.  The emulator's own writer deflates (save_framebuffer_as_png).
+    if len(idat) > 2 and (idat[2] >> 1) & 3 == 0:
+        return None, "stored (uncompressed) deflate blocks; re-encode it deflated"
     width, height, depth, colour, _, _, interlace = ihdr
     if depth != 8 or colour not in CHANNELS or interlace:
         return None, f"bit depth {depth}, colour type {colour}, interlace {interlace}: " \
@@ -238,8 +244,8 @@ def main() -> int:
     if undecodable:
         for u in undecodable:
             print(f"UNREADABLE {u}")
-        print("The emulator would not read these goldens as the pixels they hold; "
-              "re-encode them (8-bit RGBA, filter 0).")
+        print("Each is misread by the emulator or stored uncompressed; re-encode it "
+              "as 8-bit RGBA, filter 0, deflated (what the emulator's writer emits).")
         return 1
 
     if collisions:
