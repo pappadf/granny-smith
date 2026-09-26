@@ -36,17 +36,17 @@ the same errors. There is no shadow API.
 
 | File | Purpose |
 |------|---------|
-| [object.h](../src/core/object/object.h) | Core contract: classes, members, objects, nodes, path resolution |
-| [object.c](../src/core/object/object.c) | Substrate implementation (tree topology, resolver, validation, invalidators) |
-| [value.h](../src/core/object/value.h) | Tagged-union `value_t` used at every boundary |
-| [value.c](../src/core/object/value.c) | Value lifetime, conversions, formatting helpers |
-| [parse.c](../src/core/object/parse.c) | Path tokeniser shared by the resolver and completer |
-| [expr.h](../src/core/object/expr.h) | `${...}` expression parser and evaluator |
-| [alias.h](../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
-| [api.h](../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
-| [meta.h](../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
-| [shell_class.c](../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.alias_set`/`alias_unset`, `shell.interrupt`, `shell.prompt`/`running`/`aliases`/`vars`) |
-| [root.c](../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
+| [object.h](../../../src/core/object/object.h) | Core contract: classes, members, objects, nodes, path resolution |
+| [object.c](../../../src/core/object/object.c) | Substrate implementation (tree topology, resolver, validation, invalidators) |
+| [value.h](../../../src/core/object/value.h) | Tagged-union `value_t` used at every boundary |
+| [value.c](../../../src/core/object/value.c) | Value lifetime, conversions, formatting helpers |
+| [parse.c](../../../src/core/object/parse.c) | Path tokeniser shared by the resolver and completer |
+| [expr.h](../../../src/core/object/expr.h) | `${...}` expression parser and evaluator |
+| [alias.h](../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
+| [api.h](../../../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
+| [meta.h](../../../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
+| [shell_class.c](../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.alias_set`/`alias_unset`, `shell.interrupt`, `shell.prompt`/`running`/`aliases`/`vars`) |
+| [root.c](../../../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
 
 ## Core concepts
 
@@ -408,14 +408,14 @@ configure, and what the JS frontend operates on:
   resolves the path, parses arguments from JSON, invokes the right
   read / write / call, and serialises the result back to JSON. JS
   reaches it through a single shared-memory region (`js_bridge_t`,
-  declared in [`em.h`](../src/platform/wasm/em.h) and exposed via the
+  declared in [`em.h`](../../../src/platform/wasm/em.h) and exposed via the
   lone `_get_js_bridge` export); the worker's `shell_poll()` services
   the slot every tick. `Atomics.waitAsync` + `emscripten_atomic_notify`
   carry the completion signal — no polling. The worker-thread guard
   in `worker_thread.h` enforces that `gs_eval` only runs on the worker
   pthread, never via direct `Module.ccall` from the main thread. JS
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
-  never raw exit codes. See [`web.md`](web.md) for the wire layout
+  never raw exit codes. See [`web.md`](../../guide/web.md) for the wire layout
   and protocol.
 
   **The result contract** (what `gsEval` in `app/web2/src/bus/emulator.ts`
@@ -688,7 +688,7 @@ written months ago.
 
 - [shell.md](shell.md) — terminal-side dispatch, tab completion,
   symbol resolution.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — overall code organisation.
+- [ARCHITECTURE.md](../../guide/ARCHITECTURE.md) — overall code organisation.
 - `src/core/object/object.h` — the substrate contract, with detailed
   docstrings on every public function.
 

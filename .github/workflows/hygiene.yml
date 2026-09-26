@@ -40,3 +40,8 @@ jobs:
       # stub table, ...); see the script's header for the list.
       - name: Doc inventories
         run: python3 scripts/check-doc-inventories.py
+
+      # Relative links in tracked Markdown resolve (docs moved into
+      # subdirectories left ~140 links pointing one level too high).
+      - name: Markdown links
+        run: python3 scripts/check-links.py

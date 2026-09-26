@@ -124,7 +124,7 @@ spool file), `documents`, `last_pages`, and `last_outcome` (`ok`, `error:
 
 ## The prelude and identity
 
-The interpreter is seeded from [`laserwriter_prelude.ps`](laserwriter_prelude.ps),
+The interpreter is seeded from [`laserwriter_prelude.ps`](../../../src/core/network/laserwriter_prelude.ps),
 embedded at build time as a C array (`laserwriter.mk` → `bin2c.py` →
 `build/laserwriter/laserwriter_prelude.h`), and three `statusdict` identity
 entries derived from the same product/version/revision values, so

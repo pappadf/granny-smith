@@ -120,7 +120,7 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
     and the inspector UI all walk the same tree, so a new class is
     visible everywhere as soon as it's attached. There is no separate
     "command registry" or "JS API" layer to maintain in lock-step.
-  - See [`docs/core/shell/object-model.md`](object-model.md) for the substrate
+  - See [`docs/core/shell/object-model.md`](../core/shell/object-model.md) for the substrate
     and the conventions modules follow when adding a class.
 
 - **Checkpointing (optional):**
@@ -152,7 +152,7 @@ Four caller surfaces walk that tree:
 - **JavaScript / WASM bridge**: `gs_eval(path, args_json, out, size)`
   resolves the same path, JSON-encodes the result, and returns to JS.
   The web frontend reaches it through a single shared-memory region
-  (`js_bridge_t` in [`src/platform/wasm/em.h`](../src/platform/wasm/em.h)),
+  (`js_bridge_t` in [`src/platform/wasm/em.h`](../../src/platform/wasm/em.h)),
   exposed via one `_get_js_bridge` WASM export. JS calls
   `gsEval(path, args)`; that puts the request in the bridge slot and
   parks on `Atomics.waitAsync(done)` until the worker's `shell_poll()`
@@ -166,11 +166,11 @@ There is no separate command framework, no parallel JS API. Adding a
 new operation is one act — declare a member on the right class — and
 every caller sees it.
 
-See [`docs/core/shell/object-model.md`](object-model.md) for the substrate, the
+See [`docs/core/shell/object-model.md`](../core/shell/object-model.md) for the substrate, the
 path forms in detail, the lifecycle invariants (process-singleton vs.
 cfg-scoped), and the recipe for adding a new class.
 
-See [`docs/core/shell/shell.md`](shell.md) for the line-input layer specifically:
+See [`docs/core/shell/shell.md`](../core/shell/shell.md) for the line-input layer specifically:
 tokenisation, `$alias` expansion, `${expr}` interpolation, shell
 variables, scripts, and tab completion.
 
@@ -327,8 +327,8 @@ strictly read-only base content; nothing writable lands there any more.
 `<machine_id>` is a 16-hex-char opaque token in `localStorage`; it rotates only
 on explicit "new machine" actions and is pushed to the C side once per process
 via `checkpoint --machine <id> <created>`. A startup sweep deletes any sibling
-machine directories whose name does not match. See [`docs/core/storage/checkpointing.md`](checkpointing.md)
-for the full design and [`docs/core/storage/image.md`](image.md) for the image-layer API
+machine directories whose name does not match. See [`docs/core/storage/checkpointing.md`](../core/storage/checkpointing.md)
+for the full design and [`docs/core/storage/image.md`](../core/storage/image.md) for the image-layer API
 that backs it.
 
 ## Repository Layout

@@ -4,8 +4,8 @@ This document describes the internal timing model of the Granny Smith scheduler 
 how emulated time advances, how CPU execution is organized into sprints, how events are
 queued and fired, and how the various counters stay consistent with each other.
 
-The source lives in [src/core/scheduler/scheduler.c](../src/core/scheduler/scheduler.c) and
-[src/core/scheduler/scheduler.h](../src/core/scheduler/scheduler.h).
+The source lives in [src/core/scheduler/scheduler.c](../../../src/core/scheduler/scheduler.c) and
+[src/core/scheduler/scheduler.h](../../../src/core/scheduler/scheduler.h).
 
 ---
 
@@ -61,7 +61,7 @@ These are myths that repeatedly show up in discussions of the scheduler. Every o
   (`while (*instructions > 0)`) exits at the next instruction boundary, the sprint
   finalizes, and the next iteration of the sprint loop calls `cpu_run_sprint` again —
   whose prologue runs `cpu_check_interrupt` and takes the exception
-  ([cpu_68000.c:66](../src/core/cpu/cpu_68000.c#L66)). End-to-end IRQ latency from line
+  ([cpu_68000.c:66](../../../src/core/cpu/cpu_68000.c#L66)). End-to-end IRQ latency from line
   assertion to exception vector entry is therefore at most one instruction plus the
   sprint-boundary overhead. Sprints are *not* uninterruptible time quanta — any IRQ
   line change cuts the current sprint short.
@@ -121,7 +121,7 @@ independent of the pacing mode:
 | Lisa / Mac XL  | 4   | Historical effective value (every Lisa budget derives from it) |
 
 The default (no `scheduler_set_cpi` call) is 12
-([scheduler.c](../src/core/scheduler/scheduler.c)). The `scheduler.cpi` attribute is
+([scheduler.c](../../../src/core/scheduler/scheduler.c)). The `scheduler.cpi` attribute is
 writable as a **debug override** (1..255); changing it mid-run alters the guest
 timeline from that point on, so it is a tuning tool only.
 
@@ -210,7 +210,7 @@ self-consistent with the guest's boot-time calibration).
 ### 3.1 The scheduler struct
 
 The entire scheduler state is encapsulated in one opaque struct
-([scheduler.c:68-100](../src/core/scheduler/scheduler.c#L68)). The fields that matter
+([scheduler.c:68-100](../../../src/core/scheduler/scheduler.c#L68)). The fields that matter
 for timing:
 
 ```c
@@ -241,7 +241,7 @@ they work in detail.
 ### 3.2 Events
 
 An event is a callback scheduled to fire at an absolute cycle timestamp
-([scheduler.c:43-49](../src/core/scheduler/scheduler.c#L43)):
+([scheduler.c:43-49](../../../src/core/scheduler/scheduler.c#L43)):
 
 ```c
 struct event {
@@ -329,7 +329,7 @@ After reconciliation:
 
 Critically, **`reconcile_sprint()` does not update `s->cpu_cycles` or
 `s->total_instructions`**. Those get updated only in the sprint-finalization code at
-[scheduler.c:947-960](../src/core/scheduler/scheduler.c#L947). This is what makes it
+[scheduler.c:947-960](../../../src/core/scheduler/scheduler.c#L947). This is what makes it
 safe to call from deep inside a memory write.
 
 ### 4.4 Worked example
@@ -389,9 +389,9 @@ event_t *scheduler_new_cpu_event(scheduler, callback, source, data, cycles, ns);
 ```
 
 Exactly one of `cycles` or `ns` must be non-zero
-([scheduler.c:754-755](../src/core/scheduler/scheduler.c#L754)); the other is derived
+([scheduler.c:754-755](../../../src/core/scheduler/scheduler.c#L754)); the other is derived
 from the machine frequency. The pipeline
-([scheduler.c:749-764](../src/core/scheduler/scheduler.c#L749)):
+([scheduler.c:749-764](../../../src/core/scheduler/scheduler.c#L749)):
 
 1. **Invariant check** (`CHECK_INVARIANTS(s)`) and queue integrity check
    (`validate_cpu_events`).
@@ -402,7 +402,7 @@ from the machine frequency. The pipeline
    - `event->timestamp = now + cycles`
    - `insert_event_queue` — walk the list, insert at the first position where the next
      node has a strictly greater timestamp. New events tie-break *after* existing events
-     with the same timestamp (see the loop at [scheduler.c:262](../src/core/scheduler/scheduler.c#L262)).
+     with the same timestamp (see the loop at [scheduler.c:262](../../../src/core/scheduler/scheduler.c#L262)).
 4. **Invariant check** again.
 
 Because `now` is computed *after* `reconcile_sprint`, the new event is always placed
@@ -422,7 +422,7 @@ Both remove variants walk the full list; removing an event is `O(n)`.
 ## 6. Running the CPU: the sprint loop
 
 The main execution path is
-[scheduler_run_instructions](../src/core/scheduler/scheduler.c#L891). At a high level:
+[scheduler_run_instructions](../../../src/core/scheduler/scheduler.c#L891). At a high level:
 
 ```c
 while (remaining_cycles > 0) {
@@ -495,7 +495,7 @@ is subtracted from `total_instructions` in step 3 above so the *instruction* cou
 only reflects real work.
 
 The `g_io_penalty_remainder` fraction deliberately **persists across sprints** so
-sub-CPI penalties accumulate correctly over time ([scheduler.c:939](../src/core/scheduler/scheduler.c#L939)).
+sub-CPI penalties accumulate correctly over time ([scheduler.c:939](../../../src/core/scheduler/scheduler.c#L939)).
 
 ### 6.3 IRQs cut the current sprint short
 
@@ -507,12 +507,12 @@ device raises IRQ -> machine_update_ipl() -> cpu_set_ipl(cpu, level) -> cpu_resc
 ```
 
 `cpu_reschedule()` is just `reconcile_sprint()` on the global scheduler
-([scheduler.c:835](../src/core/scheduler/scheduler.c#L835)). It sets
+([scheduler.c:835](../../../src/core/scheduler/scheduler.c#L835)). It sets
 `sprint_burndown = 0` while leaving all derived quantities (`current_cpu_cycles`,
 `cpu_instr_count`) intact. That has two effects:
 
 1. **The sprint ends at the next instruction boundary.** The CPU decoder's inner loop
-   `while (*instructions > 0)` in [cpu_68000.c:67](../src/core/cpu/cpu_68000.c#L67)
+   `while (*instructions > 0)` in [cpu_68000.c:67](../../../src/core/cpu/cpu_68000.c#L67)
    sees 0 and returns.
 2. **Any events that the IRQ handler itself scheduled get accurate "now" timestamps**,
    because the reconcile happened before `add_event_internal` reads
@@ -520,7 +520,7 @@ device raises IRQ -> machine_update_ipl() -> cpu_set_ipl(cpu, level) -> cpu_resc
 
 After the sprint returns, the sprint loop finalizes counters, drains due events via
 `process_event_queue`, and iterates. The next call to `cpu_run_sprint` runs
-`cpu_check_interrupt` in its prologue ([cpu_68000.c:66](../src/core/cpu/cpu_68000.c#L66))
+`cpu_check_interrupt` in its prologue ([cpu_68000.c:66](../../../src/core/cpu/cpu_68000.c#L66))
 and enters the exception handler.
 
 End-to-end latency from `cpu_reschedule()` to exception-vector entry is therefore at
@@ -529,7 +529,7 @@ sprint-loop-iteration overhead. This matches real 68000 behavior, which also sam
 IPL at instruction boundaries.
 
 The same mechanism is what `scheduler_stop()` uses
-([scheduler.c:843](../src/core/scheduler/scheduler.c#L843)): it sets `running = false`
+([scheduler.c:843](../../../src/core/scheduler/scheduler.c#L843)): it sets `running = false`
 and calls `reconcile_sprint` to cut the sprint short at the next boundary so the outer
 `while (remaining_cycles > 0)` loop can exit promptly.
 
@@ -578,7 +578,7 @@ Consider an event scheduled at timestamp `T` while `cpu_cycles = T - N`:
 - If `N >= CPI`: `cycles_to_instructions(N)` returns `floor(N / CPI)`, and the sprint
   consumes at most `N` cycles, stopping at or before `T`.
 - If `0 < N < CPI`: we still need to execute at least one instruction to make progress,
-  so `cycles_to_instructions` rounds up to 1 ([scheduler.c:199](../src/core/scheduler/scheduler.c#L199)).
+  so `cycles_to_instructions` rounds up to 1 ([scheduler.c:199](../../../src/core/scheduler/scheduler.c#L199)).
   The sprint consumes `CPI` cycles, overshooting the event by `CPI - N` cycles.
 
 Worked example with `CPI = 12` (hw-accuracy mode):
@@ -600,8 +600,8 @@ every queued event satisfies: timestamp + CPI >= cpu_cycles
 ```
 
 Both `validate_cpu_events` and `scheduler_check_invariants` enforce the relaxed form
-([scheduler.c:218-235](../src/core/scheduler/scheduler.c#L218),
-[scheduler.c:144-149](../src/core/scheduler/scheduler.c#L144)). This allows the brief
+([scheduler.c:218-235](../../../src/core/scheduler/scheduler.c#L218),
+[scheduler.c:144-149](../../../src/core/scheduler/scheduler.c#L144)). This allows the brief
 window during a sprint iteration where the head event is slightly in the past but has
 not yet been processed.
 
@@ -642,7 +642,7 @@ use cycles (or `scheduler_time_ns`); instruction counts are a derived, display-l
 view.
 
 **Checkpoint restore:** the restore path rebuilds `total_instructions` as
-`cpu_cycles / cpi` ([scheduler.c](../src/core/scheduler/scheduler.c)). With a constant
+`cpu_cycles / cpi` ([scheduler.c](../../../src/core/scheduler/scheduler.c)). With a constant
 CPI this reconstruction is exact for a timeline that never ran accelerated
 (accelerated time makes it an underestimate — acceptable for a display-only counter).
 
@@ -661,7 +661,7 @@ frame-unit*. They differ only in **pacing**: how fast the run loop issues frame-
 ### 10.1 The VBL frame-unit
 
 `scheduler_run_frame(s, config)`
-([scheduler.c](../src/core/scheduler/scheduler.c)) is the atomic step:
+([scheduler.c](../../../src/core/scheduler/scheduler.c)) is the atomic step:
 
 1. `trigger_vbl(config)` — pulse the machine's VBL line (VIA CA1, `image_tick_all`, …).
 2. `scheduler_run(s, MAC_VBL_PERIOD)` — run exactly one VBL period of emulated time.
@@ -680,7 +680,7 @@ sees this identical sequence; only the wall-clock spacing between iterations dif
 ### 10.2 Headless: unthrottled, one frame-unit at a time
 
 Headless does not arm any VBL event. Its run loops
-([headless_main.c](../src/platform/headless/headless_main.c)) call
+([headless_main.c](../../../src/platform/headless/headless_main.c)) call
 `scheduler_run_frame()` back-to-back as fast as the host CPU allows:
 
 - the daemon/script pump (`pump_scheduler_with_heartbeat`) runs one frame-unit per
@@ -699,7 +699,7 @@ No `host_time()` value ever feeds guest execution on the headless path.
 ### 10.3 WASM: host-clock-driven, two pacing modes
 
 `scheduler_main_loop(config, now_msecs)` is called once per `requestAnimationFrame`
-([em_main.c](../src/platform/wasm/em_main.c)). It maps the elapsed host time onto a
+([em_main.c](../../../src/platform/wasm/em_main.c)). It maps the elapsed host time onto a
 whole number of frame-units and runs that many via `scheduler_run_frame()`:
 
 - **`schedule_paced`** (default; "Real-Time" in the web2 toolbar): a wall-clock
@@ -780,7 +780,7 @@ Two parts are written:
 
 1. **Plain-data fields** — everything from the top of the struct up to but not
    including `event_types`, written in one block via `system_write_checkpoint_data`
-   ([scheduler.c:629](../src/core/scheduler/scheduler.c#L629)).
+   ([scheduler.c:629](../../../src/core/scheduler/scheduler.c#L629)).
 2. **Event queue** — each event is converted to a checkpoint-friendly form
    (`event_as_checkpoint_t`) with `source_name` and `event_name` strings instead of
    raw pointers. The strings are looked up in the `event_types` registry, which must

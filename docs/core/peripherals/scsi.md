@@ -193,7 +193,7 @@ Drawbacks:
 ### 4.1 Memory map
 
 Within the SE/30 I/O decode, the SCSI chip occupies four sub-ranges
-(see [src/machines/se30.c](../src/machines/se30.c)):
+(see [src/machines/se30.c](../../../src/machines/glue/se30.c)):
 
 | Offset from I/O base     | Function                                        |
 | ------------------------ | ----------------------------------------------- |
@@ -223,7 +223,7 @@ The SE/30 routes both 5380 interrupt outputs into VIA2:
   main use is debugging / polling.
 
 See `scsi_update_irq()` and `scsi_update_drq()` in
-[scsi.c](../src/core/peripherals/scsi.c) for the emulator plumbing.
+[scsi.c](../../../src/core/peripherals/scsi.c) for the emulator plumbing.
 Both signals are driven "active-low" through `via_input_c()`.
 
 ### 4.3 Three distinct access paths
@@ -268,7 +268,7 @@ drive later chips with roughly the same state machine.  Key properties:
    host clears `MR.DMA`.
 4. **Status.**  Clear `MR.DMA`.  The emulator transitions the bus to
    STATUS automatically (see `write_mr` in
-   [scsi.c](../src/core/peripherals/scsi.c)).  `TCR=STATUS(0x03)`;
+   [scsi.c](../../../src/core/peripherals/scsi.c)).  `TCR=STATUS(0x03)`;
    host toggles `ICR.ACK` to consume the status byte via CDR.
 5. **Message in.**  Falling edge of ACK in STATUS phase transitions
    to MESSAGE_IN with `COMMAND COMPLETE`.  Host toggles ACK again.
@@ -696,7 +696,7 @@ Pages of interest:
 * `0x30` Apple vendor-specific (Apple HD SC Setup's "APPLE COMPUTER, INC."
   drive identification — the emulator returns this to pass Setup's
   identity check; see `CMD_MODE_SENSE` in
-  [scsi.c](../src/core/peripherals/scsi.c)).
+  [scsi.c](../../../src/core/peripherals/scsi.c)).
 
 ##### What MODE SELECT actually honours
 
