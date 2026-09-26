@@ -18,6 +18,7 @@
 #include "drive_activity.h"
 #include "image.h"
 #include "keyboard.h"
+#include "machine_profile.h" // enum media_bus, media_slot_t
 #include "platform.h"
 #include "scheduler.h"
 
