@@ -469,6 +469,168 @@ The result is that paths like `machine.cpu.pc` resolve as soon as a machine is
 booted and disappear cleanly when the machine is torn down, without
 the caller having to track machine-lifetime explicitly.
 
+## Machine lifecycle
+
+Four operations put a machine in place or restart the one that is running.
+They differ in what they keep. Line numbers are as of this writing; the
+function names are the stable reference.
+
+| Operation | What it does | Entry point |
+|---|---|---|
+| `machine.boot(...)` | Builds a **new** machine from a complete boot document ([Boot arguments](#boot-arguments)): validates the whole document, tears the running machine down, constructs, installs the ROM, writes the built-from record `machine.config`. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c:850`) |
+| `machine.restart` | **Power-cycle**: rebuilds the machine that `machine.config` describes, takes no arguments, and carries the mounted media across the teardown. Errors if no machine is running. | `machine_method_restart` (`machine.c:1188`) |
+| `machine.reset` | **Warm reset** (the reset button): the board's /RESET net, then the CPU back to its reset vector. Nothing is torn down or rebuilt. Errors if no machine is running. | `machine_method_reset` (`machine.c:1177`) → `system_machine_reset` (`src/core/system.c:216`) |
+| `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` (`system.c:1594`) |
+
+`machine.boot`, `machine.restart` and headless startup all go through
+`machine_boot_apply`, so they share one sequence: validate, tear down,
+construct, record (`machine.c:846-1124`). Every check runs before
+`system_destroy`, so a rejected boot leaves the running machine and its
+record untouched (`tests/integration/boot-config`).
+
+### What each operation keeps
+
+| State | `machine.boot` | `machine.restart` | `machine.reset` | `checkpoint.load` |
+|---|---|---|---|---|
+| Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record; per-slot picks replayed only where the user chose them (`machine.c:1202-1235`) | Unchanged | From the checkpoint's model id, RAM size and stored record (`system.c:1612-1665`) |
+| ROM bytes | Read from the `rom=` file (`machine.c:1062-1066`) | Read again from the recorded path, so a changed file is picked up. A live `rom.load` rewrites the record first (`rom.c:383`) | Unchanged | From the checkpoint, by content or file reference (`src/core/memory/memory.c:1632`) |
+| RAM contents | Zeroed (fresh `calloc`, `memory.c:1584`) | Zeroed | **Kept** | Restored (`memory.c:1628`) |
+| PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`, `src/core/peripherals/rtc.c:463`; tables in `src/machines/runtime/pram_defaults.h`) | Construction defaults again (not carried) | **Kept** | Restored (`rtc.c:485`) |
+| TNT NVRAM (Grand Central's Open Firmware store; `pm7500`/`pm8500`/`pm9500`/`ans500`/`ans700`) | Blank: the previous machine's store goes with it | **Carried** (`tnt_teardown`, `src/machines/tnt/tnt.c:768`) | **Kept** | From the checkpoint, which overrides any carried store (`tnt.c:474`) |
+| RTC time | Host wall clock at construction (`rtc.c:465`); the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c:189`) | The same as `machine.boot` | Keeps counting | The saved value (`rtc.c:485`) |
+| Mounted media | None. The old machine's images are closed (`system.c:1235`); a CD bay is registered empty (`system.c:1157`) | **Carried**: the same open handles pass through the substrate's `media_detach`/`media_attach`, so the write delta survives | **Kept** (`floppy_reset` keeps media, `system.c:274`) | From the checkpoint |
+| Caps Lock latch | Released | **Carried** (`machine.c:1019`, `1101`) | Kept (`adb_reset` preserves it, `src/core/peripherals/adb.c:511`) | From the checkpoint's ADB state (`adb.c:1051`) |
+| Scheduler pacing (`scheduler.mode`) | **Carried**: the host harness owns it, not the machine (`machine.c:1000-1008`, `1085`) | **Carried** | Unchanged | The checkpoint's own value (`src/core/scheduler/scheduler.c:145`, `786`) |
+| `machine.config.created` | Stamped now | **Preserved** (`machine.c:1244`) | Unchanged | From the checkpoint's record |
+| vROM/PROM offer registries, including the explicit `vrom=`/`prom=` pick | Process-global; survive | Survive | Survive | Survive; the record's `vrom` is registered again as the explicit pick (`system.c:1649`) |
+| Object tree | Machine-scoped nodes rebuilt (`root_install`, `system.c:1169`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Rebuilt | Untouched | Rebuilt |
+
+**`machine.boot` inherits nothing from the running machine.** The
+document is the whole specification. `model` and `rom` are required, and
+every other field falls back to the **model's** defaults, never to the
+previous record. That holds across a model change too
+(`machine.c:727-734`, `853-856`; `tests/integration/boot-config`). For
+this reason the integration runner passes the ROM explicitly: it starts
+headless with `rom=` and also exports the same path as `$ROM`, so a
+script re-boots with `machine.boot model=... rom="${$ROM}"`
+(`scripts/run-integration-test.sh:154-164`). To bring back the machine
+you have (including one just restored from a checkpoint), call
+`machine.restart`; a bare `machine.boot()` is an error. A new boot does
+still see four kinds of process-level state that are not part of any
+machine:
+
+- scheduler pacing (the table above);
+- the offer registries ([rom.md §10](../memory/rom.md#10-rom-provisioning));
+- per-slot staged picks the caller made before the boot
+  (`machine.nubus.slot[N].card_id` / `.video_mode`,
+  `machine.pci.slot[N].card_id`), each consumed by that boot;
+- the host share, published again for every new machine
+  (`provision_default_share`, `system.c:1172`).
+
+**`machine.reset` compared with a guest `RESET`.** The 68k `RESET`
+instruction resets the devices on /RESET (`system_reset_devices`,
+`system.c:289`) and leaves the CPU alone. `machine.reset` resets those
+devices and then resets the CPU to its vector (68040, 68000/68030, or
+`ppc_reset`; `system.c:216-231`). Each family binds its own
+`substrate->bus_reset`. The Plus and the Lisa have none yet, so they fall
+back to the common device set (`system_reset_common_devices`); the code
+calls this "a gap, not hardware" (`system.c:292`).
+
+**Differences between families, and known gaps.**
+
+- *Non-volatile state across `machine.restart`.* Only the TNT family
+  carries a chip across a power-cycle: its NVRAM store. On every other
+  Macintosh, PRAM comes back at the family's construction defaults.
+  Hardware keeps battery-backed PRAM through a power-off, so this is a
+  gap. The web frontend works around one piece of it by writing the
+  startup device again after a restart (`app/web2/src/bus/boot.ts:265`).
+  `tnt_nvram_clear` erases the store together with the carry
+  (`tnt.c:458`).
+- *Media transfer by substrate.* Floppies and `machine.scsi` go through
+  the standard pair (`system_media_detach_std` /
+  `system_media_attach_std`, `system.c:1398`/`1440`). The TNT family also
+  carries `machine.scsi2`, and the Network Servers' second channel keeps
+  its bus (`tnt_media_detach`, `tnt.c:925`;
+  `tests/integration/ans-machine-restart`). The Lisa carries its Sony
+  disk and its ProFile (`lisa_media_detach`,
+  `src/machines/lisa/lisa.c:500`). A medium that cannot be re-attached
+  is closed and logged (`machine.c:1091-1096`).
+- *`monitor=` is not replayed.* `machine.restart` builds its document
+  from every recorded field except `monitor` (`machine.c:1202-1215`). A
+  machine booted with a non-default built-in monitor therefore restarts
+  on the model's default monitor. This is a gap.
+- *Side effect before rejection.* A `vrom=`/`prom=` pick is registered
+  in the offer registry before the strict card-resolution check runs
+  (`machine.c:981-990`). A boot rejected at that check still leaves the
+  pick registered as explicit.
+- *Failure after teardown.* If `system_create` or ROM staging fails, the
+  previous machine is already gone and the process has no machine
+  (`machine.c:1055-1080`).
+- Host-side state outside the construction configuration (volume,
+  camera/microphone capture sources) is not carried by any of these
+  operations. The frontend asserts it again (`machine.c:1157-1163`;
+  `app/web2/src/bus/boot.ts`, `reconcileUiWithMachine`).
+
+## Boot arguments
+
+`machine.boot` takes only named arguments (`machine_boot_args`,
+`src/machines/machine.c:1266`). The shell writes them as `name=value`; the
+JS bridge passes them as one JSON object (`initEmulator`,
+`app/web2/src/bus/boot.ts:120-138`). An empty string, `0`, or `0xFF` for
+`video_sense` means "not given". An explicitly empty value such as `rom=`
+is rejected by the grammar before binding (`machine.c:1256-1264`). On
+success the call returns `true`; otherwise it returns a `V_ERROR` and the
+old machine keeps running.
+
+| Argument | Kind | Default | Meaning and validation |
+|---|---|---|---|
+| `model` | string | **required** | Machine model id (`machine.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
+| `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by checksum, as a ROM whose compatible list contains `model` ([rom.md §10](../memory/rom.md#10-rom-provisioning); `machine.c:873-899`). |
+| `ram` | uint (KB) | the model's `ram_default` | Must be one of the model's `ram_options` (`ram_option_allowed`, `machine.c:700`, checked at `863-871`). |
+| `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
+| `vrom` | string | resolved from the offers | An explicit NuBus declaration-ROM pick. The file must identify as a known declaration ROM (`vrom_identify_card`, `machine.c:964-969`). It then wins the pick order for the card its content provides. |
+| `video_card` | string | the slot default | Card id for the machine's **first** NuBus socket. Rejected on a model with no NuBus slots, and for an unknown id (with a "did you mean" hint) (`machine.c:901-912`). A per-slot `machine.nubus.slot[N].card_id` staged before the boot beats it for that slot. |
+| `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). The argument's doc string still says "0..7". |
+| `video_mode` | string | the card's default | Video-mode id for the first socket. It must be a known mode id (`nubus_video_mode_known`, `machine.c:936`). |
+| `custom_mode` | string | none | Custom resolution `WxHxD` for the generic `8_24` kind. Parsed and rejected with the reason (`machine.c:957-961`). |
+| `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `machine.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
+| `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket. Rejected on a model with no PCI slots, and for an unknown id (`machine.c:913-924`). |
+| `prom` | string | resolved from the offers | An explicit PCI expansion-ROM pick. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`, `machine.c:970-977`). |
+| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`). A malformed pair is logged and dropped. Whether a key means anything is up to the card's `stage_option` hook (`stage_pci_options`, `machine.c:806`). |
+
+After the per-field checks comes **strict card resolution**. A card the
+user *explicitly* picked (a staged per-slot entry, or the wildcard
+`video_card`/`pci_card` on the first socket) that needs a declaration ROM
+or FCode expansion ROM must resolve from the offer registry. Otherwise the
+boot is rejected before teardown (`validate_vrom_resolution` /
+`validate_prom_resolution`, `machine.c:745`/`775`). A socket that falls
+back to its *default* card degrades to an empty slot with a log instead,
+and a soldered-down card such as the SE/30's onboard video synthesises its
+own declaration ROM.
+
+The resolved configuration is recorded in `machine.config` (`model`,
+`ram`, `rom`, `rom_crc`, `rom2`, `vrom`, `vroms`, `slot_cards`,
+`video_card`, `video_sense`, `video_mode`, `custom_mode`, `created`,
+`valid`; `src/core/machine_config.c:183-255`). The record also stores
+`monitor`, `pci_card`, `prom` and `pci_option`, but the object surface
+does not expose those four.
+
+**Headless command line.** The CLI arguments fill the same document and
+call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-1350`):
+
+| CLI | Boot document | Notes |
+|---|---|---|
+| `rom=<file>` | `rom` | Required. The CLI identifies the file itself first and exits if it does not identify (`headless_main.c:1298`). The directory's `*.vrom` and `*.prom` files are offered before the boot (`offer_sibling_card_roms`, `headless_main.c:931`). |
+| `model=<id>` | `model` | Defaults to the first entry of the ROM's compatible list (for the Universal ROM, `se30`). An id outside that list is refused with the list printed (`headless_main.c:1303-1326`). |
+| `ram=<kb>` | `ram` | Parsed with `strtoul`. A non-number becomes `0`, which means the model default (`headless_main.c:1156`). |
+| `video_card=<id>` | `video_card` | |
+| `monitor=<id>` | `monitor` | |
+| (none) | `video_sense` | Always `-1` (unset). |
+
+`vrom`, `prom`, `pci_card`, `pci_option`, `video_mode`, `video_sense`,
+`custom_mode` and `rom2` have no CLI form. A script that needs them calls
+`machine.boot` itself.
+
 ## Adding a new class
 
 The pattern is the same regardless of whether the class is a process-
