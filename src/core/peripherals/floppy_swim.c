@@ -111,37 +111,17 @@ static int ism_mfm_spt(floppy_t *floppy, int drv) {
 //
 // ISM ASIC spec, Setup register $5: bit 2 sets GCR mode, and bit 6 ("the read
 // and write Trans-Space logic bypassed") "must be set whenever the GCR mode is
-// set".  Neither bit is read anywhere: wSetup just stores the byte and
-// mfm_build_sector synthesises an MFM address+data field unconditionally.
-// SWIM3 builds its whole format-detection walk on exactly this predicate.
+// set".  The predicate compares that framing against the format currently
+// WRITTEN on the medium (floppy_media_current), not the medium's physical
+// class: floppy_media_t::mfm once meant only "a disk of this capacity is
+// conventionally MFM", and over that the check refused 2,621 sector builds in
+// se30-mactest, which drives the ISM with 800K GCR media while framing MFM.
+// SWIM3 builds its format-detection walk on the same predicate.
 //
-// THE PREDICATE IS CORRECT AND CANNOT BE APPLIED YET.  Measured, not guessed:
-// instrumenting it over se30-mactest without acting on it shows it would refuse
-// 2,621 sector builds, every one of them
-//
-//     setup=0x20 (GCR bit CLEAR, i.e. MFM framing) over type=image_fd_ds
-//
-// -- MacTest drives the ISM with 800K GCR media while the chip is framing MFM,
-// and the model happily serves it MFM fields.  ism_mfm_spt() even has a
-// fallback for exactly this ("a GCR disk reaching the MFM path"), which is the
-// same incoherence written down somewhere else.
-//
-// So the blocker is not the Setup bit.  It is that this model has NO NOTION OF
-// WHAT ENCODING IS CURRENTLY LAID DOWN ON A MEDIUM: floppy_media_t::mfm means
-// "a disk of this CAPACITY is conventionally MFM", derived from the file size,
-// not "this disk currently carries MFM".  A predicate over the chip's framing
-// and the medium's encoding needs the second, and there is nowhere to get it.
-//
-// Enforcing the check therefore means giving the ISM path a real GCR mode --
-// the S_GCR framing SWIM2 has -- so that GCR framing over GCR media produces
-// GCR fields, and a genuine mismatch produces nothing.  That is a new
-// capability, not a gate in front of the existing one.  The IOP protocol's
-// CurrentFormat/FormatsAllowed is the shape of the missing state.
-//
-// Kept, unused, because it is what that work will need.  Do not wire it in
-// without rerunning se30-mactest, se30-format-hd, se30-cdrom, iicx-mactest and
-// iici-aux3-8bpp -- the EXTENDED tier, not the matrix: none of these are matrix
-// rows, which is why the matrix was green while the gate was in.
+// mfm_build_sector applies it on the read path only (see there).  Any change
+// to it needs se30-mactest, se30-format-hd, se30-cdrom, iicx-mactest and
+// iici-aux3-8bpp -- the EXTENDED tier: none of them is a matrix row, which is
+// how the matrix once stayed green while this gate was wrong.
 static bool ism_encoding_matches(floppy_t *floppy, int drv) {
     floppy_media_t m;
     if (!floppy_media_current(floppy, (unsigned)drv, &m))
@@ -1020,13 +1000,13 @@ static uint8_t swim_read_uint8(void *ctx, uint32_t addr) {
 // return open bus, as grand_central.c does.
 static uint16_t swim_read_uint16(void *ctx, uint32_t addr) {
     (void)ctx;
-    LOG(1, "%s: 16-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    LOG(1, "SWIM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
     return 0xFFFF;
 }
 
 static uint32_t swim_read_uint32(void *ctx, uint32_t addr) {
     (void)ctx;
-    LOG(1, "%s: 32-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    LOG(1, "SWIM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
     return 0xFFFFFFFFu;
 }
 
@@ -1038,13 +1018,13 @@ static void swim_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
 static void swim_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
     (void)ctx;
     (void)value;
-    LOG(1, "%s: 16-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
+    LOG(1, "SWIM: 16-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 static void swim_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
     (void)ctx;
     (void)value;
-    LOG(1, "%s: 32-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
+    LOG(1, "SWIM: 32-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 // ============================================================================

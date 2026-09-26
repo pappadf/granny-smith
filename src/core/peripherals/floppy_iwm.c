@@ -34,13 +34,13 @@ static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
 // return open bus, as grand_central.c does.
 static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
     (void)floppy;
-    LOG(1, "%s: 16-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    LOG(1, "IWM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
     return 0xFFFF;
 }
 
 static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
     (void)floppy;
-    LOG(1, "%s: 32-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
     return 0xFFFFFFFFu;
 }
 
@@ -58,13 +58,13 @@ static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
 static void iwm_write_uint16(void *floppy, uint32_t addr, uint16_t value) {
     (void)floppy;
     (void)value;
-    LOG(1, "%s: 16-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
+    LOG(1, "IWM: 16-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
     (void)floppy;
     (void)value;
-    LOG(1, "%s: 32-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
+    LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 // Sets up the IWM memory interface callbacks on the floppy controller
