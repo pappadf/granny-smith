@@ -92,12 +92,6 @@ double scheduler_time_ns(struct scheduler *restrict s) {
 void remove_event_by_data(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data) {
     (void)s, (void)cb, (void)src, (void)data;
 }
-int platform_bsr32(uint32_t v) {
-    int n = 31;
-    while (n >= 0 && !(v & (1u << n)))
-        n--;
-    return n;
-}
 
 // ============================================================
 // Helpers

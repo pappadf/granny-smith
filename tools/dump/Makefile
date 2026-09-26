@@ -2,7 +2,7 @@
 # Builds a reverse-engineering tool that extracts and disassembles classic
 # Mac forked files and A/UX COFF binaries.  Core sources are compiled
 # directly from src/ (not copied), following the same pattern as
-# tools/disasm/ with a force-included platform override.
+# tools/disasm/, with the shared platform header force-included.
 
 CC      ?= gcc
 CFLAGS  += -Wall -Wextra -O2
@@ -18,13 +18,13 @@ CORE_STORAGE_DIR := $(CORE_DIR)/storage
 # Directory of this Makefile (tools/dump/)
 TOOL_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-# Include paths.  Force-include the platform override before all sources
-# to prevent the real emulator platform.h from loading.
+# Include paths.  Force-include the shared platform header
+# (src/platform/platform.h), with the headless clock -- a native program.
 INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_DBG_DIR) -I$(CORE_STORAGE_DIR) -I$(CORE_DIR)/object \
-            -I$(TOOL_DIR) \
-            -include $(TOOL_DIR)/platform.h
+            -I$(TOOL_DIR) -I../../src/platform -I../../src/platform/headless \
+            -include ../../src/platform/platform.h
 
-# Tool-local sources.  Everything under tools/dump/ except platform.h.
+# Tool-local sources.  Everything under tools/dump/.
 LOCAL_SRCS := dump.c \
               annotate_disasm.c code_segment.c symbols.c \
               coff.c coff_dump.c aux_syscalls.c \
@@ -48,7 +48,7 @@ CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c \
 
 all: $(TOOL)
 
-$(TOOL): $(LOCAL_SRCS) $(CORE_SRCS) platform.h
+$(TOOL): $(LOCAL_SRCS) $(CORE_SRCS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(LOCAL_SRCS) $(CORE_SRCS)
 
 clean:

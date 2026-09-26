@@ -44,6 +44,10 @@
 #include <termios.h>
 #include <unistd.h>
 
+#if defined(__linux__) || defined(__APPLE__)
+#include <execinfo.h>
+#endif
+
 // Platform stubs for functions defined in WASM but needed by core
 
 // Video force redraw - no-op in headless
@@ -906,6 +910,49 @@ static void offer_sibling_proms(const char *rom_path) {
         prom_offer(path);
     }
     closedir(d);
+}
+
+// === The platform contract (src/platform/platform.h) =======================
+
+// The host callstack, for the failure handler: glibc's backtrace where there
+// is one (this lived in em_main.c's never-compiled native branch).
+void platform_print_host_callstack(void) {
+    printf("\n=== Host callstack ===\n");
+#if defined(__linux__) || defined(__APPLE__)
+    void *frames[64];
+    int n = backtrace(frames, 64);
+    char **syms = backtrace_symbols(frames, n);
+    if (syms) {
+        for (int i = 0; i < n; i++)
+            printf("%s\n", syms[i]);
+        free(syms);
+        return;
+    }
+#endif
+    printf("(unavailable)\n");
+}
+
+// No host audio sink headless: deterministic capture for golden-WAV tests
+// lives core-side in audio_out.c, ahead of this boundary.
+void platform_audio_open(uint32_t src_rate_hz, int channels) {
+    (void)src_rate_hz;
+    (void)channels;
+}
+
+void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
+    (void)frames;
+    (void)nframes;
+    (void)vol_0_7;
+}
+
+void platform_audio_set_rate(uint32_t src_rate_hz) {
+    (void)src_rate_hz;
+}
+
+// No host audio ring: the governor's audio signal is simply absent (and the
+// governor itself never runs on the budget-driven headless path).
+double platform_audio_ring_fill(void) {
+    return -1.0;
 }
 
 int main(int argc, char *argv[]) {

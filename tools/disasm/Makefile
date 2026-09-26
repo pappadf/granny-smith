@@ -1,7 +1,8 @@
 # Makefile for the standalone disasm tool
 # Builds a 68000/68030 disassembler reusing the core cpu_disasm.c decoder.
 # Core sources are compiled directly from src/ (not copied), following
-# the same pattern as tests/unit/ with a force-included platform override.
+# the same pattern as tests/unit/, with the shared platform header
+# (src/platform/platform.h) force-included.
 
 CC      ?= gcc
 CFLAGS  += -Wall -Wextra -O2
@@ -18,13 +19,13 @@ CORE_DIR     := ../../src/core
 TOOL_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # Include paths for core headers (cpu.h, common.h, debug_mac.h, cpu_decode.h)
-# and tools/dump headers (annotate_disasm.h).  Force-include our platform
-# override before all sources to prevent the real platform.h from loading
-# (same pattern as tests/unit/support/).
+# and tools/dump headers (annotate_disasm.h).  Force-include the shared
+# platform header (src/platform/platform.h), with the headless clock -- the
+# tool is a native program.
 INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_CPU_DIR)/dsp3210 -I$(CORE_CPU_DIR)/ppc \
             -I$(CORE_DBG_DIR) -I$(CORE_DIR)/object -I$(DUMP_DIR) \
-            -I$(TOOL_DIR) \
-            -include $(TOOL_DIR)/platform.h
+            -I$(TOOL_DIR) -I../../src/platform -I../../src/platform/headless \
+            -include ../../src/platform/platform.h
 
 # Tool-specific sources (local to this directory)
 LOCAL_SRCS := disasm.c stubs.c
@@ -40,7 +41,7 @@ CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c $(CORE_CPU_DIR)/dsp3210/dsp3210_disasm
 
 all: $(TOOL)
 
-$(TOOL): $(LOCAL_SRCS) $(CORE_SRCS) platform.h trap_lookup.h
+$(TOOL): $(LOCAL_SRCS) $(CORE_SRCS) trap_lookup.h
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(LOCAL_SRCS) $(CORE_SRCS)
 
 clean:

@@ -735,7 +735,7 @@ uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
     for (unsigned i = 0; i < size; i++) { // byte-wise: an access may straddle pages
         uint32_t a = phys + i;
         uint32_t page = a >> PAGE_SHIFT;
-        if ((int)page >= g_page_count)
+        if (page >= g_page_count)
             return 0;
         page_entry_t *pe = &g_page_table[page];
         uint8_t b;

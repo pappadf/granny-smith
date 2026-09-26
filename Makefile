@@ -183,6 +183,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(MACHINES_DIR)/oss \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \
+            -Isrc/platform \
             -I$(PLATFORM_DIR) \
             -I$(VROM68K_OUT) \
             -I$(LASERWRITER_OUT)

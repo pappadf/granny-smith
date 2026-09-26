@@ -180,16 +180,6 @@ struct cpu *system_cpu(void) {
 struct object *machine_object(void) {
     return NULL;
 }
-int platform_ntz32(uint32_t v) {
-    unsigned n = 0;
-    if (!v)
-        return 32;
-    while (!(v & 1u)) {
-        v >>= 1;
-        n++;
-    }
-    return n;
-}
 
 // ============================================================
 // Tests

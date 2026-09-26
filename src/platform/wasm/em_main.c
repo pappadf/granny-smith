@@ -34,14 +34,8 @@
 #include <termios.h>
 #include <unistd.h>
 
-#ifdef __EMSCRIPTEN__
 #include <emscripten/stack.h>
 #include <emscripten/wasmfs.h>
-#else
-#if defined(__linux__) || defined(__APPLE__)
-#include <execinfo.h>
-#endif
-#endif
 
 #include "api.h"
 #include "appletalk.h"
@@ -1097,7 +1091,6 @@ void system_post_create(config_t *cfg) {
 // Print the host (Emscripten/WASM or native) callstack for debugging
 void em_print_host_callstack(void) {
     printf("\n=== Host callstack ===\n");
-#ifdef __EMSCRIPTEN__
     // Print both C and JS stacks
     char stackbuf[8192];
     int n =
@@ -1106,23 +1099,6 @@ void em_print_host_callstack(void) {
         printf("%s\n", stackbuf);
     else
         printf("(unavailable)\n");
-#else
-// Attempt to use glibc backtrace on native builds
-#if defined(__linux__) || defined(__APPLE__)
-    void *buffer[64];
-    int n = backtrace(buffer, 64);
-    char **syms = backtrace_symbols(buffer, n);
-    if (syms) {
-        for (int i = 0; i < n; i++)
-            printf("%s\n", syms[i]);
-        free(syms);
-    } else {
-        printf("(unavailable)\n");
-    }
-#else
-    printf("(unavailable)\n");
-#endif
-#endif
 }
 
 // Platform-specific callstack function (exposed to core via platform.h)

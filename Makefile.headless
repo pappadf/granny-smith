@@ -55,9 +55,11 @@ include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 include src/core/network/laserwriter.mk
 
 # -- Include paths --
-# Platform headers come first so platform.h overrides are picked up.
+# The shared platform.h (src/platform), then this target's clock
+# (platform_clock.h in PLATFORM_DIR).
 
-INCLUDES := -I$(PLATFORM_DIR) \
+INCLUDES := -Isrc/platform \
+            -I$(PLATFORM_DIR) \
             -I$(CORE_DIR) \
             -I$(CORE_DIR)/cpu \
             -I$(CORE_DIR)/cpu/dsp3210 \
