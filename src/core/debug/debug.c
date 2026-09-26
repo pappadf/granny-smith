@@ -35,6 +35,7 @@
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "event/gs_event.h"
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // debug_init / debug_cleanup reference them.
@@ -773,6 +774,8 @@ int debug_break_and_trace(void) {
                 } else {
                     printf("breakpoint hit at $%08X\n", bp->addr);
                 }
+                gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
+                               bp->addr);
                 // Remember this PC to skip it next time we check
                 debug->last_breakpoint_pc = current_pc;
                 stop = true;

@@ -423,12 +423,10 @@ void em_main_tick(void) {
             double tick_max, tick_p50, poll_max, poll_p50;
             perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
             perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onPerfUpdate === 'function') Module.onPerfUpdate($0, $1, $2, $3, $4); },
-                (int)(mips * 100.0), (int)(ticks_per_second * 10.0),
-                (int)(tick_max * 1000.0), (int)(tick_p50 * 1000.0), (int)(poll_max * 1000.0));
-            // clang-format on
+            gs_event_emitf(GS_EVENT_STATE,
+                           "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
+                           "\"poll_max_ms\":%.3f}",
+                           mips, ticks_per_second, tick_max, tick_p50, poll_max);
         }
 
         last_time = current_time;
@@ -481,40 +479,11 @@ void em_main_tick(void) {
             em_video_update();
     }
 
-    // Push a run-state notification to JS on every transition
-    // (including the first tick). The callback is installed via
-    // Module.onRunStateChange at module construction; ASYNC variant so
-    // the worker doesn't block during emulation.
-    int running = (sched && scheduler_is_running(sched)) ? 1 : 0;
-    static int last_reported_running = -1;
-    if (running != last_reported_running) {
-        last_reported_running = running;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onRunStateChange === 'function') Module.onRunStateChange(!!$0); },
-            running);
-        // clang-format on
-    }
+    // The run state and the floppy drives are the core's to announce now
+    // (mode_started / mode_ended from the scheduler, floppy from the
+    // controller): nothing is diffed here any more.
 
-    // Push floppy drive present-state transitions to JS (Module.onFloppyChange),
-    // same diff-and-async-invoke pattern as the run-state push above. This lets
-    // the Images view clear an "Inserted" badge the instant the guest ejects a
-    // disk on its own (e.g. the MacWorks loader eject) — no JS-side polling. Two
-    // drives is the platform's fixed floppy maximum (see system.c do_insert_fd).
-    static int last_fd_present[2] = {-1, -1};
-    for (int d = 0; d < 2; d++) {
-        int present = system_fd_present(d) ? 1 : 0;
-        if (present != last_fd_present[d]) {
-            last_fd_present[d] = present;
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onFloppyChange === 'function') Module.onFloppyChange($0, !!$1); },
-                d, present);
-            // clang-format on
-        }
-    }
-
-    // Push the HD / FD / CD activity lights (Module.onDriveActivity) on a
+    // The HD / FD / CD activity lights (a drive_activity event) on a
     // state edge only: the counters are sampled here, once per tick, and
     // drive_activity_update holds a light on for its minimum visible time.
     {
@@ -525,28 +494,9 @@ void em_main_tick(void) {
         for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
             if (!(changed & (1u << k)))
                 continue;
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onDriveActivity === 'function') Module.onDriveActivity($0, $1); },
-                k, (int)lights.light[k]);
-            // clang-format on
+            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                           (int)lights.light[k]);
         }
-    }
-
-    // Push the accelerated-mode effective CPU speed (x256; 256 = 1x) to JS on
-    // change, same diff-and-async pattern as the run-state push. The value is
-    // 1x outside accelerated mode and the governor steps it only on a ≥2 s
-    // dwell, so this fires rarely — the status bar reads it edge-driven rather
-    // than polling. JS divides by 256 for the multiplier.
-    int speed_x256 = sched ? (int)scheduler_effective_speed_x256(sched) : 256;
-    static int last_reported_speed = -1;
-    if (speed_x256 != last_reported_speed) {
-        last_reported_speed = speed_x256;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onSchedulerSpeed === 'function') Module.onSchedulerSpeed($0); },
-            speed_x256);
-        // clang-format on
     }
 }
 
@@ -562,21 +512,15 @@ void tick(void) {
     tick_poll_ms[slot] = tick_poll_ms_current;
 }
 
-// Forward formatted log lines to the JS-side Module.onLogEmit callback.
+// Forward formatted log lines to the page as log events.
 // Installed once at boot via log_set_sink so the new-UI Logs view can
 // fan emissions out to a per-category mirror without inferring them
 // from Module.print (which captures everything, not just LOG sites).
-// Same MAIN_THREAD_ASYNC_EM_ASM pattern as the onRunStateChange push
-// above so the worker thread never blocks on the main-thread invoke.
 static void js_log_sink(const char *line, void *user) {
     (void)user;
     if (!line)
         return;
-    // clang-format off
-    MAIN_THREAD_ASYNC_EM_ASM(
-        { if (typeof Module.onLogEmit === 'function') Module.onLogEmit(UTF8ToString($0)); },
-        line);
-    // clang-format on
+    gs_event_emit_text(GS_EVENT_LOG, "log", "line", line);
 }
 
 // SIGINT handler — stops the scheduler so a real Ctrl-C in the headless
@@ -722,17 +666,6 @@ int gs_download(const char *path) {
 
 static bool g_background_handlers_installed = false;
 
-// The core's quick-checkpoint heartbeat (system.h gs_checkpoint_saved): the
-// status bar's CP glyph flashes and its tooltip shows the save duration.
-// x100 fixed-point since MAIN_THREAD_ASYNC_EM_ASM carries ints.
-void gs_checkpoint_saved(double elapsed_ms) {
-    // clang-format off
-    MAIN_THREAD_ASYNC_EM_ASM(
-        { if (typeof Module.onCheckpointSaved === 'function') Module.onCheckpointSaved($0); },
-        (int)(elapsed_ms * 100.0));
-    // clang-format on
-}
-
 // Request background checkpoint (with rate limiting)
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
     int rc = system_quick_checkpoint(reason, false, rate_limit);
@@ -827,7 +760,7 @@ int main(void) {
     setup_init();
     system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
-    // Route every log_emit through Module.onLogEmit so the new-UI Logs
+    // Route every log_emit onto the event ring so the new-UI Logs
     // view gets a structured stream parallel to stdout. shell_init has
     // already called log_init; setting the sink here also forwards any
     // categories registered later (setup_init, machine boot, …).
@@ -864,32 +797,16 @@ int main(void) {
 // Assertion Notification for JavaScript
 // ============================================================================
 
-// Platform-specific assertion callback implementation.
-// Notifies the browser (Playwright tests) that an assertion has failed.
-// Must run on main thread (accesses window.__gsAssertionHandler).
+// Platform-specific assertion callback implementation: the failure goes
+// out as an event (assert_failed) the page and its tests read off the
+// event ring; nothing here blocks on the browser's main thread.
 static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func) {
     if (!expr)
         expr = kind;
-    // clang-format off
-    MAIN_THREAD_EM_ASM(
-        {
-            var exprStr = $0 ? UTF8ToString($0) : "";
-            var fileStr = $1 ? UTF8ToString($1) : "<unknown>";
-            var lineNum = $2;
-            var funcStr = $3 ? UTF8ToString($3) : "<unknown>";
-
-            // Call global handler if registered
-            if (typeof window !== 'undefined' && typeof window.__gsAssertionHandler === 'function') {
-                try {
-                    window.__gsAssertionHandler(
-                        {expr: exprStr, file: fileStr, line: lineNum, func: funcStr, timestamp: Date.now()});
-                } catch (e) {
-                    // Handler may throw to stop execution - this is expected
-                }
-            }
-        },
-        expr, file, line, func);
-    // clang-format on
+    char where[512];
+    snprintf(where, sizeof where, "%s:%d %s", file ? file : "<unknown>", line, func ? func : "<unknown>");
+    gs_event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
+    gs_event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in

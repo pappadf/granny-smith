@@ -226,6 +226,7 @@ struct scheduler {
     sched_stop_reason_t stop_reason;
     bool mode_open;
     bool mode_bounded; // the mode has an instruction budget
+    uint32_t speed_reported_x256; // the last effective speed announced (speed event)
     bool in_frame; // inside scheduler_run_frame: a stop there is reported at its end
 
     // Pointers last
@@ -316,6 +317,13 @@ static void scheduler_update_cpi_eff(struct scheduler *s) {
     }
     s->cpi_eff_x256 = eff;
     s->cycle_frac_x256 = 0;
+    // The effective speed changed (a governor step, a pin, a mode switch):
+    // say so once, here, where every path that changes it passes.
+    uint32_t sp = s->mode == schedule_accelerated ? scheduler_current_speed_x256(s) : SPEED_X256_ONE;
+    if (sp != s->speed_reported_x256) {
+        s->speed_reported_x256 = sp;
+        gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)sp);
+    }
 }
 
 // Reset the adaptive governor to the authentic floor with fresh estimators.

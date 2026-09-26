@@ -479,7 +479,7 @@ static void upload_clut(const display_t *d) {
 // CSS-driven display dimensions don't, and the page shows a stretched /
 // letterboxed framebuffer (this surfaced for the IIcx when the JMFB
 // driver flipped from the SE/30-default 512×342 to 640×480).  Mirrors
-// the change-only pattern used by em_main_tick's onRunStateChange push.
+// a change-only push.
 static void resize_canvas(uint32_t width, uint32_t height, uint32_t par_w, uint32_t par_h) {
     // The canvas's intrinsic resolution is always the raw framebuffer size; the
     // pixel aspect ratio only changes the CSS display size, applied JS-side.

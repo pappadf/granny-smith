@@ -243,7 +243,7 @@ async function seedScreenFromCore(): Promise<void> {
 // host-keyboard state: a mechanically locking key is already down when the
 // machine powers on, so latch it BEFORE the machine runs, so the ROM's ADB
 // init finds the key down and reports it into KeyMap — that is the gate
-// Copland D11E4's boot blocks test.  onRunStateChange then flips
+// Copland D11E4's boot blocks test.  The mode events then flip
 // machine.status to 'running' once the worker pushes the transition.
 export async function prepareFreshMachine(): Promise<void> {
   if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);

@@ -91,13 +91,13 @@ So `r !== null` is never a success test — `{ error }` passes it.  Use
 `gsErrorText(r)` gives the reason
 ([`bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)).
 
-C→JS *state pushes* go through `Module.*` callbacks installed at module
-construction, not through the bridge slot:
+What the core says about the machine arrives as **events on the mailbox's
+event ring** (see "Events from the core" below): the run state, the
+effective speed, the floppy drives, the activity lights, the perf
+samples, checkpoint saves, log lines, breakpoint hits and assertion
+failures. The `Module.*` callbacks that remain are the platform
+transports, installed at module construction:
 
-- **`Module.onRunStateChange(running)`** — fired via
-  `MAIN_THREAD_ASYNC_EM_ASM` from `em_main_tick` when the scheduler
-  transitions between running and stopped, plus once at the first tick
-  to seed JS.
 - **`Module.onScreenResize(width, height, parW, parH)`** — fired via
   `MAIN_THREAD_ASYNC_EM_ASM` from `em_video.c::resize_canvas` whenever
   the framebuffer's intrinsic dimensions change. Transition-only
@@ -107,29 +107,8 @@ construction, not through the bridge slot:
   doesn't block on JS layout. `parW:parH` is the monitor's pixel aspect
   ratio (the Lisa's 720×364 raster is 2:3), so the renderer can show
   non-square pixels.
-- **`Module.onLogEmit(line)`** — fired via `MAIN_THREAD_ASYNC_EM_ASM`
-  per emitted log line, gated by `log_would_log()` so the worker pays
-  the cross-thread cost only when a category's level is above zero.
-  Routed in [`app/web2/src/bus/logSink.ts`](../../app/web2/src/bus/logSink.ts)
-  into the reactive `logs.entries` buffer (rAF-coalesced).
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
-  pipes. The same `logSink` writes these to the xterm pane.
-- **`Module.onFloppyChange(drive, present)`** — a floppy drive's medium
-  came or went, including when the guest ejects on its own; the Images
-  view clears its badge without polling.
-- **`Module.onSchedulerSpeed(speedX256)`** — the effective CPU speed in
-  Accelerated mode (256 = 1×), on change; the status bar's multiplier.
-- **`Module.onPerfUpdate(mipsX100, tpsX10, tickMaxUs, tickP50Us, pollMaxUs)`**
-  — emulated MIPS and the tick rate, about once a second, plus the last
-  window's per-tick wall time: the worst and median `em_main_tick` and the
-  worst `shell_poll` share, in microseconds. The rates are averages and
-  cannot show a single long tick; the samples can (the status bar's MIPS
-  tooltip shows them).
-- **`Module.onCheckpointSaved(elapsedMsX100)`** — a background or quick
-  checkpoint completed; the status bar's CP glyph flashes.
-- **`Module.onDriveActivity(kind, state)`** — an HD / FD / CD light
-  changed (kind 0/1/2; state idle/read/write 0/1/2); see the status bar
-  below.
+  pipes. `logSink` writes these to the xterm pane.
 - **`Module.onAbort(what)`** — the glue's `abort()`: the worker trapped.
   The bridge is marked dead and every request fails at once.
 - **`Module.onVideoInReady(ptr)`** / **`Module.onAudioInReady(ptr)`** —
@@ -255,9 +234,27 @@ EVT_STATE {"event":"mode_ended","mode":N,"owner":C,"reason":R,"pc":P,"instr_coun
 `mode_ended` goes out from `scheduler_run_frame` at the point where the
 run stops, whichever path stopped it — the instruction budget, a
 breakpoint, `scheduler.stop`, an assertion — so a `debug.step` emits it
-before its own result. The page's run/paused state follows these events;
-the older `Module.onRunStateChange` push reports the same transitions to
-the same handler until it is removed.
+before its own result. The page's run/paused state follows these events.
+
+The rest of what the tick used to diff and push through `Module.on*`
+callbacks is emitted at its source too; the page routes each in
+`routeCoreEvent` (`bus/emulator.ts`):
+
+| Event | Emitted by | Payload |
+|---|---|---|
+| `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
+| `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
+| `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
+| `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
+| `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
+| `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
+| `log:log` | the log sink, every line | `{line}` |
+
+What still crosses as a `Module.on*` callback is a platform transport
+handing the page a handle or a buffer (screen geometry, the Voodoo2 and
+printer rings, camera and microphone rings): not an event about the
+machine.
 
 ### Jobs: scripts off the emulator thread
 
@@ -359,10 +356,8 @@ Module = await createModule({
   print: routePrintLine,
   printErr: routeErrLine, // also recognises a worker crash
   onAbort: (what) => markBridgeDead(`Aborted(${String(what ?? '')})`),
-  onRunStateChange: handleRunStateChange,
   onScreenResize: handleScreenResize,
-  onLogEmit: routeLogEmit,
-  // ...every other Module.on* callback listed above...
+  // ...the other transport callbacks listed above...
   gsAudioWorkletUrl,
 });
 ```
@@ -398,7 +393,7 @@ The Svelte app is organised under
   — machine state, drive activity, in-flight upload progress. The HD /
   FD / CD lights are real: the core counts every drive read and write on
   the image (`storage.images[i].reads` / `.writes`), the worker tick sums
-  them per kind and pushes `Module.onDriveActivity(kind, state)` only when
+  them per kind and emits a `drive_activity` event only when
   a light changes, holding each on at least 100 ms
   ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
   shows only the lights its profile has drives for.

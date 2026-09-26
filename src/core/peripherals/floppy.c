@@ -9,6 +9,9 @@
 #include "floppy.h"
 #include "floppy_internal.h"
 #include "log.h"
+#include "event/gs_event.h"
+
+static void floppy_notify_present(int drive, bool present);
 #include "memory.h"
 #include "object.h"
 #include "platform.h"
@@ -355,6 +358,7 @@ void floppy_disk_control(floppy_t *floppy) {
                 iwm_flush_modified_tracks(drive, floppy->disk[drv], drv);
                 floppy_drive_drop_tracks(floppy, (unsigned)drv);
                 floppy->disk[drv] = NULL;
+                floppy_notify_present(drv, false);
                 LOG(1, "Drive %d: Ejected", drv);
             }
         } else {
@@ -639,6 +643,13 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
 }
 
 // Inserts a disk image into the specified drive
+// A drive's disk came or went: the page clears or sets its badge on this
+// (it used to poll the drives every tick).
+static void floppy_notify_present(int drive, bool present) {
+    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"floppy\",\"drive\":%d,\"present\":%s}", drive,
+                   present ? "true" : "false");
+}
+
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
     // Reachable from user input (fd insert, machine.floppy.drive[N].insert),
     // so the bound is a real check rather than a GS_ASSERT: the assert was
@@ -654,6 +665,7 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
     }
 
     floppy->disk[drive] = disk;
+    floppy_notify_present(drive, true);
 
     // The drive being loaded, not whichever the IWM SELECT line happens to
     // point at: this used to leave a stale offset on the freshly loaded drive
@@ -772,6 +784,7 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     iwm_flush_modified_tracks(&floppy->drives[drive], floppy->disk[drive], (int)drive);
     floppy_drive_drop_tracks(floppy, drive);
     floppy->disk[drive] = NULL;
+    floppy_notify_present((int)drive, false);
     return true;
 }
 
@@ -908,6 +921,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
                 if (name) {
                     system_read_checkpoint_data(checkpoint, name, len);
                     floppy->disk[i] = setup_get_image_by_filename(name);
+                    floppy_notify_present(i, floppy->disk[i] != NULL);
                     free(name);
                 } else {
                     // Consume bytes to keep stream aligned

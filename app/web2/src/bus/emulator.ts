@@ -95,20 +95,7 @@ interface EmscriptenModuleConfig {
   printErr?(s: string): void;
   // Called by the glue's abort() (needs "onAbort" in INCOMING_MODULE_JS_API).
   onAbort?(what: unknown): void;
-  onRunStateChange?(running: boolean): void;
   onScreenResize?(w: number, h: number, parW?: number, parH?: number): void;
-  onLogEmit?(line: string): void;
-  onFloppyChange?(drive: number, present: boolean): void;
-  onSchedulerSpeed?(speedX256: number): void;
-  onPerfUpdate?(
-    mipsX100: number,
-    tpsX10: number,
-    tickMaxUs: number,
-    tickP50Us: number,
-    pollMaxUs: number,
-  ): void;
-  onCheckpointSaved?(elapsedMsX100: number): void;
-  onDriveActivity?(kind: number, state: number): void;
   onVideoInReady?(ptr: number): void;
   onVideoInState?(active: boolean): void;
   onAudioInReady?(ptr: number): void;
@@ -244,14 +231,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     print: routePrintLine,
     printErr: routeErrLine,
     onAbort: (what: unknown) => markBridgeDead(`Aborted(${String(what ?? '')})`),
-    onRunStateChange: handleRunStateChange,
     onScreenResize: handleScreenResize,
-    onLogEmit: routeLogEmit,
-    onFloppyChange: onFloppyDriveChange,
-    onSchedulerSpeed: handleSchedulerSpeed,
-    onPerfUpdate: handlePerfUpdate,
-    onCheckpointSaved: handleCheckpointSaved,
-    onDriveActivity: setDriveActivity,
     onVideoInReady,
     onVideoInState,
     onAudioInReady,
@@ -660,12 +640,48 @@ export function dispatchCoreEvent(kindWord: number, json: string): void {
   if (coreEventTrace.push(ev) > CORE_EVENT_TRACE_MAX) coreEventTrace.shift();
   if (typeof window !== 'undefined')
     (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
-  // The run state: a mode's start and end are the transitions the
-  // Module.onRunStateChange push also reports; both feed the same
-  // idempotent handler until the push goes.
-  if (kind === 'state' && ev.event === 'mode_started') handleRunStateChange(true);
-  else if (kind === 'state' && ev.event === 'mode_ended') handleRunStateChange(false);
+  routeCoreEvent(ev);
   for (const cb of coreEventListeners) cb(ev);
+}
+
+const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
+
+// What the page does with each event the core emits (docs/guide/web.md,
+// "Events from the core").
+function routeCoreEvent(ev: CoreEvent): void {
+  const d = ev.data;
+  switch (`${ev.kind}:${ev.event}`) {
+    case 'state:mode_started':
+      handleRunStateChange(true);
+      break;
+    case 'state:mode_ended':
+      handleRunStateChange(false);
+      break;
+    case 'state:speed':
+      setAcceleratedSpeed(num(d.x256) / 256);
+      break;
+    case 'state:perf':
+      setPerfStats(num(d.mips), num(d.tps), {
+        tickMaxMs: num(d.tick_max_ms),
+        tickP50Ms: num(d.tick_p50_ms),
+        pollMaxMs: num(d.poll_max_ms),
+      });
+      break;
+    case 'notify:floppy':
+      onFloppyDriveChange(num(d.drive), d.present === true);
+      break;
+    case 'notify:drive_activity':
+      setDriveActivity(num(d.kind), num(d.state));
+      break;
+    case 'notify:checkpoint_saved':
+      setCheckpointSaved(num(d.elapsed_ms));
+      break;
+    case 'log:log':
+      if (typeof d.line === 'string') routeLogEmit(d.line);
+      break;
+    default:
+      break;
+  }
 }
 
 // --- C→JS push callbacks -----------------------------------------------
@@ -678,39 +694,6 @@ function handleRunStateChange(running: boolean): void {
   // when we know a machine is live.
   if (r) machine.status = 'running';
   else if (machine.status === 'running') machine.status = 'paused';
-}
-
-// Core-pushed accelerated-mode effective CPU speed (x256; 256 = 1x). Edge-
-// driven on the governor's rung transitions — the status bar shows it in
-// Accelerated mode. Divide by 256 for the multiplier.
-function handleSchedulerSpeed(speedX256: number): void {
-  setAcceleratedSpeed((speedX256 | 0) / 256);
-}
-
-// Core-pushed performance metrics, ~1 Hz: emulated MIPS from instr_count
-// deltas, the RAF tick rate, and the last window's per-tick wall time (max
-// and median of em_main_tick, max of its shell_poll share) -- the rates
-// cannot show one long tick, the samples can. Fixed-point on the wire
-// (x100 / x10 / microseconds) since MAIN_THREAD_ASYNC_EM_ASM carries ints.
-function handlePerfUpdate(
-  mipsX100: number,
-  tpsX10: number,
-  tickMaxUs: number,
-  tickP50Us: number,
-  pollMaxUs: number,
-): void {
-  setPerfStats((mipsX100 | 0) / 100, (tpsX10 | 0) / 10, {
-    tickMaxMs: (tickMaxUs | 0) / 1000,
-    tickP50Ms: (tickP50Us | 0) / 1000,
-    pollMaxMs: (pollMaxUs | 0) / 1000,
-  });
-}
-
-// Core-pushed quick/background checkpoint completion (elapsed ms x100 —
-// MAIN_THREAD_ASYNC_EM_ASM carries ints). The status bar flashes its CP
-// glyph and carries the time + duration in the tooltip.
-function handleCheckpointSaved(elapsedMsX100: number): void {
-  setCheckpointSaved((elapsedMsX100 | 0) / 100);
 }
 
 // Also called with the live geometry after a checkpoint restore, where no
@@ -775,7 +758,7 @@ export async function shutdownEmulator(): Promise<void> {
 
 export async function pauseEmulator(): Promise<void> {
   await gsEval('scheduler.stop');
-  // onRunStateChange handler reflects the new state.
+  // The mode_ended event reflects the new state.
 }
 
 export async function resumeEmulator(): Promise<void> {

@@ -35,6 +35,10 @@ void gs_event_emit(gs_event_kind_t kind, const char *json);
 #define GS_EVENT_MAX 1024
 void gs_event_emitf(gs_event_kind_t kind, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
+// Emits {"event":<event>,<field>:"<text>"} with `text` JSON-escaped and
+// of any length (a log line, an assertion's expression).
+void gs_event_emit_text(gs_event_kind_t kind, const char *event, const char *field, const char *text);
+
 // The client whose request the emulator thread is serving right now, or 0
 // when it is not serving one (the tick itself, a signal handler, headless
 // script mode).  A mode started while a request is served belongs to that

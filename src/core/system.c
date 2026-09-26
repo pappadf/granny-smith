@@ -39,6 +39,7 @@
 #include "sound.h"
 #include "via.h"
 #include "vrom.h"
+#include "event/gs_event.h"
 
 #include <assert.h>
 #include <dirent.h>
@@ -779,9 +780,6 @@ __attribute__((weak)) int gs_download(const char *path) {
 }
 
 // The quick-checkpoint heartbeat: the web status bar flashes on it.
-__attribute__((weak)) void gs_checkpoint_saved(double elapsed_ms) {
-    (void)elapsed_ms;
-}
 
 // === Checkpoints of the running machine, and finding media ==================
 //
@@ -876,7 +874,7 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
 
     if (rc == GS_SUCCESS) {
         g_last_quick_checkpoint_ms = now;
-        gs_checkpoint_saved(elapsed_ms);
+        gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", elapsed_ms);
         if (verbose)
             printf("Checkpoint saved to %s (%.2f ms)\n", final_path, elapsed_ms);
     } else if (verbose) {

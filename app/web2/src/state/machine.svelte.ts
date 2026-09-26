@@ -166,7 +166,7 @@ export function setCheckpointSaved(ms: number): void {
 
 // ---- Drive activity ----
 //
-// Core-pushed, on a state edge only (Module.onDriveActivity, em_main.c): the
+// Core-emitted, on a state edge only (the drive_activity event, em_main.c): the
 // core counts every disk read and write, samples the per-kind sums once per
 // tick and holds a light on for a minimum visible time
 // (src/core/storage/drive_activity.c).  kind: 0 hd, 1 fd, 2 cd; state:

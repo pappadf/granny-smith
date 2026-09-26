@@ -6,8 +6,8 @@
 //     to stdout / stderr. Routes to the terminal sink unconditionally;
 //     if the line happens to look like a structured log emission we
 //     also append to logs as a defensive double-source (covers the
-//     window before Module.onLogEmit is installed).
-//   - Module.onLogEmit — installed by src/platform/wasm/em_main.c via
+//     window before the mailbox's event reader is live).
+//   - log events — emitted by src/platform/wasm/em_main.c's log sink via
 //     log_set_sink. Every formatted log line lands here regardless of
 //     per-category stdout=on/off. Preferred path.
 
