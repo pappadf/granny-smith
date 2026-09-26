@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 # bench.sh — wall-time harness for the Voodoo2 raster backends.
 #
 # Runs the canonical launch flow — the tnt-voodoo2-glide integration row:

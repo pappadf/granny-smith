@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """Embed binary files as C byte arrays in one generated header.
 
 Usage: bin2c.py --out header.h --guard NAME name=path [name=path ...]

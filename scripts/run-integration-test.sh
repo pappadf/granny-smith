@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 # run-integration-test.sh — run one integration test directory.
 #
 # Extracted from the tests/integration Makefile pattern rules so the

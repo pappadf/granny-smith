@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 from __future__ import annotations
 """Dev server with cache bust avoidance and optional fallback root.
 Usage: python scripts/dev_server.py --root build --port 8080

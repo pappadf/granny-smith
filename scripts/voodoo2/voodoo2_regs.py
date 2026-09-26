@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """Voodoo2 (CVG) memory-mapped register table, built as data.
 
 Transcribed from 3dfx's own *Voodoo2 Graphics Specification*, rev 1.16

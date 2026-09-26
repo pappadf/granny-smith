@@ -76,11 +76,12 @@ This document describes the coding, formatting, and documentation conventions fo
 
 ### File Structure
 
-- Every source file must begin with a two-line copyright notice at the very top:
+- Every C source and header (`src/`, `tests/`, `tools/`) must begin with a two-line copyright notice at the very top:
     ```c
     // SPDX-License-Identifier: MIT
     // Copyright (c) pappadf
     ```
+  Scripts under `scripts/` carry the same two lines in their own comment syntax, after any `#!` line. The frontend's TypeScript/Svelte and the Makefiles are not required to. CI checks the C files and the scripts (the Hygiene workflow).
   The `SPDX-License-Identifier` tag is the machine-readable standard for license identification. The full MIT license text lives in the repository root `LICENSE` file — do **not** duplicate it in individual file headers.
 - Each file starts with a brief file-level comment describing its purpose. Example:
     ```c

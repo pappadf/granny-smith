@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """Seed perf-baselines.json from a suite run log.
 
 Reads the @@PERF records suite rows emit from one or more test logs and

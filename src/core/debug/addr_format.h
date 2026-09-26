@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // addr_format.h
 // Unified address parsing and formatting for logical/physical addresses.
 // Provides Motorola-convention $ hex prefix and L:/P: address space qualifiers.

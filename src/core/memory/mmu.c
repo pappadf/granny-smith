@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // mmu.c
 // 68030 PMMU (Paged Memory Management Unit) implementation.
 // Lazy-fill TLB using SoA pointer arrays: on a TLB miss the slow path

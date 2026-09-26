@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 # fetch_platen.sh — fetch EfterScript's prebuilt session library for a
 # pinned release into the local cache, verified against the release's
 # SHA256SUMS.

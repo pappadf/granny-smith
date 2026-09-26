@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """test-matrix.py — extract the integration-test coverage matrix.
 
 Statically parses tests/integration/*/config.mk and test.script (plus any

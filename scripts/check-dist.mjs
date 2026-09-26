@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Static validation of app/web2/dist/ produced by `make ui2` / Vite.
 //
 // Catches the deploy-blocker class of bug that shipped in v0.4.0, v0.4.1

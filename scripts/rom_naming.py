@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 # rom_naming.py - Canonical fixture-filename grammar for the gs-test-data repo.
 #
 # The emulator core identifies every ROM/vROM purely by content (checksum /

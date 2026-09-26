@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // addr_format.c
 // Unified address parsing and formatting for logical/physical addresses.
 

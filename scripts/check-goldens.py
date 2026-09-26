@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """check-goldens.py — every screen assertion in a test must guard a DISTINCT frame.
 
 A `check("a.png")` and a `check("b.png")` in the same script are two separate

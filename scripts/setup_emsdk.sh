@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 # Idempotent installer for a pinned Emscripten toolchain (6.0.7 by default).
 # Usage: scripts/setup_emsdk.sh [version]
 set -euo pipefail

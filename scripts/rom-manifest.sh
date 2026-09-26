@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 #
 # rom-manifest.sh - Generate the human-readable roms/ manifest for gs-test-data.
 #
