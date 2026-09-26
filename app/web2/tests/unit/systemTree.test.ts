@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 // Mock the bus so loadSystemChildren walks a synthetic SCSI device collection:
 // machine.scsi.device's meta.members lists one indexed member (`entries`)
 // with live slots 0 and 3. The walk must expand it into machine.scsi.device[0] / [3] entries rather
-// than showing the bare `entries` member (proposal §5.3 — the bug the SYSTEM
+// than showing the bare `entries` member (the bug the SYSTEM
 // tab had where indexed collections never enumerated).
 vi.mock('@/bus/emulator', () => ({
   isModuleReady: () => true,

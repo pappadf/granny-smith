@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { urlSchedulerMode, parseUrlMediaParams, hasUrlMedia } from '@/bus/urlMedia';
 
-// ?speed= reaches the core through the toolbar's mode (F-22).
+// ?speed= reaches the core through the toolbar's mode.
 describe('urlSchedulerMode', () => {
   it.each([
     ['paced', 'live'],
@@ -20,7 +20,7 @@ describe('urlSchedulerMode', () => {
   });
 });
 
-// Any media parameter starts URL processing (N-20): a CD or a vROM alone
+// Any media parameter starts URL processing: a CD or a vROM alone
 // used to be ignored.
 describe('hasUrlMedia', () => {
   it.each(['cd=x.iso', 'vrom=x.vrom', 'rom=x.rom', 'fd0=x.dsk', 'hd1=x.img'])('%s', (q) => {

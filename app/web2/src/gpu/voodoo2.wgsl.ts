@@ -1,12 +1,12 @@
-// The Voodoo2 WebGPU takeover's shaders (proposal-voodoo2-webgpu-takeover
-// §5.3-§5.4): the vertex shader places the walker's 12.4 vertices at the
-// half-pixel offset that makes the GPU's centre test equal the walker's
-// integer-sample test, and the fragment shader is the p.15 pixel pipe —
-// texture chain, chroma key, colour/alpha combine, fog, alpha test,
-// depth, dither — written in u32 arithmetic beside the C
-// (voodoo2_raster.c), stage for stage and name for name, so the two
-// implementations can be read against each other.  The GPU contributes
-// coverage, interpolation, the depth compare and the alpha blend.
+// The Voodoo2 WebGPU takeover's shaders: the vertex shader places the
+// walker's 12.4 vertices at the half-pixel offset that makes the GPU's
+// centre test equal the walker's integer-sample test, and the fragment
+// shader is the p.15 pixel pipe — texture chain, chroma key,
+// colour/alpha combine, fog, alpha test, depth, dither — written in u32
+// arithmetic beside the C (voodoo2_raster.c), stage for stage and name
+// for name, so the two implementations can be read against each other.
+// The GPU contributes coverage, interpolation, the depth compare and
+// the alpha blend.
 //
 // Everything the walker decodes per draw arrives in the uniform block
 // (voodoo2_gpu_protocol.h: the raw registers plus the per-TMU decode);
@@ -557,7 +557,7 @@ struct FOut {
 `;
 
 // The present pass: the displayed colour target through the gamma ramp
-// onto the canvas (§5.8).  A full-screen triangle; the LUT is a 256x3
+// onto the canvas.  A full-screen triangle; the LUT is a 256x3
 // r8unorm texture, rows R, G, B.
 export const PRESENT_WGSL = /* wgsl */ `
 @group(0) @binding(0) var src: texture_2d<f32>;

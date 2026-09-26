@@ -6,12 +6,11 @@
   import { startVoodooGpu, gpuOverlay } from '@/gpu/voodoo2Gpu.svelte';
 
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
-  // The Voodoo2 WebGPU takeover's overlay (proposal-voodoo2-webgpu-
-  // takeover §5.8): transferred to the GPU worker once at mount and
-  // shown exactly while the card drives the monitor in GPU mode, so the
-  // pass-through switch is literally which canvas is on top.  It takes
-  // no pointer events — input stays on #screen, where Emscripten's
-  // proxied handlers live.
+  // The Voodoo2 WebGPU takeover's overlay: transferred to the GPU worker
+  // once at mount and shown exactly while the card drives the monitor in
+  // GPU mode, so the pass-through switch is literally which canvas is on
+  // top.  It takes no pointer events — input stays on #screen, where
+  // Emscripten's proxied handlers live.
   let canvas3d: HTMLCanvasElement | undefined = $state(undefined);
 
   // CSS-driven scaling. The canvas's intrinsic resolution (width/height

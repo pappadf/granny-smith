@@ -1,9 +1,8 @@
-// Faithful projection of the C-side object model for the SYSTEM panel
-// (proposal-system-object-model.md §8.2). There is NO allowlist: we render
-// the root's children (the machine container + the emulator's meta service
-// objects + the simulated network) and lazily expand each via
-// meta.members (one call per node). Visibility is read off the model — the
-// §7.2 three-tier category — so the tree cannot drift the way the old
+// Faithful projection of the C-side object model for the SYSTEM panel.  There
+// is NO allowlist: we render the root's children (the machine container + the
+// emulator's meta service objects + the simulated network) and lazily expand
+// each via meta.members (one call per node). Visibility is read off the model —
+// the member's three-tier category — so the tree cannot drift the way the old
 // hand-maintained MACHINE_ROOTS list did.
 
 import { gsEval, isModuleReady } from './emulator';
@@ -15,8 +14,8 @@ export interface SystemTreeNode {
   icon?: IconName;
   desc?: string;
   leaf?: boolean;
-  /** Divider group this row belongs to, for the readability headings
-   *  (§8.2): 'machine' | 'emulator' | 'network'. Top-level only. */
+  /** Divider group this row belongs to, for the readability headings:
+   *  'machine' | 'emulator' | 'network'. Top-level only. */
   group?: 'machine' | 'emulator' | 'network';
 }
 
@@ -53,7 +52,7 @@ function iconFor(name: string): IconName | undefined {
   }
 }
 
-// Classify a top-level object into one of the three §5.1 kinds.
+// Classify a top-level object into one of the three kinds.
 function groupFor(name: string): 'machine' | 'emulator' | 'network' {
   if (name === 'machine') return 'machine';
   if (name === 'appletalk') return 'network';
@@ -65,7 +64,7 @@ function asString(v: unknown, fallback: string): string {
 }
 
 // One member of a node, as meta.members describes it: every member in one
-// round trip, where the tree used to spend two or three per member (F-46).
+// round trip, where the tree used to spend two or three per member.
 export interface MemberInfo {
   name: string;
   kind: 'attr' | 'child' | 'method';
@@ -98,7 +97,7 @@ export async function loadMembers(path: string, values = false): Promise<MemberI
 
 // The root's children, faithfully — machine first, then the meta objects,
 // then the network node. Each carries its model-owned label + group so the
-// view can draw the §8.2 dividers without an allowlist.
+// view can draw the dividers without an allowlist.
 export async function loadSystemRoots(): Promise<SystemTreeNode[]> {
   if (!isModuleReady()) return [];
   const out: SystemTreeNode[] = [];
@@ -118,8 +117,8 @@ export async function loadSystemRoots(): Promise<SystemTreeNode[]> {
 }
 
 // Children of a non-root node: attribute rows (leaf, with current value) then
-// expandable child objects. Honours the §7.2 category — internal members are
-// never shown; advanced members appear only when `showAdvanced` is on.
+// expandable child objects. Honours the member's category — internal members
+// are never shown; advanced members appear only when `showAdvanced` is on.
 export async function loadSystemChildren(
   path: readonly string[],
   showAdvanced: boolean,
@@ -152,8 +151,8 @@ export async function loadSystemChildren(
 
   // Child objects → expandable branches. An indexed-child member (a sparse
   // collection like scsi `device` / floppy `drive`) is expanded into its live
-  // entries — `${target}[i]` — rather than shown as the bare collection member
-  // (proposal §5.3). Attached children carry their own label and category.
+  // entries — `${target}[i]` — rather than shown as the bare collection
+  // member. Attached children carry their own label and category.
   const seen = new Set(out.map((n) => n.label));
   for (const m of members) {
     if (m.kind !== 'child' || seen.has(m.name) || !visible(m.category)) continue;
@@ -187,7 +186,7 @@ export interface MethodInfo {
 
 // The methods callable on a node, with their model-owned UI metadata —
 // the source the SYSTEM tab's right-click menu and the command browser both
-// render from (proposal §8.3 / §8.6). Hidden methods are filtered out.
+// render from. Hidden methods are filtered out.
 export async function loadNodeMethods(path: string): Promise<MethodInfo[]> {
   if (!isModuleReady() || !path) return [];
   return methodsOf(await loadMembers(path));

@@ -2,14 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { MEDIA_TYPES, type GsEval } from '@/lib/media';
 import { VROMS_DIR } from '@/lib/opfsPaths';
 
-// The OPFS store is content-addressed for both media types
-// (proposal-content-addressed-rom-provisioning.md §3.6a): CPU ROMs are stored
-// by checksum, vROMs by the declaration ROM's Format-Block CRC. Discovery is
+// The OPFS store is content-addressed for both media types: CPU ROMs are
+// stored by checksum, vROMs by the declaration ROM's Format-Block CRC. Discovery is
 // content-based (the core's offer registry), so the on-disk name never
 // matters — but the stable hash name is what keeps re-uploads idempotent.
 
-// gsEval stub returning a fixed vrom.identify payload (the post-proposal
-// shape: content facts only, no canonical_name).
+// gsEval stub returning a fixed vrom.identify payload (the current shape:
+// content facts only, no canonical_name).
 const vromIdentify: GsEval = async (evalPath: string, args?: unknown[]) => {
   expect(evalPath).toBe('machine.vrom.identify');
   expect(args).toEqual(['/opfs/upload/my_weird.bin']);

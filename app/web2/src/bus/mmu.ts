@@ -1,11 +1,11 @@
-// The MMU, as the core exposes it on every MMU kind (D3/D5).
+// The MMU, as the core exposes it on every MMU kind.
 //
 // machine.cpu.mmu.translate and .peek have the same signatures and result
 // shapes on the 68030, the 68040, the PowerPC 601/604 and the Lisa's segment
 // MMU, so nothing here branches on the architecture except which registers
 // the State tab lists.  This replaces bus/mockMmu.ts, whose hand-written
 // SE/30 fixtures the MMU tabs, and the L:/P: labels next to breakpoints,
-// stack frames and memory rows, used to show as if they were live (F-07).
+// stack frames and memory rows, used to show as if they were live.
 
 import { gsEval, isGsError, isModuleReady } from './emulator';
 import { fmtHex32 } from '@/lib/hex';

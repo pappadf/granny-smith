@@ -3,7 +3,7 @@
 // Per-category levels mirror the C-side state; setCatLevel writes
 // through via gsEval('log.<cat>.level = N').
 //
-// Phase 7 perf: appendLog coalesces high-frequency emits through
+// Perf: appendLog coalesces high-frequency emits through
 // requestAnimationFrame so a burst of N lines only causes one reactive
 // update per frame. Tests fall back to microtasks (queueMicrotask) so
 // they can assert synchronously after `await Promise.resolve()`.

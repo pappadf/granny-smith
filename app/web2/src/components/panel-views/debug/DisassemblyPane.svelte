@@ -14,7 +14,7 @@
   // the core so a row always lands exactly on it (68K instructions are
   // variable-length).  Before, this pane chose its window from the PREVIOUS
   // PC, so after a breakpoint hit or a far jump it showed the old code with
-  // no PC marker, and decoding from pc-16 could step over the PC (N-27).
+  // no PC marker, and decoding from pc-16 could step over the PC.
   const PC_ANCHOR_LINE = ROWS_BEFORE_PC + 1;
   // Single source of truth for row height — must match `.row { height: ... }`.
   const ROW_HEIGHT_PX = 22;

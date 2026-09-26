@@ -6,7 +6,7 @@
   import DriveActivity from './DriveActivity.svelte';
   import Icon from '../common/Icon.svelte';
 
-  // Spec §11: hidden before first machine start. Also surfaces during
+  // Hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
   // status bar.
   const visible = $derived(machine.status !== 'no-machine' || activity.current !== null);

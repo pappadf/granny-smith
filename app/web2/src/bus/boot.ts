@@ -27,10 +27,10 @@ import { formatRamKb } from '@/lib/machine';
 // that silently misclassified any MMU machine whose name didn't match the
 // hardcoded pattern. `mmuKind` is the full typed kind the core exports (all
 // six; this used to keep two and collapse the 68040 and PowerPC MMUs to
-// "none", F-05), and `mmuEnabled` means "has an MMU of any kind" — every
+// "none"), and `mmuEnabled` means "has an MMU of any kind" — every
 // kind answers the same machine.cpu.mmu.translate/peek (bus/mmu.ts).  `fpu`
 // gates the FPU panel; `auxCpus` lists the auxiliary cores the Debug view
-// renders (it was exported and read by nothing, F-08).
+// renders (it was exported and read by nothing).
 export async function applyCapabilities(model: string): Promise<void> {
   let kind: MmuKind = 'none';
   let fpu = false;
@@ -92,7 +92,7 @@ export function parseAuxCpus(raw: unknown): AuxCpu[] {
 }
 
 // The status bar's identity, read from the running machine after a boot or
-// a resume (M6, N-12): machine.name and machine.ram, so every entry point —
+// a resume: machine.name and machine.ram, so every entry point —
 // the dialog, a URL, a dropped ROM, a checkpoint — shows the same thing.
 // (It used to be the dialog's display name on one path and a model id on
 // two others, and the dialog's RAM string or nothing.)
@@ -111,8 +111,8 @@ function reportMount(path: string, r: MediaResult, what: string): void {
 }
 
 // Boot a machine from a config. Construction-time settings travel as ONE
-// machine.boot configuration document (named JSON-object args, proposal
-// proposal-named-args-boot-config §4) — the core validates everything
+// machine.boot configuration document (named JSON-object args) — the core
+// validates everything
 // before tearing the old machine down, stages the vROM pick, seeds the
 // video card/sense/mode, and installs the ROM itself. Only runtime media
 // (floppies/HD/CD) remain imperative calls after the boot.
@@ -165,20 +165,20 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
 // The Start Manager's default startup device is the disk the page attached:
 // the core writes the PRAM bytes (machine.rtc.pram.boot_device), the page
 // only names the SCSI id.  A fresh machine's PRAM is otherwise valid from
-// construction -- the RTC's own defaults, not a page-side seed (F-03, F-04).
+// construction -- the RTC's own defaults, not a page-side seed.
 async function setBootDevice(scsiId: number): Promise<void> {
   const r = await gsEval('machine.rtc.pram.boot_device', [scsiId]);
   if (isGsError(r)) console.warn(`[boot] startup device not recorded: ${gsErrorText(r)}`);
 }
 
-// --- After a machine appears: one reconciliation, every path (R1) ---------
+// --- After a machine appears: one reconciliation, every path --------------
 //
 // Seven paths leave a machine running: the dialog, a URL, a dropped ROM,
 // Restart, and three checkpoint loads (the resume prompt, Checkpoints ▸
 // Load, a dropped .checkpoint).  Each did its own subset of the follow-up —
 // the checkpoint loads almost none of it, so a restored machine kept the
-// previous model's name, RAM, MMU panels, drive count and pacing (F-12,
-// F-14).  Now every path calls reconcileUiWithMachine, and the fresh ones
+// previous model's name, RAM, MMU panels, drive count and pacing.  Now every
+// path calls reconcileUiWithMachine, and the fresh ones
 // then prepareFreshMachine.  Neither touches PRAM.
 
 // How the machine came to be running.  A restore brings its own scheduler
@@ -253,7 +253,7 @@ export async function prepareFreshMachine(): Promise<void> {
 // Power-cycle the running machine. machine.restart rebuilds the machine
 // from its built-from record — same model, RAM, card, ROM — and keeps the
 // mounted media attached by transferring the open image handles across the
-// teardown (proposal-boot-vs-reset §3.3), so no manual re-attachment is
+// teardown, so no manual re-attachment is
 // needed here. Only runtime state that is not construction configuration
 // (camera/microphone source, scheduler mode) is re-asserted.
 export async function restartEmulator(): Promise<void> {

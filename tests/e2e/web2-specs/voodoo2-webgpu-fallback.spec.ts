@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Voodoo2 WebGPU takeover's FALLBACK (proposal-voodoo2-
-// webgpu-takeover §7 gate 6).  The same boot as voodoo2-webgpu.spec.ts,
+// web2 e2e: the Voodoo2 WebGPU takeover's FALLBACK.  The same boot as voodoo2-webgpu.spec.ts,
 // in a browser launched WITHOUT WebGPU: the "voodoo2_webgpu" kind is not
 // offered there (machine.profile leaves it out), but named anyway it must
 // fall back to the thread backend at creation and say so, and the overlay

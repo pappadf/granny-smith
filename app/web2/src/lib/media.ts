@@ -91,7 +91,7 @@ async function parseCardRomIdentify(
   return r as PromIdentifyResult;
 }
 
-// --- The identify wrappers, one each (F-49) ---------------------------------
+// --- The identify wrappers, one each ----------------------------------------
 // rom.identify was wrapped four times and vrom/prom.identify twice each, with
 // three different result shapes.  These are the only ones.
 

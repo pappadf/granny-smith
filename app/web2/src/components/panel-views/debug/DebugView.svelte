@@ -16,7 +16,7 @@
     else if (machine.status !== 'running') clearDebugFrame();
   });
 
-  // Spec §4.3.5.2:
+  // Split orientation:
   //   panel-bottom → horizontal split, Sections LEFT, Disassembly RIGHT
   //   panel-left/right → vertical split, Disassembly TOP, Sections BOTTOM
   const orientation = $derived<'horizontal' | 'vertical'>(

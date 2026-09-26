@@ -3,10 +3,10 @@
 
 // web2 e2e: the Restart button power-cycles the machine and media survives.
 //
-// Pins proposal-boot-vs-reset stage (C): web2's restart() calls the core's
-// machine.restart, which rebuilds the recorded machine and TRANSFERS the
-// open image handles across the teardown (§3.3) — no cached-config replay,
-// no manual re-attachment in emulator.ts.  The storage-instance stem
+// Pins that web2's restart() calls the core's machine.restart, which
+// rebuilds the recorded machine and TRANSFERS the open image handles across
+// the teardown — no cached-config replay, no manual re-attachment in
+// emulator.ts.  The storage-instance stem
 // (image.path) must be identical before and after the restart: an equal
 // stem proves the handle was transferred rather than reopened, which is
 // the write-durability guarantee (a reopen would mint a fresh delta and

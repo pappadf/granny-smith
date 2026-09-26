@@ -6,7 +6,7 @@ vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).em
 const { debugFrame, refreshDebugFrame, DISASM_ROWS, ROWS_BEFORE_PC } =
   await import('@/state/debugFrame.svelte');
 
-// One debug.frame per pause, shared by the panes (D4, F-45).
+// One debug.frame per pause, shared by the panes.
 describe('the shared debug frame', () => {
   it('coalesces overlapping refreshes into one fetch plus one re-run', async () => {
     bridge.reset();

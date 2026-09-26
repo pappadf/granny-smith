@@ -1,4 +1,4 @@
-// "Upload image…" in a New Machine media dropdown (N-53): a successful upload
+// "Upload image…" in a New Machine media dropdown: a successful upload
 // selects the uploaded image, and a cancelled or rejected one leaves the
 // previous pick -- in the state AND in the <select> the user sees.  The
 // picker itself is mocked (tests/unit/filePicker.test.ts covers it).

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CommandBrowser from '@/components/panel-views/terminal/CommandBrowser.svelte';
 import { registerTerminalInsert } from '@/components/panel-views/terminal/terminalBridge';
 
-// The browser is now generated from the model (proposal §8.6), so mock the
+// The browser is generated from the model, so mock the
 // bus to feed buildCommandsTree a tiny tree: one subsystem (`cpu`) with a
 // `step` method. Categories are model-derived (subsystem bucket + the static
 // Language keywords group), not a hand-listed catalogue.

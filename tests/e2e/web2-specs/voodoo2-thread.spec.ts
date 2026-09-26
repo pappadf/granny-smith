@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Voodoo2's worker-thread raster backend in the BROWSER
-// (proposal-voodoo2-raster-thread §5.7, phase 2).
+// web2 e2e: the Voodoo2's worker-thread raster backend in the BROWSER.
 //
 // The wasm build runs the emulator on one Web Worker (PROXY_TO_PTHREAD)
 // and, since this spec's commit, the Voodoo2 rasteriser on a second one

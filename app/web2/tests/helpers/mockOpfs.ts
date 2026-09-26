@@ -4,7 +4,7 @@ import type { CheckpointEntry, ImageCategory, OpfsEntry, RomInfo } from '@/bus/t
 // The OPFS test double: hard-coded fixtures (the prototype's mock options)
 // backed by an in-memory map, so move/delete/rename mutate observable state.
 // tests/setup.ts installs a fresh one before every test; it used to be the
-// production default, shipped in the bundle (F-53).
+// production default, shipped in the bundle.
 export class MockOpfs implements OpfsBackend {
   private json = new Map<string, unknown>();
 

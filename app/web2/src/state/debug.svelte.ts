@@ -1,8 +1,8 @@
 // Reactive state for the Debug panel view. UI-only — not persisted.
-// Section expansion lives here (Phase 7 will tee this to OPFS).
+// Section expansion lives here.
 
 // Map and Descriptors return when the core can walk a table (they showed
-// fixtures before, D5).
+// fixtures before).
 export type MmuSubtab = 'state' | 'translate';
 export type MemoryMode = 'logical' | 'physical';
 
@@ -86,8 +86,7 @@ export function inspectMemoryAt(addr: number): void {
   debug.sections.memory = true;
 }
 
-// Phase 7 will surface this via OPFS persistence; for now it's just a
-// session reset hook used by tests + by the panel-position change
+// A session reset hook used by tests + by the panel-position change
 // handler if we want to reset orientations.
 export function resetDebugSections(): void {
   debug.sections = {

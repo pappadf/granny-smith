@@ -7,7 +7,7 @@ import { shortModel, formatRamKb } from '@/lib/machine';
 // capability probe — `machine.profile(id).capabilities` — never from a
 // regex on the model's display name. This lint guards against the old
 // `/SE\/30|II/i` pattern (and its variants) creeping back into frontend
-// logic; see proposal §1.4 / §6.1.
+// logic.
 describe('no model-name regex in frontend logic', () => {
   // vitest runs with cwd = the web2 package root.
   const srcDir = join(process.cwd(), 'src');
@@ -41,7 +41,7 @@ describe('shortModel', () => {
   });
 });
 
-// RAM is a number (KB) everywhere but the label (F-01): the dialog used to
+// RAM is a number (KB) everywhere but the label: the dialog used to
 // send the label back, and three models' options did not parse as "N MB".
 describe('formatRamKb', () => {
   it.each([

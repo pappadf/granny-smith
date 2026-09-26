@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { parseAuxCpus } from '@/bus/boot';
 
-// capabilities.aux_cpus -> machine.auxCpus (F-08: exported, read by nothing).
+// capabilities.aux_cpus -> machine.auxCpus (it was exported and read by
+// nothing).
 describe('parseAuxCpus', () => {
   it('reads the AV DSP entry', () => {
     expect(parseAuxCpus([{ name: 'dsp', arch: 'dsp3210', freq: 66666667 }])).toEqual([

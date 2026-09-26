@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { gsEval, gsOk, isGsError, gsErrorText } from '@/bus/emulator';
 
-// The gsEval result contract (A1): null is only a V_NONE
+// The gsEval result contract: null is only a V_NONE
 // success; every failure — the core's or the bridge's — is an { error } shape.
 describe('gsEval result contract', () => {
   it('reports a module that is not ready as a transport error, not null', async () => {
@@ -29,7 +29,7 @@ describe('gsEval result contract', () => {
   });
 });
 
-describe('request size (F-24)', () => {
+describe('request size', () => {
   it('accepts what fits the bridge buffers and refuses what would be truncated', async () => {
     const { requestTooLarge } = await import('@/bus/emulator');
     expect(requestTooLarge('machine.cpu.pc', '')).toBeNull();

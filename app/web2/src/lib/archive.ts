@@ -1,5 +1,5 @@
 // ZIP archive helpers. JSZip is dynamic-imported so it's a code-split chunk
-// (only fetched the first time a user touches a .zip), per plan-doc §5.
+// (only fetched the first time a user touches a .zip).
 
 // JSZip ships an awkward ESM shim: the namespace itself is the class, but
 // TS sees both the namespace and a default export. We treat the module as

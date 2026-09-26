@@ -1,4 +1,4 @@
-// The Debug view's one debug.frame (D4, F-45).
+// The Debug view's one debug.frame.
 //
 // Registers, FPU, Disassembly and Call Stack each used to fetch their own
 // frame — three or more serialised bridge round-trips per pause, each pane

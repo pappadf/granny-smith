@@ -20,7 +20,7 @@
   <div class="gs-panel-content">
     <!-- The terminal stays mounted once opened, hidden while another tab
          shows: its scrollback, and the output that arrives meanwhile, survive a
-         tab switch (N-57). -->
+         tab switch. -->
     {#if terminalOpened}
       <div class="terminal-keep" class:hidden={layout.activeTab !== 'terminal'}>
         <TerminalView />

@@ -1,4 +1,4 @@
-// One attach helper for every frontend path (M5).
+// One attach helper for every frontend path.
 //
 // initEmulator, the URL parameters, the drop auto-mount and the Images panel
 // each attached media for themselves: a CD at SCSI id 3 on every model (id 0
@@ -16,7 +16,7 @@ import { images, type MountInfo } from '@/state/images.svelte';
 
 // How many floppy drives the active machine has: its profile's floppy_slots.
 // (This used to probe drive[0..3] until one did not resolve, and the core
-// exposed a phantom drive[1] on one-drive Macs, so it counted two, N-06.)
+// exposed a phantom drive[1] on one-drive Macs, so it counted two.)
 // Cached in the Images state (the badge names the drive only when there are
 // several); refresh=true after a machine change.
 export async function detectFdDriveCount(refresh = false): Promise<number> {

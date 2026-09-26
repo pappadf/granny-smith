@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
 
 // The emulator could not start: the dialog must say so rather than stay on
-// "Scanning ROMs…" forever (F-37).
+// "Scanning ROMs…" forever.
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
   return {

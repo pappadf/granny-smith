@@ -4,7 +4,7 @@
   import TerminalPane from './TerminalPane.svelte';
   import CommandBrowser from './CommandBrowser.svelte';
 
-  // Spec §4.3.0: horizontal split when the panel docks at the bottom,
+  // Horizontal split when the panel docks at the bottom,
   // vertical when it docks left or right. Terminal goes left/top.
   const orientation = $derived<'horizontal' | 'vertical'>(
     layout.panelPos === 'bottom' ? 'horizontal' : 'vertical',

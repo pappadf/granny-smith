@@ -128,7 +128,7 @@ describe('bus/debug against the real object-model paths', () => {
     expect(f?.fpu).toEqual({ prefix: 'FPR', data: [], control: [{ name: 'fpscr', value: 0 }] });
   });
 
-  // An auxiliary core answers the same frame (D7): the AV DSP3210.
+  // An auxiliary core answers the same frame: the AV DSP3210.
   it("reads an auxiliary core's frame from its own node", async () => {
     bridge.reply('machine.dsp.frame', {
       arch: 'dsp3210',

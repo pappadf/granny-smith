@@ -37,7 +37,7 @@ import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPath
 import { MEDIA_TYPES, identifyRom, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
 import { attachCdrom, insertFloppy } from './media';
 
-// The one chunked writer (R3): everything the page puts on the emulator's
+// The one chunked writer: everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
 // checkpoint — goes through here, to an OPFS path, a transfer window at a time
 // (bus/xfer.ts; see STAGING above).  A stream's small network chunks are
@@ -246,7 +246,7 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
   if (category === 'cdrom') {
     // Into the model's CD bay; the core refuses an occupied bay and a model
     // with none, where this used to attach at id 3 regardless and report
-    // success for any answer that was not null (N-04).
+    // success for any answer that was not null.
     const r = await attachCdrom(persistedPath);
     if (r.ok) {
       setMounted(persistedPath, r.mount);
@@ -445,7 +445,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   // One boot document — the core validates, installs the ROM itself and
   // boots the model's own default RAM.  A rejected document leaves the
   // previous machine (or none) in place, so stop here rather than configure
-  // and "boot" it (N-08).
+  // and "boot" it.
   const booted = await gsEval('machine.boot', { model, rom: romPath });
   if (booted !== true) {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
@@ -459,7 +459,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
 async function loadCheckpointFile(file: File): Promise<void> {
   // Staged like any upload, a chunk at a time, under /opfs/upload, and
   // deleted once loaded.  It used to be read whole into memory and written
-  // to the memory-backed /tmp, where it stayed for the session (N-22).
+  // to the memory-backed /tmp, where it stayed for the session.
   const staged = `${UPLOAD_DIR}/dropped-${Date.now()}-${sanitizeName(file.name)}`;
   if (!(await streamToOpfs(staged, file))) {
     showNotification('Emulator not ready for checkpoint load', 'warning');
@@ -503,7 +503,7 @@ export async function pickAndLoadCheckpoint(): Promise<void> {
 // this. Wraps an invisible `<input type="file">` click.  Resolves with the
 // chosen files, or [] when the user cancels the dialog: `cancel` fires
 // instead of `change` then (every browser that can run the emulator has it),
-// and without it the promise stayed pending and the input leaked (F-36).
+// and without it the promise stayed pending and the input leaked.
 // There is deliberately no focus-based fallback: a window refocus can land
 // before `change` and would drop a real selection.
 export function openFilePicker(accept = '', multiple = true): Promise<File[]> {

@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 
-// Lint guard for proposal §1.4 / §6.1: the UI must derive machine capabilities
+// Lint guard: the UI must derive machine capabilities
 // from machine.profile() (the `capabilities` / `video_slots` probe), NEVER by
 // matching on the human-readable model name. The original sin was
 // `/SE\/30|II/i.test(model)` duplicated across machine.ts / upload.ts /
@@ -49,7 +49,7 @@ function walk(dir: string): string[] {
   return out;
 }
 
-describe('frontend never matches on the model name (proposal §1.4)', () => {
+describe('frontend never matches on the model name', () => {
   const files = walk(SRC);
 
   it('scans a non-trivial number of source files', () => {

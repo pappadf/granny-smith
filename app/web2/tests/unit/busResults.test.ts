@@ -5,8 +5,8 @@ vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).em
 
 const { saveCheckpoint } = await import('@/bus/checkpoint');
 
-// Every success message checks its result (A2).
-describe('Save State (F-42, N-22)', () => {
+// Every success message checks its result.
+describe('Save State', () => {
   beforeEach(() => bridge.reset());
 
   it('reports success only when both the save and the download worked', async () => {

@@ -122,7 +122,7 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     }
 
     // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
-    // be ignored (N-20).
+    // be ignored.
     if (hasUrlMedia(mediaParams)) await processUrlMedia(urlParams);
     // Otherwise the Welcome view stays up and waits for the user.
   })();

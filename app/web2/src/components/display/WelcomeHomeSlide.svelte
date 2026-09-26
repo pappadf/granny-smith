@@ -5,7 +5,7 @@
 
   // (A "Recent" card used to list /opfs/config/recent.json, which nothing in
   // production ever wrote — only test fixtures, which held display names
-  // where machine.boot takes model ids, N-13.  It is gone until something
+  // where machine.boot takes model ids.  It is gone until something
   // records a machine worth relaunching.)
 
   function openConfigSlide() {

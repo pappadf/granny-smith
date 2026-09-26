@@ -1,6 +1,7 @@
 // openFilePicker (bus/upload.ts) resolves on both ends of the OS dialog:
 // `change` with the files, `cancel` with [] -- and removes its hidden input
-// either way (F-36: a cancel left the promise pending and the input behind).
+// either way (a cancel used to leave the promise pending and the input
+// behind).
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { openFilePicker } from '@/bus/upload';
 

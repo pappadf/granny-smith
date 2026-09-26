@@ -1,8 +1,7 @@
-// Command Browser catalogue for the Terminal view (spec §4.3.0), now a
-// projection of the one object model instead of a hand-maintained constant
-// (proposal-system-object-model.md §8.6). The browser differs from the SYSTEM
-// tab only in interaction (insert-text vs invoke) and grouping (by task vs by
-// structure); both draw from the model, so neither can drift.
+// Command Browser catalogue for the Terminal view, now a projection of the one
+// object model instead of a hand-maintained constant. The browser differs from
+// the SYSTEM tab only in interaction (insert-text vs invoke) and grouping (by
+// task vs by structure); both draw from the model, so neither can drift.
 //
 // Contents are generated at runtime from:
 //   - object-node methods + global root verbs   (meta.members)
@@ -21,7 +20,7 @@ export interface CommandNode {
   children?: CommandNode[];
 }
 
-// Shell-language control-flow / binding keywords (proposal §8.6). These have
+// Shell-language control-flow / binding keywords. These have
 // no object node, so the command browser is their only browsable home. Kept
 // in sync with object.c's RESERVED_WORDS (script-grammar subset).
 const SHELL_KEYWORDS: { name: string; desc: string }[] = [

@@ -18,7 +18,7 @@ let terminalWrite: ((line: string) => void) | null = null;
 
 // Lines printed while no terminal exists (before the Terminal tab is first
 // opened), replayed when one registers -- boot output and a script's
-// results used to be dropped (N-57).  Bounded: the oldest go first.
+// results used to be dropped.  Bounded: the oldest go first.
 const BACKLOG_MAX = 2000;
 let backlog: string[] = [];
 

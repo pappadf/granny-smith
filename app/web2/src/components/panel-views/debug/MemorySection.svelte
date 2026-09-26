@@ -33,8 +33,8 @@
     try {
       // The space is always explicit: "logical" reads through the CPU's own
       // translation on every architecture (the plain read is physical on a
-      // PowerPC machine, N-26), "physical" really is physical (it used to be
-      // the logical read under a physical label, N-31).
+      // PowerPC machine), "physical" really is physical (it used to be the
+      // logical read under a physical label).
       bytes = await peekBytes(
         debug.memoryAddress,
         128,

@@ -42,7 +42,7 @@ function basename(path: string): string {
 
 // AppleDouble header sidecar path for an OPFS data-file path: "<dir>/._<name>".
 // The sidecar carries the resource fork + Finder Info; the two files are one
-// logical Mac file and move/rename/delete together (see proposal §4.6).
+// logical Mac file and move/rename/delete together.
 export function adSidecarPath(path: string): string {
   const i = path.lastIndexOf('/');
   return i >= 0 ? `${path.slice(0, i + 1)}._${path.slice(i + 1)}` : `._${path}`;

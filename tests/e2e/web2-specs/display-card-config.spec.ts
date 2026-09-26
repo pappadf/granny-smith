@@ -3,7 +3,7 @@
 
 // web2 e2e: the card-driven video configuration in the New Machine dialog.
 //
-// Regression guard for two coupled bugs (proposal-web2-card-centric-config.md):
+// Regression guard for two coupled bugs:
 //   1. Video ROMs were listed by raw filename, so the dialog couldn't speak in
 //      cards. Now the dialog probes each vROM (machine.vrom.identify → card_id)
 //      and offers the *card* by its name, never a ".vrom" filename.
@@ -60,9 +60,8 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   // The Display Card picker speaks in *cards*, not vROM filenames, and never
   // a raw ".vrom" name.  Five options for the IIcx socket: the two real cards
   // identified from the staged vROMs (8•24, 24AC) plus the three always-
-  // available generic siblings (8_24, 24ac, 8_24gc) that need no dump
-  // (proposal-generic-nubus-vrom §6.1).  "24AC" therefore matches two — the
-  // real card and its generic sibling.
+  // available generic siblings (8_24, 24ac, 8_24gc) that need no dump.
+  // "24AC" therefore matches two — the real card and its generic sibling.
   const card = page.locator('#cfg-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
   await expect(card.locator('option')).toHaveCount(5);

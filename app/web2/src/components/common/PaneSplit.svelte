@@ -2,7 +2,7 @@
   import type { Snippet } from 'svelte';
 
   // Generic two-pane split with a draggable sash. Used by the Terminal
-  // view (Phase 4) and the Debug view (Phase 6). Orientation comes from
+  // view and the Debug view. Orientation comes from
   // the consumer — typically derived from layout.panelPos so the split
   // axis flips when the panel docks to the side.
   //

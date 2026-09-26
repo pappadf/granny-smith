@@ -1,5 +1,5 @@
-// Camera state — the browser side of the AV video-in path
-// (proposal-av-video-in.md §2.3; C side: src/platform/wasm/em_camera.c).
+// Camera state — the browser side of the AV video-in path (C side:
+// src/platform/wasm/em_camera.c).
 //
 // Transport: em_camera.c owns a static double-buffered frame slot pair
 // behind a control block (bus/shmLayout.ts) in the shared wasm heap and
@@ -210,7 +210,7 @@ function stopStream(): void {
 // user's toggle can fire together, and two overlapping runs each saw no
 // stream across the getUserMedia await, each acquired one, and each started
 // a pump -- the first camera was never stopped, its light stayed on, and two
-// pumps wrote the slots (F-41).
+// pumps wrote the slots.
 let syncing: Promise<void> | null = null;
 async function syncStream(): Promise<void> {
   // Coalesce: a call arriving mid-flight waits for the in-flight one, then
@@ -256,7 +256,7 @@ async function syncStreamInner(): Promise<void> {
       /* autoplay of a muted camera element does not reject in practice */
     }
     // The toggle may have gone off during play(): stopStream() released this
-    // stream, and there is nothing to pump (N-59: the module's videoEl was
+    // stream, and there is nothing to pump (the module's videoEl used to be
     // read here, null by then).
     if (stream !== s) return;
     startPump(video);

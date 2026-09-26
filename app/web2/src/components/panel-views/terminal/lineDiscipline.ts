@@ -1,5 +1,5 @@
 // The terminal's line discipline: what xterm's `onData` delivers, as editing
-// actions.  `onData` is the one input path (F-40) -- keys, pastes, IME
+// actions.  `onData` is the one input path -- keys, pastes, IME
 // composition and virtual keyboards all arrive through it, where the old
 // `onKey` handler saw only single keystrokes and dropped the rest.  Pure, so
 // tests/unit/lineDiscipline.test.ts drives it without an xterm.

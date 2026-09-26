@@ -29,7 +29,7 @@ export interface OpfsBackend {
 // No backend yet: every call throws.  main.ts installs BrowserOpfs before
 // anything reads storage, and tests/setup.ts installs the MockOpfs fixture
 // (tests/helpers/mockOpfs.ts), so reaching this is an ordering bug -- loud,
-// where the old default served made-up fixtures (F-53).
+// where the old default served made-up fixtures.
 function unset(): never {
   throw new Error('OPFS backend not installed (setOpfsBackend was never called)');
 }
