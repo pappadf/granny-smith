@@ -27,7 +27,7 @@
 // the whole file. This mirrors how move/delete route through the worker
 // (storage.mv/storage.rm).
 
-import { gsEval, gsErrorText, isModuleReady, getModule, seedPram } from './emulator';
+import { gsEval, gsErrorText, isModuleReady, getModule } from './emulator';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
@@ -458,8 +458,6 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
     return;
   }
-  // Seed a valid PRAM, as every boot path does.
-  await seedPram(model, 0);
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
   showNotification(`Booted ${model} from uploaded ROM`, 'info');

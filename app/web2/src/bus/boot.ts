@@ -3,7 +3,7 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, seedPram, applySchedulerMode, handleScreenResize } from './emulator';
+import { gsEval, gsErrorText, isGsError, applySchedulerMode, handleScreenResize } from './emulator';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
@@ -148,22 +148,27 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
     if (!path || path === '(none)') continue;
     reportMount(path, await insertFloppy(path, true, i), `Floppy ${i + 1}`);
   }
-  let bootScsiId = 0;
   if (config.hd && config.hd !== '(none)') {
     const r = await attachHardDisk(config.hd, config.hdBay ?? 0);
     reportMount(config.hd, r, 'Hard disk');
-    if (r.ok && r.mount.bus === 'scsi') bootScsiId = r.mount.drive;
+    if (r.ok && r.mount.bus === 'scsi') await setBootDevice(r.mount.drive);
   }
   if (config.cd && config.cd !== '(none)') {
     reportMount(config.cd, await attachCdrom(config.cd), 'CD-ROM');
   }
-  // Seed a valid PRAM before the machine runs (see seedPram above), naming
-  // the disk's own SCSI id as the boot device (it was always 0, F-04).
-  await seedPram(config.model, bootScsiId);
 
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
   showNotification('Machine started', 'info');
+}
+
+// The Start Manager's default startup device is the disk the page attached:
+// the core writes the PRAM bytes (machine.rtc.pram.boot_device), the page
+// only names the SCSI id.  A fresh machine's PRAM is otherwise valid from
+// construction -- the RTC's own defaults, not a page-side seed (F-03, F-04).
+async function setBootDevice(scsiId: number): Promise<void> {
+  const r = await gsEval('machine.rtc.pram.boot_device', [scsiId]);
+  if (isGsError(r)) console.warn(`[boot] startup device not recorded: ${gsErrorText(r)}`);
 }
 
 // --- After a machine appears: one reconciliation, every path (R1) ---------
@@ -257,9 +262,10 @@ export async function restartEmulator(): Promise<void> {
     showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
     return;
   }
-  // The rebuilt machine starts with blank PRAM again — re-seed it.
-  const id = await gsEval('machine.id');
-  if (typeof id === 'string' && id) await seedPram(id, 0);
+  // The rebuilt machine's PRAM is its construction default again: name the
+  // hard disk it kept as the startup device, as the boot did.
+  const hd = Object.values(images.mounted).find((m) => m.kind === 'hd' && m.bus === 'scsi');
+  if (hd) await setBootDevice(hd.drive);
   await reconcileUiWithMachine('restart');
   // Re-asserts the Caps Lock latch too (the core also carries it across
   // machine.restart; a re-latch of an already-down key is a no-op).

@@ -646,47 +646,6 @@ export function getModuleHeap(): { u8: Uint8Array; i16: Int16Array; i32: Int32Ar
 
 // --- Lifecycle wrappers --------------------------------------------------
 
-// === PRAM seeding ============================================================
-// Never boot with blank PRAM.  A real Mac's PRAM is battery-backed; ours
-// starts empty on every machine.boot, so the guest takes its
-// PRAM-is-invalid paths every session.  On the PDM machines that means
-// the Start Manager's full startup-drive discovery wait, and under
-// Mac OS 8.1 additionally a one-time "select the DR 68k emulator and
-// restart" (MMFlags bit 5) — the reported double boot with two chimes on
-// every session.  Seeding a deterministic, valid PRAM at boot removes
-// both, with no persistent state to go stale (integration tests seed the
-// same way; see docs/core/memory/pram.md).
-//
-// Verified on the pm6100 against both System 7.5 (boots straight to the
-// Finder, no discovery wait) and Mac OS 8.1 (single chime, no restart).
-// Other families keep their ROM's own PRAM init until they get the same
-// verification — their ROMs initialize PRAM without restarting.
-const PRAM_SEEDED_MODELS = new Set(['pm6100', 'pm7100', 'pm8100']);
-
-export async function seedPram(model: string, scsiId = 0): Promise<void> {
-  if (!PRAM_SEEDED_MODELS.has(model)) return;
-  // Stamp the two boot-ROM validity tokens ($A8 + 'NuMc') so the ROM's
-  // PRAMInit leaves the seeded bytes alone (pram.md §3).
-  await gsEval('machine.rtc.pram.validate');
-  // XPRAM $01 is the Start Manager wait byte (StartSearch.a): bits 0-4 =
-  // spin-up timeout seconds (0 = pristine -> 20 s default), bit 7 =
-  // disable the dynamic wait.  On single-Curio machines the startup-device
-  // poll can never succeed (a ROM HAL bug — scsi-53c96.md §8.2), so the
-  // wait always runs to full expiry before the drive-queue fallback boots;
-  // our disk is ready instantly, so skip the wait outright.
-  await gsEvalLine('machine.rtc.pram.poke 0x01 0x80:1');
-  // Start Manager defaults (pram.md §4.2): default OS, and the boot
-  // device as the SCSI driver refnum (-(33+id)) of the configured disk so
-  // the Start Manager goes straight to it.
-  const refnum = (0xffdf - (scsiId & 7)).toString(16).toUpperCase().padStart(4, '0');
-  await gsEvalLine('machine.rtc.pram.poke 0x77 0x01:1');
-  await gsEvalLine(`machine.rtc.pram.poke 0x78 0xFFFF${refnum}:4`);
-  // MMFlags: the PDM ROM's own default ($05) plus bit 5, which Mac OS 8.1
-  // reads as "the DR emulator is already selected" — without it 8.1 sets
-  // the bit and soft-restarts on every boot.  System 7.5 ignores it.
-  await gsEvalLine('machine.rtc.pram.poke 0x8A 0x25:1');
-}
-
 // Toggle the Caps Lock latch: UI state plus an immediate push to the live
 // machine (down latches, up releases). The latch is re-asserted after every
 // boot/restart, which is how Copland D11E4's diverted boot is reached from

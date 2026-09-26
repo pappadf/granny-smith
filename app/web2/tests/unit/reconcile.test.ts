@@ -75,6 +75,28 @@ describe('one post-boot reconciliation, every path (R1)', () => {
     expect(bridge.paths()).toEqual(['machine.boot']);
   });
 
+  // P4 (F-04): the page names the disk's own SCSI id as the startup device,
+  // through the core's setter -- no PRAM bytes, and no seed at all otherwise.
+  it('a boot with a hard disk names its SCSI id as the startup device', async () => {
+    se30();
+    bridge.reply('machine.attach_hd', { bus: 'scsi', id: 3, label: 'ID 3' });
+    bridge.reply('machine.rtc.pram.boot_device', null);
+    await initEmulator({ ...BOOT, hd: '/opfs/images/hd/a.img', hdBay: 1 });
+    const set = bridge.calls.find((c) => c.path === 'machine.rtc.pram.boot_device');
+    expect(set?.args).toEqual([3]);
+    expect(bridge.paths().some((p) => p.includes('pram.poke') || p === 'shell.run')).toBe(false);
+  });
+
+  it('a restart names the kept hard disk again', async () => {
+    se30();
+    images.mounted['/opfs/images/hd/a.img'] = { kind: 'hd', bus: 'scsi', drive: 2 };
+    bridge.reply('machine.rtc.pram.boot_device', null);
+    await restartEmulator();
+    const set = bridge.calls.find((c) => c.path === 'machine.rtc.pram.boot_device');
+    expect(set?.args).toEqual([2]);
+    delete images.mounted['/opfs/images/hd/a.img'];
+  });
+
   it('a restart reconciles, then runs', async () => {
     se30();
     await restartEmulator();
