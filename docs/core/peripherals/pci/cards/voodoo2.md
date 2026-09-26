@@ -8,7 +8,7 @@ pass-through cable). Modelled in
 
 This file adopts, for PCI, the per-card documentation convention NuBus
 uses under [`nubus/cards/`](../../nubus/cards/); retro-fitting a
-`mach64gx.md` is follow-on work.
+Mach64 GX page is follow-on work.
 
 | | |
 |---|---|

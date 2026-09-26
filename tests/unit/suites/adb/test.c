@@ -30,8 +30,7 @@
 // Egret, Cuda and the SWIM IOP now share.  Four copies of that loop disagreed
 // four ways; the IIfx's two walked addresses 1..15 numerically, so ADDRESS 0
 // WAS NEVER POLLED, while the DevMap test three lines away was already
-// bit-per-address over 0..15.  The IOP ADB Driver ERS
-// (library/serial/apple-iop-adb-driver-ers/markdown.md:62,70) defines the
+// bit-per-address over 0..15.  The IOP ADB Driver ERS defines the
 // mask over 0..15 and the order as most-recently-used, with a fallback that
 // polls every address ignoring the mask while SRQ persists.
 
@@ -328,7 +327,7 @@ TEST(test_a_quiet_bus_returns_false) {
 
 // === Register 3 ============================================================
 //
-// Guide 2e Table 8-15 (single-file.md:7726-7739): bit 15 reserved 0, bit 14
+// Guide 2e Table 8-15: bit 15 reserved 0, bit 14
 // "exceptional event, device specific; always 1 if not used", bit 13
 // "Service Request enable; 1 = enabled", bit 12 reserved 0, bits 11-8 the
 // address, bits 7-0 the handler ID.  The model answered $0X -- bits 14 and

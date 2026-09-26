@@ -8,13 +8,13 @@
 // and the box's ProductInfo flags (UniversalTables.a InfoQuadra900):
 //   * ClockEgret + Caboose — RTC/PRAM/power/keyswitch behind an
 //     Egret-protocol system manager on VIA1's SR + PB3/PB4/PB5 handshake
-//     (the "Caboose" firmware is Egret-compatible; ref §15.14 [A][R])
+//     (the "Caboose" firmware is Egret-compatible)
 //   * ADBIop — ADB behind the SWIM/ADB IOP (like the IIfx), NOT Caboose
 //   * SCC and SWIM behind two Apple PIC/IOPs at island $C000 / $1E000
-//     (host register layout identical to the IIfx PIC; ref §15.8)
+//     (host register layout identical to the IIfx PIC)
 //   * two NCR 53C96 SCSI buses: internal at $F000/$F100, external at
-//     $F402/$F502 (OrwellDecoderTable [A]); INTs wire-OR onto VIA2 CB2
-//   * five NuBus '90 slots A-E on VIA2 PA1-PA5 (ref §13.3)
+//     $F402/$F502 (OrwellDecoderTable); INTs wire-OR onto VIA2 CB2
+//   * five NuBus '90 slots A-E on VIA2 PA1-PA5
 
 #include "mcu.h"
 #include "q900_internal.h"
@@ -86,13 +86,13 @@ void q900_via2_output(void *context, uint8_t port, uint8_t output) {
     (void)output;
 }
 
-// EASC interrupt → VIA2 CB1 (ref §13.4).
+// EASC interrupt → VIA2 CB1.
 static void q900_asc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     via_input_c(cfg->via2, 1, 0, active ? 0 : 1);
 }
 
-// The two 53C96 INT outputs wire-OR (active-low) onto VIA2 CB2 (ref §12.7):
+// The two 53C96 INT outputs wire-OR (active-low) onto VIA2 CB2:
 // don't drop the line while the other controller still requests.
 static void q900_scsi_irq_update(config_t *cfg, int bit, bool active) {
     mcu_state_t *st = q900_state(cfg);
@@ -110,7 +110,7 @@ static void q900_scsi96_ext_irq(void *context, bool active) {
 
 // Level-4 source: the SCC chip INT (bypass-mode servicing) ORs with the SCC
 // IOP host INT (mailbox traffic) — same combination the IIfx routes into its
-// OSS source (ref §15.10/§15.12).
+// OSS source.
 static void q900_scc_irq_update(config_t *cfg, int bit, bool active) {
     mcu_state_t *st = q900_state(cfg);
     st->scc_irq_or = active ? (st->scc_irq_or | (uint8_t)(1u << bit)) : (st->scc_irq_or & (uint8_t) ~(1u << bit));
@@ -125,7 +125,7 @@ static void q900_scc_iop_irq(void *context, bool active) {
     q900_scc_irq_update((config_t *)context, 1, active);
 }
 
-// SWIM/ADB IOP host INT → VIA2 CA2 (level 2; ref §15.10, VIA2InitQuadra900
+// SWIM/ADB IOP host INT → VIA2 CA2 (level 2; VIA2InitQuadra900
 // PCR "CA2 ind input neg active edge (SWIM IOP)").
 static void q900_swim_iop_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
@@ -190,7 +190,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
-    // External SCSI bus: electrically isolated second 53C96 (ref §12.1).
+    // External SCSI bus: electrically isolated second 53C96.
     // No default devices in v1 — selections time out like an empty chain.
     //
     // It mounts as `machine.scsi2`, not `machine.scsi`.  Both buses used to
@@ -276,7 +276,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 // Machine descriptor
 // ============================================================
 
-// Four banks of four equal SIMMs (ref §8.4); geometrically valid shipping
+// Four banks of four equal SIMMs; geometrically valid shipping
 // totals with the 4 MB base configuration.
 static const uint32_t q900_ram_options_kb[] = {4096, 8192, 16384, 20480, 32768, 65536, 0};
 
@@ -285,7 +285,7 @@ static const scsi_bus_decl_t q900_scsi_buses[] = {
     {0},
 };
 
-// NuBus topology (ref §10.3): five NuBus '90 sockets A-E; the 040 PDS is
+// NuBus topology: five NuBus '90 sockets A-E; the 040 PDS is
 // mechanically aligned with slot E.  Built-in DAFB video is pseudo-slot 9.
 // The tower's five NuBus '90 sockets $A-$E, shared with the Q950: same
 // Eclipse board, and Apple says five for both -- "expansion opportunities are
@@ -309,7 +309,7 @@ static const mcu_board_desc_t q900_board_desc = {
                  .rom_base = 0x40000000u,
                  .rom_end = 0x50000000u,
                  .io_ranges = mcu_q900_io_ranges,
-                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
+                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island
             .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
             .bus_err_lo = 0xF1000000u, // slots $1-$E: this board decodes below $F9
             .bus_err_hi = NUBUS_BERR_HI,

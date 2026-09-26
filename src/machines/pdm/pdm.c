@@ -290,7 +290,7 @@ static void pdm_scsi96b_irq(void *context, bool active) {
 }
 
 // SCC chip INT (one line for both channels) → AMIC ICR source bit 2, 68k
-// level 4 (interrupt-map.md §6.1); channel discrimination is the guest's
+// level 4; channel discrimination is the guest's
 // job via RR2B/RR3.
 static void pdm_scc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
@@ -333,8 +333,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
 
-    // The ESCC cell in Curio behind the AMIC island decode (escc-serial.md
-    // §2: single base $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
+    // The ESCC cell in Curio behind the AMIC island decode (single base
+    // $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
     // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC).
     cfg->scc = scc_init(NULL, cfg->scheduler, pdm_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3672000);

@@ -366,13 +366,13 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
     oss->rom_ctrl = 0x0d;
 
     // Default level[] state.  These specific non-zero values are what
-    // test #$11 (called from §16b at $40841282) expects to find when
+    // test #$11 (called at $40841282) expects to find when
     // it reads OSS level registers — empirically validated by live
     // trace: with these defaults, test #$11 leaves a properly-formed
     // `(ptr, size, $FFFFFFFF, ...)` table at $FFFFEC..$FFFFFC that
-    // §16c walks correctly to find its sentinel.  Changing any of
-    // these alters test #$11's RAM-write side effects and breaks
-    // §16c.
+    // the POST code that follows walks correctly to find its sentinel.
+    // Changing any of these alters test #$11's RAM-write side effects
+    // and breaks that walk.
     //
     // SPECIAL CASE: level[10] = 0 (NOT 1).  This is the OSS source 10
     // (60Hz) priority.  At hardware reset, all level registers are 0

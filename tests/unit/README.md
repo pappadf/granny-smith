@@ -10,7 +10,7 @@ avoiding the complexity of the full WebAssembly target.
 Artifacts go to `tests/unit/build/` (git-ignored). The system is intentionally
 simple — one compile+link command per test — to reduce overhead.
 
-For detailed architecture documentation, see `docs/tests.md`.
+For detailed architecture documentation, see `docs/guide/TESTING.md`.
 
 ## High-Level Layout
 

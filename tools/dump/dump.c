@@ -499,7 +499,7 @@ static const cbtype_t g_code_bearing[] = {
     // code in these non-Apple resource types instead of CODE.  All are
     // plain code from offset 0; 'QCOD' additionally prefixes an 8-byte
     // header + a trap-patch table (trap-word/patch-offset/saved-original
-    // 8-byte entries, see notes/2026-06-26-apple-macintosh-24ac-*) ahead of
+    // 8-byte entries) ahead of
     // its routine bodies, so its leading bytes decode as table data.
     {{'Q', 'C', 'O', 'D'},  CBKIND_GENERIC, "QuickDraw-accelerator code + trap-patch table (header @0, table @+8)"        },
     {{'Q', 'D', 'P', 'A'},  CBKIND_GENERIC, "QuickDraw-accelerator patch routine (stScanLoop / bMAIN0 / bEND0 bodies)"    },

@@ -5,8 +5,8 @@
 //
 // Links the real tnt/grand_central.c against recording stubs and pins
 // the interrupt-fabric semantics the boot debugging established
-// (docs/machines/tnt/tnt.md "The interrupt fabric"; the dossier's
-// interrupt-map §5.1), now as directed sequences:
+// (docs/machines/tnt/tnt.md "The interrupt fabric"), now as directed
+// sequences:
 //
 //  1. The MkLinux initialisation sequence (mask 0 / clear-all / mask 0)
 //     and its events-driven acknowledge — clear MODE 0, where the CPU

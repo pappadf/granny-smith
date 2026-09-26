@@ -61,8 +61,8 @@ typedef struct sound_surface {
 
 // Map a codec attenuation-ladder index onto the 0..7 Sound control panel
 // scale.  The AWACS and Singer ladders are both 1.5 dB per step with $0 =
-// 0 dB (loudest) and $F = -22.5 dB (singer.md §3; the ASCO 2300 ladder in
-// awacs.c is the same shape), and the Mac's slider is 3 dB per step -- so two
+// 0 dB (loudest) and $F = -22.5 dB (the ASCO 2300 ladder in awacs.c is the
+// same shape), and the Mac's slider is 3 dB per step -- so two
 // ladder steps make one slider step, and the mapping is exact across the
 // whole range rather than a fitted approximation.
 static inline uint32_t sound_volume_from_atten(unsigned atten_0_15) {

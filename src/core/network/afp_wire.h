@@ -47,7 +47,7 @@
 #define AFP_SetFileDirParms 0x23
 #define AFP_ChangePassword  0x24
 #define AFP_GetUserInfo     0x25
-// AFP 2.1 additions (AFP_21_22 single-page.md line ~638)
+// AFP 2.1 additions
 #define AFP_GetSrvrMsg    0x26
 #define AFP_CreateID      0x27
 #define AFP_DeleteID      0x28

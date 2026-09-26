@@ -4,8 +4,7 @@
 // PSC DMA-engine unit test.
 //
 // Links the real av/psc.c against recording stubs and replays the three
-// known-good client sequences the dossier quotes verbatim from Apple's
-// drivers (psc.md §3):
+// known-good client sequences verbatim from Apple's drivers:
 //
 //  1. The SCSI HAL's StartPSC / PausePSC / Wt4PSCComplete / StopPSCRead:
 //     pause-then-FROZEN, active-set indexed arming, SENSE-bit CmdStat

@@ -1,6 +1,6 @@
 # DSP3210 disassembler unit test.
 # The 100 encoding vectors of the validated reference disassembler
-# (IM worked examples, ROM-verified dossier words, the illegal-opcode
+# (IM worked examples, ROM-verified words, the illegal-opcode
 # list) against src/core/cpu/dsp3210/dsp3210_disasm.c.  Dependency-free
 # C99 — no stubs.
 

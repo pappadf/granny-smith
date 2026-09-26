@@ -109,7 +109,7 @@ struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 // assignments (TNT_INT_SCSI0/MACE/SCCA/SCCB/AWACS/VIA1/SWIM3) are
 // explicitly unchanged; TNT_INT_MESH simply goes unused.
 //
-// NOTE the trap in §10: a slot's line does NOT follow its bridge.  Slot 3
+// NOTE the trap: a slot's line does NOT follow its bridge.  Slot 3
 // sits on Bandit 2 but keeps EXT5 — the line a 9500 gives Bandit 1's third
 // slot — so the map is DATA in the profile's slot table, never derived.
 #define ANS_INT_ERROR    21 // EXT1: Error_Int, both Bandits ganged
@@ -249,7 +249,7 @@ typedef struct tnt_gc {
 #define TNT_INT_VIA1  18 // VIA1/Cuda cascade (60 Hz tick, ADB, timers)
 #define TNT_INT_SWIM3 19 // SWIM3 chip
 #define TNT_INT_NMI   20 // External Int 0 — the NanoKernel's IPL-7 bit
-// Control video VBL.  The dossier's interrupt map guessed 30, but the
+// Control video VBL.  An earlier interrupt map guessed 30, but the
 // shipping System's video driver is authoritative: right as it writes
 // Control INTR_ENA it toggles GC mask BIT 26 through the kernel's
 // Enable/DisableInterruptSource path (live at 962.6M of the 7.6 boot,
@@ -293,7 +293,7 @@ typedef struct tnt_control {
     // The BAR latches ($14 = registers, $18 = VRAM aperture) live in the
     // generic config header now (tnt_state_t.control_dev.cfg), which also
     // owns the sizing mask and the decode.  What stays here is the chip.
-    // The register file (index = offset/$10; §4 of control-chaos-video.md)
+    // The register file (index = offset/$10)
     uint32_t reg[TNT_CONTROL_REGS];
     uint8_t vbl_pending; // intr_stat: a VBL edge not yet acknowledged
     uint8_t vbl_armed; // the frame event is pending in the scheduler
@@ -313,7 +313,7 @@ typedef struct tnt_control {
 // byte-wide registers on $10 centres at island +$18000, a 16-byte FIFO
 // for the non-data phases, and DBDMA channel 10 for the data phases.
 // The register core drives the shared bus/target model through the same
-// scsi_external_* API the 53C96 front-end uses (mesh-scsi.md §2-§8).
+// scsi_external_* API the 53C96 front-end uses.
 #define TNT_MESH_FIFO 16
 
 // The MESH controller now lives in core/peripherals/scsi_mesh.[ch], with the

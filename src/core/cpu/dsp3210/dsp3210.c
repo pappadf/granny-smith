@@ -718,7 +718,7 @@ dsp3210_acc dsp3210_acc_from_double(double v) {
         int e = exp - 1 + 128;
         /* Ties go to the greater value (toward +inf), matching the DSP's
          * own `round` instruction and the sibling core's helper, so both
-         * cores encode host test data bit-identically [ERRATA B8]. */
+         * cores encode host test data bit-identically. */
         int64_t m = (int64_t)floor(f * ldexp(1.0, 24) + 0.5); /* scale 23 */
         norm_at(&m, &e, 23);
         if (e > 255) {

@@ -18,10 +18,9 @@
 //     'xbus' crash dump.
 //   * dspOverRun → reset lifecycle: $83 holds (state clear), $01 releases
 //     (fetch from external physical 0 — the 7-word bootstrap), $81
-//     re-holds.  pdspResetEn is an arm interlock, not power management
-//     (rtm-rom-host-side.md §4).
+//     re-holds.  pdspResetEn is an arm interlock, not power management.
 //   * DSP→host doorbell: the kernel's per-message BIO0 toggle latches PSC
-//     L5 bit 0 (dsp-kernel-messages.md §1); the RTM's DSPhndlr acks L5IR
+//     L5 bit 0; the RTM's DSPhndlr acks L5IR
 //     itself.
 
 #include "dsp.h"

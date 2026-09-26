@@ -720,7 +720,7 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
 // Register file
 // ============================================================
 
-// Map the live bus phase into the bus_status0 MSG/CD/IO bits (§3.2).
+// Map the live bus phase into the bus_status0 MSG/CD/IO bits.
 static uint8_t phase_bits(mesh_t *m) {
     if (m->msgout_pending)
         return 0x06u; // MSG OUT — the virtual post-select-with-ATN phase

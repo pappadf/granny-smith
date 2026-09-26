@@ -664,8 +664,8 @@ approaches for a proper fix:
 > **Why the pre-clear is not being implemented.** It is **not testable**.
 > Knowing whether `$80 $80` is the *correct* thing to leave in that buffer
 > requires knowing what a real SE/30 transceiver leaves there, which is not
-> in any source we hold — searched Guide 2e ch. 8, `library/serial/`,
-> `projects/` and `notes/`. The only observable is the fuzzy measurement in
+> in any source we hold (the *Guide to the Macintosh Family Hardware*, 2nd
+> ed., ch. 8, says nothing about it). The only observable is the fuzzy measurement in
 > §9 above: an error of `(+18, +1)` pixels. A change whose success criterion
 > is "the number got smaller" is exactly what this project's standing rule
 > excludes, so the 1 kHz guard stays and this is recorded as a decision

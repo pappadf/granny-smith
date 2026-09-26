@@ -146,7 +146,7 @@ if have_media($img) {
     if row_on("copland-desktop") { row_end("copland-desktop", try(row_copland_desktop(), "FAILED")) }
     suite_done()
 } else {
-    echo "skip: pm7100-copland-boot (Copland media not present — see the bring-up plan §6.0)"
+    echo "skip: pm7100-copland-boot (Copland media not present)"
 }
 
 quit

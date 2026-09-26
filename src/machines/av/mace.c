@@ -28,7 +28,7 @@ LOG_USE_CATEGORY_NAME("mace");
 
 #define AV_MACE_REGS 32 // $000-$1F0 on a $10 stride
 
-// Register indices (offset >> 4; mace.md §2).
+// Register indices (offset >> 4).
 #define MACE_IR       8 // interrupt register, read-to-clear
 #define MACE_IMR      9 // interrupt mask (1 = masked)
 #define MACE_PR       10 // poll register
@@ -38,10 +38,10 @@ LOG_USE_CATEGORY_NAME("mace");
 #define MACE_CHIPIDLO 24 // chip ID low byte
 #define MACE_CHIPIDHI 25 // chip ID high byte
 
-// Am79C940 revision the Curio integrates (mace.md §2 chip-ID register).
+// Am79C940 revision the Curio integrates (chip-ID register).
 #define MACE_CHIPID 0x0940
 
-// The Apple address PROM (mace.md §4): the station address bytes read
+// The Apple address PROM: the station address bytes read
 // backwards from $51 and bit-reversed by the driver's NormAddr; the XOR of
 // all eight bytes must equal $FF.  Locally-administered 02:00:00:09:07:02
 // -> bit-reversed 40 00 00 90 E0 40, with byte 7 chosen for the checksum.

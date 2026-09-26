@@ -8,7 +8,8 @@ name: "Copilot Setup Steps"
 # - Build tools (gcc, make, cmake, etc.)
 # - Test data (if token is available)
 #
-# Based on: todo/agent-setup.md and .devcontainer/devcontainer.json
+# Mirrors .devcontainer/Dockerfile and .devcontainer/devcontainer.json;
+# keep the package lists in sync with the Dockerfile.
 
 on:
   workflow_dispatch:

@@ -328,7 +328,7 @@ let FIRST = px(52, 51)
 vreg_wr(0x080, 0x80000000)
 idle3
 let SECOND = px(52, 51)
-assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift (Q9)"
+assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift"
 vreg_wr(0x104, 0x00000000)
 
 # --- Rotate-mode stipple: the walker FALLBACK, exact down to the counters. --

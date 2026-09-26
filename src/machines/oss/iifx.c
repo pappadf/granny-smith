@@ -393,7 +393,7 @@ static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
 // ── CONSTRAINT (why this can't be observed except in the test) ─────
 //
 // The boot writes $0D to OSS_ROM_CTRL at $40802E50 very early in
-// §3 POST init (bit 3 = 1 → first toggle, invert becomes true).
+// POST init (bit 3 = 1 → first toggle, invert becomes true).
 // From that point, reads at $40008000-$4000FFFF return ~ROM.
 //
 // This region is ROM-mirror page 1 (= ROM bytes at file offset

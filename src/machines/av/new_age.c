@@ -4,8 +4,8 @@
 // new_age.c
 // New Age (µPD72070) floppy controller stub — see new_age.h.
 //
-// The state machine is the datasheet's Apple-mode PIO handshake
-// (new-age.md §5), reduced to "no drive present":
+// The state machine is the datasheet's Apple-mode PIO handshake, reduced to
+// "no drive present":
 //
 //   * idle: RQM=1, DIO=0, CB=0; DxI bits 2/3 set (no drive installed).
 //   * command phase: the first FIFO byte selects the command and its total
@@ -75,8 +75,7 @@ static inline av_new_age_t *na_of(config_t *cfg) {
 
 // Total command length (opcode + parameters); 0 = invalid in Apple mode.
 // Full-opcode match — bit 7 is the on/off selector on the Apple drive
-// commands and bit 6 the GCR/MFM selector on the data commands
-// (new-age.md §3).
+// commands and bit 6 the GCR/MFM selector on the data commands.
 static int na_cmd_len(uint8_t op) {
     switch (op) {
     case 0x13:

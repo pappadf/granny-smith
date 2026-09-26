@@ -74,7 +74,7 @@
 # 49M instructions into the Welcome splash (see the header).
 
 # --- 13" RGB (sense $6) at 1/2/4/8 bpp ---
-include "../lib/mac.script"   # report_row (§5.6 coverage records)
+include "../lib/mac.script"   # report_row (coverage records)
 
 machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"

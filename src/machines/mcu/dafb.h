@@ -5,9 +5,8 @@
 // DAFB built-in video (Direct Access Frame Buffer): the Quadra family's
 // stand-alone video controller — DAFB core registers + Swatch CRTC (+$100)
 // + AC842/AC842a RAMDAC (+$200) + DP8531 pixel clock (+$300), driving a
-// dedicated VRAM aperture at $F9000000 with registers at $F9800000
-// (reference §11).  Register semantics follow the reference's [R] tables;
-// unknown registers stay accept-and-log with readback (Trap 24).
+// dedicated VRAM aperture at $F9000000 with registers at $F9800000.
+// Unknown registers stay accept-and-log with readback.
 
 #ifndef GS_MACHINES_MCU_DAFB_H
 #define GS_MACHINES_MCU_DAFB_H
@@ -21,7 +20,7 @@
 
 struct config;
 
-// Fixed CPU-visible apertures (reference §5.2 [R])
+// Fixed CPU-visible apertures
 #define DAFB_VRAM_BASE     0xF9000000u
 #define DAFB_VRAM_APERTURE 0x00200000u // 2 MiB CPU window
 #define DAFB_REG_BASE      0xF9800000u
@@ -38,7 +37,7 @@ typedef struct dafb dafb_t;
 typedef void (*dafb_irq_cb)(void *context, bool active);
 
 // Create the DAFB with `vram_size` bytes of installed VRAM (512 KiB / 1 MiB /
-// 2 MiB; the CPU aperture is fixed at 2 MiB regardless — Trap 12).
+// 2 MiB; the CPU aperture is fixed at 2 MiB regardless).
 dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp);
 void dafb_delete(dafb_t *dafb);
 void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp);
@@ -47,7 +46,7 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp);
 // timing (a 60.15 Hz fallback covers the pre-mode-set window).
 void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched);
 
-// Video interrupt output — level-sensitive (ref §11.18).
+// Video interrupt output — level-sensitive.
 void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context);
 
 // Monitor on the sense lines, in Apple's INDEXED numbering
@@ -73,16 +72,16 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
 uint8_t dafb_sense_for_build(const struct config *cfg);
 
 // Board revision facts.  `version` is served in DAFB_Test bits
-// 11:9 (ref §11.8 [R]; Q700/Q900 = 0, Q950 "DAFB 3" = 3 — the driver's
+// 11:9 (Q700/Q900 = 0, Q950 "DAFB 3" = 3 — the driver's
 // 16bpp-always-allowed check reads it on 33 MHz machines).  `ac842a`
 // selects the AC842a RAMDAC model: a real PCBR1 behind AddrReg==1 (the
 // PrimaryInit presence probe relies on PCBR1 writes NOT clobbering PCBR0)
 // and the x555 16-bit direct mode when PCBR1's $C0 bits are set
-// (DAFBDriver.a @SetupACDC — Apple source, [A]).
+// (DAFBDriver.a @SetupACDC, Apple source).
 void dafb_set_version(dafb_t *dafb, uint8_t version);
 void dafb_set_ac842a(dafb_t *dafb, bool ac842a);
 
-// TurboSCSI DRQ observation (ref §12.4): channel `chan` (0/1) control
+// TurboSCSI DRQ observation: channel `chan` (0/1) control
 // register reads present the controller's live DRQ in bit 9.
 typedef bool (*dafb_drq_query_fn)(void *context);
 void dafb_set_scsi_drq_query(dafb_t *dafb, int chan, dafb_drq_query_fn fn, void *context);

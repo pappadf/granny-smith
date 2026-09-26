@@ -261,8 +261,8 @@ uint16_t tnt_gbus_tben_read(config_t *cfg) {
 // immediately after its `Testing Parity DIMMs` LCD progress message and
 // immediately before it reports the sized memory, which makes a
 // parity-error latch the obvious reading; Apple documents neither the
-// register nor its bits.  Store-and-readback, logged, and recorded as an
-// open item in the dossier so the ladder can settle it.
+// register nor its bits.  Store-and-readback, logged, and left as an open
+// question for a boot test to settle.
 void tnt_gbus_misc_write(config_t *cfg, uint16_t value) {
     tnt_gbus_t *g = gb(cfg);
     if (!g)

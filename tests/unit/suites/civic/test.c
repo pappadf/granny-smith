@@ -4,7 +4,7 @@
 // CIVIC serial-register + sense unit test.
 //
 // Links the real av/civic.c against recording stubs and pins the contracts
-// from the AV Civic and Sebastian hardware notes:
+// of the CIVIC and Sebastian chips:
 //
 //  1. The bit-serial register codec: one bit per longword, only D[0]
 //     significant, LSB at the lowest address, stride 4.  Writes stream
@@ -150,7 +150,7 @@ static uint32_t civic_read_reg(uint32_t off, int width) {
     return v;
 }
 
-// Hardware offsets (civic.md §3).
+// Hardware offsets.
 #define R_VBLINT    0x000
 #define R_ENABLE    0x004
 #define R_VDCINT    0x008
@@ -331,7 +331,7 @@ TEST(test_sebastian_clut) {
 // visible width rendered the ROM's 1024-byte rows at a 640-byte pitch and
 // sheared the picture into diagonal bands.  The booted System reports the
 // same number in ScreenRow, and PrimaryInit paints `cvpRowWords << 3`
-// LONGWORDS per row (civic.md §4 step 15) — i.e. RowWords * 32 bytes.
+// LONGWORDS per row — i.e. RowWords * 32 bytes.
 TEST(test_stride_follows_rowwords) {
     display_t *d = av_civic_display(s_st.civic);
     seb_write(SEB_PCBR, 0x13); // 8 bpp: 640 visible bytes per row

@@ -8,10 +8,9 @@
 // Board model: HMC (memory controller: serial config, RAM bank windows,
 // machine ID) + AMIC (everything I/O: decode, pseudo-VIA1/2, interrupt
 // control, DMA register file, sound engine, video control) around silicon
-// the repo already models (Cuda, 6522, 53C96, SCC).  Register truth comes
-// from the shipping-ROM-verified dossier; source citations in the .c files
-// use the underlying primary documents (Apple Developer Notes, schematics,
-// MPC601 UM).
+// the repo already models (Cuda, 6522, 53C96, SCC).  Register truth is
+// verified against the shipping ROM; source citations in the .c files use
+// the primary documents (Apple Developer Notes, schematics, MPC601 UM).
 //
 // The core of the substrate is the machine skeleton that carries the HWInit
 // boot ladder (pdm-rom-ladder rungs L1-L12): the memory map with all ROM
@@ -312,7 +311,7 @@ void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-
 // sensitive; called after every flag/enable write).
 void pdm_amic_recompute(config_t *cfg);
-// External source lines into the ICR (bit numbers per the dossier)
+// External source lines into the ICR
 #define PDM_ICR_VIA1 0
 #define PDM_ICR_VIA2 1
 #define PDM_ICR_SCC  2

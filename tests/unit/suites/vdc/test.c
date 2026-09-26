@@ -4,17 +4,17 @@
 // AV video-in unit test.
 //
 // Links the real av/vdc.c + av/civic.c + av/cuda.c against recording stubs
-// and pins the contracts from the AV video-in hardware notes:
+// and pins the video-in contracts:
 //
-//  1. Cuda pseudo-command $22 wire framing (§2.3): direction from bit 0 of
+//  1. Cuda pseudo-command $22 wire framing: direction from bit 0 of
 //     the slave address, subaddress as the first wire byte, multi-byte
 //     auto-increment, reads = 4-byte header + data, unknown-slave error
 //     packet — all through the real VIA1-side byte protocol.
-//  2. The golden open sequence (§8): 25 DMSD + 17 VDC one-byte writes as
+//  2. The golden open sequence: 25 DMSD + 17 VDC one-byte writes as
 //     SendI2CBlock issues them, then VDC $00 := $70, read back through
 //     subaddressed reads (the Enabler build's shadow bypass path).
 //  3. The synthesized status bytes ($8B / $B9) connected and disconnected.
-//  4. The frame engine (§5.6-§5.8, §9.2): 1-5-5-5 packing, greyscale MCT
+//  4. The frame engine: 1-5-5-5 packing, greyscale MCT
 //     polarity, the VidInSize stride, Enabler 088's $0001FEFF liveness
 //     overwrite, VDCClk freeze semantics, interrupt polarity + the
 //     VDCClr 0-then-1 ack on the shared slot line, VBL/VDC independence.
@@ -303,7 +303,7 @@ static uint8_t civic_r(uint32_t off) {
     return av_civic_read(&s_cfg, off + 3, CIVIC_BASE + off + 3);
 }
 
-// Golden register tables from video-in.md §8 (the shipping ROM's open path).
+// Golden register tables (the shipping ROM's open path).
 static const uint8_t k_dmsd_defaults[25] = {0x50, 0x30, 0x00, 0xE8, 0xB6, 0xE5, 0x63, 0x00, 0xFE,
                                             0xF0, 0xFE, 0xE0, 0x20, 0x80, 0x78, 0x98, 0x00, 0x20,
                                             0x00, 0x00, 0x34, 0x0A, 0xF4, 0xCE, 0xE9};
@@ -311,7 +311,7 @@ static const uint8_t k_vdc_defaults[17] = {0x00, 0x40, 0x80, 0x0C, 0x89, 0xF0, 0
                                            0x00, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x10};
 
 // Replay the golden open sequence as lastSub+1 one-byte transactions,
-// exactly as SendI2CBlock issues them (video-in.md §2.5), then $00 := $70.
+// exactly as SendI2CBlock issues them, then $00 := $70.
 static void replay_open_sequence(void) {
     for (uint8_t sub = 0; sub < 25; sub++) {
         uint8_t wire[2] = {sub, k_dmsd_defaults[sub]};
@@ -375,7 +375,7 @@ static int cuda_xact(const uint8_t *cmd, int cmd_len, uint8_t *resp, int max) {
 // Tests
 // ============================================================================
 
-// §8: the golden open sequence lands byte-for-byte in both register files,
+// The golden open sequence lands byte-for-byte in both register files,
 // read back through the subaddressed-read path (Enabler shadow bypass).
 TEST(test_golden_open_sequence) {
     replay_open_sequence();
@@ -389,7 +389,7 @@ TEST(test_golden_open_sequence) {
     ASSERT_EQ_INT(0, memcmp(buf + 1, k_vdc_defaults + 1, 16));
 }
 
-// §3.1 / §4.7: the status bytes, disconnected and connected.
+// The status bytes, disconnected and connected.
 TEST(test_status_bytes) {
     // Disconnected: HLCK = 1 ("no signal"), plus STTC mirroring VTRC ($80).
     ASSERT_EQ_INT(0, av_vdc_set_source(s_st.vdc, "none"));
@@ -414,7 +414,7 @@ TEST(test_status_bytes) {
     av_vdc_set_source(s_st.vdc, "pattern");
 }
 
-// §2.3: a write transaction through the real Cuda byte protocol.
+// A write transaction through the real Cuda byte protocol.
 TEST(test_cuda_i2c_write) {
     // [pseudoPkt, RdWrIIC, slave $8A, sub $07, data $42] → DMSD[$07] = $42.
     const uint8_t cmd[] = {0x01, 0x22, 0x8A, 0x07, 0x42};
@@ -437,7 +437,7 @@ TEST(test_cuda_i2c_write) {
     replay_open_sequence();
 }
 
-// §2.3: reads — status byte (no subaddress) and subaddressed register.
+// Reads — status byte (no subaddress) and subaddressed register.
 TEST(test_cuda_i2c_read) {
     av_vdc_set_source(s_st.vdc, "pattern");
     const uint8_t cmd[] = {0x01, 0x22, 0x8B}; // DMSD status read
@@ -452,7 +452,7 @@ TEST(test_cuda_i2c_read) {
     ASSERT_EQ_INT(0x40, resp[4]); // XD7-0 = $40 (320 with the $04 high bits)
 }
 
-// §2.2: only the DMSD and VDC answer; other slaves get an error packet.
+// Only the DMSD and VDC answer; other slaves get an error packet.
 TEST(test_cuda_unknown_slave) {
     const uint8_t cmd[] = {0x01, 0x22, 0xA0, 0x00}; // an EEPROM that is not there
     uint8_t resp[16];
@@ -463,7 +463,7 @@ TEST(test_cuda_unknown_slave) {
     ASSERT_EQ_INT(0x22, resp[4]); // ... command $22
 }
 
-// §5.8 + §9.2: the frame engine writes 1-5-5-5 pixels over the liveness
+// The frame engine writes 1-5-5-5 pixels over the liveness
 // magic, gated by VDCClk, with one interrupt per field once armed.
 TEST(test_frame_engine_1555) {
     replay_open_sequence(); // Apple defaults: 640→320 x 240, even field, RGB
@@ -494,7 +494,7 @@ TEST(test_frame_engine_1555) {
     // No interrupt yet: VDCEnb is off and VDCClr never armed.
     ASSERT_EQ_INT(1, civic_r(0x008)); // active low — idle
 
-    // The ROM's arm sequence: VDCEnb=0, VDCClr 0 then 1, VDCEnb=1 (§5.6).
+    // The ROM's arm sequence: VDCEnb=0, VDCClr 0 then 1, VDCEnb=1.
     civic_w(0x010, 0);
     civic_w(0x00C, 0);
     civic_w(0x00C, 1);
@@ -516,7 +516,7 @@ TEST(test_frame_engine_1555) {
     civic_w(0x018, 0);
 }
 
-// §4.2/§4.4: FS=11 greyscale four-per-longword with the MCT polarity, and
+// FS=11 greyscale four-per-longword with the MCT polarity, and
 // the VidInSize stride switch.
 TEST(test_frame_engine_greyscale_stride) {
     replay_open_sequence();

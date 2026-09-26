@@ -436,7 +436,7 @@ bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8
 
     uint8_t mru = (uint8_t)(adb->autopoll_mru & 0x0F);
 
-    // The ERS (library/serial/apple-iop-adb-driver-ers/markdown.md:70):
+    // The Apple IOP ADB Driver ERS:
     // "it will poll the most recently used device (which has its polling
     // enable bit set) until it receives data, or until another device asserts
     // Service Request.  To handle a service request, it will start polling

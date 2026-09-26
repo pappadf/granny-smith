@@ -197,8 +197,8 @@ uint32_t tnt_awacs_read32(config_t *cfg, uint32_t offset) {
         return w->codec_ctrl & ~AWACS_NEWECMD;
     case AWACS_CODEC_STAT:
         // Valid data, no pending inputs; revision/part zero (plain
-        // AWACS — whether TNT carries a Screamer is an open dossier
-        // question; nothing in the boot path discriminates).
+        // AWACS — whether TNT carries a Screamer is an open question;
+        // nothing in the boot path discriminates).
         return 0x00400000u;
     case AWACS_CLIP_COUNT:
         return 0;
@@ -256,7 +256,7 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value) {
 //
 // in_enabled is false because the input path is not modelled.  The hardware
 // has one -- the TNT sound-control register's bits 0-3 are the Input SubFrame
-// Select field (awacs-sound.md §2.1), and an 8500 has a Sound In jack -- so
+// Select field, and an 8500 has a Sound In jack -- so
 // this is a gap to close, not a property of the machine.
 
 static tnt_awacs_t *snd_awacs_ctx(void *ctx) {

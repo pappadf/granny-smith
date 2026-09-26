@@ -5,7 +5,7 @@
 // The Cyclone/Tempest AV family substrate (Quadra 840AV / Centris 660AV) —
 // see av.h.  Implements the family lifecycle plus the pieces unique to this
 // generation: the access-triggered ROM-at-zero overlay (no software overlay
-// control exists — ymca.md §6), the YMCA 1-bit register file with the
+// control exists), the YMCA 1-bit register file with the
 // machine-ID straps, the CPU-ID register, the MUNI latches (with the 660AV
 // bus-error probe behavior), and the family I/O island decode run on the
 // shared mac030 engine.
@@ -61,14 +61,14 @@ static inline av_state_t *av_st(config_t *cfg) {
 }
 
 // ============================================================
-// YMCA register file ($50F30400; ymca.md §1)
+// YMCA register file ($50F30400)
 // ============================================================
 // Every register is one bit wide, addressed as a longword with the value in
 // bit 31 — i.e. bit 7 of the big-endian MSB byte lane.  The engine
 // decomposes wider accesses into bytes, so only lane 0 of each longword
 // carries data.  The machine-ID straps read the board's nibble; everything
 // else is a latch that reads back (speed/width semantics are not modelled —
-// ymca.md §10 records that even the ROM only knows fixed patterns).
+// even the ROM only knows fixed patterns).
 
 static uint8_t av_ymca_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -103,7 +103,7 @@ static void av_ymca_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 }
 
 // ============================================================
-// MUNI ($50F30000; muni.md)
+// MUNI ($50F30000)
 // ============================================================
 // Two latches: IntCntrl (+$00) and Control (+$08).  A 660AV without the
 // NuBus adapter has no MUNI at all — reads AND writes of MUNI_Control must
@@ -143,7 +143,7 @@ static void av_muni_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 }
 
 // ============================================================
-// CPU-ID register ($5FFFFFFC = $A55A2830, read-only; ymca.md §2)
+// CPU-ID register ($5FFFFFFC = $A55A2830, read-only)
 // ============================================================
 // Registered as its own page-sized device window at $5FFFF000.  The ROM's
 // GetCPUIDReg validates the $A55A signature AND that the location is not
@@ -181,8 +181,7 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 }
 
 // ============================================================
-// I/O island decode ($50F00000, 256 KiB, mirrored at $50F40000; ref
-// docs/README.md master memory map)
+// I/O island decode ($50F00000, 256 KiB, mirrored at $50F40000)
 // ============================================================
 
 #define AV_VIA_IO_PENALTY 16
@@ -227,7 +226,7 @@ static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *de
 }
 
 // ============================================================
-// IRQ routing (docs/README.md interrupt table)
+// IRQ routing
 // ============================================================
 
 static const mac030_irq_route_t av_irq_routes_tbl[] = {
@@ -290,7 +289,7 @@ static void av_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 // No pseudo-DMA on this platform (pdmaAddr = 0) — data moves through PSC
 // channel 0, which the SCSI HAL POLLS (it never installs a channel-0
 // handler).  The chip IRQ is level-sensitive into the PSC-VIA2 window,
-// bits 3 and mirror 0 (curio.md §2).
+// bits 3 and mirror 0.
 
 static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -317,13 +316,13 @@ static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, u
     scsi_53c96_pdma_write8(av_st(cfg)->scsi96, value);
 }
 
-// The chip INT drives ONLY the CB2-position bit (3).  psc.md lists bit 0 as
+// The chip INT drives ONLY the CB2-position bit (3).  Bit 0 is nominally
 // a "SCSI mirror", but driving it as a second interrupt source feeds the
 // ROM's pattern-indexed level-2 dispatcher combinations it never expects
 // (IFR $09/$29): the SCSI service then runs on patterns whose table entries
 // mis-classify, the manager's deferred-interrupt bookkeeping is left stale,
 // and the next transaction's select is never issued — verified against the
-// dossier CD image, where the boot hangs in SCSIComplete's phase wait with
+// reference CD image, where the boot hangs in SCSIComplete's phase wait with
 // the mirror driven and reaches the desktop without it.
 static void av_scsi96_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
@@ -447,7 +446,7 @@ static void av_scc_irq(void *context, bool active) {
 // ============================================================
 // A flat map of the installed RAM at physical 0 is the CORRECT model for
 // this platform, not a shortcut: the eight YMCA banks decode at a fixed
-// 16 MB spacing ($00000000/$01000000/…, ymca.md §3 RamInfo), so any
+// 16 MB spacing ($00000000/$01000000/…, the ROM's RamInfo), so any
 // population of full banks is contiguous by construction, and a partial
 // last bank simply ends early (probes above installed RAM read floating
 // $FF, which is how the ROM's SizeMemory finds each bank's size — verified
@@ -464,7 +463,7 @@ static void av_map_ram(config_t *cfg) {
 }
 
 // ============================================================
-// ROM-at-zero overlay (access-triggered; ymca.md §6)
+// ROM-at-zero overlay (access-triggered)
 // ============================================================
 // While armed, the ROM aperture ($40800000-$40A00000) is registered as a
 // device window: the first access drops the overlay — RAM appears at zero,
@@ -508,7 +507,7 @@ static void av_memory_layout(config_t *cfg) {
 // VIA1 callbacks (shared by both leaves)
 // ============================================================
 // Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out, PB5 TIP
-// out — via1-cuda.md §2); the SR shift-out is a Cuda command byte.
+// out); the SR shift-out is a Cuda command byte.
 
 void av_via1_output(void *context, uint8_t port, uint8_t value) {
     av_state_t *st = av_st((config_t *)context);
@@ -528,7 +527,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
     const av_board_desc_t *desc = av_board(cfg)->desc;
 
-    // VIA1 idle input levels (via1-cuda.md §2).  Port A: PA0/PA1 are the
+    // VIA1 idle input levels.  Port A: PA0/PA1 are the
     // POST CheckLoopBack burn-in probe — held at differing levels so no
     // jumper is detected; PA7 vSCCWrReq idles high (no SCC request).
     via_input(cfg->via1, 0, 0, 1);

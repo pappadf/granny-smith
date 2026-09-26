@@ -5,7 +5,7 @@
 // Macintosh Quadra 950 ("Zydeco", 33 MHz 68040, March 1992) — the faster
 // tower.  Sister of the Quadra 900: same Eclipse board architecture (Caboose,
 // two PIC/IOPs, dual 53C96, five NuBus '90 slots), so every hook comes from
-// q900_internal.h.  Deltas (ref §18.3, UniversalTables.a InfoQuadra950):
+// q900_internal.h.  Deltas (UniversalTables.a InfoQuadra950):
 //   * 33.33 MHz CPU clock; VIA2 PB5 speed sense reads 1 (33 MHz)
 //   * model sense $90: PA & $56 == $10 (PA6 = 0, PA4 = 1)
 //   * dedicated 3DC27823 ROM
@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 // Four banks of four equal SIMMs; geometrically valid totals up to the
-// 256 MB later-system maximum (ref §18.3 [A]).
+// 256 MB later-system maximum.
 static const uint32_t q950_ram_options_kb[] = {8192, 16384, 20480, 32768, 65536, 131072, 262144, 0};
 
 static const scsi_bus_decl_t q950_scsi_buses[] = {

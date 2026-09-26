@@ -8,12 +8,12 @@
 // functionally (not as an HC05 core) against BOTH sides of the wire:
 //   * host side — OS/CudaMgr.a (SendCudaCmd / CudaShiftRegIRQ / CudaInit)
 //   * Cuda side — the firmware disassembly distilled in
-//     docs/machines/av/cuda.md §3c (handshake pin map,
+//     docs/machines/av/cuda.md (handshake pin map,
 //     the 37-entry pseudo-command dispatch with its 12 REJECTED commands,
 //     PRAM = 256 bytes at $0100-$01FF, the RTC counter)
 //
 // Transport: VIA1's shift register (Cuda is the external shift clock) plus
-// three port-B pins (via1-cuda.md §2):
+// three port-B pins:
 //   * vCudaTREQ    (PB3, host input)  — active-LOW: Cuda holds it low while
 //     it owns the bus / has bytes to send, raises it with the last byte.
 //   * vCudaBYTEACK (PB4, host output) — a LEVEL toggled once per byte

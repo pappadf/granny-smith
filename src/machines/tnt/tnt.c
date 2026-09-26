@@ -293,7 +293,7 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
 }
 
 // Channel completion -> Grand Central interrupt n (== channel n), an
-// edge event into the fabric (interrupt-map §2.1).
+// edge event into the fabric.
 // A DBDMA channel interrupt is a LEVEL, not a pulse: the channel holds
 // its request asserted — visible in Grand Central's Levels register —
 // until the host acknowledges it through the interrupt-clear register.

@@ -160,7 +160,7 @@ static uint8_t bart_reg_read8(void *ctx, uint32_t offset) {
     if (offset >= BART_REG_LIMIT) {
         // Beyond the register file the chip answers nothing (decode
         // granularity above $87 is unknown; keep the window minimal and
-        // fault outside it — bart-nubus.md §12).
+        // fault outside it).
         LOG(4, "bart: read above the register file: $%08X", PDM_BART_BASE + offset);
         memory_signal_bus_error(PDM_BART_BASE + offset, false);
         return 0xFF;
@@ -216,7 +216,7 @@ static void bart_reg_write8(void *ctx, uint32_t offset, uint8_t value) {
     if (slot) {
         // Block-transfer enable for one slot.  Bursts and single beats are
         // indistinguishable to software here, so the bit is a latch the
-        // Slot Manager can read back (bart-nubus.md §7).
+        // Slot Manager can read back.
         b->burst[slot - 1] = value;
         LOG(2, "bart: slot $%X burst transfers %s", slot, (value & 1u) ? "enabled" : "disabled");
         return;

@@ -39,7 +39,7 @@
 
 LOG_USE_CATEGORY_NAME("singer");
 
-// sndComCtl fields (singer.md §2).
+// sndComCtl fields.
 #define SND_FRM_INT_EN (1u << 6)
 #define SND_IN_EN      (1u << 7)
 #define SND_OUT_EN     (1u << 8)
@@ -173,12 +173,12 @@ static uint32_t singer_size(av_singer_t *s) {
 // The frame engine
 // ============================================================
 
-// D/A attenuation ladder (singer.md §3): 1.5 dB steps as x65536 gains.
+// D/A attenuation ladder: 1.5 dB steps as x65536 gains.
 static const uint32_t singer_atten_x65536[16] = {
     65536, 55142, 46396, 39037, 32846, 27636, 23253, 19565, 16462, 13851, 11654, 9806, 8250, 6942, 5841, 4915,
 };
 
-// A/D gain ladder (singer.md §3, singerCtl bits 12-19): the same 1.5 dB
+// A/D gain ladder (singerCtl bits 12-19): the same 1.5 dB
 // steps upwards, 0 dB to +22.5 dB.  The driver's `singerCtlInit` selects
 // +7.5 dB on both channels, and the speech front end's AGC drives this
 // field, so an unmodelled A/D gain leaves every recorded level wrong.
@@ -570,7 +570,7 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
         return; // never DMA into ROM/NuBus space
     singer_ain_pull(s, nframes, singer_rate(s));
     // The codec's A/D gain sits ahead of the converter, so it scales what
-    // the DMA deposits (singer.md §3, singerCtl bits 12-19).  Read it BEFORE
+    // the DMA deposits (singerCtl bits 12-19).  Read it BEFORE
     // the source taps below: both of them report on the pre-gain signal, and
     // the advisory needs the ladder setting to predict clipping at the
     // converter.

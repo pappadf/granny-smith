@@ -86,7 +86,7 @@ TEST(depth_matrix_pcbr0) {
         ASSERT_EQ_INT((int)rows[i].fmt, (int)dafb_display(d)->format);
         ASSERT_EQ_INT(640, (int)dafb_display(d)->width);
     }
-    // Undefined depth pattern: mode unchanged, no crash (Trap 24: logged)
+    // Undefined depth pattern: mode unchanged, no crash (logged)
     w32(d, 0x220, 0x04);
     ASSERT_EQ_INT((int)PIXEL_32BPP_XRGB, (int)dafb_display(d)->format);
     // PCBR0's VidClk field (bits 6:5) picks the RAMDAC's PixClk/1,/2,/4 tap,
@@ -116,7 +116,7 @@ TEST(clut_component_phase) {
     ASSERT_EQ_INT(0x44, disp->clut[6].r);
     ASSERT_EQ_INT(0x66, disp->clut[6].b);
     // A partial triplet is real state: an address write resets the phase
-    // without committing (Trap 11).
+    // without committing.
     w32(d, 0x200, 9);
     w32(d, 0x210, 0x77); // R only
     w32(d, 0x200, 9); // phase reset

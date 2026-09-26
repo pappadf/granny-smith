@@ -20,7 +20,7 @@
 #   av-chime        Power-on chime through the Singer output engine — the
 #                   ROM's CycloneBeep PCM, captured at guest rate and
 #                   sample-exact against the golden (content-identical to
-#                   the dossier oracle).  ROM only.
+#                   an independent reference render).  ROM only.
 #   av-dsp-boot     The DSP3210 comes alive: the RTM init releases the
 #                   DSP, Apple's kernel boots out of the ROM's '3210'
 #                   segments (three-stage handshake), the GPB calibration
@@ -72,7 +72,7 @@
 # than a CD.  It is the volume that exercises the family properly: a full
 # AV install (A:ROSE, PlainTalk speech, QuickTime) whose extension load is
 # what caught the Cuda idle-acknowledge race, and it boots BOTH models from
-# the same fixture over the ordinary 53C96 disk path.  The dossier's 245 MB
+# the same fixture over the ordinary 53C96 disk path.  The 245 MB AV
 # Install-Me-First CD stays a local bring-up asset and is never a CI
 # dependency.
 #
@@ -368,7 +368,7 @@ def row_video_in(model, golden) {
 # running: the Sound Manager posts a MsgFIFO command {count, rate $ED62 =
 # 22254→24000, gains} and streams the samples through the Blue FIFO, the
 # sdev's AppleSRC task rate-converts on the DSP (in-place DAU stores —
-# the DSP3210 errata E10), and the Singer frame engine plays
+# on the DSP3210), and the Singer frame engine plays
 # the result.  The kernel must SURVIVE playback: emr stays $8000 — a dead
 # kernel still reads state "running" (waiti with the timer free-running),
 # so emr is the aliveness check (docs/machines/av/dsp.md).

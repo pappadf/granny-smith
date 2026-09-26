@@ -11,8 +11,8 @@
 # (256 colors is Marathon 1.2's supported depth at 640×480.  Selecting
 # "Thousands" instead drives the 8•24 GC into its double-wide 16-bpp mode, which
 # Marathon — spec'd only for 8-bit 640×480 — mishandles into a heap-corruption
-# bomb; that is faithful hardware behaviour, see tmp/marathon-16bpp-bomb-
-# findings.md, and is deliberately NOT exercised here.)
+# bomb; that is faithful hardware behaviour, and is deliberately NOT exercised
+# here.)
 
 # Pin the RTC so the boot is deterministic run-to-run.
 include "../lib/mac.script"

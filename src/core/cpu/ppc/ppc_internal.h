@@ -55,7 +55,7 @@
 #define PPC_XER_BYTES   0x0000007Fu // string byte count, XER[25-31]
 #define PPC_XER_CMPBYTE 0x0000FF00u // lscbx compare byte, XER[16-23]
 
-// === Exception vector offsets (Table 5-2; §3.3 of the proposal) ===
+// === Exception vector offsets (Table 5-2) ===
 #define PPC_VEC_RESET     0x00100u
 #define PPC_VEC_MCHECK    0x00200u
 #define PPC_VEC_DSI       0x00300u // data access

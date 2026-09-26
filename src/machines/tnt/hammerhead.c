@@ -218,7 +218,7 @@ void tnt_hh_init(config_t *cfg) {
     // The part identifier's FIRST BYTE is the model-family discriminator
     // the shipping ROM dispatches on ($39 = TNT, $3001xxxx = the 7200 /
     // Catalyst — decoded from the identification routine at $FFC14844;
-    // the dossier's "$3001 required" reading was the Catalyst branch).
+    // an earlier "$3001 required" reading was the Catalyst branch).
     hh->reg[HH_REG_ID >> 4] = tnt_board(cfg)->hh_id;
     hh->reg[HH_REG_MACHID >> 4] = tnt_board(cfg)->hh_r20;
     hh->reg[HH_REG_ARBCONFIG >> 4] = 0x00u; // TwoCPU clear: uniprocessor

@@ -7,8 +7,8 @@
 // 3-6 interrupt register pairs), the 7-channel DMA engine, the Singer sound
 // engine's register block (modelled as the mandatory free-running `sndPhase`
 // counter plus latches), the UTSC time-stamp counter, and the DSP reset
-// latch.  Contract: docs/machines/av/psc.md (+ singer.md §7,
-// dsp3210.md §8 for the sound/DSP stubs).
+// latch.  Contract: docs/machines/av/psc.md (and docs/machines/av/singer.md
+// for the sound engine).
 //
 // The VIA1 function the PSC also implements is NOT here — it is the generic
 // 6522 model (src/core/peripherals/via.c) mapped at island offset 0.
@@ -25,7 +25,7 @@
 struct av_psc;
 typedef struct av_psc av_psc_t;
 
-// PSC-VIA2 window IFR bit assignments (psc.md §5 item 7; VIA-style layout).
+// PSC-VIA2 window IFR bit assignments (VIA-style layout).
 #define AV_PSC_VIA2_SCSI_CA2 0 // SCSI IRQ mirror (level)
 #define AV_PSC_VIA2_SLOT_CA1 1 // any slot/VBL source in SInt (level)
 #define AV_PSC_VIA2_MUNI_SR  2 // MUNI (never asserted here)
@@ -52,7 +52,7 @@ void av_psc_checkpoint(av_psc_t *psc, checkpoint_t *cp);
 // === I/O island handlers (mac030 engine rows) ===============================
 
 // The 3-register VIA2 window at island $02000 ($1A00 IFR / $1C00 IER /
-// $1E00 SInt — via1-cuda.md §1).
+// $1E00 SInt).
 uint8_t av_psc_via2_read(config_t *cfg, uint32_t win_off, uint32_t addr);
 void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
@@ -113,12 +113,12 @@ uint32_t av_psc_snd_read32(av_psc_t *psc, uint32_t off);
 
 // Frame overrun from the Singer engine: sets the sticky pdspFrameOvr bit
 // and asserts L5 bit 1 as a level (it re-latches until the host clears
-// the $21C bit — rtm-rom-host-side.md §2).
+// the $21C bit).
 void av_psc_dsp_frame_overrun(av_psc_t *psc);
 
-// === DMA engine (psc.md §2.6-§3) ============================================
+// === DMA engine =============================================================
 
-// Channel assignments (psc.md §2.5).
+// Channel assignments.
 #define AV_PSC_DMA_SCSI     0
 #define AV_PSC_DMA_MACE_RX  1
 #define AV_PSC_DMA_MACE_TX  2

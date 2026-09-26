@@ -653,7 +653,7 @@ static void pdm_scsi_pump_arm(config_t *cfg) {
 
 // Fixed 8 KB ring bases inside the DMA window, per register block
 // ($1080/$1090/$10A0/$10B0).  Apple's equates name the blocks TxA RxA
-// TxB RxB, but the ring pairing is crossed (amic.md §6.1/§7.2 caveat):
+// TxB RxB, but the ring pairing is crossed:
 // the $10A0 block the guest drives for the printer port reads its frame
 // from window+$20000 (measured live from the 8.1 SerialDMA HAL).
 static const uint32_t pdm_scc_ring[4] = {0x24000u, 0x22000u, 0x20000u, 0x26000u};
@@ -798,7 +798,7 @@ static void pdm_scc_rx_arm(config_t *cfg, int idx) {
 
 // One step of the channel address + count after a byte has moved.  When
 // the count reaches zero the channel stops and raises DMAIF, which is how
-// raw/copy-protect reads terminate (§6.3).
+// raw/copy-protect reads terminate.
 static void fd_dma_advance(config_t *cfg, pdm_dma_ch_t *ch) {
     ch->addr = (ch->addr & 0xFFFF0000u) | ((ch->addr + 1u) & 0xFFFFu);
     if (ch->count > 0 && --ch->count == 0) {
@@ -844,7 +844,7 @@ bool pdm_amic_fd_dma_put(config_t *cfg, uint8_t value) {
 }
 
 // ============================================================
-// VBL — AMIC's video timing core (video-onboard-ariel.md §6)
+// VBL — AMIC's video timing core
 // ============================================================
 
 // The emulated monitor is the Hi-Res 640×480 at 66⅔ Hz (sense code 6, the
@@ -855,7 +855,7 @@ static uint64_t vbl_period_cycles(config_t *cfg) {
 }
 
 // Start of vertical blanking: assert the slot IFR VBL flag (bit 6,
-// ACTIVE-LOW — resolving the dossier's §11.6 polarity suspect: the ROM's
+// ACTIVE-LOW — the polarity is settled by the ROM itself: its
 // SonoraWaitVSync clears the flag with a $40 write, then spins until bit
 // 6 READS 0, so assertion drives the bit low).  Free-running raster; the
 // enable bit only gates the interrupt, never the flag.

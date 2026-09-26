@@ -22,7 +22,7 @@
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "dafb.h"
 #include "debug.h"
-#include "egret.h" // tower Caboose = Egret-protocol engine (ref §15.14)
+#include "egret.h" // tower Caboose = Egret-protocol engine
 #include "floppy.h"
 #include "image.h"
 #include "iop.h" // tower SCC/SWIM Apple PIC/IOPs (IIfx-compatible host aperture)
@@ -56,11 +56,11 @@ static inline mcu_state_t *mcu_st(config_t *cfg) {
 // ============================================================
 // Accept-and-log handler windows (MCU / SONIC / MAC PROM / SCSI / YANCC)
 // ============================================================
-// Register semantics in these blocks are [U]/[R] (reference §8/§10/§16); the
-// policy is Trap 24's: writes latch and read back, every first touch is
-// logged so the boot ROM's access sequence becomes an RE artifact.
+// Register semantics in these blocks are not publicly documented, so writes
+// latch and read back and every first touch is logged: the boot ROM's access
+// sequence becomes an RE artifact.
 
-// --- MCU/Orwell register file ($5000E000, ref §8.2 [U]) ---
+// --- MCU/Orwell register file ($5000E000) ---
 
 // Decompose the installed RAM into physical banks.
 //
@@ -219,7 +219,7 @@ static void mcu_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
     st->orwell_cfg = (st->orwell_cfg & ~(1ull << bit)) | ((uint64_t)(value & 1) << bit);
 }
 
-// --- Ethernet MAC-address PROM ($50008000, ref §16 [R]) ---
+// --- Ethernet MAC-address PROM ($50008000) ---
 // The Apple presentation the SONIC driver consumes (SonicEnet.a @GetAddr):
 // bytes 0-5 hold the station address with each byte BIT-REVERSED (the
 // driver's NormAddr undoes it), and the XOR of all eight bytes must equal
@@ -240,8 +240,8 @@ static void mcu_prom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8
     LOG(2, "MAC PROM write $%X = $%02X ignored (read-only)", addr & 7u, value);
 }
 
-// --- SONIC ($5000A000; 16-bit registers on 4-byte spacing, ref §16.2) ---
-// The register value rides the LOW half of the 32-bit slot ([R] — current
+// --- SONIC ($5000A000; 16-bit registers on 4-byte spacing) ---
+// The register value rides the LOW half of the 32-bit slot (current
 // MAME maps it the same way); the engine byte-decomposes wider accesses, so
 // reads serve bytes 2-3 of each slot and a write COMMITS when byte 3
 // lands (the Quadra driver/tests use 32-bit accesses throughout — SonicEqu.a
@@ -269,7 +269,7 @@ static void mcu_sonic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
         sonic_reg_write(st->sonic, off >> 2, (uint16_t)((st->sonic_byte2 << 8) | value));
 }
 
-// --- NCR 53C96 ($5000F000; registers on a 16-byte spacing, ref §6.4) ---
+// --- NCR 53C96 ($5000F000; registers on a 16-byte spacing) ---
 
 static uint8_t mcu_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -299,7 +299,7 @@ static void mcu_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, 
 
 // --- Second NCR 53C96 (towers; regs at $5000F402 on 16-byte spacing and
 // pseudo-DMA at $5000F502 — UniversalTables.a OrwellDecoderTable "2nd
-// (external) SCSI96" [A]; the pdma alias matches current MAME [R]).  The
+// (external) SCSI96"; the pdma alias matches current MAME).  The
 // same (offset >> 4) register decode as bus 0 serves the +2 byte lane.
 
 static uint8_t mcu_scsi_ext_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
@@ -325,9 +325,9 @@ static void mcu_scsi_ext_pdma_write(config_t *cfg, uint32_t win_off, uint32_t ad
 }
 
 // --- YANCC ($50028000) — the system-bus/NuBus bridge register file.
-// The register address is Apple-documented, its width and bits are not
-// (ref §10.2 [A][U]): same latch-and-log policy as the MCU file, so the
-// ROM's/driver's access sequence is recoverable as an RE artifact.  Actual
+// The register address is Apple-documented, its width and bits are not:
+// same latch-and-log policy as the MCU file, so the ROM's/driver's access
+// sequence is recoverable as an RE artifact.  Actual
 // NuBus transactions run through the memory map + nubus core directly; the
 // write-buffer/error machinery this register controls is not modeled yet.
 
@@ -359,16 +359,16 @@ static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 }
 
 // ============================================================
-// Q700 I/O island decode ($50000000, 256 KiB, mirror $3FFFF; ref §6)
+// Q700 I/O island decode ($50000000, 256 KiB, mirror $3FFFF)
 // ============================================================
 // Direct low-speed I/O (no IOPs): VIA1/VIA2, direct SCC, direct SWIM, EASC,
 // plus the handler windows above.  Penalties follow the MDU values until the
-// JDB/Relayer per-device wait-state classes are measured (ref §9.3 Tier 1).
+// JDB/Relayer per-device wait-state classes are measured.
 
 #define MCU_VIA_IO_PENALTY  16
 #define MCU_SCC_IO_PENALTY  2
 #define MCU_ASC_IO_PENALTY  2
-#define MCU_SWIM_IO_PENALTY 5 // current MAME charges 5 CPU cycles [R]
+#define MCU_SWIM_IO_PENALTY 5 // current MAME charges 5 CPU cycles
 // The handler-row chips (MAC PROM, SONIC, the MCU's own registers, the 53C96
 // and its pseudo-DMA aperture, YANCC) sit on the same island as the SCC and
 // EASC and pay the same turnaround.
@@ -391,7 +391,7 @@ const mac030_io_range_t mcu_q700_io_ranges[] = {
 };
 
 // ============================================================
-// Q900/Q950 tower I/O island decode (ref §6.3; UniversalTables.a
+// Q900/Q950 tower I/O island decode (UniversalTables.a
 // OrwellDecoderTable — Eclipse memory map)
 // ============================================================
 // Deltas vs the Q700: the SCC and SWIM windows route to the two Apple
@@ -430,7 +430,7 @@ void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, v
 }
 
 // ============================================================
-// /SLOTIRQ aggregation (ref §13.3)
+// /SLOTIRQ aggregation
 // ============================================================
 // The slot/video/Ethernet request lines land on VIA2 PA0-PA6 (active-low)
 // and OR into the active-low /SLOTIRQ on VIA2 CA1.  Every source funnels
@@ -452,7 +452,7 @@ void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
 // ============================================================
 
 // DAFB video interrupt -> VIA2 PA6 (active-low) through the family /SLOTIRQ
-// aggregate on CA1 (ref S11.18/S13.3), alongside the NuBus slot sources.
+// aggregate on CA1, alongside the NuBus slot sources.
 static void mcu_dafb_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     mcu_slot_irq_source(cfg, 6, active);
@@ -493,7 +493,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
 }
 
 // substrate.nubus_slot_irq: a NuBus card's /NMRQ maps to VIA2 PA(slot-9)
-// (slot $A→PA1 .. $E→PA5; ref §13.3).  Slot 9 is the built-in video and
+// (slot $A→PA1 .. $E→PA5).  Slot 9 is the built-in video and
 // never arrives here — DAFB drives PA6 directly through the aggregate.
 static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int pa_bit = slot - 0x9;
@@ -503,7 +503,7 @@ static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 }
 
 // ============================================================
-// ROM-at-zero overlay (access-triggered; ref §4.3 [A])
+// ROM-at-zero overlay (access-triggered)
 // ============================================================
 // While armed, the ROM aperture ($40000000-$4FFFFFFF) is registered as a
 // device window: the first access drops the overlay — RAM appears at zero,
@@ -524,7 +524,7 @@ static void mcu_memory_layout_init(config_t *cfg) {
 
     // I/O island at $50000000 (256 KiB block; the published map mirrors it
     // through $53FFFFFF, current RE through $50FFFFFF — we register the
-    // Apple-documented extent and let the mirror mask fold accesses; ref §6).
+    // Apple-documented extent and let the mirror mask fold accesses).
     mac030_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->mem_map, 0x50000000u, 0x04000000u, "I/O", &st->io_interface, &st->io);
 

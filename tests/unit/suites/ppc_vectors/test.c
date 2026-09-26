@@ -14,7 +14,7 @@
 // orchestrator runs suite binaries with no arguments.
 //
 // What a pass means: agreement with the model, NOT with silicon.  The model
-// is not hardware-validated (powerpc-test INTEGRATING.md §1), and both it and
+// is not hardware-validated, and both it and
 // this core were derived from the same 601 manual, so a shared misreading
 // would agree here.  What the suite does test independently of that: the
 // read set (unlisted state is randomized every replay, so an instruction that
@@ -157,7 +157,7 @@ static int custom_step(ppc_backend *self, const ppc_vector *vec, const ppc_state
     (void)vec; // a real emulator never looks at the vector
 
     // The 601's reservation carries an address; the model's is a valid flag
-    // only (DECISIONS.md §1).  A set reservation is therefore not
+    // only.  A set reservation is therefore not
     // representable here without inventing the address the instruction is
     // about to compute — report it rather than guessing.  No vector in the
     // smoke tier sets one (the envelope holds it false), so this is a guard

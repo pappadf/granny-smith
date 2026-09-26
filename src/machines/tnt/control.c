@@ -30,7 +30,7 @@
 //     +$30.  Misc register $20 carries the depth (bits 3:2: 0/1/2 =
 //     8/16/32 bpp), $21 the VRAM bank select.
 //   * VBL is Grand Central interrupt 26 (TNT_INT_VBL), IPL 2 through the
-//     NanoKernel mapping.  The dossier's interrupt map guessed 30; the
+//     NanoKernel mapping.  An earlier interrupt map guessed 30; the
 //     shipping System's video driver settles it by toggling GC mask bit
 //     26 as it writes INTR_ENA (see tnt.h).  Line 30 is the 9500's
 //     second-CPU doorbell in Apple's own external-interrupt table, and
@@ -40,7 +40,7 @@
 // The pixel clock is programmed over Cuda I2C (device $50) and is not
 // visible here — geometry derives from the timing registers and pitch
 // (width = pitch/bytes-per-pixel, height = (vsblank-veblank)/2), which is
-// behaviorally sufficient (control-chaos-video.md §7).
+// behaviorally sufficient.
 //
 // Register truth: linux/drivers/video/fbdev/controlfb.{c,h} [GPL-src],
 // mklinux POWERMAC/video_control.c [GPL-src], the shipping ROM's OpenFW

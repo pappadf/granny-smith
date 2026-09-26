@@ -481,7 +481,7 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
 }
 
 // ============================================================================
-// Exception trace ring (IMP from notes/09 diagnostic patch)
+// Exception trace ring
 // ============================================================================
 
 #define EXC_TRACE_RING_SIZE 256
