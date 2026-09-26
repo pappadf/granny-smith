@@ -22,7 +22,7 @@ TOOL_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 # override before all sources to prevent the real platform.h from loading
 # (same pattern as tests/unit/support/).
 INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_CPU_DIR)/dsp3210 -I$(CORE_CPU_DIR)/ppc \
-            -I$(CORE_DBG_DIR) -I$(DUMP_DIR) \
+            -I$(CORE_DBG_DIR) -I$(CORE_DIR)/object -I$(DUMP_DIR) \
             -I$(TOOL_DIR) \
             -include $(TOOL_DIR)/platform.h
 

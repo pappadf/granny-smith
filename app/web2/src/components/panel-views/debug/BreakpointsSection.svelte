@@ -14,8 +14,14 @@
   let addAddr = $state('');
   let addCond = $state('');
 
+  // Only the latest listing is shown.  A listing is several round trips, so
+  // one started before a remove (the refresh after a repeated add, say) can
+  // finish after the remove's own refresh and would put the row back.
+  let listGen = 0;
   async function refresh() {
-    rows = await listBreakpoints();
+    const gen = ++listGen;
+    const list = await listBreakpoints();
+    if (gen === listGen) rows = list;
   }
 
   onMount(() => {

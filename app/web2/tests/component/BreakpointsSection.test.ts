@@ -2,7 +2,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import BreakpointsSection from '@/components/panel-views/debug/BreakpointsSection.svelte';
 import { debug } from '@/state/debug.svelte';
-import type { Breakpoint } from '@/bus/debug';
+import { listBreakpoints, type Breakpoint } from '@/bus/debug';
 
 let bpList: Breakpoint[] = [];
 const adds: Array<{ addr: number; cond?: string }> = [];
@@ -67,5 +67,39 @@ describe('BreakpointsSection', () => {
     const txt = container.textContent ?? '';
     expect(txt).toContain('3×');
     expect(txt).toContain('d0 == 1');
+  });
+
+  // A listing is several round trips; one started before a remove used to be
+  // able to finish after the remove's own listing and put the row back.
+  it('a listing that finishes late never overwrites a newer one', async () => {
+    bpList = [{ id: 1, addr: 0x400100, enabled: true, hits: 0 }];
+    const { container } = render(BreakpointsSection);
+    await waitFor(() => expect(container.querySelectorAll('.bp-row').length).toBe(1));
+
+    // The next listing stalls, still seeing the breakpoint...
+    let release: (v: Breakpoint[]) => void = () => undefined;
+    vi.mocked(listBreakpoints).mockImplementationOnce(
+      () => new Promise<Breakpoint[]>((r) => (release = r)),
+    );
+    await fireEvent.click(container.querySelector('.add-btn') as HTMLElement);
+    const addrInput = container.querySelector('input.add-addr') as HTMLInputElement;
+    addrInput.value = '0x400100';
+    await fireEvent.input(addrInput);
+    await fireEvent.keyDown(addrInput, { key: 'Enter' });
+    await waitFor(() => expect(adds.length).toBe(1));
+
+    // ...the breakpoint is removed and the remove's listing shows none...
+    bpList = [];
+    await fireEvent.contextMenu(container.querySelector('.bp-row') as HTMLElement);
+    const remove = Array.from(document.querySelectorAll('[role="menuitem"]')).find((e) =>
+      e.textContent?.includes('Remove'),
+    ) as HTMLElement;
+    await fireEvent.click(remove);
+    await waitFor(() => expect(container.querySelectorAll('.bp-row').length).toBe(0));
+
+    // ...and the stale listing, arriving last, is dropped.
+    release([{ id: 1, addr: 0x400100, enabled: true, hits: 0 }]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.querySelectorAll('.bp-row').length).toBe(0);
   });
 });

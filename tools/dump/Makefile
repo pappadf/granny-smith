@@ -20,7 +20,7 @@ TOOL_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # Include paths.  Force-include the platform override before all sources
 # to prevent the real emulator platform.h from loading.
-INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_DBG_DIR) -I$(CORE_STORAGE_DIR) \
+INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_DBG_DIR) -I$(CORE_STORAGE_DIR) -I$(CORE_DIR)/object \
             -I$(TOOL_DIR) \
             -include $(TOOL_DIR)/platform.h
 
