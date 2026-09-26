@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Upload reproduction / regression guard, against the LOCAL build served with
-// real COOP/COEP headers (so the engine is cross-origin isolated and the WASM
-// module boots without the coi-serviceworker — see
-// playwright.webkit-local.config.ts).
+// Upload regression guard, against the local build served with real COOP/COEP
+// headers (so the engine is cross-origin isolated and the WASM module boots
+// without the coi-serviceworker).  Runs on Chromium in the main suite; on
+// macOS, playwright.webkit-local.config.ts runs it on WebKit, the Safari
+// engine (Linux WebKitGTK has no OPFS, so it skips there).
 //
 // Reported (Safari): the first attempt to upload a ROM/vROM failed with the
 // toast "Upload failed: <name>" and this console error:

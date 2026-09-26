@@ -40,11 +40,10 @@ tests/
 └── e2e/                            # Browser Playwright tests (web2 UI)
     ├── playwright.web2.config.ts  #   Main config (testDir → web2-specs/)
     ├── playwright.prod-smoke.config.ts # Production-bundle boot smoke
-    ├── playwright.webkit-local.config.ts # Local WebKit upload/OPFS checks
+    ├── playwright.webkit-local.config.ts # upload.spec.ts on WebKit (macOS)
     ├── test_server.py             #   COOP/COEP static server
     ├── web2-specs/                #   Functional suite (checkpoint, drop, url-boot, …)
     ├── ui-prod-smoke/             #   Production-bundle smoke test
-    ├── webkit-local/              #   Local WebKit OPFS upload test
     └── helpers/web2-fs.ts         #   OPFS staging + drag helpers
 ```
 

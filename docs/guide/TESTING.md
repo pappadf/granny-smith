@@ -44,7 +44,6 @@ tests/
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
     ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
     ├── ui-prod-smoke/             #   Production-bundle boot smoke
-    ├── webkit-local/             #   Local WebKit upload/OPFS checks
     ├── helpers/web2-fs.ts         #   OPFS staging + drag helpers
     ├── test_server.py             #   COOP/COEP static server
     └── playwright.web2.config.ts  #   Main Playwright configuration
@@ -390,7 +389,9 @@ one shared helper is `tests/e2e/helpers/web2-fs.ts`. See
 | `url-boot` | `?rom=…` URL-parameter boot |
 
 Two more configs run separately: `ui-prod-smoke/` (production-bundle boot
-smoke, no data) and `webkit-local/` (local WebKit OPFS upload).
+smoke, no data) and `playwright.webkit-local.config.ts`, which runs
+`web2-specs/upload.spec.ts` on WebKit (macOS only: Linux WebKitGTK has no
+OPFS).
 
 ### Running E2E Tests
 

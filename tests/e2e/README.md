@@ -19,7 +19,7 @@ focused on the C/WebAssembly sources.
 tests/e2e/
 ├── playwright.web2.config.ts        # Main functional config (testDir → web2-specs/)
 ├── playwright.prod-smoke.config.ts  # Production-bundle boot smoke (ui-prod-smoke/)
-├── playwright.webkit-local.config.ts# Local WebKit upload/OPFS checks (webkit-local/)
+├── playwright.webkit-local.config.ts# web2-specs/upload.spec.ts on WebKit (macOS)
 ├── package.json                     # Node dependencies (Playwright)
 ├── tsconfig.json
 ├── test_server.py                   # COOP/COEP-enabled static server (web2 + webkit configs)
@@ -40,6 +40,7 @@ tests/e2e/
 │   ├── lisa-xenix-profile.spec.ts   # Lisa/XL ProFile-vs-SCSI config + boot
 │   ├── perf-bench.spec.ts           # Accelerated + turbo throughput (tracked numbers)
 │   ├── scheduler-accelerated.spec.ts# Accelerated mode: faster CPU, real-time timebase
+│   ├── upload.spec.ts               # Upload picker: streamed staging through the core (Safari regression)
 │   ├── url-boot.spec.ts             # ?rom=… URL-parameter boot
 │   ├── voodoo2-thread.spec.ts       # Voodoo2 raster on a second Web Worker; LFB/counter fences
 │   ├── voodoo2-webgpu.spec.ts       # Voodoo2 WebGPU takeover: engagement, exact coverage, fallback
@@ -47,9 +48,6 @@ tests/e2e/
 │
 ├── ui-prod-smoke/                   # Production-bundle smoke (playwright.prod-smoke.config.ts)
 │   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
-│
-├── webkit-local/                    # Local WebKit only (playwright.webkit-local.config.ts)
-│   └── upload.spec.ts               # OPFS streaming upload (Safari createWritable regression)
 │
 ├── helpers/
 │   └── web2-fs.ts                   # gotoWeb2, OPFS staging, tree/file drag helpers
