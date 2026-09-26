@@ -1,12 +1,12 @@
 // Real emulator bus — boots the WASM Module and exposes `gsEval` over the
-// SAB-backed js_bridge_t slot. Port of app/web/js/emulator.js.
+// SAB-backed js_bridge_t slot (src/platform/wasm/em.h).
 //
 // THREADING — read before adding any new JS→C call site.
 //
 // With -sPROXY_TO_PTHREAD, main() / shell_init() / scheduler / device state
 // all live on the WORKER thread. Direct Module.ccall from the main thread
 // races that state. Every JS→C call MUST route through the SAB-backed
-// bridge slot (`pending=1`, single in-flight). See docs/web.md.
+// bridge slot (`pending=1`, single in-flight). See docs/guide/web.md.
 
 import {
   machine,

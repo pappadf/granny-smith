@@ -251,11 +251,6 @@ static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
 static double ticks_per_second = 0;
 
-// Emscripten-specific shell stubs. Prompt composition lives in
-// src/core/shell/shell.c::shell_build_prompt now (callable from JS via
-// `shell.prompt` on the Shell class).
-void print_prompt(void) {}
-
 // ============================================================================
 // Shared-heap Command Queue (and gs_eval queue)
 // ============================================================================

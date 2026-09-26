@@ -234,6 +234,8 @@ static void print_usage(const char *program) {
     printf("Arguments:\n");
     printf("  rom=<file>      ROM image file (required)\n");
     printf("  ram=<kb>        RAM size in kilobytes (default: machine-specific)\n");
+    printf("  model=<id>      Machine model (e.g. pm8500) when the ROM serves several;\n");
+    printf("                  default: the first model the ROM identifies as\n");
     printf("  hd=<file>       Hard disk image (optional, repeatable): each goes into the model's\n");
     printf("                  next hard-disk bay, the boot bay first (the ProFile on a Lisa)\n");
     printf("  cdrom=<file>    CD-ROM image (optional, once): into the model's CD bay --\n");
@@ -242,9 +244,9 @@ static void print_usage(const char *program) {
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
     printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
-    printf("  monitor=<id>   monitor on the built-in video port ('none' = unconnected,\n");
-    printf("                 which hands the screen to a NuBus card)\n");
     printf("                  default: the machine's default card\n");
+    printf("  monitor=<id>    monitor on the built-in video port ('none' = unconnected,\n");
+    printf("                  which hands the screen to a NuBus card)\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");
     printf("\n");
     printf("Options:\n");

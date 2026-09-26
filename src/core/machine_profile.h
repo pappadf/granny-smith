@@ -68,7 +68,7 @@ const char *mmu_kind_to_string(mmu_kind_t kind);
 // hw_profile_t.cpu_model — never stored in the profile separately.
 typedef enum cpu_arch {
     CPU_ARCH_M68K = 0, // Motorola 68000/68030/68040 (src/core/cpu/)
-    CPU_ARCH_PPC, // PowerPC — MPC601 (src/core/cpu/ppc/)
+    CPU_ARCH_PPC, // PowerPC — MPC601 / MPC604 (src/core/cpu/ppc/)
 } cpu_arch_t;
 
 // PowerPC model ids for hw_profile_t.cpu_model (the 68K ids live in cpu.h).

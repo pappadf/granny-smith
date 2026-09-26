@@ -306,7 +306,7 @@ static value_t attr_machine_created(struct object *self, const member_t *m) {
 // from the model's display name.
 static value_t build_capabilities(const hw_profile_t *p) {
     value_map_builder_t *cpu = val_map_new();
-    val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030
+    val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030 / 68040 / 601 / 604
     val_map_put(cpu, "address_bits", val_int((int64_t)p->address_bits));
     val_map_put(cpu, "fpu", val_bool(cpu_has_fpu(p->cpu_model)));
 

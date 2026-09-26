@@ -83,10 +83,6 @@ export function startVoodooGpu(canvas3d: HTMLCanvasElement): Promise<boolean> {
   return ready;
 }
 
-export function voodooGpuAvailable(): boolean {
-  return deviceReady;
-}
-
 // Resolves once the worker has answered (true: a device exists).  False
 // immediately when the worker was never started.
 export function whenVoodooGpuReady(): Promise<boolean> {

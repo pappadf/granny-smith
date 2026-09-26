@@ -26,12 +26,6 @@ describe('WelcomeHomeSlide', () => {
     expect(headings[0]).toBe('Start');
   });
 
-  it('Start card has three rows', () => {
-    const { container } = render(WelcomeHomeSlide);
-    const startCard = container.querySelectorAll('.card')[0];
-    expect(startCard.querySelectorAll('.card-row').length).toBe(3);
-  });
-
   it('"New Machine..." switches to the Configuration slide (no toast)', async () => {
     const { container } = render(WelcomeHomeSlide);
     const newMachineBtn = container.querySelector('.card-row') as HTMLButtonElement;
@@ -40,13 +34,12 @@ describe('WelcomeHomeSlide', () => {
     expect(toasts.active).toEqual([]);
   });
 
-  it('"Open Checkpoint..." fires a warning toast pointing at Phase 5', async () => {
+  it('offers New Machine and Upload ROM, and nothing that is not built', () => {
     const { container } = render(WelcomeHomeSlide);
-    const buttons = container.querySelectorAll('.card-row');
-    await fireEvent.click(buttons[1] as HTMLButtonElement);
-    expect(toasts.active.length).toBe(1);
-    expect(toasts.active[0].severity).toBe('warning');
-    expect(toasts.active[0].msg).toContain('Phase 5');
+    const rows = Array.from(container.querySelectorAll('.card-row')).map((b) =>
+      b.textContent?.trim(),
+    );
+    expect(rows).toEqual(['New Machine...', 'Upload ROM...']);
   });
 
   // Nothing in production ever wrote a recent list (N-13): no Recent card.

@@ -57,7 +57,8 @@ void em_print_host_callstack(void);
 // writes fields by offset through `Module.HEAP32` / `Module.HEAPU8`.
 // Layout is mirrored in `app/web2/src/bus/emulator.ts` (the OFF_* constants;
 // the _Static_asserts below pin every offset it hardcodes); bump
-// JS_BRIDGE_VERSION whenever fields are added, reordered, or resized.
+// JS_BRIDGE_VERSION whenever fields are added, reordered, or resized.  The
+// protocol and the result contract are described in docs/guide/web.md.
 //
 // The int32 words are shared with JS's Atomics.* and are therefore accessed
 // only through __atomic_* on this side — never plain loads or stores, which

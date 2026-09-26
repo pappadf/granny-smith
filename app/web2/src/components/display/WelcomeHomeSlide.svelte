@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { showNotification } from '@/state/toasts.svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { pickAndUpload } from '@/bus/upload';
   import Icon from '../common/Icon.svelte';
 
+  // (An "Open Checkpoint..." row only toasted that it was not written yet;
+  // saved states live in the Checkpoints view.)
   // (A "Recent" card used to list /opfs/config/recent.json, which nothing in
   // production ever wrote — only test fixtures, which held display names
   // where machine.boot takes model ids, N-13.  It is gone until something
@@ -20,10 +21,6 @@
     // path still auto-boots, which is where that shortcut belongs.
     await pickAndUpload('', { autoBootOnRom: false });
   }
-
-  function openCheckpointPicker() {
-    showNotification('Open Checkpoint... arrives in Phase 5 (Checkpoints view)', 'warning');
-  }
 </script>
 
 <div class="home-content">
@@ -35,10 +32,6 @@
       <button class="card-row" onclick={openConfigSlide}>
         <Icon name="mac" />
         <span>New Machine...</span>
-      </button>
-      <button class="card-row" onclick={openCheckpointPicker}>
-        <Icon name="clock" />
-        <span>Open Checkpoint...</span>
       </button>
       <button class="card-row" onclick={openUploadRom}>
         <Icon name="upload" />
