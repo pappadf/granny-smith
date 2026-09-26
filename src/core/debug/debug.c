@@ -575,6 +575,10 @@ void debug_exc_trace_dump(int filter) {
     }
 }
 
+// The debug_t whose construction installed g_mem_logpoint_hook; only its
+// teardown clears the hook (debug_init / debug_delete).
+static debug_t *g_mem_hook_owner = NULL;
+
 // Hook invoked from the memory slow path for every access on a logpoint page.
 // Walks the logpoint list and emits a log line for each memory logpoint that
 // matches this access.  Cost is O(num memory logpoints) per access on logged
@@ -1958,8 +1962,11 @@ debug_t *debug_init(void) {
 
     debug_mac_init();
 
-    // Install memory-logpoint hook so the memory slow path can emit logs
+    // Install memory-logpoint hook so the memory slow path can emit logs.
+    // The hook is process-global; this instance owns it until another is
+    // constructed (see debug_delete).
     g_mem_logpoint_hook = debug_memory_logpoint_hook;
+    g_mem_hook_owner = debug;
 
     // Object-tree binding — instance_data on the debug node and its
     // collection / mac children is the debug_t* itself.
@@ -2049,9 +2056,14 @@ void debug_cleanup(debug_t *debug) {
     // fast-path cost paid -- with nothing to call, so none of them ever fired
     // and nothing reported it.  root.c guards exactly this shape with
     // g_installed_cfg (root.c:295-309); this is the same guard, keyed on the
-    // handler rather than on a cfg we do not hold here.
-    if (g_mem_logpoint_hook == debug_memory_logpoint_hook)
+    // owning instance.  It used to compare the handler instead, which every
+    // instance installs, so the guard was always true and a checkpoint.load
+    // still cleared the new machine's hook: memory logpoints never fired
+    // after a load, even ones added afterwards (#172).
+    if (g_mem_hook_owner == debug) {
         g_mem_logpoint_hook = NULL;
+        g_mem_hook_owner = NULL;
+    }
 
     // Free trace log buffer entries
     if (debug->trace_log_buffer) {
