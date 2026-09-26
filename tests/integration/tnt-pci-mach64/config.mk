@@ -26,4 +26,4 @@ TEST_ARGS := model=pm9500 ram=32768
 TEST_SETUP := python3 tnt-pci-mach64/make-fixtures.py "$(WORK_DIR)"
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
-TEST_TIER := unit
+TEST_TIER := matrix

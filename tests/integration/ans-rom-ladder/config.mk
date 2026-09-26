@@ -31,4 +31,4 @@ TEST_ROM := roms/ans500-ans700-962f6c13.rom
 TEST_ARGS := model=ans500 ram=32768
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
-TEST_TIER := unit
+TEST_TIER := matrix

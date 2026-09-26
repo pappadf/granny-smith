@@ -10,7 +10,8 @@ name: Nightly
 #   * Valgrind, RESCOPED. `make integration-test-valgrind` used to sweep
 #     every test, which at Valgrind's 20-50x slowdown over billions of guest
 #     cycles cannot plausibly have run to completion. It now runs the unit
-#     tier plus one representative boot, with the perf floors switched off
+#     tier, one short run for each PowerPC family the unit tier does not
+#     boot, and one representative 68k boot, with the perf floors switched off
 #     (PERF_FLOORS=off) because a 20-50x slowdown makes throughput asserts
 #     meaningless.
 #
@@ -112,13 +113,18 @@ jobs:
             TEST_VARS="KEEP_GOING=1" -j"$(nproc)" 2>&1 | tee /tmp/it-nightly.log
           exit "${PIPESTATUS[0]}"
 
-      # Valgrind, rescoped: the unit tier plus one representative boot,
-      # with throughput floors off because Valgrind makes them meaningless.
-      - name: Valgrind (unit tier + one boot)
+      # Valgrind, rescoped: the unit tier plus one short run per machine
+      # family the unit tier does not boot, with throughput floors off
+      # because Valgrind makes them meaningless.  The unit tier covers the
+      # ANS (ans-pci-slots, ans-machine-restart); PDM and TNT left it with
+      # their ROM ladders and PCI tests, so each gets its cheapest one here.
+      - name: Valgrind (unit tier + one run per family)
         if: always()
         run: |
           make -C tests/integration test-valgrind TIER=unit PLATEN=1 -j"$(nproc)" \
             TEST_VARS="PERF_FLOORS=off" 2>&1 | tee /tmp/vg-unit.log
+          make -C tests/integration -j2 PLATEN=1 TEST_VARS="PERF_FLOORS=off" \
+            test-valgrind-pdm-rom-ladder test-valgrind-tnt-pci-slots 2>&1 | tee /tmp/vg-ppc.log
           make -C tests/integration test-valgrind-suite-plus PLATEN=1 \
             TEST_VARS="ROW=plus-beep PERF_FLOORS=off" 2>&1 | tee /tmp/vg-boot.log
 

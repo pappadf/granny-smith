@@ -13,4 +13,4 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx ram=8192
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
-TEST_TIER := unit
+TEST_TIER := matrix

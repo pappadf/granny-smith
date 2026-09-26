@@ -111,6 +111,17 @@ the PR gate), and `extended` (long diagnostics, installers, app
 choreography — nightly). CI runs by tier, so a test with no recognised
 tier runs nowhere.
 
+The unit tier's ceiling is about a second of host CPU per test and under
+15 s for the whole tier (about 10 s today). Measure a candidate, don't
+count its instructions: a 68k machine runs 60 M instructions in about a
+second, while a PowerPC ROM ladder spends several seconds before Open
+Firmware assigns a BAR. A test that needs more belongs in `matrix`. That
+is why the PPC ROM ladders, the TNT PCI tests and `machine-restart` are
+matrix tests. The nightly Valgrind run still reaches every PowerPC family:
+the ANS through the unit tier's `ans-pci-slots` and
+`ans-machine-restart`, and PDM and TNT through their own short runs
+(`nightly.yml`).
+
 ### Suites and the shared script library
 
 Machine families are covered by *suite* directories (`suite-plus`,
