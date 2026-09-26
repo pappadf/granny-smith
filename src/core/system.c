@@ -1646,8 +1646,17 @@ config_t *system_restore(const char *filename) {
         // satisfied by construction rather than by a second mechanism.
         if (restored_record.video_sense >= 0)
             build_opts.video_sense = restored_record.video_sense;
-        if (restored_record.vrom[0])
-            vrom_set_path(restored_record.vrom);
+        // The built-in monitor strap resolves to a sense code exactly as
+        // machine.boot resolves it (machine_boot_apply), and wins over
+        // video_sense there too.  The record's id was validated at boot.
+        if (restored_record.monitor[0] && profile->builtin_video && profile->builtin_video->monitor_sense) {
+            uint8_t mon_sense = 0;
+            if (profile->builtin_video->monitor_sense(restored_record.monitor, &mon_sense))
+                build_opts.video_sense = mon_sense;
+        }
+        // The record's explicit vrom=/prom= picks replace whatever the
+        // running machine registered.
+        machine_config_set_explicit_picks(restored_record.vrom, restored_record.prom);
         // The PCI half of the same rule: a checkpoint written with a
         // socketed PCI card (and its options) must re-seat that card, or
         // the slot resolves its default (usually empty) and the
@@ -1694,6 +1703,8 @@ config_t *system_restore(const char *filename) {
         // beyond "Failed to read checkpoint".
         if (prev)
             root_install(prev);
+        // ...and its explicit picks: the installed record is still prev's.
+        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
         return NULL;
     }
 

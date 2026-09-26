@@ -138,6 +138,11 @@ machine_config_record_t *machine_config_record_mut(void);
 // loader's reports rebuild it for the new machine.
 void machine_config_reset_vroms(void);
 
+// Make the offer registries' explicit picks exactly `vrom` and `prom` (NULL
+// or "" = none).  Every boot document, restart and checkpoint restore is
+// the whole specification, so the previous machine's picks never linger.
+void machine_config_set_explicit_picks(const char *vrom, const char *prom);
+
 // Report one resolved declaration-ROM pick (called by the card loader
 // while the machine is being constructed).
 void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick);

@@ -101,6 +101,9 @@ bool prom_card_resolvable(const char *card_id);
 // an empty path.
 int prom_set_path(const char *path);
 
+// Drop the explicit pick (the file stays offered); see vrom_clear_explicit.
+void prom_clear_explicit(void);
+
 // Load the resolved image for `card_id` into a malloc'd buffer the caller
 // (a card factory) hands to pci_device_t.rom / .rom_size.  *out_path (if
 // non-NULL) receives a malloc'd copy of the resolved path for the

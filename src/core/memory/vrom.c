@@ -277,6 +277,10 @@ int vrom_set_path(const char *path) {
     return 0;
 }
 
+void vrom_clear_explicit(void) {
+    offer_registry_clear_explicit(&s_offers);
+}
+
 // ============================================================================
 // Object-model class descriptor
 // ============================================================================

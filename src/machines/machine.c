@@ -859,10 +859,6 @@ static void stamp_created(char *buf, size_t bufsize) {
         snprintf(buf, bufsize, "unknown");
 }
 
-// Apply one boot document: validate → tear down → construct → record.
-// Shared by machine.boot, machine.restart and headless startup.  Returns
-// V_NONE on success, V_ERROR (with the old machine still running) on
-// rejection.
 // Would a video_card= pick be honoured by this model?  The same rules the
 // slot walk applies (nubus.c): with a socket, the pick goes to the FIRST
 // socket and must physically fit it; with none, it replaces the builtin and
@@ -899,6 +895,10 @@ static bool pci_card_pick_fits(const hw_profile_t *p, const pci_card_kind_t *k) 
     return first_socket && pci_card_fits_socket(first_socket, k);
 }
 
+// Apply one boot document: validate → tear down → construct → record.
+// Shared by machine.boot, machine.restart and headless startup.  Returns
+// V_NONE on success, V_ERROR (with the old machine still running) on
+// rejection.
 value_t machine_boot_apply(const boot_config_t *doc_in) {
     boot_config_t doc = *doc_in;
 
@@ -1036,17 +1036,21 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     }
 
     // Strict resolution for explicitly picked socket cards (per-slot staged
-    // entries and the document's wildcard card).
-    if (doc.vrom && *doc.vrom)
-        vrom_set_path(doc.vrom);
-    if (doc.prom && *doc.prom)
-        prom_set_path(doc.prom);
+    // entries and the document's wildcard card).  The resolution check reads
+    // the offer registry, so this document's explicit picks go in first, in
+    // place of the previous boot's (a document without vrom= has none); a
+    // rejection puts the running machine's picks back.
+    machine_config_set_explicit_picks(doc.vrom, doc.prom);
     value_t verr = validate_vrom_resolution(profile, doc.video_card);
-    if (val_is_error(&verr))
+    if (val_is_error(&verr)) {
+        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
         return verr;
+    }
     value_t perr = validate_prom_resolution(profile, doc.pci_card);
-    if (val_is_error(&perr))
+    if (val_is_error(&perr)) {
+        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
         return perr;
+    }
 
     // 3. Teardown + atomic construction.  On a machine.restart the mounted
     // media's open handles are detached first so they survive
@@ -1262,6 +1266,7 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
         .video_sense = snap.video_sense,
         .video_mode = snap.video_mode[0] ? snap.video_mode : NULL,
         .custom_mode = snap.custom_mode[0] ? snap.custom_mode : NULL,
+        .monitor = snap.monitor[0] ? snap.monitor : NULL,
         .pci_card = snap.pci_card[0] ? snap.pci_card : NULL,
         .pci_option = snap.pci_option[0] ? snap.pci_option : NULL,
     };
@@ -1345,7 +1350,7 @@ static const arg_decl_t machine_boot_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_sense,
-     .doc = "Monitor sense 0..7; default: card default"                             },
+     .doc = "Monitor sense 0..7 (passive), 8..14 (extended); default: card default" },
     {.name = "video_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,

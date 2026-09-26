@@ -314,6 +314,10 @@ int prom_set_path(const char *path) {
     return 0;
 }
 
+void prom_clear_explicit(void) {
+    offer_registry_clear_explicit(&s_offers);
+}
+
 bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, char **out_path) {
     if (out_buf)
         *out_buf = NULL;

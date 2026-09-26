@@ -7,7 +7,9 @@
 #include "machine_config.h"
 
 #include "object.h"
+#include "prom.h"
 #include "value.h"
+#include "vrom.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +30,15 @@ machine_config_record_t *machine_config_record_mut(void) {
 void machine_config_reset_vroms(void) {
     memset(s_record.vroms, 0, sizeof(s_record.vroms));
     s_record.n_vroms = 0;
+}
+
+void machine_config_set_explicit_picks(const char *vrom, const char *prom) {
+    vrom_clear_explicit();
+    prom_clear_explicit();
+    if (vrom && *vrom)
+        vrom_set_path(vrom);
+    if (prom && *prom)
+        prom_set_path(prom);
 }
 
 void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick) {
@@ -118,6 +129,26 @@ static value_t cfg_attr_custom_mode(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     return cfg_str(s_record.custom_mode);
+}
+static value_t cfg_attr_monitor(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.monitor);
+}
+static value_t cfg_attr_pci_card(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.pci_card);
+}
+static value_t cfg_attr_prom(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.prom);
+}
+static value_t cfg_attr_pci_option(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.pci_option);
 }
 static value_t cfg_attr_created(struct object *self, const member_t *m) {
     (void)self;
@@ -246,6 +277,26 @@ static const member_t config_members[] = {
      .doc = "Custom resolution WxHxD from the boot document (empty = none)",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_custom_mode, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "monitor",
+     .doc = "Built-in video monitor strap from the boot document (empty = machine default)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_monitor, .set = NULL}    },
+    {.kind = M_ATTR,
+     .name = "pci_card",
+     .doc = "First-PCI-socket card id from the boot document (empty = slot default)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_pci_card, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "prom",
+     .doc = "Explicit prom= pick (empty = auto-resolved from offers)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_prom, .set = NULL}       },
+    {.kind = M_ATTR,
+     .name = "pci_option",
+     .doc = "key=value options for the pci_card socket (empty = none)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_pci_option, .set = NULL} },
     {.kind = M_ATTR,
      .name = "created",
      .doc = "Boot timestamp (ISO8601 UTC), stamped by the emulator",

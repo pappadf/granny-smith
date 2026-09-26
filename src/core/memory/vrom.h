@@ -93,6 +93,10 @@ bool vrom_card_resolvable(const char *card_id);
 // empty path.
 int vrom_set_path(const char *path);
 
+// Drop the explicit pick (the file stays offered).  Each boot document is
+// the whole specification, so machine.boot clears the previous one first.
+void vrom_clear_explicit(void);
+
 void vrom_init(void);
 void vrom_delete(void);
 

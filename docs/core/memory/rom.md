@@ -346,10 +346,10 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
 - **Explicit pick.** `machine.boot vrom=`/`prom=` identifies the file and
   offers it as the explicit pick (`vrom_set_path` / `prom_set_path`;
   `machine.c:964-984`). A registry holds one explicit pick at a time, and
-  a later explicit pick replaces it. Nothing else clears the flag, so the
-  pick keeps winning on later boots that omit `vrom=`. During that time
-  `machine.config.vrom` reads empty while `machine.config.vroms` reports
-  the pick as `explicit`.
+  the pick belongs to that boot document only: every boot first clears the
+  previous one (`machine_config_set_explicit_picks`), so a later boot that
+  omits `vrom=` resolves by catalog order again. A boot rejected before
+  teardown puts the running machine's pick back.
 - **Strict resolution.** A card the user picked explicitly that finds no
   offer fails the boot before teardown. A default card degrades to an
   empty slot, and the SE/30's onboard video synthesises a fallback ROM
@@ -360,8 +360,8 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
   `machine.boot`, `machine.restart` and `checkpoint.load`, and are dropped
   only by `vrom_delete`/`prom_delete`. The card ROMs themselves are not
   checkpointed; on restore they are resolved again from the registry, with
-  the record's `vrom` offered again as the explicit pick
-  (`src/core/system.c:1649`).
+  the record's `vrom` and `prom` made the explicit picks again
+  (`system_restore`).
 - **Hooks.** `machine.vrom.offer(path)` and `machine.prom.offer(path)`
   register one file and return `true` only if it was recognised.
 

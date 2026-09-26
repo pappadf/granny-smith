@@ -502,7 +502,8 @@ record untouched (`tests/integration/boot-config`).
 | Caps Lock latch | Released | **Carried** (`machine.c:1019`, `1101`) | Kept (`adb_reset` preserves it, `src/core/peripherals/adb.c:511`) | From the checkpoint's ADB state (`adb.c:1051`) |
 | Scheduler pacing (`scheduler.mode`) | **Carried**: the host harness owns it, not the machine (`machine.c:1000-1008`, `1085`) | **Carried** | Unchanged | The checkpoint's own value (`src/core/scheduler/scheduler.c:145`, `786`) |
 | `machine.config.created` | Stamped now | **Preserved** (`machine.c:1244`) | Unchanged | From the checkpoint's record |
-| vROM/PROM offer registries, including the explicit `vrom=`/`prom=` pick | Process-global; survive | Survive | Survive | Survive; the record's `vrom` is registered again as the explicit pick (`system.c:1649`) |
+| vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
+| The explicit `vrom=`/`prom=` pick | The document's, replacing the previous one (none if the document names none); a rejected boot puts the running machine's back (`machine_config_set_explicit_picks`) | The record's | Unchanged | The checkpoint record's |
 | Object tree | Machine-scoped nodes rebuilt (`root_install`, `system.c:1169`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Rebuilt | Untouched | Rebuilt |
 
 **`machine.boot` inherits nothing from the running machine.** The
@@ -520,7 +521,8 @@ still see four kinds of process-level state that are not part of any
 machine:
 
 - scheduler pacing (the table above);
-- the offer registries ([rom.md §10](../memory/rom.md#10-rom-provisioning));
+- the offer registries ([rom.md §10](../memory/rom.md#10-rom-provisioning)),
+  though not the previous document's explicit `vrom=`/`prom=` pick;
 - per-slot staged picks the caller made before the boot
   (`machine.nubus.slot[N].card_id` / `.video_mode`,
   `machine.pci.slot[N].card_id`), each consumed by that boot;
@@ -555,14 +557,6 @@ calls this "a gap, not hardware" (`system.c:292`).
   disk and its ProFile (`lisa_media_detach`,
   `src/machines/lisa/lisa.c:500`). A medium that cannot be re-attached
   is closed and logged (`machine.c:1091-1096`).
-- *`monitor=` is not replayed.* `machine.restart` builds its document
-  from every recorded field except `monitor` (`machine.c:1202-1215`). A
-  machine booted with a non-default built-in monitor therefore restarts
-  on the model's default monitor. This is a gap.
-- *Side effect before rejection.* A `vrom=`/`prom=` pick is registered
-  in the offer registry before the strict card-resolution check runs
-  (`machine.c:981-990`). A boot rejected at that check still leaves the
-  pick registered as explicit.
 - *Failure after teardown.* If `system_create` or ROM staging fails, the
   previous machine is already gone and the process has no machine
   (`machine.c:1055-1080`).
@@ -590,7 +584,7 @@ old machine keeps running.
 | `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
 | `vrom` | string | resolved from the offers | An explicit NuBus declaration-ROM pick. The file must identify as a known declaration ROM (`vrom_identify_card`, `machine.c:964-969`). It then wins the pick order for the card its content provides. |
 | `video_card` | string | the slot default | Card id for the machine's **first** NuBus socket. Rejected on a model with no NuBus slots, and for an unknown id (with a "did you mean" hint) (`machine.c:901-912`). A per-slot `machine.nubus.slot[N].card_id` staged before the boot beats it for that slot. |
-| `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). The argument's doc string still says "0..7". |
+| `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). |
 | `video_mode` | string | the card's default | Video-mode id for the first socket. It must be a known mode id (`nubus_video_mode_known`, `machine.c:936`). |
 | `custom_mode` | string | none | Custom resolution `WxHxD` for the generic `8_24` kind. Parsed and rejected with the reason (`machine.c:957-961`). |
 | `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `machine.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
@@ -610,10 +604,10 @@ own declaration ROM.
 
 The resolved configuration is recorded in `machine.config` (`model`,
 `ram`, `rom`, `rom_crc`, `rom2`, `vrom`, `vroms`, `slot_cards`,
-`video_card`, `video_sense`, `video_mode`, `custom_mode`, `created`,
-`valid`; `src/core/machine_config.c:183-255`). The record also stores
-`monitor`, `pci_card`, `prom` and `pci_option`, but the object surface
-does not expose those four.
+`video_card`, `video_sense`, `video_mode`, `custom_mode`, `monitor`,
+`pci_card`, `prom`, `pci_option`, `created`, `valid`;
+`src/core/machine_config.c`). `machine.restart` and `checkpoint.load`
+rebuild from it, the built-in `monitor` strap included.
 
 **Headless command line.** The CLI arguments fill the same document and
 call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-1350`):
