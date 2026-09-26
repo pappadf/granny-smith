@@ -135,13 +135,30 @@ static pixel_format_t depth_format(const tnt_control_t *c) {
     }
 }
 
-// Materialize the CLUT for the renderer (8 bpp indexes it directly; the
-// direct formats bypass it).
+// Materialize the RaDACal table for the consumers.  At 8 bpp it is the CLUT
+// the pixel indexes; in the direct-colour modes it stays in the DAC path as
+// one lookup per channel (display_t.dac_lut) -- MkLinux's console draws
+// palette indexes into 32 bpp pixels and relies on that expansion, and
+// dropping the table there rendered it near-black (#147).
 static void control_refresh_clut(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_control_t *c = &st->control;
-    if (depth_bpp(c) > 8)
+    if (depth_bpp(c) > 8) {
+        for (uint32_t i = 0; i < 256; i++) {
+            st->dac_view[0][i] = c->clut[i][0];
+            st->dac_view[1][i] = c->clut[i][1];
+            st->dac_view[2][i] = c->clut[i][2];
+        }
+        st->display.clut = NULL;
+        st->display.clut_len = 0;
+        st->display.dac_lut = st->dac_view;
+        st->display.response_dirty = true;
         return;
+    }
+    if (st->display.dac_lut) {
+        st->display.dac_lut = NULL;
+        st->display.response_dirty = true;
+    }
     for (uint32_t i = 0; i < 256; i++) {
         st->clut_view[i].r = c->clut[i][0];
         st->clut_view[i].g = c->clut[i][1];
@@ -206,12 +223,7 @@ void tnt_control_update(config_t *cfg) {
                         TNT_VRAM_SIZE);
     blanked = st->display.bits == st->blank;
 
-    if (bpp > 8) {
-        st->display.clut = NULL;
-        st->display.clut_len = 0;
-    } else {
-        control_refresh_clut(cfg);
-    }
+    control_refresh_clut(cfg);
     control_compose(cfg);
     st->display.shape_dirty = true;
     st->display.fb_dirty = true;
