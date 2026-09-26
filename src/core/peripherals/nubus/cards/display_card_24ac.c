@@ -1015,37 +1015,19 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET, DISPLAY_CARD_24AC_VRAM_SIZE,
                    "display_card_24ac_engine", &s_display_card_24ac_mem_iface, &p->ctx_active);
 
-    // Seed PRAM for the picked video mode (mirrors jmfb.c).  The key is a
-    // *complete* valid PRAM, not just the two validity tokens: stamp the
-    // 'NuMc' XPRAM signature so CkNewPram preserves what we write, reproduce
-    // PRAMInitTbl (OS type + boot drive = "any") so the Start Manager still
-    // finds and boots a SCSI volume, and write the slot sPRAMRec (savedMode =
-    // depth, saved monitor = sister) so GET_SLOT_DEPTH lands on the chosen
-    // depth.  This is exactly what lets the new-machine dialog set a graphics
-    // mode AND boot a configured SCSI HD in one shot.  (rtc.pram.validate
-    // writes only the validity tokens — an incomplete PRAM with a zeroed boot
-    // device, which is why a bare validate cannot SCSI-boot; see the dossier.)
+    // Seed PRAM for the picked video mode (mirrors jmfb.c): the slot
+    // sPRAMRec (savedMode = depth, saved monitor = sister) so GET_SLOT_DEPTH
+    // lands on the chosen depth.  It survives the boot because the RTC's
+    // power-up PRAM already carries the 'NuMc' token and a complete Start
+    // Manager table -- which is also why the machine still finds and boots a
+    // SCSI volume (a bare token with a zeroed boot device cannot).
     if (seeded_monitor && seeded_depth_bpp > 0) {
         rtc_t *rtc = system_rtc();
         if (rtc) {
             uint8_t saved_mode = savedmode_for_bpp(seeded_depth_bpp);
-            // 'NuMc' XPRAM validity signature ($0C..$0F) only — leave the
-            // low-PRAM validity byte invalid so _InitUtil still cold-inits the
-            // SysParam block (caret-blink / double-click defaults).
-            rtc_pram_write(rtc, 0x0C, 0x4E); // 'N'
-            rtc_pram_write(rtc, 0x0D, 0x75); // 'u'
-            rtc_pram_write(rtc, 0x0E, 0x4D); // 'M'
-            rtc_pram_write(rtc, 0x0F, 0x63); // 'c'
-            // PRAMInitTbl ($76..$89): $77 = default OS (Mac), $78..$7B = boot
-            // drive/partition "any" ($FFFFFFDF).  CkNewPram skips writing this
-            // once 'NuMc' is present, so reproduce it or D3 reaches SCSILoad as
-            // $00000000 and the boot-driver match never fires (→ "?" floppy).
-            static const uint8_t pram_init_tbl[] = {
-                0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xDF, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            };
-            for (size_t i = 0; i < sizeof(pram_init_tbl); i++)
-                rtc_pram_write(rtc, (uint8_t)(0x76 + i), pram_init_tbl[i]);
+            // The XPRAM token and the Start Manager table (PRAMInitTbl) are the
+            // RTC's, stamped at construction (rtc.h pram_defaults_t), so the boot
+            // ROM keeps the slot record below; only that record is the card's.
             // Per-slot sPRAMRec at $46 + (slot-9)*8: $46/$47 BoardID ($05FA),
             // $48 savedMode (depth), $4C/$4D saved monitor sister.  $4C/$4D
             // must equal the sensed monitor or PrimaryInit resets the depth.

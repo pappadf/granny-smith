@@ -1,6 +1,7 @@
 <script lang="ts">
   import ImageCategorySection from './ImageCategorySection.svelte';
-  import { images, toggleCategory, detectFdDriveCount } from '@/state/images.svelte';
+  import { images, toggleCategory } from '@/state/images.svelte';
+  import { detectFdDriveCount } from '@/bus/media';
   import type { ImageCategory } from '@/bus/types';
 
   // Spec §4.3.3 fixes this order.

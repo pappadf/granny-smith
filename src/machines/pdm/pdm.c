@@ -332,7 +332,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The 601's RTC input: 7.8336 MHz on every PDM board (601 proposal §3.7).
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
 
     // The ESCC cell in Curio behind the AMIC island decode (escc-serial.md
     // §2: single base $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
@@ -608,9 +608,13 @@ static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
     return floppy_insert(cfg->floppy, drive, disk);
 }
 
+// A drive the family does not have holds no disk.  This used to answer
+// "occupied" so the core's drive auto-select would never pick drive 1; the
+// auto-select is now bounded by the profile's floppy_slots (N-06, #177), so
+// the answer can be the true one.
 static bool pdm_fd_present(config_t *cfg, int drive) {
     if (!cfg->floppy || drive != 0)
-        return true; // no such bay: report it occupied so nothing targets it
+        return false;
     return floppy_is_inserted(cfg->floppy, drive);
 }
 
@@ -628,5 +632,7 @@ const machine_substrate_t pdm_substrate = {
     .input_mouse_button = mac_input_mouse_button,
     .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
+    .media_present = system_media_present_std,
+    .media_eject = system_media_eject_std,
     .display = pdm_display,
 };

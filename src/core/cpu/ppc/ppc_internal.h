@@ -311,6 +311,9 @@ void ppc_context_sync(ppc_t *p);
 // Side-effect-free translation for the debug surfaces (no R/C update, no
 // SoA fill, no exception).  data=true follows MSR[DT], else MSR[IT].
 uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok);
+// The same with the privilege explicit (user = MSR[PR]) and, in *via (may be
+// NULL), how it resolved: "identity", "bat", "segment" or "page".
+uint32_t ppc_mmu_translate_debug_ex(ppc_t *p, uint32_t ea, bool data, bool user, bool *ok, const char **via);
 
 // The 68k world's view (user data context, translation forced on) for
 // debug.mac — stable across supervisor/user stop contexts (§3.9e).

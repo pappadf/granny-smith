@@ -68,6 +68,11 @@ struct image {
     enum image_type type; // Detected image type (floppy, hd, ...)
     bool from_diskcopy; // True if the source file was DiskCopy 4.2
 
+    // disk_read_data / disk_write_data calls since open: the drive-activity
+    // lights (drive_activity.h) and storage.images[i].reads / .writes.
+    uint64_t reads;
+    uint64_t writes;
+
     // DiskCopy 4.2 per-sector tags (read-only metadata).  The Lisa boot ROM and
     // OS read these (e.g. the boot block's FILEID = $AAAA); loaded from the
     // file's tag section at open time.  NULL when the image has no tags.

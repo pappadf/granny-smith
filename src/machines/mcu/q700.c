@@ -31,6 +31,7 @@
 #include "mmu.h"
 #include "mmu040.h"
 #include "nubus.h"
+#include "pram_defaults.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
@@ -275,6 +276,7 @@ const hw_profile_t machine_q700 = {
 
     .nubus_slots = q700_nubus_slots,
 
+    .pram = &pram_defaults_mac_ii,
     .substrate = &mcu_substrate,
     .board = &q700_board,
 };

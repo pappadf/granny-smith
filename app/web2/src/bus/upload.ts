@@ -10,81 +10,86 @@
 //   5. Persist to the right /opfs/images/<category>/ via gsEval('storage.cp').
 //   6. Cleanup the staging copy.
 //
-// STAGING (see stageUpload): the write runs ON THE WORKER — Module.FS is proxied
-// to the runtime thread, whose WasmFS drives OPFS via createSyncAccessHandle,
-// the only browser-portable OPFS write path. Writing staging from the MAIN
-// thread — the old approach — failed two ways: Safari's OPFS rejects main-thread
-// createWritable() with "UnknownError", and on Chromium the worker's WasmFS
-// can't see a main-thread OPFS write, so the follow-up storage.cp can't find the
-// file and strands it in /opfs/upload. The file is sliced and written chunk by
-// chunk, so uploads of any size (including hundreds-of-MB CD-ROMs) never buffer
-// the whole file. This mirrors how move/delete route through the worker
-// (storage.mv/storage.rm).
+// STAGING (see stageUpload): the write goes through the emulator's own
+// filesystem, on the emulator thread: the page copies each chunk into the
+// core's transfer window and storage.xfer_write puts it in the file
+// (bus/xfer.ts).  The page never touches the filesystem itself.  It used to
+// call Module.FS, which under WasmFS runs on the page's thread and busy-waits
+// for WasmFS's OPFS thread -- jank on Chrome, and a deadlock on Safari, where
+// WebKit serves that thread's OPFS requests through the busy page thread.
+// Writing staging with the page's own navigator.storage failed too: Safari's
+// OPFS rejects main-thread createWritable() with "UnknownError", and on
+// Chromium the emulator's WasmFS can't see an out-of-band OPFS write, so the
+// follow-up storage.cp strands the file in /opfs/upload.  The file is sliced
+// and written chunk by chunk, so uploads of any size (including hundreds-of-MB
+// CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
+// through the worker (storage.mv/storage.rm).
 
-import { gsEval, isModuleReady, getModule, applyCapabilities, seedPram } from './emulator';
-import { opfs } from './opfs';
+import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { xferChunkBytes, xferWrite } from './xfer';
+import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName, isZipFile, isMacArchive } from '@/lib/archive';
 import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
-import { MEDIA_TYPES, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
+import { MEDIA_TYPES, identifyRom, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
+import { attachCdrom, insertFloppy } from './media';
 
-interface RomIdentifyResult {
-  recognised: boolean;
-  compatible: string[];
-  checksum: string;
-  name: string;
-  size: number;
-}
-
-async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
-  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
-  const r = await gsEval('machine.rom.identify', [path]);
-  if (!r || typeof r !== 'object') return null;
-  const parsed = r as Partial<RomIdentifyResult>;
-  if (parsed.recognised) return parsed as RomIdentifyResult;
-  return null;
-}
-
-// Bytes copied to the worker per FS.write. Bounds peak memory (one slice in the
-// JS heap + one in the WASM heap at a time) so uploads of any size — including
-// hundreds-of-MB CD-ROM images — never buffer the whole file anywhere.
-const STAGE_CHUNK_BYTES = 4 * 1024 * 1024;
-
-// Write a File to an OPFS path, chunk by chunk, ON THE WORKER: Module.FS is
-// proxied to the runtime thread, whose WasmFS drives OPFS via
-// createSyncAccessHandle — the only browser-portable OPFS write path.
-// Main-thread createWritable() throws "UnknownError" on Safari, and a
-// main-thread OPFS write isn't visible to the worker's WasmFS on Chromium
-// (stranding the file). Slicing the File and writing chunk-by-chunk means
-// nothing buffers the whole file, so any size (incl. large CD-ROMs) works.
+// The one chunked writer (R3): everything the page puts on the emulator's
+// filesystem — an upload's File, a URL download's response body, a dropped
+// checkpoint — goes through here, to an OPFS path, a transfer window at a time
+// (bus/xfer.ts; see STAGING above).  A stream's small network chunks are
+// gathered into full windows first, so a download costs one request per
+// window, not per packet.  Nothing buffers the whole file, so any size works.
 // Returns true on success.
-async function streamFileToOpfs(opfsPath: string, file: File): Promise<boolean> {
-  const mod = getModule();
-  if (!mod) return false;
-  let stream: unknown;
+export async function streamToOpfs(
+  opfsPath: string,
+  source: Blob | ReadableStream<Uint8Array> | Uint8Array,
+): Promise<boolean> {
   try {
-    stream = mod.FS.open(opfsPath, 'w');
-    for (let pos = 0; pos < file.size; ) {
-      const end = Math.min(pos + STAGE_CHUNK_BYTES, file.size);
-      const chunk = new Uint8Array(await file.slice(pos, end).arrayBuffer());
-      mod.FS.write(stream, chunk, 0, chunk.length, pos);
-      pos = end;
+    const size = await xferChunkBytes();
+    let pos = 0;
+    let wrote = false;
+    const put = async (chunk: Uint8Array) => {
+      await xferWrite(opfsPath, pos, chunk);
+      pos += chunk.length;
+      wrote = true;
+    };
+    if (source instanceof Uint8Array) {
+      for (let at = 0; at < source.length; at += size)
+        await put(source.subarray(at, Math.min(at + size, source.length)));
+    } else if (source instanceof Blob) {
+      for (let at = 0; at < source.size; at += size)
+        await put(
+          new Uint8Array(await source.slice(at, Math.min(at + size, source.size)).arrayBuffer()),
+        );
+    } else {
+      const reader = source.getReader();
+      const pending = new Uint8Array(size);
+      let fill = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (let at = 0; value && at < value.length; ) {
+          const n = Math.min(size - fill, value.length - at);
+          pending.set(value.subarray(at, at + n), fill);
+          fill += n;
+          at += n;
+          if (fill === size) {
+            await put(pending);
+            fill = 0;
+          }
+        }
+      }
+      if (fill) await put(pending.subarray(0, fill));
     }
+    if (!wrote) await put(new Uint8Array(0)); // an empty file still exists
     return true;
   } catch (err) {
-    console.error('upload: OPFS stream write failed', err);
+    console.error('upload: staging write failed', err);
     return false;
-  } finally {
-    if (stream !== undefined) {
-      try {
-        mod.FS.close(stream);
-      } catch {
-        // Already closed / open failed — nothing to release.
-      }
-    }
   }
 }
 
@@ -92,13 +97,13 @@ async function streamFileToOpfs(opfsPath: string, file: File): Promise<boolean> 
 // staged path (or null on failure). Callers cleanup via discardStaging().
 async function stageUpload(file: File): Promise<string | null> {
   const path = `${UPLOAD_DIR}/${sanitizeName(file.name) || 'image.img'}`;
-  return (await streamFileToOpfs(path, file)) ? path : null;
+  return (await streamToOpfs(path, file)) ? path : null;
 }
 
 // Best-effort removal of a staged file / unpacked-archive dir. Everything staging
 // touches is written by the worker (FS streaming above, archive.extract), so the
 // recursive rm runs worker-side too — keeping its WasmFS view coherent.
-async function discardStaging(path: string): Promise<void> {
+export async function discardStaging(path: string): Promise<void> {
   await gsEval('storage.rm', [path]);
 }
 
@@ -156,15 +161,16 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
 // Category-strict entry — used by the New Machine dialog dropdowns and
 // the Images-tab per-category drop targets. Validates the staged file
 // AS THIS SPECIFIC category only; rejects (with a toast) anything that
-// doesn't match. Single-file flow.
+// doesn't match. Single-file flow.  Returns the persisted path, or null
+// when nothing was stored.
 export async function acceptFilesAsCategory(
   files: File[],
   category: MediaTypeId,
-): Promise<boolean> {
-  if (!files.length) return false;
+): Promise<string | null> {
+  if (!files.length) return null;
   if (!isModuleReady()) {
     showNotification('Emulator still starting; please retry', 'warning');
-    return false;
+    return null;
   }
   const file = files[0];
   startActivity(file.name);
@@ -172,20 +178,20 @@ export async function acceptFilesAsCategory(
     const staging = await stageUpload(file);
     if (!staging) {
       showNotification(`Upload failed: ${file.name}`, 'error');
-      return false;
+      return null;
     }
     const descriptor = MEDIA_TYPES[category];
     const result = await descriptor.validate(staging, gsEval);
     if (!result.valid) {
       showNotification(`'${file.name}' is not a valid ${descriptor.label}`, 'error');
       await discardStaging(staging);
-      return false;
+      return null;
     }
     const persisted = await persist(staging, file.name, descriptor, result.info);
-    if (!persisted) return false;
+    if (!persisted) return null;
     if (category === 'rom') await maybeBootFromRom(persisted);
     else await autoMountIfEmpty(persisted, category);
-    return true;
+    return persisted;
   } finally {
     endActivity();
   }
@@ -208,7 +214,7 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
     try {
       // Write straight to the chosen folder on the worker (Safari-safe, coherent
       // with its WasmFS). No staging/copy — targetDir may itself be /opfs/upload.
-      const ok = await streamFileToOpfs(finalPath, file);
+      const ok = await streamToOpfs(finalPath, file);
       showNotification(
         ok ? `'${file.name}' saved to ${targetDir}` : `Upload failed: ${file.name}`,
         ok ? 'info' : 'error',
@@ -227,36 +233,26 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
 // outcome either way.
 async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
   if (category === 'fd') {
-    let sawEmptyDrive = false;
-    for (let i = 0; i < 2; i++) {
-      const present = await gsEval(`machine.floppy.drive[${i}].present`);
-      if (present === true) continue;
-      // A failed insert into an empty slot means the image couldn't be
-      // opened, not that the drives are full — keep the two apart.
-      sawEmptyDrive = true;
-      const ok =
-        (await gsEval(`machine.floppy.drive[${i}].insert`, [persistedPath, true])) === true;
-      if (ok) {
-        setMounted(persistedPath, { kind: 'fd', drive: i });
-        showNotification(`Inserted into floppy drive ${i + 1}`, 'info');
-        return;
-      }
+    // The first empty drive of the ones the machine has (bus/media.ts).
+    const r = await insertFloppy(persistedPath, true);
+    if (r.ok) {
+      setMounted(persistedPath, r.mount);
+      showNotification(`Inserted into floppy drive ${r.mount.drive + 1}`, 'info');
+    } else {
+      showNotification(`Image saved but not inserted: ${r.reason}`, 'warning');
     }
-    showNotification(
-      sawEmptyDrive
-        ? 'Image saved, but it could not be inserted (the image could not be opened)'
-        : 'Both floppy drives are full — image saved but not mounted',
-      'warning',
-    );
     return;
   }
   if (category === 'cdrom') {
-    const ok = (await gsEval('machine.scsi.attach_cdrom', [persistedPath, 3])) !== null;
-    if (ok) {
-      setMounted(persistedPath, { kind: 'cd', drive: 3 });
+    // Into the model's CD bay; the core refuses an occupied bay and a model
+    // with none, where this used to attach at id 3 regardless and report
+    // success for any answer that was not null (N-04).
+    const r = await attachCdrom(persistedPath);
+    if (r.ok) {
+      setMounted(persistedPath, r.mount);
       showNotification('Inserted into CD-ROM drive', 'info');
     } else {
-      showNotification('CD-ROM drive is occupied — image saved but not mounted', 'warning');
+      showNotification(`Image saved but not mounted: ${r.reason}`, 'warning');
     }
   }
 }
@@ -443,70 +439,100 @@ export async function persistAs(
 // info; the user can switch later.
 async function maybeBootFromRom(romPath: string): Promise<void> {
   if (machine.status === 'running' || machine.status === 'paused') return;
-  const info = await romIdentify(romPath);
+  const info = await identifyRom(gsEval, romPath);
   if (!info || !info.compatible.length) return;
   const model = info.compatible[0];
-  const profile = await gsEval('machine.profile', [model]);
-  let ramKb = 4096;
-  if (profile && typeof profile === 'object' && !('error' in profile)) {
-    const parsed = profile as { ram_default?: number };
-    if (parsed.ram_default) ramKb = parsed.ram_default;
+  // One boot document — the core validates, installs the ROM itself and
+  // boots the model's own default RAM.  A rejected document leaves the
+  // previous machine (or none) in place, so stop here rather than configure
+  // and "boot" it (N-08).
+  const booted = await gsEval('machine.boot', { model, rom: romPath });
+  if (booted !== true) {
+    showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
+    return;
   }
-  // One boot document — the core validates and installs the ROM itself.
-  await gsEval('machine.boot', { model, ram: ramKb, rom: romPath });
-  // Seed a valid PRAM, as every boot path does.
-  await seedPram(model, 0);
-  machine.model = model;
-  machine.ram = `${ramKb / 1024} MB`;
-  await applyCapabilities(model);
-  await gsEval('scheduler.run');
+  await reconcileUiWithMachine('boot');
+  await prepareFreshMachine();
   showNotification(`Booted ${model} from uploaded ROM`, 'info');
 }
 
 async function loadCheckpointFile(file: File): Promise<void> {
-  const tmpPath = `/tmp/dropped-${Date.now()}-${sanitizeName(file.name)}`;
-  // Stage to memory-backed /tmp first (cross-thread safe), then load.
-  const buf = new Uint8Array(await file.arrayBuffer());
-  const mod = getModule();
-  if (!mod) {
+  // Staged like any upload, a chunk at a time, under /opfs/upload, and
+  // deleted once loaded.  It used to be read whole into memory and written
+  // to the memory-backed /tmp, where it stayed for the session (N-22).
+  const staged = `${UPLOAD_DIR}/dropped-${Date.now()}-${sanitizeName(file.name)}`;
+  if (!(await streamToOpfs(staged, file))) {
     showNotification('Emulator not ready for checkpoint load', 'warning');
     return;
   }
-  mod.FS.writeFile(tmpPath, buf);
   showNotification(`Loading checkpoint ${file.name}…`, 'info');
-  const ok = (await gsEval('checkpoint.load', [tmpPath])) === true;
+  const ok = (await gsEval('checkpoint.load', [staged])) === true;
+  await discardStaging(staged);
   if (ok) {
+    await reconcileUiWithMachine('restore');
     showNotification(`Checkpoint loaded (${file.name})`, 'info');
   } else {
     showNotification(`Checkpoint load failed`, 'error');
   }
 }
 
+// Welcome's "Open Checkpoint...": pick a saved state from disk and load it
+// through the path a dropped one takes.  The file's own signature decides,
+// not its name -- Save State downloads a .bin, the store keeps
+// state.checkpoint -- so the picker is not filtered by extension.
+export async function pickAndLoadCheckpoint(): Promise<void> {
+  const [file] = await openFilePicker('', false);
+  if (!file) return;
+  if (!isModuleReady()) {
+    showNotification('Emulator still starting; please retry', 'warning');
+    return;
+  }
+  if (!(await fileHasCheckpointSignature(file))) {
+    showNotification(`'${file.name}' is not a Granny Smith checkpoint`, 'error');
+    return;
+  }
+  startActivity(file.name);
+  try {
+    await loadCheckpointFile(file);
+  } finally {
+    endActivity();
+  }
+}
+
 // Programmatic file-picker entry — Welcome's "Upload ROM..." button calls
-// this. Wraps an invisible `<input type="file">` click.
-export function openFilePicker(accept = ''): Promise<File[]> {
+// this. Wraps an invisible `<input type="file">` click.  Resolves with the
+// chosen files, or [] when the user cancels the dialog: `cancel` fires
+// instead of `change` then (every browser that can run the emulator has it),
+// and without it the promise stayed pending and the input leaked (F-36).
+// There is deliberately no focus-based fallback: a window refocus can land
+// before `change` and would drop a real selection.
+export function openFilePicker(accept = '', multiple = true): Promise<File[]> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     if (accept) input.accept = accept;
-    input.multiple = true;
+    input.multiple = multiple;
     input.style.display = 'none';
-    input.addEventListener(
-      'change',
-      () => {
-        const files = input.files ? Array.from(input.files) : [];
-        document.body.removeChild(input);
-        resolve(files);
-      },
-      { once: true },
-    );
+    let done = false;
+    const cleanup = (files: File[]) => {
+      if (done) return;
+      done = true;
+      input.removeEventListener('change', onChange);
+      input.removeEventListener('cancel', onCancel);
+      input.remove();
+      resolve(files);
+    };
+    const onChange = () => cleanup(input.files ? Array.from(input.files) : []);
+    const onCancel = () => cleanup([]);
+    input.addEventListener('change', onChange);
+    input.addEventListener('cancel', onCancel);
     document.body.appendChild(input);
     input.click();
   });
 }
 
-// Used by Welcome's "Upload ROM..." button — opens the picker, runs the full
-// pipeline, then triggers a Recent refresh by re-reading OPFS.
+// Used by Welcome's "Upload ROM..." button — opens the picker and runs the
+// full pipeline (which bumps the image revision the dialogs re-scan on).
 //
 // The Welcome button passes { autoBootOnRom: false }: that surface is a
 // configuration entry point, not a "boot now" shortcut. The Display
@@ -515,18 +541,16 @@ export function openFilePicker(accept = ''): Promise<File[]> {
 export async function pickAndUpload(accept = '', opts: AcceptFilesOptions = {}): Promise<void> {
   const files = await openFilePicker(accept);
   if (files.length) await acceptFiles(files, opts);
-  // Touch the recent list so consumers re-scan.
-  void opfs.scanRoms().catch(() => undefined);
 }
 
 // Category-strict picker variant — the New Machine dialog uses this so
 // picking "Upload image..." in (say) the floppy slot only accepts a
-// floppy. Returns the persistDir-relative path of the persisted file
-// (when the upload succeeds), or null when the user cancelled or the
-// file was rejected.
-export async function pickAndUploadAs(category: MediaTypeId, accept = ''): Promise<boolean> {
-  const files = await openFilePicker(accept);
-  if (!files.length) return false;
+// floppy. One file.  Returns the path of the persisted file (when the
+// upload succeeds), or null when the user cancelled or the file was
+// rejected.
+export async function pickAndUploadAs(category: MediaTypeId, accept = ''): Promise<string | null> {
+  const files = await openFilePicker(accept, false);
+  if (!files.length) return null;
   return acceptFilesAsCategory(files, category);
 }
 

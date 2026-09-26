@@ -6,7 +6,7 @@
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
+  import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
 
   let rows = $state<Breakpoint[]>([]);
@@ -14,8 +14,14 @@
   let addAddr = $state('');
   let addCond = $state('');
 
+  // Only the latest listing is shown.  A listing is several round trips, so
+  // one started before a remove (the refresh after a repeated add, say) can
+  // finish after the remove's own refresh and would put the row back.
+  let listGen = 0;
   async function refresh() {
-    rows = await listBreakpoints();
+    const gen = ++listGen;
+    const list = await listBreakpoints();
+    if (gen === listGen) rows = list;
   }
 
   onMount(() => {
@@ -73,7 +79,7 @@
   }
 
   async function doRemove(row: Breakpoint) {
-    const ok = await removeBreakpoint(row.addr);
+    const ok = await removeBreakpoint(row.id);
     if (!ok) {
       showNotification('Failed to remove breakpoint', 'error');
       return;
@@ -81,12 +87,17 @@
     await refresh();
   }
 
+  // Real translations for the L:/P: labels (the core's, bus/mmu.ts).
+  let xl = $state<Record<number, Translation>>({});
+  $effect(() => {
+    const addrs = rows.map((r) => r.addr);
+    if (!machine.mmuEnabled || addrs.length === 0) return;
+    void translateMany(addrs).then((m) => (xl = m));
+  });
+
   function labelFor(addr: number): string {
     if (!machine.mmuEnabled) return `$${fmtHex32(addr)}`;
-    const r = mmuLookup(addr);
-    const phys = r.valid && r.phys !== undefined ? fmtHex32(r.phys) : '!';
-    const tag = r.valid ? (r.kind ?? 'PT') : 'INVALID';
-    return `L:$${fmtHex32(addr)}  P:$${phys}  ${tag}`;
+    return addrLabel(addr, xl[addr >>> 0]);
   }
 </script>
 
@@ -96,16 +107,12 @@
   onToggle={() => toggleSection('breakpoints')}
 >
   {#snippet actions()}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <span
-      role="button"
-      tabindex="-1"
+    <button
+      type="button"
       class="add-btn"
       title="Add breakpoint"
-      onclick={(ev: MouseEvent) => {
-        ev.stopPropagation();
-        showAdd = true;
-      }}>+</span
+      aria-label="Add breakpoint"
+      onclick={() => (showAdd = true)}>+</button
     >
   {/snippet}
   {#if showAdd}
@@ -156,12 +163,16 @@
     justify-content: center;
     width: 18px;
     height: 18px;
+    padding: 0;
+    border: none;
+    background: transparent;
     color: var(--gs-fg-muted);
     cursor: pointer;
     font-size: 14px;
     line-height: 1;
   }
-  .add-btn:hover {
+  .add-btn:hover,
+  .add-btn:focus-visible {
     color: var(--gs-fg-bright);
   }
   .add-row {

@@ -1,9 +1,9 @@
 <script lang="ts">
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import { peekBytes, peekPhysBytes } from '@/bus/debug';
+  import { peekBytes } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
+  import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
 
   let bytes = $state<Uint8Array | null>(null);
@@ -31,11 +31,15 @@
   async function refresh() {
     loading = true;
     try {
-      const data =
-        debug.memoryMode === 'physical'
-          ? await peekPhysBytes(debug.memoryAddress, 128)
-          : await peekBytes(debug.memoryAddress, 128);
-      bytes = data;
+      // The space is always explicit: "logical" reads through the CPU's own
+      // translation on every architecture (the plain read is physical on a
+      // PowerPC machine, N-26), "physical" really is physical (it used to be
+      // the logical read under a physical label, N-31).
+      bytes = await peekBytes(
+        debug.memoryAddress,
+        128,
+        physicalAvailable ? debug.memoryMode : 'logical',
+      );
     } finally {
       loading = false;
     }
@@ -74,14 +78,22 @@
     return '.';
   }
 
+  // The Lisa's three physical spaces (RAM, I/O, ROM) cannot be named by a
+  // bare address, so its Memory pane is logical only.
+  const physicalAvailable = $derived(machine.mmuKind !== 'lisa_segment');
+
+  // Real translations for the row labels in logical mode (bus/mmu.ts).
+  let xl = $state<Record<number, Translation>>({});
+  $effect(() => {
+    void bytes;
+    if (!machine.mmuEnabled || debug.memoryMode !== 'logical') return;
+    const rowsAt = Array.from({ length: 8 }, (_, i) => (debug.memoryAddress + i * 16) >>> 0);
+    void translateMany(rowsAt).then((m) => (xl = m));
+  });
+
   function rowLogicalLabel(rowIndex: number): string {
     const a = ((debug.memoryAddress + rowIndex * 16) >>> 0) & 0xffffffff;
-    if (machine.mmuEnabled && debug.memoryMode === 'logical') {
-      const r = mmuLookup(a);
-      const phys = r.valid && r.phys !== undefined ? fmtHex32(r.phys) : '!';
-      const tag = r.valid ? (r.kind ?? 'PT') : 'INVALID';
-      return `L:$${fmtHex32(a)}  P:$${phys}  ${tag}`;
-    }
+    if (machine.mmuEnabled && debug.memoryMode === 'logical') return addrLabel(a, xl[a]);
     return `$${fmtHex32(a)}`;
   }
 </script>
@@ -101,7 +113,7 @@
       aria-label="Memory address"
     />
     <button type="button" class="mem-btn" onclick={commitAddress}>Go</button>
-    {#if machine.mmuEnabled}
+    {#if machine.mmuEnabled && physicalAvailable}
       <span class="mem-sep"></span>
       <span class="mem-label">Mode:</span>
       <div class="mem-mode" role="group" aria-label="Memory access mode">
@@ -109,6 +121,7 @@
           type="button"
           class="mem-mode-btn"
           class:active={debug.memoryMode === 'logical'}
+          aria-pressed={debug.memoryMode === 'logical'}
           onclick={() => setMode('logical')}
         >
           Logical
@@ -117,6 +130,7 @@
           type="button"
           class="mem-mode-btn"
           class:active={debug.memoryMode === 'physical'}
+          aria-pressed={debug.memoryMode === 'physical'}
           onclick={() => setMode('physical')}
         >
           Physical

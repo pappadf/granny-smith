@@ -20,3 +20,13 @@ export function startActivity(name: string, verb = 'Uploading'): void {
 export function endActivity(): void {
   activity.current = null;
 }
+
+// A bridge request that has been running unusually long (bus/emulator.ts).
+// Informational only: the request is not stuck until it is — the notice just
+// says what the emulator is busy with.  `path` is null when nothing is slow.
+interface BridgeBusyState {
+  path: string | null;
+  seconds: number;
+}
+
+export const bridgeBusy: BridgeBusyState = $state({ path: null, seconds: 0 });

@@ -75,6 +75,11 @@ typedef struct lisa_state {
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
     struct object *hd_obj; // `profile` object (parallel hard disk)
     struct object *power_obj; // `power` object (soft power-off switch)
+    // Which keys the host holds down, by ADB raw code.  A repeated down (a
+    // host's auto-repeat) or an up with no down is not a key transition, and
+    // the COPS must not report one -- the ADB and Plus keyboards suppress the
+    // same (N-36).  Host-side state, so not checkpointed.
+    bool key_held[128];
 } lisa_state_t;
 
 // Video geometry, 1 bpp MSB-first (docs/machines/lisa/lisa.md §8).  The unmodified Lisa 2 has
@@ -378,6 +383,9 @@ static int lisa_input_key(config_t *cfg, int adb_code, bool down) {
     uint8_t code = lisa_keycode_for_adb(adb_code);
     if (code == LISA_NO_KEY)
         return -1; // a key this keyboard does not have
+    if (ls->key_held[adb_code] == down)
+        return 0; // no transition: a repeat, or an up without its down
+    ls->key_held[adb_code] = down;
     cops_inject_key(ls->cops, (uint8_t)(down ? (code | 0x80) : (code & 0x7F)));
     return 0;
 }
@@ -484,7 +492,7 @@ static int lisa_fd_insert(config_t *cfg, int drive, struct image *disk) {
 static bool lisa_fd_present(config_t *cfg, int drive) {
     lisa_state_t *ls = lisa_state(cfg);
     if (drive != 0)
-        return true; // only drive 0 exists; report others "occupied"
+        return false; // only drive 0 exists; the others hold nothing
     return ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
 }
 
@@ -526,6 +534,32 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     default:
         return -1; // no SCSI bus on a Lisa
     }
+}
+
+// The runtime attach/eject verbs' view: the one Sony drive and the ProFile.
+static bool lisa_media_present(config_t *cfg, media_bus_t bus, int unit) {
+    lisa_state_t *ls = lisa_state(cfg);
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return unit == 0 && ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
+    case MEDIA_BUS_PROFILE:
+        return ls && ls->profile && lisa_profile_attached(ls->profile);
+    default:
+        return false;
+    }
+}
+
+static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!lisa_media_present(cfg, bus, unit))
+        return -1;
+    if (bus == MEDIA_BUS_FLOPPY) {
+        lisa_fdc_eject(ls->fdc);
+        return 0;
+    }
+    lisa_profile_detach(ls->profile);
+    lisa_profile_update_lines(cfg);
+    return 0;
 }
 
 // ============================================================
@@ -928,6 +962,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
+    lisa_mmu_attach_object(ls->mmu, cfg->cpu); // machine.cpu.mmu, like every MMU kind
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
     lisa_mmu_set_clock(ls->mmu, cfg->scheduler); // cycle source for the retrace status bit
     lisa_mmu_set_vbl_ack(ls->mmu, lisa_vbl_ack, cfg); // Status-Register read acks the latched VBL
@@ -1238,19 +1273,11 @@ static const struct floppy_slot lisa_floppy_slots[] = {
     {0},
 };
 
-// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so this SCSI
-// table stays empty: the parallel disk is its own device (lisa_profile.c), and
-// the profile advertises it via `.hd_bus = HD_BUS_PROFILE`.  The config UI reads
-// hd_bus to label the HD row "ProFile" and attach through profile.attach rather
-// than scsi.attach_hd.
-static const struct scsi_slot lisa_scsi_slots[] = {
-    {0},
-};
-
-static const scsi_bus_decl_t lisa_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = lisa_scsi_slots},
-    {0},
-};
+// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so the
+// profile declares no SCSI bus at all (it used to declare an empty
+// "machine.scsi" that did not resolve, N-10): the parallel disk is its own
+// device (lisa_profile.c), advertised via `.hd_bus = HD_BUS_PROFILE`, and its
+// bay is derived from that (profile_hd_bays -> "profile").
 
 // Apple Lisa 2 hardware profile.
 static const machine_substrate_t lisa_substrate = {
@@ -1271,6 +1298,8 @@ static const machine_substrate_t lisa_substrate = {
     .input_mouse_button = lisa_input_mouse_button,
     .media_detach = lisa_media_detach,
     .media_attach = lisa_media_attach,
+    .media_present = lisa_media_present,
+    .media_eject = lisa_media_eject,
 };
 
 const hw_profile_t machine_lisa = {
@@ -1289,7 +1318,7 @@ const hw_profile_t machine_lisa = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = lisa_scsi_buses,
+    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,
@@ -1319,7 +1348,7 @@ const hw_profile_t machine_macxl = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = lisa_scsi_buses,
+    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,

@@ -13,6 +13,7 @@
 #include <stdlib.h> // malloc / free
 
 #include "alias.h"
+#include "debug.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -907,9 +908,79 @@ static uint32_t ppc_dbgif_translate_mac(void *ctx, uint32_t logical, bool *ok) {
     return ppc_mmu_translate_mac((ppc_t *)ctx, logical, ok);
 }
 
+// The PPC register file for debug.frame: the GPRs, PC and the user and
+// supervisor control registers a debugger reads first.  The segment and BAT
+// registers stay on machine.cpu (the MMU view reads them there).
+static void ppc_dbgif_regs(void *ctx, struct value_map_builder *regs) {
+    ppc_t *p = (ppc_t *)ctx;
+    char rname[4];
+    for (int i = 0; i < 32; i++) {
+        snprintf(rname, sizeof(rname), "r%d", i);
+        val_map_put(regs, rname, val_int((int64_t)p->gpr[i]));
+    }
+    val_map_put(regs, "pc", val_int((int64_t)p->pc));
+    val_map_put(regs, "lr", val_int((int64_t)p->lr));
+    val_map_put(regs, "ctr", val_int((int64_t)p->ctr));
+    val_map_put(regs, "cr", val_int((int64_t)p->cr));
+    val_map_put(regs, "xer", val_int((int64_t)p->xer));
+    val_map_put(regs, "msr", val_int((int64_t)p->msr));
+    val_map_put(regs, "srr0", val_int((int64_t)p->srr0));
+    val_map_put(regs, "srr1", val_int((int64_t)p->srr1));
+    if (p->cpu_model == CPU_MODEL_PPC601)
+        val_map_put(regs, "mq", val_int((int64_t)p->mq)); // POWER MQ: 601 only
+}
+
+// The FPU register file for debug.frame: fpr0-fpr31 (IEEE doubles) as raw
+// hex plus a decimal rendering, and FPSCR.  Every 601 and 604 has an FPU.
+static bool ppc_dbgif_fpu(void *ctx, struct value_map_builder *fb) {
+    ppc_t *p = (ppc_t *)ctx;
+    value_t *fps = NULL;
+    size_t n_fps = 0, cap_fps = 0;
+    char hexbuf[20];
+    char valbuf[40];
+    for (int i = 0; i < 32; i++) {
+        value_map_builder_t *fpb = val_map_new();
+        snprintf(hexbuf, sizeof(hexbuf), "%016llX", (unsigned long long)p->fpr[i]);
+        val_map_put(fpb, "hex", val_str(hexbuf));
+        double d;
+        memcpy(&d, &p->fpr[i], sizeof(d));
+        // Inf/NaN aren't legal JSON numbers: keep the value a string.
+        if (d != d)
+            snprintf(valbuf, sizeof(valbuf), "NaN");
+        else if (d > 1.7976931348623157e308 || d < -1.7976931348623157e308)
+            snprintf(valbuf, sizeof(valbuf), "%s", d < 0 ? "-Inf" : "Inf");
+        else
+            snprintf(valbuf, sizeof(valbuf), "%.17g", d);
+        val_map_put(fpb, "val", val_str(valbuf));
+        val_list_push(&fps, &n_fps, &cap_fps, val_map_finish(fpb));
+    }
+    val_map_put(fb, "fpr", val_list(fps, n_fps));
+    val_map_put(fb, "fpscr", val_int((int64_t)p->fpscr));
+    return true;
+}
+
+// Instruction-side translation for disassembly rows (the IBATs / fetch rules).
+static uint32_t ppc_dbgif_translate_code(void *ctx, uint32_t logical, bool *ok) {
+    return ppc_mmu_translate_debug((ppc_t *)ctx, logical, false, ok);
+}
+
+// Supervisor state: MSR[PR] clear.
+static bool ppc_dbgif_is_supervisor(void *ctx) {
+    return (((ppc_t *)ctx)->msr & PPC_MSR_PR) == 0;
+}
+
 cpu_debug_if_t ppc_debug_if(ppc_t *p) {
-    cpu_debug_if_t dif = {
-        p, ppc_dbgif_get_pc, ppc_dbgif_set_pc, ppc_dbgif_disasm, ppc_dbgif_translate, ppc_dbgif_translate_mac};
+    cpu_debug_if_t dif = {.ctx = p,
+                          .get_pc = ppc_dbgif_get_pc,
+                          .set_pc = ppc_dbgif_set_pc,
+                          .disasm = ppc_dbgif_disasm,
+                          .translate = ppc_dbgif_translate,
+                          .translate_mac = ppc_dbgif_translate_mac,
+                          .arch = "ppc",
+                          .regs = ppc_dbgif_regs,
+                          .fpu = ppc_dbgif_fpu,
+                          .translate_code = ppc_dbgif_translate_code,
+                          .is_supervisor = ppc_dbgif_is_supervisor};
     return dif;
 }
 
@@ -1069,6 +1140,26 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
         PPC_ATTR("dbat" #N "l", PA_DBAT0U + 2 * (N) + 1,                                                               \
                  "DBAT " #N " lower — block physical address and protection bits")
 
+// Read `instr_count`: the scheduler's retired-instruction count, which is
+// architecture-neutral (68K exposes the same attribute).
+static value_t ppc_attr_instr_count(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, cpu_instr_count());
+}
+
+// `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
+// the contract every CPU-like object shares (debug_frame_build; debug.frame
+// is the same call).
+static value_t ppc_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    ppc_t *p = ppc_from(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    cpu_debug_if_t dif = ppc_debug_if(p);
+    return debug_frame_build(&dif, "machine.cpu.frame", argc, argv);
+}
+
 // clang-format off
 static const member_t ppc_members[] = {
     PPC_ATTR("pc",    PA_PC,    "Program counter — address of the next instruction to execute"),
@@ -1100,6 +1191,12 @@ static const member_t ppc_members[] = {
     PPC_DBAT(0), PPC_DBAT(1), PPC_DBAT(2), PPC_DBAT(3),
     PPC_ATTR("tbu", PA_RTCU, "Timebase upper half (604); the same storage as rtcu"),
     PPC_ATTR("tbl", PA_RTCL, "Timebase lower half (604); the same storage as rtcl"),
+    {.kind = M_ATTR, .name = "instr_count", .flags = VAL_RO,
+     .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
+     .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
+    {.kind = M_METHOD, .name = "frame",
+     .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
 };
 // clang-format on
 
@@ -1114,35 +1211,47 @@ static const class_desc_t ppc_cpu_class = {
 // and a translated peek — the way tests and debugging reach the 68k
 // world's logical memory without knowing the HTAB layout.
 
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via}: the same
+// shape as every other MMU kind's (debug.h).  Omitted `supervisor` means the
+// current MSR[PR]; `fetch` translates with the instruction-side rules (the
+// IBATs, MSR[IT]) instead of the data side.
 static value_t mmu_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    (void)argc;
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
+    bool user = (argc >= 2 && argv[1].kind == V_BOOL) ? !argv[1].b : (p->msr & PPC_MSR_PR) != 0;
+    bool fetch = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
     bool ok;
-    uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u, true, &ok);
-    if (!ok)
-        return val_err("no translation for $%08X", (uint32_t)argv[0].u);
-    value_t v = val_uint(4, pa);
-    v.flags |= VAL_HEX;
-    return v;
+    const char *via = "page";
+    uint32_t pa = ppc_mmu_translate_debug_ex(p, (uint32_t)argv[0].u, !fetch, user, &ok, &via);
+    return debug_translation_result(pa, ok, via);
 }
 
+// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
+// reads through the data-side translation; "physical" reads the address as
+// is.  (machine.memory.peek on a PowerPC machine is physical; this is the
+// logical read a debugger wants.)
 static value_t mmu_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
-    uint32_t size = (argc >= 2) ? (uint32_t)argv[1].u : 4u;
+    uint32_t size = (argc >= 2 && argv[1].kind == V_UINT) ? (uint32_t)argv[1].u : 4u;
     if (size != 1 && size != 2 && size != 4)
         return val_err("size must be 1, 2 or 4");
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("peek: space must be \"logical\" or \"physical\"");
     uint32_t raw = 0;
     for (uint32_t i = 0; i < size; i++) {
-        bool ok;
-        uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u + i, true, &ok);
-        if (!ok)
-            return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
+        uint32_t pa = (uint32_t)argv[0].u + i;
+        if (!physical) {
+            bool ok;
+            pa = ppc_mmu_translate_debug(p, pa, true, &ok);
+            if (!ok)
+                return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
+        }
         raw = (raw << 8) | memory_debug_read_uint8(pa);
     }
     value_t v = val_uint((int)size, raw);
@@ -1150,23 +1259,45 @@ static value_t mmu_method_peek(struct object *self, const member_t *m, int argc,
     return v;
 }
 
+// peek's default size: a named `space` must be reachable past it.
+static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+
 static const arg_decl_t mmu_translate_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+    {.name = "supervisor",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "translate for supervisor (true) or user (false); default: MSR[PR]"},
+    {.name = "fetch",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "instruction-side translation (IBATs, MSR[IT]) rather than data-side"},
 };
 static const arg_decl_t mmu_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX,        .doc = "effective (logical) address"},
-    {.name = "size", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+    {.name = "size",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_peek_size4,
+     .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "\"logical\" (default) or \"physical\""},
 };
 
 static const member_t ppc_mmu_members[] = {
     {.kind = M_METHOD,
      .name = "translate",
-     .doc = "Translate a data-side effective address (current MSR context, no side effects)",
-     .method = {.args = mmu_translate_args, .nargs = 1, .result = V_UINT, .fn = mmu_method_translate}},
+     .doc = "Translate an address: {phys, valid, via}, side-effect-free (same shape on every MMU kind)",
+     .method = {.args = mmu_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu_method_translate}},
     {.kind = M_METHOD,
      .name = "peek",
-     .doc = "Read guest memory through the current translation (side-effect-free)",
-     .method = {.args = mmu_peek_args, .nargs = 2, .result = V_UINT, .fn = mmu_method_peek}          },
+     .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
+     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}         },
 };
 
 static const class_desc_t ppc_mmu_class = {

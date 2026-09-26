@@ -54,6 +54,11 @@ int format_address_pair(char *buf, size_t buf_size, uint32_t logical_addr);
 // Sets *valid to true if translation succeeded.
 uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool *tt_hit, bool *valid);
 
+// Whether the main CPU is in supervisor state, asked through the debug
+// interface so debugger code needs no architecture's CPU struct (true when no
+// machine is live).
+bool debug_cpu_is_supervisor(void);
+
 // Check if dual address display should be shown (based on display mode and MMU state).
 bool addr_display_is_expanded(void);
 

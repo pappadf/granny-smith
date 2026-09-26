@@ -492,7 +492,7 @@ def row_av_tts() {
     assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
     assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
     assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-tts.wav", 69120)
+    check_sound("goldens/av-tts.wav", 68640)
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 
@@ -558,7 +558,7 @@ def row_av_sound_in() {
     run_ticks(400)
     assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died"
     assert machine.sound.overruns == 0 "av-sound-in: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-sound-in.wav", 161760)
+    check_sound("goldens/av-sound-in.wav", 161280)
     click(377, 169) # Cancel — never Save
     run_ticks(100)
     report_perf("suite-av/av-sound-in", scheduler.instr_count)
@@ -643,13 +643,19 @@ def row_av_sr_command() {
 # golden, and the windoid caption to a screen golden.
 def row_av_sr_macro() {
     sr_bring_up()
-    # One take.  This row used to need a throwaway warm-up utterance first
-    # (its recognition reliably missed, settling the AGC and the
-    # endpointer's cepstral mean for a second take) — but that tuning was
-    # captured under the pre-fix scheduler timing, where run_ticks() spans
-    # ran short of their nominal time.  With honest guest ticks the FIRST
-    # take recognizes, and a warm-up take would speak the answer before the
-    # capture opens (observed: windoid answered, capture peak 0).
+    # A warm-up take first: it misses ("Pardon me?"), settling the AGC and
+    # the endpointer's cepstral mean, and after 10 s more the second take
+    # recognizes.  Which take lands is a property of the boot's exact timing,
+    # so it has moved twice: this row needed the warm-up under the old
+    # scheduler timing, not under honest guest ticks -- where a warm-up that
+    # recognized spoke the answer before the capture opened (capture peak
+    # 0) -- and needs it again now that the machine's PRAM skips the
+    # startup-drive wait (measured: without the pause, and with only a pause,
+    # the take misses).  The run is deterministic, so the golden pins
+    # whatever the takes produce.  NOTE the peak assert alone cannot tell the
+    # answer from a spoken "Pardon me?" -- the windoid golden is what does.
+    sr_say($av_sr_date)
+    run_ticks(600)
     #
     # The capture records the machine's OUTPUT, which is silent for as long
     # as an utterance is being fed IN.  So open it only from the point the

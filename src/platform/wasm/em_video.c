@@ -52,8 +52,11 @@ LOG_USE_CATEGORY_NAME("video");
 // glTexSubImage2D still read stride*height back OUT of it, so a mode past the
 // ceiling (DAFB reaches stride 16380 x 2048, the Mach64 32736) read past the
 // static array either way -- and half a frame is not a useful degradation
-// (04-video F-19).  The producers keep stride*height inside the buffer they
-// point at (display_set_scanout), so this is the consumer's own ceiling.
+// (04-video F-19).  Past that ceiling it is the producers' job to keep
+// stride*height inside the buffer they point at: most through
+// display_set_scanout (the 8*24 GC's VidComm too, since N-52), the Voodoo2 by
+// clamping its screen to its scanout allocation (N-51).  This is the
+// consumer's own ceiling, not the guarantee that a descriptor is backed.
 static bool fb_fits_scratch(const display_t *d) {
     return (uint64_t)d->stride * d->height <= MAX_FB_BYTES;
 }
@@ -64,6 +67,9 @@ static GLuint s_vbo = 0;
 static GLuint s_fb_tex = 0; // framebuffer texture (format depends on pixel_format)
 static GLuint s_clut_tex = 0; // 256x1 RGBA texture for indexed-format CLUTs
 static GLuint s_response_tex = 0; // 256x3 R8 texture — per-channel CRT response LUT
+// The identity CRT response (every row 0..255), filled once in init_gl and
+// uploaded whenever the display's monitor has no response table of its own.
+static uint8_t s_identity_response[3 * 256];
 
 // Per-format shader programs.  Indexed by pixel_format_t.  A NULL slot means
 // "no program for this format yet" — fall back to the 1bpp program with
@@ -548,11 +554,10 @@ static void init_gl(void) {
     // assigns its monitor's table.
     glGenTextures(1, &s_response_tex);
     glBindTexture(GL_TEXTURE_2D, s_response_tex);
-    uint8_t identity[3 * 256];
     for (int c = 0; c < 3; c++)
         for (int v = 0; v < 256; v++)
-            identity[c * 256 + v] = (uint8_t)v;
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 256, 3, 0, GL_RED, GL_UNSIGNED_BYTE, identity);
+            s_identity_response[c * 256 + v] = (uint8_t)v;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 256, 3, 0, GL_RED, GL_UNSIGNED_BYTE, s_identity_response);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -566,15 +571,8 @@ static void init_gl(void) {
 static void upload_response(const display_t *d) {
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, s_response_tex);
-    if (d->crt_response) {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, d->crt_response);
-    } else {
-        uint8_t identity[3 * 256];
-        for (int c = 0; c < 3; c++)
-            for (int v = 0; v < 256; v++)
-                identity[c * 256 + v] = (uint8_t)v;
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, identity);
-    }
+    const uint8_t *table = d->crt_response ? &d->crt_response[0][0] : s_identity_response;
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, table);
 }
 
 // Consume the display's dirty flags and re-bind / re-upload exactly what

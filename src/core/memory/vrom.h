@@ -59,6 +59,8 @@ bool vrom_identify_card(const char *path, vrom_id_t *out);
 
 // Add one candidate (idempotent by content).
 void vrom_offer(const char *path);
+// Offer every file in `dir` ending in `ext` (NULL: any), skipping dotfiles.
+void vrom_offer_dir(const char *dir, const char *ext);
 
 // Drop every registered offer (teardown).
 void vrom_offer_clear(void);

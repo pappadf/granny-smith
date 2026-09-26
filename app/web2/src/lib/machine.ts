@@ -1,19 +1,15 @@
-// Pure helpers for machine config / model identification.
-
-import type { MachineConfig } from '@/bus/types';
+// Pure helpers for machine display.
 
 // Drop the leading "Macintosh " for compact display (status bar etc.).
 export function shortModel(model: string): string {
   return model.replace(/^Macintosh\s+/i, '');
 }
 
-// Default new-machine config — populates the Configuration slide form on
-// first render. Matches the prototype's default option for each select.
-export const DEFAULT_CONFIG: MachineConfig = {
-  model: 'Macintosh Plus',
-  vrom: '(auto)',
-  ram: '4 MB',
-  floppies: [],
-  hd: 'hd1.img',
-  cd: '(none)',
-};
+// A RAM size in KB as a label: "512 KB", "4 MB", "2.5 MB".  RAM is a number
+// everywhere else — the profile, the boot document, machine.ram — and only
+// becomes text here (F-01).
+export function formatRamKb(kb: number): string {
+  if (kb >= 1024 && kb % 1024 === 0) return `${kb / 1024} MB`;
+  if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MB`;
+  return `${kb} KB`;
+}

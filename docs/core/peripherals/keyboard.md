@@ -10,15 +10,19 @@ shift-register behavior** and the **classic Mac OS keyboard-driver
 expectations**, so emulator authors can implement both the electrical/protocol
 layer and the OS-visible results.
 
-## Emulator API: ADB Virtual Key Codes
+## Emulator API: ADB Raw Key Codes
 
-This emulator uses **ADB virtual key codes** (from *Inside Macintosh* Vol V) as
+This emulator uses **ADB raw key codes** — what an ADB keyboard transmits — as
 the standard API between platform frontends and the keyboard emulation core.
+They equal the *Inside Macintosh* Vol V virtual key codes for every key except
+the arrows (raw `$3B`–`$3E` left/right/down/up, virtual `$7B`–`$7E`) and the
+right-hand modifiers (raw `$7B`–`$7D`); names resolve to the raw codes, so
+`"left"` is `$3B` (it was `$7B`, which pressed Right Shift on ADB Macs).
 This design allows easy future support for ADB-based Macintosh models (SE, II,
 etc.) while maintaining compatibility with the Mac Plus VIA-based protocol.
 
-The `keyboard_update()` function accepts ADB virtual key codes and translates
-them internally to Mac Plus raw transition bytes.
+The `keyboard_update()` function accepts ADB key codes (the arrows by either
+code) and translates them internally to Mac Plus raw transition bytes.
 
 ### The shell surface
 
@@ -48,11 +52,23 @@ It exposes five methods:
 its key. `debug_mac_resolve_key_name()` is the whole table.
 
 An integer means **the same key on every machine**: key identity across the
-model is the ADB virtual keycode (`machine_profile.h`'s `input_key`), names
+model is the ADB raw keycode (`machine_profile.h`'s `input_key`), names
 are resolved once above the substrate, and each machine translates from
 there — the Plus to M0110A wire codes, the Lisa to COPS keycodes
 (`lisa_keymap.c`). A key this keyboard has not got is an error rather than a
 substitution, so pressing `"control"` on a Lisa says so.
+
+### The browser host
+
+The web build's keyboard takes the same path on every machine
+(`src/core/host_keys.c`): DOM `KeyboardEvent.code` → ADB raw keycode →
+`system_input_key` → the machine's own keyboard.  It keeps the set of keys
+the host holds, so every down gets its up even when focus or the pointer
+lock moved meanwhile; losing either releases everything held except Caps
+Lock, which the web frontend owns.  A machine that refuses Control gets
+Command instead — the Lisa, whose SCO Xenix reads Apple-D as Control-D.
+The mouse moves through `mouse.move`'s `"relative"` mode, which every
+machine implements as hardware deltas.
 
 `raw(byte)` is the exception and deliberately not portable: it hands one byte
 to the machine's own keyboard encoding, direction bit and all, for rows that

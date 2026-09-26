@@ -158,11 +158,10 @@ def phase1_boot() {
     # The target is RAW.  Phase 2 starts from a blank disk.
     assert try(storage.partmap($target), none) == none "the target drive already carries a partition map"
 
-    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, the documented
-    # Ticks poke past the 20 s spin-up window, then boot blocks, CFM init, the
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan (no spin-up
+    # wait: the machine's PRAM disables it), then boot blocks, CFM init, the
     # extensions parade and the Finder.
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
     scheduler.run 1200000000
     wait_stable(900000000)
     assert debug.mac.globals.read("BootDrive") != 0 "BootDrive == 0 (no startup device)"

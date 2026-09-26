@@ -1,0 +1,39 @@
+# hd= went to the boot bay (Bay 2, id 2), cdrom= to the CD bay (id 0).
+assert machine.scsi.device[2].type == "hd" "hd= in the boot bay"
+assert machine.scsi.device[0].type == "cdrom" "cdrom= in the CD bay"
+
+# The profile exports the same answer.
+let p = machine.profile("ans500")
+assert $p.hd_default.bus == "scsi" "hd_default bus"
+assert $p.hd_default.id == 2 "hd_default is the boot bay"
+assert $p.hd_bays[3].bus == "scsi2" "the second channel's bays follow"
+assert $p.cdrom.id == 0 "cdrom bay"
+assert machine.profile("lisa").hd_default.bus == "profile" "the Lisa's disk is the ProFile"
+assert len(machine.profile("lisa").scsi_buses) == 0 "no phantom SCSI bus on the Lisa (N-10)"
+assert machine.profile("plus").cdrom == none "no CD bay on the Plus"
+
+# attach_hd by bay index, on whatever bus the bay is: index 3 is Bay 5, the
+# first bay on the second fast/wide channel.
+let b = machine.attach_hd("${$WORK_DIR}/hd2.img", 3)
+assert $b.bus == "scsi2" "attach_hd answers the bus"
+assert $b.id == 4 "attach_hd answers the id"
+assert machine.scsi2.device[4].type == "hd" "the disk is on machine.scsi2"
+
+# An occupied bay, a bay that does not exist, a second CD: refused, not overwritten.
+assert try(machine.attach_hd("${$WORK_DIR}/hd2.img"), "refused") == "refused" "occupied boot bay refused"
+assert try(machine.attach_hd("${$WORK_DIR}/hd2.img", 6), "refused") == "refused" "bay 6 does not exist"
+assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "refused") == "refused" "occupied CD bay refused"
+
+# eject_media takes back what attach answered.
+machine.eject_media "scsi2" 4
+assert try(machine.eject_media("scsi2", 4), "empty") == "empty" "nothing left to eject"
+assert try(machine.eject_media("bogus", 0), "bad") == "bad" "unknown bus refused"
+
+# A Mac with no CD bay refuses a CD.
+machine.boot model="plus" rom="${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"
+assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "none") == "none" "no CD bay on the Plus"
+let h = machine.attach_hd("${$WORK_DIR}/hd.img")
+assert $h.id == 0 "a Plus's first disk at id 0"
+
+echo "media-bays-ok"
+quit

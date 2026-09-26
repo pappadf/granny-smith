@@ -913,10 +913,18 @@ static uint32_t v2_tex_lod_base(const voodoo2_t *v, int tmu, int lod) {
     return base;
 }
 
+// The scanout raster's allocation: the widest logical line the part
+// reaches, and as many lines.  videoDimensions is guest-programmed (11
+// bits each way), so both screen dimensions are clamped to it -- a height
+// of up to 2047 used to be taken as programmed and the conversion wrote the
+// rows past 1024 beyond the allocation every frame (N-51).
+#define V2_SCANOUT_MAX_W 1024u
+#define V2_SCANOUT_MAX_H 1024u
+
 // Screen height for the Y-origin flip, from videoDimensions.
 static uint32_t v2_screen_height(const voodoo2_t *v) {
     uint32_t h = (v->reg[R_VIDEODIM] >> 16) & 0x7FFu;
-    return h ? h : 480u;
+    return (h && h <= V2_SCANOUT_MAX_H) ? h : 480u;
 }
 
 // Clip rectangle in top-of-screen coordinates (always applied: the spec
@@ -2610,7 +2618,7 @@ static const char *v2_name(const pci_device_t *dev) {
 static uint32_t v2_screen_width(const voodoo2_t *v) {
     // videoDimensions packs (x-1) in the low field [V2 §5.47].
     uint32_t w = (v->reg[R_VIDEODIM] & 0x7FFu) + 1u;
-    return (w > 1u && w <= 1024u) ? w : 640u;
+    return (w > 1u && w <= V2_SCANOUT_MAX_W) ? w : 640u;
 }
 
 // Does the card drive the monitor this frame?  fbiInit0[0] is the
@@ -3477,8 +3485,8 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
     s_staged_tex_size = V2_TMU_4MB;
     v->fb_ram = (uint8_t *)calloc(1, V2_FB_SIZE);
     // Big-endian scanout raster for the display layer, sized for the
-    // widest mode the part reaches (1024-pixel logical line).
-    v->scanout = (uint8_t *)calloc(1, 1024u * 1024u * 4u);
+    // largest screen v2_screen_width / v2_screen_height report.
+    v->scanout = (uint8_t *)calloc(1, (size_t)V2_SCANOUT_MAX_W * V2_SCANOUT_MAX_H * 4u);
     v->tex_ram[0] = (uint8_t *)calloc(1, v->tex_size);
     v->tex_ram[1] = (uint8_t *)calloc(1, v->tex_size);
     // The raster target points at the memories; the backend is chosen

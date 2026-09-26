@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // lisa_keymap.h
-// ADB virtual keycode -> Apple Lisa COPS keycode.
+// ADB raw keycode -> Apple Lisa COPS keycode.
 //
-// The model's universal key identity is the ADB virtual keycode
+// The model's universal key identity is the ADB raw keycode
 // (machine_profile.h's input_key); this is the Lisa's translation of it.
 // Kept in its own file, with the boot ROM's own keycode->ASCII table beside
 // it, so the mapping can be CHECKED against the source it was derived from

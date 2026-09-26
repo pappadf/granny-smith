@@ -60,8 +60,8 @@ const char *floppy_kind_to_string(floppy_kind_t kind) {
     return "";
 }
 
-// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" /
-// "lisa_segment").  This is the value the capability probe exports as
+// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" / "68040" /
+// "ppc_601" / "ppc_604" / "lisa_segment").  This is the value the capability probe exports as
 // `mmu.kind` so the debug UI can pick the right register views.
 const char *mmu_kind_to_string(mmu_kind_t kind) {
     switch (kind) {
@@ -91,6 +91,97 @@ const char *hd_bus_to_string(hd_bus_t bus) {
         return "profile";
     }
     return "scsi";
+}
+
+// === Media bays (M1) =========================================
+// Where a hard disk or a CD goes is a fact the profile already holds -- the
+// buses with their bays, the `boot` flag, hd_bus, has_cdrom/cdrom_id -- but
+// every consumer derived it for itself, and they disagreed: headless put
+// hd=N at SCSI id N, the web dialog at the boot bay, the URL path at N again,
+// the Images panel at the default id on bus 0 whatever the bay's bus.  These
+// derive it once.
+
+const char *media_bus_name(media_bus_t bus) {
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return "floppy";
+    case MEDIA_BUS_SCSI:
+        return "scsi";
+    case MEDIA_BUS_SCSI2:
+        return "scsi2";
+    case MEDIA_BUS_PROFILE:
+        return "profile";
+    }
+    return "scsi";
+}
+
+bool media_bus_parse(const char *name, media_bus_t *out) {
+    static const media_bus_t all[] = {MEDIA_BUS_FLOPPY, MEDIA_BUS_SCSI, MEDIA_BUS_SCSI2, MEDIA_BUS_PROFILE};
+    for (size_t i = 0; name && i < sizeof(all) / sizeof(all[0]); i++) {
+        if (strcmp(name, media_bus_name(all[i])) == 0) {
+            *out = all[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max) {
+    if (!p || max <= 0)
+        return 0;
+    if (p->hd_bus == HD_BUS_PROFILE) {
+        out[0] = (media_bay_t){.bus = MEDIA_BUS_PROFILE, .unit = 0, .label = "ProFile"};
+        return 1;
+    }
+    // Every declared bay, in declared order, remembering the boot one.
+    media_bay_t all[MEDIA_HD_BAYS_MAX];
+    int n = 0, boot = 0;
+    for (const struct scsi_bus_decl *bus = p->scsi_buses; bus && bus->object; bus++) {
+        media_bus_t which;
+        if (!media_bus_parse(bus->object, &which) || (which != MEDIA_BUS_SCSI && which != MEDIA_BUS_SCSI2))
+            continue;
+        for (const struct scsi_slot *s = bus->slots; s && s->label && n < MEDIA_HD_BAYS_MAX; s++) {
+            if (s->boot)
+                boot = n;
+            all[n++] = (media_bay_t){.bus = which, .unit = s->id, .label = s->label};
+        }
+    }
+    // The boot bay first, then the rest in declared order.
+    int count = 0;
+    if (n > 0)
+        out[count++] = all[boot];
+    for (int i = 0; i < n && count < max; i++)
+        if (i != boot)
+            out[count++] = all[i];
+    return count;
+}
+
+bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out) {
+    return profile_hd_bays(p, out, 1) == 1;
+}
+
+bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
+    if (!p || !p->has_cdrom)
+        return false;
+    // The core seats the CD on the machine's first bus (cfg->scsi).
+    *out = (media_bay_t){.bus = MEDIA_BUS_SCSI, .unit = p->cdrom_id, .label = "CD-ROM"};
+    return true;
+}
+
+int profile_floppy_count(const hw_profile_t *p) {
+    int n = 0;
+    for (const struct floppy_slot *s = p ? p->floppy_slots : NULL; s && s->label; s++)
+        n++;
+    return n;
+}
+
+// A bay as the profile exports it: {bus, id, label}.
+static value_t media_bay_value(const media_bay_t *bay) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "bus", val_str(media_bus_name(bay->bus)));
+    val_map_put(b, "id", val_int((int64_t)bay->unit));
+    val_map_put(b, "label", val_str(bay->label ? bay->label : ""));
+    return val_map_finish(b);
 }
 
 // Find a machine profile by its id string
@@ -215,7 +306,7 @@ static value_t attr_machine_created(struct object *self, const member_t *m) {
 // from the model's display name.
 static value_t build_capabilities(const hw_profile_t *p) {
     value_map_builder_t *cpu = val_map_new();
-    val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030
+    val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030 / 68040 / 601 / 604
     val_map_put(cpu, "address_bits", val_int((int64_t)p->address_bits));
     val_map_put(cpu, "fpu", val_bool(cpu_has_fpu(p->cpu_model)));
 
@@ -555,6 +646,21 @@ static value_t build_profile(const hw_profile_t *p) {
 
     val_map_put(b, "has_cdrom", val_bool(p->has_cdrom));
     val_map_put(b, "cdrom_id", val_int((int64_t)p->cdrom_id));
+
+    // The derived bays (M1): every hard-disk bay in attach order, the default
+    // one (hd_bays[0]), and the CD bay -- {bus, id, label}, bus one of
+    // "scsi" / "scsi2" / "profile".  What machine.attach_hd / attach_cdrom
+    // use, exported so a UI can show the same answer before a boot.
+    media_bay_t bays[MEDIA_HD_BAYS_MAX];
+    int n_bays = profile_hd_bays(p, bays, MEDIA_HD_BAYS_MAX);
+    value_t *bay_vals = NULL;
+    size_t n_bay_vals = 0, cap_bay_vals = 0;
+    for (int i = 0; i < n_bays; i++)
+        val_list_push(&bay_vals, &n_bay_vals, &cap_bay_vals, media_bay_value(&bays[i]));
+    val_map_put(b, "hd_bays", val_list(bay_vals, n_bay_vals));
+    val_map_put(b, "hd_default", n_bays > 0 ? media_bay_value(&bays[0]) : val_none());
+    media_bay_t cd;
+    val_map_put(b, "cdrom", profile_cdrom_bay(p, &cd) ? media_bay_value(&cd) : val_none());
 
     // Derived capability probe + per-card video-slot shape (proposal §4.4) —
     // the source of truth the frontend consumes.  (The web-legacy compat keys
@@ -1239,6 +1345,92 @@ static const arg_decl_t machine_profile_args[] = {
     {.name = "id", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30)"},
 };
 
+// === machine.attach_hd / attach_cdrom / eject_media (M2) ======
+// Media by bay, not by bus: the running machine's profile says where a hard
+// disk or a CD goes (profile_hd_bays / profile_cdrom_bay), and the substrate
+// attaches it there, on whatever bus that is -- machine.scsi, machine.scsi2 or
+// the Lisa's ProFile.  Each answers the bay it used, {bus, id, label}, which
+// is what eject_media takes back.
+
+static value_t machine_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.attach_hd: no machine is running");
+    media_bay_t bays[MEDIA_HD_BAYS_MAX];
+    int n = profile_hd_bays(cfg->machine, bays, MEDIA_HD_BAYS_MAX);
+    int64_t which = (argc >= 2 && argv[1].kind == V_INT) ? argv[1].i : 0;
+    if (n == 0)
+        return val_err("machine.attach_hd: %s has no hard-disk bay", cfg->machine->name);
+    if (which < 0 || which >= n)
+        return val_err("machine.attach_hd: bay %lld does not exist (%s has %d)", (long long)which, cfg->machine->name,
+                       n);
+    char err[256];
+    if (system_media_attach_path(cfg, &bays[which], false, argv[0].s, err, sizeof(err)) != 0)
+        return val_err("machine.attach_hd: %s", err);
+    return media_bay_value(&bays[which]);
+}
+
+static value_t machine_method_attach_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.attach_cdrom: no machine is running");
+    media_bay_t bay;
+    if (!profile_cdrom_bay(cfg->machine, &bay))
+        return val_err("machine.attach_cdrom: %s has no CD-ROM bay", cfg->machine->name);
+    char err[256];
+    if (system_media_attach_path(cfg, &bay, true, argv[0].s, err, sizeof(err)) != 0)
+        return val_err("machine.attach_cdrom: %s", err);
+    return media_bay_value(&bay);
+}
+
+static value_t machine_method_eject_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.eject_media: no machine is running");
+    media_bus_t bus;
+    if (!media_bus_parse(argv[0].s, &bus))
+        return val_err("machine.eject_media: unknown bus '%s' (floppy, scsi, scsi2 or profile)", argv[0].s);
+    int unit = (argc >= 2 && argv[1].kind == V_INT) ? (int)argv[1].i : 0;
+    int rc = system_media_eject(cfg, bus, unit);
+    if (rc == -2)
+        return val_err("machine.eject_media: the guest has locked %s %d", argv[0].s, unit);
+    if (rc != 0)
+        return val_err("machine.eject_media: nothing to eject at %s %d", argv[0].s, unit);
+    return val_none();
+}
+
+// The bay index's default: a named argument after it must stay reachable.
+static const value_t k_bay0 = {.kind = V_INT, .i = 0};
+
+static const arg_decl_t machine_attach_hd_args[] = {
+    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Hard-disk image path"},
+    {.name = "bay",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_bay0,
+     .doc = "Which bay, in profile.hd_bays order (default 0: the boot bay)"},
+};
+
+static const arg_decl_t machine_attach_cdrom_args[] = {
+    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "CD-ROM image path"},
+};
+
+static const arg_decl_t machine_eject_media_args[] = {
+    {.name = "bus", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "floppy, scsi, scsi2 or profile"},
+    {.name = "id",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_bay0,
+     .doc = "Drive index or SCSI id (default 0)"},
+};
+
 static const member_t machine_members[] = {
     {.kind = M_ATTR,
      .name = "id",
@@ -1298,6 +1490,18 @@ static const member_t machine_members[] = {
      .name = "register",
      .doc = "Record the active machine identity for checkpointing",
      .method = {.args = machine_register_args, .nargs = 2, .result = V_BOOL, .fn = machine_method_register}},
+    {.kind = M_METHOD,
+     .name = "attach_hd",
+     .doc = "Attach a hard-disk image to a bay (default: the boot bay) on whatever bus it is; answers {bus, id, label}",
+     .method = {.args = machine_attach_hd_args, .nargs = 2, .result = V_MAP, .fn = machine_method_attach_hd}},
+    {.kind = M_METHOD,
+     .name = "attach_cdrom",
+     .doc = "Insert a CD-ROM image into the machine's CD bay; answers {bus, id, label}",
+     .method = {.args = machine_attach_cdrom_args, .nargs = 1, .result = V_MAP, .fn = machine_method_attach_cdrom}},
+    {.kind = M_METHOD,
+     .name = "eject_media",
+     .doc = "Take the medium out of a bay, named as attach_hd/attach_cdrom answer it (bus, id)",
+     .method = {.args = machine_eject_media_args, .nargs = 2, .result = V_NONE, .fn = machine_method_eject_media}},
 };
 
 static const class_desc_t machine_class = {

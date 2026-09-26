@@ -1,10 +1,11 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { layout, setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 
 // The Configuration slide drives the model dropdown by calling
 // `machine.rom.identify` on every ROM in OPFS, then `machine.profile` to get the
@@ -81,7 +82,6 @@ beforeEach(() => {
   machine.model = null;
   machine.ram = null;
   setWelcomeSlide('configuration');
-  stopDriveActivityMock();
 });
 
 describe('WelcomeConfigSlide', () => {
@@ -109,7 +109,8 @@ describe('WelcomeConfigSlide', () => {
     // (so no display-card row is shown), ram_default=4096 KB, two floppy slots,
     // and no has_cdrom (→ the SCSI CD-ROM row is hidden).
     expect(container.querySelector('#cfg-card')).toBeNull();
-    expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4 MB');
+    // RAM is a number in KB behind the label (F-01).
+    expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4096');
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     expect(container.querySelector('#cfg-cd')).toBeNull();
   });
@@ -167,7 +168,7 @@ describe('WelcomeConfigSlide', () => {
     let ramSel = container.querySelector('#cfg-ram') as HTMLSelectElement;
     // Plus: ram_options [1, 2, 4] MB, default 4 MB.
     expect(Array.from(ramSel.options).map((o) => o.textContent)).toEqual(['1 MB', '2 MB', '4 MB']);
-    expect(ramSel.value).toBe('4 MB');
+    expect(ramSel.value).toBe('4096');
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
     modelSel.value = 'se30';
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
@@ -178,7 +179,7 @@ describe('WelcomeConfigSlide', () => {
       if (labels.join() !== ['2 MB', '4 MB', '8 MB', '16 MB'].join())
         throw new Error('ram options not refreshed yet');
     });
-    expect(ramSel.value).toBe('8 MB');
+    expect(ramSel.value).toBe('8192');
   });
 
   it('renders one floppy row per profile.floppy_slots entry', async () => {

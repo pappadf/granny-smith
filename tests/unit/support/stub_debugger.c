@@ -50,3 +50,35 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     (void)format_frame;
     (void)double_fault_kind;
 }
+
+// Debug-surface helpers the MMU object classes call (debug.h).  Unit suites
+// that link cpu.c / ppc.c do not exercise translate/peek; these keep them
+// linking without dragging in debug.c or value.c.
+#include "value.h"
+bool debug_cpu_is_supervisor(void) {
+    return true;
+}
+value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
+    (void)phys;
+    (void)valid;
+    (void)via;
+    return (value_t){.kind = V_NONE};
+}
+bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
+    (void)argc;
+    (void)argv;
+    (void)idx;
+    *physical = false;
+    return true;
+}
+// The frame builder the CPU classes' `frame` method calls, and its argument
+// table, which the member tables take the address of.
+#include "debug.h"
+const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {{.name = "addr"}, {.name = "count"}, {.name = "before"}};
+value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, const value_t *argv) {
+    (void)dif;
+    (void)who;
+    (void)argc;
+    (void)argv;
+    return (value_t){.kind = V_NONE};
+}

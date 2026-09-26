@@ -178,7 +178,7 @@ int main(int argc, char *argv[]) {
             ppc_insn ins;
             ppc_disassemble_model(w, addr, ppc_model, &ins);
             // "mnemonic\toperands" -> single aligned column pair
-            char mnem[32], ops[64];
+            char mnem[sizeof(ins.text)], ops[sizeof(ins.text)];
             const char *tab = strchr(ins.text, '\t');
             if (tab) {
                 snprintf(mnem, sizeof(mnem), "%.*s", (int)(tab - ins.text), ins.text);
@@ -258,18 +258,16 @@ int main(int argc, char *argv[]) {
 
         // split mnemonic and operands at the tab character,
         // matching the emulator's debug.c disasm() function
-        int i;
-        if (strlen(disasm_buf) == 0) {
-            strcpy(mnemonic, "ILLEGAL");
+        // Bounded: the split never writes past mnemonic[] whatever the
+        // decoder returns (F-34; unreachable today, measured, but unbounded).
+        if (disasm_buf[0] == '\0') {
+            snprintf(mnemonic, sizeof(mnemonic), "ILLEGAL");
             operands[0] = '\0';
         } else {
-            for (i = 0; disasm_buf[i] != '\0' && disasm_buf[i] != '\t'; i++)
-                mnemonic[i] = disasm_buf[i];
-            mnemonic[i] = '\0';
-            if (disasm_buf[i] == '\t')
-                snprintf(operands, sizeof(operands), "%s", disasm_buf + i + 1);
-            else
-                operands[0] = '\0';
+            const char *tab = strchr(disasm_buf, '\t');
+            int mlen = tab ? (int)(tab - disasm_buf) : (int)strlen(disasm_buf);
+            snprintf(mnemonic, sizeof(mnemonic), "%.*s", mlen, disasm_buf);
+            snprintf(operands, sizeof(operands), "%s", tab ? tab + 1 : "");
         }
 
         // annotate branch destinations on the operands string
@@ -277,10 +275,7 @@ int main(int argc, char *argv[]) {
 
         // format exactly like the emulator: "%08x  %04x  %-10s%-12s"
         // then append the branch annotation (if any) after the base output
-        char base_line[256];
-        sprintf(base_line, "$%08X  %04x  %-10s%s", (unsigned int)addr, (int)words[pos], mnemonic, annotated_buf);
-
-        printf("%s\n", base_line);
+        printf("$%08X  %04x  %-10s%s\n", (unsigned int)addr, (int)words[pos], mnemonic, annotated_buf);
 
         pos += nwords;
         instr_count++;

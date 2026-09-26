@@ -101,7 +101,7 @@ input_mouse_move / input_mouse_button` hooks let the standard `keyboard` /
 `mouse` object methods (`keyboard.press`, `mouse.move`, `mouse.click`) route to
 the Lisa COPS (via `system_input_*` in `system.c`) instead of the default Mac
 ADB/Toolbox path — which is untouched, so Mac machines are unaffected.
-`input_key` takes an **ADB virtual keycode**, the model's universal key
+`input_key` takes an **ADB raw keycode**, the model's universal key
 identity; `lisa_keymap.c` translates it to a COPS keycode. A fourth hook,
 `input_key_raw`, carries a COPS wire byte verbatim for the rows that are
 testing the wire (`keyboard.raw`), and is NULL on every Mac.  Verified:

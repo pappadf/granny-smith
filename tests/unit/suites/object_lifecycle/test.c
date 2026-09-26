@@ -90,8 +90,17 @@ static value_t meta_method_stub(struct object *self, const member_t *m, int argc
     (void)argv;
     return val_none();
 }
+static value_t metmeta_shown_get(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(4, 42);
+}
 static const member_t metmeta_members[] = {
-    {.kind = M_ATTR, .name = "shown", .doc = "basic attribute", .attr = {.type = V_UINT, .get = NULL, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "shown",
+     .doc = "basic attribute",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = metmeta_shown_get, .set = NULL}},
     {.kind = M_ATTR,
      .name = "raw_reg",
      .flags = M_CAT_ADVANCED,
@@ -312,6 +321,70 @@ TEST(test_meta_label_category) {
     object_delete(o);
 }
 
+// The map for member `name` in a meta.members list, or NULL.
+static const value_t *member_entry(const value_t *list, const char *name) {
+    for (size_t i = 0; i < list->list.len; i++) {
+        const value_t *n = value_map_get(&list->list.items[i], "name");
+        if (n && n->kind == V_STRING && strcmp(n->s, name) == 0)
+            return &list->list.items[i];
+    }
+    return NULL;
+}
+
+static bool entry_str(const value_t *e, const char *key, const char *want) {
+    const value_t *v = value_map_get(e, key);
+    return v && v->kind == V_STRING && strcmp(v->s, want) == 0;
+}
+
+// meta.members describes every member in one call (F-46): class members with
+// their own category/label and per-kind fields, then attached children with
+// the label and category the child object carries.  Values only on request.
+TEST(test_meta_members) {
+    object_root_reset();
+    struct object *o = object_new(&metmeta_class, NULL, "gadget");
+    object_attach(object_root(), o);
+    struct object *kid = object_new(&toy_class, NULL, "lcd");
+    object_set_label(kid, "Front Panel LCD");
+    object_set_category(kid, M_CAT_ADVANCED);
+    object_attach(o, kid);
+
+    node_t n = object_resolve(object_root(), "gadget.meta.members");
+    ASSERT_TRUE(node_valid(n));
+    value_t list = node_call(n, 0, NULL);
+    ASSERT_TRUE(list.kind == V_LIST);
+    ASSERT_EQ_INT((int)list.list.len, 6); // five class members + the attached child
+
+    const value_t *raw = member_entry(&list, "raw_reg");
+    ASSERT_TRUE(raw && entry_str(raw, "kind", "attr") && entry_str(raw, "category", "advanced"));
+    ASSERT_TRUE(entry_str(raw, "label", "Raw register"));
+    ASSERT_TRUE(value_map_get(raw, "value") == NULL); // not asked for
+    const value_t *ro = value_map_get(member_entry(&list, "shown"), "readonly");
+    ASSERT_TRUE(ro && ro->kind == V_BOOL && ro->b);
+
+    const value_t *exp = member_entry(&list, "export");
+    ASSERT_TRUE(exp && entry_str(exp, "kind", "method") && entry_str(exp, "verb", "Save image…"));
+    ASSERT_TRUE(entry_str(exp, "task", "storage"));
+    const value_t *mut = value_map_get(exp, "mutate");
+    ASSERT_TRUE(mut && mut->kind == V_BOOL && mut->b);
+    const value_t *des = value_map_get(member_entry(&list, "eject"), "destructive");
+    ASSERT_TRUE(des && des->kind == V_BOOL && des->b);
+
+    const value_t *lcd = member_entry(&list, "lcd");
+    ASSERT_TRUE(lcd && entry_str(lcd, "kind", "child") && entry_str(lcd, "label", "Front Panel LCD"));
+    ASSERT_TRUE(entry_str(lcd, "category", "advanced"));
+    value_free(&list);
+
+    value_t yes = val_bool(true);
+    value_t withv = node_call(n, 1, &yes);
+    ASSERT_TRUE(withv.kind == V_LIST);
+    const value_t *v = value_map_get(member_entry(&withv, "shown"), "value");
+    ASSERT_TRUE(v && v->kind == V_UINT && v->u == 42);
+    value_free(&withv);
+
+    object_root_reset();
+    object_delete(o);
+}
+
 int main(void) {
     RUN(test_destructor_runs_on_delete);
     RUN(test_cascade_post_order);
@@ -320,5 +393,6 @@ int main(void) {
     RUN(test_ordered_iteration);
     RUN(test_member_metadata);
     RUN(test_meta_label_category);
+    RUN(test_meta_members);
     return 0;
 }

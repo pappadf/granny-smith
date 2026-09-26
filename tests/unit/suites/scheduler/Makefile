@@ -17,7 +17,7 @@ TARGET    := $(BUILD_DIR)/$(TEST_NAME)
 
 CC ?= gcc
 BASE_CFLAGS := -O0 -g -Wall -Wextra
-# $(CURDIR) comes FIRST so this suite's platform.h (extern, controllable
+# $(CURDIR) comes FIRST so this suite's platform_clock.h (extern, controllable
 # host_time) shadows the support default (static inline, always 0.0).
 INCLUDE_FLAGS := -I$(CURDIR) \
                  -I$(UNIT_ROOT)/support \
@@ -32,7 +32,7 @@ INCLUDE_FLAGS := -I$(CURDIR) \
                  -I$(EMU_ROOT)/core/object \
                  -I$(EMU_ROOT)/core/vfs \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
-                 -include $(CURDIR)/platform.h \
+                 -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
 
 CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)

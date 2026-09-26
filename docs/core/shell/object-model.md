@@ -418,6 +418,18 @@ configure, and what the JS frontend operates on:
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
   never raw exit codes. See [`web.md`](web.md) for the wire layout
   and protocol.
+
+  **The result contract** (what `gsEval` in `app/web2/src/bus/emulator.ts`
+  resolves to): a value is the result; `null` is **only** a successful
+  method that returns nothing (V_NONE); every failure is an
+  `{error: "…"}` object — the core's V_ERROR message, or, for a failure of
+  the bridge itself (module not ready, a thrown request), the same shape
+  with `transport: true`. So `r !== null` is never a success test (an
+  `{error}` satisfies it): use `gsOk(r)` for "did it work", `r === true`
+  for a V_BOOL method, and a shape check for a read. `gsErrorText(r)`
+  gives the reason. A shell statement such as `machine.cpu.d0 = 1` is
+  **not** a `gs_eval` path — write an attribute by passing the value as
+  the single argument: `gsEval('machine.cpu.d0', [1])`.
 - **Inspector UI.** The browser inspector panel reads the tree by
   walking `objects()` / `attributes()` / `methods()` and rendering the
   results. No bespoke inspection protocol; the panel is just another

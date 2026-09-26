@@ -223,7 +223,7 @@ char input_mouse_mode_parse(const char *mode) {
         return 'd';
     if (strcmp(mode, "global") == 0)
         return 'g';
-    if (strcmp(mode, "hw") == 0)
+    if (strcmp(mode, "hw") == 0 || strcmp(mode, "relative") == 0)
         return 'h';
     if (strcmp(mode, "aux") == 0)
         return 'a';
@@ -244,7 +244,7 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
     const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
     if ((argc >= 3) && !mouse_mode_char(&argv[2]))
-        return val_err("mouse.move: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
+        return val_err("mouse.move: mode must be one of \"default\"/\"relative\"/\"global\"/\"hw\"/\"aux\"");
     // Inject through the machine substrate: Mac Toolbox cursor / Lisa COPS —
     // one uniform path (proposal §4.4).
     if (system_input_mouse_move((int)x, (int)y, modestr) < 0)
@@ -259,7 +259,7 @@ static value_t mouse_method_click(struct object *self, const member_t *m, int ar
     const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
     if ((argc >= 2) && !mouse_mode_char(&argv[1]))
-        return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
+        return val_err("mouse.click: mode must be one of \"default\"/\"relative\"/\"global\"/\"hw\"/\"aux\"");
     // Inject through the machine substrate (Mac Toolbox cursor / Lisa COPS).
     if (system_input_mouse_button(down, modestr) < 0)
         return val_err("mouse.click: machine rejected request");
@@ -280,7 +280,8 @@ static const arg_decl_t mouse_move_args[] = {
     {.name = "mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"default\" (per-platform), \"global\" (Toolbox MTemp), \"hw\" (raw quadrature), or \"aux\" (A/UX MAE)"},
+     .doc = "\"default\" (a Mac: absolute Toolbox cursor; a Lisa: deltas), \"relative\" (deltas, every machine), "
+            "\"global\" (Toolbox MTemp), \"hw\" (= relative), or \"aux\" (A/UX MAE)"},
 };
 // `mouse.click()` with no arguments is a press, so the slot has a real default
 // rather than obj_arg_unset -- and having one is what makes `mouse.click(mode=

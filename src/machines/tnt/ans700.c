@@ -43,9 +43,9 @@ static const uint32_t ans700_ram_options_kb[] = {16384, 32768, 49152, 65536, 131
 // rear).  Until this the table was byte-identical to the 500's while the
 // comment above described a topology it did not express.
 static const struct scsi_slot ans700_scsi_slots_fw1[] = {
-    {.label = "Bay 5 (fast/wide 1)", .id = 4},
-    {.label = "Bay 6 (fast/wide 1)", .id = 5},
-    {.label = "Bay 7 (fast/wide 1)", .id = 6},
+    {.label = "Bay 4 (fast/wide 1)", .id = 4},
+    {.label = "Bay 5 (fast/wide 1)", .id = 5},
+    {.label = "Bay 6 (fast/wide 1)", .id = 6},
     {.label = "Rear bay 1 (fast/wide 1)", .id = 0},
     {.label = "Rear bay 2 (fast/wide 1)", .id = 1},
     {0},

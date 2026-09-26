@@ -109,6 +109,11 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint);
 // machine setup code after both CPU and MMU instances exist.  Idempotent.
 void cpu_attach_mmu(cpu_t *cpu, void *mmu);
 
+// Bind a `cpu.mmu` child node of class `cls` (an MMU kind cpu.c does not
+// model, e.g. the Lisa's segment MMU).  Idempotent.
+struct class_desc;
+void cpu_attach_mmu_node(cpu_t *cpu, const struct class_desc *cls, void *data);
+
 // === Operations ===
 
 extern void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions);

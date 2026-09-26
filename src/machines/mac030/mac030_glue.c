@@ -159,7 +159,7 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 // below it differ enough (one or two, different hooks, different IRQ sinks)
 // that they stay with each family.
 void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool)) {
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
     cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : mac030_glue_scc_irq, cfg, cp);
     // 3.6864 MHz PCLK / 7.8336 MHz RTxC -- the same pair on every 68k Mac.
     scc_set_clocks(cfg->scc, 7833600, 3686400);
@@ -513,4 +513,6 @@ const machine_substrate_t glue_substrate = {
     .input_mouse_button = mac_input_mouse_button,
     .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
+    .media_present = system_media_present_std,
+    .media_eject = system_media_eject_std,
 };

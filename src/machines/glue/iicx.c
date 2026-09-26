@@ -34,6 +34,7 @@
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
+#include "pram_defaults.h"
 #include "rtc.h"
 #include "scheduler.h"
 #include "via.h"
@@ -254,6 +255,7 @@ const hw_profile_t machine_iicx = {
 
     .nubus_slots = iicx_slots,
 
+    .pram = &pram_defaults_mac_ii,
     .substrate = &glue_substrate, // shared GLUE-family substrate
     .board = &iicx_board,
 };

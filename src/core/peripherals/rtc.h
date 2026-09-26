@@ -22,6 +22,36 @@ typedef struct via via_t;
 struct rtc;
 typedef struct rtc rtc_t;
 
+// The PRAM a machine powers up with (pram.md §4, §8).  A real Mac's PRAM is
+// battery-backed and has almost always booted before; ours is created with
+// the machine.  So the RTC initialises it to a store that has: the XPRAM
+// validity token, the ROM family's own Start Manager table and MMFlags, and
+// the Start Manager's "no dynamic drive wait" bit.  The low 20-byte SysParam
+// block is left INVALID on purpose, so each ROM still writes its own
+// defaults there (they differ per family, pram.md §9.2).  One table per ROM
+// family, from measurement; the machine layer owns them (pram_defaults.c).
+// Written so an Open Firmware machine's NVRAM can later reuse the applier
+// for its PRAM partition.
+typedef struct pram_defaults {
+    uint32_t xpram_token; // $0C..$0F, big-endian: 'NuMc' ('Bugs' on the Plus)
+    const uint8_t *startmgr; // PRAMInitTbl for $76..$89 (20 bytes), or NULL
+    uint8_t mmflags; // $8A: the value the ROM's own cold init writes
+    uint8_t mmflags_booted; // bits a booted System leaves set in $8A, ORed in
+} pram_defaults_t;
+
+#define PRAM_STARTMGR_BASE 0x76 // PRAMInitTbl's place in XPRAM
+#define PRAM_STARTMGR_LEN  20
+#define PRAM_MMFLAGS       0x8A
+#define PRAM_STARTMGR_WAIT 0x01 // Start Manager wait byte (StartSearch.a)
+// $01 bit 7: disable the dynamic startup-drive wait.  Set at construction
+// (D-2): a deliberate departure from a factory-fresh chip, whose first boot
+// waits up to 20 s for drives to spin up.  A row that wants that path
+// clears the bit after construction and keeps the token.
+#define PRAM_STARTMGR_NO_WAIT 0x80
+
+// Write `d` into a 256-byte PRAM image.  Everything else is left as it is.
+void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d);
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // `extended` selects the chip variant: true for the 256-byte XPRAM RTC used
@@ -44,7 +74,10 @@ typedef struct rtc rtc_t;
 // extended-command path (read_ext/write_ext) indexes all 256 bytes regardless,
 // so a 20-byte machine would still have working extended commands it must not
 // have.  Fix that before wiring one up.
-rtc_t *rtc_init(struct scheduler *scheduler, checkpoint_t *checkpoint, bool extended);
+//
+// `defaults` is the PRAM the machine powers up with (NULL: all zero, as the
+// Open Firmware machines still start); a checkpoint restores over it.
+rtc_t *rtc_init(struct scheduler *scheduler, checkpoint_t *checkpoint, bool extended, const pram_defaults_t *defaults);
 
 void rtc_delete(rtc_t *rtc);
 

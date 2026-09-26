@@ -31,6 +31,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
@@ -159,13 +160,6 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
 });
 
 // --- terminal helpers (same shape as vrom-offer-ingest.spec.ts) ------------
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
 
 // Echo an expression under a unique key and return the printed value. The
 // typed line is echoed too, so values still starting with `$` are the input

@@ -226,7 +226,10 @@ typed). Emulated hardware nests under one `machine` node
 (proposal-system-object-model.md); the emulator's own services and the
 simulated network are its siblings at the root:
 
-- **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`),
+- **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`;
+  every MMU kind — 68030, 68040, PowerPC, the Lisa's segment MMU — answers
+  `mmu.translate(addr, [supervisor], [fetch])` → `{phys, valid, via}` and
+  `mmu.peek(addr, [size], [space])` the same way),
   `machine.memory`, `machine.rom`, `machine.vrom`, `machine.via1`/`via2`,
   `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
   `machine.floppy.drive[N].disk`, `machine.scsi.device[N].image`,
@@ -256,7 +259,12 @@ pm8500/pm9500 — on a 604, `rtcu/rtcl` read the timebase halves) and inert
 on the 601.
 
 The browser frontend calls into the tree via `gsEval(path, args?)` (see
-`app/web2/src/bus/emulator.ts`). Inside the shell (v2 script language —
+`app/web2/src/bus/emulator.ts`). It resolves to a value, to `null` only for a
+method that returns nothing, or to an `{error}` object on any failure — so
+check success with `gsOk(r)` (or `=== true` for a boolean method), never
+`r !== null`; write an attribute as `gsEval('machine.cpu.d0', [v])`, never as
+a `"path = value"` string (docs/core/shell/object-model.md, "The result
+contract"). Inside the shell (v2 script language —
 see `docs/core/shell/shell.md`), the same tree is reachable via:
 
   machine.cpu.pc                 # bare path → read (& print at the REPL)

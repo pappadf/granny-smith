@@ -10,6 +10,8 @@
 // === Includes ===
 #include "addr_format.h"
 #include "common.h"
+#include "object.h"
+#include "value.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -18,6 +20,7 @@
 // === Forward Declarations ===
 struct cpu;
 struct object;
+struct value_map_builder;
 
 // === Main-CPU debug interface (PPC proposal §3.9b) ===
 // The handful of debugger paths that reach into the main CPU (PC reads for
@@ -26,14 +29,14 @@ struct object;
 // Populated by system_create from the active core's adapter (the 68K one is
 // cpu_debug_if() in cpu.c); fetched via system_cpu_debug_if().
 typedef struct cpu_debug_if {
-    void *ctx; // the core instance (cpu_t / ppc_t)
+    void *ctx; // the core instance (cpu_t / ppc_t / dsp3210_t)
     uint32_t (*get_pc)(void *ctx);
-    void (*set_pc)(void *ctx, uint32_t pc);
+    void (*set_pc)(void *ctx, uint32_t pc); // NULL on a core the debugger cannot redirect
     // Disassemble one instruction at pc using the core's own memory view into
-    // buf (mnemonic + '\t' + operands, empty string for illegal encodings;
-    // buf must hold >= 100 bytes).  Returns bytes consumed (68K: 2..20;
-    // PPC: always 4).
-    // Disassemble one instruction into `buf`, which holds `buflen` bytes.
+    // buf (mnemonic + '\t' + operands, or the whole text with no tab for an
+    // algebraic syntax like the DSP3210's; empty string for illegal
+    // encodings; buf holds `buflen` >= 100 bytes).  Returns bytes consumed
+    // (68K: 2..20; PPC and DSP3210: always 4).
     // The length is passed explicitly because the 68K adapter's backend is 39
     // unbounded sprintf calls into whatever the caller supplied.  An exhaustive
     // sweep (every MOVEM mask x every full-format extension word x six MOVEM
@@ -51,7 +54,41 @@ typedef struct cpu_debug_if {
     // because on PDM the nanokernel relocates logical page 0 away from
     // physical 0 once the framebuffer claims it (§3.9e).
     uint32_t (*translate_mac)(void *ctx, uint32_t logical, bool *ok);
+    // --- for debug.frame, so it needs no architecture-specific code ---
+    // Short architecture tag: "m68k", "ppc" or "dsp3210".
+    const char *arch;
+    // Put the core's register file into `regs` (name -> integer).
+    void (*regs)(void *ctx, struct value_map_builder *regs);
+    // Put the FPU register file into `fpu` and return true; return false,
+    // writing nothing, when the core has no FPU.
+    bool (*fpu)(void *ctx, struct value_map_builder *fpu);
+    // Instruction-side logical→physical, for disassembly rows.  NULL means
+    // the same as `translate` (68K); PPC's instruction and data BATs differ.
+    // Both NULL: the core addresses physical memory directly (the DSP3210).
+    uint32_t (*translate_code)(void *ctx, uint32_t logical, bool *ok);
+    // True in supervisor state: which MMU context a debugger read uses.
+    bool (*is_supervisor)(void *ctx);
 } cpu_debug_if_t;
+
+// The frame contract every CPU-like object shares: `debug.frame`,
+// `machine.cpu.frame` and an auxiliary core's `frame` (machine.dsp) take
+// these arguments -- (addr, count, before), all optional -- and answer
+// debug_frame_build's map, {arch, pc, regs, rows, fpu?}, built from the
+// core's cpu_debug_if_t.  debug.c documents the shape.
+#define DEBUG_FRAME_NARGS 3
+extern const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS];
+value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, const value_t *argv);
+
+// The result of a typed `machine.cpu.mmu.translate`, the same shape on every
+// MMU kind: {phys, valid, via}.  `phys` is absent when the translation is
+// invalid; `via` says how it resolved: "identity" (translation off), "tt"
+// (68K transparent translation), "bat" (PPC block translation), "page"
+// (a table walk), "segment" (PPC direct-store segment, or the Lisa's MMU).
+value_t debug_translation_result(uint32_t phys, bool valid, const char *via);
+
+// Read the optional `space` argument at argv[idx]: "logical" (the default,
+// also when omitted) or "physical".  Returns false for anything else.
+bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);
 
 // Resolve a 68k low-memory address through the mac-world translation
 // (identity on 68K machines and when no machine is live).  Shared by

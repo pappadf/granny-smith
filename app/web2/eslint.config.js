@@ -85,6 +85,14 @@ export default [
           message:
             "bus/* must not call gsEval('shell.run', ...). Use a typed object-model path instead. Only TerminalPane.svelte may construct shell-line strings.",
         },
+        {
+          // The shell-line escape hatch is the terminal's; the bus speaks
+          // typed paths (F-51: seedPram's four untyped PRAM pokes were the
+          // last bus-side callers).
+          selector: "CallExpression[callee.name='gsEvalLine']",
+          message:
+            "bus/* must not call gsEvalLine: it is the terminal's shell-line path. Use gsEval with a typed object-model path.",
+        },
       ],
     },
   },

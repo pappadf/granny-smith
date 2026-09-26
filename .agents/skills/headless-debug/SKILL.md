@@ -62,7 +62,12 @@ printf 'debug.step\nmachine.cpu.pc\n' | nc -w 3 localhost 6800
 ```
 
 - Use `nc -w <secs>`; give long runs a long `-w`. **Disconnecting cancels an
-  in-flight run.**
+  in-flight run** (within a second or two); half-closing (`nc -N`, `nc -q`)
+  does not — the daemon keeps running and answering.
+- Each statement runs the moment it is complete (newline, balanced braces),
+  however the input is chunked; pipelined statements wait their turn. The
+  daemon closes 500 ms after the client goes quiet with nothing running. An
+  unclosed block at the end is reported (`incomplete block at end of input`).
 - During `scheduler.run` the daemon prints `# running... N instructions`
   heartbeats; filter with `grep -v '^#'`.
 - While a run is in flight, another connection accepts only `stop`,
@@ -127,8 +132,9 @@ machine.restart                # power-cycle from machine.config, keeps media
 machine.boot model="iicx" rom="tests/data/roms/iix-iicx-se30-97221136.rom" ram=8192
 ```
 
-- `debug.step` services no interrupts (VBL, VIA timers): `Ticks` does not move.
-  Use `scheduler.run N` when interrupt-driven code must progress.
+- `debug.step N` runs through the frame loop exactly as `scheduler.run N`
+  does: VBL and VIA timers keep running and `Ticks` moves, so stepping and
+  running from the same state end in the same place.
 - `scheduler.run N` can retire fewer than N instructions when the guest
   sits in `STOP`; loop on `machine.cpu.instr_count` for an exact count.
 - `machine.boot` is a complete document: `model=` and `rom=` are required,
@@ -204,7 +210,8 @@ find.bytes "4e 75" 0x408980 0x408990   # space-separated 2-digit hex
 ```
 debug.exceptions                       # last 256 exceptions (vector, pc, sr, fault addr)
 debug.exceptions filter=1              # hide routine traps/IRQs
-let f = debug.frame()                  # regs + 32 disasm rows + MMU translation
+let f = debug.frame()                  # regs + 32 disasm rows + MMU translation (= machine.cpu.frame)
+machine.dsp.frame(count=8)             # the same map for the AV DSP3210 (any aux core)
 ($f.regs.pc)
 machine.cpu.mmu                        # tc crp srp tt0 tt1 mmusr enabled (68030)
 machine.irq

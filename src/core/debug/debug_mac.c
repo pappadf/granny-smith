@@ -878,8 +878,9 @@ void debug_mac_mouse_button_mode(bool button_down, char mode) {
         system_mouse_update(button_down, 0, 0);
 }
 
-// Resolves one printable ASCII character to the US-layout ADB virtual keycode
-// that produces it, setting *shift when the character needs the Shift key.
+// Resolves one printable ASCII character to the US-layout ADB raw keycode
+// that produces it (for these keys the same as the virtual code), setting
+// *shift when the character needs the Shift key.
 // Returns -1 for a character the layout cannot type.  Tab and newline resolve
 // to their keys so a typed line can carry its own terminator.
 int debug_mac_resolve_ascii(char c, bool *shift) {
@@ -991,7 +992,7 @@ int debug_mac_resolve_ascii(char c, bool *shift) {
     return -1;
 }
 
-// Resolves a key name to an ADB virtual keycode, or -1 if unknown
+// Resolves a key name to an ADB raw keycode, or -1 if unknown
 int debug_mac_resolve_key_name(const char *name) {
     // Named keys (case-insensitive comparison via manual lowering)
     if (!strcasecmp(name, "return") || !strcasecmp(name, "enter"))
@@ -1004,14 +1005,17 @@ int debug_mac_resolve_key_name(const char *name) {
         return 0x30;
     if (!strcasecmp(name, "delete") || !strcasecmp(name, "backspace"))
         return 0x33;
+    // The arrows' RAW codes, $3B-$3E.  These were the virtual codes $7B-$7E,
+    // which on the ADB wire are the right-hand modifiers: "left" pressed
+    // Right Shift (N-34).
     if (!strcasecmp(name, "up"))
-        return 0x7E;
+        return 0x3E;
     if (!strcasecmp(name, "down"))
-        return 0x7D;
+        return 0x3D;
     if (!strcasecmp(name, "left"))
-        return 0x7B;
+        return 0x3B;
     if (!strcasecmp(name, "right"))
-        return 0x7C;
+        return 0x3C;
     if (!strcasecmp(name, "command") || !strcasecmp(name, "cmd"))
         return 0x37;
     if (!strcasecmp(name, "shift"))

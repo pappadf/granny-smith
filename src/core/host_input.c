@@ -36,7 +36,7 @@ LOG_USE_CATEGORY_NAME("keyboard");
 // so -- the Lisa's COPS FIFO is 32.
 #define KEY_QUEUE_BYTES_DEFAULT 96
 
-// The ADB keycode for Shift (Inside Macintosh, "Virtual Key Codes").
+// The ADB raw keycode for Shift.
 #define KEY_SHIFT 0x38
 
 struct host_input {
@@ -63,9 +63,9 @@ static host_input_t *hi_from(struct object *self) {
 // `keyboard.press(key)` — inject a key-down + key-up via the keyboard
 // subsystem. The arg is either a string name ("return", "space",
 // "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
-// integer ADB virtual keycode (0x00–0x7F).
+// integer ADB raw keycode (0x00–0x7F).
 
-// Shared arg decode for press/down/up: a key NAME or an ADB virtual keycode.
+// Shared arg decode for press/down/up: a key NAME or an ADB raw keycode.
 // Both resolve to an ADB keycode here, once, because that is the model's
 // universal key identity -- see machine_profile.h's input_key.  Substrates
 // never see a name, and an integer means the same key on every machine.

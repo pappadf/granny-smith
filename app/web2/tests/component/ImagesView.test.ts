@@ -1,7 +1,8 @@
 import { render, waitFor, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import ImagesView from '@/components/panel-views/images/ImagesView.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import { images } from '@/state/images.svelte';
 
 beforeEach(() => {
@@ -36,7 +37,7 @@ describe('ImagesView', () => {
     await waitFor(() => {
       expect(container.querySelectorAll('.image-row').length).toBeGreaterThan(0);
     });
-    const romHeader = Array.from(container.querySelectorAll('.header')).find((h) =>
+    const romHeader = Array.from(container.querySelectorAll('.header .toggle')).find((h) =>
       h.textContent?.includes('ROM'),
     ) as HTMLElement;
     await fireEvent.click(romHeader);

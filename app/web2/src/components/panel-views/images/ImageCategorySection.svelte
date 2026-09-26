@@ -6,7 +6,7 @@
   import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
   import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
-  import { gsEval, defaultHdId } from '@/bus/emulator';
+  import { attachHardDisk, attachCdrom, insertFloppy, ejectMedia } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import type { MediaTypeId } from '@/lib/media';
@@ -15,7 +15,6 @@
     setMounted,
     isMounted as isPathMounted,
     mountBadge,
-    detectFdDriveCount,
     bumpImagesRevision,
   } from '@/state/images.svelte';
 
@@ -105,8 +104,7 @@
     if (!ev.dataTransfer?.files?.length) return;
     ev.preventDefault();
     const files = Array.from(ev.dataTransfer.files);
-    const ok = await acceptFilesAsCategory(files, mediaIdFor(cat));
-    if (ok) await refresh();
+    if ((await acceptFilesAsCategory(files, mediaIdFor(cat))) !== null) await refresh();
   }
 
   function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
@@ -127,69 +125,46 @@
     openContextMenu(items, ev.clientX, ev.clientY);
   }
 
+  // Mount / insert and unmount / eject through the one attach helper
+  // (bus/media.ts): a floppy into the first empty drive the machine has, a
+  // hard disk into the model's boot bay on whatever bus it is (this attached
+  // at the default SCSI id on the first bus, ignoring the Lisa's ProFile and
+  // a Network Server's second channel, N-05), a CD into the model's CD bay.
+  // Every result is checked; an unmount ejects from where the mount put it
+  // (it called scsi methods that do not exist and toasted success, N-02).
   async function mount(entry: OpfsEntry) {
-    try {
-      if (cat === 'fd') {
-        // Insert into the first empty drive, like dropping a disk into a Mac.
-        const n = (await detectFdDriveCount()) || 1;
-        let drive = -1;
-        let sawEmptyDrive = false;
-        for (let i = 0; i < n; i++) {
-          if ((await gsEval(`machine.floppy.drive[${i}].present`)) === true) continue;
-          // Empty slot found. A failed insert here is a real error (the image
-          // couldn't be opened), not "drives full" — track that so the two
-          // cases don't collapse into one misleading message.
-          sawEmptyDrive = true;
-          if ((await gsEval(`machine.floppy.drive[${i}].insert`, [entry.path, false])) === true) {
-            drive = i;
-            break;
-          }
-        }
-        if (drive < 0) {
-          if (sawEmptyDrive) {
-            showNotification(
-              `Couldn't insert '${entry.name}' — the image could not be opened`,
-              'error',
-            );
-          } else {
-            showNotification('All floppy drives are full', 'warning');
-          }
-          return;
-        }
-        setMounted(entry.path, { kind: 'fd', drive });
-        showNotification(`Inserted '${entry.name}'`, 'info');
-      } else if (cat === 'hd') {
-        const id = await defaultHdId();
-        await gsEval('machine.scsi.attach_hd', [entry.path, id]);
-        setMounted(entry.path, { kind: 'hd', drive: id });
-        showNotification(`Mounted '${entry.name}'`, 'info');
-      } else if (cat === 'cd') {
-        await gsEval('machine.scsi.attach_cdrom', [entry.path, 3]);
-        setMounted(entry.path, { kind: 'cd', drive: 3 });
-        showNotification(`Inserted '${entry.name}'`, 'info');
-      }
-      onMountedChange?.();
-    } catch {
-      showNotification(isRemovable ? 'Insert failed' : 'Mount failed', 'error');
+    const r =
+      cat === 'fd'
+        ? await insertFloppy(entry.path, false)
+        : cat === 'hd'
+          ? await attachHardDisk(entry.path)
+          : await attachCdrom(entry.path);
+    if (!r.ok) {
+      showNotification(
+        `Couldn't ${isRemovable ? 'insert' : 'mount'} '${entry.name}': ${r.reason}`,
+        r.full ? 'warning' : 'error',
+      );
+      return;
     }
+    setMounted(entry.path, r.mount);
+    showNotification(`${isRemovable ? 'Inserted' : 'Mounted'} '${entry.name}'`, 'info');
+    onMountedChange?.();
   }
 
   async function unmount(entry: OpfsEntry) {
-    const drive = images.mounted[entry.path]?.drive ?? 0;
-    try {
-      if (cat === 'fd') {
-        await gsEval(`machine.floppy.drive[${drive}].eject`);
-      } else if (cat === 'hd') {
-        await gsEval('machine.scsi.detach_hd', [0]);
-      } else if (cat === 'cd') {
-        await gsEval('machine.scsi.detach_cdrom', [3]);
-      }
-      setMounted(entry.path, null);
-      showNotification(`${isRemovable ? 'Ejected' : 'Unmounted'} '${entry.name}'`, 'info');
-      onMountedChange?.();
-    } catch {
-      showNotification(isRemovable ? 'Eject failed' : 'Unmount failed', 'error');
+    const where = images.mounted[entry.path];
+    if (!where) return;
+    const r = await ejectMedia(where);
+    if (!r.ok) {
+      showNotification(
+        `Couldn't ${isRemovable ? 'eject' : 'unmount'} '${entry.name}': ${r.reason}`,
+        'error',
+      );
+      return;
     }
+    setMounted(entry.path, null);
+    showNotification(`${isRemovable ? 'Ejected' : 'Unmounted'} '${entry.name}'`, 'info');
+    onMountedChange?.();
   }
 
   function showDownloadToast(entry: OpfsEntry) {
@@ -236,16 +211,15 @@
 >
   <CollapsibleSection title={CATEGORY_LABELS[cat]} {open} {onToggle} count={entries.length}>
     {#snippet actions()}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <span
+      <button
+        type="button"
         class="upload-btn"
-        role="button"
-        tabindex="-1"
         title="Upload {CATEGORY_LABELS[cat]} image"
+        aria-label="Upload {CATEGORY_LABELS[cat]} image"
         onclick={onUploadClick}
       >
         <Icon name="upload" size={14} />
-      </span>
+      </button>
     {/snippet}
     {#if loading && entries.length === 0}
       <p class="empty">Loading…</p>
@@ -277,6 +251,9 @@
     justify-content: center;
     width: 22px;
     height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
     color: var(--gs-fg-muted);
     opacity: 0.6;
     transition:

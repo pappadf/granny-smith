@@ -15,9 +15,6 @@ export const HD_DIR = '/opfs/images/hd';
 export const CD_DIR = '/opfs/images/cd';
 export const CHECKPOINT_DIR = '/opfs/checkpoints';
 export const UPLOAD_DIR = '/opfs/upload';
-export const CONFIG_DIR = '/opfs/config';
-
-export const RECENTS_PATH = '/opfs/config/recent.json';
 
 // Checkpoint file signatures (v2 = per-block RLE, v3 = whole-file RLE).
 // First 7 bytes are shared; byte 7 is the version digit.

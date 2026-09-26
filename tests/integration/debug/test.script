@@ -79,6 +79,42 @@ debug.breakpoints.clear
 assert try(debug.breakpoints[42], none) == none "empty slot read must error"
 assert len(debug.breakpoints.entries) == 0 "cleared collection reads as empty list"
 
+# === breakpoint entries: dedupe, enumerate, enable, remove ==============
+#
+# What web2's Breakpoints panel relies on (D1).  Ids are
+# stable and never reused, so a list is walked with meta.indices, never
+# with count; a second add at one address returns the existing entry; a
+# disabled entry stays listed but does not fire.
+
+debug.breakpoints.clear
+debug.breakpoints.add 0x400100
+debug.breakpoints.add 0x400100
+assert debug.breakpoints.count == 1 "a duplicate add must not stack"
+debug.breakpoints.add 0x400200
+assert debug.breakpoints.count == 2 "two addresses, two entries"
+let first = debug.breakpoints.meta.indices("entries")[0]
+assert debug.breakpoints.entries[$first].enabled == true "enabled by default"
+debug.breakpoints.entries[$first].remove
+assert debug.breakpoints.count == 1 "remove by id"
+assert len(debug.breakpoints.meta.indices("entries")) == 1 "indices follow the removal"
+
+# A disabled breakpoint on a PC the ROM keeps passing does not fire;
+# re-enabled, it stops the machine there.
+debug.breakpoints.clear
+scheduler.run 200000
+let loop_pc = machine.cpu.pc
+debug.breakpoints.add $loop_pc
+let bp = debug.breakpoints.meta.indices("entries")[0]
+debug.breakpoints.entries[$bp].enabled = false
+scheduler.run 200000
+assert debug.breakpoints.entries[$bp].hit_count == 0 "a disabled breakpoint must not fire"
+debug.breakpoints.entries[$bp].enabled = true
+scheduler.run 200000
+assert debug.breakpoints.entries[$bp].hit_count == 1 "re-enabled, it fires"
+assert machine.cpu.pc == $loop_pc "and stops the machine at its address"
+debug.breakpoints.clear
+echo "bp-contract-ok"
+
 # === debug.disasm with explicit address =================================
 #
 # `debug.disasm` accepts an optional starting address. The two-arg form
@@ -87,5 +123,27 @@ assert len(debug.breakpoints.entries) == 0 "cleared collection reads as empty li
 # this test boots against.
 
 debug.disasm 0x400090 3
+
+# === debug.step runs through the frame loop =============================
+#
+# N stepped instructions must be N run ones: debug.step arms the same budget
+# scheduler.run does, so VBL pulses while stepping.  Before, stepping ran the
+# guest with the VBL line dead and the two diverged within a few frames.
+# 600000 Plus instructions span several
+# VBLs.  (Last in the script: it restarts the machine.)
+
+machine.restart
+machine.rtc.time = 3000000000
+scheduler.run 400000
+debug.step 600000
+let step_pc = machine.cpu.pc
+let step_n = machine.cpu.instr_count
+machine.restart
+machine.rtc.time = 3000000000
+scheduler.run 400000
+scheduler.run 600000
+assert machine.cpu.instr_count == $step_n "same instruction count"
+assert machine.cpu.pc == $step_pc "debug.step N must end where scheduler.run N does"
+echo "step-matches-run-ok"
 
 quit

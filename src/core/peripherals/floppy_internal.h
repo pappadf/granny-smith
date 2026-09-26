@@ -303,6 +303,12 @@ struct floppy {
     struct object *disk_objects[NUM_DRIVES]; // per-drive medium (disk) nodes — drive[N].disk
     // Per-drive back-link used as instance_data for each drive entry.
     floppy_drive_link_t drive_links[NUM_DRIVES];
+    // How many of the controller's NUM_DRIVES the machine has cabled
+    // (its profile's floppy_slots).  The chip always has two drive selects;
+    // a one-drive Mac simply has nothing on the second, and neither the host
+    // nor the object model may put a disk there (N-06).  Set from the
+    // profile at every build, so not checkpointed.
+    int n_drives;
 };
 
 // Size of plain-data portion for checkpointing (excludes pointers at end)

@@ -7,16 +7,19 @@
 // conditioning that makes an arbitrary browser microphone behave like the
 // Apple PlainTalk microphone the guest software was written for.
 //
-// Transport — a lock-free SPSC ring in the shared wasm heap, the audio
-// analogue of em_camera.c's double-buffered frame slots.  Audio cannot use
-// a slot flip: the guest pulls whole half-buffers (240 frames = 10 ms) on
-// the Singer's frame cadence while the browser produces on its own, so the
-// two rates must be decoupled by a queue rather than a latest-wins slot.
-// The MAIN THREAD (an AudioWorklet callback) writes mono int16 and bumps
-// `wr`; the WORKER-side gs_audio_in_frames reads and bumps `rd`.  Single
-// producer, single consumer, no locks: each index is written by exactly one
-// side and read by the other.  Static storage keeps the address stable
-// under ALLOW_MEMORY_GROWTH.
+// Transport — a lock-free SPSC ring behind a control block
+// (em_shm_layout.h) in the shared wasm heap, the audio analogue of
+// em_camera.c's double-buffered frame slots.  Audio cannot use a slot flip:
+// the guest pulls whole half-buffers (240 frames = 10 ms) on the Singer's
+// frame cadence while the browser produces on its own, so the two rates must
+// be decoupled by a queue rather than a latest-wins slot.  The MAIN THREAD
+// (an AudioWorklet callback) writes mono int16 and bumps `wr`; the
+// WORKER-side gs_audio_in_frames reads and bumps `rd`.  Single producer,
+// single consumer, no locks: each index is written by exactly one side and
+// read by the other -- including a reset, which the producer only REQUESTS
+// (reset_req) and the consumer carries out (rd = wr).  The index arithmetic
+// is em_mic_ring.c.  Static storage keeps the address stable under
+// ALLOW_MEMORY_GROWTH.
 //
 // Why the conditioning lives here and not in JS: it is the same chain the
 // offline asset generator applies (debug-plaintalk/scripts/gen-sr-asset.py),
@@ -25,6 +28,8 @@
 // JS is left with capture and rate conversion only.
 
 #include "em.h"
+#include "em_mic_ring.h"
+#include "em_shm_layout.h"
 
 #include "system.h"
 
@@ -32,17 +37,26 @@
 #include <emscripten/threading.h>
 #include <math.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-// One second at the codec's default rate: far more than the ~10 ms the
-// guest consumes per frame, so a scheduling hiccup on either side costs
-// latency rather than a dropout.
-#define GS_MIC_RING 24576u
-#define GS_MIC_RATE 24000u // the rate JS is asked to deliver (Singer default)
+// A power of two (the index is masked on both sides, em_mic_ring.h), twice
+// the largest half-buffer a guest can program (the Singer's
+// SINGER_MAX_FRAMES, 16384), so one request is at most half the ring; 1.36 s
+// at the codec's default rate -- far more than the ~10 ms the guest consumes
+// per frame, so a scheduling hiccup on either side costs latency rather than
+// a dropout.  (It was 24576, less than two maximal half-buffers, which made
+// the backlog-drop arithmetic incoherent for large ones.)
+#define GS_MIC_RING      32768u
+#define GS_MIC_RATE      24000u // the rate JS is asked to deliver (Singer default)
+#define GS_MIC_LABEL_LEN 64
 
 typedef struct gs_mic_shm {
+    uint32_t magic, version;
+    uint32_t ring_off, ring_len;
+    uint32_t label_off, label_len;
     _Atomic int32_t connected; // main thread: a track is attached and live
     _Atomic uint32_t wr; // producer index (main thread), free-running
     _Atomic uint32_t rd; // consumer index (worker), free-running
@@ -61,25 +75,47 @@ typedef struct gs_mic_shm {
     // in this header is downstream of the write.
     _Atomic int32_t js_rms;
     _Atomic int32_t js_peak;
+    _Atomic uint32_t reset_req; // producer: bump to ask for the backlog to go
+    _Atomic uint32_t reset_ack; // consumer: the last request carried out
     // The capture device the browser actually chose, NUL-terminated ASCII,
     // written once by JS at attach.  getUserMedia picks the system default,
     // and a default that is not the user's microphone (a monitor source, an
     // HDMI input, a muted device) yields a perfectly healthy stream of
     // near-silence — indistinguishable, from inside the ring, from a bug in
     // this file.  Naming the device is what tells those apart.
-    char label[64];
+    char label[GS_MIC_LABEL_LEN];
     int16_t ring[GS_MIC_RING]; // mono samples; stereo is made at the seam
 } gs_mic_shm_t;
 
-static gs_mic_shm_t g_mic = {.rate = GS_MIC_RATE};
+_Static_assert((GS_MIC_RING & (GS_MIC_RING - 1)) == 0, "the mic ring is a power of two");
+_Static_assert(offsetof(gs_mic_shm_t, ring_off) == GS_MIC_W_RING_OFF * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, label_off) == GS_MIC_W_LABEL_OFF * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, connected) == GS_MIC_W_CONNECTED * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, wr) == GS_MIC_W_WR * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, rd) == GS_MIC_W_RD * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, rate) == GS_MIC_W_RATE * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, underruns) == GS_MIC_W_UNDERRUNS * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, js_peak) == GS_MIC_W_JS_PEAK * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, reset_req) == GS_MIC_W_RESET_REQ * 4, "mic layout");
+_Static_assert(offsetof(gs_mic_shm_t, reset_ack) == GS_MIC_W_RESET_ACK * 4, "mic layout");
 
-// Announce the transport to the main thread once at startup; JS keeps the
-// address and writes samples directly through Module.HEAP16.
+static gs_mic_shm_t g_mic = {
+    .magic = GS_MIC_MAGIC,
+    .version = GS_MIC_VERSION,
+    .ring_off = offsetof(gs_mic_shm_t, ring),
+    .ring_len = GS_MIC_RING,
+    .label_off = offsetof(gs_mic_shm_t, label),
+    .label_len = GS_MIC_LABEL_LEN,
+    .rate = GS_MIC_RATE,
+};
+
+// Announce the transport to the main thread once at startup; JS reads the
+// layout from the control block and writes samples through Module.HEAP16.
 void em_audio_in_init(void) {
     // clang-format off
     MAIN_THREAD_ASYNC_EM_ASM(
-        { if (typeof Module.onAudioInReady === 'function') Module.onAudioInReady($0, $1, $2); },
-        (uint32_t)(uintptr_t)&g_mic, GS_MIC_RING, GS_MIC_RATE);
+        { if (typeof Module.onAudioInReady === 'function') Module.onAudioInReady($0); },
+        (uint32_t)(uintptr_t)&g_mic);
     // clang-format on
 }
 
@@ -550,34 +586,41 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
 
     uint32_t rd = atomic_load_explicit(&g_mic.rd, memory_order_relaxed);
     uint32_t wr = atomic_load_explicit(&g_mic.wr, memory_order_acquire);
-    uint32_t avail = wr - rd;
+
+    // The producer asked for the backlog to go (its capture graph was
+    // rebuilt): carry that out here, where `rd` has its one writer.  The
+    // producer used to zero both indices itself, racing this function.
+    uint32_t req = atomic_load_explicit(&g_mic.reset_req, memory_order_acquire);
+    if (req != atomic_load_explicit(&g_mic.reset_ack, memory_order_relaxed)) {
+        rd = wr;
+        atomic_store_explicit(&g_mic.rd, rd, memory_order_release);
+        atomic_store_explicit(&g_mic.reset_ack, req, memory_order_release);
+    }
 
     // How many producer samples this request consumes.  The browser is
     // asked for the codec rate, so this is normally 1:1; the ratio covers a
     // guest that reprograms pSndRate (32/48 kHz) without renegotiating the
     // capture graph.
     uint64_t need64 = ((uint64_t)frames * producer_rate + rate / 2) / rate;
-    uint32_t need = (uint32_t)(need64 ? need64 : 1);
-    if (need > GS_MIC_RING)
-        need = GS_MIC_RING;
+    uint32_t need = (uint32_t)(need64 > UINT32_MAX ? UINT32_MAX : need64);
 
     // The browser captures on WALL time and the guest consumes on EMULATED
     // time, so the two clocks drift by definition.  When the producer gets
     // ahead, drop the backlog and take the freshest samples: the alternative
     // is unbounded latency between speaking and the guest hearing it.  The
     // CONSUMER does this, never the producer — `rd` has exactly one writer,
-    // which is what makes the lock-free claim true.
-    if (avail > GS_MIC_RING / 2) {
-        rd = wr - need;
-        avail = need;
+    // which is what makes the lock-free claim true.  (em_mic_ring.c.)
+    mic_take_t take = mic_ring_take(wr, rd, GS_MIC_RING, need);
+    if (take.overrun)
         atomic_fetch_add_explicit(&g_mic.overruns, 1, memory_order_relaxed);
-    }
+    need = take.need;
+    rd = take.start;
 
     // Underrun: the producer has not caught up (a tab throttled in the
     // background, or the very first frames after attach).  Report "no
     // source" rather than emitting a partial buffer of garbage — the caller
     // then presents silence for this frame and tries again on the next.
-    if (avail < need) {
+    if (!take.ok) {
         atomic_fetch_add_explicit(&g_mic.underruns, 1, memory_order_relaxed);
         return false;
     }
@@ -586,9 +629,9 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
     // channels.  The PlainTalk plug's middle contact drives the left AND
     // right inputs with the same blended signal, so identical channels is
     // what the hardware actually presents — not a simplification.
-    static int16_t block[GS_MIC_RING];
+    static int16_t block[GS_MIC_RING / 2];
     for (uint32_t i = 0; i < need; i++)
-        block[i] = g_mic.ring[(rd + i) % GS_MIC_RING];
+        block[i] = g_mic.ring[mic_ring_slot(rd + i, GS_MIC_RING)];
     atomic_store_explicit(&g_mic.rd, rd + need, memory_order_release);
 
     mic_condition(block, need, producer_rate);

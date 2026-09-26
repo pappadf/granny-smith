@@ -130,7 +130,6 @@ def phase1_hand_off() {
     machine.scsi.attach_hd "${$drive}" 0
     machine.scsi.attach_cdrom "${$dr3_iso}" 3
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
 
     # CLICK UNTIL IT TAKES.  The splash is only up for its ten-second
     # countdown, and when it appears depends on how long the extensions parade
@@ -323,7 +322,6 @@ def phase3_lilo() {
     # survives it by construction.
     machine.restart
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
     scheduler.run 900000000
     click(503, 177) # Boot MacOS
     scheduler.run 1500000000

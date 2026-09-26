@@ -33,6 +33,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import * as path from "node:path";
 import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
+import { terminalRun as typeLine } from "../helpers/terminal";
+
+// A per-key delay: this machine keeps the main thread busy (a live
+// AudioWorklet), and a burst typed into it can lose characters.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { delay: 10 });
 
 const DATA = path.resolve(__dirname, "../../data");
 const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
@@ -53,36 +59,6 @@ test.use({
     ],
   },
 });
-
-// Focus xterm's own hidden input and WAIT until it really is the active
-// element.  `.xterm` click() resolves when the click is DISPATCHED, not when
-// xterm has taken focus, and with an AV machine plus a live AudioWorklet on
-// the main thread that gap is wide: CI #636 lost the first 17 characters of
-// a line, so `machine.memory.poke.w 0x50F31218 240` reached the shell as
-// `ke.w 0x50F31218 240` and the register was never written.
-async function focusTerminal(page: Page): Promise<void> {
-  const ta = page.locator(".xterm textarea.xterm-helper-textarea");
-  if ((await ta.count()) > 0) {
-    await ta.focus();
-    await page.waitForFunction(
-      () =>
-        document.activeElement instanceof HTMLTextAreaElement &&
-        document.activeElement.classList.contains("xterm-helper-textarea"),
-      undefined,
-      { timeout: 15_000 },
-    );
-    return;
-  }
-  await page.locator(".xterm").click();
-}
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  await focusTerminal(page);
-  // A per-key delay as well: a burst typed while the terminal is re-rendering
-  // the previous command's output can lose characters mid-line too.
-  await page.keyboard.type(line, { delay: 10 });
-  await page.keyboard.press("Enter");
-}
 
 // See av-camera.spec.ts for why the answer is bracketed on both sides.
 async function readKey(page: Page, key: string): Promise<string | null> {

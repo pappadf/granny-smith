@@ -29,7 +29,7 @@ const unsigned char lisa_rom_ascii_table[96] = {
 
 // === ADB keycode -> Lisa COPS keycode =======================================
 //
-// The model's universal key identity is the ADB virtual keycode
+// The model's universal key identity is the ADB raw keycode
 // (machine_profile.h).  The Lisa's own keycodes are unrelated, so this is the
 // translation, and it is DERIVED FROM A PRIMARY SOURCE rather than guessed:
 // the boot ROM's AsciiTable carries a per-row comment naming the physical key
@@ -116,10 +116,10 @@ uint8_t lisa_keycode_for_adb(int adb) {
         [0x24] = 0x48,
         [0x30] = 0x78,
         [0x33] = 0x45, // return tab backspace
-        [0x7E] = 0x27,
-        [0x7D] = 0x2B,
-        [0x7B] = 0x22,
-        [0x7C] = 0x23, // arrows
+        [0x3E] = 0x27,
+        [0x3D] = 0x2B,
+        [0x3B] = 0x22,
+        [0x3C] = 0x23, // arrows, by their ADB raw codes (not virtual $7B-$7E)
 
         // Modifiers.  No Control on a Lisa keyboard.
         [0x38] = 0x7E,

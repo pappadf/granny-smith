@@ -47,4 +47,10 @@ assert machine.sound.enabled == true
 machine.id
 machine.cpu.pc
 
+# meta.members describes every member in one call: the attributes, the
+# methods and the children (class and attached) -- nothing more, nothing less.
+assert len(machine.cpu.meta.members()) == len(machine.cpu.meta.attributes) + len(machine.cpu.meta.methods) + len(machine.cpu.meta.children) "cpu: members is attributes + methods + children"
+assert len(machine.meta.members()) == len(machine.meta.attributes) + len(machine.meta.methods) + len(machine.meta.children) "machine: members is attributes + methods + children"
+assert len(meta.members()) == len(meta.attributes) + len(meta.methods) + len(meta.children) "root: members is attributes + methods + children"
+
 quit

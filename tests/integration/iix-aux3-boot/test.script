@@ -11,13 +11,9 @@ include "../lib/mac.script"
 
 machine.rtc.time = "2026-04-26T21:30:36"
 
-# Skip the Universal ROM's boot-drive-discovery key-scan at $40801610 (poke
-# $8805 into $017A, clear it after one inner-poll cycle).  See
-# tests/integration/iicx-video-modes/test.script for the mechanics.
-scheduler.run 40000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 2000000
-machine.memory.poke.w 0x017A 0
+# The Universal ROM's boot-drive-discovery wait needs no bypass: the
+# machine's PRAM already disables it (it used to take a KeyMap poke here).
+scheduler.run 42000000
 
 # Boot to the A/UX login window (~692M instructions).  A/UX is interrupt-
 # driven: the kernel sleeps for each disk read and is woken by the SCSI DRQ

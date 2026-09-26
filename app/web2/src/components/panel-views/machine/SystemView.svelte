@@ -7,7 +7,7 @@
     loadNodeMethods,
     type SystemTreeNode,
   } from '@/bus/systemTree';
-  import { gsEval } from '@/bus/emulator';
+  import { gsEval, gsErrorText } from '@/bus/emulator';
   import { machine } from '@/state/machine.svelte';
   import { pathKey } from '@/lib/treePath';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
@@ -78,11 +78,17 @@
       showNotification('export failed (file may already exist)', 'error');
       return;
     }
-    await gsEval('download', [tmp]);
+    const downloaded = await gsEval('download', [tmp]);
+    // The download copied the file out; /tmp is heap-backed, so drop it.
+    await gsEval('storage.rm', [tmp]);
+    if (downloaded !== true) {
+      showNotification(`Export failed: ${gsErrorText(downloaded)}`, 'error');
+      return;
+    }
     showNotification(`Exported ${name}`, 'info');
   }
 
-  // Build the right-click menu for a node from meta.methods (§8.3): one item
+  // Build the right-click menu for a node from its methods (§8.3): one item
   // per UI-surfaced method, destructive ones flagged, args prompted.
   async function onContextMenu(path: string[], ev: MouseEvent) {
     ev.preventDefault();

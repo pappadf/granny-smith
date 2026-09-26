@@ -12,7 +12,8 @@ vi.mock('@/bus/emulator', () => ({
 }));
 
 import { adSidecarPath, copyOutOfImage, deleteItems, moveItems, opfsSafeName } from '@/bus/fsOps';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import type { OpfsEntry } from '@/bus/types';
 
 // Backend whose list() returns a configurable set of existing names.

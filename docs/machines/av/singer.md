@@ -93,10 +93,13 @@ microphone with `machine.audioin.source = "host"`.
 
 `src/platform/wasm/em_audio_in.c` overrides the seam for the WASM build and
 `app/web2/src/state/microphone.svelte.ts` drives it, mirroring the camera
-path exactly: a toolbar toggle gated on the `audio_in` capability, and a
-`MediaStreamTrack` attached only while the user's toggle AND the guest's
-`pSndInEn` both hold, so the browser's recording indicator is lit only while
-the guest is genuinely listening.
+path: a toolbar toggle gated on the `audio_in` capability, and a
+`MediaStreamTrack` that attaches the first time the guest's `pSndInEn` goes
+on with the toggle on — so the browser's recording indicator does not light
+on the toggle alone — and then stays until the toggle goes off.  Unlike the
+camera it does not detach when the guest stops listening: a recognizer's
+endpointer stops and restarts input continuously, and rebuilding the capture
+graph each time shredded the utterance.
 
 Samples cross on a lock-free SPSC ring in the shared wasm heap rather than
 the camera's latest-wins slot pair: the guest pulls whole 10 ms half-buffers
@@ -106,7 +109,12 @@ consumes on **emulated** time, so the two clocks drift by definition — the
 consumer drops its own backlog when it falls behind, bounding latency, and
 reports "no source" on an underrun so the engine presents its noise floor
 rather than a torn buffer.  `rd` has exactly one writer and `wr` has exactly
-one writer; that, and nothing else, is what makes the ring lock-free.
+one writer; that, and nothing else, is what makes the ring lock-free.  So a
+reset (a new capture rate) is not the page zeroing both indices: it bumps a
+request word, and the consumer moves `rd` up to `wr` itself.  The ring is a
+power of two, twice `SINGER_MAX_FRAMES`, and both indices run free — the
+slot is the index masked, on both sides.  The index arithmetic is two small
+pure files (`em_mic_ring.c`, `state/micRing.ts`), each tested at the wrap.
 
 > **The lifecycle notification fires on the GUEST's gate.**  `pSndInEn`
 > changing drives `gs_audio_in_state`, exactly as the VDC clock drives

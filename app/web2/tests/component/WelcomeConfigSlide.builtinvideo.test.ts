@@ -13,20 +13,23 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
-import { initEmulator } from '@/bus/emulator';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
+import { initEmulator } from '@/bus/boot';
 
 const PDM_ROM = '/opfs/images/rom/pm6100-pm7100-pm8100-9feb69b3.rom';
+
+// The boot itself is not under test: record the config it was handed.
+vi.mock('@/bus/boot', () => ({ initEmulator: vi.fn(async () => {}) }));
 
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
   return {
     ...actual,
     whenModuleReady: () => Promise.resolve(),
-    initEmulator: vi.fn(async () => {}),
     gsEval: async (path: string, args?: unknown[]) => {
       if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
@@ -95,7 +98,6 @@ beforeEach(async () => {
   machine.model = null;
   machine.ram = null;
   setWelcomeSlide('configuration');
-  stopDriveActivityMock();
   vi.mocked(initEmulator).mockClear();
 });
 

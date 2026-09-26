@@ -15,22 +15,16 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
-
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
 
 // Echo an expression through the terminal under a unique key and return the
 // printed value (fresh key per probe so stale echoes can't satisfy the
 // match); values still starting with `$` are the input echo, not the result.
-// Keystrokes can race a busy xterm render (a probe typed right after heavy
-// output sometimes never lands), so each probe retries with a fresh key.
+// A probe that never lands is retried with a fresh key.  (The misses this
+// was written for were not rendering: the terminal dropped whatever was
+// typed while the previous command still ran.  It queues it now.)
 let probeSeq = 0;
 async function terminalEval(page: Page, expr: string): Promise<string | null> {
   for (let attempt = 0; attempt < 3; attempt++) {

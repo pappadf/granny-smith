@@ -37,8 +37,24 @@ describe('CollapsibleSection', () => {
       onToggle,
       children: rawSnippet('<span/>'),
     });
-    await fireEvent.click(container.querySelector('.header') as HTMLElement);
+    await fireEvent.click(container.querySelector('.header .toggle') as HTMLElement);
     expect(onToggle).toHaveBeenCalled();
+  });
+
+  // The header used to be role="button" with tabindex -1: no keyboard could
+  // reach it, and the actions (a "+") were nested inside it (F-55).
+  it('toggles through a real, focusable button that reports its state', () => {
+    const { container } = render(CollapsibleSection, {
+      title: 'ROM',
+      open: true,
+      onToggle: () => undefined,
+      children: rawSnippet('<span/>'),
+    });
+    const toggle = container.querySelector('.header button.toggle') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.tabIndex).toBe(0);
+    expect(container.querySelector('[role="button"]')).toBeNull();
   });
 
   it('shows the count when provided', () => {

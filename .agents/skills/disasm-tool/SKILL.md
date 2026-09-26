@@ -52,7 +52,6 @@ tools/disasm/disasm          # the built executable
 tools/disasm/disasm.c        # main source (CLI, annotation logic)
 tools/disasm/trap_lookup.c   # A-trap name resolver
 tools/disasm/stubs.c         # linker stubs (gs_assert_fail)
-tools/disasm/platform.h      # minimal platform override (force-included)
 tools/disasm/trap_lookup.h   # header for trap_lookup.c
 tools/disasm/Makefile         # build rules
 ```

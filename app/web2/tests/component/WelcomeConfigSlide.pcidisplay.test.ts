@@ -12,11 +12,12 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
-import { initEmulator } from '@/bus/emulator';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
+import { initEmulator } from '@/bus/boot';
 
 const TNT_ROM = '/opfs/images/rom/pm7500-pm8500-pm9500-96cd923d.rom';
 const MACH64_PROM = '/opfs/images/prom/437584e0';
@@ -31,12 +32,14 @@ let promPresent = true;
 // still-valid card, so a pick made on the previous model would mask it.
 let romModels = ['pm9500', 'pm7500'];
 
+// The boot itself is not under test: record the config it was handed.
+vi.mock('@/bus/boot', () => ({ initEmulator: vi.fn(async () => {}) }));
+
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
   return {
     ...actual,
     whenModuleReady: () => Promise.resolve(),
-    initEmulator: vi.fn(async () => {}),
     gsEval: async (path: string, args?: unknown[]) => {
       if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
@@ -218,7 +221,6 @@ beforeEach(async () => {
   machine.model = null;
   machine.ram = null;
   setWelcomeSlide('configuration');
-  stopDriveActivityMock();
   vi.mocked(initEmulator).mockClear();
 });
 

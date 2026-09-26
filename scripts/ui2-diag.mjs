@@ -145,12 +145,16 @@ async function main() {
 
   // 4. Wait for the bridge to come up. main.ts sets window.__gsReady = true
   //    after `whenModuleReady()` resolves — no settle guesswork.
+  //    A boot that cannot start sets window.__gsBootError instead, so a
+  //    failure is reported with its reason at once, not as a timeout.
   try {
     await page.waitForFunction(
-      () => window.__gsReady === true,
+      () => window.__gsReady === true || typeof window.__gsBootError === 'string',
       null,
       { timeout: TIMEOUT_MS },
     );
+    const bootError = await page.evaluate(() => window.__gsBootError);
+    if (bootError) throw new Error(`emulator did not start: ${bootError}`);
   } catch (err) {
     // The most likely failure mode in real-browser-GPU testing: WASM
     // module loaded but the worker died before resolving ready (e.g.

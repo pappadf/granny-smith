@@ -80,17 +80,20 @@ bool system_checkpoint_probe(void) {
 const char *find_valid_checkpoint_path(void) {
     return NULL;
 }
-bool gs_background_checkpoint(const char *label) {
+int gs_background_checkpoint(const char *label) {
     (void)label;
-    return false;
+    return -1;
 }
 bool gs_checkpoint_auto_get(void) {
     return false;
 }
-void gs_checkpoint_auto_set(bool on) {
+int gs_checkpoint_auto_set(bool on) {
     (void)on;
+    return -2;
 }
-void gs_checkpoint_clear(void) {}
+int gs_checkpoint_clear(void) {
+    return 0;
+}
 
 // === File helpers ===========================================================
 

@@ -9,51 +9,127 @@
       "tolerance": 0.2
     },
     "iicx-gsvrom/gsvrom-24ac": {
-      "instr": 67583321,
+      "instr": 55334452,
       "tolerance": 0.2
     },
     "iicx-gsvrom/gsvrom-824gc": {
-      "instr": 188473905,
+      "instr": 184615229,
       "tolerance": 0.2
     },
     "iicx-gsvrom/gsvrom-custom-mode": {
-      "instr": 152096626,
+      "instr": 125890995,
       "tolerance": 0.2
     },
     "iicx-gsvrom/gsvrom-sweep": {
-      "instr": 106090886,
+      "instr": 48024070,
+      "tolerance": 0.2
+    },
+    "mklinux-boot/pm7100": {
+      "instr": 4959983600,
+      "tolerance": 0.2
+    },
+    "mklinux-boot/pm7500": {
+      "instr": 4750000000,
       "tolerance": 0.2
     },
     "quadra-dual-card/dual": {
       "instr": 772706113,
       "tolerance": 0.2
     },
+    "suite-av/av-audio-in-device": {
+      "instr": 6454290,
+      "tolerance": 0.2
+    },
+    "suite-av/av-beep": {
+      "instr": 995135272,
+      "tolerance": 0.2
+    },
+    "suite-av/av-checkpoint": {
+      "instr": 764969224,
+      "tolerance": 0.2
+    },
+    "suite-av/av-chime": {
+      "instr": 21413629,
+      "tolerance": 0.2
+    },
+    "suite-av/av-dsp-boot": {
+      "instr": 89591366,
+      "tolerance": 0.2
+    },
+    "suite-av/av-dsp-determinism": {
+      "instr": 89591408,
+      "tolerance": 0.2
+    },
+    "suite-av/av-identity": {
+      "instr": 24479901,
+      "tolerance": 0.2
+    },
+    "suite-av/av-ram-sizing": {
+      "instr": 393735977,
+      "tolerance": 0.2
+    },
+    "suite-av/av-sound-in": {
+      "instr": 1234069917,
+      "tolerance": 0.2
+    },
+    "suite-av/av-sr-command": {
+      "instr": 1497555487,
+      "tolerance": 0.2
+    },
+    "suite-av/av-sr-macro": {
+      "instr": 1657021067,
+      "tolerance": 0.2
+    },
+    "suite-av/av-tts": {
+      "instr": 1223044352,
+      "tolerance": 0.2
+    },
+    "suite-av/av-video": {
+      "instr": 390245139,
+      "tolerance": 0.2
+    },
+    "suite-av/q660av-71-hd-desktop": {
+      "instr": 703785573,
+      "tolerance": 0.2
+    },
+    "suite-av/q660av-71-video-in": {
+      "instr": 743114505,
+      "tolerance": 0.2
+    },
+    "suite-av/q840av-71-hd-desktop": {
+      "instr": 716367877,
+      "tolerance": 0.2
+    },
+    "suite-av/q840av-71-video-in": {
+      "instr": 780064645,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-24ac-dual": {
-      "instr": 971560464,
+      "instr": 971583885,
       "tolerance": 0.2
     },
     "suite-iici/iici-701-depths": {
-      "instr": 362350516,
+      "instr": 371730291,
       "tolerance": 0.2
     },
     "suite-iici/iici-701-fd": {
-      "instr": 392597910,
+      "instr": 402038751,
       "tolerance": 0.2
     },
     "suite-iici/iici-71-hd": {
-      "instr": 373215426,
+      "instr": 371787679,
       "tolerance": 0.2
     },
     "suite-iici/iici-75-hd": {
-      "instr": 372143809,
+      "instr": 370715952,
       "tolerance": 0.2
     },
     "suite-iici/iici-76-hd": {
-      "instr": 466670553,
+      "instr": 524375358,
       "tolerance": 0.2
     },
     "suite-iici/iici-checkpoint": {
-      "instr": 454642827,
+      "instr": 454643167,
       "tolerance": 0.2
     },
     "suite-iici/iici-chime": {
@@ -61,63 +137,67 @@
       "tolerance": 0.2
     },
     "suite-iici/iici-lowram": {
-      "instr": 109269466,
+      "instr": 100029394,
       "tolerance": 0.2
     },
     "suite-iici/iici-mactest-diag": {
-      "instr": 678930958,
+      "instr": 592935004,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac": {
-      "instr": 411558835,
+      "instr": 410390745,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac-restart": {
-      "instr": 455862809,
+      "instr": 454694156,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-chime": {
-      "instr": 11718825,
+      "instr": 11833418,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-gc-accel8": {
-      "instr": 317849318,
+      "instr": 316678113,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-gc-beep": {
-      "instr": 380641745,
+      "instr": 379588265,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-gc-decline8": {
-      "instr": 277871895,
+      "instr": 276700634,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-24ac-seat": {
-      "instr": 86111937,
+      "instr": 83270328,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-608-fd": {
-      "instr": 291539612,
+      "instr": 308495541,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-701-fd": {
-      "instr": 338753914,
+      "instr": 315861912,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-71-824gc": {
-      "instr": 291528832,
+      "instr": 308487578,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-75-24ac-832": {
-      "instr": 523256952,
+      "instr": 463564279,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-8m": {
-      "instr": 468443895,
+      "instr": 468618946,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-aux3-login": {
-      "instr": 667019463,
+      "instr": 668554327,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-checkpoint": {
+      "instr": 364687960,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-chime": {
@@ -129,19 +209,19 @@
       "tolerance": 0.2
     },
     "suite-iisi/iisi-701-fd": {
-      "instr": 203335810,
+      "instr": 210237070,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-71-kbd": {
-      "instr": 226283186,
+      "instr": 156678364,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-75-hd": {
-      "instr": 370367967,
+      "instr": 369168539,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-chime": {
-      "instr": 10115362,
+      "instr": 10115327,
       "tolerance": 0.2
     },
     "suite-iix/iix-701-fd": {
@@ -149,39 +229,47 @@
       "tolerance": 0.2
     },
     "suite-iix/iix-71-extfd": {
-      "instr": 234259484,
+      "instr": 230894329,
       "tolerance": 0.2
     },
     "suite-iix/iix-75-hd": {
-      "instr": 474770463,
+      "instr": 473712853,
       "tolerance": 0.2
     },
     "suite-iix/iix-824gc-seat": {
-      "instr": 89800230,
+      "instr": 83311681,
       "tolerance": 0.2
     },
     "suite-iix/iix-gc-accel1": {
-      "instr": 277753582,
+      "instr": 276696312,
       "tolerance": 0.2
     },
     "suite-iix/iix-gc-decline1": {
-      "instr": 277753593,
+      "instr": 276696863,
+      "tolerance": 0.2
+    },
+    "suite-iix/iix-jmfb-refuse": {
+      "instr": 69863754,
       "tolerance": 0.2
     },
     "suite-iix/iix-jmfb-sweep": {
-      "instr": 59329908,
+      "instr": 48090520,
       "tolerance": 0.2
     },
     "suite-iix/iix-nomedia": {
-      "instr": 89076022,
+      "instr": 82582379,
       "tolerance": 0.2
     },
     "suite-iix/iix-portrait-603": {
-      "instr": 135804332,
+      "instr": 120166345,
+      "tolerance": 0.2
+    },
+    "suite-lisa/lisa-checkpoint": {
+      "instr": 102000000,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-los31-profile": {
-      "instr": 110719499,
+      "instr": 108119636,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-boot": {
@@ -189,7 +277,7 @@
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-hdinit": {
-      "instr": 386600000,
+      "instr": 387000000,
       "tolerance": 0.2
     },
     "suite-lisa/lisa-xenix-nofloppy": {
@@ -202,6 +290,42 @@
     },
     "suite-lisa/xl-no-media": {
       "instr": 120000000,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pdm-floppy-800k": {
+      "instr": 2619983600,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pdm-floppy-boot": {
+      "instr": 7599983600,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pdm-floppy-mount": {
+      "instr": 3856983600,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pdm-floppy-write-eject": {
+      "instr": 2612983600,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pdm-swim3-reset": {
+      "instr": 20191800,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pm6100-75-hd": {
+      "instr": 1919483600,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pm7100-75-hd": {
+      "instr": 1946983600,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pm8100-75-24ac": {
+      "instr": 1639983600,
+      "tolerance": 0.2
+    },
+    "suite-pdm/pm8100-75-hd": {
+      "instr": 2012483600,
       "tolerance": 0.2
     },
     "suite-plus/plus-20-fd": {
@@ -232,44 +356,48 @@
       "instr": 1000000,
       "tolerance": 0.2
     },
+    "suite-plus/plus-checkpoint": {
+      "instr": 115000000,
+      "tolerance": 0.2
+    },
     "suite-quadra/q700-20m": {
-      "instr": 97121021,
+      "instr": 97235466,
       "tolerance": 0.2
     },
     "suite-quadra/q700-71-fd": {
-      "instr": 197984642,
+      "instr": 97209274,
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-hd": {
-      "instr": 703408784,
+      "instr": 704016138,
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-monitors": {
-      "instr": 475551339,
+      "instr": 493154624,
       "tolerance": 0.2
     },
     "suite-quadra/q700-checkpoint": {
-      "instr": 201998247,
+      "instr": 101998239,
       "tolerance": 0.2
     },
     "suite-quadra/q700-chime": {
-      "instr": 37083119,
+      "instr": 37041160,
       "tolerance": 0.2
     },
     "suite-quadra/q700-dafb-senses": {
-      "instr": 27149999,
+      "instr": 27243611,
       "tolerance": 0.2
     },
     "suite-quadra/q700-sense-checkpoint": {
-      "instr": 6398720,
+      "instr": 6399836,
       "tolerance": 0.2
     },
     "suite-quadra/q900-75-hd": {
-      "instr": 717418518,
+      "instr": 718069449,
       "tolerance": 0.2
     },
     "suite-quadra/q900-76-fd": {
-      "instr": 372892049,
+      "instr": 371624503,
       "tolerance": 0.2
     },
     "suite-quadra/q950-71-hd": {
@@ -277,35 +405,35 @@
       "tolerance": 0.2
     },
     "suite-quadra/q950-76-hd": {
-      "instr": 886916774,
+      "instr": 881131878,
       "tolerance": 0.2
     },
     "suite-se30/se30-608-fd": {
-      "instr": 64948428,
+      "instr": 54834354,
       "tolerance": 0.2
     },
     "suite-se30/se30-701-gsvrom": {
-      "instr": 86638579,
+      "instr": 76134309,
       "tolerance": 0.2
     },
     "suite-se30/se30-71-fd": {
-      "instr": 734049059,
+      "instr": 735036427,
       "tolerance": 0.2
     },
     "suite-se30/se30-75-hd": {
-      "instr": 1096342456,
+      "instr": 1073302356,
       "tolerance": 0.2
     },
     "suite-se30/se30-checkpoint": {
-      "instr": 76997115,
+      "instr": 64997035,
       "tolerance": 0.2
     },
     "suite-se30/se30-chime": {
-      "instr": 11719697,
+      "instr": 11834258,
       "tolerance": 0.2
     },
     "suite-se30/se30-nomedia": {
-      "instr": 277074596,
+      "instr": 270578364,
       "tolerance": 0.2
     },
     "tnt-pci-voodoo2": {

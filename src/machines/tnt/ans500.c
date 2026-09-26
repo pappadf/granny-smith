@@ -49,13 +49,15 @@ static const uint32_t ans500_ram_options_kb[] = {16384, 32768, 49152, 65536, 131
 // ans-scsi drives a CD-ROM on it through Open Firmware's probe-scsi2 --
 // so the bays are declared rather than described.
 //
-// Bay 0 is Apple's expected CD-ROM position and is deliberately NOT declared
-// here: it is what hw_profile_t.cdrom_id addresses, which F-10 of the
-// 2026-09-03 review owns.
+// The bays are numbered as the firmware numbers its disks, 0-6 across the
+// two channels (`diskN` is bay N), so channel 1's are Bays 4-6 -- they were
+// labelled 5-7, one off from channel 0's Bays 1-3.  Bay 0 is Apple's expected
+// CD-ROM position and is deliberately NOT declared here: it is the CD bay,
+// hw_profile_t.cdrom_id, which profile_cdrom_bay derives.
 static const struct scsi_slot ans500_scsi_slots_fw1[] = {
-    {.label = "Bay 5 (fast/wide 1)", .id = 4},
-    {.label = "Bay 6 (fast/wide 1)", .id = 5},
-    {.label = "Bay 7 (fast/wide 1)", .id = 6},
+    {.label = "Bay 4 (fast/wide 1)", .id = 4},
+    {.label = "Bay 5 (fast/wide 1)", .id = 5},
+    {.label = "Bay 6 (fast/wide 1)", .id = 6},
     {0},
 };
 

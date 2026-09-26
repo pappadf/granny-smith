@@ -23,6 +23,11 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
@@ -35,14 +40,6 @@ function swap32(v: number): number {
   return (((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >>> 8) & 0xff00) | ((v >>> 24) & 0xff)) >>> 0;
 }
 const hex = (v: number): string => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
-}
 
 // Read one expression back through the terminal with a fresh key per probe
 // so the echoed input line (still holding the unexpanded ${...}) can never

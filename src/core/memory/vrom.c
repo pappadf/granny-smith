@@ -238,6 +238,10 @@ void vrom_offer(const char *path) {
     offer_registry_add(&s_offers, path, false);
 }
 
+void vrom_offer_dir(const char *dir, const char *ext) {
+    offer_registry_add_dir(&s_offers, dir, ext);
+}
+
 void vrom_offer_clear(void) {
     offer_registry_clear(&s_offers);
 }

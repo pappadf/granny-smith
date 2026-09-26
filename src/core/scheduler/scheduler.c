@@ -679,7 +679,7 @@ static void run_stop_event(void *source, uint64_t data) {
 
 // Schedule a stop after `instructions` more instructions of execution.
 // Returns false on overflow / zero-count / scheduler not initialised.
-static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
+bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     GS_ASSERT(s != NULL);
     uint32_t eff_x256 = s->cpi_eff_x256;
 
@@ -1846,20 +1846,40 @@ static value_t sched_attr_mode_get(struct object *self, const member_t *m) {
     (void)m;
     return val_str(mode_label(sched_self_from(self)->mode));
 }
+bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
+    // Legacy three-mode names stay accepted as aliases so existing scripts
+    // keep working: real/realtime and hw/hardware were the wall-clock modes
+    // → paced; max was the run-flat-out mode → turbo.  (There were three
+    // copies of this table, and they disagreed: the setter took real/hw, the
+    // command lines realtime/hardware.)
+    static const struct {
+        const char *name;
+        enum schedule_mode mode;
+    } names[] = {
+        {"paced",       schedule_paced      },
+        {"real",        schedule_paced      },
+        {"realtime",    schedule_paced      },
+        {"hw",          schedule_paced      },
+        {"hardware",    schedule_paced      },
+        {"accelerated", schedule_accelerated},
+        {"accel",       schedule_accelerated},
+        {"turbo",       schedule_unthrottled},
+        {"max",         schedule_unthrottled},
+    };
+    for (size_t i = 0; name && i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(name, names[i].name) == 0) {
+            *out = names[i].mode;
+            return true;
+        }
+    }
+    return false;
+}
+
 static value_t sched_attr_mode_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
     scheduler_t *s = sched_self_from(self);
     enum schedule_mode mode;
-    // Legacy three-mode names stay accepted as aliases so existing scripts
-    // keep working: 'real'/'hw' were the wall-clock modes → paced; 'max' was
-    // the run-flat-out mode → turbo.
-    if (strcmp(in.s, "paced") == 0 || strcmp(in.s, "real") == 0 || strcmp(in.s, "hw") == 0)
-        mode = schedule_paced;
-    else if (strcmp(in.s, "turbo") == 0 || strcmp(in.s, "max") == 0)
-        mode = schedule_unthrottled;
-    else if (strcmp(in.s, "accelerated") == 0 || strcmp(in.s, "accel") == 0)
-        mode = schedule_accelerated;
-    else {
+    if (!scheduler_mode_from_string(in.s, &mode)) {
         value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: paced, accelerated, turbo)", in.s);
         value_free(&in);
         return e;

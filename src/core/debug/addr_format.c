@@ -5,6 +5,8 @@
 #include "addr_format.h"
 
 #include "cpu.h"
+#include "debug.h"
+#include "lisa_mmu.h"
 #include "mmu.h"
 #include "system.h"
 
@@ -18,6 +20,11 @@
 
 // Default display mode: auto (collapsed unless MMU is active)
 addr_display_mode_t g_addr_display_mode = ADDR_DISPLAY_AUTO;
+
+bool debug_cpu_is_supervisor(void) {
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    return (dif && dif->is_supervisor) ? dif->is_supervisor(dif->ctx) : true;
+}
 
 // Try to resolve a name as a CPU register, returning its value.
 // Returns true if name matched a register, false otherwise.
@@ -160,6 +167,18 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
     if (valid)
         *valid = true;
 
+    // The Lisa's segment MMU: its own translation, not the PMMU's (before,
+    // this reported every Lisa address as mapped to itself, N-28).
+    if (g_lisa_mmu) {
+        uint32_t phys = logical_addr;
+        bool ok = lisa_mmu_translate(g_lisa_mmu, logical_addr, debug_cpu_is_supervisor(), &phys, NULL);
+        if (valid)
+            *valid = ok;
+        if (is_identity)
+            *is_identity = ok && phys == logical_addr;
+        return ok ? phys : logical_addr;
+    }
+
     // No MMU or MMU disabled: identity mapping
     if (!g_mmu || !g_mmu->enabled)
         return logical_addr;
@@ -168,8 +187,7 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
     // that under TC.SRE=1 (separate user/supervisor roots) addresses dumped
     // while user code is running resolve through CRP, not SRP.  Also affects
     // breakpoint physical-page matching via the debug_check_pc_break caller.
-    cpu_t *cpu = system_cpu();
-    bool supervisor = cpu ? cpu_is_supervisor(cpu) : true;
+    bool supervisor = debug_cpu_is_supervisor();
 
     // Check transparent translation first
     if (mmu_check_tt(g_mmu, logical_addr, false, supervisor)) {

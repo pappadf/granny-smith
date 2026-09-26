@@ -9,6 +9,7 @@
 
 #include "system_config.h" // full config_t definition (includes system.h transitively)
 
+#include "appletalk.h"
 #include "build_id.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
@@ -40,11 +41,14 @@
 #include "vrom.h"
 
 #include <assert.h>
+#include <dirent.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -327,6 +331,23 @@ config_t *system_config(void) {
     return global_emulator;
 }
 
+// Per-kind sums of the tracked images' I/O counters -- the images the
+// machine's drives were given; host-side browsing opens its own handles and
+// never counts.  An ejected image does no I/O, so it never lights.
+void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DRIVE_KIND_COUNT]) {
+    for (int k = 0; k < DRIVE_KIND_COUNT; k++)
+        reads[k] = writes[k] = 0;
+    config_t *cfg = global_emulator;
+    for (int i = 0; cfg && i < cfg->n_images; i++) {
+        const image_t *img = cfg->images[i];
+        if (!img)
+            continue;
+        int k = image_is_floppy(img->type) ? DRIVE_KIND_FD : img->type == image_cdrom ? DRIVE_KIND_CD : DRIVE_KIND_HD;
+        reads[k] += img->reads;
+        writes[k] += img->writes;
+    }
+}
+
 // Host-input dispatch through the machine substrate (proposal §4.4).  Every
 // substrate implements these — Macs route to the shared mac_input_* helpers
 // (keyboard / Toolbox cursor), the Lisa to its COPS — so there is one uniform
@@ -480,8 +501,53 @@ void trigger_vbl(struct config *restrict config) {
 // Insert a floppy disk image into the first free (or preferred) drive.
 // writable: 1=writable, 0=read-only, -1=default (writable).
 // preferred: drive number (0 or 1), or -1 for auto-select.
+// The machine's floppy drives: its profile's floppy_slots, never more than
+// the controller's two.  Drive selection is bounded by this, not by
+// FLOPPY_NUM_DRIVES -- a one-drive Mac has no drive 1 to pick (N-06).
+static int sys_fd_count(config_t *cfg) {
+    int n = profile_floppy_count(cfg->machine);
+    return n > FLOPPY_NUM_DRIVES ? FLOPPY_NUM_DRIVES : n;
+}
+
+// The drive to put a disk in: `preferred` when it exists and is free, else
+// with preferred == -1 the first free one.  -1 with the reason printed when
+// there is none.  An explicit drive is a request, not a hint: fail rather than
+// silently load the disk into another drive (a caller feeding a guest that
+// is waiting on drive 1 must never have its disk land in drive 0).
+static int sys_fd_pick(config_t *cfg, int preferred, const char *who) {
+    int n = sys_fd_count(cfg);
+    if (preferred < -1 || preferred >= n) {
+        printf("%s: no such floppy drive %d (this machine has %d).\n", who, preferred, n);
+        return -1;
+    }
+    if (preferred != -1) {
+        if (sys_fd_is_inserted(cfg, preferred)) {
+            printf("%s: floppy drive %d is already occupied.\n", who, preferred);
+            return -1;
+        }
+        return preferred;
+    }
+    for (int d = 0; d < n; d++)
+        if (!sys_fd_is_inserted(cfg, d))
+            return d;
+    if (n == 0)
+        printf("%s: this machine has no floppy drive.\n", who);
+    else
+        printf("%s: no free floppy drive.\n", who);
+    return -1;
+}
+
 static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     bool writable = (writable_flag != 0); // default to writable unless explicitly 0
+
+    config_t *config = global_emulator;
+    if (!config) {
+        printf("fd insert: emulator config not initialized.\n");
+        return -1;
+    }
+    int target = sys_fd_pick(config, preferred, "fd insert");
+    if (target < 0)
+        return -1;
 
     image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
     if (!disk) {
@@ -489,53 +555,15 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
         return -1;
     }
 
-    config_t *config = global_emulator;
-    if (!config) {
-        printf("fd insert: emulator config not initialized.\n");
-        return -1;
-    }
-
-    bool d0_free = !sys_fd_is_inserted(config, 0);
-    bool d1_free = !sys_fd_is_inserted(config, 1);
-
-    // An explicit drive is a request, not a hint: fail rather than silently
-    // load the disk into the other drive (a caller feeding a guest that is
-    // waiting on drive 1 must never have its disk land in drive 0).
-    //
-    // Validate it against the documented contract first.  The occupancy test
-    // below is a two-way branch on `preferred == 0`, so any other value takes
-    // the drive-1 arm and then falls through into `target = preferred`
-    // verbatim -- which is how an out-of-range drive would reach
-    // floppy_insert.
-    if (preferred < -1 || preferred >= FLOPPY_NUM_DRIVES) {
-        printf("fd insert: no such floppy drive %d.\n", preferred);
+    // Register the image only once the drive has taken it.  This ignored the
+    // insert's result and printed "inserted" whatever the drive said, so a
+    // drive that refused left an orphan on the image list and a success claim.
+    if (sys_fd_insert(config, target, disk) != 0) {
+        printf("fd insert: floppy drive %d refused %s.\n", target, path);
         image_close(disk);
         return -1;
     }
-    if (preferred != -1) {
-        if (preferred == 0 ? !d0_free : !d1_free) {
-            printf("fd insert: floppy drive %d is already occupied.\n", preferred);
-            image_close(disk);
-            return -1;
-        }
-    }
-
-    // No drive requested: fall back to the first free one.
-    int target = preferred;
-    if (target == -1) {
-        if (d0_free) {
-            target = 0;
-        } else if (d1_free) {
-            target = 1;
-        } else {
-            printf("fd insert: both floppy drives are already occupied.\n");
-            image_close(disk);
-            return -1;
-        }
-    }
-
     add_image(config, disk);
-    sys_fd_insert(config, target, disk);
     printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
     return 0;
 }
@@ -579,22 +607,12 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
         return -1;
     }
 
-    bool d0_free = !sys_fd_is_inserted(config, 0);
-    bool d1_free = !sys_fd_is_inserted(config, 1);
-
-    int target = -1;
-    if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
-        target = preferred;
-    } else if (d0_free) {
-        target = 0;
-    } else if (d1_free) {
-        target = 1;
-    }
-
-    if (target == -1) {
-        printf("fd create: both floppy drives are already occupied.\n");
+    // The preferred drive when it exists and is free, else the first free one.
+    int target = (preferred >= 0 && preferred < sys_fd_count(config) && !sys_fd_is_inserted(config, preferred))
+                     ? preferred
+                     : sys_fd_pick(config, -1, "fd create");
+    if (target < 0)
         return -1;
-    }
 
     int rc = image_create_blank_floppy(path, false, high_density);
     if (rc != 0) {
@@ -611,8 +629,12 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
         return -1;
     }
 
+    if (sys_fd_insert(config, target, disk) != 0) {
+        printf("fd create: floppy drive %d refused %s.\n", target, path);
+        image_close(disk);
+        return -1;
+    }
     add_image(config, disk);
-    sys_fd_insert(config, target, disk);
     printf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K", target);
     return 0;
 }
@@ -705,11 +727,31 @@ void setup_init() {
     image_init(NULL);
 }
 
-// Platform hook called after system_create completes.
-// The weak default is a no-op; the WASM platform overrides to install
-// the assertion callback (which requires the debug object to exist).
-__attribute__((weak)) void system_post_create(config_t *cfg) {
-    (void)cfg;
+// The default AppleShare volume (S5).  The platform registers its path once
+// (the browser: /opfs/shared; headless: --shared-dir or $GS_SHARED_DIR); core
+// publishes it after every machine build, because a machine's teardown drops
+// the volume table.  Both platforms used to carry the same provisioning in a
+// system_post_create override, with different mkdir modes and log styles.
+#define GS_DEFAULT_SHARE_NAME "Shared"
+static char g_default_share[1024];
+
+void system_set_default_share(const char *path) {
+    snprintf(g_default_share, sizeof(g_default_share), "%s", path ? path : "");
+}
+
+// Publish the default share.  Idempotent; a failure is a logged warning,
+// never a boot error — a user who removed the directory still gets a
+// running machine.
+static void provision_default_share(void) {
+    if (!g_default_share[0] || atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
+        return;
+    if (mkdir(g_default_share, 0755) != 0 && errno != EEXIST) {
+        LOG(0, "warning: default share: cannot create %s: %s", g_default_share, strerror(errno));
+        return;
+    }
+    char err[192];
+    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, g_default_share, err, sizeof(err)) < 0)
+        LOG(0, "warning: default share: %s", err);
 }
 
 // Background-checkpoint auto state. WASM-only at the moment — the
@@ -720,38 +762,252 @@ __attribute__((weak)) bool gs_checkpoint_auto_get(void) {
     return false;
 }
 
-__attribute__((weak)) void gs_checkpoint_auto_set(bool enabled) {
+__attribute__((weak)) int gs_checkpoint_auto_set(bool enabled) {
     (void)enabled;
+    return -2; // no auto-checkpoint loop on this platform
 }
 
-// Platform-specific entry points (see system.h).  Headless gets the
-// "not supported" stubs by default; em_main.c overrides them on WASM.
-__attribute__((weak)) void gs_quit(void) {}
+// Platform-specific entry points (see system.h): the weak defaults say "not
+// supported on this platform" (-2), and a platform that has the thing
+// overrides them -- headless quit, wasm download.
+__attribute__((weak)) int gs_quit(void) {
+    return -2; // the browser owns the page's lifecycle
+}
 __attribute__((weak)) int gs_download(const char *path) {
     (void)path;
-    printf("download: only supported in the WASM build\n");
-    return -1;
-}
-__attribute__((weak)) int gs_background_checkpoint(const char *reason) {
-    (void)reason;
-    printf("background-checkpoint: only supported in the WASM build\n");
-    return -1;
-}
-__attribute__((weak)) int gs_checkpoint_clear(void) {
-    printf("checkpoint clear: only supported in the WASM build\n");
-    return -1;
-}
-__attribute__((weak)) int gs_register_machine(const char *machine_id, const char *created) {
-    (void)machine_id;
-    (void)created;
-    return 0; // headless has no per-machine checkpoint scoping; treat as no-op success
+    return -2; // no browser to hand a file to
 }
 
-__attribute__((weak)) int gs_find_media(const char *dir_path, const char *dest) {
-    (void)dir_path;
-    (void)dest;
-    printf("find-media: only supported in the WASM build\n");
-    return 1;
+// The quick-checkpoint heartbeat: the web status bar flashes on it.
+__attribute__((weak)) void gs_checkpoint_saved(double elapsed_ms) {
+    (void)elapsed_ms;
+}
+
+// === Checkpoints of the running machine, and finding media (S2) ============
+//
+// These are file work in the machine's checkpoint directory, the same on
+// every platform, so they live here.  They used to exist only in em_main.c,
+// with weak stubs that told headless "only supported in the WASM build" --
+// untrue of everything but the browser trigger -- so no headless test could
+// reach them.  The platform keeps the triggers (the page going hidden, the
+// auto-checkpoint tick) and the heartbeat hook above.
+
+#define QUICK_CHECKPOINT_PATH_MAX        512
+#define QUICK_CHECKPOINT_MIN_INTERVAL_MS 750.0
+
+static double g_last_quick_checkpoint_ms = 0.0;
+
+// Build "<machine_dir>/state.checkpoint" into out_path.  Returns GS_SUCCESS
+// when the machine dir is set and the path fits.
+static int build_state_checkpoint_path(char *out_path, size_t out_len) {
+    const char *dir = checkpoint_machine_dir();
+    if (!dir)
+        return GS_ERROR;
+    int written = snprintf(out_path, out_len, "%s/state.checkpoint", dir);
+    return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
+}
+
+// The path of the machine's current valid quick checkpoint, in a static
+// buffer, or NULL when there is none (or it is from another build).
+const char *find_valid_checkpoint_path(void) {
+    static char path_buf[QUICK_CHECKPOINT_PATH_MAX];
+    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != GS_SUCCESS)
+        return NULL;
+    struct stat st;
+    if (stat(path_buf, &st) != 0)
+        return NULL;
+    // Reject checkpoints from a different build (incompatible state layout)
+    if (!checkpoint_validate_build_id(path_buf))
+        return NULL;
+    return path_buf;
+}
+
+int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
+    scheduler_t *sched = system_scheduler();
+    if (!sched)
+        return GS_ERROR;
+
+    // Skip checkpointing when the emulator is idle — nothing meaningful to save
+    if (!scheduler_is_running(sched) && cpu_instr_count() == 0)
+        return GS_SUCCESS;
+
+    // No machine identity yet → nothing to save under.
+    if (!checkpoint_machine_dir()) {
+        if (verbose)
+            printf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
+        return GS_SUCCESS;
+    }
+
+    double now = host_time_ms();
+    if (rate_limit && g_last_quick_checkpoint_ms > 0.0) {
+        double delta = now - g_last_quick_checkpoint_ms;
+        if (delta >= 0.0 && delta < QUICK_CHECKPOINT_MIN_INTERVAL_MS)
+            return GS_SUCCESS;
+    }
+
+    char final_path[QUICK_CHECKPOINT_PATH_MAX];
+    char tmp_path[QUICK_CHECKPOINT_PATH_MAX];
+    if (build_state_checkpoint_path(final_path, sizeof(final_path)) != GS_SUCCESS)
+        return GS_ERROR;
+    int wn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
+    if (wn <= 0 || (size_t)wn >= sizeof(tmp_path))
+        return GS_ERROR;
+
+    // Record running state before stopping - this will be saved in the checkpoint
+    bool was_running = scheduler_is_running(sched);
+    if (was_running)
+        scheduler_stop(sched);
+    // Temporarily restore running flag so checkpoint captures the pre-stop state
+    if (was_running)
+        scheduler_set_running(sched, true);
+
+    double start = host_time_ms();
+    // Drop any stale tmp from a crashed prior run.
+    unlink(tmp_path);
+    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
+    if (rc == GS_SUCCESS) {
+        if (rename(tmp_path, final_path) != 0) {
+            printf("[checkpoint] rename %s -> %s failed: %s\n", tmp_path, final_path, strerror(errno));
+            unlink(tmp_path);
+            rc = GS_ERROR;
+        }
+    } else {
+        unlink(tmp_path);
+    }
+    double elapsed_ms = host_time_ms() - start;
+
+    if (rc == GS_SUCCESS) {
+        g_last_quick_checkpoint_ms = now;
+        gs_checkpoint_saved(elapsed_ms);
+        if (verbose)
+            printf("Checkpoint saved to %s (%.2f ms)\n", final_path, elapsed_ms);
+    } else if (verbose) {
+        printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
+    }
+    return rc;
+}
+
+int gs_background_checkpoint(const char *reason) {
+    return system_quick_checkpoint(reason ? reason : "manual", true, false) == GS_SUCCESS ? 0 : -1;
+}
+
+// Clear checkpoint files inside the current machine directory: drops
+// state.checkpoint, any leftover *.tmp, and (defensive) any legacy
+// sequence-numbered *.checkpoint / *.pending / *.complete files.  The
+// machine directory itself is left in place.
+static int clear_checkpoint_files(void) {
+    const char *dir_path = checkpoint_machine_dir();
+    if (!dir_path)
+        return 0;
+    DIR *dir = opendir(dir_path);
+    if (!dir)
+        return 0;
+    struct dirent *entry;
+    int removed = 0;
+    char path[QUICK_CHECKPOINT_PATH_MAX];
+    while ((entry = readdir(dir)) != NULL) {
+        const char *name = entry->d_name;
+        if (!name || name[0] == '.')
+            continue;
+        size_t len = strlen(name);
+        bool match = false;
+        if (strcmp(name, "state.checkpoint") == 0)
+            match = true;
+        else if (len >= 4 && strcmp(name + len - 4, ".tmp") == 0)
+            match = true;
+        else if (len >= 11 && strcmp(name + len - 11, ".checkpoint") == 0)
+            match = true; // legacy
+        else if (strstr(name, ".complete") || strstr(name, ".pending"))
+            match = true; // legacy
+        if (match) {
+            snprintf(path, sizeof(path), "%s/%s", dir_path, name);
+            if (unlink(path) == 0)
+                removed++;
+        }
+    }
+    closedir(dir);
+    return removed;
+}
+
+int gs_checkpoint_clear(void) {
+    int removed = clear_checkpoint_files();
+    printf("Cleared %d checkpoint file(s)\n", removed);
+    return 0;
+}
+
+int gs_register_machine(const char *machine_id, const char *created) {
+    if (!machine_id || !created)
+        return -1;
+    int rc = checkpoint_machine_set(machine_id, created);
+    if (rc != 0)
+        printf("register_machine: failed to set %s-%s\n", machine_id, created);
+    return rc == 0 ? 0 : -1;
+}
+
+// Find a mountable media file in a directory: walks `dir_path`, picks the
+// first regular file recognised as a floppy image, optionally copies it to
+// `dest`, and prints its path.  Returns 0 on success, non-zero on "no media
+// found" / IO error.  The web frontend runs it after an archive extraction
+// (FS.readdir from the main thread is broken with WasmFS pthreads, so this
+// runs on the worker).
+int gs_find_media(const char *dir_path, const char *dest) {
+    DIR *dir = opendir(dir_path);
+    if (!dir) {
+        printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
+        return 1;
+    }
+
+    struct dirent *entry;
+    char found_path[1024] = {0};
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.')
+            continue;
+        char full[1024];
+        snprintf(full, sizeof(full), "%s/%s", dir_path, entry->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
+        // Try as floppy image
+        image_t *img = image_open_readonly(full);
+        if (img) {
+            bool is_floppy = image_is_floppy(img->type);
+            image_close(img);
+            if (is_floppy) {
+                snprintf(found_path, sizeof(found_path), "%s", full);
+                break;
+            }
+        }
+    }
+    closedir(dir);
+
+    if (!found_path[0])
+        return 1;
+
+    // Optionally copy to dest
+    if (dest) {
+        FILE *fin = fopen(found_path, "rb");
+        if (!fin)
+            return 1;
+        FILE *fout = fopen(dest, "wb");
+        if (!fout) {
+            fclose(fin);
+            return 1;
+        }
+        char buf[65536];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
+            if (fwrite(buf, 1, n, fout) != n) {
+                fclose(fin);
+                fclose(fout);
+                return 1;
+            }
+        }
+        fclose(fin);
+        fclose(fout);
+    }
+
+    printf("%s\n", found_path);
+    return 0;
 }
 
 // Host video-input seam: the defaults model "no camera attached" — the
@@ -873,6 +1129,10 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         return NULL;
     }
 
+    // The floppy controller learns how many drives this machine cables.
+    if (cfg->floppy)
+        floppy_set_drive_count(cfg->floppy, sys_fd_count(cfg));
+
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {
     case CPU_ARCH_M68K:
@@ -909,8 +1169,8 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // runtime state. The legacy shell remains primary.
     root_install(cfg);
 
-    // Notify the platform (e.g., install assertion callback)
-    system_post_create(cfg);
+    // The volume table went with the previous machine: publish the share.
+    provision_default_share();
 
     // Cold boot: stamp out a manifest documenting what was set up.  Skipped
     // on checkpoint restore — the manifest is fixed at original creation
@@ -1003,6 +1263,84 @@ void mac_reset(config_t *restrict sim) {
     scc_reset(sim->scc);
 }
 
+// Open `path` as the medium a bay on `bus` takes and fill in `slot` -- the
+// image handle plus, on SCSI, the identity the device presents -- ready for
+// a substrate's media_attach.  One open for every attach path: a hard disk
+// as the closest catalog drive over a base+delta image, a CD-ROM read-only
+// at 2048-byte blocks, a ProFile at its 532-byte block.  slot->unit is left
+// 0 for the caller.  Returns false (and says why) when the file cannot be
+// opened.
+static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot_t *slot) {
+    *slot = (media_slot_t){.bus = bus};
+    if (!path || !*path) {
+        printf("Cannot attach: no image path\n");
+        return false;
+    }
+    if (bus == MEDIA_BUS_PROFILE) {
+        const image_geometry_t geom = {.block_size = PROFILE_BLOCK_SIZE};
+        slot->img = image_create_with_geometry(path, pick_delta_dir(path), geom);
+        if (!slot->img)
+            printf("Failed to open ProFile image: %s\n", path);
+        return slot->img != NULL;
+    }
+    if (cdrom) {
+        // CD-ROM images are always opened read-only
+        slot->img = image_open_readonly(path);
+        if (!slot->img) {
+            printf("Failed to open CD-ROM image: %s\n", path);
+            return false;
+        }
+        slot->img->type = image_cdrom;
+        // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
+        // sector, not a property of the disc — so serve every disc at 2048 and let
+        // the guest ask for anything else.  A host that wants 512-byte addressing
+        // issues MODE SELECT with a block descriptor, which scsi_cdrom_mode_select
+        // already honours; A/UX does exactly that when it mounts its install CD.
+        //
+        // Do NOT adopt the sbBlkSize the disc's Driver Descriptor Map records
+        // (block 0, 'ER' signature, bytes 2-3).  That field is the unit the
+        // PARTITION MAP is addressed in — 512 on an HFS disc, including a raw hard
+        // disk image burned to CD — and not the drive's block length.  Conflating
+        // the two hands the Apple CD-ROM driver a 512-byte device when it is
+        // addressing 2048-byte sectors, so every sector number it computes lands a
+        // quarter of the way into the disc: it reads byte 8192 looking for the
+        // ISO 9660 descriptor at sector 16, never finds the partition map, and the
+        // Finder offers to initialize the disc.  Mapping the map's 512-byte units
+        // onto 2048-byte sectors is the driver's job, and it does it in software.
+        slot->scsi_type = scsi_dev_cdrom;
+        slot->block_size = 2048;
+        slot->read_only = true;
+        snprintf(slot->vendor, sizeof(slot->vendor), "SONY");
+        snprintf(slot->product, sizeof(slot->product), "CD-ROM CDU-8002");
+        snprintf(slot->revision, sizeof(slot->revision), "1.8g");
+        printf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks)\n", path,
+               disk_size(slot->img), slot->block_size);
+        return true;
+    }
+    slot->img = image_create(path, pick_delta_dir(path));
+    if (!slot->img) {
+        printf("Failed to open image: %s\n", path);
+        return false;
+    }
+    size_t sz = disk_size(slot->img);
+    // Find the closest drive model from the catalog
+    const struct drive_model *best = drive_catalog_find_closest(sz);
+    if (!best) {
+        LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", path);
+        image_close(slot->img);
+        slot->img = NULL;
+        return false;
+    }
+    LOG(1, "Attaching SCSI drive: %s as %s %s (size: %zu bytes)", path, best->vendor, best->product, sz);
+    slot->scsi_type = scsi_dev_hd;
+    slot->block_size = 512;
+    slot->read_only = false;
+    snprintf(slot->vendor, sizeof(slot->vendor), "%s", best->vendor);
+    snprintf(slot->product, sizeof(slot->product), "%s", best->product);
+    snprintf(slot->revision, sizeof(slot->revision), "%s", best->revision);
+    return true;
+}
+
 // Add a SCSI hard disk to the configuration.
 bool add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
     return add_scsi_drive_on(config, config ? config->scsi : NULL, filename, scsi_id);
@@ -1014,29 +1352,19 @@ bool add_scsi_drive(struct config *restrict config, const char *filename, int sc
 // two fast/wide 53C825A channels carrying the backplane's bays between
 // them, reachable as `machine.scsi` and `machine.scsi2`.  Passing the bus
 // explicitly is what lets `machine.scsi2.attach_hd` mean what it says.
+//
+// A NULL bus is refused: the Lisa has no SCSI at all, and `hd=` on a Lisa
+// used to hand NULL to scsi_add_device and crash the harness (N-01).
 bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
-    image_t *img = image_create(filename, pick_delta_dir(filename));
-    if (!img) {
-        printf("Failed to open image: %s\n", filename);
+    if (!bus) {
+        printf("Cannot attach %s: this machine has no SCSI bus\n", filename);
         return false;
     }
-
-    size_t sz = disk_size(img);
-
-    // Find the closest drive model from the catalog
-    const struct drive_model *best = drive_catalog_find_closest(sz);
-    if (!best) {
-        LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", filename);
-        image_close(img);
+    media_slot_t slot;
+    if (!media_open(MEDIA_BUS_SCSI, false, filename, &slot))
         return false;
-    }
-
-    LOG(1, "Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)", filename, best->vendor, best->product,
-        sz, scsi_id);
-
-    add_image(config, img);
-    scsi_add_device(bus, scsi_id, best->vendor, best->product, best->revision, img, scsi_dev_hd, 512, false);
-    return true;
+    slot.unit = scsi_id;
+    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
 }
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
@@ -1046,39 +1374,15 @@ bool add_scsi_cdrom(struct config *restrict config, const char *filename, int sc
 
 // ...on a NAMED bus; see add_scsi_drive_on.
 bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
-    // CD-ROM images are always opened read-only
-    image_t *img = image_open_readonly(filename);
-    if (!img) {
-        printf("Failed to open CD-ROM image: %s\n", filename);
+    if (!bus) {
+        printf("Cannot attach CD-ROM %s: this machine has no SCSI bus\n", filename);
         return false;
     }
-
-    img->type = image_cdrom;
-
-    // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
-    // sector, not a property of the disc — so serve every disc at 2048 and let
-    // the guest ask for anything else.  A host that wants 512-byte addressing
-    // issues MODE SELECT with a block descriptor, which scsi_cdrom_mode_select
-    // already honours; A/UX does exactly that when it mounts its install CD.
-    //
-    // Do NOT adopt the sbBlkSize the disc's Driver Descriptor Map records
-    // (block 0, 'ER' signature, bytes 2-3).  That field is the unit the
-    // PARTITION MAP is addressed in — 512 on an HFS disc, including a raw hard
-    // disk image burned to CD — and not the drive's block length.  Conflating
-    // the two hands the Apple CD-ROM driver a 512-byte device when it is
-    // addressing 2048-byte sectors, so every sector number it computes lands a
-    // quarter of the way into the disc: it reads byte 8192 looking for the
-    // ISO 9660 descriptor at sector 16, never finds the partition map, and the
-    // Finder offers to initialize the disc.  Mapping the map's 512-byte units
-    // onto 2048-byte sectors is the driver's job, and it does it in software.
-    uint16_t cd_block_size = 2048;
-
-    printf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks, SCSI ID: %d)\n",
-           filename, disk_size(img), cd_block_size, scsi_id);
-
-    add_image(config, img);
-    scsi_add_device(bus, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
-    return true;
+    media_slot_t slot;
+    if (!media_open(MEDIA_BUS_SCSI, true, filename, &slot))
+        return false;
+    slot.unit = scsi_id;
+    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
 }
 
 // === machine.restart media transfer (proposal-boot-vs-reset §3.3) ==========
@@ -1157,6 +1461,79 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
     return 0;
+}
+
+// === Machine-level attach and eject (M2) =====================
+//
+// One verb for "put this disk in that bay", whatever bus the bay is on: the
+// same substrate dispatch machine.restart hands media back through
+// (media_attach), fed by media_open instead of a transferred handle.  Before,
+// every caller branched on hd_bus itself and chose between scsi.attach_hd,
+// scsi2.attach_hd and hd.attach -- and several chose wrong.
+
+bool system_media_present_scsi_bus(struct scsi *bus, int unit) {
+    return bus && unit >= 0 && unit <= 6 && scsi_device_image(bus, (unsigned)unit) != NULL;
+}
+
+int system_media_eject_scsi_bus(struct scsi *bus, int unit) {
+    if (!bus || unit < 0 || unit > 6)
+        return -1;
+    int rc = scsi_eject_device(bus, unit);
+    return rc == 1 ? 0 : rc == -2 ? -2 : -1;
+}
+
+bool system_media_present_std(config_t *cfg, media_bus_t bus, int unit) {
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return sys_fd_is_inserted(cfg, unit);
+    case MEDIA_BUS_SCSI:
+        return system_media_present_scsi_bus(cfg->scsi, unit);
+    default:
+        return false;
+    }
+}
+
+int system_media_eject_std(config_t *cfg, media_bus_t bus, int unit) {
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return (cfg->floppy && unit >= 0 && floppy_drive_eject(cfg->floppy, (unsigned)unit)) ? 0 : -1;
+    case MEDIA_BUS_SCSI:
+        return system_media_eject_scsi_bus(cfg->scsi, unit);
+    default:
+        return -1;
+    }
+}
+
+int system_media_attach_path(config_t *cfg, const media_bay_t *bay, bool cdrom, const char *path, char *err,
+                             size_t errlen) {
+    const machine_substrate_t *sub = (cfg && cfg->machine) ? cfg->machine->substrate : NULL;
+    if (!sub || !sub->media_attach) {
+        snprintf(err, errlen, "no machine is running");
+        return -1;
+    }
+    if (sub->media_present && sub->media_present(cfg, bay->bus, bay->unit)) {
+        snprintf(err, errlen, "%s is occupied; eject it first", bay->label ? bay->label : "the bay");
+        return -1;
+    }
+    media_slot_t slot;
+    if (!media_open(bay->bus, cdrom, path, &slot)) {
+        snprintf(err, errlen, "cannot open '%s'", path ? path : "");
+        return -1;
+    }
+    slot.unit = bay->unit;
+    if (sub->media_attach(cfg, &slot) != 0) {
+        image_close(slot.img);
+        snprintf(err, errlen, "%s cannot take '%s'", bay->label ? bay->label : "the bay", path);
+        return -1;
+    }
+    return 0;
+}
+
+int system_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    const machine_substrate_t *sub = (cfg && cfg->machine) ? cfg->machine->substrate : NULL;
+    if (!sub || !sub->media_eject)
+        return -1;
+    return sub->media_eject(cfg, bus, unit);
 }
 
 // Save current machine state to a checkpoint file.
@@ -1354,13 +1731,6 @@ int system_checkpoint_save(const char *filename, bool files_as_refs) {
     int result = system_checkpoint(filename, CHECKPOINT_KIND_CONSOLIDATED);
     checkpoint_set_files_as_refs(prev_mode); // restore previous setting
     return result;
-}
-
-// Platform hook: find the path to the latest valid background checkpoint.
-// Returns a static buffer with the path, or NULL if no valid checkpoint exists.
-// The weak default returns NULL; the WASM platform overrides with actual scanning.
-__attribute__((weak)) const char *find_valid_checkpoint_path(void) {
-    return NULL;
 }
 
 // Load a saved checkpoint.  `filename` NULL or empty auto-loads the latest

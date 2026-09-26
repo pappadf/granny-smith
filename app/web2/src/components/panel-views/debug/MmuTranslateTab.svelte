@@ -1,28 +1,29 @@
 <script lang="ts">
-  import { mmuWalk, type WalkResult } from '@/bus/mockMmu';
+  import { translateAddr, type Translation } from '@/bus/mmu';
   import { debug } from '@/state/debug.svelte';
+  import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
 
-  // inputValue mirrors debug.mmuTransAddr but is mutable so the user
-  // can type into it before committing with Enter / Walk.
+  // inputValue mirrors debug.mmuTransAddr but is mutable so the user can
+  // type into it before committing with Enter / Translate.
   // eslint-disable-next-line svelte/prefer-writable-derived
   let inputValue = $state(fmtHex32(debug.mmuTransAddr));
-  // result is recomputed reactively in the $effect below; it must be a
-  // writable $state so the WalkResult's async-ish "compute then assign"
-  // pattern works.
-  // eslint-disable-next-line svelte/prefer-writable-derived
-  let result = $state<WalkResult | null>(null);
+  let result = $state<Translation | null>(null);
 
   $effect(() => {
     inputValue = fmtHex32(debug.mmuTransAddr);
   });
 
-  // Auto-walk when the address or supervisor mode changes.
+  // Translate through the core whenever the address, the S/U choice or the
+  // machine state (a new frame) changes.
   $effect(() => {
-    result = mmuWalk(debug.mmuTransAddr, debug.mmuSupervisor);
+    void debugFrame.current;
+    const addr = debug.mmuTransAddr;
+    const sup = debug.mmuSupervisor;
+    void translateAddr(addr, sup).then((t) => (result = t));
   });
 
-  function walk() {
+  function translate() {
     const v = parseHex(inputValue);
     if (v === null) return;
     debug.mmuTransAddr = v;
@@ -31,11 +32,9 @@
   function onKey(ev: KeyboardEvent) {
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      walk();
+      translate();
     }
   }
-
-  const PRESETS = [0x00400000, 0x00fc0000, 0x47f00000, 0x00000100];
 </script>
 
 <div class="trans-body">
@@ -48,58 +47,30 @@
       onkeydown={onKey}
       aria-label="Logical address to translate"
     />
-    <button type="button" class="btn" onclick={walk}>Walk</button>
-    <span class="presets">
-      {#each PRESETS as p (p)}
+    <button type="button" class="btn" onclick={translate}>Translate</button>
+    {#if debugFrame.current}
+      <span class="presets">
         <button
           type="button"
           class="preset-btn"
-          onclick={() => {
-            debug.mmuTransAddr = p;
-          }}
+          onclick={() => (debug.mmuTransAddr = debugFrame.current?.pc ?? 0)}>PC</button
         >
-          ${fmtHex32(p)}
-        </button>
-      {/each}
-    </span>
+      </span>
+    {/if}
   </div>
   {#if result}
     {#if !result.valid}
       <p class="invalid">
-        L:$<span class="hex">{fmtHex32(result.logical)}</span> → INVALID — page-fault if accessed
+        L:$<span class="hex">{fmtHex32(debug.mmuTransAddr)}</span> → INVALID — faults if accessed
       </p>
-    {:else if result.kind === 'TT'}
-      <p class="ok">
-        L:$<span class="hex">{fmtHex32(result.logical)}</span> P:$<span class="hex"
-          >{fmtHex32(result.physical ?? 0)}</span
-        >
-        <span class="tag tag-tt">TT</span>
-      </p>
-      <p class="root">Root: transparent translation (no walk)</p>
     {:else}
       <p class="ok">
-        L:$<span class="hex">{fmtHex32(result.logical)}</span> P:$<span class="hex"
-          >{fmtHex32(result.physical ?? 0)}</span
+        L:$<span class="hex">{fmtHex32(debug.mmuTransAddr)}</span> P:$<span class="hex"
+          >{fmtHex32(result.phys ?? 0)}</span
         >
-        <span class="tag tag-pt">PT</span>
+        <span class="tag tag-pt">{result.via.toUpperCase()}</span>
+        {#if result.space}<span class="tag tag-tt">{result.space}</span>{/if}
       </p>
-      <p class="root">Root: {result.root}</p>
-      {#each result.levels as level (level.idx)}
-        <div class="level-card">
-          <div class="level-title">
-            Level {result.levels.indexOf(level)} (TIA={level.idx}) · index={level.idx}
-          </div>
-          <div class="level-detail">
-            descriptor at $<span class="hex">{fmtHex32(level.descriptorAddr)}</span>: $<span
-              class="hex">{fmtHex32(level.descriptorWord)}</span
-            >
-            · DT={level.dt}
-            {#if level.next !== undefined}
-              · next=$<span class="hex">{fmtHex32(level.next)}</span>
-            {/if}
-          </div>
-        </div>
-      {/each}
     {/if}
   {/if}
 </div>
@@ -173,11 +144,6 @@
   .hex {
     text-transform: uppercase;
   }
-  .root {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    margin: 0;
-  }
   .tag {
     border-radius: 9999px;
     padding: 0 6px;
@@ -193,20 +159,5 @@
   .tag-pt {
     background: rgba(80, 140, 220, 0.25);
     color: #6aa6ff;
-  }
-  .level-card {
-    border-left: 2px solid var(--gs-border);
-    padding-left: 10px;
-    margin: 4px 0 0 4px;
-  }
-  .level-title {
-    font-size: 11px;
-    color: var(--gs-fg-bright);
-    font-weight: 600;
-  }
-  .level-detail {
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    color: var(--gs-fg-muted);
   }
 </style>

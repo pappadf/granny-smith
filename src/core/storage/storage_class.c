@@ -82,6 +82,17 @@ static value_t storage_image_attr_writable(struct object *self, const member_t *
     return val_bool(img ? img->writable : false);
 }
 
+static value_t storage_image_attr_reads(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_uint(8, img ? img->reads : 0);
+}
+static value_t storage_image_attr_writes(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_uint(8, img ? img->writes : 0);
+}
+
 // Designated-initialiser table keyed by `image_type` so a future enum
 // reorder (or a value inserted out of order) keeps the labels aligned.
 static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
@@ -104,32 +115,42 @@ static const member_t storage_image_members[] = {
      .name = "index",
      .flags = VAL_RO,
      .doc = "Position in storage.images; stable only while no image is added or removed",
-     .attr = {.type = V_INT, .get = storage_image_attr_index, .set = NULL}      },
+     .attr = {.type = V_INT, .get = storage_image_attr_index, .set = NULL}                                      },
     {.kind = M_ATTR,
      .name = "filename",
      .flags = VAL_RO,
      .doc = "Last path component, for display",
-     .attr = {.type = V_STRING, .get = storage_image_attr_filename, .set = NULL}},
+     .attr = {.type = V_STRING, .get = storage_image_attr_filename, .set = NULL}                                },
     {.kind = M_ATTR,
      .name = "path",
      .flags = VAL_RO,
      .doc = "Full host path or storage URI the image was opened from",
-     .attr = {.type = V_STRING, .get = storage_image_attr_path, .set = NULL}    },
+     .attr = {.type = V_STRING, .get = storage_image_attr_path, .set = NULL}                                    },
     {.kind = M_ATTR,
      .name = "raw_size",
      .flags = VAL_RO,
      .doc = "Logical size of the image in bytes, before any container or compression layer",
-     .attr = {.type = V_UINT, .get = storage_image_attr_raw_size, .set = NULL}  },
+     .attr = {.type = V_UINT, .get = storage_image_attr_raw_size, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "writable",
      .flags = VAL_RO,
      .doc = "True when guest writes reach the image (directly or through a checkpoint delta)",
-     .attr = {.type = V_BOOL, .get = storage_image_attr_writable, .set = NULL}  },
+     .attr = {.type = V_BOOL, .get = storage_image_attr_writable, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "type",
      .flags = VAL_RO,
      .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
-     .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}      },
+     .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}                                      },
+    {.kind = M_ATTR,
+     .name = "reads",
+     .flags = VAL_RO,
+     .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
+     .attr = {.type = V_UINT, .get = storage_image_attr_reads, .set = NULL, .presentation_flags = VAL_VOLATILE} },
+    {.kind = M_ATTR,
+     .name = "writes",
+     .flags = VAL_RO,
+     .doc = "Drive writes to the image since it was opened",
+     .attr = {.type = V_UINT, .get = storage_image_attr_writes, .set = NULL, .presentation_flags = VAL_VOLATILE}},
 };
 
 static const class_desc_t storage_image_class = {
@@ -676,6 +697,77 @@ static const arg_decl_t storage_cp_args[] = {
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
     {.name = "flag", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional -r / -R for recursive"},
 };
+// === The file-transfer window =================================================
+//
+// How the web page moves file bytes in and out without touching the file
+// system from its own thread.  Under WasmFS a Module.FS call from the page runs
+// ON the page's thread, which then busy-waits for the OPFS backend -- and in
+// WebKit a worker's OPFS request is itself served through the page's thread, so
+// Safari deadlocked on every upload.  Instead the page copies a chunk into
+// this buffer (it is ordinary wasm memory: a plain store, no waiting) and asks
+// for it to be written -- or asks for a chunk to be read into it -- through the
+// request bridge, so every file access runs here, on the emulator thread, as
+// all others do.  One chunk in flight at a time; the page serialises them.
+#define STORAGE_XFER_BYTES (2u << 20)
+static uint8_t g_xfer[STORAGE_XFER_BYTES];
+
+static value_t storage_attr_xfer_buffer(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(4, (uint32_t)(uintptr_t)g_xfer);
+}
+
+static value_t storage_attr_xfer_size(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(4, STORAGE_XFER_BYTES);
+}
+
+// `storage.xfer_write(path, offset, len)` — write the window's first `len`
+// bytes to `path` at `offset`; offset 0 creates (or truncates) the file.
+static value_t storage_method_xfer_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    uint64_t offset = argv[1].u, len = argv[2].u;
+    if (len > STORAGE_XFER_BYTES)
+        return val_err("storage.xfer_write: %llu bytes is more than the %u-byte window", (unsigned long long)len,
+                       STORAGE_XFER_BYTES);
+    FILE *f = fopen(argv[0].s, offset == 0 ? "wb" : "r+b");
+    if (!f)
+        return val_err("storage.xfer_write: cannot open '%s': %s", argv[0].s, strerror(errno));
+    bool ok = fseeko(f, (off_t)offset, SEEK_SET) == 0 && fwrite(g_xfer, 1, (size_t)len, f) == (size_t)len;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok)
+        return val_err("storage.xfer_write: write to '%s' at %llu failed", argv[0].s, (unsigned long long)offset);
+    return val_bool(true);
+}
+
+// `storage.xfer_read(path, offset, len)` — read up to `len` bytes of `path`
+// from `offset` into the window; answers how many (0 at the end).
+static value_t storage_method_xfer_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    uint64_t offset = argv[1].u, len = argv[2].u;
+    if (len > STORAGE_XFER_BYTES)
+        len = STORAGE_XFER_BYTES;
+    FILE *f = fopen(argv[0].s, "rb");
+    if (!f)
+        return val_err("storage.xfer_read: cannot open '%s': %s", argv[0].s, strerror(errno));
+    size_t n = 0;
+    if (fseeko(f, (off_t)offset, SEEK_SET) == 0)
+        n = fread(g_xfer, 1, (size_t)len, f);
+    fclose(f);
+    return val_uint(4, (uint32_t)n);
+}
+
+static const arg_decl_t storage_xfer_args[] = {
+    {.name = "path",   .kind = V_STRING, .doc = "File path"                             },
+    {.name = "offset", .kind = V_UINT,   .doc = "Byte offset in the file"               },
+    {.name = "len",    .kind = V_UINT,   .doc = "Byte count (at most storage.xfer_size)"},
+};
+
 static const arg_decl_t storage_export_raw_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Source image path (host, or nested inside a mounted image)"},
     {.name = "dst", .kind = V_STRING, .doc = "Destination host path for the decoded raw image"           },
@@ -717,34 +809,54 @@ static const arg_decl_t storage_partmap_args[] = {
 };
 
 static const member_t storage_members[] = {
+    {.kind = M_ATTR,
+     .name = "xfer_buffer",
+     .flags = VAL_RO | M_CAT_INTERNAL,
+     .doc = "Address of the file-transfer window in wasm memory (the web page's upload path)",
+     .attr = {.type = V_UINT, .get = storage_attr_xfer_buffer, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "xfer_size",
+     .flags = VAL_RO | M_CAT_INTERNAL,
+     .doc = "Size of the file-transfer window in bytes",
+     .attr = {.type = V_UINT, .get = storage_attr_xfer_size, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "xfer_write",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Write the transfer window's first len bytes to path at offset (offset 0 creates the file)",
+     .method = {.args = storage_xfer_args, .nargs = 3, .result = V_BOOL, .fn = storage_method_xfer_write}},
+    {.kind = M_METHOD,
+     .name = "xfer_read",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Read up to len bytes of path at offset into the transfer window; answers the count",
+     .method = {.args = storage_xfer_args, .nargs = 3, .result = V_UINT, .fn = storage_method_xfer_read}},
     {.kind = M_METHOD,
      .name = "import",
      .doc = "Copy a host file to a destination path",
-     .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}        },
+     .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}},
     {.kind = M_METHOD,
      .name = "list_dir",
      .doc = "List directory entries (V_LIST of V_STRING names)",
-     .method = {.args = storage_list_dir_args, .nargs = 1, .result = V_LIST, .fn = storage_method_list_dir}      },
+     .method = {.args = storage_list_dir_args, .nargs = 1, .result = V_LIST, .fn = storage_method_list_dir}},
     {.kind = M_METHOD,
      .name = "cp",
      .doc = "Copy a host or VFS path to another VFS path",
-     .method = {.args = storage_cp_args, .nargs = 3, .result = V_BOOL, .fn = storage_method_cp}                  },
+     .method = {.args = storage_cp_args, .nargs = 3, .result = V_BOOL, .fn = storage_method_cp}},
     {.kind = M_METHOD,
      .name = "export_raw",
      .doc = "Decode a disk image (incl. NDIF nested in a mounted image) to a flat raw image on the host",
-     .method = {.args = storage_export_raw_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_export_raw}  },
+     .method = {.args = storage_export_raw_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_export_raw}},
     {.kind = M_METHOD,
      .name = "find_media",
      .doc = "Find a recognised floppy/disk image in a directory",
-     .method = {.args = storage_find_media_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_find_media}  },
+     .method = {.args = storage_find_media_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_find_media}},
     {.kind = M_METHOD,
      .name = "hd_create",
      .doc = "Create a blank SCSI HD image",
-     .method = {.args = storage_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_hd_create}    },
+     .method = {.args = storage_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_hd_create}},
     {.kind = M_METHOD,
      .name = "fd_create",
      .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
-     .method = {.args = storage_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_fd_create}    },
+     .method = {.args = storage_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_fd_create}},
     {.kind = M_METHOD,
      .name = "profile_create",
      .doc = "Create a blank Lisa/XL ProFile image (raw 532-byte/block zero file)",
@@ -753,43 +865,43 @@ static const member_t storage_members[] = {
     {.kind = M_METHOD,
      .name = "rm",
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
-     .method = {.args = storage_rm_args, .nargs = 1, .result = V_BOOL, .fn = storage_method_rm}                  },
+     .method = {.args = storage_rm_args, .nargs = 1, .result = V_BOOL, .fn = storage_method_rm}},
     {.kind = M_METHOD,
      .name = "mv",
      .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
-     .method = {.args = storage_mv_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_mv}                  },
+     .method = {.args = storage_mv_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_mv}},
     {.kind = M_METHOD,
      .name = "partmap",
      .doc = "Print the Apple Partition Map of an image",
-     .method = {.args = storage_partmap_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_partmap}        },
+     .method = {.args = storage_partmap_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_partmap}},
     {.kind = M_METHOD,
      .name = "probe",
      .doc = "Identify the format of a disk image",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_probe}              },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_probe}},
     {.kind = M_METHOD,
      .name = "list_partitions",
      .doc = "Print the cached image-VFS mount table",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_list_partitions}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_list_partitions}},
     {.kind = M_METHOD,
      .name = "mounts",
      .doc = "Alias for list_partitions; prints the mount table",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_mounts}                         },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_mounts}},
     {.kind = M_METHOD,
      .name = "unmount",
      .doc = "Drop a cached image-VFS mount",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_unmount}            },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_unmount}},
     {.kind = M_METHOD,
      .name = "path_exists",
      .doc = "True if the path resolves in the shell VFS",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_path_exists}        },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_path_exists}},
     {.kind = M_METHOD,
      .name = "path_size",
      .doc = "File size in bytes (0 on stat failure)",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_UINT, .fn = storage_method_path_size}          },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_UINT, .fn = storage_method_path_size}},
     {.kind = M_METHOD,
      .name = "path_compare",
      .doc = "Byte-compare two files: -1 if identical, else the first differing offset",
-     .method = {.args = storage_compare_args, .nargs = 2, .result = V_INT, .fn = storage_method_path_compare}    },
+     .method = {.args = storage_compare_args, .nargs = 2, .result = V_INT, .fn = storage_method_path_compare}},
 };
 
 const class_desc_t storage_class_real = {

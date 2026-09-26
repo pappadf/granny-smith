@@ -47,10 +47,9 @@ def boot_image(image, latch) {
     if $latch {
         machine.adb.keyboard.down "capslock"
     }
-    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, skip the 20 s
-    # WaitForPollDrive spin-up window, then boot blocks onward.
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan (no spin-up
+    # wait: the machine's PRAM disables it), then boot blocks onward.
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
     scheduler.run 1200000000
 }
 
@@ -65,15 +64,16 @@ def row_control_75() {
 }
 
 # THE MECHANISM.  Assert the emulator fix at the exact place the boot blocks
-# read: KeyMap's bit for key 0x39.  Measured, the boot blocks do their btst at
-# ~398.7 M instructions, so 380 M is after the ADB init that would have thrown
-# the latch away and before anything acts on it.
+# read: KeyMap's bit for key 0x39.  Measured, KeyMap holds the latch from
+# ~230 M (after the ADB init that would have thrown it away) until the boot
+# acts on it at ~330 M -- the machine no longer waits for drives in between --
+# so 280 M is between the two.
 def row_keymap_latch() {
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
     machine.rtc.time = 0xE0800000 # post-install seed, as in boot_image
     machine.scsi.attach_hd "${$img}" 0
     machine.adb.keyboard.down "capslock"
-    scheduler.run 380000000
+    scheduler.run 280000000
     let km = machine.cpu.mmu.peek(0x17B, 1)
     echo "KeyMap[$017B] = ${$km:02x}"
     assert ($km & 0x02) != 0 "the latched Caps Lock never reached KeyMap — the ADB init discarded it"

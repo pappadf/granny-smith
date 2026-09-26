@@ -157,7 +157,7 @@ static void set_protect(rtc_t *rtc, bool on) {
 
 // The headline: the same physical byte, reached both ways, obeys the same law.
 static void test_protect_covers_both_windows(void) {
-    rtc_t *rtc = rtc_init(NULL, NULL, true);
+    rtc_t *rtc = rtc_init(NULL, NULL, true, NULL);
     CHECK(rtc != NULL, "rtc_init returned NULL");
     if (!rtc)
         return;
@@ -193,7 +193,7 @@ static void test_protect_covers_both_windows(void) {
 // 8 sectors x 32 bytes: walk one address in each sector and confirm it lands
 // where the decode says, with no aliasing between sectors.
 static void test_extended_address_decode(void) {
-    rtc_t *rtc = rtc_init(NULL, NULL, true);
+    rtc_t *rtc = rtc_init(NULL, NULL, true, NULL);
     if (!rtc)
         return;
     set_protect(rtc, false);
@@ -217,7 +217,7 @@ static void test_extended_address_decode(void) {
 // The extended layout leaves $0C..$0F free for the XPRAM 'NuMc' signature,
 // which is the whole point of the split.
 static void test_legacy_group_mapping(void) {
-    rtc_t *ext = rtc_init(NULL, NULL, true);
+    rtc_t *ext = rtc_init(NULL, NULL, true, NULL);
     if (!ext)
         return;
     set_protect(ext, false);
@@ -233,7 +233,7 @@ static void test_legacy_group_mapping(void) {
         CHECK(rtc_pram_read(ext, a) == 0x00, "extended chip: legacy write touched $%02X (the 'NuMc' slot)", a);
     rtc_delete(ext);
 
-    rtc_t *legacy = rtc_init(NULL, NULL, false);
+    rtc_t *legacy = rtc_init(NULL, NULL, false, NULL);
     if (!legacy)
         return;
     set_protect(legacy, false);
@@ -263,7 +263,7 @@ static void test_legacy_group_mapping(void) {
 // It runs first: reintroducing the defect aborts here, at rtc.c's invariant,
 // before the rest of the suite has run.
 static void test_fresh_chip_accepts_a_command(void) {
-    rtc_t *rtc = rtc_init(NULL, NULL, true);
+    rtc_t *rtc = rtc_init(NULL, NULL, true, NULL);
     CHECK(rtc != NULL, "rtc_init returned NULL");
     if (!rtc)
         return;
@@ -285,7 +285,7 @@ static void test_fresh_chip_accepts_a_command(void) {
 // deliberate policy choice (a test that protects PRAM should see writes
 // refused), which is separate from the chip law above.
 static void test_host_path_honours_protect(void) {
-    rtc_t *rtc = rtc_init(NULL, NULL, true);
+    rtc_t *rtc = rtc_init(NULL, NULL, true, NULL);
     if (!rtc)
         return;
 
@@ -300,8 +300,34 @@ static void test_host_path_honours_protect(void) {
     rtc_delete(rtc);
 }
 
+// A machine's PRAM is built from its ROM family's defaults (rtc.h): the
+// token, the Start Manager table, MMFlags with the booted bits, the no-wait
+// bit -- and nothing else, SysParam's validity byte included.
+static void test_construction_defaults(void) {
+    static const uint8_t tbl[PRAM_STARTMGR_LEN] = {0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xDF};
+    const pram_defaults_t d = {.xpram_token = 0x4E754D63u, .startmgr = tbl, .mmflags = 0x05, .mmflags_booted = 0x20};
+    rtc_t *rtc = rtc_init(NULL, NULL, true, &d);
+    if (!rtc)
+        return;
+    CHECK(rtc_pram_read(rtc, 0x0C) == 'N' && rtc_pram_read(rtc, 0x0F) == 'c', "XPRAM token not stamped");
+    CHECK(rtc_pram_read(rtc, 0x77) == 0x01 && rtc_pram_read(rtc, 0x7B) == 0xDF, "Start Manager table not copied");
+    CHECK(rtc_pram_read(rtc, 0x8A) == 0x25, "MMFlags is not the cold value with the booted bits");
+    CHECK(rtc_pram_read(rtc, 0x01) == 0x80, "the Start Manager's no-wait bit is not set");
+    CHECK(rtc_pram_read(rtc, 0x10) == 0x00, "SysParam must stay invalid for the ROM");
+    CHECK(rtc_pram_read(rtc, 0x00) == 0x00, "physical $00 is not a validity byte");
+    rtc_delete(rtc);
+
+    // No defaults: all zero (the Open Firmware machines).
+    rtc = rtc_init(NULL, NULL, true, NULL);
+    if (!rtc)
+        return;
+    CHECK(rtc_pram_read(rtc, 0x0C) == 0 && rtc_pram_read(rtc, 0x01) == 0, "PRAM not zero without defaults");
+    rtc_delete(rtc);
+}
+
 int main(void) {
     test_fresh_chip_accepts_a_command();
+    test_construction_defaults();
     test_protect_covers_both_windows();
     test_extended_address_decode();
     test_legacy_group_mapping();

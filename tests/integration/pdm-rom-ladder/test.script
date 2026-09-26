@@ -126,8 +126,8 @@ assert machine.cpu.mmu.peek(0xCB3, 1) == 0x45 "L16: BoxFlag != boxPDM50WLCD (69)
 # path with HTAB growth and exception re-entry.  (The VBL raster is what
 # lets the boot leave the Sonora driver's WaitVSync spin and reach here —
 # the dossier's §11.6 polarity suspect resolved: the flag is active-low.)
-assert machine.cpu.mmu.translate(0x60B00000) == 0x0000000 "L18: framebuffer window not at physical 0"
-assert machine.cpu.mmu.translate(0x61000000) == 0x1780000 "L18: DMA window not mapped (24 MB layout)"
+assert machine.cpu.mmu.translate(0x60B00000).phys == 0x0000000 "L18: framebuffer window not at physical 0"
+assert machine.cpu.mmu.translate(0x61000000).phys == 0x1780000 "L18: DMA window not mapped (24 MB layout)"
 
 # --- L17: pseudo-VIA timing — ticks and seconds advance at rate ------------
 # Cuda/PRAM/ADB init and the tick chain were proven live above; L17 pins

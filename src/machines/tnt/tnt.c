@@ -504,7 +504,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     uint32_t tick_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram); // NULL: NVRAM is a later phase
 
     // The ESCC cell behind the Grand Central decode, reachable through two
     // apertures (legacy +$12000 for the 68k Serial Driver, ESCC +$13000
@@ -938,6 +938,23 @@ static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
     return system_media_attach_std(cfg, slot);
 }
 
+// The runtime attach/eject verbs' view of the same second bus.
+static bool tnt_media_present(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_present_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_present_std(cfg, bus, unit);
+}
+
+static int tnt_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_eject_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_eject_std(cfg, bus, unit);
+}
+
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand
 // Central external it reaches (23-25 on Bandit 1, 27-29 on Bandit 2 — the
 // 9500's own published external-interrupt assignment); the lines are
@@ -1118,9 +1135,11 @@ static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
     return floppy_insert(cfg->floppy, drive, disk);
 }
 
+// A drive the board does not have holds no disk (see pdm_fd_present: the
+// auto-select no longer needs a phantom "occupied" to stay off drive 1).
 static bool tnt_fd_present(config_t *cfg, int drive) {
     if (!cfg->floppy || drive != 0)
-        return true; // no such bay: report it occupied so nothing targets it
+        return false;
     return floppy_is_inserted(cfg->floppy, drive);
 }
 
@@ -1139,4 +1158,6 @@ const machine_substrate_t tnt_substrate = {
     .display = tnt_display,
     .media_detach = tnt_media_detach,
     .media_attach = tnt_media_attach,
+    .media_present = tnt_media_present,
+    .media_eject = tnt_media_eject,
 };

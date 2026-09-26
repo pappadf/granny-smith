@@ -56,7 +56,7 @@ checkpoint as POD, object class) with these core-specific requirements:
 | **Bus access** | **injected at init** (the guest-physical hook pattern of `sonic.h`/`psc.h`).  The core never touches `g_active_*`, `g_page_table`, the MMU, or any sprint-timing global.  On-chip resources (internal RAM, MMIO) decode *inside* the core before the hooks are consulted |
 | State | one POD struct, pointers last; checkpoint boundary before the first pointer; hook pointers re-planted on restore |
 | **Disassembler** | mandatory, dependency-free, raw words + pc in / text out — linkable standalone (`tools/disasm --arch <name>`) |
-| Object class | `machine.<name>` node with register attrs (hex), `instr_count`, `state` (`reset`/`running`/`idle`/`crashed`), methods `step(n)` and `disasm(addr, count)`.  **No `$` aliases** — those stay reserved for the main CPU |
+| Object class | `machine.<name>` node with register attrs (hex), `instr_count`, `state` (`reset`/`running`/`idle`/`crashed`), methods `step(n)`, `disasm(addr, count)` (prints) and `frame(addr, count, before)` — the `debug_frame_build` map every CPU-like object answers, from a `cpu_debug_if_t` the glue fills in (`arch`, `get_pc`, `disasm`, `regs`, optionally `fpu`), so the web Debug view renders it with no per-core code.  **No `$` aliases** — those stay reserved for the main CPU |
 | Logging | own `LOG_USE_CATEGORY_NAME("<arch>")` (in the glue; the core itself stays I/O-free) |
 | Tests | unit suite under `tests/unit/suites/<arch>/` against a mock bus |
 

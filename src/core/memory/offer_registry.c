@@ -9,6 +9,8 @@
 
 #include "log.h"
 
+#include <dirent.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -148,4 +150,28 @@ bool offer_registry_catalogued(const offer_registry_t *r, const char *card_id) {
 
 bool offer_registry_resolvable(const offer_registry_t *r, const char *card_id) {
     return offer_registry_find(r, card_id, 0, NULL) != NULL;
+}
+
+void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ext) {
+    if (!dir || !*dir)
+        return;
+    DIR *d = opendir(dir);
+    if (!d)
+        return;
+    size_t ext_len = ext ? strlen(ext) : 0;
+    struct dirent *entry;
+    char path[1200];
+    while ((entry = readdir(d)) != NULL) {
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (name[0] == '.')
+            continue; // dotfiles, and . and ..
+        if (ext && (len <= ext_len || strcmp(name + len - ext_len, ext) != 0))
+            continue;
+        const char *sep = dir[strlen(dir) - 1] == '/' ? "" : "/";
+        if (snprintf(path, sizeof(path), "%s%s%s", dir, sep, name) >= (int)sizeof(path))
+            continue;
+        offer_registry_add(r, path, false);
+    }
+    closedir(d);
 }

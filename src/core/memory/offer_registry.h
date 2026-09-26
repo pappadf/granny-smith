@@ -60,6 +60,12 @@ typedef struct offer_registry {
 // promote the entry to the explicit pick.  At most one entry is explicit.
 void offer_registry_add(offer_registry_t *r, const char *path, bool explicit_pick);
 
+// Offer every file in `dir` whose name ends in `ext` (NULL: any name),
+// skipping dotfiles -- each identified by content like any offer.  The one
+// directory walk the platforms share (S3): headless offers the ROM's sibling
+// *.vrom / *.prom, the browser its persistent vROM and PROM stores.
+void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ext);
+
 // Drop every entry and free the registry's storage.
 void offer_registry_clear(offer_registry_t *r);
 

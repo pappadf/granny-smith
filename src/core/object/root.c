@@ -198,14 +198,15 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
 // process-wide ones stay here.
 
 // `quit()` — request emulator shutdown. Headless sets the script
-// quit flag and stops the scheduler; WASM is a no-op (the browser
-// owns the lifecycle).
+// quit flag and stops the scheduler; in the browser, which owns the page's
+// lifecycle, it says so rather than doing nothing silently.
 static value_t method_root_quit(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     (void)argv;
-    gs_quit();
+    if (gs_quit() != 0)
+        return val_err("quit: not supported on this platform");
     return val_none();
 }
 
@@ -248,13 +249,16 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
 }
 
 // `download(path)` — trigger a browser file download. Routes to the
-// platform-specific gs_download (WASM streams via Blob+anchor; headless
-// prints a "not supported" stub).
+// platform-specific gs_download (WASM streams via Blob+anchor); a platform
+// with no browser says so.
 static value_t method_root_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    return val_bool(gs_download(argv[0].s) == 0);
+    int rc = gs_download(argv[0].s);
+    if (rc == -2)
+        return val_err("download: not supported on this platform");
+    return val_bool(rc == 0);
 }
 
 static const arg_decl_t root_path_arg[] = {

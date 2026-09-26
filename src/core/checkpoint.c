@@ -1432,7 +1432,8 @@ static value_t checkpoint_method_snapshot(struct object *self, const member_t *m
 }
 
 // `checkpoint.auto` (V_BOOL, RW) — exposes the WASM background-checkpoint
-// loop's enabled flag. Headless's weak defaults stub out.
+// loop's enabled flag.  A platform with no such loop (headless) reads false
+// and refuses the set.
 static value_t checkpoint_attr_auto_get(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -1442,7 +1443,8 @@ static value_t checkpoint_attr_auto_get(struct object *self, const member_t *m) 
 static value_t checkpoint_attr_auto_set(struct object *self, const member_t *m, value_t in) {
     (void)self;
     (void)m;
-    gs_checkpoint_auto_set(in.b);
+    if (gs_checkpoint_auto_set(in.b) != 0)
+        return val_err("checkpoint.auto: not supported on this platform");
     return val_none();
 }
 

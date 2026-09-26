@@ -1719,10 +1719,9 @@ static value_t scsi_dev_method_insert(struct object *self, const member_t *m, in
     if (slot > 6)
         return val_err("scsi.devices[%u].insert: %u is the initiator slot, expected 0..6", slot, slot);
 
-    if (scsi_device_type(scsi, slot) == scsi_dev_cdrom) {
-        add_scsi_cdrom_on(global_emulator, scsi, argv[0].s, (int)slot);
-        return val_bool(true);
-    }
+    // The attach's own result (it answered true whatever happened, N-04).
+    if (scsi_device_type(scsi, slot) == scsi_dev_cdrom)
+        return val_bool(add_scsi_cdrom_on(global_emulator, scsi, argv[0].s, (int)slot));
     return val_bool(system_hd_attach_on(scsi, argv[0].s, (int)slot) == 0);
 }
 

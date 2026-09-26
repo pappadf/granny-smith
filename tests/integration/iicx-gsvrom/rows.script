@@ -24,18 +24,15 @@ def row_gsvrom_sweep() {
     #     pre-correction to invert) and the gray desktop pattern comes from
     #     the GS driver's own GrayScreen fill.
     #
-    # Boot budget per cell: identical five-line prefix to iicx-video-modes
-    # (50M to the Universal-ROM wait routine, $017A Cmd-Shift-Power poke to
-    # short-circuit boot-drive discovery, 11M to the stable Welcome window).
+    # Boot budget per cell: straight into the Welcome window, as in
+    # iicx-video-modes -- the machine's PRAM already skips the startup-drive
+    # wait.  Each budget is the middle of that cell's measured window
+    # (44..51M for most; 46..54M for the 15" and 21" 8 bpp cells).
 
     # --- 13" RGB at 1/2/4/8 bpp --------------------------------------------------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.id == "iicx"                      "machine.id != iicx"
     assert machine.screen.width == 640               "13in_rgb 1bpp width != 640"
     assert machine.screen.height == 480              "13in_rgb 1bpp height != 480"
@@ -48,11 +45,7 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_2bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.rtc.pram.peek(0x48) == 0x81       "13in_rgb 2bpp savedMode != 0x81"
     assert machine.memory.peek.l(0xf9200208) == 0x88 "13in_rgb 2bpp CLUTPBCR != 0x88"
     assert machine.memory.peek.l(0xf920000c) == 0x28 "13in_rgb 2bpp RowWords != 0x28"
@@ -64,11 +57,7 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_4bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.rtc.pram.peek(0x48) == 0x82       "13in_rgb 4bpp savedMode != 0x82"
     assert machine.memory.peek.l(0xf9200208) == 0x90 "13in_rgb 4bpp CLUTPBCR != 0x90"
     assert machine.memory.peek.l(0xf920000c) == 0x50 "13in_rgb 4bpp RowWords != 0x50"
@@ -77,11 +66,7 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.rtc.pram.peek(0x48) == 0x83       "13in_rgb 8bpp savedMode != 0x83"
     assert machine.memory.peek.l(0xf9200208) == 0x98 "13in_rgb 8bpp CLUTPBCR != 0x98"
     assert machine.memory.peek.l(0xf920000c) == 0xa0 "13in_rgb 8bpp RowWords != 0xa0"
@@ -91,11 +76,7 @@ def row_gsvrom_sweep() {
     # --- 12" RGB at 1/8 bpp ------------------------------------------------------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.screen.width == 512               "12in_rgb 1bpp width != 512"
     assert machine.screen.height == 384              "12in_rgb 1bpp height != 384"
     assert machine.rtc.pram.peek(0x48) == 0x80       "12in_rgb 1bpp savedMode != 0x80"
@@ -105,11 +86,7 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.rtc.pram.peek(0x48) == 0x83       "12in_rgb 8bpp savedMode != 0x83"
     check("goldens/welcome-12in_rgb-512x384-8bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 512x384x8 12in_rgb")
@@ -117,11 +94,7 @@ def row_gsvrom_sweep() {
     # --- 15" Portrait B&W at 1/8 bpp ---------------------------------------------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.screen.width == 640               "15in_bw 1bpp width != 640"
     assert machine.screen.height == 870              "15in_bw 1bpp height != 870"
     assert machine.rtc.pram.peek(0x48) == 0x80       "15in_bw 1bpp savedMode != 0x80"
@@ -131,11 +104,7 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 49000000
     assert machine.rtc.pram.peek(0x48) == 0x83       "15in_bw 8bpp savedMode != 0x83"
     check("goldens/welcome-15in_bw-640x870-8bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 640x870x8 15in_bw")
@@ -143,11 +112,7 @@ def row_gsvrom_sweep() {
     # --- 21" RGB at 1/8 bpp (neutral grays — identity gamma, see header) ---------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.screen.width == 1152              "21in_rgb 1bpp width != 1152"
     assert machine.screen.height == 870              "21in_rgb 1bpp height != 870"
     assert machine.rtc.pram.peek(0x48) == 0x80       "21in_rgb 1bpp savedMode != 0x80"
@@ -158,10 +123,6 @@ def row_gsvrom_sweep() {
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 63000000
     assert machine.rtc.pram.peek(0x48) == 0x83       "21in_rgb 8bpp savedMode != 0x83"
     check("goldens/welcome-21in_rgb-1152x870-8bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 1152x870x8 21in_rgb")
@@ -176,11 +137,7 @@ def row_gsvrom_24ac() {
     # other siblings; the extended-sense probe in the GS ROM picks the monitor.
     machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 48000000
     assert machine.screen.width == 640                "24ac 640x480 width != 640"
     assert machine.screen.height == 480               "24ac 640x480 height != 480"
     assert machine.rtc.pram.peek(0x48) == 0x82        "24ac savedMode != 0x82 (8bpp)"
@@ -194,11 +151,7 @@ def row_gsvrom_24ac() {
 
     machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_832x624_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 20000000
+    scheduler.run 58000000
     assert machine.screen.width == 832                "24ac 832x624 width != 832"
     assert machine.screen.height == 624               "24ac 832x624 height != 624"
     assert machine.rtc.pram.peek(0x48) == 0x82        "24ac savedMode != 0x82 (8bpp)"
@@ -226,14 +179,10 @@ def row_gsvrom_custom_mode() {
     # Generic 8_24 at a custom resolution: the declaration ROM is generated
     # with an 800x600 video sResource (the default 13" monitor's slot), the
     # staged custom depth (8bpp) is PRAM-seeded, and the Welcome screen paints
-    # at 800x600.  The five-line boot prefix mirrors iicx-gsvrom-video-modes.
+    # at 800x600, and the row runs on to the Finder.
     machine.boot model="iicx" ram=8192 video_card="8_24" custom_mode="800x600x8" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    scheduler.run 50000000
-    machine.memory.poke.w 0x017A 0x8805
-    scheduler.run 1500000
-    machine.memory.poke.w 0x017A 0
-    scheduler.run 111000000
+    scheduler.run 130000000
     assert machine.screen.width == 800                "custom width != 800"
     assert machine.screen.height == 600               "custom height != 600"
     assert machine.config.custom_mode == "800x600x8"  "custom_mode not recorded"

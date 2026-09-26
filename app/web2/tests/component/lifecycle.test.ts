@@ -29,9 +29,8 @@ describe('emulator lifecycle (no Module in jsdom)', () => {
 
   it('initEmulator is a no-op against an un-booted bus', async () => {
     await initEmulator({
-      model: 'Macintosh Plus',
+      model: 'plus',
       vrom: '(auto)',
-      ram: '4 MB',
       floppies: [],
       hd: '(none)',
       cd: '(none)',

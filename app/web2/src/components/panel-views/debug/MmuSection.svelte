@@ -5,22 +5,19 @@
   import { machine } from '@/state/machine.svelte';
   import MmuStateTab from './MmuStateTab.svelte';
   import MmuTranslateTab from './MmuTranslateTab.svelte';
-  import MmuMapTab from './MmuMapTab.svelte';
-  import MmuDescriptorsTab from './MmuDescriptorsTab.svelte';
 
+  // State and Translate read the core's own MMU (bus/mmu.ts).  Map and
+  // Descriptors are gone until the core can walk a table for them: they
+  // showed a hand-written SE/30 layout as if it were live.
   const TABS = [
     { key: 'state', label: 'State' },
     { key: 'translate', label: 'Translate' },
-    { key: 'map', label: 'Map' },
-    { key: 'descriptors', label: 'Descriptors' },
   ] as const;
 
-  // Gate the MMU register panel on the typed capability kind directly: the
-  // TC/CRP/SRP/TT0/TT1/MMUSR views are a 68030 PMMU concept (the Lisa segment
-  // MMU and "none" never show them).  The other debug panels gate on the
-  // derived machine.mmuEnabled bool, which is the same condition expressed as
-  // the logical-vs-physical addressing flag they need.
-  const visible = $derived(machine.mmuKind === '68030_pmmu');
+  // Every MMU kind: the 68030 PMMU, the 68040, the PowerPC 601/604 and the
+  // Lisa's segment MMU all answer the same translate/peek (the section used
+  // to show only on a 68030, with fixtures).
+  const visible = $derived(machine.mmuKind !== 'none');
 </script>
 
 {#if visible}
@@ -39,6 +36,7 @@
               type="button"
               class="su-btn"
               class:active={debug.mmuSupervisor}
+              aria-pressed={debug.mmuSupervisor}
               onclick={() => (debug.mmuSupervisor = true)}
               title="Supervisor root"
             >
@@ -48,6 +46,7 @@
               type="button"
               class="su-btn"
               class:active={!debug.mmuSupervisor}
+              aria-pressed={!debug.mmuSupervisor}
               onclick={() => (debug.mmuSupervisor = false)}
               title="User root"
             >
@@ -56,14 +55,10 @@
           </div>
         {/snippet}
       </TabStrip>
-      {#if debug.mmuSubtab === 'state'}
-        <MmuStateTab />
-      {:else if debug.mmuSubtab === 'translate'}
+      {#if debug.mmuSubtab === 'translate'}
         <MmuTranslateTab />
-      {:else if debug.mmuSubtab === 'map'}
-        <MmuMapTab />
       {:else}
-        <MmuDescriptorsTab />
+        <MmuStateTab />
       {/if}
     {/if}
   </CollapsibleSection>

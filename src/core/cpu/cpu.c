@@ -7,6 +7,7 @@
 #include "cpu_internal.h"
 
 #include "alias.h"
+#include "debug.h"
 #include "fpu.h"
 #include "log.h"
 #include "memory.h"
@@ -355,6 +356,16 @@ void cpu_attach_mmu(cpu_t *cpu, void *mmu) {
         object_attach(cpu->cpu_object, cpu->mmu_object);
 }
 
+// Bind a `cpu.mmu` child of an MMU kind this file does not model (the Lisa's
+// segment MMU), so every MMU is reached at the same path.  Idempotent.
+void cpu_attach_mmu_node(cpu_t *cpu, const class_desc_t *cls, void *data) {
+    if (!cpu || !cpu->cpu_object || !cls || cpu->mmu_object)
+        return;
+    cpu->mmu_object = object_new(cls, data, "mmu");
+    if (cpu->mmu_object)
+        object_attach(cpu->cpu_object, cpu->mmu_object);
+}
+
 // Free resources associated with a CPU instance
 void cpu_delete(cpu_t *cpu) {
     if (!cpu)
@@ -464,10 +475,122 @@ static uint32_t cpu_dbgif_translate(void *ctx, uint32_t logical, bool *ok) {
     return phys;
 }
 
+// The 68K register file for debug.frame: D0-D7, A0-A7, PC, SR, USP, SSP.
+static void cpu_dbgif_regs(void *ctx, struct value_map_builder *regs) {
+    cpu_t *cpu = (cpu_t *)ctx;
+    char rname[4];
+    for (int i = 0; i < 8; i++) {
+        snprintf(rname, sizeof(rname), "d%d", i);
+        val_map_put(regs, rname, val_int((int64_t)cpu_get_dn(cpu, i)));
+    }
+    for (int i = 0; i < 8; i++) {
+        snprintf(rname, sizeof(rname), "a%d", i);
+        val_map_put(regs, rname, val_int((int64_t)cpu_get_an(cpu, i)));
+    }
+    val_map_put(regs, "pc", val_int((int64_t)cpu_get_pc(cpu)));
+    val_map_put(regs, "sr", val_int((int64_t)cpu_get_sr(cpu)));
+    val_map_put(regs, "usp", val_int((int64_t)cpu_get_usp(cpu)));
+    val_map_put(regs, "ssp", val_int((int64_t)cpu_get_ssp(cpu)));
+}
+
+// Side-effect-free conversion of an 80-bit extended-precision register
+// to a host double for display. The FPU's own fpu_to_double helper sets
+// inexact / SNaN bits in fpsr — we don't want that for an observer that
+// just reads register state. Precision loss in normal range is fine for
+// human-readable display; tests/tools that need bit-exact bytes can
+// consume the hex form instead.
+static double fp80_to_display_double(float80_reg_t f) {
+    int sign = FP80_SIGN(f);
+    uint16_t exp = FP80_EXP(f);
+    if (exp == 0 && f.mantissa == 0)
+        return sign ? -0.0 : 0.0;
+    if (exp == 0x7FFF) {
+        if (f.mantissa == 0 || (f.mantissa & ~(1ULL << 63)) == 0)
+            return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
+        return (double)0.0 / 0.0;
+    }
+    int32_t true_exp = (int32_t)exp - 16383;
+    if (true_exp > 1023)
+        return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
+    if (true_exp < -1074)
+        return sign ? -0.0 : 0.0;
+    uint64_t mant52;
+    int double_exp;
+    if (true_exp >= -1022) {
+        mant52 = (f.mantissa >> 11) & 0x000FFFFFFFFFFFFFULL;
+        double_exp = true_exp + 1023;
+    } else {
+        // Subnormal in double precision.
+        int shift = -1022 - true_exp;
+        if (shift >= 53)
+            return sign ? -0.0 : 0.0;
+        mant52 = (f.mantissa >> (11 + shift)) & 0x000FFFFFFFFFFFFFULL;
+        double_exp = 0;
+    }
+    uint64_t bits = ((uint64_t)sign << 63) | ((uint64_t)double_exp << 52) | mant52;
+    double result;
+    memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+// The 68881/68882/68040 register file for debug.frame: fp0-fp7 as the raw
+// 80-bit value in hex plus a decimal rendering, and FPCR/FPSR/FPIAR.
+static bool cpu_dbgif_fpu(void *ctx, struct value_map_builder *fb) {
+    fpu_state_t *fpu = (fpu_state_t *)((cpu_t *)ctx)->fpu;
+    if (!fpu)
+        return false;
+    value_t *fps = NULL;
+    size_t n_fps = 0, cap_fps = 0;
+    char hexbuf[24];
+    char valbuf[40];
+    for (int i = 0; i < 8; i++) {
+        value_map_builder_t *fpb = val_map_new();
+        // 4 hex digits of exponent (with sign bit) + underscore + 16 hex
+        // digits of mantissa. Underscore makes scanning easier.
+        snprintf(hexbuf, sizeof(hexbuf), "%04X_%016llX", fpu->fp[i].exponent, (unsigned long long)fpu->fp[i].mantissa);
+        val_map_put(fpb, "hex", val_str(hexbuf));
+        // Decimal display — handle special values explicitly and keep the
+        // value a string (Inf/NaN aren't legal JSON numbers).
+        uint16_t e = FP80_EXP(fpu->fp[i]);
+        int sign = FP80_SIGN(fpu->fp[i]);
+        if (e == 0 && fpu->fp[i].mantissa == 0)
+            snprintf(valbuf, sizeof(valbuf), sign ? "-0" : "0");
+        else if (e == 0x7FFF)
+            snprintf(valbuf, sizeof(valbuf), "%s",
+                     (fpu->fp[i].mantissa == 0 || (fpu->fp[i].mantissa & ~(1ULL << 63)) == 0) ? (sign ? "-Inf" : "Inf")
+                                                                                              : "NaN");
+        else
+            snprintf(valbuf, sizeof(valbuf), "%.17g", fp80_to_display_double(fpu->fp[i]));
+        val_map_put(fpb, "val", val_str(valbuf));
+        val_list_push(&fps, &n_fps, &cap_fps, val_map_finish(fpb));
+    }
+    val_map_put(fb, "fp", val_list(fps, n_fps));
+    val_map_put(fb, "fpcr", val_int((int64_t)fpu->fpcr));
+    val_map_put(fb, "fpsr", val_int((int64_t)fpu->fpsr));
+    val_map_put(fb, "fpiar", val_int((int64_t)fpu->fpiar));
+    return true;
+}
+
+// Supervisor state, from SR.S.
+static bool cpu_dbgif_is_supervisor(void *ctx) {
+    return cpu_is_supervisor((cpu_t *)ctx);
+}
+
 cpu_debug_if_t cpu_debug_if(cpu_t *cpu) {
     // translate_mac is NULL: on 68K machines the mac world is the core's
     // own space (memory_debug_read already applies the 68k MMU).
-    cpu_debug_if_t dif = {cpu, cpu_dbgif_get_pc, cpu_dbgif_set_pc, cpu_dbgif_disasm, cpu_dbgif_translate, NULL};
+    // translate_code is NULL: the debug translation serves both sides.
+    cpu_debug_if_t dif = {.ctx = cpu,
+                          .get_pc = cpu_dbgif_get_pc,
+                          .set_pc = cpu_dbgif_set_pc,
+                          .disasm = cpu_dbgif_disasm,
+                          .translate = cpu_dbgif_translate,
+                          .translate_mac = NULL,
+                          .arch = "m68k",
+                          .regs = cpu_dbgif_regs,
+                          .fpu = cpu_dbgif_fpu,
+                          .translate_code = NULL,
+                          .is_supervisor = cpu_dbgif_is_supervisor};
     return dif;
 }
 
@@ -715,6 +838,18 @@ static value_t attr_cpu_instr_count(struct object *self, const member_t *m) {
     return val_uint(8, cpu_instr_count());
 }
 
+// `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
+// the contract every CPU-like object shares (debug_frame_build; debug.frame
+// is the same call).
+static value_t cpu_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    cpu_debug_if_t dif = cpu_debug_if(cpu);
+    return debug_frame_build(&dif, "machine.cpu.frame", argc, argv);
+}
+
 // CCR-bit attributes (cpu.c / cpu.v / cpu.z / cpu.n / cpu.x). 1-bit reads
 // and writes that round-trip through SR — the legacy `set z 1` interface
 // in typed form.
@@ -796,6 +931,9 @@ static const member_t cpu_members[] = {
     ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
     ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
     ATTR_RO("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
+    {.kind = M_METHOD, .name = "frame",
+     .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},
 };
 // clang-format on
 
@@ -1000,6 +1138,119 @@ static value_t attr_mmu_enabled(struct object *self, const member_t *m) {
     return val_uint(1, mmu->enabled ? 1 : 0);
 }
 
+// === Typed translate / peek, shared by the 030 and 040 nodes ================
+//
+// The same two methods exist on every MMU kind (68030, 68040, PowerPC, the
+// Lisa's segment MMU), with the same result shapes, so a debugger needs no
+// per-kind code to label an address or read memory (D3).
+
+// Whether a 68040 transparent-translation register maps `addr` for this
+// privilege: enabled, base/mask match on A31-A24, and the S field allows it.
+static bool tt040_hit(uint32_t tt, uint32_t addr, bool supervisor) {
+    if (!TT040_E(tt))
+        return false;
+    uint32_t mask = ~TT040_MASK(tt) & 0xFFu;
+    if (((addr >> 24) & mask) != (TT040_BASE(tt) & mask))
+        return false;
+    uint32_t sf = TT040_SFIELD(tt);
+    return sf >= 2 || (sf == 1) == supervisor;
+}
+
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via}.  Omitted
+// `supervisor` means the CPU's current state.  `fetch` selects the 040's
+// instruction TT registers; the 030 PMMU's TT match does not distinguish.
+static value_t mmu68k_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr = (uint32_t)argv[0].u;
+    bool sup = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : debug_cpu_is_supervisor();
+    bool fetch = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
+    if (!g_mmu || !g_mmu->enabled)
+        return debug_translation_result(addr, true, "identity");
+    if (g_mmu->m040) {
+        mmu040_state_t *m4 = g_mmu->m040;
+        if (tt040_hit(fetch ? m4->itt0 : m4->dtt0, addr, sup) || tt040_hit(fetch ? m4->itt1 : m4->dtt1, addr, sup))
+            return debug_translation_result(addr, true, "tt");
+    } else if (mmu_check_tt(g_mmu, addr, false, sup)) {
+        return debug_translation_result(addr, true, "tt");
+    }
+    uint32_t pa = addr;
+    bool ok = mmu_translate_checked(g_mmu, addr, sup, &pa);
+    return debug_translation_result(pa, ok, "page");
+}
+
+// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
+// reads through the MMU in the CPU's current state; "physical" reads the
+// physical address directly.
+static value_t mmu68k_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr = (uint32_t)argv[0].u;
+    unsigned size = (argc >= 2 && argv[1].kind == V_UINT) ? (unsigned)argv[1].u : 4;
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("peek: space must be \"logical\" or \"physical\"");
+    if (size != 1 && size != 2 && size != 4)
+        return val_err("peek: size must be 1, 2 or 4");
+    if (physical) {
+        bool ok;
+        uint32_t v = memory_debug_read_phys(addr, size, &ok);
+        return ok ? val_uint((uint8_t)size, v) : val_err("peek: nothing at physical $%08X", addr);
+    }
+    uint32_t v = size == 1   ? memory_debug_read_uint8(addr)
+                 : size == 2 ? memory_debug_read_uint16(addr)
+                             : memory_debug_read_uint32(addr);
+    return val_uint((uint8_t)size, v);
+}
+
+// peek's default size: a named `space` must be reachable past it.
+static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+
+static const arg_decl_t mmu68k_translate_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical address"},
+    {.name = "supervisor",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "translate for supervisor (true) or user (false); default: the CPU's current state"},
+    {.name = "fetch",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "instruction fetch (the 040's ITT registers) rather than a data access"},
+};
+static const arg_decl_t mmu68k_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address"},
+    {.name = "size",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_peek_size4,
+     .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "\"logical\" (default) or \"physical\""},
+};
+
+// The two methods, appended to both 68K mmu member tables.
+#define MMU68K_METHODS                                                                                                 \
+    {                                                                                                                  \
+        .kind = M_METHOD,                                                                                              \
+        .name = "translate",                                                                                           \
+        .doc = "Translate an address: {phys, valid, via}, side-effect-free (same shape on every MMU kind)",            \
+        .method = {.args = mmu68k_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu68k_method_translate} \
+},        \
+    {                                                                                                                  \
+        .kind = M_METHOD, .name = "peek",                                                                              \
+        .doc = "Read memory, logical (through the MMU) or physical; side-effect-free", .method = {                     \
+            .args = mmu68k_peek_args,                                                                                  \
+            .nargs = 3,                                                                                                \
+            .result = V_UINT,                                                                                          \
+            .fn = mmu68k_method_peek                                                                                   \
+        }                                                                                                              \
+    }
+
 static const member_t mmu_members[] = {
     {.kind = M_ATTR,
      .name = "tc",
@@ -1046,6 +1297,7 @@ static const member_t mmu_members[] = {
      .flags = VAL_RO,
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}                              },
+    MMU68K_METHODS,
 };
 
 static const class_desc_t mmu_class = {
@@ -1141,6 +1393,7 @@ static const member_t mmu040_members[] = {
      .flags = VAL_RO,
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}                             },
+    MMU68K_METHODS,
 };
 
 static const class_desc_t mmu040_class = {

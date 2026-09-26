@@ -6,33 +6,33 @@ import { buildCommandsTree, type CommandNode } from '@/lib/commandsTree';
 //   root → machine → cpu (with a `step` method) ; root verbs `echo`/`download`
 //   plus one alias. We assert the generated shape, not a hand-listed set.
 vi.mock('@/bus/emulator', () => {
-  const methodInfo = (name: string, doc = '', task = '') => ({
+  const method = (name: string, doc = '') => ({
     name,
-    verb: name,
+    kind: 'method',
     category: 'basic',
-    task,
+    label: name,
     doc,
+    verb: name,
+    task: '',
     destructive: false,
     mutate: false,
     hidden: false,
     nargs: 0,
   });
+  const child = (name: string) => ({
+    name,
+    kind: 'child',
+    category: 'basic',
+    label: name,
+    doc: '',
+  });
   return {
     isModuleReady: () => true,
-    gsEval: async (path: string, args?: unknown[]) => {
-      // Root verbs.
-      if (path === 'meta.methods') return ['echo'];
-      if (path === 'meta.method_info') return methodInfo(String(args?.[0]), 'print args');
-      // Root children.
-      if (path === 'objects') return ['machine'];
-      // machine: no methods, one child (cpu).
-      if (path === 'machine.meta.methods') return [];
-      if (path === 'machine.meta.children') return ['cpu'];
-      // cpu: a `step` method, no children.
-      if (path === 'machine.cpu.meta.methods') return ['step'];
-      if (path === 'machine.cpu.meta.method_info')
-        return methodInfo(String(args?.[0]), 'run N instructions');
-      if (path === 'machine.cpu.meta.children') return [];
+    // One meta.members call per node: its methods and its children.
+    gsEval: async (path: string) => {
+      if (path === 'meta.members') return [method('echo', 'print args'), child('machine')];
+      if (path === 'machine.meta.members') return [child('cpu')];
+      if (path === 'machine.cpu.meta.members') return [method('step', 'run N instructions')];
       if (path === 'shell.aliases') return ['pc=machine.cpu.pc'];
       return null;
     },

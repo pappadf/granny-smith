@@ -10,11 +10,14 @@
 // Singer's frame cadence while the browser produces on its own, so the two
 // rates have to be decoupled by a queue.
 //
-// Lifecycle & privacy: the browser's recording indicator is lit only while
-// the guest is genuinely listening. `enabled` is the user's master toggle
-// (the click is also the user gesture getUserMedia wants); `guestActive`
-// follows pSndInEn via Module.onAudioInState. The MediaStreamTrack is
-// attached only while BOTH hold — the same discipline as the camera.
+// Lifecycle & privacy: `enabled` is the user's master toggle (the click is
+// also the user gesture getUserMedia wants); `guestActive` follows pSndInEn
+// via Module.onAudioInState. The MediaStreamTrack attaches the first time
+// the guest listens with the toggle on, and then stays until the toggle goes
+// off -- not until the guest stops listening, because a recognizer's
+// endpointer stops and starts input all the time (see syncStreamInner). So
+// the recording indicator does not light on the toggle alone, but it stays
+// lit between utterances.
 //
 // Capture settings matter more than they look. The browser's own
 // echoCancellation / noiseSuppression / autoGainControl are all turned OFF
@@ -25,6 +28,25 @@
 // The C side then applies the PlainTalk microphone's own characteristics.
 
 import { getModuleHeap } from '@/bus/emulator';
+import {
+  MIC_MAGIC,
+  MIC_VERSION,
+  MIC_W_CONNECTED,
+  MIC_W_JS_PEAK,
+  MIC_W_JS_RMS,
+  MIC_W_LABEL_LEN,
+  MIC_W_LABEL_OFF,
+  MIC_W_OVERRUNS,
+  MIC_W_RATE,
+  MIC_W_RD,
+  MIC_W_RESET_REQ,
+  MIC_W_RING_LEN,
+  MIC_W_RING_OFF,
+  MIC_W_UNDERRUNS,
+  MIC_W_WR,
+  shmBlockOk,
+} from '@/bus/shmLayout';
+import { micRingSlot } from './micRing';
 import { gsEval } from '@/bus/emulator';
 import { opfs } from '@/bus/opfs';
 import { machine } from './machine.svelte';
@@ -62,23 +84,23 @@ export const microphone: MicrophoneState = $state({
   deviceId: '',
 });
 
-// Shared-heap transport, announced by em_audio_in.c at startup.
-// Header Int32 layout: [0] connected, [1] wr, [2] rd, [3] rate,
-// [4] underruns, [5] overruns, [6] js_rms, [7] js_peak, then char
-// label[64] at byte 32. The int16 ring follows the 96-byte header.
+// Shared-heap transport, announced by em_audio_in.c at startup; the layout
+// (bus/shmLayout.ts) comes from its control block, read on first use -- the
+// address arrives while the module is still starting.
+let announcedPtr = 0;
+let layoutChecked = false;
 let shmPtr = 0;
 let ringLen = 0;
-const HDR_BYTES = 96;
-const LABEL_OFF = 32; // char label[64] — the chosen capture device
-const LABEL_MAX = 63;
+let ringOff = 0;
+let labelOff = 0;
+let labelMax = 0;
 
 let stream: MediaStream | null = null;
-// Frames captured since the user turned the microphone on, across any graph
-// rebuild. The ring's own `wr` is zeroed by resetRing() whenever the graph is
-// rebuilt, so it answers "how long since the last rebuild?", not "has the
-// browser been delivering audio?" -- and a diagnostic that reads like the
-// second while meaning the first is how a dead capture path gets mistaken for
-// a failing recognizer.
+// Frames captured since the user turned the microphone on. The ring's own
+// `wr` counts only what was queued while the guest recorded, since the page
+// loaded -- not "has the browser been delivering audio?" -- and a diagnostic
+// that reads like the second while meaning the first is how a dead capture
+// path gets mistaken for a failing recognizer.
 let capturedTotal = 0;
 let audioCtx: AudioContext | null = null;
 let node: AudioWorkletNode | ScriptProcessorNode | null = null;
@@ -90,9 +112,37 @@ let source: MediaStreamAudioSourceNode | null = null;
 // prefer. It is deliberately NOT used to construct the AudioContext — see
 // buildGraph — so it is not taken as a parameter here at all; the rate
 // actually negotiated travels the other way instead, via resetRing.
-export function onAudioInReady(ptr: number, len: number): void {
-  shmPtr = ptr;
-  ringLen = len;
+export function onAudioInReady(ptr: number): void {
+  announcedPtr = ptr;
+  layoutChecked = false;
+  shmPtr = 0;
+}
+
+// The transport's heap views, once its control block has been read and
+// found to be the layout this build speaks; null otherwise.
+function transport(): ReturnType<typeof getModuleHeap> {
+  const heap = getModuleHeap();
+  if (!heap || !announcedPtr) return null;
+  if (!layoutChecked) {
+    layoutChecked = true;
+    if (!shmBlockOk(heap.i32, announcedPtr, MIC_MAGIC, MIC_VERSION)) {
+      // A core from another build: writing through a guessed layout would
+      // corrupt the heap. Say so, and leave the microphone off.
+      console.error('[mic] sample transport layout not recognised; microphone disabled');
+      showNotification(
+        'Microphone unavailable: this emulator build has a different ring layout',
+        'error',
+      );
+      return null;
+    }
+    const w = announcedPtr >> 2;
+    ringOff = Atomics.load(heap.i32, w + MIC_W_RING_OFF);
+    ringLen = Atomics.load(heap.i32, w + MIC_W_RING_LEN);
+    labelOff = Atomics.load(heap.i32, w + MIC_W_LABEL_OFF);
+    labelMax = Atomics.load(heap.i32, w + MIC_W_LABEL_LEN) - 1;
+    shmPtr = announcedPtr;
+  }
+  return shmPtr ? heap : null;
 }
 
 // Expose the counters for the e2e spec (and for anyone debugging in the
@@ -130,23 +180,23 @@ export function onAudioInState(active: boolean): void {
 // --- Header helpers ---------------------------------------------------------
 
 function setConnected(v: boolean): void {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr) return;
-  Atomics.store(heap.i32, shmPtr >> 2, v ? 1 : 0);
+  const heap = transport();
+  if (!heap) return;
+  Atomics.store(heap.i32, (shmPtr >> 2) + MIC_W_CONNECTED, v ? 1 : 0);
 }
 
 // Drop anything queued and tell the C side what rate is actually arriving.
+// The drop is REQUESTED: the consumer honours it (rd = wr) where `rd` has its
+// one writer. This used to zero `wr` and `rd` itself, racing a pull on the
+// worker (N-47). The producer writes only its own words.
 function resetRing(rate: number): void {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr) return;
+  const heap = transport();
+  if (!heap) return;
   const hdr = shmPtr >> 2;
-  Atomics.store(heap.i32, hdr + 1, 0); // wr
-  Atomics.store(heap.i32, hdr + 2, 0); // rd
-  Atomics.store(heap.i32, hdr + 3, rate | 0);
-  Atomics.store(heap.i32, hdr + 4, 0); // underruns
-  Atomics.store(heap.i32, hdr + 5, 0); // overruns
-  Atomics.store(heap.i32, hdr + 6, 0); // js_rms
-  Atomics.store(heap.i32, hdr + 7, 0); // js_peak
+  Atomics.store(heap.i32, hdr + MIC_W_RATE, rate | 0);
+  Atomics.store(heap.i32, hdr + MIC_W_JS_RMS, 0);
+  Atomics.store(heap.i32, hdr + MIC_W_JS_PEAK, 0);
+  Atomics.add(heap.i32, hdr + MIC_W_RESET_REQ, 1);
 }
 
 // Publish the capture device's name where the emulator's level meter prints
@@ -155,12 +205,12 @@ function resetRing(rate: number): void {
 // device delivers exactly what a broken ring would: full-rate quanta of
 // near-silence. The meter cannot distinguish those; the device name can.
 function publishLabel(text: string): void {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr) return;
+  const heap = transport();
+  if (!heap) return;
   const bytes = new TextEncoder().encode(text);
-  const n = Math.min(bytes.length, LABEL_MAX);
-  for (let i = 0; i < n; i++) heap.u8[shmPtr + LABEL_OFF + i] = bytes[i];
-  heap.u8[shmPtr + LABEL_OFF + n] = 0;
+  const n = Math.min(bytes.length, labelMax);
+  for (let i = 0; i < n; i++) heap.u8[shmPtr + labelOff + i] = bytes[i];
+  heap.u8[shmPtr + labelOff + n] = 0;
 }
 
 // Live transport counters, for the toolbar tooltip. Without these, "the
@@ -176,8 +226,8 @@ export function micStats(): {
   overruns: number;
   captured: number;
 } {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr)
+  const heap = transport();
+  if (!heap)
     return {
       ptr: shmPtr,
       rate: 0,
@@ -190,12 +240,12 @@ export function micStats(): {
   const hdr = shmPtr >> 2;
   return {
     ptr: shmPtr,
-    rate: Atomics.load(heap.i32, hdr + 3),
-    produced: Atomics.load(heap.i32, hdr + 1),
-    consumed: Atomics.load(heap.i32, hdr + 2),
-    underruns: Atomics.load(heap.i32, hdr + 4),
-    overruns: Atomics.load(heap.i32, hdr + 5),
-    captured: capturedTotal, // session-cumulative; `produced` is per-graph
+    rate: Atomics.load(heap.i32, hdr + MIC_W_RATE),
+    produced: Atomics.load(heap.i32, hdr + MIC_W_WR) >>> 0,
+    consumed: Atomics.load(heap.i32, hdr + MIC_W_RD) >>> 0,
+    underruns: Atomics.load(heap.i32, hdr + MIC_W_UNDERRUNS),
+    overruns: Atomics.load(heap.i32, hdr + MIC_W_OVERRUNS),
+    captured: capturedTotal, // since the user turned the microphone on
   };
 }
 
@@ -204,16 +254,16 @@ export function micStats(): {
 // lock-free claim is false. A producer that gets ahead is the consumer's
 // problem to notice, and it does (em_audio_in.c drops its own backlog).
 function pushSamples(block: Float32Array): void {
-  const heap = getModuleHeap();
-  if (!heap || !shmPtr || !ringLen) return;
+  const heap = transport();
+  if (!heap || !ringLen) return;
   // Mic live but the guest is not recording: keep the graph up (rebuilding it
   // is what broke recognition) and simply do not queue audio it never asked
   // for. Cheap, and it leaves the ring exactly where the guest left it.
   if (!microphone.guestActive) return;
   const hdr = shmPtr >> 2;
-  let wr = Atomics.load(heap.i32, hdr + 1);
+  const wr = Atomics.load(heap.i32, hdr + MIC_W_WR);
   const n = Math.min(block.length, ringLen);
-  const base = (shmPtr + HDR_BYTES) >> 1; // int16 index of ring[0]
+  const base = (shmPtr + ringOff) >> 1; // int16 index of ring[0]
   // Measure what the WORKLET handed us, before our conversion or the ring:
   // the single number that says whether the browser is capturing at all.
   let sum = 0;
@@ -221,16 +271,15 @@ function pushSamples(block: Float32Array): void {
   for (let i = 0; i < n; i++) {
     const v = block[i];
     const s = v < -1 ? -32768 : v > 1 ? 32767 : Math.round(v * 32767);
-    heap.i16[base + ((wr + i) % ringLen)] = s;
+    heap.i16[base + micRingSlot(wr, i, ringLen)] = s;
     sum += s * s;
     if (Math.abs(s) > peak) peak = Math.abs(s);
   }
   if (n) {
-    Atomics.store(heap.i32, hdr + 6, Math.round(Math.sqrt(sum / n)));
-    Atomics.store(heap.i32, hdr + 7, peak);
+    Atomics.store(heap.i32, hdr + MIC_W_JS_RMS, Math.round(Math.sqrt(sum / n)));
+    Atomics.store(heap.i32, hdr + MIC_W_JS_PEAK, peak);
   }
-  wr += n;
-  Atomics.store(heap.i32, hdr + 1, wr);
+  Atomics.store(heap.i32, hdr + MIC_W_WR, (wr + n) | 0);
   capturedTotal += n;
 }
 
@@ -418,7 +467,8 @@ async function syncStreamInner(): Promise<void> {
   // flow again on every open, and reset the ring counters each time. The
   // utterance arrived shredded across those gaps and recognition failed, with
   // `produced` reporting time-since-last-rebuild rather than the session.
-  // `guestActive` now gates only whether samples are WRITTEN (see pushSamples).
+  // `guestActive` now gates only whether samples are WRITTEN (see pushSamples),
+  // and when the stream first ATTACHES: the check after acquireStream below.
   const want = microphone.enabled;
   if (want && !stream) {
     const s = await acquireStream();
@@ -429,7 +479,11 @@ async function syncStreamInner(): Promise<void> {
       }
       return;
     }
-    // The toggle may have flipped while the permission prompt was up.
+    // Attach only once the guest is listening (the toggle alone does not
+    // light the recording indicator), and not if the toggle went off while
+    // the permission prompt was up.  An acquire that stops here straight
+    // away is the permission prompt under the click's gesture -- the only
+    // one: setMicrophoneEnabled used to prime a second time (N-60).
     if (!(microphone.enabled && microphone.guestActive)) {
       for (const t of s.getTracks()) t.stop();
       return;
@@ -463,8 +517,8 @@ async function syncStreamInner(): Promise<void> {
 
 // User intent: connect/disconnect the microphone from the guest's sound
 // input. Connecting selects the `host` source on machine.audioin (the Singer
-// then reports a microphone present); the device itself attaches only while
-// the guest is actually recording (syncStream).
+// then reports a microphone present); the device itself attaches once the
+// guest starts recording (syncStream).
 export async function setMicrophoneEnabled(on: boolean): Promise<void> {
   microphone.enabled = on;
   if (on) {
@@ -476,18 +530,9 @@ export async function setMicrophoneEnabled(on: boolean): Promise<void> {
     // noise floor rather than stale audio.
     setConnected(true);
     await gsEval('machine.audioin.source', ['host']);
-    // Prime the permission prompt under the click's user gesture, then
-    // release the device again if the guest is not recording yet.
+    // Under the click's user gesture: attaches the device if the guest is
+    // recording, and otherwise asks for permission and releases it again.
     await syncStream();
-    if (!microphone.guestActive && microphone.enabled) {
-      const s = await acquireStream();
-      if (s) {
-        for (const t of s.getTracks()) t.stop();
-      } else {
-        showNotification('Microphone unavailable — permission denied or no device', 'warning');
-        await setMicrophoneEnabled(false);
-      }
-    }
   } else {
     setConnected(false);
     stopStream();

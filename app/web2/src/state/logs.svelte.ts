@@ -125,7 +125,7 @@ export async function refreshCatLevels(): Promise<void> {
 
 // Write a new level for one category and mirror locally on success.
 export async function setCatLevel(cat: string, level: number): Promise<boolean> {
-  const { gsEval, isModuleReady } = await import('@/bus/emulator');
+  const { gsEval, gsOk, isModuleReady } = await import('@/bus/emulator');
   if (!isModuleReady()) return false;
   // debug.log(category, level) adjusts the per-subsystem level.  `category`
   // is a typed enum over the log manifest, so an unknown name is REJECTED
@@ -133,7 +133,8 @@ export async function setCatLevel(cat: string, level: number): Promise<boolean> 
   // debug.log_levels(), which lists that manifest, so they are always valid.
   // Further options are named arguments: debug.log(cat, stdout=, file=, ts=,
   // pc=).
-  await gsEval('debug.log', [cat, level]);
+  // Mirror the level only if the core took it.
+  if (!gsOk(await gsEval('debug.log', [cat, level]))) return false;
   logs.catLevels[cat] = level;
   return true;
 }

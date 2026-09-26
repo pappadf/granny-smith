@@ -4,9 +4,6 @@
 export interface MachineConfig {
   /** Model id as accepted by `machine.boot` (e.g. "plus", "se30", "iici"). */
   model: string;
-  /** Optional human-readable model name from `machine.profile(id).name`,
-   *  used for status-bar display when set. Falls back to `model` if absent. */
-  modelName?: string;
   /** ROM image path (under /opfs/images/rom/). Becomes the boot document's
    *  `rom` field, which machine.boot requires — the document is the whole
    *  specification and inherits nothing (proposal-boot-vs-reset §3.1). */
@@ -37,23 +34,19 @@ export interface MachineConfig {
    *  and hands the screen to the NuBus card.  Unset = the machine's own
    *  default monitor. */
   monitor?: string;
-  ram: string;
+  /** RAM in KB — one of the profile's ram_options.  Omitted: the core
+   *  boots the model's ram_default (there is no frontend fallback). */
+  ramKb?: number;
   /** Ordered list of floppy image paths, one per drive slot. Entries that
    *  are empty / '(none)' are skipped (no insertion into that slot). */
   floppies: string[];
   hd: string;
-  /** How to attach `hd`: 'scsi' (default — scsi.attach_hd) or 'profile' (the
-   *  Lisa/XL parallel-port ProFile — profile.attach). Sourced from the model's
-   *  `machine.profile(id).hd_bus`. */
-  hdBus?: 'scsi' | 'profile';
-  /** SCSI id (bay) to attach `hd` at. Chosen in the dialog from the model's
-   *  `scsi_buses`; defaults to the bay flagged `boot`, else the first one. */
-  hdId?: number;
-  /** Object-model name of the bus that bay is on — "scsi", "scsi2". Comes
-   *  from the model's `scsi_buses[].object`, so a machine with a second
-   *  controller (the Network Servers' two fast/wide channels) needs no
-   *  special case here. Defaults to "scsi". */
-  hdBusObject?: string;
+  /** Which hard-disk bay `hd` goes into: an index into the model's
+   *  profile.hd_bays (0, the default, is the boot bay).  The core knows
+   *  which bus each bay is on — SCSI, the Network Servers' second channel,
+   *  the Lisa's ProFile — so nothing here does. */
+  hdBay?: number;
+  /** CD image, into the model's CD bay; only sent for a model that has one. */
   cd: string;
 }
 
@@ -67,17 +60,6 @@ export interface OpfsEntry {
   name: string;
   path: string;
   kind: 'file' | 'directory';
-}
-
-export interface RecentEntry {
-  model: string;
-  ram: string;
-  media: string;
-  /** ROM image path to boot with. machine.boot requires a rom in every
-   *  document (nothing is inherited), so a recent without one cannot be
-   *  relaunched directly. */
-  rom?: string;
-  lastUsedAt: number;
 }
 
 export type ImageCategory = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd';

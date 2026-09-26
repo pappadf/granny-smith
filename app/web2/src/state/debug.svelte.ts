@@ -1,7 +1,9 @@
 // Reactive state for the Debug panel view. UI-only — not persisted.
 // Section expansion lives here (Phase 7 will tee this to OPFS).
 
-export type MmuSubtab = 'state' | 'translate' | 'map' | 'descriptors';
+// Map and Descriptors return when the core can walk a table (they showed
+// fixtures before, D5).
+export type MmuSubtab = 'state' | 'translate';
 export type MemoryMode = 'logical' | 'physical';
 
 interface DebugState {
@@ -17,9 +19,10 @@ interface DebugState {
     memory: boolean;
     mmu: boolean;
     breakpoints: boolean;
-    watchpoints: boolean;
     callstack: boolean;
   };
+  /** Open state of each auxiliary core's section, by its node name. */
+  auxOpen: Record<string, boolean>;
   /** Last-rendered register values keyed by name (e.g. 'd0', 'pc'). Used
    *  by RegistersSection to flash changed values for ~800 ms after a
    *  Step. */
@@ -49,9 +52,9 @@ export const debug: DebugState = $state({
     memory: false,
     mmu: false,
     breakpoints: false,
-    watchpoints: false,
     callstack: false,
   },
+  auxOpen: {},
   registersPrev: {},
   refreshGen: 0,
 });
@@ -93,7 +96,6 @@ export function resetDebugSections(): void {
     memory: false,
     mmu: false,
     breakpoints: false,
-    watchpoints: false,
     callstack: false,
   };
 }

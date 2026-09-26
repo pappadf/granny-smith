@@ -646,7 +646,7 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
     // signed (a negative index passed it), compiles out under GS_FAST, and
     // even when enabled gs_assert_fail returns and execution continues into
     // the subscript.  Matches floppy_drive_eject below.
-    if (!floppy || drive < 0 || drive >= NUM_DRIVES)
+    if (!floppy || drive < 0 || drive >= floppy->n_drives)
         return -1;
 
     if (floppy->disk[drive] != NULL) {
@@ -674,6 +674,12 @@ bool floppy_is_inserted(floppy_t *floppy, int drive) {
     if (!floppy || drive < 0 || drive >= NUM_DRIVES)
         return false;
     return floppy->disk[drive] != NULL;
+}
+
+void floppy_set_drive_count(floppy_t *floppy, int n) {
+    if (!floppy)
+        return;
+    floppy->n_drives = n < 0 ? 0 : n > NUM_DRIVES ? NUM_DRIVES : n;
 }
 
 // Get the memory-mapped I/O interface for machine-level address decode
@@ -854,6 +860,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     }
 
     memset(floppy, 0, sizeof(floppy_t));
+    floppy->n_drives = NUM_DRIVES;
     for (int d = 0; d < NUM_DRIVES; d++)
         floppy->drives[d].write_hdr_start = -1;
     floppy->type = type;
@@ -1623,8 +1630,8 @@ static const class_desc_t floppy_drive_class = {
 
 static struct object *floppy_drives_get(struct object *self, int index) {
     floppy_t *floppy = (floppy_t *)object_data(self);
-    if (!floppy || index < 0 || index >= NUM_DRIVES)
-        return NULL;
+    if (!floppy || index < 0 || index >= floppy->n_drives)
+        return NULL; // a drive the machine does not have (N-06)
     return floppy->drive_objects[index];
 }
 
