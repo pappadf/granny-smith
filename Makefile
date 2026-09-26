@@ -59,44 +59,14 @@ MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/wasm
 PEELER_DIR    := src/peeler
 
-# -- Source discovery --
-# Wildcard patterns auto-discover new .c files in each subdirectory.
+# -- Sources --
+# CORE_SRC, PEELER_SRC, CORE_INCLUDES and PEELER_INCLUDES are shared with
+# Makefile.headless.
 
-# Core emulator sources (platform-agnostic)
-CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/dsp3210/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/ppc/*.c) \
-            $(wildcard $(CORE_DIR)/memory/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/nubus/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/nubus/cards/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/pci/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/pci/cards/*.c) \
-            $(wildcard $(CORE_DIR)/scheduler/*.c) \
-            $(wildcard $(CORE_DIR)/debug/*.c) \
-            $(wildcard $(CORE_DIR)/storage/*.c) \
-            $(wildcard $(CORE_DIR)/network/*.c) \
-            $(wildcard $(CORE_DIR)/shell/*.c) \
-            $(wildcard $(CORE_DIR)/object/*.c) \
-            $(wildcard $(CORE_DIR)/vfs/*.c) \
-            $(shell find $(MACHINES_DIR) -name '*.c')
+include src/sources.mk
 
 # Platform-specific sources (WASM/Emscripten)
 PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
-
-# Peeler library sources
-PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
-              $(PEELER_DIR)/lib/appledouble.c \
-              $(PEELER_DIR)/lib/err.c \
-              $(PEELER_DIR)/lib/util.c \
-              $(PEELER_DIR)/lib/formats/bin.c \
-              $(PEELER_DIR)/lib/formats/cpt.c \
-              $(PEELER_DIR)/lib/formats/hqx.c \
-              $(PEELER_DIR)/lib/formats/sit.c \
-              $(PEELER_DIR)/lib/formats/sit3.c \
-              $(PEELER_DIR)/lib/formats/sit13.c \
-              $(PEELER_DIR)/lib/formats/sit15.c
 
 # The LaserWriter bridge reaches its interpreter through one transport per
 # build (laserwriter_transport.h): in the browser the interpreter runs in
@@ -152,37 +122,7 @@ endif
 
 # -- Include paths --
 
-PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
-
-INCLUDES := -I$(CORE_DIR) \
-            -I$(CORE_DIR)/cpu \
-            -I$(CORE_DIR)/cpu/dsp3210 \
-            -I$(CORE_DIR)/cpu/ppc \
-            -I$(CORE_DIR)/memory \
-            -I$(CORE_DIR)/peripherals \
-            -I$(CORE_DIR)/peripherals/nubus \
-            -I$(CORE_DIR)/peripherals/nubus/cards \
-            -I$(CORE_DIR)/peripherals/pci \
-            -I$(CORE_DIR)/peripherals/pci/cards \
-            -I$(CORE_DIR)/scheduler \
-            -I$(CORE_DIR)/debug \
-            -I$(CORE_DIR)/storage \
-            -I$(CORE_DIR)/network \
-            -I$(CORE_DIR)/shell \
-            -I$(CORE_DIR)/object \
-            -I$(CORE_DIR)/vfs \
-            -I$(MACHINES_DIR) \
-            -I$(MACHINES_DIR)/runtime \
-            -I$(MACHINES_DIR)/mac030 \
-            -I$(MACHINES_DIR)/glue \
-            -I$(MACHINES_DIR)/mdu \
-            -I$(MACHINES_DIR)/mcu \
-            -I$(MACHINES_DIR)/av \
-            -I$(MACHINES_DIR)/pdm \
-            -I$(MACHINES_DIR)/tnt \
-            -I$(MACHINES_DIR)/oss \
-            -I$(MACHINES_DIR)/compact \
-            -I$(MACHINES_DIR)/lisa \
+INCLUDES := $(CORE_INCLUDES) \
             -Isrc/platform \
             -I$(PLATFORM_DIR) \
             -I$(VROM68K_OUT) \
