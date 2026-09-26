@@ -8,5 +8,5 @@ TEST_DESC := debug.breakpoints/.logpoints indexed children with sparse stable in
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -26,5 +26,5 @@ TEST_SETUP := rm -f $(TEST_DATA)/systems/System_7_0_1.image.delta $(TEST_DATA)/s
 # Boot from floppy with 8 MB RAM; the HD is created and attached in test.script
 TEST_ARGS := fd=$(TEST_DATA)/systems/System_7_0_1.image ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

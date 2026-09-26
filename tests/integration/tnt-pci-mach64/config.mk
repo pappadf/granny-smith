@@ -26,5 +26,5 @@ TEST_ARGS := model=pm9500 ram=32768
 # like, and neither is interesting enough to store as a binary.
 TEST_SETUP := python3 tnt-pci-mach64/make-fixtures.py "$(WORK_DIR)"
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -32,7 +32,7 @@ import sys
 
 # Lines allowed to match in the tracked tree.  The tree is being cleaned in
 # steps; this ceiling only ever goes down, and the check fails above it.
-MAX_MATCHES = 1835
+MAX_MATCHES = 1693
 
 PATTERNS = [
     ("design-document name", r"proposal-[a-z0-9]"),

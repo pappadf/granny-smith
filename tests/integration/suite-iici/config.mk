@@ -1,4 +1,4 @@
-# Integration suite: Macintosh IIci (proposal-integration-test-rework §7)
+# Integration suite: Macintosh IIci
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs iici-boot and iici-boot-chime,
@@ -28,5 +28,5 @@ TEST_DESC := Chime WAV, RBV 7.0.1 boot + About, 7.5 HD, 7.6 HD (32-bit), MDU che
 TEST_ROM := roms/iici-368cadfe.rom
 TEST_ARGS := model=iici ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

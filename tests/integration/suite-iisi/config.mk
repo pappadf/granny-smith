@@ -1,4 +1,4 @@
-# Integration suite: Macintosh IIsi (proposal-integration-test-rework §7)
+# Integration suite: Macintosh IIsi
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs iisi-boot and iisi-boot-chime,
@@ -23,5 +23,5 @@ TEST_DESC := Chime WAV, V8 7.0.1 boot, 6.0.8 HD row, ADB-via-Egret keyboard row,
 TEST_ROM := roms/iisi-36b7fb6c.rom
 TEST_ARGS := model=iisi ram=17408
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

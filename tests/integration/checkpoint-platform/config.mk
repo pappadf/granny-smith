@@ -16,5 +16,5 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_SETUP := mkdir -p "$(WORK_DIR)/cp" "$(WORK_DIR)/media" && cp "$(TEST_DATA)/systems/System_3_2_0.dsk" "$(WORK_DIR)/media/"
 TEST_ARGS := --checkpoint-dir=$(WORK_DIR)/cp
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

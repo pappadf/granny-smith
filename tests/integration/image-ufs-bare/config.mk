@@ -13,5 +13,5 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_SETUP := dd if="$(TEST_DATA)/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso" of="$(WORK_DIR)/aux-root.ufs" bs=512 skip=361632 count=274566 conv=sparse status=none
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

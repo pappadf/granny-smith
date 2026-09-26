@@ -20,5 +20,5 @@ TEST_ROM := roms/pm7500-pm8500-pm9500-96cd923d.rom
 
 TEST_ARGS := model=pm7500 ram=32768
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

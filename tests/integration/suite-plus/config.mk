@@ -1,4 +1,4 @@
-# Integration suite: Macintosh Plus (proposal-integration-test-rework §7)
+# Integration suite: Macintosh Plus
 #
 # Grown out of boot-matrix, which already had the target shape (one
 # daemon, machine.boot between rows, per-row throughput floors); the rows
@@ -38,5 +38,5 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 # test.script has a sensible baseline to re-instantiate from.
 TEST_ARGS := model=plus ram=1024
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

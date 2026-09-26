@@ -81,5 +81,5 @@ TEST_ROM := roms/iifx-4147dd77.rom
 # each floppy itself.
 TEST_ARGS := model=iifx ram=16384
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

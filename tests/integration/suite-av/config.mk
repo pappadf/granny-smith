@@ -22,5 +22,5 @@ TEST_DESC := Cyclone/Tempest identity + 7.1 HD boot to the Finder desktop
 TEST_ROM := roms/q840av-q660av-5bf10fd1.rom
 TEST_ARGS := model=q840av ram=16384
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

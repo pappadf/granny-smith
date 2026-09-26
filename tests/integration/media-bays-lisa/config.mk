@@ -13,5 +13,5 @@ TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_SETUP := truncate -s 5175296 "$(WORK_DIR)/pro.img"
 TEST_ARGS := model=lisa hd=$(WORK_DIR)/pro.img
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

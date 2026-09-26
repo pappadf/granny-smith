@@ -37,5 +37,5 @@ TEST_ROM := roms/iici-368cadfe.rom
 
 TEST_ARGS := model=iici ram=16384
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

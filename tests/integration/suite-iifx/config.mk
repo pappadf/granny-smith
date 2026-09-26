@@ -1,4 +1,4 @@
-# Integration suite: Macintosh IIfx (proposal-integration-test-rework §7)
+# Integration suite: Macintosh IIfx
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs iifx-boot, iifx-boot-chime,
@@ -35,5 +35,5 @@ TEST_DESC := Chime WAV, 6.0.8 IOP floppy, 7.0.1 JMFB + lowmem + About, 7.1 GC ca
 TEST_ROM := roms/iifx-4147dd77.rom
 TEST_ARGS := model=iifx ram=16384
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

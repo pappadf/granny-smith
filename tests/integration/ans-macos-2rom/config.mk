@@ -28,5 +28,5 @@ TEST_ROM := roms/ans500-ans700-proto20-49b2be8f.rom
 
 TEST_ARGS := model=ans500 ram=32768
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

@@ -38,5 +38,5 @@ TEST_ARGS := model=pm7100 ram=24576
 # a copy of this one -- same map, byte-identical ext2 root -- not by a separate
 # install, so this pair is still where the MkLinux side actually comes from.
 #
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

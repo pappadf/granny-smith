@@ -10,5 +10,5 @@ TEST_DESC := archive.extract a StuffIt fixture; verify AppleDouble "._<name>" si
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

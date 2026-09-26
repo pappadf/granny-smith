@@ -19,5 +19,5 @@ TEST_SETUP := cp "$(TEST_DATA)/systems/System_3_2_0.dsk" "$(WORK_DIR)/a.dsk" && 
 # no free drive (it used to land in the q700's nonexistent drive 1).
 TEST_ARGS := model=q700 fd=$(WORK_DIR)/a.dsk fd=$(WORK_DIR)/b.dsk
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -16,5 +16,5 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_SETUP := python3 image-udif/make-fixture.py "$(TEST_DATA)/systems/system_6_0_8_20mb_8_24gc.img" "$(WORK_DIR)/fixture.dmg" && cp "$(TEST_DATA)/systems/System_6_0_8.dsk" "$(WORK_DIR)/floppy.dsk" && cp "$(TEST_DATA)/systems/system_6_0_8_20mb_8_24gc.img" "$(WORK_DIR)/hd.img"
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -27,5 +27,5 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # don't drift across screenshots if the IIcx profile RAM default changes.
 TEST_ARGS := model=iicx ram=4096 fd0=$(TEST_DATA)/apps/MacTest-IIcx-IIci.image
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

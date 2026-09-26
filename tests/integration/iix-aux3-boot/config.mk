@@ -25,5 +25,5 @@ TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/hd160-with-aux-301.img" "$(TEST_TMP
 # src/machines/glue/iix.c) and the reference PNGs were recaptured against it.
 TEST_ARGS := model=iix ram=16384 hd=$(TEST_TMPDIR)/hd.img
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

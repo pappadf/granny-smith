@@ -1,4 +1,4 @@
-# Integration suite: Macintosh IIx (proposal-integration-test-rework §7)
+# Integration suite: Macintosh IIx
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs iix-boot, iix-floppy and
@@ -22,5 +22,5 @@ TEST_DESC := 824GC card seat, JMFB 7.0.1 + portrait goldens (first IIx pixel tes
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iix ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

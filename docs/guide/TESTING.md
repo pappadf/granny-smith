@@ -188,10 +188,13 @@ files there, so nothing ever writes into `tests/data` and independent
 tests can run concurrently. The per-test runner logic lives in
 `scripts/run-integration-test.sh`.
 
-Each `config.mk` declares a `TEST_TIER` (proposal-integration-test-
-rework §5.4): `unit` (zero/near-zero guest cycles, seconds for the
-whole tier), `matrix` (per-machine boot suites — the PR gate), and
-`extended` (long diagnostics, installers, app choreography — nightly).
+### Tiers
+
+Each `config.mk` declares a `TEST_TIER`: `unit` (zero/near-zero guest
+cycles, seconds for the whole tier), `matrix` (per-machine boot suites —
+the PR gate), and `extended` (long diagnostics, installers, app
+choreography — nightly). CI runs by tier, so a test with no recognised
+tier runs nowhere.
 
 ### Suites and the shared script library
 

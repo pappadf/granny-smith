@@ -38,5 +38,5 @@ TEST_ROM := roms/iici-368cadfe.rom
 # §3), so this is the floor rather than a choice.
 TEST_ARGS := model=iici ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

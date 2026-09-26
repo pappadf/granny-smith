@@ -11,5 +11,5 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 # lines so the test verifies actual behavior, not just "didn't crash".
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

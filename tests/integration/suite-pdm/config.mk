@@ -29,5 +29,5 @@ TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 
 TEST_ARGS := model=pm6100 ram=24576
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

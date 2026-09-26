@@ -1,4 +1,4 @@
-# Integration suite: Macintosh IIcx (proposal-integration-test-rework §7)
+# Integration suite: Macintosh IIcx
 #
 # The IIcx's share after §7's host-redistribution pass is deliberately
 # small: its ADB keyboard test moved to the IIsi (Egret), its external-
@@ -22,5 +22,5 @@ TEST_DESC := Machine-level IIcx rows: sample-exact boot chime
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix
