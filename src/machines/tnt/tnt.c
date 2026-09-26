@@ -553,6 +553,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
     }
+    // Control's pixel-clock synthesiser hangs off Cuda's I2C bus (device
+    // $50): the video driver programs it with three RdWrIIC packets per
+    // mode-set, and the retrace period derives from what it wrote.
+    av_cuda_attach_i2c_write(st->cuda, tnt_control_i2c_write, cfg);
 
     // The DBDMA engine behind the island's +$8000 channel windows.  No
     // device ports are attached yet — each datapath phase (AWACS ch 8,

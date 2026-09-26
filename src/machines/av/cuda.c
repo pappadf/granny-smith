@@ -197,6 +197,8 @@ struct av_cuda {
     struct adb *adb;
     struct scheduler *sched;
     struct av_vdc *vdc; // I2C targets behind pseudo-command $22 (may be NULL)
+    av_cuda_i2c_write_fn i2c_write; // machine-level I2C write target (may be NULL)
+    void *i2c_write_ctx;
 
     // Fixed machine property (config, not guest state): whether the one-second
     // tick may carry the RTC in the Mode3Clock RdTime form.  Enabled only for
@@ -568,9 +570,17 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         // what goes on the I2C wire — for these Philips parts the first is
         // the subaddress.  Reads append the data bytes to the header; the
         // host terminates when it has its count (open-ended, like RdPRAM).
-        if (data_len < 1 || !cuda->vdc)
-            break; // no slave byte / no bus: header-only acknowledgement
+        if (data_len < 1)
+            break; // no slave byte: header-only acknowledgement
         uint8_t slave = data[0];
+        LOG(3, "RdWrIIC slave=$%02X %s len=%d sub=$%02X val=$%02X", slave, (slave & 1) ? "read" : "write", data_len - 1,
+            (data_len >= 2) ? data[1] : 0u, (data_len >= 3) ? data[2] : 0u);
+        // A machine-level write target (the TNT's pixel-clock synthesiser)
+        // answers first; the acknowledgement is header-only either way.
+        if (!(slave & 1) && cuda->i2c_write && cuda->i2c_write(cuda->i2c_write_ctx, slave, &data[1], data_len - 1))
+            break;
+        if (!cuda->vdc)
+            break; // no digitizer bus: header-only acknowledgement
         if (!av_vdc_i2c_slave_known(slave)) {
             // Only the DMSD and VDC are on the bus; the real handler's behavior
             // for other addresses was never analysed — reject loudly so a guest
@@ -990,4 +1000,11 @@ void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp) {
 void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc) {
     if (cuda)
         cuda->vdc = vdc;
+}
+
+void av_cuda_attach_i2c_write(av_cuda_t *cuda, av_cuda_i2c_write_fn fn, void *ctx) {
+    if (cuda) {
+        cuda->i2c_write = fn;
+        cuda->i2c_write_ctx = ctx;
+    }
 }

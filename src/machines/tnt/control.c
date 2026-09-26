@@ -37,10 +37,11 @@
 //     26 is Bandit 2's error line on a two-Bandit board — free on TNT,
 //     which is why Control could have it.
 //
-// The pixel clock is programmed over Cuda I2C (device $50) and is not
-// visible here — geometry derives from the timing registers and pitch
-// (width = pitch/bytes-per-pixel, height = (vsblank-veblank)/2), which is
-// behaviorally sufficient.
+// The pixel clock is programmed over Cuda I2C (device $50, three RdWrIIC
+// packets per mode-set) and never shows in Control's own register space;
+// Cuda hands those writes here (tnt_control_i2c_write), and the retrace
+// period is pixel_clock / (htotal x vtotal) from them plus the period
+// registers.  Geometry derives from the blank-pair registers and pitch.
 //
 // Register truth: linux/drivers/video/fbdev/controlfb.{c,h} [GPL-src],
 // mklinux POWERMAC/video_control.c [GPL-src], the shipping ROM's OpenFW
@@ -66,6 +67,7 @@ LOG_USE_CATEGORY_NAME("video");
 #define CR_VSBLANK    2 // vertical start blank (end of active, half-lines)
 #define CR_VEBLANK    3 // vertical end blank (display start, half-lines)
 #define CR_VPERIOD    7 // vertical period (half-lines)
+#define CR_HPERIOD    9 // horizontal period - 2 (2-px units)
 #define CR_HSBLANK    10 // horizontal start blank (end of active, 2-px units)
 #define CR_HEBLANK    11 // horizontal end blank (display start, 2-px units)
 #define CR_CTRL       18 // display control ($400 blanks; $03/$30 gate syncs)
@@ -96,6 +98,31 @@ LOG_USE_CATEGORY_NAME("video");
 
 // Pixel 0 sits 16 bytes into the framebuffer (controlfb's CTRLFB_OFF).
 #define CONTROL_FB_OFF 16u
+
+// The pixel-clock synthesiser: Cuda I2C device $50, subaddresses 1..3
+// carrying {p0, p1, p2}, dot clock = 3.9064 MHz x p1 x 2^p2 / p0 (the
+// Apple RAMDAC-family M/N/P scheme; Valkyrie and Platinum use the same
+// reference).  The retrace rate is then dot_clock / (htotal x vtotal),
+// where htotal = (hperiod + 2) x 2 pixels and vtotal = vperiod / 2 lines.
+// Until the chip is programmed — power-on, the blanked window of a
+// mode-set, zero totals, a half-written mode line — the event keeps the
+// nominal 60 Hz it always ran at, so boot behaviour is unchanged.
+//
+// What the shipping ROM's own driver programs, captured live [ROM-RE]:
+//   * 640x480 (the 13"/14" strap, extended sense $2B): {14, 27, 2} =
+//     30.135 MHz over hperiod 430 / vperiod 1050 = 864 x 525 -> 66.43 Hz.
+//     That is Apple's 640x480 @ 66.67 Hz raster (30.24 MHz nominal), NOT
+//     the VGA 60 Hz one -- so the old constant was 10% slow on the boot
+//     mode, and the synthesiser's nearest ratio lands 0.35% under nominal.
+//   * 1152x870 (the 21" strap, sense 0): {11, 35, 3} = 99.44 MHz over
+//     hperiod 726 / vperiod 1830 = 1456 x 915 -> 74.63 Hz (100 MHz and
+//     75.06 Hz nominal).  The 2-pixel horizontal unit holds above 1024
+//     wide, at least for the ROM's own mode table.
+#define CONTROL_I2C_CLOCK       0x50u
+#define CONTROL_PIXCLOCK_BASE   3906400u // Hz
+#define CONTROL_VBL_FALLBACK_NS (1000000000ull / 60u)
+#define CONTROL_VBL_MIN_NS      4000000ull // 250 Hz: faster is a mode line half-written
+#define CONTROL_VBL_MAX_NS      40000000ull // 25 Hz: slower likewise
 
 // The monitor on the sense lines: an AppleColor Hi-Res 13"/14" strap —
 // line C tied to ground, A/B floating.  Raw sense 6, extended walk $2B,
@@ -359,11 +386,48 @@ static void control_vbl_sync(config_t *cfg) {
 // the monitor with the machine clock.
 //
 // The faithful model is neither constant: on the real chip the rate is
-// pixel_clock / (htotal x vtotal), and this file already derives GEOMETRY from
-// the blank-pair registers.  Deriving the period from them too is a fidelity
-// improvement left for its own change, because it moves guest-visible timing
-// on every TNT machine.  Nor is this 60 a drifted copy of MAC_VBL_PERIOD: the
-// two are not measuring the same thing.
+// pixel_clock / (htotal x vtotal), which control_frame_ns derives from the
+// period registers and the synthesiser parameters the driver wrote over Cuda
+// I2C.  The nominal 60 Hz survives only as the fallback for an unprogrammed
+// chip; it is not a drifted copy of MAC_VBL_PERIOD, the two are not measuring
+// the same thing.
+
+// The programmed dot clock in Hz, 0 while the synthesiser is unprogrammed.
+static uint64_t control_dot_clock_hz(const tnt_control_t *c) {
+    uint32_t p0 = c->clk[0], p1 = c->clk[1], p2 = c->clk[2];
+    if (p0 == 0 || p1 == 0 || p2 > 7u)
+        return 0;
+    return ((uint64_t)CONTROL_PIXCLOCK_BASE * p1 << p2) / p0;
+}
+
+// The retrace period in ns: the programmed raster against the programmed
+// dot clock, or the nominal fallback until both are in place.
+static uint64_t control_frame_ns(config_t *cfg) {
+    tnt_control_t *c = ctl(cfg);
+    uint64_t dot_hz = control_dot_clock_hz(c);
+    uint64_t htotal = ((uint64_t)c->reg[CR_HPERIOD] + 2u) * 2u; // pixels per line
+    uint64_t vtotal = c->reg[CR_VPERIOD] / 2u; // lines per frame
+    if (dot_hz == 0 || c->reg[CR_HPERIOD] == 0 || vtotal == 0 || (c->reg[CR_CTRL] & 0x400u))
+        return CONTROL_VBL_FALLBACK_NS; // unprogrammed or blanked
+    uint64_t ns = htotal * vtotal * 1000000000ull / dot_hz;
+    if (ns < CONTROL_VBL_MIN_NS || ns > CONTROL_VBL_MAX_NS)
+        return CONTROL_VBL_FALLBACK_NS; // a mode line caught half-written
+    return ns;
+}
+
+// Log the retrace the registers currently give, whenever a write could
+// have moved it (mode-line, control and clock writes — all rare).
+static void control_log_frame(config_t *cfg) {
+    tnt_control_t *c = ctl(cfg);
+    uint64_t ns = control_frame_ns(cfg);
+    uint64_t dot_hz = control_dot_clock_hz(c);
+    LOG(2, "Control: retrace %llu ns (%llu.%02llu Hz)%s: dot %llu Hz (p0=%u p1=%u p2=%u) htotal=%u vtotal=%u",
+        (unsigned long long)ns, (unsigned long long)(1000000000ull / ns),
+        (unsigned long long)((100000000000ull / ns) % 100u),
+        (ns == CONTROL_VBL_FALLBACK_NS && dot_hz == 0) ? " [fallback]" : "", (unsigned long long)dot_hz, c->clk[0],
+        c->clk[1], c->clk[2], (c->reg[CR_HPERIOD] + 2u) * 2u, c->reg[CR_VPERIOD] / 2u);
+}
+
 static void control_vbl_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
@@ -374,7 +438,7 @@ static void control_vbl_event(void *source, uint64_t data) {
     c->vbl_pending = 1;
     control_vbl_sync(cfg);
     c->vbl_armed = 1;
-    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, 1000000000ull / 60u);
+    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, control_frame_ns(cfg));
 }
 
 static void control_vbl_arm(config_t *cfg) {
@@ -382,22 +446,40 @@ static void control_vbl_arm(config_t *cfg) {
     if (c->vbl_armed || !(c->reg[CR_INTR_ENA] & CONTROL_INT_VBL))
         return;
     c->vbl_armed = 1;
-    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, 1000000000ull / 60u);
+    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, control_frame_ns(cfg));
+}
+
+// The pixel-clock synthesiser on Cuda's I2C bus: subaddress i (1..3) takes
+// clock parameter i-1.  Anything else on the bus is not ours.
+bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len) {
+    config_t *cfg = (config_t *)ctx;
+    tnt_control_t *c = ctl(cfg);
+    if (slave != CONTROL_I2C_CLOCK)
+        return false;
+    if (len < 2 || data[0] < 1u || data[0] > 3u) {
+        LOG(1, "Control: clock synthesiser write ignored (sub=$%02X len=%d)", (len >= 1) ? data[0] : 0u, len);
+        return true;
+    }
+    c->clk[data[0] - 1u] = data[1];
+    LOG(2, "Control: clock synthesiser p%u = %u", data[0] - 1u, data[1]);
+    if (data[0] == 3u)
+        control_log_frame(cfg); // the third write completes the triple
+    return true;
 }
 
 // ============================================================
 // The register block (BAR $14): 32 x 32-bit LE on $10 centres
 // ============================================================
 
-// Live vertical counter: the frame phase off the CPU clock against a
-// nominal 60 Hz frame, scaled to the programmed vertical period.  Guests
+// Live vertical counter: the frame phase off the CPU clock against the
+// derived retrace period, scaled to the programmed vertical period.  Guests
 // poll it for vertical-blank waits; only monotonic-within-frame matters.
 static uint32_t control_vcount(config_t *cfg) {
     tnt_control_t *c = ctl(cfg);
     uint32_t vtotal = c->reg[CR_VPERIOD] / 2u;
     if (vtotal == 0 || vtotal > 4096u)
         vtotal = 525u;
-    uint64_t frame = cfg->machine->freq / 60u;
+    uint64_t frame = cfg->machine->freq * control_frame_ns(cfg) / 1000000000ull; // cycles per frame
     if (!frame)
         return 0; // a machine with no clock yet -- % 0 is undefined
     uint64_t pos = scheduler_cpu_cycles(cfg->scheduler) % frame;
@@ -451,7 +533,6 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
     LOG(2, "Control: reg[%u] = $%08X", idx, value);
     c->reg[idx] = value;
     switch (idx) {
-    case CR_CTRL:
     case CR_START_ADDR:
     case CR_PITCH:
     case CR_VRAM_ATTR:
@@ -461,6 +542,14 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
     case CR_HSBLANK:
     case CR_HEBLANK:
         tnt_control_update(cfg);
+        break;
+    case CR_VPERIOD:
+    case CR_HPERIOD:
+        control_log_frame(cfg); // the raster totals: the retrace period moved
+        break;
+    case CR_CTRL:
+        tnt_control_update(cfg);
+        control_log_frame(cfg); // blank/unblank switches the fallback in or out
         break;
     case CR_INTR_ENA:
         if (!(value & CONTROL_INT_VBL) || !(value & CONTROL_INT_GATE))
@@ -789,6 +878,7 @@ void tnt_control_reset(config_t *cfg) {
     memset(c->rad_misc, 0, sizeof(c->rad_misc));
     memset(c->clut, 0, sizeof(c->clut));
     memset(c->crsr, 0, sizeof(c->crsr));
+    memset(c->clk, 0, sizeof(c->clk)); // synthesiser unprogrammed: nominal retrace
     tnt_gc_set_source(cfg, TNT_INT_VBL, false);
     tnt_control_update(cfg);
 }

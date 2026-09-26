@@ -155,10 +155,22 @@ The board model is the chipset skeleton plus the DMA architecture:
   `+$1B000` (index/cursor/misc/CLUT on `$10` centres; misc `$20` bits 3:2
   = 8/16/32 bpp), monitor sense modeled as a 13"/14" strap (line C
   grounded — extended sense `$2B`, the head of the ROM's own mode table),
-  and VBL as Grand Central interrupt **26** at 60 Hz while `intr_ena` is
+  and VBL as Grand Central interrupt **26** while `intr_ena` is
   set (an earlier map guessed 30; the shipping video driver toggles
   mask bit 26 as it writes `INTR_ENA`, and Apple's own 9500
-  external-interrupt table gives 30 to the second-CPU doorbell).
+  external-interrupt table gives 30 to the second-CPU doorbell).  The
+  retrace period is the chip's own: pixel clock / (htotal × vtotal),
+  with htotal = (hperiod + 2) × 2 and vtotal = vperiod / 2 from the
+  timing registers and the pixel clock from the synthesiser the driver
+  programs over Cuda I2C (device `$50`, three RdWrIIC packets per
+  mode-set carrying {p0, p1, p2}; dot clock = 3.9064 MHz × p1 × 2^p2 /
+  p0).  The ROM's 640x480 boot mode is {14, 27, 2} = 30.135 MHz over
+  864 × 525 — Apple's 66.67 Hz 13"/14" raster, 66.43 Hz here — and its
+  1152x870 mode {11, 35, 3} = 99.44 MHz over 1456 × 915 = 74.63 Hz.
+  Until the synthesiser and both period registers are programmed (power
+  on, the blanked window of a mode-set) the event runs at a nominal
+  60 Hz.  This is Control's retrace and not the 60.15 Hz machine tick:
+  `tnt_trigger_vbl()` still feeds VIA1 CA1 once per scheduler frame-unit.
   Scanout presents through the shared `display_t`; geometry derives from
   the blank-pair timing registers (width = (hsblank − heblank) × 2,
   height = (vsblank − veblank) / 2) with the pitch as the scan-line

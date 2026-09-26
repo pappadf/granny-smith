@@ -93,4 +93,13 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b);
 // pseudo-command $22 (wired from av_build_devices once both exist).
 void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc);
 
+// A machine-level I2C WRITE target behind pseudo-command $22, consulted
+// before the digitizer bus: `slave` is the wire address (bit 0 clear =
+// write), `data` the bytes after it (subaddress first).  Returns true when
+// the slave is its own.  The TNT's Control pixel-clock synthesiser (device
+// $50) is the one such target; a write nobody claims stays the header-only
+// acknowledgement it always was.
+typedef bool (*av_cuda_i2c_write_fn)(void *ctx, uint8_t slave, const uint8_t *data, int len);
+void av_cuda_attach_i2c_write(av_cuda_t *cuda, av_cuda_i2c_write_fn fn, void *ctx);
+
 #endif // GS_MACHINES_AV_CUDA_H
