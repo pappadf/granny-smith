@@ -94,6 +94,7 @@ int system_hd_attach(const char *path, int scsi_id) {
 }
 bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
     (void)config, (void)filename, (void)scsi_id;
+    return false;
 }
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
@@ -101,6 +102,7 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
 }
 bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
+    return false;
 }
 // No scheduler here: these tests never let time pass.  A NULL scheduler means
 // a DATA OUT settle completes immediately (there is nothing to wait for), which

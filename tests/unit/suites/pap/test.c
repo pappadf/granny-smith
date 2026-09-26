@@ -16,9 +16,6 @@
 
 // --- stubs: ATP, NBP, the clock ------------------------------------------------
 
-void LOG_INDENT(int n) {
-    (void)n;
-}
 // A scheduler to hand out, so the printer registers its timers; they run
 // through the stubs below, never through it.
 static int g_scheduler_dummy;

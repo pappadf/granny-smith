@@ -22,10 +22,6 @@
 #include <stdio.h>
 #include <string.h>
 
-void LOG_INDENT(int n) {
-    (void)n;
-}
-
 // ---- AFP server (appletalk_server.c) --------------------------------------
 //
 // atalk_server_init registers an ASP client that records what reached it, so

@@ -56,6 +56,18 @@ static inline void log_vemit(const log_category_t *cat, int level, const char *f
     (void)ap;
 }
 
+/* Indentation control, as in the real log.h */
+static inline void log_indent_set(int spaces) {
+    (void)spaces;
+}
+static inline int log_indent_get(void) {
+    return 0;
+}
+static inline void log_indent_adjust(int delta) {
+    (void)delta;
+}
+#define LOG_INDENT(delta) log_indent_adjust((delta))
+
 /* Macros and predicates (no-op) */
 static inline int log_would_log(const log_category_t *cat, int level) {
     (void)cat;
