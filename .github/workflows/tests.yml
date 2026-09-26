@@ -273,18 +273,20 @@ jobs:
       - name: Summary for builds without test data
         if: steps.fetch-data.outputs.has_test_data == 'false'
         run: |
-          echo "## ⚠️ Limited Test Coverage" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "This build ran with **limited test coverage** because proprietary test data is not available." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tests that ran:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Unit tests (CPU instruction tests)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tests that were skipped:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ⏭️ Integration tests (require ROM and disk images)" >> $GITHUB_STEP_SUMMARY
-          echo "- ⏭️ E2E Playwright tests (require ROM and disk images; run in the ui job)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "For full test coverage, see [docs/TEST_DATA.md](../docs/TEST_DATA.md)." >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Limited test coverage"
+            echo ""
+            echo "Proprietary test data (ROM and disk images) is not available to this run."
+            echo ""
+            echo "**Ran:** the headless build, core layering and tier checks, the unit"
+            echo "suites (native and wasm32), golden distinctness; in the ui job,"
+            echo "svelte-check, lint, vitest, the WASM and Vite builds and prod-smoke."
+            echo ""
+            echo "**Skipped:** the integration tiers, the coverage and performance"
+            echo "contracts, and the functional web2 e2e."
+            echo ""
+            echo "For full coverage see https://github.com/${{ github.repository }}/blob/main/docs/guide/TEST_DATA.md"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # New Svelte UI at app/web2. Typecheck + lint + Vitest + Vite build, then
   # the WASM build and the browser end-to-end suites: prod-smoke (always) and

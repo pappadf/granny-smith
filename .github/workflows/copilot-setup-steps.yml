@@ -229,7 +229,7 @@ jobs:
             echo "Test data fetched successfully."
           else
             echo "::notice::Test data token not available. Integration and e2e tests will be skipped."
-            echo "See docs/TEST_DATA.md for information on obtaining test data."
+            echo "See docs/guide/TEST_DATA.md for information on obtaining test data."
           fi
 
       # ============================================
