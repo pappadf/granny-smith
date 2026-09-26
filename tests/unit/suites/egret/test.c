@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Egret's send-abandon watchdog (code review 2026-09-03, 06-io-controllers
-// unit D1, from F-03).
+// Egret's send-abandon watchdog.
 //
 // egret_try_unsolicited is the whole gate on unsolicited traffic:
 //
@@ -282,7 +281,7 @@ static void host_exchange(egret_t *eg, const uint8_t *cmd, int len) {
 // Tests
 // ============================================================
 
-// The finding itself: a host that walks away mid-response used to wedge
+// The defect itself: a host that walks away mid-response used to wedge
 // the transport, and with it every unsolicited packet Egret ever sends.
 TEST(test_an_unclaimed_response_does_not_wedge_the_transport) {
     egret_t *eg = setup();

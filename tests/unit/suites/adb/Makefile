@@ -41,7 +41,7 @@ LDFLAGS ?=
 # sym53c825.c comes along for the register file.  The engine addresses
 # registers by 7-bit number and now goes through the same accessors the host
 # BAR windows use, so the read-to-clear and side-effect semantics are exercised
-# rather than stubbed -- which is the point of F-14.  Its PCI surface stays out
+# rather than stubbed.  Its PCI surface stays out
 # of the way behind the pci_* stubs the test already supplies.
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/adb.c \

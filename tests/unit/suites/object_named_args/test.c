@@ -1,5 +1,5 @@
 // Unit tests for the named-argument binder (node_bind_args) and the
-// `name=expr` call-form grammar (proposal-named-args-boot-config §3).
+// `name=expr` call-form grammar.
 //
 // Strategy: register a toy `nt` class whose methods exercise the
 // binding rules — required/optional-with-default fixed slots, a rest

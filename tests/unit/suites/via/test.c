@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// VIA unit test (code review 2026-09-03, 05-chipsets-irq track A1).  Links the
-// real via.c against recording stubs and pins its register model against the
-// Rockwell R6522 datasheet, held in-tree at
-// local/gs-docs/library/io/rockwell-r6522-via/.
+// VIA unit test.  Links the real via.c against recording stubs and pins its
+// register model against the Rockwell R6522 datasheet.
 //
 //   Figure 11 (PCR), CA2 field = PCR bits 3,2,1 / CB2 field = bits 7,6,5:
 //     000 input, negative active edge        010 input, positive active edge
@@ -23,12 +21,12 @@
 //   decrement at system clock rate.  This allows the system processor to read
 //   the contents of the counter to determine the time since interrupt."
 //
-// Findings pinned here, each verified to fail when its defect is reintroduced
-// alone: F-01 (dead positive-edge selector), F-02 (independent modes lost
-// their flag on a port access), F-27 (wide accesses aborted the emulator),
-// F-29 (T1 one-shot froze its counter), F-32 (IER bit 7 reached storage).
-// Also F-12's power-on idle-high control lines, fixed in via_init before this
-// suite existed and pinned so it cannot be silently undone.
+// Defects pinned here, each verified to fail when reintroduced alone: a dead
+// positive-edge selector, independent modes losing their flag on a port
+// access, wide accesses aborting the emulator, a T1 one-shot that froze its
+// counter, and IER bit 7 reaching storage.  Also the power-on idle-high
+// control lines, fixed in via_init before this suite existed and pinned so
+// they cannot be silently undone.
 
 #include "object.h"
 #include "test_assert.h"
@@ -222,7 +220,7 @@ static via_t *make_via(unsigned ca2_mode) {
     s_irq_level = false;
     // Non-zero: arm_timer stores scheduler_cpu_cycles() as start_timestamp and
     // read_timer reads a zero timestamp as "never armed", so a timer armed at
-    // cycle 0 would read as stopped.  Latent in the emulator too (W-02).
+    // cycle 0 would read as stopped.  Latent in the emulator too.
     s_cycles = 1000;
     s_armed_cb = NULL;
     via_t *via = via_init(s_dummy_map_token, NULL, 1, "via1", output_sink, shift_sink, irq_sink, NULL, NULL);
@@ -241,7 +239,7 @@ static bool edge_sets_ca2(via_t *via, bool going_high) {
 }
 
 // ============================================================================
-// F-01 — which edge is active in each of the four CA2/CB2 input modes
+// Which edge is active in each of the four CA2/CB2 input modes
 // ============================================================================
 
 // R6522 Figure 11: field bit 1 selects the positive edge, in both the plain
@@ -281,7 +279,8 @@ TEST(test_ca2_output_modes_ignore_input_edges) {
 }
 
 // CB2's field is PCR bits 7-5 and behaves identically — the two halves of the
-// chip drifted apart once (F-01 was present in both), so pin them together.
+// chip drifted apart once (the dead positive-edge selector was in both), so pin
+// them together.
 TEST(test_cb2_mirrors_ca2_edge_selection) {
     via_t *via = via_init(s_dummy_map_token, NULL, 1, "via1", output_sink, shift_sink, irq_sink, NULL, NULL);
     ASSERT_TRUE(via != NULL);
@@ -302,7 +301,7 @@ TEST(test_cb2_mirrors_ca2_edge_selection) {
 }
 
 // ============================================================================
-// F-02 — which modes survive a port access
+// Which modes survive a port access
 // ============================================================================
 
 // Figure 29 note: the plain input modes clear CA2 on an ORA access; the two
@@ -356,7 +355,7 @@ TEST(test_port_access_always_clears_ca1) {
 }
 
 // Register 15 is port A without handshake and clears nothing — the existing
-// behaviour F-02's fix must not disturb.
+// behaviour the independent-mode fix must not disturb.
 TEST(test_ora_no_handshake_clears_nothing) {
     via_t *via = make_via(CA2_INPUT_NEG);
     ASSERT_EQ_INT(edge_sets_ca2(via, false), true);
@@ -392,7 +391,7 @@ TEST(test_orb_access_respects_cb2_independent_mode) {
 }
 
 // ============================================================================
-// F-31 — ACR input latching (bits 0 and 1)
+// ACR input latching (bits 0 and 1)
 // ============================================================================
 
 // R6522 "Port A and Port B Operation": "With input latching disabled, IRA will
@@ -448,7 +447,7 @@ TEST(test_latching_does_not_cover_output_pins) {
 }
 
 // ============================================================================
-// F-30 / W-02 — timer accessors report live values; arming at cycle 0 works
+// Timer accessors report live values; arming at cycle 0 works
 // ============================================================================
 
 // via_timer_counter() is declared as an object-model view.  It used to return
@@ -487,7 +486,7 @@ TEST(test_timer_armed_at_cycle_zero_still_counts) {
 }
 
 // ============================================================================
-// F-32 — IER bit 7 is the set/clear selector, not storage
+// IER bit 7 is the set/clear selector, not storage
 // ============================================================================
 
 // R6522 Figure 30: bit 7 of the written value selects set-vs-clear, and the
@@ -515,7 +514,7 @@ TEST(test_ier_bit7_is_a_selector_not_storage) {
 }
 
 // ============================================================================
-// F-29 — T1 one-shot keeps counting after timeout, as T2 already did
+// T1 one-shot keeps counting after timeout, as T2 already did
 // ============================================================================
 
 // R6522 "Timer 1 One-Shot Mode": "When the counter reaches zero, the T1
@@ -588,7 +587,7 @@ TEST(test_t1_free_run_rearms) {
 }
 
 // ============================================================================
-// F-27 — a wider access degrades, it does not abort
+// A wider access degrades, it does not abort
 // ============================================================================
 
 // The VIA is 8-bit on the upper byte of the bus.  A word or long access is not
@@ -623,8 +622,8 @@ TEST(test_wide_accesses_compose_from_byte_ops) {
 }
 
 // ============================================================================
-// Power-on state (F-12, fixed in via_init before this suite existed — pinned
-// here so it is not silently undone)
+// Power-on state (fixed in via_init before this suite existed — pinned here
+// so it is not silently undone)
 // ============================================================================
 
 // All four control lines idle high on the board pull-ups, so the first

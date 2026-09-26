@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// VIA E-clock synchronization penalty unit test (proposal-via-eclock-sync).
+// VIA E-clock synchronization penalty unit test.
 //
 // Pins the boundary math and the two properties that make E-sync faithful:
 //

@@ -1,4 +1,4 @@
-# PPC (MPC601) core unit test (proposal-powerpc-601-pdm.md Phase B §7.2):
+# PPC (MPC601) core unit test:
 # directed semantics tests from the 601UM chapter-10 RTL — carry/overflow/
 # CR0 record matrices, shift/rotate mask edges, the POWER holdovers against
 # their documented RTL, MQ side effects, SPR asymmetries, the exception

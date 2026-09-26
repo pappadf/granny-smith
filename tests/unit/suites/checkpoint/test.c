@@ -1,10 +1,10 @@
 // The checkpoint stream reader, tested as an untrusted parser.
 //
-// 08-WORK-ORDER.md Track C, unit C0.  There was no core checkpoint suite:
-// scsi_checkpoint and scc_checkpoint each cover one device's blocks, and
-// nothing exercised checkpoint.c's own read path.  That absence is how F-05
-// (on-disk counts validated only by GS_ASSERT) and F-06 (length checks that
-// overflow on the 32-bit wasm heap) came to be written and to survive review.
+// There was no core checkpoint suite: scsi_checkpoint and scc_checkpoint each
+// cover one device's blocks, and nothing exercised checkpoint.c's own read
+// path.  That absence is how on-disk counts validated only by GS_ASSERT, and
+// length checks that overflow on the 32-bit wasm heap, came to be written and
+// to survive.
 //
 // What a checkpoint actually is: a file the user supplies.  `checkpoint --load
 // <path>`, a drag-and-drop into the browser, or the quick checkpoint the
@@ -18,8 +18,8 @@
 // round-trips come first so that nothing here can pass vacuously -- a reader
 // that rejected everything would fail those.
 //
-// Defect injection, run while writing this suite (08-WORK-ORDER.md 7 requires
-// it, and it changed one test's documented claim):
+// Defect injection, run while writing this suite (it changed one test's
+// documented claim):
 //
 //   guard disabled                          test that failed
 //   --------------------------------------  ----------------------------------
@@ -54,9 +54,9 @@
 //
 // Note what this list is evidence of: linking the checkpoint module alone still
 // drags in system.c's checkpoint entry points, because the typed methods call
-// them.  Track I replaced what used to be here -- cmd_load_checkpoint and
+// them.  They replaced what used to be here -- cmd_load_checkpoint and
 // cmd_save_checkpoint, the retired argc/argv handlers the methods reached by
-// building a fake argv[] (F-31) -- so these are now ordinary typed functions
+// building a fake argv[] -- so these are now ordinary typed functions
 // rather than a command layer wearing a costume.
 
 static char g_build_id[BUILD_ID_LEN + 1] = "unit-test-build-0001";
@@ -205,8 +205,7 @@ TEST(quick_round_trip) {
 // === The build-ID gate ======================================================
 //
 // This is the only compatibility check the format has -- there is no version
-// integer anywhere (F-21).  It is worth pinning precisely because so much rests
-// on it, and because the work order's C4 adds a version field beside it.
+// integer anywhere.  It is worth pinning precisely because so much rests on it.
 
 TEST(foreign_build_id_is_refused) {
     write_valid(CHECKPOINT_KIND_CONSOLIDATED);
@@ -243,7 +242,7 @@ TEST(truncated_stream_sets_error_not_garbage) {
     system_read_checkpoint_data(cp, &b, sizeof(b));
     system_read_checkpoint_data(cp, &c, sizeof(c));
     // The contract that matters: a short file is an ERROR, not a silent
-    // half-restore.  F-26 was three subsystems restoring nothing and reporting
+    // half-restore.  Three subsystems once restored nothing and reported
     // success; this is the same failure mode one level down.
     //
     // Scope of this test, measured rather than assumed.  The v2 read path has
@@ -253,9 +252,9 @@ TEST(truncated_stream_sets_error_not_garbage) {
     // of them -- or the first two together -- leaves this test passing.  So it
     // pins the CONTRACT, not a particular guard, and it is deliberately not
     // claimed as the injection test for any single line.  That is the right
-    // shape here: which guard fires is an implementation detail C1-C3 are
-    // about to move, and a test coupled to one of them would have to be
-    // rewritten by the work it is meant to protect.
+    // shape here: which guard fires is an implementation detail that can
+    // move, and a test coupled to one of them would have to be rewritten by
+    // the work it is meant to protect.
     ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
     checkpoint_close(cp);
     cp_unlink();
@@ -263,20 +262,20 @@ TEST(truncated_stream_sets_error_not_garbage) {
 
 // === Block-order divergence =================================================
 //
-// The stream is positional: no per-block tag, no version (F-21).  Ordering
-// integrity rests entirely on two lists in two functions staying in sync, and
-// F-20 is the proof that they do not -- the IIfx saved ASC/ADB/floppy and
-// restored ASC/floppy/ADB, which broke checkpoint.load on that machine
-// outright.  In the consolidated format a size mismatch is at least caught.
-// This test pins that much, and C4's per-block identity is what will let the
-// SAME-sized case be caught too.
+// The stream is positional: no version, and order is checked only by size
+// and by the per-block tags.  Ordering integrity rests on two lists in two
+// functions staying in sync, and they have not always -- the IIfx saved
+// ASC/ADB/floppy and restored ASC/floppy/ADB, which broke checkpoint.load on
+// that machine outright.  In the consolidated format a size mismatch is at
+// least caught.  This test pins that much; the per-block tags (Block identity,
+// below) catch the SAME-sized case too.
 
 TEST(block_size_divergence_is_caught_in_v2) {
     write_valid(CHECKPOINT_KIND_CONSOLIDATED);
     checkpoint_t *cp = checkpoint_open_read(CP_PATH);
     ASSERT_TRUE(cp != NULL);
     // Read the blocks back in the WRONG order -- a restore path that disagrees
-    // with its save path, which is F-20 reduced to three fields.
+    // with its save path, the IIfx defect reduced to three fields.
     uint64_t b = 0;
     system_read_checkpoint_data(cp, &b, sizeof(b)); // stream holds a 4-byte block
     ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
@@ -284,7 +283,7 @@ TEST(block_size_divergence_is_caught_in_v2) {
     cp_unlink();
 }
 
-// === A failed read zeroes its destination (10-network F-10) ================
+// === A failed read zeroes its destination ===================================
 //
 // Every restore reads a block into a local and then decides whether to apply
 // it.  The reader used to return early without touching the destination, so a
@@ -316,7 +315,7 @@ TEST(failed_read_zeroes_its_destination_quick) {
     failed_reads_zero(CHECKPOINT_KIND_QUICK);
 }
 
-// === F-06: the length arithmetic that only overflows on wasm32 ==============
+// === The length arithmetic that only overflows on wasm32 =====================
 //
 // rle_decode guards its copies with `op + count > out_size` and
 // `ip + count > in_size`, where count is a uint32_t read straight from the
@@ -355,7 +354,7 @@ TEST(rle_length_guard_wraps_on_32bit_targets) {
     ASSERT_EQ_INT(guard_as_written_32(op, count, out_size), 0); // ADMITS it
     ASSERT_EQ_INT(guard_fixed_32(op, count, out_size), 1); // rejects it
 
-    // And the fixed form still accepts everything legitimate, so C2 cannot
+    // And the fixed form still accepts everything legitimate, so a fix cannot
     // "fix" this by rejecting all input.
     ASSERT_EQ_INT(guard_fixed_32(16, 48, 64), 0); // exactly fills
     ASSERT_EQ_INT(guard_fixed_32(16, 49, 64), 1); // one past
@@ -395,7 +394,7 @@ TEST(corrupt_quick_payload_is_refused) {
     cp_unlink();
 }
 
-// === Bounded reads (F-22, F-23, F-24 via the C3 helpers) ====================
+// === Bounded reads ===========================================================
 //
 // checkpoint_read_count() and checkpoint_read_string() are the shape that
 // makes the next variable-length field correct by construction, so they are
@@ -425,7 +424,7 @@ TEST(bounded_count_refuses_over_cap) {
     cp_unlink();
     checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
     ASSERT_TRUE(cp != NULL);
-    uint32_t n = 0xFFFFFFFFu; // the value F-24 turned into a four-billion-iteration loop
+    uint32_t n = 0xFFFFFFFFu; // once a four-billion-iteration loop
     system_write_checkpoint_data(cp, &n, sizeof(n));
     checkpoint_close(cp);
 
@@ -469,7 +468,7 @@ TEST(bounded_string_refuses_over_cap) {
     cp_unlink();
     checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
     ASSERT_TRUE(cp != NULL);
-    uint32_t len = 0xFFFFFFFFu; // F-22/F-23: a 4 GB malloc on the 32-bit wasm heap
+    uint32_t len = 0xFFFFFFFFu; // a 4 GB malloc on the 32-bit wasm heap
     system_write_checkpoint_data(cp, &len, sizeof(len));
     checkpoint_close(cp);
 
@@ -482,11 +481,11 @@ TEST(bounded_string_refuses_over_cap) {
     cp_unlink();
 }
 
-// F-22 in its own right: the length is in the v2 BLOCK HEADER, below the
-// system_read_checkpoint_data layer the helpers above sit on, so it has its
-// own bounded reader and needs its own test.  The block header stores the
-// save site's __FILE__, which is this file -- so the stream contains the
-// literal path, and the four bytes before it are the length to poison.
+// The filename length in its own right: it is in the v2 BLOCK HEADER, below the
+// system_read_checkpoint_data layer the helpers above sit on, so it has its own
+// bounded reader and needs its own test.  The block header stores the save
+// site's __FILE__, which is this file -- so the stream contains the literal
+// path, and the four bytes before it are the length to poison.
 TEST(block_header_filename_length_is_bounded) {
     write_valid(CHECKPOINT_KIND_CONSOLIDATED);
 
@@ -533,19 +532,19 @@ TEST(block_header_filename_length_is_bounded) {
     // contract -- an absurd length is refused -- and not the cap specifically.
     //
     // The cap is still the guard that matters, and the reason it cannot be
-    // isolated here is the same reason F-06 cannot be: word size.  On the
-    // 32-bit wasm heap a 4 GB request is the entire address space, and the
-    // point of the cap is that the allocation is never ATTEMPTED.  A 64-bit
-    // host with 100+ GB of address space reaches the same verdict by a route
-    // the shipping target does not have.
+    // isolated here is the same reason the rle_decode guard cannot be: word
+    // size.  On the 32-bit wasm heap a 4 GB request is the entire address
+    // space, and the point of the cap is that the allocation is never
+    // ATTEMPTED.  A 64-bit host with 100+ GB of address space reaches the same
+    // verdict by a route the shipping target does not have.
 }
 
-// === Block identity (F-21) ==================================================
+// === Block identity =========================================================
 //
 // The stream is positional and BOTH formats compare only a size, so two
-// same-sized blocks in the wrong order cross-load in silence.  F-20 was
-// exactly that: the IIfx saved ASC -> ADB -> floppy and restored ASC ->
-// floppy -> ADB.
+// same-sized blocks in the wrong order cross-load in silence.  The IIfx did
+// exactly that: it saved ASC -> ADB -> floppy and restored ASC -> floppy ->
+// ADB.
 //
 // Every block now carries a 32-bit tag beside its size.  The name is passed as
 // an optional fourth argument to the ordinary read/write calls rather than by
@@ -578,9 +577,9 @@ TEST(matching_tags_round_trip) {
     cp_unlink();
 }
 
-// F-20 in miniature: two SAME-SIZED blocks saved in one order and restored in
-// the other.  Without a tag nothing notices -- the sizes agree, so the size
-// check passes and each subsystem loads the other's state.
+// The IIfx defect in miniature: two SAME-SIZED blocks saved in one order and
+// restored in the other.  Without a tag nothing notices -- the sizes agree, so
+// the size check passes and each subsystem loads the other's state.
 TEST(swapped_same_sized_blocks_fail_by_name) {
     cp_unlink();
     checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// SCC interrupt vector (RR2), code review 2026-09-03, 06-io-controllers
-// unit C1 / N-02.
+// SCC interrupt vector (RR2).
 //
 // Z8530 UM section 5.3.3: "RR2 contains the interrupt vector written into
 // WR2.  When this register is accessed in Channel A, the vector returned is

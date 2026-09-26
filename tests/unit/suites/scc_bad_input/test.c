@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// SCC inputs that used to abort the emulator (code review 2026-09-03,
-// 06-io-controllers unit C2, from F-40 / N-12 / N-13).
+// SCC inputs that used to abort the emulator.
 //
 // Four raw asserts in scc.c sat on conditions the chip's own users can
 // break.  `assert` aborts in a debug build and is compiled out entirely by
@@ -134,12 +133,12 @@ static scc_t *make(void) {
 // Tests
 // ============================================================
 
-// The four writes from the finding, in order: internal loopback on, a byte
-// through the transmit buffer (which loops straight back into this
-// channel's receive buffer), loopback off, SDLC on.  Then read RR8.  The
-// byte is an ordinary async byte -- there is no frame around it -- so
-// reading it as async is the honest answer, and that is what rr8 does now
-// instead of asserting the channel index.
+// The four writes that used to abort, in order: internal loopback on, a byte
+// through the transmit buffer (which loops straight back into this channel's
+// receive buffer), loopback off, SDLC on.  Then read RR8.  The byte is an
+// ordinary async byte -- there is no frame around it -- so reading it as async
+// is the honest answer, and that is what rr8 does now instead of asserting the
+// channel index.
 TEST(test_sdlc_receive_on_channel_a_reads_the_byte) {
     scc_t *scc = make();
 
@@ -223,7 +222,7 @@ TEST(test_sdlc_send_refuses_an_oversized_frame) {
     scc_delete(scc);
 }
 
-// --- The LocalTalk frame sink (10-network unit 0.1) -------------------------
+// --- The LocalTalk frame sink ----------------------------------------------
 //
 // The SCC used to hand every flushed transmit buffer to a global
 // process_packet(), whatever the channel or mode: async console bytes on

@@ -1,4 +1,4 @@
-# GLUE-family dispatch-table unit test (proposal §6.1).
+# GLUE-family dispatch-table unit test.
 # Exercises the data-driven I/O address map + IRQ→IPL routing directly (no
 # emulator/ROM/MMU): links only the table file and stubs its device getters.
 

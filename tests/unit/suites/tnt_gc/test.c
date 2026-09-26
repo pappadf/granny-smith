@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// Grand Central unit test (proposal-powermac-7500-8500-9500 §5.3/§8).
+// Grand Central unit test.
 //
 // Links the real tnt/grand_central.c against recording stubs and pins
-// the interrupt-fabric semantics the Phase B boot debugging established
+// the interrupt-fabric semantics the boot debugging established
 // (docs/machines/tnt/tnt.md "The interrupt fabric"; the dossier's
 // interrupt-map §5.1), now as directed sequences:
 //
@@ -354,7 +354,7 @@ TEST(test_mode1_dbdma_level_ack) {
 // that interrupt is how ExtIntHandlerTNT re-reads quiet Levels and lowers
 // the 68k emulator's posted IPL (nothing else in the kernel/emulator
 // contract does; without it the emulator redelivers the stale level
-// forever and the 68k base context starves — the Phase D2 boot wall).
+// forever and the 68k base context starves — a boot wall this model hit).
 TEST(test_mode1_latch) {
     fixture();
     reg_write(R_MASK, 1u << TNT_INT_VIA1);
@@ -368,7 +368,7 @@ TEST(test_mode1_latch) {
     ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> TNT_INT_VIA1) & 1, 1); // ...events untouched
     ASSERT_EQ_INT((int)(reg_read(R_LEVELS) >> TNT_INT_VIA1) & 1, 1); // level still up
     // No re-fire while the level merely stands (a combinational model
-    // storms here — the Phase B failure mode).
+    // storms here — an earlier boot failure mode).
     tnt_gc_recompute(&s_cfg);
     ASSERT_EQ_INT(s_line, 0);
     // The 68k handler serviced the VIA: the DEASSERTION is itself a

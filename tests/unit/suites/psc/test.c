@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// PSC DMA-engine unit test (proposal-quadra-av.md Phase D).
+// PSC DMA-engine unit test.
 //
 // Links the real av/psc.c against recording stubs and replays the three
 // known-good client sequences the dossier quotes verbatim from Apple's
@@ -66,10 +66,10 @@ static void mem_write(void *ctx, uint32_t phys, uint32_t value, unsigned width) 
 // Register access helpers (byte-lane shaped, like the mac030 engine)
 // ============================================================================
 
-// Handler rows take (cfg, win_off, addr) since 05-chipsets-irq F-22: the
-// engine decodes the window-relative offset once and hands it over, instead
-// of each handler re-deriving it from the island mirror mask by hand.  For
-// this window win_off is exactly `off`.
+// Handler rows take (cfg, win_off, addr): the engine decodes the
+// window-relative offset once and hands it over, instead of each handler
+// re-deriving it from the island mirror mask by hand.  For this window win_off
+// is exactly `off`.
 #define PSC_BASE 0x50F31000u
 
 static config_t s_cfg;

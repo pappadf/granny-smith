@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// The Voodoo2's scanout raster is a fixed allocation, and videoDimensions
-// is guest-programmed: 11 bits of height (up to 2047) against a raster
-// sized for 1024 x 1024.  A card driving the monitor at 1024 x 1100 wrote
-// the rows past 1024 beyond the allocation every frame (N-51, #174).  The
-// card must really drive the monitor here -- pass-through set, blanking and
-// reset clear, outputs enabled -- or the conversion never runs and the test
-// passes whatever the code does.
+// The Voodoo2's scanout raster is a fixed allocation, and videoDimensions is
+// guest-programmed: 11 bits of height (up to 2047) against a raster sized for
+// 1024 x 1024.  A card driving the monitor at 1024 x 1100 wrote the rows past
+// 1024 beyond the allocation every frame (#174).  The card must really drive
+// the monitor here -- pass-through set, blanking and reset clear, outputs
+// enabled -- or the conversion never runs and the test passes whatever the code
+// does.
 
 #include "card.h"
 #include "display.h"

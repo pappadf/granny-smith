@@ -1,4 +1,4 @@
-# PSC DMA-engine unit test (proposal-quadra-av.md Phase D).
+# PSC DMA-engine unit test.
 # Links the real av/psc.c against recording stubs and replays the three
 # known-good client sequences quoted in the dossier's psc.md §3:
 # StartPSC/StopPSCRead (SCSI HAL), InitRecv/PrimeXmitRS (MACE), and the

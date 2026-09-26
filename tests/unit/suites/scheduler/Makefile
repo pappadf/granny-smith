@@ -1,4 +1,4 @@
-# Scheduler pacing unit test (proposal-scheduler-two-modes.md §7).
+# Scheduler pacing unit test.
 # Links the real scheduler.c against a fake host clock and a stub CPU sprint,
 # then drives scheduler_main_loop with synthetic tick sequences: accumulator
 # convergence at 60/59.94/120 Hz, the PACED_MAX_CATCHUP no-spiral cap, the

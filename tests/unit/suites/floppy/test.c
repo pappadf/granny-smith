@@ -5,13 +5,12 @@
 // the Sony zone geometry, and the address-to-register decode each board
 // applies to the SWIM.
 //
-// Why these: 02-floppy F-30 records that the most testable parts of the
-// subsystem had no coverage at all, and that every duplication finding in the
-// report (the codeword table, the checksum chain and the zone geometry each
-// existed twice) was "cheap to make safe with a round-trip test and dangerous
-// without one".  These tests exist to make the codec merge safe -- they pin the
-// behaviour that must survive it -- and to catch the class of bug F-31 and F-33
-// are examples of.
+// Why these: the most testable parts of the subsystem had no coverage at all,
+// and every duplication in it (the codeword table, the checksum chain and the
+// zone geometry each existed twice) was cheap to make safe with a round-trip
+// test and dangerous without one.  These tests exist to make the codec merge
+// safe -- they pin the behaviour that must survive it -- and to catch the class
+// of bug test_track_rpm and test_codeword_round_trip describe.
 //
 // floppy_gcr.c is #included so the tests can reach its static codec.
 // Deterministic; no emulator, ROM, MMU or scheduler.
@@ -51,9 +50,9 @@ TEST(test_sectors_per_track) {
     ASSERT_EQ_INT(iwm_sectors_per_track(79), 8);
 }
 
-// The zone RPM table.  F-31: swim3_xfer.c's copy masked the zone index with
-// & 7 over a five-entry array, which reads like a bounds guard while being
-// wider than the array.  Every legal track must land in 0..4.
+// The zone RPM table. swim3_xfer.c's copy masked the zone index with & 7 over a
+// five-entry array, which reads like a bounds guard while being wider than the
+// array.  Every legal track must land in 0..4.
 TEST(test_track_rpm) {
     static const int expect[5] = {394, 429, 472, 525, 590};
     for (int t = 0; t < NUM_TRACKS; t++) {
@@ -92,8 +91,8 @@ TEST(test_track_length_by_zone) {
 // ---------------------------------------------------------------------------
 
 // 64 six-bit values map to 64 legal disk bytes.  Two properties the decoder
-// depends on, and which F-33 shows are not free: every codeword has bit 7 set,
-// and the table is strictly increasing (so it is a bijection).
+// depends on, and which decode_gcr's lookup shows are not free: every codeword
+// has bit 7 set, and the table is strictly increasing (so it is a bijection).
 TEST(test_codeword_table_shape) {
     for (int i = 0; i < 64; i++) {
         ASSERT_TRUE(gcr_codewords[i] >= 0x96);
@@ -103,11 +102,11 @@ TEST(test_codeword_table_shape) {
     }
 }
 
-// F-33: decode_gcr keys its lookup on `codeword & 0x7F`.  Since every legal
-// codeword has bit 7 set, that aliases 64 illegal bytes ($16 -> $96, $1F ->
-// $9F, ...) onto legal values -- defeating the very check meant to catch
-// corrupt nibbles.  This test pins the round trip that must hold, and records
-// the aliasing so the fix has a home.
+// decode_gcr keys its lookup on `codeword & 0x7F`.  Since every legal codeword
+// has bit 7 set, that aliases 64 illegal bytes ($16 -> $96, $1F -> $9F, ...)
+// onto legal values -- defeating the very check meant to catch corrupt nibbles.
+// This test pins the round trip that must hold, and records the aliasing so the
+// fix has a home.
 TEST(test_codeword_round_trip) {
     for (int i = 0; i < 64; i++)
         ASSERT_EQ_INT(decode_gcr(gcr_codewords[i]), i);
@@ -147,7 +146,7 @@ TEST(test_sector_round_trip) {
                 ASSERT_EQ_INT(d_sector, sector);
                 ASSERT_TRUE(memcmp(out, data, 512) == 0);
                 // Tags round-trip too: the GCR path used to synthesise zeros
-                // on encode and discard them on decode (02-floppy F-14).
+                // on encode and discard them on decode.
                 ASSERT_TRUE(memcmp(out_tag, tag, 12) == 0);
             }
         }
@@ -236,9 +235,9 @@ static void mfm_capture(void *ctx, uint8_t byte, bool is_mark) {
     c->buf[c->pos++] = byte;
 }
 
-// The IBM System-34 sector the SuperDrive lays down, written twice before
-// (02-floppy F-20) with identical field order and values but different sinks.
-// This pins the field order so the one description cannot drift.
+// The IBM System-34 sector the SuperDrive lays down, written twice before with
+// identical field order and values but different sinks.  This pins the field
+// order so the one description cannot drift.
 TEST(test_mfm_sector_layout) {
     uint8_t data[512];
     for (int i = 0; i < 512; i++)
@@ -350,9 +349,9 @@ TEST(test_write_through_detects_sector_boundary) {
 
 // The chip owns registers by index; whoever owns the window maps addresses on
 // to it.  Four different strides are in use across the machines modelled here,
-// and F-03 was the one that was wrong: the IIfx/Q900 IOP bypass handed the
-// SWIM an offset of 0..$1F, which the SE/30's `(addr >> 9) & 0x0F` collapsed
-// on to index 0 for all sixteen registers.
+// and one of them was wrong: the IIfx/Q900 IOP bypass handed the SWIM an offset
+// of 0..$1F, which the SE/30's `(addr >> 9) & 0x0F` collapsed on to index 0 for
+// all sixteen registers.
 TEST(test_register_strides) {
     // GLUE / MDU / MCU windows and the PDM: the chip's A0-A3 are on A9-A12.
     for (unsigned reg = 0; reg < 16; reg++) {
@@ -379,7 +378,7 @@ TEST(test_register_strides) {
 // register, so it must REFUSE malformed input rather than assert on it: under
 // GS_FAST the asserts vanish and corrupt nibbles reached the user's image; in
 // every other build gs_assert_fail prints, pauses the scheduler and then
-// CONTINUES (02-floppy F-07).  It must also never read past `end` (F-06).
+// CONTINUES.  It must also never read past `end`.
 TEST(test_decode_sector_rejects_corruption) {
     static uint8_t buf[16384];
     uint8_t data[512], tag[12], out[512], out_tag[12];
@@ -422,7 +421,7 @@ TEST(test_decode_sector_rejects_corruption) {
 // whole-track variant (advances a source pointer, captures in place);
 // gcr_encode_triplet is the DMA-stream variant SWIM3 uses.  They were two
 // independent transcriptions of the same subtle algorithm with nothing holding
-// them together (02-floppy F-18); this is what holds them together.
+// them together; this is what holds them together.
 TEST(test_triplet_forms_agree) {
     uint8_t src[3 * 64];
     for (unsigned i = 0; i < sizeof src; i++)
@@ -469,7 +468,7 @@ TEST(test_triplet_forms_agree) {
 // and a sector layout.  720K is the one that used to be missing: it classified
 // as a hard disk, so the GCR path encoded MFM-laid-out bytes as if they were an
 // 800K disk, the media senses reported DD GCR, and floppy.identify said "not a
-// floppy" (02-floppy F-04).
+// floppy".
 TEST(test_media_descriptor) {
     struct {
         enum image_type type;
@@ -513,8 +512,7 @@ TEST(test_media_descriptor) {
 // 720K image are one kind of media -- double density -- carrying two different
 // formats, and a DD disk moves between them every time it is reformatted.  The
 // model used to derive both from the file's byte size, which can only ever say
-// the first; that is why 02-floppy F-09's framing predicate could not be
-// applied.
+// the first; that is why a framing predicate on the media could not be applied.
 TEST(test_media_class_vs_format) {
     image_t img;
     memset(&img, 0, sizeof img);

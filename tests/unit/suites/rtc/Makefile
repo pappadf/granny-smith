@@ -1,4 +1,4 @@
-# RTC / PRAM unit test (code review 2026-09-03, 06-io-controllers unit A1).
+# RTC / PRAM unit test.
 # Links the real rtc.c against recording stubs and pins the write-protect law
 # on BOTH addressing windows, the extended-command address decode, and the
 # per-variant legacy PRAM group mapping.

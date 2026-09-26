@@ -3,8 +3,8 @@
 //
 // SCSI transfer-range bounds, for READ and WRITE on both CDB lengths.
 //
-// 03-scsi F-02: WRITE had no bounds check at all.  Its only guards were two
-// assert()s in command_complete:
+// WRITE had no bounds check at all.  Its only guards were two assert()s in
+// command_complete:
 //
 //     assert(scsi->cmd.tl * blk_sz == scsi->buf.size);
 //     assert(((size_t)scsi->cmd.lba + scsi->cmd.tl) * blk_sz <= device_bytes);
@@ -16,9 +16,9 @@
 // which is the worst failure mode a disk has.  READ, meanwhile, had a real
 // check and returned ILLEGAL REQUEST / LBA OUT OF RANGE.
 //
-// 03-scsi F-04: that READ check computed `(size_t)lba * blk_sz`, and size_t is
-// 32 bits on wasm32, so a large LBA wrapped and the check passed on a range
-// that is nowhere near the medium.
+// And that READ check computed `(size_t)lba * blk_sz`, and size_t is 32 bits on
+// wasm32, so a large LBA wrapped and the check passed on a range that is
+// nowhere near the medium.
 //
 // These tests exist because neither is reachable from an integration row: the
 // guest drivers in gs-test-data do not issue out-of-range commands, and the
@@ -179,9 +179,9 @@ TEST(test_write_in_range_lands) {
     scsi_delete(scsi);
 }
 
-// The whole point of F-02: a WRITE that runs past the end must be REFUSED, and
-// the medium must be untouched.  Before the fix this returned STATUS GOOD and
-// the in-range part of the transfer was written.
+// The whole point: a WRITE that runs past the end must be REFUSED, and the
+// medium must be untouched.  Before the fix this returned STATUS GOOD and the
+// in-range part of the transfer was written.
 TEST(test_write_past_end_is_refused) {
     scsi_t *scsi = attach_disk();
     uint8_t payload[BLK * 4];
@@ -232,8 +232,8 @@ TEST(test_read_range) {
     scsi_delete(scsi);
 }
 
-// F-04: the range arithmetic must not wrap.  On wasm32 `(size_t)lba * blk_sz`
-// is 32-bit, and a READ(6) can reach lba 0x1FFFFF, which at 2048-byte blocks is
+// The range arithmetic must not wrap.  On wasm32 `(size_t)lba * blk_sz` is
+// 32-bit, and a READ(6) can reach lba 0x1FFFFF, which at 2048-byte blocks is
 // 0xFFFFF800 -- one more block wraps to 0 and the check passes on a range
 // nowhere near the medium.  Computed in uint64_t, every one of these is simply
 // out of range.
@@ -241,7 +241,7 @@ TEST(test_large_lba_does_not_wrap) {
     scsi_t *scsi = attach_disk();
     // READ(6)'s LBA field is 21 bits, so only values that survive the CDB can
     // be tested here; 0x1FFFFF is the largest, and at this medium's 512-byte
-    // blocks it is far past the end.  The wrap F-04 describes needs a CD-ROM's
+    // blocks it is far past the end.  The 32-bit wrap needs a CD-ROM's
     // 2048-byte blocks to reach 0xFFFFF800, which read10 covers below.
     const uint32_t lbas[] = {0x001FFFFFu, 0x00100000u, 0x0000FFFFu};
     for (unsigned i = 0; i < sizeof lbas / sizeof lbas[0]; i++) {
@@ -253,13 +253,13 @@ TEST(test_large_lba_does_not_wrap) {
     scsi_delete(scsi);
 }
 
-// The wrap F-04 actually describes needs READ(10)'s 32-bit LBA.  At 512-byte
-// blocks, lba 0x00800000 scales to 0x1_0000_0000 -- exactly one past what a
-// 32-bit size_t holds, so the old `(size_t)lba * blk_sz` truncated it to 0 and
-// the bounds check passed on a range nowhere near a 32 KB medium.  On a 64-bit
-// host the old code got this right by accident, which is why nothing caught it:
-// the bug only existed in the build that ships.  Computed in uint64_t it is out
-// of range on every host, which is what this pins.
+// The 32-bit wrap actually needs READ(10)'s 32-bit LBA.  At 512-byte blocks,
+// lba 0x00800000 scales to 0x1_0000_0000 -- exactly one past what a 32-bit
+// size_t holds, so the old `(size_t)lba * blk_sz` truncated it to 0 and the
+// bounds check passed on a range nowhere near a 32 KB medium.  On a 64-bit host
+// the old code got this right by accident, which is why nothing caught it: the
+// bug only existed in the build that ships.  Computed in uint64_t it is out of
+// range on every host, which is what this pins.
 TEST(test_read10_large_lba_does_not_wrap) {
     scsi_t *scsi = attach_disk();
     const uint32_t lbas[] = {
@@ -274,12 +274,12 @@ TEST(test_read10_large_lba_does_not_wrap) {
     scsi_delete(scsi);
 }
 
-// F-03: cmd_size() decodes the CDB length from the opcode's group code, and
-// run_cmd() fires the instant the accumulated count matches.  Size a group
-// wrong and the command dispatches early, leaving the unread tail of the CDB to
-// be consumed by whatever phase comes next.  The old table was
-// `opcode < 0x20 ? 6 : 10`, which gets group 5 (twelve-byte) wrong by two bytes
-// and groups 3 and 4 wrong by four.
+// cmd_size() decodes the CDB length from the opcode's group code, and run_cmd()
+// fires the instant the accumulated count matches.  Size a group wrong and the
+// command dispatches early, leaving the unread tail of the CDB to be consumed
+// by whatever phase comes next.  The old table was `opcode < 0x20 ? 6 : 10`,
+// which gets group 5 (twelve-byte) wrong by two bytes and groups 3 and 4 wrong
+// by four.
 //
 // Every opcode below is deliberately one we do NOT implement, so the outcome is
 // always CHECK CONDITION / INVALID OPCODE and the phase after the final byte is
@@ -331,7 +331,7 @@ TEST(test_cdb_length_by_group_code) {
     scsi_delete(scsi);
 }
 
-// F-10: an allocation length of zero means zero, on the HD paths too.
+// An allocation length of zero means zero, on the HD paths too.
 //
 // The HD MODE SENSE path in scsi.c always had this right and documented why;
 // INQUIRY, a few lines above it, substituted 36.  Both now share
@@ -364,7 +364,7 @@ TEST(test_zero_allocation_length_transfers_nothing) {
     scsi_delete(scsi);
 }
 
-// F-13: a REJECTED read must not touch the staging buffer.
+// A REJECTED read must not touch the staging buffer.
 //
 // phase_data_in calls scsi_buf_ensure, which reallocs the staging buffer to the
 // full requested size -- and the buffer never shrinks.  With the phase change
@@ -568,7 +568,7 @@ TEST(mode_sense_saved_values_are_answered_like_defaults) {
 }
 
 // ============================================================
-// VERIFY, SEEK and FORMAT UNIT (F-39)
+// VERIFY, SEEK and FORMAT UNIT
 // ============================================================
 // All three used to answer GOOD without decoding their CDB.  VERIFY is not a
 // stub nobody reaches: Apple HD SC Setup 7.3.5 sweeps the whole disk with it
@@ -633,11 +633,10 @@ TEST(verify_up_to_the_final_block_is_accepted) {
 
 // The 10-byte decode shifts byte 2 left by 24, and byte 2 promotes to `int`:
 // for anything >= 0x80 that overflows, which is undefined behaviour rather
-// than merely implementation-defined (C11 6.5.7p4).  READ(10) has had a test
-// for this since F-04 (test_read10_large_lba_does_not_wrap); VERIFY got a
-// verbatim copy of the same decode in F-39 and no test with a high LBA, so
-// nothing reached it -- UBSan is only as good as the path a test takes
-// (03-scsi F-48).
+// than merely implementation-defined (C11 6.5.7p4).  READ(10) has a test for
+// this (test_read10_large_lba_does_not_wrap); VERIFY got a verbatim copy of the
+// same decode and no test with a high LBA, so nothing reached it -- UBSan is
+// only as good as the path a test takes.
 //
 // The refusal is the easy half; the point is that getting here is defined.
 TEST(verify_with_a_high_lba_is_refused_not_wrapped) {
@@ -838,7 +837,7 @@ TEST(format_unit_with_an_empty_defect_list_ends_at_the_header) {
 }
 
 // ============================================================
-// Empty and sub-block media (F-40)
+// Empty and sub-block media
 // ============================================================
 // READ CAPACITY reports the address of the LAST block, so a block count has to
 // lose one -- and an unsigned zero that loses one is 0xFFFFFFFF.  Two routes

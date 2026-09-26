@@ -1,4 +1,4 @@
-# VIA E-clock synchronization penalty unit test (proposal-via-eclock-sync).
+# VIA E-clock synchronization penalty unit test.
 # Header-only: exercises the pure boundary math (memory_esync_penalty_cycles)
 # and the charging wrapper (memory_io_esync_penalty) against locally defined
 # globals — no emulator sources linked.

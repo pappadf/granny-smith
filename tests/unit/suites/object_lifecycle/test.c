@@ -1,5 +1,4 @@
-// Unit tests for the system-object-model substrate additions
-// (proposal-system-object-model.md §6–§7):
+// Unit tests for the system-object-model substrate additions:
 //
 //   - cascade delete over owning (attached) edges, post-order
 //   - per-object destructor (frees the C struct behind instance_data)
@@ -336,9 +335,9 @@ static bool entry_str(const value_t *e, const char *key, const char *want) {
     return v && v->kind == V_STRING && strcmp(v->s, want) == 0;
 }
 
-// meta.members describes every member in one call (F-46): class members with
-// their own category/label and per-kind fields, then attached children with
-// the label and category the child object carries.  Values only on request.
+// meta.members describes every member in one call: class members with their own
+// category/label and per-kind fields, then attached children with the label and
+// category the child object carries.  Values only on request.
 TEST(test_meta_members) {
     object_root_reset();
     struct object *o = object_new(&metmeta_class, NULL, "gadget");

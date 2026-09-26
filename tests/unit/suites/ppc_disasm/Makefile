@@ -1,4 +1,4 @@
-# PPC (MPC601) disassembler unit test (proposal-powerpc-601-pdm.md Phase B).
+# PPC (MPC601) disassembler unit test.
 # Vectors are cross-validated against powerpc-linux-gnu-objdump -m powerpc:601
 # over both a directed sweep and the shipping PDM ROM's HWInit/nanokernel
 # regions (modulo the documented simplified-mnemonic differences).

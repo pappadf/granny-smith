@@ -5,7 +5,7 @@
 // shared corpus sweep (fpu_corpus.h) over the integer-only kernel and
 // prints the digest.  Built with emcc and run under node by the suite's
 // `wasm-check` target, which diffs this line against the native test's
-// "corpus-hash:" line — the proposal §3.6 native/WASM acceptance.
+// "corpus-hash:" line — the native/WASM byte-exactness acceptance.
 
 #include "fpu_corpus.h"
 

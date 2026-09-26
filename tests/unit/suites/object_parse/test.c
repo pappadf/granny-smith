@@ -237,11 +237,10 @@ TEST(test_reserved_other_rejected_as_literal) {
     value_free(&v);
 }
 
-// === One integer grammar (08-core-infra F-11, F-12) ========================
+// === One integer grammar ===================================================
 
-// F-12.  strtoull saturates at ULLONG_MAX and sets ERANGE; unchecked, a typo
-// in an address literal became a plausible-looking wrong value rather than an
-// error.
+// strtoull saturates at ULLONG_MAX and sets ERANGE; unchecked, a typo in an
+// address literal became a plausible-looking wrong value rather than an error.
 TEST(test_integer_literal_rejects_out_of_range) {
     const char *p = "99999999999999999999";
     value_t v = parse_integer_literal(&p);
@@ -266,8 +265,8 @@ TEST(test_integer_literal_negation_boundaries) {
     value_free(&vb);
 }
 
-// F-11's user-visible symptom: base-0 parsing made a leading zero octal in one
-// spelling of a path index and decimal in the other, so `devices.010` and
+// The user-visible symptom of base-0 parsing: it made a leading zero octal in
+// one spelling of a path index and decimal in the other, so `devices.010` and
 // `devices[010]` selected different children of the same object.  One grammar
 // now, and it is decimal unless a prefix says otherwise.
 TEST(test_leading_zero_is_decimal_not_octal) {

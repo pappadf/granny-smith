@@ -13,7 +13,7 @@
 # defined twice.
 #
 # CC and EXEC_WRAPPER are overridable so the same suite runs on wasm32, where
-# size_t is 32 bits (09-WORK-ORDER.md §0.2):
+# size_t is 32 bits:
 #   make run CC=emcc EXEC_WRAPPER=node TARGET_EXT=.js
 
 TEST_NAME := peeler
@@ -35,7 +35,7 @@ EXEC_WRAPPER ?=
 EXEC_WRAPPER_BIN := $(if $(EXEC_WRAPPER),$(shell command -v $(EXEC_WRAPPER)))
 # Native builds run under ASan + UBSan, and UB aborts rather than printing and
 # carrying on.  Several peeler defects are small heap overruns (two bytes past
-# a malloc, F-02) that land in allocator padding and do not crash natively; a
+# a malloc) that land in allocator padding and do not crash natively; a
 # test of one must fail on the unfixed code, and without a sanitizer it would
 # pass for the wrong reason.  Not under emcc: the wasm32 run is for 32-bit
 # arithmetic, and ASan there costs more than it finds.
@@ -73,8 +73,8 @@ $(TARGET): $(OBJ)
 	$(CC) $(OBJ) $(LDFLAGS) -o $@
 
 # Leak detection is on: every decoder's allocations are owned by its decode
-# context and freed on abort (09 A2), and LeakSanitizer is how a new abort
-# path that leaks gets caught -- F-10, F-11 and F-12 were exactly that.
+# context and freed on abort, and LeakSanitizer is how a new abort path that
+# leaks gets caught -- several past leaks were exactly that.
 DETECT_LEAKS ?= 1
 run: $(TARGET)
 	@ASAN_OPTIONS=detect_leaks=$(DETECT_LEAKS) $(EXEC_WRAPPER_BIN) $(TARGET)

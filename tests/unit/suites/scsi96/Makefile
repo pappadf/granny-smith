@@ -1,4 +1,4 @@
-# NCR 53C96 chip-model unit test (Quadra proposal Phase E).
+# NCR 53C96 chip-model unit test.
 # Links scsi_53c96.c against a mock bus (the scsi_external_* / scsi_pop /
 # scsi_push / scsi_get_bus_phase functions defined in test.c) plus a small
 # RAM disk, so the select → CDB → pseudo-DMA read → status/message flow is

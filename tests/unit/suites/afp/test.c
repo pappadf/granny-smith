@@ -1927,7 +1927,7 @@ TEST(get_srvr_parms_lists_every_volume) {
 }
 
 // ============================================================================
-// Object-model surface (proposal-appletalk-afp-object-model.md §2)
+// Object-model surface
 // ============================================================================
 
 TEST(volume_add_reports_the_real_reason_it_failed) {
@@ -2168,8 +2168,8 @@ TEST(desktop_store_reopens_and_prunes) {
 
 // A fork refnum is never handed out while another fork holds it.  Refnums came
 // from a counter that skipped only 0: after 65,535 opens a new fork got the
-// refnum a still-open one held, and FPRead on it read the new file
-// (10-network F-08).  One allocator now serves every id the stack issues.
+// refnum a still-open one held, and FPRead on it read the new file.  One
+// allocator now serves every id the stack issues.
 TEST(fork_refnums_are_never_reused_while_held) {
     fixture_up("refwrap");
     write_file("held.txt", "HELD");
@@ -2196,7 +2196,7 @@ TEST(fork_refnums_are_never_reused_while_held) {
     fixture_down();
 }
 
-// --- sessions and login (10-network C7, F-05) --------------------------------------
+// --- sessions and login ------------------------------------------------------------
 
 static void req_delete(const char *name) {
     req_vol_dir_path(g_vol_id, CNID_ROOT, name);
@@ -2240,7 +2240,7 @@ TEST(commands_need_an_open_logged_in_session) {
 }
 
 // FPGetSrvrInfo travels only on ASP GetStatus (appletalk_server.md §1.4); as a
-// command it was the payload of a session-free second channel (F-05).
+// command it was the payload of a session-free second channel.
 TEST(get_srvr_info_is_not_a_command) {
     fixture_up("srvrinfo");
     req_reset();
@@ -2258,7 +2258,7 @@ TEST(a_disabled_server_takes_no_sessions) {
     afp_session_closed(0x0044);
 }
 
-// --- names and paths at the wire (10-network Track D) -------------------------------
+// --- names and paths at the wire ----------------------------------------------------
 
 // A pathname with explicit PathType and bytes (NULs allowed).
 static void put_raw_path(uint8_t type, const void *bytes, size_t len) {
@@ -2309,7 +2309,7 @@ static bool host_exists(const char *path) {
 // server's own names, or two elements.  It went straight into a host path
 // join, so "../../x" renamed, moved or copied a file out of the share -- and
 // a directory moved that way got a CNID whose path was outside, so later calls
-// by that CNID worked outside too (F-01).
+// by that CNID worked outside too.
 TEST(new_names_cannot_leave_the_share) {
     fixture_up("leaf");
     char outside[300];
@@ -2406,7 +2406,7 @@ TEST(new_names_cannot_leave_the_share) {
 // AFP pathnames separate elements with NULs (Inside AppleTalk 13-10): a NUL
 // before the first name is ignored and each extra NUL climbs a level.  The
 // server truncated a pathname at its first NUL -- "sub\0f.txt" answered for
-// "sub" -- and split on ':', '/' and '\' instead (N-01).
+// "sub" -- and split on ':', '/' and '\' instead.
 TEST(pathnames_separate_elements_with_nuls) {
     fixture_up("nulpath");
     uint32_t sub = 0;
@@ -2424,9 +2424,9 @@ TEST(pathnames_separate_elements_with_nuls) {
 }
 
 // The path type is 1 or 2 in AFP 2.x, and a Pascal length that runs past the
-// request is a bad parameter.  Every type was accepted (F-25), and a length
+// request is a bad parameter.  Every type was accepted, and a length
 // past the request was clamped: an FPDelete that claimed 10 bytes but carried
-// "abc" deleted "abc" (N-17).
+// "abc" deleted "abc".
 TEST(path_type_and_length_are_checked) {
     fixture_up("ptype");
     write_file("abc", "x");
@@ -2456,7 +2456,7 @@ TEST(path_type_and_length_are_checked) {
 }
 
 // Names are MacRoman on the wire and UTF-8 on the host, with a Mac '/' as a
-// host ':' -- the convention image_hfs.c already used (N-02, decision D-1).
+// host ':' -- the convention image_hfs.c already used.
 // They went across as raw bytes: "Résumé" became an invalid UTF-8 host name,
 // "café.txt" reached the Mac as mojibake, and "a/b" was split into a path.
 TEST(names_are_macroman_on_the_wire_and_utf8_on_the_host) {
@@ -2505,7 +2505,7 @@ TEST(names_are_macroman_on_the_wire_and_utf8_on_the_host) {
 }
 
 // A share-relative path becomes a host path in one place, afp_host_join, and
-// only when every element is a real name (10 D4): a catalog entry named ".."
+// only when every element is a real name: a catalog entry named ".."
 // -- the catalog takes any name, and replays one from its log -- names no
 // host path, so the sweep drops it instead of keeping the share's parent.
 TEST(host_paths_are_joined_from_real_names_only) {
@@ -2532,7 +2532,7 @@ TEST(host_paths_are_joined_from_real_names_only) {
     fixture_down();
 }
 
-// --- handles have owners (10-network E2, F-04) -----------------------------------
+// --- handles have owners ---------------------------------------------------------
 
 // Open and log in a second session; with `open_vol`, open the volume too.
 static void second_session_up(uint16_t session, bool open_vol) {
@@ -2679,7 +2679,7 @@ TEST(desktop_refnums_belong_to_their_session) {
     fixture_down();
 }
 
-// --- one writer for the parameter replies (10-network H2: N-14, N-32) ---------
+// --- one writer for the parameter replies -------------------------------------
 
 static uint32_t write_fork(uint16_t ref, const void *data, uint32_t n) {
     req_reset();
@@ -2811,7 +2811,7 @@ TEST(a_short_icon_bitmap_is_refused) {
     fixture_down();
 }
 
-// --- F1: every icon keeps its own bytes (10-network F-03) ------------------------
+// --- every icon keeps its own bytes ----------------------------------------------
 
 static void icon_fill(uint8_t *bits, size_t n, int i) {
     for (size_t k = 0; k < n; k++)
@@ -2883,7 +2883,7 @@ TEST(a_reopened_store_keeps_every_icon_bitmap) {
     fixture_down();
 }
 
-// --- F2: a listing lives no longer than its volume (10-network F-09) ------------
+// --- a listing lives no longer than its volume ----------------------------------
 
 // A host file beside the share, outside AFP (no mutation is counted).
 static void write_host_file(const char *dir, const char *name) {
@@ -2958,8 +2958,8 @@ TEST(closing_a_volume_keeps_the_sessions_listings_on_others) {
     fixture_down();
 }
 
-// FPGetUserInfo with both bitmap bits writes 10 bytes; it checked for 6
-// (10-network F-11).  The dispatcher's floor refuses a short buffer before
+// FPGetUserInfo with both bitmap bits writes 10 bytes; it checked for 6.
+// The dispatcher's floor refuses a short buffer before
 // the handler runs, and the bytes past it are untouched.
 TEST(get_user_info_never_writes_past_the_reply_buffer) {
     fixture_up("userinfo");
@@ -2978,7 +2978,7 @@ TEST(get_user_info_never_writes_past_the_reply_buffer) {
     fixture_down();
 }
 
-// --- F4: no fork past the volume ceiling (10-network F-17) -----------------------
+// --- no fork past the volume ceiling ---------------------------------------------
 
 static uint32_t set_fork_length(uint16_t ref, uint16_t bitmap, uint32_t length) {
     req_reset();
@@ -3034,7 +3034,7 @@ TEST(a_fork_never_grows_past_the_volume_ceiling) {
     fixture_down();
 }
 
-// --- F5: the icon store is bounded (10-network F-18) ------------------------------
+// --- the icon store is bounded ----------------------------------------------------
 
 static uint32_t add_icon(uint16_t dt, uint32_t creator, uint8_t fill) {
     uint8_t bits[32];
@@ -3065,7 +3065,7 @@ TEST(the_icon_store_is_bounded) {
     fixture_down();
 }
 
-// --- F6: listings are evicted oldest first, and never cut short (10-network F-23) -
+// --- listings are evicted oldest first, and never cut short -----------------------
 
 // FPEnumerate `session` over the directory `dir` from `start`, `count` at a
 // time; the names land in `names`.  Returns the result code.
@@ -3133,7 +3133,7 @@ TEST(a_listing_in_progress_is_not_evicted_first) {
     fixture_down();
 }
 
-// --- F7: FPGetIcon's Length is after a pad (10-network N-10) ----------------------
+// --- FPGetIcon's Length is after a pad --------------------------------------------
 
 // FPGetIcon returns at most Length bytes.  Length was read one byte early,
 // from the pad: asking for 16 bytes of a 256-byte icon got all 256.
@@ -3155,7 +3155,7 @@ TEST(get_icon_returns_at_most_the_length_asked) {
     fixture_down();
 }
 
-// --- F8: small AFP corrections (10-network N-11, N-12, N-13a, N-15) ------------------
+// --- small AFP corrections -----------------------------------------------------------
 
 static uint32_t add_comment(uint16_t dt, const char *path, const char *comment) {
     req_reset();
@@ -3319,7 +3319,7 @@ TEST(open_dir_accepts_an_empty_pathname) {
     fixture_down();
 }
 
-// --- G1: one append log for the catalog and the desktop stores (10-network N-16) --
+// --- one append log for the catalog and the desktop stores ------------------------
 
 static void desktop_log_path(const char *leaf, char *out, size_t cap) {
     snprintf(out, cap, "%s/%s/%s", g_root, AFP_CONTROL_DIR, leaf);
@@ -3421,7 +3421,7 @@ TEST(a_rewritten_icon_does_not_grow_the_log) {
     fixture_down();
 }
 
-// --- G2: catalog lookups are indexed (10-network F-24) --------------------------
+// --- catalog lookups are indexed ------------------------------------------------
 
 // The child index follows every rename, move and delete, keeps names that
 // differ only in case apart (the host does), and a reopened catalog rebuilds
@@ -3493,7 +3493,7 @@ TEST(a_directory_too_large_to_page_is_refused_whole) {
     fixture_down();
 }
 
-// --- G3: stores are replaced whole (10-network N-26) ------------------------------
+// --- stores are replaced whole ----------------------------------------------------
 
 static ino_t inode_of(const char *path) {
     struct stat st;
@@ -3534,7 +3534,7 @@ TEST(sidecars_and_the_volume_record_are_replaced_whole) {
     fixture_down();
 }
 
-// --- I5: a rename that cannot be published changes nothing (10-network N-23) ------
+// --- a rename that cannot be published changes nothing ----------------------------
 
 // The server's new name is published before it is stored: a name another
 // entity holds ("Taken", in this suite's registry) leaves the server named as
@@ -3552,7 +3552,7 @@ TEST(a_server_rename_that_cannot_be_published_changes_nothing) {
     fixture_down();
 }
 
-// --- D-5: names longer than a Mac name (10-network 0.6) --------------------------
+// --- names longer than a Mac name ------------------------------------------------
 
 // A host name longer than 31 MacRoman characters goes out as its first bytes
 // and "#<CNID in hex>", 31 in all, and that name finds the file again; a name
@@ -3599,7 +3599,7 @@ TEST(long_names_are_shortened_and_found_again) {
     fixture_down();
 }
 
-// --- D-7: names are case-insensitive, diacritical-sensitive ---------------------
+// --- names are case-insensitive, diacritical-sensitive --------------------------
 
 static uint32_t rename_to(const char *from, const char *to) {
     req_reset();

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// SCRIPTS instruction-engine unit test
-// (proposal-apple-network-server-500-700 §5.7, Phase E).
+// SCRIPTS instruction-engine unit test.
 //
 // Drives the real cards/scripts53c8xx.c against a flat guest-memory array
 // and a MOCK SCSI target, with no PCI, no machine and no shared bus model
@@ -146,10 +145,10 @@ void pci_deassert_irq(struct pci_device *dev) {
     s_irq_deasserts++;
 }
 
-// sym53c825.c is linked for its register file (F-14: the engine and the host
-// share one set of accessors), which drags in the two PCI entry points it uses
-// to publish its BAR windows and reset its config header.  Neither is on any
-// path this suite drives -- there is no PCI bus here.
+// sym53c825.c is linked for its register file (the engine and the host share
+// one set of accessors), which drags in the two PCI entry points it uses to
+// publish its BAR windows and reset its config header.  Neither is on any path
+// this suite drives -- there is no PCI bus here.
 void pci_bar_backing_iface(struct pci_device *dev, int bar, const memory_interface_t *iface, void *ctx) {
     (void)dev, (void)bar, (void)iface, (void)ctx;
 }
@@ -158,10 +157,10 @@ void pci_cfg_reset(struct pci_device *dev) {
     (void)dev;
 }
 
-// The device side of a bus reset (F-17): the card calls it, the bus implements
-// it.  This suite drives the engine against a MOCK target with no scsi_t behind
-// it, so there is nothing on the wire to return to a power-on state -- record
-// the call and move on.
+// The device side of a bus reset: the card calls it, the bus implements it.
+// This suite drives the engine against a MOCK target with no scsi_t behind it,
+// so there is nothing on the wire to return to a power-on state -- record the
+// call and move on.
 static int s_bus_resets;
 void scsi_bus_reset(struct scsi *bus) {
     (void)bus;
@@ -1117,7 +1116,7 @@ TEST(test_checkpoint_roundtrip) {
 }
 
 // ============================================================================
-// 9. The engine and the host share one register file (F-14)
+// 9. The engine and the host share one register file
 // ============================================================================
 //
 // The engine addresses registers by 7-bit number and used to index s->reg[]
@@ -1133,7 +1132,7 @@ TEST(test_script_read_of_a_status_register_sees_the_latch) {
     // SIST0[CMP] -- "Function Complete", one of the five non-fatal interrupts.
     // It latches WITHOUT stopping SCRIPTS, which is what makes it observable
     // from a running script: a fatal cause would hold the engine halted until
-    // the driver read it (F-15), so it could never be pre-latched and then run.
+    // the driver read it, so it could never be pre-latched and then run.
     s_c->reg[SYM825_SIST0] = SYM825_SIST0_CMP;
 
     // MOVE SIST0 | 0x00 TO SFBR -- opcode 110, operator 010 (OR), which is how
@@ -1218,7 +1217,7 @@ TEST(test_script_write_to_dcntl_does_not_restart_the_engine) {
 }
 
 // ============================================================================
-// 10. A latched fatal cause holds the engine (F-15)
+// 10. A latched fatal cause holds the engine
 // ============================================================================
 //
 // LSI53C825A TM v3.1, SCSI SCRIPTS mode: "Once an interrupt is generated, the
@@ -1313,7 +1312,7 @@ TEST(test_single_step_needs_clear_then_start) {
     ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SSI);
 }
 
-// F-22: everything that makes the engine resumable has to come back.
+// Everything that makes the engine resumable has to come back.
 //
 // The save used to name six members by hand -- reg, script_ram, running,
 // connected, target, phase -- and lost the rest.  Each field below is here

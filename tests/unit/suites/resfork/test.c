@@ -607,13 +607,13 @@ TEST(test_dcmp_zero_pads_short_streams) {
     free(out);
 }
 
-// 09-storage F-21: actual_size is a 32-bit header field, and dcmp 0 sized its
-// buffer as `(size_t)actual_size + overrun` then zero-padded a short stream
-// out to actual_size.  With actual_size near 4 GiB that sum wraps when size_t
-// is 32 bits -- the shipping wasm build -- so a 16-byte malloc met a ~4 GiB
-// memset: a heap overflow from one resource.  (Natively it is a real 4 GiB
-// allocation and memset instead.)  Must be refused before allocating, on every
-// target; this suite runs under run-wasm32, where the unfixed code overflows.
+// actual_size is a 32-bit header field, and dcmp 0 sized its buffer as
+// `(size_t)actual_size + overrun` then zero-padded a short stream out to
+// actual_size.  With actual_size near 4 GiB that sum wraps when size_t is 32
+// bits -- the shipping wasm build -- so a 16-byte malloc met a ~4 GiB memset: a
+// heap overflow from one resource.  (Natively it is a real 4 GiB allocation and
+// memset instead.)  Must be refused before allocating, on every target; this
+// suite runs under run-wasm32, where the unfixed code overflows.
 TEST(test_dcmp_huge_actual_size_is_refused) {
     uint8_t payload[] = {
         0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, // signature, header length 18, v8
@@ -629,8 +629,8 @@ TEST(test_dcmp_huge_actual_size_is_refused) {
     ASSERT_TRUE(err != NULL);
 }
 
-// The F-21 bound is exact: RSRC_DCMP_MAX_SIZE decodes (zero-padded), one
-// byte more does not.
+// The bound is exact: RSRC_DCMP_MAX_SIZE decodes (zero-padded), one byte more
+// does not.
 TEST(test_dcmp_size_bound_is_exact) {
     uint8_t payload[] = {
         0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // actual_size set below
@@ -651,7 +651,7 @@ TEST(test_dcmp_size_bound_is_exact) {
     }
 }
 
-// ---- MacRoman round trip (09-storage F-60) ---------------------------------
+// ---- MacRoman round trip ---------------------------------------------------
 
 // Every MacRoman byte survives MacRoman -> UTF-8 -> MacRoman.  The inverse
 // used to be a 128-entry copy of the forward table in resource_fork.c,
@@ -670,7 +670,7 @@ TEST(test_macroman_round_trips_every_byte) {
     ASSERT_EQ_INT(-EINVAL, macroman_from_utf8("\xC3", out, sizeof(out))); // cut-off sequence
 }
 
-// ---- Inflation on lookup (09-storage F-22) ----------------------------------
+// ---- Inflation on lookup ----------------------------------------------------
 
 // A dcmp 0 resource declaring `actual` bytes whose stream ends at once: it
 // inflates to `actual` zero bytes.  hdr[] is 19 bytes.

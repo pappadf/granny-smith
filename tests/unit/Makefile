@@ -40,7 +40,7 @@ run: $(TESTS)
 test-%:
 	$(MAKE) -C suites/$* run
 
-# The parser suites again, on wasm32 (09-WORK-ORDER.md §0.2, A0.2).
+# The parser suites again, on wasm32.
 #
 # The shipping build is emcc -> WebAssembly, where size_t and long are 32 bits;
 # the native tier is 64-bit and cannot see a defect that only wraps at 32 (an

@@ -1,4 +1,4 @@
-# CIVIC serial-register + sense unit test (proposal-quadra-av.md Phase F).
+# CIVIC serial-register + sense unit test.
 # Links the real av/civic.c against recording stubs and pins the bit-serial
 # register codec (one bit per longword, LSB ascending on write / MSB
 # descending on read), the five direct-longword registers, the inverted

@@ -1,4 +1,4 @@
-// Unit tests for M6 — per-object invalidation hooks (proposal §9).
+// Unit tests for per-object invalidation hooks.
 //
 // Hot-path consumers that hold a pre-resolved node_t (breakpoint
 // conditions, watch paths, …) need to be told when the entry behind
@@ -133,7 +133,7 @@ TEST(test_unregister_only_targeted_listener) {
 
 // === Sparse stable indices via the resolver under remove/add cycles =========
 //
-// Mirrors the M6 expectation: removing entry #0 must not renumber
+// The expectation: removing entry #0 must not renumber
 // #1, and the next add receives `max_id_ever + 1` rather than recycling
 // the freed slot. The indexed-child substrate already supports this in
 // principle; this test pins it down end-to-end through object_resolve.
@@ -241,7 +241,7 @@ TEST(test_sparse_indices_survive_remove_and_re_add) {
 
 // === Invalidation through a held node_t =====================================
 //
-// Models the M6 hot-path scenario: a consumer resolves the node once,
+// Models the hot-path scenario: a consumer resolves the node once,
 // keeps the pointer, and registers an invalidator on the entry's
 // object. When the entry is removed, the invalidator nulls the held
 // pointer and the consumer's next access fails cleanly instead of
@@ -286,7 +286,7 @@ static int count_children(struct object *o) {
     return n;
 }
 
-// === object_root_reset honours the invalidator contract (F-57) =============
+// === object_root_reset honours the invalidator contract ====================
 //
 // object_root_reset detached the root's children, released its Meta node and
 // free()d it -- skipping object_fire_invalidators and the destructor hook,

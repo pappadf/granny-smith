@@ -1,4 +1,4 @@
-// Unit tests for the Meta class — proposal-introspection-via-meta-attribute.md.
+// Unit tests for the Meta class (`<path>.meta` introspection).
 //
 // Covers:
 //   - `<path>.meta` resolves to a synthetic Meta node bound to the path

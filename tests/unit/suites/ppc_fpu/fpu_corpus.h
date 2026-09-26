@@ -2,11 +2,11 @@
 // Copyright (c) pappadf
 
 // fpu_corpus.h — the shared byte-exactness corpus for the 601 FPU kernel.
-// Included by test.c (native) and wasm_hash.c (the emcc/node build): both
-// run the identical deterministic sweep over ppc_softfp and hash every
-// (result, fpscr) pair.  Equal hashes across hosts IS the proposal §3.6
-// byte-determinism acceptance — the kernel is pure integer code, so any
-// divergence would be a toolchain bug, and this corpus is the tripwire.
+// Included by test.c (native) and wasm_hash.c (the emcc/node build): both run
+// the identical deterministic sweep over ppc_softfp and hash every (result,
+// fpscr) pair.  Equal hashes across hosts IS the byte-determinism acceptance —
+// the kernel is pure integer code, so any divergence would be a toolchain bug,
+// and this corpus is the tripwire.
 //
 // Dependency-free on purpose (stdint + ppc_softfp only): the WASM build
 // compiles just ppc_softfp.c and this sweep, no harness.

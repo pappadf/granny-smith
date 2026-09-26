@@ -332,7 +332,7 @@ TEST(vfs_resolve_descent_not_image) {
 
 TEST(vfs_resolve_bare_file_strict) {
     // Strict resolve on a bare file path stays on the host backend — no
-    // descent, no ENOTDIR.  This is the /cat foo.img/ rule from §2.9.
+    // descent, no ENOTDIR.  This is the /cat foo.img/ rule.
     setup_sandbox();
     vfs_set_cwd("/");
     char cwd[PATH_MAX];

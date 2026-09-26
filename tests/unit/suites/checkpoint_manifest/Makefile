@@ -1,5 +1,5 @@
 # The per-machine checkpoint manifest (src/core/storage/checkpoint_machine.c),
-# written against a stub emulator config.  09-storage F-35.
+# written against a stub emulator config.
 
 TEST_NAME := checkpoint_manifest
 TEST_SRCS := test.c

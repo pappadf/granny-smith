@@ -2,8 +2,7 @@
 // Copyright (c) pappadf
 //
 // Unit test for the mac030 I/O dispatch engine + the GLUE and MDU+RBV family
-// tables (proposal §6.1, "address-map tests per board" + "IRQ-routing tests
-// per board").
+// tables: address-map tests and IRQ-routing tests per board.
 //
 // The dispatcher's decode and the IRQ→IPL routing are ordered tables walked by
 // generic engines (mac030_glue_io.c).  Because they are data, the address map
@@ -98,7 +97,7 @@ static void expect_window(const mac030_io_range_t *ranges, uint32_t mirror, uint
 // The stride is only useful if it actually produces a register index.  Every
 // one of the SWIM's sixteen registers must be reachable and distinct: baking
 // the SE/30 decode into the chip instead is what collapsed all sixteen on to
-// index 0 through the IIfx/Q900 IOP bypass (02-floppy F-03).
+// index 0 through the IIfx/Q900 IOP bypass.
 TEST(test_swim_window_decodes_register_index) {
     const mac030_io_range_t *g = mac030_glue_io_ranges();
     int seen[16] = {0};
@@ -127,7 +126,7 @@ TEST(test_glue_addr_map) {
     expect_window(g, GLUE_MIRROR, 0x14000, MAC030_DEV_ASC, "asc", 2, MAC030_IO_NORMAL);
     // The SWIM window carries its own stride: the chip's A0-A3 are wired to
     // A9-A12, so the table decodes the register index rather than handing the
-    // chip a bus offset (02-floppy F-03/F-44).
+    // chip a bus offset.
     expect_window(g, GLUE_MIRROR, 0x16000, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_STRIDE_512);
     expect_window(g, GLUE_MIRROR, 0x17FFF, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_STRIDE_512);
     // SCSI pseudo-DMA "blind" windows: fixed register (read 0 / write $201).
@@ -200,7 +199,7 @@ static void probe_write(struct config *cfg, uint32_t win_off, uint32_t addr, uin
 // handler that re-derives its own offset has to name SOME mask, and any
 // board whose mask differs from the one it named is then decoded twice,
 // differently.  That is exactly what psc.c and new_age.c were doing with a
-// hardcoded `(addr & 0x3FFFFu) - <base>` (05-chipsets-irq F-22).
+// hardcoded `(addr & 0x3FFFFu) - <base>`.
 #define PROBE_MIRROR 0x0001FFFFu
 #define PROBE_BASE   0x00001000u
 // A second, adjacent window, so a wide access can be made to straddle the
@@ -255,12 +254,11 @@ TEST(test_handler_row_gets_engine_decoded_sub_offset) {
     ASSERT_EQ_INT(g_probe_writes, 1);
 }
 
-// A 16/32-bit access now decodes once and hands the row to each byte
-// (05-chipsets-irq F-43) -- the four table scans a longword used to do were
-// the waste, not the four device calls.  The hoist must not become a promise
-// that all four bytes live in one window: nothing forbids an access
-// straddling a window edge, so the row is re-validated per byte and a
-// straddle falls back to the full scan.
+// A 16/32-bit access now decodes once and hands the row to each byte -- the
+// four table scans a longword used to do were the waste, not the four device
+// calls.  The hoist must not become a promise that all four bytes live in one
+// window: nothing forbids an access straddling a window edge, so the row is
+// re-validated per byte and a straddle falls back to the full scan.
 TEST(test_wide_access_straddling_a_window_edge_redecodes) {
     mac030_io_t io;
     probe_io_init(&io, k_probe_ranges, PROBE_MIRROR);
@@ -334,7 +332,7 @@ static const mac030_io_range_t k_nested[] = {
 
 // The index must be invisible: for every board, at every offset of its
 // island, the indexed decode the dispatch path takes has to name exactly the
-// row the plain linear walk names (05-chipsets-irq F-43).
+// row the plain linear walk names.
 static void sweep_index_against_linear(const mac030_io_range_t *ranges, uint32_t mirror) {
     mac030_io_t io;
     probe_io_init(&io, ranges, mirror);
@@ -370,14 +368,13 @@ TEST(test_nested_window_keeps_first_match_wins) {
 }
 
 // --- Bus penalties --------------------------------------------------------
-// Every window that completes a bus cycle charges the island's turnaround.
-// The handler rows were the ones that did not: av.c and mcu.c left the field
-// at its zero default on twenty-six rows between them, so a PSC or 53C96
-// access on a Quadra was free while an SCC access two rows above it cost 2
-// (05-chipsets-irq F-49).  The IIfx table had it right all along -- its
-// scsi_dma and oss_ext handler rows charge, and only its two bus-error
-// windows do not -- which is the evidence that the penalty models the
-// island's bus turnaround and not the part behind it.
+// Every window that completes a bus cycle charges the island's turnaround.  The
+// handler rows were the ones that did not: av.c and mcu.c left the field at its
+// zero default on twenty-six rows between them, so a PSC or 53C96 access on a
+// Quadra was free while an SCC access two rows above it cost 2.  The IIfx table
+// had it right all along -- its scsi_dma and oss_ext handler rows charge, and
+// only its two bus-error windows do not -- which is the evidence that the
+// penalty models the island's bus turnaround and not the part behind it.
 
 static void expect_all_rows_declare_a_penalty(const mac030_io_range_t *ranges) {
     for (const mac030_io_range_t *r = ranges; r->end; r++) {

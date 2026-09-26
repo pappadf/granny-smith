@@ -106,7 +106,7 @@ TEST(test_nested_list_free) {
 }
 
 // value_dup duplicates heap kinds.  (value_copy, the second deep-copier,
-// is gone -- 08-core-infra F-13.)
+// is gone.)
 TEST(test_value_dup_heap_kinds) {
     value_t s = val_str("original");
     value_t c = value_dup(&s);
@@ -128,7 +128,7 @@ TEST(test_value_dup_heap_kinds) {
     value_free(&list_copy);
 }
 
-// Truthiness rule per proposal §2.5.
+// Truthiness rules.
 TEST(test_truthiness) {
     value_t t;
 
@@ -271,7 +271,7 @@ TEST(test_value_auto_cleanup) {
     // attribute is accepted by the compiler.
 }
 
-// === One boolean vocabulary (08-core-infra F-55) ===========================
+// === One boolean vocabulary ================================================
 //
 // There were two coercion tables that disagreed on case: validate_slot's was
 // case-sensitive, log.c's parse_onoff case-INsensitive and narrower.  So
@@ -314,7 +314,7 @@ TEST(test_parse_bool_is_case_sensitive_and_rejects_junk) {
 // val_bytes holds `p != NULL whenever n > 0`, including when the allocation
 // fails.  value_copy's V_BYTES arm used to leave `n` at the source length
 // with `p` NULL, and the next reader -- format_value_default, same_kind_equal
-// -- dereferenced NULL with a non-zero length (08-core-infra F-13).
+// -- dereferenced NULL with a non-zero length.
 TEST(test_bytes_invariant_holds) {
     value_t a = val_bytes("abc", 3);
     ASSERT_EQ_INT((int)a.bytes.n, 3);
@@ -336,7 +336,7 @@ TEST(test_bytes_invariant_holds) {
     value_free(&src);
 }
 
-// === Lazy ranges (08-core-infra F-37, decision D-2) ========================
+// === Lazy ranges ===========================================================
 //
 // range() used to materialise a V_LIST capped at 2^20 entries, which at
 // sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
@@ -362,8 +362,8 @@ TEST(test_range_is_lazy_and_counts_correctly) {
 }
 
 // The count is computed in uint64 so the full int64 span cannot overflow the
-// subtraction, which is undefined in int64 and was the narrower half of F-37's
-// overflow claim.
+// subtraction, which is undefined in int64 and was the narrower of the two
+// overflows the old range() had.
 TEST(test_range_count_does_not_overflow) {
     value_t huge = val_range(INT64_MIN, INT64_MAX);
     uint64_t n = val_range_count(&huge);

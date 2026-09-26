@@ -1,4 +1,4 @@
-# Generic PCI core unit test (proposal-pci-architecture §13).
+# Generic PCI core unit test.
 # Links the real core/peripherals/pci/{pci,config_space}.c against a stub
 # bus environment and pins the config-cycle contract: absent devices read
 # all-ones, the type-0 header assembles from the declaration, BAR sizing

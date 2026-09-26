@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // test.c — directed + oracle tests for the 601 FPU datapath
-// (src/core/cpu/ppc/ppc_softfp.c + ppc_fpu.c), proposal §3.6 / Phase E.
+// (src/core/cpu/ppc/ppc_softfp.c + ppc_fpu.c).
 //
 // Three layers:
 //   1. Directed kernel semantics from the 601UM action lists (§5.4.7):
@@ -10,14 +10,14 @@
 //      signed zeros, rounding modes, denormalization, disabled overflow's
 //      per-mode results, the ±1536/±192 trap-enabled exponent wraps,
 //      FR/FI/XX, fctiw saturation, and the FPSCR-instruction write rules.
-//      AUTHORITY-PENDING cases (Appendix F absent from the manual — the
-//      §11 acquisition item) are marked inline: frsp/fctiw NaN payload
-//      truncation, fctiw's rounded-vs-unrounded VXCVI boundary, FR
-//      magnitude-increment reading, single-op NaN payload truncation.
+//      AUTHORITY-PENDING cases (Appendix F absent from the manual) are
+//      marked inline: frsp/fctiw NaN payload truncation, fctiw's
+//      rounded-vs-unrounded VXCVI boundary, FR magnitude-increment
+//      reading, single-op NaN payload truncation.
 //   2. A randomized host-double oracle: values (and FI for finite
 //      results) must match the host's IEEE arithmetic exactly — host FP
-//      is the proposal's correctness-by-definition reference, used here
-//      as the ORACLE while the emulator itself stays integer-only.
+//      is the correctness-by-definition reference, used here as the
+//      ORACLE while the emulator itself stays integer-only.
 //   3. Ops-level integration through the interpreter: CR1 records, the
 //      MSR[FP] gate, and the precise FEX program exception (SRR0 = the
 //      causing instruction, SRR1[11], frD suppression).

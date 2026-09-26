@@ -1,4 +1,4 @@
-# DBDMA engine unit test (proposal-powermac-7500-8500-9500 §5.4, Phase C).
+# DBDMA engine unit test.
 # Links the real tnt/dbdma.c against array-backed memory hooks and a
 # scripted device port, and pins: the control register's mask/value
 # convention, the synchronous status transitions behind the canonical

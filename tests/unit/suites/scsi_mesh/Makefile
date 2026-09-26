@@ -1,10 +1,10 @@
 # The MESH controller.
 #
-# 03-scsi F-23: MESH lived under machines/tnt/ with no handle of its own,
-# taking config_t* everywhere and reaching its state through tnt_st(cfg)->mesh.
-# It could not be constructed outside a whole Power Macintosh, so it had no
-# unit tests at all -- the only controller in the subsystem without them, and
-# the only one whose bugs had to be found through a full boot.
+# MESH lived under machines/tnt/ with no handle of its own, taking config_t*
+# everywhere and reaching its state through tnt_st(cfg)->mesh.  It could not be
+# constructed outside a whole Power Macintosh, so it had no unit tests at all --
+# the only controller in the subsystem without them, and the only one whose bugs
+# had to be found through a full boot.
 #
 # This suite is the reason the move was worth doing.
 TEST_NAME := scsi_mesh

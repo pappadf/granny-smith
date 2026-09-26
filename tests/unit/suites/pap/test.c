@@ -224,7 +224,7 @@ static void setup(void) {
 
 // Three fragments of a job reach the sink as exactly those bytes, marked
 // complete -- and nothing is written under /tmp, where the job used to be
-// spooled (F-12).
+// spooled.
 TEST(a_job_reaches_the_capture_sink_whole) {
     setup();
     atalk_printer_stats_t before = *atalk_printer_get_stats();
@@ -236,7 +236,7 @@ TEST(a_job_reaches_the_capture_sink_whole) {
     ASSERT_EQ_INT(26, (int)g_captured_len);
     ASSERT_EQ_INT(0, memcmp(g_captured, "%!PS\n1 2 add pop\nshowpage\n", 26));
     ASSERT_TRUE(g_captured_complete);
-    const atalk_printer_stats_t *after = atalk_printer_get_stats(); // F-33
+    const atalk_printer_stats_t *after = atalk_printer_get_stats();
     ASSERT_EQ_INT(1, (int)(after->jobs - before.jobs));
     ASSERT_EQ_INT(26, (int)(after->bytes - before.bytes));
     ASSERT_EQ_INT(1, (int)(after->captures - before.captures));
@@ -261,7 +261,7 @@ TEST(a_job_too_large_is_aborted) {
 }
 
 // A CloseConn ends the job only when it is the session's: its connection id
-// from the node that opened it.  Any id ended the active job (F-13).  A
+// from the node that opened it.  Any id ended the active job.  A
 // foreign one is still answered with a CloseReply.
 TEST(a_foreign_closeconn_does_not_end_the_job) {
     setup();
@@ -277,8 +277,7 @@ TEST(a_foreign_closeconn_does_not_end_the_job) {
 
 // A workstation that goes quiet loses its connection after 120 s of guest
 // time, whether or not anything else arrives.  The timeout was checked only
-// when the next PAP packet came in, so a vanished client held the printer
-// (N-22).
+// when the next PAP packet came in, so a vanished client held the printer.
 TEST(an_idle_connection_times_out_on_its_own) {
     setup();
     open_conn(7);
@@ -292,7 +291,7 @@ TEST(an_idle_connection_times_out_on_its_own) {
 
 // A printer rename that cannot be published leaves the printer named, and
 // advertised, as it was; a name longer than NBP allows is refused, not cut
-// short (N-23: the name was stored first, and enable truncated what set_name
+// short (the name was stored first, and enable truncated what set_name
 // rejects).
 TEST(a_printer_rename_that_cannot_be_published_changes_nothing) {
     setup();

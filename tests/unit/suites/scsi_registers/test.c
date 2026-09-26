@@ -3,9 +3,8 @@
 //
 // Guest-reachable NCR 5380 register transitions must be declined, not asserted.
 //
-// 03-scsi F-07: the bus state machine used plain assert() to guard transitions
-// a guest drives entirely through the register file.  Two builds, two opposite
-// wrong answers:
+// The bus state machine used plain assert() to guard transitions a guest drives
+// entirely through the register file.  Two builds, two opposite wrong answers:
 //
 //   - The DEFAULT headless build keeps assertions live (Makefile.headless:
 //     "No -DNDEBUG: keep assertions active in the headless test/debug tool"),
@@ -124,7 +123,7 @@ static uint8_t rd(scsi_t *scsi, int reg) {
     return scsi_get_memory_interface(scsi)->read_uint8(scsi, (uint32_t)(reg << 4));
 }
 
-// The finding's first named sequence: select normally, then drive SEL/BSY a
+// The first sequence that used to abort: select normally, then drive SEL/BSY a
 // second time.  The second BSY-release reaches the end-of-selection branch with
 // phase == command, which used to be `assert(phase == scsi_selection)`.
 //
@@ -148,9 +147,9 @@ TEST(test_reselect_from_command_is_declined) {
     scsi_delete(scsi);
 }
 
-// The finding's second named sequence, and by far the most frequently reached
-// in the fuzz: a single write of MR.DMA while the bus is idle.  There is no
-// REQ/ACK partner in BUS FREE, so on real silicon arming DMA transfers nothing.
+// The second, and by far the most frequently reached in the fuzz: a single
+// write of MR.DMA while the bus is idle.  There is no REQ/ACK partner in BUS
+// FREE, so on real silicon arming DMA transfers nothing.
 TEST(test_dma_mode_in_bus_free_is_declined) {
     scsi_t *scsi = attach_disk();
     ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_bus_free);
@@ -329,7 +328,7 @@ TEST(start_dma_send_asserts_drq_in_an_out_phase) {
 // phase being DATA IN, and phase_data_in assigns rather than reads), but the
 // CHECKPOINT does: it saves [0 .. pos + size) so an in-flight transfer
 // round-trips, and parked in STATUS that span is dead payload carried into the
-// image.  phase_status() owns the reset now -- 03-scsi F-47.
+// image.  phase_status() owns the reset now.
 TEST(abandoning_a_read_through_tcr_leaves_no_staged_bytes) {
     scsi_t *scsi = attach_disk();
 

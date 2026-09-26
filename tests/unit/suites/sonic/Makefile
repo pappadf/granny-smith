@@ -1,4 +1,4 @@
-# DP83932 SONIC chip-model unit test (Quadra proposal Phase F).
+# DP83932 SONIC chip-model unit test.
 # Links sonic.c against mock guest memory (sonic_set_memory_hooks) so the
 # scsi flows are replaced by SONIC descriptor DMA over the mock buffer.
 # Apple ROM self-tests pin are exercised deterministically.

@@ -566,7 +566,7 @@ TEST(storage_save_state_short_base) {
     teardown_sandbox();
 }
 
-// ---- 64-bit offsets and the journal (09-storage F-29, F-30) ---------------
+// ---- 64-bit offsets and the journal ---------------------------------------
 
 // A block past 2 GiB of the delta is written and read back where it
 // belongs.  On wasm32 -- the shipping build -- the (long) seek wrapped at

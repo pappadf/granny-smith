@@ -270,8 +270,8 @@ TEST(read6_past_end_still_refused) {
 }
 
 // ===========================================================================
-// F-08: UNIT ATTENTION must report the cause that was staged, and removal is
-// not one of the causes at all.
+// UNIT ATTENTION must report the cause that was staged, and removal is not
+// one of the causes at all.
 // ===========================================================================
 //
 // AUTHORITY: Sony CDU-541 SCSI manual S4.1.3 -- the drive we advertise is a
@@ -420,7 +420,7 @@ TEST(inquiry_does_not_clear_unit_attention) {
 }
 
 // ===========================================================================
-// F-09: a refused eject must say the prevent bit is set, not that the drive is
+// A refused eject must say the prevent bit is set, not that the drive is
 // empty.
 // ===========================================================================
 //
@@ -563,7 +563,7 @@ TEST(allow_on_empty_drive_is_accepted) {
 }
 
 // ===========================================================================
-// F-10: an allocation length of zero means zero.
+// An allocation length of zero means zero.
 // ===========================================================================
 //
 // AUTHORITY: the allocation length is a ceiling, never a request.  The CDU-541
@@ -669,8 +669,8 @@ TEST(allocation_length_is_a_ceiling_not_a_request) {
     scsi_delete(scsi);
 }
 
-// F-24: the two Apple vendor page $30 strings differ, and that is pinned here
-// so it stays a decision rather than a drift.
+// The two Apple vendor page $30 strings differ, and that is pinned here so it
+// stays a decision rather than a drift.
 //
 // The emitter is shared; the content is not.  The hard-disk string is verified
 // against HD SC Setup, which requests the page four times during a format.
@@ -791,12 +791,11 @@ TEST(mode_sense_all_pages_includes_07_in_order) {
 
 // The whole "all pages" response must fit the buffer it is assembled in.
 //
-// 03-scsi F-41 proposed the stack buffer this now uses and put the response at
-// "at most 96 bytes".  It was 94 when the review was written; adding page 07h
-// (F-37) and counting page 30h's two-byte page header put it at 104.  A
-// uint8_t resp[96] -- which is exactly what the hard disk's MODE SENSE next
-// door declares, so it is the number a reader would copy -- would have
-// overflowed the stack by eight bytes.
+// The response was once put at "at most 96 bytes" (it was 94 then); adding page
+// 07h and counting page 30h's two-byte page header put it at 104.  A uint8_t
+// resp[96] -- which is exactly what the hard disk's MODE SENSE next door
+// declares, so it is the number a reader would copy -- would have overflowed
+// the stack by eight bytes.
 //
 // So the length is pinned here.  If this fails, CD_MODE_SENSE_MAX in
 // scsi_cdrom.c is the thing to change, not this number.
@@ -1028,7 +1027,7 @@ TEST(read_header_honours_the_msf_bit) {
 }
 
 // ============================================================
-// MODE SELECT block descriptor (F-50)
+// MODE SELECT block descriptor
 // ============================================================
 // The CDU-541 manual S5.2.2 Table 5-4 lists six block lengths this drive
 // accepts -- 256, 512, 1024, 2048, 2336, 2340 -- and says of anything else:

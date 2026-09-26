@@ -1,4 +1,4 @@
-# DAFB register-level unit test (Quadra proposal Phase D / ref §22.9).
+# DAFB register-level unit test.
 # Links the real dafb.c against the isolated stubs: depth matrix (PCBR0),
 # Swatch geometry derivation from the ROM's observed mode-set values,
 # AC842 CLUT component phase, DP8531 commit, monitor-sense protocol,

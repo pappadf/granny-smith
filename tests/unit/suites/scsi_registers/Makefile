@@ -1,10 +1,10 @@
 # Guest-reachable NCR 5380 register transitions must decline, not abort.
 #
-# 03-scsi F-07: the bus state machine guarded transitions a guest fully
-# controls through the register file with plain assert().  The default headless
-# build keeps assertions live (Makefile.headless: "No -DNDEBUG: keep assertions
-# active in the headless test/debug tool"), so five byte-writes to one register
-# aborted the emulator -- and every CI integration row runs that build.  The
+# The bus state machine guarded transitions a guest fully controls through the
+# register file with plain assert().  The default headless build keeps
+# assertions live (Makefile.headless: "No -DNDEBUG: keep assertions active in
+# the headless test/debug tool"), so five byte-writes to one register aborted
+# the emulator -- and every CI integration row runs that build.  The
 # GS_FAST/NDEBUG profiles compiled the same checks out and continued into a
 # state the rest of the file assumes is impossible.
 #

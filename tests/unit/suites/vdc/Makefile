@@ -1,4 +1,4 @@
-# AV video-in unit test (proposal-av-video-in.md §5.1).
+# AV video-in unit test.
 # Links the real av/vdc.c + av/civic.c + av/cuda.c against recording stubs
 # and pins: the Cuda $22 RdWrIIC wire framing (direction bit, subaddress,
 # multi-byte auto-increment, unknown-slave error packet), the golden DMSD/

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Mac Plus keyboard: the INQUIRY timeout that an INSTANT supersedes
-// (code review 2026-09-03, 06-io-controllers unit C2, from F-40).
+// Mac Plus keyboard: the INQUIRY timeout that an INSTANT supersedes.
 //
 // keyboard_tx_callback's INSTANT-with-empty-queue branch asserted that no
 // timeout event was armed.  It is an ordinary guest sequence that arms one:
@@ -15,9 +14,7 @@
 //               timeout very much armed
 //
 // The Mac ROM polls with INQUIRY and drops to INSTANT when it wants an
-// answer now; two polls with no key in between is all it takes.  This was
-// the most reachable of the six sites in the finding, and the report gave
-// no reachability argument for it at all.
+// answer now; two polls with no key in between is all it takes.
 //
 // Left armed rather than asserted (release builds compile the assert out),
 // the stale timer puts a second, unsolicited NULL_RESPONSE on the VIA shift

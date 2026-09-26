@@ -1,4 +1,4 @@
-// MC68040 MMU unit tests (Quadra proposal Phase B gate).
+// MC68040 MMU unit tests.
 //
 // Verifies the mmu040.c translation front-end dispatched through mmu.c:
 // three-level table walk (root/pointer/page), U/M bit update protocol,

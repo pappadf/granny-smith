@@ -1,5 +1,4 @@
-# SCRIPTS instruction-engine unit test
-# (proposal-apple-network-server-500-700 §5.7, Phase E).
+# SCRIPTS instruction-engine unit test.
 #
 # Links the real cards/scripts53c8xx.c against a flat guest-memory array
 # and a MOCK SCSI target, with no PCI, no machine and no shared bus model
@@ -54,7 +53,7 @@ LDFLAGS ?=
 # sym53c825.c comes along for the register file.  The engine addresses
 # registers by 7-bit number and now goes through the same accessors the host
 # BAR windows use, so the read-to-clear and side-effect semantics are exercised
-# rather than stubbed -- which is the point of F-14.  Its PCI surface stays out
+# rather than stubbed.  Its PCI surface stays out
 # of the way behind the pci_* stubs the test already supplies.
 # scsi_msgsession.c is the real IDENTIFY/SDTR/WDTR parser, shared with MESH.
 # It is pure logic with no emulator dependencies, so the suite links the actual

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// AV video-in unit test (proposal-av-video-in.md §5.1).
+// AV video-in unit test.
 //
 // Links the real av/vdc.c + av/civic.c + av/cuda.c against recording stubs
 // and pins the contracts from the AV video-in hardware notes:
@@ -297,7 +297,7 @@ static av_state_t s_st;
 
 // Write one CIVIC 1-bit slot (byte lane 3 carries D[0]).
 static void civic_w(uint32_t off, uint8_t bit) {
-    av_civic_write(&s_cfg, off + 3, CIVIC_BASE + off + 3, bit); // (cfg, win_off, addr) since F-22
+    av_civic_write(&s_cfg, off + 3, CIVIC_BASE + off + 3, bit); // (cfg, win_off, addr)
 }
 static uint8_t civic_r(uint32_t off) {
     return av_civic_read(&s_cfg, off + 3, CIVIC_BASE + off + 3);

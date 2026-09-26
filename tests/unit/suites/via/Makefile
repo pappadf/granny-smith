@@ -1,4 +1,4 @@
-# VIA control-line unit test (code review 2026-09-03, 05-chipsets-irq F-01/F-02).
+# VIA control-line unit test.
 # Links the real via.c against recording stubs and pins the PCR CA2/CB2 mode
 # field: which edge is active in each of the four input modes, and which of
 # those modes leave the IFR flag standing across an ORA/ORB access.

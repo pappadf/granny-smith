@@ -1,4 +1,4 @@
-# MMU040 unit test (Quadra proposal Phase B)
+# MMU040 unit test
 # Tests the MC68040 MMU: TTRs, three-level table walk, U/M protocol,
 # protection, indirect descriptors, 8K pages, PTEST MMUSR.
 # Uses real memory.c, mmu.c, and mmu040.c.

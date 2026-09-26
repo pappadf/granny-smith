@@ -9,12 +9,12 @@
 // sizeof(ch_t), eight bytes larger because of the `scc` back-pointer each
 // channel carries. Measured on this tree: prefix 11424, sizeof 11432.
 //
-// So the block ran eight bytes past the end of ch[0]'s prefix and straight
-// over ch[0]'s `scc` pointer -- a host heap address, written into every save
-// file, which is the thing 05-chipsets-irq F-09 swept for and missed here --
-// and then stopped eight bytes short of the end of ch[1]'s, silently
-// dropping channel B's `brg` (baud rate generator: time constant, counter,
-// enable, clock source), `loopback_prev_dtr` and `rx_special`.
+// So the block ran eight bytes past the end of ch[0]'s prefix and straight over
+// ch[0]'s `scc` pointer -- a host heap address, written into every save file,
+// which an earlier sweep for host pointers in checkpoints missed -- and then
+// stopped eight bytes short of the end of ch[1]'s, silently dropping channel
+// B's `brg` (baud rate generator: time constant, counter, enable, clock
+// source), `loopback_prev_dtr` and `rx_special`.
 //
 // Channel B is the LocalTalk channel on a Mac, and `rx_special` is the SDLC
 // end-of-frame latch the PDM native LocalTalk driver waits on.
@@ -215,7 +215,7 @@ TEST(test_both_channels_registers_survive) {
 
 // The external loopback cable is a property of the two ports together, so
 // it lives outside the per-channel blocks -- and it was outside the stream
-// entirely (N-16).  A restore quietly unplugged it.
+// entirely.  A restore quietly unplugged it.
 TEST(test_the_loopback_cable_survives) {
     s_w[0] = s_w[1] = s_r = 0;
 

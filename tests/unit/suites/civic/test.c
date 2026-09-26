@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// CIVIC serial-register + sense unit test (proposal-quadra-av.md Phase F).
+// CIVIC serial-register + sense unit test.
 //
 // Links the real av/civic.c against recording stubs and pins the contracts
 // from the AV Civic and Sebastian hardware notes:
@@ -23,9 +23,9 @@
 #include "av.h"
 #include "civic.h"
 #include "psc.h"
-// Handler rows take (cfg, win_off, addr) since 05-chipsets-irq F-22: the
-// engine hands them the window-relative offset it has already decoded, and
-// keeps the raw address for fault reporting.  These calls pass both.
+// Handler rows take (cfg, win_off, addr): the engine hands them the
+// window-relative offset it has already decoded, and keeps the raw address for
+// fault reporting.  These calls pass both.
 #include "test_assert.h"
 
 #include <stdint.h>

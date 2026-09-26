@@ -57,7 +57,7 @@ TEST(test_mkdir_p_and_parents) {
 
 // rm -r removes a whole tree, and a symlink -- at the top or inside the tree
 // -- is removed, never followed: storage.rm of a link to a directory used to
-// open the link and empty the directory it pointed at (F-36).
+// open the link and empty the directory it pointed at.
 TEST(test_rm_tree_does_not_follow_symlinks) {
     fresh_root();
     char *target = gs_str_printf("%s/target", g_root);
@@ -91,7 +91,7 @@ TEST(test_rm_tree_does_not_follow_symlinks) {
 }
 
 // Every read states its cap, and a larger file is refused before anything
-// is allocated for it (F-57).  An empty file reads as a non-NULL buffer.
+// is allocated for it.  An empty file reads as a non-NULL buffer.
 TEST(test_read_file_is_capped) {
     fresh_root();
     char *p = gs_str_printf("%s/f", g_root);

@@ -1,4 +1,4 @@
-# Apple Sound Chip unit test (proposal-sound-support-all-models §5/§8).
+# Apple Sound Chip unit test.
 # Links the real asc.c against recording stubs for the scheduler, VIA and
 # audio_out sink; replays the ROM POST register vectors (USTNonCritTsts.a
 # `sndrnold`/`sndrdold` — the standard-ASC behavioral spec) and pins the FIFO

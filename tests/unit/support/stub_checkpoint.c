@@ -45,8 +45,7 @@ bool checkpoint_has_error(checkpoint_t *checkpoint) {
 }
 
 // Restore paths flag a checkpoint they cannot trust rather than asserting on
-// it (08-core-infra F-05), so any suite that links a module with a restore
-// path needs this symbol.
+// it, so any suite that links a module with a restore path needs this symbol.
 void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
 }

@@ -1,4 +1,4 @@
-# RBV sound-interrupt unit test (proposal-sound-support-all-models §6).
+# RBV sound-interrupt unit test.
 # Links the real rbv.c + asc.c against recording stubs: pins the RvIFR/RvIER
 # set/clr-via-bit-7 semantics ($90/$10 writes), the RvSndIRQ (bit 4) source,
 # the VIA-spaced register aliases, and the full ASC→RBV interrupt chain

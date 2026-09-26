@@ -1,4 +1,4 @@
-# DSP3210 core unit test (proposal-dsp3210-plaintalk.md Phase 1).
+# DSP3210 core unit test.
 # Links the real src/core/cpu/dsp3210/dsp3210.c — the core is
 # dependency-free portable C99, so no stubs are needed: the 31 ported
 # reference tests plus the repo-adaptation tests (timer/BIO MMIO, PS.IR

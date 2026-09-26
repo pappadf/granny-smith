@@ -1,4 +1,4 @@
-// DAFB register-level tests (Quadra proposal Phase D; reference §22.9).
+// DAFB register-level tests.
 //
 // Drives dafb.c through its memory interface exactly as the bus would.
 // The Swatch/DP8531 values are the boot ROM's observed 640×480 mode set

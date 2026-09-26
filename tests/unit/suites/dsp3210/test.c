@@ -13,8 +13,7 @@
  * New tests at the bottom cover the repo adaptation's additions: on-chip
  * timer + BIO MMIO decode, the BIO output callback (the AV DSP→host
  * doorbell), PS.IR0/IR1 pin mirrors, the dsp3210_run burn-down/idle
- * contract, and the 7-word host bootstrap handshake against a mock bus
- * (the multi-CPU proposal's Phase B acceptance test).
+ * contract, and the 7-word host bootstrap handshake against a mock bus.
  */
 
 #include "dsp3210.h"
@@ -1199,7 +1198,7 @@ static void test_run_idle_contract(void) {
 /* The 7-word host bootstrap (StartProcessorRoutine) against a mock bus:
  * external memory lives behind hooks only, and the stage-1 handshake write
  * ($18 = $18, the call's link-register store in the latent slot) must be
- * observed through the hook — the Phase B acceptance test. */
+ * observed through the hook. */
 static uint8_t mock_bus[0x2000];
 static int mock_writes;
 

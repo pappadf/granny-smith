@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// RBV sound-interrupt unit test (proposal-sound-support-all-models §6).
+// RBV sound-interrupt unit test.
 //
 // Links the real rbv.c and asc.c against recording stubs and pins:
 //
@@ -128,12 +128,11 @@ void sound_object_delete(struct object *o) {
     (void)o;
 }
 
-// The object model used to be stubbed inert here.  It is the real thing
-// now: rbv.c builds a machine.rbv node at init (05-chipsets-irq F-26), and
-// a suite that stubs object_new to return NULL cannot tell a node that
-// works from one that was never built.  Only machine_object() stays a stub
-// (support/stub_machine_object.c) -- there is no machine here to parent to,
-// and object_attach(NULL, child) is a no-op.
+// The object model used to be stubbed inert here.  It is the real thing now:
+// rbv.c builds a machine.rbv node at init, and a suite that stubs object_new to
+// return NULL cannot tell a node that works from one that was never built.
+// Only machine_object() stays a stub (support/stub_machine_object.c) -- there
+// is no machine here to parent to, and object_attach(NULL, child) is a no-op.
 
 // --- memory map: unused (both devices get map == NULL) ---
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
@@ -289,7 +288,7 @@ TEST(test_asc_to_rbv_chain) {
 // ============================================================================
 
 // ============================================================================
-// 4. RvIFR writes clear the RvIRQ0 latch (2026-09-03 code review, 05 F-33)
+// 4. RvIFR writes clear the RvIRQ0 latch
 // ============================================================================
 
 // slot_pending bit 6 (RvIRQ0, the built-in video frame interrupt) is a LATCH:
