@@ -217,6 +217,37 @@ TEST(disasm_full_ext_words) {
     ASSERT_TRUE(fail == 0);
 }
 
+// Every opcode, with eight extension-word patterns (all zeros, all ones and
+// six seeded random runs), fits the buffers the emulator and the disasm tool
+// split its text into: the mnemonic (before the tab) under 48 -- the longest
+// is a 32-character trap name -- and the whole line under 256.  The fuzz
+// harness that measured those bounds (F-34, N-40), kept as a test.
+TEST(every_opcode_fits_its_buffers) {
+    char text[4096];
+    uint16_t w[16];
+    size_t max_pre = 0, max_len = 0;
+    srand(1);
+    for (int trial = 0; trial < 8; trial++) {
+        for (unsigned op = 0; op < 65536; op++) {
+            w[0] = (uint16_t)op;
+            for (int k = 1; k < 16; k++)
+                w[k] = trial == 0 ? 0 : trial == 1 ? 0xFFFF : (uint16_t)rand();
+            text[0] = '\0';
+            cpu_disasm(w, text);
+            size_t len = strlen(text);
+            const char *tab = strchr(text, '\t');
+            size_t pre = tab ? (size_t)(tab - text) : len;
+            if (pre > max_pre)
+                max_pre = pre;
+            if (len > max_len)
+                max_len = len;
+        }
+    }
+    printf("  longest mnemonic %zu, longest line %zu\n", max_pre, max_len);
+    ASSERT_TRUE(max_pre < 48);
+    ASSERT_TRUE(max_len < 256);
+}
+
 int main(void) {
     // Initialize test harness (creates CPU and memory for us)
     test_context_t *ctx = test_harness_init();
@@ -227,6 +258,7 @@ int main(void) {
 
     RUN(disasm_all);
     RUN(disasm_full_ext_words);
+    RUN(every_opcode_fits_its_buffers);
 
     test_harness_destroy(ctx);
     return 0;

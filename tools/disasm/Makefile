@@ -5,7 +5,7 @@
 # (src/platform/platform.h) force-included.
 
 CC      ?= gcc
-CFLAGS  += -Wall -Wextra -O2
+CFLAGS  += -Wall -Wextra -O2 -Werror=format-overflow
 
 TOOL    := disasm
 

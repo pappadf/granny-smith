@@ -660,7 +660,13 @@ int delete_all_logpoints(debug_t *debug);
 // splitting the core's "mnemonic\toperands" text.  Returns bytes consumed
 // (so callers advance the address arch-neutrally); 2 as a safe fallback
 // when no machine/core is up.
-static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
+// The split text's buffers: the longest mnemonic the 68K decoder produces is
+// a 32-character trap name (_CaseAndMarkSensitiveEqualString, measured over
+// every opcode), which a 31-character cap used to truncate (N-40).
+#define DISASM_MNEMONIC_MAX 48
+#define DISASM_OPERANDS_MAX 80
+
+static int disasm_at(uint32_t pc, char mnemonic[DISASM_MNEMONIC_MAX], char operands[DISASM_OPERANDS_MAX]) {
     char buf[100];
     int i, n;
 
@@ -673,16 +679,16 @@ static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
     }
 
     if (strlen(buf) == 0) {
-        snprintf(mnemonic, 32, "ILLEGAL"); // the caller's buffer is 32 bytes
+        snprintf(mnemonic, DISASM_MNEMONIC_MAX, "ILLEGAL");
         operands[0] = '\0';
     } else {
-        // Cap at 31 so we always have room for the trailing NUL even if
-        // the core's disasm ever returns an opcode without a tab separator.
-        for (i = 0; i < 31 && buf[i] != '\0' && buf[i] != '\t'; i++)
+        // Bounded so there is always room for the NUL even if the core's
+        // disasm ever returns an opcode without a tab separator.
+        for (i = 0; i < DISASM_MNEMONIC_MAX - 1 && buf[i] != '\0' && buf[i] != '\t'; i++)
             mnemonic[i] = buf[i];
         mnemonic[i] = '\0';
         if (buf[i] == '\t')
-            snprintf(operands, 80, "%s", buf + i + 1);
+            snprintf(operands, DISASM_OPERANDS_MAX, "%s", buf + i + 1);
         else
             operands[0] = '\0';
     }
@@ -692,12 +698,12 @@ static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
 
 // Disassemble instruction at addr, write to buf, return instruction length in bytes
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
-    char mnemonic[32], operands[80];
+    char mnemonic[DISASM_MNEMONIC_MAX], operands[DISASM_OPERANDS_MAX];
 
     int n = disasm_at(addr, mnemonic, operands);
 
     // Format with address prefix.  Use snprintf to bound output: addr_str is
-    // up to 39 chars, mnemonic up to 31, operands up to 79 — worst case
+    // up to 39 chars, mnemonic up to 47, operands up to 79 — worst case
     // ~160 bytes, larger than the 100-byte caller buffers historically used.
     // dc19792 enlarged the inner operands buffer but missed callers; this
     // bounds the final write so a complex full-extension-word instruction
