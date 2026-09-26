@@ -1,5 +1,4 @@
-# The 54M30 framebuffer, as Open Firmware's console
-# (proposal-apple-network-server-500-700 §5.8, ladder rung S14's instrument).
+# The 54M30 framebuffer, as Open Firmware's console.
 
 include "../lib/mac.script"
 include "../lib/ans.script"

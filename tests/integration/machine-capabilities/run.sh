@@ -104,9 +104,9 @@ assert_contains iicx '"nubus":true'   "iicx has nubus"
 assert_contains iicx '"id":"mdc_8_24"'        "iicx 8·24 video card"
 assert_contains iicx '"requires_vrom":true'   "iicx card needs vrom"
 # IIci built-in RBV video carries its declaration in main ROM — no VROM.
-# (Match the whole card object: since stage 2 the IIci also declares three
-# sockets whose pluggable candidates DO need a vROM, so a profile-wide
-# requires_vrom:true absence check would be wrong.)
+# (Match the whole card object: the IIci also declares three sockets whose
+# pluggable candidates DO need a vROM, so a profile-wide requires_vrom:true
+# absence check would be wrong.)
 assert_contains iici '"id":"builtin_rbv_video","display_name":"Macintosh IIci Built-in Video","requires_vrom":false' \
     "iici builtin video needs no vrom"
 
@@ -114,14 +114,14 @@ assert_contains iici '"id":"builtin_rbv_video","display_name":"Macintosh IIci Bu
 # Socket candidates are computed from the card registry by attachment
 # (nubus_card_fits_socket): every CARD_ATTACH_NUBUS video card is offered on
 # every machine with a user-configurable socket — including the IIci's three
-# empty sockets next to its builtin video
-# (proposal-nubus-computed-card-compatibility.md §5.3).
+# empty sockets next to its builtin video (docs/guide/ARCHITECTURE.md,
+# "Computed card compatibility").
 for m in iicx iix iifx iici; do
     assert_contains "$m" '"id":"mdc_8_24"'          "$m offers 8·24"
     assert_contains "$m" '"id":"display_card_24ac"' "$m offers 24AC"
     assert_contains "$m" '"id":"824gc"'             "$m offers 8·24 GC"
 done
-# Stage 2: machines declare EVERY socket (topology), not just one video
+# Machines declare EVERY socket (topology), not just one video
 # slot — the IIcx's three, the IIx/IIfx's six, the IIci's three.
 for m in iicx iix iifx; do
     assert_contains "$m" '"slot":"9"' "$m declares socket \$9"
@@ -168,11 +168,10 @@ for m in q840av q660av; do
 done
 # --- PDM family (Power Macintosh 6100/7100/8100): the first PowerPC
 # machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug
-# panels; fpu:true since Phase E landed the 601 FPU datapath and the
-# machine.cpu.fpu object (proposal-powerpc-601-pdm.md §3.6).  Phase G
-# landed the Curio SCSI bus, so two HD slots AND the CD bay are offered —
-# a CD-ROM is an ordinary SCSI target on that same bus, with no
-# CD-specific hardware behind it.  ONE floppy slot, not two: the family
+# panels; fpu:true since the 601 FPU datapath and the machine.cpu.fpu
+# object landed.  The Curio SCSI bus is modelled, so two HD slots AND the
+# CD bay are offered — a CD-ROM is an ordinary SCSI target on that same
+# bus, with no CD-specific hardware behind it.  ONE floppy slot, not two: the family
 # has a single internal manual-inject SuperDrive and no external port, and
 # this assertion moved only after a 1.44 MB disk mounted in the Finder on
 # a booted 7100 and a PowerPC application launched off it (suite-pdm rows
@@ -181,12 +180,12 @@ done
 for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"model":601' "$m is a PowerPC 601"
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
-    assert_contains "$m" '"fpu":true' "$m FPU capability on since Phase E"
+    assert_contains "$m" '"fpu":true' "$m FPU capability on"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"has_cdrom":true' "$m offers the Curio-bus CD bay"
     assert_contains "$m" '"cdrom_id":3' "$m puts the CD at SCSI ID 3"
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers the two Curio SCSI HD slots on one bus (Phase G)"
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers the two Curio SCSI HD slots on one bus"
 done
 # NuBus splits the family in two, and that split is the point of these
 # rows.  The 7100 and 8100 carry BART and three connectors on the logic
@@ -227,8 +226,8 @@ assert_contains pm7100 '"freq":66000000' "pm7100 runs at 66 MHz"
 assert_contains pm8100 '"freq":80000000' "pm8100 runs at 80 MHz"
 
 # The TNT family: the 7500 keeps the 601, the 8500/9500 are the first
-# 604 machines.  Phase E wired the internal MESH bus, so the two HD
-# slots are offered, and the SWIM3 + DBDMA-channel-1 floppy datapath is
+# 604 machines.  The internal MESH bus is wired, so the two HD slots
+# are offered, and the SWIM3 + DBDMA-channel-1 floppy datapath is
 # complete too -- ans-diag-floppy boots the Network Server Diagnostic
 # Utility from drive 0 -- so the one internal SuperDrive is offered on
 # every board in the family.  No NuBus on a PCI machine; PCI slot
@@ -244,19 +243,18 @@ for m in pm7500 pm8500 pm9500; do
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"Internal HD0","id":0,"boot":false},{"label":"Internal HD1","id":1,"boot":false}]}]' "$m offers the two internal MESH HD slots on one bus (Phase E)"
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"Internal HD0","id":0,"boot":false},{"label":"Internal HD1","id":1,"boot":false}]}]' "$m offers the two internal MESH HD slots on one bus"
 done
 assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
 assert_contains pm9500 '"freq":132000000' "pm9500 runs at 132 MHz"
 
 # The Apple Network Servers — the same TNT substrate with the Macintosh
-# removed (proposal-apple-network-server-500-700 §3.1).  Both are plain
-# 604s and both advertise PCI; what distinguishes them in the profile is
-# the CPU clock, the shipping memory size and the 512 MB ROM decode
-# ceiling that replaces the 9500's 1.5 GB (§5.9 — being LESS permissive
-# than the silicon is the faithful choice, because above it the guest
-# hangs during the RAM test rather than reporting an error).
+# removed.  Both are plain 604s and both advertise PCI; what distinguishes
+# them in the profile is the CPU clock, the shipping memory size and the
+# 512 MB ROM decode ceiling that replaces the 9500's 1.5 GB (being LESS
+# permissive than the silicon is the faithful choice, because above it the
+# guest hangs during the RAM test rather than reporting an error).
 for m in ans500 ans700; do
     assert_contains "$m" '"model":604' "$m is a PowerPC 604"
     assert_contains "$m" '"kind":"ppc_604"' "$m has the 604 split-BAT MMU"
@@ -278,7 +276,7 @@ for m in ans500 ans700; do
     assert_contains "$m" '"object":"scsi2"' "$m offers a second fast/wide bus"
 done
 # The 700's two REAR bays cable to fast/wide 1 -- the topology its comment
-# described long before the table expressed it (F-17).
+# described long before the table expressed it.
 assert_contains ans700 '"label":"Rear bay 1 (fast/wide 1)","id":0' "ans700 declares its first rear bay"
 assert_contains ans700 '"label":"Rear bay 2 (fast/wide 1)","id":1' "ans700 declares its second rear bay"
 assert_not_contains ans500 'Rear bay' "ans500 has no rear bays"

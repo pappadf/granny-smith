@@ -1,7 +1,6 @@
 # Integration test configuration: Apple-branded 230 MB drive acceptance
 #
-# Guards the two things Copland's installer depends on (see
-# local/gs-docs/projects/copland/bring-up-plan.md §4.2):
+# Guards the two things Copland's installer depends on:
 #   1. the drive catalog offers an Apple-shipped mechanism above the
 #      installer's 230 MB floor, and
 #   2. Apple's own formatter accepts it — i.e. our MODE SENSE page 0x30

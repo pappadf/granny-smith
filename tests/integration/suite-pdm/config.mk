@@ -1,5 +1,4 @@
 # Integration suite: the PDM family (Power Macintosh 6100/7100/8100)
-# (proposal-powerpc-601-pdm.md, Phase G acceptance rows)
 #
 # One daemon run; rows re-instantiate via machine.boot (the boot-matrix
 # pattern, suite-quadra shape) and ../lib/mac.script provides the harness

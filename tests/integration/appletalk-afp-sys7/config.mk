@@ -3,12 +3,12 @@
 # Every other AFP row mounts from System 6, which speaks AFP 2.0.  This one
 # mounts the same kind of share from System 7.5 on a IIci (the aevt rows'
 # machine and image), so a real client negotiates with the server from the
-# System 7 side (10-network D-8), and it copies a file whose host name is
-# longer than a Mac name to the Mac's own disk -- D-5's measurement, repeated
-# on System 7.
+# System 7 side, and it copies a file whose host name is longer than a Mac
+# name to the Mac's own disk -- appletalk-afp-longname's measurement,
+# repeated on System 7.
 
 TEST_NAME := AppleTalk AFP from System 7.5
-TEST_DESC := Mount a host share from System 7.5 through the Chooser, check the negotiated AFP version, and copy a 40-character-named file to the Mac's disk (10-network D-8).
+TEST_DESC := Mount a host share from System 7.5 through the Chooser, check the negotiated AFP version, and copy a 40-character-named file to the Mac's disk.
 
 TEST_ROM := roms/iici-368cadfe.rom
 

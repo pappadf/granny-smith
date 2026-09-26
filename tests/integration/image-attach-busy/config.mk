@@ -2,10 +2,10 @@
 #
 # A writable attach puts the guest's writes in a delta the VFS's read-only
 # mount cannot see, so the VFS must answer EBUSY rather than serve the stale
-# base (09-storage F-39..F-41).  The unit suite image_vfs covers the mount
-# side against a stubbed query; this covers the real one end to end: the
-# attach paths register the image, and the key is the path the user named
-# even when the image actually opened is a decoded scratch copy (the .dmg).
+# base.  The unit suite image_vfs covers the mount side against a stubbed
+# query; this covers the real one end to end: the attach paths register the
+# image, and the key is the path the user named even when the image actually
+# opened is a decoded scratch copy (the .dmg).
 #
 # The .dmg is built at setup time by image-udif's fixture writer.
 

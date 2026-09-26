@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# machine.profile() schema-snapshot test (proposal §6.1).
+# machine.profile() schema-snapshot test.
 #
 # Dumps machine.profile for every registered model, normalizes each profile to
 # a value-independent SHAPE string (see schema.mjs), and diffs against the

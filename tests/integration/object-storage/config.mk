@@ -2,8 +2,8 @@
 # hd1 is the same System 6.0.8 at the same 21,411,840-byte ST225N geometry,
 # and the GC image's System Folder is a strict superset (AppleShare
 # included), so every geometry/catalog assert holds unchanged — and this
-# removes the suite's last TEST_SETUP unzip (§6.1).
-# Integration test: storage object class (M8 slice 2)
+# removes the suite's last TEST_SETUP unzip.
+# Integration test: storage object class
 # Boots Plus with one SCSI HD and one floppy so storage.images has at
 # least two populated entries to walk.
 

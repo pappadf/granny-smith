@@ -30,8 +30,8 @@
 include "../lib/mac.script"
 
 # MILESTONE row semantics for a directory-level test: the flow runs and its
-# result is reported, but red does not fail the run. §7 classes this move as
-# the milestone class precisely because RBV-under-A/UX is a video path
+# result is reported, but red does not fail the run. This move is in the
+# milestone class precisely because RBV-under-A/UX is a video path
 # nothing has exercised and is expected to surface gaps; promotion to
 # enforced is a reviewed edit here plus removing the cell's marker in
 # matrix-targets.json.

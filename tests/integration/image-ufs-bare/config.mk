@@ -1,5 +1,5 @@
 # Integration test: a bare UFS volume -- an A/UX partition with no partition
-# map around it -- mounts through the image VFS (09-storage F-45).
+# map around it -- mounts through the image VFS.
 #
 # The fixture is cut at setup time from partition 6, "UNIX Root&Usr slice
 # 0", of the A/UX 3.0.1 CD (Apple_UNIX_SVR2, blocks 361632 + 274566) --

@@ -1,5 +1,5 @@
 # TNT PCI slot topology and the config-cycle contract
-# (proposal-pci-architecture, Phase 1).
+# (docs/core/peripherals/pci.md).
 #
 # Three things are pinned here, all of which the hand-rolled Bandit model
 # either could not express or was never tested for:
@@ -89,7 +89,7 @@ assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "a multi-hot IDSEL must s
 machine.memory.poke.l(0xF2800000, 0x00000000)
 
 # Control answers on the Chaos bus at device 11.  Its ids are Chaos's — the
-# documented conflation (control.c, proposal §14 Q6) — and Chaos's config
+# documented conflation (see control.c) — and Chaos's config
 # space is readable only at $00-$0F/$14/$18, the two exceptions being
 # exactly Control's BARs.
 machine.memory.poke.l(0xF0800000, 0x00080000)
@@ -151,7 +151,7 @@ assert machine.pci.slot[4].card.config.command == 0x0002 "Control decodes memory
 machine.boot model="pm9500" ram=32768 rom="${$ROM}"
 # Slot labels come from each bridge's own `slot-names` property, dumped
 # live in TN1062: Bandit 1 publishes "A1" "B1" "C1", Bandit 2 publishes
-# "D2" "E2" "F2" (Phase 1 guessed D1/E1/F1 and said so).
+# "D2" "E2" "F2" (an earlier guess of D1/E1/F1 was wrong).
 assert machine.pci.slot[4].label == "D2" "9500 slot 4 label"
 assert machine.pci.slot[5].label == "E2" "9500 slot 5 label"
 assert machine.pci.slot[6].label == "F2" "9500 slot 6 label"
@@ -205,8 +205,7 @@ assert machine.pci.slot[7].card.name == "Control" "restart must re-seat the reco
 # "display controller" but it must never be the machine's only video, so
 # its card_class is "3d" — and the BUILTIN_FALLBACK test is by class.
 # With one seated, the Control stand-in must remain, or a 9500 with only
-# a Voodoo2 would boot with no screen at all (proposal-pci-3dfx-voodoo2
-# §3.2, §8 Q10).
+# a Voodoo2 would boot with no screen at all (docs/core/peripherals/pci.md).
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
 assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the ROM-less card seats with no PROM staged"
 assert machine.pci.slot[7].card.name == "Control" "a 3d-class card must NOT retire the display fallback"
@@ -214,8 +213,8 @@ assert machine.pci.slot[7].card.name == "Control" "a 3d-class card must NOT reti
 # --- The SWIM3 is on the board's /RESET net. --------------------------------
 # It is TNT's floppy CONTROLLER (Grand Central +$15000, 16 registers on $10
 # centres), and it was the one controller in the tree that survived a machine
-# reset -- `W-01` from the 2026-09-03 review. cfg->floppy has always been
-# reset by the shared chain; the chip in front of it was not.
+# reset. cfg->floppy has always been reset by the shared chain; the chip in
+# front of it was not.
 #
 # The PDM suite asserts the same thing, and deliberately not instead of this
 # one: the two families call swim3_reset from their own bus_reset, so a

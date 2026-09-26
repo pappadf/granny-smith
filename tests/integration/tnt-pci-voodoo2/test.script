@@ -1,5 +1,5 @@
 # The 3dfx Voodoo2 (CVG) enumerating in socket A1 of a Power Macintosh
-# 7500 — the first ROM-less socket card (proposal-pci-3dfx-voodoo2, 3b).
+# 7500 — the first ROM-less socket card.
 #
 # THE ACCEPTANCE SHAPE IS APPLE'S OWN SPECIFICATION of a card with no
 # expansion ROM ("Designing PCI Cards and Drivers", revised 1999):
@@ -88,8 +88,8 @@ assert cfg_rd(0x50) == 0xC0FFEE00 "cfgScratch is a pure scratchpad"
 # 27:16, set RUN (bit 28), poll bits 27:16 until the countdown drains,
 # then read the ring-oscillator count from bits 15:0 [Glide-src
 # init/util.c sst1InitMeasureSiProcess].  The model completes the
-# measurement at issue (the same idle contract as every busy bit, §8
-# Q3) — a frozen countdown here spins the shipped driver forever.
+# measurement at issue (the same idle contract as every busy bit) — a
+# frozen countdown here spins the shipped driver forever.
 cfg_wr(0x54, 0x0FFF0000)
 assert cfg_rd(0x54) == 0x0FFF0000 "siProcess in reset: the preload reads back, count zero"
 cfg_wr(0x54, 0x1FFF0000)
@@ -157,12 +157,12 @@ assert vreg_rd(0x144) == vreg_rd(0x144 + 0xFC000) "the last wrap alias reaches t
 machine.memory.poke.l($BAR + 0x800000, 0x11223344)
 assert machine.memory.peek.l($BAR + 0x800000) == 0xFFFFFFFF "texture reads return undefined (all-ones) data"
 
-# --- The card draws (milestone 3c). -----------------------------------------
+# --- The card draws. ---------------------------------------------------------
 include "draw.script"
 
 # --- Observations: LFB throughput, and the row's deterministic spend. --------
-# §3.4 wants the dispatcher-path cost "answered with a number rather
-# than a worry".  This shell-driven burst is an UPPER bound (it includes
+# The dispatcher-path cost should be answered with a number rather
+# than a worry.  This shell-driven burst is an UPPER bound (it includes
 # the script interpreter); the escape hatch (a host-overlay fast path)
 # stays out of scope unless a guest-driven workload shows the need.
 include "../lib/mac.script"
@@ -244,7 +244,7 @@ assert machine.pci.slot[1].card.regs.gpu_stats == "" "...with nothing to report"
 
 # --- The positive control: an EMPTY slot reads all-ones. --------------------
 # No "the card enumerated" assertion above is trusted until its negative
-# has been seen (the §9.2 instrument discipline).
+# has been seen.
 machine.boot model="pm7500" ram=32768 rom="${$ROM}"
 assert cfg_rd(0x00) == 0xFFFFFFFF "an empty A1 reads all-ones"
 assert cfg_rd(0x2C) == 0xFFFFFFFF "...including the subsystem registers"

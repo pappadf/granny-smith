@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Build the AFP end-to-end suite's test application.
 
-Stage 4 of proposal-afp-server-completeness.md §7.3 needs a resource-bearing
-binary the guest can *launch over AFP*: the Segment Loader has to open the
-file's resource fork through FPOpenFork, FPRead its CODE resources, and jump
-into them.  Nothing on the stock System 6 boot volume is both a standalone
-application and visually distinctive, so the suite ships its own — a minimal
-68K app that paints a known pattern over the screen and then spins.
+The suite's launch stage needs a resource-bearing binary the guest can
+*launch over AFP*: the Segment Loader has to open the file's resource fork
+through FPOpenFork, FPRead its CODE resources, and jump into them.  Nothing
+on the stock System 6 boot volume is both a standalone application and
+visually distinctive, so the suite ships its own — a minimal 68K app that
+paints a known pattern over the screen and then spins.
 
 The app is emitted as an AppleDouble pair, which is exactly the on-disk shape
 the AFP server serves and `cp` produces:

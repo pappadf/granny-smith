@@ -1,7 +1,7 @@
-# Integration test configuration: Machine Abstraction Wiring (M1)
+# Integration test configuration: Machine Abstraction Wiring
 # Exercises system_create → boot → checkpoint → system_destroy → system_create restore cycle
 
-TEST_NAME := Machine Lifecycle (M1)
+TEST_NAME := Machine Lifecycle
 TEST_DESC := Validates system_create/system_destroy lifecycle and checkpoint round-trip via machine_plus callbacks
 
 # Required ROM image (path relative to tests/data/)

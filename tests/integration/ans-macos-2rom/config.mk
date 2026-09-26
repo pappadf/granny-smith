@@ -1,5 +1,4 @@
-# Integration test: the Network Server's 2.0 prototype ROM, running Mac OS
-# (proposal-apple-network-server-500-700 §5.1, ladder rung S14)
+# Integration test: the Network Server's 2.0 prototype ROM, running Mac OS.
 #
 # THE CROSS-EXAMINATION.  The Apple Network Servers shipped a ROM with no
 # Mac OS Toolbox at all: the production image ($962F6C13) boots AIX and
@@ -11,9 +10,9 @@
 # row exists.  Two entirely unrelated software stacks exercise one hardware
 # model: anything the model gets wrong that both stacks tolerate is
 # genuinely invisible, and anything only one of them tolerates shows up here
-# rather than in a bug report.  It is also the fallback named in the
-# proposal's R4 — when AIX misbehaves and there is no source to disassemble,
-# a device can be cross-examined through a stack we do understand.
+# rather than in a bug report.  It is also the fallback when AIX
+# misbehaves and there is no source to disassemble: a device can be
+# cross-examined through a stack we do understand.
 #
 # The prototype ROM misconfigures the L2 cache and was never shipped; it is
 # a research artifact, not a supported configuration.

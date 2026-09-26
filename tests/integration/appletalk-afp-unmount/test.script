@@ -8,8 +8,8 @@
 # AppleTalk Fig. 11-10).  The server read the session from the ATP data --
 # always absent -- so no CloseSess ever closed anything: every unmount left
 # the session held until the two-minute idle sweep, and with four session
-# slots a fifth mount inside that window was refused (10-network N-03).  The
-# run checks the session is gone within a few seconds of the drag.
+# slots a fifth mount inside that window was refused.  The run checks the
+# session is gone within a few seconds of the drag.
 
 include "../lib/mac.script"
 

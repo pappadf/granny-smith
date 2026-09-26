@@ -1,5 +1,5 @@
 # The Voodoo2 pass-through switch against a live System 7.6 desktop
-# (proposal-pci-3dfx-voodoo2 §3.2, §4.8; milestone 3d).
+# (docs/core/peripherals/pci/cards/voodoo2.md).
 #
 # The mechanism under test is deliberately NOT new code: tnt_display()
 # resolves the screen through pci_primary_display_card(), which calls
@@ -32,8 +32,8 @@ machine.rtc.time = "2026-04-26T21:30:36"
 machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
 
 # System 7.6 to the Finder — with the ROM-less card seated the whole
-# way.  Mac OS finds no driver for pci121a,2 and must not care (§1.10:
-# a missing/ignored Voodoo2 causes no boot problem).
+# way.  Mac OS finds no driver for pci121a,2 and must not care (a
+# missing/ignored Voodoo2 causes no boot problem).
 scheduler.run 2500000000
 assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver match / mount failed)"
 assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
@@ -95,7 +95,7 @@ vreg_wr(0x064, 0x00000000)
 vreg_wr(0x068, 0x00000C00)
 vreg_wr(0x080, 0x80000000)
 # NOW the switch: video out of reset, unblanked, outputs driven,
-# pass-through taken — the §4.8 predicate turns true in one place.
+# pass-through taken — the pass-through predicate turns true in one place.
 vreg_wr(0x214, (vreg_rd(0x214) & 0xFFFFEEFF) | 0x1E000)
 vreg_wr(0x210, vreg_rd(0x210) | 0x1)
 assert machine.pci.slot[1].card.video.drives_monitor "the predicate reads true once everything is driven"

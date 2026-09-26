@@ -1,7 +1,6 @@
-# RE-HOSTED IIfx -> IIci (§7's A/UX redistribution, MILESTONE class): this
-# becomes RBV-under-A/UX, a video path nothing exercises. §7 picks the IIci
-# over the IIsi because A/UX requires an FPU and the IIci has a standard
-# 68882. Expected to surface real gaps, so it is run-not-fatal until it
+# RE-HOSTED IIfx -> IIci (MILESTONE class): this becomes RBV-under-A/UX, a
+# video path nothing exercises. The IIci rather than the IIsi because A/UX
+# requires an FPU and the IIci has a standard 68882. Expected to surface real gaps, so it is run-not-fatal until it
 # passes; promotion is a reviewed edit.
 # Integration test configuration: IIci A/UX 3.0.1 HD Boot at 8 bpp (via RBV)
 #
@@ -14,7 +13,7 @@
 #      seed slot-PRAM AND stamp the boot-ROM PRAM validity tokens; a
 #      regression there (the token stamp suppressing the ROM's default
 #      startup-device PRAM init) left D3=0 at SCSILoad → no boot driver →
-#      Mac-OS no-boot floppy.  See notes/iifx-debug/117.
+#      Mac-OS no-boot floppy.
 #   2. CPU instruction-fetch fault handling — 8bpp's larger framebuffer
 #      raises memory pressure, so A/UX exec'ing /etc/init demand-pages
 #      init's text page from disk; f_trap once routed that PMMU

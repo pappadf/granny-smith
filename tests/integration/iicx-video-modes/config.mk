@@ -6,7 +6,7 @@
 # docs/core/memory/pram.md §3/§6 for the validator + sPRAMRec layout.
 #
 # The 15" Portrait and 21" RGB halves of this sweep were re-hosted to
-# suite-iix (§7's 8-of-16 split); the sixteen cells now span two hosts.
+# suite-iix (an 8-of-16 split); the sixteen cells now span two hosts.
 
 TEST_NAME := IIcx Video Modes
 TEST_DESC := Cold-boot Finder-at-N-bpp via PRAM seeding on the JMFB (13" + 12" halves; 15"/21" run in suite-iix)

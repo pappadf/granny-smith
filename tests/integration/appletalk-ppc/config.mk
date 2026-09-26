@@ -1,5 +1,5 @@
 # Integration test configuration: PPC Toolbox program linking against a real
-# System 7 guest (proposal-appletalk-ppc-appleevents.md WP-8).
+# System 7 guest.
 #
 # The guest is the 20 MB System 7.1 SCSI image, booted on the Plus.  It is the
 # only machine family with the AppleTalk stack wired in (appletalk_init is

@@ -1,4 +1,4 @@
-# Integration test: ${...} interpolation in logpoint messages (M5)
+# Integration test: ${...} interpolation in logpoint messages
 # Boots Plus, sets a memory logpoint on Ticks ($16A), runs long enough
 # for the VBL handler to bump it, and verifies the formatted output.
 

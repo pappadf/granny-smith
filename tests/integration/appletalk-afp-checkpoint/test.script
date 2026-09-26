@@ -12,8 +12,8 @@
 # "cannot restore event 'atp.xo_release' — type not registered", and in the
 # release build (asserts compiled out) the restore indexed event_types[-1].
 # The browser saves a background checkpoint every ~15 s, so ordinary file
-# sharing hit it (10-network N-05).  The same held for PAP, the LaserWriter job
-# and its transport.  Every one is now registered when the stack comes up
+# sharing hit it.  The same held for PAP, the LaserWriter job and its
+# transport.  Every one is now registered when the stack comes up
 # (atalk_timer_t).
 #
 # The run steps the machine in small slices right after the Finder starts
@@ -150,7 +150,7 @@ assert checkpoint.save("${$WORK_DIR}/afp.checkpoint") "checkpoint save"
 assert checkpoint.load("${$WORK_DIR}/afp.checkpoint") "checkpoint load"
 
 # The share is still published, under the id the guest cached for it
-# (10-network D-3: a load used to drop every volume).
+# (a load used to drop every volume).
 assert appletalk.afp.volumes["My Volume"].vol_id == $vol_id "the share did not come back under its volume id"
 
 # The restored queue still holds the transaction's timer, resolved to a live

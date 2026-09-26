@@ -1,5 +1,5 @@
 # Integration test configuration: Apple events against the Scriptable Finder
-# (proposal-appletalk-ppc-appleevents.md §7.2, the flagship script).
+# (the flagship script).
 #
 # System 7.5 on a IIci — the combination this feature exists for.  7.5 brings
 # the Scriptable Finder, and the IIci has the AppleTalk stack now that it is

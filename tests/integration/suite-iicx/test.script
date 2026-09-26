@@ -11,7 +11,7 @@
 #                     golden, accelerator forced to the fallback
 #   iicx-24ac         iicx-24ac: the 24AC under 7.1 at 8 bpp — desktop,
 #                     Apple menu, control-panel scroll, PLUS the engine
-#                     counters §3.2 says nothing asserted
+#                     counters nothing else asserted
 #   iicx-24ac-restart iicx-24ac-restart: warm restart back to the 8 bpp
 #                     desktop
 #   iicx-gc-beep      iicx-824gc-beep: Control Panel, two Speaker Volume
@@ -23,8 +23,8 @@ include "../lib/mac.script"
 let hd_608_gc = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
 
 # ---- iicx-chime -------------------------------------------------------------
-# Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
-# 15,359-frame length are both the assertion.
+# Frame-exact capture window: the 12 M budget and the 15,359-frame length
+# are both the assertion.
 def row_iicx_chime() {
     machine.boot model="iicx" ram=8192 rom="${$ROM}"
     machine.sound.capture.start
@@ -38,15 +38,15 @@ def row_iicx_chime() {
 
 
 # ---- iicx-gc-accel8 / iicx-gc-decline8 --------------------------------------
-# The 8•24 GC's accel/decline differential pair at 8 bpp. §7 keeps this
-# pair on the IIcx (the 1 bpp pair re-hosted to suite-iix) because the
-# 6.0.8 GC image is this host's home media and because a differential
-# pair must share a host by construction: both rows match the SAME
-# golden, since a correct accelerated render and a correct ROM/QuickDraw
-# fallback are pixel-identical by design. That is exactly why pixels
-# cannot prove engagement — the gc.* counters do.
+# The 8•24 GC's accel/decline differential pair at 8 bpp. The suite keeps this
+# pair on the IIcx (the 1 bpp pair re-hosted to suite-iix) because the 6.0.8 GC
+# image is this host's home media and because a differential pair must share a
+# host by construction: both rows match the SAME golden, since a correct
+# accelerated render and a correct ROM/QuickDraw fallback are pixel-identical
+# by design. That is exactly why pixels cannot prove engagement — the gc.*
+# counters do.
 #
-# The accel row also absorbs iicx-824gc-adb-mouse (§2.3): rather than
+# The accel row also absorbs iicx-824gc-adb-mouse: rather than
 # re-running the same 200 M-cycle boot to reach a few lowmem asserts, the
 # cursor-tracking checks run after the golden matched. They guard a real
 # regression — an aborted ADB Talk used to lose the delta, so MTemp,
@@ -108,17 +108,17 @@ def row_iicx_gc_decline8() {
 
 
 # ---- iicx-gc-beep -----------------------------------------------------------
-# The former iicx-824gc-beep test, folded in as a row on its ORIGINAL host
-# and mode (IIcx, 1 bpp). §7 wanted the beep to travel to the IIx with the
-# 1 bpp accel/decline pair; measurement says it should not. Its strongest
-# assertion is that the two beeps are byte-identical pre-volume — the guard
-# proving no Sound Manager state (wavetable fill, phase accumulators, FIFO
-# pointers) leaks from one beep into the next. On the 68020 IIx that
-# invariant does NOT reproduce: the second capture runs 3 frames longer and
-# the waveforms diverge ~31 frames in, so re-hosting would have traded a
-# real oracle for two per-host baselines. Whether that divergence is a
-# capture-phase artifact or genuine leakage on the 020 path is unresolved
-# and worth a look; until then the guard stays where it holds.
+# The former iicx-824gc-beep test, folded in as a row on its ORIGINAL host and
+# mode (IIcx, 1 bpp). The beep was meant to travel to the IIx with the 1 bpp
+# accel/decline pair; measurement says it should not. Its strongest assertion
+# is that the two beeps are byte-identical pre-volume — the guard proving no
+# Sound Manager state (wavetable fill, phase accumulators, FIFO pointers) leaks
+# from one beep into the next. On the 68020 IIx that invariant does NOT
+# reproduce: the second capture runs 3 frames longer and the waveforms diverge
+# ~31 frames in, so re-hosting would have traded a real oracle for two per-host
+# baselines. Whether that divergence is a capture-phase artifact or genuine
+# leakage on the 020 path is unresolved and worth a look; until then the guard
+# stays where it holds.
 #
 # The choreography (Control Panel, two Speaker Volume drags, the exact
 # slider pixel coordinates) is copied verbatim from the original test.
@@ -189,9 +189,9 @@ def row_iicx_gc_beep() {
     #
     # The exact count is a CAPTURE-WINDOW measurement, not a property of the
     # beep, and it moves whenever anything shifts where the guest is when the
-    # window opens.  It has been 5427 (original), 5423 (branch 2's sound
-    # rework) and 5427 again since F-17 gave the SCSI bus a real reset -- whose
-    # unit attentions move this row by 127 instructions in 380 million.  The
+    # window opens.  It has been 5427 (original), 5423 (after a sound rework)
+    # and 5427 again since the SCSI bus got a real reset -- whose unit
+    # attentions move this row by 127 instructions in 380 million.  The
     # waveform survived that unchanged: aligned on their shared body the old
     # and new captures differ in 25 samples of 5,423, all at the window edges.
     # It is also context-sensitive, so REGEN it from a WHOLE-SUITE run: on its
@@ -231,9 +231,10 @@ def row_iicx_gc_beep() {
     #
     # "byte-for-byte", as this said until 2026-09-13, overstates it and is not
     # asserted anywhere -- the two captures have never been the same length
-    # (5423/5426 before F-17, 5427/5426 after).  Aligned on their shared body
-    # they agree to ONE sample in ~5,424, and that ratio is identical either
-    # side of F-17, which is the invariant this row exists to guard.
+    # (5423/5426 before the SCSI reset, 5427/5426 after).  Aligned on their
+    # shared body they agree to ONE sample in ~5,424, and that ratio is
+    # identical either side of that change, which is the invariant this row
+    # exists to guard.
     assert machine.sound.volume == 6 "ASC volume register != slider level 6"
     report_perf("suite-iicx/iicx-gc-beep", scheduler.instr_count)
 }
@@ -241,24 +242,24 @@ def row_iicx_gc_beep() {
 
 # ---- iicx-24ac / iicx-24ac-restart ------------------------------------------
 # The 24AC's OS-level rows, folded in from iicx-24ac and iicx-24ac-restart.
-# §7 wanted these re-hosted to the IIci so the card would sit beside a live
-# RBV; measurement says only half of that works. On the IIci the built-in
-# video stays the boot screen (PRAM $80..$81 seeding does not move it), so
-# machine.screen would capture the RBV and the 24AC's own pixels — the
-# whole point of these rows — would stop being observable. They therefore
-# stay on the IIcx, where the 24AC is the only display, and the IIci gets
-# a dual-display row of its own (suite-iici's iici-24ac-dual) for the
-# second-screen cell §7 was after. Choreography copied verbatim.
+# They were meant to re-host to the IIci so the card would sit beside a live
+# RBV; measurement says only half of that works. On the IIci the built-in video
+# stays the boot screen (PRAM $80..$81 seeding does not move it), so
+# machine.screen would capture the RBV and the 24AC's own pixels — the whole
+# point of these rows — would stop being observable. They therefore stay on the
+# IIcx, where the 24AC is the only display, and the IIci gets a dual-display
+# row of its own (suite-iici's iici-24ac-dual) for the second-screen cell those
+# re-hosts were after. Choreography copied verbatim.
 def row_iicx_24ac() {
     # Integration test: IIcx + Display Card 24AC — boot the 32-bit SCSI cdev image
     # to an 8-bpp COLOUR Finder desktop.
     #
-    # Unlike iicx-display-card-24ac (which boots the floppy System 7.0.1 with the
-    # $017A boot-wait poke and exercises the engine via memory.poke/peek), this
-    # boots the genuine "Step B" artifact: systems/system_7_1_20mb_24ac_cd_32bit_gc.img
-    # — a 20 MB System 7.1 SCSI HD with the 24AC cdev pre-installed and 32-bit
-    # addressing on.  So the cdev binds at boot and drives the real card end-to-end
-    # (proposal-nubus-card-display-card-24ac §3.7 Step B).
+    # Unlike iicx-display-card-24ac (which boots the floppy System 7.0.1 with
+    # the $017A boot-wait poke and exercises the engine via memory.poke/peek),
+    # this boots the prepared image
+    # systems/system_7_1_20mb_24ac_cd_32bit_gc.img — a 20 MB System 7.1 SCSI HD
+    # with the 24AC cdev pre-installed and 32-bit addressing on.  So the cdev
+    # binds at boot and drives the real card end-to-end.
     #
     # The image is stored as a .7z in gs-test-data (systems/) and auto-extracted by
     # scripts/fetch-test-data.sh, so the raw .img is present under tests/data.
@@ -347,7 +348,7 @@ def row_iicx_24ac() {
     machine.adb.mouse.click false
     scheduler.run 8000000
     check("goldens/iicx-7.1-640x480x8-24ac-cp-scroll-640x480-8bpp.png")
-    # §3.2's missing proof: no OS-level test asserted the 24AC's engine
+    # The missing proof: no OS-level test asserted the 24AC's engine
     # counters, so engine use was only ever INFERRED from goldens that a
     # fallback render would reproduce exactly. These make it explicit.
     assert machine.nubus.slot[9].card.engine.fill_ops > 0 "iicx-24ac: engine did no fills — accelerator never engaged"

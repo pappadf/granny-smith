@@ -2,8 +2,8 @@
 #
 # Every other AFP row mounts from System 6, whose client speaks AFP 2.0.  This
 # one boots System 7.5 on a IIci, whose AppleShare 3.5 client negotiates AFP
-# 2.1 -- the first real client to do so against this server (10-network D-8)
-# -- and repeats D-5's long-name measurement on System 7:
+# 2.1 -- the first real client to do so against this server -- and repeats
+# appletalk-afp-longname's long-name measurement on System 7:
 #
 #   1. Publish a share holding a 40-character name and a 31-character control.
 #   2. Apple menu -> Chooser -> AppleShare: the server is listed.
@@ -21,9 +21,9 @@
 #
 # Find File is not driven here.  Its FPCatSearch now parses (it was
 # ParamErr), but how this client wants the last matches and the end of the
-# search delivered is not settled: see 10-WORK-ORDER.md §10, N-40.
+# search delivered is not settled.
 #
-# D-5 on System 7, measured with the shortening removed: the client cuts the
+# The long-name case on System 7, measured with the shortening removed: the client cuts the
 # 40-character name to 31 itself, then asks for the file by the cut name --
 # which does not exist -- and the Finder refuses the copy: "You cannot copy
 # ... because it cannot be found", no bytes read.  So step 6 fails without the

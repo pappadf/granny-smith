@@ -1,5 +1,4 @@
 # Integration suite: the AV family (Quadra 840AV / Centris 660AV)
-# (proposal-quadra-av.md §5.1)
 #
 # One daemon run; rows re-instantiate via machine.boot with every staging
 # argument named, and the shared library in ../lib/mac.script provides the

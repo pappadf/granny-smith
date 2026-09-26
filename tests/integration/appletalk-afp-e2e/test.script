@@ -1,4 +1,4 @@
-# AFP end-to-end fork fidelity (proposal-afp-server-completeness.md §7.3).
+# AFP end-to-end fork fidelity.
 #
 # One script that walks the whole chain and pins every protocol-visible stage:
 #

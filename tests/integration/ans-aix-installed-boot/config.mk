@@ -1,5 +1,5 @@
 # Integration test: cold-booting an INSTALLED AIX 4.1.5 on the Apple Network
-# Server (proposal-apple-network-server-500-700 §6, ladder rung S13).
+# Server.
 #
 # The media is a disk image the BOS install itself produced — AIX 4.1.5
 # installed from the Install CD onto a Quantum LP240S (234 MB, the smallest
@@ -8,7 +8,7 @@
 # Installation Assistant completed, shut down with `shutdown -F` typed on
 # that console and exported flattened with
 # `machine.scsi.device[2].image.export`.  It is
-# copyrighted AIX and cannot live in this repository (proposal §13 R8); it
+# copyrighted AIX and cannot live in this repository; it
 # is in the private gs-test-data (systems/aix_4_1_5_lp240s_234mb.img.7z,
 # 14.5 MB) and the row skips cleanly when it has not been fetched.
 #

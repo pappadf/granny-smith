@@ -123,7 +123,7 @@ scheduler.run 5000000
 
 # All settings applied: High Resolution / 100% / 256 colors / Normal, and
 # Background Music now ON. Folded in from iicx-marathon, which was deleted
-# as fully subsumed by this test (§8) — this was its one assertion that
+# as fully subsumed by this test — this was its one assertion that
 # had no counterpart here, so it moves rather than disappearing. The
 # golden differs from iicx-marathon's by the Background Music checkbox.
 check("marathon-prefs-set-8bpp-640x480.png")

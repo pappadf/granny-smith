@@ -1,4 +1,4 @@
-# Integration test: debug.* indexed-child surface (M6)
+# Integration test: debug.* indexed-child surface
 # Boots Plus, exercises the debug.breakpoints / .logpoints tree, and
 # verifies legacy `break` commands and the new `debug.breakpoints.add`
 # method touch the same entries.

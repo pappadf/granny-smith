@@ -1,5 +1,5 @@
 # Integration test: checkpoints of the running machine, and find_media, on
-# headless (S2, F-19).
+# headless.
 #
 # Registering a machine, the quick checkpoint, clearing it and finding media
 # in a directory are file work in core, the same on every platform.  They

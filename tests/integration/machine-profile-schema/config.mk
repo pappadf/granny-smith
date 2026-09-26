@@ -1,4 +1,4 @@
-# Integration test: machine.profile() schema snapshot (proposal §6.1)
+# Integration test: machine.profile() schema snapshot
 # Pins the SHAPE (keys + value types, value-independent) of every model's
 # machine.profile() JSON against a committed golden, so adding/removing/
 # retyping a field fails loudly. Complements machine-capabilities, which

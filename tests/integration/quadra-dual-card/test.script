@@ -42,7 +42,7 @@ assert machine.nubus.slot[14].card.gc.on == false "GC INIT unexpectedly started 
 
 # From both: the built-in DAFB stays the boot screen even with two cards in.
 assert (debug.mac.globals.read("ScrnBase") & 0xFF000000) == 0xF9000000 "ScrnBase not on the DAFB"
-# 7.6 selects 32-bit addressing itself (§3.4).
+# 7.6 selects 32-bit addressing itself (measured).
 assert_addr(true)
 assert machine.screen.width == 640 "screen width != 640"
 assert machine.screen.height == 480 "screen height != 480"

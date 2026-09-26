@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# archive.extract must not write outside its output directory (09 F-13).
+# archive.extract must not write outside its output directory.
 set -euo pipefail
 
 mkdir -p "$WORK_DIR"

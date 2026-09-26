@@ -1,7 +1,6 @@
 #!/bin/bash
-# Canonical ROM/vROM filename conformance (proposal-test-rom-naming.md §4.3,
-# re-homed onto the tooling naming grammar by
-# proposal-content-addressed-rom-provisioning.md §3.6b).
+# Canonical ROM/vROM filename conformance, checked against the tooling
+# naming grammar (scripts/rom_naming.py).
 #
 # Enumerate every file in $TEST_DATA/roms and drive a single headless
 # identify pass over all of them, then assert:
@@ -36,7 +35,7 @@ while IFS= read -r -d '' f; do
         *.rom)  obj="machine.rom.identify"  ;;
         *.vrom) obj="machine.vrom.identify" ;;
         *.prom) obj="machine.prom.identify" ;;
-        # The generated manifest (roms/README.md, proposal §4.4) and any other
+        # The generated manifest (roms/README.md) and any other
         # docs legitimately live here — they are not ROM blobs, so skip them.
         README.md|*.md) continue ;;
         *) echo "FAIL: unexpected non-ROM/doc file in roms/: $base"; exit 1 ;;

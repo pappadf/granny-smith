@@ -9,7 +9,7 @@
 #
 # Retired here, not lost: se30-floppy claimed SE/30 x 7.1 from
 # System_7_1_0.dsk, an 800K disk that actually boots a 6.0.7-class
-# system (§7's third media fiction) — the genuine 800K GCR transport
+# system (a media fiction) — the genuine 800K GCR transport
 # coverage is the 6.0.8 row below. se30-scsi is deleted; its SCSI HD
 # boot path is the 7.5 row, on fresher media.
 #

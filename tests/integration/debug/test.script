@@ -1,8 +1,8 @@
 # Integration test: Debug tooling — `find` family (shell v2).
 #
-# `find.{str|bytes|word|long}` return a V_LIST of match addresses
-# (shell v2 §6.1); failures return V_ERROR. This script asserts on the
-# typed results and echoes stable markers that run.sh greps.
+# `find.{str|bytes|word|long}` return a V_LIST of match addresses; failures
+# return V_ERROR. This script asserts on the typed results and echoes stable
+# markers that run.sh greps.
 
 # === find: introspection ================================================
 
@@ -81,10 +81,10 @@ assert len(debug.breakpoints.entries) == 0 "cleared collection reads as empty li
 
 # === breakpoint entries: dedupe, enumerate, enable, remove ==============
 #
-# What web2's Breakpoints panel relies on (D1).  Ids are
-# stable and never reused, so a list is walked with meta.indices, never
-# with count; a second add at one address returns the existing entry; a
-# disabled entry stays listed but does not fire.
+# What web2's Breakpoints panel relies on.  Ids are stable and never
+# reused, so a list is walked with meta.indices, never with count; a second
+# add at one address returns the existing entry; a disabled entry stays
+# listed but does not fire.
 
 debug.breakpoints.clear
 debug.breakpoints.add 0x400100

@@ -1,4 +1,4 @@
-# TNT ROM boot ladder (proposal-powermac-7500-8500-9500 §7.1).
+# TNT ROM boot ladder.
 #
 # Every assertion is a hardware truth read from the live machine after a
 # clean bounded run — deliberately NO PC logpoints/breakpoints (the PDM
@@ -12,8 +12,7 @@
 # into the Grand Central NVRAM — before POST and the 68k emulator take
 # over.  The budget below runs through all of that to the 68k Start
 # Manager, which mode-sets Control through the ROM's native video driver,
-# paints the gray desktop (rung T11) and parks looking for boot media
-# (Phase E's frontier).
+# paints the gray desktop (rung T11) and parks looking for boot media.
 
 include "../lib/mac.script"
 
@@ -42,20 +41,20 @@ assert machine.cpu.sdr1 == 0x01FE0001 "T2: SDR1/HTAB not at the 32 MB layout"
 # the chip whose two clear modes make a storm hard to read: in mode 0 the
 # line follows ((events|levels) & mask), in mode 1 (latch & mask) alone,
 # and which one you are in is invisible from the register values.  So
-# `active` answers for the mode actually selected (05-chipsets-irq F-26).
+# `active` answers for the mode actually selected.
 assert machine.gc.chip == "Grand Central" "machine.gc missing"
 assert machine.gc.clear_mode == 0 || machine.gc.clear_mode == 1 "gc.clear_mode out of range"
 
-# --- T4: machine identity — SOLVED (Phase D) ---------------------------------
+# --- T4: machine identity — SOLVED -------------------------------------------
 # The shipping ROM's identification routine ($FFC14844, decoded during
-# Phase D): Hammerhead's part identifier must read $39 in its first byte
-# (a $3001xxxx identifier is the 7200/Catalyst personality — the cause
-# of the Phase-B BoxFlag=$66 puzzle), the 9500 is flagged by Hammerhead
-# +$20 bit 30, and the 8500 by BoxID little-endian bit 11.  The proof is
-# the 68k BoxFlag global: $3E = the Power Macintosh 7500 (gestalt 68).
-# The BoxID model byte carries bit 13 SET (BE byte 1 = $E0) — Open
-# Firmware's half of the identity, decoded in Phase D part 2: its model
-# word takes BoxID xw@>>11 and splits 7500 (bit 13 set) from 8500.
+# bring-up): Hammerhead's part identifier must read $39 in its first byte
+# (a $3001xxxx identifier is the 7200/Catalyst personality — the cause of
+# an early BoxFlag=$66 puzzle), the 9500 is flagged by Hammerhead +$20 bit
+# 30, and the 8500 by BoxID little-endian bit 11.  The proof is the 68k
+# BoxFlag global: $3E = the Power Macintosh 7500 (gestalt 68). The BoxID
+# model byte carries bit 13 SET (BE byte 1 = $E0) — Open Firmware's half
+# of the identity, decoded separately: its model word takes BoxID xw@>>11
+# and splits 7500 (bit 13 set) from 8500.
 assert machine.memory.peek.l(0xF8000000) == 0x39000000 "T4: Hammerhead ID != $39xxxxxx"
 assert machine.memory.peek.b(0xF301A001) == 0xE0 "T4: BoxID model byte"
 assert machine.memory.peek.b(0xCB3) == 0x3E "T4: BoxFlag != $3E (not identified as a 7500)"
@@ -65,7 +64,7 @@ assert machine.memory.peek.b(0xCB3) == 0x3E "T4: BoxFlag != $3E (not identified 
 # selector m = (+$20 byte >> 5) | ((+$20 byte >> 1) & 8) — $80 reads as
 # 4 = the 7500/8500 arm, $40 as 2 = 9500) must recognise the box: the
 # "AAPL,????" fallback builds a tree with NO chaos/control display nodes
-# and the ROM's video driver can never load (the Phase-D video wall).
+# and the ROM's video driver can never load (the old video wall).
 # The compatible string and the control node's model property are read
 # back from OF's live workspace in low RAM.
 assert len(find.str("AAPL,7500", 0x8000, 0x20000)) > 0 "T6: OF compatible != AAPL,7500 (model decode fell back)"
@@ -142,15 +141,15 @@ assert machine.memory.peek.l(0xF300830C) == 0x78563412 "T9: DBDMA cmdptr store-r
 machine.memory.poke.l(0xF300830C, 0)
 
 # --- T10: the firmware beep through AWACS + DBDMA channel 8 -------------------
-# Open Firmware plays its beep through the full datapath: the sound-
-# control rate write (22 050 Hz), codec attenuation commands over the
-# NEWECMD port, and a 51 928-frame descriptor program drained through the
-# channel-8 frame-credit gate in emulated time.  The run is
+# Open Firmware plays its beep through the full datapath: the
+# sound-control rate write (22 050 Hz), codec attenuation commands over
+# the NEWECMD port, and a 51 928-frame descriptor program drained through
+# the channel-8 frame-credit gate in emulated time.  The run is
 # deterministic, so the capture matches a golden WAV sample-exactly
-# (REGEN=1 regenerates).  The 68k startup chime STILL does not play by
-# the T11 desktop (the boot reaches its media hunt chime-less — an open
-# question for Phase E; the row pins the whole capture so the chime's
-# first appearance will show up as a length change here).
+# (REGEN=1 regenerates).  The 68k startup chime STILL does not play by the
+# T11 desktop (the boot reaches its media hunt chime-less — an open
+# question; the row pins the whole capture so the chime's first appearance
+# will show up as a length change here).
 check_sound("of-beep.wav", 51928)
 assert machine.sound.peak >= 2000 "T10: beep rendered silent (peak ${machine.sound.peak})"
 assert machine.sound.sample_rate == 22050 "T10: sound rate != the beep's 22050"
@@ -177,8 +176,8 @@ check("gray-desktop.png")
 
 # The T5 marker (the OF memory-sizing sequence against Hammerhead) stays
 # asserted transitively — MemTop and the kernel's 32 MB layout are
-# downstream of OF's sizing — and gets its own direct row when the R1
-# Hammerhead access log is fitted.  T12-T13 (SCSI, Finder) are Phase E.
+# downstream of OF's sizing — and gets its own direct row when a
+# Hammerhead access log is fitted.  T12-T13 (SCSI, Finder) are tnt-hd-boot's.
 
 echo "tnt-rom-ladder: high-water rung T11 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} sound=${machine.sound.frames}f/${machine.sound.peak}pk scrn=${debug.mac.globals.read("ScrnBase"):08x})"
 quit

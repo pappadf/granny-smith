@@ -1,12 +1,11 @@
-# Integration test: Apple Network Server PCI topology
-# (proposal-apple-network-server-500-700 §5.2, §5.3, §5.7, §5.8)
+# Integration test: Apple Network Server PCI topology.
 #
 # The Network Server's PCI delta is three of the four boot-critical items
 # in Apple's own table, and all three are pure data — which is exactly why
 # they need a row: nothing about a wrong IDSEL or a wrong interrupt line is
 # loud.  A subtly wrong config answer yields a SILENTLY UNCONFIGURED DEVICE
 # under AIX rather than a crash, which is the hardest failure shape there
-# is (proposal §7).
+# is.
 #
 # What is pinned here:
 #

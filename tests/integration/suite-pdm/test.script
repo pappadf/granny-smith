@@ -1,4 +1,4 @@
-# PDM family suite — Phase G acceptance rows (proposal-powerpc-601-pdm.md).
+# PDM family suite — the family's acceptance rows.
 #
 # Row map:
 #
@@ -80,7 +80,7 @@ def boot_pdm_75(model, ram_kb, id) {
     machine.rtc.time = 0xE0000000
     machine.scsi.attach_hd "${$hd_75}" $id
     # The Start Manager's default startup device is the disk's own id --
-    # the core writes the PRAM bytes, as the web page asks it to (F-04).
+    # the core writes the PRAM bytes, as the web page asks it to.
     machine.rtc.pram.boot_device = $id
     # Chip init, bus scan, driver load, DQE post -- and no spin-up wait: the
     # machine's PRAM disables it (see header).  The Start Manager has
@@ -110,7 +110,7 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart, id) {
     assert machine.screen.width == 640 "${$model}: not in 640x480"
     assert machine.screen.height == 480 "${$model}: not in 640x480"
     assert machine.screen.depth == 8 "${$model}: not 8 bpp"
-    # The Start Manager committed to the SCSI drive (Phase G acceptance).
+    # The Start Manager committed to the SCSI drive.
     assert debug.mac.globals.read("BootDrive") != 0 "${$model}: BootDrive == 0 (no startup device)"
     # DynamicBoxFlag identity (ladder L16 mechanism, per-model value) —
     # read through the user-context window, so park in USER mode first.
@@ -129,7 +129,7 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart, id) {
 # The 6100 is the row where BART must be ABSENT: its bridge ships on an
 # optional PDS adapter, so the probe faults and the machine boots anyway.
 def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false, 0) }
-# The disk at id 2, not 0: the startup device follows it (F-04).
+# The disk at id 2, not 0: the startup device follows it.
 def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true, 2) }
 def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true, 0) }
 
@@ -209,23 +209,21 @@ def row_pdm_nubus_empty() {
     assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
     # machine.amic — the AMIC has no per-source mask of its own, so
     # `enabled` reports all six ICR sources and the masking that matters is
-    # one level down in the pseudo-VIA2 IERs, which the node also carries
-    # (05-chipsets-irq F-26).
+    # one level down in the pseudo-VIA2 IERs, which the node also carries.
     assert machine.amic.chip == "AMIC" "pdm-nubus-empty: machine.amic missing"
     assert machine.amic.enabled == 0x3F "pdm-nubus-empty: AMIC should report six ICR sources"
     assert machine.amic.mode == 0 "pdm-nubus-empty: AMIC INTMODE should be 0 out of reset"
 
     # The Ethernet ID PROM ($50F08000) and MACE ($50F0A000) windows are
-    # declared in the AMIC decode with nothing behind them yet.  They read
-    # 0, NOT the $FF that 05-chipsets-irq F-25 proposes and that the five
-    # mac030 families float to: floating them high breaks mklinux-boot's
-    # pm7100 row, which stops reaching the login screen because MkLinux
-    # probes for Ethernet here and an all-ones ID PROM is a different
-    # answer from an empty one.  Measured, not assumed -- the EPROM window
-    # is read once and MACE read 10 / written 40 times per run of this
-    # suite, so the value is live traffic.  The defines stay: multi-cpu
-    # §11.5 wants OFF_EPROM wired as an IPI and localtalk-networking keeps
-    # MACE as a stub.
+    # declared in the AMIC decode with nothing behind them yet.  They read 0,
+    # NOT the $FF that was once proposed for them and that the five mac030
+    # families float to: floating them high breaks mklinux-boot's pm7100 row,
+    # which stops reaching the login screen because MkLinux probes for Ethernet
+    # here and an all-ones ID PROM is a different answer from an empty one.
+    # Measured, not assumed -- the EPROM window is read once and MACE read 10 /
+    # written 40 times per run of this suite, so the value is live traffic.
+    # The defines stay: multi-CPU work wants OFF_EPROM wired as an IPI and
+    # LocalTalk networking keeps MACE as a stub.
     assert machine.memory.peek.b(0x50F08000) == 0 "pdm: Ethernet ID PROM window should read 0, not float"
     assert machine.memory.peek.b(0x50F0A000) == 0 "pdm: MACE window should read 0, not float"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
@@ -322,7 +320,7 @@ def row_pdm_floppy_mount() {
     assert machine.floppy.type == "swim3" "floppy controller type ${machine.floppy.type}, want swim3"
     assert !machine.floppy.drive[0].present "FD0 occupied before the insert"
 
-    # The family has ONE bay, so there is no drive 1 to put a disk in (N-06).
+    # The family has ONE bay, so there is no drive 1 to put a disk in.
     assert try(machine.floppy.drive[1].present, "none") == "none" "FD1 exists on a family with one bay"
 
     machine.floppy.drive[0].insert "${$fd_144}"
@@ -524,9 +522,9 @@ if row_on("8100-75-24ac") {
 
 # ---- pdm-swim3-reset --------------------------------------------------------
 # The SWIM3 is this family's floppy CONTROLLER, and it was the one controller
-# in the tree that survived a machine reset -- `W-01` from the 2026-09-03
-# review.  cfg->floppy (the drive and its media) has always been reset by the
-# shared chain; the chip in front of it was not, on either PowerPC family.
+# in the tree that survived a machine reset.  cfg->floppy (the drive and its
+# media) has always been reset by the shared chain; the chip in front of it was
+# not, on either PowerPC family.
 #
 # Poke a non-zero Setup register (island $16000 + register 5 x $200), reset,
 # and require the documented power-on value back.  $24 is GCR + IBMDrive and

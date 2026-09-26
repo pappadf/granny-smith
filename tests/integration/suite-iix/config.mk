@@ -2,15 +2,15 @@
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs iix-boot, iix-floppy and
-# iix-824gc, and takes the re-hosted external-floppy test (§7: the IIx
+# iix-824gc, and takes the re-hosted external-floppy test (the IIx
 # has two floppy bays, so the external FD1 path belongs on the two-bay
 # machine rather than the IIcx).
 #
-# §2.1 recorded that the IIx had "no pixel golden at all" — all three of
-# its tests were checksum-only. This suite fixes that: the 7.0.1 row and
-# the new portrait row both pixel-match, so the IIx finally has real
-# pixel coverage, including the JMFB's 640x870 portrait geometry that
-# nothing exercised under an OS before.
+# The IIx used to have no pixel golden at all — all three of its tests
+# were checksum-only. This suite fixes that: the 7.0.1 row and the new
+# portrait row both pixel-match, so the IIx finally has real pixel
+# coverage, including the JMFB's 640x870 portrait geometry that nothing
+# exercised under an OS before.
 #
 #   make test-suite-iix
 #   make test-suite-iix TEST_VARS="ROW=iix-824gc-seat"  one row only

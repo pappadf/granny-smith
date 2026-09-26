@@ -1,4 +1,4 @@
-# Integration test: PDM ROM boot ladder (proposal-powerpc-601-pdm.md §6.1)
+# Integration test: PDM ROM boot ladder (docs/machines/pdm/pdm.md, "Boot ladder")
 #
 # THE verification instrument for the PowerPC/PDM bring-up: boots the
 # shipping 1994-03 PDM ROM headless for a bounded instruction budget and
@@ -9,10 +9,10 @@
 #
 # Current high-water: L20 (boot chime golden-WAV-exact through the AWACS
 # datapath, gray-desktop screen golden through the Ariel scanout); the run
-# parks at the Phase-G SCSI-scan wall.  REGEN=1 regenerates both goldens.
+# parks at the SCSI-scan wall.  REGEN=1 regenerates both goldens.
 
 TEST_NAME := PDM ROM ladder
-TEST_DESC := Boots the PDM ROM and asserts the §6.1 ladder markers up to the committed high-water rung
+TEST_DESC := Boots the PDM ROM and asserts the boot-ladder markers up to the committed high-water rung
 
 # 4 MB Power Macintosh 6100/7100/8100 ROM (stored checksum 0x9FEB69B3)
 TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom

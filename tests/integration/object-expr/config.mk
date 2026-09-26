@@ -1,4 +1,4 @@
-# Integration test: $(...) expressions in the legacy shell (M4)
+# Integration test: $(...) expressions in the legacy shell
 # Exercises the new expression substitution and predicate `assert`.
 
 TEST_NAME := Object-model expressions (Plus)

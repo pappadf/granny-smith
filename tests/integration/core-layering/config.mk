@@ -1,4 +1,4 @@
-# Integration test: core layering check (proposal §4.3)
+# Integration test: core layering check
 # Asserts the platform-agnostic core never includes a machine-implementation
 # header — only the public core/machine_profile.h.  Pure static check; the
 # ROM is required by the harness but unused.

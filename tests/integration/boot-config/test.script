@@ -1,7 +1,6 @@
-# Integration test: configuration-document boot
-# (proposal-named-args-boot-config §4, revised by proposal-boot-vs-reset:
-# machine.boot inherits NOTHING — the document is the whole specification —
-# and machine.restart is the verb for "power-cycle this machine").
+# Integration test: configuration-document boot.  machine.boot inherits
+# NOTHING — the document is the whole specification — and machine.restart
+# is the verb for "power-cycle this machine".
 #
 # Pins the boot-document contract end-to-end:
 #   * headless startup writes the built-from record (same path as scripts);
@@ -80,7 +79,7 @@ assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "c
 
 # --- The record captures the RESOLVED per-slot picks, not just the
 # wildcard: that is what lets machine.restart re-seat a multi-card machine
-# (proposal-pci-architecture §8.2, the repair of the wildcard-only gap). ---
+# (a wildcard-only record could not). ---
 machine.nubus.slot[9].card_id = "display_card_24ac"
 machine.nubus.slot[10].card_id = "824gc"
 machine.boot model="iicx" rom="${$ROM}"
@@ -131,7 +130,7 @@ assert machine.config.model == "iicx" "restored record model"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine card"
 # Under a non-inheriting boot a bare machine.boot after restore is an error;
 # the idiom for "power-cycle the restored machine" is machine.restart, which
-# replays the restored record cold (proposal-boot-vs-reset §6.5).
+# replays the restored record cold.
 assert !machine.boot() "bare machine.boot after restore must be rejected"
 machine.restart
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "machine.restart after checkpoint.load must rebuild the restored configuration"

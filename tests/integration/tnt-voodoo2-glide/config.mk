@@ -1,6 +1,5 @@
 # Integration test: the shipped Mac Glide driver runs its full hardware
-# detection against the Voodoo2 model (proposal-pci-3dfx-voodoo2,
-# milestone 3e).
+# detection against the Voodoo2 model.
 #
 # The guest is Mac OS 8.1 with 3dfx's own VOODOO2_DRV_1.0B5 extensions
 # (byte-verified against the shipped archive) and MacSoft's `Quake 3Dfx`

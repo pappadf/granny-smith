@@ -1,4 +1,4 @@
-# Integration test: Phase 3 UFS read + cp -r
+# Integration test: UFS read + cp -r
 #
 # Exercises the UFS walker against the A/UX 3.0.1 retail ISO.  Partition 6
 # ("UNIX Root&Usr slice 0") is the root filesystem; we list several well-

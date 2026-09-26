@@ -1,4 +1,4 @@
-# Shell v2 language acceptance tests (proposal §13).
+# Shell v2 language acceptance tests.
 
 # --- bindings: let creates, = mutates, undeclared mutation errors -------
 let x = 41
@@ -39,7 +39,7 @@ for v in $hits {
 }
 assert $total == 1 "break/continue"
 
-# --- list literals (proposal-integration-test-rework §10 q.8) ------------
+# --- list literals -----------------------------------------------------
 # `[` in postfix position is indexing, so a `[` where a primary is expected
 # can only start a list — these two readings never collide.
 let empty = []

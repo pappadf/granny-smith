@@ -1,5 +1,4 @@
-# Apple Network Server PCI topology and the built-in device identities
-# (proposal-apple-network-server-500-700 §5.2 / §5.3 / §5.7 / §5.8).
+# Apple Network Server PCI topology and the built-in device identities.
 #
 # Config-port note, inherited verbatim from `tnt-pci-slots`: the Bandit
 # address and data ports are LITTLE-ENDIAN (the guest drives them with

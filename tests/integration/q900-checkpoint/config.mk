@@ -1,5 +1,4 @@
 # Integration test: Quadra 900 checkpoint save/restore across processes
-# (proposal-machine-quadra-700-900-950.md Phase I)
 #
 # Step 1 boots the tower HD image halfway (mid-extension load: the IOP
 # mailboxes, Caboose, dual 53C96, SONIC and DAFB all carry live state) and

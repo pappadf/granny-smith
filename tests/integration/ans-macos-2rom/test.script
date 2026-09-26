@@ -1,6 +1,5 @@
 # The Network Server's 2.0 prototype ROM, running Mac OS on the same
-# hardware model that runs AIX
-# (proposal-apple-network-server-500-700 §5.1, ladder rung S14).
+# hardware model that runs AIX.
 #
 # There is no ROM image that boots both operating systems: the production
 # image has no Mac OS Toolbox at all, and this prototype has no AIX.  That

@@ -1,5 +1,4 @@
-# machine.restart on a machine with two SCSI buses
-# (proposal-apple-network-server-500-700 §8 Phase F).
+# machine.restart on a machine with two SCSI buses.
 #
 # What the row is for: the standard media transfer walks the floppies and
 # `cfg->scsi`.  A Network Server's rear bays are on `machine.scsi2`, and

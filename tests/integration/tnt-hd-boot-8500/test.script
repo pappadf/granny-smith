@@ -1,7 +1,7 @@
 # TNT MESH disk boot on the pm8500 (604) — the 604 boot-wall row.
 # Same script as tnt-hd-boot with model=pm8500: the machine that used
 # to die in the boot Name-Registry import (the split-store update-loss
-# bug in the 604 model, fixed on branch tnt-604-boot-wall) boots
+# bug in the 604 model, since fixed) boots
 # System 7.6 all the way to the Finder desktop.
 
 include "../lib/mac.script"

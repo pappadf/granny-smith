@@ -1,4 +1,4 @@
-# Quadra family suite — the proposal-integration-test-rework §9 pilot.
+# Quadra family suite — the pilot of the family-suite layout.
 #
 # Row map (former directory → row; **bold** rows are new matrix cells):
 #
@@ -18,22 +18,22 @@
 #   q700-75-monitors **Q700 x 7.5 x 832x624 and x 1152x870**: the two new
 #                   built-in-video rasters, booted to the Finder
 #   q900-76-fd      **Q900 × 7.6**: Disk Tools 1 through the SWIM IOP
-#                   mailbox path (q900-boot-floppy re-media'd per §7)
+#                   mailbox path (q900-boot-floppy re-media'd)
 #   q900-75-hd      **Q900 × 7.5**: tower Caboose+IOPs+53C96 HD boot +
 #                   About (absorbs q900-boot-hd's coverage; 16 MB)
 #   q950-71-hd      q950-boot-hd: 33 MHz tower boot, Monitors switch to
 #                   Thousands (AC842a x555), About in 16bpp
 #   q950-76-hd      **Q950 × 7.6**: 7.6 HD boot, 32-bit asserted (32 MB)
-#   q700-checkpoint **MCU-family checkpoint round-trip** (§7 epilogue):
+#   q700-checkpoint **MCU-family checkpoint round-trip**:
 #                   boot → save → fresh boot → load → re-match
 #
 # The 7.5/7.6 rows skip (with an echo) when the prepared image has not
-# been fetched — the §9 landable-before-data pattern.
+# been fetched — the landable-before-data pattern.
 #
-# §10 q.3 ("which monitors can the built-in Quadra video actually drive?")
-# is answered here rather than in the proposal: every geometry the Q700 ROM
-# has timings for is asserted by q700-dafb-senses, and the two that are
-# worth a desktop are pixel-matched by q700-75-monitors.
+# "Which monitors can the built-in Quadra video actually drive?" is answered
+# here: every geometry the Q700 ROM has timings for is asserted by
+# q700-dafb-senses, and the two that are worth a desktop are pixel-matched by
+# q700-75-monitors.
 
 include "../lib/mac.script"
 
@@ -46,12 +46,12 @@ let quadra_rom = "../../data/roms/q700-q900-420dbff3.rom"
 let q950_rom = "../../data/roms/q950-3dc27823.rom"
 
 # ---- q700-chime -------------------------------------------------------------
-# Phase C observables. The capture window is frame-exact (run_exact
-# semantics): the constants are load-bearing, not padding.
+# The chime's observables. The capture window is frame-exact: the constants
+# are load-bearing, not padding.
 #
-# §10 q.5 asked whether pinning rtc.time plus a fixed power-on phase could make
-# this capture sample-exact, or whether the window assert had to stay. Measured
-# 2026-07-28, and the premise was wrong in both directions:
+# An open question asked whether pinning rtc.time plus a fixed power-on phase
+# could make this capture sample-exact, or whether the window assert had to
+# stay. Measured 2026-07-28, and the premise was wrong in both directions:
 #
 #   * The capture is ALREADY bit-reproducible, and rtc.time is irrelevant to
 #     it. Three separate processes with the clock pinned and three more with it
@@ -62,9 +62,9 @@ let q950_rom = "../../data/roms/q950-3dc27823.rom"
 #     1.6x fast, so a fixed instruction budget now spans different guest time.
 #     Reproducibility is unchanged; only the constant moved.)
 #
-#     It moved once more, to 58,779, when mcu_init adopted via_set_exact_clock
-#     (F-12). The integer divisor via_freq_factor_for_clock returns for 25 MHz
-#     is 32, giving phi2 = 781,250 Hz — 0.27% slow against the true 783,360 Hz;
+#     It moved once more, to 58,779, when mcu_init adopted via_set_exact_clock.
+#     The integer divisor via_freq_factor_for_clock returns for 25 MHz is 32,
+#     giving phi2 = 781,250 Hz — 0.27% slow against the true 783,360 Hz;
 #     the exact rational removes that residue. Two frames in 58,777. Confirmed
 #     bit-reproducible at the new value the same way as the old: three separate
 #     processes, same count.
@@ -93,7 +93,7 @@ def row_q700_chime() {
 
 # ---- q700-71-fd -------------------------------------------------------------
 # Disk Tools over the direct (non-IOP) SWIM, DAFB 640x480 pixel-exact.
-# 4 MB is the Q700 minimum RAM option (§7 RAM axis).
+# 4 MB is the Q700 minimum RAM option (the RAM axis).
 def boot_q700_fd() {
     machine.boot model="q700" ram=4096 rom="${$quadra_rom}"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
@@ -135,8 +135,8 @@ def row_q700_75_hd() {
     # the minimal install), so machine identity rides on BoxFlag:
     # boxQuadra700 = 16.
     assert debug.mac.globals.read("MMUFluff") == 16 "q700-75-hd: not identified as Quadra 700"
-    # Measured (§3.4): under default PRAM the towers boot 7.5 in 24-bit
-    # compatibility mode; deliberately selecting 32-bit is the q.7 PRAM
+    # Measured: under default PRAM the towers boot 7.5 in 24-bit
+    # compatibility mode; deliberately selecting 32-bit is a PRAM
     # follow-up.
     assert_addr(false)
     check_ex("goldens/q700-7.5-640x480-finder.png", 0, 440, 20, 640)
@@ -161,11 +161,11 @@ def row_q700_75_hd() {
 # size, which is exactly what the ROM's sizing maths cannot express until the
 # two banks are decoded separately.
 #
-# This was a milestone row guarding proposal-emulator-bug-fixes.md §4 (MemTop
-# stayed 0 and POST spun at $4084BBF8 forever). Fixed 2026-07-29 by
-# implementing the Orwell memory controller's bank-start registers, so the
-# banks decode in their own 64 MB windows while the ROM probes them and then
-# merge contiguous when it latches the computed starts. Promoted to enforced.
+# This was a milestone row guarding the bank-sizing stall (MemTop stayed 0 and
+# POST spun at $4084BBF8 forever). Fixed 2026-07-29 by implementing the Orwell
+# memory controller's bank-start registers, so the banks decode in their own
+# 64 MB windows while the ROM probes them and then merge contiguous when it
+# latches the computed starts. Promoted to enforced.
 def row_q700_20m() {
     for kb in [4096, 8192, 20480, 36864, 69632] {
         machine.boot model="q700" ram=$kb rom="${$quadra_rom}"
@@ -182,14 +182,14 @@ def row_q700_20m() {
 # numbering (DepVideoEqu.a): 0..7 is the passive 3-bit code, 8..14 name the
 # monitors that answer the EXTENDED tie-matrix probe instead.
 #
-# This was a milestone row guarding proposal-emulator-bug-fixes.md §6, which
-# recorded that only sense 6 produced a real monitor's raster — the others
-# came up 72x870, 160x870 and 512x385. The width figures were the tell: the
-# SWATCH horizontal counts are in CHARACTER ticks, not dots, and the RAMDAC's
-# PixClk/1,/2,/4 tap says how many dots each tick carries. The code divided by
-# that factor instead of multiplying, so exactly the modes that run the CRTC
-# below the dot clock — every monitor wider or taller than 640x480 — came out
-# 1/4 or 1/2 size. Fixed 2026-07-30; promoted to enforced.
+# This was a milestone row guarding a defect where only sense 6 produced a real
+# monitor's raster — the others came up 72x870, 160x870 and 512x385. The width
+# figures were the tell: the SWATCH horizontal counts are in CHARACTER ticks,
+# not dots, and the RAMDAC's PixClk/1,/2,/4 tap says how many dots each tick
+# carries. The code divided by that factor instead of multiplying, so exactly
+# the modes that run the CRTC below the dot clock — every monitor wider or
+# taller than 640x480 — came out 1/4 or 1/2 size. Fixed 2026-07-30; promoted to
+# enforced.
 #
 # The table below is measured, not aspirational. Codes 4, 8, 9 and 11-14 are
 # real Apple monitors with no timing entry in THIS 1991 ROM, so the driver
@@ -232,8 +232,8 @@ def row_q700_dafb_senses() {
 #
 # 832x624 comes from the Apple 16" display, which is an EXTENDED-sense monitor
 # (raw code $2D, "GoldFish"): the pins read as no-connect and the ROM then runs
-# the three-drive tie-matrix probe. That probe had no model at all until this
-# branch, which is the second half of the §6 fix — the geometry fix alone gets
+# the three-drive tie-matrix probe. That probe had no model at all at first,
+# and modelling it is the second half of the fix — the geometry fix alone gets
 # you the passive monitors, but not this one.
 #
 # Both boot at 1 bpp, which is what this ROM + media give on the built-in video
@@ -263,7 +263,7 @@ def row_q700_75_monitors() {
 
 # ---- q900-76-fd -------------------------------------------------------------
 # NEW CELL Q900 × 7.6: every tower floppy transfer is a SWIM IOP
-# mailbox transaction — the transport row, re-media'd per §7 (Q900 ×
+# mailbox transaction — the transport row, re-media'd (Q900 ×
 # 7.1 stays lit via q900-checkpoint).
 def row_q900_76_fd() {
     machine.rtc.time = 3000000000
@@ -273,7 +273,7 @@ def row_q900_76_fd() {
     wait_stable(900000000)
     assert machine.id == "q900" "q900-76-fd: machine.id != q900"
     assert machine.screen.width == 640 "q900-76-fd: not in 640x480"
-    # The 7.6 *floppy* system runs 24-bit (§3.4 — unlike the installed
+    # The 7.6 *floppy* system runs 24-bit (measured — unlike the installed
     # volume, which selects 32-bit itself).
     assert_addr(false)
     check_ex("goldens/q900-7.6-640x480-finder.png", 0, 440, 20, 640)
@@ -282,7 +282,7 @@ def row_q900_76_fd() {
 }
 
 # ---- q900-75-hd -------------------------------------------------------------
-# NEW CELL Q900 × 7.5: the full Phase G device set (Caboose RTC/PRAM,
+# NEW CELL Q900 × 7.5: the full tower device set (Caboose RTC/PRAM,
 # IOP firmware + mailboxes, dual 53C96) under 7.5; About proves the
 # Gestalt identity ("Macintosh Quadra 900") and the 16 MB RAM option.
 def row_q900_75_hd() {
@@ -317,7 +317,7 @@ def row_q900_75_hd() {
 }
 
 # ---- q950-71-hd -------------------------------------------------------------
-# Phase H: DAFB 3 + AC842a. Monitors lists "Thousands" only if
+# DAFB 3 + AC842a. Monitors lists "Thousands" only if
 # PrimaryInit's PCBR1 presence probe passed; clicking it switches the
 # scanout to big-endian x555 16bpp, matched pixel-exactly, then About
 # renders over it. Mouse choreography is guest-tick-timed (run_ticks)
@@ -356,10 +356,10 @@ def row_q950_71_hd() {
 }
 
 # ---- q950-76-hd -------------------------------------------------------------
-# NEW CELL Q950 × 7.6. The §6.1 "AppleTalk cannot be used" dialog is
-# IIfx-specific — measured on the Q950 the image boots straight to the
-# desktop (Control Strip up, no dialog). 7.6 selects 32-bit addressing
-# itself (measured §3.4, here and on the IIfx).
+# NEW CELL Q950 × 7.6. The "AppleTalk cannot be used" dialog seen on the IIfx
+# is IIfx-specific — measured on the Q950 the image boots straight to the
+# desktop (Control Strip up, no dialog). 7.6 selects 32-bit addressing itself
+# (measured, here and on the IIfx).
 def row_q950_76_hd() {
     machine.rtc.time = 3000000000
     machine.boot model="q950" ram=32768 rom="${$q950_rom}"
@@ -386,10 +386,10 @@ def row_q950_76_hd() {
 }
 
 # ---- q700-checkpoint --------------------------------------------------------
-# §7 epilogue: checkpoint round-trip on the MCU family (previously only
-# exercised via q900-checkpoint's two-process flow). Save the booted
-# Finder state, wipe it with a fresh machine.boot, load it back, and
-# re-match the same golden in-process.
+# Checkpoint round-trip on the MCU family (previously only exercised via
+# q900-checkpoint's two-process flow). Save the booted Finder state, wipe it
+# with a fresh machine.boot, load it back, and re-match the same golden
+# in-process.
 def row_q700_checkpoint() {
     boot_q700_fd()
     assert checkpoint.save("${$WORK_DIR}/suite-quadra.gsc") "q700-checkpoint: save failed"
@@ -401,12 +401,12 @@ def row_q700_checkpoint() {
 }
 
 # ---- q700-sense-checkpoint --------------------------------------------------
-# Regression for the boot/restore asymmetry in monitor-sense staging, found by
-# review of this branch. machine.boot stages the sense into BOTH video paths
-# (jmfb_pending_sense_set + dafb_pending_sense_set, machine.c), but the
-# checkpoint restore path in system.c only staged the jmfb half — so a Quadra
-# booted with a non-default video_sense came back from a restore reporting the
-# hardcoded default (6) on its sense pins.
+# Regression for the boot/restore asymmetry in monitor-sense staging.
+# machine.boot stages the sense into BOTH video paths (jmfb_pending_sense_set +
+# dafb_pending_sense_set, machine.c), but the checkpoint restore path in
+# system.c only staged the jmfb half — so a Quadra booted with a non-default
+# video_sense came back from a restore reporting the hardcoded default (6) on
+# its sense pins.
 #
 # The sense is NOT carried in the checkpoint stream on purpose: that stream is
 # strictly ordered, so adding a field would misalign every checkpoint written

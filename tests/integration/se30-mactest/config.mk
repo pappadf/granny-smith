@@ -12,11 +12,11 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # the boot disk during its head-seek phase, then asks the user to insert a blank.
 # The blank is inserted into fd0 at the right moment (after eject, at a breakpoint).
 # Pin RAM at 4 MB to match the existing screenshot baseline; SE/30's profile
-# default is 8 MB now (proposal §3.1) and MacTest's RAM-test reports would
-# otherwise drift across the screenshots.
+# default is 8 MB now and MacTest's RAM-test reports would otherwise drift
+# across the screenshots.
 # Pinned to the REAL onboard-video vROM kind: this suite's reference PNGs
 # were captured against it, and the SE/30 profile now defaults to the
-# generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
+# generic GS-vROM sibling (docs/core/peripherals/nubus_generic_vrom.md).
 TEST_ARGS := video_card=builtin_se30_video ram=4096 fd0=$(TEST_DATA)/apps/MacTest-SE30.image
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

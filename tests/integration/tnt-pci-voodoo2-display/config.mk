@@ -1,5 +1,5 @@
 # Integration test: the Voodoo2 pass-through switch against a live
-# desktop (proposal-pci-3dfx-voodoo2, milestone 3d).
+# desktop (docs/core/peripherals/pci/cards/voodoo2.md).
 #
 # A pm8500 boots System 7.6 to the Finder on its soldered Control video
 # with a Voodoo2 seated in socket A1 — the machine a real owner had.

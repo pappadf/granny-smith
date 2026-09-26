@@ -1,4 +1,4 @@
-# M7d integration: `scsi` object class.
+# Integration: `scsi` object class.
 # A SCSI HD image is attached at boot, so devices.N has at least one
 # populated slot. We verify the path resolves, the bus phase enum
 # reports a known phase, the device collection enumerates correctly
@@ -72,8 +72,7 @@ assert machine.scsi.identify_cdrom("${$WORK_DIR}/ident-fd.img") == false "floppy
 # disk" (scsi_eject_device takes any id, and the CD-ROM's PREVENT lock is the
 # only thing that refuses it).  insert() has to be its counterpart, and was
 # not: it called add_scsi_cdrom() whatever the slot held, so putting a hard
-# disk back turned it into a read-only SONY CDU-8002 with 2048-byte blocks
-# (03-scsi F-45).
+# disk back turned it into a read-only SONY CDU-8002 with 2048-byte blocks.
 #
 # The slot's type survives an eject -- scsi_eject_device clears
 # medium_present and the image pointer, never the type -- so insert() asks it.

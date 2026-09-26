@@ -1,7 +1,7 @@
-# Cold boot of an installed AIX 4.1.5 (proposal-apple-network-server-500-700
-# §6, rung S13).  See config.mk for what the media is and why it is gated.
+# Cold boot of an installed AIX 4.1.5.  See config.mk for what the media is
+# and why it is gated.
 #
-# RUNG S13, ON THE MONITOR.  A Network Server with AIX on the disk in bay 2
+# S13, ON THE MONITOR.  A Network Server with AIX on the disk in bay 2
 # and the key in Normal boots it with no help: POST, Open Firmware's default
 # boot device `disk2:aix`, the kernel, cfgmgr over both fast/wide channels
 # (LCD 890 / 868), and `Console login:` — on the 54M30 graphics console,
@@ -11,9 +11,9 @@
 #
 # What the two matches prove, in order: the installed system came up
 # multi-user with its LFT console on the display; the keyboard adapter was
-# defined by cfgcuda from Cuda's device list (finding 57), the keyboard
-# attached to the LFT, and a typed line went through Cuda autopoll, the
-# kernel's ADB manager, kbddd and the LFT into a login (finding 58).
+# defined by cfgcuda from Cuda's device list, the keyboard attached to the
+# LFT, and a typed line went through Cuda autopoll, the kernel's ADB
+# manager, kbddd and the LFT into a login.
 #
 # The image's Installation Assistant has already been completed, so no
 # first-boot prompts stand between multi-user and the login.  The banner's
@@ -22,7 +22,7 @@
 #
 # BUDGET.  A Normal-key cold boot is slow by the machine's design — POST
 # runs its full memory test, and cfgmgr pays one selection time-out plus a
-# bus reset for every absent id on two wide buses (finding 48).  Sampled
+# bus reset for every absent id on two wide buses.  Sampled
 # in 500 M-cycle strides and polled against the login golden; ~260
 # strides to the prompt on the reference host, capped at 400.
 

@@ -1,8 +1,8 @@
 #!/bin/bash
-# Integration test: Machine Lifecycle (M1)
+# Integration test: Machine Lifecycle
 #
 # Tests the system_create → run → checkpoint → system_destroy → system_create
-# restore cycle introduced by Milestone 1 (Machine Abstraction Wiring).
+# restore cycle of the machine abstraction wiring.
 #
 # Step 1: Cold-boot, run 5M cycles, save checkpoint, quit.
 # Step 2: Restore checkpoint, run 1M more cycles, quit.
@@ -15,7 +15,7 @@ set -e
 
 CHECKPOINT_FILE="$TEST_TMPDIR/lifecycle.gs"
 
-echo "=== Machine Lifecycle Test (M1) ==="
+echo "=== Machine Lifecycle Test ==="
 echo "ROM: $ROM_PATH"
 echo "Checkpoint: $CHECKPOINT_FILE"
 

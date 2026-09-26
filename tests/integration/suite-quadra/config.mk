@@ -1,5 +1,4 @@
 # Integration suite: the Quadra family (Q700 / Q900 / Q950)
-# (proposal-integration-test-rework §7 — the §9 pilot suite)
 #
 # One daemon run; rows re-instantiate via machine.boot (the boot-matrix
 # pattern) and the shared library in ../lib/mac.script provides the

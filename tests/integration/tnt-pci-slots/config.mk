@@ -1,5 +1,5 @@
 # Integration test: TNT PCI slot topology and the empty-socket contract
-# (proposal-pci-architecture, Phase 1).
+# (docs/core/peripherals/pci.md).
 #
 # The gate for the generic PCI core's TNT integration: the machine's slot
 # table reaches the profile, the object model and the runtime from one

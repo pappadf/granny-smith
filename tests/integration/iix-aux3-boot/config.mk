@@ -1,4 +1,4 @@
-# RE-HOSTED SE/30 -> IIx (§7's A/UX redistribution, cheap class): both run
+# RE-HOSTED SE/30 -> IIx (A/UX redistribution, cheap class): both run
 # the Universal ROM and are GLUE siblings, and A/UX 3.0.1's kernel
 # autoconfigures across them, so this costs a boot probe and a golden
 # recapture. It gives the IIx its first A/UX presence; se30-aux-3 (the

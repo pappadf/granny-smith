@@ -1,4 +1,4 @@
-# Integration test configuration: inbound Apple events (WP-7).
+# Integration test configuration: inbound Apple events.
 #
 # The other direction from aevt-finder and aevt-stress: instead of driving the
 # guest, this test has a guest application link to the port we advertise and

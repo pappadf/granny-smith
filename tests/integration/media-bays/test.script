@@ -9,7 +9,7 @@ assert $p.hd_default.id == 2 "hd_default is the boot bay"
 assert $p.hd_bays[3].bus == "scsi2" "the second channel's bays follow"
 assert $p.cdrom.id == 0 "cdrom bay"
 assert machine.profile("lisa").hd_default.bus == "profile" "the Lisa's disk is the ProFile"
-assert len(machine.profile("lisa").scsi_buses) == 0 "no phantom SCSI bus on the Lisa (N-10)"
+assert len(machine.profile("lisa").scsi_buses) == 0 "no phantom SCSI bus on the Lisa"
 assert machine.profile("plus").cdrom == none "no CD bay on the Plus"
 
 # attach_hd by bay index, on whatever bus the bay is: index 3 is Bay 5, the

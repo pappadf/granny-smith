@@ -3,9 +3,10 @@
 # lisa-xenix-boot, lisa-xenix-nofloppy, xl-boot, xl-no-media). The only
 # edits are mechanical: a machine.boot line per row so the suite
 # re-instantiates between rows, screen.match rewritten to the library's
-# check()/check_ex() so REGEN works, goldens renamed to the §5.5 grammar,
-# and a report_perf call. The COPS keyboard choreographies — long exact
-# scan-code sequences — were copied by script, not retyped.
+# check()/check_ex() so REGEN works, goldens renamed to the suite golden
+# grammar (docs/guide/TESTING.md), and a report_perf call. The COPS
+# keyboard choreographies — long exact scan-code sequences — were copied
+# by script, not retyped.
 
 def row_lisa_los31_profile() {
     machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
@@ -32,9 +33,9 @@ def row_lisa_los31_profile() {
     #
     # This used to load a 64-byte file that tests/integration/suite-lisa/
     # seed_pram.py synthesised at make time: 90 lines of Python outside the
-    # emulator that reimplemented the ROM's own VFYCHKSM checksum and packed
-    # the device-configuration table by hand.  The store is now synthesised by
-    # the device model that owns it (proposal-reset-and-nonvolatile-state §4.1).
+    # emulator that reimplemented the ROM's own VFYCHKSM checksum and packed the
+    # device-configuration table by hand.  The store is now synthesised by the
+    # device model that owns it.
     assert machine.hd.pram_init(2, false) "pram_init failed"
 
     # The ROM reads PRAM -> BootVol=2 -> PROBOOT the ProFile -> loader -> SYSTEM.OS;
@@ -47,9 +48,9 @@ def row_lisa_los31_profile() {
     # instead, because the COPS clock read all zeros -- not merely unset but impossible,
     # since day-of-year is 1-based and year 0 is 1980, below the Office System's floor.
     # This row dismissed it by warping the cursor onto the OK button and clicking.  The
-    # COPS clock powers up at 1 January 1984 now (06-io-controllers F-27), so there is
-    # no note and nothing to dismiss; the golden is the same desktop, differing only in
-    # where the cursor is parked.
+    # COPS clock powers up at 1 January 1984 now, so there is no note and nothing to
+    # dismiss; the golden is the same desktop, differing only in where the cursor is
+    # parked.
     scheduler.run 112000000
     check("goldens/lisa-los3.1-720x364x1-office.png")
     report_row("LOS 3.1", "builtin", "profile-boot own-pram")
@@ -379,9 +380,8 @@ def row_lisa_checkpoint() {
     # still in power-on START mode with zeroed descriptors, which is exactly the
     # state lisa_mmu_init recreates -- so a save/restore that dropped all 4 KiB
     # of descriptor RAM was indistinguishable from a correct one, and this row
-    # passed against a checkpoint that was a literal no-op on both sides
-    # (07-cpu-mmu F-58).  Saving from a mapped state is what makes the round
-    # trip observable.
+    # passed against a checkpoint that was a literal no-op on both sides.
+    # Saving from a mapped state is what makes the round trip observable.
     scheduler.run 60000000
     # Put COPS state in the machine BEFORE saving.  Until 2026-09-21
     # cops_checkpoint was a no-op, so a restored Lisa came up with an empty

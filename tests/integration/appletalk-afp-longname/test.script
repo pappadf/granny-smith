@@ -1,4 +1,4 @@
-# AppleTalk AFP long names (10-network 0.6, decision D-5).
+# AppleTalk AFP long names.
 #
 # A Mac name is at most 31 characters.  This row publishes a share holding a
 # 40-character name and a 31-character control, mounts it from System 6 as

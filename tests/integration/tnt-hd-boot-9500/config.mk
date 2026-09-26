@@ -1,5 +1,4 @@
 # Integration test: TNT MESH disk boot on the pm9500, ON THE CARD
-# (proposal-pci-mach64-gx-spinnaker, milestone 2d).
 #
 # The tnt-hd-boot chain — driver match, mount, System 7.6 to the Finder —
 # on the machine that has no onboard video at all.  Every pixel here is

@@ -1,4 +1,4 @@
-# Integration test: the arrow keys by name press the arrows (I1, N-34).
+# Integration test: the arrow keys by name press the arrows.
 #
 # Key identity across the model is the ADB raw keycode.  The name resolver
 # (and the Lisa's keymap) keyed the arrows on the Mac OS virtual codes

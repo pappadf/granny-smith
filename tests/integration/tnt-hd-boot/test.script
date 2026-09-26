@@ -1,4 +1,4 @@
-# TNT MESH disk boot (see config.mk) — the Phase-E row, promoted to the
+# TNT MESH disk boot (see config.mk) — the SCSI-boot row, promoted to the
 # full Finder boot (ladder T13) when the data-phase wall fell to the
 # SEQ_BUSFREE expect-free law (mesh.c).
 #

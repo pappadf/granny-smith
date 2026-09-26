@@ -1,5 +1,4 @@
 # Integration test: the Apple Accelerated PCI Graphics Card enumerates
-# (proposal-pci-mach64-gx-spinnaker, milestone 2b).
 #
 # The first pluggable card on the generic PCI core, seated in socket A1 of
 # a Power Macintosh 9500.  The acceptance target is not a golden we made

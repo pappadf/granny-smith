@@ -1,8 +1,8 @@
 # Integration test configuration: Debug tooling
-# Exercises new debug shell commands from proposal-debug-tooling.md.
+# Exercises the debug shell commands (find, breakpoints, ...).
 
 TEST_NAME := Debug Tooling
-TEST_DESC := Tests debug shell commands (find str/bytes) from PR1 of debug-tooling proposal
+TEST_DESC := Tests debug shell commands (find str/bytes)
 
 # Plus ROM — small, deterministic, always available.
 TEST_ROM := roms/plus-v3-4d1f8172.rom

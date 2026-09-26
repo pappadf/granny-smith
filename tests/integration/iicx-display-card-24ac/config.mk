@@ -5,12 +5,12 @@
 #            solid fill, block copy, operand load/readback, STATUS/CONFIG),
 #            driven directly through memory.poke/peek against hand-computed
 #            expected VRAM.  No OS boot — deterministic and fast.
-#   Part C — the engine-vs-fallback oracle (proposal §3.5): the engine's
+#   Part C — the engine-vs-fallback oracle: the engine's
 #            pattern fill must equal the software (CPU) fill, toggled via the
 #            object-model gate machine.nubus.slot[9].card.engine.enabled;
 #            plus the object-model surface (slot[N].card.{framebuffer,
-#            declrom,clut,mode,engine} + screen.source reference, §3.8).
-#   Part B — a full Phase-1/2 boot to an 8-bpp COLOUR Finder desktop: the
+#            declrom,clut,mode,engine} + screen.source reference).
+#   Part B — a full boot to an 8-bpp COLOUR Finder desktop: the
 #            vrom senses the 640x480 multisync monitor, the OS selects 8 bpp
 #            (savedMode $82) and the desktop is matched pixel-exact.
 

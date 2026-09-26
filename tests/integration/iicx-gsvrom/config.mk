@@ -5,7 +5,7 @@
 # iicx-gsvrom-24ac, iicx-gsvrom-824gc and iicx-gsvrom-custom-mode.
 #
 # Every row here runs a card on its RUNTIME-GENERATED declaration ROM
-# rather than a real dump — the other half of §3.2's "card x vROM-source"
+# rather than a real dump — the other half of the "card x vROM-source"
 # plane, whose real-vROM half is iicx-video-modes. The rows all name
 # their card and mode explicitly, so none can inherit video staging from
 # the row above it.

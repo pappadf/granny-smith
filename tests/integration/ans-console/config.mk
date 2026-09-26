@@ -1,5 +1,4 @@
-# Integration test: the Cirrus 54M30 framebuffer as Open Firmware's console
-# (proposal-apple-network-server-500-700 §5.8, Phase G)
+# Integration test: the Cirrus 54M30 framebuffer as Open Firmware's console.
 #
 # The Apple Network Server's on-board video is the repository's first REAL
 # PCI framebuffer for an Old World Power Macintosh — a discrete SVGA part on

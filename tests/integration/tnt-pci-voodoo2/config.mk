@@ -1,5 +1,5 @@
 # Integration test: the 3dfx Voodoo2 enumerates and survives bring-up
-# (proposal-pci-3dfx-voodoo2, milestone 3b).
+# (docs/core/peripherals/pci/cards/voodoo2.md).
 #
 # The first ROM-less socket card on the generic PCI core: no expansion
 # ROM, no FCode, no ndrv.  The acceptance shape is Apple's own
@@ -17,7 +17,7 @@
 #
 # The idle contract runs through everything: every wait is a bounded
 # poll, so a busy bit that never clears is a test failure here and not a
-# hung suite (V2 spec p.128 §12.3; proposal §4.4).
+# hung suite (V2 spec p.128 §12.3).
 
 TEST_NAME := TNT PCI Voodoo2
 TEST_DESC := 3dfx Voodoo2 in a pm7500 socket: ROM-less enumeration, vendor config space, Glide bring-up replay

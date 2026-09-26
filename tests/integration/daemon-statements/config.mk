@@ -1,5 +1,4 @@
-# Integration test: the daemon runs each statement as soon as it is complete
-# (S6, F-33, N-41..N-43).
+# Integration test: the daemon runs each statement as soon as it is complete.
 #
 # The daemon used to guess where a request ended before running anything --
 # read until a newline plus 1 ms of silence, run the lot, close -- and every

@@ -1,5 +1,5 @@
 # Integration test: the Network Server boots Apple's diagnostic floppy
-# (proposal-apple-network-server-500-700; the floppy datapath).
+# (the floppy datapath).
 #
 # The Apple Network Server has one boot path that is neither SCSI nor the
 # network: the front keyswitch in its Service position makes Open

@@ -1,10 +1,10 @@
 # Integration test: AFP end-to-end fork fidelity
 #
-# The flagship of proposal-afp-server-completeness.md §7.3: one deterministic
-# script that walks the whole chain — HFS image -> VFS copy-out -> AppleDouble
-# pair on the host share -> AFP -> a guest that sees the right Finder Info,
-# lists the volume, and *executes* a binary whose CODE resources live only in
-# the resource fork — and then back out again with a byte-for-byte comparison.
+# The AFP flagship: one deterministic script that walks the whole chain —
+# HFS image -> VFS copy-out -> AppleDouble pair on the host share -> AFP ->
+# a guest that sees the right Finder Info, lists the volume, and *executes* a
+# binary whose CODE resources live only in the resource fork — and then back
+# out again with a byte-for-byte comparison.
 #
 # The launchable binary is built by make-fixture.py at setup time: nothing on
 # the stock System 6 volume is both a standalone application and visually

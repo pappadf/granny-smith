@@ -197,7 +197,7 @@ clean:
 # Run the (tier-filtered) tests under Valgrind memcheck.  Note: the
 # full-suite sweep is impractical (20-50x slowdown over billions of
 # guest cycles); CI runs `make test-valgrind TIER=unit` plus selected
-# boots — see proposal-integration-test-rework §5.4.
+# boots — see docs/guide/TESTING.md.
 test-valgrind: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
 	@echo "Running $(words $(TEST_DIRS)) integration test(s) under Valgrind$(if $(TIER), [tier: $(TIER)])"

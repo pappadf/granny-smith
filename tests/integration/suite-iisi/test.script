@@ -6,22 +6,21 @@
 #                   65 MB maximum RAM option (a ROM-only row, so the
 #                   biggest RAM config costs nothing here)
 #   iisi-701-fd     iisi-boot: V8 built-in video, 7.0.1 floppy, 17 MB
-#   iisi-608-hd     **IIsi x 6.0.8** (§7 media re-assignment): the
+#   iisi-608-hd     **IIsi x 6.0.8** (media re-assignment): the
 #                   6.0.8 HD image on the 5 MB minimum — 6.0.8's HD
-#                   rows all boot the prepared image per §7's 6.0.8
-#                   rationalization
+#                   rows all boot the prepared image
 #   iisi-71-kbd     **IIsi x 7.1** and the re-hosted ADB keyboard test:
 #                   Find dialog + typed text through ADB behind the
 #                   EGRET transceiver (9 MB)
-#   iisi-75-hd      **IIsi x 7.5**: the pure-redistribution gap §7 could
+#   iisi-75-hd      **IIsi x 7.5**: the pure-redistribution gap that could
 #                   not close by moving anything — one cheap boot row
 #
 # The IIsi is builtin-video only, so every row runs the V8 at 640x480.
 # Depth rows (V8 at 2/4/8 bpp) are NOT here: built-in video exposes no
 # declaration ROM, so the guest sees no depth mode list and stays at
 # 1 bpp no matter what the slot-PRAM record says (measured 2026-07-28).
-# Tracked as an emulator defect in proposal-emulator-bug-fixes.md §5;
-# the depth rows get written once it is fixed.
+# Tracked as an emulator defect; the depth rows get written once it is
+# fixed.
 
 include "../lib/mac.script"
 
@@ -31,9 +30,9 @@ let hd_608 = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
 let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 
 # ---- iisi-chime -------------------------------------------------------------
-# Frame-exact capture window (§5.2 run_exact): both the 12 M budget and
-# the 13,444-frame length are the assertion. Runs at the 65 MB maximum,
-# so the ROM's RAM sizing covers the largest supported configuration.
+# Frame-exact capture window: both the 12 M budget and the 13,444-frame length
+# are the assertion. Runs at the 65 MB maximum, so the ROM's RAM sizing covers
+# the largest supported configuration.
 def row_iisi_chime() {
     machine.boot model="iisi" ram=66560 rom="${$ROM}"
     machine.sound.capture.start
@@ -42,7 +41,7 @@ def row_iisi_chime() {
     assert machine.ram == 66560 "iisi-chime: machine.ram != 66560"
     assert machine.sound.capture.frames == 13444 "iisi-chime: unexpected capture length"
     # machine.rbv on the V8 superset — same node, same four attributes, and
-    # the variant is the part the node has to distinguish (F-26).
+    # the variant is the part the node has to distinguish.
     assert machine.rbv.chip == "RBV" "iisi-chime: machine.rbv missing"
     assert machine.rbv.variant == "V8/IIsi" "iisi-chime: wrong RBV variant"
     machine.sound.match goldens/iisi-chime.wav
@@ -120,7 +119,7 @@ def row_iisi_71_kbd() {
     machine.adb.mouse.click false
     # Fixed guest-time window, not a settle: the Find dialog blinks a
     # text caret, so the screen never holds still and the golden is
-    # caret-phase-sensitive (§5.2's run_exact class).
+    # caret-phase-sensitive.
     run_ticks(90)
     check("goldens/iisi-7.1-640x480x1-find-dialog.png")
 
@@ -141,8 +140,8 @@ def row_iisi_71_kbd() {
 }
 
 # ---- iisi-75-hd ------------------------------------------------------------
-# NEW CELL IIsi x 7.5 — the one cell pure redistribution could not close
-# (§7), so it is a plain cheap boot row.
+# NEW CELL IIsi x 7.5 — the one cell pure redistribution could not close,
+# so it is a plain cheap boot row.
 def row_iisi_75_hd() {
     machine.rtc.time = 3000000000
     machine.boot model="iisi" ram=17408 rom="${$ROM}"

@@ -1,6 +1,6 @@
 # Integration suite: Macintosh IIcx
 #
-# The IIcx's share after §7's host-redistribution pass is deliberately
+# The IIcx's share after the host-redistribution pass is deliberately
 # small: its ADB keyboard test moved to the IIsi (Egret), its external-
 # floppy test to the IIx (two bays), and its 24AC suite to the IIci (24AC
 # beside a live RBV). What stays IIcx-hosted lives in its own directories
@@ -10,7 +10,7 @@
 # iicx-dual-display.
 #
 # This suite therefore holds the machine-level rows: the chime golden
-# now, and the boot rows folded in as the remaining §7 consolidations
+# now, and the boot rows folded in as the remaining consolidations
 # land.
 #
 #   make test-suite-iicx

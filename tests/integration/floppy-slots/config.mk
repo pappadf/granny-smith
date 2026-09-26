@@ -1,5 +1,4 @@
-# Integration test: the floppy drives are the profile's (M7,
-# N-06, #177).
+# Integration test: the floppy drives are the profile's (#177).
 #
 # The floppy controller always has two drive selects, and the object model
 # exposed drive[1] on every machine.  On a one-drive Quadra 700 an insert

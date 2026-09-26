@@ -1,7 +1,7 @@
 // Normalize machine.profile() JSON into a stable per-model SHAPE string, so a
 // snapshot diff fails loudly when a field's *shape* changes (added, removed, or
 // retyped) without breaking on value churn (RAM sizes, monitor counts, etc.) —
-// proposal §6.1 "schema snapshot per model".
+// one schema snapshot per model.
 //
 // Reads the headless dump on stdin (one JSON object per line, each carrying
 // "id":"<model>"); writes "<id>\t<shape>" lines sorted by id to stdout.

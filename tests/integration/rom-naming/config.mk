@@ -1,4 +1,4 @@
-# Integration test: canonical ROM/vROM filename conformance (proposal-test-rom-naming.md §4.3).
+# Integration test: canonical ROM/vROM filename conformance.
 #
 # The enforcement that makes the reorganization stick.  Enumerates every file
 # in tests/data/roms and, via machine.(v)rom.identify, asserts:

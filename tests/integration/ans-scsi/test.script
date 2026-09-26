@@ -1,5 +1,4 @@
-# The SCRIPTS engine, driven by Open Firmware's own probe words
-# (proposal-apple-network-server-500-700 §5.7, ladder rung S8).
+# The SCRIPTS engine, driven by Open Firmware's own probe words.
 #
 # What a successful probe proves is a whole chain, and none of it can be
 # faked by a register model: the firmware builds a six-instruction SCRIPT in
