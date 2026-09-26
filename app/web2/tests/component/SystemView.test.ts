@@ -4,17 +4,20 @@ import SystemView from '@/components/panel-views/machine/SystemView.svelte';
 
 // Mock the emulator bus so the faithful walk sees a "ready" Module and a
 // synthetic root: the machine container plus one meta object. There is no
-// allowlist — SystemView renders whatever `objects` (the root's children)
-// returns, labelled and grouped from the model (proposal §8.2).
+// allowlist — SystemView renders whatever children the root's meta.members
+// lists, labelled and grouped from the model (proposal §8.2).
 vi.mock('@/bus/emulator', () => {
   return {
     isModuleReady: () => true,
     gsEval: async (path: string) => {
-      if (path === 'objects') return ['machine', 'storage'];
-      if (path === 'machine.meta.category') return 'basic';
-      if (path === 'machine.meta.label') return 'Macintosh IIcx';
-      if (path === 'storage.meta.category') return 'basic';
-      if (path === 'storage.meta.label') return 'Storage';
+      // The root's members: its children carry their own label and category.
+      if (path === 'meta.members')
+        return [
+          { name: 'machine', kind: 'child', category: 'basic', label: 'Macintosh IIcx', doc: '' },
+          { name: 'storage', kind: 'child', category: 'basic', label: 'Storage', doc: '' },
+          { name: 'secret', kind: 'child', category: 'internal', label: 'Secret', doc: '' },
+          { name: 'echo', kind: 'method', category: 'basic', label: 'echo', doc: '' },
+        ];
       return null;
     },
   };
@@ -28,6 +31,7 @@ describe('SystemView', () => {
       // The machine container leads (model-owned label), the meta object follows.
       expect(labels).toContain('Macintosh IIcx');
       expect(labels).toContain('Storage');
+      expect(labels).not.toContain('Secret'); // internal nodes are never shown
     });
     // Meta objects sit under the non-interactive "Emulator" divider (§8.2).
     const dividers = Array.from(container.querySelectorAll('.group-divider')).map(

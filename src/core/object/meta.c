@@ -351,6 +351,8 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
 // member. Returns a V_LIST<V_INT> for an indexed member (possibly empty), or
 // a V_ERROR for a non-indexed / unknown member — so a caller can use the
 // error/list distinction to tell "indexed collection" from "named child".
+static value_t indices_of(struct object *insp, const member_t *mb);
+
 static value_t meta_method_indices(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
@@ -358,24 +360,115 @@ static value_t meta_method_indices(struct object *self, const member_t *m, int a
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!mb || mb->kind != M_CHILD || !mb->child.indexed)
         return val_err("indices: '%s' is not an indexed child", argv[0].s);
-    // Walk the member's sparse-index iterator (start at -1). next() returns the
-    // next live index or -1 when exhausted; holes are skipped by the callback.
+    return indices_of(insp, mb);
+}
+
+// `members(values?)` — every member of the inspected node in one call, one
+// map each: {name, kind: attr|child|method, category, label, doc}, plus
+// `readonly` (and, with values=true, `value`) for an attribute, `indexed`
+// (and `indices`) for a child, and the method_info fields for a method.
+// Runtime-attached children are listed after the class members with their
+// own label and category.  A tree view used to spend two or three round
+// trips per member on member_category / member_label / indices (F-46).
+// Values are opt-in: some attributes are volatile or costly to read.
+
+// The live indices of an indexed-child member, as a V_LIST<V_INT>.
+static value_t indices_of(struct object *insp, const member_t *mb) {
     value_t *items = NULL;
     size_t len = 0, cap = 0;
-    {
-        for (int i = object_child_next(insp, mb, -1); i >= 0; i = object_child_next(insp, mb, i)) {
-            if (len + 1 > cap) {
-                size_t ncap = cap ? cap * 2 : 8;
-                value_t *t = (value_t *)realloc(items, ncap * sizeof(value_t));
-                if (!t)
-                    break;
-                items = t;
-                cap = ncap;
-            }
-            items[len++] = val_int(i);
+    for (int i = object_child_next(insp, mb, -1); i >= 0; i = object_child_next(insp, mb, i)) {
+        if (!val_list_push(&items, &len, &cap, val_int(i))) {
+            for (size_t k = 0; k < len; k++)
+                value_free(&items[k]);
+            free(items);
+            return val_err("out of memory");
         }
     }
     return val_list(items, len);
+}
+
+static value_t describe_member(struct object *insp, const member_t *mb, bool values) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
+    const char *kind = mb->kind == M_ATTR ? "attr" : mb->kind == M_CHILD ? "child" : "method";
+    val_map_put(b, "kind", val_str(kind));
+    val_map_put(b, "category", val_str(category_name(mb->flags)));
+    val_map_put(b, "label", val_str(mb->label ? mb->label : (mb->name ? mb->name : "")));
+    val_map_put(b, "doc", val_str(mb->doc ? mb->doc : ""));
+    switch (mb->kind) {
+    case M_ATTR:
+        val_map_put(b, "readonly", val_bool((mb->flags & VAL_RO) != 0 || !mb->attr.set));
+        if (values)
+            val_map_put(b, "value", node_get((node_t){.obj = insp, .member = mb, .index = -1}));
+        break;
+    case M_CHILD:
+        val_map_put(b, "indexed", val_bool(mb->child.indexed));
+        if (mb->child.indexed)
+            val_map_put(b, "indices", indices_of(insp, mb));
+        break;
+    case M_METHOD:
+        val_map_put(b, "verb", val_str(mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : "")));
+        val_map_put(b, "task", val_str(mb->method.task_category ? mb->method.task_category : ""));
+        val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
+        val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
+        val_map_put(b, "hidden", val_bool((mb->method.ui_flags & MM_HIDDEN) != 0));
+        val_map_put(b, "nargs", val_int((int64_t)mb->method.nargs));
+        break;
+    }
+    return val_map_finish(b);
+}
+
+typedef struct {
+    value_t *items;
+    size_t len, cap;
+    bool oom;
+} member_list_t;
+
+static void member_list_push(member_list_t *acc, value_t v) {
+    if (v.kind == V_ERROR) {
+        value_free(&v);
+        acc->oom = true;
+        return;
+    }
+    if (!val_list_push(&acc->items, &acc->len, &acc->cap, v))
+        acc->oom = true;
+}
+
+static void each_attached_describe(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    const char *name = object_name(child);
+    if (!name)
+        return;
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "name", val_str(name));
+    val_map_put(b, "kind", val_str("child"));
+    val_map_put(b, "category", val_str(category_name(object_category(child))));
+    const char *label = object_label(child);
+    val_map_put(b, "label", val_str(label ? label : name));
+    val_map_put(b, "doc", val_str(""));
+    val_map_put(b, "indexed", val_bool(false));
+    member_list_push((member_list_t *)ud, val_map_finish(b));
+}
+
+static value_t meta_method_members(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    bool values = argc >= 1 && argv[0].kind == V_BOOL && argv[0].b;
+    struct object *insp = meta_inspected(self);
+    if (!insp)
+        return val_list(NULL, 0);
+    member_list_t acc = {0};
+    const class_desc_t *cls = object_class(insp);
+    for (size_t i = 0; cls && i < cls->n_members && !acc.oom; i++)
+        member_list_push(&acc, describe_member(insp, &cls->members[i], values));
+    if (!acc.oom)
+        object_each_attached_ordered(insp, each_attached_describe, &acc);
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
+    return val_list(acc.items, acc.len);
 }
 
 // === Class table =========================================================
@@ -397,6 +490,13 @@ static const arg_decl_t meta_member_args[] = {
 
 static const arg_decl_t meta_named_member_args[] = {
     {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Member name"},
+};
+
+static const arg_decl_t meta_members_args[] = {
+    {.name = "values",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Also read each attribute's current value (default false)"},
 };
 
 static const member_t meta_members[] = {
@@ -460,6 +560,10 @@ static const member_t meta_members[] = {
      .name = "method_info",
      .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}},
+    {.kind = M_METHOD,
+     .name = "members",
+     .doc = "Every member in one call: name, kind, category, label, doc, and per kind readonly/value, "
+            "indexed/indices or the method_info fields", .method = {.args = meta_members_args, .nargs = 1, .result = V_LIST, .fn = meta_method_members}},
     {.kind = M_METHOD,
      .name = "indices",
      .doc = "Live indices of an indexed-child member (errors if not indexed)",

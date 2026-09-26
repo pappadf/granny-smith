@@ -88,7 +88,7 @@
     showNotification(`Exported ${name}`, 'info');
   }
 
-  // Build the right-click menu for a node from meta.methods (§8.3): one item
+  // Build the right-click menu for a node from its methods (§8.3): one item
   // per UI-surfaced method, destructive ones flagged, args prompted.
   async function onContextMenu(path: string[], ev: MouseEvent) {
     ev.preventDefault();
