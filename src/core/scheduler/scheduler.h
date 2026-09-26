@@ -122,8 +122,8 @@ double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callb
 //
 // A handler MAY cancel its own event: the next occurrence is inserted before
 // the callback runs, so remove_event() from inside the handler finds it.
-event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
-                                    uint64_t data, uint64_t cycles, uint64_t ns, bool periodic);
+event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_t callback, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic);
 
 #define SCHED_EV_SELECT_7(_1, _2, _3, _4, _5, _6, _7, NAME, ...) NAME
 #define SCHED_EV_PERIODIC(s, cb, src, d, cyc, ns, per)                                                                 \
@@ -159,7 +159,7 @@ void remove_event(struct scheduler *restrict scheduler, event_callback_t callbac
 void remove_event_by_data(struct scheduler *restrict scheduler, event_callback_t callback, void *source, uint64_t data);
 
 // Register a new event type for checkpoint save/restore
-void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *source_name, void *source,
+void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,
                               const char *event_name, event_callback_t callback);
 
 // Time and cycle queries

@@ -1057,7 +1057,7 @@ void scheduler_start(struct scheduler *restrict s) {
 }
 
 // Register a new event type for checkpoint save/restore
-void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *source_name, void *source,
+void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,
                               const char *event_name, event_callback_t callback) {
     GS_ASSERT(scheduler != NULL);
     GS_ASSERT(source_name != NULL && source_name[0] != '\0');
@@ -1092,8 +1092,8 @@ void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *
 }
 
 // Schedule a new CPU event to fire after the specified number of cycles or nanoseconds
-event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
-                                    uint64_t data, uint64_t cycles, uint64_t ns, bool periodic) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_t callback, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
     GS_ASSERT(scheduler != NULL);
     GS_ASSERT(scheduler->cpu.run_sprint != NULL);
     GS_ASSERT(callback != NULL);
