@@ -17,12 +17,13 @@
 // the full 16-mode legacy matrix remains available that way.
 //
 // Mechanics mirror the legacy spec: boot each mode through the New Machine
-// dialog, switch the scheduler to `fast`, drive three bounded scheduler.run
-// stages through the Terminal panel (poking $017A to short-circuit the
-// Universal ROM's ~17 s boot-drive-discovery wait), land deep in the
-// "Welcome to Macintosh" splash plateau, freeze, and screenshot the canvas
-// at 100% zoom. The plateau + maxDiffPixelRatio 0.01 absorb the wasm VBL
-// pacing drift the legacy spec documents.
+// dialog, stop the machine, switch the scheduler to turbo, run through the
+// Terminal panel to an absolute instruction count in the middle of the
+// "Welcome to Macintosh" splash plateau, freeze, and screenshot the canvas at
+// 100% zoom. (The machine's PRAM skips the Universal ROM's boot-drive wait,
+// which used to be short-circuited here by poking $017A.) The plateau +
+// maxDiffPixelRatio 0.01 absorb the wasm VBL pacing drift the legacy spec
+// documents.
 //
 // One test() runs all modes so OPFS media (ROM/vROM/FD) persist across the
 // per-mode page reloads; each reload after the first answers the
@@ -94,17 +95,6 @@ async function currentState(page: Page): Promise<{ instr: number; running: boole
     if (s) return s;
   }
   throw new Error('terminal state probe never answered');
-}
-
-// Poke a KeyMap modifier word. Can't be verified by read-back: on the IIcx
-// (68030 PMMU) the shell's peek path translates low addresses differently
-// from where poke lands, so peek.w always reads 0 here — yet the poke does
-// reach the ROM's KeyMap read (the integration test relies on exactly this
-// to skip the boot-drive wait). We issue it against the stable stopped
-// prompt (runBudget leaves the machine halted), where a single submission
-// is reliable.
-async function pokeKeymap(page: Page, value: number): Promise<void> {
-  await terminalRun(page, `machine.memory.poke.w 0x017A ${value}`);
 }
 
 // Issue `scheduler.run <budget>` and wait until the run-stop event fired
@@ -209,22 +199,25 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
     await zoom.fill('100%');
     await zoom.press('Enter');
 
-    // Turbo (unthrottled) batching, then the three bounded run stages with
-    // the boot-drive-wait skip pokes (same mechanics as the integration test).
-    await page.getByRole('button', { name: 'fast-forward', exact: true }).click();
+    // The machine auto-runs (paced) after boot; halt it FIRST so the bounded
+    // run below starts from a known stopped state -- with no startup-drive
+    // wait to sit in, a turbo stretch before the stop would run straight
+    // past the splash. Then turbo (a mode change only; it does not resume).
     await page.locator('button.ptab[data-tab="terminal"]').click();
     await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
-    // The machine auto-runs after boot; halt it so the bounded run stages
-    // below start from a known stopped state.
     await terminalRun(page, 'scheduler.stop');
     await expect
       .poll(async () => (await currentState(page)).running, { timeout: 15_000, intervals: [500] })
       .toBe(false);
-    await runBudget(page, 40_000_000);
-    await pokeKeymap(page, 0x8805);
-    await runBudget(page, 2_000_000);
-    await pokeKeymap(page, 0);
-    await runBudget(page, 15_000_000);
+    await page.getByRole('button', { name: 'fast-forward', exact: true }).click();
+    // Run to 49 M instructions: the splash is up from ~45 M to ~52 M
+    // (measured, headless, every mode here).
+    const WELCOME_AT = 49_000_000;
+    const { instr } = await currentState(page);
+    expect(instr, 'the paced start already ran past the Welcome splash').toBeLessThan(
+      WELCOME_AT - 1_000_000,
+    );
+    await runBudget(page, WELCOME_AT - instr);
 
     const png = await page.locator('#screen').screenshot();
     expect(png).toMatchSnapshot(`welcome-${mode.id}.png`, { maxDiffPixelRatio: 0.01 });
