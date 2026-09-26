@@ -27,10 +27,14 @@
 # binary routes every delta/journal/scratch sidecar there, so nothing
 # writes into tests/data and independent tests can run in parallel.
 
-set -u
+set -euo pipefail
 
 TEST="${1:?usage: run-integration-test.sh <test-dir>}"
 LABEL="${WRAPPER:+ (valgrind)}"
+
+# Any command failing outside an explicit check is a runner error: say
+# so and record it, rather than exiting silently with no status file.
+trap 'echo "=== FAIL${LABEL}: $TEST (runner error at line $LINENO) ==="; echo FAIL > "${TEST_RESULTS_DIR:-/nonexistent}/status" 2>/dev/null || true' ERR
 
 fail() {
     echo "=== FAIL${LABEL}: $TEST ==="
@@ -42,13 +46,21 @@ fail() {
 [ -f "$TEST/test.script" ] || { echo "ERROR: Test script '$TEST/test.script' not found"; exit 1; }
 [ -f "$TEST/config.mk" ] || { echo "ERROR: Test config '$TEST/config.mk' not found"; exit 1; }
 
-# Extract configuration from config.mk (first match per key).
-cfg() { grep -m1 "^$1" "$TEST/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'; }
+# Extract configuration from config.mk: the first `KEY :=` line, exactly that
+# key (TEST_SETUP never matches TEST_SETUP_EXTRA), empty when absent.
+cfg() { sed -n "/^$1[[:space:]]*:=/{s/^[^=]*=[[:space:]]*//p;q}" "$TEST/config.mk"; }
 TEST_ROM=$(cfg TEST_ROM)
 TEST_ARGS=$(cfg TEST_ARGS)
 TEST_SETUP=$(cfg TEST_SETUP)
 TEST_RUNNER=$(cfg TEST_RUNNER)
 TEST_NAME=$(cfg TEST_NAME)
+
+# A hang outside any in-script wait (a daemon that never starts, an unbounded
+# run) must end the test, not the CI job.  900 s is about twice the slowest
+# native test; under a wrapper (Valgrind: 20-50x) the slowest unit-tier test
+# takes about 1450 s, so the ceiling is an hour.  A config may set its own.
+TEST_TIMEOUT=$(cfg TEST_TIMEOUT)
+TEST_TIMEOUT=${TEST_TIMEOUT:-$([ -n "${WRAPPER:-}" ] && echo 3600 || echo 900)}
 
 echo "=== Running${LABEL}: $TEST_NAME ($TEST) ==="
 
@@ -65,12 +77,28 @@ rm -f "$TEST_RESULTS_DIR/status"
 export GS_STORAGE_CACHE="$WORK_DIR/storage-cache"
 EXTRA_MEDIA="${GS_EXTRA_MEDIA_DIR:-$WORK_DIR/no-extra-media}"
 
-# Substitute the Makefile-style placeholders used in config.mk values.
+# Substitute the Makefile-style placeholders used in config.mk values.  Plain
+# parameter expansion, so a path holding '&', '|' or '\' arrives verbatim (the
+# replacement is quoted, which also turns off bash 5.2's '&' substitution).
 expand() {
-    echo "$1" | sed "s|\$(TEST_DATA)|$TEST_DATA|g" \
-               | sed "s|\$(TEST_TMPDIR)|$TEST_TMPDIR|g" \
-               | sed "s|\$(TEST_RESULTS_DIR)|$TEST_RESULTS_DIR|g" \
-               | sed "s|\$(WORK_DIR)|$WORK_DIR|g"
+    local s=$1
+    s=${s//'$(TEST_DATA)'/"$TEST_DATA"}
+    s=${s//'$(TEST_TMPDIR)'/"$TEST_TMPDIR"}
+    s=${s//'$(TEST_RESULTS_DIR)'/"$TEST_RESULTS_DIR"}
+    s=${s//'$(WORK_DIR)'/"$WORK_DIR"}
+    printf '%s\n' "$s"
+}
+
+# Report a timeout (exit 124 from timeout(1)) distinctly from a failure.
+check_rc() {
+    local rc=$1
+    [ "$rc" -eq 0 ] && return 0
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        echo "=== FAIL${LABEL}: $TEST (timeout after ${TEST_TIMEOUT}s) ==="
+        echo "FAIL" > "$TEST_RESULTS_DIR/status" 2>/dev/null
+        exit 1
+    fi
+    fail
 }
 
 if [ -n "$TEST_SETUP" ]; then
@@ -117,14 +145,15 @@ if [ -n "$TEST_RUNNER" ]; then
         WORK_DIR="$WORK_DIR" \
         STORAGE_CACHE="$GS_STORAGE_CACHE" \
         TEST_VAR_ARGS="$VAR_ARGS" \
-        bash "$TEST_RUNNER" || fail
+        timeout -k 30 "$TEST_TIMEOUT" bash "$TEST_RUNNER" || rc=$?
+    check_rc "${rc:-0}"
 else
     # shellcheck disable=SC2086 — args and vars are intentionally word-split
     # $ROM mirrors the startup rom= so scripts can re-boot with an explicit
     # rom="${$ROM}" (machine.boot inherits nothing from the running machine).
     # $TEST_DATA is the fixture root, for rows that name a second file by
     # path (a card's expansion ROM, a second disk image).
-    ${WRAPPER:-} "$HEADLESS_BIN" \
+    timeout -k 30 "$TEST_TIMEOUT" ${WRAPPER:-} "$HEADLESS_BIN" \
         rom="$ROM_PATH" \
         $EXPANDED_ARGS \
         script=test.script \
@@ -134,7 +163,8 @@ else
         --var TEST_DATA="$TEST_DATA" \
         --var EXTRA_MEDIA="$EXTRA_MEDIA" \
         $VAR_ARGS \
-        --speed=max || fail
+        --speed=max || rc=$?
+    check_rc "${rc:-0}"
 fi
 
 echo "=== PASS${LABEL}: $TEST ==="
