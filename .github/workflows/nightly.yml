@@ -98,8 +98,10 @@ jobs:
         env:
           GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
 
+      # PLATEN=1 and in parallel, as every step below builds it: a build
+      # with other flags would be rebuilt from scratch by the next step.
       - name: Build headless emulator
-        run: make -f Makefile.headless
+        run: make -f Makefile.headless PLATEN=1 -j"$(nproc)"
 
       # KEEP_GOING so one red row does not truncate the report.
       - name: Run integration tests (${{ github.event.inputs.tier || 'extended' }} tier)
@@ -107,7 +109,7 @@ jobs:
           # PLATEN=1: without the bridge the printer rows skip (see
           # .github/workflows/tests.yml for the full note).
           make integration-test PLATEN=1 TIER="${{ github.event.inputs.tier || 'extended' }}" \
-            TEST_VARS="KEEP_GOING=1" 2>&1 | tee /tmp/it-nightly.log
+            TEST_VARS="KEEP_GOING=1" -j"$(nproc)" 2>&1 | tee /tmp/it-nightly.log
           exit "${PIPESTATUS[0]}"
 
       # Valgrind, rescoped: the unit tier plus one representative boot,
@@ -115,9 +117,9 @@ jobs:
       - name: Valgrind (unit tier + one boot)
         if: always()
         run: |
-          make -C tests/integration test-valgrind TIER=unit \
+          make -C tests/integration test-valgrind TIER=unit PLATEN=1 -j"$(nproc)" \
             TEST_VARS="PERF_FLOORS=off" 2>&1 | tee /tmp/vg-unit.log
-          make -C tests/integration test-valgrind-suite-plus \
+          make -C tests/integration test-valgrind-suite-plus PLATEN=1 \
             TEST_VARS="ROW=plus-beep PERF_FLOORS=off" 2>&1 | tee /tmp/vg-boot.log
 
       - name: Report into the step summary
