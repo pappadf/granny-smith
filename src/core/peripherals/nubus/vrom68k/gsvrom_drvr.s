@@ -3,10 +3,10 @@
 |
 | gsvrom_drvr.s
 | The shared slot video DRVR: Open/Close, Control/Status csCode dispatch,
-| and the slot-VBL ISR (proposal sec. 3.1 — everything above the ops line
-| never names a register address).  The Slot Manager copies this whole
-| sBlock to the system heap, so the CPB data and card ops are emitted
-| into it with the "DR" prefix.
+| and the slot-VBL ISR (everything above the ops line never names a
+| register address).  The Slot Manager copies this whole sBlock to the
+| system heap, so the CPB data and card ops are emitted into it with the
+| "DR" prefix.
 |
 | csCode ABI per docs/core/peripherals/nubus_vrom.md sec. 10 (confirmed
 | against the GC ROM's driver): Control 0-9, Status 2-10.
@@ -62,7 +62,7 @@ DrvOpen:
 
 	| monitor geometry: dCtlSlotId names the sResource that loaded us —
 	| walk its records with the Slot Manager instead of an in-code
-	| table, exactly like the genuine 8*24/GC drivers (§3.4).
+	| table, exactly like the genuine 8*24/GC drivers.
 	moveq	#0,d0
 	move.b	dCtlSlotId(a3),d0
 	move.w	d0,pvSpID(a5)
@@ -645,7 +645,7 @@ StGetCurMode:
 | DrvReadVP: read the head of mode-list id D0.W's VPBlock from the
 | sResource that loaded us (pvSpID) and cache vpRowBytes / width /
 | height in private storage — the driver reads the generated records
-| instead of carrying its own geometry table (§3.4).  In: D0.W = mode
+| instead of carrying its own geometry table.  In: D0.W = mode
 | id (0x80 + depth code), A5 = private.  Out: D0 = 0 on success (Z
 | set), Slot Manager error otherwise; other registers preserved.
 DrvReadVP:

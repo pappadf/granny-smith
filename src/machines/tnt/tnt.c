@@ -293,7 +293,7 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
 }
 
 // Channel completion -> Grand Central interrupt n (== channel n), an
-// edge event into the fabric (interrupt-map §2.1).
+// edge event into the fabric.
 // A DBDMA channel interrupt is a LEVEL, not a pulse: the channel holds
 // its request asserted — visible in Grand Central's Levels register —
 // until the host acknowledges it through the interrupt-clear register.
@@ -434,13 +434,13 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 //
 // The carry follows the power switch, i.e. machine.restart, and stops
 // at machine.boot: that builds a NEW machine, which inherits nothing it
-// was not given (proposal-boot-vs-reset §2).  The distinction is not
+// was not given.  The distinction is not
 // bookkeeping.  A run stopped part-way through Open Firmware's format of
 // a virgin store — a bounded `scheduler.run`, a client that walked away
 // mid-run — leaves the store torn, and a machine built on a torn store
 // stops in the ROM's serial-console read loop with a black screen and
 // no way back short of restarting the process.  Rows that DO want the
-// same chip across two cold boots (ans-diag-floppy's DIMM table) say so
+// same chip across two cold boots (suite-ans's ans500-diag-floppy: its DIMM table) say so
 // with machine.restart.
 static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
 static bool tnt_nvram_carry_valid;
@@ -504,14 +504,14 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     uint32_t tick_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram); // NULL: NVRAM is a later phase
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
 
     // The ESCC cell behind the Grand Central decode, reachable through two
     // apertures (legacy +$12000 for the 68k Serial Driver, ESCC +$13000
     // for Open Firmware/native drivers — grand_central.c).  Clocks follow
     // the PDM values pending a TNT-specific measurement.  The chip's one
     // INT line fans to Grand Central interrupts 15/16 (ch A/B) — per-
-    // channel splitting arrives with the Phase F serial datapath.
+    // channel splitting belongs to the serial datapath.
     cfg->scc = scc_init(NULL, cfg->scheduler, tnt_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
 
@@ -522,7 +522,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Grand Central MACE window is a #define and nothing else, so there is no
     // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
     // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
-    // the family up rather than proving it -- see proposal-test-fixes.md.
+    // the family up rather than proving it.
     appletalk_init(cfg->scheduler, cfg->scc, cp);
 
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
@@ -637,14 +637,14 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             tnt_control_update(cfg); // rebuild the descriptor from restored regs
     }
 
-    // SCSI (Phase E; appended at the end of the positional stream).  The
+    // SCSI (appended at the end of the positional stream).  The
     // image list restores before the devices that resolve media out of
     // it, then the shared bus, then the chips.  hd= media land on
     // cfg->scsi = the MESH internal bus (boot disks are internal on the
     // real machines); the external 53C94 is instantiated with NO bus
     // attached — every select times out, the empty-chain presentation
-    // (the PDM 8100 fast-chip precedent).  CD-ROM joins the 53C94 chain
-    // in a later phase.
+    // (the PDM 8100 fast-chip precedent).  No CD-ROM sits on the 53C94
+    // chain yet (see pm7500.c's has_cdrom).
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
     cfg->scsi = scsi_init(cp);
@@ -678,7 +678,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             // MESH pops straight off the SCSI bus, so it never returns
             // short and the channel would run a whole transfer inside one
             // register store; the burst makes it yield and MESH's own pump
-            // kicks it back on the bus's cadence (05-chipsets-irq F-15).
+            // kicks it back on the bus's cadence.
             .burst = MESH_DMA_BURST,
             .ctx = st->mesh,
         };
@@ -726,7 +726,7 @@ static void tnt_bus_reset(config_t *cfg) {
     tnt_dbdma_reset(st->dbdma);
     // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
     // drive and its media) is reset by the shared chain; the SWIM3 was the
-    // one controller in the tree that survived a reset (`W-01`).
+    // one controller in the tree that survived a reset.
     swim3_reset(&st->swim3);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
@@ -836,7 +836,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
     // Same relative order as the tnt_init construction sequence (the
     // checkpoint stream is positional).
-    // The shared core prefix (05-chipsets-irq F-18), byte-identical to the
+    // The shared core prefix, byte-identical to the
     // seven lines it replaces -- see pdm.c for why the PowerPC families come
     // out the same as the 68k ones through it.
     machine_checkpoint_save_core(cfg, cp);
@@ -858,7 +858,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
     if (st->vram)
         system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
-    // Phase-E SCSI block (mirrors the tnt_init append order exactly).
+    // SCSI block (mirrors the tnt_init append order exactly).
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     if (st->scsi2)
@@ -879,8 +879,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // in a user-shareable save file, and made two saves of the same guest
     // state differ -- which defeats any diff-based checkpoint testing.  The
     // restore re-binds through *_swim3_bind either way, so the values were
-    // harmless; the leak and the non-reproducibility were not
-    // (05-chipsets-irq F-09).
+    // harmless; the leak and the non-reproducibility were not.
     system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
 }
@@ -891,7 +890,8 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // init waits for a CA1 edge right after its SecMode exchange (it polls
 // IFR bit 1, then enables the CA1 interrupt) and the whole boot — ADB
 // enumeration, DrawBeepScreen, the video driver — hangs forever without
-// it (the Phase-D "video wall" turned out to park HERE, inside InitADB).
+// it (a boot that seemed to stall at video init was parked HERE, inside
+// InitADB).
 // Also: media insertion polling and the display's re-upload mark (guest
 // CPU writes into VRAM bypass the renderer).
 static void tnt_trigger_vbl(config_t *cfg) {

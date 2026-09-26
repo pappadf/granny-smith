@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // The unit tier's clock (see platform.h beside this file): always zero.
 #ifndef PLATFORM_CLOCK_H
 #define PLATFORM_CLOCK_H

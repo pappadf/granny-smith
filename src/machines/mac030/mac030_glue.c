@@ -136,7 +136,7 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 // the header.  Nine writes that were replicated across five families, which
 // made a replicated FILE FORMAT: the stream is positional, so those nine
 // lines ARE the layout, and a family that dropped one silently wrote a
-// different format (the review's F-23: TNT's copy omitted appletalk).
+// different format (TNT's copy omitted appletalk).
 //
 // via2 is written unconditionally on purpose.  via_checkpoint(NULL, cp)
 // returns before writing anything, so a single-VIA machine emits nothing
@@ -249,7 +249,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
 }
 
 // Build the shared II-family construction prefix.  Reads the CPU model from
-// the profile (single source of truth — §1.3), not a hardcoded constant.
+// the profile (single source of truth), not a hardcoded constant.
 void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
@@ -264,14 +264,14 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
                          mac030_fill_fn fill, bool writable) {
     if (size_pages == 0)
         return; // a bank smaller than one page decodes nothing
-    for (uint32_t i = 0; i < window_pages && (int)(start_page + i) < g_page_count; i++)
+    for (uint32_t i = 0; i < window_pages && start_page + i < g_page_count; i++)
         fill(start_page + i, host + ((i % size_pages) << PAGE_SHIFT), writable);
 }
 
 // Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages
 // leave the write SoA entries at their zero-initialised value (slow path).
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if ((int)page_index >= g_page_count)
+    if (page_index >= g_page_count)
         return;
     g_page_table[page_index].host_base = host_ptr;
     g_page_table[page_index].dev = NULL;
@@ -301,11 +301,11 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint32_t rom_start_page = rom_start >> PAGE_SHIFT;
     if (on) {
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
+        for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, g_page_table[rom_start_page + p].host_base, false);
     } else {
         uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
+        for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
     }
 }
@@ -317,7 +317,7 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
 //
 // The 68030 PMMU used to be cleared here.  It is INSIDE THE CPU and not on
 // the net, so an external chip reset must not touch it; that moved to
-// cpu_hardware_reset (reset proposal §3.1.3).  The `mmu` parameter is gone
+// cpu_hardware_reset.  The `mmu` parameter is gone
 // with it.
 void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start) {
     *overlay_flag = false; // force the set_rom_overlay toggle below
@@ -338,7 +338,7 @@ void mac030_glue_via2_irq(void *context, bool active) {
 
 // Set/clear an IRQ source bit and re-derive the CPU IPL.  The routing itself
 // is the data-driven glue_irq_routes table + mac030_irq_resolve_ipl engine
-// (both in mac030_glue_io.c — the GLUE family's dispatch tables, §4.2.2).
+// (both in mac030_glue_io.c — the GLUE family's dispatch tables).
 void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
     int old_irq = cfg->irq;
     if (active)
@@ -359,7 +359,7 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 // port-A bit (active-low; slot $9→PA0 .. $E→PA5); the umbrella OR-line edge
 // (no slot asserted ↔ any slot asserted) pulses CA1.  Verbatim from the former
 // nubus.c VIA2 fast-path — now reached uniformly through the substrate so
-// nubus.c carries no cfg->via2 (proposal §4.4).
+// nubus.c carries no cfg->via2.
 // One source of the family's /SLOTIRQ aggregate changes state.
 //
 // The chipset keeps the OR, not the bus.  GLUE used to pulse CA1 only when
@@ -368,7 +368,7 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 // mask, and the MCU was right -- its aggregate includes DAFB on PA6 and SONIC
 // on PA0, sources the NuBus controller knows nothing about.  The SE/30's
 // built-in video is the same shape.  A bus that cannot see every contributor
-// cannot compute the edge (05-chipsets-irq F-46).
+// cannot compute the edge.
 //
 // /SLOTIRQ is a LEVEL: "routed through an OR gate ... connected to the CA1
 // input of VIA2" (Quadra 700 and 900 developer notes).
@@ -391,7 +391,7 @@ void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 
 // Family-shared teardown delete-chain.  Order matches the (identical)
 // per-machine teardowns; NuBus cards are already gone (system_destroy calls
-// nubus_delete before machine teardown — §6.2 ownership invariant).
+// nubus_delete before machine teardown — the cards' ownership invariant).
 void mac030_glue_teardown(config_t *cfg, struct adb *adb, struct asc *asc, struct floppy *floppy,
                           struct mmu_state *mmu) {
     if (cfg->scheduler)
@@ -415,7 +415,7 @@ void mac030_glue_teardown(config_t *cfg, struct adb *adb, struct asc *asc, struc
 }
 
 // ============================================================
-// The shared GLUE-family substrate (proposal §4.2.2)
+// The shared GLUE-family substrate
 // ============================================================
 //
 // SE/30, IIcx and IIx all bind this one substrate.  Each machine's deltas live
@@ -492,8 +492,7 @@ static void glue_trigger_vbl(config_t *cfg) {
     // real card may be holding.  Guide to the Macintosh Family Hardware 2e,
     // p.211: the vSync slot interrupt "is distinct from the 60.15 Hz
     // interrupt (VBL) request, WHICH IS SENT BY VIA2 TO VIA1."  Two different
-    // interrupts; only one of them lands on a CA1 pin here
-    // (05-chipsets-irq F-11).
+    // interrupts; only one of them lands on a CA1 pin here.
     mac_vbl_pulse(cfg->via1);
     nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);

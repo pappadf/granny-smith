@@ -82,7 +82,7 @@ void scc_set_external_loopback(scc_t *scc, bool enabled);
 // Query external loopback state
 bool scc_get_external_loopback(scc_t *scc);
 
-// === M7a object-model accessors =============================================
+// === Object-model accessors =================================================
 //
 // Read-only views used by the `scc` / `scc.a` / `scc.b` object classes.
 // `ch` is 0 (A) or 1 (B). Out-of-range channels return false / 0.

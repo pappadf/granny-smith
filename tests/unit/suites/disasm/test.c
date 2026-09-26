@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Disassembler test - validates cpu_disasm() against a corpus of expected outputs.
 
 #include "cpu.h"
@@ -221,7 +223,7 @@ TEST(disasm_full_ext_words) {
 // six seeded random runs), fits the buffers the emulator and the disasm tool
 // split its text into: the mnemonic (before the tab) under 48 -- the longest
 // is a 32-character trap name -- and the whole line under 256.  The fuzz
-// harness that measured those bounds (F-34, N-40), kept as a test.
+// harness that measured those bounds, kept as a test.
 TEST(every_opcode_fits_its_buffers) {
     char text[4096];
     uint16_t w[16];

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Regenerate disasm.txt using the same dependencies as the disasm test suite
 #include "cpu.h"
 #include "harness.h"

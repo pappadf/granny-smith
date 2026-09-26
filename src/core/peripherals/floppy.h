@@ -69,7 +69,7 @@ const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
 // Does NOT flush modified tracks — the caller decides whether they matter.
 void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive);
 
-// === M7e — object-model accessors ===========================================
+// === Object-model accessors =================================================
 //
 // Read-only views over the floppy controller and its two drive slots
 // used by `floppy` / `floppy.drives` object classes. Drive index is

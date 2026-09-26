@@ -9,7 +9,7 @@ module — see "Why not one expansion-bus abstraction" below.
 | File | What it holds |
 |---|---|
 | `pci.h` / `pci.c` | bus controller: buses, devices, decode windows, config dispatch, slot table, kind registry, staged config, lifecycle and interrupt fan-outs |
-| `card.h` | `pci_device_t` / `pci_device_ops_t` / `pci_card_kind_t` — the only header a card driver under `cards/` needs |
+| `pci_card.h` | `pci_device_t` / `pci_device_ops_t` / `pci_card_kind_t` — the only header a card driver under `cards/` needs |
 | `config_space.h` / `config_space.c` | the generic type-0 header: IDs, class, command/status, BAR latch + sizing, expansion-ROM BAR, interrupt line |
 | `pci_class.c` | the `machine.pci.slot[N]` object surface |
 | `cards/` | pluggable card drivers (empty today) |
@@ -87,8 +87,7 @@ per access and buys correct fault semantics for free, no memory-map churn
 apertures — Control's banked VRAM view has a *hole* between its banks that
 the sizing probe depends on, which no flat host mapping can express.
 
-The host-overlay fast path the architecture proposal sketches for a
-framebuffer is **not** implemented, and the reason is concrete: the memory
+A host-overlay fast path for a framebuffer is **not** implemented, and the reason is concrete: the memory
 map has no removal counterpart to `memory_map_host_region` (its fill list
 is a fixed 16-entry table built for init-time registration), so a *movable*
 host-backed BAR cannot be unmapped today. That primitive lands with the
@@ -232,8 +231,7 @@ learns any card's identity and declaration order does not matter.
 
 ## Status
 
-Phase 1 of `proposal-pci-architecture`, plus Phase 2's substrate: the
-generic core, the TNT family migrated onto it (Bandit/Chaos as adapters,
+The generic core, the TNT family migrated onto it (Bandit/Chaos as adapters,
 Control as a registered BUILTIN card kind, Grand Central's config presence
 at device 16), slot topology for all three TNT models, the object model,
 staged configuration and the profile surface — and now the PCI I/O window
@@ -243,11 +241,11 @@ the Apple Accelerated PCI Graphics Card
 (`src/core/peripherals/pci/cards/mach64gx.c`), which boots System 7.6 to a
 desktop on a Power Macintosh 9500.
 
-Phase 3 adds the **ROM-less socket-card path**, exercised for real by the
-3dfx Voodoo2 (`cards/voodoo2.c`, `docs/core/peripherals/pci/cards/voodoo2.md`):
-`rom_size = 0` and `requires_prom = false` were legal from Phase 1
-(§5.7's "no-ROM cards fall out for free") but the Voodoo2 is the first
-card to ride them — the guest's Open Firmware sizes and assigns the BAR,
+The **ROM-less socket-card path** is exercised for real by the 3dfx Voodoo2
+(`cards/voodoo2.c`, `docs/core/peripherals/pci/cards/voodoo2.md`):
+`rom_size = 0` and `requires_prom = false` were always legal (no-ROM cards
+fall out of the generic core for free) but the Voodoo2 is the first card to
+ride them — the guest's Open Firmware sizes and assigns the BAR,
 builds a generated `pciVVVV,DDDD` node, loads no driver, and leaves
 Memory Space Enable clear for the disk-loaded driver to set. A card that
 must never be the machine's display declares `card_class = "3d"` so the

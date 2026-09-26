@@ -15,7 +15,7 @@
 // addr_write_byte, and open-coded shifts in hammerhead.c, mcu.c and av.c --
 // three naming conventions and four spellings of the same shift
 // (`3u - (index & 3u)`, `3 - (off & 3)`, `3 - lane`, `3 - reg_off`).
-// Consolidated here by the 2026-09-03 code review, 05-chipsets-irq F-38.
+// All of them now use this header.
 //
 // LANE 0 IS THE MOST SIGNIFICANT BYTE.  That is the convention on this bus
 // and it is the whole reason the shift is `3 - lane` rather than `lane`; it

@@ -39,9 +39,9 @@ peel_err_t *make_err(const char *fmt, ...)
 // abort handler, and the success path after releasing (dctx_release) what it
 // returns.
 // So an abort can never leak, however deep it fires or whatever was in
-// flight -- which every decoder that longjmp'd used to (09-storage F-10,
-// F-11, F-12: sit15 its decoder state and ~80 MiB of block buffers, sit3 its
-// output, hqx a finished data fork when the resource fork failed).
+// flight -- which every decoder that longjmp'd used to (sit15 its decoder
+// state and ~80 MiB of block buffers, sit3 its output, hqx a finished data
+// fork when the resource fork failed).
 //
 // It also removes a setjmp trap: a local assigned after setjmp has an
 // indeterminate value after longjmp unless it is volatile, so a handler that
@@ -111,11 +111,11 @@ static inline uint32_t rd32be(const uint8_t *p) {
 // Every format declares its output sizes in its own headers, and every
 // decoder used to allocate whatever a header said: a few hundred bytes of
 // .hqx could ask for a 4 GiB fork, and each format bounded it differently or
-// not at all (09-storage F-08, F-65).  These caps bound what an archive may
-// declare, stated once and enforced by every format.  They sit far above any
-// classic Mac file -- a CD-ROM image is ~700 MB -- and far below the 4 GiB a
-// 32-bit size_t can address, so no buffer built under them can overflow its
-// own length arithmetic (which is also what closes F-14).
+// not at all.  These caps bound what an archive may declare, stated once and
+// enforced by every format.  They sit far above any classic Mac file -- a
+// CD-ROM image is ~700 MB -- and far below the 4 GiB a 32-bit size_t can
+// address, so no buffer built under them can overflow its own length
+// arithmetic.
 #define PEEL_MAX_FORK      ((uint64_t)1 << 30) // largest fork an archive may declare
 #define PEEL_MAX_INPUT     ((uint64_t)1 << 30) // largest file peel_read_file loads
 #define PEEL_MAX_DIR_DEPTH 128                 // deepest folder nesting a walker follows
@@ -129,7 +129,7 @@ static inline uint32_t rd32be(const uint8_t *p) {
 // peel_file_meta_t.name): '/' and NUL become ':', a dots-only name gets a '_'
 // prefix, an empty one becomes "_".  Truncates at cap; always terminates.
 // Every format builds its names through this, so no archive can smuggle a
-// separator or a traversal component into one (09-storage F-13).
+// separator or a traversal component into one.
 void peel_append_segment(char *dst, size_t cap, size_t *pos, const uint8_t *name, size_t n);
 
 // ============================================================================
@@ -139,8 +139,7 @@ void peel_append_segment(char *dst, size_t cap, size_t *pos, const uint8_t *name
 // Does [off, off + len) lie inside a buffer of `total` bytes?  Wrap-safe:
 // never forms off + len, which a 32-bit size_t (the wasm32 build) wraps for
 // lengths an archive can simply claim.  Every format locates its forks with
-// lengths read from the archive; this is the one check they all use
-// (09-storage F-15).
+// lengths read from the archive; this is the one check they all use.
 static inline bool peel_extent_fits(size_t off, uint64_t len, size_t total) {
     return off <= total && len <= (uint64_t)(total - off);
 }
@@ -183,7 +182,7 @@ uint16_t crc16_ccitt_update(uint16_t crc, const uint8_t *data, size_t len);
 // significant first.  Each format had its own reader, with three different
 // behaviours at the end of the input; now both readers behave one way --
 // bits past the end read as zeros -- and a format that must refuse a short
-// stream asks peel_*_avail first (09-storage F-58).
+// stream asks peel_*_avail first.
 //
 // Both refill on demand, pulling only the bytes a read needs, so
 // peel_msb_pulled is exactly the input bytes consumed so far: Compact Pro's
@@ -313,10 +312,9 @@ static inline bool peel_lsb_at_end(const peel_lsb_t *r) {
 // ============================================================================
 //
 // One pool-allocated decode tree for the two formats that build canonical
-// Huffman codes; each had its own, and only Compact Pro's bounded its pool
-// (09-storage F-59, F-04).  A pool holds one or more trees (sit13 keeps four
-// in one).  Formats keep their own bit readers and walk a tree with
-// peel_huff_child / peel_huff_sym.
+// Huffman codes; each had its own, and only Compact Pro's bounded its pool.
+// A pool holds one or more trees (sit13 keeps four in one).  Formats keep
+// their own bit readers and walk a tree with peel_huff_child / peel_huff_sym.
 
 #define PEEL_HUFF_POOL_CAP 2048
 #define PEEL_HUFF_NOSYM    ((int16_t)-1)

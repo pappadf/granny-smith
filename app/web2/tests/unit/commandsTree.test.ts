@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildCommandsTree, type CommandNode } from '@/lib/commandsTree';
 
-// The catalogue is now generated from the model (proposal §8.6), not a static
+// The catalogue is generated from the model, not a static
 // constant. Mock the bus so buildCommandsTree walks a tiny synthetic tree:
 //   root → machine → cpu (with a `step` method) ; root verbs `echo`/`download`
 //   plus one alias. We assert the generated shape, not a hand-listed set.

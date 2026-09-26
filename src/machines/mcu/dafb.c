@@ -2,9 +2,8 @@
 // Copyright (c) pappadf
 
 // dafb.c
-// DAFB built-in video — see dafb.h.  Register semantics follow the
-// reference's §11 [R] tables, cross-checked against the boot ROM's captured
-// access sequence, captured from the Quadra 700 boot ROM:
+// DAFB built-in video — see dafb.h.  Register semantics are cross-checked
+// against the access sequence captured from the Quadra 700 boot ROM:
 //   * frame-buffer base $000/$004 (the ROM's 640×480 set programs $1000),
 //     stride $008 (words; ROM uses $100 → 1024-byte rows for the gray screen)
 //   * Swatch timing at +$100: HAL/HFP give 640 visible ($88/$308), VAL/VFP
@@ -14,13 +13,13 @@
 //     ROM's white/black gray-screen entries confirm the protocol) and
 //     PCBR0 at $220 (depth field & $1C, pixel divider & $60)
 //   * DP8531 at +$300: sixteen 4-bit registers, commit on register 15; the
-//     reference's frequency formula yields 25.18 MHz for the ROM's 640×480
-//     values — validated against the captured nibbles
+//     frequency formula yields 25.18 MHz for the ROM's 640×480 values —
+//     validated against the captured nibbles
 //   * monitor sense at $01C: per-line drive/release protocol (active-low
 //     drive bits); the attached monitor's passive code answers on released
 //     lines.  A wrong echo here made the ROM pick a PAL convolution mode
 //     during bring-up, so this register must never read back its own write.
-// Unknown registers stay accept-and-log with readback (Trap 24).
+// Unknown registers stay accept-and-log with readback.
 
 #include "dafb.h"
 
@@ -40,10 +39,10 @@ LOG_USE_CATEGORY_NAME("video");
 #define DAFB_FB_BASE_HI   0x000u // base bits 20:9
 #define DAFB_FB_BASE_LO   0x004u // base bits 8:5
 #define DAFB_STRIDE       0x008u // row stride in 32-bit words
-#define DAFB_TIMING_CTL   0x00Cu // stored [U]
-#define DAFB_CONFIG       0x010u // bit 2 interlace, bit 3 convolution [R]
+#define DAFB_TIMING_CTL   0x00Cu // stored
+#define DAFB_CONFIG       0x010u // bit 2 interlace, bit 3 convolution
 #define DAFB_SENSE        0x01Cu // monitor sense drive/read
-#define DAFB_TEST_VERSION 0x02Cu // version bits from 9 up [R]
+#define DAFB_TEST_VERSION 0x02Cu // version bits from 9 up
 // Swatch (+$100)
 #define SWATCH_MODE         0x100u
 #define SWATCH_INTR_ENABLE  0x104u // bit0 VBL, bit1 aux, bit2 cursor
@@ -63,11 +62,11 @@ LOG_USE_CATEGORY_NAME("video");
 #define AC842_PCBR0 0x220u
 // DP8531 (+$300): register = (offset >> 4) & 0xF; commit on reg 15
 
-// Phase C fallback frame period until the ROM programs real timing.
+// Fallback frame period until the ROM programs real timing.
 // Until the Swatch timing registers are programmed there is no mode line to
 // derive a refresh from, so the fallback is the machine's own 60.15 Hz
 // retrace -- taken from scheduler.h rather than re-rounded here, which is
-// where the old 16625000 literal lost 103 ns a frame (04-video F-17).
+// where the old 16625000 literal lost 103 ns a frame.
 #define DAFB_FALLBACK_FRAME_NS MAC_VBL_PERIOD_NS
 
 struct dafb {
@@ -80,26 +79,26 @@ struct dafb {
     // Scanout state
     display_t display;
     // machine.video -- the framebuffer node every display source exposes
-    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    // (display_class.h).
     display_fb_node_t fb_node;
     struct object *video_node;
     rgba8_t clut[256];
 
-    // AC842 write machine: index + RGB component phase (Trap 11: the
-    // partial triplet is real state and checkpoints with the device).
+    // AC842 write machine: index + RGB component phase (the partial
+    // triplet is real state and checkpoints with the device).
     uint8_t dac_idx;
     uint8_t dac_phase;
     uint8_t dac_rgb[3];
     uint8_t pcbr0;
 
     // AC842a (Q950): PCBR1 lives behind AddrReg==1 at the config register
-    // (DAFBDriver.a/PrimaryInit.a [A]).  Bits 7:4 latch; the low nibble is
+    // (DAFBDriver.a/PrimaryInit.a).  Bits 7:4 latch; the low nibble is
     // the read-only mfg/rev field (0 = non-Antelope → the driver uses the
     // sparse Trans5to8 CLUT load).  x555 16-bit direct mode is active when
     // the $C0 bits are set and PCBR0 selects direct color.
     bool ac842a; // true = AC842a model (PCBR1 exists)
     uint8_t pcbr1;
-    uint8_t version; // DAFB_Test bits 11:9 (0 Q700/Q900, 3 Q950; ref §11.8)
+    uint8_t version; // DAFB_Test bits 11:9 (0 Q700/Q900, 3 Q950)
 
     // DP8531 nibble registers + committed output
     uint8_t clk_reg[16];
@@ -110,7 +109,7 @@ struct dafb {
     uint8_t sense_ext; // raw 6-bit extended-sense code (valid when sense_ext_on)
     bool sense_ext_on; // monitor answers the tie-matrix probe
 
-    // TurboSCSI DRQ observation (per channel; ref §12.4 bit 9)
+    // TurboSCSI DRQ observation (per channel; bit 9)
     dafb_drq_query_fn drq_fn[2];
     void *drq_ctx[2];
 
@@ -125,7 +124,7 @@ struct dafb {
 };
 
 // ============================================================
-// Video IRQ (level: status & enable; ref §11.18)
+// Video IRQ (level: status & enable)
 // ============================================================
 
 static void update_irq(dafb_t *dafb) {
@@ -140,7 +139,7 @@ static void update_irq(dafb_t *dafb) {
 }
 
 // ============================================================
-// Swatch timing derivation (ref §11.9/§11.14)
+// Swatch timing derivation
 // ============================================================
 
 // PCBR0's VidClk field (bits 6:5) selects the RAMDAC's PixClk/1, /2 or /4 tap
@@ -162,7 +161,7 @@ static uint32_t pixel_multiplier(const dafb_t *dafb) {
     return 1u << ((dafb->pcbr0 & 0x60u) >> 5);
 }
 
-// Map the PCBR0 depth field to a display format (ref §11.11).  Direct color
+// Map the PCBR0 depth field to a display format.  Direct color
 // is 24-in-32 XRGB, except on an AC842a with PCBR1's x555 bits set —
 // then pixels are big-endian x555 16-bit words (DAFBDriver.a writes
 // PCBR1 = $C0 when entering the "Thousands" mode).
@@ -201,7 +200,7 @@ static bool depth_format(const dafb_t *dafb, pixel_format_t *fmt, uint32_t *bpp)
 
 // Recompute the scanout shape + frame period from the programmed state.
 // Runs on Swatch mode/PCBR0/DP8531-commit/base/stride writes; incomplete
-// programming (zeros mid-mode-set) leaves the previous shape (ref §11.14).
+// programming (zeros mid-mode-set) leaves the previous shape.
 static void reconfigure(dafb_t *dafb) {
     uint32_t hal = dafb->regs[SWATCH_HAL >> 2] & 0xFFFu;
     uint32_t hfp = dafb->regs[SWATCH_HFP >> 2] & 0xFFFu;
@@ -238,7 +237,7 @@ static void reconfigure(dafb_t *dafb) {
     uint32_t width = hactive * mult;
     uint32_t height = (vfp - val) / 2u;
     // Convolution halves the effective horizontal fetch on the composite
-    // modes; v1 renders the literal pixels (documented divergence [R][U]).
+    // modes; v1 renders the literal pixels (documented divergence).
 
     uint32_t fb_base =
         ((dafb->regs[DAFB_FB_BASE_HI >> 2] & 0xFFFu) << 9) | ((dafb->regs[DAFB_FB_BASE_LO >> 2] & 0xFu) << 5);
@@ -294,7 +293,7 @@ static void reconfigure(dafb_t *dafb) {
 // One event per frame raises both the VBL and cursor pending bits (the
 // cursor line is inside the frame; a per-scanline model can split these
 // later).  Status sets regardless of enables; the IRQ line is
-// status & enable (ref §11.10, §22.9).
+// status & enable.
 
 static void dafb_frame_event(void *source, uint64_t data) {
     (void)data;
@@ -316,7 +315,7 @@ void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched) {
 }
 
 // ============================================================
-// Monitor sense (ref §11.7)
+// Monitor sense
 // ============================================================
 // The register's low 3 bits drive the sense lines active-low (0 = drive
 // low, 1 = release).  A read returns each line's level: low when the host
@@ -378,7 +377,7 @@ static uint8_t sense_read(dafb_t *dafb) {
 }
 
 // ============================================================
-// DP8531 clock synthesizer (ref §11.13)
+// DP8531 clock synthesizer
 // ============================================================
 
 static void dp8531_commit(dafb_t *dafb) {
@@ -403,7 +402,7 @@ static void dp8531_commit(dafb_t *dafb) {
 }
 
 // ============================================================
-// AC842 RAMDAC (ref §11.11)
+// AC842 RAMDAC
 // ============================================================
 
 static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
@@ -531,14 +530,14 @@ static bool reg_read_special(dafb_t *dafb, uint32_t off, uint32_t *out) {
         return true;
     }
     if (off == DAFB_TEST_VERSION) {
-        // Version rides bits 11:9 of the 12-bit test register (ref §11.8;
-        // the driver's 33 MHz path shifts by 9 and compares to DAFB3Vers).
+        // Version rides bits 11:9 of the 12-bit test register (the
+        // driver's 33 MHz path shifts by 9 and compares to DAFB3Vers).
         *out = (dafb->regs[off >> 2] & 0x1FFu) | ((uint32_t)(dafb->version & 0x7u) << 9);
         return true;
     }
     if (off == 0x024u || off == 0x028u) {
         // TurboSCSI control readback: stored control bits + live DRQ in
-        // bit 9 (ref §12.4).
+        // bit 9.
         int chan = (off == 0x028u) ? 1 : 0;
         bool drq = dafb->drq_fn[chan] && dafb->drq_fn[chan](dafb->drq_ctx[chan]);
         *out = (dafb->regs[off >> 2] & 0x1FFu) | (drq ? 0x200u : 0u);
@@ -595,8 +594,8 @@ static void dafb_write32(void *ctx, uint32_t offset, uint32_t value) {
 // side effects ONCE PER REGISTER.
 //
 // dafb_write16 used to be two dafb_write8 calls, and each of those ran
-// log_touch + reg_write_effects on a PARTIALLY ASSEMBLED register (04-video
-// F-46).  reg_write_effects is not idempotent, so that was not merely noisy:
+// log_touch + reg_write_effects on a PARTIALLY ASSEMBLED register.
+// reg_write_effects is not idempotent, so that was not merely noisy:
 //
 //   - ac842_write(AC842_DATA) does `dac_phase++` unconditionally, so one guest
 //     word write to the CLUT data port consumed TWO palette components -- and
@@ -655,7 +654,7 @@ static const memory_interface_t dafb_reg_iface = {
 // stride, format and bits, and the CLUT at whatever the guest had programmed.
 // Worse, with regs zeroed the next reconfigure() bails at its mid-mode-set
 // guard (`hfp <= hal`), so the stale mode persisted indefinitely rather than
-// being re-derived (04-video F-38).
+// being re-derived.
 //
 // `cold` follows the same rule as the NuBus cards' set_poweron_defaults: VRAM
 // keeps the previous frame across a warm /RESET, so only a cold build blanks
@@ -725,7 +724,7 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         // with SWATCH_INTR_STATUS & _ENABLE non-zero has to re-assert it here,
         // or the level is lost -- and update_irq's `active != irq_line` edge
         // filter means a later status change may not re-raise it either.  The
-        // Quadra's whole VBL chain hangs off this level (04-video F-38).
+        // Quadra's whole VBL chain hangs off this level.
         update_irq(dafb);
     }
     return dafb;
@@ -833,8 +832,8 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
 //
 // This used to be a file-static "pending" slot that machine.c poked by name
 // and mcu.c consumed destructively -- a second mirror of the JMFB one, which
-// existed only because core could not reach a machine header to set both
-// (proposal-construction-inputs §1.6).  machine_build_opts_t lives in core,
+// existed only because core could not reach a machine header to set both.
+// machine_build_opts_t lives in core,
 // so both now read one value and neither consumes it.
 uint8_t dafb_sense_for_build(const struct config *cfg) {
     int s = cfg->build_opts.video_sense;
@@ -888,7 +887,7 @@ void dafb_reset(dafb_t *dafb) {
         dafb->irq_cb(dafb->irq_ctx, false);
     // ...and the presentation state that is DERIVED from those registers.
     // Zeroing the register file is not a reset of the chip if the descriptor
-    // it produced survives (04-video F-38).
+    // it produced survives.
     dafb_poweron_display(dafb, /*cold*/ false);
 }
 

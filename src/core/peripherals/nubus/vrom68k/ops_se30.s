@@ -18,9 +18,9 @@
                                         | selected by VIA1 PA6.  The hand-built
                                         | fallback ROM has always declared
                                         | mPageCnt 2 for this reason; the
-                                        | generated ROM under-declared it as 1
-                                        | (04-video F-51).  Declaring 2 obliges
-                                        | this driver to SERVE page 1 --
+                                        | generated ROM once under-declared it
+                                        | as 1.  Declaring 2 obliges this
+                                        | driver to SERVE page 1 --
                                         | Designing Cards and Drivers 3ed makes
                                         | cscSetMode the page-switch call and
                                         | GetBaseAddr answerable for a page that
@@ -41,7 +41,7 @@
 | --- CPB data (EmitCPB <pfx>) ------------------------------------------------
 	.macro	EmitCPB pfx
 | Top-level video spID (the built-in CRT); geometry lives only in the
-| generated records (§3.4).
+| generated records.
 \pfx&SpidTab:
 	dc.w	0x0080
 	dc.w	0                       | terminator

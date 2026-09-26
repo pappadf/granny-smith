@@ -55,7 +55,7 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable);
 void lisa_profile_detach(lisa_profile_t *pf); // close the image (no base writeback)
 bool lisa_profile_attached(const lisa_profile_t *pf);
 
-// machine.restart handle transfer (proposal-boot-vs-reset §3.3): take the
+// machine.restart handle transfer: take the
 // attached image OUT of the device without closing it (ownership moves to
 // the caller; returns NULL when nothing is attached), and attach an
 // already-open 532-bytes/block image handle to a fresh device (geometry is

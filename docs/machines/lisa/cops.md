@@ -111,7 +111,7 @@ Lisa boot **menu** is mouse-driven — its input loop watches for the mouse-butt
 code, not keyboard.)
 
 ### Clock / NMI key / power
-The **real-time clock is modelled** (F-27): `$02` reads it, and `$2C` +
+The **real-time clock is modelled**: `$02` reads it, and `$2C` +
 sixteen `$1n` nibbles + `$25` sets it, with the eleven clock digits taken from
 digit 5 onward — the first five are the alarm. It powers up at 1 January 1984
 rather than seeding from the host wall clock, because four bits of year reach

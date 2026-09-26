@@ -8,8 +8,7 @@
 // never committed); this file is the only translation unit that
 // includes them.  gsvrom_generate turns a card kind's monitor table
 // into a finished image via the declrom builder — the C monitors[]
-// array is the single source of truth for mode geometry
-// (proposal-nubus-runtime-vrom §3.3/§3.5).
+// array is the single source of truth for mode geometry.
 
 #include "card.h"
 #include "declrom.h"
@@ -49,14 +48,13 @@ const uint8_t *gsvrom_frag(gsvrom_personality_t p, gsvrom_frag_kind_t k, size_t 
 }
 
 // === Per-personality identity + mode rules ==================================
-// The values the assembled images carried (tools/vrom history): board
-// identity per proposal-generic-nubus-vrom §5.2 (byte-authentic where
-// Mac-side software matches on them), video sResource names the OS
-// pattern-matches, and each card's framebuffer window geometry.
+// The values the assembled images carried (tools/vrom history): board identity
+// (byte-authentic where Mac-side software matches on them), video sResource
+// names the OS pattern-matches, and each card's framebuffer window geometry.
 
 typedef struct {
     const char *board_name; // board sRsrcName
-    uint16_t board_id; // BoardId (load-bearing, §3.5)
+    uint16_t board_id; // BoardId (load-bearing: Mac-side software keys on it)
     const char *rev_level; // VendorInfo RevLevel string
     const char *vid_name; // functional sResource name
     uint16_t drhw; // sRsrcType DrHW
@@ -65,10 +63,10 @@ typedef struct {
     // counting number (Designing Cards and Drivers 3ed, p.242).  The SE/30 has
     // two, selected by VIA1 PA6, and the hand-built fallback ROM has always
     // declared them -- make_mode used to hard-code 1, so the GENERATED ROM
-    // (which is the SE/30 profile's default) under-declared the hardware
-    // (04-video F-51).  This must agree with the driver's GS_NPAGES: the
-    // declaration and the DRVR are two halves of one claim, and the DRVR's
-    // cscSetMode / GetPages / GetBaseAddr serve exactly this many pages.
+    // (which is the SE/30 profile's default) under-declared the hardware.  This
+    // must agree with the driver's GS_NPAGES: the declaration and the DRVR are
+    // two halves of one claim, and the DRVR's cscSetMode / GetPages /
+    // GetBaseAddr serve exactly this many pages.
     uint16_t page_count;
 } gsvrom_traits_t;
 

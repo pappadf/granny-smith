@@ -80,7 +80,7 @@ static bool applog_replay(afp_applog_t *log, afp_applog_replay_fn replay) {
     }
     free(payload);
     // Whatever follows the last good record is a torn write: cut it off, or
-    // every record appended from now on would be lost behind it (N-16).
+    // every record appended from now on would be lost behind it.
     if (fseeko(f, 0, SEEK_END) == 0 && ftello(f) > good) {
         LOG(1, "AFP: '%s' ends in a torn record -- dropping %lld bytes", log->path, (long long)(ftello(f) - good));
         fflush(f);

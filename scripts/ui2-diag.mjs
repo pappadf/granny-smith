@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Headless diagnostic for app/web2. Spawns the python dev server, drives
 // Chromium via Playwright, and waits for explicit page conditions —
 // never sleeps for a hopeful "settle". Captures console + pageerror +

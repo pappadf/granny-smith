@@ -15,7 +15,7 @@
 //   - the wait-state bit (bit 8) that HWInit's bus-ratio measurement
 //     toggles: while set, physical page 0 takes a slow path that charges
 //     extra bus cycles per access, so the measured delta yields the real
-//     machine's CPU:bus ratio (proposal §5.2).
+//     machine's CPU:bus ratio.
 //   - the machine-ID register at $5FFFFFFC (byte-readable; a 32-bit read
 //     must NOT show the $A55A signature — the ROM's long-probe has to fail).
 //
@@ -153,7 +153,7 @@ void pdm_hmc_remap(config_t *cfg) {
 }
 
 // ============================================================
-// Wait-state slow path for the bus-ratio measurement (§5.2)
+// Wait-state slow path for the bus-ratio measurement
 // ============================================================
 // While the DRAM timing field (bits 2-15) is all zero — the power-on state
 // and the ROM's $00090000 test pattern — physical page 0 is remapped to
@@ -242,8 +242,8 @@ static void hmc_shift_in(config_t *cfg, uint32_t bit) {
 
     // Bit 33 selects the scanout base: set = physical 0 (the ROM's and Mac
     // OS's constant state), clear = $100000 (MkLinux's VPDM_PHYSADDR — and
-    // Copland's, whose kernel owns physical 0 for its vector page).  See
-    // powermac notes amic.md §"no framebuffer-base register" / hmc.md §2.2.
+    // Copland's, whose kernel owns physical 0 for its vector page); AMIC
+    // has no framebuffer-base register.
     if (n == 33) {
         LOG(1, "video base bit <- %u (scan from $%X)", bit, bit ? 0u : 0x100000u);
         pdm_video_update(cfg); // scan base moves with the bit (ariel.c)

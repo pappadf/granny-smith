@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 in-browser throughput benchmark (perf proposal P5 validation / P12
-// tracked number).  Boots an SE/30 with no media — the ROM free-runs at the
-// flashing-? insert prompt, a busy-wait that retires instructions at full
-// rate without any test data — then measures two numbers:
+// web2 in-browser throughput benchmark.  Boots an SE/30 with no media — the
+// ROM free-runs at the flashing-? insert prompt, a busy-wait that retires
+// instructions at full rate without any test data — then measures two
+// numbers:
 //
 //   1. PRIMARY — Accelerated mode, engaged through the web2 toolbar exactly
 //      as a user would: wait for the adaptive governor to plateau, then
 //      measure effective instructions/second and the multiplier in force.
-//      This is the user-facing deliverable (and what P11's knob re-tune
-//      moves).
+//      This is the user-facing deliverable (and what a re-tune of the
+//      governor's knobs moves).
 //   2. SECONDARY — turbo mode (via the shell): raw engine throughput within
 //      the fixed TURBO_HOST_HEADROOM RAF budget.  Finer-grained for build-
 //      flag A/Bs, and still meaningful when every variant saturates the
@@ -161,7 +161,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   await page.waitForTimeout(3_000);
   const turbo = await measureWindows(page, 'turbo', WINDOWS);
 
-  // P12 observability: the status bar's live MIPS readout (pushed from the
+  // Observability: the status bar's live MIPS readout (pushed from the
   // core ~1 Hz) must be visible while running and read a plausible number.
   const mipsChip = page.locator('.gs-statusbar .sb-mips .label');
   await expect(mipsChip).toBeVisible({ timeout: 15_000 });

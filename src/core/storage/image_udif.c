@@ -100,7 +100,7 @@ int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out) 
         return -EINVAL;
     // The decoded image is pre-extended to sectors * 512 before anything is
     // decoded, so an unbounded count asks for an arbitrarily large scratch
-    // file (09-storage F-24).  Bound it by what the storage layer can open
+    // file.  Bound it by what the storage layer can open
     // at all: 2^32 blocks.
     if (out->sectors > UINT32_MAX)
         return -EFBIG;
@@ -229,8 +229,7 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
         chunks[nc].offset = rd64(e + 24);
         chunks[nc].length = rd64(e + 32);
         // A chunk must stay inside the sector run its own table declares --
-        // checked without an addition that 64-bit values could wrap
-        // (09-storage F-25).
+        // checked without an addition that 64-bit values could wrap.
         if (chunks[nc].count > t->sectors || chunks[nc].sector > t->sectors - chunks[nc].count) {
             free(chunks);
             return -EINVAL;

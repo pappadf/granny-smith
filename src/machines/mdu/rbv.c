@@ -21,7 +21,7 @@
 // Apple's shared VIA2/RBV OS code additionally reaches the IFR and IER at
 // the VIA-register-spaced aliases Rv2IFR = vIFR+RvIFR = $1A03 and
 // Rv2IER = vIER+RvIER = $1C13 (the IER decode requires A4=1 — an RBV ASIC
-// quirk documented in the mac68k headers and local rbv-byte-lane-findings).
+// quirk documented in the mac68k headers).
 // We decode both the native small offsets and those two aliases so code
 // written either way reaches the same register.
 //
@@ -126,11 +126,11 @@ struct rbv {
     void (*mode_cb)(void *ctx, int depth_code);
     // RvVIDOff (RvMonP bit 6).  A separate seam from mode_cb because blanking
     // and depth are separate bits the driver sets independently -- it blanks,
-    // reprograms, then unblanks (04-video F-44).
+    // reprograms, then unblanks.
     void (*blank_cb)(void *ctx, bool video_off);
     void *blank_ctx;
     void *mode_ctx;
-    struct object *object; // machine.rbv (F-26); after the blob, never saved
+    struct object *object; // machine.rbv; after the blob, never saved
 };
 
 // === Interrupt aggregation ==================================================
@@ -168,8 +168,8 @@ static void rbv_update_irq(rbv_t *rbv) {
 // The decode is deliberately NARROW -- eight exact offsets plus two named
 // aliases -- where the AMIC's equivalent pseudo-VIA2 bank partial-decodes on
 // the low five address bits (amic.c) and mirrors its 32-byte file across the
-// whole window.  Code review 2026-09-03 05-chipsets-irq F-42 reads that
-// difference as a gap and proposes `off & 0x1F` here.  It must not be applied:
+// whole window.  That difference looks like a gap that `off & 0x1F` here
+// would close.  It must not be applied:
 //
 //   - The two accesses the AMIC comment names as load-bearing -- the compact
 //     offsets and the classic-VIA stride ($1A03 for the IFR, $1C13 for the
@@ -372,7 +372,7 @@ static void rbv_write_long(void *device, uint32_t addr, uint32_t value) {
 
 // === Lifecycle ==============================================================
 
-// === Object node: machine.rbv (05-chipsets-irq F-26) ========================
+// === Object node: machine.rbv ===============================================
 //
 // The IIci and IIsi have no VIA2 -- the RBV replaces it -- so `machine.via2`
 // does not exist on them and there was nothing else to look at.  RvIFR is

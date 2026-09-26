@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for object_resolve and the indexed-child contract.
 //
-// Covers (per M2 plan):
+// Covers:
 //   - named child resolution
-//   - indexed children with sparse stable indices (proposal §2.1)
+//   - indexed children with sparse stable indices
 //   - the next() iterator skipping holes
 //   - reserved-word rejection at registration
 
@@ -245,8 +247,7 @@ TEST(test_indexed_next_skips_holes) {
 
 // Mock class with a reserved-word member name. object_validate_class
 // must reject it. Note: registration entry points should always
-// validate before attaching (root.c does this; M3 alias.add
-// will too).
+// validate before attaching (root.c does this).
 static const member_t bad_members[] = {
     {.kind = M_ATTR,
      .name = "while",

@@ -85,7 +85,7 @@ static void direct_run_pending(void);
 
 // Appends `len` bytes to one output channel; past LASERWRITER_OUTPUT_MAX, or
 // out of memory, they are dropped and logged.  The channels grew without
-// bound (10-network N-21).
+// bound.
 static void direct_buf_append(byteq_t *b, const uint8_t *bytes, size_t len) {
     if (!byteq_append(b, bytes, len, LASERWRITER_OUTPUT_MAX))
         LOG(1, "laserwriter: dropping %zu output bytes (past %u, or out of memory)", len, LASERWRITER_OUTPUT_MAX);

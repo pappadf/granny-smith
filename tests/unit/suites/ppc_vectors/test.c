@@ -14,7 +14,7 @@
 // orchestrator runs suite binaries with no arguments.
 //
 // What a pass means: agreement with the model, NOT with silicon.  The model
-// is not hardware-validated (powerpc-test INTEGRATING.md §1), and both it and
+// is not hardware-validated, and both it and
 // this core were derived from the same 601 manual, so a shared misreading
 // would agree here.  What the suite does test independently of that: the
 // read set (unlisted state is randomized every replay, so an instruction that
@@ -54,10 +54,9 @@
 // The runner's CLI, renamed by the Makefile so this file can own main().
 int ppc_runner_main(int argc, char **argv);
 
-// Which model the custom backend builds (TNT proposal §4.5): the corpus is
-// generated from the sail 601 model, and main() below replays it twice —
-// once as the 601 (every file), once as the 604 with the 601-divergent
-// mnemonics filtered out.
+// Which model the custom backend builds: the corpus is generated from the sail
+// 601 model, and main() below replays it twice — once as the 601 (every file),
+// once as the 604 with the 601-divergent mnemonics filtered out.
 static int g_backend_model = CPU_MODEL_PPC601;
 
 // 8 MB of RAM at 0: the vectors' 64 KiB test window ($00100000, recorded in
@@ -158,7 +157,7 @@ static int custom_step(ppc_backend *self, const ppc_vector *vec, const ppc_state
     (void)vec; // a real emulator never looks at the vector
 
     // The 601's reservation carries an address; the model's is a valid flag
-    // only (DECISIONS.md §1).  A set reservation is therefore not
+    // only.  A set reservation is therefore not
     // representable here without inventing the address the instruction is
     // about to compute — report it rather than guessing.  No vector in the
     // smoke tier sets one (the envelope holds it false), so this is a guard
@@ -313,11 +312,11 @@ static const char *find_vectors_dir(void) {
     return NULL;
 }
 
-// Mnemonic files whose replay legitimately diverges under the 604 model
-// (TNT proposal §4.5: "the 601-only encodings masked out"): the POWER
-// holdovers and MQ/RTC SPR moves trap; mtmsr/rfi mask differently; the
-// word-alignment classes and dcbz's cache-disabled rule fault where the
-// sail 601 model completes.  Everything else must replay bit-identically.
+// Mnemonic files whose replay legitimately diverges under the 604 model (the
+// 601-only encodings are masked out): the POWER holdovers and MQ/RTC SPR moves
+// trap; mtmsr/rfi mask differently; the word-alignment classes and dcbz's
+// cache-disabled rule fault where the sail 601 model completes.  Everything
+// else must replay bit-identically.
 static const char *const skip_604[] = {
     // POWER holdovers (program exception on the 604)
     "abs", "clcs", "div", "divs", "doz", "dozi", "lscbx", "maskg", "maskir", "mul", "nabs", "rlmi", "rrib", "sle",

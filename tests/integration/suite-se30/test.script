@@ -15,10 +15,10 @@
 #                    generic GS vROM (7.0.1, 8 MB)
 #   se30-75-hd       **SE/30 x 7.5**: prepared 7.5 image over SCSI —
 #                    absorbs se30-scsi's HD-boot coverage (16 MB)
-#   se30-checkpoint  **GLUE-family checkpoint round-trip** (§7 epilogue)
+#   se30-checkpoint  **GLUE-family checkpoint round-trip**
 #
-# Each row also picks a distinct supported RAM configuration (§7 "The
-# RAM axis"), so the system-version and RAM-sizing axes fill together.
+# Each row also picks a distinct supported RAM configuration, so the
+# system-version and RAM-sizing axes fill together.
 
 include "../lib/mac.script"
 
@@ -28,13 +28,12 @@ let sys_701 = "../../data/systems/System_7_0_1.image"
 let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 
 # ---- se30-nomedia -----------------------------------------------------------
-# With no media the ROM finds no startup device and draws the floppy "?"
-# icon (the machine's PRAM skips the drive-discovery wait, so it gets there
-# at once). The budget is FIXED deliberately (§5.2's run_exact class, not
-# padding): the icon BLINKS, so the golden is animation-phase-sensitive — a
-# settle wait never converges and a polling wait would only ever sample
-# multiples of its step. The 335 M figure is the budget the row has always
-# had; it now lands in the icon's "?" phase.
+# With no media the ROM finds no startup device and draws the floppy "?" icon
+# (the machine's PRAM skips the drive-discovery wait, so it gets there at
+# once). The budget is FIXED deliberately (not padding): the icon BLINKS, so
+# the golden is animation-phase-sensitive — a settle wait never converges and a
+# polling wait would only ever sample multiples of its step. The 335 M figure
+# is the budget the row has always had; it now lands in the icon's "?" phase.
 def row_se30_nomedia() {
     machine.boot model="se30" ram=1024 rom="${$ROM}"
     scheduler.run 335000000
@@ -82,7 +81,7 @@ def row_se30_608_fd() {
 # ---- se30-71-fd -------------------------------------------------------------
 # NEW CELL SE/30 x 7.1 and the 1.44 M MFM transport row: se30-floppy-hd
 # re-media'd from 7.0.1 to the 1.4 M "Disk Tools" floppy, which is
-# genuinely 7.1 (§7's rule — a 7.1 row never uses an 800K "7.1" disk).
+# genuinely 7.1 (the rule: a 7.1 row never uses an 800K "7.1" disk).
 # The About box confirms the System version and the 4 MB total.
 def row_se30_71_fd() {
     machine.rtc.time = 3000000000
@@ -130,7 +129,7 @@ def row_se30_701_gsvrom() {
 # NEW CELL SE/30 x 7.5, and the SE/30's SCSI-HD boot path (se30-scsi
 # deleted — same path, fresher media). 16 MB exercises a RAM total the
 # SE/30 can only see in 32-bit mode; the prepared image carries MODE32,
-# but under default PRAM it still boots 24-bit (measured §3.4), so the
+# but under default PRAM it still boots 24-bit (measured), so the
 # addressing assert records reality and MemTop is capped at 8 MB.
 def row_se30_75_hd() {
     machine.rtc.time = 3000000000
@@ -151,8 +150,8 @@ def row_se30_75_hd() {
 }
 
 # ---- se30-checkpoint --------------------------------------------------------
-# §7 epilogue: the GLUE device set's save/restore round-trip, in
-# process — boot, save, wipe with a fresh boot, load, re-match.
+# The GLUE device set's save/restore round-trip, in process — boot, save, wipe
+# with a fresh boot, load, re-match.
 def row_se30_checkpoint() {
     machine.boot model="se30" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"

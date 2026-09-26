@@ -189,7 +189,7 @@ void mouse_delete(mouse_t *mouse) {
     if (!mouse)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(mouse->scheduler, mouse);
     free(mouse);
 }
@@ -206,9 +206,8 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint) {
 
 // === Object-model class descriptor =========================================
 //
-// `input.mouse` (proposal §5.9). Methods move(x, y), click(down),
-// trace(enabled). Wraps debug_mac_set_mouse_mode / system_mouse_update
-// / debug_mac_set_trace_mouse.
+// `input.mouse`. Methods move(x, y), click(down), trace(enabled). Wraps
+// debug_mac_set_mouse_mode / system_mouse_update / debug_mac_set_trace_mouse.
 
 // Mode-string → mode char for debug_mac_*_mode().
 //   "default" / NULL → 'd' (default routing)
@@ -246,7 +245,7 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
     if ((argc >= 3) && !mouse_mode_char(&argv[2]))
         return val_err("mouse.move: mode must be one of \"default\"/\"relative\"/\"global\"/\"hw\"/\"aux\"");
     // Inject through the machine substrate: Mac Toolbox cursor / Lisa COPS —
-    // one uniform path (proposal §4.4).
+    // one uniform path.
     if (system_input_mouse_move((int)x, (int)y, modestr) < 0)
         return val_err("mouse.move: machine rejected request");
     return val_bool(true);

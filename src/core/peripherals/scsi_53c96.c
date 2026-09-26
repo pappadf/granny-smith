@@ -4,9 +4,7 @@
 // scsi_53c96.c
 // NCR 53C96 chip model — see scsi_53c96.h.  Register semantics follow the
 // NCR 53C94/95/96 Data Manual ch. 4 (register file) and ch. 5 (command set);
-// section references below are to that manual.  Phase C implements the
-// disconnected-state behavior the boot ROM exercises; the target-transfer
-// machinery arrives with the bus attachment in Phase E.
+// section references below are to that manual.
 
 #include "scsi_53c96.h"
 
@@ -56,9 +54,9 @@ LOG_USE_CATEGORY_NAME("53c96");
 // Alignment Register, gated by CR2 bit 7 (DAE).  It only matters for initiator
 // synchronous data-in landing on a misaligned boundary.  No guest touches it --
 // instrumented reads and writes across suite-quadra, q900-checkpoint,
-// tnt-hd-boot and ans-scsi saw 0x0F neither read nor written, and 0x0D neither
+// suite-tnt's pm7500-76-hd and ans-scsi saw 0x0F neither read nor written, and 0x0D neither
 // read nor written either.  0x0E IS read (11 times in suite-quadra, once in
-// tnt-hd-boot, at raw address 0x0E rather than through decode aliasing); it
+// pm7500-76-hd, at raw address 0x0E rather than through decode aliasing); it
 // returns 0 from the default case, which is what it did before and what the
 // manual tells software to expect of a reserved address.
 
@@ -178,14 +176,14 @@ static void select_timeout_cb(void *source) {
 // Wait out the selection period, then report.
 //
 // The wait belongs to the bus -- every controller needs the same one, and
-// reporting synchronously inside the driver's own register write is the defect
-// F-18 is about.  The period and the reporting stay here, because those are
-// this chip's.
+// reporting synchronously inside the driver's own register write is a
+// defect.  The period and the reporting stay here, because those are this
+// chip's.
 //
 // The exception is a chip with NO bus attached, which is how the Power
 // Macintosh models its empty 53C94 chain (tnt.c attaches no bus at all, so
 // every select finds nothing).  There is no bus object to hold the event, so
-// the chip schedules it itself.  Losing this is what made tnt-hd-boot fail to
+// the chip schedules it itself.  Losing this is what made the 7500 disk boot fail to
 // find a boot drive: the timeout simply never arrived and the driver's scan
 // never finished.
 static uint64_t select_timeout_ns(scsi_53c96_t *c);
@@ -328,7 +326,7 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         // A target answered; nothing is owed.
         scsi_bus_cancel_select_timeout(c->bus);
         // Message byte(s) first for the ATN variants (IDENTIFY etc.) —
-        // informational to the v1 target model; consumed from the FIFO.
+        // informational to the target model; consumed from the FIFO.
         int msg_bytes = (code == 0x41) ? 0 : (code == 0x46) ? 3 : 1;
         for (int i = 0; i < msg_bytes && byte_fifo_count(&c->fifo) > 0; i++)
             (void)fifo_pop(c);
@@ -499,8 +497,8 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
     case 0x1B: // Reset ATN
         break; // wire-level; no observable effect without a bus
     default:
-        // Commands from a mode group the chip is not in (it is always
-        // disconnected until Phase E) raise the illegal-command interrupt.
+        // Commands from a mode group the chip is not in raise the
+        // illegal-command interrupt.
         post_interrupt(c, IR_ILL_CMD);
         LOG(2, "53C96 illegal/unimplemented command $%02X", cmd);
         break;
@@ -646,7 +644,7 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
         // pointers this calloc left NULL stay NULL and are re-bound by the
         // machine (scsi_53c96_attach_bus, scsi_53c96_set_irq_callback).
         system_read_checkpoint_data(cp, c, offsetof(scsi_53c96_t, sched));
-        c->xfer_mode = XFER_IDLE; // mid-transfer restore lands in Phase I
+        c->xfer_mode = XFER_IDLE; // a mid-transfer restore is not modelled
     }
     // The machine's clock wins over whatever the checkpoint carried: it is a
     // property of the board this chip is being built into, not of the saved
@@ -665,11 +663,11 @@ void scsi_53c96_delete(scsi_53c96_t *c) {
     if (!c)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(c->sched, c);
     // Any time-out this chip armed is queued on the BUS now, so it must be
-    // cancelled through the bus -- see F-11/F-12: an event outliving its
-    // source is the class of bug this destructor exists to avoid.
+    // cancelled through the bus: an event outliving its source is the class of
+    // bug this destructor exists to avoid.
     scsi_bus_cancel_select_timeout(c->bus);
     if (c->sched)
         remove_event(c->sched, busless_select_timeout_event, c);

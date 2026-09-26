@@ -16,9 +16,8 @@ lives in [src/machines/av/vdc.c](../../../src/machines/av/vdc.c) /
 The I²C bus is **not** on the CPU bus. It hangs off Cuda and is driven with
 pseudo-command **`$22` (`RdWrIIC`)** — see [cuda.md](cuda.md).
 
-Contract and register semantics:
-the AV video-in hardware notes (ROM-verified against the
-disassembled `'vdig'`/`'i2c '` components, plus both Philips datasheets).
+Register semantics are ROM-verified against the disassembled
+`'vdig'`/`'i2c '` components, plus both Philips datasheets.
 
 ## The chips are register files plus two status bytes
 
@@ -143,13 +142,13 @@ checkpoint scope, and on restore the frame slots simply repopulate.
 - **S-video vs composite** beyond the status bits the auto-detect probes.
 - **Per-pixel key-colour gating in the overlay** (`vdTypeKey`, ≤ 8 bpp
   graphics): the video window wins unconditionally inside its rect, so a
-  Finder window dragged over a playthrough window would not clip it. The
-  dossier leaves that path untraced (video-in.md §11).
+  Finder window dragged over a playthrough window would not clip it. That
+  path is untraced.
 - **Sound of any kind.** Capture is mute — the data path never involves the
   DSP3210 or Singer, and QuickTime movie recording with audio is a separate
   (much larger) project.
 
-## Known open question, inherited from the dossier
+## Known open question
 
 **Greyscale polarity.** Apple programs the VDC `MCT` = 1 ("non-inverse
 monochrome") yet `CivicVideoCLUTSet` loads a *descending* 32-entry ramp for

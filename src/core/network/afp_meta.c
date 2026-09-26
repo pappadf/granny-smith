@@ -282,11 +282,11 @@ static size_t build_meta_entries(const afp_meta_t *meta, ad_entry_t *entries, si
 }
 
 // Write a sidecar whole or not at all: the AppleDouble header through the
-// one writer (09-storage F-61), the metadata entries, then the resource fork
+// one writer, the metadata entries, then the resource fork
 // from memory (`rsrc`) or streamed from `rsrc_src` in fixed-size chunks, so
 // its size never bounds memory.  Both public writers are this one; the
 // in-memory one used to truncate the sidecar in place, so a crash mid-write
-// lost every piece of metadata it held (10-network N-26).
+// lost every piece of metadata it held.
 static int meta_write(const char *host_path, const afp_meta_t *meta, const uint8_t *rsrc, FILE *rsrc_src,
                       size_t rsrc_len) {
     char sc[PATH_MAX];

@@ -40,7 +40,7 @@ bool cpu_has_fpu(int cpu_model) {
     switch (cpu_model) {
     case CPU_MODEL_68030: // paired 68882
     case CPU_MODEL_68040: // on-chip FPU
-    case CPU_MODEL_PPC601: // on-chip FPU (datapath live since Phase E)
+    case CPU_MODEL_PPC601: // on-chip FPU
     case CPU_MODEL_PPC604: // on-chip FPU
         return true;
     default: // 68000 compacts
@@ -136,12 +136,11 @@ uint32_t cpu_get_ipl(cpu_t *restrict cpu) {
 // which only reconciles sprint counters -- it is NOT the wake mechanism, and
 // reading it as one is the mistake this comment exists to prevent.
 //
-// DO NOT "fix" this by calling cpu_check_interrupt() from here.  The 2026-09-03
-// review (05-chipsets-irq F-47) proposes exactly that, guarded on the CPU being
-// stopped, and the guard is sound as far as it goes -- a stopped CPU is at a
-// clean instruction boundary.  But the common caller is a device callback
-// running inside process_event_queue(), so delivering there would push an
-// exception frame and move the PC part-way through an event batch that then
+// DO NOT "fix" this by calling cpu_check_interrupt() from here, even guarded on
+// the CPU being stopped.  The guard is sound as far as it goes -- a stopped CPU
+// is at a clean instruction boundary.  But the common caller is a device
+// callback running inside process_event_queue(), so delivering there would push
+// an exception frame and move the PC part-way through an event batch that then
 // continues.  That reorders exception delivery against the remaining events for
 // no present benefit: no caller today violates the invariant above.
 //
@@ -423,7 +422,7 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint) {
 
 // === Runtime Dispatch ===
 
-// 68K adapter for the scheduler's main-CPU seam (multi-cpu proposal §3.6):
+// 68K adapter for the scheduler's main-CPU seam:
 // one indirect call per sprint, nothing per instruction.
 static void cpu_if_run_sprint(void *ctx, uint32_t *instructions) {
     cpu_run_sprint((cpu_t *)ctx, instructions);
@@ -442,7 +441,7 @@ sched_cpu_if_t cpu_sched_if(cpu_t *cpu) {
     return cif;
 }
 
-// === Main-CPU debug interface adapter (PPC proposal §3.9b) ===
+// === Main-CPU debug interface adapter ===
 // Debugger paths (breakpoints, disasm, shell prompt) reach the main CPU
 // through this vtable so debug.c stays architecture-neutral.
 
@@ -985,7 +984,7 @@ static value_t attr_fpu_fpiar(struct object *self, const member_t *m) {
 // FP0..FP7: 80-bit extended precision. Expose the raw register bytes
 // as V_BYTES (10 bytes) so the formatter can hex-dump it and tests
 // can compare bit-for-bit. Conversion to a host double is lossy and
-// belongs in a future helper; M3 keeps the raw payload visible.
+// belongs in a future helper; this keeps the raw payload visible.
 static value_t attr_fpu_fpN(struct object *self, const member_t *m) {
     fpu_state_t *fpu = fpu_from(self);
     if (!fpu)
@@ -1142,7 +1141,7 @@ static value_t attr_mmu_enabled(struct object *self, const member_t *m) {
 //
 // The same two methods exist on every MMU kind (68030, 68040, PowerPC, the
 // Lisa's segment MMU), with the same result shapes, so a debugger needs no
-// per-kind code to label an address or read memory (D3).
+// per-kind code to label an address or read memory.
 
 // Whether a 68040 transparent-translation register maps `addr` for this
 // privilege: enabled, base/mask match on A31-A24, and the S field allows it.

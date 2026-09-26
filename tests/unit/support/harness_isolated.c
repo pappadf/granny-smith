@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Isolated harness - no emulator subsystems, only stubs
 // Used for pure unit tests that don't need CPU, memory, or other subsystems.
 

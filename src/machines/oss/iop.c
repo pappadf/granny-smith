@@ -184,7 +184,7 @@ static int scc_bypass_addr(uint32_t offset) {
 // Without this the SWIM's own memory_interface_t applied the SE/30's window
 // decode, (addr >> 9) & 0x0F, to an offset of 0..0x1F -- and (0x1F >> 9) == 0,
 // so every register aliased to index 0 for both reads and writes on the IIfx
-// and the Q900, which have no direct SWIM window at all (02-floppy F-03).
+// and the Q900, which have no direct SWIM window at all.
 //
 // Odd offsets are the filler byte of each 2-byte slot and decode to nothing,
 // exactly as scc_bypass_addr treats the SCC's unused offsets.
@@ -428,7 +428,7 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
     };
 
     if (checkpoint) {
-        // Mirrors iop_checkpoint: one blob, host_irq included (F-08).
+        // Mirrors iop_checkpoint: one blob, host_irq included.
         system_read_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
     }
 
@@ -451,11 +451,11 @@ void iop_delete(iop_t *iop) {
 }
 
 // One blob of everything before the first pointer -- the prefix idiom of
-// via.c and friends (05-chipsets-irq F-37).
+// via.c and friends.
 //
-// THIS ALSO FIXES F-08, and the two findings turn out to be one.  The three
-// per-field calls this replaces saved `ram`, `ram_addr` and `stat_ctl` but
-// NOT `host_irq`, which sits between stat_ctl and the first pointer.
+// It is also what keeps `host_irq` in the stream.  The three per-field calls
+// this replaces saved `ram`, `ram_addr` and `stat_ctl` but NOT `host_irq`,
+// which sits between stat_ctl and the first pointer.
 // iop_update_host_irq() is edge-suppressed -- `if (active == iop->host_irq)
 // return;` -- so a checkpoint taken with iopInt0Active set came back with
 // host_irq false while the OSS pending bit was separately restored TRUE.

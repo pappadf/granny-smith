@@ -38,9 +38,9 @@ assert machine.hd.present == true "ProFile should be attached"
 
 # (0) The install floppy's own first screen. Folded in from lisa-los-boot,
 # which existed only to boot this same media and match this same screen —
-# §2.1's conclusion that the install flow "passes through the same
-# screens", so the menu golden becomes a checkpoint inside the flow rather
-# than a 80 M-cycle boot of its own. The geometry asserts came with it.
+# the install flow passes through the same screens, so the menu golden
+# becomes a checkpoint inside the flow rather than a 80 M-cycle boot of its
+# own. The geometry asserts came with it.
 assert machine.screen.width == 720 "screen.width != 720"
 assert machine.screen.height == 364 "screen.height != 364"
 check("boot-menu.png")
@@ -54,7 +54,7 @@ machine.adb.mouse.click false
 scheduler.run 14000000
 # (2) ProFile detected -> "use the disk attached to the parallel connector?"
 # This is also the screen lisa-los-install existed to reach: same media,
-# same click on Install, same dialog. Folded in here (§2.1).
+# same click on Install, same dialog. Folded in here.
 check("expected.png")
 
 # (3) OK (use this disk).
@@ -146,9 +146,9 @@ check("expected_installed.png")
 # installer ignores the COPS $FB switch).  To leave the ProFile cleanly unmounted
 # we must run the OS FROM it: eject the boot floppy and power-cycle with
 # machine.restart — the just-installed ProFile (delta and all) stays attached
-# across the teardown (proposal-boot-vs-reset §3.3), no save-and-reattach
-# choreography — then seed the parameter memory so the ROM auto-boots the
-# ProFile with no floppy — exactly suite-lisa's lisa-los31-profile row.
+# across the teardown, no save-and-reattach choreography — then seed the
+# parameter memory so the ROM auto-boots the ProFile with no floppy — exactly
+# suite-lisa's lisa-los31-profile row.
 #
 # BootVol=2, a valid checksum, and the installer's device table -- i.e. what
 # LOS itself would have left in PRAM had it shut down cleanly.  That third
@@ -168,7 +168,7 @@ assert machine.hd.pram_init(2, true, true) "pram_init failed"
 # Boot to the clean Office System desktop (menu bar + Preferences / Wastebasket /
 # Clipboard / Disk icons).  This used to arrive at a "clock not set" note that the
 # row dismissed by warping onto OK and clicking; the COPS clock powers up at
-# 1 January 1984 now (06-io-controllers F-27) and the note does not appear.
+# 1 January 1984 now and the note does not appear.
 scheduler.run 112000000
 check("expected_desktop.png")
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """golden-triage.py — rank reference images by how much is actually ON them.
 
 NOT a matching rule. Goldens are compared byte-exactly by machine.screen.match

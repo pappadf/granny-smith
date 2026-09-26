@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Unit tests for the shared bus-master memory port (05-chipsets-irq F-16).
+// Unit tests for the shared bus-master memory port.
 //
 // Four engines used to declare their own hook typedefs in two different
 // shapes -- `(phys, value, width)` for SONIC and the PSC, `(phys, buf, len)`

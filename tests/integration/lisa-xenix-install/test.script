@@ -62,9 +62,9 @@ machine.screen.match expected_hdinit.png
 
 # === (§1.5.3) Reboot and boot the hard-disk kernel =========================
 # Power-cycle the machine.  machine.restart rebuilds the recorded Lisa and
-# keeps the mounted media attached across the teardown (proposal-boot-vs-reset
-# §3.3): the freshly-initialized ProFile — delta and all — rides through with
-# no save-and-reattach choreography.  The boot floppy does NOT ride through:
+# keeps the mounted media attached across the teardown: the
+# freshly-initialized ProFile — delta and all — rides through with no
+# save-and-reattach choreography.  The boot floppy does NOT ride through:
 # hdinit's flow already ejected it, so the drive is empty at the power-cycle
 # and it must be re-inserted for the ROM to auto-boot its loader.
 machine.restart

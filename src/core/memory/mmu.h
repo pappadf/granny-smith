@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // mmu.h
 // 68030 PMMU (Paged Memory Management Unit) interface.
 // Implements lazy-fill TLB using SoA pointer arrays in memory.h.
@@ -140,7 +141,7 @@ typedef struct mmu_state {
     // range generate bus errors.  Outside this range, unmapped TT-mapped
     // reads return 0 silently (as the hardware does for non-NuBus slots).
 
-    // 68040 front-end (Quadra proposal §6.5): when non-NULL, this machine's
+    // 68040 front-end: when non-NULL, this machine's
     // translation front-end (TTR match + fixed three-level walk in mmu040.c)
     // replaces the PMMU one; the physical resolver, SoA fill, and TLB
     // tracking above are shared.  `enabled` mirrors the 040 TC.E bit so the
@@ -306,7 +307,7 @@ extern uint64_t g_last_user_crp;
 // set the flag false explicitly for exactly this reason.
 static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write) {
     uint32_t page_index = emu_page >> PAGE_SHIFT;
-    if ((int)page_index < g_page_count) {
+    if (page_index < g_page_count) {
         uintptr_t *active = write ? g_active_write : g_active_read;
         if (active && active[page_index] == 0) {
             // For closer ranges (e.g. $006DB000 from corrupted page tables) the

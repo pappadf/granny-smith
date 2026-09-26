@@ -379,7 +379,7 @@ static const int grp_step[] = {  8,   4,   4,   4,   2,   2,   1 };
 // This used to accumulate into a plain int with no bound on bit_pos; 32 tokens
 // of 0 summed to 2^31 - 1, the next `1 << 31` wrapped it to exactly -1, the
 // caller's `blk_len + run_len > blk_cap` was false for a negative length, and
-// memset(buf, fill, (size_t)-1) followed (09-storage F-01).
+// memset(buf, fill, (size_t)-1) followed.
 static int consume_zero_run(arsenic_state *s, int first_tok, int *out_sel)
 {
     uint64_t total = 0;
@@ -560,7 +560,7 @@ static bool parse_header(arsenic_state *s)
     s->eos = ac_decode_sym(s, &s->m_primary) != 0;
 
     // Allocate block buffers, owned by the decode context until freed, so an
-    // abort anywhere after this frees them (09-storage F-10).
+    // abort anywhere after this frees them.
     s->blk_buf = dctx_malloc(s->ctx, (size_t)s->blk_cap);
     s->lf_map  = dctx_malloc(s->ctx, (size_t)s->blk_cap * sizeof(uint32_t));
 
@@ -591,7 +591,7 @@ peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
     // Use setjmp/longjmp for deep-error abort during decompression.  Every
     // allocation below is owned by dctx until released, so the handler frees
     // them all -- the output, the decoder state and its ~80 MiB of block
-    // buffers used to leak on every abort (09-storage F-10) -- and reads no
+    // buffers used to leak on every abort -- and reads no
     // local assigned after setjmp.
     decode_ctx_t dctx;
     dctx_init(&dctx);

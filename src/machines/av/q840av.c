@@ -3,7 +3,7 @@
 
 // q840av.c
 // Macintosh Quadra 840AV ("Cyclone", 40 MHz 68040, July 1993) — the desktop
-// flagship of the AV family and its first leaf (proposal-quadra-av.md).
+// flagship of the AV family and its first leaf.
 // YMCA strap nibble $F, BoxFlag 72, Gestalt 78; MUNI present with three
 // NuBus '90 slots C/D/E (declared but unpopulated — no AV declaration-ROM
 // work in scope).  Shares the 2 MB $5BF10FD1 ROM with the Centris 660AV;
@@ -20,11 +20,11 @@
 
 // Eight 72-pin SIMM banks of up to 16 MB (1 MB minimum bank): the shipping
 // 8/16 MB configurations plus the geometrically valid larger totals up to
-// the 128 MB architectural maximum (ymca.md §3 RamInfoCyclone).
+// the 128 MB architectural maximum (the ROM's RamInfoCyclone).
 static const uint32_t q840av_ram_options_kb[] = {8192, 16384, 32768, 65536, 131072, 0};
 
 // New Age reports "no drive" (ST3 = $FF) — no floppy slots offered until a
-// real New Age model lands (proposal §3.1).
+// real New Age model lands.
 static const struct floppy_slot q840av_floppy_slots[] = {
     {0},
 };
@@ -46,7 +46,7 @@ static const av_board_desc_t q840av_board_desc = {
             .bus_err_lo = 0xA0000000u, // super-slots + slots; see nubus.h
             .bus_err_hi = NUBUS_BERR_HI,
                  },
-    .strap_nibble = 0xF, // Cyclone40 straps %1111 (ymca.md §2)
+    .strap_nibble = 0xF, // Cyclone40 straps %1111
     .muni_present = true,
 };
 
@@ -57,7 +57,7 @@ static const av_board_t q840av_board = {
     .build_devices = av_build_devices,
 };
 
-// The DSP3210 aux core (66.6667 MHz; dsp3210.md §0).
+// The DSP3210 aux core (66.6667 MHz).
 static const struct aux_cpu_slot q840av_aux_cpus[] = {
     {"dsp", "dsp3210", 66666667u},
     {NULL,  NULL,      0        },
@@ -81,7 +81,7 @@ const hw_profile_t machine_q840av = {
     .scsi_buses = q840av_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
-    .has_video_in = true, // on-board DMSD/VDC digitizer (video-in.md)
+    .has_video_in = true, // on-board DMSD/VDC digitizer
     .has_audio_in = true, // Singer codec microphone input (singer.md)
     .aux_cpus = q840av_aux_cpus, // the DSP3210 (machine.dsp)
 

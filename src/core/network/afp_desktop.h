@@ -2,8 +2,7 @@
 // Copyright (c) pappadf
 
 // afp_desktop.h
-// Persistent per-volume desktop database for the AFP server
-// (proposal-afp-server-completeness.md §4.4).
+// Persistent per-volume desktop database for the AFP server.
 //
 // The Finder uses the AFP desktop database instead of a shared-hostile
 // Desktop file (Inside AppleTalk ch. 13, "Desktop database"): it stores icon
@@ -35,7 +34,7 @@
 
 // Icons one volume's desktop database holds, about 4 MB at most.  A new
 // (creator, type, icon type) past it is refused: the key space is 72 bits,
-// and a guest looping FPAddIcon grew the store without bound (F-18).
+// and a guest looping FPAddIcon grew the store without bound.
 #define AFP_MAX_ICONS 4096u
 
 typedef struct afp_desktop afp_desktop_t;

@@ -174,9 +174,9 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
     .toMatch(/^gs se30>$/);
 });
 
-// The terminal stays mounted while another tab shows (N-57): its scrollback
+// The terminal stays mounted while another tab shows: its scrollback
 // survives a tab switch, and output printed meanwhile is there on return.
-// Typed input goes through xterm's onData (F-40), so a pasted line runs too.
+// Typed input goes through xterm's onData, so a pasted line runs too.
 test('terminal keeps its scrollback across tab switches, and paste runs', async ({ page }) => {
   test.setTimeout(3 * 60 * 1000);
   await gotoWeb2(page);

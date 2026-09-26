@@ -2,14 +2,13 @@
 // Copyright (c) pappadf
 
 // machine_config.h
-// Construction-time boot document and the per-machine "built-from" record
-// (proposal-named-args-boot-config §4).
+// Construction-time boot document and the per-machine "built-from" record.
 //
 // The boot document carries every construction-time setting of one
 // machine.boot call; the record is the live machine's immutable birth
 // certificate — written by boot (plus the rom.load write-back), read by
-// the read-only machine.config object, replayed by machine.restart
-// (proposal-boot-vs-reset §3.2), and serialized into checkpoints.
+// the read-only machine.config object, replayed by machine.restart, and
+// serialized into checkpoints.
 
 #ifndef GS_MACHINE_CONFIG_H
 #define GS_MACHINE_CONFIG_H
@@ -37,7 +36,7 @@ typedef struct {
     char card_id[MC_ID_MAX];
     char path[MC_PATH_MAX];
     uint32_t crc; // Format-Block CRC (content identity)
-    bool explicit_pick; // true when the vrom= / vrom.load explicit pick won
+    bool explicit_pick; // true when machine.boot's vrom= explicit pick won
 } machine_config_vrom_t;
 
 #define MC_MAX_VROMS 8
@@ -54,7 +53,7 @@ typedef enum mc_bus_kind {
 // machine construction.  This is what makes machine.restart rebuild a
 // multi-card machine faithfully: the boot document's wildcard card covers
 // only the first socket, and concrete per-slot picks are staged state that
-// the slot walk consumes and clears (proposal-pci-architecture §8.2).
+// the slot walk consumes and clears.
 typedef struct {
     uint8_t bus_kind; // mc_bus_kind_t
     int16_t slot; // slot number within that bus's numbering
@@ -99,10 +98,10 @@ typedef struct machine_config_record {
 
 // The in-flight boot document: pointers borrow from the caller; NULL/0/-1
 // mean "not given" (the model's own defaults fill them; model and rom are
-// required — proposal-boot-vs-reset §3.1).
+// required).
 typedef struct boot_config {
     const char *model;
-    uint32_t ram_kb; // 0 = inherit / profile default
+    uint32_t ram_kb; // 0 = the profile's ram_default
     const char *rom;
     const char *rom2;
     const char *vrom;
@@ -139,6 +138,11 @@ machine_config_record_t *machine_config_record_mut(void);
 // loader's reports rebuild it for the new machine.
 void machine_config_reset_vroms(void);
 
+// Make the offer registries' explicit picks exactly `vrom` and `prom` (NULL
+// or "" = none).  Every boot document, restart and checkpoint restore is
+// the whole specification, so the previous machine's picks never linger.
+void machine_config_set_explicit_picks(const char *vrom, const char *prom);
+
 // Report one resolved declaration-ROM pick (called by the card loader
 // while the machine is being constructed).
 void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick);
@@ -165,7 +169,7 @@ value_t machine_boot_apply(const boot_config_t *doc);
 // machine.restart (a power-cycle), false while it is building a NEW machine
 // for machine.boot.  Non-volatile hardware that outlives the power switch —
 // the mounted media, the Caps Lock latch, the TNT's soldered NVRAM part —
-// is carried across a restart only; a machine.boot inherits nothing (§2).
+// is carried across a restart only; a machine.boot inherits nothing.
 bool machine_boot_is_restart(void);
 
 #ifdef __cplusplus

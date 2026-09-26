@@ -13,7 +13,7 @@
 | set_poweron_defaults).  Depth selection is NOT register-programmed:
 | the card boots at the PRAM-seeded depth and runtime switches ride the
 | GC-OS VidComm channel — so SetDepth only performs the bounded cardSync
-| heartbeat wait the real driver does around mode programming (sec. 7.3).
+| heartbeat wait the real driver does around mode programming.
 
 | --- CPB equates -------------------------------------------------------------
 .equ GS_DRHW,          0x001D          | GC DrHW (Display_Video_Apple_MDCGC)
@@ -49,12 +49,12 @@
 .equ GREG_SYNC_HB,     0x4C00000       | RISC video heartbeat: bit 31 toggles
 
 | --- CPB data (EmitCPB <pfx>) ------------------------------------------------
-| One monitor in stage 2: config 0 = 640x480 (the verified HLE config; the
-| 16" config-1 variant runs through VidComm and is a stage-4 follow-up).
+| One monitor for now: config 0 = 640x480 (the verified HLE config; the
+| 16" config-1 variant runs through VidComm and is a follow-up).
 	.macro	EmitCPB pfx
 | Top-level video spID: the 24-bit boot family (the 0xA0 32-bit sister
 | is kept by GS_DEFER_SPID, not listed here); geometry lives only in
-| the generated records (§3.4).
+| the generated records.
 \pfx&SpidTab:
 	dc.w	0x0080
 	dc.w	0                       | terminator
@@ -90,7 +90,7 @@
 
 | CardSync: BOUNDED wait for one full heartbeat cycle (bit 31 of
 | super+0x4C00000: 1->0->1).  The real declROM driver's cardSync is an
-| UNBOUNDED loop — the documented System 6.0.8 hang class (sec. 7.3);
+| UNBOUNDED loop — the known System 6.0.8 hang class;
 | this one gives up after 256 reads per edge.
 \pfx&CardSync:
 	movem.l	d0-d2/a0,-(sp)
@@ -123,7 +123,7 @@
 | visible framebuffer lives in super-slot DRAM, which classic 24-bit
 | QuickDraw cannot address — answer the 24-bit boot-family base until
 | 32-Bit QuickDraw is loaded, the super-slot DRAM framebuffer after.
-| (Known stage-2 gap, sec. 7.2: the OS's gDevice rebuild reads the
+| (Known gap: the OS's gDevice rebuild reads the
 | DEVICE base + vpBaseOffset rather than asking the driver, so on
 | System 6.0.8 the Finder still paints into std-slot VRAM; the
 | accelerator bring-up itself is unaffected.)
@@ -156,8 +156,8 @@
 	movem.l	(sp)+,d1/a0-a1
 	rts
 
-| ReadSense: out D0.W = functional spID.  Both GC monitors answer
-| primary sense 6; stage 2 ships the single config-0 sResource, so any
+| ReadSense: out D0.W = functional spID.  Both GC monitors answer primary
+| sense 6; the generic ROM ships the single config-0 sResource, so any
 | sensed monitor selects it (no-monitor still returns 0x80 — the GC is
 | usable headless through its accelerator).
 \pfx&ReadSense:

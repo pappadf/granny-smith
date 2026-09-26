@@ -15,8 +15,7 @@
 // case: at construction it fixes the display geometry and format, the
 // generated declaration-ROM bytes for the generic card kinds, the seeded slot
 // PRAM, and on the SE/30 which host regions get mapped.  Setting it afterwards
-// is a card rebuild, not an attribute write
-// (proposal-construction-inputs.md §1.5).
+// is a card rebuild, not an attribute write.
 //
 // Such an option used to reach its device through a per-module process global
 // that the constructor read and cleared -- jmfb_pending_sense_set,
@@ -34,9 +33,8 @@
 // NOT here, deliberately: the per-slot card and video-mode picks
 // (machine.nubus.slot[N].card_id and friends).  Those travel through a
 // per-slot table that is the boot document's visible extension rather than a
-// hidden store, and proposal-reset-and-nonvolatile-state.md §2 calls that
-// legitimate.  What was wrong was the hidden per-kind channel, not the visible
-// per-slot one.
+// hidden store, and that is legitimate.  What was wrong was the hidden
+// per-kind channel, not the visible per-slot one.
 typedef struct machine_build_opts {
     // Monitor sense code for the machine's video, or MACHINE_SENSE_UNSET when
     // the caller did not choose one and the board default applies.

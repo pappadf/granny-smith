@@ -4,8 +4,22 @@
 
 # -- Compiler --
 
-CC ?= gcc
-CFLAGS_BASE := -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -MMD -MP
+# make's built-in CC=cc outranks `CC ?=`; replace only that default.
+ifeq ($(origin CC),default)
+CC := gcc
+endif
+# -Wall -Wextra on every C build, minus one: -Wmissing-field-initializers
+# objects to positional initializers that stop before a struct's last
+# fields, and the I/O range and display timing tables are written that way
+# on purpose (mac030_io_range_t keeps its optional fields last "so
+# positional initializers stay valid").  WERROR=1 (set in CI) makes every
+# warning an error; it applies to compilation only, never to the link.
+CFLAGS_BASE := -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers \
+               -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -MMD -MP
+WERROR ?= 0
+ifeq ($(WERROR),1)
+CFLAGS_BASE += -Werror
+endif
 
 # -- Build mode (release | debug | sanitize | fast) --
 
@@ -28,9 +42,9 @@ endif
 
 # -- Directories --
 
-# fast mode builds into its own tree: CFLAGS changes don't retrigger object
-# rebuilds, so sharing build/headless would silently mix assert-enabled and
-# assert-free objects.
+# fast mode builds into its own tree, so switching between it and the default
+# build does not recompile everything each time (a flags change does trigger
+# a full rebuild -- see FLAGS_STAMP -- but only within one tree).
 ifeq ($(MODE),fast)
 BUILD_DIR     := build/headless-fast
 else
@@ -54,84 +68,26 @@ include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
 include src/core/network/laserwriter.mk
 
+# -- Sources and the shared include roster (CORE_INCLUDES) --
+
+include src/sources.mk
+
 # -- Include paths --
 # The shared platform.h (src/platform), then this target's clock
 # (platform_clock.h in PLATFORM_DIR).
 
 INCLUDES := -Isrc/platform \
             -I$(PLATFORM_DIR) \
-            -I$(CORE_DIR) \
-            -I$(CORE_DIR)/cpu \
-            -I$(CORE_DIR)/cpu/dsp3210 \
-            -I$(CORE_DIR)/cpu/ppc \
-            -I$(CORE_DIR)/memory \
-            -I$(CORE_DIR)/peripherals \
-            -I$(CORE_DIR)/peripherals/nubus \
-            -I$(CORE_DIR)/peripherals/nubus/cards \
-            -I$(CORE_DIR)/peripherals/pci \
-            -I$(CORE_DIR)/peripherals/pci/cards \
-            -I$(CORE_DIR)/scheduler \
-            -I$(CORE_DIR)/debug \
-            -I$(CORE_DIR)/storage \
-            -I$(CORE_DIR)/network \
-            -I$(CORE_DIR)/shell \
-            -I$(CORE_DIR)/object \
-            -I$(CORE_DIR)/vfs \
-            -I$(MACHINES_DIR) \
-            -I$(MACHINES_DIR)/runtime \
-            -I$(MACHINES_DIR)/mac030 \
-            -I$(MACHINES_DIR)/glue \
-            -I$(MACHINES_DIR)/mdu \
-            -I$(MACHINES_DIR)/mcu \
-            -I$(MACHINES_DIR)/av \
-            -I$(MACHINES_DIR)/pdm \
-            -I$(MACHINES_DIR)/tnt \
-            -I$(MACHINES_DIR)/oss \
-            -I$(MACHINES_DIR)/compact \
-            -I$(MACHINES_DIR)/lisa \
-            -I$(PEELER_DIR)/include \
-            -I$(PEELER_DIR)/lib \
+            $(CORE_INCLUDES) \
+            $(PEELER_INCLUDES) \
             -I$(VROM68K_OUT) \
             -I$(LASERWRITER_OUT)
 
-# -- Source discovery --
-# Wildcard patterns auto-discover new .c files in each subdirectory.
-
-# Core emulator sources (platform-agnostic)
-CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/dsp3210/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/ppc/*.c) \
-            $(wildcard $(CORE_DIR)/memory/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/nubus/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/nubus/cards/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/pci/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/pci/cards/*.c) \
-            $(wildcard $(CORE_DIR)/scheduler/*.c) \
-            $(wildcard $(CORE_DIR)/debug/*.c) \
-            $(wildcard $(CORE_DIR)/storage/*.c) \
-            $(wildcard $(CORE_DIR)/network/*.c) \
-            $(wildcard $(CORE_DIR)/shell/*.c) \
-            $(wildcard $(CORE_DIR)/object/*.c) \
-            $(wildcard $(CORE_DIR)/vfs/*.c) \
-            $(shell find $(MACHINES_DIR) -name '*.c')
+# -- Sources --
+# CORE_SRC and PEELER_SRC come from src/sources.mk (included above).
 
 # Platform-specific sources
 PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
-
-# Peeler library sources
-PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
-              $(PEELER_DIR)/lib/appledouble.c \
-              $(PEELER_DIR)/lib/err.c \
-              $(PEELER_DIR)/lib/util.c \
-              $(PEELER_DIR)/lib/formats/bin.c \
-              $(PEELER_DIR)/lib/formats/cpt.c \
-              $(PEELER_DIR)/lib/formats/hqx.c \
-              $(PEELER_DIR)/lib/formats/sit.c \
-              $(PEELER_DIR)/lib/formats/sit3.c \
-              $(PEELER_DIR)/lib/formats/sit13.c \
-              $(PEELER_DIR)/lib/formats/sit15.c
 
 # The LaserWriter bridge reaches its interpreter through one transport per
 # build (laserwriter_transport.h): headless links the platen library and
@@ -166,10 +122,14 @@ PLATEN_LDLIBS :=
 PLATEN_PREREQS :=
 endif
 
-# PLATEN changes what the printer compiles to; a stamp named after the
-# value is a prerequisite of every object, so toggling the switch rebuilds
-# the tree instead of mixing objects compiled either way.
-PLATEN_STAMP := $(BUILD_DIR)/platen-$(PLATEN).stamp
+# Objects depend on the flags they were compiled with, not only on their
+# sources: a stamp named after a hash of CFLAGS (MODE, EXTRA_CFLAGS, PLATEN,
+# the include list) is a prerequisite of every object, so `make debug` after
+# `make` recompiles instead of linking release objects with the asserts
+# compiled out, and toggling PLATEN rebuilds the tree instead of mixing
+# objects compiled either way.
+FLAGS_HASH  := $(shell printf '%s' '$(subst ','\'',$(CFLAGS) PLATEN=$(PLATEN))' | md5sum | cut -c1-12)
+FLAGS_STAMP := $(BUILD_DIR)/flags-$(FLAGS_HASH).stamp
 
 # -- Targets --
 
@@ -194,12 +154,12 @@ $(BUILD_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 # laserwriter_job.c embeds the generated prelude header.
 $(BUILD_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
 
-# The PLATEN stamp: creating it (a value change) outdates every object.
-$(PLATEN_STAMP):
+# The flags stamp: creating it (any flag change) outdates every object.
+$(FLAGS_STAMP):
 	@mkdir -p $(dir $@)
-	@rm -f $(BUILD_DIR)/platen-*.stamp
+	@rm -f $(BUILD_DIR)/flags-*.stamp $(BUILD_DIR)/platen-*.stamp
 	@touch $@
-$(OBJ): $(PLATEN_STAMP) $(PLATEN_PREREQS)
+$(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS)
 
 # Link all objects into the headless binary
 $(OUTPUT): $(OBJ)
@@ -218,8 +178,11 @@ sanitize:
 	$(MAKE) MODE=sanitize
 
 # Clean build artifacts
+# Both headless trees (default and MODE=fast).  build/vrom68k and
+# build/laserwriter are shared with the WASM build; the top-level `make
+# clean` owns them.
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf build/headless build/headless-fast
 
 # Show build configuration
 info:

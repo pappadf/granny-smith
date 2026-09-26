@@ -1,6 +1,6 @@
 # Integration test configuration: Power Macintosh 7100 — boot Copland D11E4.
 #
-# The last phase of the Copland bring-up (bring-up plan §6.3).  It starts from
+# The last phase of the Copland bring-up.  It starts from
 # the volume `pm7100-copland-install-os8` publishes: Drive-Setup-2.0d5c2
 # formatted, System 7.5.0 in `System Folder`, Mac OS 8 D11E4 in `Mac OS Folder`.
 #

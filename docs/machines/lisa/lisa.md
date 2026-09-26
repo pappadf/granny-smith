@@ -14,7 +14,7 @@ microcontroller (the COPS), an intelligent floppy coprocessor, and a parallel
 
 > **Scope note.** The generic internals of the 6522 VIA (timers, IFR/IER, shift
 > register, handshake modes) and the Z8530 SCC (write/read register file, baud
-> generator) are documented in [via.md](via.md) and [scc.md](scc.md). This
+> generator) are documented in [via.md](../../core/peripherals/via.md) and [scc.md](../../core/peripherals/scc.md). This
 > document specifies only how those parts are *wired and addressed* on the Lisa.
 > Everything else needed to model the machine is contained here.
 
@@ -662,7 +662,7 @@ All addresses are physical I/O space (reached at logical `$00FCxxxx`; §3.3).
 
 Both are standard MOS 6522 VIAs. Their internal register semantics (timers T1/T2,
 ACR/PCR handshake modes, IFR/IER, shift register, CA/CB lines) are described in
-[via.md](via.md); only the Lisa wiring and addressing are given here. The Lisa
+[via.md](../../core/peripherals/via.md); only the Lisa wiring and addressing are given here. The Lisa
 I/O-board 6522s are clocked at the 68000 cycle ÷ 4 (~785 ns on Lisa 2).
 
 > **⚠️ The Lisa OS source SWAPS the VIA1/VIA2 names** relative to the Hardware
@@ -815,15 +815,12 @@ codes through the layout table for the configured layout.
 
 #### The final-US key code table
 
-Transcribed from the boot ROM's own `AsciiTable`
-(`local/gs-docs/projects/Lisa/AppleLisa - Boot ROM Source/Lisa Boot ROM RM248.G.TEXT`),
+Transcribed from the boot ROM's own `AsciiTable` (the *Lisa Boot ROM*
+source, `RM248.G.TEXT`),
 96 bytes covering key codes `$20`–`$7F`. The indexing law is in
 *Lisa Boot ROM Asm Listing*, routine `KeyToAscii`: `ANDI #$007F,D1` then
 `SUBI #32,D1` — so the first table byte is key code `$20`, and bit 7 is the
 direction bit rather than part of the index.
-
-This table was previously undocumented here, which is worth recording because
-a code review cited "lisa.md §11" as its location and the citation was wrong.
 
 |      | `+0`  | `+1` | `+2` | `+3` | `+4` | `+5` | `+6` | `+7` |
 | ---- | ----- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
@@ -1140,7 +1137,7 @@ port accesses must be spaced to support both 6522 clock rates — roughly ≥ 14
 ## 15. Serial — Z8530 SCC
 
 A dual-channel Zilog **Z8530 SCC**. Its internal register file and baud-rate
-generator are described in [scc.md](scc.md); the Lisa specifics are:
+generator are described in [scc.md](../../core/peripherals/scc.md); the Lisa specifics are:
 
 - **Addresses** (physical I/O space; the address pins follow the standard
   A1 = A/B-select, A2 = data/control convention):
@@ -1260,8 +1257,8 @@ Hardware-relevant facts for an emulator:
 | Floppy 6504A (§13) | **new** front-end, but block-level (no GCR cells); reuses image block I/O |
 | Video (§8) | direct 1-bpp framebuffer in RAM, base from the `$E800` latch |
 | Processor-board control / status (§6, §7) | strobe latches + status/error registers |
-| 6522 VIA ×2 (§10) | reuse the generic 6522 model ([via.md](via.md)); Lisa wiring only |
-| Z8530 SCC (§15) | reuse the generic SCC model ([scc.md](scc.md)); Lisa addresses/clocks only |
+| 6522 VIA ×2 (§10) | reuse the generic 6522 model ([via.md](../../core/peripherals/via.md)); Lisa wiring only |
+| Z8530 SCC (§15) | reuse the generic SCC model ([scc.md](../../core/peripherals/scc.md)); Lisa addresses/clocks only |
 | 68000 CPU (§2) | reuse; feed fixed-IPL interrupts and bus errors |
 
 The genuinely new silicon is the **segment MMU**, the **COPS**, and the

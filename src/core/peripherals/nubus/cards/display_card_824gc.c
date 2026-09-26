@@ -2,10 +2,9 @@
 // Copyright (c) pappadf
 
 // display_card_824gc.c
-// "Apple Macintosh Display Card 8•24 GC" ("Dolphin") — HLE ("option B").  See
-// display_card_824gc.h, the proposal
-// docs/core/peripherals/nubus/cards/display_card_8_24.md (protocol §§3-9/14,
-// driver §§2-6, kernel §§1/7).
+// "Apple Macintosh Display Card 8•24 GC" ("Dolphin") — HLE.  See
+// display_card_824gc.h and, for the JMFB display half,
+// docs/core/peripherals/nubus/cards/display_card_8_24.md.
 //
 // Scope (this file): the CARD SHELL — the card presents the genuine v1.1
 // declaration ROM (BoardId $2C), its JMFB-family display half boots a desktop,
@@ -14,12 +13,12 @@
 // ACEFload byte sink, the boot handshake, CB arming, the RPC doorbell
 // transport, the per-VBL heartbeat).  The drawing work itself — the
 // DrawMultiObject interpreter, the rasterizers, the func $15 blit engine and
-// the text machinery — is the "GC QuickDraw" engine in
-// display_card_824gc_qd.c, reached through the gc824_* entry points in
-// display_card_824gc_priv.h.  Anything outside the engine's accept envelope
-// *declines* (proposal §4 safety net): QuickDraw's own ROM path renders it,
-// so the desktop stays pixel-correct.  gc.force_decline forces every drawing
-// func down the ROM path — the differential test oracle.
+// the text machinery — is the "GC QuickDraw" engine in display_card_824gc_qd.c,
+// reached through the gc824_* entry points in display_card_824gc_priv.h.
+// Anything outside the engine's accept envelope *declines* (the safety net):
+// QuickDraw's own ROM path renders it, so the desktop stays pixel-correct.
+// gc.force_decline forces every drawing func down the ROM path — the
+// differential test oracle.
 //
 // The firmware bytes are *stored, not executed*: SRAM/DRAM simply accept the
 // driver's ACEFload writes into their backing buffers, which automatically
@@ -59,8 +58,8 @@ static pixel_format_t format_for_bpp(int bpp); // fwd (video-mode section)
 // Recompute stride + width from RowWords + current format (jmfb convention).
 // The JMFB-register scanout, decided in one place against the VRAM that has to
 // back it.  The port from jmfb.c brought the unbounded `val * 32 * 8 / 3` with
-// it (04-video F-21): a 16-bit VideoBase reaches 5,592,320 bytes into a 2 MB
-// standard-slot VRAM.
+// it: a 16-bit VideoBase reaches 5,592,320 bytes into a 2 MB standard-slot
+// VRAM.
 //
 // This card has TWO candidate framebuffers -- the GC OS draws into `dram` via
 // programMode (which does its own bounds work below), while these registers
@@ -92,9 +91,8 @@ static const char *state_name(gc_state_t s) {
 }
 
 // The card's Boot/kernel initializes the comm regions when it sees the boot
-// magic (protocol §5.3; ambiguity #1 — the driver reads PublicIn+0x40C at the
-// end of Control 2, so publish the CB address here, at magic-clear time, not
-// on the later entry write).
+// magic (the driver reads PublicIn+0x40C at the end of Control 2, so publish
+// the CB address here, at magic-clear time, not on the later entry write).
 static void gc_boot(display_card_824gc_priv_t *p) {
     // Clear the boot magic, exactly as the Am29000 Boot code does.
     dram_set_be32(p, GC824_DRAM_PUBLICIN + GC824_PI_MAGIC, 0);
@@ -107,7 +105,7 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     // (gcp & $FFF00000) | (ptr & $FFFFF), so those pointers must be gcp-relative
     // (not super-slot) to land inside GC824_GCP_WINDOW and reach the DRAM CB.
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_ARGSOFF, p->gcp_base + GC824_CB_ARGSAREA);
-    // Queue-buffer one-block free list (protocol §9.2): {size, next=0}.
+    // Queue-buffer one-block free list: {size, next=0}.
     uint32_t free_base = p->gcp_base + GC824_CB_FREEAREA;
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEPTR, free_base);
     // GCQD carves the drawing queue from this block, returning free_base + 8
@@ -161,9 +159,9 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     LOG(1, "8*24 GC: boot handshake: CB published at NuBus $%08x (free %uB)", p->cb_nubus, free_size);
 }
 
-// RPC (Transport A) dispatch — executed synchronously inside the doorbell
-// write handler (proposal §3.5: the HLE is infinitely fast).  Returns the
-// completion status word (3 = OK / 0xB = error).
+// RPC (Transport A) dispatch — executed synchronously inside the doorbell write
+// handler (the HLE is infinitely fast).  Returns the completion status word
+// (3 = OK / 0xB = error).
 static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, uint32_t *out_result) {
     uint32_t result = 0;
     uint32_t statusw = GC824_STATUSW_OK;
@@ -200,12 +198,12 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         uint32_t ctx = p->super_base | (GC824_DRAM_OFFSET + GC824_DRAM_GCTX);
         dram_set_be32(p, GC824_DRAM_CB + 0x604 + 4, ctx);
         // PQDInit is also the fault-recovery re-init: the real handler
-        // flushes all 11 caches (protocol §9.2) — drop the font + PixPat caches.
+        // flushes all 11 caches — drop the font + PixPat caches.
         gc824_font_caches_flush(p);
         gc824_pixpats_flush(p, 0);
         LOG(2, "8*24 GC: func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, ctx);
-        // Result 1 = registered OK — sub_61B0 checks this (== 1) and $884A posts
-        // error 4 ("having difficulty") otherwise.  Protocol §9.2.
+        // Result 1 = registered OK — sub_61B0 checks this (== 1) and $884A
+        // posts error 4 ("having difficulty") otherwise.
         result = 1;
         break;
     }
@@ -245,12 +243,12 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         result = 0;
         break;
     }
-    // --- Drawing surface: decline to the ROM path (stage 1 safety net) ---
-    // The decline convention is result == 0 (protocol §9): for func $15 the host
-    // reads "0 = declined → run the ROM blit" (1 = card drew it); for func $2D
+    // --- Drawing surface: decline to the ROM path (the safety net) ---
+    // The decline convention is result == 0: for func $15 the host reads
+    // "0 = declined → run the ROM blit" (1 = card drew it); for func $2D
     // (SetPort) the result's bit 0 is "accept" (else fall back to ROM for the
     // whole port).  Returning 0 for both makes GCQD render every primitive via
-    // QuickDraw's own ROM bottlenecks — the stage-1 safety net (proposal §4).
+    // QuickDraw's own ROM bottlenecks — the safety net.
     case 0x15: // StretchBits (CopyBits): accelerate the accept-envelope, else
         // decline (result 0 → host runs the ROM blit).  Runs synchronously here,
         // so it lands in the framebuffer in RPC order relative to the queued
@@ -269,7 +267,7 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         // coordinates; global = local − bounds.topLeft; the WMgr port's
         // bounds are (0,0) so the desktop never exposed this).
         // Accept only ports that target the SCREEN at a supported depth;
-        // gc.force_decline (the differential test oracle, proposal §4.1)
+        // gc.force_decline (the differential test oracle)
         // declines everything → the ROM path renders the same scene.
         //
         // The screen test reads the LIVE thePort's baseAddr, NOT the staged
@@ -319,10 +317,10 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
     case 0x30: { // FontDownload — cache the strikes/width tables so ops $67/$06
         // draw text on-card; any failure (or the oracle switch, or an
         // unsupported depth) declines: the host rolls back its checksum and
-        // draws text unaccelerated (proposal §3.10 safety net).  Accepted at
-        // every port-accepted depth (1/8/16/32 — same set as func $2D): the
-        // glyph cores render through the depth-generic gc_px, and the real
-        // Rev B card accelerates text at the direct depths too.
+        // draws text unaccelerated (the safety net).  Accepted at every
+        // port-accepted depth (1/8/16/32 — same set as func $2D): the glyph
+        // cores render through the depth-generic gc_px, and the real Rev B card
+        // accelerates text at the direct depths too.
         bool text_depth_ok = p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP ||
                              p->display.format == PIXEL_16BPP_555 || p->display.format == PIXEL_32BPP_XRGB;
         result = (!p->force_decline && text_depth_ok) ? (uint32_t)gc824_font_download(p) : 0;
@@ -330,14 +328,14 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
     }
     default:
         if (func > 0x3B) {
-            // Unknown function — flag the sequence/error bits (protocol §9).
+            // Unknown function — flag the sequence/error bits.
             dram_set_be32(p, GC824_DRAM_CB + GC824_CB_STATUS, dram_be32(p, GC824_DRAM_CB + GC824_CB_STATUS) | 0x11u);
             statusw = GC824_STATUSW_ERR;
             LOG(1, "8*24 GC: RPC unknown func $%02x", func);
         } else {
             // A known-but-unimplemented func: succeed benignly (bookkeeping).
             result = 0;
-            LOG(2, "8*24 GC: func $%02x accepted (no-op, stage 1)", func);
+            LOG(2, "8*24 GC: func $%02x accepted (no-op)", func);
         }
         break;
     }
@@ -380,12 +378,12 @@ static void gc_rpc(display_card_824gc_priv_t *p) {
 }
 
 // Transport B (CB+0x1C0 bytes published): drain the opcode stream.  Draining
-// happens INCREMENTALLY as the host publishes bytes (proposal §3.5) — not
-// batched at the func-$26 submit — so accelerated geometry lands in the FB in
-// the same temporal order as the ROM-declined ops (text, CopyBits) the Finder
-// draws between publishes; a later batch would paint over that ROM output.
-// The host resets the buffer (CB+$1C0 drops) after a func-$26 submit; we detect
-// that as the start of a new drawing cycle and reset the interpreter state.
+// happens INCREMENTALLY as the host publishes bytes — not batched at the
+// func-$26 submit — so accelerated geometry lands in the FB in the same
+// temporal order as the ROM-declined ops (text, CopyBits) the Finder draws
+// between publishes; a later batch would paint over that ROM output.  The host
+// resets the buffer (CB+$1C0 drops) after a func-$26 submit; we detect that as
+// the start of a new drawing cycle and reset the interpreter state.
 static void gc_drain_queue(display_card_824gc_priv_t *p) {
     uint32_t pub = dram_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB);
     // A publish value BELOW the high-water mark is NOT a buffer reset: GCQD's
@@ -429,7 +427,7 @@ static bool gc_vidcomm_depth_ok(uint32_t bpp) {
 // a 1152x870 monitor at 32 bpp is 4608 x 870 ~ 4 MB, a legitimate-looking
 // request the DRAM cannot back.  This path used to set bits and stride
 // directly, and the renderer (and this card's own drawing engine) read and
-// wrote past the DRAM (N-52).
+// wrote past the DRAM.
 static void gc_vidcomm(display_card_824gc_priv_t *p) {
     uint32_t vc = GC824_DRAM_VIDCOMM;
     uint32_t fbbase = dram_be32(p, vc + GC824_VC_FBBASE);
@@ -465,8 +463,8 @@ static void gc_vidcomm(display_card_824gc_priv_t *p) {
 }
 
 // After any guest write into DRAM, check the watched comm-region longwords and
-// react (protocol §5.3/§6).  Writes may be byte/word/long; the driver issues
-// these as MOVE.L, so reading the full longword back is robust.
+// react.  Writes may be byte/word/long; the driver issues these as MOVE.L, so
+// reading the full longword back is robust.
 static void gc_check_triggers(display_card_824gc_priv_t *p) {
     if (!p->booted) {
         if (dram_be32(p, GC824_DRAM_PUBLICIN + GC824_PI_MAGIC) == GC824_BOOT_MAGIC)
@@ -597,12 +595,12 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
             // delayTouch helper (decl ROM $3420) reads this cell 10× and leaves
             // the LAST read in D0; cardSync ($33C8) then waits for bit 31 to
             // cycle set→clear→set (a full frame).  (The $44001C0 read in that
-            // loop is a discarded bus side-effect — see decl-rom-disasm and
-            // open-issues.md §0.)  So synthesize a heartbeat here: flip bit 31
-            // on a read counter, period > the 10-read delay loop so consecutive
-            // delayTouch results alternate and all three passes advance.
-            // Synthesized on read (not stored): delayTouch writes the value back
-            // each iteration, so a RAM cell would be frozen.
+            // loop is a discarded bus side-effect.)  So synthesize a heartbeat
+            // here: flip bit 31 on a read counter, period > the 10-read delay
+            // loop so consecutive delayTouch results alternate and all three
+            // passes advance.  Synthesized on read (not stored): delayTouch
+            // writes the value back each iteration, so a RAM cell would be
+            // frozen.
             if (width != 4)
                 return buf_read(p->regs, cl - GC824_REGS_OFFSET, GC824_REGS_SIZE, width);
             uint32_t v = buf_read(p->regs, cl - GC824_REGS_OFFSET, GC824_REGS_SIZE, 4) & ~0x80000000u;
@@ -780,8 +778,8 @@ static memory_interface_t s_gc824_mem_iface = {
 // === VROM load ==============================================================
 // Content-driven (Format-Block CRC): loads whichever of the three known GC
 // declaration ROMs (v1.1 64 KB / v1.0 / alpha 32 KB) is actually present —
-// the explicit machine.vrom.load path first (any filename), then the catalog
-// names in the standard locations.  A 32 KB revision lands in the top half of
+// the explicit machine.boot vrom= first (any filename), then the other
+// offered candidates in catalog order (see vrom.h).  A 32 KB revision lands in the top half of
 // the 256 KB bus window (the Format Block always ends at the slot top).
 static bool load_vrom(display_card_824gc_priv_t *p) {
     char *path = NULL;
@@ -797,10 +795,9 @@ static bool load_vrom(display_card_824gc_priv_t *p) {
 // STAGING -- ON DEATH ROW.  This is a construction input travelling as a
 // hidden per-module global: the visible per-slot channel
 // (machine.nubus.slot[N].video_mode) funnels through here, and the factory
-// consumes it destructively.  proposal-construction-inputs.md R1 replaces
-// every one of these with a machine_build_opts_t field passed to the factory
-// as an ARGUMENT, which is also what proposal-reset-and-nonvolatile-state.md
-// R3 means by "no holder, no staged copy, no pending slot".  Do not add
+// consumes it destructively.  The intended end state replaces every one of
+// these with a machine_build_opts_t field passed to the factory as an
+// ARGUMENT -- no holder, no staged copy, no pending slot.  Do not add
 // another one; the per-slot channel is already there to carry it.
 static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 static const nubus_monitor_t display_card_824gc_monitors[]; // fwd
@@ -904,10 +901,10 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->armed = false;
     // The slot VBL the RISC side arms (command 1).  card_on_vbl asserts on
     // `!(sw_ic & VINT_DISABLE) || vbl_enabled`, so leaving this set after a
-    // /RESET keeps the card driving a VBL interrupt the newly-reset chip
-    // should not be driving -- and the disjunction means the documented mask
-    // bit cannot suppress it (04-video F-36).  A slot IRQ asserted before the
-    // rebooting ROM installs its SlotIQE is the interrupt-storm shape.
+    // /RESET keeps the card driving a VBL interrupt the newly-reset chip should
+    // not be driving -- and the disjunction means the documented mask bit
+    // cannot suppress it.  A slot IRQ asserted before the rebooting ROM
+    // installs its SlotIQE is the interrupt-storm shape.
     p->vbl_enabled = false;
     p->attached = false;
     p->gc_on = false;
@@ -980,8 +977,9 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
 
     // Bind the shared JMFB model to what THIS card's registers address.  The
     // store is `vram`, NOT the `dram` the accelerator composes into -- that
-    // distinction is the whole of 04-video F-21, and keeping the bindings
-    // explicit is what stops the two being confused again.
+    // distinction is what let a register write repoint the descriptor between
+    // two different allocations, and keeping the bindings explicit is what
+    // stops the two being confused again.
     p->jmfb_bind = (jmfb_bind_t){.display = &p->display,
                                  .store = p->vram,
                                  .store_size = GC824_VRAM_SIZE,
@@ -993,8 +991,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         // Generic sibling kind ("8_24gc"): generate the GS declaration ROM
         // at card_init — the boot family + 32-bit sister family from the
         // generic monitors[] row, code fragments (incl. SecondaryInit)
-        // spliced, CRC stamped in C (proposal-nubus-runtime-vrom §4); the
-        // offer registry is never consulted.
+        // spliced, CRC stamped in C; the offer registry is never consulted.
         declrom_builder_t *bld = gsvrom_generate(GSVROM_MDCGC, display_card_824gc_generic_kind.monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
@@ -1005,7 +1002,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             LOG(0, "8*24 GC: 8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
     } else if (!load_vrom(p))
-        LOG(0, "8*24 GC: no 8•24 GC declaration ROM offered (machine.vrom.load a GC vROM, "
+        LOG(0, "8*24 GC: no 8•24 GC declaration ROM offered (pass a GC vROM as machine.boot vrom=, "
                "or make one available where the platform offers vROM files); "
                "declaration ROM is zero-filled");
 
@@ -1055,7 +1052,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // from the card-local offset, and drives the bring-up/RPC state machine
     // on comm-region writes.  A device region (not host) is required so those
     // writes are observed; SRAM/DRAM are backed by real buffers so the guest
-    // dereferences card addresses faithfully (proposal §3.2).
+    // dereferences card addresses faithfully.
     p->ctx_super = (gc_reg_ctx_t){.p = p, .region_base = p->super_base};
     memory_map_add(cfg->mem_map, p->super_base, 0x10000000u, "gc824_super", &s_gc824_mem_iface, &p->ctx_super);
 
@@ -1144,7 +1141,7 @@ static const char *card_name(const nubus_card_t *card) {
 }
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model
-// (proposal-generic-nubus-vrom sec. 6.1: "one HLE model per pair").
+// (hard rule: one HLE model per real/generic pair).
 static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     return card_init_common(card, cfg, cp, /*generic*/ false);
 }
@@ -1239,8 +1236,8 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (04-video
-        // F-41; see display.h).
+        // pixel_format_t, whose size is implementation-defined (see
+        // display.h).
         display_head_t head = display_head_of(&p->display);
         system_write_checkpoint_data(cp, &head, sizeof head);
     }
@@ -1378,7 +1375,7 @@ static nubus_card_t *node_card(struct object *self) {
 // --- machine.nubus.slot[N].card.gc -------------------------------------------
 // This card's own object children, attached through the KIND's attach_objects
 // hook.  They used to live in nubus_class.c behind an is_card() test, which
-// meant a core file knew this card existed (04-video F-10).
+// meant a core file knew this card existed.
 static value_t gc_attr_state(struct object *self, const member_t *m) {
     (void)m;
     return val_str(display_card_824gc_state(node_card(self)));
@@ -1498,9 +1495,9 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .attach_objects = display_card_824gc_attach_objects,
 };
 
-// Monitor list for the generic sibling: config 0 (640×480) only in this
-// stage — the 16" config rides the GC-OS VidComm channel and lands with
-// the extended-mode work (proposal sec. 9 stage 4).
+// Monitor list for the generic sibling: config 0 (640×480) only for now —
+// the 16" config rides the GC-OS VidComm channel and lands with the
+// extended-mode work.
 static const nubus_monitor_t display_card_824gc_generic_monitors[] = {
     {.id = "gc_640x480",
      .name = "13\" AppleColor (640×480)",
@@ -1515,8 +1512,8 @@ static const nubus_monitor_t display_card_824gc_generic_monitors[] = {
 };
 
 // Generic sibling kind: always-available twin with the built-in GS
-// declaration ROM.  Note the id is one underscore from the real "824gc"
-// (proposal sec. 11.3) — deliberate short boot-document spelling.
+// declaration ROM.  Note the id is one underscore from the real "824gc" —
+// deliberate short boot-document spelling.
 const nubus_card_kind_t display_card_824gc_generic_kind = {
     .id = "8_24gc",
     .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"

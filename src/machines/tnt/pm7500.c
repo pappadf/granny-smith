@@ -21,7 +21,7 @@ static const scsi_bus_decl_t pm7500_scsi_buses[] = {
     {0},
 };
 
-// PCI topology (proposal-pci-architecture §6.1).  Three sockets on Bandit
+// PCI topology.  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
 // the bandit node, corroborated by Apple's Network Server developer note
 // IDSEL table — with their strapped INTA-D lines on Grand Central
@@ -46,9 +46,8 @@ static const tnt_board_desc_t pm7500_board = {
     // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
     // present, bit 8 factory-test strap CLEAR (set sends the ROM into its
     // serial test monitor), bit 11 CLEAR (set = 8500 — the shipping ROM's
-    // identification routine at $FFC14844, decoded during Phase D), and
-    // bit 13 SET — Open Firmware's model decode (OpenFW image $10592,
-    // decoded during Phase D part 2) reads BoxID as xw@>>11 into its
+    // identification routine at $FFC14844), and bit 13 SET — Open
+    // Firmware's model decode (OpenFW image $10592) reads BoxID as xw@>>11 into its
     // machine word and picks "AAPL,7500" over "AAPL,8500" on bit 13.
     .boxid = 0x8000u | 0x4000u | 0x2000u,
     // Hammerhead identity: first byte $39 selects the ROM's TNT path
@@ -57,8 +56,8 @@ static const tnt_board_desc_t pm7500_board = {
     // ((b>>1)&8) over the +$20 top byte: $80 -> 4 -> 7500/8500,
     // $40 -> 2 -> 9500), bit 30 clear = not a 9500 for the 68k routine.
     // Without bit 31 OF emits compatible "AAPL,????" and never
-    // instantiates the chaos/control display nodes (the Phase-D video
-    // wall's root cause).
+    // instantiates the chaos/control display nodes (and the boot never
+    // reaches video).
     .hh_id = 0x39000000u,
     .hh_r20 = 0x80000000u,
     .bus_hz = 50000000u, // 2:1 bus (100 MHz 601 card)

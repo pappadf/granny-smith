@@ -1,5 +1,5 @@
 # tests/integration/lib/ans.script — shared helpers for the Apple Network
-# Server rows (proposal-apple-network-server-500-700).
+# Server rows.
 #
 # Pull in with `include "../lib/ans.script"`.
 #

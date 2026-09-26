@@ -3,12 +3,11 @@
 
 // mace.h
 // MACE Ethernet MAC (Am79C940 core inside Curio) — a register stub with no
-// wire behind it, plus the Apple address PROM at $50F08000.  Contract:
-// the AV MACE hardware notes §2 (register map) and §4 (PROM).
+// wire behind it, plus the Apple address PROM at $50F08000.
 //
 // The `.ENET` driver runs three loopback self-tests at open; with no
 // datapath they fail and the driver does not load.  That is harmless for
-// booting (IMPLEMENTATION.md §7) and is the documented Phase-G contract.
+// booting and is the intended no-Ethernet contract.
 
 #ifndef GS_MACHINES_AV_MACE_H
 #define GS_MACHINES_AV_MACE_H

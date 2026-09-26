@@ -1,4 +1,4 @@
-# M4 integration test: ${...} expression substitution + predicate assert.
+# Integration test: ${...} expression substitution + predicate assert.
 #
 # Boots Plus, runs a few thousand instructions, then exercises:
 #   - ${literal arithmetic} expanded into shell args
@@ -16,7 +16,7 @@ echo "${0xFF & 0x0F}"
 echo "${machine.memory.rom_size + 1}"
 echo "${$pc + 4}"
 
-# Computed breakpoint address — proposal §0 example.
+# Computed breakpoint address.
 debug.breakpoints.add ($pc + 0x10)
 echo "${len(debug.breakpoints.entries)} breakpoints"
 
@@ -34,7 +34,7 @@ assert shell.meta.attributes == "[prompt, running, aliases, vars]" "list == form
 assert shell.meta.attributes != "[prompt]" "list != wrong string"
 assert (shell.meta.attributes == "prompt, running, aliases, vars") == false "brackets are part of the formatting"
 
-# --- Named arguments (proposal-named-args-boot-config §3) ---
+# --- Named arguments ---
 # Shell form: unquoted name=value tokens bind to declared slots, any
 # order, mixing with positionals.
 machine.boot model="plus" ram=1024 rom="${$ROM}"

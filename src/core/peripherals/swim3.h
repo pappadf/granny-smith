@@ -56,7 +56,7 @@ typedef struct swim3 {
     // value, `timer_start_ns` the scheduler time of the load; the running
     // count reads back live and TIMER_DONE fires at zero (swim3.c).  The
     // 7.5 .Sony driver never touches it; Copland's floppy plugin is built
-    // on it (SwimIIISmallWait polls it — gs-docs/projects/copland).
+    // on it (SwimIIISmallWait polls it).
     uint8_t timer;
     uint8_t timer_running;
     uint64_t timer_start_ns;

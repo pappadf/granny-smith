@@ -40,9 +40,9 @@ static void deliver(uint32_t return_id) {
 }
 
 // A full inbox still answers.  It returned before the reply, so the guest's
-// AESend waited out its own timeout, and nothing counted the event (N-20).
+// AESend waited out its own timeout, and nothing counted the event.
 // The reply goes to the session the event came in on, not to one looked up
-// again by an id narrowed to 16 bits (N-24): this session's is 0x12345.
+// again by an id narrowed to 16 bits: this session's is 0x12345.
 TEST(a_full_inbox_still_answers) {
     setup();
     for (uint32_t i = 0; i < 33; i++)
@@ -71,7 +71,7 @@ TEST(clearing_the_inbox_makes_room) {
 
 // The event table holds 256 sends a run.  The next is an error the script
 // sees -- a statement producing one stops the script -- and try() turns it
-// into the fallback a script that wants to carry on can test (D-6).
+// into the fallback a script that wants to carry on can test.
 TEST(a_full_event_table_is_a_script_error) {
     setup();
     for (int i = 0; i < 256; i++) {

@@ -149,7 +149,7 @@ static int journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
 
 // Every seek in this file is fseeko with an off_t: a long is 32 bits on
 // wasm32, where an fseek offset past 2 GiB wrapped and reads and writes
-// landed at the wrong block with no error (09-storage F-29).
+// landed at the wrong block with no error.
 _Static_assert(sizeof(off_t) >= 8, "storage requires 64-bit off_t (build with _FILE_OFFSET_BITS=64)");
 
 // Byte position of block `lba` in a file whose blocks start at `origin`,
@@ -160,7 +160,7 @@ static off_t block_pos(uint64_t origin, uint64_t lba, uint32_t block_size) {
 
 // Scan the journal file and rebuild the in-memory index.  The index is the
 // longest valid prefix of the file: an entry that is cut short (a crash mid-
-// append) or names a block outside the device (09-storage F-30) ends it,
+// append) or names a block outside the device ends it,
 // and the file is truncated there so appends stay aligned and a replay
 // never writes outside the delta's data area.
 static int journal_load_index(storage_t *s) {
@@ -563,10 +563,14 @@ int storage_clear_rollback(storage_t *storage) {
         delta_flush_bitmaps(storage);
         storage->bitmap_dirty = false;
 
+        // Same rule as storage_apply_rollback: a journal that cannot be truncated
+        // keeps its count, so the in-memory index matches what is on disk.
         if (storage->journal_count > 0 && storage->journal_fp) {
             int fd = fileno(storage->journal_fp);
-            if (fd >= 0)
-                ftruncate(fd, 0);
+            if (fd >= 0 && ftruncate(fd, 0) != 0) {
+                LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+                return GS_ERROR;
+            }
             fseeko(storage->journal_fp, 0, SEEK_SET);
             storage->journal_count = 0;
         }
@@ -824,8 +828,10 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
 
     if (storage->journal_fp) {
         int fd = fileno(storage->journal_fp);
-        if (fd >= 0)
-            ftruncate(fd, 0);
+        if (fd >= 0 && ftruncate(fd, 0) != 0) {
+            LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+            return GS_ERROR;
+        }
         fseeko(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;

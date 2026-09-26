@@ -299,7 +299,7 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
         uint8_t name_len = rec[6];
         // The name must lie inside both the key and the record.  The key
         // length alone bounds neither, and the name is read -- and shown to
-        // the user -- before anything else checks it (09-storage F-19).
+        // the user -- before anything else checks it.
         if (name_len > 31 || (size_t)name_len + 6 > key_len || (size_t)name_len + 7 > rec_size)
             continue;
         // Key storage (including keyLen byte) padded up to even length.
@@ -429,8 +429,7 @@ static int parse_xt_leaf_node(const uint8_t *node, size_t node_size, hfs_xt_rec_
         size_t rec_size = next - off;
         const uint8_t *rec = node + off;
         // keyLen(1) + a 7-byte key (forkType, fileNumber, startBlock), then
-        // three extents (12 bytes).  Checked before any field is read
-        // (09-storage F-20).
+        // three extents (12 bytes).  Checked before any field is read.
         const size_t key_bytes = 1 + 7;
         if (rec_size < key_bytes + 12 || rec[0] != 7)
             continue;
@@ -614,7 +613,7 @@ static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
 // Validate a B-tree node size read from a header record: a power of two in
 // [512, max] and no larger than the file we loaded.  Classic HFS allows up
 // to 8192 (HFS_NODE_MAX), HFS+ up to 32768 (HFSP_NODE_MAX); every B-tree of
-// both goes through here (09-storage F-47).
+// both goes through here.
 #define HFS_NODE_MAX  8192
 #define HFSP_NODE_MAX 32768
 static bool node_size_ok(size_t node_size, size_t max, size_t file_size) {
@@ -1227,7 +1226,7 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork, uint64_t off, void 
                         return _rc;                                                                                    \
                 } else {                                                                                               \
                     /* An extent outside the partition is a hole, zero-filled like any range no extent */              \
-                    /* covers -- not a reason to fail the whole fork (09-storage F-48). */                             \
+                    /* covers -- not a reason to fail the whole fork. */                                               \
                     memset(dst + done, 0, (size_t)take);                                                               \
                 }                                                                                                      \
                 done += (size_t)take;                                                                                  \

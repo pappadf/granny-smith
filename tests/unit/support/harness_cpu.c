@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // CPU harness - initializes real CPU and memory subsystems
 // Used for tests that need CPU emulation with memory access (disasm).
 

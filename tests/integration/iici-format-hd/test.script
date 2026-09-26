@@ -13,7 +13,7 @@
 # the 5380 is reached through the MDU rather than GLUE, so the same guard covers
 # a second bus path.
 #
-# EVERY WAIT IS A CONDITION (§5.2). The IIcx original ran this flow on fixed
+# EVERY WAIT IS A CONDITION. The IIcx original ran this flow on fixed
 # instruction budgets tuned to that host; re-hosted unchanged, its first budget
 # landed on "Welcome to Macintosh" and the rest of the flow then clicked at the
 # splash while its goldens captured it. Nothing below states a duration as an

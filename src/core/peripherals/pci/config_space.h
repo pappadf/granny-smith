@@ -2,14 +2,14 @@
 // Copyright (c) pappadf
 
 // config_space.h
-// The generic PCI type-0 configuration header (proposal-pci-architecture
-// §5.2).  ONE implementation serves every device on every bus — the host
-// bridges' own headers, Grand Central's config presence, Control, and
-// every future slot card — so that "absent devices read all-ones" means
-// "no device is registered at this IDSEL", never a hard-coded literal.
+// The generic PCI type-0 configuration header.  ONE implementation serves
+// every device on every bus — the host bridges' own headers, Grand
+// Central's config presence, Control, and every future slot card — so
+// that "absent devices read all-ones" means "no device is registered at
+// this IDSEL", never a hard-coded literal.
 //
 // The contract, attested by the shipping ROM's own probe and by every OS
-// driver for these machines (bandit-chaos-pci.md):
+// driver for these machines:
 //   * Reads are dword-assembled from the static declaration (IDs, class,
 //     header type, interrupt pin) plus live state (command, status, the
 //     BAR latches, the expansion-ROM BAR, interrupt line).  Registers the
@@ -75,13 +75,13 @@ typedef struct pci_config_decl {
     uint16_t device_id;
     uint8_t revision;
     uint32_t class_code; // 24-bit class / subclass / prog-if
-    uint8_t header_type; // $00 for everything this proposal covers
+    uint8_t header_type; // $00: type-0 (no PCI-PCI bridges are modelled)
     uint8_t interrupt_pin; // 0 = none, 1 = INTA (slots strap INTA-D together)
     uint16_t command_writable; // mask of command bits the device latches
     uint16_t command_reset; // command bits that are hardwired ON at power-on
                             // (Control: the Chaos bus ignores config writes
                             // outside its two BAR offsets, so the device
-                            // always decodes — proposal §6.2)
+                            // always decodes)
     // Power-on value of the STATUS halfword ($06).  Strapped silicon facts,
     // not software state: bits 10:9 are the DEVSEL timing the part drives,
     // which Open Firmware publishes as the node's `devsel-speed` property.

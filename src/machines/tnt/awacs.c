@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // awacs.c
-// The TNT AWACS sound face (proposal §5.8, ladder rung T10): five 32-bit
+// The TNT AWACS sound face: five 32-bit
 // little-endian registers on $10 centres at island +$14000, the shared
 // ASCO codec shadows (core/peripherals/awacs.c) behind the NEWECMD
 // command port, and the output datapath — DBDMA channel 8 pulling a
@@ -197,8 +197,8 @@ uint32_t tnt_awacs_read32(config_t *cfg, uint32_t offset) {
         return w->codec_ctrl & ~AWACS_NEWECMD;
     case AWACS_CODEC_STAT:
         // Valid data, no pending inputs; revision/part zero (plain
-        // AWACS — whether TNT carries a Screamer is an open dossier
-        // question; nothing in the boot path discriminates).
+        // AWACS — whether TNT carries a Screamer is an open question;
+        // nothing in the boot path discriminates).
         return 0x00400000u;
     case AWACS_CLIP_COUNT:
         return 0;
@@ -256,7 +256,7 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value) {
 //
 // in_enabled is false because the input path is not modelled.  The hardware
 // has one -- the TNT sound-control register's bits 0-3 are the Input SubFrame
-// Select field (awacs-sound.md §2.1), and an 8500 has a Sound In jack -- so
+// Select field, and an 8500 has a Sound In jack -- so
 // this is a gap to close, not a property of the machine.
 
 static tnt_awacs_t *snd_awacs_ctx(void *ctx) {
@@ -350,7 +350,7 @@ void tnt_awacs_init(config_t *cfg) {
     // its beep — observed, and stable for the whole parked boot — so
     // opening there keeps a boot-long capture free of the mid-capture
     // rate switch that invalidates golden matching.  Revisit when the
-    // 68k chime first plays (it did not by the Phase-D wall).
+    // 68k chime first plays.
     audio_out_open(22050, 2);
 
     // The channel-8 device port (replaces nothing: attached at build).

@@ -561,7 +561,7 @@ TEST(test_text_parse_scalars) {
     value_free(&ev);
 }
 
-// The flagship query of the proposal's test plan, parsed and encoded.
+// The flagship object-specifier query, parsed and encoded.
 TEST(test_text_object_specifier) {
     char err[192] = "";
     value_t ev = aevt_parse_text("core/getd{'----':obj{form:enum(prop), want:type(prop), "

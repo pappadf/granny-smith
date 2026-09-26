@@ -1,16 +1,16 @@
-# The drawing section under the WebGPU TAKEOVER (proposal-voodoo2-webgpu-
-# takeover §7, gates 2 and 3) — draw.script's cases replayed while the
-# browser's GPU draws them, with the expectations the takeover makes.
-# Run from the web2 e2e (tests/e2e/web2-specs/voodoo2-webgpu.spec.ts),
-# which composes this file after the bring-up replay (glide-init.script)
-# and the take-monitor sequence; never from a native row (there is no
-# GPU there — raster=webgpu falls back to the thread backend, which
-# test.script asserts).
+# The drawing section under the WebGPU TAKEOVER — draw.script's cases
+# replayed while the browser's GPU draws them, with the expectations the
+# takeover makes. Run from the web2 e2e
+# (tests/e2e/web2-specs/voodoo2-webgpu.spec.ts), which composes this
+# file after the bring-up replay (glide-init.script) and the
+# take-monitor sequence; never from a native row (there is no GPU there
+# — raster=webgpu falls back to the thread backend, which test.script
+# asserts).
 #
 # What is EXACT here, by construction, and asserted as in draw.script:
 #   - coverage: which pixels a triangle touches (the half-pixel shift
-#     makes the GPU's centre test the walker's integer test; gate 2 counts
-#     the 136 and 256 literally);
+#     makes the GPU's centre test the walker's integer test; the rows
+#     below count the 136 and 256 literally);
 #   - the iterated colour at interior pixels (a linear plane is
 #     interpolated exactly), the integer combine units, dither, the LFB
 #     bypass round trips, the depth compare (exact 16-bit codes);
@@ -40,7 +40,7 @@ def tri1_vertices() {
     vreg_wr(0x01C, 0x00000320)
 }
 
-# --- Engagement (§5.1): the card drives the monitor, so GPU mode is on. -----
+# --- Engagement: the card drives the monitor, so GPU mode is on. ------------
 # (A counter read is a fence: it retires the queued ENGAGE first.)
 let PO_START = stat(0x15C)
 assert machine.pci.slot[1].card.regs.raster == "webgpu" "the takeover backend is installed"
@@ -57,7 +57,7 @@ vreg_wr(0x120, 0x00000003)
 
 # --- FASTFILL clears the clip rectangle, and ONLY the clip rectangle. -------
 # A fill draw on the GPU; the pixels come back through LFB reads, i.e.
-# readbacks of the rows they sit on (§5.7).
+# readbacks of the rows they sit on.
 vreg_wr(0x118, (10 << 16) | 42)
 vreg_wr(0x11C, (5 << 16) | 21)
 vreg_wr(0x148, 0x00FF0000)
@@ -305,7 +305,7 @@ machine.memory.poke.l($A200, $V)
 assert machine.memory.peek.l($A200) != $V "LFB: swizzled write read raw is NOT the identity"
 vreg_wr(0x114, 0x00000000)
 
-# --- Q9: sub-pixel correction mutates the START LATCHES (producer-side). ----
+# --- Sub-pixel correction mutates the START LATCHES (producer-side). --------
 vreg_wr(0x104, 0x14000000)
 vreg_wr(0x008, 0x00000328)
 vreg_wr(0x00C, 0x00000328)
@@ -328,11 +328,11 @@ let FIRST = px(52, 51)
 vreg_wr(0x080, 0x80000000)
 idle3
 let SECOND = px(52, 51)
-assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift (Q9)"
+assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift"
 vreg_wr(0x104, 0x00000000)
 
 # --- Rotate-mode stipple: the walker FALLBACK, exact down to the counters. --
-# A per-pixel register the GPU cannot honour (§5.5): the translator reads
+# A per-pixel register the GPU cannot honour: the translator reads
 # the touched rows back, the walker draws, the rectangle goes up again.
 # So the counters and the stipple register move exactly as draw.script
 # pins them — the fallback's own proof that it ran.

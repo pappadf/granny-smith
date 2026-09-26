@@ -160,7 +160,7 @@ def idle3() {
   if (glideInit.includes("the beam counters must advance"))
     throw new Error("beam step not stripped");
   const takeMonitor = `
-# --- Take the monitor: the edge that engages GPU mode (§5.1). --------------
+# --- Take the monitor: the edge that engages GPU mode. ---------------------
 vreg_wr(0x220, (704 << 16) | 96)
 vreg_wr(0x224, (523 << 16) | 2)
 vreg_wr(0x208, (25 << 16) | 38)

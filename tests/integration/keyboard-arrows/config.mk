@@ -1,4 +1,4 @@
-# Integration test: the arrow keys by name press the arrows (I1, N-34).
+# Integration test: the arrow keys by name press the arrows.
 #
 # Key identity across the model is the ADB raw keycode.  The name resolver
 # (and the Lisa's keymap) keyed the arrows on the Mac OS virtual codes
@@ -13,5 +13,5 @@ TEST_DESC := keyboard.down "left"/"right"/"down"/"up" set the arrow bits of KeyM
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

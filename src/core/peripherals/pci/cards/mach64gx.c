@@ -53,7 +53,6 @@
 // driver reads Apple's sense lines through GP_IO, a register that does not
 // exist on the 88800GX at all.
 
-#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
@@ -430,11 +429,11 @@ static const char *mach64_traj_name(mach64_traj_t t) {
 // code actually selects is a driver decision we have not measured yet, and
 // the bit order WITHIN each extended pair is not stated by the note — so
 // mach64_sense_log() prints the primary and extended codes the engine
-// produced on the first run, and the table gets pinned from that (§8 Q7 of
-// the proposal).  Nothing about enumeration depends on it: the card's
-// FCode gives up only when primary == 7 AND extended == $3F together, i.e.
-// when all three pins float high in every configuration, which is what "no
-// cable attached" looks like.
+// produced on the first run, and the table gets pinned from that.  Nothing
+// about enumeration depends on it: the card's FCode gives up only when
+// primary == 7 AND extended == $3F together, i.e. when all three pins float
+// high in every configuration, which is what "no cable attached" looks
+// like.
 typedef struct mach64_monitor_sense {
     const char *id;
     uint8_t primary; // 3-bit code, pins (2,1,0), all tri-stated
@@ -1085,7 +1084,7 @@ static void mach64_aperture_changed(mach64_t *m) {
 // The draw engine
 // ============================================================
 //
-// §4.8 of the proposal reasoned this could stay store-and-readback: classic
+// The first design reasoned this could stay store-and-readback: classic
 // Mac OS draws through QuickDraw into the framebuffer, and the accelerated
 // paths were expected to come from the separately installed ATI Graphics
 // Accelerator extension, with the in-ROM ndrv being a display driver only.
@@ -1997,8 +1996,8 @@ static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
 // The card asks for a 16 MB BAR because CFG_MEM_AP_LOC has 4 MB
 // granularity while an 8 MB aperture needs 8 MB alignment, so 16 MB
 // guarantees a legal placement wherever Open Firmware puts it.  What the
-// upper half then does was the open question, and the proposal reasoned it
-// was alignment SLACK decoding nothing — modelled that way deliberately,
+// upper half then does was the open question, and the first model assumed
+// it was alignment SLACK decoding nothing — modelled that way deliberately,
 // with a loud log on any access, so that a wrong guess would announce
 // itself instead of silently rendering garbage.
 //
@@ -2207,8 +2206,8 @@ static uint32_t mach64_current_vline(const mach64_t *m) {
 // bit wired to a latch that only the interrupt path ever set, the driver
 // spun there forever and System 7.6 never reached the mount, while the
 // card looked perfectly healthy by every other measure.  A live status bit
-// that never changes is the same trap the proposal flagged for
-// CRTC_VLINE_CRNT_VLINE.
+// that never changes is the same trap as a CRTC_VLINE_CRNT_VLINE that never
+// advances.
 static bool mach64_in_vblank(const mach64_t *m) {
     uint32_t vtotal = 0;
     uint32_t line = mach64_scanline(m, &vtotal);
@@ -2308,7 +2307,7 @@ static void mach64_present(mach64_t *m) {
 
     // No clamp needed: mach64_update settled this geometry against vram_size
     // through display_set_scanout, and `compose` is vram_size, so the span
-    // fits both by construction (04-video F-26/F-27).
+    // fits both by construction.
     size_t span = (size_t)stride * height;
     memcpy(m->compose, frame, span);
     m->display.bits = m->compose;
@@ -2422,11 +2421,11 @@ static void mach64_update(mach64_t *m) {
     // the buffer are settled TOGETHER, which is the part this used to get
     // wrong.  CRTC_PITCH reaches 32,736 and height reaches 1,536, so the
     // advertised span reaches ~50 MB; the old code noticed, set `blanked`,
-    // clamped the MEMSET to vram_size, and then left display.stride x height
-    // at the large value over a vram_size buffer -- so every consumer still
-    // read what the producer advertised (04-video F-26).  display_set_scanout
-    // decides both, and `blank` is vram_size, so a refused descriptor falls
-    // back to a raster the blank buffer can actually serve.
+    // clamped the MEMSET to vram_size, and then left display.stride x height at
+    // the large value over a vram_size buffer -- so every consumer still read
+    // what the producer advertised.  display_set_scanout decides both, and
+    // `blank` is vram_size, so a refused descriptor falls back to a raster the
+    // blank buffer can actually serve.
     display_set_scanout(&m->display, blanked ? NULL : m->vram, m->vram_size, base, stride ? stride : width * bpp, width,
                         height, m->blank, m->vram_size);
     blanked = m->display.bits == m->blank;
@@ -2659,7 +2658,7 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     // one.  Growing `vram` alone broke the invariant and turned the very next
     // mach64_update() -- which this function calls below -- into a 2 MB heap
     // WRITE overflow, twice over: memcpy into `compose` in mach64_present and
-    // memset of `blank` here (04-video F-27).
+    // memset of `blank` here.
     if (c.vram_size != m->vram_size) {
         uint8_t *v = (uint8_t *)calloc(1, c.vram_size);
         uint8_t *b = (uint8_t *)calloc(1, c.vram_size);
@@ -2985,10 +2984,10 @@ static const class_desc_t mach64_dac_class = {
 
 // --- the framebuffer node ---------------------------------------------------
 // The framebuffer node is display_class.c's, shared with the NuBus cards and
-// the built-in chips, so `machine.screen.source` reads the same on either bus
-// (04-video F-15).  This card used to re-implement it with `size` where NuBus
-// said `raw_size`, V_UINT where NuBus said V_INT, and no `format` at all --
-// the node was declared to mirror the NuBus one and did not.
+// the built-in chips, so `machine.screen.source` reads the same on either bus.
+// This card used to re-implement it with `size` where NuBus said `raw_size`,
+// V_UINT where NuBus said V_INT, and no `format` at all -- the node was
+// declared to mirror the NuBus one and did not.
 static display_t *mach64_fb_resolve(void *owner) {
     mach64_t *c = (mach64_t *)owner;
     return c ? &c->display : NULL;

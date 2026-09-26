@@ -69,6 +69,13 @@ void offer_registry_add(offer_registry_t *r, const char *path, bool explicit_pic
         explicit_pick ? " [explicit]" : "");
 }
 
+void offer_registry_clear_explicit(offer_registry_t *r) {
+    if (!r)
+        return;
+    for (size_t i = 0; i < r->count; i++)
+        r->entries[i].explicit_pick = false;
+}
+
 void offer_registry_clear(offer_registry_t *r) {
     if (!r)
         return;

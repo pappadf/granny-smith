@@ -2,16 +2,15 @@
 // Copyright (c) pappadf
 
 // scsi_53c96.h
-// NCR 53C96 Advanced SCSI Controller — the Quadra generation's SCSI chip
-// (proposal-machine-quadra-700-900-950.md §10), machine-independent so the
-// later 68040/early-PowerPC machines can reuse it.
+// NCR 53C96 Advanced SCSI Controller — the Quadra generation's SCSI chip,
+// machine-independent so the later 68040/early-PowerPC machines can reuse it.
 //
-// Phase C scope: the chip register file with data-manual-faithful reset and
+// Scope: the chip register file with data-manual-faithful reset and
 // interrupt semantics (NCR 53C94/95/96 Data Manual ch. 4/5) — enough for the
 // boot ROM's controller probe and bus scan: chip reset, NOP, flush FIFO,
 // SCSI bus reset, enable/disable selection, and the select sequences ending
-// in a selection time-out interrupt when no target responds.  Phase E
-// attaches the existing bus/target/CD-ROM object model and the TurboSCSI
+// in a selection time-out interrupt when no target responds; plus the
+// attachment to the shared bus/target/CD-ROM model and the TurboSCSI
 // pseudo-DMA path.
 
 #ifndef SCSI_53C96_H

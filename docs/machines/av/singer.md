@@ -2,9 +2,7 @@
 
 The AV family's sound datapath: the PSC's dedicated sound DMA engine and
 the Singer codec, modelled as a cadenced frame engine — the structural
-twin of the VDC field engine.  Register contract:
-the AV Singer hardware notes; tick gating and overrun
-semantics: the PlainTalk gap-closure findings (B2/B3).
+twin of the VDC field engine.
 
 ## The frame engine
 
@@ -38,7 +36,7 @@ its window (`(frame+1) & 1`):
   division by zero, whose infinities permanently saturate the endpoint
   detector's running cepstral mean.
 - **Frame interrupt** (`pFrmIntEn`): latch PSC-VIA2 IFR bit 6
-  (`PSCSNDFRM`) **and** pulse DSP EXT1 — the same gated tick (B2).
+  (`PSCSNDFRM`) **and** pulse DSP EXT1 — the same gated tick.
   If the previous EXT1 is still latched unserviced, that is a frame
   overrun: sticky `pdspFrameOvr` + L5 bit 1 (level until the host
   clears the $21C bit — B3).
@@ -124,7 +122,7 @@ pure files (`em_mic_ring.c`, `state/micRing.ts`), each tested at the wrap.
 > against itself and left the control switching itself back off.
 >
 > **A dead capture path does not sound silent — it sounds like white noise.**
-> The guest's recorder gains up hard (rung 6's tone golden plays back at full
+> The guest's recorder gains up hard (its tone golden plays back at full
 > scale), so it amplifies the codec's own dither into full-scale hiss.  "No
 > audio" and "wrong audio" are therefore indistinguishable by ear, which is
 > why the mic button's tooltip carries the live transport counters — rate,
@@ -149,7 +147,7 @@ pure files (`em_mic_ring.c`, `state/micRing.ts`), each tested at the wrap.
 Those are voice-call processing, and a browser AGC in front of the emulator
 is exactly the defect that made recorded speech-recognition assets unusable —
 levels 6-12 dB hot with the dynamics flattened, which Apple's recognizer
-rejects (`sr-test-audio-assets.md` §2).
+rejects.
 
 **The AudioContext runs at the browser's NATIVE rate**, not the codec's.
 Asking for 24 kHz looks tidier and would leave the C side at 1:1, but a real
@@ -270,22 +268,22 @@ The **tilt** figure is reported but not judged, deliberately.  Averaged over
 a whole utterance offline it separated a recognised asset (−11 dB) from a
 rejected recording (−20 dB); measured per second in the emulator the ranges
 overlap (−7.0/−3.5 against −5.3/−9.7), so no threshold is honest.  The
-thresholds that ARE enforced come from the PlainTalk contract and from rung
-7's finding that assets 6–12 dB hot are rejected — but they are calibrated
+thresholds that ARE enforced come from the PlainTalk contract and from the
+finding that assets 6–12 dB hot are rejected — but they are calibrated
 against one accepted signal and one rejected one, so passing them is not a
 promise of recognition.  It is not: the rejected recording was corrected to
 match the asset in both level and spectrum and was still rejected, 12 takes
 out of 12, while the asset recognised in the same session.
 
 The PlainTalk microphone rig exercises the conditioning without a
-browser (it found two defects review had missed).  `connected` drives the mic-present sense;
+browser.  `connected` drives the mic-present sense;
 `samples`/`position` expose progress.  The loaded WAV is checkpointed
 with the machine; the host mic is checkpoint-ephemeral.
 
 ## Tests
 
 `suite-av`: `av-chime` (power-on chime golden, content-identical to the
-dossier oracle `boot-chime-24kHz.wav`), `av-audio-in-device` (plug
+reference recording `boot-chime-24kHz.wav`), `av-audio-in-device` (plug
 contract + tone landing in the guest double buffer), plus the DSP rows
 that ride the frame tick (`av-dsp-boot`, `av-dsp-determinism`).
 

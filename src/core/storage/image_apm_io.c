@@ -25,7 +25,7 @@ apm_table_t *image_apm_parse(image_t *img, const char **errmsg) {
 
     // A partition map is in 512-byte blocks; an image opened with another
     // geometry (a Lisa ProFile's 532) has none, and disk_read_data would
-    // assert on the 512-based read below (09-storage F-49).
+    // assert on the 512-based read below.
     if (disk_block_size(img) != APM_BLOCK_SIZE) {
         if (errmsg)
             *errmsg = image_apm_err_read;

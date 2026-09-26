@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """test-matrix.py — extract the integration-test coverage matrix.
 
 Statically parses tests/integration/*/config.mk and test.script (plus any
@@ -11,9 +13,12 @@ Statically parses tests/integration/*/config.mk and test.script (plus any
 as GitHub-flavored markdown.  Scripts are segmented at `machine.boot`
 statements so multi-boot matrix tests attribute media/video to the machine
 that actually boots them.  Heuristic by design: once suites self-report
-coverage rows at runtime (proposal-integration-test-rework.md §5.6), that
-JSONL replaces the script-side guesswork here; the pivots and rendering
-stay.
+coverage rows at runtime, that JSONL replaces the script-side guesswork
+here; the pivots and rendering stay.
+
+The machine roster and each fixture ROM's default model are read from the
+source (builtin_machines[] and the profiles' .id; rom.c's compatible lists),
+so a new model or ROM needs no edit here.
 
 Usage:  scripts/test-matrix.py [--tests] [--video] [--pivot] [tests/integration]
 """
@@ -23,19 +28,42 @@ import re
 import sys
 from pathlib import Path
 
-MACHINES = {"plus", "se30", "iix", "iicx", "iici", "iisi", "iifx",
-            "q700", "q900", "q950", "q840av", "q660av",
-            "pm6100", "pm7100", "pm8100", "pm7500", "pm8500", "pm9500",
-            "lisa", "macxl"}
+SRC = Path(__file__).resolve().parent.parent / "src"
 
-# first entry of each ROM's compatible-model list (src/core/memory/rom.c)
-ROM_MACHINE = [
-    ("plus-", "plus"), ("iix-iicx-se30", "se30"), ("iici-", "iici"),
-    ("iisi-", "iisi"), ("iifx-", "iifx"), ("q700-q900", "q700"),
-    ("q950-", "q950"), ("q840av-q660av", "q840av"),
-    ("pm6100-pm7100-pm8100", "pm6100"), ("pm7500-pm8500-pm9500", "pm7500"),
-    ("lisa2-", "lisa"), ("macxl-", "macxl"),
-]
+
+def machine_roster():
+    """The registered model ids, read from the source the way machine.models
+    reports them: builtin_machines[] in src/machines/machine.c names each
+    profile, and the profile's .id is the model id."""
+    table = (SRC / "machines/machine.c").read_text(errors="replace")
+    body = re.search(r"builtin_machines\[\]\s*=\s*\{(.*?)\};", table, re.S).group(1)
+    wanted = set(re.findall(r"&(machine_\w+)", body))
+    ids = {}
+    for f in (SRC / "machines").rglob("*.c"):
+        text = f.read_text(errors="replace")
+        for var, block in re.findall(r"hw_profile_t\s+(machine_\w+)\s*=\s*\{(.*?)\n\};", text, re.S):
+            m = re.search(r'\.id\s*=\s*"([^"]+)"', block)
+            if var in wanted and m:
+                ids[var] = m.group(1)
+    missing = wanted - ids.keys()
+    if missing:
+        sys.exit(f"test-matrix: no .id found for {sorted(missing)}")
+    return set(ids.values())
+
+
+def rom_defaults():
+    """ROM checksum -> the model a boot picks when none is named: the first
+    entry of that ROM's compatible list in src/core/memory/rom.c."""
+    text = (SRC / "core/memory/rom.c").read_text(errors="replace")
+    lists = {name: re.findall(r'"([^"]+)"', items)
+             for name, items in re.findall(r"static const char \*const (\w+)\[\]\s*=\s*\{([^}]*)\}", text)}
+    return {int(ck, 16): lists[name][0]
+            for name, ck in re.findall(r'\{+\s*"(?:[^"\\]|\\.)*",\s*(\w+),\s*(0x[0-9A-Fa-f]{8})', text)
+            if lists.get(name)}
+
+
+MACHINES = machine_roster()
+ROM_DEFAULT = rom_defaults()
 
 # media path fragment -> system-software label
 MEDIA_SYSTEM = [
@@ -147,6 +175,12 @@ def parse_script(test, text):
         if "machine.boot" in line:
             test.note_args(line, is_boot=True)
             continue
+        # A row helper that boots the model it is handed, e.g.
+        # tnt_hd_boot("pm8500", ...): its quoted model argument is the
+        # machine for what follows.
+        m = re.search(r'\b\w+\(\s*"([a-z0-9]+)"', line)
+        if m and m.group(1) in MACHINES:
+            test.machine = m.group(1)
         m = re.search(r'\.insert\s+("[^"]+"|\S+)', line)
         if m:
             test.note_media(unquote(m.group(1)), "fd")
@@ -175,7 +209,9 @@ def parse_test(d):
             fields[m.group(1)] = m.group(2)
             if m.group(1) == "ROM":
                 rom = m.group(2).strip()
-    default = next((mach for frag, mach in ROM_MACHINE if frag in rom), None)
+    # Fixture ROMs are named <models>-<checksum>.rom (scripts/rom_naming.py).
+    ck = re.search(r"([0-9a-fA-F]{8})\.rom\b", rom)
+    default = ROM_DEFAULT.get(int(ck.group(1), 16)) if ck else None
     # model= in TEST_ARGS overrides the ROM-derived default
     args_model = re.search(r'model=(\S+)', fields.get("ARGS", ""))
     if args_model and unquote(args_model.group(1)) in MACHINES:
@@ -211,7 +247,9 @@ def emit_pivot(tests, pairs_of, title):
     for t in tests:
         for pair in pairs_of(t):
             pair_tests.setdefault(pair, []).append(t.name)
-    rows = sorted({m for m, _ in pair_tests})
+    # Every registered model gets a row, so one no test covers shows as an
+    # empty row rather than not at all.
+    rows = sorted(MACHINES | {m for m, _ in pair_tests if m != "?"})
     cols = sorted({c for _, c in pair_tests})
     print(f"\n### {title}\n")
     print("| " + " | ".join([""] + cols) + " |")
@@ -223,7 +261,7 @@ def emit_pivot(tests, pairs_of, title):
 
 
 
-# === Runtime coverage (§5.6 layer 2) ========================================
+# === Runtime coverage (layer 2) ==============================================
 #
 # Layer 1 (everything above) parses scripts statically and is heuristic by
 # design. Layer 2 reads what the suites REPORTED at runtime: each row that
@@ -231,9 +269,8 @@ def emit_pivot(tests, pairs_of, title):
 # machine, so the achieved set cannot drift from what actually ran.
 #
 # The declared roster in matrix-targets.json is the other half: it is
-# hand-authored from the proposal's §7 assignment tables and says which
-# cells the suite is REQUIRED to cover and which suite owes each one. It is
-# never generated from a run — a contract derived from what happened would
+# hand-authored and says which cells the suite is REQUIRED to cover and which
+# suite owes each one. It is never generated from a run — a contract derived from what happened would
 # be satisfied by whatever happened.
 
 COV_KEYS = ("machine", "system", "card", "width", "height", "depth", "addr32")
@@ -270,40 +307,65 @@ def read_targets(path):
 
 
 def check_perf(baseline_path, log_paths):
-    """Gate per-row instruction spend against perf-baselines.json (§5.8).
+    """Gate per-row instruction spend against perf-baselines.json.
 
     The spend is deterministic per build — same guest work, same count — so a
     row outside its tolerance band is a real change, not flake, and fails like
     a pixel golden. Absorbing a legitimate change means committing a reviewed
     baselines diff in the PR that caused it (scripts/gen-baselines.py).
+
+    Two more ways a row escapes the gate, both failures too:
+      * a row that reports with no baseline (a new row is baselined in the
+        commit that adds it);
+      * a baselined row that stops reporting although its test ran (a
+        renamed row, a row that now skips, a suite that exits early).
+    A test "ran" when the log carries the runner's "=== Running: ... (<dir>)"
+    line; a row belongs to the test directory named before its first '/'.
+    A row that announced itself skipped ("skip: <row> (...)", the media-gated
+    and known-defect rows) is listed, not failed.
     """
     doc = json.loads(Path(baseline_path).read_text())
     rows = doc["rows"]
-    seen, bad, new = {}, [], []
+    seen, ran, skipped, bad, new = {}, set(), set(), [], []
     for lp in log_paths:
         for line in Path(lp).read_text(errors="replace").splitlines():
             m = re.search(r"@@PERF (\{.*\})", line)
             if m:
                 rec = json.loads(m.group(1))
                 seen[rec["row"]] = rec["instr"]
+            m = re.match(r"=== Running(?: \(valgrind\))?: .* \(([^()]+)\) ===$", line)
+            if m:
+                ran.add(m.group(1))
+            m = re.match(r"skip: (\S+)", line)
+            if m:
+                skipped.add(m.group(1))
     for row, instr in sorted(seen.items()):
         base = rows.get(row)
         if not base:
             new.append((row, instr))
             continue
         want, tol = base["instr"], base.get("tolerance", 0.20)
-        if want and abs(instr - want) > want * tol:
+        if abs(instr - want) > want * tol:
             bad.append((row, instr, want, tol))
-    print(f"perf rows measured: {len(seen)}   baselined: {len(rows)}")
+    quiet = [r for r in rows if r not in seen and r.split("/", 1)[0] in ran]
+    skips = sorted(r for r in quiet if r.split("/", 1)[-1] in skipped)
+    silent = sorted(r for r in quiet if r not in skips)
+    print(f"perf rows measured: {len(seen)}   baselined: {len(rows)}   tests run: {len(ran)}")
     for row, instr, want, tol in bad:
         delta = (instr - want) / want * 100.0
         print(f"  OUT OF BAND {row}: {instr} vs baseline {want} "
               f"({delta:+.1f}%, tolerance ±{tol * 100:.0f}%)")
     for row, instr in new:
-        print(f"  no baseline yet: {row} = {instr}")
-    if not bad:
-        print("OK: every baselined row is within its tolerance band")
-    return 1 if bad else 0
+        print(f"  NO BASELINE {row} = {instr} (add it: scripts/gen-baselines.py)")
+    for row in silent:
+        print(f"  NOT REPORTED {row}: its test ran, the row did not report")
+    for row in skips:
+        print(f"  skipped: {row}")
+    if bad or new or silent:
+        return 1
+    print("OK: every reported row is baselined and within its band, "
+          "and every baselined row of the tests that ran reported")
+    return 0
 
 
 def owner_tier(suite_root, suite):
@@ -318,15 +380,15 @@ def owner_tier(suite_root, suite):
 def check_coverage(target_path, log_paths, suite_root, tier=None):
     """Diff achieved (@@COV) against declared (matrix-targets.json).
 
-    Exit semantics (§5.6): a declared cell that was not covered fails; a
+    Exit semantics: a declared cell that was not covered fails; a
     covered cell nobody declared is a warning telling the author to claim
     it. Two declared-but-uncovered cases are warnings instead of failures,
     because neither means coverage regressed:
       * the owing suite does not exist yet (branch work in progress) —
         derived from the filesystem, so it cannot be faked with a flag;
       * the cell is media_gated and its row printed a "skip:" line,
-        i.e. the private test data is not present in this checkout (§9's
-        landable-before-data rule);
+        i.e. the private test data is not present in this checkout (a row
+        may land before its data does);
       * the cell carries a `blocked` reason — an emulator defect makes it
         unreachable today (the cell-level twin of a milestone row). The
         reason is printed on every run so the debt stays visible, and
@@ -340,6 +402,15 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
 
     missing = [c for k, c in by_key_declared.items() if k not in by_key_achieved]
     extra = [c for k, c in by_key_achieved.items() if k not in by_key_declared]
+
+    # A cell is only enforceable if its owner runs in a tier whose check can
+    # fail the build; the unit tier has no coverage check (its tests boot no
+    # guest to speak of), so a cell owned there could never fail.
+    unit_owned = [c for c in declared if owner_tier(suite_root, c.get("suite", "")) == "unit"]
+    # A blocked cell that the run covered is a stale marker: whatever made it
+    # unreachable no longer does.  Say so, so the marker (and the reason
+    # written on it) comes off rather than going stale unnoticed.
+    unblocked = [c for k, c in by_key_declared.items() if c.get("blocked") and k in by_key_achieved]
 
     pending, gated, blocked, other_tier, failed = [], [], [], [], []
     for c in missing:
@@ -357,19 +428,21 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
 
     print(f"declared cells: {len(declared)}   achieved: {len(by_key_achieved)}")
     for label, group in (("NOT COVERED (regression)", failed),
+                         ("OWNED BY A UNIT-TIER TEST (move it to a matrix or extended test)", unit_owned),
                          ("not covered — suite not built yet", pending),
                          ("not covered — blocked by an emulator defect", blocked),
                          ("not covered — owed by another tier (not in this run)", other_tier),
                          ("not covered — media absent (skipped)", gated),
-                         ("covered but undeclared (claim it)", extra)):
+                         ("covered but undeclared (claim it)", extra),
+                         ("blocked but covered (remove the blocked marker)", unblocked)):
         if group:
             print(f"\n{label}: {len(group)}")
             for c in sorted(group, key=cell_key):
                 why = f"  {c['blocked']}" if c.get("blocked") else ""
                 print(f"  {cell_str(c)}  [{c.get('suite','?')}]{why}")
-    if not failed:
+    if not failed and not unit_owned:
         print("\nOK: every declared cell that can be covered was covered")
-    return 1 if failed else 0
+    return 1 if failed or unit_owned else 0
 
 
 def main():

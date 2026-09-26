@@ -3,13 +3,12 @@
 Third-party 3D-only **pass-through** PCI accelerator (not an Apple
 product; the Mac boards — TechWorks Power3D II, Micro Conversions Game
 Wizard — were the PC reference design with Mac drivers and a monitor
-pass-through cable). To be modelled in
-[`src/core/peripherals/pci/cards/voodoo2.c`](../../../../../src/core/peripherals/pci/cards/voodoo2.c);
-design in `proposal-pci-3dfx-voodoo2.md` (PCI Phase 3).
+pass-through cable). Modelled in
+[`src/core/peripherals/pci/cards/voodoo2.c`](../../../../../src/core/peripherals/pci/cards/voodoo2.c).
 
 This file adopts, for PCI, the per-card documentation convention NuBus
 uses under [`nubus/cards/`](../../nubus/cards/); retro-fitting a
-`mach64gx.md` is follow-on work.
+Mach64 GX page is follow-on work.
 
 | | |
 |---|---|
@@ -22,19 +21,18 @@ uses under [`nubus/cards/`](../../nubus/cards/); retro-fitting a
 
 ## Status
 
-Delivered in milestone groups on one branch (`pci-3dfx-voodoo2`); this
-document grows as each group lands.
+Delivered in steps; this document grows as each one lands.
 
-- **3a — substrate (landed):** `PIXEL_16BPP_565` in the display layer
+- **Substrate (landed):** `PIXEL_16BPP_565` in the display layer
   (below), the register-name table `scripts/voodoo2/voodoo2_regs.py`,
   this directory.
-- **3b — enumeration and bring-up (landed):** the card model in
+- **Enumeration and bring-up (landed):** the card model in
   [`voodoo2.c`](../../../../../src/core/peripherals/pci/cards/voodoo2.c)
   — config declaration, the vendor block at `$40`–`$57`, the three-face
   aperture, the register file with its gating rules, the ICS5342 DAC and
   PLL, LFB with memory-sizing aliasing, and the idle contract — gated by
   `tests/integration/tnt-pci-voodoo2` (below).
-- **3c — the rasteriser (landed):** both triangle paths (host setup and
+- **The rasteriser (landed):** both triangle paths (host setup and
   the on-chip setup engine with strips/fans/culling), the full pixel
   pipeline in the p.15 order, two TMUs with single-pass multitexture,
   all fifteen texture formats with the NCC/palette decode, the packed
@@ -45,7 +43,7 @@ document grows as each group lands.
   with the software walker as the normative default and a null backend
   pinning the analytic-timing invariant.  See "The fill convention and
   the divergence list" below.
-- **3d — pass-through and display (landed):** `v2_drives_monitor()` —
+- **Pass-through and display (landed):** `v2_drives_monitor()` —
   the one place the pass-through state is computed (fbiInit0[0] under
   the driver's 1-= -drives convention, gated by video reset, software
   blanking and the output enables, with the fbiInit6[29:28] override) —
@@ -63,15 +61,15 @@ document grows as each group lands.
   (`system_restore` now re-seeds the PCI staged picks from the restored
   record, the exact NuBus parallel that was already there).  web2's
   Expansion Slots section gains the one non-display socket picker.
-  Gate: `tnt-pci-voodoo2-display` — take/release against a live 7.6
-  desktop with the release matching the pre-takeover golden
+  Gate: `suite-tnt`'s `tnt-voodoo2-display` row — take/release against a
+  live 7.6 desktop with the release matching the pre-takeover golden
   byte-identically, and a mid-drive checkpoint restoring to the same
   framebuffer checksum.
-- **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`) — COMPLETE:
+- **Guest software (Mac OS 8.1 + `Quake 3Dfx`) — COMPLETE:
   detection AND real in-game rendering.**  Running the SHIPPED 3dfx
   driver exposed nine model gaps, all closed, none found by the
   hand-written tests.  Detection round: the **CMDFIFO engine** (V2 §11
-  — the proposal wrongly believed it off the Glide 2.x path; Mac
+  — once wrongly believed off the Glide 2.x path; Mac
   Glide's whole render path uses it and polls `cmdFifoRdPtr` for
   room), **TMU send-config** (`trexInit1[18]` — how software counts a
   board's TMUs), and a **calibratable dither** (unique 4×4 un-dither
@@ -89,8 +87,8 @@ document grows as each group lands.
      on a black screen (`V2_CHIP_REVISION`).
   3. **The SGRAM fill** (`bltCommand` FRECTFILL) — grBufferClear
      clears the page-aligned screen span with the 2D engine;
-     `fastfillCMD` only mops sub-page remainder rows.  The proposal's
-     "2D BLT is a non-goal" was wrong by exactly this one operation
+     `fastfillCMD` only mops sub-page remainder rows.  Treating
+     2D BLT as a non-goal was wrong by exactly this one operation
      (`v2_blt_go`).
   4. **TSU float→12.4 truncation** — clients hand the setup unit
      coordinates still carrying the `+786432.0` snap bias (3dfx's own
@@ -149,7 +147,7 @@ cited, never code copied). **No other emulator's device model is used**:
 `dingusppc/` and `mame-voodoo/` sit quarantined in the project's
 `do-not-read/` directory, and nothing here may be derived from them.
 
-## The 5-6-5 pixel format (milestone 3a)
+## The 5-6-5 pixel format
 
 The Voodoo2's framebuffer is natively 5-6-5 RGB, and the display layer
 had no such format (1/2/4/8 indexed, 1-5-5-5, 32-bpp XRGB). Rather than
@@ -172,7 +170,7 @@ one bit of green on every pixel and make every golden a lossy record —
   in `make-fixtures.py`, with the same bytes reinterpreted as 5-5-5 as
   the positive control.
 
-## The model, milestone 3b — what is enforced where
+## The model — what is enforced where
 
 Each rule lives in exactly one place in `voodoo2.c`:
 
@@ -189,8 +187,8 @@ Each rule lives in exactly one place in `voodoo2.c`:
   and read zero; `cfgStatus` aliases the live status register so a
   driver can poll before mapping; the undocumented `$C0`/`$E0` writes
   fall through to the generic reserved behaviour (no fault, logged once).
-- **The idle contract is inverted from silicon** (documented divergence,
-  proposal §8 Q3): work completes synchronously and `status` is
+- **The idle contract is inverted from silicon** (documented divergence 1
+  below): work completes synchronously and `status` is
   *composed*, never stored — FIFO fields read empty, busy bits read 0,
   the retrace bit and beam counters derive from the scheduler
   (`v2_scanline`, the `mach64_scanline` idiom) so anything spinning on
@@ -232,12 +230,12 @@ and `glide-init.script`, a step-by-step replay of 3dfx's own bring-up
 order with every step's postcondition asserted in place and every wait
 bounded. The empty slot's all-ones read is the positive control.
 
-## The fill convention, and the divergence list (milestone 3c)
+## The fill convention, and the divergence list
 
 **The triangle fill rule is CHOSEN, not known.**  V2 §7.2, on the
 TRIANGLE command, reads in full: *"TO BE COMPLETED. SEE THE SST-1
 PROGRAMMING GUIDE FOR A DETAILED EXPLANATION"* — and nobody holds that
-guide (proposal §8 Q1, §10 item 1).  The convention this rasteriser
+guide.  The convention this rasteriser
 implements, derived from what the spec does give (the p.36 area formula
 and sign, 12.4 vertices, the sub-pixel rule):
 
@@ -254,10 +252,10 @@ divergences, each deliberate and localised:
 
 | # | Divergence | Where | Why |
 |---|---|---|---|
-| 1 | Idle is inverted: work completes at issue, busy reads 0 | `v2_status` | the faithful failure mode is an unbounded guest spin (§8 Q3) |
-| 2 | The fill rule above | `v2_sw_triangle` (`voodoo2_raster.c`) | not specified at any price; §8 Q1 |
+| 1 | Idle is inverted: work completes at issue, busy reads 0 | `v2_status` | the faithful failure mode is an unbounded guest spin |
+| 2 | The fill rule above | `v2_sw_triangle` (`voodoo2_raster.c`) | not specified at any price |
 | 3 | Dither thresholds (classic Bayer 4×4/2×2, remainder-threshold rule) | `v2_pack565` (`voodoo2_raster.c`) | the spec names the modes but not the matrices |
-| 4 | Per-pixel LOD from analytic texel-space steps | `v2_texture_chain_full` (`voodoo2_raster.c`) | the LOD arithmetic is Bruce-spec material nobody holds (§8 Q4) |
+| 4 | Per-pixel LOD from analytic texel-space steps | `v2_texture_chain_full` (`voodoo2_raster.c`) | the LOD arithmetic is Bruce-spec material nobody holds |
 | 5 | 1/W→4.12 float-depth normalisation | `v2_depth_float` | the exact normalisation is not in our material |
 | 6 | Fog table indexing (4-bit exponent + 2 mantissa bits, no inter-entry interpolation) | `v2_pixel_pipe` | normalisation unspecified; no held client uses fog |
 | 7 | Float-mirror→fixed conversion truncates toward zero | `v2_float_to_latch` | conversion rounding unspecified |
@@ -273,15 +271,14 @@ divergences, each deliberate and localised:
 
 What is *not* on this list, because the hardware behaviour is documented
 and implemented faithfully: sub-pixel correction mutating the start
-latches per FIFO read (so resend-less triangles drift — §8 Q9, asserted),
+latches per FIFO read (so resend-less triangles drift — asserted),
 the reversed LFB transform orders, texture-memory aliasing under the
 sizing probes, and the initEnable gates.
 
 ## The raster seam: commands, snapshot, backends
 
 `voodoo2_raster.h` is the seam between the card and its rasteriser,
-reshaped by two follow-on proposals (`proposal-voodoo2-walker-
-optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
+reshaped into a command layer:
 
 - **The producer** (`voodoo2.c`) owns the register file and turns guest
   traffic into commands: triangle, fastfill, LFB pixel, raw 16-bit
@@ -297,9 +294,8 @@ optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
   command into the **target** (`v2_target_t`) it owns: the framebuffer,
   the texture RAMs, the palettes and NCC tables, the five statistics
   counters and the stipple register.  The TU never includes the card
-  struct — it *cannot* read a live register, which is the thread
-  proposal's "worker never reads live state" rule enforced by the
-  compiler.
+  struct — it *cannot* read a live register, which is the "worker never
+  reads live state" rule enforced by the compiler.
 - **Backends** decide only *where* the executor runs:
   `pci_option="raster=sw"` (default, inline, **normative** — it
   produces every golden), `raster=null` (drops triangles; pins the
@@ -353,10 +349,10 @@ a mismatch):
 | snapshot | register decode, mip-chain address arithmetic and buffer bases hoisted per draw | same expressions, evaluated once |
 | dither | `v2_pack565`'s two divisions become `s_dith5/6[d][v]` lookups | tables built from the same expressions over the whole 16×256 domain |
 | fetch | one clamp/wrap per bilinear coordinate, a 2×2 raw fetch, 8-bit formats through a 256-entry expansion cache keyed by (format, NCC select, palette generation); `ldexp` becomes a multiply by an exact power of two | cache built by `v2_texel_expand`; power-of-two scaling is exact in IEEE double |
-| TMU skip (§3.2) | TMU1 not sampled when TMU0's combine consumes nothing from its chain input (`tc_zero_other`, `tca_zero_other`, no `a_other` mselect, not echoing config); the chain not run when `fbzColorPath` never reads `tex_argb` | dataflow: the dead value is multiplied by zero or never selected |
-| incremental (§3.3) | edge functions and every iterator evaluated in closed form at the first pixel of a row's inside run, then stepped by the X gradient; the row scan stops when the run ends | integer fixed point: `start + k·d` accumulated equals the closed form; a convex polygon's row is one interval |
-| pinned LOD (§3.4) | with `lodmin == lodmax` and equal min/mag filters the estimate (four divides and a `log2` per pixel) is never computed | the clamp pins `lod4` and `magnify` selects nothing |
-| inlining (§3.6) | the per-pixel leaf helpers are `always_inline`; the watch test is one predicted branch | no semantic content |
+| TMU skip | TMU1 not sampled when TMU0's combine consumes nothing from its chain input (`tc_zero_other`, `tca_zero_other`, no `a_other` mselect, not echoing config); the chain not run when `fbzColorPath` never reads `tex_argb` | dataflow: the dead value is multiplied by zero or never selected |
+| incremental | edge functions and every iterator evaluated in closed form at the first pixel of a row's inside run, then stepped by the X gradient; the row scan stops when the run ends | integer fixed point: `start + k·d` accumulated equals the closed form; a convex polygon's row is one interval |
+| pinned LOD | with `lodmin == lodmax` and equal min/mag filters the estimate (four divides and a `log2` per pixel) is never computed | the clamp pins `lod4` and `magnify` selects nothing |
+| inlining | the per-pixel leaf helpers are `always_inline`; the watch test is one predicted branch | no semantic content |
 
 Measured on the canonical launch (`scripts/voodoo2/bench.sh`: the
 glide row to its golden — Mac OS 8.1 boot, Finder launch, the attract
@@ -391,20 +387,18 @@ the producer's time is the PowerPC interpreter running the guest.
 Moving the parser or the setup engine onto the worker could therefore
 save at most a few percent, at the price of a worker-owned register
 file (every register-face read would fence); the worker itself is
-where the remaining time is.  The backend stays opt-in, as the
-proposal specified.  **`raster=null` is not a no-raster floor for this flow**:
+where the remaining time is.  The backend stays opt-in.  **`raster=null` is not a no-raster floor for this flow**:
 with nothing drawn the shipped driver's render-based self-tests fail,
 `grSstQueryHardware` reports no board and Quake never opens the
-screen — the row diverges after ~100 s.  The thread proposal's "68%
-of host CPU is rasterisation" was measured that way and therefore
+screen — the row diverges after ~100 s.  An earlier "68% of host
+CPU is rasterisation" figure was measured that way and therefore
 compared two different programs; the honest figure on this host is
 whatever the ladder removed (at least the 6 minutes it took off) plus
 the unknown remainder.
 
 ## The WebGPU takeover (`voodoo2_webgpu`)
 
-`proposal-voodoo2-webgpu-takeover` (branch `voodoo2-webgpu-takeover`):
-in the browser, the host's GPU draws the guest's triangles.  An
+In the browser, the host's GPU draws the guest's triangles.  An
 **alternative** to the software rasteriser, chosen as a CARD: the
 registry holds two kinds sharing one implementation, `voodoo2` (the
 exact card, its rasteriser the worker thread) and `voodoo2_webgpu`
@@ -421,7 +415,7 @@ so.  `pci_option="raster=..."` still overrides either kind per boot
 (the tests use it); nothing in the walker changes, and every native
 gate and golden is untouched.  What the user gets is a *rendering* of the scene
 the guest described, held to a tolerance; the model's frame is what
-native produces (§6 of the proposal, divergences 12–16 above).
+native produces (divergences 12–16 above).
 
 **The shape.**  `raster=webgpu` is the thread backend with a
 *translator* in its worker
@@ -476,7 +470,7 @@ row is added back as a one-row quad on the same plane, a bottom
 edge's row is cut by the scissor (`v2gpu_triangle`); the gate draws the
 136/120 pair flipped and counts both rows.
 
-**Engagement (§5.1).**  The driver's bring-up renders and reads back
+**Engagement.**  The driver's bring-up renders and reads back
 hundreds of times (dither calibration, TMU census, memory sizing) —
 the walker does that exactly and in microseconds — so GPU mode
 engages on the edge where the card starts driving the monitor
@@ -498,7 +492,7 @@ shadow's colour and aux buffers (exact at that instant, by the fence
 audit); disengaging reads every target back so the walker continues
 from the GPU's pixels.
 
-**Fences (§5.7).**  The shadow is still what the guest reads, but
+**Fences.**  The shadow is still what the guest reads, but
 under the takeover its *pixels* are current only where a fence read
 them back: `v2_raster_sync_fb(addr, len)` — LFB reads (one 64-row
 band of the buffer, cached per row until the next draw touches it),
@@ -509,7 +503,7 @@ register, the palettes and the texture RAM authoritative, as before.
 Each band is one GPU roundtrip (`copyTextureToBuffer` + `mapAsync`,
 ~1–5 ms); Quake's in-game phase does none.
 
-**Fallbacks (§5.5).**  A rotate-mode stipple *mask*, the "colour
+**Fallbacks.**  A rotate-mode stipple *mask*, the "colour
 before fog" destination blend factor and the zaColor depth compare
 are not expressible on the GPU: the translator reads the triangle's
 rows back, the walker executes the command against the shadow (so
@@ -557,15 +551,15 @@ that; a descending segment is now held flat at its lower entry
 (divergence 10).
 
 **Not delivered (deliberately):** the optional internal resolution
-scaling (§5.9) — the vertex path is ready for it (positions are
+scaling — the vertex path is ready for it (positions are
 floats, the attachments are ours) but nothing uses it yet; the
-browser Quake visual gate (§7 gate 4) — the drawing-section gate runs
+browser Quake visual gate — the drawing-section gate runs
 every stage the shader has, but the full launch flow in the browser on
 a software adapter is many minutes and stays a manual check
 (`scripts/voodoo2/bench.sh` for native, the e2e for the takeover's
 mechanics).
 
-## The register-name table (milestone 3a)
+## The register-name table
 
 `scripts/voodoo2/voodoo2_regs.py` — register offset → name / width /
 R-W class / FIFO / pipelined flags, transcribed from V2 spec pp.22-26,
@@ -589,7 +583,7 @@ triangle with its vertex positions and the shading state (`tri (..)
 fbzcp= fbz= alpha= t0mode= t0lod= t0base=`); level 6: register reads.
 `pc=on` stamps the guest PC.  The fifo lines exist because the entire
 Mac Glide render path travels through the CMDFIFO: a trace blind to it
-shows a card nobody is drawing on — the 3e diagnosis lost an hour to
+shows a card nobody is drawing on — the guest-software diagnosis lost an hour to
 exactly that.
 
 Two further tools trace a single wrong pixel to its texels:

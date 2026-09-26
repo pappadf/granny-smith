@@ -8,12 +8,12 @@
 // functionally (not as an HC05 core) against BOTH sides of the wire:
 //   * host side — OS/CudaMgr.a (SendCudaCmd / CudaShiftRegIRQ / CudaInit)
 //   * Cuda side — the firmware disassembly distilled in
-//     docs/machines/av/cuda.md §3c (handshake pin map,
+//     docs/machines/av/cuda.md (handshake pin map,
 //     the 37-entry pseudo-command dispatch with its 12 REJECTED commands,
 //     PRAM = 256 bytes at $0100-$01FF, the RTC counter)
 //
 // Transport: VIA1's shift register (Cuda is the external shift clock) plus
-// three port-B pins (via1-cuda.md §2):
+// three port-B pins:
 //   * vCudaTREQ    (PB3, host input)  — active-LOW: Cuda holds it low while
 //     it owns the bus / has bytes to send, raises it with the last byte.
 //   * vCudaBYTEACK (PB4, host output) — a LEVEL toggled once per byte
@@ -64,7 +64,7 @@ void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp);
 // The VIA1 glue is the same on every machine that wires this transport to
 // VIA1: port B is the handshake, the shift register is a command byte, and
 // only the port test and a NULL check stand between the VIA callback and
-// the transport (F-19).  Five machines each carried their own copy of that,
+// the transport.  Five machines each carried their own copy of that,
 // and they had already drifted -- two tested the machine-state pointer for
 // NULL and two did not.  Both entry points below are NULL-tolerant, and
 // av_cuda_via1_port_output takes the port number, so a machine's callback is one

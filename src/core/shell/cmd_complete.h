@@ -33,8 +33,7 @@ struct completion {
     // Set when candidates were DROPPED -- the per-call string pool filled, or
     // the item table did.  Without it a short list was indistinguishable from
     // a complete one, so a class with many long member names silently lost
-    // completions past the pool's 2 KB with no indication anywhere
-    // (08-core-infra F-54).
+    // completions past the pool's 2 KB with no indication anywhere.
     bool truncated;
 };
 

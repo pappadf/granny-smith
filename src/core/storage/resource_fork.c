@@ -71,7 +71,7 @@ struct rfork {
 // Most a fork may hold inflated at once.  Resources used to be inflated at
 // parse time, every one, each up to RSRC_DCMP_MAX_SIZE -- a fork whose map
 // declares thousands of small compressed resources asked for that many
-// times 16 MiB before anyone read one (09-storage F-22).  Inflation is on
+// times 16 MiB before anyone read one.  Inflation is on
 // first lookup now, and a lookup past this budget gets the raw bytes, as if
 // the resource's dcmp were unsupported.  A System file's compressed
 // resources come to a few MB.

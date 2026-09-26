@@ -64,6 +64,17 @@ VALGRIND_FLAGS := --error-exitcode=1 \
 # Auto-discover test directories (those containing test.script); TIER=
 # narrows to directories whose config.mk declares that TEST_TIER.
 ALL_TEST_DIRS := $(patsubst %/test.script,%,$(wildcard */test.script))
+
+# CI runs by tier and never the unfiltered set, so a test whose config.mk
+# has no recognised `TEST_TIER := unit|matrix|extended` line (a typo, `?=`,
+# trailing blanks, no config.mk at all) would run nowhere while still being
+# listed.  Refuse to proceed instead.
+tier_of = $(shell sed -n 's/^TEST_TIER := \(unit\|matrix\|extended\)$$/\1/p' $(1)/config.mk 2>/dev/null)
+UNTIERED := $(strip $(foreach d,$(ALL_TEST_DIRS),$(if $(call tier_of,$(d)),,$(d))))
+ifneq ($(UNTIERED),)
+$(error tests with no recognised TEST_TIER (unit | matrix | extended): $(UNTIERED))
+endif
+
 TIER ?=
 ifeq ($(TIER),)
 TEST_DIRS := $(ALL_TEST_DIRS)
@@ -86,7 +97,7 @@ export HEADLESS_BIN_ABS := $(abspath $(HEADLESS_BIN))
 export DUMP_BIN_ABS := $(abspath $(DUMP_BIN))
 export TEST_DATA_ABS := $(abspath $(TEST_DATA))
 
-.PHONY: all build test test-valgrind list clean check-data FORCE
+.PHONY: all build test test-valgrind list check-tiers clean check-data FORCE
 FORCE:
 
 # Check if test data is available
@@ -138,8 +149,8 @@ build:
 $(HEADLESS_BIN):
 	@$(MAKE) -C $(ROOT_DIR) -f Makefile.headless
 
-# The dump tool — used by the re-* tests for resource-fork extraction.
-# Each test runner can depend on it via $(DUMP_BIN) in its config.mk.
+# The dump tool — used by the re-* tests for resource-fork extraction.  Every
+# test rule depends on it (phony, so a stale binary is rebuilt too).
 $(DUMP_BIN):
 	@$(MAKE) -C $(ROOT_DIR)/tools/dump
 
@@ -171,17 +182,22 @@ list:
 	@echo "Available integration tests:"
 	@for dir in $(TEST_DIRS); do \
 		if [ -f "$$dir/config.mk" ]; then \
-			name=$$(grep -m1 '^TEST_NAME' "$$dir/config.mk" 2>/dev/null | cut -d= -f2- | sed 's/^[ \t]*//'); \
-			tier=$$(grep -m1 '^TEST_TIER' "$$dir/config.mk" 2>/dev/null | cut -d= -f2- | sed 's/^[ \t]*//'); \
+			name=$$(sed -n 's/^TEST_NAME[[:space:]]*:=[[:space:]]*//p' "$$dir/config.mk" | head -1); \
+			tier=$$(sed -n 's/^TEST_TIER := \(unit\|matrix\|extended\)$$/\1/p' "$$dir/config.mk"); \
 			echo "  $$dir [$$tier]: $$name"; \
 		else \
 			echo "  $$dir"; \
 		fi; \
 	done
 
+# Every test directory has a recognised tier (checked at parse time above);
+# this target exists so CI can run that check on its own, without data.
+check-tiers:
+	@echo "$(words $(ALL_TEST_DIRS)) integration tests, each with a tier"
+
 # Pattern rule for running individual tests: delegate to the shared
 # runner with per-test result/work dirs.
-test-%: $(HEADLESS_BIN) FORCE
+test-%: $(HEADLESS_BIN) $(DUMP_BIN) FORCE
 	@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
 	DUMP_BIN="$(DUMP_BIN_ABS)" \
 	TEST_DATA="$(TEST_DATA_ABS)" \
@@ -197,7 +213,7 @@ clean:
 # Run the (tier-filtered) tests under Valgrind memcheck.  Note: the
 # full-suite sweep is impractical (20-50x slowdown over billions of
 # guest cycles); CI runs `make test-valgrind TIER=unit` plus selected
-# boots — see proposal-integration-test-rework §5.4.
+# boots — see docs/guide/TESTING.md.
 test-valgrind: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
 	@echo "Running $(words $(TEST_DIRS)) integration test(s) under Valgrind$(if $(TIER), [tier: $(TIER)])"
@@ -218,7 +234,7 @@ test-valgrind: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	fi
 
 # Valgrind flavor of the pattern rule: same runner, wrapped binary.
-test-valgrind-%: $(HEADLESS_BIN) FORCE
+test-valgrind-%: $(HEADLESS_BIN) $(DUMP_BIN) FORCE
 	@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
 	DUMP_BIN="$(DUMP_BIN_ABS)" \
 	TEST_DATA="$(TEST_DATA_ABS)" \

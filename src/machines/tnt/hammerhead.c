@@ -218,7 +218,7 @@ void tnt_hh_init(config_t *cfg) {
     // The part identifier's FIRST BYTE is the model-family discriminator
     // the shipping ROM dispatches on ($39 = TNT, $3001xxxx = the 7200 /
     // Catalyst — decoded from the identification routine at $FFC14844;
-    // the dossier's "$3001 required" reading was the Catalyst branch).
+    // an earlier "$3001 required" reading was the Catalyst branch).
     hh->reg[HH_REG_ID >> 4] = tnt_board(cfg)->hh_id;
     hh->reg[HH_REG_MACHID >> 4] = tnt_board(cfg)->hh_r20;
     hh->reg[HH_REG_ARBCONFIG >> 4] = 0x00u; // TwoCPU clear: uniprocessor
@@ -229,8 +229,8 @@ void tnt_hh_init(config_t *cfg) {
     //
     // A GS_HH_L2CFG env-var override used to sit here, cut for the 604
     // boot-wall hunt, letting the environment rewrite the strap and latch an
-    // `l2cfg_sticky` flag that made the register ignore writes.  Removed
-    // (05-chipsets-irq F-41).  Three things were wrong with it: emulated
+    // `l2cfg_sticky` flag that made the register ignore writes.  Removed.
+    // Three things were wrong with it: emulated
     // hardware behaviour depended on the process environment, so a run was
     // not reproducible; it contradicted the rule that a machine's facts come
     // from its profile (mac030_glue.h:57-60, ARCHITECTURE.md:492); and

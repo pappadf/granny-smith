@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // The unit tier's platform header: the shared one (src/platform/platform.h),
 // with a clock that stands still (platform_clock.h beside this file), so a
 // test's timing never depends on the host.  Force-included by every suite and

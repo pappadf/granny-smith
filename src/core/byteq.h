@@ -8,7 +8,7 @@
 // Taking bytes advances the head rather than moving what is left, so draining
 // a queue in small pieces costs linear time -- the copies it replaces moved
 // the whole remainder down after every 512-byte read, quadratic in what was
-// queued (10-network N-21).  The space is reclaimed when the queue empties,
+// queued.  The space is reclaimed when the queue empties,
 // or by moving the remainder down once the head has passed half the buffer:
 // by then at least as many bytes were taken as are moved.
 //

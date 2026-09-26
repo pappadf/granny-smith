@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// PSC DMA-engine unit test (proposal-quadra-av.md Phase D).
+// PSC DMA-engine unit test.
 //
 // Links the real av/psc.c against recording stubs and replays the three
-// known-good client sequences the dossier quotes verbatim from Apple's
-// drivers (psc.md §3):
+// known-good client sequences verbatim from Apple's drivers:
 //
 //  1. The SCSI HAL's StartPSC / PausePSC / Wt4PSCComplete / StopPSCRead:
 //     pause-then-FROZEN, active-set indexed arming, SENSE-bit CmdStat
@@ -66,10 +65,10 @@ static void mem_write(void *ctx, uint32_t phys, uint32_t value, unsigned width) 
 // Register access helpers (byte-lane shaped, like the mac030 engine)
 // ============================================================================
 
-// Handler rows take (cfg, win_off, addr) since 05-chipsets-irq F-22: the
-// engine decodes the window-relative offset once and hands it over, instead
-// of each handler re-deriving it from the island mirror mask by hand.  For
-// this window win_off is exactly `off`.
+// Handler rows take (cfg, win_off, addr): the engine decodes the
+// window-relative offset once and hands it over, instead of each handler
+// re-deriving it from the island mirror mask by hand.  For this window win_off
+// is exactly `off`.
 #define PSC_BASE 0x50F31000u
 
 static config_t s_cfg;
@@ -303,6 +302,20 @@ TEST(test_no_dma_above_rom_base) {
     ASSERT_TRUE(!(r16(CTRL(0)) & HW_BERR));
 }
 
+// 7. The sound block's last longword: dspOverRun is lane 0 of $21C, and
+// lanes 1-3 hold nothing.  They once read past the end of the sound-latch
+// array into the next member.
+TEST(test_dsp_overrun_lanes) {
+    w8(0x21C, 0x87); // sense convention: set bits 0-2
+    ASSERT_EQ_INT(r8(0x21C) & 0x07, 0x07);
+    for (uint32_t off = 0x21D; off <= 0x21F; off++) {
+        w8(off, 0xA5); // dropped
+        ASSERT_EQ_INT(r8(off), 0);
+    }
+    w8(0x21C, 0x07); // clear them again
+    ASSERT_EQ_INT(r8(0x21C) & 0x07, 0);
+}
+
 int main(void) {
     s_cfg.machine_context = &s_st;
     s_st.psc = av_psc_init(&s_cfg, NULL);
@@ -316,6 +329,7 @@ int main(void) {
     RUN(test_fdc_double_buffer);
     RUN(test_write_direction);
     RUN(test_no_dma_above_rom_base);
+    RUN(test_dsp_overrun_lanes);
 
     fprintf(stderr, "psc: all tests passed\n");
     return 0;

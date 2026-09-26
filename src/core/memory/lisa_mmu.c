@@ -175,8 +175,7 @@ void lisa_mmu_delete(lisa_mmu_t *m) {
 // start = true and zeroes the descriptors, so a restored machine resumed a
 // mid-boot CPU against a POWER-ON MMU: `start` re-routes every low access to
 // ROM/descriptor RAM and every mapped segment reads slr = 0, which is below
-// ACC_MEM_RO_STK, so it faults.  Unfinished R7 of
-// completed/proposal-machine-lisa-xl.md, not a new design question.
+// ACC_MEM_RO_STK, so it faults.
 //
 // Field-by-field rather than a POD blob because the struct interleaves host
 // pointers (rom, sched, the NMI and VBL-ack callbacks, the io[] table) with
@@ -324,8 +323,8 @@ void lisa_mmu_set_nmi(lisa_mmu_t *m, void (*cb)(void *, bool), void *ctx) {
 }
 
 // Read the Status Register byte.  Bit 2 is the vertical-retrace signal.  We
-// model only the *frame-accurate* VBL (docs/machines/lisa/lisa.md §8.1, §6.2 in the proposal:
-// cycle-exact video dot timing is a non-goal), so rather than reproduce the
+// model only the *frame-accurate* VBL (cycle-exact video dot timing is a
+// non-goal), so rather than reproduce the
 // exact dot-clock phase the ROM's video-logic self-test (VIDTST) samples, we
 // present a retrace bit that simply *changes* over time — alternating on each
 // Status Register read.  VIDTST waits for the bit low then expects it high, so
@@ -804,8 +803,8 @@ bool lisa_mmu_debug_write(uint32_t addr, unsigned size, bool supervisor, uint32_
 //
 // The segment MMU is real hardware with its own translation; before this node
 // it had no object at all and the debugger showed every address as mapped to
-// itself (D3, D-7, N-28).  translate/peek have the same
-// signatures and result shapes as every other MMU kind's.
+// itself.  translate/peek have the same signatures and result shapes as every
+// other MMU kind's.
 
 // Instance data: the lisa_mmu_t.
 static lisa_mmu_t *lisa_mmu_from(struct object *self) {

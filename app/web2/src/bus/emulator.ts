@@ -130,7 +130,7 @@ const cmdWaiters: Array<() => void> = [];
 // version mismatch, a module that fails to load, or a worker that never
 // comes up.  Before this, a failure left the promise pending forever — URL
 // media never ran, the New Machine dialog stayed on "Scanning ROMs…", and a
-// worker that never started produced no message at all (F-37, N-58).
+// worker that never started produced no message at all.
 export type BootState =
   | { phase: 'starting' }
   | { phase: 'ready' }
@@ -293,7 +293,7 @@ export function isModuleReady(): boolean {
 
 // --- gsEval -------------------------------------------------------------
 
-// The result contract (A1):
+// The result contract:
 //   - a value     — the method or attribute's result;
 //   - null        — ONLY a successful method that returns nothing (V_NONE);
 //   - { error }   — failure.  A C-side V_ERROR carries the core's message;
@@ -319,8 +319,7 @@ export async function gsEval(
   if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
   if (!Module || !moduleReady) return transportError('emulator not ready');
   await waitForBridgeReady();
-  // An array is positional; a plain object binds by declared argument name
-  // (proposal-named-args-boot-config §3.4).
+  // An array is positional; a plain object binds by declared argument name.
   const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
   // Refuse before touching the shared slot: a too-large request is the
   // caller's error, not the bridge's, so it carries no `transport` flag.
@@ -348,7 +347,7 @@ export function requestTooLarge(path: string, argsJson: string): string | null {
   return null;
 }
 
-// --- Slow is not dead (A6) ---------------------------------
+// --- Slow is not dead --------------------------------------
 //
 // The bridge has one slot and no request id, so a slow request is never
 // abandoned on a timer: freeing the slot while the worker is still inside the
@@ -450,8 +449,7 @@ export function gsErrorText(res: unknown): string {
 //
 // The Terminal view is the single caller of `shell.run` — every other
 // component reaches the core through typed object-model paths via
-// gsEval. The proposal-shell-as-object-model-citizen.md §5.3 ESLint
-// rule pins this; only TerminalPane.svelte may construct shell-line
+// gsEval. An ESLint rule (eslint.config.js) pins this; only TerminalPane.svelte may construct shell-line
 // strings.
 
 let cachedPrompt: string | null = null;
@@ -591,7 +589,7 @@ function handleSchedulerSpeed(speedX256: number): void {
   setAcceleratedSpeed((speedX256 | 0) / 256);
 }
 
-// Core-pushed performance metrics, ~1 Hz (perf proposal P12): emulated MIPS
+// Core-pushed performance metrics, ~1 Hz: emulated MIPS
 // from instr_count deltas and the RAF tick rate. Fixed-point on the wire
 // (x100 / x10) since MAIN_THREAD_ASYNC_EM_ASM carries ints.
 function handlePerfUpdate(mipsX100: number, tpsX10: number): void {

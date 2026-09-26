@@ -49,7 +49,7 @@ void vbuf_appendf(vbuf_t *b, const char *fmt, ...) {
         return;
     // vsnprintf reports the length it WOULD have written.  Appending that
     // many bytes out of `tmp` is the overread this codebase has already shipped
-    // once (08-core-infra F-02), so the short path clamps and the long path
+    // once, so the short path clamps and the long path
     // formats again into an exact allocation rather than trusting the count.
     if ((size_t)n < sizeof(tmp)) {
         vbuf_append(b, tmp, (size_t)n);
@@ -167,7 +167,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
         // VAL_HEX is honoured in every text mode.  format_value_print used to
         // ignore it for V_INT while format_scalar_inline honoured it, so the
         // same attribute rendered two ways depending on whether it was asked
-        // for alone or inside a table (F-39).  JSON keeps V_INT numeric so the
+        // for alone or inside a table.  JSON keeps V_INT numeric so the
         // document stays machine-readable.
         if (mode_is_json(mode))
             vbuf_appendf(out, "%" PRId64, v->i);

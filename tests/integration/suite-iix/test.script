@@ -13,22 +13,22 @@
 #                     raster, pixel-matched at the ROM stage AND at the
 #                     Finder desktop — the first full desktop anything
 #                     has rendered at portrait geometry. Media is one of
-#                     §6.2's unused single-disk images (4 MB)
+#                     the unused single-disk images (4 MB)
 #   iix-71-extfd      **IIx x 7.1** and the re-hosted external-floppy
 #                     row: a second disk goes into the EXTERNAL bay (the
 #                     IIx has two) and mounts without a system error
 #                     (16 MB)
 #
-#   iix-gc-accel1     **IIx x 6.0.8 on the 8•24 GC**, re-hosted per §7 —
+#   iix-gc-accel1     **IIx x 6.0.8 on the 8•24 GC**, re-hosted —
 #                     accelerator engaged (counters asserted). The beep
-#                     choreography §7 wanted moved here stayed on the
+#                     choreography once meant to move here stayed on the
 #                     IIcx — see suite-iicx's iicx-gc-beep row for the
 #                     measured reason
 #   iix-gc-decline1   the decline half of that differential ORACLE: same
 #                     golden, accelerator forced to the ROM/QuickDraw
 #                     fallback
 #   iix-jmfb-sweep  **8 of the 16 JMFB depth x resolution cells**, re-hosted
-#                   from iicx-video-modes per §7: the 15" portrait and 21"
+#                   from iicx-video-modes: the 15" portrait and 21"
 #                   RGB senses at 1/2/4/8 bpp. The IIcx keeps the 13" and 12"
 #                   halves, so the same 16 cells now span two hosts.
 #   iix-75-hd       **IIx x 7.5** — see the sweep row's comment for why this
@@ -77,9 +77,9 @@ def row_iix_824gc_seat() {
 }
 
 # ---- iix-701-fd -------------------------------------------------------------
-# The IIx's first pixel golden (§2.1: all three IIx tests were
-# checksum-only). JMFB at 13" RGB 640x480, 1 bpp — the sense code and
-# slot-PRAM sister come from the shared seeding idiom.
+# The IIx's first pixel golden (all three former IIx tests were checksum-only).
+# JMFB at 13" RGB 640x480, 1 bpp — the sense code and slot-PRAM sister come
+# from the shared seeding idiom.
 def row_iix_701_fd() {
     machine.rtc.time = 3000000000
     machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6 rom="${$ROM}"
@@ -99,8 +99,8 @@ def row_iix_701_fd() {
 
 # ---- iix-portrait-603 -------------------------------------------------------
 # NEW CELL: the JMFB's portrait monitor (sense $1 → Mac Portrait Display,
-# 640x870, sister $A1) on the IIx, booting System 6.0.3 — one of the
-# unused single-disk images §6.2 asked to put to work.
+# 640x870, sister $A1) on the IIx, booting System 6.0.3 — one of the unused
+# single-disk images, put to work.
 #
 # The row pins both stages: the ROM's PrimaryInit programming the
 # 640x870 raster (Welcome screen, pixel-exact) and System 6.0.3 keeping
@@ -166,7 +166,7 @@ def row_iix_71_extfd() {
 
 
 # ---- iix-gc-accel1 / iix-gc-decline1 ---------------------------------------
-# RE-HOSTED from the IIcx per §7: the 8•24 GC's accel/decline differential
+# RE-HOSTED from the IIcx: the 8•24 GC's accel/decline differential
 # pair at 1 bpp, giving the IIx its first real workload and putting a GC in
 # an IIx socket. The pair is the suite's acceleration ORACLE and must stay
 # a pair on one host: both rows match the SAME golden, because a correct
@@ -176,12 +176,12 @@ def row_iix_71_extfd() {
 # asserts rpc_count > 0 while the decline row forces the fallback with
 # force_decline and still requires the identical frame.
 #
-# The accel row also absorbs iicx-824gc-beep (§2.3: fold beep into the
-# accel boot rather than re-running a 200 M-cycle boot to reach a sound
-# capture): it opens the Control Panel, drags the Speaker Volume slider
-# twice, and matches both beeps sample-exactly plus the ASC volume
-# register. That choreography is coordinate-precise and was copied
-# verbatim from the original test, not retyped.
+# The accel row also absorbs iicx-824gc-beep (folding the beep into the accel
+# boot rather than re-running a 200 M-cycle boot to reach a sound capture): it
+# opens the Control Panel, drags the Speaker Volume slider twice, and matches
+# both beeps sample-exactly plus the ASC volume register. That choreography is
+# coordinate-precise and was copied verbatim from the original test, not
+# retyped.
 
 def gc_boot_1bpp(label) {
     machine.rtc.time = 3000000000
@@ -224,7 +224,7 @@ def row_iix_gc_decline1() {
 }
 
 # ---- iix-jmfb-sweep ---------------------------------------------------------
-# §7's 8-of-16 JMFB sweep re-host. iicx-video-modes drove all four monitor
+# The 8-of-16 JMFB sweep re-host. iicx-video-modes drove all four monitor
 # senses at four depths on one host; the 15" portrait (sense $1) and 21" RGB
 # (sense $0) halves live here now, so the same 16 cells span two machines. The
 # JMFB seats in slot 9 on both, so the sPRAMRec address and the whole seeding
@@ -241,7 +241,7 @@ def row_iix_gc_decline1() {
 def sweep_cell(sense, sister, spid, w, h, settle, golden) {
     # Staging named explicitly: the GC rows above seat an 824gc, and an
     # unnamed machine.boot inherits it — which is how the same trap produced
-    # a wrong diagnosis in suite-iici (ledger §8).
+    # a wrong diagnosis in suite-iici (see its iici-71-hd row).
     machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=$sense rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     machine.rtc.pram.validate
@@ -257,9 +257,9 @@ def sweep_cell(sense, sister, spid, w, h, settle, golden) {
     assert machine.screen.height == $h "jmfb-sweep ${$golden}: height != ${$h}"
     assert machine.rtc.pram.peek(0x48) == $spid "jmfb-sweep ${$golden}: savedMode rewritten by ROM"
     check($golden)
-    # Claim the cell so the contract protects it: these are (card x geometry
-    # x depth) cells in §3.2's sense, taken at ROM stage — the same shape
-    # iix-portrait-603 already declares.
+    # Claim the cell so the contract protects it: these are (card x geometry x
+    # depth) cells, taken at ROM stage — the same shape iix-portrait-603
+    # already declares.
     report_row("7.0.1", "jmfb", "rom-stage ${$w}x${$h}x${machine.screen.depth}")
 }
 
@@ -289,23 +289,23 @@ def row_iix_jmfb_sweep() {
 # ---- iix-75-hd --------------------------------------------------------------
 # NEW CELL IIx x 7.5.
 #
-# §7 wanted this cell taken by splitting the re-hosted sweep's media 4/4
-# between 7.0.1 and 7.5. That is not buildable, and the reason is worth
-# recording: a depth cell has to seed slot PRAM, which requires
-# rtc.pram.validate to stamp the validity tokens — and stamping them
-# suppresses the boot ROM's own default PRAM init, which is what populates the
-# startup device. On a floppy boot that costs nothing (the drive is found by
-# scanning), but a SCSI boot then finds no startup device and parks on the
-# blinking "?" floppy. Measured 2026-07-28: the sweep recipe against the 7.5
-# HD image gives the right geometry (1152x870) and a "?" floppy; restoring the
-# documented default boot device ($78..$7B = $FFFFFFDF) does not rescue it, so
-# more of the suppressed init matters than that one field. The same interaction
-# is recorded from the other direction in iici-aux3-8bpp/config.mk.
+# The original idea was to take this cell by splitting the re-hosted sweep's
+# media 4/4 between 7.0.1 and 7.5. That is not buildable, and the reason is
+# worth recording: a depth cell has to seed slot PRAM, which requires
+# rtc.pram.validate to stamp the validity tokens — and stamping them suppresses
+# the boot ROM's own default PRAM init, which is what populates the startup
+# device. On a floppy boot that costs nothing (the drive is found by scanning),
+# but a SCSI boot then finds no startup device and parks on the blinking "?"
+# floppy. Measured 2026-07-28: the sweep recipe against the 7.5 HD image gives
+# the right geometry (1152x870) and a "?" floppy; restoring the documented
+# default boot device ($78..$7B = $FFFFFFDF) does not rescue it, so more of the
+# suppressed init matters than that one field. The same interaction is recorded
+# from the other direction in iici-aux3-8bpp/config.mk.
 #
 # So the sweep stays entirely on 7.0.1 floppy media, and IIx x 7.5 is taken by
-# this plain boot-to-desktop row instead. The cell is what §7 was after; only
-# the mechanism differs. Verified the image is host-portable first: IIx and
-# IIcx settle on the byte-identical frame from this image with no seeding.
+# this plain boot-to-desktop row instead. The cell is what was wanted; only the
+# mechanism differs. Verified the image is host-portable first: IIx and IIcx
+# settle on the byte-identical frame from this image with no seeding.
 def row_iix_75_hd() {
     machine.rtc.time = 3000000000
     # video_sense named too: the sweep above leaves sense $0 (21" RGB, 1152
@@ -327,8 +327,8 @@ def row_iix_75_hd() {
 # The descriptor half of the JMFB: what the card does when the guest programs
 # geometry its 2 MB VRAM cannot back.  VideoBase is 16 bits in units of 32
 # bytes, so one move.l reaches 2,097,120 -- and at 24 bpp the driver's own
-# encoding scales it by 8/3, which reaches 5,592,320, 2.7x past the end
-# (04-video F-20).  RowWords is likewise unbounded.
+# encoding scales it by 8/3, which reaches 5,592,320, 2.7x past the end.
+# RowWords is likewise unbounded.
 #
 # Both writes must be REFUSED, not clamped: the card scans nothing rather than
 # advertising a raster that runs off the end of VRAM, so screen.checksum -- the

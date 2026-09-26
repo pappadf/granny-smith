@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Unit tests for drive_activity.c: counter sums in, light edges out (U6).
+// Unit tests for drive_activity.c: counter sums in, light edges out.
 
 #include "drive_activity.h"
 #include "test_assert.h"

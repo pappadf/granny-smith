@@ -206,9 +206,7 @@ generic SCSI-2 table, which differs on the last row:
 > not apply here, because our INQUIRY reports ANSI version `0x01`, SCSI-1, for
 > every device.
 >
-> The error was inherited by a 2026-09-03 review item that proposed
-> implementing the rejection; it would have made the model less faithful, not
-> more.
+> Implementing the rejection would make the model less faithful, not more.
 
 **Changeable values (PC=1)**, §5.2.3.2 verbatim: "The page requested will be
 returned with the bits that are allowed to be changed set to one. Parameters
@@ -492,8 +490,8 @@ The CDU-8002 supports five standard mode pages plus the Apple vendor page. All p
 > Neither is the drive's. §5.3.1.1, in prose because Table 5-33 is a scanned
 > image: "The read retry count field specifies the number of times that the
 > controller will attempt its read recovery algorithm. **The default value is
-> zero.**" A 2026-09-03 review item proposed changing the code to match the `3`
-> here, which would have replaced one wrong value with another.
+> zero.**" Changing the code to match the `3` here would have replaced one
+> wrong value with another.
 
 The error recovery parameter byte encodes a combination of TB, RC, PER, DTE, and DCR bits per the Sony CDU-541 manual. For emulation, the default (`0x00`) means maximum error recovery with only uncorrectable errors reported.
 
@@ -772,7 +770,7 @@ listed for completeness; they belong to conditions this model does not simulate.
 > progress, `0x57`, `0x63`, `0xB9`, `0x4E`) attributed to the CDU-541 manual.
 > None of the five is that manual's value for the condition named. The wrong
 > table was not merely inert: it is where the code's `0x3A`-on-refused-eject
-> (F-09) and `0x3A`-on-empty-bay (F-08) came from.
+> and `0x3A`-on-empty-bay once came from.
 
 ### 6.4 UNIT ATTENTION
 

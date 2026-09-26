@@ -32,6 +32,11 @@ on:
         required: false
         default: ''
 
+# The deploy pushes with DEPLOY_TOKEN; GITHUB_TOKEN only reads.
+permissions:
+  contents: read
+  packages: read
+
 # Independent of `publish` — a real-release deploy can run while a
 # staging deploy is in flight (or vice versa) without one cancelling
 # the other. But two staging deploys in flight at once would race on
@@ -57,9 +62,9 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v7
         with:
-          submodules: recursive
           path: source
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       # 2. Build WASM + new UI (release mode). Same command publish.yml
       #    uses, so what we deploy here is byte-identical to what a

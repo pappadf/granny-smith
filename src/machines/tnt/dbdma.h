@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // dbdma.h
-// DBDMA — Apple's descriptor-based DMA engine (proposal §5.4): eleven
+// DBDMA — Apple's descriptor-based DMA engine: eleven
 // identical channels inside Grand Central, one engine programmed one way
 // for every device datapath (SCSI, floppy, Ethernet, serial, audio).
 // Channel registers live at island +$8000 + n*$100; both the registers
@@ -62,8 +62,7 @@ typedef struct tnt_dbdma tnt_dbdma_t;
 
 // Guest-physical memory moves (descriptor fetch/write-back and data
 // transfers; the CPU MMU is deliberately not in the path) go through the
-// shared dma_mem_port_t, which is where this file's own pair of block-shaped
-// typedefs went (05-chipsets-irq F-16).  This engine fills the port's BLOCK
+// shared dma_mem_port_t.  This engine fills the port's BLOCK
 // slots: it moves kilobytes per command, and tnt.c's implementation turns
 // the RAM case into a memcpy -- which is also why it is not the same
 // implementation as dma_mem_port_physical (that one resolves host memory
@@ -86,7 +85,7 @@ typedef struct tnt_dbdma_port {
     uint8_t (*s_bits)(void *ctx); // live device status bits (may be NULL)
     void *ctx;
     // Bytes this port will move per activation before the channel yields,
-    // or 0 for "as many as the device offers" (05-chipsets-irq F-15).
+    // or 0 for "as many as the device offers".
     //
     // A port whose device is itself rate-limited -- the AWACS half-buffer,
     // the SWIM3 byte ring, an SCC ring -- needs nothing here: it returns

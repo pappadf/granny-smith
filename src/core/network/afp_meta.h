@@ -9,8 +9,7 @@
 // dates, the locked/inhibit attribute bits and the Finder comment — beside
 // the data file in an AppleDouble header (RFC 1740).  The sidecar moves and
 // copies with the file, interoperates with `cp`, macOS and Netatalk, and
-// survives an OPFS page reload with no extra machinery
-// (proposal-afp-server-completeness.md §4.3).
+// survives an OPFS page reload with no extra machinery.
 //
 // This module owns the mapping between AFP wire values and AppleDouble entry
 // payloads.  It is I/O-complete (it opens the sidecar itself) but knows
@@ -104,7 +103,7 @@ int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t 
 int afp_meta_update(const char *host_path, const afp_meta_t *meta);
 
 // Streaming variants, so a multi-megabyte resource fork never has to exist in
-// memory as a whole (proposal §5 WP-7).  `rsrc_src` is read from its current
+// memory as a whole.  `rsrc_src` is read from its current
 // position for exactly `rsrc_len` bytes; pass NULL/0 for no fork.
 int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *rsrc_src, size_t rsrc_len);
 
@@ -118,7 +117,7 @@ size_t afp_meta_copy_rsrc(const char *host_path, FILE *dst);
 bool afp_meta_is_hidden(const char *name);
 
 // Name of the per-volume control directory holding the CNID catalog and the
-// desktop database (proposal §4.1).
+// desktop database.
 #define AFP_CONTROL_DIR ".gs-afp"
 
 // "<root>/.gs-afp/<leaf>", creating the control directory when it is missing:

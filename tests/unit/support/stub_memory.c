@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Memory stubs for isolated unit tests
 // Provides minimal no-op memory implementations for tests not using real memory.
 

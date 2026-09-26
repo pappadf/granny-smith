@@ -777,7 +777,7 @@ void asc_delete(asc_t *asc) {
     if (!asc)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(asc->scheduler, asc);
     if (asc->object) {
         // sound_object_delete(), not a hand-rolled detach-and-delete: the node

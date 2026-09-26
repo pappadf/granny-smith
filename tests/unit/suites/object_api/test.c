@@ -183,7 +183,7 @@ TEST(test_enumerate_with_meta_indices) {
 
 // A request cut short in transit (the web bridge's fixed-size args buffer
 // truncates at a code-point boundary, often right after a ',') must be
-// refused, never run with its trailing arguments silently dropped (N-46).
+// refused, never run with its trailing arguments silently dropped.
 TEST(test_truncated_args_are_refused) {
     struct object *a, *b;
     fixture_up(&a, &b);

@@ -421,7 +421,7 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 # vram_size and every scan is bounded by vram_size, which is the only reason a
 # buffer of that size is always big enough.  Growing `vram` alone left the
 # other two at the old size and turned the mach64_update() that the restore
-# itself performs into a heap WRITE overflow (04-video F-27).
+# itself performs into a heap WRITE overflow.
 #
 # This pins the invariant rather than the crash: firing the overflow needs the
 # guest in a mode spanning more than 2 MB, which a ROM-stage boot never reaches.

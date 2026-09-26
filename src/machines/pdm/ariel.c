@@ -98,7 +98,7 @@ const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id) {
 // the buffer 499,200 bytes short of the raster the descriptor advertised in
 // Portrait mode, and the clamped memset did not shorten the descriptor, so a
 // blanked Portrait screen was read past the end of the allocation by every
-// consumer (04-video F-25).  GoldFish 832x624x2 = 1,038,336 also fits under
+// consumer.  GoldFish 832x624x2 = 1,038,336 also fits under
 // this.
 #define PDM_VIDEO_MAX_BYTES (640u * 870u * 2u)
 
@@ -113,7 +113,7 @@ static bool pdm_mode_geometry(uint8_t code, uint32_t *w, uint32_t *h) {
     case 6: { // Hi-Res 13"/14" 640x480 66.67 Hz
         // These three are the ordinary Apple sense codes and mean the same
         // raster here as on every other part, so the geometry comes from the
-        // shared table instead of being spelled out again (04-video F-17).
+        // shared table instead of being spelled out again.
         // The codes past 7 below are Sonora's OWN timing-set numbering --
         // not sense codes, and not the same space as any other part's
         // extended set (DAFB's 9 is PAL; this 9 is GoldFish) -- so they stay
@@ -251,7 +251,7 @@ static uint64_t ariel_fb_base(void *owner) {
 void pdm_video_init(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     // A restore has already loaded the saved strap; only a cold build takes
-    // the caller's pick (04-video F-40).  Nothing to consume or reset now
+    // the caller's pick.  Nothing to consume or reset now
     // that the pick is a build option rather than a one-shot static -- a
     // forgotten `monitor=` cannot leak into the next boot because the next
     // boot fills its own options.

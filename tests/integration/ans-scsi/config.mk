@@ -1,5 +1,4 @@
-# Integration test: the SCRIPTS engine and both fast/wide SCSI channels
-# (proposal-apple-network-server-500-700 §5.7, ladder rung S8)
+# Integration test: the SCRIPTS engine and both fast/wide SCSI channels.
 #
 # The 53C8xx is a new DEVICE CLASS for this repository, not a variation on
 # anything already here.  Every other SCSI controller in the tree — the
@@ -29,5 +28,5 @@ TEST_ROM := roms/ans500-ans700-962f6c13.rom
 
 TEST_ARGS := model=ans500 ram=32768
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

@@ -141,7 +141,7 @@ peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len,
     *err = NULL;
 
     // The output is owned by ctx until released, so an abort frees it -- it
-    // used to leak on every decode error (09-storage F-11).
+    // used to leak on every decode error.
     decode_ctx_t ctx;
     dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {

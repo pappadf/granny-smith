@@ -1,5 +1,4 @@
 # Integration suite: the Quadra family (Q700 / Q900 / Q950)
-# (proposal-integration-test-rework §7 — the §9 pilot suite)
 #
 # One daemon run; rows re-instantiate via machine.boot (the boot-matrix
 # pattern) and the shared library in ../lib/mac.script provides the
@@ -19,5 +18,5 @@ TEST_DESC := Chime, floppy/HD boots, 7.1/7.5/7.6 spread, Thousands, checkpoint r
 TEST_ROM := roms/q700-q900-420dbff3.rom
 TEST_ARGS := model=q700 ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

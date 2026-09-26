@@ -316,7 +316,7 @@ ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
     // random bytes on subsequent calls.  Block and fragment sizes are bounded
     // (FFS allows at most 64 KiB blocks), and an indirect block holds exactly
     // bsize / 4 pointers: an unbounded size made every fragment-to-byte
-    // multiplication below a candidate for overflow (09-storage F-37).
+    // multiplication below a candidate for overflow.
     // A/UX 3.0.1 volumes are 8192 / 1024 / nindir 2048.
     if (vol->fsize < 512 || vol->fsize > UFS_MAX_BSIZE || vol->fsize % 512 != 0 || vol->bsize < vol->fsize ||
         vol->bsize > UFS_MAX_BSIZE || vol->bsize % 512 != 0 || vol->frag == 0 || vol->bsize / vol->fsize != vol->frag ||

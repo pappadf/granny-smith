@@ -308,7 +308,7 @@
   //
   // Actions apply one at a time, and only while the input line is live: what
   // is typed while a command runs waits for its prompt instead of being
-  // dropped (N-55), and a multi-line paste runs its lines in order.
+  // dropped, and a multi-line paste runs its lines in order.
   const pending: TermAction[] = [];
   let pumping = false;
 
@@ -459,10 +459,10 @@
       // Allow CommandBrowser rows to push into the prompt.
       registerTerminalInsert((s: string) => insertText(s));
 
-      // The one input path (F-40): keys, pastes, IME and virtual keyboards
+      // The one input path: keys, pastes, IME and virtual keyboards
       // all arrive as data.  Ctrl-C (xterm sends ^C for Ctrl only) interrupts
       // at once and drops the type-ahead; Cmd-C sends nothing, so on macOS it
-      // is the browser's copy (N-54).
+      // is the browser's copy.
       xterm.onData((data) => {
         for (const action of parseTerminalData(data)) {
           if (action.kind === 'interrupt') {
@@ -507,7 +507,7 @@
     pending.length = 0;
     setTerminalSink(null);
     registerTerminalInsert(null);
-    // Its DOM, observers, renderer and 5000 lines of scrollback (F-39).
+    // Its DOM, observers, renderer and 5000 lines of scrollback.
     xterm?.dispose();
     xterm = null;
     fitAddon = null;

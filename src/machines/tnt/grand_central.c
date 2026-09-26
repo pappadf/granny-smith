@@ -14,13 +14,11 @@
 // centres (VIA: $200) so each occupies its own aligned longword slot —
 // they are byte-access only, and wider access logs and reads open bus.
 //
-// Populated so far: the interrupt block (+$20..$2C), the DBDMA channel
-// windows (+$8000+n*$100, Phase C — the engine itself is dbdma.c), the
-// VIA1/Cuda window (+$16000), BoxID (+$1A000), the banked NVRAM
-// (+$1D000 port / +$1F000 data window), AWACS (+$14000, Phase D) and the
-// RaDACal RAMDAC (+$1B000 — control.c, Phase D part 2).  The remaining
-// apertures log and read open bus until their phases land (SCSI/MESH
-// +$10000/+$18000 Phase E; MACE, SCC, SWIM3 Phase F).
+// Populated here: the interrupt block (+$20..$2C), the DBDMA channel
+// windows (+$8000+n*$100 — the engine itself is dbdma.c), the VIA1/Cuda
+// window (+$16000), BoxID (+$1A000), the banked NVRAM (+$1D000 port /
+// +$1F000 data window), AWACS (+$14000) and the RaDACal RAMDAC (+$1B000 —
+// control.c).  An aperture with no model behind it logs and reads open bus.
 //
 // Register truth: the shipping ROM's Open Firmware device tree and 68k
 // DecoderInfo tables, the ROM's own NanoKernel interrupt handler, and
@@ -48,17 +46,17 @@ LOG_USE_CATEGORY_NAME("gc");
 #define OFF_INTS      0x00020u // +$20 Events / +$24 Mask / +$28 Clear / +$2C Levels
 #define OFF_DBDMA     0x08000u // channels 0-10 at +$8000+n*$100 (dbdma.c)
 #define OFF_DBDMA_END (OFF_DBDMA + 0x100u * TNT_DBDMA_CHANNELS)
-#define OFF_SCSI0     0x10000u // 53C94, external bus (Phase E)
-#define OFF_MACE      0x11000u // MACE Ethernet (Phase F)
-#define OFF_SCCLEG    0x12000u // SCC legacy aperture (Phase F)
-#define OFF_ESCC      0x13000u // ESCC: channel B at +0, channel A at +$20 (Phase F)
-#define OFF_AWACS     0x14000u // AWACS codec + sound control (Phase D)
+#define OFF_SCSI0     0x10000u // 53C94, external bus
+#define OFF_MACE      0x11000u // MACE Ethernet
+#define OFF_SCCLEG    0x12000u // SCC legacy aperture
+#define OFF_ESCC      0x13000u // ESCC: channel B at +0, channel A at +$20
+#define OFF_AWACS     0x14000u // AWACS codec + sound control
 #define OFF_SWIM3     0x15000u // SWIM3 floppy: 16 regs on $10 centres (swim3.c)
 #define OFF_VIA       0x16000u // VIA1/Cuda: 16 byte regs on $200 centres (8 KB)
-#define OFF_MESH      0x18000u // MESH, internal bus (Phase E)
+#define OFF_MESH      0x18000u // MESH, internal bus
 #define OFF_EPROM     0x19000u // Ethernet address PROM (+ the ANS MP doorbell)
 #define OFF_BOXID     0x1A000u // machine-identification register (LE)
-#define OFF_RADACAL   0x1B000u // RAMDAC colormap bank (Phase D)
+#define OFF_RADACAL   0x1B000u // RAMDAC colormap bank
 #define OFF_LCDGB     0x1C000u // GBUS device 3: ANS front-panel LCD (lcd.c)
 #define OFF_BREG2     0x1E000u // ANS Board Register 2: environment (gbus.c)
 #define OFF_NVPORT    0x1D000u // NVRAM bank-select port
@@ -311,7 +309,7 @@ static void nvram_write(config_t *cfg, uint32_t offset, uint8_t value) {
 // Island dispatch
 // ============================================================
 
-// === Object node: machine.gc (05-chipsets-irq F-26) =========================
+// === Object node: machine.gc ================================================
 //
 // Grand Central is the whole interrupt controller of a 7500/8500/9500 and an
 // ANS, and it is the chip whose two clear modes make an IRQ storm here
@@ -433,13 +431,12 @@ void tnt_gc_init(config_t *cfg) {
     gc->int_mask = 0;
     gc->int_levels = 0;
     // The mode-1 output latch and the clear-mode selector, which this said
-    // "nothing latched" about while leaving both standing (05-chipsets-irq
-    // F-07).  With int_mask zero the line is quiet either way, so nothing
-    // fired immediately -- but the moment post-reset firmware writes its
-    // first mask, stale pre-reset latch bits inside it assert the CPU line
-    // for sources that never re-asserted.  And a clear mode surviving a reset
-    // means a machine restarted out of MkLinux boots the ROM in mode 1
-    // instead of the power-on mode 0.
+    // "nothing latched" about while leaving both standing.  With int_mask zero
+    // the line is quiet either way, so nothing fired immediately -- but the
+    // moment post-reset firmware writes its first mask, stale pre-reset latch
+    // bits inside it assert the CPU line for sources that never re-asserted.
+    // And a clear mode surviving a reset means a machine restarted out of
+    // MkLinux boots the ROM in mode 1 instead of the power-on mode 0.
     gc->int_latch = 0;
     gc->int_mode1 = false;
     gc->nvram_bank = 0;
@@ -449,9 +446,8 @@ void tnt_gc_init(config_t *cfg) {
 // Grand Central's PCI presence — device 16 on Bandit 1
 // ============================================================
 // Apple's own device tree calls it /gc@10, and Open Firmware does issue a
-// command + BAR write at IDSEL 16 during probe-slots (handover-phase-d
-// §1).  What that write lands on was a documented open question
-// (proposal-pci-architecture §14 Q7) until the diagnostic utility's bridge
+// command + BAR write at IDSEL 16 during probe-slots.  What that write
+// lands on was an open question until the diagnostic utility's bridge
 // test named the vendor; the header below is the generic type-0 one with
 // Grand Central's ids.
 //

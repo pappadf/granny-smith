@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ADB virtual keycode -> Apple Lisa COPS keycode, checked against the boot
-// ROM table it was derived from (code review 2026-09-03, F-11 follow-on).
+// ROM table it was derived from.
 //
 // The model's universal key identity is the ADB keycode: system_keyboard_update
 // already handed the same int to the ADB transceiver or to the Plus's M0110A,

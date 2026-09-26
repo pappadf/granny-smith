@@ -11,12 +11,10 @@
 //   - AT&T "DSP3210 Information Manual" (Sept 1991): ch. 4 instruction pages,
 //     ch. 7 exception model, ch. 8 DAU + DSP32 float format, ch. 9 timer/BIO,
 //     ch. 10 encodings.
-//   - The ROM-verified AV DSP3210 hardware notes (docs/machines/av/dsp.md)
-//     (§1.4 MMIO map, §1.5 encodings, §1.6 exceptions) and the errata log
-//     the DSP3210 errata — every semantic
-//     hardened there (irsh replay under the pre-switch memory map, masked
-//     address-error completion, CA-load flags, IEEE↔DSP32 bias, guard bits)
-//     is load-bearing: real Apple/AT&T code found each one.
+//   - The AV board wiring in docs/machines/av/dsp.md.  Every semantic
+//     hardened against real code (irsh replay under the pre-switch memory
+//     map, masked address-error completion, CA-load flags, IEEE↔DSP32 bias,
+//     guard bits) is load-bearing: real Apple/AT&T code found each one.
 //
 // Scope:
 //   - Complete instruction-set decode; every one of the 64 top-level opcodes
@@ -30,27 +28,26 @@
 //     accumulator's top bits, where float32/float16/ic read it back — the
 //     round trip is how the RTM's sound-input rate converter splits its
 //     phase accumulator, and "leave the numeric value there instead"
-//     turned every Sound cdev recording into a saturated derivative
-//     (errata.md E16).
+//     turned every Sound cdev recording into a saturated derivative.
 //   - All three of the DAU pipeline's data latencies [IM §4.4.2] are
 //     modelled, because Apple's shipped sound and speech modules are
 //     software-pipelined to them and compute the wrong thing without:
 //     Latency 1 — a DA memory write is not readable for three instructions
-//     (WinAuto's in-place pre-emphasis FIR, errata.md E13);
+//     (WinAuto's in-place pre-emphasis FIR);
 //     Latency 2 — an accumulator feeding the MULTIPLIER reads its value
 //     from three instructions back (the RTM sound-input converter's DC
-//     blocker, E12);
+//     blocker);
 //     Latency 4 — a DAU condition tested by a conditional branch or
 //     conditional CA instruction is the one established four instructions
 //     back, while ifalt/ifagt/ifaeq stay zero-latency (VQ's codebook
-//     search, E14).
+//     search).
 //     Latency 3 (delayed branches) was already modelled.
 //   - Exception model: 16-entry vector table at evtp, error vs interrupt
 //     dispatch, emr masking, processing levels, ireturn with shadow restore,
 //     waiti, sftrst.  bkpt halts the core (state "crashed").
 //   - On-chip peripherals the Mac sound path uses ARE modelled: the 32-bit
 //     timer (tcon/count, vector 9, incl. the masked-address-error
-//     (long)-store-to-$413 path of the errata) and the BIO port (bio/bioc,
+//     (long)-store-to-$413 path) and the BIO port (bio/bioc,
 //     2-bit op fields, output transitions surfaced through a callback — the
 //     AV board's DSP→host doorbell).  SIO/DMAC registers are
 //     present-but-inert (plain on-chip RAM).
@@ -59,7 +56,7 @@
 //     kernel polls `ir1s` both to measure the frame period (calibration
 //     gadget) and to detect frame overrun between modules.  Writing emr with
 //     bit 0 set drops a latched-but-untaken EXT1 request (the kernel's
-//     "clear the edge latch" pulse, dsp-kernel-messages.md §3.5).
+//     "clear the edge latch" pulse).
 //
 // Portable C99, no globals, no I/O, no allocation: the struct is plain data
 // followed by pointers (checkpoint boundary at `mem`).  Bus access outside
@@ -216,7 +213,7 @@ typedef struct dsp3210 {
     // instruction window are served the PRE-write bytes from here instead.
     // Apple's WinAuto depends on it: its pre-emphasis FIR runs in place and
     // reads x[n-1] one instruction after overwriting it, so a core without
-    // the window silently computes an IIR (errata.md E13).
+    // the window silently computes an IIR.
     struct {
         uint32_t addr, old;
         uint8_t size;
@@ -233,7 +230,7 @@ typedef struct dsp3210 {
     // conditional loads are explicitly exempt and read the live flags.
     // Apple's VQ codebook search is scheduled to this: its early-exit
     // branch tests a comparison four instructions back while the ifalt
-    // right before it uses the newest one (errata.md E14).
+    // right before it uses the newest one.
     uint16_t dau_flag_pipe[4]; // [k] = the DAU flag bits after insn n-1-k
 
     // do-loop state [IM DO page]
@@ -253,7 +250,7 @@ typedef struct dsp3210 {
     // asserted after dsp3210_ext_pulse() (0 = negated).  PS.IR0/IR1 read the
     // LIVE pin level (1 = negated) — the RTM kernel's frame-period gadget
     // and per-module overrun polls both spin on `ir1s` waiting for the
-    // board's short active-low frame pulse (dsp-kernel-messages.md §3.2/3.4)
+    // board's short active-low frame pulse
     uint32_t ext_pulse[2]; // [0] = EXT0 (vec 8), [1] = EXT1 (vec 15)
 
     // interrupt shadow registers [IM §7.5.1; ps/ctr per Figure 4-1]

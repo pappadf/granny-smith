@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // HFS Plus catalog-walker unit tests.
 //
 // image_hfs.c's only dependency on the storage stack is disk_read_data()
@@ -324,7 +326,7 @@ TEST(test_read_bytes_unaligned) {
 }
 
 // A range whose end wraps past 2^64 is outside the partition.  HFS's copy
-// checked off + n > size, which the wrap slips past; UFS's did not (F-38).
+// checked off + n > size, which the wrap slips past; UFS's did not.
 TEST(test_read_partition_refuses_a_wrapping_range) {
     uint8_t out[100];
     ASSERT_EQ_INT(-EIO, image_read_partition(DUMMY, 0, IMG_SIZE, UINT64_MAX - 9, out, sizeof(out)));

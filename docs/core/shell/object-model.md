@@ -36,17 +36,17 @@ the same errors. There is no shadow API.
 
 | File | Purpose |
 |------|---------|
-| [object.h](../src/core/object/object.h) | Core contract: classes, members, objects, nodes, path resolution |
-| [object.c](../src/core/object/object.c) | Substrate implementation (tree topology, resolver, validation, invalidators) |
-| [value.h](../src/core/object/value.h) | Tagged-union `value_t` used at every boundary |
-| [value.c](../src/core/object/value.c) | Value lifetime, conversions, formatting helpers |
-| [parse.c](../src/core/object/parse.c) | Path tokeniser shared by the resolver and completer |
-| [expr.h](../src/core/object/expr.h) | `${...}` expression parser and evaluator |
-| [alias.h](../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
-| [api.h](../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
-| [meta.h](../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
-| [shell_class.c](../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.alias_set`/`alias_unset`, `shell.interrupt`, `shell.prompt`/`running`/`aliases`/`vars`) |
-| [root.c](../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
+| [object.h](../../../src/core/object/object.h) | Core contract: classes, members, objects, nodes, path resolution |
+| [object.c](../../../src/core/object/object.c) | Substrate implementation (tree topology, resolver, validation, invalidators) |
+| [value.h](../../../src/core/object/value.h) | Tagged-union `value_t` used at every boundary |
+| [value.c](../../../src/core/object/value.c) | Value lifetime, conversions, formatting helpers |
+| [parse.c](../../../src/core/object/parse.c) | Path tokeniser shared by the resolver and completer |
+| [expr.h](../../../src/core/object/expr.h) | `${...}` expression parser and evaluator |
+| [alias.h](../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
+| [api.h](../../../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
+| [meta.h](../../../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
+| [shell_class.c](../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.alias_set`/`alias_unset`, `shell.interrupt`, `shell.prompt`/`running`/`aliases`/`vars`) |
+| [root.c](../../../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
 
 ## Core concepts
 
@@ -186,9 +186,8 @@ in C, **with one deliberate exception**: the bitwise operators `&`, `^` and
 `|` bind *tighter* than the comparisons, where C binds them looser. So
 `${machine.cpu.sr & 0x2000 == 0x2000}` means `(sr & 0x2000) == 0x2000` here
 and `sr & (0x2000 == 0x2000)` in C. C's order is a well-known trap and this
-is the friendlier reading; the full precedence table is in
-`proposal-shell-expressions.md` §2.3, and `expr.c`'s grammar comment is the
-authority in code. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
+is the friendlier reading; the full precedence table is `expr.c`'s grammar
+comment, the authority in code. Truthiness is per kind: numbers ≠ 0, non-empty
 strings/lists/bytes/maps, `none` never, and errors are not truth values —
 an error reaching a condition aborts.
 
@@ -208,7 +207,7 @@ segments work after a call form and through bindings:
 `len(map)` counts entries. Maps are read-only through this surface —
 there is no `map.key = …` write path.
 
-`$name` is the unified binding surface (shell v2 §3.4/§3.5): scoped
+`$name` is the unified binding surface: scoped
 `let` bindings first, then the alias table, whose entries behave as
 **reference bindings** — they store path text and re-resolve on every
 access, so they survive `machine.boot`:
@@ -221,7 +220,7 @@ access, so they survive `machine.boot`:
   (or `shell.alias.add`). They cannot collide with built-ins or
   reserved words, and they don't persist across the process.
 
-### Reserved words (shell v2 §3.11)
+### Reserved words
 
 Statement keywords: `let`, `alias`, `if`, `elif`, `else`, `while`,
 `for`, `in`, `break`, `continue`, `return`, `def`, `assert`. Literals:
@@ -230,7 +229,7 @@ alias, or binding names (`object_validate_name`). `on`/`off`/`yes`/`no`
 are **not** reserved — they remain accepted as input coercions for
 bool-typed argument slots only.
 
-### Library conventions (shell v2 §6)
+### Library conventions
 
 - **Methods return data; surfaces do the printing.** Search results
   come back as lists (`find.str(...)` → list of addresses; empty =
@@ -409,14 +408,14 @@ configure, and what the JS frontend operates on:
   resolves the path, parses arguments from JSON, invokes the right
   read / write / call, and serialises the result back to JSON. JS
   reaches it through a single shared-memory region (`js_bridge_t`,
-  declared in [`em.h`](../src/platform/wasm/em.h) and exposed via the
+  declared in [`em.h`](../../../src/platform/wasm/em.h) and exposed via the
   lone `_get_js_bridge` export); the worker's `shell_poll()` services
   the slot every tick. `Atomics.waitAsync` + `emscripten_atomic_notify`
   carry the completion signal — no polling. The worker-thread guard
   in `worker_thread.h` enforces that `gs_eval` only runs on the worker
   pthread, never via direct `Module.ccall` from the main thread. JS
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
-  never raw exit codes. See [`web.md`](web.md) for the wire layout
+  never raw exit codes. See [`web.md`](../../guide/web.md) for the wire layout
   and protocol.
 
   **The result contract** (what `gsEval` in `app/web2/src/bus/emulator.ts`
@@ -469,6 +468,162 @@ the installed cfg is no longer "its" cfg. This invariant lives in
 The result is that paths like `machine.cpu.pc` resolve as soon as a machine is
 booted and disappear cleanly when the machine is torn down, without
 the caller having to track machine-lifetime explicitly.
+
+## Machine lifecycle
+
+Four operations put a machine in place or restart the one that is running.
+They differ in what they keep. Line numbers are as of this writing; the
+function names are the stable reference.
+
+| Operation | What it does | Entry point |
+|---|---|---|
+| `machine.boot(...)` | Builds a **new** machine from a complete boot document ([Boot arguments](#boot-arguments)): validates the whole document, tears the running machine down, constructs, installs the ROM, writes the built-from record `machine.config`. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c:850`) |
+| `machine.restart` | **Power-cycle**: rebuilds the machine that `machine.config` describes, takes no arguments, and carries the mounted media across the teardown. Errors if no machine is running. | `machine_method_restart` (`machine.c:1188`) |
+| `machine.reset` | **Warm reset** (the reset button): the board's /RESET net, then the CPU back to its reset vector. Nothing is torn down or rebuilt. Errors if no machine is running. | `machine_method_reset` (`machine.c:1177`) → `system_machine_reset` (`src/core/system.c:216`) |
+| `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` (`system.c:1594`) |
+
+`machine.boot`, `machine.restart` and headless startup all go through
+`machine_boot_apply`, so they share one sequence: validate, tear down,
+construct, record (`machine.c:846-1124`). Every check runs before
+`system_destroy`, so a rejected boot leaves the running machine and its
+record untouched (`tests/integration/boot-config`).
+
+### What each operation keeps
+
+| State | `machine.boot` | `machine.restart` | `machine.reset` | `checkpoint.load` |
+|---|---|---|---|---|
+| Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record; per-slot picks replayed only where the user chose them (`machine.c:1202-1235`) | Unchanged | From the checkpoint's model id, RAM size and stored record (`system.c:1612-1665`) |
+| ROM bytes | Read from the `rom=` file (`machine.c:1062-1066`) | Read again from the recorded path, so a changed file is picked up. A live `rom.load` rewrites the record first (`rom.c:383`) | Unchanged | From the checkpoint, by content or file reference (`src/core/memory/memory.c:1632`) |
+| RAM contents | Zeroed (fresh `calloc`, `memory.c:1584`) | Zeroed | **Kept** | Restored (`memory.c:1628`) |
+| PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`, `src/core/peripherals/rtc.c:463`; tables in `src/machines/runtime/pram_defaults.h`) | Construction defaults again (not carried) | **Kept** | Restored (`rtc.c:485`) |
+| TNT NVRAM (Grand Central's Open Firmware store; `pm7500`/`pm8500`/`pm9500`/`ans500`/`ans700`) | Blank: the previous machine's store goes with it | **Carried** (`tnt_teardown`, `src/machines/tnt/tnt.c:768`) | **Kept** | From the checkpoint, which overrides any carried store (`tnt.c:474`) |
+| RTC time | Host wall clock at construction (`rtc.c:465`); the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c:189`) | The same as `machine.boot` | Keeps counting | The saved value (`rtc.c:485`) |
+| Mounted media | None. The old machine's images are closed (`system.c:1235`); a CD bay is registered empty (`system.c:1157`) | **Carried**: the same open handles pass through the substrate's `media_detach`/`media_attach`, so the write delta survives | **Kept** (`floppy_reset` keeps media, `system.c:274`) | From the checkpoint |
+| Caps Lock latch | Released | **Carried** (`machine.c:1019`, `1101`) | Kept (`adb_reset` preserves it, `src/core/peripherals/adb.c:511`) | From the checkpoint's ADB state (`adb.c:1051`) |
+| Scheduler pacing (`scheduler.mode`) | **Carried**: the host harness owns it, not the machine (`machine.c:1000-1008`, `1085`) | **Carried** | Unchanged | The checkpoint's own value (`src/core/scheduler/scheduler.c:145`, `786`) |
+| `machine.config.created` | Stamped now | **Preserved** (`machine.c:1244`) | Unchanged | From the checkpoint's record |
+| vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
+| The explicit `vrom=`/`prom=` pick | The document's, replacing the previous one (none if the document names none); a rejected boot puts the running machine's back (`machine_config_set_explicit_picks`) | The record's | Unchanged | The checkpoint record's |
+| Object tree | Machine-scoped nodes rebuilt (`root_install`, `system.c:1169`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Rebuilt | Untouched | Rebuilt |
+
+**`machine.boot` inherits nothing from the running machine.** The
+document is the whole specification. `model` and `rom` are required, and
+every other field falls back to the **model's** defaults, never to the
+previous record. That holds across a model change too
+(`machine.c:727-734`, `853-856`; `tests/integration/boot-config`). For
+this reason the integration runner passes the ROM explicitly: it starts
+headless with `rom=` and also exports the same path as `$ROM`, so a
+script re-boots with `machine.boot model=... rom="${$ROM}"`
+(`scripts/run-integration-test.sh:154-164`). To bring back the machine
+you have (including one just restored from a checkpoint), call
+`machine.restart`; a bare `machine.boot()` is an error. A new boot does
+still see four kinds of process-level state that are not part of any
+machine:
+
+- scheduler pacing (the table above);
+- the offer registries ([rom.md §10](../memory/rom.md#10-rom-provisioning)),
+  though not the previous document's explicit `vrom=`/`prom=` pick;
+- per-slot staged picks the caller made before the boot
+  (`machine.nubus.slot[N].card_id` / `.video_mode`,
+  `machine.pci.slot[N].card_id`), each consumed by that boot;
+- the host share, published again for every new machine
+  (`provision_default_share`, `system.c:1172`).
+
+**`machine.reset` compared with a guest `RESET`.** The 68k `RESET`
+instruction resets the devices on /RESET (`system_reset_devices`,
+`system.c:289`) and leaves the CPU alone. `machine.reset` resets those
+devices and then resets the CPU to its vector (68040, 68000/68030, or
+`ppc_reset`; `system.c:216-231`). Each family binds its own
+`substrate->bus_reset`. The Plus and the Lisa have none yet, so they fall
+back to the common device set (`system_reset_common_devices`); the code
+calls this "a gap, not hardware" (`system.c:292`).
+
+**Differences between families, and known gaps.**
+
+- *Non-volatile state across `machine.restart`.* Only the TNT family
+  carries a chip across a power-cycle: its NVRAM store. On every other
+  Macintosh, PRAM comes back at the family's construction defaults.
+  Hardware keeps battery-backed PRAM through a power-off, so this is a
+  gap. The web frontend works around one piece of it by writing the
+  startup device again after a restart (`app/web2/src/bus/boot.ts:265`).
+  `tnt_nvram_clear` erases the store together with the carry
+  (`tnt.c:458`).
+- *Media transfer by substrate.* Floppies and `machine.scsi` go through
+  the standard pair (`system_media_detach_std` /
+  `system_media_attach_std`, `system.c:1398`/`1440`). The TNT family also
+  carries `machine.scsi2`, and the Network Servers' second channel keeps
+  its bus (`tnt_media_detach`, `tnt.c:925`;
+  `tests/integration/ans-machine-restart`). The Lisa carries its Sony
+  disk and its ProFile (`lisa_media_detach`,
+  `src/machines/lisa/lisa.c:500`). A medium that cannot be re-attached
+  is closed and logged (`machine.c:1091-1096`).
+- *Failure after teardown.* If `system_create` or ROM staging fails, the
+  previous machine is already gone and the process has no machine
+  (`machine.c:1055-1080`).
+- Host-side state outside the construction configuration (volume,
+  camera/microphone capture sources) is not carried by any of these
+  operations. The frontend asserts it again (`machine.c:1157-1163`;
+  `app/web2/src/bus/boot.ts`, `reconcileUiWithMachine`).
+
+## Boot arguments
+
+`machine.boot` takes only named arguments (`machine_boot_args`,
+`src/machines/machine.c:1266`). The shell writes them as `name=value`; the
+JS bridge passes them as one JSON object (`initEmulator`,
+`app/web2/src/bus/boot.ts:120-138`). An empty string, `0`, or `0xFF` for
+`video_sense` means "not given". An explicitly empty value such as `rom=`
+is rejected by the grammar before binding (`machine.c:1256-1264`). On
+success the call returns `true`; otherwise it returns a `V_ERROR` and the
+old machine keeps running.
+
+| Argument | Kind | Default | Meaning and validation |
+|---|---|---|---|
+| `model` | string | **required** | Machine model id (`machine.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
+| `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by checksum, as a ROM whose compatible list contains `model` ([rom.md §10](../memory/rom.md#10-rom-provisioning); `machine.c:873-899`). |
+| `ram` | uint (KB) | the model's `ram_default` | Must be one of the model's `ram_options` (`ram_option_allowed`, `machine.c:700`, checked at `863-871`). |
+| `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
+| `vrom` | string | resolved from the offers | An explicit NuBus declaration-ROM pick. The file must identify as a known declaration ROM (`vrom_identify_card`, `machine.c:964-969`). It then wins the pick order for the card its content provides. |
+| `video_card` | string | the slot default | Card id for the machine's **first** NuBus socket. Rejected on a model with no NuBus slots, and for an unknown id (with a "did you mean" hint) (`machine.c:901-912`). A per-slot `machine.nubus.slot[N].card_id` staged before the boot beats it for that slot. |
+| `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). |
+| `video_mode` | string | the card's default | Video-mode id for the first socket. It must be a known mode id (`nubus_video_mode_known`, `machine.c:936`). |
+| `custom_mode` | string | none | Custom resolution `WxHxD` for the generic `8_24` kind. Parsed and rejected with the reason (`machine.c:957-961`). |
+| `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `machine.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
+| `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket. Rejected on a model with no PCI slots, and for an unknown id (`machine.c:913-924`). |
+| `prom` | string | resolved from the offers | An explicit PCI expansion-ROM pick. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`, `machine.c:970-977`). |
+| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`). A malformed pair is logged and dropped. Whether a key means anything is up to the card's `stage_option` hook (`stage_pci_options`, `machine.c:806`). |
+
+After the per-field checks comes **strict card resolution**. A card the
+user *explicitly* picked (a staged per-slot entry, or the wildcard
+`video_card`/`pci_card` on the first socket) that needs a declaration ROM
+or FCode expansion ROM must resolve from the offer registry. Otherwise the
+boot is rejected before teardown (`validate_vrom_resolution` /
+`validate_prom_resolution`, `machine.c:745`/`775`). A socket that falls
+back to its *default* card degrades to an empty slot with a log instead,
+and a soldered-down card such as the SE/30's onboard video synthesises its
+own declaration ROM.
+
+The resolved configuration is recorded in `machine.config` (`model`,
+`ram`, `rom`, `rom_crc`, `rom2`, `vrom`, `vroms`, `slot_cards`,
+`video_card`, `video_sense`, `video_mode`, `custom_mode`, `monitor`,
+`pci_card`, `prom`, `pci_option`, `created`, `valid`;
+`src/core/machine_config.c`). `machine.restart` and `checkpoint.load`
+rebuild from it, the built-in `monitor` strap included.
+
+**Headless command line.** The CLI arguments fill the same document and
+call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-1350`):
+
+| CLI | Boot document | Notes |
+|---|---|---|
+| `rom=<file>` | `rom` | Required. The CLI identifies the file itself first and exits if it does not identify (`headless_main.c:1298`). The directory's `*.vrom` and `*.prom` files are offered before the boot (`offer_sibling_card_roms`, `headless_main.c:931`). |
+| `model=<id>` | `model` | Defaults to the first entry of the ROM's compatible list (for the Universal ROM, `se30`). An id outside that list is refused with the list printed (`headless_main.c:1303-1326`). |
+| `ram=<kb>` | `ram` | Parsed with `strtoul`. A non-number becomes `0`, which means the model default (`headless_main.c:1156`). |
+| `video_card=<id>` | `video_card` | |
+| `monitor=<id>` | `monitor` | |
+| (none) | `video_sense` | Always `-1` (unset). |
+
+`vrom`, `prom`, `pci_card`, `pci_option`, `video_mode`, `video_sense`,
+`custom_mode` and `rom2` have no CLI form. A script that needs them calls
+`machine.boot` itself.
 
 ## Adding a new class
 
@@ -533,7 +688,7 @@ written months ago.
 
 - [shell.md](shell.md) — terminal-side dispatch, tab completion,
   symbol resolution.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — overall code organisation.
+- [ARCHITECTURE.md](../../guide/ARCHITECTURE.md) — overall code organisation.
 - `src/core/object/object.h` — the substrate contract, with detailed
   docstrings on every public function.
 
@@ -550,6 +705,6 @@ lifetime needs one, and a half-built teardown story is worse than none.
 `object_root_reset()` is the test-only path that tears the tree down, and it
 routes through `object_delete` so the invalidator contract still holds.
 
-*(Decision recorded working 08-core-infra F-49. If a future embedding needs to
-build and tear down the emulator repeatedly in one process, that is the change
-that should add `shell_shutdown()` — with all of it, not a piece.)*
+*(If a future embedding needs to build and tear down the emulator repeatedly
+in one process, that is the change that should add `shell_shutdown()` — with
+all of it, not a piece.)*

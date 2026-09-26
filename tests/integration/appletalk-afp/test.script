@@ -141,8 +141,8 @@ machine.adb.mouse.click true
 scheduler.run 80000
 machine.adb.mouse.click false
 scheduler.run 60000000
-# The window's info bar carries the volume's free space, which WP-1 now
-# reports honestly from the host filesystem — so it is excluded from the
+# The window's info bar carries the volume's free space, which the server
+# now reports honestly from the host filesystem — so it is excluded from the
 # match while the listing itself stays pinned.
 check_ex("volume-window.png", 58, 140, 80, 420)
 

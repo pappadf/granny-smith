@@ -21,7 +21,7 @@ static uint16_t disasm_fetch_16_without_inc(uint16_t *fetch_pos) {
 
 static uint32_t disasm_fetch_32_without_inc(uint16_t *fetch_pos) {
     // Widen before the shift: a promoted int shifted past its sign bit is
-    // undefined for any word at or above $8000 (N-44).
+    // undefined for any word at or above $8000.
     uint32_t v = (uint32_t)fetch_pos[1] << 16 | fetch_pos[2];
 
     return v;
@@ -579,11 +579,6 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
         *fetch_src += 1;
         break;
     }
-}
-
-static const char *disasm_cache_scope(unsigned c) {
-    static const char *caches[4] = {"", "L", "P", "A"};
-    return caches[c & 3];
 }
 
 // FPU arithmetic opcode → mnemonic
@@ -1247,7 +1242,6 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
     if (0) {                                                                                                           \
     illegal:;                                                                                                          \
     }                                                                                                                  \
-    done:                                                                                                              \
     if (buf && (buf[0] == '\0' || strstr(buf, "<illegal>") != NULL)) {                                                 \
         sprintf(buf, "DC.W\t$%04X", (unsigned int)instr[0]);                                                           \
         return 1;                                                                                                      \

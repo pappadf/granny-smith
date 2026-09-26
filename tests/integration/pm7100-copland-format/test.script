@@ -1,6 +1,6 @@
 # Integration test: Power Macintosh 7100 — format Copland's target volume.
 #
-# Phases 1-2 of the bring-up plan §6.2: boot the host environment, then
+# Phases 1-2 of the Copland install: boot the host environment, then
 # initialize the blank Apple 230 MB drive with Drive Setup 2.0d5c2 off the DDK
 # CD and publish the result.  `pm7100-copland-install` picks that volume up and
 # installs System 7.5.0 and Copland onto it.  See config.mk for the phase map.
@@ -18,9 +18,9 @@
 #
 #   * the target drive is the Apple-branded 230 MB mechanism Copland's
 #     installer demands.  Its rule 204 refuses any volume under 230 MB and its
-#     rule 207 refuses a disk Apple's own formatter never touched (plan §5.2),
-#     and before HD230SC existed the drive catalog topped out at 169 MB.  The
-#     INQUIRY identity and the exact image size are what
+#     rule 207 refuses a disk Apple's own formatter never touched, and before
+#     HD230SC existed the drive catalog topped out at 169 MB.  The INQUIRY
+#     identity and the exact image size are what
 #     se30-format-hd-apple230 pins on the SE/30; asserting them here says the
 #     drive this test hands to Drive Setup is that same mechanism.
 #   * the drive is still RAW — no partition map, so nothing has formatted it and
@@ -39,10 +39,10 @@
 
 include "../lib/mac.script"
 
-# Media (plan §6.0).  Three levels up from tests/integration/<test>/ is the
-# repo root; the Copland media is not in gs-test-data, so every path here is
-# guarded and the test skips rather than fails where it is absent.
-let copland_root = "../../../local/gs-docs/projects/copland"
+# Media.  The Copland media is not redistributable and not part of the test
+# data; it is read from $GS_EXTRA_MEDIA_DIR/copland/, every path here is
+# guarded, and the test skips rather than fails where it is absent.
+let copland_root = "${$EXTRA_MEDIA}/copland"
 let ddk_cd = "${$copland_root}/images/copland_d11e4_jun_1996_mac_os_8_ddk_0.4_original_cd_image.dmg"
 let ssw75 = "${$copland_root}/media/ssw75-1.4M"
 # The 7.5.0 host volume: genuine 7.5.0, boots on all three PDMs, and Apple is
@@ -65,8 +65,8 @@ def phase1_host_desktop() {
     # 0xE0100000, gaps of ~6 days >> any phase — so timestamps are monotonic
     # across the whole install: a file created in an earlier phase and
     # modified in a later one keeps crDat < mdDat, which Copland's HFS
-    # ValidCatalogEntry requires (a violation hangs any app launch — gs-docs
-    # projects/copland/notes/app-launch-hang.md).  Reproducible and correct.
+    # ValidCatalogEntry requires (a violation hangs any app launch).
+    # Reproducible and correct.
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
     machine.rtc.time = 0xE0000000
     machine.scsi.attach_hd "${$host_hd}" 0
@@ -142,7 +142,7 @@ def popup_pick(px, py, ix, iy) {
 
 # Phase 2 — initialize the target with Drive Setup 2.0d5c2 off the DDK CD.
 #
-# 2.0d5c2 and not System 7.5's own Drive Setup 1.0.2 (plan §7): Apple names
+# 2.0d5c2 and not System 7.5's own Drive Setup 1.0.2: Apple names
 # 2.0d5c2 as the version to use, calls 1.0.4 the oldest acceptable fallback,
 # and — the reason that decides it — initializing with 2.0d5c2 writes the
 # secondary loader partition that the Copland installer's rule 207 ("Check for
@@ -180,8 +180,9 @@ def phase2_format_target() {
     wait_stable(2000000000)
     # "List of Drives": Macintosh HD at ID 0, <not initialized> at ID 1, and
     # <CD-ROM drive> at ID 3.  Apple's own formatter enumerating our emulated
-    # HD230SC as an initializable mechanism is GAP 2's acceptance test, now on
-    # the tool Copland actually requires rather than on 7.0.1's HD SC Setup.
+    # HD230SC as an initializable mechanism is the acceptance test for that
+    # drive, now on the tool Copland actually requires rather than on 7.0.1's
+    # HD SC Setup.
     check_ex("drive-setup-drivelist.png", 0, 440, 20, 640)
 
     # Select the uninitialized drive; the status line must turn into "This disk
@@ -210,7 +211,7 @@ def phase2_format_target() {
 
     click(340, 355)
     wait_stable(600000000)
-    # THE STATUS LINE the plan asks for:
+    # THE STATUS LINE this step is after:
     #   New Partitioning: 1 Macintosh HFS
     #   Initialization Options: None
     check_ex("ready-to-initialize.png", 0, 440, 20, 640)
@@ -236,7 +237,7 @@ def phase2_format_target() {
 # Export the formatted volume and prove, host-side, that Drive Setup 2.0d5c2
 # wrote what Copland's installer requires.
 #
-# The partition map is the whole point of using 2.0d5c2 (plan §7).  Flattened
+# The partition map is the whole point of using 2.0d5c2.  Flattened
 # base+delta, it reads:
 #
 #   1  SecondaryLoader   Apple_MacOSPrep          64      16
@@ -264,23 +265,22 @@ def phase2_export_formatted() {
     echo "formatted volume root: ${$root}"
     assert len($root) < 5 "the formatted volume is not a fresh empty HFS root"
 
-    # Hand-off (plan §6.4): the next test installs System 7.5 and Copland onto
-    # this volume, and cannot read another test's WORK_DIR — the harness wipes
-    # it.  The format is slow, deterministic and rarely changes, so it is
+    # Hand-off: the next test installs System 7.5 and Copland onto this
+    # volume, and cannot read another test's WORK_DIR — the harness wipes it.  The format is slow, deterministic and rarely changes, so it is
     # published once, here, next to the rest of the Copland media.
     storage.cp "${$WORK_DIR}/formatted.img" "${$copland_root}/media/copland_target_formatted_230mb.img"
     assert storage.path_exists("${$copland_root}/media/copland_target_formatted_230mb.img") "the formatted volume was not published to media/"
 }
 
-# Skip cleanly where the Copland media is absent (plan §6.0): it lives in
-# local/ and is deliberately not part of gs-test-data yet.
+# Skip cleanly where the Copland media is absent: it is not redistributable
+# and not part of the test data (see GS_EXTRA_MEDIA_DIR above).
 if have_media($ddk_cd) && have_media("${$ssw75}/Install Disk 1.img") && have_media($host_hd) {
     phase1_host_desktop()
     phase2_format_target()
     phase2_export_formatted()
     report_row("7.5", "ariel", "copland-install-phase1 hd-boot cd-mount drive-setup-2.0d5c2")
 } else {
-    echo "skip: pm7100-copland-install (Copland media not present — see the bring-up plan §6.0)"
+    echo "skip: pm7100-copland-format (Copland media not present — set GS_EXTRA_MEDIA_DIR)"
 }
 
 quit

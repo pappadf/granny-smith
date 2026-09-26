@@ -5,7 +5,7 @@ import SystemView from '@/components/panel-views/machine/SystemView.svelte';
 // Mock the emulator bus so the faithful walk sees a "ready" Module and a
 // synthetic root: the machine container plus one meta object. There is no
 // allowlist — SystemView renders whatever children the root's meta.members
-// lists, labelled and grouped from the model (proposal §8.2).
+// lists, labelled and grouped from the model.
 vi.mock('@/bus/emulator', () => {
   return {
     isModuleReady: () => true,
@@ -33,7 +33,7 @@ describe('SystemView', () => {
       expect(labels).toContain('Storage');
       expect(labels).not.toContain('Secret'); // internal nodes are never shown
     });
-    // Meta objects sit under the non-interactive "Emulator" divider (§8.2).
+    // Meta objects sit under the non-interactive "Emulator" divider.
     const dividers = Array.from(container.querySelectorAll('.group-divider')).map(
       (e) => e.textContent,
     );

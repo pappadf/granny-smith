@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Accelerated scheduler button (proposal-scheduler-accelerated-
-// mode.md §9, last bullet) — the third toolbar mode switches the core to
-// `accelerated`, instruction throughput rises above Real-Time (the adaptive
-// governor climbing under the real RAF loop), and the *timebase* stays locked
-// to real wall-clock while it does.
+// web2 e2e: the Accelerated scheduler button — the third toolbar mode
+// switches the core to `accelerated`, instruction throughput rises above
+// Real-Time (the adaptive governor climbing under the real RAF loop), and the
+// *timebase* stays locked to real wall-clock while it does.
 //
 // The two rates that pin the mode's contract, both read through the shipped
 // Terminal panel (web2 has no window.gsEval):
@@ -152,7 +151,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
     })
     .toBeGreaterThan(live.instrPerSec * 1.4);
 
-  // --- The §9 property, measured in one window -------------------------------
+  // --- The mode's property, measured in one window ---------------------------
   // CPU-bound throughput up, timebase unchanged: instructions per real second
   // beat Real-Time while cycles per real second stay at the machine's clock.
   const accel = await measureRates(page, 6);

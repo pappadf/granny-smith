@@ -107,8 +107,8 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
         return val_err("keyboard.press: unknown key '%s'", as_written);
 
     // Tap (down then up) through the machine substrate: Macs inject via the
-    // keyboard / Toolbox path, the Lisa via its COPS — one uniform path
-    // (proposal §4.4).  A negative result here means this KEYBOARD has no
+    // keyboard / Toolbox path, the Lisa via its COPS — one uniform path.
+    // A negative result here means this KEYBOARD has no
     // such key, which is a different thing from an unknown name: the Lisa has
     // no Control key and no function keys.
     if (system_input_key(code, true) < 0)

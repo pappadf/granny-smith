@@ -126,7 +126,7 @@ struct sonic {
 
     bool in_reset; // CR.RST latched
     bool rx_enabled; // receiver on (CR.RXEN/RXDIS)
-    bool timer_on; // watchdog running (CR.ST/STP) — value is static in v1
+    bool timer_on; // watchdog running (CR.ST/STP) — value is static in this model
     bool irq_line; // current INT output level
 
     uint8_t rba_seq, pkt_seq; // RSC halves (datasheet 3.4.3.2)

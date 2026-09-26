@@ -75,7 +75,7 @@ void afp_log_hex(const char *label, const uint8_t *buf, int len) {
 
 typedef uint32_t (*afp_command_handler_fn)(afp_req_t *r);
 
-// What a session must have done before a command is served (10-network C7).
+// What a session must have done before a command is served.
 // The zero value is the common case, so the table names only the exceptions.
 typedef enum {
     AFP_GATE_LOGIN = 0, // a logged-in session
@@ -96,7 +96,7 @@ typedef struct {
 // the session has done in AFP: whether it has logged in, and at which version.
 // A record is made when ASP opens the session (the client's on_open) and
 // dropped when it closes.  Commands used to be served to any session id,
-// logged in or not, including ids that never existed (10-network F-05).
+// logged in or not, including ids that never existed.
 
 typedef enum { AFP_SESS_OPEN, AFP_SESS_LOGGED_IN } afp_sess_state_t;
 
@@ -406,7 +406,7 @@ static uint32_t afp_cmd_login_cont(afp_req_t *r) {
 static uint32_t afp_cmd_logout(afp_req_t *r) {
     afp_session_release(r->ctx->session_id);
     // Logged out: the session stays open, but serves nothing until it logs in
-    // again.  It used to keep its version and go on working (F-05).
+    // again.  It used to keep its version and go on working.
     afp_session_t *s = afp_session(r->ctx->session_id);
     if (s) {
         s->state = AFP_SESS_OPEN;
@@ -423,7 +423,8 @@ static uint32_t afp_cmd_change_password(afp_req_t *r) {
 }
 
 // FPMapID (0x15) / FPMapName (0x16) / FPGetUserInfo (0x25) — a consistent
-// single-user fiction; WP-13 documents where a real user database would plug in.
+// single-user fiction; appletalk_server.md §5 says where a real user database
+// would plug in.
 static uint32_t afp_cmd_map_id(afp_req_t *r) {
     if (r->in_len < 5)
         return AFPERR_ParamErr;
@@ -930,7 +931,7 @@ static uint32_t afp_cmd_flush_fork(afp_req_t *r) {
 }
 
 // FPByteRangeLock (0x01) — real ranges now, checked against every other open
-// of the same fork (WP-6).
+// of the same fork.
 static uint32_t afp_cmd_byte_range_lock(afp_req_t *r) {
     if (r->in_len < 11)
         return AFPERR_ParamErr;
@@ -1147,7 +1148,7 @@ static uint32_t afp_cmd_rename(afp_req_t *r) {
     // The new name is one element, decoded like any other: "..", a name with a
     // separator in it, or one of the server's own names is a bad NewName.  It
     // went straight into a host path join, so "../../x" renamed a file out of
-    // the share (10-network F-01).
+    // the share.
     afp_path_t new_path;
     char new_name[AFP_MAX_NAME * 3 + 1];
     if (afp_read_path(r->in, r->in_len, pos, &new_path) < 0 || !afp_parse_leaf(&new_path, new_name, sizeof(new_name)))
@@ -1211,7 +1212,7 @@ static uint32_t afp_cmd_move_and_rename(afp_req_t *r) {
     pos = afp_read_path(r->in, r->in_len, pos, &dst_path);
     if (pos < 0)
         return AFPERR_ParamErr;
-    // An optional new name (F-01: checked like FPRename's).
+    // An optional new name, checked like FPRename's.
     char new_name[AFP_MAX_NAME * 3 + 1] = "";
     if (pos < r->in_len) {
         afp_path_t new_path;
@@ -1320,7 +1321,7 @@ static uint32_t afp_cmd_copy_file(afp_req_t *r) {
     pos = afp_read_path(r->in, r->in_len, pos, &dst_name);
     if (pos < 0)
         return AFPERR_ParamErr;
-    // An optional new name (F-01: checked like FPRename's).
+    // An optional new name, checked like FPRename's.
     char new_name[AFP_MAX_NAME * 3 + 1] = "";
     if (pos < r->in_len) {
         afp_path_t new_path;
@@ -1390,7 +1391,7 @@ static uint32_t afp_cmd_copy_file(afp_req_t *r) {
 }
 
 // ============================================================================
-// Desktop database (WP-9)
+// Desktop database
 // ============================================================================
 
 // A volume's DTRefNum is its volume ID: one per volume, never 0, and never
@@ -1454,7 +1455,7 @@ static uint32_t afp_cmd_add_icon(afp_req_t *r) {
     if (icon_size > AFP_ICON_MAX_BYTES)
         return AFPERR_IconTypeError;
     // A bitmap shorter than its BitmapSize is a bad request, as a short FPWrite
-    // is -- not a smaller icon (10-network N-32).
+    // is -- not a smaller icon.
     if (icon_size > r->in_len - 19)
         return AFPERR_ParamErr;
     // Replacing an existing icon with one of a different size is an error,
@@ -1471,8 +1472,8 @@ static uint32_t afp_cmd_add_icon(afp_req_t *r) {
 // FPGetIcon (0x33)
 static uint32_t afp_cmd_get_icon(afp_req_t *r) {
     // Pad(1) DTRefNum(2) FileCreator(4) FileType(4) IconType(1) Pad(1)
-    // Length(2) -- Inside AppleTalk p. 13-92.  Length was read from the pad
-    // (10-network N-10): 256 asked for 1 byte, 128 got 256.
+    // Length(2) -- Inside AppleTalk p. 13-92.  Length was once read from the
+    // pad: 256 asked for 1 byte, 128 got 256.
     if (r->in_len < 15)
         return AFPERR_ParamErr;
     vol_t *v = find_vol_by_dt_ref(r->ctx, RD_BE16(r->in + 1));
@@ -1559,8 +1560,7 @@ static uint32_t afp_cmd_remove_appl(afp_req_t *r) {
     uint32_t dir_id = RD_BE32(r->in + 3);
     uint32_t creator = RD_BE32(r->in + 7);
     // The application is named by its path.  One that did not resolve left
-    // the CNID 0, which the store takes as "every mapping for this creator"
-    // (10-network N-15).
+    // the CNID 0, which the store takes as "every mapping for this creator".
     afp_path_t path;
     if (afp_read_path(r->in, r->in_len, 11, &path) < 0)
         return AFPERR_ParamErr;
@@ -1653,7 +1653,7 @@ static uint32_t afp_cmd_add_comment(afp_req_t *r) {
     meta.has_comment = true;
     // A pad follows the pathname when the comment would start on an odd
     // offset of the command block -- which begins one byte before r->in, with
-    // the opcode.  It was read as the comment's length (10-network N-11).
+    // the opcode.  It was read as the comment's length.
     if (pos % 2 == 0)
         pos++;
     if (pos < r->in_len) {
@@ -1717,7 +1717,7 @@ static uint32_t afp_cmd_get_comment(afp_req_t *r) {
 }
 
 // ============================================================================
-// AFP 2.1 file-ID calls (WP-5)
+// AFP 2.1 file-ID calls
 // ============================================================================
 
 // FPCreateID (0x27) — attach a file-ID thread to a file.  The CNID is already
@@ -2071,7 +2071,7 @@ static bool catsearch_matches(vol_t *vol, const char *rel, const char *name, boo
         }
     }
     if (request_bm & (1u << 6)) {
-        // Folded as Mac names (D-7): case-insensitive, diacritical-sensitive.
+        // Folded as Mac names: case-insensitive, diacritical-sensitive.
         if (partial_name ? !afp_name_fold_contains(name, s1->name) : afp_name_fold_cmp(name, s1->name) != 0)
             return false;
     }
@@ -2155,7 +2155,7 @@ static uint32_t afp_cmd_cat_search(afp_req_t *r) {
     // The cursor moves past an entry only once it is written or rejected: an
     // entry the reply had no room for, or that came after the last match
     // asked for, is where the next call resumes.  It moved first, so every
-    // resume lost one match (10-network N-12: 1999 of 2000).
+    // resume lost one match (1999 of 2000).
     for (const afp_cat_entry_t *e = afp_catalog_next(vol->catalog, cursor); e;
          e = afp_catalog_next(vol->catalog, cursor)) {
         if (actual >= req_matches) {
@@ -2163,7 +2163,7 @@ static uint32_t afp_cmd_cat_search(afp_req_t *r) {
             break;
         }
         // Copied now: matching adopts ancestors into the catalog, which can
-        // move `e` (10-network N-33).
+        // move `e`.
         uint32_t cnid = e->cnid;
         char name[AFP_CAT_MAX_NAME + 1];
         snprintf(name, sizeof(name), "%s", e->name);
@@ -2294,7 +2294,7 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
     // Handlers write their fixed-size replies without checking the room: the
     // reply buffer is never smaller than one ATP packet.  They used to check
     // it one by one, some only after acting -- FPOpenFork after opening the
-    // fork, FPLogin after recording the version (10-network N-32).
+    // fork, FPLogin after recording the version.
     if (!out || out_max < AFP_MIN_REPLY) {
         LOG(1, "AFP: command 0x%02X refused — reply buffer of %d bytes", opcode, out_max);
         afp_count_result(opcode, AFPERR_ParamErr);
@@ -2340,7 +2340,7 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
 }
 
 // Release everything a departing session owned.  Called from the ASP layer on
-// CloseSess and on tickle expiry (WP-8).
+// CloseSess and on tickle expiry.
 // Release what a session holds: its forks, snapshots, and volume and desktop
 // references.
 static void afp_session_release(uint16_t session_id) {
@@ -2366,7 +2366,7 @@ uint32_t afp_session_open_forks(uint16_t session_id) {
 }
 
 // Drop every volume-scoped cache — used when a checkpoint restore replaces
-// the machine underneath a live mount (WP-11).
+// the machine underneath a live mount.
 void afp_reset_transient_state(void) {
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
         if (!g_vols[i].in_use)

@@ -103,7 +103,7 @@ export async function loadDebugFrame(
   if (!CORE_NAME.test(core)) return null;
   if (!isModuleReady()) return null;
   // Named arguments: a lone positional argument is `addr` to the core, so
-  // `[0, n]` used to disassemble from address 0 (N-32).
+  // `[0, n]` used to disassemble from address 0.
   const args: Record<string, number> = { count };
   if (addr !== undefined) args.addr = addr >>> 0;
   else if (before > 0) args.before = before;
@@ -305,8 +305,8 @@ export async function stopMachine(): Promise<void> {
   await shutdownEmulator();
 }
 
-// Restart the current machine: machine.restart power-cycles it in the core
-// (proposal-boot-vs-reset §3.2), rebuilding the recorded hardware from cold
+// Restart the current machine: machine.restart power-cycles it in the core,
+// rebuilding the recorded hardware from cold
 // ROM state with the mounted media still attached — no cached-config replay
 // or manual re-insertion needed.
 export async function restart(): Promise<void> {

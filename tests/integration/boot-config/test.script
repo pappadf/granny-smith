@@ -1,7 +1,6 @@
-# Integration test: configuration-document boot
-# (proposal-named-args-boot-config §4, revised by proposal-boot-vs-reset:
-# machine.boot inherits NOTHING — the document is the whole specification —
-# and machine.restart is the verb for "power-cycle this machine").
+# Integration test: configuration-document boot.  machine.boot inherits
+# NOTHING — the document is the whole specification — and machine.restart
+# is the verb for "power-cycle this machine".
 #
 # Pins the boot-document contract end-to-end:
 #   * headless startup writes the built-from record (same path as scripts);
@@ -40,6 +39,10 @@ assert !machine.boot(model="iicx", rom="${$ROM}", ram=999) "off-menu ram must be
 assert !machine.boot(model="iicx", rom="does/not/exist.rom") "unreadable rom must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", vrom="../../data/roms/plus-v3-4d1f8172.rom") "non-vROM vrom= must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_card="nonesuch") "unknown card id must be rejected"
+# A real card that fits no slot of this model (the IIci's built-in RBV video
+# on a IIcx) is rejected too: seated nowhere, it used to boot the default
+# display and leave the row that named it testing something else.
+assert !machine.boot(model="iicx", rom="${$ROM}", video_card="builtin_rbv_video") "a card that fits no slot must be rejected"
 # 15 is one past the top of Apple's indexed sense numbering: 0..7 is the
 # passive 3-bit code, 8..14 names a monitor that answers the EXTENDED
 # tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).
@@ -80,7 +83,7 @@ assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "c
 
 # --- The record captures the RESOLVED per-slot picks, not just the
 # wildcard: that is what lets machine.restart re-seat a multi-card machine
-# (proposal-pci-architecture §8.2, the repair of the wildcard-only gap). ---
+# (a wildcard-only record could not). ---
 machine.nubus.slot[9].card_id = "display_card_24ac"
 machine.nubus.slot[10].card_id = "824gc"
 machine.boot model="iicx" rom="${$ROM}"
@@ -131,7 +134,7 @@ assert machine.config.model == "iicx" "restored record model"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine card"
 # Under a non-inheriting boot a bare machine.boot after restore is an error;
 # the idiom for "power-cycle the restored machine" is machine.restart, which
-# replays the restored record cold (proposal-boot-vs-reset §6.5).
+# replays the restored record cold.
 assert !machine.boot() "bare machine.boot after restore must be rejected"
 machine.restart
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "machine.restart after checkpoint.load must rebuild the restored configuration"
@@ -142,6 +145,30 @@ assert machine.config.ram == 16384 "restart after restore keeps the restored ram
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc" vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"
 assert machine.config.vrom != "" "record must carry the explicit pick"
 assert machine.config.vroms == "[{\"card_id\":\"824gc\",\"path\":\"../../data/roms/824gc-v1.0-reva-9e9857e8.vrom\",\"crc\":\"0x9e9857e8\",\"explicit\":true}]" "explicit v1.0 pick must win over the preferred v1.1"
+# ...for that document only: the next boot without vrom= resolves the
+# catalog-preferred v1.1 again (the pick used to stay registered as explicit).
+machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
+assert machine.config.vrom == "" "no vrom= in the document, none in the record"
+assert machine.config.vroms[0].crc == "0xd722b053" "the previous boot's explicit pick must not outlive it"
+assert !machine.config.vroms[0].explicit "an auto-resolved pick is not explicit"
+
+# --- The built-in monitor strap (PDM) is part of the record: restart and
+# checkpoint.load rebuild with it.  monitor=none leaves the port unconnected,
+# so the machine has no screen until a card provides one; restart used to
+# drop the strap and bring the built-in 640x480 back. ---
+let pdm_rom = "../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
+machine.boot model="pm7100" rom=$pdm_rom monitor="none"
+assert machine.config.monitor == "none" "record carries the monitor strap"
+assert machine.screen.width == 0 "monitor=none: no built-in screen"
+machine.restart
+assert machine.config.monitor == "none" "restart keeps the strap in the record"
+assert machine.screen.width == 0 "restart must rebuild with the strap"
+assert checkpoint.save("${$WORK_DIR}/monitor.checkpoint") "checkpoint save (pm7100)"
+machine.boot model="pm7100" rom=$pdm_rom
+assert machine.screen.width == 640 "default strap: the built-in 640x480"
+assert checkpoint.load("${$WORK_DIR}/monitor.checkpoint") "checkpoint load (pm7100)"
+assert machine.config.monitor == "none" "restored record carries the strap"
+assert machine.screen.width == 0 "restored machine has no built-in screen"
 
 # --- A model change carries nothing (the v0.8.0 staging regression). ---
 # video_card / video_mode / video_sense / vrom name a card in a slot, so

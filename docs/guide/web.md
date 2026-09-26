@@ -47,7 +47,7 @@ later worker-side create at that path fails (`I/O error`). To stay coherent,
 the Filesystem tab routes its **mutations through the worker**
 (`storage.rm` / `storage.mv` / `storage.cp`), reserving `navigator.storage`
 for reads. (This is why `BrowserOpfs.delete` / `.move` in
-[`bus/opfs.ts`](../app/web2/src/bus/opfs.ts) call `gsEval` rather than
+[`bus/opfs.ts`](../../app/web2/src/bus/opfs.ts) call `gsEval` rather than
 `removeEntry` directly.)
 
 **Core / frontend separation.** The emulator core is path-agnostic: it
@@ -59,7 +59,7 @@ fdhd,hd,cd}` and `/opfs/{checkpoints,upload}` at boot via
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
 a single shared-memory region — `js_bridge_t`, defined in
-[`src/platform/wasm/em.h`](../src/platform/wasm/em.h) and exported via
+[`src/platform/wasm/em.h`](../../src/platform/wasm/em.h) and exported via
 the lone `_get_js_bridge()` accessor. JS resolves the base pointer once
 at init and reads/writes fields by offset through `Module.HEAP32` /
 `Module.HEAPU8`. The struct carries a `version` field that JS verifies
@@ -91,7 +91,7 @@ So `r !== null` is never a success test — `{ error }` passes it.  Use
 `gsOk(r)` for "did it work" (neither an error nor a V_BOOL `false`),
 `r === true` for a V_BOOL method, and a shape check for a read;
 `gsErrorText(r)` gives the reason
-([`bus/emulator.ts`](../app/web2/src/bus/emulator.ts)).
+([`bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)).
 
 C→JS *state pushes* go through `Module.*` callbacks installed at module
 construction, not through the bridge slot:
@@ -112,7 +112,7 @@ construction, not through the bridge slot:
 - **`Module.onLogEmit(line)`** — fired via `MAIN_THREAD_ASYNC_EM_ASM`
   per emitted log line, gated by `log_would_log()` so the worker pays
   the cross-thread cost only when a category's level is above zero.
-  Routed in [`app/web2/src/bus/logSink.ts`](../app/web2/src/bus/logSink.ts)
+  Routed in [`app/web2/src/bus/logSink.ts`](../../app/web2/src/bus/logSink.ts)
   into the reactive `logs.entries` buffer (rAF-coalesced).
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
   pipes. The same `logSink` writes these to the xterm pane.
@@ -138,7 +138,7 @@ construction, not through the bridge slot:
   access, not callbacks.
 - **`Module.onVideoInState(active)`** — fired when the guest gates the
   AV digitizer's VDC clock, i.e. when capture actually starts and stops.
-  [`state/camera.svelte.ts`](../app/web2/src/state/camera.svelte.ts)
+  [`state/camera.svelte.ts`](../../app/web2/src/state/camera.svelte.ts)
   attaches or stops the `MediaStreamTrack` on it, so the camera light
   is on only while the guest is capturing.
 - **`Module.onAudioInState(active)`** / **`Module.onAudioInInjected(path)`**
@@ -150,12 +150,12 @@ construction, not through the bridge slot:
 
 - **`Module.onVoodooGpuAttach(ctrl, bytes)` / `onVoodooGpuDetach(ctrl)`**
   — the Voodoo2 WebGPU takeover (`raster=webgpu`,
-  [`src/platform/wasm/em_gpu.c`](../src/platform/wasm/em_gpu.c)): the
+  [`src/platform/wasm/em_gpu.c`](../../src/platform/wasm/em_gpu.c)): the
   emulator's raster pthread allocated a control block + op ring +
   readback area at `ctrl` in the shared heap and wants the page's GPU
-  worker attached to it.  [`gpu/voodoo2Gpu.svelte.ts`](../app/web2/src/gpu/voodoo2Gpu.svelte.ts)
+  worker attached to it.  [`gpu/voodoo2Gpu.svelte.ts`](../../app/web2/src/gpu/voodoo2Gpu.svelte.ts)
   posts the wasm memory and the address to the worker
-  ([`gpu/voodoo2Gpu.worker.ts`](../app/web2/src/gpu/voodoo2Gpu.worker.ts)),
+  ([`gpu/voodoo2Gpu.worker.ts`](../../app/web2/src/gpu/voodoo2Gpu.worker.ts)),
   which then talks to the emulator through shared memory only —
   `Atomics.waitAsync` on the ring's head, `Atomics.notify` on its tail
   and the acknowledge word — while the C side waits with futexes.  The
@@ -165,7 +165,7 @@ construction, not through the bridge slot:
   honest at machine creation.  The page shows the overlay exactly
   while GPU mode is engaged (the worker relays the MODE records it
   consumes).  The protocol is
-  [`voodoo2_gpu_protocol.h`](../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h)
+  [`voodoo2_gpu_protocol.h`](../../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h)
   / `voodoo2Protocol.ts`.
 
 - **`Module.onPrinterAttach(ctrl, version)`** — the emulated LaserWriter's
@@ -173,8 +173,8 @@ construction, not through the bridge slot:
   `laserwriter_ring_attach_requested`): the printer bridge allocated a
   control block + two byte rings at `ctrl` in the shared heap on the
   first print job and wants the page's platen worker attached.
-  [`printer/platen.ts`](../app/web2/src/printer/platen.ts) starts
-  [`printer/platen.worker.ts`](../app/web2/src/printer/platen.worker.ts)
+  [`printer/platen.ts`](../../app/web2/src/printer/platen.ts) starts
+  [`printer/platen.worker.ts`](../../app/web2/src/printer/platen.worker.ts)
   then (lazily: the worker fetches its own non-threaded module,
   `platen-<version>.js` beside `main.mjs`, built by `make platen-module`),
   and posts the wasm memory and the address; the worker parks in
@@ -182,7 +182,7 @@ construction, not through the bridge slot:
   it with `emscripten_futex_wake`.  Each finished PDF comes back to the
   page as a transferable and is downloaded at once as
   `<job>-<title>.pdf`.  The protocol is
-  [`laserwriter_ring_protocol.h`](../src/core/network/laserwriter_ring_protocol.h)
+  [`laserwriter_ring_protocol.h`](../../src/core/network/laserwriter_ring_protocol.h)
   / `printer/platenProtocol.ts`; the whole path is
   [`docs/core/network/laserwriter.md`](../core/network/laserwriter.md) §5.5.
 
@@ -194,12 +194,12 @@ These callbacks are the template for any future C→JS event: install on
 `Module.*`, fire from C with `MAIN_THREAD_*_EM_ASM`. No exports, no
 SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback
 retired when the new prompt started coming back as `shell.run`'s return
-value under proposal-shell-as-object-model-citizen.)
+value.)
 
 ## The Bridge Struct
 
 Layout (mirrored as `OFF_*` constants in
-[`app/web2/src/bus/emulator.ts`](../app/web2/src/bus/emulator.ts)):
+[`app/web2/src/bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)):
 
 ```
 offset    0   version    int32     must equal JS_BRIDGE_VERSION
@@ -241,7 +241,7 @@ pattern gates the initial `ready` flip.
 
 ## Module Bootstrapping
 
-Entry point: [`app/web2/src/main.ts`](../app/web2/src/main.ts).
+Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
 
 1. Synchronous pre-mount work:
    - Load persisted state from `localStorage` (theme, panel pos+size,
@@ -249,11 +249,11 @@ Entry point: [`app/web2/src/main.ts`](../app/web2/src/main.ts).
    - Apply theme to `<html data-theme>` to avoid a flash.
    - Auto-pick panel orientation from viewport size if no persisted
      value.
-2. **WebGL2 probe.** [`lib/webglCheck.ts`](../app/web2/src/lib/webglCheck.ts)
+2. **WebGL2 probe.** [`lib/webglCheck.ts`](../../app/web2/src/lib/webglCheck.ts)
    creates an off-DOM canvas and asks for a `webgl2` context. If
    missing (e.g. Chrome GPU process dead, hardware acceleration
    disabled), the app renders a full-page error overlay via
-   [`lib/webglErrorPage.ts`](../app/web2/src/lib/webglErrorPage.ts) and
+   [`lib/webglErrorPage.ts`](../../app/web2/src/lib/webglErrorPage.ts) and
    does **not** mount Svelte. The error page is vanilla DOM so it
    survives a degraded framework runtime.
 3. Mount the Svelte tree.
@@ -261,13 +261,13 @@ Entry point: [`app/web2/src/main.ts`](../app/web2/src/main.ts).
    - `await whenModuleReady()` (resolved by `bus/emulator.ts::bootstrap`
      once the bridge's `ready` flag flips). Exposes `window.__gsReady =
      true` for headless automation
-     ([`scripts/ui2-diag.mjs`](../scripts/ui2-diag.mjs)).
+     ([`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs)).
    - `maybeOfferBackgroundCheckpoint()` — surfaces a resume prompt if
      this browser's machine has a saved checkpoint.
    - `processUrlMedia()` — handles the URL's media parameters (any of
      them starts it).
 
-Module-construction call ([`bus/emulator.ts::bootstrap`](../app/web2/src/bus/emulator.ts)):
+Module-construction call ([`bus/emulator.ts::bootstrap`](../../app/web2/src/bus/emulator.ts)):
 
 ```ts
 const url = new URL(`main.mjs?v=${bust}`, document.baseURI).href;
@@ -301,43 +301,43 @@ activate the per-machine checkpoint directory.
 ## Major UI Surfaces
 
 The Svelte app is organised under
-[`app/web2/src/components/`](../app/web2/src/components/):
+[`app/web2/src/components/`](../../app/web2/src/components/):
 
-- **Display** ([`display/`](../app/web2/src/components/display/)) —
+- **Display** ([`display/`](../../app/web2/src/components/display/)) —
   ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save,
   theme), DropOverlay (drag state machine §8.5), WelcomeView with
   Home / Configuration slides for new-machine setup.
-- **Workbench** ([`workbench/`](../app/web2/src/components/workbench/))
+- **Workbench** ([`workbench/`](../../app/web2/src/components/workbench/))
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.
-- **Panel views** ([`panel-views/`](../app/web2/src/components/panel-views/)):
+- **Panel views** ([`panel-views/`](../../app/web2/src/components/panel-views/)):
   Terminal, Logs, Machine tree, Filesystem tree, Images, Checkpoints,
   Debug (Disassembly + Registers + FPU + Memory + MMU + Breakpoints +
   Watchpoints + Call Stack).
-- **Status bar** ([`status-bar/`](../app/web2/src/components/status-bar/))
+- **Status bar** ([`status-bar/`](../../app/web2/src/components/status-bar/))
   — machine state, drive activity, in-flight upload progress. The HD /
   FD / CD lights are real: the core counts every drive read and write on
   the image (`storage.images[i].reads` / `.writes`), the worker tick sums
   them per kind and pushes `Module.onDriveActivity(kind, state)` only when
   a light changes, holding each on at least 100 ms
-  ([`drive_activity.c`](../src/core/storage/drive_activity.c)). A model
+  ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
   shows only the lights its profile has drives for.
-- **Common** ([`common/`](../app/web2/src/components/common/)) —
+- **Common** ([`common/`](../../app/web2/src/components/common/)) —
   CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu, Icon
-  (codicon sprite at [`public/icons/sprite.svg`](../app/web2/public/icons/sprite.svg)).
+  (codicon sprite at [`public/icons/sprite.svg`](../../app/web2/public/icons/sprite.svg)).
 
-State lives under [`app/web2/src/state/`](../app/web2/src/state/) —
+State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
 each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,
 `debug`, `theme`, `logs`, `images`, `uploads`, `toasts`, …). The bus
-layer at [`app/web2/src/bus/`](../app/web2/src/bus/) wraps every
+layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
 `gsEval` call site.
 
 ## Upload Pipeline
 
 Four deliberate ways to get a media image into OPFS, all routing
-through [`app/web2/src/bus/upload.ts`](../app/web2/src/bus/upload.ts).
+through [`app/web2/src/bus/upload.ts`](../../app/web2/src/bus/upload.ts).
 Every byte goes through the core's **transfer window**
-([`bus/xfer.ts`](../app/web2/src/bus/xfer.ts)): the page copies a chunk
+([`bus/xfer.ts`](../../app/web2/src/bus/xfer.ts)): the page copies a chunk
 into a fixed buffer in wasm memory and `storage.xfer_write` writes it on
 the emulator thread (`storage.xfer_read` is the reverse).  The page never
 calls `Module.FS`: under WasmFS that runs on the page's thread and
@@ -352,12 +352,12 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    selects what was stored, and a cancelled or rejected upload keeps the
    previous pick. The floppy / HD
    slots also offer "Create blank image…", which opens
-   [`CreateImageDialog.svelte`](../app/web2/src/components/display/CreateImageDialog.svelte)
+   [`CreateImageDialog.svelte`](../../app/web2/src/components/display/CreateImageDialog.svelte)
    and creates a blank image directly in OPFS via `storage.fd_create`
    (800 KB / 1.4 MB) or `storage.hd_create` (size from
    `machine.scsi.hd_models`).
 2. **Drag-and-drop onto the Display** —
-   [`DropOverlay.svelte`](../app/web2/src/components/display/DropOverlay.svelte)
+   [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
    `acceptFiles(files)`. Auto-detects type by probing each
    `MediaTypeDescriptor` in order; archives (`.zip`, `.sit`, `.hqx`,
@@ -367,31 +367,31 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    bay is refused, not overwritten); ROMs trigger a full cold boot via
    `maybeBootFromRom`.
 3. **Drag-and-drop onto the Filesystem tab** —
-   [`FilesystemView.svelte`](../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
+   [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls
    `acceptFilesRaw(files, targetDir)`. **No validation** — the
    Filesystem view is the low-level OPFS browser. The same tab also does
    *internal* drags — move within OPFS, and **copy a file/folder out of a
    disk image** to an OPFS folder — through the operations in
-   [`bus/fsOps.ts`](../app/web2/src/bus/fsOps.ts).
+   [`bus/fsOps.ts`](../../app/web2/src/bus/fsOps.ts).
 4. **Drag-and-drop onto an Images-tab category** —
-   [`ImageCategorySection.svelte`](../app/web2/src/components/panel-views/images/ImageCategorySection.svelte)
+   [`ImageCategorySection.svelte`](../../app/web2/src/components/panel-views/images/ImageCategorySection.svelte)
    wraps each section in a drop host. Drop calls
    `acceptFilesAsCategory(files, mediaIdFor(cat))`. Same strict
    per-category validation as path 1.
 
 All four paths run through `startActivity` / `endActivity`
-([`state/activity.svelte.ts`](../app/web2/src/state/activity.svelte.ts)) so
+([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
 the status bar shows a spinner with a "\<verb>: \<name>" label during long
 operations. The verb is general — uploads show "Uploading", and the
 Filesystem-tab worker ops reuse the same indicator ("Copying", "Moving",
 "Deleting", "Unpacking", "Downloading"). Confirmation toasts are centralised
-in [`state/toasts.svelte.ts`](../app/web2/src/state/toasts.svelte.ts).
+in [`state/toasts.svelte.ts`](../../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
 
-Highlights — see the typed-dispatch / introspection proposals for the
-full surface.
+Highlights — see [object-model.md](../core/shell/object-model.md) for the
+typed-dispatch and introspection surface.
 
 - **`machine.rom.identify(path)`** → `{recognised, checksum, name,
   compatible[], size}`. Drives the Model dropdown in the New Machine
@@ -407,7 +407,7 @@ full surface.
   Filesystem-tab "Unpack" action.
 - **`vfs.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
   image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
-  browse inside images; see [`target-filesystems.md`](target-filesystems.md).
+  browse inside images; see [`target-filesystems.md`](../core/storage/target-filesystems.md).
 - **`storage.cp([-r], src, dst)`** — copy, including *out of* an image into
   OPFS (backs copy-out and Download). **`storage.rm(path)`** /
   **`storage.mv(src, dst)`** — recursive remove / move, run worker-side so
@@ -512,7 +512,7 @@ any checkpoint's reference to it do not survive a reload. Copy it under
 
 ## URL Parameters
 
-Handled in [`bus/urlMedia.ts`](../app/web2/src/bus/urlMedia.ts) and
+Handled in [`bus/urlMedia.ts`](../../app/web2/src/bus/urlMedia.ts) and
 invoked from `main.ts` after `whenModuleReady()` resolves:
 
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
@@ -569,20 +569,20 @@ The same sequence as Module Bootstrapping above, end to end:
 
 ## Terminal Integration (xterm.js)
 
-[`TerminalPane.svelte`](../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
+[`TerminalPane.svelte`](../../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
 dynamically imports `@xterm/xterm` and `@xterm/addon-fit` on first
 mount so they're code-split out of the main bundle, and it stays mounted
 (hidden) once opened, so scrollback survives a tab switch. The terminal's
 input state machine (`{buffer, cursor, history}`) lives in the component.
 All input arrives through xterm's `onData` — keys, pastes, IME text —
-and [`lineDiscipline.ts`](../app/web2/src/components/panel-views/terminal/lineDiscipline.ts)
+and [`lineDiscipline.ts`](../../app/web2/src/components/panel-views/terminal/lineDiscipline.ts)
 turns it into editing actions, which apply one at a time while the input
 line is live: whatever is typed while a command runs waits for the next
 prompt, and a multi-line paste runs line by line. On Enter the pane calls
 `gsEvalLine(line)`, which routes to the Shell class's `run` method;
 the next prompt is returned from `shell.run` and cached for the next
 `showPrompt()`. Stdout / stderr from `Module.print` lands in the same
-pane via [`bus/logSink.ts`](../app/web2/src/bus/logSink.ts), which holds
+pane via [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts), which holds
 what is printed before the terminal first opens and replays it then.
 
 Tab completion uses the typed `shell.complete(line, cursor)` method.
@@ -601,10 +601,10 @@ runs lazily after the first pointer/key/click/touch event; the
 emulator can run silently before that without errors.
 
 The worklet is
-[`audio/gsAudio.worklet.ts`](../app/web2/src/audio/gsAudio.worklet.ts),
+[`audio/gsAudio.worklet.ts`](../../app/web2/src/audio/gsAudio.worklet.ts),
 bundled by Vite and handed to the core as `Module.gsAudioWorkletUrl`;
 its ring logic is the class in
-[`audio/audioRing.ts`](../app/web2/src/audio/audioRing.ts), which the
+[`audio/audioRing.ts`](../../app/web2/src/audio/audioRing.ts), which the
 unit tests drive directly. It reads int16 frames straight from
 `em_audio.c`'s ring in the shared heap. Each index has one writer: the
 emulator advances `write`, the worklet advances `read`, both
@@ -622,8 +622,8 @@ magic and a version, followed by the `(offset, size)` pairs of what it
 carries; the C side fills the block before it announces the pointer,
 and JS derives every offset from it and refuses, with a toast, a block
 it does not recognise. The word indices live in
-[`em_shm_layout.h`](../src/platform/wasm/em_shm_layout.h) and are
-mirrored in [`bus/shmLayout.ts`](../app/web2/src/bus/shmLayout.ts); a
+[`em_shm_layout.h`](../../src/platform/wasm/em_shm_layout.h) and are
+mirrored in [`bus/shmLayout.ts`](../../app/web2/src/bus/shmLayout.ts); a
 unit test compares every mirrored header with its TS twin.
 
 ## Camera (AV video input)
@@ -654,7 +654,7 @@ engine are both on — see `Module.onVideoInState` above and
 
 `SharedArrayBuffer` (required for pthreads + Atomics) needs Cross-
 Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers. The dev
-server [`scripts/dev_server.py`](../scripts/dev_server.py) sends both
+server [`scripts/dev_server.py`](../../scripts/dev_server.py) sends both
 unconditionally; serving `index.html` directly (no redirect) keeps the
 headers intact through Codespaces' port-forwarding proxy.
 
@@ -662,20 +662,20 @@ headers intact through Codespaces' port-forwarding proxy.
 
 - Wire new features through the object model
   (`bus/emulator.ts::gsEval(path, args)`). The bridge contract is
-  documented in [object-model.md](object-model.md).
+  documented in [object-model.md](../core/shell/object-model.md).
 - New panel views drop into
-  [`app/web2/src/components/panel-views/`](../app/web2/src/components/panel-views/)
+  [`app/web2/src/components/panel-views/`](../../app/web2/src/components/panel-views/)
   and get registered in `PanelTab` / `PanelContent`.
 - New persistent UI state goes into a `state/<slice>.svelte.ts` file
   with `$state(...)`. Wire localStorage persistence in
-  [`state/persist.svelte.ts`](../app/web2/src/state/persist.svelte.ts).
+  [`state/persist.svelte.ts`](../../app/web2/src/state/persist.svelte.ts).
 - Media is persisted by the web app (`bus/upload.ts::persist`), not by
   the core; the core opens the path it is given.
 - The core is path-agnostic — all directory-structure decisions belong
   to the web app.
 - Any new URL parameter is handled in
-  [`bus/urlMedia.ts::parseUrlMediaParams`](../app/web2/src/bus/urlMedia.ts).
+  [`bus/urlMedia.ts::parseUrlMediaParams`](../../app/web2/src/bus/urlMedia.ts).
 - The diagnostic harness at
-  [`scripts/ui2-diag.mjs`](../scripts/ui2-diag.mjs) drives Chromium
+  [`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs) drives Chromium
   via Playwright, captures console / pageerror / xterm contents, and
   prints a JSON report. Run with `make ui2-diag`.

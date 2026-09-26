@@ -389,12 +389,12 @@ TEST(test_reserved_control_code_rejected) {
 
     ASSERT_EQ_INT((int)adsp_conn_recv_seq(cb), (int)recv_before);
     ASSERT_EQ_INT(conn_count(g_b), 1); // rejected, not fatal
-    ASSERT_EQ_INT((int)(adsp_get_stats(g_b)->malformed - malformed_before), 1); // and counted (F-35)
+    ASSERT_EQ_INT((int)(adsp_get_stats(g_b)->malformed - malformed_before), 1); // and counted
     pump();
 }
 
-// A packet shorter than the 13-byte header is dropped and counted (10-network
-// F-35: it used to leave no trace but a log line).
+// A packet shorter than the 13-byte header is dropped and counted (it used to
+// leave no trace but a log line).
 TEST(test_runt_packet_is_counted) {
     setup();
     uint8_t pkt[ADSP_HEADER_SIZE - 1] = {0};
@@ -559,7 +559,7 @@ TEST(test_close_advice) {
 }
 
 // A client may close a connection from inside on_close.  The slot was still
-// open then: a second CLOSE went out and on_close ran twice (F-15).
+// open then: a second CLOSE went out and on_close ran twice.
 TEST(test_local_close_reenters) {
     setup();
     adsp_conn_t *ca = open_a_to_b();

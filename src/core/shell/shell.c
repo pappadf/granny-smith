@@ -60,7 +60,7 @@ bool shell_internal_dispatch_command(char *line, char *err_buf, size_t err_size)
     return true;
 }
 
-// === Value printing (the REPL formatting surface, §5) ======================
+// === Value printing (the REPL formatting surface) ==========================
 
 // Print one scalar value inline (no trailing newline). Used as the
 // rhs in the object-attribute table dump and inside list expansion.
@@ -138,7 +138,7 @@ static void format_cell(const value_t *v, char *buf, size_t buf_size) {
 #define TABLE_CELL_MAX 48
 
 // A V_LIST whose elements are all objects of one class prints as a
-// table — columns from the class's attributes (§5). This is what lets
+// table — columns from the class's attributes. This is what lets
 // `debug.breakpoints.entries` at the prompt render the same table the
 // retired `list` methods used to print. Returns false when the list
 // isn't table-shaped (caller falls back to inline list rendering).
@@ -277,7 +277,7 @@ static void format_value_print(const value_t *v) {
 }
 
 // Public print surface for the script interpreter (REPL result
-// printing, §5).
+// printing).
 void shell_print_value(const value_t *v) {
     format_value_print(v);
 }
@@ -365,7 +365,7 @@ int shell_init(void) {
 
     // Register process-singleton namespace objects that exist
     // independently of any machine instance: rom, vrom, and machine
-    // all carry pre-boot surfaces (rom.identify, vrom.load,
+    // all carry pre-boot surfaces (rom.identify, vrom.identify,
     // machine.boot, machine.profile) that callers reach for *before*
     // a machine has been created. The WASM URL-media boot path is the
     // canonical case — drag-drop a Plus ROM, ask rom.identify for the

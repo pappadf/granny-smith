@@ -68,7 +68,7 @@ uint32_t system_get_pending_ram_kb(void) {
 
 // Pick the delta directory for a fresh writable mount.  Default is the
 // active machine directory (so deltas live alongside state.checkpoint and
-// the manifest, §2.1).  For volatile bases under /tmp/ — typically test
+// the manifest).  For volatile bases under /tmp/ — typically test
 // artifacts uploaded to memfs — fall back to NULL so image_create places
 // deltas adjacent to the base, preserving memfs-only I/O performance.
 static const char *pick_delta_dir(const char *path) {
@@ -199,9 +199,9 @@ void system_keyboard_update(key_event_t event, int key) {
 // peripherals.  On SE/30: VIA1 re-enables ROM overlay, MMU disabled.
 // LEVEL 2 -- a machine reset: the reset button, Finder > Restart, the Cuda's
 // CMD_RESET, a double bus fault.  Bus reset plus the CPU back to its vector,
-// which is the entire difference from level 1 (reset proposal §3.1.2).
+// which is the entire difference from level 1.
 //
-// This is 05-chipsets-irq F-04.  The two callers of the old
+// The two callers of the old
 // system_hardware_reset() had incompatible expectations: cpu_hardware_reset()
 // called it and then reset the CPU itself, while cuda_reset_event() called it
 // ALONE.  That was survivable on PDM and TNT only because their substrate
@@ -248,14 +248,14 @@ void system_hardware_reset(void) {
 //
 // This used to BE system_reset_devices() -- a core-owned list of two devices
 // that no board could extend, which is why it never grew a PCI arm and why
-// adding one there would have been dead code (reset proposal §3.1.5).
+// adding one there would have been dead code.
 void system_reset_common_devices(config_t *cfg) {
     if (!cfg)
         return;
-    // NOTE: the reset proposal's §3.1.3 lists `cfg->scsi2` here, the Network
-    // Servers' second bus.  There is no such field -- config_t carries one
-    // `scsi`, and the ANS's second bus lives in the TNT state, so its family
-    // bus_reset is where it belongs.  Corrected rather than copied.
+    // NOTE: no second SCSI bus here.  The Network Servers have one, but there
+    // is no `cfg->scsi2` field -- config_t carries one `scsi`, and the ANS's
+    // second bus lives in the TNT state, so its family bus_reset is where it
+    // belongs.
     if (cfg->scsi)
         // A reset condition on the wire: the bus goes free and every target
         // returns to its power-on state (scsi_bus_reset, called from
@@ -317,7 +317,7 @@ cpu_t *system_cpu(void) {
     return global_emulator ? global_emulator->cpu : NULL;
 }
 
-// Main-CPU debug interface accessor (PPC proposal §3.9b).  Returns NULL until
+// Main-CPU debug interface accessor.  Returns NULL until
 // a machine with a main CPU has been built (ctx doubles as the "populated"
 // flag — system_create fills the vtable right after substrate init).
 const struct cpu_debug_if *system_cpu_debug_if(void) {
@@ -348,7 +348,7 @@ void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DR
     }
 }
 
-// Host-input dispatch through the machine substrate (proposal §4.4).  Every
+// Host-input dispatch through the machine substrate.  Every
 // substrate implements these — Macs route to the shared mac_input_* helpers
 // (keyboard / Toolbox cursor), the Lisa to its COPS — so there is one uniform
 // path and no caller-side fallback.  Each returns 0 on success, <0 on failure
@@ -398,7 +398,7 @@ display_t *system_display_synced(void) {
     return d;
 }
 
-// System-level display accessor.  Per proposal §3.3.2: a machine with
+// System-level display accessor.  A machine with
 // built-in video (substrate .display — Plus, Lisa, the MCU family's DAFB)
 // shows that factory display; glue030-family machines source theirs from
 // the NuBus bus controller (the IIci's built-in RBV is itself the first
@@ -466,7 +466,7 @@ int system_ensure_machine(const char *model_id) {
     return 0;
 }
 
-// Floppy insertion through the machine substrate (proposal §4.4): every
+// Floppy insertion through the machine substrate: every
 // substrate implements fd_present/fd_insert — Macs route to mac_fd_* (their
 // IWM/SWIM via cfg->floppy), the Lisa to its parallel FDC — so there is one
 // uniform path and no cfg->floppy special-case here.
@@ -503,7 +503,7 @@ void trigger_vbl(struct config *restrict config) {
 // preferred: drive number (0 or 1), or -1 for auto-select.
 // The machine's floppy drives: its profile's floppy_slots, never more than
 // the controller's two.  Drive selection is bounded by this, not by
-// FLOPPY_NUM_DRIVES -- a one-drive Mac has no drive 1 to pick (N-06).
+// FLOPPY_NUM_DRIVES -- a one-drive Mac has no drive 1 to pick.
 static int sys_fd_count(config_t *cfg) {
     int n = profile_floppy_count(cfg->machine);
     return n > FLOPPY_NUM_DRIVES ? FLOPPY_NUM_DRIVES : n;
@@ -701,8 +701,8 @@ static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
     }
     // Report what actually happened.  This returned 0 unconditionally, so
     // `attach_hd` on an unopenable file printed "Failed to open image" and then
-    // answered true -- and once insert() started reporting its attach result
-    // (03-scsi F-45), a test could assert on a lie.
+    // answered true -- and once insert() started reporting its attach result,
+    // a test could assert on a lie.
     return add_scsi_drive_on(config, bus ? bus : config->scsi, path, scsi_id) ? 0 : -1;
 }
 
@@ -721,13 +721,13 @@ void setup_init() {
     // arguments lists the complete set rather than only what has already been
     // hit or configured.  This replaces a one-off registration of
     // "appletalk" that existed for exactly this reason -- and whose presence
-    // was the tell that a manifest was missing (08-core-infra F-34).
+    // was the tell that a manifest was missing.
     log_register_manifest();
 
     image_init(NULL);
 }
 
-// The default AppleShare volume (S5).  The platform registers its path once
+// The default AppleShare volume.  The platform registers its path once
 // (the browser: /opfs/shared; headless: --shared-dir or $GS_SHARED_DIR); core
 // publishes it after every machine build, because a machine's teardown drops
 // the volume table.  Both platforms used to carry the same provisioning in a
@@ -783,7 +783,7 @@ __attribute__((weak)) void gs_checkpoint_saved(double elapsed_ms) {
     (void)elapsed_ms;
 }
 
-// === Checkpoints of the running machine, and finding media (S2) ============
+// === Checkpoints of the running machine, and finding media ==================
 //
 // These are file work in the machine's checkpoint directory, the same on
 // every platform, so they live here.  They used to exist only in em_main.c,
@@ -1094,15 +1094,14 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     cfg->build_opts = opts ? *opts : machine_build_opts_default();
 
     cfg->machine = profile;
-    // Main-CPU architecture tag (PPC proposal §3.9a): derived from the
+    // Main-CPU architecture tag: derived from the
     // profile's cpu_model; the substrate init below builds the matching core.
     cfg->cpu_arch = cpu_arch_for_model(profile->cpu_model);
     global_emulator = cfg;
 
     // Label the machine container node with the active model name so the
     // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
-    // segment (proposal-system-object-model.md §7.1). Covers cold boot and
-    // checkpoint restore — both land here.
+    // segment. Covers cold boot and checkpoint restore — both land here.
     machine_set_active_label(profile->name);
 
     // Compute RAM size: use pending override if set, otherwise machine default
@@ -1164,7 +1163,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // event type has to exist when the scheduler re-binds restored events.
     cfg->host_input = host_input_init(cfg, cfg->scheduler);
 
-    // Stand up the object-model root (M2): attaches stub classes for
+    // Stand up the object-model root: attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
     // runtime state. The legacy shell remains primary.
     root_install(cfg);
@@ -1174,7 +1173,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
 
     // Cold boot: stamp out a manifest documenting what was set up.  Skipped
     // on checkpoint restore — the manifest is fixed at original creation
-    // time and is purely informational (§2.7).  Failure is non-fatal.
+    // time and is purely informational.  Failure is non-fatal.
     if (!checkpoint && checkpoint_machine_dir())
         checkpoint_machine_write_manifest();
 
@@ -1354,7 +1353,7 @@ bool add_scsi_drive(struct config *restrict config, const char *filename, int sc
 // explicitly is what lets `machine.scsi2.attach_hd` mean what it says.
 //
 // A NULL bus is refused: the Lisa has no SCSI at all, and `hd=` on a Lisa
-// used to hand NULL to scsi_add_device and crash the harness (N-01).
+// used to hand NULL to scsi_add_device and crash the harness.
 bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     if (!bus) {
         printf("Cannot attach %s: this machine has no SCSI bus\n", filename);
@@ -1385,7 +1384,7 @@ bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
     return system_media_attach_scsi_bus(config, bus, &slot) == 0;
 }
 
-// === machine.restart media transfer (proposal-boot-vs-reset §3.3) ==========
+// === machine.restart media transfer ========================================
 //
 // The standard substrate implementation over cfg->floppy + cfg->scsi, bound
 // into every Mac substrate's vtable (the Lisa implements its own: parallel
@@ -1463,7 +1462,7 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
     return 0;
 }
 
-// === Machine-level attach and eject (M2) =====================
+// === Machine-level attach and eject ===========================
 //
 // One verb for "put this disk in that bay", whatever bus the bay is on: the
 // same substrate dispatch machine.restart hands media back through
@@ -1647,8 +1646,17 @@ config_t *system_restore(const char *filename) {
         // satisfied by construction rather than by a second mechanism.
         if (restored_record.video_sense >= 0)
             build_opts.video_sense = restored_record.video_sense;
-        if (restored_record.vrom[0])
-            vrom_set_path(restored_record.vrom);
+        // The built-in monitor strap resolves to a sense code exactly as
+        // machine.boot resolves it (machine_boot_apply), and wins over
+        // video_sense there too.  The record's id was validated at boot.
+        if (restored_record.monitor[0] && profile->builtin_video && profile->builtin_video->monitor_sense) {
+            uint8_t mon_sense = 0;
+            if (profile->builtin_video->monitor_sense(restored_record.monitor, &mon_sense))
+                build_opts.video_sense = mon_sense;
+        }
+        // The record's explicit vrom=/prom= picks replace whatever the
+        // running machine registered.
+        machine_config_set_explicit_picks(restored_record.vrom, restored_record.prom);
         // The PCI half of the same rule: a checkpoint written with a
         // socketed PCI card (and its options) must re-seat that card, or
         // the slot resolves its default (usually empty) and the
@@ -1692,9 +1700,11 @@ config_t *system_restore(const char *filename) {
         // `shell.functions`, `shell.alias`, `storage`, `storage.images`,
         // `machine.nubus` and `machine.pci` all detached and the root methods
         // gone -- the entire tooling surface evaporated, with no diagnostic
-        // beyond "Failed to read checkpoint" (F-17).
+        // beyond "Failed to read checkpoint".
         if (prev)
             root_install(prev);
+        // ...and its explicit picks: the installed record is still prev's.
+        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
         return NULL;
     }
 
@@ -1722,7 +1732,7 @@ config_t *system_restore(const char *filename) {
 // by the typed checkpoint.save() building a fake argv[] and then string-
 // matching the mode back out of it.  The typed method calls this directly now
 // and the mode arrives as a validated V_ENUM, so the framework rejects a typo
-// instead of the body re-checking it (08-core-infra F-31, Track I).
+// instead of the body re-checking it.
 int system_checkpoint_save(const char *filename, bool files_as_refs) {
     if (!filename || !*filename)
         return -1;

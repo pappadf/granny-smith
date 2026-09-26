@@ -314,7 +314,7 @@ static __attribute__((noinline)) uint32_t calculate_ea_slow(cpu_t *restrict cpu,
 // Force-inlined hot switch covering the frequent register-indirect modes
 // (An)/(An)+/-(An)/(d16,An); everything else takes the out-of-line cold tail
 // above.  Out-of-line entirely, these helpers measured ~11% of gameplay
-// runtime in call overhead (perf proposal §5.2).
+// runtime in call overhead.
 static inline __attribute__((always_inline)) uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int reg,
                                                                    bool increment) {
     switch (mode) {
@@ -477,7 +477,7 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint8_t d_set = 0, a_set = 0;
     for (i = 0; i < 8; i++)
         if (register_mask & (1 << i)) {
-            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
             if (g_bus_error_pending)
                 return;
@@ -486,7 +486,7 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         }
     for (i = 0; i < 8; i++)
         if (register_mask & (0x100 << i)) {
-            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
             if (g_bus_error_pending)
                 return;
@@ -588,7 +588,7 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
 // ABCD: add decimal with extend (based on research at https://gendev.spritesmind.net/forum/viewtopic.php?t=1964)
 static inline uint8_t abcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t ss = xx + yy + !!cpu->extend;
-    uint8_t dc = (ss + 0x66 ^ ss) >> 1;
+    uint8_t dc = ((ss + 0x66) ^ ss) >> 1;
     uint8_t bc = (xx & yy) | ((xx | yy) & ~ss);
     uint8_t corr = (bc | dc) & 0x88;
     uint8_t rr = ss + corr - (corr >> 2);
@@ -1255,7 +1255,7 @@ static inline void f_trap(cpu_t *restrict cpu) {
         return;
     }
     uint32_t fetch_page = cpu->instruction_pc >> PAGE_SHIFT;
-    if (__builtin_expect(g_active_read && (int)fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
+    if (__builtin_expect(g_active_read && fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
         // Instruction page has no SoA entry — fetch returned $FF from unmapped
         // physical memory.  Treat as bus error (matching real hardware behavior).
         cpu->pc = cpu->instruction_pc;

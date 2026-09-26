@@ -6,7 +6,7 @@ export interface MachineConfig {
   model: string;
   /** ROM image path (under /opfs/images/rom/). Becomes the boot document's
    *  `rom` field, which machine.boot requires — the document is the whole
-   *  specification and inherits nothing (proposal-boot-vs-reset §3.1). */
+   *  specification and inherits nothing. */
   rom?: string;
   vrom: string;
   /** NuBus video card-kind id to install (e.g. "display_card_24ac", "mdc_8_24") —

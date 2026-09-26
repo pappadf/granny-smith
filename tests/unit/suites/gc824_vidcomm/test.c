@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// The 8*24 GC's VidComm mode change goes through display_set_scanout
-// (N-52, #175).  The request is guest-written geometry in the card's DRAM;
-// it used to set the descriptor's bits and stride directly, so a raster
-// that decodes but does not fit the 2 MB DRAM had the renderer (and the
-// card's own drawing engine) run past it.  The handler is static: the card
-// source is included here to reach it.
+// The 8*24 GC's VidComm mode change goes through display_set_scanout (#175).
+// The request is guest-written geometry in the card's DRAM; it used to set the
+// descriptor's bits and stride directly, so a raster that decodes but does not
+// fit the 2 MB DRAM had the renderer (and the card's own drawing engine) run
+// past it.  The handler is static: the card source is included here to reach
+// it.
 
 #include "../../../../src/core/peripherals/nubus/cards/display_card_824gc.c"
 

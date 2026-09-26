@@ -7,7 +7,7 @@
 // command block into the shared RAM and the coprocessor returns logical
 // 512-byte sectors.  Modeled behaviourally (the iop_swim.c pattern), reusing
 // disk_read_data / the Sony geometry helpers.  See docs/machines/lisa/lisa.md §13 and
-// proposal-machine-lisa-xl.md §4.7.
+// docs/machines/lisa/fdc.md.
 //
 // Shared RAM at physical $00C001 (logical $00FCC001), byte N at $C001 + 2*N
 // (the controller RAM sits on the odd bytes of the 68000 bus; the ROM uses

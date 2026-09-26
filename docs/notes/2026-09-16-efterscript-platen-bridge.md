@@ -225,9 +225,8 @@ Against the SDK's own changelog for 5.x and 6.0.x, on the branch:
 
 ## The rebase regression, and the PAP fix
 
-After the rebase onto main (the four code-review commits of 2026-09-03)
-the acceptance row failed: the whole guest flow ran, the driver reached
-"processing job", and no document arrived. Bisected to the machines
+After a rebase onto main the acceptance row failed: the whole guest flow
+ran, the driver reached "processing job", and no document arrived. Bisected to the machines
 commit, but that commit only moved boot timing (its VIA idle-line change,
 reverted in isolation, changed nothing); the pre-rebase build itself
 failed as soon as AppleTalk logging was raised. The defect was the
@@ -346,7 +345,7 @@ and the PLATEN default flip are part 2B.
   (`LWRING_PAD8`; fields inside a payload are padded to 4) and that
   never wrap — a PAD record reaches the ring's end, and the 8-byte rule
   is what guarantees the PAD's own 8-byte header always fits (a 4-byte
-  rule left a 4-byte remainder possible; caught in review before part
+  rule left a 4-byte remainder possible; caught before part
   2B mirrors the protocol; readers reject `len & 7`), and the records:
   OPEN (job id plus every
   `platen_config` field the bridge sets, the identity as NUL-terminated

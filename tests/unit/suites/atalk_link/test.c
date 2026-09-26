@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // atalk_link: the real LLAP, DDP, NBP, ATP and ASP (appletalk.c) driven
-// frame by frame from the guest's side of the wire (10-network unit 0.2).
+// frame by frame from the guest's side of the wire.
 //
 // Before this suite the link and transport layers had no unit coverage at
 // all: appletalk.c could not be linked into a suite (a stub of its entry
@@ -94,9 +94,9 @@ TEST(nbp_lookup_is_answered_after_the_rts_cts_handshake) {
 // Every event type the transport can schedule is registered the moment the
 // stack comes up -- before a checkpoint restore replays the saved queue.  ATP
 // used to register its two only when it first armed one, so a checkpoint taken
-// with an AFP command or a print job in flight could not be restored
-// (10-network N-05; the printer, LaserWriter and ADSP timers are stubbed out
-// of this suite and are covered by the appletalk-afp-checkpoint row).
+// with an AFP command or a print job in flight could not be restored (the
+// printer, LaserWriter and ADSP timers are stubbed out of this suite and are
+// covered by the appletalk-afp-checkpoint row).
 TEST(every_transport_timer_is_registered_at_init) {
     link_boot();
     ASSERT_EQ_INT(0, sched_pending()); // registered, not armed
@@ -149,7 +149,7 @@ static void asp_write(uint8_t node, uint8_t sid, uint16_t tid, uint16_t seq) {
 // ASP, so the new stack inherited the old one's outgoing ATP requests, XO
 // cache and pending ASP write: here the old machine's WriteContinue was still
 // "pending", and the new machine's first Write was never answered -- not after
-// 600 s of guest time (10-network N-08).
+// 600 s of guest time.
 TEST(a_rebuilt_stack_serves_a_write_the_old_one_left_pending) {
     link_boot();
     uint8_t s1 = asp_open_session(GUEST_NODE, 100, 0x1001);
@@ -171,7 +171,7 @@ TEST(a_rebuilt_stack_serves_a_write_the_old_one_left_pending) {
 
 // Detaching the stack from the link (appletalk.enabled = false) left a frame
 // that was waiting for its CTS in the queue, and the RTS timer kept putting
-// it on the wire (10-network N-09).
+// it on the wire.
 TEST(detaching_the_stack_stops_its_transmitter) {
     link_boot();
     atalk_nbp_service_desc_t desc = {.object = "Test Host", .type = "LinkTest", .socket = 200};
@@ -222,7 +222,7 @@ TEST(the_checkpoint_record_is_restored) {
 // process-wide: a restore that fails keeps the running machine, and whatever
 // this stack applied on the way stays with it -- the old restore tested only
 // the magic word, in a local the reader had not written, and then copied the
-// Apple event strings out of it (10-network F-10).
+// Apple event strings out of it.
 TEST(a_record_from_a_failed_checkpoint_is_not_applied) {
     link_boot();
     atalk_set_enabled(false);
@@ -239,8 +239,7 @@ TEST(a_record_from_a_failed_checkpoint_is_not_applied) {
 // back on restore: shares with their volume ids, server identity, printer
 // settings.  A load used to drop every AFP volume while the restored guest
 // still had one mounted -- its next call got ParamErr -- and the server name
-// survived only because it was a process static nobody reset (10-network N-07,
-// decision D-3).
+// survived only because it was a process static nobody reset.
 TEST(configuration_survives_a_checkpoint) {
     link_boot();
     char err[128];
@@ -267,11 +266,11 @@ TEST(configuration_survives_a_checkpoint) {
     atalk_printer_set_capture(false);
 }
 
-// A checkpoint load that fails after the new machine's stack came up: the
-// stack was left bound to the new machine's SCC and scheduler, which the load
-// then freed -- the next frame read freed memory (10-network N-06, found
-// under Valgrind).  Now the stack is rebuilt for the machine that keeps
-// running, with that machine's shares, not the checkpoint's.
+// A checkpoint load that fails after the new machine's stack came up: the stack
+// was left bound to the new machine's SCC and scheduler, which the load then
+// freed -- the next frame read freed memory (found under Valgrind).  Now the
+// stack is rebuilt for the machine that keeps running, with that machine's
+// shares, not the checkpoint's.
 TEST(a_failed_load_gives_the_stack_back_to_the_running_machine) {
     link_boot();
     char err[128];
@@ -309,7 +308,7 @@ TEST(a_successful_load_moves_the_stack_to_the_new_machine) {
     link_delete();
 }
 
-// --- malformed input (10-network F-02, F-35) -------------------------------------
+// --- malformed input -------------------------------------------------------------
 
 typedef struct {
     uint64_t malformed, unhandled, tx_dropped, ddp_in;
@@ -416,7 +415,7 @@ TEST(every_discard_is_counted_by_reason) {
     link_delete();
 }
 
-// --- NBP with eight tuples (10-network F-07) ----------------------------------
+// --- NBP with eight tuples ----------------------------------------------------
 
 // Walk the tuples of an NBP packet at `p`; returns how many parse.
 static int nbp_count_tuples(const uint8_t *p, size_t len) {
@@ -502,7 +501,7 @@ TEST(a_lookup_reply_with_eight_tuples_delivers_all_eight) {
 
 // AEP (Inside AppleTalk ch. 6): the Echoer on socket 4 turns an Echo Request
 // (function 1) round as an Echo Reply (function 2), data unchanged; anything
-// else is not for it (10-network N-35: it echoed everything, unchanged).
+// else is not for it (it echoed everything, unchanged).
 TEST(the_echoer_answers_requests_on_socket_4_with_a_reply) {
     link_boot();
     uint8_t ping[] = {1, 'p', 'i', 'n', 'g'};
@@ -526,7 +525,7 @@ TEST(the_echoer_answers_requests_on_socket_4_with_a_reply) {
     link_delete();
 }
 
-// --- ASP sessions (10-network C2-C6) ---------------------------------------------
+// --- ASP sessions ----------------------------------------------------------------
 
 #define ASP_CLOSE_SESS 1
 #define ASP_COMMAND    2
@@ -568,7 +567,7 @@ static int live_sessions(void) {
 
 // CloseSess names its session in user byte 1 and carries no data (Inside
 // AppleTalk Fig. 11-10).  The server read the session from the ATP data, so a
-// real client's CloseSess closed nothing (10-network N-03).
+// real client's CloseSess closed nothing.
 TEST(close_sess_closes_the_session) {
     link_boot();
     g_asp_closes = 0;
@@ -587,8 +586,8 @@ TEST(close_sess_closes_the_session) {
     link_delete();
 }
 
-// OpenSess refusals carry the spec's codes (N-04): ServerBusy when full,
-// BadVersNum for anything but version 1.0.
+// OpenSess refusals carry the spec's codes: ServerBusy when full, BadVersNum
+// for anything but version 1.0.
 TEST(open_sess_refusals_use_asp_error_codes) {
     link_boot();
     for (int i = 0; i < atalk_asp_session_max(); i++)
@@ -614,7 +613,7 @@ TEST(open_sess_refusals_use_asp_error_codes) {
 
 // Session ids are one byte on the wire and unique among live sessions; the
 // old ones were a counter's low byte, so two live sessions 256 opens apart
-// shared an id and commands for one landed on the other (F-06).
+// shared an id and commands for one landed on the other.
 TEST(session_ids_stay_unique_across_many_opens) {
     link_boot();
     uint8_t held = asp_open_session(GUEST_NODE, 100, 0x1001);
@@ -628,9 +627,9 @@ TEST(session_ids_stay_unique_across_many_opens) {
     link_delete();
 }
 
-// A session answers only the node that opened it (F-06), and a command for a
-// session that is not open is answered SessClosed and never reaches the
-// client -- it used to run as "session 0", with no login (F-05).
+// A session answers only the node that opened it, and a command for a session
+// that is not open is answered SessClosed and never reaches the client -- it
+// used to run as "session 0", with no login.
 TEST(commands_reach_only_their_own_session) {
     link_boot();
     uint8_t sid = asp_open_session(GUEST_NODE, 100, 0x1001);
@@ -655,7 +654,7 @@ TEST(commands_reach_only_their_own_session) {
 
 // GetStatus returns the status block and runs nothing, whatever it carries.
 // With data it used to be a second command channel: the first data byte was
-// dispatched as an AFP opcode from session 0 (F-05).
+// dispatched as an AFP opcode from session 0.
 TEST(get_status_runs_no_command) {
     link_boot();
     g_afp_calls = 0;
@@ -666,8 +665,8 @@ TEST(get_status_runs_no_command) {
     link_delete();
 }
 
-// Each session has its own pending write (F-14): with one for the whole
-// server, a second session's Write while the first waited got no reply.
+// Each session has its own pending write: with one for the whole server, a
+// second session's Write while the first waited got no reply.
 TEST(two_sessions_write_at_once) {
     link_boot();
     uint8_t s1 = asp_open_session(GUEST_NODE, 100, 0x1001);
@@ -689,8 +688,8 @@ TEST(two_sessions_write_at_once) {
 }
 
 // A rename that cannot be published changes nothing: the entry keeps its old
-// name, still found by a lookup (10-network N-23: services stored the new name
-// first, or withdrew first).
+// name, still found by a lookup (services stored the new name first, or
+// withdrew first).
 static int count_named(const char *object) {
     int n = 0;
     atalk_nbp_info_t info;

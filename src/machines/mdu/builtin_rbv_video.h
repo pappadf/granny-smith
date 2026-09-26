@@ -70,7 +70,7 @@ uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off);
 void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code);
 
 // RvMonP's RvVIDOff bit: present a black raster without touching the
-// framebuffer, which on the IIsi is live guest memory (04-video F-44).
+// framebuffer, which on the IIsi is live guest memory.
 void builtin_rbv_video_set_blank(nubus_card_t *card, bool video_off);
 
 #endif // NUBUS_CARDS_BUILTIN_RBV_VIDEO_H

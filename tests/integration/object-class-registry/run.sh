@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Every class descriptor that reaches the object tree must pass
-# object_validate_class (08-core-infra G2).
+# object_validate_class.
 #
 # The validator itself runs inside object_new() in non-GS_FAST builds and
 # prints "object: class '<name>' invalid: <why>" on stderr.  Nothing made that

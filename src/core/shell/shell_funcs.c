@@ -184,7 +184,7 @@ int shell_func_define(const char *name, char **params, int n_params, script_bloc
     // Checked, and the partial entry unwound on failure.  These were stored
     // unchecked and then strcmp'd at call time (shell_funcs.c's named-argument
     // binding), so an OOM here turned into a NULL dereference at a distance --
-    // and on the 32-bit wasm heap OOM is not hypothetical (08-core-infra F-56).
+    // and on the 32-bit wasm heap OOM is not hypothetical.
     f->name = strdup(name);
     f->n_params = n_params;
     f->params = n_params > 0 ? (char **)calloc((size_t)n_params, sizeof(char *)) : NULL;

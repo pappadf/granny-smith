@@ -19,7 +19,7 @@ static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
     // byte accesses reach it.  That is a property of how THIS board wired /LDS,
     // which is why it is checked here and not in the chip -- and it is logged
     // rather than asserted, because a guest must not be able to pause the
-    // emulator by executing a wrong instruction (02-floppy F-32).
+    // emulator by executing a wrong instruction.
     if (!(addr & 1))
         LOG(1, "IWM: even-address byte read at 0x%08X; the chip is on the low byte", addr);
 
@@ -30,17 +30,17 @@ static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
 // The chip is on one byte of the data bus, so a wide access reaches nothing.
 // These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
-// halted the emulator and surfaced in CI as an unexplained hang (02-floppy
-// F-32).  Log it and return open bus, as grand_central.c does.
+// halted the emulator and surfaced in CI as an unexplained hang.  Log it and
+// return open bus, as grand_central.c does.
 static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
     (void)floppy;
-    LOG(1, "%s: 16-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    LOG(1, "IWM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
     return 0xFFFF;
 }
 
 static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
     (void)floppy;
-    LOG(1, "%s: 32-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
     return 0xFFFFFFFFu;
 }
 
@@ -58,13 +58,13 @@ static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
 static void iwm_write_uint16(void *floppy, uint32_t addr, uint16_t value) {
     (void)floppy;
     (void)value;
-    LOG(1, "%s: 16-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
+    LOG(1, "IWM: 16-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
     (void)floppy;
     (void)value;
-    LOG(1, "%s: 32-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
+    LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 // Sets up the IWM memory interface callbacks on the floppy controller

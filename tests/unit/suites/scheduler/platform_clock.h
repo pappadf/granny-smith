@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // The scheduler suite's clock (see src/platform/platform.h): host_time() is
 // an extern the test implements over a controllable fake clock -- the pacing
 // estimators (host_secs_per_vbl / host_secs_per_loop) are meaningless with the

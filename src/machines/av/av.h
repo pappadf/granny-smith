@@ -3,7 +3,7 @@
 
 // av.h
 // The Cyclone/Tempest AV family (Quadra 840AV / Centris 660AV): the 68040 +
-// YMCA + PSC + CIVIC/Sebastian + Cuda generation (proposal-quadra-av.md).
+// YMCA + PSC + CIVIC/Sebastian + Cuda generation.
 // Chip-named like mcu/, mdu/, oss/ — YMCA is the memory controller that
 // defines the generation, but the family is best known by its "AV" branding.
 //
@@ -11,19 +11,19 @@
 //   * access-triggered ROM-at-zero overlay: the 2 MB boot ROM is readable at
 //     $00000000 out of reset; the FIRST access to the ROM aperture
 //     ($40800000-$40A00000) restores RAM at zero.  There is no software
-//     overlay-disable on this platform (ymca.md §6 — YMCA_EPROMmode is never
-//     written; vOverlay does not exist).
+//     overlay-disable on this platform (YMCA_EPROMmode is never written;
+//     vOverlay does not exist).
 //   * YMCA register file at $50F30400: 1-bit registers accessed as longwords
-//     with the value in bit 31 (ymca.md §1); machine-ID straps at +$38..$44,
+//     with the value in bit 31; machine-ID straps at +$38..$44,
 //     speed/width latches, and the per-bank boundary/size shift registers
-//     that drive RAM bank mapping (ymca.md §5).
-//   * CPU-ID register $5FFFFFFC reading $A55A2830, not writable (ymca.md §2).
+//     that drive RAM bank mapping.
+//   * CPU-ID register $5FFFFFFC reading $A55A2830, not writable.
 //   * the I/O island at $50F00000-$50F3FFFF with its non-serialized alias at
 //     $50F40000 (mirror mask $3FFFF), run on the shared mac030 I/O engine.
 //   * MUNI NuBus bridge latches; a 660AV without the NuBus adapter must
 //     bus-error on MUNI_Control so the ROM's TestForMUNI clears MUNIExists.
 //   * interrupts: VIA1→1, PSC-VIA2 window→2, MACE→3, PSC-L4→4, PSC-L5→5,
-//     PSC-L6→6, NMI→7 (docs/README.md interrupt table), resolved through
+//     PSC-L6→6, NMI→7, resolved through
 //     mac030_irq_resolve_ipl with the family's own routing table.
 //   * NO VIA2 chip, no ASC, no SWIM, no SONIC, no IOPs — the PSC replaces
 //     them all (config_t.via2 stays NULL; the IPL-2 path is the PSC's
@@ -54,7 +54,7 @@ struct mmu_state;
 struct nubus_slot_decl;
 struct scsi_53c96;
 
-// YMCA register file ($50F30400, ymca.md §1): every register is 1 bit wide,
+// YMCA register file ($50F30400): every register is 1 bit wide,
 // accessed as a longword with the value in bit 31.  The file spans offsets
 // $000-$197 (bank 7's last size bit at $18C, then Test_Mode/Refresh_Test).
 #define AV_YMCA_REG_COUNT (0x198 / 4)
@@ -71,12 +71,12 @@ struct scsi_53c96;
 #define AV_YMCA_BDRY_BITS   7
 #define AV_YMCA_SIZE_BITS   3
 
-// MUNI register block ($50F30000, muni.md): only two registers are used by
+// MUNI register block ($50F30000): only two registers are used by
 // the boot ROM — IntCntrl (+$00, written) and Control (+$08, read/written).
 #define AV_MUNI_INTCNTRL 0x00
 #define AV_MUNI_CONTROL  0x08
 
-// IRQ source bits driven into cfg->irq (one per 68k IPL; docs/README.md).
+// IRQ source bits driven into cfg->irq (one per 68k IPL).
 #define AV_IRQ_VIA1 (1 << 0) // IPL 1: VIA1 (60 Hz tick, Cuda SR, one-second)
 #define AV_IRQ_VIA2 (1 << 1) // IPL 2: PSC VIA2 window (SCSI, FDC, slots, VBL)
 #define AV_IRQ_L3   (1 << 2) // IPL 3: MACE
@@ -114,25 +114,25 @@ typedef struct av_state {
     struct av_vdc *vdc; // video digitizer: DMSD + VDC models + frame engine
     struct av_new_age *fdc; // New Age floppy controller stub
     struct av_mace *mace; // MACE Ethernet register stub
-    struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio (Phase E)
+    struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio
 
     mac030_rom_overlay_t overlay; // ROM-at-zero until the aperture is touched
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs on the CPU
 
     mac030_io_t io; // device handles for the shared I/O engine
 
-    // YMCA register file: one latched bit per register (ymca.md §1).  Strap
+    // YMCA register file: one latched bit per register.  Strap
     // registers read the board's ID nibble instead of the latch.
     uint8_t ymca_regs[AV_YMCA_REG_COUNT];
 
-    // Physical RAM bank model (ymca.md §5): the installed RAM decomposed into
+    // Physical RAM bank model: the installed RAM decomposed into
     // up to 8 banks of 1-16 MB; starts latched from the boundary registers.
     uint32_t bank_size[AV_YMCA_BANK_COUNT]; // installed bytes (0 = empty)
     uint32_t bank_image_off[AV_YMCA_BANK_COUNT]; // offset in the flat RAM image
     uint32_t bank_start[AV_YMCA_BANK_COUNT]; // decoded physical start
     int bank_count; // populated banks
 
-    // MUNI latches (muni.md): IntCntrl write-only in practice, Control R/W.
+    // MUNI latches: IntCntrl write-only in practice, Control R/W.
     uint32_t muni_intcntrl;
     uint32_t muni_control;
 

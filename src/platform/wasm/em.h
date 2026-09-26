@@ -62,14 +62,13 @@ void em_print_host_callstack(void);
 //
 // The int32 words are shared with JS's Atomics.* and are therefore accessed
 // only through __atomic_* on this side — never plain loads or stores, which
-// carry no ordering with JS's writes (A4, F-25).  `version` is
+// carry no ordering with JS's writes.  `version` is
 // the exception: a static initialiser, fixed before JS can see the struct.
 //
 // Request protocol — exactly one kind, serialised by the JS-side
-// `cmdInFlight` lock. Introspection rides on `<path>.meta.*`
-// (proposal-introspection-via-meta-attribute.md); free-form shell
-// lines and tab completion ride on the `Shell` class's `run` and
-// `complete` methods (proposal-shell-as-object-model-citizen.md). The
+// `cmdInFlight` lock. Introspection rides on `<path>.meta.*`; free-form
+// shell lines and tab completion ride on the `Shell` class's `run` and
+// `complete` methods (docs/core/shell/shell.md). The
 // `pending` field is kept as a 32-bit slot so future call kinds can be
 // added without a layout change, but only kind 1 is currently used.
 //

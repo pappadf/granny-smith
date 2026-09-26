@@ -24,7 +24,7 @@ scheduler.run 42000000
 # The first chunk is budget-pinned against an A/UX-internal race in the
 # CommandShell launch: at some boot phases the DA installs its menus but
 # defers its window until the next keyboard event reaches its pty.  The
-# boot-chime producer (sound stage 1: the ASC now really renders the chime,
+# boot-chime producer (the ASC now really renders the chime,
 # adding sample-rate scheduler events during the mode-2 window) shifted the
 # phase into the slow arm; 248M re-pinned it to the fast arm with every
 # golden unchanged.  If a future timing change trips shell.png again, nudge

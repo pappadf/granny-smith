@@ -378,7 +378,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // machine.audioin and recognises it. Its peak there is the file's own
   // 5318 counts times the codec's 2.37x A/D gain — about 12,600. A browser
   // figure far above that is the level error that makes Casper's AGC wind
-  // the codec gain down and reject the utterance (sr-test-audio-assets §2).
+  // the codec gain down and reject the utterance.
   console.log(`  codec saw a peak of ${peak} counts (headless av-sr-command sees ~12600 for this asset)`);
   console.log(`  final micStats: ${JSON.stringify(last)}`);
   console.log(`  audioin.level=${await probe(page, "machine.audioin.level")}`);

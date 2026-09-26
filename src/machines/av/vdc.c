@@ -3,8 +3,8 @@
 
 // vdc.c
 // SAA7191B DMSD + SAA7186 VDC models and the video-in frame engine — see
-// vdc.h.  Register semantics from video-in.md §3/§4 (datasheet-verified);
-// the frame engine implements §9.2 "to actually implement capture":
+// vdc.h.  Register semantics follow the SAA7191B and SAA7186 datasheets;
+// the frame engine is what it takes to actually implement capture:
 //
 //   * once per NTSC field (59.94 Hz), when VDCClk == 0 (clock on),
 //     BusSize == 0 (32-bit mode) and VDC $00 VPE == 1 (VRAM port enabled),
@@ -14,17 +14,16 @@
 //     (nearest-neighbour sampling stands in for the chip's decimation
 //     filters — AFS/HF/VP filter selection is accepted but not modelled)
 //   * formats: FS=00 → 1-5-5-5 ARGB two-per-longword with α = 0 (Apple
-//     ships with the chroma keyer disabled — video-in.md §4.6); FS=11 →
+//     ships with the chroma keyer disabled); FS=11 →
 //     8-bit greyscale with the $10 MCT polarity.  YUV formats (FS=01/10)
 //     and the VBI bypass region are out of scope and logged.
 //   * the writer always writes when the engine runs, even with no source
 //     (black fields): Enabler 088's liveness probe stamps $0001FEFF at
-//     $50200804 and fails if it survives a field (video-in.md §5.8)
+//     $50200804 and fails if it survives a field
 //
 // The window start registers are programmed relative to the DMSD raster:
 // the NTSC active picture is (30, 16, 510, 656), so XO = 16 / YO = 15
-// (field lines) address the top-left of the 640x480 host frame
-// (video-in.md §7.5).
+// (field lines) address the top-left of the 640x480 host frame.
 
 #include "vdc.h"
 
@@ -48,12 +47,12 @@ LOG_USE_CATEGORY_NAME("vdc");
 // NTSC field cadence: 59.94 Hz.
 #define AV_VDC_FIELD_NS 16683350.0
 
-// DMSD ($8A) has 25 write registers, the VDC ($B8) 17 (video-in.md §2.4).
+// DMSD ($8A) has 25 write registers, the VDC ($B8) 17.
 #define DMSD_REGS 25
 #define VDC_REGS  17
 
 // NTSC active-picture origin in DMSD raster coordinates: left = 16 pixels,
-// top = 30 raster lines = 15 field lines (video-in.md §7.5, §4.4).
+// top = 30 raster lines = 15 field lines.
 #define ACTIVE_LEFT      16
 #define ACTIVE_TOP_FIELD 15
 
@@ -127,7 +126,7 @@ int av_vdc_set_source(av_vdc_t *vdc, const char *name) {
     return 0;
 }
 
-// DMSD status byte ($8B; video-in.md §3.1): STTC mirrors the programmed
+// DMSD status byte ($8B): STTC mirrors the programmed
 // VTRC time constant; a connected source reads "locked, 60 Hz, colour"
 // (HLCK = 0, FIDT = 1, CODE = 1), a missing one "PLL unlocked" ($40).
 static uint8_t vdc_dmsd_status(av_vdc_t *vdc) {
@@ -135,7 +134,7 @@ static uint8_t vdc_dmsd_status(av_vdc_t *vdc) {
     return (uint8_t)(sttc | (av_vdc_connected(vdc) ? 0x21 : 0x40));
 }
 
-// VDC status byte ($B9; video-in.md §4.7): version ID nibble MUST read
+// VDC status byte ($B9): version ID nibble MUST read
 // %0001, OEF is the detected field parity, SVP mirrors VPE taking effect.
 static uint8_t vdc_vdc_status(av_vdc_t *vdc) {
     uint8_t svp = (uint8_t)((vdc->vdc[0x00] >> 4) & 1);
@@ -254,7 +253,7 @@ static void vdc_fill_frame(av_vdc_t *vdc) {
 // ============================================================
 
 // Assemble the 9/10-bit window parameters from their register spread
-// (video-in.md §4.2: low 8 bits in the base register, overflow in $04/$08).
+// (low 8 bits in the base register, overflow in $04/$08).
 typedef struct {
     int xd, xs, xo; // output pixels, input pixels, window start
     int yd, ys, yo; // output lines, input lines, window start (field lines)
@@ -300,7 +299,7 @@ static void vdc_write_field(av_vdc_t *vdc, av_civic_t *cv, int parity) {
     for (int j = 0; j < w.yd; j++) {
         // Interlaced storage (OF=00) lands field lines on alternate VRAM
         // rows; single-field modes (OF=1x) and non-interlaced (01) pack
-        // them consecutively (video-in.md §4.1).
+        // them consecutively.
         uint32_t row = (of == 0) ? (uint32_t)(j * 2 + parity) : (uint32_t)j;
         uint32_t off = AV_VDC_VRAM_OFFSET + row * stride;
         if (off + (uint32_t)(w.xd * bpp) > AV_CIVIC_VRAM_SIZE)
@@ -326,7 +325,7 @@ static void vdc_write_field(av_vdc_t *vdc, av_civic_t *cv, int parity) {
             const uint8_t *p = src + sx * 4;
             if (fs == 0) {
                 // 1-5-5-5 ARGB, α = 0 (keyer disabled is Apple's shipping
-                // state — video-in.md §4.6), 8→5 bit truncation, guest
+                // state), 8→5 bit truncation, guest
                 // big-endian byte order.
                 uint16_t px = (uint16_t)(((p[0] >> 3) << 10) | ((p[1] >> 3) << 5) | (p[2] >> 3));
                 dst[i * 2 + 0] = (uint8_t)(px >> 8);
@@ -353,7 +352,7 @@ static void vdc_field_event(void *source, uint64_t data) {
     if (cv && vpe && !av_civic_vidin_clock_off(cv) && !av_civic_bus64(cv)) {
         uint8_t of = (uint8_t)((vdc->vdc[0x00] >> 5) & 0x03);
         // Field parity: alternating for both-fields modes, pinned for the
-        // single-field modes (10 = odd only, 11 = even only — §4.2).
+        // single-field modes (10 = odd only, 11 = even only).
         int parity;
         if (of == 2)
             parity = 1;

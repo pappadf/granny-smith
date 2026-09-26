@@ -4,11 +4,11 @@
 // cops.c
 // Apple Lisa COPS microcontroller. See cops.h and docs/machines/lisa/lisa.md §11.
 //
-// This first cut models the host↔COPS handshake faithfully (it acts only on
-// VIA1 pin traffic — port-A jam, CRDY, CA1, PB0 reset) and emits the power-up
+// The model is built on the host↔COPS handshake (it acts only on VIA1 pin
+// traffic — port-A jam, CRDY, CA1, PB0 reset) and emits the power-up
 // reset/id codes so the boot ROM's COPS self-test (RSTSCAN) detects a connected
 // keyboard and proceeds.  Live keyboard/mouse input injection and the RTC clock
-// protocol layer on top of this same handshake in later steps.
+// protocol layer on top of this same handshake.
 
 #include "cops.h"
 
@@ -166,7 +166,7 @@ struct cops {
     int warp_x, warp_y; // target screen pixel
     int warp_ticks; // convergence-loop safety counter
 
-    // The real-time clock (06-io-controllers F-27).  Eleven BCD nibbles:
+    // The real-time clock.  Eleven BCD nibbles:
     // year, three day-of-year digits, hh, mm, ss and tenths.  Held unpacked,
     // one digit per byte, because the wire packs them differently in each
     // direction -- the read is six bytes with an $E marker nibble, the write
@@ -269,7 +269,7 @@ static void fifo_push_raw(cops_t *c, uint8_t byte) {
 // drop-oldest policy adb.c and keyboard.c use: their rings are unframed, one
 // entry per key transition, so dropping the oldest byte loses one event and
 // nothing else.  Dropping the oldest BYTE here would desynchronise the
-// decoder exactly as a partial write does.  (06-io-controllers F-26, N-09.)
+// decoder exactly as a partial write does.
 static void fifo_push_msg(cops_t *c, const uint8_t *bytes, int n) {
     if (n <= 0)
         return;

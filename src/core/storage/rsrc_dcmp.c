@@ -231,7 +231,7 @@ static int vt_remember(vt_t *vt, const uint8_t *data, size_t len) {
     if (vt->size < 4)
         return -1;
     uint16_t next_idx = RD_BE16(vt->buf);
-    if (next_idx + 2 > vt->size)
+    if ((size_t)next_idx + 2 > vt->size)
         return -1; // index list would collide with the data area
     // Previous entry's offset = end of the new string.
     uint16_t prev_off = RD_BE16(vt->buf + next_idx - 2);
@@ -1056,8 +1056,8 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
     // fork's data offsets are 24-bit, so no fork -- and no resource in one --
     // exceeds 16 MiB.  Unbounded, dcmp 0's `(size_t)actual_size + overrun`
     // wrapped on wasm32 (32-bit size_t) and a 16-byte buffer met a ~4 GiB
-    // zero-padding memset: a heap overflow from one resource (09-storage
-    // F-21).  Natively it was a real 4 GiB allocation and memset instead.
+    // zero-padding memset: a heap overflow from one resource.  Natively it
+    // was a real 4 GiB allocation and memset instead.
     if (actual_size > RSRC_DCMP_MAX_SIZE)
         FAIL("declared size too large");
 

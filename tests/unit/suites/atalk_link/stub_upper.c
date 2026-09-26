@@ -4,8 +4,8 @@
 // stub_upper.c
 // Everything above the link and transport layers that appletalk.c links
 // against: the AFP server, the printer, ADSP, PPC and Apple events.  The
-// length of this file is the measure of 10-network F-21: to test LLAP, DDP,
-// NBP, ATP and ASP you have to stand in for all of them.
+// length of this file is the measure of the coupling: to test LLAP, DDP, NBP,
+// ATP and ASP you have to stand in for all of them.
 //
 // afp_handle_command records what reached it, so ASP tests can see which
 // session and opcode a command was dispatched as.
@@ -21,10 +21,6 @@
 
 #include <stdio.h>
 #include <string.h>
-
-void LOG_INDENT(int n) {
-    (void)n;
-}
 
 // ---- AFP server (appletalk_server.c) --------------------------------------
 //
@@ -158,7 +154,7 @@ void atalk_aevt_install_objects(struct object *p) {
 }
 void atalk_aevt_remove_objects(void) {}
 
-// ---- configuration the stack captures and restores (10-network A5) -----------
+// ---- configuration the stack captures and restores ---------------------------
 //
 // Stateful, like the real modules: a checkpoint round trip can be checked.
 // Server identity and printer settings are process-wide and survive a

@@ -16,7 +16,7 @@ struct ppc_session {
     int id;
 };
 
-static struct ppc_session g_session = {.id = 0x12345}; // wider than 16 bits (N-24)
+static struct ppc_session g_session = {.id = 0x12345}; // wider than 16 bits
 int stub_ppc_blocks;
 const ppc_session_t *stub_ppc_last_block_session;
 

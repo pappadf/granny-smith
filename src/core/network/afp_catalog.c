@@ -130,7 +130,7 @@ static long slot_of(afp_catalog_t *cat, uint32_t cnid) {
 //
 // FPEnumerate adopts every entry it lists and each adoption looks its name up
 // under its parent, so a scan here made listing a directory quadratic: 4000
-// entries took 0.16 s, twice as many four times as long (10-network F-24).
+// entries took 0.16 s, twice as many four times as long.
 // Names are matched exactly, as the host does: two host files may differ only
 // in case, and each needs its own CNID.
 

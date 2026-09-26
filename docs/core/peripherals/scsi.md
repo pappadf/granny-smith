@@ -4,7 +4,7 @@ This document describes the SCSI subsystem at the Macintosh-system level:
 how the bus is wired, how pseudo-DMA is implemented on each machine,
 and how classic Mac OS and A/UX drive the NCR 5380 so differently that
 a single emulator must model both flows correctly.  Chip-internal
-register-level details live in [ncr_5380.md](ncr_5380.md); SCSI
+register-level details live in [scsi_5380.md](scsi_5380.md); SCSI
 protocol / command-set details are at the end of this file.
 
 Status of our emulator:
@@ -62,7 +62,7 @@ Apple machines are single-initiator, every Mac SCSI driver we've seen
 skips the arbitrate step and performs **non-arbitrated selection**:
 write the target ID to ODR, assert `ICR.SEL`, `ICR.DATA`, then drop
 BSY.  The 5380 is perfectly willing to do this — see
-[ncr_5380.md §5.2](ncr_5380.md).
+[scsi_5380.md §5.2](scsi_5380.md).
 
 ---
 
@@ -193,7 +193,7 @@ Drawbacks:
 ### 4.1 Memory map
 
 Within the SE/30 I/O decode, the SCSI chip occupies four sub-ranges
-(see [src/machines/se30.c](../src/machines/se30.c)):
+(see [src/machines/se30.c](../../../src/machines/glue/se30.c)):
 
 | Offset from I/O base     | Function                                        |
 | ------------------------ | ----------------------------------------------- |
@@ -205,7 +205,7 @@ Within the SE/30 I/O decode, the SCSI chip occupies four sub-ranges
 All four map through the chip's `read_uint8` / `write_uint8`.  The
 emulator does *not* need to distinguish blind-vs-DRQ: our chip model
 asserts `BSR.DR` only when the bus phase matches TCR (see
-[ncr_5380.md §3.3](ncr_5380.md)), which is the real signal behind the
+[scsi_5380.md §3.3](scsi_5380.md)), which is the real signal behind the
 glue logic's DRQ wait.
 
 The absolute SCSI base on the SE/30 I/O page is `$50010000`.
@@ -223,7 +223,7 @@ The SE/30 routes both 5380 interrupt outputs into VIA2:
   main use is debugging / polling.
 
 See `scsi_update_irq()` and `scsi_update_drq()` in
-[scsi.c](../src/core/peripherals/scsi.c) for the emulator plumbing.
+[scsi.c](../../../src/core/peripherals/scsi.c) for the emulator plumbing.
 Both signals are driven "active-low" through `via_input_c()`.
 
 ### 4.3 Three distinct access paths
@@ -268,7 +268,7 @@ drive later chips with roughly the same state machine.  Key properties:
    host clears `MR.DMA`.
 4. **Status.**  Clear `MR.DMA`.  The emulator transitions the bus to
    STATUS automatically (see `write_mr` in
-   [scsi.c](../src/core/peripherals/scsi.c)).  `TCR=STATUS(0x03)`;
+   [scsi.c](../../../src/core/peripherals/scsi.c)).  `TCR=STATUS(0x03)`;
    host toggles `ICR.ACK` to consume the status byte via CDR.
 5. **Message in.**  Falling edge of ACK in STATUS phase transitions
    to MESSAGE_IN with `COMMAND COMPLETE`.  Host toggles ACK again.
@@ -696,7 +696,7 @@ Pages of interest:
 * `0x30` Apple vendor-specific (Apple HD SC Setup's "APPLE COMPUTER, INC."
   drive identification — the emulator returns this to pass Setup's
   identity check; see `CMD_MODE_SENSE` in
-  [scsi.c](../src/core/peripherals/scsi.c)).
+  [scsi.c](../../../src/core/peripherals/scsi.c)).
 
 ##### What MODE SELECT actually honours
 

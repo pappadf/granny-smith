@@ -16,31 +16,28 @@ on:
       - 'docs/**'
       - '.github/ISSUE_TEMPLATE/**'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   formatting-check:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-      - name: Install clang-format-18
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-format-18
-
-      - name: Check formatting (src/)
-        run: |
-          find src -name '*.c' -o -name '*.h' \
-            | xargs clang-format-18 --dry-run --Werror
-
-      # STYLE_GUIDE.md "File Structure": every source file begins with the
-      # two-line copyright notice.  The tree is clean; this keeps it that way
-      # (the 2026-09-03 review found four files missing it, and F-26 a fifth).
-      - name: Check SPDX headers (src/)
-        run: |
-          missing=$(find src \( -name '*.c' -o -name '*.h' \) \
-            -exec sh -c 'head -1 "$1" | grep -q "^// SPDX-License-Identifier:" || echo "$1"' _ {} \;)
-          if [ -n "$missing" ]; then
-            echo "Files whose first line is not an SPDX identifier:"
-            echo "$missing"
-            exit 1
-          fi
+      # The pre-commit hook itself, so CI and a local commit agree on the
+      # clang-format version (the hook's pin) and on what is checked: every
+      # C file in the repository except src/peeler, which keeps its own
+      # upstream style.  Before, CI checked src/ only (peeler included) with
+      # the distribution's clang-format, and tests/ and tools/ with nothing.
+      # pipx is preinstalled on the runner; Ubuntu 24.04's system Python
+      # refuses a plain `pip install` (PEP 668).
+      - name: Check formatting (pre-commit clang-format hook)
+        run: pipx run pre-commit run clang-format --all-files --show-diff-on-failure

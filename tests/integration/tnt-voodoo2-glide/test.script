@@ -1,5 +1,4 @@
-# Milestone 3e: the SHIPPED Mac Glide driver against the Voodoo2 model
-# (proposal-pci-3dfx-voodoo2 §7).
+# The SHIPPED Mac Glide driver against the Voodoo2 model.
 #
 # Everything in this row is the guest's own software doing the work:
 # CFM registers the four B5 extensions at boot, `Quake 3Dfx` imports
@@ -21,7 +20,8 @@
 # siProcess oscillator, the initEnable revision gate, the SGRAM fill,
 # the TSU's 16-bit float→12.4 truncation (the +786432 snap bias), and
 # packet-5 byte addressing — every one found by THIS software, none by
-# the hand-written tests (voodoo2.md §3e tells the story).
+# the hand-written tests (docs/core/peripherals/pci/cards/voodoo2.md
+# tells the story).
 
 include "../lib/mac.script"
 
@@ -48,7 +48,7 @@ scheduler.run 2600000000
 assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver match / mount failed)"
 assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
 
-# --- Exactly ONE 3DfxGlideLib2.x fragment is registered (§8 Q12). -----------
+# --- Exactly ONE 3DfxGlideLib2.x fragment is registered. --------------------
 # The Quake CD ships a Voodoo1-era library under the SAME fragment name;
 # with both installed CFM may bind Glide to the library that cannot see
 # a Voodoo2, and the failure is silent.  The shipped image has the
@@ -56,7 +56,7 @@ assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
 # heap — one entry, holding the fragment name, in this window.
 assert len(find.str("3DfxGlideLib2.x", 0x100000, 0x300000)) == 1 "exactly one 3DfxGlideLib2.x registration"
 # ...and registered-not-prepared: no Glide code is resident at boot
-# (nothing imports it until a client launches — §1.10).
+# (nothing imports it until a client launches).
 assert len(find.str("MacCheckBoardsInSystem", 0x0, 0x4000000)) == 0 "Glide code is not resident before a client runs"
 
 # The card is untouched: Mac OS loads no driver for a ROM-less card.

@@ -9,7 +9,7 @@ This document describes how the Macintosh ROM and System software use the
    depth, color/grayscale) are persisted across reboots.
 
 For the chip-level serial protocol used to read and write PRAM bytes, see
-[rtc.md](rtc.md). This document is concerned with the **logical format**
+[rtc.md](../peripherals/rtc.md). This document is concerned with the **logical format**
 that the ROM and Mac OS impose on top of those bytes.
 
 The information below applies to the **SE/30** and **IIcx**, both of which
@@ -20,7 +20,7 @@ out explicitly.
 
 > Throughout this document, **PRAM offset** means the 0..255 byte address
 > visible on the chip's serial interface — i.e. the index into our
-> `rtc_t::pram[256]` array in [rtc.c](../src/core/peripherals/rtc.c). The
+> `rtc_t::pram[256]` array in [rtc.c](../../../src/core/peripherals/rtc.c). The
 > ROM/OS calls these "extended PRAM" or "XPRAM" addresses, since the
 > original Macintosh 128K/512K/Plus only exposed 20 bytes through the
 > non-extended commands.
@@ -412,11 +412,12 @@ described below.
 
 The IIcx has **no built-in video at all**. All video on a IIcx comes
 from an Apple-supplied or third-party NuBus card installed in one of
-slots `$9..$E`. In our integration test
-[tests/integration/iicx-floppy/config.mk](../tests/integration/iicx-floppy/config.mk),
-the card we install is the **Apple Macintosh Display Card 8•24** (Apple
+slots `$9..$E`. The IIcx model's slot default, which every IIcx
+integration test gets unless it picks another card (asserted in
+[tests/integration/boot-config](../../../tests/integration/boot-config/test.script)),
+is the **Apple Macintosh Display Card 8•24** (Apple
 codename "JMFB", declaration ROM `mdc-8-24-revb-d1629664.vrom`,
-[src/core/peripherals/nubus/cards/jmfb.c](../src/core/peripherals/nubus/cards/jmfb.c)).
+[src/core/peripherals/nubus/cards/jmfb.c](../../../src/core/peripherals/nubus/cards/jmfb.c)).
 That card is multi-mode and multi-depth (1/2/4/8/16/24 bpp, multiple
 resolutions selected by the connected monitor's sense lines), so its
 sPRAMRec exercises both byte 2 (depth) and byte 3 (resolution) — this
@@ -875,7 +876,7 @@ the realistic options (in increasing order of fidelity):
    pending update events and the Window Manager redraws the
    desktop in the new format.  Captured screenshots are *real*
    Finder-at-N-bpp.  Implemented in our shell as
-   [`screen.set_video_mode N`](../src/core/debug/debug.c) — injects
+   [`screen.set_video_mode N`](../../../src/core/debug/debug.c) — injects
    a 36-byte 68k stub at scratch RAM ($00400000) that pushes
    SetDepth args, traps `_PaletteDispatch`, then traps
    `_PaintBehind`, then halts at a known PC sentinel.

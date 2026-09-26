@@ -3,7 +3,7 @@
 
 // afp_fork.h
 // Shared fork backing store, deny modes and byte-range locks for the AFP
-// server (proposal-afp-server-completeness.md §5 WP-6/WP-7).
+// server.
 //
 // A fork is opened many times by many sessions, so the bytes cannot live in a
 // per-open private copy: the second opener would see a stale snapshot and the
@@ -57,7 +57,7 @@ typedef enum {
 
 // No fork grows past this: the 2 GB - 1 KB ceiling every size the server
 // reports is clamped to (AFP_VOL_SIZE_CEILING).  A length or a write that would
-// end beyond it is AFP_FORK_DISK_FULL -- not a 4 GB sparse file (F-17).
+// end beyond it is AFP_FORK_DISK_FULL -- not a 4 GB sparse file.
 #define AFP_FORK_MAX_LENGTH 0x7FFFFC00u
 
 // Release every backing and handle.  Called from the server's teardown.

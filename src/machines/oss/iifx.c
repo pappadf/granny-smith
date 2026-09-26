@@ -247,7 +247,7 @@ typedef struct iifx_state {
     //   The DMAEN gate naturally restricts the chip-internal cur_addr
     //   behaviour to A/UX-driven bus-master transfers.
     //
-    //   A 2026-05-26 byte-level trace audit (see doc-111) ESTABLISHED
+    //   A 2026-05-26 byte-level trace audit ESTABLISHED
     //   that this chip-faithful model alone CANNOT load libc1_s
     //   correctly: A/UX writes $100 = $2EBA00 byte-identically before
     //   every arm of the 10-arm exec-load, with no other chip-bus
@@ -304,7 +304,7 @@ static void iifx_trigger_vbl(config_t *cfg);
 
 // Fills one page-table entry with a direct host mapping.
 static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if ((int)page_index >= g_page_count)
+    if (page_index >= g_page_count)
         return;
     g_page_table[page_index].host_base = host_ptr;
     g_page_table[page_index].dev = NULL;
@@ -393,7 +393,7 @@ static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
 // ── CONSTRAINT (why this can't be observed except in the test) ─────
 //
 // The boot writes $0D to OSS_ROM_CTRL at $40802E50 very early in
-// §3 POST init (bit 3 = 1 → first toggle, invert becomes true).
+// POST init (bit 3 = 1 → first toggle, invert becomes true).
 // From that point, reads at $40008000-$4000FFFF return ~ROM.
 //
 // This region is ROM-mirror page 1 (= ROM bytes at file offset
@@ -452,7 +452,7 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
 // Re-arms one ROM-window page as the first-access trap device (reset state):
 // the inverse of iifx_fill_page, restoring what memory_map_add installed.
 static void iifx_arm_rom_trap_page(iifx_state_t *st, config_t *cfg, uint32_t page_index) {
-    if ((int)page_index >= g_page_count)
+    if (page_index >= g_page_count)
         return;
     g_page_table[page_index].host_base = NULL;
     g_page_table[page_index].dev = &st->rom_interface;
@@ -486,7 +486,7 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     // rom_size ≤ ram_size, but keep the two expressions in lock-step).
     uint32_t ram_pages = cfg->ram_size >> PAGE_SHIFT;
 
-    for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
+    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++) {
         uint8_t *host_ptr = overlay ? rom_data + (p << PAGE_SHIFT) : ram_base + ((p % ram_pages) << PAGE_SHIFT);
         iifx_fill_page(p, host_ptr, !overlay);
     }
@@ -505,7 +505,7 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     // its 8 pages after this via the same iifx_fill_page path.
     uint32_t wstart = (uint32_t)(IIFX_ROM_START >> PAGE_SHIFT);
     uint32_t wend = (uint32_t)(IIFX_ROM_END >> PAGE_SHIFT);
-    for (uint32_t p = wstart; p < wend && (int)p < g_page_count; p++) {
+    for (uint32_t p = wstart; p < wend && p < g_page_count; p++) {
         if (overlay) {
             iifx_arm_rom_trap_page(st, cfg, p);
         } else {
@@ -670,31 +670,11 @@ static inline void iifx_scsidma_observe_mr_dma(iifx_state_t *st, scsi_t *scsi) {
     st->scsi_dma_prev_mr_dma = now;
 }
 
-// ── FIFO byte-router primitives (spec §13) ─────────────────────────
-// Big-endian byte lanes: addr bit pattern A1:A0 = 00 -> D[31:24]
-// (lane 0), 01 -> D[23:16] (lane 1), 10 -> D[15:8] (lane 2),
-// 11 -> D[7:0] (lane 3). "MSBs go in LS addresses."
-static inline unsigned scsidma_lane_shift(int lane) {
-    return (3u - (unsigned)lane) * 8u;
-}
-
+// ── FIFO state (spec §13) ──────────────────────────────────────────
 static void scsidma_fifo_clear(iifx_state_t *st) {
     st->scsi_dma_fifo_count = 0;
     for (int i = 0; i < 4; i++)
         st->scsi_dma_fifo_valid[i] = false;
-}
-
-static void scsidma_fifo_put_lane(iifx_state_t *st, int lane, uint8_t byte) {
-    unsigned sh = scsidma_lane_shift(lane);
-    st->scsi_dma_fifo_word = (st->scsi_dma_fifo_word & ~(0xffu << sh)) | ((uint32_t)byte << sh);
-    if (!st->scsi_dma_fifo_valid[lane]) {
-        st->scsi_dma_fifo_valid[lane] = true;
-        st->scsi_dma_fifo_count++;
-    }
-}
-
-static uint8_t scsidma_fifo_get_lane(const iifx_state_t *st, int lane) {
-    return (uint8_t)(st->scsi_dma_fifo_word >> scsidma_lane_shift(lane));
 }
 
 // ── Reset & completion ────────────────────────────────────────────
@@ -864,11 +844,11 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     // issue time.  $0C0/$100 emit only on the final byte so the assembled
     // 32-bit value appears; $020/$050/$070 are byte-wide registers.
     //
-    // Gated on the `board` log category at level 9, not on GS_IIFX_SHIM_TRACE
-    // (05-chipsets-irq F-41).  `debug.log board 9` turns it on, `file=` can
-    // redirect it, and it is visible in the object model -- none of which an
-    // env var offered.  Unlike the other overrides that finding names, this
-    // one only ever produced output and never changed emulated behaviour.
+    // Gated on the `board` log category at level 9, not on GS_IIFX_SHIM_TRACE.
+    // `debug.log board 9` turns it on, `file=` can redirect it, and it is
+    // visible in the object model -- none of which an env var offered.  Unlike
+    // the other env-var overrides this replaced, this one only ever produced
+    // output and never changed emulated behaviour.
     if (log_would_log(_log_get_local_category(), 9)) {
         extern uint64_t cpu_instr_count(void);
         unsigned long long ic = (unsigned long long)cpu_instr_count();
@@ -1402,7 +1382,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
     // itself throughout the 64 MB RAM decode window.  The boot ROM sizes
     // memory by probing down from the window top and reading where the
     // address wraps; with a bare linear map the probe reads unmapped $FF
-    // instead of a wrap and POST stalls (ledger §11 — 4 and 8 MB stalled
+    // instead of a wrap and POST stalls (4 and 8 MB stalled
     // while 16/32/64 MB happened to survive the descending probe).
     //
     // Unlike the two-bank MDU machines (iici.c, iisi.c) there is no second
@@ -1466,7 +1446,7 @@ static const nubus_slot_decl_t iifx_slots[] = {
     {0},
 };
 
-// The IIfx board descriptor (proposal §4.2.2): OSS+FMC hardware data, consumed
+// The IIfx board descriptor: OSS+FMC hardware data, consumed
 // at init by the shared helpers.  ROM at $40000000; the 18-bit $40000 I/O
 // mirror; the IIfx window table (device-rows + handler-rows); 0xFF on an
 // unmapped read.

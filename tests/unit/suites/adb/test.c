@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// ADB: the ST-transition filter (code review 2026-09-03, 06-io-controllers
-// unit D2, from F-17 / R-5b).
+// ADB: the ST-transition filter.
 //
 // PB5:PB4 on VIA1 are the ADB transaction-state lines ST1:ST0 (Guide 2e
 // :4155-4161; the state table at :7545-7552 reads 0 = command, 1 = even,
@@ -27,14 +26,13 @@
 // for the VIA's shift-complete callback, same BUG-004).  A filtered write
 // reads nothing.
 //
-// The suite also covers adb_autopoll_next (unit D3, from R-2 / N-05), the
-// one auto-poll engine that Egret, Cuda and the SWIM IOP now share.  Four
-// copies of that loop disagreed four ways; the IIfx's two walked addresses
-// 1..15 numerically, so ADDRESS 0 WAS NEVER POLLED, while the DevMap test
-// three lines away was already bit-per-address over 0..15.  The IOP ADB
-// Driver ERS (library/serial/apple-iop-adb-driver-ers/markdown.md:62,70)
-// defines the mask over 0..15 and the order as most-recently-used, with a
-// fallback that polls every address ignoring the mask while SRQ persists.
+// The suite also covers adb_autopoll_next, the one auto-poll engine that
+// Egret, Cuda and the SWIM IOP now share.  Four copies of that loop disagreed
+// four ways; the IIfx's two walked addresses 1..15 numerically, so ADDRESS 0
+// WAS NEVER POLLED, while the DevMap test three lines away was already
+// bit-per-address over 0..15.  The IOP ADB Driver ERS defines the
+// mask over 0..15 and the order as most-recently-used, with a fallback that
+// polls every address ignoring the mask while SRQ persists.
 
 #include "adb.h"
 
@@ -329,7 +327,7 @@ TEST(test_a_quiet_bus_returns_false) {
 
 // === Register 3 ============================================================
 //
-// Guide 2e Table 8-15 (single-file.md:7726-7739): bit 15 reserved 0, bit 14
+// Guide 2e Table 8-15: bit 15 reserved 0, bit 14
 // "exceptional event, device specific; always 1 if not used", bit 13
 // "Service Request enable; 1 = enabled", bit 12 reserved 0, bits 11-8 the
 // address, bits 7-0 the handler ID.  The model answered $0X -- bits 14 and

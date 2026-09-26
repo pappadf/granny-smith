@@ -3,12 +3,11 @@
 
 // q700.c
 // Macintosh Quadra 700 ("Spike", 25 MHz 68040, October 1991) — the desktop
-// member of the MCU/DAFB family and Granny Smith's first 68040 machine
-// (proposal-machine-quadra-700-900-950.md).  Low-speed I/O is direct and
-// IIci-like (ref §14): VIA1+VIA2, classic RTC/PRAM, VIA-shifter ADB
-// transceiver, direct SCC and SWIM.  No IOPs, no Caboose, one SCSI bus.
-// Shares the 420DBFF3 ROM with the Quadra 900 (model sense on VIA1 PA
-// distinguishes them; ref §7.4).
+// member of the MCU/DAFB family and Granny Smith's first 68040 machine.
+// Low-speed I/O is direct and IIci-like: VIA1+VIA2, classic
+// RTC/PRAM, VIA-shifter ADB transceiver, direct SCC and SWIM.  No IOPs, no
+// Caboose, one SCSI bus.  Shares the 420DBFF3 ROM with the Quadra 900 (model
+// sense on VIA1 PA distinguishes them).
 
 #include "mcu.h"
 
@@ -49,14 +48,14 @@
 LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
-// VIA callbacks (direct IIci-like wiring; ref §14)
+// VIA callbacks (direct IIci-like wiring)
 // ============================================================
 
 static inline mcu_state_t *q700_state(config_t *cfg) {
     return (mcu_state_t *)cfg->machine_context;
 }
 
-// VIA1 outputs: PA5 = floppy head select (ref §14.6); PB = classic RTC serial
+// VIA1 outputs: PA5 = floppy head select; PB = classic RTC serial
 // (bits 0-2) + ADB ST lines (bits 4-5) — the IIci pattern verbatim.
 static void q700_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
@@ -75,36 +74,36 @@ static void q700_via1_output(void *context, uint8_t port, uint8_t output) {
     }
 }
 
-// VIA2 outputs: PB4/PB3/PB0 drive the DFAC serial control on the Q700
-// (ref §13.6) — logged until the audio path lands in Phase D.
+// VIA2 outputs: PB4/PB3/PB0 drive the DFAC serial control on the Q700 —
+// logged only.
 static void q700_via2_output(void *context, uint8_t port, uint8_t output) {
     (void)context;
     (void)port;
     (void)output;
 }
 
-// EASC interrupt → VIA2 CB1 (ref §13.4).
+// EASC interrupt → VIA2 CB1.
 static void q700_asc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     // CB1 is active-low on the board; the 6522 PCR polarity handles edges.
     via_input_c(cfg->via2, 1, 0, active ? 0 : 1);
 }
 
-// 53C96 INT output → VIA2 CB2 (combined SCSI interrupt request; ref §13.4).
+// 53C96 INT output → VIA2 CB2 (combined SCSI interrupt request).
 static void q700_scsi96_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     via_input_c(cfg->via2, 1, 1, active ? 0 : 1);
 }
 
 // SONIC INT → VIA2 PA0 (active-low) through the /SLOTIRQ aggregate
-// (ref §13.3/§16.5; A/UX level-3 remap not modeled).
+// (A/UX level-3 remap not modeled).
 static void q700_sonic_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     mcu_slot_irq_source(cfg, 0, active);
 }
 
 // SONIC bus-master DMA: guest-physical accesses through the bus resolver
-// (no IOMMU on this family, ref §16.3 — CPU MMU is not in the path).
+// (no IOMMU on this family — CPU MMU is not in the path).
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -114,7 +113,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
 
-    // The Q700 bit-bangs the classic RTC on VIA1 (ref §14.4).
+    // The Q700 bit-bangs the classic RTC on VIA1.
     rtc_set_via(cfg->rtc, cfg->via1);
 
     // Model sense on VIA1 PA from the board descriptor ($C0: the ROM's identify
@@ -128,7 +127,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via1, 1, 0, 1);
 
     // VIA2 PA: slot/video/Ethernet requests, all active-low → idle high
-    // (Q700 exposes D, E/PDS, video, Ethernet; ref §13.3).
+    // (Q700 exposes D, E/PDS, video, Ethernet).
     for (int bit = 0; bit < 8; bit++)
         via_input(cfg->via2, 0, bit, 1);
     via_input_c(cfg->via2, 0, 0, 1); // CA1 /SLOTIRQ idle
@@ -148,14 +147,13 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
-    // SONIC Ethernet (Phase F; ~20 MHz part on the Q700, no wire in v1).
+    // SONIC Ethernet (~20 MHz part on the Q700, no wire in v1).
     st->sonic = sonic_init(cp);
     sonic_set_irq_callback(st->sonic, q700_sonic_irq, cfg);
-    // SONIC bus-master DMA: the shared guest-physical port.  This machine
-    // carried its own byte-identical copy of it until F-16.
+    // SONIC bus-master DMA: the shared guest-physical port.
     sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
-    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core until Phase D
+    st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
@@ -167,7 +165,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Bus-side physical resolver for the 040 walker: RAM at 0, the 1 MiB ROM
     // mirroring through the aperture.  ram_size_max is the full 1 GiB RAM
     // aperture — RAM-sizing probes above installed memory read $FF rather
-    // than bus-erroring (flat functional model, ref §8.5).
+    // than bus-erroring (flat functional model).
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
@@ -203,7 +201,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 // ============================================================
 
 // Official totals 4/8/20 MB plus the accepted-in-practice 36/68 MB SIMM
-// configurations (ref §8.3 [R][U] — extended sizes, flagged as such).
+// configurations (extended sizes, flagged as such).
 static const uint32_t q700_ram_options_kb[] = {4096, 8192, 20480, 36864, 69632, 0};
 
 static const scsi_bus_decl_t q700_scsi_buses[] = {
@@ -211,7 +209,7 @@ static const scsi_bus_decl_t q700_scsi_buses[] = {
     {0},
 };
 
-// NuBus topology (ref §10.3): two sockets, D and E; the PDS is mechanically
+// NuBus topology: two sockets, D and E; the PDS is mechanically
 // aligned with slot E (a PDS card precludes a NuBus card there — not modeled
 // as a constraint in v1).  The built-in DAFB video is pseudo-slot 9: its
 // declaration ROM lives in the system ROM and its apertures are mapped
@@ -229,16 +227,16 @@ static const mcu_board_desc_t q700_board_desc = {
                  .rom_base = 0x40000000u,
                  .rom_end = 0x50000000u,
                  .io_ranges = mcu_q700_io_ranges,
-                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
+                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island
             .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
             .bus_err_lo = 0xF1000000u, // slots $1-$E: this board decodes below $F9
             .bus_err_hi = NUBUS_BERR_HI,
                  },
     .ram_onboard_size = 0x00400000u, // 4 MB soldered = bank A; SIMM bank B follows
     .ram_bank_count = 2, // 4 MB soldered + one four-SIMM bank
-    .via1_pa_model = 0xC0, // Q700 model sense (ref §7.4 [R])
+    .via1_pa_model = 0xC0, // Q700 model sense
     // Modelled maxed.  Base is 512 KiB soldered plus three optional
-    // 256 KiB-SIMM-pair banks (DAFB reference S16.1).
+    // 256 KiB-SIMM-pair banks.
     .dafb_vram_size = 0x00200000u,
 };
 

@@ -1,4 +1,4 @@
-// The one reader of `machine.profile(id)` (M4, F-11, F-49).
+// The one reader of `machine.profile(id)`.
 //
 // Five call sites used to fetch the profile each for itself — the config
 // dialog, capabilities, the URL path, the ROM-drop boot, the default HD bay —
@@ -48,7 +48,7 @@ export interface MachineProfile {
   hd_bays: MediaBay[];
   hd_default: MediaBay | null;
   cdrom: MediaBay | null;
-  // Derived capability probe (proposal §4.4): the typed facts the UI reads
+  // Derived capability probe: the typed facts the UI reads
   // instead of guessing from the model name.
   capabilities: {
     cpu?: { model?: number; address_bits?: number; fpu?: boolean };

@@ -200,7 +200,7 @@ static const int predefined_dist_nsym[5] = {11, 13, 14, 11, 11};
 
 // All trees of a block (meta + first + second + dist) share one of peeler's
 // canonical-Huffman pools (internal.h), which bounds it: this file's own
-// allocator did not (09-storage F-04, F-59).
+// allocator did not.
 
 // Walk the tree from root, reading one bit at a time until a leaf is
 // reached.  Returns the leaf's symbol value, or -1 on error.
@@ -258,7 +258,8 @@ static int m13_build_meta_tree(peel_hpool_t *pool) {
 // longest a direct set produces (command 30).  -1 is legitimate: it is what a
 // decrement from the reset value 0 gives, m13_build_canonical starts at -1 so
 // that it counts as "absent" like 0, and real DropStuff 6 streams open a list
-// with exactly that.  Below -1 the builder never matches, which is F-05.
+// with exactly that.  Below -1 the builder never matches (see
+// m13_decode_lengths).
 #define M13_MIN_CODE_LEN (-1)
 #define M13_MAX_CODE_LEN 31
 
@@ -275,8 +276,7 @@ static int m13_build_canonical(peel_hpool_t *pool, const int8_t *lengths, int ns
 // 0..30 set the length directly, 31 resets to 0, 32/33 increment/
 // decrement, and 34..36 are various repeat encodings.
 //
-// Returns 0, or -1 on a malformed list.  Two bounds that were missing
-// (09-storage F-03, F-05):
+// Returns 0, or -1 on a malformed list.  Two bounds that were missing:
 //
 //   * Every command's entry count is checked against the space left.  The
 //     loop was bounded by nsym but the repeats inside it were not: command

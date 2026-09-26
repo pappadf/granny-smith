@@ -50,7 +50,7 @@ void mouse_move(mouse_t *restrict mouse, int dx, int dy);
 //   "relative" / "hw"         -> 'h'   x/y are hardware deltas, no Toolbox
 //                                      help, on EVERY machine -- the
 //                                      operation a host with a relative
-//                                      pointer (a pointer lock) uses (N-33)
+//                                      pointer (a pointer lock) uses
 //   "global"                  -> 'g'   absolute screen position (warp)
 //   "aux"                     -> 'a'   A/UX MAE routing
 //
@@ -73,7 +73,7 @@ char input_mouse_mode_parse(const char *mode);
 //
 // Before this existed, adb.c carried the remainder and cops.c discarded it,
 // which meant a large synthetic `mouse.move` silently lost distance on the
-// Lisa (06-io-controllers F-25).
+// Lisa.
 static inline int input_clamp_delta(int delta, int lo, int hi, int *remaining) {
     int clamped = delta;
     if (clamped > hi)

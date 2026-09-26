@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Enforce the proposal §4.3 layering rule: no file under src/core/ may #include
+# Enforce the core layering rule: no file under src/core/ may #include
 # a machine *implementation* header (anything under src/machines/).  The one
 # legal machine header for core is core/machine_profile.h, which lives in core
 # — so it never appears in the src/machines/ header set this check builds.
@@ -26,14 +26,13 @@ if [ "$fail" -ne 0 ]; then
 fi
 echo "core-layering: OK — src/core/ includes no machine-implementation headers"
 
-# proposal-content-addressed-rom-provisioning.md §6: core may open a path it
-# was handed, but must never FABRICATE one.  Two greps keep the boundary
-# honest:
+# Core may open a path it was handed, but must never FABRICATE one.  Two
+# greps keep the boundary honest:
 #   1. no environment path literal ("/opfs/…", "tests/data…") in the vROM
 #      loader areas of src/core and src/machines — the platform enumerates
 #      and offers files; core only content-matches among the offers.  (The
 #      "/opfs/" *persistence* heuristics in src/core/storage et al. are a
-#      separate is-this-path-durable concern, out of scope per §2.)
+#      separate is-this-path-durable concern, out of scope here.)
 #   2. no catalog-name→path joining anywhere in src/ — vrom_catalog_name was
 #      removed with the search; a reappearance means the name column leaked
 #      back into core.
@@ -51,12 +50,12 @@ if [ -n "$hits" ]; then
     fail=1
 fi
 if [ "$fail" -ne 0 ]; then
-    echo "core-layering: FAILED — core must not fabricate ROM/vROM paths (proposal §6)"
+    echo "core-layering: FAILED — core must not fabricate ROM/vROM paths"
     exit 1
 fi
 echo "core-layering: OK — no path fabrication in the ROM/vROM loader areas"
 
-# 08-core-infra F-50: a class_desc_t is file-local unless another file uses it.
+# A class_desc_t is file-local unless another file uses it.
 #
 # 87 of 127 were non-static, and only 7 had a consumer outside their own file.
 # The other 80 exported a global symbol for nothing -- and, worse, there was no
@@ -84,7 +83,9 @@ fail=0
 while IFS= read -r line; do
     [ -z "$line" ] && continue
     name=$(echo "$line" | sed 's/.*class_desc_t \([a-z_0-9]*\) = {.*/\1/')
-    if ! echo "$ALLOWED_EXTERNAL_CLASSES" | grep -qx "$name"; then
+    # A here-string, not `echo | grep -q`: under pipefail, grep -q exiting at
+    # the first match can SIGPIPE the echo and fail the whole test.
+    if ! grep -qx "$name" <<<"$ALLOWED_EXTERNAL_CLASSES"; then
         echo "NON-STATIC CLASS: $line"
         echo "    '$name' has no cross-file consumer; make it 'static const'."
         fail=1
@@ -101,7 +102,7 @@ for name in $ALLOWED_EXTERNAL_CLASSES; do
 done
 
 if [ "$fail" -ne 0 ]; then
-    echo "core-layering: FAILED — class_desc_t visibility (08-core-infra F-50)"
+    echo "core-layering: FAILED — class_desc_t visibility"
     exit 1
 fi
 echo "core-layering: OK — every non-static class_desc_t has a cross-file consumer"

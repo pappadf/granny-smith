@@ -1,0 +1,47 @@
+name: Hygiene
+
+# Static checks over the tracked tree: no build, no test data, no container.
+# Deliberately not filtered by path, since most of what these check is docs.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: No references outside the repository
+        run: python3 scripts/check-external-refs.py
+
+      # STYLE_GUIDE.md "File Structure": C sources in src/, tests/, tools/ and
+      # the scripts begin with both lines of the notice.
+      - name: SPDX and copyright headers
+        run: python3 scripts/check-spdx.py
+
+      # Docs that inventory a directory name everything in it (the unit
+      # stub table, ...); see the script's header for the list.
+      - name: Doc inventories
+        run: python3 scripts/check-doc-inventories.py
+
+      # Relative links in tracked Markdown resolve (docs moved into
+      # subdirectories left ~140 links pointing one level too high).
+      - name: Markdown links
+        run: python3 scripts/check-links.py

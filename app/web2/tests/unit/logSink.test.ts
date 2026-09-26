@@ -1,5 +1,5 @@
 // Output printed before any terminal exists is kept and replayed when one
-// registers (N-57), within a bound.
+// registers, within a bound.
 import { describe, it, expect } from 'vitest';
 import { routePrintLine, setTerminalSink } from '@/bus/logSink';
 

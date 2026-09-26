@@ -11,7 +11,7 @@ beforeEach(() => {
 });
 
 describe('DisplayContent routing', () => {
-  // Phase 3 always mounts ScreenView (so bus.emulator.bootstrap can hand
+  // DisplayContent always mounts ScreenView (so bus.emulator.bootstrap can hand
   // Emscripten a stable canvas reference). Welcome is layered on top via
   // `.welcome-layer` until a machine is running.
 

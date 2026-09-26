@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Single-step CPU instruction test suite
 // Tests 68000 instructions against the SingleStepTests/m68000 test data
 // which was generated from MAME's highly accurate m68000 core.

@@ -7,7 +7,7 @@
 // A 1K x 12-bit descriptor RAM mapping 128 logical segments x 4 contexts onto
 // three disjoint physical spaces (main RAM / I/O / special-I/O), with 512-byte
 // pages and a power-on START (setup) mode that bypasses translation.  See
-// docs/machines/lisa/lisa.md §4-5 and proposal-machine-lisa-xl.md §4.2 for the model.
+// docs/machines/lisa/lisa.md §4-5 for the model.
 //
 // Integration seam: the Lisa machine routes ALL CPU memory accesses through
 // this module via the slow path in memory.c (gated on g_lisa_mmu != NULL).

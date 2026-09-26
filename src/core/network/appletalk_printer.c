@@ -58,7 +58,7 @@ enum { PAP_MARK_FLUSH = 1u << 0, PAP_MARK_PATCHPREP = 1u << 1, PAP_MARK_FONTLIST
 // A job's captured PostScript is held in memory and handed to the platform
 // (laserwriter_sink_capture) when the job ends.  It went to a file under /tmp
 // -- a path the core has no business naming, and one the browser cannot
-// reach (10-network F-12).  A job larger than this is aborted, not held.
+// reach.  A job larger than this is aborted, not held.
 #ifndef PRINTER_CAPTURE_MAX
 #define PRINTER_CAPTURE_MAX (32u * 1024u * 1024u)
 #endif
@@ -457,7 +457,7 @@ static void pap_update_progress_status(void) {
 // It fires on the guest clock, armed when the connection opens and re-armed
 // for what is left of the interval -- the timeout was checked only when the
 // next PAP packet arrived, so a workstation that vanished held the printer
-// for ever (10-network N-22).
+// for ever.
 static void pap_idle_cb(void *source, uint64_t data) {
     (void)source;
     (void)data;
@@ -682,7 +682,7 @@ static int pap_format_status_line(const char *text, char *out, size_t out_len) {
     if (len < 0)
         len = 0;
     // snprintf returns what it would have written; cut short, the buffer holds
-    // one byte less and a NUL -- which the old clamp sent as payload (F-30).
+    // one byte less and a NUL -- which the old clamp sent as payload.
     if ((size_t)len >= out_len)
         len = (int)out_len - 1;
     return len;
@@ -1237,7 +1237,7 @@ static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp) {
 // True when a request belongs to the active session: its connection id, from
 // the node and network that opened it.  The id is one byte the workstation
 // chose, so on its own it is anyone's -- a CloseConn with any id ended the
-// active job, and any Tickle kept it alive (10-network F-13).
+// active job, and any Tickle kept it alive.
 static bool pap_request_is_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
     return g_session.active && atp->user[0] == g_session.conn_id && ddp->llap.src == g_session.client_addr.node &&
            ddp->src_net == g_session.client_addr.net;
@@ -1531,7 +1531,7 @@ void atalk_printer_register(void) {
     // Publish on every stack: the previous one withdrew the advertisement in
     // atalk_printer_shutdown.  (A printer is enabled by default, and this has
     // always re-enabled one a script turned off -- that is configuration,
-    // which 10-network A5 carries through a restore.)
+    // which the checkpoint's configuration record carries through a restore.)
     if (atalk_printer_enable(NULL) != 0)
         LOG(1, "pap: failed to auto-enable printer");
 }
@@ -1557,7 +1557,7 @@ void atalk_printer_link_down(void) {
 // Enables (or renames) the emulated LaserWriter and registers its NBP entry.
 // The name is published before it is stored, so a failure -- a name another
 // entity holds -- leaves the printer advertised, and named, as it was; and
-// one too long is refused, as set_name refuses it, not cut short (N-23).
+// one too long is refused, as set_name refuses it, not cut short.
 int atalk_printer_enable(const char *object_name) {
     pap_printer_init();
     const char *name = (object_name && *object_name) ? object_name : g_printer.object_name;
@@ -1597,8 +1597,8 @@ int atalk_printer_disable(void) {
 
 // === Object-model surface ============================================
 //
-// `appletalk.printer` exposes `enabled` and `name` as writable attributes
-// (object-model proposal §2): state is an attribute, methods are verbs.
+// `appletalk.printer` exposes `enabled` and `name` as writable attributes:
+// state is an attribute, methods are verbs.
 
 bool atalk_printer_get_enabled(void) {
     return g_printer.enabled;

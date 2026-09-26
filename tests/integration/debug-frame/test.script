@@ -15,13 +15,13 @@ def check_frame(arch) {
     let g = debug.frame(count=8, before=3)
     assert $g.rows[3].addr == machine.cpu.pc "before=3 puts the PC on row 3"
     assert machine.cpu.instr_count > 0 "instr_count on every architecture"
-    # machine.cpu.frame is the same call (D7).
+    # machine.cpu.frame is the same call.
     let c = machine.cpu.frame(count=4)
     assert $c.arch == $arch "machine.cpu.frame arch"
     assert $c.rows[0].addr == $f.rows[0].addr "machine.cpu.frame is debug.frame"
 }
 
-# The typed translate/peek every MMU kind has (D3): the frame's row
+# The typed translate/peek every MMU kind has: the frame's row
 # translation agrees with translate(), and a logical read equals a physical
 # read of the translated address (`physical_ok` false on the Lisa, whose
 # three physical spaces a bare address cannot name).
@@ -73,7 +73,7 @@ machine.boot model="pm8500" rom="../../data/roms/pm7500-pm8500-pm9500-96cd923d.r
 check_frame("ppc")
 check_mmu(true)
 
-# The DSP3210 on an AV machine answers the same frame contract (D7): its own
+# The DSP3210 on an AV machine answers the same frame contract: its own
 # architecture tag, register file and disassembly, and its accumulators as
 # the floating-point block.
 machine.boot model="q840av" ram=16384 rom="../../data/roms/q840av-q660av-5bf10fd1.rom"

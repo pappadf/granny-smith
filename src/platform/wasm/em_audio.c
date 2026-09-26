@@ -3,7 +3,7 @@
 
 // em_audio.c
 // Audio subsystem for Emscripten platform — implements WebAudio streaming via
-// AudioWorklet fed from a SharedArrayBuffer ring (perf proposal P6). One
+// AudioWorklet fed from a SharedArrayBuffer ring. One
 // parameterized stream serves every machine: interleaved int16 frames, mono
 // or stereo, at a runtime-settable source rate (22,255 / 22,257 / 22,050 /
 // 44,100 Hz).
@@ -58,7 +58,7 @@
 #define GS_ARING_MAX_CH 2
 
 // The control block (em_shm_layout.h), then the frames.  One writer per
-// index (T4, F-35): the producer owns write_idx, the worklet owns read_idx,
+// index: the producer owns write_idx, the worklet owns read_idx,
 // both free-running.  A full ring is the consumer's to notice -- the producer
 // just keeps writing, and the worklet resyncs when it finds more than a
 // ring's worth outstanding.  A new stream is REQUESTED (reset_gen) and the
@@ -343,7 +343,7 @@ void platform_audio_open(uint32_t src_rate_hz, int channels) {
 
 // Push interleaved int16 frames to the stream: a local copy into the shared
 // ring plus atomic index/volume updates.  No main-thread round trip — this
-// runs entirely on the emulation thread (perf proposal P6).
+// runs entirely on the emulation thread.
 void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
     if (!frames || nframes <= 0)
         return;

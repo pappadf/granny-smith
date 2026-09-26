@@ -909,8 +909,7 @@ static void adsp_conn_release(adsp_stack_t *s, adsp_conn_t *c, const char *reaso
     // The slot is free before the client hears of it.  It was freed after, so
     // an on_close that closed the same end found it still open -- a second
     // CLOSE went out and on_close ran again -- and the memset that followed
-    // wiped any connection on_close had opened into the slot (10-network
-    // F-15).  adsp_alloc_conn zeroes a slot when it is taken.
+    // wiped any connection on_close had opened into the slot.  adsp_alloc_conn zeroes a slot when it is taken.
     c->in_use = false;
     c->state = ADSP_STATE_CLOSED;
     for (int t = 0; t < ADSP_TIMER_COUNT; t++)

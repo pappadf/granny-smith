@@ -6,18 +6,17 @@
 export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped' | 'crashed';
 
 // Drive activity glyph state. `idle` = dim; `read` = white flash; `write` =
-// yellow flash. The flash decays on a 180 ms timeout (matches prototype).
+// yellow flash. The flash decays on a 180 ms timeout.
 export type DriveActivity = 'idle' | 'read' | 'write';
 
 // Three pacing modes, mirroring the core's schedule_paced/schedule_accelerated/
-// schedule_unthrottled (proposal-scheduler-two-modes.md and
-// proposal-scheduler-accelerated-mode.md): 'live' = wall-clock paced, 'accel' =
-// real-time timebase with a faster CPU (accelerator-card model; the adaptive
-// governor picks the speed), 'turbo' = as fast as the host allows. The guest
-// timeline is identical in live/turbo; accel trades that determinism for CPU
-// throughput while VBL/sound stay real-time. The toolbar labels these
-// Real-Time / Accelerated / Fast-Forward (proposal §5.1); the internal ids
-// below predate the relabel and stay stable.
+// schedule_unthrottled (docs/core/scheduler/scheduler.md): 'live' = wall-clock
+// paced, 'accel' = real-time timebase with a faster CPU (accelerator-card
+// model; the adaptive governor picks the speed), 'turbo' = as fast as the host
+// allows. The guest timeline is identical in live/turbo; accel trades that
+// determinism for CPU throughput while VBL/sound stay real-time. The toolbar
+// labels these Real-Time / Accelerated / Fast-Forward; the internal ids below
+// predate the relabel and stay stable.
 export type SchedulerMode = 'live' | 'accel' | 'turbo';
 
 // Typed MMU kind, sourced from `machine.profile(id).capabilities.mmu.kind`
@@ -82,7 +81,7 @@ interface MachineState {
   // where the adaptive governor moves it; pushed from the core on change
   // (bus/emulator.ts handleSchedulerSpeed). 1 in every other mode.
   acceleratedSpeed: number;
-  // Live performance readout, pushed from the core ~1 Hz (perf proposal P12):
+  // Live performance readout, pushed from the core ~1 Hz:
   // emulated MIPS from instruction-count deltas, and the RAF tick rate the
   // main loop is achieving. 0 until the first push after machine start.
   mips: number;

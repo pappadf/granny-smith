@@ -2,8 +2,7 @@
 // Copyright (c) pappadf
 
 // afp_catalog.h
-// Persistent per-volume CNID catalog for the AFP server
-// (proposal-afp-server-completeness.md §4.2).
+// Persistent per-volume CNID catalog for the AFP server.
 //
 // AFP requires catalog node IDs that are unique per volume, stable across
 // rename / move / server restart, never reused, and that cover files as well
@@ -97,7 +96,7 @@ const afp_cat_entry_t *afp_catalog_find_child(afp_catalog_t *cat, uint32_t paren
 
 // Resolve a volume-relative path ("" = root, "a/b/c") to an entry, adopting
 // any missing component along the way when `adopt` is true (the lazy-adoption
-// policy of §4.2: anything the server touches that has no entry gets one).
+// policy: anything the server touches that has no entry gets one).
 // `is_dir` describes the final component; intermediate components are always
 // adopted as directories.  NULL when the path is malformed or absent.
 const afp_cat_entry_t *afp_catalog_resolve_path(afp_catalog_t *cat, const char *rel_path, bool adopt, bool is_dir);

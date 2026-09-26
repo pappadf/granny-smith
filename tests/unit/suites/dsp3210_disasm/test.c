@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 /*
  * test_dsp3210.c — unit tests for the DSP3210 reference disassembler.
  *
@@ -10,8 +12,8 @@
  *      SHIFT LEFT example shows the >> F-code — those are encoded here
  *      per Table 10-2, which the manual's own CALL/IRETURN/DO examples
  *      corroborate.)
- *   2. ROM-verified words from the 840av_660av dossier (docs/dsp3210.md
- *      §1.5.5), e.g. 9CFA2817 = "r22 = *r5++".
+ *   2. Words verified against the Quadra 840AV / Centris 660AV ROM,
+ *      e.g. 9CFA2817 = "r22 = *r5++".
  *   3. The illegal-opcode list of IM §7.5.3.2.
  */
 
@@ -108,7 +110,7 @@ int main(void) {
     expect(0x8D00080A, "dolock 1, 10");
     expect(0x8E800003, "doblock r3");
 
-    /* ---- shift-or (4b) — dossier-verified words ---- */
+    /* ---- shift-or (4b) — ROM-verified words ---- */
     expect(0x93405003, "r22 = r0 <<| 0x5003");
     expect(0x90425003, "r2 = r2 <<| 0x5003");
     expect(0x9021ABCD, "r1 = r1 <<| 0xabcd");
@@ -148,23 +150,23 @@ int main(void) {
     expect(alu_i(0, 8, 3, 0xFFFF), "r3 = (short) r3 ^ -0x1");
     expect(alu_i(1, 15, 6, 0x0080), "r6 & 0x80"); /* bit test */
 
-    /* ---- moves (7a-7d) — IM LOAD/STORE examples + dossier words ---- */
+    /* ---- moves (7a-7d) — IM LOAD/STORE examples + ROM words ---- */
     expect(0x1C4A00AA, "r10 = (ushort) *0xaa"); /* IM LOAD (2) */
     expect(0x1CE100AA, "r1 = *0xaa");
     expect(0x1D651234, "*0x1234 = (short) r5");
-    expect(0x9CE41017, "r4 = *r2++"); /* dossier */
+    expect(0x9CE41017, "r4 = *r2++"); /* ROM */
     expect(0x9CE41012, "r4 = *r2++r16");
-    expect(0x9D041817, "*r3++ = (byte) r4"); /* dossier */
-    expect(0x9CFA2817, "r22 = *r5++"); /* dossier */
-    expect(0x9DE00000, "*r0 = r0"); /* dossier */
+    expect(0x9D041817, "*r3++ = (byte) r4"); /* ROM */
+    expect(0x9CFA2817, "r22 = *r5++"); /* ROM */
+    expect(0x9DE00000, "*r0 = r0"); /* ROM */
     expect(0x9D830817, "*r1++ = (hbyte) r3"); /* IM STORE */
     expect(0x9E681000, "emr = (short) *r2"); /* IM LOAD-IOR */
     expect(0x9F600800, "*r1 = (short) ps"); /* IM STORE-IOR */
-    expect(0x9D61040C, "pcw = (short) r1"); /* dossier */
+    expect(0x9D61040C, "pcw = (short) r1"); /* ROM */
     expect(0x9CE7040E, "r7 = dauc");
     expect(0x9C01040E, "r1 = (byte) dauc"); /* seen in dspf */
 
-    /* ---- spc pseudo-instructions (dossier-verified words) ---- */
+    /* ---- spc pseudo-instructions (ROM-verified words) ---- */
     expect(0x9DE0040A, "waiti");
     expect(0x9D60040A, "bkpt");
     expect(0x9D00040A, "sftrst");
@@ -189,7 +191,7 @@ int main(void) {
      * an in-place accumulate with cursor advance.  With an accumulator
      * Y there is nothing to store through, so it reads as no write
      * (the old blanket "0x7F = no write" reading was wrong for memory
-     * Y operands — see the DSP3210 errata). */
+     * Y operands). */
     expect(0x3440087F, "*r2++ = a2 = *r2 + a0");
     expect(0x700000FF, "a0 = a1 * a0"); /* acc Y: no write */
     expect(0x3800079F, "a0 = (*r3++ = *r1++) + a0");

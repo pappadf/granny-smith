@@ -1,8 +1,8 @@
 name: Nightly
 
-# The long half of the integration suite, split out of the PR gate per
-# proposal-integration-test-rework §5.4. PR/push runs the unit and matrix
-# tiers (see tests.yml); this workflow runs:
+# The long half of the integration suite, split out of the PR gate (tiers:
+# docs/guide/TESTING.md). PR/push runs the unit and matrix tiers (see
+# tests.yml); this workflow runs:
 #
 #   * the extended tier — MacTest diagnostics, the installers and their
 #     artifact-producing flows, app choreography (Marathon, MusicWorks),
@@ -10,9 +10,10 @@ name: Nightly
 #   * Valgrind, RESCOPED. `make integration-test-valgrind` used to sweep
 #     every test, which at Valgrind's 20-50x slowdown over billions of guest
 #     cycles cannot plausibly have run to completion. It now runs the unit
-#     tier plus one representative boot, with the perf floors switched off
+#     tier, one short run for each PowerPC family the unit tier does not
+#     boot, and one representative 68k boot, with the perf floors switched off
 #     (PERF_FLOORS=off) because a 20-50x slowdown makes throughput asserts
-#     meaningless — the latent contradiction §5.8 called out.
+#     meaningless.
 #
 # Nightly also runs the suites in KEEP_GOING mode so a red row does not hide
 # every row after it: the coverage and milestone report at the end is only
@@ -29,6 +30,17 @@ on:
         required: false
         default: 'extended'
 
+# Least privilege: the default GITHUB_TOKEN may write to the repository,
+# and nothing here needs to. packages: read pulls the dev container.
+permissions:
+  contents: read
+  packages: read
+
+# A dispatch while the scheduled run is going waits rather than cancelling it.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
 # Every `run:` uses bash, not the container's default sh. Steps here pipe into
 # tee and then `exit "${PIPESTATUS[0]}"` to surface the real command's status
 # rather than tee's — PIPESTATUS is a bashism, and under dash it expands to
@@ -42,6 +54,7 @@ defaults:
 jobs:
   extended:
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       credentials:
@@ -49,9 +62,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      # No submodules: the nightly runs integration tiers only.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          persist-credentials: false
 
       - name: Verify 7z presence
         shell: bash
@@ -85,26 +99,33 @@ jobs:
         env:
           GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
 
+      # PLATEN=1 and in parallel, as every step below builds it: a build
+      # with other flags would be rebuilt from scratch by the next step.
       - name: Build headless emulator
-        run: make -f Makefile.headless
+        run: make -f Makefile.headless PLATEN=1 -j"$(nproc)"
 
-      # KEEP_GOING so one red row does not truncate the report (§5.7).
+      # KEEP_GOING so one red row does not truncate the report.
       - name: Run integration tests (${{ github.event.inputs.tier || 'extended' }} tier)
         run: |
           # PLATEN=1: without the bridge the printer rows skip (see
           # .github/workflows/tests.yml for the full note).
           make integration-test PLATEN=1 TIER="${{ github.event.inputs.tier || 'extended' }}" \
-            TEST_VARS="KEEP_GOING=1" 2>&1 | tee /tmp/it-nightly.log
+            TEST_VARS="KEEP_GOING=1" -j"$(nproc)" 2>&1 | tee /tmp/it-nightly.log
           exit "${PIPESTATUS[0]}"
 
-      # Valgrind, rescoped (§5.4): the unit tier plus one representative boot,
-      # with throughput floors off because Valgrind makes them meaningless.
-      - name: Valgrind (unit tier + one boot)
+      # Valgrind, rescoped: the unit tier plus one short run per machine
+      # family the unit tier does not boot, with throughput floors off
+      # because Valgrind makes them meaningless.  The unit tier covers the
+      # ANS (ans-pci-slots, ans-machine-restart); PDM and TNT left it with
+      # their ROM ladders and PCI tests, so each gets its cheapest one here.
+      - name: Valgrind (unit tier + one run per family)
         if: always()
         run: |
-          make -C tests/integration test-valgrind TIER=unit \
+          make -C tests/integration test-valgrind TIER=unit PLATEN=1 -j"$(nproc)" \
             TEST_VARS="PERF_FLOORS=off" 2>&1 | tee /tmp/vg-unit.log
-          make -C tests/integration test-valgrind-suite-plus \
+          make -C tests/integration -j2 PLATEN=1 TEST_VARS="PERF_FLOORS=off" \
+            test-valgrind-pdm-rom-ladder test-valgrind-tnt-pci-slots 2>&1 | tee /tmp/vg-ppc.log
+          make -C tests/integration test-valgrind-suite-plus PLATEN=1 \
             TEST_VARS="ROW=plus-beep PERF_FLOORS=off" 2>&1 | tee /tmp/vg-boot.log
 
       - name: Report into the step summary

@@ -48,7 +48,7 @@
 
 LOG_USE_CATEGORY_NAME("cuda");
 
-// === VIA1 port-B handshake pins (via1-cuda.md §2) ===========================
+// === VIA1 port-B handshake pins =============================================
 
 #define PB_TREQ    (1u << 3) // PB3 vCudaTREQ — Cuda transaction request (host input, active-low)
 #define PB_BYTEACK (1u << 4) // PB4 vCudaBYTEACK — per-byte level toggle (host output)
@@ -73,7 +73,7 @@ LOG_USE_CATEGORY_NAME("cuda");
 #define CMD_PWRDOWN    0x0A // power off
 #define CMD_WRPRAM     0x0C // write PRAM
 #define CMD_WRDFAC     0x0E // audio gain (accept-and-log)
-#define CMD_RDWRIIC    0x22 // I2C master transaction (DMSD/VDC — video-in.md §2)
+#define CMD_RDWRIIC    0x22 // I2C master transaction (DMSD/VDC)
 #define CMD_RESET      0x11 // cold reset
 #define CMD_SETAUTOP   0x14 // set autopoll rate
 #define CMD_RDDEVLIST  0x1A // read the ADB device list (16-bit address bitmap)
@@ -84,7 +84,7 @@ LOG_USE_CATEGORY_NAME("cuda");
 #define CUDA_ERR_PRAMADDR  4 // PRAM address out of the $100-$1FF page
 
 // The twelve pseudo-commands Cuda 2.37's dispatch table REJECTS (their
-// slots jump to the invalid-command path; via1-cuda.md §3c).  A model must
+// slots jump to the invalid-command path).  A model must
 // reject them, not implement them.
 static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17, 0x18, 0x1C, 0x1D, 0x1E, 0x1F, 0x20};
 #define CUDA_MAX_PSEUDO 0x24 // MaxPseudoCmd; >= $25 rejected
@@ -563,7 +563,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         break;
     case CMD_RDWRIIC: {
         // I2C master transaction (OS/CudaMgr.a SetTransferParams wire
-        // format, video-in.md §2.3): data[0] = slave address, direction =
+        // format): data[0] = slave address, direction =
         // its bit 0 (even = write, odd = read); the remaining bytes are
         // what goes on the I2C wire — for these Philips parts the first is
         // the subaddress.  Reads append the data bytes to the header; the
@@ -572,9 +572,9 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
             break; // no slave byte / no bus: header-only acknowledgement
         uint8_t slave = data[0];
         if (!av_vdc_i2c_slave_known(slave)) {
-            // Only the DMSD and VDC are on the bus; the real handler's
-            // behavior for other addresses was never analysed (GAPS.md
-            // §2.4) — reject loudly so a guest probing one is visible.
+            // Only the DMSD and VDC are on the bus; the real handler's behavior
+            // for other addresses was never analysed — reject loudly so a guest
+            // probing one is visible.
             LOG(1, "RdWrIIC to unknown I2C slave $%02X rejected", slave);
             cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
             return;
@@ -670,9 +670,9 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
 
     // Abort/Sync: ByteAck asserted (falling) while TIP stays negated.  This is
     // recognised from ANY state, which is the whole point of it — the host-side
-    // line-state table (CudaMgr.a:519-536, transcribed in the PDM notes
-    // "cuda-adb.md" §3) lists TIP=1/ByteAck=0 as Abort/Sync for TREQ low *and*
-    // TREQ high, i.e. whatever Cuda happens to be doing.  CudaInit's sync
+    // line-state table (CudaMgr.a:519-536) lists TIP=1/ByteAck=0 as
+    // Abort/Sync for TREQ low *and* TREQ high, i.e. whatever Cuda happens to
+    // be doing.  CudaInit's sync
     // explicitly expects to run while we are mid-transaction: its step 2 is "if
     // TREQ is already low, Cuda is mid-transaction: wait for its SR interrupt",
     // and only then does it assert ByteAck.
@@ -853,7 +853,7 @@ static void cuda_reset_event(void *source, uint64_t data) {
     // Level 2: the bus AND the CPU.  This used to call the bus half alone,
     // which on the AV families left the 68040 executing from wherever it was
     // while the ROM overlay came back under it -- RAM yanked out from beneath
-    // $00000000 with the machine still running (05-chipsets-irq F-04).  It
+    // $00000000 with the machine still running.  It
     // survived on PDM and TNT only because their substrate handlers called
     // ppc_reset() from inside the bus half, which is now where it is not.
     system_machine_reset();
@@ -868,8 +868,8 @@ static void cuda_tick_event(void *source, uint64_t data) {
             // Mode3Clock: the tick is an RdTime response carrying the
             // 32-bit BE seconds, so the OS's CudaTickHandler seeds lowmem
             // Time from the real clock every second instead of merely
-            // incrementing a counter that began at zero (cuda-adb.md §7 —
-            // "always send the RdTime form; the handler accepts both").
+            // incrementing a counter that began at zero (always send the
+            // RdTime form; the handler accepts both).
             uint32_t secs = cuda->rtc ? rtc_get_seconds(cuda->rtc) : 0;
             int n = cuda_put_header(cuda, PKT_PSEUDO, 0, CMD_RDTIME);
             cuda->tx_buf[n++] = (uint8_t)(secs >> 24);
@@ -898,7 +898,7 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
         cuda->state, cuda->push_pending, cuda->last_pb);
     if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
         // The device-selection rules live in adb.c, shared with Egret and the
-        // SWIM IOP (R-2).  Cuda has no WrDevList in this model -- the host
+        // SWIM IOP.  Cuda has no WrDevList in this model -- the host
         // can read the device list but not set a polling mask -- so 0 here
         // means every address is eligible, and the scan finds the devices
         // wherever Listen R3 has most recently moved them (Copland moves

@@ -1,0 +1,330 @@
+# TNT family suite — System 7.6 from a MESH disk, and the PCI display rows.
+#
+# Row map:
+#
+#   pm7500-76-hd     pm7500 (601) x 7.6 on the internal MESH bus: the
+#                    complete boot chain to the Finder desktop.
+#   pm8500-76-hd     pm8500 (604): the same chain on the machine the 604
+#                    boot wall used to kill.
+#   pm9500-76-mach64 pm9500, which has no onboard video: the same chain,
+#                    every pixel drawn by an ATI Mach64 GX in PCI socket A1.
+#   tnt-voodoo2-display  pm8500 + a Voodoo2 in A1: the card takes the
+#                    monitor from Control's live desktop and gives it back
+#                    byte-identical.
+#
+# ---- the boot chain (tnt_hd_boot) -------------------------------------------
+# The boot-driver selection matches (XPRAM $77 "Default OS" = 1 through the
+# banked NVRAM — the bank-port 16-bit access law — against the DDM's
+# ddType), the DDM/partition-map/driver-partition reads run as complete
+# byte-perfect MESH transactions, the Apple_Driver43 loads, the boot mounts
+# the startup volume (BootDrive set), and System 7.6 starts all the way to
+# the Finder desktop.  The last wall on that chain — the loaded driver's
+# data phases all disconnecting — fell to the MESH SEQ_BUSFREE expect-free
+# law (mesh.c): BUSFREE with the target still REQing raises the
+# phase-mismatch exception instead of releasing, which is the very signal
+# the driver's [114]==4 probe path uses to continue into the data phase.
+#
+# The image is 68k-install-flavored (its System lacks the 7500's gpch 68
+# patch resource) — empirically irrelevant: the boot reaches the Finder
+# regardless.  Each row attaches it directly; every writable attach mints
+# its own delta instance, so no row sees another row's writes.
+#
+# The startup chime is asserted on all three models: they share one Grand
+# Central + AWACS sound path (tnt.c), so a model on which it went quiet has
+# lost something the other two still have.
+#
+# Same discipline as the ROM ladder: clean bounded runs, no PC logpoints,
+# assertions read state afterward.
+
+include "../lib/mac.script"
+
+let hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
+
+# Boot `model` (with PCI card `card` in the first socket, "" for none) from
+# the 7.6 image on MESH id 0, run `budget` instructions, and assert what
+# every TNT disk boot owes: the startup volume, a clean startup, and the
+# chime.
+def tnt_hd_boot(model, card, budget) {
+    machine.boot model=$model ram=32768 rom="${$ROM}" pci_card="${$card}"
+    machine.rtc.time = "2026-04-26T21:30:36"
+    machine.scsi.attach_hd "${$hd_76}" 0
+
+    # Through OF, POST, the 68k boot, the gray desktop, the SCSI scan
+    # (complete MESH transactions against the disk), driver-partition load,
+    # the boot-volume mount, the Mac OS splash, and the full System 7.6
+    # startup to the Finder desktop.
+    scheduler.run $budget
+
+    # The boot-driver selection matched and the volume mounted: BootDrive
+    # carries the boot drive number instead of the scan's $FFFF.  ($23, not
+    # $03: the .Sony driver owns the floppy drive and its drive numbers now
+    # that the SWIM3 is wired, and the SCSI volume lands after it.)
+    assert debug.mac.globals.read("BootDrive") == 0x8023 "${$model}: BootDrive ${debug.mac.globals.read("BootDrive"):04x}, not set (driver match / mount failed)"
+
+    # Startup completed without a system error: DSErrCode was explicitly
+    # cleared by the running system (the scan-era sentinel is $FFFF; the
+    # old data-phase wall bombed here with $66 dsOldSystem).
+    assert debug.mac.globals.read("DSErrCode") == 0 "${$model}: system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+
+    # The 68k startup chime played: the Sound Manager's DBDMA ring on
+    # channel 8 ran past the firmware beep's 51 928 frames and louder than
+    # its peak (2 921).  It needs the channel's completion interrupt to
+    # reach the 68k side — a LEVEL in Grand Central's Levels register, the
+    # only thing the NanoKernel's handler classifies from; modelled as a
+    # pulse, the ring parked after its first two buffers and the machine
+    # was silent after the beep (the chime, alert beeps, every game).
+    echo "${$model}: sound frames=${machine.sound.frames} peak=${machine.sound.peak}"
+    assert machine.sound.frames > 55000 "${$model}: the startup chime never played (frames ${machine.sound.frames})"
+    assert machine.sound.peak > 4000 "${$model}: the startup chime was silent (peak ${machine.sound.peak})"
+}
+
+# ---- pm7500-76-hd -----------------------------------------------------------
+def row_pm7500_76_hd() {
+    tnt_hd_boot("pm7500", "", 2500000000)
+    # The Finder desktop: menu bar, mounted "Macintosh HD" volume, Trash,
+    # and the Energy Saver first-boot dialog.  The menu-bar clock area is
+    # excluded — it tracks the pinned RTC plus guest uptime, so it shifts
+    # whenever model changes move boot timing.
+    check_ex("goldens/pm7500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "control", "hd-boot mesh chime")
+    report_perf("suite-tnt/pm7500-76-hd", scheduler.instr_count)
+}
+
+# ---- pm8500-76-hd -----------------------------------------------------------
+# The same chain on the 604 machine that the boot wall used to kill: the 604
+# model's hardware-split path for misaligned page-crossing stores dropped
+# the update-form rA writeback, shearing the 68k emulator's A7 during the
+# boot-time Name-Registry import (pinned FE03 workspace at $3FF040,
+# clobbered return address, runaway into zeroed RAM).  This row holds the
+# fix: the same disk image boots to the Finder on the 604.
+def row_pm8500_76_hd() {
+    tnt_hd_boot("pm8500", "", 2500000000)
+    check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "control", "hd-boot mesh chime 604")
+    report_perf("suite-tnt/pm8500-76-hd", scheduler.instr_count)
+}
+
+# ---- pm9500-76-mach64 -------------------------------------------------------
+# The 9500 "requires a display card in a PCI slot" — it has no built-in video
+# — so this row stages one and asserts the whole chain end to end: the card
+# enumerates, Open Firmware assigns it, the ndrv in its own expansion ROM
+# drives it, and System 7.6 reaches the Finder on it.  Its CRTC supplies the
+# display descriptor, its RGB514 the palette, and its draw engine paints the
+# desktop.  It needs a longer budget than the Control machines.
+#
+# The golden was captured once and inspected by hand (TESTING.md: goldens are
+# reviewed, never REGEN'd to green).  What that inspection established,
+# recorded here so nobody has to derive it again:
+#
+# The desktop dither is structurally IDENTICAL to the pm8500 row's — same
+# checkerboard, same phase, same pixel positions — but the two goldens do not
+# share a single desktop pixel VALUE: this row renders the pair as
+# (135,135,135) / (193,193,193), the 8500 renders it as (96,96,96) /
+# (160,160,160).  That is expected, and it is worth knowing why before anyone
+# "fixes" it:
+#
+#   * The pixel INDICES are $81 and $F8.  In Apple's standard 8-bit CLUT those
+#     are the neutral cube entry (102,102,102) and the fourth gray ramp entry
+#     (170,170,170) — so both machines are drawing the same two logical
+#     colours, and the difference is entirely in the CLUT.
+#   * A Mac video driver writes its CLUT through a gamma table, and the ndrv
+#     in this card's own expansion ROM carries a different one from
+#     Control's.  135/193 is 102/170 under roughly a 1.4 gamma.
+#   * The RGB514 is an 8-bit DAC and this model keeps all eight bits verbatim
+#     (mach64_refresh_clut is a straight byte copy).  The 8500's numbers are
+#     its linear values with the low nibble dropped — 102 -> 96, 170 -> 160 —
+#     so the Control path is the lossy one, not this.
+#
+# In other words the two rows disagreeing about desktop grey is a fact about
+# two different DACs and two different gamma tables, not a defect in either.
+def row_pm9500_76_mach64() {
+    tnt_hd_boot("pm9500", "mach64_gx", 4000000000)
+
+    # The Control/Chaos entry is a BUILTIN_FALLBACK: with a display card in a
+    # socket it stands down, and the machine is the single-display machine
+    # the hardware is.
+    assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "no onboard video when a display card is seated"
+
+    # The screen is the CARD's, derived from the CRTC registers the card's
+    # own driver programmed — not a machine framebuffer.
+    assert machine.screen.width == 640 "640 pixels across"
+    assert machine.screen.height == 480 "480 lines"
+    assert machine.screen.depth == 8 "8 bpp"
+    assert machine.pci.slot[1].card.framebuffer.depth == 8 "machine.screen.source resolves to the card's framebuffer"
+
+    # Menu bar, "Macintosh HD", Trash, the control strip and the Energy Saver
+    # first-boot dialog — every pixel of it drawn through the Mach64's draw
+    # engine.
+    check_ex("goldens/pm9500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "mach64_gx", "hd-boot mesh chime pci-display")
+    report_perf("suite-tnt/pm9500-76-mach64", scheduler.instr_count)
+}
+
+# ---- tnt-voodoo2-display ----------------------------------------------------
+# The Voodoo2 pass-through switch against a live System 7.6 desktop
+# (docs/core/peripherals/pci/cards/voodoo2.md).  A pm8500 boots to the Finder
+# on its soldered Control video with a Voodoo2 seated in socket A1 — the
+# machine a real owner had.  The card then takes the monitor (fbiInit0[0],
+# video timing programmed, unblanked, outputs driven), shows its own
+# rendering, and releases it — and the desktop must come back BYTE-IDENTICAL,
+# the strongest available statement that the takeover was non-destructive.
+#
+# The mechanism under test is deliberately NOT new code: tnt_display()
+# resolves the screen through pci_primary_display_card(), which calls every
+# card's ops->display() fresh each frame.  The Voodoo2 answers NULL while
+# passing through and its descriptor while driving, so the monitor follows
+# fbiInit0[0] at frame granularity with no change to the generic layer.
+#
+# The desktop is the pm8500 row's golden, deliberately: a ROM-less card in a
+# socket changes nothing on Control's screen, so the identity is itself an
+# assertion.  A checkpoint taken while the card is driving must restore to
+# the identical framebuffer checksum.
+
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+def cfg_wr(reg, val) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    machine.memory.poke.l(0xF2C00000, swap32($val))
+    machine.memory.poke.l(0xF2800000, 0)
+}
+def cfg_rd(reg) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    let v = swap32(machine.memory.peek.l(0xF2C00000))
+    machine.memory.poke.l(0xF2800000, 0)
+    return $v
+}
+# The card's register BAR, set by the row once the card is enumerated.
+let V2_BAR = 0
+def vreg_wr(off, val) {
+    machine.memory.poke.l($V2_BAR + $off, swap32($val))
+}
+def vreg_rd(off) {
+    return swap32(machine.memory.peek.l($V2_BAR + $off))
+}
+
+def row_tnt_voodoo2_display() {
+    # System 7.6 to the Finder — with the ROM-less card seated the whole
+    # way.  Mac OS finds no driver for pci121a,2 and must not care (a
+    # missing/ignored Voodoo2 causes no boot problem).
+    tnt_hd_boot("pm8500", "voodoo2", 2500000000)
+
+    # --- The idle card yields: Control draws the desktop. -----------------
+    assert !machine.pci.slot[1].card.video.drives_monitor "the card powers up passing through"
+    assert machine.screen.depth == 32 "the desktop is Control's millions-of-colours mode"
+    assert machine.screen.width == 640 "Control's 640x480"
+    check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "control+voodoo2", "hd-boot pci-passthrough take-release checkpoint")
+
+    # --- The card takes the monitor. --------------------------------------
+    # Exactly what the Glide library does: enable Memory Space itself, open
+    # the init gate, program the video, unblank, drive the outputs, and set
+    # the pass-through bit.  (The guest keeps running underneath — the
+    # takeover is asynchronous to it, like the real cable switch.)
+    cfg_wr(0x04, cfg_rd(0x04) | 0x0002)
+    cfg_wr(0x40, 0x00000003)
+    $V2_BAR = machine.pci.slot[1].card.config.bar[0].base
+    # 640x480 timing, front-buffer layout, LFB reads on.
+    vreg_wr(0x220, (704 << 16) | 96)
+    vreg_wr(0x224, (523 << 16) | 2)
+    vreg_wr(0x208, (25 << 16) | 38)
+    vreg_wr(0x20C, (480 << 16) | 639)
+    vreg_wr(0x218, (vreg_rd(0x218) & 0xFFF007FF) | (150 << 11) | 0x400000)
+    vreg_wr(0x214, (vreg_rd(0x214) & 0xFEFFFF0F) | 0xA0)
+    vreg_wr(0x214, vreg_rd(0x214) | 0x8)
+    # The card renders before it takes the screen: clear to a deep blue and
+    # draw one gouraud triangle — unmistakably not a Macintosh desktop.
+    vreg_wr(0x118, (0 << 16) | 640)
+    vreg_wr(0x11C, (0 << 16) | 480)
+    vreg_wr(0x148, 0x00000060)
+    vreg_wr(0x130, 0x00000000)
+    vreg_wr(0x110, 0x00000601)
+    vreg_wr(0x124, 0x00000000)
+    vreg_wr(0x110, 0x00000600)
+    vreg_wr(0x104, 0x00000000)
+    vreg_wr(0x008, 0x00000C80)
+    vreg_wr(0x00C, 0x00000640)
+    vreg_wr(0x010, 0x00000C80)
+    vreg_wr(0x014, 0x00001400)
+    vreg_wr(0x018, 0x00001E00)
+    vreg_wr(0x01C, 0x00001400)
+    vreg_wr(0x020, 0x000FF000)
+    vreg_wr(0x024, 0x00000000)
+    vreg_wr(0x028, 0x00000000)
+    vreg_wr(0x040, 0x00000000)
+    vreg_wr(0x044, 0x00000600)
+    vreg_wr(0x048, 0x00000000)
+    vreg_wr(0x060, 0x00000000)
+    vreg_wr(0x064, 0x00000000)
+    vreg_wr(0x068, 0x00000C00)
+    vreg_wr(0x080, 0x80000000)
+    # NOW the switch: video out of reset, unblanked, outputs driven,
+    # pass-through taken — the pass-through predicate turns true in one place.
+    vreg_wr(0x214, (vreg_rd(0x214) & 0xFFFFEEFF) | 0x1E000)
+    vreg_wr(0x210, vreg_rd(0x210) | 0x1)
+    assert machine.pci.slot[1].card.video.drives_monitor "the predicate reads true once everything is driven"
+    # Let a frame pass so every consumer re-resolves the display chain.
+    scheduler.run 20000000
+    assert machine.screen.depth == 32 "the screen is the Voodoo2's DAC output: 5-6-5 expanded to 8-8-8 through the gamma CLUT"
+    assert machine.screen.width == 640 "..at the card's programmed videoDimensions"
+    assert machine.screen.height == 480 "..both axes"
+    assert machine.screen.source.displayed_buffer == 0 "screen.source resolves to the CARD's framebuffer node"
+    # The card's own rendering.
+    check("goldens/pm8500-voodoo2-640x480x32-frame.png")
+
+    # --- A checkpoint taken while the card is driving restores exactly. ---
+    let csum = machine.screen.checksum(0, 0, 480, 640)
+    assert checkpoint.save("${$WORK_DIR}/voodoo2-mid-frame.checkpoint") "checkpoint save"
+    assert checkpoint.load("${$WORK_DIR}/voodoo2-mid-frame.checkpoint") "checkpoint load"
+    assert machine.screen.depth == 32 "restored with the card still driving"
+    assert machine.screen.checksum(0, 0, 480, 640) == $csum "the framebuffer checksum survives the round trip"
+
+    # --- Release: the desktop comes back byte-identically. ----------------
+    # The shell's peek/poke bindings survive the restore; the card hands the
+    # monitor back by clearing the one bit.
+    machine.memory.poke.l(0xF2800000, swap32(0x00002004))
+    machine.memory.poke.l(0xF2C00000, swap32(0x00000002))
+    machine.memory.poke.l(0xF2800000, 0)
+    vreg_wr(0x210, vreg_rd(0x210) & 0xFFFFFFFE)
+    assert !machine.pci.slot[1].card.video.drives_monitor "released"
+    scheduler.run 20000000
+    assert machine.screen.depth == 32 "Control is the screen again"
+    # THE strongest statement in the row: the same golden as before the
+    # takeover, byte for byte — the takeover was non-destructive.
+    check_ex("goldens/pm8500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    report_perf("suite-tnt/tnt-voodoo2-display", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("pm7500-76-hd") {
+    if have_media($hd_76) {
+        row_end("pm7500-76-hd", try(row_pm7500_76_hd(), "FAILED"))
+    } else {
+        echo "skip: pm7500-76-hd (7.6 image not fetched)"
+    }
+}
+if row_on("pm8500-76-hd") {
+    if have_media($hd_76) {
+        row_end("pm8500-76-hd", try(row_pm8500_76_hd(), "FAILED"))
+    } else {
+        echo "skip: pm8500-76-hd (7.6 image not fetched)"
+    }
+}
+if row_on("pm9500-76-mach64") {
+    if have_media($hd_76) {
+        row_end("pm9500-76-mach64", try(row_pm9500_76_mach64(), "FAILED"))
+    } else {
+        echo "skip: pm9500-76-mach64 (7.6 image not fetched)"
+    }
+}
+if row_on("tnt-voodoo2-display") {
+    if have_media($hd_76) {
+        row_end("tnt-voodoo2-display", try(row_tnt_voodoo2_display(), "FAILED"))
+    } else {
+        echo "skip: tnt-voodoo2-display (7.6 image not fetched)"
+    }
+}
+
+suite_done()
+quit

@@ -1,7 +1,8 @@
 # Integration test: machine.profile() capability probe
 # Verifies the derived `capabilities` block (cpu/mmu/fpu/nubus) and the
 # per-card `video_slots` block that the frontend now probes instead of
-# guessing from the model's display name (proposal §4.4 / §6.1).
+# guessing from the model's display name (docs/guide/ARCHITECTURE.md,
+# "Capability probe").
 
 TEST_NAME := Machine Capability Probe
 TEST_DESC := machine.profile().capabilities mmu.kind per model + VROM-by-card
@@ -11,5 +12,5 @@ TEST_DESC := machine.profile().capabilities mmu.kind per model + VROM-by-card
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

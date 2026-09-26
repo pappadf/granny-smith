@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for the VFS layer and APM parser.
 // The APM tests drive image_apm_parse_buffer with synthetic bytes to avoid
 // pulling in the full image/storage stack.  The VFS tests exercise the
@@ -243,7 +245,7 @@ TEST(vfs_readdir_lists_entries) {
     write_file(a, "hello", 5);
     write_file(b, "world", 5);
 
-    char dir_path[PATH_MAX];
+    char dir_path[PATH_MAX + 64];
     snprintf(dir_path, sizeof(dir_path), "%s/%s", cwd, SANDBOX_DIR);
     vfs_dir_t *dir = NULL;
     const vfs_backend_t *be = NULL;
@@ -332,7 +334,7 @@ TEST(vfs_resolve_descent_not_image) {
 
 TEST(vfs_resolve_bare_file_strict) {
     // Strict resolve on a bare file path stays on the host backend — no
-    // descent, no ENOTDIR.  This is the /cat foo.img/ rule from §2.9.
+    // descent, no ENOTDIR.  This is the /cat foo.img/ rule.
     setup_sandbox();
     vfs_set_cwd("/");
     char cwd[PATH_MAX];

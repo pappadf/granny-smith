@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Unit tests for em_mic_ring.c: the microphone ring's consumer arithmetic
-// (T2), at the uint32 wrap of the free-running indices.  The producer half
-// (app/web2 micRing.ts) is tested at the same wrap by vitest.
+// Unit tests for em_mic_ring.c: the microphone ring's consumer arithmetic at
+// the uint32 wrap of the free-running indices.  The producer half (app/web2
+// micRing.ts) is tested at the same wrap by vitest.
 
 #include "em_mic_ring.h"
 #include "test_assert.h"

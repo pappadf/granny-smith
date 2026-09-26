@@ -1,5 +1,4 @@
-# Integration test: the daemon runs each statement as soon as it is complete
-# (S6, F-33, N-41..N-43).
+# Integration test: the daemon runs each statement as soon as it is complete.
 #
 # The daemon used to guess where a request ended before running anything --
 # read until a newline plus 1 ms of silence, run the lot, close -- and every
@@ -15,5 +14,5 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

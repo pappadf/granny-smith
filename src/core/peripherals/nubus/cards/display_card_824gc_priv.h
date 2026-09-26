@@ -61,7 +61,7 @@ struct display_card_824gc_priv {
     rgba8_t clut[256];
     // The JMFB chip's registers.  This card IS an 8*24 with an accelerator
     // bolted on, so it carries the same chip, and the model is shared with
-    // jmfb.c rather than ported into it (jmfb_family.h, 04-video F-07).
+    // jmfb.c rather than ported into it (jmfb_family.h).
     // Plain data, so it rides the checkpointed range exactly as the loose
     // fields it replaced did.  Named `jmfb`, not `regs`: `regs` below is the
     // ACCELERATOR's register window, a different thing entirely.
@@ -106,8 +106,8 @@ struct display_card_824gc_priv {
     int risc_cmd_bits;
     bool vbl_enabled; // slot VBL armed by RISC command 1
 
-    // --- Stage 2: DrawMultiObject interpreter state (proposal §3.7) ---
-    // The GCQD marshaller stages drawing as a queue of opcode records (§10.1);
+    // --- DrawMultiObject interpreter state ---
+    // The GCQD marshaller stages drawing as a queue of opcode records;
     // when func $2D (SetPort) is accepted the card interprets them.  State
     // opcodes set these fields; the next primitive resolves them.
     uint8_t gc_pat[4][8]; // pattern slots 1=pnPat 2=bkPat 3=fillPat (opPattern $71)
@@ -147,7 +147,7 @@ struct display_card_824gc_priv {
     uint32_t gc_cliprgn_len, gc_visrgn_len;
     int16_t gc_rgn_ox, gc_rgn_oy; // port origin the stored regions carry
     uint64_t draw_count; // primitives rasterized (introspection)
-    bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2)
+    bool gc_accel; // func $2D accepted the port → interpret its queue
 
     // ==================================================================
     // NOT in the checkpoint range above.  Handled explicitly, or not at all:
@@ -197,7 +197,7 @@ struct display_card_824gc_priv {
         uint32_t *pix; // w*h device pixels, row-major
     } gc_pixpats[4];
 
-    // --- Text (func $30 FontDownload + ops $67/$06; proposal §3.10) ---
+    // --- Text (func $30 FontDownload + ops $67/$06) ---
     // The host downloads font data into card caches: type 8 = strikes (raw
     // FontRec/NFNT bytes, keyed by the host handle), type 10 = Font-Manager
     // width tables (0x434 bytes: 256 Fixed advances + a trailer holding the
@@ -218,7 +218,7 @@ struct display_card_824gc_priv {
     uint8_t *gc_blitmask; // 1 bit/pixel per-blit mask (func $15 rgnA∩rgnB∩rgnC)
     bool force_decline; // harness switch (gc.force_decline): decline the drawing
                         // funcs ($2D/$15/$30) so the ROM path renders everything —
-                        // the differential test oracle (proposal §4.1).  Not guest
+                        // the differential test oracle.  Not guest
                         // state: survives /RESET, cleared only at card_init.
 
     // Region contexts.
@@ -258,7 +258,7 @@ static inline void dram_set_be32(display_card_824gc_priv_t *p, uint32_t off, uin
 // everything else in the engine is file-local.
 
 // Drain entry: interpret `count` bytes of DrawMultiObject opcode records
-// starting at DRAM offset `base` (proposal §3.7 / protocol §10.1).
+// starting at DRAM offset `base`.
 void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count);
 // func $15 StretchBits/CopyBits: rasterize the request block at CB+$58 if it
 // is inside the accept envelope.  Returns 1 if drawn, 0 to decline (ROM path).

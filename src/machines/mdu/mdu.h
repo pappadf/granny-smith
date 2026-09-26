@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // mdu.h
-// The one MDU+RBV-family substrate (proposal §4.2.2 / per-family adjustment):
+// The one MDU+RBV-family substrate:
 // the IIci and IIsi both bind `mdu_substrate`.  Their per-machine deltas live
 // in a mac030_mdu_board_t (named via hw_profile_t.board) — the board's data
 // descriptor, its VIA1 callbacks, and one build_devices hook that does the

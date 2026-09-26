@@ -11,8 +11,8 @@ def row_gsvrom_sweep() {
     # Integration test: IIcx Video Modes — GS generic vROM ("8_24" kind)
     #
     # Clone of ../iicx-video-modes running on the generic JMFB sibling with
-    # the built-in GS declaration ROM (proposal-generic-nubus-vrom.md,
-    # stage 1).  Differences from the real-vROM suite:
+    # the built-in GS declaration ROM (docs/core/peripherals/
+    # nubus_generic_vrom.md).  Differences from the real-vROM suite:
     #
     #   * `video_card="8_24"` — the generic kind; no vROM file is consulted
     #     (the offer registry is bypassed by construction).

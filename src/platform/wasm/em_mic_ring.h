@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // em_mic_ring.h
-// The microphone ring's consumer arithmetic (T2), pure so it is unit-tested
+// The microphone ring's consumer arithmetic, pure so it is unit-tested
 // natively (tests/unit/suites/mic_ring) at the index wrap.  em_audio_in.c
 // does the atomics and the copy around it; app/web2's micRing.ts is the
 // producer half.

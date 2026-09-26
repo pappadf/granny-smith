@@ -17,7 +17,7 @@ Catalogued in [`video.md`](../../video.md) §2.3; vROM byte-layout reference in
 
 ## 1. What is modelled
 
-Two halves (proposal `proposal-nubus-card-display-card-24ac.md` §0):
+Two halves:
 
 - **Display** — loads the genuine vROM and presents a linear framebuffer + CLUT
   + VBL slot IRQ. The card's own vROM video driver programs the standard video

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Stub implementations for image_vfs_* symbols so the VFS unit test binary
 // can link without pulling in the full image/storage stack.  These stubs
 // short-circuit descent: acquire_mount always reports "not an image" so

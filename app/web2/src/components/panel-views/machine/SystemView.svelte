@@ -16,7 +16,7 @@
   let rootNodes = $state<SystemTreeNode[]>([]);
   let expanded = $state<Record<string, boolean>>({});
   let loading = $state(true);
-  // §7.2: advanced members are hidden until the user opts in.
+  // Advanced members are hidden until the user opts in.
   let showAdvanced = $state(false);
 
   async function refresh() {
@@ -46,9 +46,10 @@
     expanded = {};
   }
 
-  // The three §5.1 kinds, drawn under non-interactive dividers (§8.2). The
-  // machine subtree leads with no heading; the meta objects sit under an
-  // "Emulator" divider and the simulated network under "Network".
+  // The three top-level kinds (machine, emulator, network), drawn under
+  // non-interactive dividers. The machine subtree leads with no heading; the
+  // meta objects sit under an "Emulator" divider and the simulated network
+  // under "Network".
   const machineNodes = $derived(rootNodes.filter((n) => n.group === 'machine') as TreeNode[]);
   const emulatorNodes = $derived(rootNodes.filter((n) => n.group === 'emulator') as TreeNode[]);
   const networkNodes = $derived(rootNodes.filter((n) => n.group === 'network') as TreeNode[]);
@@ -65,7 +66,7 @@
     if (mutate) void refresh();
   }
 
-  // Save-image flow (§8.4): export writes a NEW file, then we hand it to the
+  // Save-image flow: export writes a NEW file, then we hand it to the
   // browser via the WASM-only root.download. "Save image…" is a Save As.
   async function saveImage(target: string) {
     const suggested = (await gsEval(`${target}.filename`)) as string;
@@ -88,7 +89,7 @@
     showNotification(`Exported ${name}`, 'info');
   }
 
-  // Build the right-click menu for a node from its methods (§8.3): one item
+  // Build the right-click menu for a node from its methods: one item
   // per UI-surfaced method, destructive ones flagged, args prompted.
   async function onContextMenu(path: string[], ev: MouseEvent) {
     ev.preventDefault();

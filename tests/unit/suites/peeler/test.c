@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// The peeler archive library, tested as an untrusted parser
-// (09-WORK-ORDER.md Track A).
+// The peeler archive library, tested as an untrusted parser.
 //
 // Every input here is built by the test rather than committed as a blob, so
 // each fixture reads as the defect it provokes.  The rule for a memory-safety
@@ -219,10 +218,10 @@ TEST(test_sit15_encoder_round_trip) {
     free(in);
 }
 
-// F-01: consume_zero_run accumulated (tok + 1) << bit_pos into a plain int with
-// no bound on bit_pos.  Thirty-two zero-run tokens of value 0 sum to
-// 2^0 + ... + 2^30 = 2^31 - 1, and the 32nd adds 1 << 31 -- signed overflow,
-// in practice INT_MIN -- leaving the total at exactly -1.  The caller's
+// consume_zero_run accumulated (tok + 1) << bit_pos into a plain int with no
+// bound on bit_pos.  Thirty-two zero-run tokens of value 0 sum to 2^0 + ... +
+// 2^30 = 2^31 - 1, and the 32nd adds 1 << 31 -- signed overflow, in practice
+// INT_MIN -- leaving the total at exactly -1.  The caller's
 // `blk_len + run_len > blk_cap` check is false for a negative length, and
 // memset(buf, fill, (size_t)-1) follows.  The input must now be rejected.
 TEST(test_sit15_zero_run_cannot_overflow) {
@@ -246,11 +245,11 @@ TEST(test_sit15_zero_run_cannot_overflow) {
     free(in);
 }
 
-// The F-01 bound is exact: a legitimate run may fill the block (512 bytes at
-// block exponent 0) and must decode; one byte more must not.  Only 4 output
+// The zero-run bound is exact: a legitimate run may fill the block (512 bytes
+// at block exponent 0) and must decode; one byte more must not.  Only 4 output
 // bytes are requested: the whole block is decoded before the first byte is
-// emitted, so that is enough to exercise the bound, and the final RLE stage
-// (4 identical bytes then a count) means 512 upstream zeros do not yield 512
+// emitted, so that is enough to exercise the bound, and the final RLE stage (4
+// identical bytes then a count) means 512 upstream zeros do not yield 512
 // output bytes anyway.  Guards an off-by-one in the bound itself -- `>=`
 // instead of `>` fails the first half.
 TEST(test_sit15_zero_run_bound_is_exact) {
@@ -309,9 +308,10 @@ static void m13w_dynamic_header(m13_writer *w) {
 
 // A length of -1 is legal: a decrement from the reset value 0 gives it, and
 // m13_build_canonical counts it as absent, like 0.  Real DropStuff 6 streams
-// open their distance-tree list with exactly that -- the fix for F-05 first
-// refused it, and the real corpus caught it.  Here the distance list is a
-// decrement then nine repeats of -1, and the stream must still decode.
+// open their distance-tree list with exactly that -- the fix for the -2 case
+// (below) first refused it, and the real corpus caught it.  Here the distance
+// list is a decrement then nine repeats of -1, and the stream must still
+// decode.
 TEST(test_sit13_minus_one_is_an_absent_symbol) {
     m13_writer w = {0};
     m13w_dynamic_header(&w);
@@ -343,11 +343,11 @@ TEST(test_sit13_minus_one_is_an_absent_symbol) {
     peel_free(&out);
 }
 
-// F-05: a length list that decrements to -2.  m13_build_canonical assigns
-// codes by walking lengths upward from -1; it never meets a -2, so it never
-// finishes (natively the shift in its loop is UB long before that).  Two
-// decrements emit -1 then -2; four long repeats and one of 23 fill the
-// remaining 319 entries exactly, so the list itself is well-formed in size.
+// A length list that decrements to -2.  m13_build_canonical assigns codes by
+// walking lengths upward from -1; it never meets a -2, so it never finishes
+// (natively the shift in its loop is UB long before that).  Two decrements emit
+// -1 then -2; four long repeats and one of 23 fill the remaining 319 entries
+// exactly, so the list itself is well-formed in size.
 TEST(test_sit13_negative_length_is_rejected) {
     m13_writer w = {0};
     m13w_dynamic_header(&w);
@@ -512,7 +512,7 @@ TEST(test_cpt_lzh_round_trip) {
     free(a);
 }
 
-// Offset 0 reaches a full window back (8192 bytes).  09-storage F-16 called it
+// Offset 0 reaches a full window back (8192 bytes).  It was once taken to be
 // invalid, on the strength of cpt.md's "offsets are 1-based", and this suite
 // once asserted that it was refused -- until the real corpus
 // (src/peeler/test/testfiles) showed both Compact Pro archives use it.  The
@@ -556,11 +556,11 @@ TEST(test_cpt_short_fork_is_rejected) {
     free(a);
 }
 
-// F-15, Compact Pro half: the fork extents were `file_offset + rsrc_comp > len`
-// in size_t -- a sum that wraps on wasm32.  Observed unfixed: native refuses
-// the archive; wasm32 ACCEPTS it (no error, one file) with a resource fork
-// decoded from an empty source, because cp_memsrc_init's own wrap-safe check
-// failed and its result was ignored.  Must be refused on every target.
+// Compact Pro: the fork extents were `file_offset + rsrc_comp > len` in size_t
+// -- a sum that wraps on wasm32.  Observed unfixed: native refuses the archive;
+// wasm32 ACCEPTS it (no error, one file) with a resource fork decoded from an
+// empty source, because cp_memsrc_init's own wrap-safe check failed and its
+// result was ignored.  Must be refused on every target.
 TEST(test_cpt_fork_extent_is_checked) {
     size_t len;
     uint8_t *a = make_cpt_file(0x40, 0xFFFFFFF0u, 0, &len);
@@ -573,10 +573,10 @@ TEST(test_cpt_fork_extent_is_checked) {
     free(a);
 }
 
-// F-07: cp_walk_entries recursed once per nested folder with no depth limit,
-// and each frame carries two 256-byte path buffers -- so a few bytes of
-// archive per level buy half a kilobyte of stack.  60 000 levels is 180 KB of
-// input; it must be refused, not followed down.
+// cp_walk_entries recursed once per nested folder with no depth limit, and each
+// frame carries two 256-byte path buffers -- so a few bytes of archive per
+// level buy half a kilobyte of stack.  60 000 levels is 180 KB of input; it
+// must be refused, not followed down.
 TEST(test_cpt_folder_nesting_is_bounded) {
     size_t len;
     uint8_t *a = make_cpt_nested(60000, &len);
@@ -756,11 +756,11 @@ TEST(test_sit5_round_trip_with_resource_fork) {
     free(a);
 }
 
-// LZW (method 2): a stream of 9-bit literal codes, packed least significant
-// bit first, decodes to exactly those bytes -- each code after the first adds
-// a dictionary entry, but under 255 codes the width stays 9.  Covers the
-// LZW bit reader, which F-17 changed from a memcpy into a host-order word
-// to explicit little-endian composition.
+// LZW (method 2): a stream of 9-bit literal codes, packed least significant bit
+// first, decodes to exactly those bytes -- each code after the first adds a
+// dictionary entry, but under 255 codes the width stays 9.  Covers the LZW bit
+// reader, which was changed from a memcpy into a host-order word to explicit
+// little-endian composition.
 TEST(test_sit5_lzw_literals_round_trip) {
     static const char text[] = "Hello, LZW!";
     size_t n = sizeof(text) - 1;
@@ -791,11 +791,11 @@ TEST(test_sit5_lzw_literals_round_trip) {
     free(a);
 }
 
-// F-15: a resource fork claiming 0xFFFFFFC0 packed bytes, in an archive of a
-// few hundred.  The data fork's start was computed as a pointer, resource
-// start + that length, and only the data fork was bounds-checked.  Natively
-// the pointer lands far past the end and the check rejects it, by accident.
-// On wasm32 it wraps back inside the buffer and the check passes: the unfixed
+// StuffIt 5: a resource fork claiming 0xFFFFFFC0 packed bytes, in an archive of
+// a few hundred.  The data fork's start was computed as a pointer, resource
+// start + that length, and only the data fork was bounds-checked.  Natively the
+// pointer lands far past the end and the check rejects it, by accident.  On
+// wasm32 it wraps back inside the buffer and the check passes: the unfixed
 // build decodes the resource fork straight off the end of the archive into
 // adjacent heap until it has its 4096 bytes, and only the fork CRC rejects it
 // ("fork CRC mismatch", observed under run-wasm32).  The assertion is on the
@@ -821,10 +821,10 @@ TEST(test_sit5_resource_fork_extent_is_checked) {
     free(a);
 }
 
-// F-02: header 1's length was never checked against its own fixed fields.
-// The CRC step mallocs h1_len bytes and then zeroes bytes 32 and 33 of the
-// copy -- two bytes past the end for any h1_len below 34.  Silent natively
-// (the write lands in allocator padding); ASan reports it.  Must be rejected.
+// Header 1's length was never checked against its own fixed fields.  The CRC
+// step mallocs h1_len bytes and then zeroes bytes 32 and 33 of the copy -- two
+// bytes past the end for any h1_len below 34.  Silent natively (the write lands
+// in allocator padding); ASan reports it.  Must be rejected.
 TEST(test_sit5_short_header_is_rejected) {
     static const uint8_t data[] = "x";
     size_t len;
@@ -841,11 +841,11 @@ TEST(test_sit5_short_header_is_rejected) {
     free(a);
 }
 
-// F-06: a skip-marker entry (raw length 0xFFFFFFFF) moves the cursor on by
-// h1_len and does not count down the entries remaining -- so h1_len == 0 left
-// the cursor where it was, forever.  The F-02 bound (h1_len >= 48 + name)
-// rules it out; this pins that down in case the bound is ever loosened to
-// "just enough for the CRC".
+// A skip-marker entry (raw length 0xFFFFFFFF) moves the cursor on by h1_len and
+// does not count down the entries remaining -- so h1_len == 0 left the cursor
+// where it was, forever.  The header-length bound (h1_len >= 48 + name) rules
+// it out; this pins that down in case the bound is ever loosened to "just
+// enough for the CRC".
 TEST(test_sit5_zero_length_skip_marker_cannot_loop) {
     static const uint8_t data[] = "x";
     size_t len;
@@ -903,11 +903,11 @@ TEST(test_sit13_dynamic_round_trip) {
     peel_free(&out);
 }
 
-// F-03: m13_decode_lengths bounded its loop by nsym but not the repeat
-// commands inside it.  Command 36 emits r + 10 entries plus one more, r a
-// 6-bit field -- up to 74 -- so from index 320 of the 321-entry lengths array
-// it writes 73 bytes past the end of a stack array.  Four full repeats and
-// one of 24 reach index 320 exactly; a fifth full one overruns.
+// m13_decode_lengths bounded its loop by nsym but not the repeat commands
+// inside it.  Command 36 emits r + 10 entries plus one more, r a 6-bit field --
+// up to 74 -- so from index 320 of the 321-entry lengths array it writes 73
+// bytes past the end of a stack array.  Four full repeats and one of 24 reach
+// index 320 exactly; a fifth full one overruns.
 TEST(test_sit13_length_repeat_cannot_overrun) {
     m13_writer w = {0};
     m13w_dynamic_header(&w);
@@ -1008,9 +1008,9 @@ TEST(test_hqx_round_trip) {
     free(txt);
 }
 
-// F-12: the data fork decodes and is complete, then the resource fork's CRC
-// is wrong.  The abort used to leak the finished data fork; under
-// LeakSanitizer that fails the suite.
+// The data fork decodes and is complete, then the resource fork's CRC is wrong.
+// The abort used to leak the finished data fork; under LeakSanitizer that fails
+// the suite.
 TEST(test_hqx_resource_fork_failure_frees_the_data_fork) {
     char *txt = make_hqx("Hi", "data!", "RSRC", true);
     peel_err_t *err = NULL;
@@ -1025,8 +1025,8 @@ TEST(test_hqx_resource_fork_failure_frees_the_data_fork) {
 // sit3.c's entry point, declared (not in a header) where sit.c declares it.
 peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
 
-// F-11: sit3 allocated its output, then aborted on a truncated tree -- one
-// set bit starts a leaf, whose 8-bit symbol is not there -- and leaked it.
+// sit3 allocated its output, then aborted on a truncated tree -- one set bit
+// starts a leaf, whose 8-bit symbol is not there -- and leaked it.
 TEST(test_sit3_abort_frees_its_output) {
     static const uint8_t one_byte[] = {0xFF};
     peel_err_t *err = NULL;
@@ -1180,14 +1180,14 @@ TEST(test_sit5_lzw_widening_and_clear) {
 }
 
 // ============================================================================
-// A3: one cap on what an archive may declare (PEEL_MAX_FORK, internal.h)
+// One cap on what an archive may declare (PEEL_MAX_FORK, internal.h)
 // ============================================================================
 //
-// F-08: each format allocated whatever size its header declared -- a few
-// hundred bytes of archive could ask for gigabytes.  Every format must now
-// refuse a declared fork over the cap before allocating, and say so; each
-// test asserts the cap's own message, because the unfixed code also failed
-// these inputs eventually -- after attempting the allocation.
+// Each format allocated whatever size its header declared -- a few hundred
+// bytes of archive could ask for gigabytes.  Every format must now refuse a
+// declared fork over the cap before allocating, and say so; each test asserts
+// the cap's own message, because the unfixed code also failed these inputs
+// eventually -- after attempting the allocation.
 
 #define OVER_CAP 0x50000000u // 1.25 GiB, over PEEL_MAX_FORK's 1 GiB
 
@@ -1232,9 +1232,9 @@ TEST(test_hqx_fork_over_the_cap_is_refused) {
     free(txt);
 }
 
-// F-09: peel_read_file loads a whole file, with no bound.  A sparse file one
-// byte over PEEL_MAX_INPUT must be refused before anything is allocated.
-// Native only: under node, MEMFS would allocate the gigabyte for real.
+// peel_read_file loads a whole file, with no bound.  A sparse file one byte
+// over PEEL_MAX_INPUT must be refused before anything is allocated.  Native
+// only: under node, MEMFS would allocate the gigabyte for real.
 TEST(test_read_file_over_the_cap_is_refused) {
 #ifndef __EMSCRIPTEN__
     char path[] = "/tmp/peeler-cap-XXXXXX";
@@ -1253,7 +1253,7 @@ TEST(test_read_file_over_the_cap_is_refused) {
 }
 
 // ============================================================================
-// Track B: entry names cannot leave the output directory (F-13)
+// Entry names cannot leave the output directory
 // ============================================================================
 
 TEST(test_path_is_confined) {
@@ -1398,7 +1398,7 @@ TEST(test_peel_passes_unrecognised_input_through) {
     }
 }
 
-// ---- The shared canonical-Huffman pool (09 A4: F-59, F-04) ------------------
+// ---- The shared canonical-Huffman pool --------------------------------------
 
 // Walk `bits` (MSB first) from `root`: the symbol reached, or -1.
 static int huff_walk(const peel_hpool_t *p, int root, const char *bits) {
@@ -1425,9 +1425,9 @@ TEST(test_huff_canonical_codes) {
     ASSERT_EQ_INT(-1, peel_huff_build(&pool, bad, 2, 1, 15));
 }
 
-// The pool is bounded: trees that do not fit are refused.  sit13 kept its
-// four trees in a 2048-node pool it never bounds-checked (F-04); it now
-// shares this one.  Under ASan an overrun here is a failure.
+// The pool is bounded: trees that do not fit are refused.  sit13 kept its four
+// trees in a 2048-node pool it never bounds-checked; it now shares this one.
+// Under ASan an overrun here is a failure.
 TEST(test_huff_pool_is_bounded) {
     static peel_hpool_t pool;
     peel_hpool_reset(&pool);

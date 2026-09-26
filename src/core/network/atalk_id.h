@@ -11,7 +11,7 @@
 // a duplicate.  Two did not search at all: AFP fork refnums skipped only 0,
 // so after 65,535 opens a new fork could get the refnum a still-open one held
 // and FPRead on the old refnum read the new file; ASP session ids were the low
-// byte of a counter (10-network F-08, F-06).
+// byte of a counter.
 
 #ifndef ATALK_ID_H
 #define ATALK_ID_H

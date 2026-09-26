@@ -139,8 +139,8 @@ TEST(test_reads_a_data_fork_and_a_resource) {
     unmount_volume();
 }
 
-// F-42: an open resource file borrows bytes from the resource-fork cache, and
-// the cache (8 entries) evicted without asking.  Open file 0's resource, touch
+// An open resource file borrows bytes from the resource-fork cache, and the
+// cache (8 entries) evicted without asking.  Open file 0's resource, touch
 // eight other files' forks so the ninth acquire evicts file 0's entry, then
 // read the handle: the unfixed backend reads freed memory (ASan:
 // heap-use-after-free).  A borrowed entry must stay alive while borrowed.
@@ -246,10 +246,10 @@ TEST(test_all_entries_pinned_refuses_a_ninth_fork) {
     unmount_volume();
 }
 
-// F-26: the resource fork's size comes from the catalog and was malloc'd as
-// given.  A catalog claiming 3 GiB (the volume holds a few hundred bytes of
-// fork) must be refused before anything that size is allocated; under this
-// suite's 256 MB ASan ceiling the unfixed backend's malloc aborts the run.
+// The resource fork's size comes from the catalog and was malloc'd as given.  A
+// catalog claiming 3 GiB (the volume holds a few hundred bytes of fork) must be
+// refused before anything that size is allocated; under this suite's 256 MB
+// ASan ceiling the unfixed backend's malloc aborts the run.
 TEST(test_huge_resource_fork_is_refused_before_allocating) {
     static uint8_t rsrc[1024];
     size_t rlen = text_rsrc(rsrc, sizeof(rsrc), "x");
@@ -268,7 +268,7 @@ TEST(test_huge_resource_fork_is_refused_before_allocating) {
     unmount_volume();
 }
 
-// ---- The emulator holding the file writable (F-39, F-40, F-41) -------------
+// ---- The emulator holding the file writable --------------------------------
 
 static const hfsb_file_t one_file[] = {
     {.name = "A", .data = (const uint8_t *)"data", .data_len = 4}
@@ -278,7 +278,7 @@ static const hfsb_file_t one_file[] = {
 // writes land in a delta this mount cannot see -- every call refuses with
 // -EBUSY, a handle opened earlier included.  Once it is no longer open, the
 // same mount serves again.  The flag this replaced was set on attach and
-// never cleared: the detach notification had no caller (F-39).
+// never cleared: the detach notification had no caller.
 TEST(test_busy_exactly_while_open_writable) {
     image_mount_t *m = mount_volume(one_file, 1);
     const vfs_backend_t *be = vfs_image_backend();
@@ -337,7 +337,7 @@ TEST(test_pending_unmount_completes_on_last_close) {
     unmount_volume();
 }
 
-// ---- Path length (F-44) -----------------------------------------------------
+// ---- Path length ------------------------------------------------------------
 
 // An in-image path longer than the resolver's buffer was truncated and
 // resolved anyway.  "/partition1/A", then slashes to past the buffer, then
@@ -357,7 +357,7 @@ TEST(test_overlong_path_is_refused_not_truncated) {
     unmount_volume();
 }
 
-// ---- Geometry (F-49) --------------------------------------------------------
+// ---- Geometry ---------------------------------------------------------------
 
 // An image opened with 532-byte blocks (a Lisa ProFile) has no partition map
 // or HFS volume in 512-byte terms.  It is refused as not an image, without
@@ -373,7 +373,7 @@ TEST(test_non_512_geometry_is_refused_cleanly) {
     unlink(g_host);
 }
 
-// ---- Nested-image scratch copies (F-33, F-64) -------------------------------
+// ---- Nested-image scratch copies --------------------------------------------
 
 static void read_file(const char *path, char *buf, size_t cap) {
     FILE *f = fopen(path, "rb");

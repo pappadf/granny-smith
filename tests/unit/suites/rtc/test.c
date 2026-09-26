@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// RTC / PRAM unit test (code review 2026-09-03, 06-io-controllers unit A1).
+// RTC / PRAM unit test.
 // Links the real rtc.c against recording stubs and pins three things the
 // module had no test for at all.
 //
 // 1. THE WRITE-PROTECT LAW APPLIES TO BOTH ADDRESSING WINDOWS.
 //
 //    The chip has one 256-byte array and one protect latch, reached two ways.
-//    Macintosh Hardware Overview rev.2 (local/gs-docs/library/books/
-//    apple-mac-hardware-overview-rev2-1991/single-file.md:1759):
+//    Apple, Macintosh Hardware Overview, rev. 2 (1991):
 //
 //      "A 256-byte battery-backed-up RAM on the RTC holds system configuration
 //       information and control panel settings.  It is organized as 8 sectors
@@ -246,7 +245,7 @@ static void test_legacy_group_mapping(void) {
     rtc_delete(legacy);
 }
 
-// A fresh chip is waiting for a command byte (unit C1 / N-03).
+// A fresh chip is waiting for a command byte.
 //
 // rtc_init() memset the whole struct, so rx_bits and tx_bits were both zero,
 // and the ONLY path that reloads rx_bits from idle is rtc_input's `disable`

@@ -1,9 +1,9 @@
-# The afp suite again, under AddressSanitizer (10-network unit 0.3).
+# The afp suite again, under AddressSanitizer.
 #
 # The AFP server keeps views into arrays that grow by realloc (the desktop
 # icon store, the CNID catalog).  Whether a stale view reads freed memory
 # that still holds the old bytes depends on the allocator, so a plain run
-# can pass by luck where ASan fails every time (10-network F-03).  Native
+# can pass by luck where ASan fails every time.  Native
 # only: the wasm32 tier runs the plain suite.
 
 TEST_NAME := afp_asan
@@ -22,6 +22,6 @@ EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
               ../../../../src/core/network/afp_meta.c \
               ../../../../src/core/storage/macroman.c \
               ../../../../src/peeler/lib/appledouble.c
-EXTRA_CFLAGS := -fsanitize=address -fno-omit-frame-pointer
+EXTRA_CFLAGS := -fsanitize=address -fno-omit-frame-pointer -DAFP_MAX_ENUM_ENTRIES=1023u
 LDFLAGS := -fsanitize=address
 include ../../common.mk

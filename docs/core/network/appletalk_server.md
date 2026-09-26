@@ -151,8 +151,8 @@ The first byte of the ASP Command payload is the AFP function opcode:
 | 0x3A         | GetComment      |
 | 0xC0         | AddIcon         |
 
-Opcodes `0x26`–`0x2B` are the AFP 2.1 additions (AFP_21_22 single-page.md
-line ~638). They are dispatched only for a session that negotiated
+Opcodes `0x26`–`0x2B` are the AFP 2.1 additions (Apple's AFP 2.1/2.2
+specification). They are dispatched only for a session that negotiated
 `AFPVersion 2.1` at `FPLogin`; a 2.0 session gets `CallNotSupported` so the
 client falls back to its 2.0 paths instead of failing outright.
 
@@ -2510,8 +2510,7 @@ addressed by a 16-bit offset measured from the first parameter byte.
 # 3 Object-model surface
 
 Everything the server holds is reachable — and, where it is state rather than
-an operation, settable — through the object tree
-(proposal-appletalk-afp-object-model.md §2):
+an operation, settable — through the object tree:
 
 ```
 appletalk                        the stack itself

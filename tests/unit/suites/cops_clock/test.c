@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// The Lisa COPS real-time clock (code review 2026-09-03, F-27).
+// The Lisa COPS real-time clock.
 //
 // The Lisa's clock lives in the COPS, and the model answered its read command
 // with five zero bytes.  That is not "unset" — it is impossible.  Day-of-year

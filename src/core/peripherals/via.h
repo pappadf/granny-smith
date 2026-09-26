@@ -110,7 +110,7 @@ void via_cancel_pending_shift(via_t *via);
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *via_get_memory_interface(via_t *via);
 
-// === M7c — object-model accessors ===========================================
+// === Object-model accessors =================================================
 //
 // Read-only views over the VIA register file used by the `via1` /
 // `via2` object classes. Port `which` is 0 (A) or 1 (B); timer

@@ -26,7 +26,7 @@ byte-layout reference in [`nubus_vrom.md`](../../nubus_vrom.md).
 
 ## 1. What is modelled
 
-Minimum-viable (proposal `proposal-machine-iicx-iix.md` §3.2.5): enough to boot
+Minimum-viable: enough to boot
 System 7 to a colour desktop and let the Monitors control panel switch depth.
 
 - The card factory loads `mdc-8-24-revb-d1629664.vrom` and registers VRAM, the
@@ -101,5 +101,5 @@ returns `card_id = "mdc_8_24"` with `compatible = [...]`. See
 
 ## 6. Provenance
 
-Design contract: `proposal-machine-iicx-iix.md` §3.2.5 + `jmfb.h`. Historical
+Design contract: `jmfb.h`. Historical
 survey and the Toby→JMFB→DAFB lineage: [`video.md`](../../video.md) §2.

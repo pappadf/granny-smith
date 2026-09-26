@@ -318,7 +318,7 @@ TEST(ndif_materialize_round_trip) {
 }
 
 // A chunk that does not lie inside the declared image is refused, not
-// written wherever it points (F-23).
+// written wherever it points.
 TEST(ndif_materialize_refuses_a_chunk_outside_the_image) {
     uint8_t fork_data[1024];
     memset(fork_data, 0x22, sizeof(fork_data));

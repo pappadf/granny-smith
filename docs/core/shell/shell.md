@@ -28,12 +28,12 @@ go through `shell.eval(text)`.
 
 | File | Purpose |
 |------|---------|
-| [script.c](../src/core/shell/script.c) | Statement parser + interpreter: blocks, control flow, assignments, command dispatch |
-| [shell.c](../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
-| [shell_var.c](../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
-| [shell_funcs.c](../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
-| [cmd_complete.c](../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
-| [cmd_cp.c](../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `storage.cp` / `storage.import` |
+| [script.c](../../../src/core/shell/script.c) | Statement parser + interpreter: blocks, control flow, assignments, command dispatch |
+| [shell.c](../../../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
+| [shell_var.c](../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
+| [shell_funcs.c](../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
+| [cmd_complete.c](../../../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
+| [cmd_cp.c](../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `storage.cp` / `storage.import` |
 | `src/core/object/expr.c` | Expression grammar and evaluator; string interpolation; `try`/`error`/`range`/`len` |
 
 ## Statements
@@ -234,7 +234,7 @@ layered over the shell store.
 - [object-model.md](object-model.md) — the substrate the shell
   dispatches against, the library conventions (§6), and the reserved
   words.
-- [web.md](web.md) — how the browser frontend reaches the same tree
+- [web.md](../../guide/web.md) — how the browser frontend reaches the same tree
   through the JS / WASM bridge instead of the shell layer.
 - `src/core/object/expr.h` — expression grammar, interpolation, and the
   binding-callback contract.

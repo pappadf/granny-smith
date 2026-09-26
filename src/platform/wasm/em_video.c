@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // em_video.c
-// WebGL2 renderer for the emulator's display.  Step 5 of the IIcx/IIx
-// proposal (§3.3.3): format-aware shader pipeline + variable canvas.
+// WebGL2 renderer for the emulator's display: format-aware shader pipeline
+// + variable canvas.
 // Reads the active `display_t` from system_display() each frame and
 // consumes its dirty flags:
 //
@@ -17,7 +17,7 @@
 //
 // Full pixel paths exist for every pixel_format_t.  2 and 4 bpp were grey
 // stubs until 2026-09-16 — see FS_2BPP for why "no shipping card boots into
-// them" was the wrong test (04-video F-43).
+// them" was the wrong test.
 
 #include "em.h"
 
@@ -33,8 +33,8 @@
 #include "system.h"
 
 // The renderer is part of the display path, so it shares its category:
-// `debug.log("video", N)` turns on the producers AND the consumer
-// (04-video F-14).  These five messages used to be bare printfs, so they
+// `debug.log("video", N)` turns on the producers AND the consumer.
+// These five messages used to be bare printfs, so they
 // could not be levelled, filed or redirected at all.
 LOG_USE_CATEGORY_NAME("video");
 
@@ -42,8 +42,8 @@ LOG_USE_CATEGORY_NAME("video");
 // Internal state
 // ============================================================================
 
-// Maximum supported framebuffer area.  Chosen to fit the largest mode the
-// proposal scopes (1152x870 = 1MP).  We still allocate per-display, but the
+// Maximum supported framebuffer area.  Chosen to fit a 1152x870 (1 MP)
+// mode at 32 bpp.  We still allocate per-display, but the
 // scratch upload buffer is sized once.
 #define MAX_FB_BYTES (1152u * 870u * 4u)
 
@@ -51,12 +51,11 @@ LOG_USE_CATEGORY_NAME("video");
 // refused, not clamped: the clamp bounded the memcpy INTO the scratch but
 // glTexSubImage2D still read stride*height back OUT of it, so a mode past the
 // ceiling (DAFB reaches stride 16380 x 2048, the Mach64 32736) read past the
-// static array either way -- and half a frame is not a useful degradation
-// (04-video F-19).  Past that ceiling it is the producers' job to keep
-// stride*height inside the buffer they point at: most through
-// display_set_scanout (the 8*24 GC's VidComm too, since N-52), the Voodoo2 by
-// clamping its screen to its scanout allocation (N-51).  This is the
-// consumer's own ceiling, not the guarantee that a descriptor is backed.
+// static array either way -- and half a frame is not a useful degradation.
+// Past that ceiling it is the producers' job to keep stride*height inside the
+// buffer they point at: most through display_set_scanout (the 8*24 GC's
+// VidComm too), the Voodoo2 by clamping its screen to its scanout allocation.
+// This is the consumer's own ceiling, not the guarantee that a descriptor is backed.
 static bool fb_fits_scratch(const display_t *d) {
     return (uint64_t)d->stride * d->height <= MAX_FB_BYTES;
 }
@@ -255,8 +254,8 @@ static const char *FS_16BPP_565 =
 // 2 bpp and 4 bpp indexed.  The 8 bpp shader with the byte unpacked into four
 // or two pixels, MSB first -- the Mac convention display.h's decoder follows.
 //
-// These were grey stubs, justified as "no shipping card boots into them"
-// (04-video F-43).  Booting is not the only way in: six producers switch into
+// These were grey stubs, justified as "no shipping card boots into them".
+// Booting is not the only way in: six producers switch into
 // 2 and 4 bpp at runtime from the Monitors control panel, and PNG capture has
 // always decoded them correctly -- so the browser showed a flat grey field for
 // a desktop the goldens rendered properly.  The divergence was in the renderer
@@ -414,7 +413,7 @@ static void allocate_fb_texture(pixel_format_t format, uint32_t stride, uint32_t
         break;
     case PIXEL_16BPP_555:
     case PIXEL_16BPP_565:
-        internal = GL_R8; // step 6 / JMFB driver replaces this with RGB565
+        internal = GL_R8; // raw big-endian bytes; FS_16BPP* decode the pixel
         src_fmt = GL_RED;
         tex_width = stride;
         break;
@@ -590,12 +589,12 @@ static bool refresh_from_display(display_t *d, bool force_full) {
     // slot is 0 (a shader that failed to compile -- a driver quirk or a WebGL2
     // precision difference), but allocate_fb_texture(), the u_stride uniform
     // and upload_fb()'s src_fmt / tex_width all keep using the REAL format.
-    // So the 1 bpp shader sampled an RGBA8 texture with byte-index maths
-    // (04-video F-49).  Agreeing on 1 bpp instead would only make the garbage
-    // self-consistent; refusing says which format is missing, which is the same
-    // call display_set_scanout and the 8*24 GC blitter make -- and it also
-    // covers the case the finding does not, where the 1 bpp program is itself
-    // the one that failed and glUseProgram(0) silently unbinds everything.
+    // So the 1 bpp shader sampled an RGBA8 texture with byte-index maths.
+    // Agreeing on 1 bpp instead would only make the garbage self-consistent;
+    // refusing says which format is missing, which is the same call
+    // display_set_scanout and the 8*24 GC blitter make -- and it also covers
+    // the case where the 1 bpp program is itself the one that failed and
+    // glUseProgram(0) silently unbinds everything.
     if (d->format < 0 || (int)d->format >= NUM_FORMATS || !s_progs[d->format]) {
         static bool warned[NUM_FORMATS + 1];
         int slot = (d->format >= 0 && (int)d->format < NUM_FORMATS) ? (int)d->format : NUM_FORMATS;

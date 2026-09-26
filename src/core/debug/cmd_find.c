@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // cmd_find.c
-// `find.*` memory search (shell v2 §6.1): find.str / find.bytes /
+// `find.*` memory search: find.str / find.bytes /
 // find.word / find.long return the complete V_LIST of match addresses
 // (empty list = not found); optional start/end arguments bound the
 // scan, defaulting to the whole address space (g_address_mask).
@@ -43,7 +43,7 @@ static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
 
 // === Object-model class descriptor =========================================
 //
-// Shell v2 §6.1: the `find.*` methods return data — a V_LIST of match
+// The `find.*` methods return data — a V_LIST of match
 // addresses (empty list = not found) — and the REPL formats it. The
 // printed match report and the `all` hit cap are gone: the list is
 // always complete (bounded by FIND_MAX_HITS as a runaway guard).

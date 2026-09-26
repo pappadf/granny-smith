@@ -8,7 +8,7 @@
 // or bus bridge exported an object node: there was `machine.via1.ifr` and
 // nothing for the RBV, the OSS, the PSC, the AMIC or Grand Central, which is
 // to say that an IRQ storm on a IIci, IIfx, Quadra AV or Power Macintosh
-// could not be looked at from the shell at all (05-chipsets-irq F-26).
+// could not be looked at from the shell at all.
 //
 // The shape is deliberately two-part:
 //
@@ -25,7 +25,7 @@
 // chip's own state pointer and a chip-specific getter is written exactly the
 // way it would be written without this file.
 //
-// NOTE (HANDOVER §4.5): do NOT give these nodes per-controller log
+// NOTE: do NOT give these nodes per-controller log
 // categories.  find_category is an exact strcmp and an unknown name is
 // created on demand, so a typo would silently make a new category.
 

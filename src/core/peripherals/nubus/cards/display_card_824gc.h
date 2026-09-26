@@ -4,26 +4,26 @@
 // display_card_824gc.h
 // "Apple Macintosh Display Card 8•24 GC" ("Dolphin") — a NuBus display card
 // whose display half is the JMFB family and whose Am29000 "GC" accelerator is
-// *simulated, not emulated* (HLE, "option B").  See the proposal
-// docs/core/peripherals/nubus/cards/display_card_8_24.md.
+// *simulated, not emulated* (HLE).  The display half is the plain 8•24's,
+// documented in docs/core/peripherals/nubus/cards/display_card_8_24.md.
 //
 // Two halves:
 //   * Display — the genuine v1.1 declaration ROM (`341-0266`, BoardId $2C) and
 //     its `.Display_Video_Apple_MDCGC` video driver drive a linear framebuffer
 //     + CLUT + VBL slot IRQ through the JMFB/Stopwatch/CLUT/Endeavor register
-//     blocks at slot+$200000 (identical map to jmfb.c; proposal §3.13).
+//     blocks at slot+$200000 (identical map to jmfb.c; see jmfb_family.h).
 //   * Accelerator — the card model implements the GC-OS/IPC protocol surface
 //     natively in C: the SRAM/DRAM windows, the accelerator control registers,
 //     the shared-memory command block (CB) and the bring-up state machine that
 //     makes the `.GraphAccel` driver believe a live Am29000 card booted.  The
-//     firmware bytes are *stored, not executed*.  Stage 0/1 covers identity,
-//     the register/RAM map, and the full bring-up ladder; stage 2 adds the
+//     firmware bytes are *stored, not executed*.  The model covers identity,
+//     the register/RAM map, and the full bring-up ladder, plus the
 //     DrawMultiObject interpreter + 1-bpp rasterizers and the func-$15 blit.
-//     Anything outside the accept envelope declines to the ROM path (proposal
-//     §4 safety net), and gc.force_decline declines everything — the
+//     Anything outside the accept envelope declines to the ROM path (the
+//     safety net), and gc.force_decline declines everything — the
 //     differential test oracle.
 //
-// Address model (proposal §3.2, protocol §3): the card straddles two spaces.
+// Address model: the card straddles two spaces.
 // The display half + declaration ROM live in STANDARD slot space
 // ($Fs000000).  The accelerator (SRAM, DRAM, control/comm regions) lives in
 // SUPER-slot space ($s0000000), reached by the driver's card-local↔NuBus
@@ -40,7 +40,7 @@
 // === Declaration ROM ========================================================
 // Loaded by CONTENT via declrom_load_vrom_card (vrom.c catalog keyed on the
 // Format-Block CRC) — any of the three known GC ROMs works: v1.1 (341-0266,
-// 64 KB, richest monitor table; proposal §3.1), v1.0, or the alpha (32 KB).
+// 64 KB, richest monitor table), v1.0, or the alpha (32 KB).
 // All are byteLanes $E1 (byte lane 0) → chip ×4 bus-space footprint laid into
 // the tail of a 256 KB window at the top of standard slot space.
 #define GC824_DECLROM_BUS_SIZE   0x040000u // 256 KB bus window (64 KB chip ×4)
@@ -99,7 +99,7 @@
 // GCQD "gcp" command-block window (STANDARD-slot space).  The QuickDraw
 // marshaller (GCQD, gc24 -4048) does NOT reach the command block through the
 // super-slot DRAM aperture — it uses the driver's "gcp" pointer, computed in
-// .GraphAccel Open (driver doc §5.1 step 5 / §7) as
+// .GraphAccel Open as
 //     card+$16C = $F0000000 | (slot<<24) | (slot<<20)   (= std base + slot*1 MB)
 //     gcp       = card+$C = card+$16C + $8C00
 // Init29K's arm/CB-read+arm path is gated OFF for the normal config ($168 bit
@@ -111,7 +111,7 @@
 // super-slot exposes at GC824_DRAM_CB, so the fields the marshaller polls hit
 // the live CB engine (and CB-internal pointers are published gcp-relative so
 // GCQD's `(gcp & $FFF00000) | (ptr & $FFFFF)` address reconstruction lands in
-// this window).  See debug/2026-07-09-*-gcp-window.md.
+// this window).
 #define GC824_GCP_OFFSET 0x8C00u // gcp offset within card+$16C
 #define GC824_GCP_WINDOW 0x2000u // CB header + carved queue (GCQD G+$268 = 4 KB)
 
@@ -148,7 +148,7 @@
 // bus side-effect.  The HLE synthesizes a toggling bit 31 here (see gc_read).
 #define GC824_REG_SYNC_HB 0x4C00000u
 
-// Comm regions — fixed card-local addresses inside DRAM bank 0 (protocol §4).
+// Comm regions — fixed card-local addresses inside DRAM bank 0.
 // Expressed as DRAM-buffer offsets (card-local − 0x0C000000).
 #define GC824_DRAM_PUBLICIN 0x006400u // host→card boot block
 #define GC824_DRAM_PUBLICOU 0x006800u // card→host status block
@@ -203,11 +203,11 @@
 #define GC824_CB_HEARTBEAT 0x1C4u // card heartbeat counter (ticked per VBL)
 #define GC824_CB_ARGSAREA  0x64Cu // default command args area
 #define GC824_CB_FREEAREA  0x6CCu // default free-list base
-// Cursor-protocol fields (gc-cursor-protocol.md §3): the driver deposits the
-// HOST addresses of the low-memory cursor globals so the card can bus-master-
-// read them; the card raises the two status flags, which the host cursor stubs
-// and GACursorTask consume (clear-on-read) to keep the ROM's software-cursor
-// state coherent with card drawing.
+// Cursor-protocol fields: the driver deposits the HOST addresses of the
+// low-memory cursor globals so the card can bus-master-read them; the card
+// raises the two status flags, which the host cursor stubs and GACursorTask
+// consume (clear-on-read) to keep the ROM's software-cursor state coherent with
+// card drawing.
 #define GC824_CB_CRSRHID   0x5F0u // card→host: "card hid the cursor" → CrsrVis=0
 #define GC824_CB_CRSRNEW   0x5F4u // card→host: "cursor changed" → CrsrNew=1
 #define GC824_CB_CRSRRECTP 0x5F8u // host→card: host addr of CrsrRect ($083C)
@@ -242,7 +242,8 @@
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t display_card_824gc_kind;
 // Generic sibling ("8_24gc") with the built-in GS declaration ROM — same
-// HLE model, no vROM file needed (proposal-generic-nubus-vrom.md sec. 6.1).
+// HLE model, no vROM file needed (see
+// docs/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t display_card_824gc_generic_kind;
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
@@ -264,9 +265,9 @@ uint64_t display_card_824gc_rpc_count(const nubus_card_t *card); // total RPCs s
 uint64_t display_card_824gc_queue_bytes(const nubus_card_t *card); // total Transport-B bytes drained
 bool display_card_824gc_gc_on(const nubus_card_t *card); // acceleration turned ON (Control $0D)
 int32_t display_card_824gc_error(const nubus_card_t *card); // last posted error (Control $14), 0 = none
-// Differential-test-oracle switch (proposal §4.1): when set, the drawing funcs
-// ($2D SetPort / $15 StretchBits / $30 FontDownload) decline, so the identical
-// guest scene renders via QuickDraw's ROM path — the accel-vs-ROM pixel oracle.
+// Differential-test-oracle switch: when set, the drawing funcs ($2D SetPort /
+// $15 StretchBits / $30 FontDownload) decline, so the identical guest scene
+// renders via QuickDraw's ROM path — the accel-vs-ROM pixel oracle.
 bool display_card_824gc_force_decline(const nubus_card_t *card);
 void display_card_824gc_set_force_decline(nubus_card_t *card, bool v);
 

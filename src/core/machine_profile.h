@@ -7,7 +7,7 @@
 // (system.c / system_config.h store and read a `const hw_profile_t *`).  The
 // machine *implementation* headers (mac030/…, glue/…, mdu/…, oss/…, lisa/…,
 // runtime/…, the per-machine _internal.h) are off-limits to core — a CI
-// layering check enforces that (proposal §4.3).
+// layering check enforces that.
 //
 // machines/machine.h includes this and adds the implementation-side surface
 // (the extern profile objects + the registry/object-model entry points).
@@ -62,7 +62,7 @@ typedef enum mmu_kind {
 // "68040" / "ppc_601" / "ppc_604").
 const char *mmu_kind_to_string(mmu_kind_t kind);
 
-// Main-CPU architecture of a machine (PPC proposal §3.9a).  The tagged
+// Main-CPU architecture of a machine.  The tagged
 // discriminator for config_t's main-CPU handle: exactly one of the per-arch
 // core pointers is non-NULL, selected by this tag.  Derived from
 // hw_profile_t.cpu_model — never stored in the profile separately.
@@ -86,7 +86,7 @@ static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
 // SCSI bus (scsi.attach_hd(path, id)); the Lisa 2 / Macintosh XL use the
 // parallel-port ProFile instead (profile.attach(path, writable)).  This is the
 // typed fact the config UI reads to label the HD row and pick the attach call —
-// no model-name guessing (proposal §4.4).  Default 0 = SCSI, so every existing
+// no model-name guessing.  Default 0 = SCSI, so every existing
 // profile keeps its behavior without an explicit field.
 typedef enum hd_bus {
     HD_BUS_SCSI = 0, // SCSI bus: scsi.attach_hd
@@ -120,7 +120,7 @@ typedef struct builtin_video_desc {
     // used to be `stage_monitor`, which wrote a family-private static that the
     // next construction consumed, so the value was invisible to everything but
     // the two modules that agreed on it and a second construction silently got
-    // the default (proposal-construction-inputs R1).
+    // the default.
     bool (*monitor_sense)(const char *id, uint8_t *out_sense);
 } builtin_video_desc_t;
 
@@ -145,7 +145,7 @@ struct scsi_slot {
 // because a SCSI bus is a user-facing object: media attach through
 // `machine.<object>.attach_hd`, so the object name has to travel as data or
 // every consumer hardcodes the mapping (bus 1 -> "scsi2"), which is the same
-// family-knowledge-in-generic-code shape F-13 removed from the video port.
+// family-knowledge-in-generic-code shape already removed from the video port.
 //
 // PCI's pci_slot_decl_t does carry a flat `bus` index, and that is right
 // there: nothing outside the core ever addresses a PCI bus by name, so bus is
@@ -178,8 +178,8 @@ typedef enum media_bus {
     MEDIA_BUS_PROFILE, // Lisa/XL parallel-port ProFile (unit unused)
 } media_bus_t;
 
-// One mounted medium in transit across a machine.restart power-cycle
-// (proposal-boot-vs-reset §3.3): the OPEN image handle — never a captured
+// One mounted medium in transit across a machine.restart power-cycle: the
+// OPEN image handle — never a captured
 // path, so delta writes and blank images survive by construction — plus the
 // attachment coordinates needed to hand the handle back to the rebuilt
 // machine.
@@ -226,8 +226,8 @@ const char *media_bus_name(media_bus_t bus);
 // The reverse; false for an unknown name.
 bool media_bus_parse(const char *name, media_bus_t *out);
 
-// Machine lifecycle + host-input vtable.  The behavior half of a machine
-// (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
+// Machine lifecycle + host-input vtable.  The behavior half of a machine:
+// hw_profile_t is pure descriptor DATA and points at one of
 // these.  system.c / nubus.c / pci.c dispatch through it; every hook is
 // NULL-safe.
 // (memory_layout_init and checkpoint_restore are deliberately absent — they
@@ -255,7 +255,7 @@ typedef struct machine_substrate {
     // cfg->nubus and nothing else, while substrate->reset re-armed the ROM
     // overlay and disabled the MMU -- and they reset DISJOINT sets, which is
     // how two lists always end up.  They are one list now, and both entry
-    // points call it (proposal-reset-and-nonvolatile-state.md §3.1).
+    // points call it.
     //
     // CPU-INTERNAL STATE IS NOT HERE.  On the 68030 the MMU is inside the
     // CPU, so an external chip reset must not touch it; that half lives in
@@ -271,7 +271,7 @@ typedef struct machine_substrate {
     // not a statement about the hardware: both machines physically reset --
     // the Plus from the programmer's switch, and either from a guest
     // executing the 68000 RESET opcode -- and today the call silently does
-    // nothing on them.  Owned by the reset proposal's §5 conformance table.
+    // nothing on them.
     //
     // Distinguish this from `nubus_slot_irq` and `pci_slot_irq` below, which
     // are NULL because the bus genuinely is not on the board.  A NULL that
@@ -294,7 +294,7 @@ typedef struct machine_substrate {
     // helper: slot numbering matches a machine's interrupt-source numbering
     // only by coincidence, and the one that existed put a IIci's slot $C on
     // its NMI source (mdu.c).  Keeps nubus.c machine-agnostic — no cfg->via2
-    // poke (proposal §4.4).  NULL on the three substrates with no NuBus --
+    // poke.  NULL on the three substrates with no NuBus --
     // `compact` (Plus), `lisa`, and `tnt`, which is PCI -- and they never
     // reach it.
     void (*nubus_slot_irq)(struct config *cfg, int slot, bool active);
@@ -346,7 +346,7 @@ typedef struct machine_substrate {
     int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
     struct display *(*display)(struct config *cfg);
 
-    // machine.restart media transfer (proposal-boot-vs-reset §3.3).
+    // machine.restart media transfer.
     // media_detach hands every mounted medium's open image handle (plus its
     // attachment coordinates) to `out`, removing them from whatever would
     // close them during teardown, and returns the count; media_attach hands
@@ -389,7 +389,7 @@ typedef struct hw_profile {
     int cpu_model; // 68000, 68030
     uint32_t freq; // CPU clock in Hz
     // Typed MMU kind — the single source of truth behind the exported
-    // `mmu.kind` capability (proposal §4.4).  FPU presence is derived from
+    // `mmu.kind` capability.  FPU presence is derived from
     // cpu_model via cpu_has_fpu(); neither is a separate descriptor field.
     mmu_kind_t mmu_kind;
 
@@ -415,8 +415,8 @@ typedef struct hw_profile {
     //
     // The consumers stay NULL-safe (build_profile guards both) as
     // defence-in-depth, not as a second supported spelling -- do not read those
-    // guards as licence to leave a profile's table out (F-20, and F-51 for the
-    // same distinction on the substrate hooks).
+    // guards as licence to leave a profile's table out (the substrate hooks
+    // draw the same distinction).
     const struct floppy_slot *floppy_slots;
     const struct scsi_bus_decl *scsi_buses;
 
@@ -463,7 +463,7 @@ typedef struct hw_profile {
     // They used to be two.  Eleven machines wrote the table into their board
     // descriptor as well, and this comment claimed the views were "guaranteed
     // identical" when the guarantee was really a hand-maintained invariant
-    // nothing checked (the review's F-33; they did all agree, as it happens).
+    // nothing checked (they did all agree, as it happens).
     // The two feed different consumers -- the profile drives the config
     // dialog and validate_vrom_resolution, nubus_init builds what the guest
     // sees -- so a divergence would have offered a card for a socket that
@@ -513,7 +513,7 @@ typedef struct hw_profile {
     const machine_substrate_t *substrate;
 
     // Per-machine board descriptor — chipset-family data the shared substrate
-    // interprets (proposal §4.2.2/§4.4).  Typed by convention: the family
+    // interprets.  Typed by convention: the family
     // substrate casts it to its concrete type.  NULL where a substrate serves
     // exactly one machine and can therefore reach its data directly (Plus,
     // IIfx).  The IIfx does define a mac030_board_desc_t of its own -- it
@@ -534,7 +534,7 @@ typedef struct hw_profile {
     //     fits in a field and is read as a branch (`pdm_board(cfg)->has_fast_scsi`,
     //     `tnt_board(cfg)->kind == TNT_BOARD_SHINER`) rather than a hook.
     //
-    // NAMING follows from that, and holds tree-wide (F-48):
+    // NAMING follows from that, and holds tree-wide:
     //   <model>_board       -- whatever THIS field points at
     //   <model>_board_desc  -- a descriptor that is not itself that thing
     // So a two-level family has both; a one-level family has only <model>_board;
@@ -576,7 +576,7 @@ int system_media_eject_std(struct config *cfg, media_bus_t bus, int unit);
 bool system_media_present_scsi_bus(struct scsi *bus, int unit);
 int system_media_eject_scsi_bus(struct scsi *bus, int unit);
 
-// === Object-model topology (proposal-system-object-model.md §5.1) ==========
+// === Object-model topology =================================================
 // The single `machine` container node — all emulated hardware nests under it
 // (machine.cpu, machine.scsi.device[0].image, …).  Defined in
 // machines/machine.c but declared here (the one machine header core may

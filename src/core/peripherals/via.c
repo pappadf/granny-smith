@@ -147,9 +147,9 @@ struct via {
     // bit the historical arithmetic — while machines whose CPU clock is not
     // an integer multiple of 783,360 Hz (PDM: 60/66/80 MHz) install the
     // reduced 783360/cpu_hz rational via via_set_exact_clock() so the
-    // guest-visible timer rate is exactly φ2-equivalent over any interval
-    // (the PDM dossier's hard constraint).  Config-derived, not part of the
-    // checkpointed plain-data prefix; re-derived on every init.
+    // guest-visible timer rate is exactly φ2-equivalent over any interval.
+    // Config-derived, not part of the checkpointed plain-data prefix;
+    // re-derived on every init.
     uint32_t ff_num, ff_den;
 
     // Object-tree binding — lifetime tied to via_init / via_delete.
@@ -233,6 +233,7 @@ static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_ca
 
 // Shift register completion callback - fires after 8 clock cycles
 static void sr_shift_complete_callback(void *source, uint64_t data) {
+    (void)data;
     via_t *via = (via_t *)source;
 
     // Only complete the shift if still pending (not cancelled by ACR change)
@@ -261,6 +262,7 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
 
 // Timer 1 timeout callback - handles one-shot and free-running modes
 static void t1_callback(void *source, uint64_t data) {
+    (void)data;
 
     via_t *via = (via_t *)source;
 
@@ -307,6 +309,7 @@ static void t1_callback(void *source, uint64_t data) {
 
 // Timer 2 timeout callback - handles one-shot interval timing
 static void t2_callback(void *source, uint64_t data) {
+    (void)data;
 
     via_t *via = (via_t *)source;
 
@@ -740,8 +743,7 @@ static void via_write_uint32(void *via, uint32_t addr, uint32_t value) {
 //
 // Before this existed there was no via_reset at all -- the IER, IFR, ACR, PCR,
 // timers and armed events survived every reset path, so a warm restart could
-// take an interrupt for a source the new OS had not installed a handler for
-// (05-chipsets-irq F-03).
+// take an interrupt for a source the new OS had not installed a handler for.
 void via_reset(via_t *restrict via) {
     if (!via)
         return;
@@ -834,7 +836,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     // condition the family default, and every II-family machine then had to
     // raise VIA2 PA3 back up because there the same pin is a NuBus slot
     // /NMRQ: leaving it low meant slot $C asserted an interrupt forever.
-    // plus.c now drives its own W/REQ line (F-50).
+    // plus.c now drives its own W/REQ line.
     //
     // The four CONTROL lines had the mirror-image bug: they came up at 0,
     // which for an active-low input reads as ASSERTED, so the SE/30, IIcx, IIx
@@ -847,7 +849,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     // -- suite-iicx/iicx-gc-beep 5427 -> 5423 frames and suite-plus/plus-beep
     // 15432 -> 15116.  Both goldens were re-cut, having been listened to
     // against the originals first: the waveform is the same beep, earlier in
-    // the window (HANDOVER S4.4).
+    // the window.
     via->ports[0].input = 0xFF;
     via->ports[1].input = 0xFF;
     via->ports[0].ctrl[0] = 1; // CA1
@@ -910,7 +912,7 @@ const memory_interface_t *via_get_memory_interface(via_t *via) {
     return &via->memory_interface;
 }
 
-// === M7c — read-only views for the object model =============================
+// === Read-only views for the object model ===================================
 
 uint8_t via_get_ifr(const via_t *via) {
     return via ? via->ifr : 0;
@@ -975,7 +977,7 @@ void via_delete(via_t *via) {
         return;
     LOG(1, "via_delete: freeing via");
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(via->scheduler, via);
 
     if (via->port_b_object) {

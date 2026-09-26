@@ -56,12 +56,11 @@ enabling the implementation of a behaviorally exact emulator of the subsystem.
 
 > **Authority.** Where this document and a primary source disagree, **the
 > primary source wins** and this document is the thing to fix. The primary
-> sources live in `local/gs-docs/library/floppy/` — the Apple ISM ASIC spec
-> rev 4.1 (1987) for the ISM register file, the SWIM User's Reference rev 1.5
+> sources are the Apple ISM ASIC spec rev 4.1 (1987) for the ISM register file, the SWIM User's Reference rev 1.5
 > (1988) for programming sequences and sample code, the IWM spec rev 19 (1982),
 > and the SWIM2 / SWIM3 ERS documents. This document has been wrong against them
 > at least three times (the Handshake CRC polarity, the Error register's
-> per-mode definitions, and the sense-register table — see 02-floppy F-42), each
+> per-mode definitions, and the sense-register table), each
 > time in a way that would have broken working code if "fixed" to match. Quote
 > the source when recording a contract here.
 The scope includes:
@@ -1042,7 +1041,7 @@ depending on the address set by CA0/CA1/CA2/SEL.
 The 4-bit drive register address is the CA lines plus SEL, keyed as
 **`SEL<<3 | CA2<<2 | CA1<<1 | CA0`**.
 
-> **Corrected 2026-09-11 (02-floppy F-42).** An earlier revision of this table
+> **Corrected 2026-09-11.** An earlier revision of this table
 > numbered its "Addr" column in the reverse bit order and, decoded that way, put
 > mfmDrv where /TKO belongs, omitted /TKO and TACH entirely, and listed /WRTPRT
 > twice. It is the most consulted table in this document, and "fixing" the code

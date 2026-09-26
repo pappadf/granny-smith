@@ -72,7 +72,7 @@ export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };
   const downloaded = await gsEval('download', [tmpPath]);
   // /tmp is memory-backed: a staged checkpoint left there holds the whole
-  // machine's state in the wasm heap for the rest of the session (N-22).
+  // machine's state in the wasm heap for the rest of the session.
   // The download has already copied it out, so remove it either way.
   await gsEval('storage.rm', [tmpPath]);
   if (downloaded !== true) return { ok: false, step: 'download', message: gsErrorText(downloaded) };

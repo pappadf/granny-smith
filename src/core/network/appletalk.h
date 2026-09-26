@@ -8,9 +8,9 @@
 // The object-model surface built on top of this API is `appletalk` with its
 // `stats` and `nbp`, `appletalk.afp`, `appletalk.printer`, and the
 // program-linking layers `appletalk.adsp`, `.ppc` and `.aevt`, which own
-// their subtrees (proposal-appletalk-afp-object-model.md §2).  Every call that can fail for
-// a reason a user should see reports it through an `err`/`err_len` buffer, so
-// the tree can surface the real message instead of "failed (see log)".
+// their subtrees.  Every call that can fail for a reason a user should see
+// reports it through an `err`/`err_len` buffer, so the tree can surface the
+// real message instead of "failed (see log)".
 
 #ifndef APPLETALK_H
 #define APPLETALK_H
@@ -27,7 +27,7 @@ typedef struct scheduler scheduler_t;
 //
 // The stack's tables, and the object-model collections that mirror them slot
 // for slot, size themselves from these: each mirror had its own constant,
-// equal by hand (10-network K5).
+// equal by hand.
 #define ATALK_NBP_MAX_ENTRIES  16 // NBP names this host registers
 #define ATALK_ASP_MAX_SESSIONS 4 // ASP sessions (and AFP's session table)
 #define ATALK_AFP_MAX_VOLUMES  8 // published AFP volumes
@@ -184,7 +184,7 @@ void atalk_printer_set_capture(bool enabled);
 
 // Printer counters (object model: `appletalk.printer.stats`) -- what a
 // script needs to see that a job happened, how big it was and what became of
-// it; the printer published two attributes and nothing else (10-network F-33).
+// it; the printer published two attributes and nothing else.
 typedef struct {
     uint64_t jobs; // jobs that ran to their end
     uint64_t aborts; // jobs cut off: timeout, too large, closed early
@@ -221,8 +221,8 @@ typedef struct {
 // is full -- *entry and what it advertises are unchanged, so a service that
 // publishes a new name before storing it keeps the old one whole.  Renames
 // used to store the new name first (AFP, the printer: the tree showed a name
-// nobody could look up) or withdraw first (PPC: the port vanished) --
-// 10-network N-23.  0, or -1 with nothing changed.
+// nobody could look up) or withdraw first (PPC: the port vanished).  0, or -1
+// with nothing changed.
 int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t *desc);
 
 // Withdraw *entry, if published, and clear it.

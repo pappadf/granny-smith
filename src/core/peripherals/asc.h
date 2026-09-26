@@ -28,7 +28,7 @@ typedef struct asc asc_t;
 // Board-level fold of the ASC's stereo output to the (mono) internal
 // speaker: IIx/IIcx wire the speaker to the left channel; the SE/30 board
 // sums both channels. (Headphone-jack stereo switching is deliberately not
-// modeled — see proposal-sound-support-all-models §9.)
+// modeled.)
 typedef enum asc_mix {
     ASC_MIX_CH_A = 0, // speaker = left channel (IIx, IIcx)
     ASC_MIX_SUM = 1, // speaker = left + right analog mix, averaged (SE/30)

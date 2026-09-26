@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# bench.sh — wall-time harness for the Voodoo2 raster backends
-# (proposal-voodoo2-raster-thread §8, shared with the walker-optimization
-# proposal §3.8).
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
+# bench.sh — wall-time harness for the Voodoo2 raster backends.
 #
 # Runs the canonical launch flow — the tnt-voodoo2-glide integration row:
 # Mac OS 8.1 boots, Quake 3Dfx launches from the Finder, the attract

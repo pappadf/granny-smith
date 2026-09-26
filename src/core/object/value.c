@@ -125,8 +125,10 @@ value_t val_err(const char *fmt, ...) {
     v.kind = V_ERROR;
     char buf[512];
     va_list ap;
+    buf[0] = '\0';
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt ? fmt : "", ap);
+    if (fmt)
+        vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     v.err = xstrdup(buf);
     return v;
@@ -457,7 +459,7 @@ double val_as_f64(const value_t *v, bool *ok) {
     }
 }
 
-// Truthiness rule per proposal-shell-expressions.md §2.5.
+// Truthiness, per kind.
 bool val_as_bool(const value_t *v) {
     if (!v)
         return false;

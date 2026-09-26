@@ -392,7 +392,7 @@ static void ppc_port_add(const char *machine, uint8_t node, uint8_t socket, cons
 }
 
 // Keep the collection in a stable order regardless of arrival: scripts assert
-// on indices (proposal §9.8).
+// on indices.
 static int ppc_port_cmp(const void *a, const void *b) {
     const ppc_port_info_t *x = (const ppc_port_info_t *)a;
     const ppc_port_info_t *y = (const ppc_port_info_t *)b;
@@ -888,7 +888,7 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
     // One NBP entity per machine, on the connection-listening socket (§3).
     // Published -- or renamed in place -- before the name is stored: a name
     // another machine holds leaves the port advertised as it was.  The old
-    // advertisement was withdrawn first, so the port vanished (N-23).
+    // advertisement was withdrawn first, so the port vanished.
     atalk_nbp_service_desc_t desc = {
         .object = port,
         .type = PPC_NBP_TYPE,

@@ -1,87 +1,19 @@
-# MMU040 unit test (Quadra proposal Phase B)
+# MMU040 unit test
 # Tests the MC68040 MMU: TTRs, three-level table walk, U/M protocol,
 # protection, indirect descriptors, 8K pages, PTEST MMUSR.
 # Uses real memory.c, mmu.c, and mmu040.c.
 
-TEST_NAME := mmu040
-
-UNIT_ROOT      := $(abspath ../../)
-WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
-EMU_ROOT       := $(WORKSPACE_ROOT)/src
-
-BUILD_DIR := $(UNIT_ROOT)/build
-OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
-TARGET    := $(BUILD_DIR)/$(TEST_NAME)
-
-CC ?= gcc
-BASE_CFLAGS := -O0 -g -Wall -Wextra
-INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
-                 -I$(EMU_ROOT)/core \
-                 -I$(EMU_ROOT)/core/cpu \
-                 -I$(EMU_ROOT)/core/memory \
-                 -I$(EMU_ROOT)/core/peripherals \
-                 -I$(EMU_ROOT)/core/peripherals/nubus \
-                 -I$(EMU_ROOT)/core/scheduler \
-                 -I$(EMU_ROOT)/core/debug \
-                 -I$(EMU_ROOT)/core/storage \
-                 -I$(EMU_ROOT)/core/network \
-                 -I$(EMU_ROOT)/core/shell \
-                 -I$(EMU_ROOT)/core/object \
-                 -I$(EMU_ROOT)/core/vfs \
-                 -I$(EMU_ROOT)/machines \
-                 -I$(EMU_ROOT)/platform/wasm \
-                 -DUNIT_TEST_PLATFORM_OVERRIDE \
-                 -include $(UNIT_ROOT)/support/platform.h \
-                 -include $(UNIT_ROOT)/support/log.h
-
-CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
-LDFLAGS ?=
-LDFLAGS += -rdynamic
-
+TEST_NAME    := mmu040
+TEST_SRCS    := test.c
+TEST_HARNESS := isolated
 # Real memory.c, mmu.c, mmu040.c; exclude stub_memory.c to avoid symbol conflicts
-SRCS := $(CURDIR)/test.c \
-        $(UNIT_ROOT)/support/harness_common.c \
-        $(UNIT_ROOT)/support/harness_isolated.c \
-        $(UNIT_ROOT)/support/stub_platform.c \
-        $(UNIT_ROOT)/support/stub_shell.c \
-        $(UNIT_ROOT)/support/stub_checkpoint.c \
-        $(UNIT_ROOT)/support/stub_system.c \
-        $(UNIT_ROOT)/support/stub_debugger.c \
-        $(UNIT_ROOT)/support/stub_peripherals.c \
-        $(UNIT_ROOT)/support/stub_assert.c \
-        $(UNIT_ROOT)/support/stub_cpu.c \
-        $(UNIT_ROOT)/support/stub_lisa_mmu.c \
-        $(EMU_ROOT)/core/memory/memory.c \
-        $(EMU_ROOT)/core/memory/mmu.c \
-        $(EMU_ROOT)/core/memory/mmu040.c \
-        $(EMU_ROOT)/core/object/meta.c \
-        $(EMU_ROOT)/core/object/object.c \
-        $(EMU_ROOT)/core/object/parse.c \
-        $(EMU_ROOT)/core/object/value.c
-
-ALL_SRCS := $(abspath $(SRCS))
-
-OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))
-DEP := $(OBJ:.o=.d)
-
-.PHONY: all run clean
-
-all: $(TARGET)
-
-$(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-$(TARGET): $(OBJ)
-	@mkdir -p $(dir $@)
-	@echo "[LD ] $@"
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
-
--include $(DEP)
-
-run: $(TARGET)
-	$(TARGET)
-
-clean:
-	rm -f $(TARGET)
-	rm -rf $(OBJ_DIR)
+OMIT_STUBS   := memory
+STUBS        := cpu lisa_mmu
+EXTRA_SRCS   := ../../../../src/core/memory/memory.c \
+                ../../../../src/core/memory/mmu.c \
+                ../../../../src/core/memory/mmu040.c \
+                ../../../../src/core/object/meta.c \
+                ../../../../src/core/object/object.c \
+                ../../../../src/core/object/parse.c \
+                ../../../../src/core/object/value.c
+include ../../common.mk

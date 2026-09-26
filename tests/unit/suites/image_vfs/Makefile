@@ -7,8 +7,8 @@
 # sets it.  Everything else -- the HFS/UFS/APM/NDIF parsers, the resource-fork
 # parser and decompressor -- is the real code.
 #
-# Natively it runs under ASan + UBSan, with a 256 MB allocation ceiling: a
-# 09-storage finding (F-26) is an allocation sized from an unchecked catalog
+# Natively it runs under ASan + UBSan, with a 256 MB allocation ceiling: one
+# defect this suite pins is an allocation sized from an unchecked catalog
 # field, and the ceiling is how a test sees the attempt.
 
 TEST_NAME := image_vfs

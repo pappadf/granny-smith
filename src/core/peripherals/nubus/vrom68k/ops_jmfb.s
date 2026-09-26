@@ -8,7 +8,7 @@
 | execution, so any data or leaf routine they use must live INSIDE that
 | block.  The CPB data and card ops are therefore emitted per-block via
 | macros taking a label prefix (pfx) — the personality stays one source,
-| instantiated wherever a self-contained copy is needed (proposal sec. 3.1).
+| instantiated wherever a self-contained copy is needed.
 
 | --- CPB equates -------------------------------------------------------------
 .equ GS_DRHW,          0x0019          | JMFB DrHW (Display_Video_Apple_MDC)
@@ -23,7 +23,7 @@
 
 | DRVR name — "." + the functional sResource name the builder generates
 | ("Display_Video_Apple_MDC"; Mac-side software matches on the exact
-| string, proposal sec. 7.1).
+| string).
 	.macro	GSDrvrName
 	dc.b	24
 	.ascii	".Display_Video_Apple_MDC"
@@ -43,10 +43,10 @@
 
 | --- CPB data (EmitCPB <pfx>) ------------------------------------------------
 | Monitor table rows: spID.w, width.w, height.w — spIDs reproduce the real
-| ROM's ACTIVE Ax sister scheme so emulator PRAM seeding matches (sec. 3.3).
+| ROM's ACTIVE Ax sister scheme so emulator PRAM seeding matches.
 	.macro	EmitCPB pfx
 | Top-level video spIDs (the ACTIVE Ax sister scheme) — the prune's
-| kill-list; geometry lives only in the generated records (§3.4).
+| kill-list; geometry lives only in the generated records.
 \pfx&SpidTab:
 	dc.w	0x00A6,0x00A2,0x00A1,0x00A7
 	dc.w	0                       | terminator
@@ -91,9 +91,9 @@
 	rts
 
 | ReadSense: out D0.W = chosen functional sResource spID (0 = no usable
-| monitor).  The whole sense strategy is personality-private (proposal
-| sec. 3.1): the JMFB reads the 3-bit sense field in CSR bits 9-11 and
-| maps it through the CPB sense table.
+| monitor).  The whole sense strategy is personality-private: the JMFB
+| reads the 3-bit sense field in CSR bits 9-11 and maps it through the CPB
+| sense table.
 \pfx&ReadSense:
 	move.l	JREG_CSR(a4),d0
 	lsr.l	#8,d0

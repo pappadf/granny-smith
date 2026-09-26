@@ -1,6 +1,6 @@
 # Integration test: IIcx + "Macintosh Display Card 8•24 GC" ("Dolphin").
 #
-# Verifies the stage-0/1 card model:
+# Verifies the card model:
 #   * the card is detected as an 8•24 GC (genuine v1.1 declaration ROM,
 #     341-0266, loaded via the new lane-0 byteLanes-$E1 support);
 #   * the object-model surface (slot[N].card.{name,declrom,framebuffer,gc});
@@ -26,7 +26,7 @@
 # --- Select the 8•24 GC card and (re)boot the IIcx with it in slot $9. ---
 machine.boot model="iicx" ram=8192 video_card="824gc" rom="${$ROM}"
 
-# --- Card identity + declaration ROM (stage 0). ---
+# --- Card identity + declaration ROM. ---
 assert machine.id == "iicx" "machine.id != iicx"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
 assert machine.nubus.slot[9].card.declrom.present "declaration ROM not present"
@@ -68,7 +68,7 @@ machine.memory.poke.l 0x9C007014 0xFFFFFFFF
 assert machine.nubus.slot[9].card.gc.rpc_count == 2 "second RPC not serviced"
 assert machine.memory.peek.l(0x9C00701C) == 1 "liveness func(2) result != 1"
 
-# --- Stage 2: DrawMultiObject rasterizers, driven straight through the queue.
+# --- DrawMultiObject rasterizers, driven straight through the queue.
 #     SetPort (func $2D, seq 1) accepts the port -> the card interprets the
 #     Transport-B opcode stream.  Queue base = gcp+$6CC+8 = DRAM CB+$6D4 =
 #     super-slot $9C0076D4.  Three primitives whose exact 1-bpp rasterization

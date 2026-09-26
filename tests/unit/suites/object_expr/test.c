@@ -1,7 +1,9 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for expr.{c,h} — recursive-descent expression parser/evaluator.
 //
 // Covers: operator table against known results, type promotion, short-circuit
-// semantics (proposal §3.2), and error propagation.
+// semantics, and error propagation.
 
 #include "expr.h"
 #include "object.h"
@@ -174,7 +176,7 @@ TEST(test_bool_to_uint_promotion) {
     value_free(&v);
 }
 
-// === Short-circuit (§3.2) ===================================================
+// === Short-circuit ==========================================================
 
 TEST(test_logand_short_circuit) {
     // The right side calls `unknown.path` which would error, but
@@ -240,9 +242,9 @@ TEST(test_error_propagates_through_arithmetic) {
 
 TEST(test_error_propagates_through_negation) {
     value_t v = eval("!missing");
-    // !error per proposal §3.2 is also "false". A V_ERROR turned into
-    // a bool via val_as_bool is false, so !false = true. The proposal
-    // gives `assert $(!cpu.broken)` as a valid idiom.
+    // !error is also "false": a V_ERROR turned into a bool via
+    // val_as_bool is false, so !false = true.  That is what makes
+    // `assert $(!cpu.broken)` a valid idiom.
     ASSERT_EQ_INT(V_BOOL, v.kind);
     ASSERT_TRUE(v.b);
     value_free(&v);
@@ -326,7 +328,7 @@ TEST(test_interpolate_unterminated) {
     value_free(&v);
 }
 
-// === M5 format specs (proposal §4.2.1) ====================================
+// === Format specs ===========================================================
 
 TEST(test_interp_spec_decimal) {
     expr_ctx_t ctx = {0};
@@ -396,7 +398,7 @@ TEST(test_interp_multiple_chunks) {
 TEST(test_interp_colon_inside_string_doesnt_split_spec) {
     expr_ctx_t ctx = {0};
     // The colon inside the string literal must not be mistaken for a
-    // format-spec separator (proposal §4.2.1 — split at top-level colon).
+    // format-spec separator (the split is at the top-level colon).
     value_t v = expr_interpolate_string("${\"a:b\"}", &ctx);
     ASSERT_TRUE(strcmp(v.s, "a:b") == 0);
     value_free(&v);
@@ -454,7 +456,7 @@ TEST(test_map_equals_json_string) {
     value_free(&v);
 }
 
-// === Format-spec safety (08-core-infra F-01, F-02) =========================
+// === Format-spec safety ====================================================
 //
 // `${EXPR:FMT}` used to hand FMT to snprintf as the format string.  FMT is
 // user input -- a script line, a logpoint `message=`, a gsEval string -- and
@@ -501,11 +503,10 @@ TEST(test_spec_star_width_is_refused) {
     value_free(&v);
 }
 
-// F-02: ${1:0500d} set width 500 against a 160-byte scratch buffer, snprintf
-// returned 500, and 500 bytes were copied out of it -- a 340-byte stack
-// overread landing in a string the caller prints or returns to JS.  The field
-// is clamped, so the result is bounded and correct rather than truncated
-// garbage.
+// ${1:0500d} set width 500 against a 160-byte scratch buffer, snprintf returned
+// 500, and 500 bytes were copied out of it -- a 340-byte stack overread landing
+// in a string the caller prints or returns to JS.  The field is clamped, so the
+// result is bounded and correct rather than truncated garbage.
 TEST(test_spec_width_is_clamped) {
     expr_ctx_t ctx = {0};
     value_t v = expr_interpolate_string("${1:0500d}", &ctx);
@@ -560,13 +561,13 @@ TEST(test_spec_valid_forms_still_render) {
     }
 }
 
-// === Expression-language promises (08-core-infra F-07, F-08, F-09) =========
+// === Expression-language promises ===========================================
 
-// F-07.  numeric_op reported a failure twice -- as the returned V_ERROR and
-// through the caller's `err` buffer -- but only the non-numeric path wrote the
-// buffer.  The other fourteen returns left it untouched and all six callers
-// then read err[0], an uninitialised stack array, so ${1/0} reported whatever
-// was on the stack rather than "division by zero", and only sometimes.
+// numeric_op reported a failure twice -- as the returned V_ERROR and through
+// the caller's `err` buffer -- but only the non-numeric path wrote the buffer.
+// The other fourteen returns left it untouched and all six callers then read
+// err[0], an uninitialised stack array, so ${1/0} reported whatever was on the
+// stack rather than "division by zero", and only sometimes.
 TEST(test_divide_by_zero_reports_its_reason) {
     value_t v = eval("1/0");
     ASSERT_TRUE(val_is_error(&v));
@@ -590,9 +591,9 @@ TEST(test_shift_out_of_range_reports_its_reason) {
     value_free(&v);
 }
 
-// F-08.  The canonical guard idiom: the untaken branch must not fail the
-// expression.  Both branches used to be evaluated and lex_error is sticky, so
-// the division ran even when x was zero.
+// The canonical guard idiom: the untaken branch must not fail the expression.
+// Both branches used to be evaluated and lex_error is sticky, so the division
+// ran even when x was zero.
 TEST(test_ternary_untaken_branch_does_not_fail_the_expression) {
     bool ok = false;
     value_t v = eval("0 != 0 ? 100/0 : 42");
@@ -622,7 +623,7 @@ TEST(test_ternary_still_selects_correctly) {
     value_free(&c);
 }
 
-// F-09.  find_format_colon took the RIGHTMOST top-level ':' as the format-spec
+// find_format_colon took the RIGHTMOST top-level ':' as the format-spec
 // separator without tracking '?', so `${a ? 1 : 2}` split into the expression
 // `a ? 1 ` and the spec ` 2`.  The ternary and ${...} -- both documented parts
 // of the language -- were mutually exclusive, with a confusing error.
@@ -660,7 +661,7 @@ TEST(test_format_spec_without_ternary_unaffected) {
 }
 
 // range() and `..` are the same value now, and both are indexable so the lazy
-// form loses nothing against the list it replaced (F-37).
+// form loses nothing against the list it replaced.
 TEST(test_range_builtin_matches_dotdot) {
     value_t a = eval("range(4) == 0..4");
     ASSERT_EQ_INT(V_BOOL, a.kind);

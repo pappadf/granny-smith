@@ -8,10 +8,7 @@
 
 #include "cpu_internal.h"
 
-#include "log.h"
 #include "system.h"
-
-LOG_USE_CATEGORY_NAME("cpu");
 
 // 68000 memory access: direct (no MMU translation)
 #define D(n)                                         cpu->d[n]

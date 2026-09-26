@@ -39,7 +39,7 @@ TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 # the script boots twice — see its header.
 TEST_ARGS := model=pm8100 ram=16384
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 # Extended, like the two IIcx sysinfo tests: this asserts an application's
 # behaviour rather than a (machine x system x card x geometry x depth)
 # cell, so it is deliberately NOT declared in matrix-targets.json.

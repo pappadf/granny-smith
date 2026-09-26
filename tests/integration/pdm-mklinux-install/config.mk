@@ -20,9 +20,10 @@
 # package set dominates.  `extended` because it produces an artifact, not
 # because it is quick.
 #
-# MEDIA: the DR3 disc (a 663 MB hybrid ISO) and the drive pdm-mklinux-disk
-# publishes both live under local/gs-docs/projects/mklinux/ and are not in
-# gs-test-data, so this test SKIPS cleanly where they are absent.
+# MEDIA: the DR3 disc (a 663 MB hybrid ISO) is not redistributable and not
+# part of the test data, and neither is the drive pdm-mklinux-disk publishes.
+# Both are read from $GS_EXTRA_MEDIA_DIR/mklinux/media/, and this test SKIPS
+# cleanly where they are absent.
 
 TEST_NAME := Power Macintosh 7100 — install MkLinux DR3 onto the single drive
 TEST_DESC := Boot the Booter into Mach_Kernel, run the DR3 installer onto /dev/sda6 with the Absolute Minimum package set, point lilo.conf at it and publish the finished image
@@ -43,5 +44,5 @@ TEST_ARGS := model=pm7100 ram=40960
 # a copy of this one -- same map, byte-identical ext2 root -- not by a separate
 # install, so this pair is still where the MkLinux side actually comes from.
 #
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

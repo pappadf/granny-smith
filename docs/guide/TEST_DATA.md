@@ -56,8 +56,7 @@ runtime-generated generic GS vROM instead; `iicx-gsvrom` covers that path.
 ### Prepared hard-disk images (`tests/data/systems/`)
 
 These are the workhorses: full installs that boot on any supported
-machine, so a test can pick its host freely. Naming grammar (§6.1 of
-proposal-integration-test-rework):
+machine, so a test can pick its host freely. Naming grammar:
 `system_<ver>_<size>_<trait>[_<trait>…].img`.
 
 | File | Contents |
@@ -71,8 +70,7 @@ proposal-integration-test-rework):
 
 Trait tokens in prepared-image names are a closed vocabulary: `mode32`,
 `24ac`, `824gc`, `32bit`, **`cd` — CD-ROM driver support installed in the
-System Folder** (not "cdev"; the rework proposal briefly proposed renaming it
-on that misreading and the rename was struck), and **`av` — a Quadra 840AV /
+System Folder** (not "cdev"), and **`av` — a Quadra 840AV /
 Centris 660AV install carrying System Enabler 088**, which the AV machines
 cannot boot without (its `gbly` gates on machine IDs 72 and 54, so a stock
 volume will not start them at all).
@@ -127,7 +125,7 @@ Single-disk system images (`System_<ver>.dsk`, 400K/800K raw — exactly
 `SSW-7.0-800K/`, `SSW-7.1-1.4M/`, `SSW-7.5-1.4M/`, `SSW-7.6-1.4M/`.
 
 ⚠️ **Three media labels are known to lie**, so do not trust a filename as
-a system version (each is documented in §6.2/§7 of the rework proposal):
+a system version:
 
 | File | Claims | Actually boots |
 |---|---|---|

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // MMU unit tests (Milestone 7)
 // Verifies 68030 PMMU: SoA fast-path arrays, table walk, TLB invalidation,
 // transparent translation, PTEST, write protection, and supervisor-only pages.

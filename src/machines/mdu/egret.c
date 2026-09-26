@@ -143,8 +143,8 @@ struct egret {
     // A response whose ATTENTION byte the host never takes is abandoned
     // after EGRET_SEND_ABANDON_NS.  Named as on the Cuda side, which runs
     // the same protocol behind the same Apple host driver (EgretMgr.a
-    // serves both), so the consolidation R-1 proposes has two watchdogs of
-    // one shape to merge rather than two designs to reconcile.
+    // serves both), so a future Egret/Cuda consolidation has two watchdogs
+    // of one shape to merge rather than two designs to reconcile.
     bool send_timeout_pending;
     // A response the watchdog reaped unclaimed is RE-PRESENTED once the bus
     // settles.  The reap resets the TRANSPORT; the firmware's output queue
@@ -532,7 +532,7 @@ static void egret_autopoll_event(void *source, uint64_t data) {
     egret_t *eg = (egret_t *)source;
     if (eg->autopoll_enabled && eg->adb && egret_try_unsolicited(eg)) {
         // The device-selection rules live in adb.c, shared with Cuda and the
-        // SWIM IOP (R-2).  Egret implements neither WrDevList nor RdDevList,
+        // SWIM IOP.  Egret implements neither WrDevList nor RdDevList,
         // so it has no host-supplied enable bitmap: 0 means every address is
         // eligible, and the scan finds the devices wherever Listen R3 has
         // most recently moved them.
@@ -590,7 +590,7 @@ egret_t *egret_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct s
         // A checkpoint taken with either watchdog in flight re-arms it here;
         // the flags ride in the plain-data block above via1.  (Cuda re-arms
         // send_timeout_pending but not resend_pending -- a gap on that side,
-        // left for R-1's consolidation rather than changed here.)
+        // left for an Egret/Cuda consolidation rather than changed here.)
         if (eg->send_timeout_pending)
             scheduler_new_cpu_event(eg->sched, &egret_send_timeout_event, eg, 0, 0, (uint64_t)EGRET_SEND_ABANDON_NS);
         if (eg->resend_pending)

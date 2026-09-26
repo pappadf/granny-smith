@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Minimal system accessor stubs for the Lisa ROM unit test.
 //
 // We cannot link the shared support/stub_system.c here because it also stubs
@@ -95,4 +97,17 @@ rtc_t *system_rtc(void) {
 struct cpu_debug_if;
 const struct cpu_debug_if *system_cpu_debug_if(void) {
     return NULL;
+}
+
+// machine_config.c's explicit-pick helper drives the vROM/PROM offer
+// registries, which this harness does not link.
+void vrom_clear_explicit(void) {}
+void prom_clear_explicit(void) {}
+int vrom_set_path(const char *path) {
+    (void)path;
+    return 0;
+}
+int prom_set_path(const char *path) {
+    (void)path;
+    return 0;
 }

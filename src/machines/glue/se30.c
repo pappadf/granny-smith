@@ -24,7 +24,6 @@
 #include "builtin_se30_video.h" // SE/30 built-in video as a NuBus card (slot $E)
 #include "floppy.h"
 #include "image.h"
-#include "log.h"
 #include "memory.h"
 #include "nubus.h"
 #include "pram_defaults.h"
@@ -38,8 +37,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Constants
@@ -153,7 +150,7 @@ static void se30_memory_layout_tail(config_t *cfg) {
         uint32_t vram_pages = SE30_VRAM_SIZE >> PAGE_SHIFT; // 16 pages
         uint32_t vram_start_page = SE30_VRAM_BASE >> PAGE_SHIFT;
         uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> PAGE_SHIFT; // 1 MB window
-        for (uint32_t p = vram_start_page; p < vram_mirror_end && (int)p < g_page_count; p++) {
+        for (uint32_t p = vram_start_page; p < vram_mirror_end && p < g_page_count; p++) {
             uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << PAGE_SHIFT;
             mac030_fill_page(p, se30->vram + offset_in_vram, true);
         }
@@ -163,7 +160,7 @@ static void se30_memory_layout_tail(config_t *cfg) {
     {
         uint32_t vrom_pages = SE30_VROM_SIZE >> PAGE_SHIFT; // 8 pages
         uint32_t vrom_start_page = SE30_VROM_BASE >> PAGE_SHIFT;
-        for (uint32_t p = 0; p < vrom_pages && (int)(vrom_start_page + p) < g_page_count; p++)
+        for (uint32_t p = 0; p < vrom_pages && vrom_start_page + p < g_page_count; p++)
             mac030_fill_page(vrom_start_page + p, se30->vrom + (p << PAGE_SHIFT), false);
     }
 
@@ -262,9 +259,8 @@ static void se30_trigger_vbl(config_t *cfg) {
     // /SLOTIRQ aggregate, and the 60.15 Hz VBL lands on VIA1's CA1.  This
     // used to pulse BOTH CA1 lines "as the GLUE chip does", which forged a
     // slot interrupt every frame and fought the umbrella level a real card
-    // may be holding (05-chipsets-irq F-11), and drove slot $E by poking
-    // VIA2 port A directly, so the bus never saw it
-    // (F-13).
+    // may be holding, and drove slot $E by poking VIA2 port A directly, so
+    // the bus never saw it.
     mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
     mac_vbl_pulse(cfg->via1);
 
@@ -278,7 +274,7 @@ static void se30_trigger_vbl(config_t *cfg) {
 
     // The built-in card is slot $E on this machine, and the default GLUE path
     // ticks the bus; overriding trigger_vbl dropped that, so a card with an
-    // on_vbl hook would silently never tick (F-13).
+    // on_vbl hook would silently never tick.
     nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }
@@ -309,7 +305,7 @@ static void se30_pre_devices(config_t *cfg) {
 // reports the sound jack inserted; control lines idle high.
 // Only the board's genuine straps: everything else this used to write --
 // VIA2 PA0-PA5 and the CA1/CA2/CB2 control lines -- is now the VIA's own
-// idle-high power-on state (F-50).
+// idle-high power-on state.
 static void se30_setup_id(config_t *cfg) {
     via_input(cfg->via2, 1, 3, 0); // PB3
     // PB6 = v2SNDEXT, and on the SE/30 it is TIED LOW in hardware "so that the
@@ -410,7 +406,7 @@ static const mac030_glue_board_t se30_board = {
 // hooks -- a per-machine workaround for a generic mechanism that was missing.
 // builtin_se30_video.c implements the ordinary NuBus card checkpoint ops now,
 // so the shared nubus_checkpoint_save/_restore carry them and both hooks are
-// gone from mac030_glue_board_t (F-03).
+// gone from mac030_glue_board_t.
 
 // ============================================================
 // Machine descriptor

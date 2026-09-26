@@ -5,6 +5,16 @@
 # Discover test directories under suites/ (each must contain a Makefile)
 TEST_DIRS := $(sort $(dir $(wildcard suites/*/Makefile)))
 TESTS := $(patsubst %/,%,$(TEST_DIRS))
+
+# Every suite builds through common.mk, so a change to it (a flag, a stub,
+# a sanitizer mode) reaches all of them.  The one exception is a shell
+# driver, not a C suite: peeler_corpus runs the archive library's own test
+# script.  A new suite that writes its own build rules fails here.
+COMMON_MK_EXEMPT := suites/peeler_corpus
+BYPASSING := $(filter-out $(COMMON_MK_EXEMPT),$(foreach t,$(TESTS),$(if $(shell grep -l '^include ../../common.mk' $(t)/Makefile),,$(t))))
+ifneq ($(strip $(BYPASSING)),)
+$(error suites that do not include common.mk: $(BYPASSING))
+endif
 BUILD_DIR := build
 
 .PHONY: all run run-wasm32 list clean $(TESTS) test-%
@@ -16,7 +26,11 @@ all: $(TESTS)
 $(TESTS):
 	@echo "[MAKE] $@"; $(MAKE) -C $@ all
 
-run: $(TESTS)
+# Build with -k first, so one suite that fails to compile does not stop the
+# others building; the loop then runs every suite, and a suite whose build
+# failed fails again there and is reported with the rest.
+run:
+	@$(MAKE) --no-print-directory -k all || true
 	@failed=""; passed=0; total=0; \
 	for d in $(TESTS); do \
 	  total=$$((total + 1)); \
@@ -40,7 +54,7 @@ run: $(TESTS)
 test-%:
 	$(MAKE) -C suites/$* run
 
-# The parser suites again, on wasm32 (09-WORK-ORDER.md §0.2, A0.2).
+# The parser suites again, on wasm32.
 #
 # The shipping build is emcc -> WebAssembly, where size_t and long are 32 bits;
 # the native tier is 64-bit and cannot see a defect that only wraps at 32 (an

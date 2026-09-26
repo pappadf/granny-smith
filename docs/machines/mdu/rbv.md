@@ -4,15 +4,15 @@ The **RBV** ("RAM-Based Video", Apple part 344S1019) is the combined
 video-control + interrupt-aggregation ASIC used by the Macintosh IIci
 (and, in its *V8* variant, the IIsi / LC family). In Granny Smith it is
 implemented as a flat peripheral module:
-[src/core/peripherals/rbv.c](../src/core/peripherals/rbv.c) /
-[rbv.h](../src/core/peripherals/rbv.h).
+[src/core/peripherals/rbv.c](../../../src/machines/mdu/rbv.c) /
+[rbv.h](../../../src/machines/mdu/rbv.h).
 
 On the IIci the RBV **replaces the VIA2** of the IIcx-family machines: it
 lives at physical `$50F26000`, aggregates the slot / SCSI / sound
 interrupts into a single 68030 **IPL 2** assertion, owns the
 soft-power-off and external-cache control bits, and carries the built-in
 video's monitor-sense + depth register. The framebuffer itself is owned
-by the [builtin_rbv_video](../src/core/peripherals/nubus/cards/builtin_rbv_video.c)
+by the [builtin_rbv_video](../../../src/machines/mdu/builtin_rbv_video.c)
 NuBus pseudo-card and a Bt450 VDAC at `$50F24000`; the RBV only holds the
 depth/monitor register (`RvMonP`) and the slot-0 video VBL interrupt
 (`RvIRQ0`).

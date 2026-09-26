@@ -35,7 +35,7 @@ static const pdm_board_desc_t pm8100_board = {
     .bus_hz = 40000000u, // 2:1 bus
     .bank_layout = PDM_BANKS_FIXED,
     .bank_count = 8,
-    .wait_state_penalty = 2, // pinned by the rung-L7 bus-ratio row
+    .wait_state_penalty = 2, // pinned by the pdm-rom-ladder L7 bus-ratio row
     .has_fast_scsi = true, // discrete 53CF96, island +$11000, DMA channel B
 };
 
@@ -55,9 +55,9 @@ const hw_profile_t machine_pm8100 = {
     .ram_options = pm8100_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = pm8100_scsi_buses,
-    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
-    // (Phase G): no CD-specific hardware is involved, so the bay is
-    // offered as soon as that bus exists.
+    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots: no
+    // CD-specific hardware is involved, so the bay is offered as soon as that
+    // bus exists.
     .has_cdrom = true,
     .cdrom_id = 3,
 

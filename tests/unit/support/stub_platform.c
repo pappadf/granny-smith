@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Platform stubs for unit tests
 // Provides minimal implementations of platform-specific functions.
 

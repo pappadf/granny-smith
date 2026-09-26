@@ -216,7 +216,6 @@
 
 #define SUB_DN_EA(bits)                                                                                                \
     LOAD_EA(bits, dst, (ea_memory & ea_alterable));                                                                    \
-    UINT(bits) src = DN;                                                                                               \
     SUB(bits, dst, (UINT(bits))DN, res);                                                                               \
     STORE_EA(bits, res);
 
@@ -525,7 +524,7 @@
     UPDATE_X_SHIFT(c);                                                                                                 \
     UPDATE_N(r);                                                                                                       \
     UPDATE_Z(r);                                                                                                       \
-    CC_V = !r && d ||                                                                                                  \
+    CC_V = (!r && d) ||                                                                                                \
            (UINT(bits))((INT(bits))(1u << (bits - 1) & d) >> (c & (bits - 1)) ^ d) >> ((bits - c - 1) & (bits - 1));
 
 #define LSHIFT_LEFT(bits, data, count, op)                                                                             \

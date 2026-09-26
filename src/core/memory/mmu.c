@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // mmu.c
 // 68030 PMMU (Paged Memory Management Unit) implementation.
 // Lazy-fill TLB using SoA pointer arrays: on a TLB miss the slow path
@@ -61,10 +62,10 @@ void tlb_track_page(uint32_t page_index) {
 // caches one descriptor for the whole covered range and never re-walks; the
 // old emulator approximation eagerly materialised every covered 4 KB page
 // into the SoA arrays (~9,200 entries per walk), which dominated steady-state
-// host time under System 6's per-VBL _SwapMMUMode invalidation storm (see
-// docs/proposals/proposal-performance-optimizations.md §5.1).  Instead, cache
-// the walked descriptor itself; on a later fault inside the covered range,
-// fill only the touched 4 KB page from the cached descriptor — no re-walk.
+// host time under System 6's per-VBL _SwapMMUMode invalidation storm.
+// Instead, cache the walked descriptor itself; on a later fault inside the
+// covered range, fill only the touched 4 KB page from the cached descriptor —
+// no re-walk.
 typedef struct atc_block {
     uint32_t log_base; // logical range base (aligned to coverage)
     uint32_t log_mask; // ~(coverage-1)
@@ -665,7 +666,7 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
             continue; // resolver-only: device windows may overlap the alias range
         uint32_t pages = r->size >> PAGE_SHIFT;
         uint32_t start = r->phys_base >> PAGE_SHIFT;
-        for (uint32_t p = 0; p < pages && (int)(start + p) < g_page_count; p++)
+        for (uint32_t p = 0; p < pages && start + p < g_page_count; p++)
             fill(start + p, r->host + (p << PAGE_SHIFT), r->writable);
         // Mode-24 (24-bit Memory Manager) slot window: slot s ($9..$E) has a
         // 1 MB region at $00s00000 mirroring the start of its 32-bit slot
@@ -679,7 +680,7 @@ void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool m
                     alias_bytes = r->size;
                 uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
                 uint32_t start24 = ((uint32_t)slot << 20) >> PAGE_SHIFT; // $00s00000
-                for (uint32_t p = 0; p < alias_pages && (int)(start24 + p) < g_page_count; p++)
+                for (uint32_t p = 0; p < alias_pages && start24 + p < g_page_count; p++)
                     fill(start24 + p, r->host + (p << PAGE_SHIFT), true);
             }
         }
@@ -725,7 +726,7 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
 
     bool host_writable = writable && phys_is_writable(mmu, physical_page);
     uint32_t page_index = logical_page >> PAGE_SHIFT;
-    if ((int)page_index >= g_page_count)
+    if (page_index >= g_page_count)
         return;
 
     // Memory logpoints force the slow path — see mmu_fill_soa_entry.
@@ -751,7 +752,7 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
     }
 }
 
-// === memory_map_host_region — public bus-map API (proposal §3.2.3) =========
+// === memory_map_host_region — public bus-map API ===========================
 //
 // The names below live on the memory map (declared in memory.h) but the
 // storage they manipulate is still the 4-slot mmu_state_t today; this
@@ -863,7 +864,7 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
 }
 
 // memory_set_bus_error_range now lives in memory.c: the window is a bus
-// property, not an MMU one (05-chipsets-irq F-23).
+// property, not an MMU one.
 
 // Invalidate the software TLB.  Uses the tracking list to zero only
 // populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
@@ -966,7 +967,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
         // pseudo-slots like slot $F.  Writes are always silently dropped.
         if (!write) {
             uint32_t page_index = emu_page >> PAGE_SHIFT;
-            if ((int)page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
+            if (page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
                 memory_addr_faults_when_unmapped(logical_addr)) {
                 // TT + unmapped physical = plain bus timeout; ROM handlers
                 // expect skip semantics (Format $A).

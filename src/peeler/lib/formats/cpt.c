@@ -262,9 +262,9 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
             // Offset 0 is legitimate and means a full window back (8192): the
             // field is 13 bits, so 8192 cannot be written any other way, and
             // `(wpos - 0) & CP_WIN_MASK` is exactly that slot.  Real Compact
-            // Pro 1.33 and 1.52 archives use it -- refusing it, as 09-storage
-            // F-16 prescribed on the strength of cpt.md's "1-based", broke
-            // both corpus archives.  A zero length is still an error.
+            // Pro 1.33 and 1.52 archives use it -- refusing it, on the strength
+            // of cpt.md's "1-based", broke both corpus archives.  A zero length
+            // is still an error.
             if (mlen == 0) return -1;
 
             lz->blk_cost += 3;
@@ -565,7 +565,7 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
                            int depth) {
     // Each level is one recursive call carrying two 256-byte path buffers,
     // bought by three bytes of archive; unbounded, a 180 KB archive of empty
-    // folders overflowed the stack (09-storage F-07).  Paths are joined into
+    // folders overflowed the stack.  Paths are joined into
     // 256 bytes, so no real archive nests anywhere near the cap.
     if (depth > PEEL_MAX_DIR_DEPTH) return -1;
     while (remaining > 0) {
@@ -612,7 +612,7 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
         const uint8_t *m = data + *cursor;
         cp_entry_t fe;
         memset(&fe, 0, sizeof(fe));
-        strncpy(fe.name, full, sizeof(fe.name) - 1);
+        snprintf(fe.name, sizeof(fe.name), "%s", full);
 
         // Parse all 45 bytes of file metadata in field order
         size_t off = 0;
@@ -814,7 +814,7 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
         peel_file_t *f = &files[fi];
 
         // Copy metadata
-        strncpy(f->meta.name, e->name, sizeof(f->meta.name) - 1);
+        snprintf(f->meta.name, sizeof(f->meta.name), "%s", e->name);
         f->meta.mac_type     = e->type;
         f->meta.mac_creator  = e->creator;
         f->meta.finder_flags = e->finder_flags;
@@ -823,7 +823,7 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
         // data fork at file_offset + rsrc_comp.  Checked with the wrap-safe
         // extent test: `rsrc_offset + rsrc_comp > len` in size_t wraps on
         // wasm32, where the shipping build accepted a malformed archive and
-        // returned a fork decoded from nothing (09-storage F-15).
+        // returned a fork decoded from nothing.
         size_t rsrc_offset = (size_t)e->file_offset;
         if (!peel_extent_fits(rsrc_offset, e->rsrc_comp, len)) {
             decode_abort(&ctx, "resource fork of '%s' extends past archive", e->name);

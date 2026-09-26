@@ -37,7 +37,7 @@
 | (0x6B/0x6C/0x6D) so emulator PRAM/mode staging matches.
 	.macro	EmitCPB pfx
 | Top-level video spIDs (the 0x6B/0x6C/0x6D sister scheme); geometry
-| lives only in the generated records (§3.4).
+| lives only in the generated records.
 \pfx&SpidTab:
 	dc.w	0x006B,0x006C,0x006D
 	dc.w	0                       | terminator

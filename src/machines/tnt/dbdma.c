@@ -262,7 +262,7 @@ static void run_channel(tnt_dbdma_t *d, int n) {
             const tnt_dbdma_port_t *p = &d->port[n];
             if (!(out ? p->out != NULL : p->in != NULL)) {
                 // No device behind this channel yet: stall honestly (the
-                // program resumes when a later phase attaches the port).
+                // program resumes once a device attaches the port).
                 LOG(1, "ch%d %s $%04X bytes with no device port — stalling", n, out ? "OUTPUT" : "INPUT", req);
                 return;
             }
@@ -295,8 +295,8 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                 if (p->burst > 0) {
                     // Rate-limited port: yield after its burst, the same way
                     // a short return yields, so the transfer costs emulated
-                    // time instead of completing inside one register store
-                    // (F-15).  The device's pump kicks us back.
+                    // time instead of completing inside one register store.
+                    // The device's pump kicks us back.
                     burst_left -= (uint32_t)moved;
                     if (burst_left == 0 && c->cursor < req) {
                         LOG(3, "ch%d yielding at %u/%u bytes (burst %d)", n, c->cursor, req, p->burst);

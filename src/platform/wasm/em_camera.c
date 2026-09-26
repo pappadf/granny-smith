@@ -3,8 +3,7 @@
 
 // em_camera.c
 // Browser webcam → AV video-in frame path: the WASM overrides of the
-// gs_video_in_* seam (system.h) plus the shared-heap frame transport
-// (proposal-av-video-in.md §2.3).
+// gs_video_in_* seam (system.h) plus the shared-heap frame transport.
 //
 // Transport — a static double-buffered frame slot pair behind a control
 // block (em_shm_layout.h) in the shared wasm heap.  Static storage keeps the
@@ -87,8 +86,8 @@ bool gs_video_in_connected(void) {
 }
 
 // Copy the newest complete camera frame into the digitizer's staging
-// buffer.  Runs on the emulator worker at field cadence.  A seqlock on `seq`
-// (T3, F-29): if a frame completed while we copied, the slot we latched may
+// buffer.  Runs on the emulator worker at field cadence.  A seqlock on
+// `seq`: if a frame completed while we copied, the slot we latched may
 // be the one the writer is now filling, so copy again.  A frame period is
 // ~33 ms against a ~0.2 ms copy, so a retry all but always succeeds; after
 // three the copy stands -- the caller would otherwise show black, which is

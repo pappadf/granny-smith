@@ -23,7 +23,7 @@
   import type { IconName } from '@/lib/icons';
   import type { SchedulerMode } from '@/state/machine.svelte';
 
-  // Enable predicates (Phase 2 wiring). `isLive` covers running + paused — the
+  // Enable predicates. `isLive` covers running + paused — the
   // states where machine-dependent toolbar buttons are interactive. After a
   // Shut Down the status is 'stopped'; Welcome view is shown again so the user
   // can pick a new config, but the Run/Save/etc. buttons stay disabled until
@@ -76,7 +76,7 @@
       : 'Theme: light. Click for dark.',
   );
 
-  // Run/Pause icon flip — prototype app.js:877-881.
+  // Run/Pause icon flip.
   const runIcon: IconName = $derived(machine.status === 'running' ? 'pause' : 'play');
   const runTitle = $derived(machine.status === 'running' ? 'Pause' : 'Run');
 
@@ -96,7 +96,7 @@
       if (res.ok) showNotification(`State saved (${res.name})`, 'info');
       else showNotification(`Save State failed (${res.step}): ${res.message}`, 'error');
     } finally {
-      // Match prototype's 400 ms re-enable delay (app.js:962).
+      // Re-enable after 400 ms.
       setTimeout(() => (saving = false), 400);
     }
   }

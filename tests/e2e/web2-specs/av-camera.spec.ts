@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the AV camera control and the browser webcam → video-in path
-// (proposal-av-video-in.md §4 Phase 4).
+// web2 e2e: the AV camera control and the browser webcam → video-in path.
 //
 // Runs against Chromium's fake camera (--use-fake-device-for-media-stream
 // generates a moving synthetic pattern; --use-fake-ui-for-media-stream

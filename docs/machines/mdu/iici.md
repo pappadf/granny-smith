@@ -2,8 +2,8 @@
 
 The **Macintosh IIci** ("Aurora", 25 MHz 68030, March 1989) is the first
 of the RBV/MDU-class colour Macs. Granny Smith models it in
-[src/machines/iici.c](../src/machines/iici.c) /
-[iici_internal.h](../src/machines/iici_internal.h).
+[src/machines/iici.c](../../../src/machines/mdu/iici.c) /
+[iici_internal.h](../../../src/machines/mdu/iici_internal.h).
 
 Architecturally the IIci is **"the IIcx with VIA2 replaced by the RBV
 chip and built-in video reading from the slot-$B framebuffer
@@ -49,7 +49,7 @@ VIA2 (`$02000`) is *not* present — the RBV supersedes it.
 ## Built-in video
 
 The IIci's built-in video is presented as a NuBus pseudo-card
-([builtin_rbv_video.c](../src/core/peripherals/nubus/cards/builtin_rbv_video.c))
+([builtin_rbv_video.c](../../../src/machines/mdu/builtin_rbv_video.c))
 seated at the internal NuBus slot `$B` — the slot whose address space
 holds the framebuffer. Unlike the SE/30's slot-$E framebuffer it has no
 declaration ROM: the boot ROM drives the video from the hard-coded
@@ -82,10 +82,11 @@ VIA1 -> IPL 1
 
 ## Status
 
-The IIci boots stock System 7.1 from floppy to a working Finder desktop.
-The integration test
-[tests/integration/iici-boot](../tests/integration/iici-boot) boots the
-System 7.1 "Disk Tools" floppy and pixel-matches the Finder desktop.
+The IIci boots stock System 7.0.1 from floppy, and 7.1, 7.5 and 7.6 from
+hard disk, to a working Finder desktop. The rows `iici-701-fd`,
+`iici-71-hd`, `iici-75-hd` and `iici-76-hd` of
+[tests/integration/suite-iici](../../../tests/integration/suite-iici/test.script)
+boot each and pixel-match the desktop.
 
 Deferred (not v1): the optional Parity Generator Card, the 32 KB L2
 cache card, sound IRQ delivery (`RvSndIRQ` is unwired, matching the
@@ -94,4 +95,4 @@ IIfx's ASC), and user-installable NuBus cards in slots `$C/$D/$E`.
 ## See also
 
 - [docs/machines/mdu/rbv.md](rbv.md) — the RBV chip.
-- [src/machines/iicx.c](../src/machines/iicx.c) — the closest template.
+- [src/machines/iicx.c](../../../src/machines/glue/iicx.c) — the closest template.

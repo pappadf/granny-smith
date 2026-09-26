@@ -45,9 +45,9 @@ assert shell.complete("machine.cpu.p", 13).candidates == "[machine.cpu.pc]" "mid
 assert shell.complete("machine.cpu.p", 13).span.start == 0 "mid-path span start"
 assert shell.complete("machine.cpu.p", 13).span.end == 13 "mid-path span end"
 assert shell.complete("machine.cpu.s", 13).candidates == "[machine.cpu.sr, machine.cpu.ssp, machine.cpu.sp]" "mid-path multi match"
-# Method-arg position dispatches by arg_decl kind: V_BOOL offers the
-# canonical spellings, followed by the `name=` named-argument forms
-# (proposal-named-args-boot-config §3.5). The span is the arg word alone.
+# Method-arg position dispatches by arg_decl kind: V_BOOL offers the canonical
+# spellings, followed by the `name=` named-argument forms.  The span is the arg
+# word alone.
 assert shell.complete("machine.sound.mute ", 19).candidates == "[on, off, true, false, muted=]" "V_BOOL arg candidates"
 # A typed name prefix narrows to the named-argument form; `name=` prefix
 # completes the value with the name kept.

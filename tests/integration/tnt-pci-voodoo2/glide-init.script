@@ -4,9 +4,8 @@
 # sst1InitDacDetect() from the vendor's released Glide 2.x source
 # (glide2x/cvg/init/), expressed as shell-v2 accesses through the
 # aperture, with each step's POSTCONDITION asserted in place so the
-# first step that fails is the finding (proposal §6.2, §9.2).  It
-# exercises the whole init path without needing a guest driver or a
-# Mac OS image.
+# first step that fails is the finding.  It exercises the whole init
+# path without needing a guest driver or a Mac OS image.
 #
 # Included by test.script AFTER it has enabled Memory Space and bound
 # $BAR to the aperture base.  Uses swap32/swap16/vreg_wr/vreg_rd/
@@ -117,8 +116,7 @@ assert (vreg_rd(0x218) & 0x80000000) != 0 "fbiInit2 reads its own value once the
 
 # --- Step 9: the graphics PLL — program GCLK0 and switch to it. -------------
 # Fout = 14.318 MHz x (M+2) / (2^P x (N+2)); M=$49, P=1, N=4 -> ~89.5 MHz
-# core, the Voodoo2's clock class.  [proposal §4.4; sequence per
-# sst1InitSetGrxClkICS]
+# core, the Voodoo2's clock class.  [sequence per sst1InitSetGrxClkICS]
 cfg_wr(0x40, 0x00000005)
 dac_wr(4, 0xA)
 dac_wr(5, 0x49)
@@ -178,9 +176,9 @@ let L1 = (vreg_rd(0x240) >> 16) & 0x1FFF
 assert $L0 != $L1 "the beam counters must advance"
 
 # --- Step 12: DRAM warm-up shape (fastfill through the FIFO'd path). --------
-# The draw itself lands with the rasteriser milestone; what this step
-# pins TODAY is that the whole command surface accepts writes and the
-# card reports idle after each — the §12.3 idiom, nopCMD then status.
+# The draw itself is draw.script's job; what this step pins TODAY is
+# that the whole command surface accepts writes and the card reports
+# idle after each — the §12.3 idiom, nopCMD then status.
 vreg_wr(0x104, 0x00000000)
 vreg_wr(0x108, 0x00000000)
 vreg_wr(0x110, 0x00000300)

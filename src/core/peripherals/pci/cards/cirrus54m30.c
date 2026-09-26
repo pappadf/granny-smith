@@ -46,7 +46,6 @@
 // Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical
 // Reference Manual", 4th ed. (Feb 1995), §4.14-§4.20.
 
-#include "card.h"
 #include "display.h"
 #include "display_class.h"
 #include "log.h"
@@ -124,6 +123,7 @@ typedef struct c54m30 {
     bool attr_data; // the attribute port's index/data flip-flop
     uint8_t dac_write_index, dac_read_index, dac_phase;
     uint8_t dac[256][3]; // the palette, in the DAC's own 6-bit values
+    uint32_t scan_start; // byte offset the scanout starts at (after the fall-back)
     display_t display;
     rgba8_t clut[256]; // the palette materialised for the renderer
     memory_interface_t fb_if;
@@ -435,9 +435,10 @@ static void c54m30_update(c54m30_t *c) {
     // this has always done.  It is not a bound on the SPAN, though -- the
     // Offset register reaches stride 2040 and height reaches 1536, which is
     // 3,133,440 bytes of raster over a 1 MB store, and resetting the base does
-    // nothing about that (04-video F-26).
+    // nothing about that.
     if ((uint64_t)start + (uint64_t)stride * height > C54M30_VRAM)
         start = 0;
+    c->scan_start = start;
 
     uint32_t prev_w = c->display.width, prev_h = c->display.height, prev_stride = c->display.stride;
     const uint8_t *prev_bits = c->display.bits;
@@ -545,6 +546,14 @@ static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     c->display.clut = c->clut;
     c->display.clut_len = 256;
     c->display.format = PIXEL_8BPP;
+    // The mode is derived from the registers just cleared, so there is none
+    // until the firmware programs one: without this the display op kept
+    // presenting the old geometry over stale memory, because "keep the last
+    // good mode" (c54m30_update) also ignores the reset state.
+    c->display.width = 0;
+    c->display.height = 0;
+    c->display.bits = NULL;
+    c->scan_start = 0;
     c->display.clut_dirty = true;
     c->display.shape_dirty = true;
 }
@@ -569,6 +578,11 @@ static void c54m30_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, c->gr, sizeof(c->gr));
     system_write_checkpoint_data(cp, c->attr, sizeof(c->attr));
     system_write_checkpoint_data(cp, c->dac, sizeof(c->dac));
+    // The port latches: a checkpoint taken between an index write and its
+    // data write, or partway through a palette entry, must resume there.
+    uint8_t latches[8] = {c->seq_index,           c->crtc_index,      c->gr_index,       c->attr_index,
+                          c->attr_data ? 1u : 0u, c->dac_write_index, c->dac_read_index, c->dac_phase};
+    system_write_checkpoint_data(cp, latches, sizeof(latches));
     system_write_checkpoint_data(cp, c->vram, C54M30_VRAM);
 }
 
@@ -582,6 +596,16 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, c->gr, sizeof(c->gr));
     system_read_checkpoint_data(cp, c->attr, sizeof(c->attr));
     system_read_checkpoint_data(cp, c->dac, sizeof(c->dac));
+    uint8_t latches[8] = {0};
+    system_read_checkpoint_data(cp, latches, sizeof(latches));
+    c->seq_index = latches[0];
+    c->crtc_index = latches[1];
+    c->gr_index = latches[2];
+    c->attr_index = latches[3];
+    c->attr_data = latches[4] != 0;
+    c->dac_write_index = latches[5];
+    c->dac_read_index = latches[6];
+    c->dac_phase = latches[7];
     system_read_checkpoint_data(cp, c->vram, C54M30_VRAM);
     // The palette view and the scanout descriptor are DERIVED: rebuild them
     // rather than checkpointing pointers into a buffer that has moved.
@@ -671,19 +695,17 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t 
 // The framebuffer node, shared with every other display source
 // (display_class.h).  This card declared no attach_objects at all, so on a
 // Network Server `machine.screen.source` resolved to nothing and there was no
-// way to read the geometry the VGA CRTC had been programmed with
-// (04-video F-15).
+// way to read the geometry the VGA CRTC had been programmed with.
 static display_t *c54m30_fb_resolve(void *owner) {
     c54m30_t *c = (c54m30_t *)owner;
     return c ? &c->display : NULL;
 }
 static uint64_t c54m30_fb_base(void *owner) {
-    // A byte offset into display memory: the VGA start-address pair, in the
-    // doubleword units the CRTC counts in.
+    // A byte offset into display memory: where the scanout actually starts,
+    // as c54m30_update derived it (CR0C/CR0D with the CR1B extension, and the
+    // fall-back to 0 for a start that runs the raster off the end).
     c54m30_t *c = (c54m30_t *)owner;
-    if (!c)
-        return 0;
-    return ((uint64_t)c->crtc[0x0C] << 8 | c->crtc[0x0D]) * 4u;
+    return c ? c->scan_start : 0;
 }
 
 static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {

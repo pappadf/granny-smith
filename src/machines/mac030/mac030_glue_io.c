@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // mac030_glue_io.c
-// The mac030 II-family I/O dispatch engine + the GLUE family's dispatch tables
-// (proposal §4.2.2).  The engine (mac030_io_*) walks the ordered window table
+// The mac030 II-family I/O dispatch engine + the GLUE family's dispatch
+// tables.  The engine (mac030_io_*) walks the ordered window table
 // in a mac030_io_t; GLUE (here) and MDU+RBV (mdu_io.c) each install their own
 // table + mirror + device set.  The decode, per-window bus penalties, and IRQ
 // priority are the SE/30 / IIcx logic verbatim (those were byte- and
@@ -43,8 +43,8 @@ static const log_category_t *io_board_category(void) {
 // a decode miss, and they are precisely the ones where an unimplemented
 // register is most likely -- so the project's stated RE workflow ("every
 // first touch is logged so the boot ROM's access sequence becomes an RE
-// artefact", mcu.c:57-58) was unavailable exactly where it was most wanted
-// (05-chipsets-irq F-21).
+// artefact", mcu.c:57-58) was unavailable exactly where it was most
+// wanted.
 //
 // The bitmaps live on the instance, not in a function-level static: two
 // machines in one process (the boot-matrix rows do this) each get their own
@@ -93,7 +93,7 @@ static inline uint32_t io_sub_offset(const mac030_io_range_t *r, uint32_t offset
 
 // Decode, with the page index and a hint.
 //
-// Two separate cuts at the same waste (05-chipsets-irq F-43):
+// Two separate cuts at the same waste:
 //
 //  - The page index. A byte access used to walk the table from row 0 every
 //    time.  Measured over a full suite-iici run: 322,597,183 byte accesses
@@ -320,7 +320,7 @@ int mac030_io_validate(const mac030_io_t *io, const char *machine_id) {
         // handler rows were the ones that did not: av.c and mcu.c left the
         // field at its zero default at twenty-odd rows, so a PSC or 53C96
         // access on a Quadra was free while an SCC access two rows above it
-        // cost 2 (05-chipsets-irq F-49).  The IIfx table had it right all
+        // cost 2.  The IIfx table had it right all
         // along -- its scsi_dma and oss_ext handler rows charge, and only
         // its two bus-error windows do not -- which is the evidence that
         // the penalty models the island's bus turnaround, not the part.
@@ -398,7 +398,7 @@ void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, const struct mac030_boa
 // IRQ→IPL routing (the GLUE family's second dispatch table)
 // ============================================================
 
-// Ordered highest-IPL-first: NMI→7, SCC→4, VIA2→2, VIA1→1 (proposal §4.2.2).
+// Ordered highest-IPL-first: NMI→7, SCC→4, VIA2→2, VIA1→1.
 static const mac030_irq_route_t glue_irq_routes[] = {
     {MAC030_GLUE_IRQ_NMI,  7},
     {MAC030_GLUE_IRQ_SCC,  4},
@@ -412,7 +412,7 @@ const mac030_irq_route_t *mac030_glue_irq_routes(void) {
 }
 
 // Walk an ordered (high→low IPL) routing table; return the IPL of the
-// highest-priority active source, or 0 if none.  Pure; unit-tested (§6.1).
+// highest-priority active source, or 0 if none.  Pure; unit-tested.
 int mac030_irq_resolve_ipl(const mac030_irq_route_t *routes, uint32_t irq) {
     for (; routes->source; routes++) {
         if (irq & (uint32_t)routes->source)

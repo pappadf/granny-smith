@@ -406,7 +406,7 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
         // pick_delta_dir, so the delta shares state.checkpoint's lifetime and
         // gets cleaned with it), a read-only mount an ephemeral scratch delta.
         // Either way the base is immutable.  The path is used as given: where
-        // media lives is the frontend's choice (09-storage D-1).
+        // media lives is the frontend's choice.
         img = writable ? image_create_with_geometry(path, pro_delta_dir(path), geom)
                        : image_open_readonly_with_geometry(path, geom);
     }

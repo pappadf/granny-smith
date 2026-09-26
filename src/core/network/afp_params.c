@@ -81,7 +81,7 @@ static bool afp_append_component(char *path, size_t path_len, const char *compon
 // (macroman_name_to_host: MacRoman to UTF-8, '/' to ':').  False for a name
 // that cannot be one element -- "..", ".", or anything the conversion refuses
 // (':' is illegal in a Mac name) -- and for the names the server keeps for
-// itself (§4.1).
+// itself.
 static bool afp_client_element(const uint8_t *bytes, size_t len, char *host, size_t cap) {
     if (len == 0 || !macroman_name_to_host(bytes, len, host, cap))
         return false;
@@ -109,8 +109,8 @@ int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out) {
 //
 // A Mac name is at most 31 characters (HFS's Str31; AFP 2.x has no longer
 // one).  A host name whose MacRoman form is longer goes out as its first bytes
-// and "#<CNID in hex>", 31 in all.  Measured before choosing (10-network D-5,
-// appletalk-afp-longname): System 6's Finder listed a 40-character name whole,
+// and "#<CNID in hex>", 31 in all.  Measured before choosing (the
+// appletalk-afp-longname test): System 6's Finder listed a 40-character name whole,
 // then failed to copy the file to its disk -- "couldn't be written and was
 // skipped (unknown error)" -- since HFS cannot create the name.  The CNID never
 // changes, so the short form does not either, and afp_demangle maps it back.
@@ -167,8 +167,7 @@ static void afp_demangle(vol_t *vol, const char *dir_rel, char *host, size_t cap
 // 13-9): two names are one when they match after Appendix D's Table D-2 maps
 // lowercase to uppercase -- a-z and 13 MacRoman letters.  É is é, but é is
 // not e.  The hosts are case-sensitive, so a lookup that misses exactly is
-// tried again folded, and a new name that folds onto a sibling is refused
-// (10-network D-7).
+// tried again folded, and a new name that folds onto a sibling is refused.
 static const uint8_t k_d2_pairs[][2] = {
     {0x88, 0xCB},
     {0x8A, 0x80},
@@ -295,7 +294,7 @@ bool afp_name_taken(vol_t *vol, const char *dir_rel, const char *name, const cha
 // each NUL beyond the first in a run climbs one level.  This used to copy the
 // pathname into a C string -- so everything after the first NUL was lost and
 // "sub\0file" named "sub" -- and split it on ':', '/' and '\\' instead, so a
-// Mac name holding a '/' became two host path elements (10-network N-01).
+// Mac name holding a '/' became two host path elements.
 bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, char *out, size_t out_len) {
     if (!out || out_len == 0)
         return false;
@@ -404,7 +403,7 @@ bool afp_dir_rel_path(vol_t *vol, uint32_t dir_id, char *out, size_t cap) {
 
 // Adopt (or find) the catalog entry for a volume-relative path, deciding
 // file-vs-directory from the host filesystem.  This is the lazy-adoption
-// policy: anything the server touches gets an entry (§4.2).
+// policy: anything the server touches gets an entry.
 const afp_cat_entry_t *afp_entry_for(vol_t *vol, const char *rel_path) {
     if (!vol || !vol->catalog)
         return NULL;
@@ -463,7 +462,7 @@ uint16_t afp_count_offspring(const char *full_path) {
 // full Search/Read/Write in all four right bytes (user, owner, group,
 // everyone).  Mapping host permissions here instead would hand the guest a
 // user-rights byte of 0 and the AppleShare client greys out the volume.
-// Real per-directory rights are the deferred WP-13 work.
+// Real per-directory rights are deferred (appletalk_server.md §5).
 #define AFP_ACCESS_RIGHTS_ALL 0x07070707u
 
 // The AFP attribute word for one object: the persisted inhibit/visibility
@@ -592,9 +591,8 @@ int afp_mac_text(const char *text, uint8_t *out, size_t cap) {
 
 static int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, const char *host_name, uint32_t cnid,
                                uint16_t bm, int pos_long_off, int pos_short_off) {
-    // The Mac name for the host name (10-network N-02: host names went out as
-    // raw UTF-8, so "café" reached the Mac as "cafÃ©"), at most 31 characters
-    // in both fields (D-5).
+    // The Mac name for the host name, at most 31 characters in both fields.
+    // Sent as raw UTF-8, "café" would reach the Mac as "cafÃ©".
     uint8_t nm[AFP_MAC_NAME_MAX];
     int n = afp_client_name(host_name, cnid, nm, sizeof(nm));
     if (n < 0)
@@ -664,7 +662,7 @@ static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_pat
 
     if (!is_dir) {
         // An open fork's length is live: the sidecar catches up only on flush,
-        // and the data fork may have grown since the stat (10-network N-14).
+        // and the data fork may have grown since the stat.
         uint32_t len;
         if ((ptr = afp_param_field_ptr(false, bm, pbase, 9)) >= 0)
             WR_BE32(out + ptr, afp_fork_live_length(full, false, &len) ? len : (uint32_t)st->st_size);
@@ -719,7 +717,7 @@ int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t d
         return -1;
     // Strict: a length that runs past the request, or past `dst`, is a bad
     // parameter -- not a shorter string.  (Clamping it made an FPDelete that
-    // claimed 10 bytes but carried "abc" delete "abc": 10-network N-17.)
+    // claimed 10 bytes but carried "abc" delete "abc".)
     uint8_t raw_len = in[pos++];
     if (pos + raw_len > in_len || (size_t)raw_len >= dst_len)
         return -1;
@@ -730,7 +728,7 @@ int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, size_t d
 }
 
 // ============================================================================
-// Volume parameter block (WP-1: honest sizes and dates)
+// Volume parameter block (honest sizes and dates)
 // ============================================================================
 
 // Free/total bytes for a share, from the host filesystem and clamped to what

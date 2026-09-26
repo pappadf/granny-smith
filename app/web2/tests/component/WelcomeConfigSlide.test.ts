@@ -109,7 +109,7 @@ describe('WelcomeConfigSlide', () => {
     // (so no display-card row is shown), ram_default=4096 KB, two floppy slots,
     // and no has_cdrom (→ the SCSI CD-ROM row is hidden).
     expect(container.querySelector('#cfg-card')).toBeNull();
-    // RAM is a number in KB behind the label (F-01).
+    // RAM is a number in KB behind the label.
     expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4096');
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     expect(container.querySelector('#cfg-cd')).toBeNull();

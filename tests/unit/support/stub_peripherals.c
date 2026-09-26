@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Peripheral stubs for unit tests
 // Provides no-op implementations for floppy and network functions.
 

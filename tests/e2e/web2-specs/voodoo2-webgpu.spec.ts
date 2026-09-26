@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Voodoo2's WebGPU TAKEOVER (proposal-voodoo2-webgpu-
-// takeover §7, gates 2 and 3).
+// web2 e2e: the Voodoo2's WebGPU TAKEOVER.
 //
 // "voodoo2_webgpu" is the browser's alternative to the software walker: the
 // emulator's raster pthread translates the card's command stream into

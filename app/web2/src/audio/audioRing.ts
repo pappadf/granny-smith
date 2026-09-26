@@ -9,7 +9,7 @@
 // volume ramping, a one-pole LPF and a DC blocker. The producer stays
 // deterministic.
 //
-// One writer per index (T4, F-35): the emulator writes WRITE, this class
+// One writer per index: the emulator writes WRITE, this class
 // writes READ, both free-running uint32 in Int32 words. A full ring is ours
 // to notice -- the producer overwrites the oldest frames, and we resync when
 // more than a ring's worth is outstanding. A new stream is requested through

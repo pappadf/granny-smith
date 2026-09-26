@@ -2,12 +2,9 @@
 // Copyright (c) pappadf
 
 // nubus_class.c
-// `nubus.*` object-model surface.  Step-3 status: just the `nubus.cards()`
-// method, which walks nubus_card_registry() and returns a list of card-id
-// strings — empty until step 4 lands the first card.  The richer surface
-// described in proposal §3.5.3 (slot.<n>/ children, .primary, per-card
-// width/height/format/decl_rom_path) lands once cfg->nubus is non-NULL,
-// which only happens after step 4 wires up nubus_init from glue030_init.
+// `nubus.*` object-model surface: the `nubus.cards()` method, which walks
+// nubus_card_registry() and returns the list of card-id strings, and the
+// per-slot `machine.nubus.slot[N].card.*` node trees.
 
 #include "card.h"
 #include "display.h"
@@ -21,8 +18,8 @@
 #include <string.h>
 
 // `nubus.cards()` — list every registered card-driver id.  Returns
-// V_LIST<V_STRING>.  Used by the config dialog in step 5 to populate
-// the per-slot card-type dropdown without baking the list into the JS.
+// V_LIST<V_STRING>.  Used by the config dialog to populate the per-slot
+// card-type dropdown without baking the list into the JS.
 static value_t nubus_method_cards(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -47,8 +44,7 @@ static value_t nubus_method_cards(struct object *self, const member_t *m, int ar
 // REGISTRY rather than of three named cards: every display kind carries its
 // own catalogue in `.monitors`, and nubus_monitor_mode_lookup answers the same
 // question against any of them.  The named-card version meant core knew which
-// display cards exist -- and silently gave the wrong answer for a fourth
-// (04-video F-10).
+// display cards exist -- and silently gave the wrong answer for a fourth.
 static bool video_mode_id_known(const char *id) {
     for (const nubus_card_kind_t *const *k = nubus_card_registry(); k && *k; k++)
         if (nubus_monitor_mode_lookup((*k)->monitors, id, NULL, NULL))
@@ -61,7 +57,7 @@ bool nubus_video_mode_known(const char *id) {
     return video_mode_id_known(id);
 }
 
-// === Per-card object-model surface (proposal §3.8) ==========================
+// === Per-card object-model surface ==========================================
 //
 // machine.nubus.slot[N].card.{framebuffer,declrom,clut,mode[,engine]}.  The
 // node objects are created by nubus_objects_build() (called from nubus_init,
@@ -103,8 +99,8 @@ static display_t *node_disp(struct object *self) {
 // --- framebuffer node -------------------------------------------------------
 // The node itself is display_class.c's, shared with every other display
 // source so `machine.screen.source` means the same thing on either bus and on
-// the built-in chips (04-video F-15/F-16).  All this side supplies is how to
-// reach a card's live descriptor and where its framebuffer sits.
+// the built-in chips.  All this side supplies is how to reach a card's live
+// descriptor and where its framebuffer sits.
 static display_t *nubus_fb_resolve(void *owner) {
     nubus_card_t *c = (nubus_card_t *)owner;
     return (c && c->ops && c->ops->display) ? c->ops->display(c) : NULL;
@@ -427,8 +423,8 @@ void nubus_objects_build(nubus_bus_t *bus) {
             n->mode = attach_resource(n->card, &nubus_mode_class, card, "mode", "Mode", 40, M_CAT_BASIC);
             // Card-specific children, through the KIND that seated this slot.
             // This file never tests a card's identity -- the accelerator nodes
-            // that used to live here behind is_card() belong to the cards
-            // (04-video F-10), the same way pci_class.c has always done it.
+            // that used to live here behind is_card() belong to the cards,
+            // the same way pci_class.c has always done it.
             const nubus_card_kind_t *kind = nubus_slot_kind(bus, i);
             if (kind && kind->attach_objects)
                 kind->attach_objects(card, n->card);

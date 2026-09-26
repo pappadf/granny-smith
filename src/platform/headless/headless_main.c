@@ -171,7 +171,7 @@ static void sigterm_handler(int sig) {
         scheduler_stop(sched);
 }
 
-// PID file path for daemon mode (IMP-103)
+// PID file path for daemon mode
 static char g_pid_path[256] = {0};
 
 // Build PID file path for the given port
@@ -195,7 +195,7 @@ static void remove_pid_file(void) {
         unlink(g_pid_path);
 }
 
-// Kill existing daemon on the given port (IMP-103)
+// Kill existing daemon on the given port
 static int kill_existing_daemon(int port) {
     char path[256];
     pid_file_path(port, path, sizeof(path));
@@ -283,7 +283,7 @@ static int g_script_exit_code = 0;
 // Assertion failures seen this run.  A failed GS_ASSERT prints its
 // diagnostics and pauses the machine (debug.c diagnose_and_halt) so it can be
 // examined on the spot; it does not stop a script, which would otherwise run
-// on and pass.  So the run's exit status carries it (10-network D-4).
+// on and pass.  So the run's exit status carries it.
 static unsigned g_assert_failures;
 
 static void headless_failure_hook(const char *kind, const char *expr, const char *file, int line, const char *func) {
@@ -466,7 +466,7 @@ static void daemon_serve_control_connection(void) {
     close(fd);
 }
 
-// Pump the scheduler until it stops, emitting periodic heartbeat lines (IMP-105).
+// Pump the scheduler until it stops, emitting periodic heartbeat lines.
 // In daemon mode the heartbeat prevents nc -w timeouts; in script/stdin modes it
 // lets callers follow progress. Emits once per second with instruction count.
 // Also: if the daemon client is gone mid-run, stop the scheduler — a dead
@@ -488,7 +488,7 @@ static void pump_scheduler_with_heartbeat(void) {
     // bit-for-bit (only the pacing — max speed here, host-clock there —
     // differs).  That includes the power-up PRAM: the machine is built with
     // it (rtc.h pram_defaults_t) on both, where on the PDM machines the page
-    // used to seed its own and headless booted differently (F-03).  An
+    // used to seed its own and headless booted differently.  An
     // instruction-budget `scheduler.run N` schedules a
     // run_stop_event; scheduler_run_frame's inner scheduler_run clamps to it, so
     // the budget stops mid-frame at exactly N and the loop below exits.
@@ -524,7 +524,7 @@ static void pump_scheduler_with_heartbeat(void) {
     }
 }
 
-// === Statements from a stream (S6) =========================================
+// === Statements from a stream ==============================================
 //
 // A statement is complete when it ends at a newline and is balanced
 // (script_needs_continuation).  The daemon, stdin and the REPL all feed lines
@@ -585,7 +585,7 @@ static void stmt_free(stmt_asm_t *a) {
 }
 
 // Run one complete daemon statement, pump the run it starts, and report the
-// PC as a status line (IMP-308).
+// PC as a status line.
 static void daemon_run_statement(char *stmt) {
     shell_dispatch(stmt);
     pump_scheduler_with_heartbeat();
@@ -607,7 +607,7 @@ static void daemon_run_statement(char *stmt) {
 
 // Serve one client: run its statements as they complete, while reading on.
 // Supports any number of newline-delimited statements, in any number of
-// sends, of any size up to STMT_MAX (IMP-104).
+// sends, of any size up to STMT_MAX.
 static void daemon_handle_client(int client_fd) {
     g_client_fd = client_fd;
     g_client_lost = false;
@@ -736,7 +736,7 @@ static void daemon_loop(void) {
     fprintf(stderr, "Daemon listening on 127.0.0.1:%d\n", g_daemon_port);
     fprintf(stderr, "Send commands with: echo \"command\" | nc localhost %d\n", g_daemon_port);
 
-    // Emit READY signal so callers can block-read instead of sleeping (IMP-101)
+    // Emit READY signal so callers can block-read instead of sleeping
     printf("READY\n");
     fflush(stdout);
 
@@ -783,7 +783,7 @@ static const char *parse_arg(const char *arg, const char *key) {
 }
 
 // Script-interpreter pump hook: after each executed statement, drive
-// the scheduler to completion (heartbeat included, IMP-105) and report
+// the scheduler to completion (heartbeat included) and report
 // whether a quit was requested so the interpreter can stop cleanly.
 static bool headless_script_pump(void) {
     pump_scheduler_with_heartbeat();
@@ -798,7 +798,7 @@ static int run_script_file(const char *filename) {
     printf("> running %s\n", filename);
     int result = script_run_file(filename);
     if (result != 0) {
-        // v2 scripts abort on the first error (§3.9); a script that
+        // v2 scripts abort on the first error; a script that
         // aborted never reaches its `quit`, so exit here instead of
         // dropping into the interactive loop.
         g_script_exit_code = 1;
@@ -807,10 +807,10 @@ static int run_script_file(const char *filename) {
     return 0;
 }
 
-// Run statements from stdin (IMP-803), each as soon as it is complete: a
+// Run statements from stdin, each as soon as it is complete: a
 // line at a time through the statement assembler, so a multi-line block
 // runs when it closes.  getline, not a 1024-byte fgets: a longer line used to
-// be split into two statements (N-43).
+// be split into two statements.
 static int run_script_stdin(void) {
     stmt_asm_t stmt = {0};
     char *line = NULL;
@@ -826,7 +826,7 @@ static int run_script_stdin(void) {
         if (line[0] == '#')
             continue;
 
-        // An empty line repeats the last command (IMP-806) -- only outside a
+        // An empty line repeats the last command -- only outside a
         // continuation.
         if (len == 0 && stmt.len == 0) {
             if (!last_cmd)
@@ -888,7 +888,7 @@ void print_prompt(void) {
 
 // Poll for shell input (called from main loop): a line at a time through the
 // statement assembler, with the continuation prompt "... " while a block is
-// open.  getline, so a long line is one line (N-43).
+// open.  getline, so a long line is one line.
 static stmt_asm_t g_repl;
 
 int shell_poll(void) {
@@ -1197,7 +1197,7 @@ int main(int argc, char *argv[]) {
     }
     fclose(f);
 
-    // Line-buffer stdout when output is redirected or piped (IMP-107)
+    // Line-buffer stdout when output is redirected or piped
     if (script_file || !isatty(STDOUT_FILENO)) {
         setvbuf(stdout, NULL, _IOLBF, 0);
     }
@@ -1293,14 +1293,14 @@ int main(int argc, char *argv[]) {
 
     // Probe the ROM to find compatible machines, then explicitly boot one.
     // ROM identity does not pick the machine — multiple Mac models share the
-    // same ROM (Universal IIx/IIcx/SE/30), so the user picks via --model.
+    // same ROM (Universal IIx/IIcx/SE/30), so the user picks via model=.
     rom_file_info_t rom_fi = {0};
     if (rom_probe_file(rom_file, &rom_fi) != 0 || !rom_fi.info) {
         fprintf(stderr, "Error: ROM file %s could not be identified\n", rom_file);
         return 1;
     }
 
-    // Resolve target machine: --model overrides; else use the first entry in
+    // Resolve target machine: model= overrides; else use the first entry in
     // the ROM's compatible list (the family default, e.g. SE/30 for Universal).
     const char *target_model = model_override;
     if (!target_model) {
@@ -1315,7 +1315,7 @@ int main(int argc, char *argv[]) {
             }
         }
         if (!ok) {
-            fprintf(stderr, "Error: --model %s is not compatible with this ROM (%s).\n", target_model,
+            fprintf(stderr, "Error: model=%s is not compatible with this ROM (%s).\n", target_model,
                     rom_fi.info->family_name);
             fprintf(stderr, "Compatible models:");
             for (const char *const *p = rom_fi.info->compatible; *p; p++)
@@ -1374,9 +1374,9 @@ int main(int argc, char *argv[]) {
     // The web frontend attaches through the same bays (machine.attach_hd), so
     // the two front ends put a disk in the same place.  This used to put hd=N
     // at SCSI id N on the first bus whatever the model: on a Lisa that handed
-    // a NULL bus to the SCSI layer and crashed (N-01), on a Network Server it
-    // put the first disk beside the boot bay (F-15), and a fourth disk on a
-    // Mac landed on the CD bay (N-07).  A disk that cannot be placed stops the
+    // a NULL bus to the SCSI layer and crashed, on a Network Server it put the
+    // first disk beside the boot bay, and a fourth disk on a Mac landed on the
+    // CD bay.  A disk that cannot be placed stops the
     // run: a test must not go on against a machine it did not ask for.
     const hw_profile_t *active = profile; // the model machine_boot_apply just built
     media_bay_t bays[MEDIA_HD_BAYS_MAX];
@@ -1460,7 +1460,7 @@ int main(int argc, char *argv[]) {
         run_script_file(script_file);
     }
 
-    // Run commands from stdin if --script-stdin (IMP-803)
+    // Run commands from stdin if --script-stdin
     if (script_stdin) {
         run_script_stdin();
     }
@@ -1474,7 +1474,7 @@ int main(int argc, char *argv[]) {
     // Daemon mode: listen on TCP socket for commands from AI agents
     // ====================================================================
     if (g_daemon_mode) {
-        // Kill existing daemon on same port if --kill was specified (IMP-103)
+        // Kill existing daemon on same port if --kill was specified
         if (kill_daemon)
             kill_existing_daemon(g_daemon_port);
 
@@ -1486,7 +1486,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        // Write PID file and register cleanup (IMP-103)
+        // Write PID file and register cleanup
         write_pid_file(g_daemon_port);
         atexit(remove_pid_file);
         fprintf(stderr, "Daemon PID: %d\n", getpid());

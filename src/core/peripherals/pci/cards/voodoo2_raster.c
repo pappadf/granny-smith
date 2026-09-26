@@ -11,14 +11,13 @@
 // v2_draw_state_t snapshot, everything it writes lives in the
 // v2_target_t it owns.  A function here that wanted a live register
 // could not get one — which is the rule "the worker must never read
-// live card state" (thread proposal §4) enforced by the linker rather
-// than by discipline.
+// live card state" enforced by the linker rather than by discipline.
 //
 // Register truth: 3dfx, *Voodoo2 Graphics Specification* rev 1.16 —
 // cited "[V2 p.N]"; the fill convention is CHOSEN (voodoo2.md).  The
-// per-pixel semantics here are exactly the milestone-3c walker's;
-// every rung of the walker-optimization proposal is bit-exact against
-// it by construction, and the goldens are the oracle.
+// per-pixel semantics here are exactly the milestone-3c walker's; every
+// rung of the walker-optimization ladder (voodoo2.md) is bit-exact
+// against it by construction, and the goldens are the oracle.
 
 #include "voodoo2_raster.h"
 #include "voodoo2_gpu.h"
@@ -54,11 +53,10 @@
 
 LOG_USE_CATEGORY_NAME("voodoo2");
 
-// V2_FB_MASK and the always_inline leaf helpers (walker proposal §3.6;
-// the precedent is the PPC decoder's +34% from the same attribute:
-// -O2 across a TU this size otherwise leaves call boundaries in the
-// hottest loop of the emulator) live in voodoo2_raster_priv.h, shared
-// with the WebGPU translator.
+// V2_FB_MASK and the always_inline leaf helpers (the precedent is the
+// PPC decoder's +34% from the same attribute: -O2 across a TU this size
+// otherwise leaves call boundaries in the hottest loop of the emulator)
+// live in voodoo2_raster_priv.h, shared with the WebGPU translator.
 
 // One pixel's state entering the back half of the pipeline.
 typedef struct v2_pix {
@@ -72,21 +70,21 @@ typedef struct v2_pix {
 } v2_pix_t;
 
 // ============================================================
-// The pixel-provenance watch (§9.2 instrument, GS_V2_WATCH="x,y")
+// The pixel-provenance watch (trace instrument, GS_V2_WATCH="x,y")
 // ============================================================
 // Armed by the pixel pipe for the watched pixel so the texel fetches
 // that shade it can identify themselves.  Read once from the
 // environment; a threaded backend refuses to start while it is armed
 // (the instrument logs from inside the executor, and diagnosis uses
-// the synchronous walker — thread proposal §5.7).
+// the synchronous walker).
 
 static int s_watch_x = -2, s_watch_y = -2;
 static bool s_watch_now;
 // GS_V2_XCHECK=1: the soak-run cross-check for the dataflow rungs of
-// the walker-optimization proposal (§3.2, §3.3) — every shortcut is
-// recomputed the long way and a mismatch aborts.  Release builds keep
-// the code (the check is one predictable branch per pixel), so the
-// soak runs the exact binary that ships.
+// the walker-optimization ladder (TMU skip, incremental; voodoo2.md) —
+// every shortcut is recomputed the long way and a mismatch aborts.
+// Release builds keep the code (the check is one predictable branch per
+// pixel), so the soak runs the exact binary that ships.
 static bool s_xcheck;
 
 static void v2_watch_init(void) {
@@ -128,7 +126,7 @@ V2_INLINE uint16_t v2_fb_load(const v2_draw_state_t *st, const v2_target_t *tgt,
 
 V2_INLINE void v2_fb_store(const v2_draw_state_t *st, v2_target_t *tgt, uint32_t buffer, int32_t x, int32_t y,
                            uint16_t px) {
-    // Pixel-provenance watch (§9.2 instrument): GS_V2_WATCH="x,y" logs
+    // Pixel-provenance watch (trace instrument): GS_V2_WATCH="x,y" logs
     // every color-buffer store to that pixel with the state that shaded
     // it — the tool that traces one wrong pixel back to its texture.
     if (__builtin_expect(x == s_watch_x && y == s_watch_y && buffer <= 1u, 0))
@@ -240,7 +238,7 @@ static uint32_t v2_ncc_decode(const v2_target_t *tgt, int tmu, int table, uint8_
 
 // Expand one raw texel to 32-bit ARGB per the tformat table (V2 p.81).
 // Format 10's green expansion is printed there as {g[5:0], r[5:4]} —
-// resolved as the obvious typo for {g[5:0], g[5:4]} (proposal §8 Q5).
+// resolved as the obvious typo for {g[5:0], g[5:4]}.
 uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, uint32_t raw) {
     uint32_t fmt = tm->fmt;
     int table = tm->ncc_table;
@@ -441,7 +439,7 @@ static const uint8_t v2_dither2[2][2] = {
 // s_dith6[d][v] = (v*63 + 13*d) / 255 for every threshold d (0..15) and
 // channel value v — built once from the SAME expressions, so the table
 // is exact by construction and the two integer divisions leave the
-// per-pixel path (walker proposal §3.5).
+// per-pixel path.
 static uint8_t s_dith5[16][256];
 static uint8_t s_dith6[16][256];
 
@@ -900,7 +898,7 @@ static bool v2_pixel_pipe(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t 
 // The software walker — the normative rasteriser backend
 // ============================================================
 // THE FILL CONVENTION IS CHOSEN, NOT KNOWN (V2 §7.2 defers the walk to
-// the SST-1 Programming Guide nobody holds; proposal §4.5, §8 Q1):
+// the SST-1 Programming Guide nobody holds):
 // sample points at pixel integer coordinates, half-open top-left edge
 // inclusion, orientation from the command's area sign (a sign that
 // disagrees with the geometry draws nothing), and parameter iteration
@@ -954,12 +952,11 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
     uint32_t chain = 0; // most-upstream c_other is zero
     for (int tmu = V2_RASTER_TMUS - 1; tmu >= 0; tmu--) {
         const v2_tmu_state_t *tm = &st->tmu[tmu];
-        // Walker proposal §3.2: when TMU0's combine provably consumes
-        // nothing from its chain input (both zero_other bits set, no
-        // mselect of a_other, not echoing config), the TMU1 sample is
-        // dead — its contribution is multiplied by zero or never
-        // selected — and the whole sample is skipped.  Quake's
-        // single-TMU configs hit this on every pixel.
+        // When TMU0's combine provably consumes nothing from its chain
+        // input (both zero_other bits set, no mselect of a_other, not
+        // echoing config), the TMU1 sample is dead — its contribution is
+        // multiplied by zero or never selected — and the whole sample is
+        // skipped.  Quake's single-TMU configs hit this on every pixel.
         if (tmu == 1 && skip_tmu1)
             continue;
         uint32_t mode = tm->mode;
@@ -1008,12 +1005,12 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
         // the hardware's exact LOD arithmetic is Bruce-spec material we
         // do not hold).  4.2 fixed, biased and clamped per tLOD.
         //
-        // Walker proposal §3.4: with lodmin == lodmax the clamp pins
-        // lod4 to lodmin whatever the estimate says, and when the two
-        // filter bits agree `magnify` selects nothing either — so the
-        // estimate (four more divides and a log2 per pixel) is never
-        // computed.  Quake pins the level of its lightmaps and most
-        // world textures.  Everything else takes the full path.
+        // With lodmin == lodmax the clamp pins lod4 to lodmin whatever the
+        // estimate says, and when the two filter bits agree `magnify`
+        // selects nothing either — so the estimate (four more divides and a
+        // log2 per pixel) is never computed.  Quake pins the level of its
+        // lightmaps and most world textures.  Everything else takes the
+        // full path.
         int32_t lod4;
         bool magnify;
         if (tm->lod_pinned && !s_xcheck) {
@@ -1145,9 +1142,9 @@ V2_INLINE uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt,
 }
 
 // The per-pixel iterators of one triangle: closed form at the first
-// pixel of a row's inside run, stepped by the X gradients along it
-// (walker proposal §3.3).  Integer fixed point throughout, so
-// `start + k*d` accumulated equals the closed form bit for bit.
+// pixel of a row's inside run, stepped by the X gradients along it.
+// Integer fixed point throughout, so `start + k*d` accumulated equals
+// the closed form bit for bit.
 typedef struct v2_iters {
     int64_t r, g, b, a, z, w;
     int64_t s[V2_RASTER_TMUS], t[V2_RASTER_TMUS], tw[V2_RASTER_TMUS];
@@ -1310,7 +1307,7 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
             p.have_tex = tex_on;
             s_watch_now = (p.x == s_watch_x && p.y == s_watch_y);
             // The chain runs only when the pipeline reads its output
-            // (uses_tex, §3.2) — or the watch wants to print it.
+            // (uses_tex) — or the watch wants to print it.
             p.tex_argb = (tex_on && (uses_tex || s_watch_now)) ? v2_texture_chain(st, tgt, T, it.s, it.t, it.tw) : 0u;
             v2_pixel_pipe(st, tgt, &p);
             for (int e = 0; e < 3; e++)

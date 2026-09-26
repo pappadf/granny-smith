@@ -9,7 +9,7 @@
 // /opfs/images/<category>/ the way an upload of that kind is (upload.ts
 // persistAs) and mounted from there; the staging copy is then removed.  The
 // frontend owns where media lives; the core no longer copies volatile paths
-// into OPFS behind the caller's back (09-storage D-1).  A file that does not
+// into OPFS behind the caller's back.  A file that does not
 // validate as its slot's category is attached from its staging copy, with a
 // warning.
 
@@ -57,7 +57,7 @@ export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
 // ?speed= as the toolbar's pacing mode, or null when absent or unknown.
 // Accepts the core's names and their legacy aliases (max, realtime,
 // hardware).  It used to be documented as reaching the wasm module's
-// --speed flag, which nothing ever passed (F-22).
+// --speed flag, which nothing ever passed.
 export function urlSchedulerMode(speed: string | null): SchedulerMode | null {
   switch ((speed ?? '').toLowerCase()) {
     case 'paced':
@@ -97,7 +97,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // Slot -> the path to attach it from: its persisted path, or its staging
   // path when it did not validate as its category, or undefined when the
   // fetch failed.  One download at a time: in parallel, every large image
-  // was in flight at once (R3).
+  // was in flight at once.
   const paths = new Map<string, string | undefined>();
   const wanted: Array<[string, string, MediaTypeId]> = [];
   if (params.rom) wanted.push(['rom', params.rom, 'rom']);
@@ -130,11 +130,11 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   // One boot document: the core validates model/rom together, installs the
   // ROM itself and boots the model's own default RAM (there was a 4096 KB
-  // fallback here, which two models cannot boot, F-01).
+  // fallback here, which two models cannot boot).
   const booted = await gsEval('machine.boot', { model: chosen, rom: romPath });
   if (booted !== true) {
     // A rejected document leaves the previous machine (or none) in place:
-    // do not attach media to it or report a boot (N-08).
+    // do not attach media to it or report a boot.
     showNotification(
       `Could not boot ${chosen} from URL parameters: ${gsErrorText(booted)}`,
       'error',
@@ -144,7 +144,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   await insertUrlFloppies(params, paths);
   // ?hdN= is the N-th hard-disk bay in the model's own order (hd0 is the boot
-  // bay), on whatever bus it is — not SCSI id N on the first bus (F-10).
+  // bay), on whatever bus it is — not SCSI id N on the first bus.
   for (const hd of params.hardDisks) {
     const p = paths.get(hd.slot);
     if (!p) continue;
@@ -161,7 +161,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 }
 
 // ?fdN= goes into drive N — it always went into drive 0, so ?fd0=a&fd1=b
-// left b refused and dropped (F-09) — and only a drive the model has.
+// left b refused and dropped — and only a drive the model has.
 async function insertUrlFloppies(
   params: UrlMediaParams,
   paths: Map<string, string | undefined>,

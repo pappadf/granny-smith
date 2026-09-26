@@ -1,8 +1,8 @@
-// The Voodoo2 WebGPU takeover's GPU worker (proposal-voodoo2-webgpu-
-// takeover §4, §5.10).  Owns the GPUDevice and the overlay canvas;
-// consumes the record stream the emulator's raster pthread writes into
-// the wasm heap (voodoo2Protocol.ts / voodoo2_gpu_protocol.h) and turns
-// it into render passes, texture uploads, presents and readbacks.
+// The Voodoo2 WebGPU takeover's GPU worker.  Owns the GPUDevice and the
+// overlay canvas; consumes the record stream the emulator's raster
+// pthread writes into the wasm heap (voodoo2Protocol.ts /
+// voodoo2_gpu_protocol.h) and turns it into render passes, texture
+// uploads, presents and readbacks.
 //
 // Why a worker of its own: WebGPU readback is asynchronous (mapAsync),
 // the emulator pthread blocks in Atomics.wait at fences, and the raster
@@ -163,7 +163,7 @@ let passBindKey = '';
 let passScissor = '';
 // Textures/targets referenced by the open encoder: an upload into one
 // of them must wait for the encoder to be submitted (queue writes run
-// before submitted work), which is the "pass boundary" of §5.2.
+// before submitted work) -- the pass boundary.
 const usedInEncoder = new Set<string>();
 
 // The heap as the upload APIs want it: WebGPU accepts SharedArrayBuffer-
@@ -830,7 +830,7 @@ async function drain(head: number): Promise<boolean> {
     const len = u32![(at >> 2) + 1];
     // A record is word-aligned, whole within the ring (the writer pads to the
     // end rather than wrap one), and no longer than what was published -- the
-    // checks platen's ringRead makes (N-48).  Only a writer bug could break
+    // checks platen's ringRead makes.  Only a writer bug could break
     // them, and a record that does would read past the ring into the
     // readback area and mis-decode.
     if (!len || len & 3 || off + len > ringSize || len > (head - consumed) >>> 0) {

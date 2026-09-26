@@ -3,7 +3,7 @@
 
 // builtin_rbv_video.c
 // Macintosh IIci built-in video pseudo-card.  See builtin_rbv_video.h for
-// the contract and proposal-machine-iici-iisi.md §3.4 for the RBV/video
+// the contract and docs/machines/mdu/rbv.md for the RBV/video
 // split.  Modelled on jmfb.c (CLUT + depth-switch video) but much smaller:
 // the depth/monitor-sense register lives on the RBV chip, there is no slot
 // register window, and the framebuffer is registered by the machine at the
@@ -121,7 +121,7 @@ static void rbv_video_apply_scanout(rbv_video_priv_t *p) {
 // renderer read the untouched low entries, which after the boot ROM's
 // gray-out all hold the same 50% gray — so a 2 or 4 bpp desktop scanned out
 // as a uniform gray field even though the framebuffer and ScreenRow were
-// correct (ledger §5).
+// correct.
 static void rbv_video_apply_clut_window(rbv_video_priv_t *p) {
     uint32_t bpp = display_bpp(p->display.format);
     uint32_t len = 1u << bpp; // 2, 4, 16 or 256
@@ -226,7 +226,7 @@ static const char *card_name(const nubus_card_t *card) {
 // the card: VRAM contents, the active depth/format and stride, and the CLUT
 // the VDAC has been fed.  Without them a restore re-ran card_init and came up
 // on a freshly zeroed framebuffer at the 1 bpp power-up default, i.e. a blank
-// white screen that never repainted (ledger §2).
+// white screen that never repainted.
 //
 // The dirty flags are forced on restore rather than saved: the frontend has
 // just been handed a different buffer and must re-upload everything once.
@@ -241,8 +241,8 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (04-video
-        // F-41; see display.h).
+        // pixel_format_t, whose size is implementation-defined (see
+        // display.h).
         display_head_t head = display_head_of(&p->display);
         system_write_checkpoint_data(cp, &head, sizeof head);
     }
@@ -320,7 +320,7 @@ void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, ui
 // believed video was off -- every sibling chip honours its blanking bit
 // (ariel.c `vid_mode & 0x80`, control.c `CR_CTRL & 0x400`, mach64gx.c
 // `CRTC_EN`/`CRTC_DISPLAY_DIS`, civic.c `SLOT_ENABLE`) and RBV was the only
-// one that did not (04-video F-44).  The visible effect is the mode-change
+// one that did not.  The visible effect is the mode-change
 // flicker a real IIci shows during a depth switch: guest code that
 // blanks-then-reprograms was visible mid-transition.
 void builtin_rbv_video_set_blank(nubus_card_t *card, bool video_off) {

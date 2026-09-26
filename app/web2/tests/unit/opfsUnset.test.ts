@@ -1,5 +1,5 @@
-// Storage used before a backend is installed is an ordering bug, and says so
-// (F-53): the old default answered with made-up fixture files.
+// Storage used before a backend is installed is an ordering bug, and says so:
+// the old default answered with made-up fixture files.
 import { describe, it, expect, vi } from 'vitest';
 
 describe('opfs without a backend', () => {

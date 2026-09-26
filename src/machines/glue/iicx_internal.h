@@ -7,7 +7,7 @@
 // and only diverge in a handful of decisions: slot table, machine-ID bits,
 // soft-power policy, sound-jack policy.  iix.c reuses iicx.c's internals via
 // this header; the family-shared lifecycle + I/O engine live in mac030/ (the
-// §4.2 GLUE substrate).
+// GLUE substrate).
 
 #ifndef IICX_INTERNAL_H
 #define IICX_INTERNAL_H

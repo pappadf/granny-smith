@@ -1,4 +1,4 @@
-// Toast system — spec §7. Three severities (info/warning/error), max 3
+// Toast system. Three severities (info/warning/error), max 3
 // visible, queueing rule for spam (>3 in 800 ms goes straight to queue),
 // hover pauses auto-dismiss timer.
 

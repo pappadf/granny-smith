@@ -3,10 +3,10 @@
 //
 // Apple's MESH controller, driven through its register file.
 //
-// 03-scsi F-23.  MESH was the only controller in this subsystem with no unit
-// tests, because it had no handle to construct: it lived under machines/tnt/,
-// took config_t* everywhere and reached its state through tnt_st(cfg)->mesh.
-// Every bug in it had to be found through a full Power Macintosh boot.
+// MESH was the only controller in this subsystem with no unit tests, because it
+// had no handle to construct: it lived under machines/tnt/, took config_t*
+// everywhere and reached its state through tnt_st(cfg)->mesh.  Every bug in it
+// had to be found through a full Power Macintosh boot.
 //
 // That cost was paid during the move itself.  A mechanical rewrite turned
 //
@@ -101,6 +101,7 @@ int system_hd_attach(const char *path, int scsi_id) {
 }
 bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
     (void)config, (void)filename, (void)scsi_id;
+    return false;
 }
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
@@ -108,6 +109,7 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
 }
 bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
+    return false;
 }
 // No scheduler here: these tests never let time pass.
 struct scheduler *system_scheduler(void) {
@@ -129,9 +131,9 @@ event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback
 void remove_event(struct scheduler *restrict s, event_callback_t cb, void *src) {
     (void)s, (void)cb, (void)src;
 }
-// The DMA pump (F-15) asks whether it is already queued.  These tests drive
-// the port directly rather than through the scheduler, so "never queued" is
-// the right answer: every mesh_pump_arm re-arms into the no-op above.
+// The DMA pump asks whether it is already queued.  These tests drive the port
+// directly rather than through the scheduler, so "never queued" is the right
+// answer: every mesh_pump_arm re-arms into the no-op above.
 bool has_event(struct scheduler *restrict s, event_callback_t cb) {
     (void)s, (void)cb;
     return false;
@@ -309,8 +311,8 @@ TEST(datain_with_dma_asks_the_channel) {
 }
 
 // Selecting a target that is not there reports a time-out -- and does so
-// through the SHARED bus helper (F-18), which with no scheduler under the
-// suite reports immediately.
+// through the SHARED bus helper, which with no scheduler under the suite
+// reports immediately.
 TEST(select_absent_target_times_out) {
     setup();
     wr(R_SEL_TIMEOUT, 25); // 250 ms, what Mac OS programs

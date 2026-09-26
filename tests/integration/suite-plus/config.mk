@@ -1,4 +1,4 @@
-# Integration suite: Macintosh Plus (proposal-integration-test-rework §7)
+# Integration suite: Macintosh Plus
 #
 # Grown out of boot-matrix, which already had the target shape (one
 # daemon, machine.boot between rows, per-row throughput floors); the rows
@@ -16,13 +16,13 @@
 # the "Welcome to Macintosh" splash — so these rows are that mirror's
 # regression test.
 #
-# The two IIcx rows boot-matrix used to carry are gone, not moved: §7
-# drops the IIcx 6.0.8 floppy row as transport-redundant (suite-se30's
-# row covers direct-SWIM 800K, and IIcx x 6.0.8 stays lit by the GC
-# accel pair on the 6.0.8 HD image) and retires the "SSW 7.0" row as a
-# media fiction — that 800K set's boot disk actually runs a 6.0.7-class
-# System, so the cell it claimed never existed.  Its 2 bpp JMFB coverage
-# lives in iicx-video-modes' 16-cell sweep.
+# The two IIcx rows boot-matrix used to carry are gone, not moved: the
+# redistribution drops the IIcx 6.0.8 floppy row as transport-redundant
+# (suite-se30's row covers direct-SWIM 800K, and IIcx x 6.0.8 stays lit
+# by the GC accel pair on the 6.0.8 HD image) and retires the "SSW 7.0"
+# row as a media fiction — that 800K set's boot disk actually runs a
+# 6.0.7-class System, so the cell it claimed never existed.  Its 2 bpp
+# JMFB coverage lives in iicx-video-modes' 16-cell sweep.
 #
 #   make test-suite-plus
 #   make test-suite-plus TEST_VARS="ROW=plus-beep"   one row only
@@ -38,5 +38,5 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 # test.script has a sensible baseline to re-instantiate from.
 TEST_ARGS := model=plus ram=1024
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

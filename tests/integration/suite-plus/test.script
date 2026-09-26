@@ -7,7 +7,7 @@
 #                  (frame-exact window — the constants are load-bearing)
 #   plus-20-fd     System 2.0 @ 1 MB (factory-default RAM)
 #   plus-32-fd     System 3.2 @ 2 MB
-#   plus-4x-fd     **System 4.1 @ 2.5 MB** — one of §6.2's unused
+#   plus-4x-fd     **System 4.1 @ 2.5 MB** — one of the unused
 #                  single-disk system images, on the asymmetric-bank
 #                  RAM config
 #   plus-42-fd     System 4.2, moved to the 4 MB maximum
@@ -44,9 +44,8 @@ def plus_fd_row(label, ram, media, golden, ceiling) {
 }
 
 # ---- plus-beep --------------------------------------------------------------
-# Deterministic PWM audio through the generalized audio path. The fixed
-# window and the exact frame count are both the assertion (§5.2's
-# run_exact class), not padding.
+# Deterministic PWM audio through the generalized audio path. The fixed window
+# and the exact frame count are both the assertion, not padding.
 def row_plus_beep() {
     machine.boot model="plus" ram=1024 rom="${$ROM}"
     machine.sound.capture.start
@@ -75,8 +74,8 @@ def row_plus_32_fd() {
     report_perf("suite-plus/plus-32-fd", $spent)
 }
 
-# NEW ROW: System 4.1 — one of the single-disk system images that sat
-# unused in tests/data (§6.2), on the asymmetric two-bank RAM config.
+# NEW ROW: System 4.1 — one of the single-disk system images that sat unused in
+# tests/data, on the asymmetric two-bank RAM config.
 def row_plus_4x_fd() {
     let t0 = scheduler.host_user_ns
     let spent = plus_fd_row("plus-4x-fd", 2560, $sys_41, "goldens/plus-4.1-512x342-finder.png", 90000000)
@@ -106,7 +105,7 @@ def row_plus_608_fd() {
     assert machine.ram == 2048 "plus-608-fd: machine.ram != 2048"
     check("goldens/plus-6.0.8-512x342-finder.png")
     # No assert_addr here: the Plus is a 68000, always 24-bit, and it has
-    # no MMU32bit global (§3.4 — the axis is n/a for this class).
+    # no MMU32bit global (the axis is n/a for this class).
     report_row("6.0.8", "builtin", "fd-boot iwm 800k-gcr")
 
     # Blank second floppy → the System's initialize-disk dialog.
@@ -228,7 +227,7 @@ def row_plus_keyboard() {
     run_ticks(10)
     assert keymap_bit(0x38) == 0 "plus-keyboard: Shift latch stuck down after keypad / release"
 
-    # N-04: keyboard.press("a") failed on EVERY machine, Mac included --
+    # keyboard.press("a") used to fail on EVERY machine, Mac included --
     # debug_mac_resolve_key_name knew fourteen named keys and the hex form and
     # nothing else, while adb.c's own argument doc promised
     # `Key name ("return"/"esc"/"a"/...)`.  Letters and digits now resolve
@@ -251,13 +250,12 @@ def row_plus_keyboard() {
 
 # ---- plus-checkpoint --------------------------------------------------------
 # The Plus had no save/restore round trip at all, which is the coverage the
-# 2026-09-03 review's F-18 needed before the family could move onto the
-# shared checkpoint prefix: the checkpoint stream is positional and has no
-# version field, so a save and its restore that drift apart do not fail at
-# the drift -- they cross-load and die later at whichever block first
-# disagrees on size (the IIfx did exactly that).  Boot to the 6.0.8 Finder,
-# save, boot a DIFFERENT machine, load, and require the restored machine to
-# be the saved one down to the pixel.
+# family needed before it could move onto the shared checkpoint prefix: the
+# checkpoint stream is positional and has no version field, so a save and its
+# restore that drift apart do not fail at the drift -- they cross-load and die
+# later at whichever block first disagrees on size (the IIfx did exactly that).
+# Boot to the 6.0.8 Finder, save, boot a DIFFERENT machine, load, and require
+# the restored machine to be the saved one down to the pixel.
 def row_plus_checkpoint() {
     machine.boot model="plus" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"

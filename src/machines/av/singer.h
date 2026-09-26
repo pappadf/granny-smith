@@ -3,10 +3,7 @@
 
 // singer.h
 // The Singer codec + PSC sound frame engine — the AV family's sound
-// datapath.  Contract: docs/machines/av/singer.md (register
-// map §1, sndComCtl §2, singerCtl/singerStat §3, behavioural model §7) +
-// the frame-tick gating facts from the PlainTalk gap-closure findings
-// (supermario-board-wiring.md §B2, rtm-rom-host-side.md §2/§5).
+// datapath.  Contract: docs/machines/av/singer.md.
 //
 // The engine runs a scheduler event at the programmed frame cadence
 // (`sndSize` sample frames at the `pSndRate` codec rate, phase-locked to
@@ -28,7 +25,7 @@
 struct av_singer;
 typedef struct av_singer av_singer_t;
 
-// singerStat presentation (singer.md §3 + gap-closure B4): BI1/BI3 set —
+// singerStat presentation: BI1/BI3 set —
 // the DSP driver's 3-way input-source decode reads "source 1", the
 // microphone presentation — BI4 set for the shipped output-port choice,
 // and pValidData so recorded A/D data reads as valid.  Board straps, not

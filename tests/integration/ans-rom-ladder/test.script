@@ -1,5 +1,4 @@
-# Apple Network Server ROM boot ladder
-# (proposal-apple-network-server-500-700 §8.1).
+# Apple Network Server ROM boot ladder.
 #
 # Every assertion is a hardware truth read from the live machine after a
 # clean bounded run — deliberately NO PC logpoints or breakpoints (the PDM
@@ -14,7 +13,7 @@
 
 # The two profiles differ in the CPU card's clock, the L2 DIMM size and
 # TwoSuppliesH — and in nothing else an emulator can see, which is exactly
-# why both run (§13 R10).  Each row is a full cold boot.
+# why both run.  Each row is a full cold boot.
 def ladder(model, ram_kb, ram_banner, cpu_banner, l2_banner, two_psu) {
     machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
 
@@ -105,7 +104,8 @@ def ladder(model, ram_kb, ram_banner, cpu_banner, l2_banner, two_psu) {
     assert machine.lcd.line(0) != "L2 Cache SIMM Failed" "S4: ${$model} the L2 cache test failed"
     # The three POST failures the built-in PCI devices would report if their
     # config space were wrong.  Absence is a real assertion here: each names
-    # a device we model, and each appeared for real before Phase C landed.
+    # a device we model, and each appeared for real before its config space
+    # was modelled.
     assert machine.lcd.line(0) != "MainLBU 825#1 Failed" "S5: ${$model} 53C825A #0 rejected by POST"
     assert machine.lcd.line(0) != "MainLBU 825#2 Failed" "S5: ${$model} 53C825A #1 rejected by POST"
     assert machine.lcd.line(0) != "MainLBU Video Failed" "S5: ${$model} the 54M30 was rejected by POST"

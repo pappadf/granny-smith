@@ -1,6 +1,5 @@
 # The Apple Network Server's Open Firmware device tree, matched against
-# Apple's published Listing 6-1
-# (proposal-apple-network-server-500-700 §6/§7, ladder rungs S5-S7).
+# Apple's published Listing 6-1.
 #
 # The tree is an OUTPUT, not a build target.  Every node below exists
 # because Open Firmware probed a register we model and decided the device
@@ -107,8 +106,8 @@ def tree(model, ram_kb, bus_clock, l2_label) {
     assert contains($scsi, "device_type             scsi") "S7: ${$model} device_type is not scsi"
     assert contains($scsi, "revision-id             00000014") "S7: ${$model} revision-id is not \$14"
     # AAPL,interrupts — the property AIX reads to build its ODM entry, NOT
-    # the PCI pin (which is 1) and NOT the raw EXT number.  The proposal
-    # deduced the rule as "the Grand Central interrupt-controller bit
+    # the PCI pin (which is 1) and NOT the raw EXT number.  The rule was
+    # first deduced as "the Grand Central interrupt-controller bit
     # number", i.e. 20 + EXT index, from a single published data point
     # (0x1D for a slot-6 card, which is EXT9 = GC 29).  This is the
     # firmware's own answer for a device on EXT2: 20 + 2 = 22 = 0x16.
@@ -131,7 +130,7 @@ def tree(model, ram_kb, bus_clock, l2_label) {
     # carries one.  Allocating it an EXT position would corrupt the map.
     assert !contains($video, "AAPL,interrupts") "S7: ${$model} the 54M30 must carry no routed interrupt"
 
-    # --- The device aliases: the boot paths Phase F will type ---------------
+    # --- The device aliases: the boot paths a boot command will type ---------
     send("devalias")
     let aliases = go()
     # `pci1` and `pci2` are the two Bandits, which is the form the six

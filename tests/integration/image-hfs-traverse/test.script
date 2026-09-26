@@ -1,4 +1,4 @@
-# Integration test: Phase 2 image-VFS descent into an HFS floppy.
+# Integration test: image-VFS descent into an HFS floppy.
 # Runner cd's into this directory; paths are relative.
 
 # Probe the image: expected to surface as a bare HFS volume.

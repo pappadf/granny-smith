@@ -5,8 +5,7 @@
 // Public entry point: gs_eval. The former gs_inspect and gs_complete
 // entry points were folded into the object model itself — schema is now
 // reached via `<path>.meta.*` and tab-completion via
-// `gs_eval("meta.complete", [...])`. See
-// proposal-introspection-via-meta-attribute.md.
+// `gs_eval("meta.complete", [...])`.
 
 #include "api.h"
 
@@ -27,7 +26,7 @@
 // Tiny JSON emitter — values become a single JSON-encodable shape:
 //   numeric / bool      → bare number / true / false
 //   strings, errors     → quoted string with the standard escapes
-//   bytes               → "0x..." hex string (proposal default formatter)
+//   bytes               → "0x..." hex string (the default formatter)
 //   enum                → {"enum": "<name>", "index": <idx>}
 //   list                → JSON array, recurse
 //   object              → {"object": "<class>", "name": "<name>"}
@@ -100,7 +99,7 @@ static void buf_append_jstring(char *buf, size_t size, size_t *pos, const char *
 // caller reading gsEval output has to discriminate those kinds.  It differs
 // from the VFMT_JSON that script text uses, and that difference is now
 // declared rather than, as expr.c's comment used to claim, an agreement that
-// happened not to hold (F-14).
+// happened not to hold.
 //
 // It also gains two cases this function never had: V_REF and V_RANGE fell
 // through the switch with no default, emitting NOTHING and producing a
@@ -467,7 +466,7 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
         // bare document `"empty path"`, so a JS caller doing
         // `if (result.error)` got undefined and treated the failure as a
         // successful string result -- while object-model.md promises JS
-        // callers see error SHAPES, never raw values (08-core-infra F-59).
+        // callers see error SHAPES, never raw values.
         buf_append(out_buf, out_size, &pos, "{\"error\":", 9);
         buf_append_jstring(out_buf, out_size, &pos, "empty path");
         buf_append(out_buf, out_size, &pos, "}", 1);

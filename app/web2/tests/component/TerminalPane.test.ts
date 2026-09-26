@@ -1,7 +1,7 @@
 // The terminal pane's input path against a stand-in xterm: `onData` is the
-// only input (F-40), what is typed while a command runs waits for its prompt
-// (N-55), Ctrl-C interrupts and drops the type-ahead, and an unmount
-// disposes the terminal (F-39).
+// only input, what is typed while a command runs waits for its prompt,
+// Ctrl-C interrupts and drops the type-ahead, and an unmount
+// disposes the terminal.
 import { render, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import TerminalPane from '@/components/panel-views/terminal/TerminalPane.svelte';

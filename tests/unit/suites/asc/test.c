@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// Apple Sound Chip unit test (proposal-sound-support-all-models §5/§8).
+// Apple Sound Chip unit test.
 //
 // Links the real asc.c against recording stubs and pins three layers:
 //

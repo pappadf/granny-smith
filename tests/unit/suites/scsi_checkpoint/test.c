@@ -3,9 +3,9 @@
 //
 // SCSI checkpoint round-trip.
 //
-// 03-scsi F-20.  The save was a plain-data prefix that stopped at `devices`,
-// plus a hand-written per-field loop over the eight device records -- and the
-// loop forgot fields.  sense, prevent_removal and default_block_size were all
+// The save was a plain-data prefix that stopped at `devices`, plus a
+// hand-written per-field loop over the eight device records -- and the loop
+// forgot fields.  sense, prevent_removal and default_block_size were all
 // silently dropped.
 //
 // That is not theoretical: instrumenting the save path showed suite-quadra
@@ -94,6 +94,7 @@ int system_hd_attach(const char *path, int scsi_id) {
 }
 bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
     (void)config, (void)filename, (void)scsi_id;
+    return false;
 }
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
     (void)bus, (void)path, (void)scsi_id;
@@ -101,6 +102,7 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
 }
 bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
+    return false;
 }
 // No scheduler here: these tests never let time pass.  A NULL scheduler means
 // a DATA OUT settle completes immediately (there is nothing to wait for), which
@@ -329,7 +331,7 @@ TEST(test_busless_round_trip_is_symmetric) {
 }
 
 // ============================================================================
-// F-21: no host pointers in the stream
+// No host pointers in the stream
 // ============================================================================
 //
 // scsi_53c96_checkpoint wrote sizeof(*c) -- the whole struct, pointers and all.
@@ -403,10 +405,10 @@ TEST(test_53c96_state_survives_a_round_trip) {
 
 // The shared selection time-out does not cross a checkpoint, and must not try.
 //
-// F-18 moved the wait into the bus so every controller uses one implementation.
-// That makes its restore behaviour shared too: the armed callback is a host
-// function pointer and its context a host address, so neither may be written
-// (F-21), and a restore lands with nothing armed.  Stated once on
+// The wait lives in the bus so every controller uses one implementation.  That
+// makes its restore behaviour shared too: the armed callback is a host function
+// pointer and its context a host address, so neither may be written, and a
+// restore lands with nothing armed.  Stated once on
 // scsi_bus_arm_select_timeout() in scsi.h; pinned here so it stays true.
 static void dummy_seltmo(void *ctx) {
     (void)ctx;

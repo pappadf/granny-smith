@@ -42,7 +42,7 @@ describe('WelcomeHomeSlide', () => {
     expect(rows).toEqual(['New Machine...', 'Open Checkpoint...', 'Upload ROM...']);
   });
 
-  // Nothing in production ever wrote a recent list (N-13): no Recent card.
+  // Nothing in production ever wrote a recent list: no Recent card.
   it('shows only the Start card', () => {
     const { container } = render(WelcomeHomeSlide);
     const headings = Array.from(container.querySelectorAll('.card-heading')).map(

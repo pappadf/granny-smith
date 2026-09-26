@@ -2,14 +2,15 @@
 // Copyright (c) pappadf
 
 // voodoo2_gpu.c
-// The WebGPU takeover's translator (proposal-voodoo2-webgpu-takeover
-// §4-§5): the raster pthread's GPU mode.  It consumes the SAME
-// v2_cmd_t stream every backend consumes, and while ENGAGED turns it
-// into records for the browser's GPU worker (voodoo2_gpu_protocol.h)
-// instead of pixels: the setup unit's triangles become vertex-buffer
-// entries under a cached pipeline plus a uniform block, fastfills and
-// SGRAM fills become fill draws, texture memory becomes a cache of GPU
-// mip chains converted from the shadow texture RAM by the normative
+// The WebGPU takeover's translator
+// (docs/core/peripherals/pci/cards/voodoo2.md, "The WebGPU takeover"):
+// the raster pthread's GPU mode.  It consumes the SAME v2_cmd_t stream
+// every backend consumes, and while ENGAGED turns it into records for
+// the browser's GPU worker (voodoo2_gpu_protocol.h) instead of pixels:
+// the setup unit's triangles become vertex-buffer entries under a
+// cached pipeline plus a uniform block, fastfills and SGRAM fills
+// become fill draws, texture memory becomes a cache of GPU mip chains
+// converted from the shadow texture RAM by the normative
 // v2_texel_expand, bypass LFB writes become texture uploads, and a
 // swap's vblank becomes a present onto the overlay canvas.
 //
@@ -17,16 +18,16 @@
 // RAM, palettes, NCC tables, counters, stipple — is kept coherent by
 // running the non-pixel commands through the walker as usual; the
 // FRAMEBUFFER shadow is patched only at fences, from readbacks of the
-// rows a fence needs (§5.7).  Bring-up runs on the walker (§5.1):
-// GPU mode engages when the card starts driving the monitor and
-// disengages when it stops, on device loss, or on a readback storm.
+// rows a fence needs.  Bring-up runs on the walker: GPU mode engages
+// when the card starts driving the monitor and disengages when it
+// stops, on device loss, or on a readback storm.
 //
-// Anything the shader cannot express exactly enough (§5.5) — a
-// rotate-mode stipple mask, the "colour before fog" destination blend
-// factor, a zaColor depth compare — falls back: the touched rows are
-// read back, the walker executes the command against the shadow, and
-// the rectangle is uploaded again.  Correct by construction, slow only
-// when it happens, counted by reason.
+// Anything the shader cannot express exactly enough — a rotate-mode
+// stipple mask, the "colour before fog" destination blend factor, a
+// zaColor depth compare — falls back: the touched rows are read back,
+// the walker executes the command against the shadow, and the rectangle
+// is uploaded again.  Correct by construction, slow only when it
+// happens, counted by reason.
 //
 // Everything here runs on the raster pthread; the only other caller
 // is v2_gpu_destroy (after the queue has been fenced).  Nothing reads
@@ -393,7 +394,7 @@ static bool v2gpu_upload_rect(v2_gpu_t *g, v2gpu_target_t *t, uint32_t x0, uint3
 
 // Read rows [y0, y1) of the target back into the shadow, band by band,
 // skipping bands whose rows are already valid.  Each band is one
-// roundtrip through the worker (a fence in the proposal's sense).
+// roundtrip through the worker (one fence).
 static bool v2gpu_readback_rows(v2_gpu_t *g, v2gpu_target_t *t, uint32_t y0, uint32_t y1) {
     v2gpu_close_all(g);
     if (y1 > t->h)
@@ -820,11 +821,6 @@ static uint32_t v2gpu_tex_resolve(v2_gpu_t *g, const v2_draw_state_t *st, int tm
 // Draw records
 // ============================================================
 
-static inline float v2gpu_f(uint32_t bits) {
-    float f;
-    memcpy(&f, &bits, sizeof(f));
-    return f;
-}
 static inline uint32_t v2gpu_bits(float f) {
     uint32_t u;
     memcpy(&u, &f, sizeof(u));
@@ -958,7 +954,7 @@ static float *v2gpu_vertex_ptr(v2_gpu_t *g) {
 // One vertex of a triangle: the walker's iterators, evaluated in closed
 // form at the vertex's real 12.4 position, relative to vertex A's
 // truncated position — the plane the walker iterates, so the GPU's
-// linear interpolation reproduces it at every pixel centre (§5.3).
+// linear interpolation reproduces it at every pixel centre.
 static void v2gpu_vertex(float *o, const voodoo2_tri_t *T, int32_t vx, int32_t vy) {
     double x = vx / 16.0, y = vy / 16.0;
     double dx = x - (double)(T->ax >> 4), dy = y - (double)(T->ay >> 4);
@@ -1139,9 +1135,9 @@ static void v2gpu_triangle(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *
     if (T->cy > maxy)
         maxy = T->cy;
     int32_t bx0 = minx >> 4, bx1 = (maxx + 15) >> 4, by0 = miny >> 4, by1 = (maxy + 15) >> 4;
-    // The fallbacks (§5.5): a rotate-mode stipple MASK (per-pixel
-    // register order), the "colour before fog" destination factor, and
-    // the zaColor depth compare — none expressible on the GPU.
+    // The fallbacks: a rotate-mode stipple MASK (per-pixel register order),
+    // the "colour before fog" destination factor, and the zaColor depth
+    // compare — none expressible on the GPU.
     int reason = -1;
     if ((fbz & 4u) && !(fbz & 0x1000u))
         reason = V2GPU_FB_STIPPLE;
@@ -1208,7 +1204,7 @@ static void v2gpu_triangle(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *
     // high.  A top edge's row is added back as a one-row quad on the same
     // plane (its ends carry the corners' left/right ties); a bottom edge's
     // row is cut with the scissor — the triangle has nothing else on it.
-    // Unflipped, the two rules coincide (§5.3); slanted edges never differ.
+    // Unflipped, the two rules coincide; slanted edges never differ.
     int32_t tie_y = INT32_MIN, tie_xa = 0, tie_xb = 0;
     bool tie_top = false;
     if (flip) {
@@ -1267,9 +1263,9 @@ static void v2gpu_triangle(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *
         if (fbz & 0x400u)
             v2gpu_rows_set(dt, (uint32_t)ry0, (uint32_t)ry1, false);
     }
-    // The statistics counters are APPROXIMATE in GPU mode (§5.4): the
-    // analytic covered area, clipped by the bounding box's visible
-    // fraction; the failure counters do not move.
+    // The statistics counters are APPROXIMATE in GPU mode: the analytic
+    // covered area, clipped by the bounding box's visible fraction; the
+    // failure counters do not move.
     double pixels = (double)(area < 0 ? -area : area) / 512.0;
     double bw = (double)(bx1 - bx0), bh = (double)(by1 - by0);
     int32_t cx0 = bx0 < st->clip_x0 ? st->clip_x0 : bx0, cx1 = bx1 > st->clip_x1 ? st->clip_x1 : bx1;

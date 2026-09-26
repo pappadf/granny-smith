@@ -24,7 +24,7 @@
 // on purpose: they are voice-call processing, and an AGC in front of the
 // emulator is precisely the defect that made recorded test assets unusable
 // (levels 6-12 dB hot with the dynamics flattened, which Apple's recognizer
-// rejects — see the PlainTalk SR test-audio notes §2).
+// rejects).
 // The C side then applies the PlainTalk microphone's own characteristics.
 
 import { getModuleHeap } from '@/bus/emulator';
@@ -188,7 +188,7 @@ function setConnected(v: boolean): void {
 // Drop anything queued and tell the C side what rate is actually arriving.
 // The drop is REQUESTED: the consumer honours it (rd = wr) where `rd` has its
 // one writer. This used to zero `wr` and `rd` itself, racing a pull on the
-// worker (N-47). The producer writes only its own words.
+// worker. The producer writes only its own words.
 function resetRing(rate: number): void {
   const heap = transport();
   if (!heap) return;
@@ -483,7 +483,7 @@ async function syncStreamInner(): Promise<void> {
     // light the recording indicator), and not if the toggle went off while
     // the permission prompt was up.  An acquire that stops here straight
     // away is the permission prompt under the click's gesture -- the only
-    // one: setMicrophoneEnabled used to prime a second time (N-60).
+    // one: setMicrophoneEnabled used to prime a second time.
     if (!(microphone.enabled && microphone.guestActive)) {
       for (const t of s.getTracks()) t.stop();
       return;

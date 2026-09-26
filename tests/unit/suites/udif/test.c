@@ -294,7 +294,7 @@ TEST(udif_trailer_rejects_unsupported) {
     ASSERT_EQ_INT(-EINVAL, udif_parse_trailer(t, sizeof(t), &tr));
 
     // More sectors than storage can open: the scratch file is pre-extended
-    // to this size before anything is decoded (F-24).  2^32 - 1 is the
+    // to this size before anything is decoded.  2^32 - 1 is the
     // largest accepted.
     build_trailer(t);
     w_u64(t + KOLY_SECTORS, (uint64_t)UINT32_MAX + 1);
@@ -441,7 +441,7 @@ TEST(udif_parse_blkx_rejects_malformed) {
     ASSERT_TRUE(m == NULL);
 
     // The same, where sector + count wraps to a small number: the check was
-    // an addition, which the wrap passed (F-25).
+    // an addition, which the wrap passed.
     const test_chunk_t wraps[] = {
         {UDIF_CHUNK_RAW, UINT64_MAX, 1, 0, 512}
     };

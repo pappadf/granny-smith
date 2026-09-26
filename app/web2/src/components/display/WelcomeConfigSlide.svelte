@@ -96,13 +96,12 @@
     for (const v of allVroms) (out[v.cardId] ??= []).push(v);
     return out;
   });
-  // The slot this dialog configures: the FIRST video_slots entry.  Machines
-  // now declare every socket (stage 2 of the computed-card-compatibility
-  // proposal), all offering the same computed card list — the single picker
-  // drives the first one via the machine.nubus.video_card first-socket
-  // alias; a per-socket UI is future work.  On builtin-first machines
-  // (SE/30, IIci, IIsi) the first entry is the fixed built-in video, which
-  // keeps their no-picker/vROM-row behavior exactly as before.
+  // The slot this dialog configures: the FIRST video_slots entry.  Machines now
+  // declare every socket, all offering the same computed card list — the single
+  // picker drives the first one via the machine.nubus.video_card first-socket
+  // alias; a per-socket UI is future work.  On builtin-first machines (SE/30,
+  // IIci, IIsi) the first entry is the fixed built-in video, which keeps their
+  // no-picker/vROM-row behavior exactly as before.
   let configSlot = $derived((currentProfile?.video_slots ?? [])[0]);
   let slotCards = $derived(configSlot?.cards ?? []);
   // The slot's default card id (the C-side default pick).
@@ -275,8 +274,8 @@
   // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
   // asymmetry): a card declares requires_vrom, not the machine.
   let needsVrom = $derived(selectedCard?.requires_vrom === true);
-  // The vROM file handed to the core for the selected card (an explicit
-  // machine.vrom.load — the preferred offer); it also gates "is this card
+  // The vROM file handed to the core for the selected card (machine.boot's
+  // vrom= argument, the explicit pick that wins the offer order); it also gates "is this card
   // installable". Without it the card factory falls back to whatever the
   // platform offered from the OPFS store (content-matched).
   let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
@@ -312,7 +311,7 @@
   });
   // Only machines whose profile advertises a CD-ROM (has_cdrom) show the CD row.
   let hasCdrom = $derived(currentProfile?.has_cdrom === true);
-  // RAM choices in KB, labelled for display (the value stays a number, F-01).
+  // RAM choices in KB, labelled for display (the value stays a number).
   let ramOptions = $derived(currentProfile?.ram_options ?? []);
   let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
   // Video-mode list for the *selected card*: its monitors × supported depths.
@@ -512,7 +511,7 @@
     floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
     // Media picked for another model are not this one's (and this one may
     // have no CD bay at all): the CD used to stay selected, hidden, and be
-    // attached anyway (N-03).
+    // attached anyway.
     hd = NONE_SENTINEL;
     cd = NONE_SENTINEL;
     // cardId / videoMode follow the card-selection effects above.
@@ -557,7 +556,7 @@
   // or rejected, the previous value.  In that last case the state does not
   // change, so Svelte leaves the DOM showing the sentinel: write the
   // <select>'s value back ourselves.  (A cancel used to wipe the slot, and a
-  // successful upload left it at (none), N-53.)
+  // successful upload left it at (none).)
   async function interceptIfUpload(
     select: HTMLSelectElement,
     previous: string,

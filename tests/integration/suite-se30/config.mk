@@ -1,4 +1,4 @@
-# Integration suite: Macintosh SE/30 (proposal-integration-test-rework §7)
+# Integration suite: Macintosh SE/30
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs se30-boot (no-media icon),
@@ -9,7 +9,7 @@
 #
 # Retired here, not lost: se30-floppy claimed SE/30 x 7.1 from
 # System_7_1_0.dsk, an 800K disk that actually boots a 6.0.7-class
-# system (§7's third media fiction) — the genuine 800K GCR transport
+# system (a media fiction) — the genuine 800K GCR transport
 # coverage is the 6.0.8 row below. se30-scsi is deleted; its SCSI HD
 # boot path is the 7.5 row, on fresher media.
 #
@@ -23,5 +23,5 @@ TEST_DESC := No-media icon, chime WAV, 6.0.8/7.1 floppy transports, generic vROM
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=se30 ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

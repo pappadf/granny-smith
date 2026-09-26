@@ -13,8 +13,7 @@
  * New tests at the bottom cover the repo adaptation's additions: on-chip
  * timer + BIO MMIO decode, the BIO output callback (the AV DSP→host
  * doorbell), PS.IR0/IR1 pin mirrors, the dsp3210_run burn-down/idle
- * contract, and the 7-word host bootstrap handshake against a mock bus
- * (the multi-CPU proposal's Phase B acceptance test).
+ * contract, and the 7-word host bootstrap handshake against a mock bus.
  */
 
 #include "dsp3210.h"
@@ -498,7 +497,7 @@ static void test_waiti_bkpt(void) {
     prog(q, 1);
     CHECK(run(10) == DSP3210_STEP_BKPT);
 
-    /* the three spc encodings, byte-for-byte [DOC §1.5.4] */
+    /* the three spc encodings, byte-for-byte */
     CHECK(e_mvior(1, W_LONG, RC(0), 10) == 0x9DE0040Au);
     CHECK(e_mvior(1, W_SHORT, RC(0), 10) == 0x9D60040Au);
     CHECK(e_mvior(1, W_BYTE, RC(0), 10) == 0x9D00040Au);
@@ -719,7 +718,7 @@ static void test_da_int_float(void) {
      * round trip (`*r8 = a0 = int32(a3)` ; `a0 = float32(a0)` splits its
      * phase accumulator into integer and fractional parts); modelling
      * INT32 as "leave the numeric value" turned every recording the
-     * Sound control panel made into a saturated derivative (errata E16). */
+     * Sound control panel made into a saturated derivative. */
     const uint32_t q[] = {
         e_set24(RC(2), 0x104), e_daspec(9, 0, DF_ACC(1), DF(2, 0)), /* *r2 = a0 = int32(a1) */
         e_daspec(8, 0, DF_ACC(0), DF_NOWR), /* a0 = float32(a0) */
@@ -904,7 +903,7 @@ static void test_da_ifalt(void) {
     CHECK(dsp3210_acc_get(&S, 3) == 99.0); /* N clear → kept */
 }
 
-/* ---- the DAU pipeline latencies [IM §4.4.2] (errata.md E12-E14) ---- */
+/* ---- the DAU pipeline latencies [IM §4.4.2] ---- */
 
 /* Latency 1 [IM §4.4.2.1]: a DA instruction's memory write "is not
  * available to be read from that location until four instructions later".
@@ -996,7 +995,7 @@ static void test_latency_dau_condition(void) {
 }
 
 static void test_dsp32_format(void) {
-    /* spot values from the format definition [DOC §1.5.6] */
+    /* spot values from the format definition */
     CHECK(dsp3210_dsp32_to_double(0) == 0.0);
     CHECK(dsp3210_dsp32_to_double(0x00000080u) == 1.0); /* 1.0×2^0 */
     CHECK(dsp3210_dsp32_to_double(0x00000081u) == 2.0);
@@ -1107,7 +1106,7 @@ static void test_bio_doorbell(void) {
 /* PS.IR0/IR1 read the LIVE pin level (1 = negated): dsp3210_ext_pulse
  * asserts the pin for a bounded window of core time and edge-latches the
  * request; taking the interrupt does not touch the pin, and an emr write
- * with bit 0 set drops a latched-but-untaken EXT1 request (§3.5). */
+ * with bit 0 set drops a latched-but-untaken EXT1 request. */
 static void test_ps_ir_mirror(void) {
     const uint32_t p[] = {
         E_NOP,
@@ -1199,7 +1198,7 @@ static void test_run_idle_contract(void) {
 /* The 7-word host bootstrap (StartProcessorRoutine) against a mock bus:
  * external memory lives behind hooks only, and the stage-1 handshake write
  * ($18 = $18, the call's link-register store in the latent slot) must be
- * observed through the hook — the Phase B acceptance test. */
+ * observed through the hook. */
 static uint8_t mock_bus[0x2000];
 static int mock_writes;
 
@@ -1246,7 +1245,7 @@ static void test_bootstrap_mock_bus(void) {
     memset(mock_bus, 0, sizeof mock_bus);
     mock_writes = 0;
     /* the ROM's exact 7-word stub ($08 deliberately untouched — the 68040
-     * bus-error vector) [DOC §4] */
+     * bus-error vector) */
     mock_poke32(0x00, 0x802F0004u); /* goto pc+4 */
     mock_poke32(0x04, 0xC0010000u | (entry & 0xFFFFu)); /* r1 = lo16 */
     mock_poke32(0x0C, 0x90210000u | (entry >> 16)); /* r1 <<| hi16 */

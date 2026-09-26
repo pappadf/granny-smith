@@ -61,7 +61,7 @@ void egret_checkpoint(egret_t *eg, checkpoint_t *cp);
 // The VIA1 glue is the same on every machine that wires this transport to
 // VIA1: port B is the handshake, the shift register is a command byte, and
 // only the port test and a NULL check stand between the VIA callback and
-// the transport (F-19).  Five machines each carried their own copy of that,
+// the transport.  Five machines each carried their own copy of that,
 // and they had already drifted -- two tested the machine-state pointer for
 // NULL and two did not.  Both entry points below are NULL-tolerant, and
 // egret_via1_port_output takes the port number, so a machine's callback is one

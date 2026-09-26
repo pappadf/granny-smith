@@ -3,8 +3,8 @@
 # Headless boots Plus from plus-v3-4d1f8172.rom (config.mk's TEST_ROM); we then
 # probe the same file plus the SE/30 ROM by relative path to exercise the
 # new map shape, and call machine.profile() for both registered models to
-# pin the static configuration shape.  The cross-check here is what
-# protects against the drift documented in proposal §1.1.
+# pin the static configuration shape.  The cross-check here is what keeps
+# the ROM table and the model profiles from drifting apart.
 
 # rom.identify on the loaded Plus ROM.  Output is a JSON-encoded V_STRING.
 echo "${machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom")}"
@@ -25,7 +25,7 @@ assert machine.rom.name == "Macintosh Plus (Rev 3, Loud Harmonicas)" "Plus_v3 fa
 assert machine.rom.size == 131072 "Plus ROM is 128 KiB"
 
 # Static profile lookup.  Both registered models must resolve.  IIcx is
-# intentionally unregistered (proposal §3.1 "no partial profiles").
+# intentionally unregistered (no partial profiles).
 echo "${machine.profile("plus")}"
 echo "${machine.profile("se30")}"
 

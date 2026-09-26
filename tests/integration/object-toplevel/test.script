@@ -1,7 +1,6 @@
-# M8 integration: the appletalk + mouse top-level objects.
+# Integration: the appletalk + mouse top-level objects.
 #
-# Exercises the AppleTalk/AFP object surface described in
-# proposal-appletalk-afp-object-model.md §2: stack enablement and node ID,
+# Exercises the AppleTalk/AFP object surface: stack enablement and node ID,
 # the AFP server node (enabled / name / message / versions), the volumes
 # collection (constructive add, name lookup, per-entry observability), the
 # NBP registry view, and the printer's attribute pair.

@@ -32,7 +32,7 @@ describe('MmuSection', () => {
     expect(suBtns.length).toBe(2);
   });
 
-  // It used to show only on a 68030 (F-05).
+  // It used to show only on a 68030.
   it.each(['68040', 'ppc_601', 'ppc_604', 'lisa_segment'] as const)(
     'shows for a %s MMU',
     (kind) => {

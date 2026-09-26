@@ -128,7 +128,7 @@ typedef struct {
     uint64_t timeouts;
     uint64_t received;
     uint64_t auto_replies;
-    uint64_t malformed; // blocks that are no high-level event (10-network F-35)
+    uint64_t malformed; // blocks that are no high-level event
     uint64_t dropped; // events received with the inbox full (answered, not kept)
 } aevt_stats_t;
 
@@ -428,7 +428,7 @@ void atalk_aevt_deliver(ppc_session_t *session, const char *sender, const char *
     // session it came in on, so the sender's AESend completes -- even when the
     // inbox is full and it is not kept.  A full inbox returned without
     // answering: the guest waited out its own timeout, and nothing counted the
-    // loss (10-network N-20).
+    // loss.
     g_stats.received++;
     if (g_inbox_count >= AEVT_MAX_INBOX) {
         g_stats.dropped++;
@@ -449,7 +449,7 @@ void atalk_aevt_deliver(ppc_session_t *session, const char *sender, const char *
     in->text = val_is_error(&map) ? NULL : aevt_render_text(&map);
     LOG(3, "AE: received %s/%s from '%s'", in->class4, in->id4, in->sender);
     // The session itself, not its id looked up again: the id went through a
-    // 16-bit parameter and back against 32 bits (10-network N-24).
+    // 16-bit parameter and back against 32 bits.
     aevt_send_auto_reply(session, return_id);
 }
 
@@ -576,7 +576,7 @@ void atalk_aevt_set_config(const atalk_aevt_config_t *in) {
     if (!in)
         return;
     // `in` may come straight off a checkpoint, so nothing in it is trusted to
-    // be terminated or to be a valid bool (10-network F-10).
+    // be terminated or to be a valid bool.
     uint8_t enabled_byte;
     memcpy(&enabled_byte, &in->enabled, 1);
     g_enabled = enabled_byte != 0;

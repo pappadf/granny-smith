@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// DBDMA engine unit test (proposal-powermac-7500-8500-9500 §5.4).
+// DBDMA engine unit test.
 //
 // Drives the real tnt/dbdma.c against a flat guest-memory array and a
 // scripted device port.  Register values on this API are already in the
@@ -322,13 +322,12 @@ TEST(test_stall_and_kick) {
     ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0); // parked on STOP
 }
 
-// A rate-limited port yields mid-command and resumes on a kick
-// (05-chipsets-irq F-15).
+// A rate-limited port yields mid-command and resumes on a kick.
 //
 // Without this, a port that never returns short -- MESH pops straight off
 // the SCSI bus -- runs a whole data command inside the guest's
 // control-register store: measured at 61,440 bytes in one run_channel call
-// on tnt-hd-boot, against the 2 KB per firing the AV and PDM families
+// on suite-tnt's pm7500-76-hd, against the 2 KB per firing the AV and PDM families
 // already observe for the same job.  The burst makes the channel yield the
 // same way a short device return does, and the device's scheduler pump
 // kicks it back on the bus's cadence.

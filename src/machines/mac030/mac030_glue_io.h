@@ -6,11 +6,11 @@
 //
 // The engine (mac030_io_*) walks an ordered, sentinel-terminated table of
 // `mac030_io_range_t` windows — the address map expressed as DATA rather than a
-// hand-written if-ladder (proposal §4.2.2).  It is family-neutral: GLUE (SE/30,
+// hand-written if-ladder.  It is family-neutral: GLUE (SE/30,
 // IIcx, IIx) and MDU+RBV (IIci, IIsi) both use it, each installing its own
 // range table + mirror mask + device set into a `mac030_io_t` at bind time.
-// This makes the address map directly unit-testable (§6.1) and kills the
-// formerly cloned ~600-line dispatchers (§1.1).
+// This makes the address map directly unit-testable and kills the
+// formerly cloned ~600-line dispatchers.
 //
 // The engine is decoupled from each machine's private state struct: it reads
 // everything it needs from the small mac030_io_t the machine fills at init and
@@ -71,8 +71,7 @@ typedef struct mac030_io_range {
     mac030_io_xform_t xform; // offset transform
     uint16_t read_off, write_off; // sub-offsets for MAC030_IO_FIXED windows
     // Optional code hooks for windows a (device, offset) row can't express —
-    // bus-error windows, DMA engines, stateful shift registers (proposal
-    // §4.2.2 "the few things a table can't express are code hooks").  When set,
+    // bus-error windows, DMA engines, stateful shift registers.  When set,
     // the engine calls them with the machine config + the FULL bus address
     // (so a handler can report the faulting address) instead of routing to a
     // device.  NULL on every GLUE/MDU row (those are pure device routes).
@@ -84,7 +83,7 @@ typedef struct mac030_io_range {
     // once as data in q840av.c/q660av.c, was written out six more times
     // inside psc.c and new_age.c as `(addr & 0x3FFFFu) - <window base>`.
     // Changing io_mirror_mask on a new board would silently have broken all
-    // six (05-chipsets-irq F-22).  Device rows never had this problem: they
+    // six.  Device rows never had this problem: they
     // have always been handed io_sub_offset().
     uint8_t (*read_fn)(struct config *cfg, uint32_t win_off, uint32_t addr);
     void (*write_fn)(struct config *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
@@ -124,7 +123,7 @@ typedef struct mac030_io {
     uint64_t miss_logged_read, miss_logged_write;
     // Decode index: for each 4 KB page of the island, the span of rows that
     // touch it -- first..last inclusive, MAC030_IO_NO_ROW when no row does.
-    // Built by mac030_io_install from the table itself (F-43).  A span, not
+    // Built by mac030_io_install from the table itself.  A span, not
     // a single row, because the table needs no particular order: the IIfx
     // nests a 32-byte bus-error window inside the 16 KB oss_ext window and
     // declares the narrow one FIRST so the linear walk's first-match gives
@@ -143,11 +142,11 @@ typedef mac030_io_t mac030_glue_io_t;
 // --- The engine ------------------------------------------------------------
 
 // Pure decode: the window in `ranges` containing `offset & mirror`, or NULL if
-// unmapped.  Exposed for the address-map unit tests (§6.1).
+// unmapped.  Exposed for the address-map unit tests.
 const mac030_io_range_t *mac030_io_decode(const mac030_io_range_t *ranges, uint32_t mirror, uint32_t offset);
 
 // The same decode the dispatch path actually takes, through this board's page
-// index (F-43).  Must agree with mac030_io_decode() on every offset of the
+// index.  Must agree with mac030_io_decode() on every offset of the
 // island for every board -- which is what the unit test sweeps.
 const mac030_io_range_t *mac030_io_decode_indexed(const mac030_io_t *io, uint32_t addr);
 
@@ -175,7 +174,7 @@ void mac030_io_install(mac030_io_t *io, struct config *cfg, const struct mac030_
 // meaningless apart -- a handle without its interface decodes to NULL, and an
 // interface without its handle dispatches on NULL -- so setting them in one
 // call is what stops them drifting.  Four families were writing the pair by
-// hand at twenty sites (05-chipsets-irq F-20).
+// hand at twenty sites.
 static inline void mac030_io_bind_dev(mac030_io_t *io, mac030_dev_t dev, void *handle,
                                       const memory_interface_t *iface) {
     io->handle[dev] = handle;

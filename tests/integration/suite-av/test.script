@@ -20,7 +20,7 @@
 #   av-chime        Power-on chime through the Singer output engine — the
 #                   ROM's CycloneBeep PCM, captured at guest rate and
 #                   sample-exact against the golden (content-identical to
-#                   the dossier oracle).  ROM only.
+#                   an independent reference render).  ROM only.
 #   av-dsp-boot     The DSP3210 comes alive: the RTM init releases the
 #                   DSP, Apple's kernel boots out of the ROM's '3210'
 #                   segments (three-stage handshake), the GPB calibration
@@ -42,21 +42,21 @@
 #                   overlay showing the pattern.
 #   q660av-71-video-in    Same for the 660AV (different clock → different
 #                   captured frame at the golden instant, so no collision).
-#   av-beep         SysBeep through the full RTM/DSP path (rung 4 of the
-#                   observable ladder): Sound cdev opened by mouse, volume
-#                   raised, Simple Beep clicked — the sdev's AppleSRC task
-#                   rate-converts the samples on the DSP and the capture is
-#                   sample-exact against the golden.  The kernel must
-#                   survive playback (emr stays $8000).
-#   av-tts          Text-to-speech (rung 5): TeachText 7.2 launched from
+#   av-beep         SysBeep through the full RTM/DSP path: Sound cdev
+#                   opened by mouse, volume raised, Simple Beep clicked —
+#                   the sdev's AppleSRC task rate-converts the samples on
+#                   the DSP and the capture is sample-exact against the
+#                   golden.  The kernel must survive playback (emr stays
+#                   $8000).
+#   av-tts          Text-to-speech: TeachText 7.2 launched from
 #                   the volume root, "hello" typed, File → Speak All
 #                   (Cmd-H) — Speech Manager synthesis (pure 68040) plays
 #                   through the same sdev/DSP path, captured sample-exact.
-#   av-sound-in     The guest records (rung 6): the Sound cdev's "Add…"
+#   av-sound-in     The guest records: the Sound cdev's "Add…"
 #                   dialog records the emulator's tone source through
 #                   .AppleSoundInput, then plays it back out through the
 #                   DSP — input and output paths in one round trip.
-#   av-sr-command   Speech recognition (rung 7): Apple's Casper recognizer
+#   av-sr-command   Speech recognition: Apple's Casper recognizer
 #                   is turned on from Speech Setup, a spoken "Computer,
 #                   open the Trash" is played into the microphone seam,
 #                   and the Finder opens the Trash window — the whole
@@ -72,16 +72,16 @@
 # than a CD.  It is the volume that exercises the family properly: a full
 # AV install (A:ROSE, PlainTalk speech, QuickTime) whose extension load is
 # what caught the Cuda idle-acknowledge race, and it boots BOTH models from
-# the same fixture over the ordinary 53C96 disk path.  The dossier's 245 MB
+# the same fixture over the ordinary 53C96 disk path.  The 245 MB AV
 # Install-Me-First CD stays a local bring-up asset and is never a CI
 # dependency.
 #
-# Every row gates on have_media() and echoes "skip:" if its data is absent
-# (proposal-quadra-av.md §5.2 — the landable-before-data pattern): the
-# ROM-only rows need roms/q840av-q660av-5bf10fd1.rom and the boot rows
-# additionally need systems/system_7_1_77mb_av.img.  Both are in
-# gs-test-data as of revision 2937e56; the gating stays in so a checkout
-# with stale or partial data skips rather than fails.
+# Every row gates on have_media() and echoes "skip:" if its data is absent (the
+# landable-before-data pattern): the ROM-only rows need
+# roms/q840av-q660av-5bf10fd1.rom and the boot rows additionally need
+# systems/system_7_1_77mb_av.img.  Both are in gs-test-data as of revision
+# 2937e56; the gating stays in so a checkout with stale or partial data skips
+# rather than fails.
 #
 # The two speech rows additionally need speech/sr-open-the-trash.wav and
 # speech/sr-what-day-is-it.wav, which landed in gs-test-data at revision
@@ -96,10 +96,9 @@ include "../lib/mac.script"
 
 let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
 let av_hd = "../../data/systems/system_7_1_77mb_av.img"
-# Spoken-command media.  Generated, not recorded: see
-# the internal PlainTalk SR asset generator and
-# dsp3210-plaintalk/sr-test-audio-assets.md §2 for the PlainTalk
-# microphone contract they are conditioned to.
+# Spoken-command media.  Generated, not recorded, and conditioned to the
+# PlainTalk microphone contract (levels and dynamics Apple's recognizer
+# accepts; see docs/machines/av/singer.md on why raw capture matters).
 let av_sr_trash = "../../data/speech/sr-open-the-trash.wav"
 let av_sr_date = "../../data/speech/sr-what-day-is-it.wav"
 
@@ -306,10 +305,10 @@ def row_q660av_71_hd_desktop() {
 }
 
 # ---- video-in rows ----------------------------------------------------------
-# The AV video digitizer end to end (proposal-av-video-in.md §4 Phase 3): the
-# vdig opens over Cuda I2C, programs the SAA7186 window/format, starts the
-# CIVIC frame engine, and Video Monitor's hardware playthrough shows the
-# deterministic test pattern through the Sebastian overlay.
+# The AV video digitizer end to end: the vdig opens over Cuda I2C, programs the
+# SAA7186 window/format, starts the CIVIC frame engine, and Video Monitor's
+# hardware playthrough shows the deterministic test pattern through the
+# Sebastian overlay.
 #
 # Determinism note: once capture runs, the screen updates every field (the
 # pattern scrolls), so NO stability wait may follow the launch — the dance is
@@ -349,7 +348,7 @@ def row_video_in(model, golden) {
     # Sebastian: video-in enable + overlay bits both set (PCBR bit 4 + 7).
     assert (machine.memory.peek.b(0x50F30820) & 0x90) == 0x90 "video-in: PCBR ${machine.memory.peek.b(0x50F30820):02x} — overlay not enabled"
 
-    check("goldens/${$golden}")
+    check("${$golden}")
     # No report_row() here, deliberately.  The coverage matrix is keyed on the
     # raster (machine x system x card x WxHxD), and these rows add none: the
     # -hd-desktop rows above already claim 640x480x8 for both models.  Worse,
@@ -361,7 +360,7 @@ def row_video_in(model, golden) {
 }
 
 # ---- av-beep ----------------------------------------------------------------
-# Rung 4 of the observable ladder: SysBeep through the full RTM/DSP path.
+# SysBeep through the full RTM/DSP path.
 # Boot to the desktop, open the Sound cdev (Apple menu → Control Panels →
 # double-click Sound), raise the volume slider (the image ships with it at
 # 0, where alerts are menu-flash only; the release itself plays a feedback
@@ -369,7 +368,7 @@ def row_video_in(model, golden) {
 # running: the Sound Manager posts a MsgFIFO command {count, rate $ED62 =
 # 22254→24000, gains} and streams the samples through the Blue FIFO, the
 # sdev's AppleSRC task rate-converts on the DSP (in-place DAU stores —
-# the DSP3210 errata E10), and the Singer frame engine plays
+# on the DSP3210), and the Singer frame engine plays
 # the result.  The kernel must SURVIVE playback: emr stays $8000 — a dead
 # kernel still reads state "running" (waiti with the timer free-running),
 # so emr is the aliveness check (docs/machines/av/dsp.md).
@@ -421,15 +420,14 @@ def row_av_beep() {
 }
 
 # ---- av-tts -----------------------------------------------------------------
-# Rung 5 of the observable ladder: text-to-speech.  TTS synthesis is pure
-# 68040 (plaintalk-software-inventory.md) — what this row proves is the
-# Speech Manager → Sound Manager → sdev/DSP output path end to end: boot
-# to the desktop, raise the volume (Sound cdev, as in av-beep), close the
-# panel windows, launch the AV-bundled TeachText 7.2 from the volume
-# root, type "hello", and File → Speak All (Cmd-H).  Before the DSP
-# worked this alerted "An error occurred when TeachText tried to speak"
-# (guest-ui-exploration.md §5); now it speaks ~0.5 s of synthesized
-# audio, captured sample-exact.  Kernel aliveness = emr stays $8000.
+# Text-to-speech.  TTS synthesis is pure 68040 — what this row proves is the
+# Speech Manager → Sound Manager → sdev/DSP output path end to end: boot to the
+# desktop, raise the volume (Sound cdev, as in av-beep), close the panel
+# windows, launch the AV-bundled TeachText 7.2 from the volume root, type
+# "hello", and File → Speak All (Cmd-H).  Before the DSP worked this alerted
+# "An error occurred when TeachText tried to speak"; now it speaks ~0.5 s of
+# synthesized audio, captured sample-exact.  Kernel aliveness = emr stays
+# $8000.
 def row_av_tts() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
@@ -497,16 +495,15 @@ def row_av_tts() {
 }
 
 # ---- av-sound-in ------------------------------------------------------------
-# Rung 6 of the observable ladder: the guest RECORDS.  av-audio-in-device
-# proves the input engine by programming the PSC directly from the ROM;
-# this row proves the whole guest path — .AppleSoundInput → Sound
-# Manager SndRecord → the Sound cdev's "Add…" recording dialog — with
-# the emulator's deterministic tone source (600 Hz sawtooth) plugged in
-# as the microphone.  Record for ~3 s, Stop, then Play with the capture
-# running: what comes back out through the sdev/DSP output path is the
-# recorded tone (the Sound Manager's record AGC drives it to full
-# scale), sample-exact against the golden.  Cancel at the end so the
-# sound is never added to the System file.
+# The guest RECORDS.  av-audio-in-device proves the input engine by programming
+# the PSC directly from the ROM; this row proves the whole guest path —
+# .AppleSoundInput → Sound Manager SndRecord → the Sound cdev's "Add…"
+# recording dialog — with the emulator's deterministic tone source (600 Hz
+# sawtooth) plugged in as the microphone.  Record for ~3 s, Stop, then Play
+# with the capture running: what comes back out through the sdev/DSP output
+# path is the recorded tone (the Sound Manager's record AGC drives it to full
+# scale), sample-exact against the golden.  Cancel at the end so the sound is
+# never added to the System file.
 def row_av_sound_in() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
@@ -565,12 +562,11 @@ def row_av_sound_in() {
 }
 
 # ---- the speech-recognition rows --------------------------------------------
-# Rung 7: Apple's Casper recognizer, end to end.  Shared bring-up — boot,
-# open Speech Setup from its desktop alias, turn Recognition on, idle out
-# the ~10-15 s startup blackout, close the panel and park the mouse.  The
-# windoid ends up bottom-left reading "Computer / Starting up… / Ready.",
-# which IS the listening state (the Attention Key is a toggle, not
-# push-to-talk).
+# Apple's Casper recognizer, end to end.  Shared bring-up — boot, open Speech
+# Setup from its desktop alias, turn Recognition on, idle out the ~10-15 s
+# startup blackout, close the panel and park the mouse.  The windoid ends up
+# bottom-left reading "Computer / Starting up… / Ready.", which IS the
+# listening state (the Attention Key is a toggle, not push-to-talk).
 #
 # Nothing may be loaded into machine.audioin before this: a loaded WAV
 # plays once on its own during the blackout, which would recognize early
@@ -682,10 +678,10 @@ def row_av_sr_macro() {
 # The DSP3210 comes alive: during the Enabler's RTM init the DSP is released
 # (dspOverRun $01 clear-write), Apple's kernel boots out of the ROM's '3210'
 # segments, and all three handshake stages pass — the stage-1 cell, then
-# data+$198 bits 0 AND 1 (rtm-rom-host-side.md; gap-closure D8).  The GPB
-# calibration then measures the frame period off the live EXT1 pin, the
-# standard sound team installs, and the DSP stays signed in — idling until
-# a sound client enables frame ticks.  Hardware truths only — no golden.
+# data+$198 bits 0 AND 1.  The GPB calibration then measures the frame period
+# off the live EXT1 pin, the standard sound team installs, and the DSP stays
+# signed in — idling until a sound client enables frame ticks.  Hardware truths
+# only — no golden.
 def row_av_dsp_boot() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
@@ -762,7 +758,7 @@ def row_av_chime() {
     # machine.psc — on the AV machines the PSC is both the VIA2 replacement
     # and the L3-L6 level controller, so one node carries two register
     # families: the generic four describe the VIA2 window, `levels` the
-    # L-file where an AV storm is actually diagnosed (F-26).
+    # L-file where an AV storm is actually diagnosed.
     assert machine.psc.chip == "PSC" "av-chime: machine.psc missing"
     assert len(machine.psc.levels) == 4 "av-chime: PSC level map is not L3..L6"
     assert machine.psc.levels[0].ipl == 3 "av-chime: PSC level map does not start at IPL 3"
@@ -785,7 +781,7 @@ def row_av_audio_in_device() {
     assert machine.audioin.connected == false "audioin: 'none' reports connected"
     assert machine.audioin.gain == 100 "audioin: default gain ${machine.audioin.gain}, want 100"
     # singerStat presents the mic straps (BI1/BI3 for the input-source
-    # enumeration, BI4 for the output port — singer.md §3, gap-closure B4).
+    # enumeration, BI4 for the output port — docs/machines/av/singer.md).
     assert (machine.memory.peek.l(0x50F31208) & 0xD) == 0xD "audioin: singerStat ${machine.memory.peek.l(0x50F31208):08x} lacks the mic straps"
     # Tone source: connected, deterministic.
     machine.audioin.source = "tone"
@@ -892,14 +888,14 @@ if row_on("av-checkpoint") {
 }
 if row_on("q840av-71-video-in") {
     if have_media($av_rom) && have_media($av_hd) {
-        row_end("q840av-71-video-in", try(row_video_in("q840av", "q840av-7.1-640x480x8-video-monitor.png"), "FAILED"))
+        row_end("q840av-71-video-in", try(row_video_in("q840av", "goldens/q840av-7.1-640x480x8-video-monitor.png"), "FAILED"))
     } else {
         echo "skip: q840av-71-video-in — ${$av_hd} not fetched"
     }
 }
 if row_on("q660av-71-video-in") {
     if have_media($av_rom) && have_media($av_hd) {
-        row_end("q660av-71-video-in", try(row_video_in("q660av", "q660av-7.1-640x480x8-video-monitor.png"), "FAILED"))
+        row_end("q660av-71-video-in", try(row_video_in("q660av", "goldens/q660av-7.1-640x480x8-video-monitor.png"), "FAILED"))
     } else {
         echo "skip: q660av-71-video-in — ${$av_hd} not fetched"
     }

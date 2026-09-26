@@ -109,4 +109,4 @@ The zlib decompressor both this and the PNG reader use is first-party (`inflate.
 - Reusing the same base image for a fresh machine no longer replays stale deltas: every `image_create` mints a new random instance id, so two machines mounting the same base get two independent delta files.
 
 ---
-Last updated for the per-machine checkpoint-isolation rewrite (proposal-checkpoint-storage-isolation.md).
+Last updated for the per-machine checkpoint-isolation rewrite.

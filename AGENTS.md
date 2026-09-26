@@ -13,20 +13,25 @@ case there is nothing to do.
 
 ## Repository Directory Overview
 
-- `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/)
+- `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/, object/, vfs/, plus the system and machine-configuration files at its root)
 - `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `archive` object. See `docs/guide/peeler.md`.
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
 - `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — the only UI
-- `docs/`: Design, architecture, and developer docs, mirroring the code tree:
-  `docs/guide/` (dev/process), `docs/core/<subsystem>/` (mirrors `src/core/`),
-  `docs/machines/<family>/` (mirrors `src/machines/`), `docs/notes/` (dated
-  investigation logs, not reference)
+- `docs/`: Design, architecture, and developer docs, following the code tree:
+  `docs/guide/` (dev/process), `docs/core/<area>/` for `src/core/`,
+  `docs/machines/<family>/` for `src/machines/`, `docs/notes/`
+  (investigation logs, not reference). One doc area may cover several
+  source directories: `docs/core/shell/` covers `src/core/object/`
+  (object-model.md) and `src/core/debug/` (log.md), and
+  `docs/core/storage/` covers `src/core/vfs/`; a family doc may cover
+  several sources (`tnt/tnt.md` is the whole TNT family). `src/machines/runtime/`
+  is shared infrastructure and has no doc directory.
 - `build/`: Generated artifacts — do not edit
 - `scripts/`: Tools and helpers
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
-- `tests/e2e`: Playwright end-to-end tests (specs in `specs/`, helpers in `helpers/`)
+- `tests/e2e`: Playwright end-to-end tests (specs in `web2-specs/`, helpers in `helpers/`)
 - `third-party/`: External libraries (git submodules, e.g. single-step-tests,
   powerpc-test)
 
@@ -73,9 +78,10 @@ the devcontainer image.)
 - Output: `build/` directory with `index.html`, `main.mjs`, etc.
 
 **Run tests:**
-- Unit tests (CPU): `make -C tests/unit run` (~1–5 min) — uses `third-party/single-step-tests`
-  (68k) and `third-party/powerpc-test` (601); both are submodules, so init them first
-- Integration tests: `make integration-test` (~10–20 min serial; add `-j$(nproc)` to parallelize, or `TIER=unit` / `TIER=matrix` for a subset — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
+- Unit tests: `make -j$(nproc) -C tests/unit run` (~1.5 min at -j8; ~6 min serial) — uses the
+  `third-party/single-step-tests` (68k) and `third-party/powerpc-test` (601) corpora; both are
+  submodules, so init them first
+- Integration tests: `make integration-test` (all three tiers: the better part of an hour even with `-j$(nproc)`; `TIER=unit` takes about a minute, `TIER=matrix` about fifteen at -j — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`
 - E2E/UI tests (Playwright, web2):
@@ -192,12 +198,12 @@ to not break this rule in the first place.
 
 **Logpoints (`src/core/debug/debug.c`):**
 - PC logpoints emit a log message when the CPU executes a specific address or range, without stopping
-- Set via shell (named arguments, shell v2 §6.2): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
+- Set via shell (named arguments): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
 - The default category is `logpoint` for PC logpoints; enable it with `debug.log logpoint 10`
 - Memory logpoints fire on **read** or **write** accesses without halting:
   - `debug.logpoints.add addr=<addr> mode=write width=l message="…"` — log every write (`mode=read` / `mode=rw` likewise; `width` is `b`/`w`/`l`)
   - Default category is `memory` (enable with `debug.log memory 1`)
-  - `message=` is a fire-time template (shell v2 §6.3): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
+  - `message=` is a fire-time template (see `docs/core/shell/shell.md`): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
   - Implemented without slowing the fast path: covered pages are zeroed in the
     SoA arrays so only logged pages take the slow-path penalty (see `docs/core/memory/memory.md`)
 - Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
@@ -223,7 +229,7 @@ to not break this rule in the first place.
 Every emulator subsystem is exposed through a single tagged-union value
 type and an opaque `object_t` tree rooted at the implicit `emu` root (never
 typed). Emulated hardware nests under one `machine` node
-(proposal-system-object-model.md); the emulator's own services and the
+(see `docs/core/shell/object-model.md`); the emulator's own services and the
 simulated network are its siblings at the root:
 
 - **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`;
@@ -287,14 +293,15 @@ boot calls (`main.js` / `checkpoint.js`); everything else goes through
 
 ## When AGENTS.md Is Wrong
 
-If instructions in AGENTS.md are incorrect, incomplete, or misleading (e.g., wrong paths, missing build steps, outdated commands), log it in `notes/feedback.md`:
+If instructions in AGENTS.md are incorrect, incomplete, or misleading (e.g., wrong paths, missing build steps, outdated commands), fix AGENTS.md in the same change, and say so in the commit message:
 
 ```
-- [YYYY-MM-DD] <What was wrong in AGENTS.md>
-  - Problem: <Instruction that didn't work or was missing>
-  - Fix: <What you had to do instead>
-  - Update needed: <How to fix AGENTS.md>
+AGENTS.md: <what was wrong>
+  - Problem: <instruction that didn't work or was missing>
+  - Fix: <what you had to do instead>
 ```
+
+A correction kept anywhere else is invisible to the next reader: `/notes/` at the repository root is ignored by git and exists only on the machine that wrote it.
 
 This is ONLY for documentation gaps in AGENTS.md — not for general code changes or feature work.
 

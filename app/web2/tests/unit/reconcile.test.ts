@@ -41,7 +41,7 @@ const BOOT = {
   cd: '',
 };
 
-describe('one post-boot reconciliation, every path (R1)', () => {
+describe('one post-boot reconciliation, every path', () => {
   beforeEach(() => {
     bridge.reset();
     clearProfileCache();
@@ -67,7 +67,7 @@ describe('one post-boot reconciliation, every path (R1)', () => {
     expect(machine.scheduler).toBe('live');
   });
 
-  // N-08: a rejected boot document leaves the previous machine in place, so
+  // A rejected boot document leaves the previous machine in place, so
   // nothing may be attached to it, reconciled from it, or run.
   it('a rejected boot attaches, reconciles and runs nothing', async () => {
     bridge.reply('machine.boot', { error: 'machine.boot: unknown model' });
@@ -75,7 +75,7 @@ describe('one post-boot reconciliation, every path (R1)', () => {
     expect(bridge.paths()).toEqual(['machine.boot']);
   });
 
-  // P4 (F-04): the page names the disk's own SCSI id as the startup device,
+  // The page names the disk's own SCSI id as the startup device,
   // through the core's setter -- no PRAM bytes, and no seed at all otherwise.
   it('a boot with a hard disk names its SCSI id as the startup device', async () => {
     se30();

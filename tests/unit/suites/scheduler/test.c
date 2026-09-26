@@ -25,8 +25,7 @@
 //     in flight to exercise sprint clamping
 //   - CPI is mode-independent and settable as a single per-machine constant
 //
-// Accelerated mode (proposal-scheduler-accelerated-mode.md, stage 1 — fixed
-// multiplier via fractional effective CPI):
+// Accelerated mode (fixed multiplier via fractional effective CPI):
 //   - timebase invariance: for a sweep of speed multipliers, N frame-units
 //     advance cpu_cycles by (nearly) the paced amount and a cycle-timestamped
 //     repeating event (the VIA-timer proxy) fires the same number of times,
@@ -39,7 +38,7 @@
 //   - pacing: accelerated shares the paced wall-clock accumulator (rate
 //     converges to VBL_HZ, bursts capped)
 //
-// Adaptive governor (stage 2 — scheduler.speed = 0/auto; the stub CPU's
+// Adaptive governor (scheduler.speed = 0/auto; the stub CPU's
 // per-instruction host cost closes the control loop, since faster speeds
 // retire more instructions per frame and thus consume more fake host time):
 //   - steady fast host: climbs the quantized ladder one rung at a time,
@@ -166,8 +165,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 }
 
 // The restore path flags a checkpoint it cannot trust instead of asserting on
-// it (08-core-infra F-05), so the stub records the call and the corruption
-// tests below assert on it.
+// it, so the stub records the call and the corruption tests below assert on it.
 static int g_cp_errors;
 void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
@@ -231,9 +229,9 @@ value_t val_int(int64_t i) {
     return v;
 }
 
-// scheduler.events builds a V_LIST of V_MAPs (08-core-infra F-30), so the
-// suite needs the map builder and the list accumulator.  Minimal versions:
-// this suite asserts on queue COUNTS, not on the rendered list.
+// scheduler.events builds a V_LIST of V_MAPs, so the suite needs the map
+// builder and the list accumulator.  Minimal versions: this suite asserts on
+// queue COUNTS, not on the rendered list.
 struct value_map_builder {
     int unused;
 };
@@ -758,7 +756,7 @@ TEST(test_accelerated_paced_pacing) {
     teardown(s);
 }
 
-// --- Adaptive governor (stage 2) ---------------------------------------------
+// --- Adaptive governor -------------------------------------------------------
 
 // Authentic instructions per frame-unit, measured (12 CPI at 7.8336 MHz).
 static uint64_t authentic_per_frame(void) {
@@ -781,7 +779,7 @@ typedef struct {
     uint64_t max_pf; // largest per-frame count ever observed
 } gov_trace_t;
 
-static gov_trace_t gov_drive(scheduler_t *s, double *now, int ticks, bool expect_monotonic) {
+static gov_trace_t gov_drive(double *now, int ticks, bool expect_monotonic) {
     gov_trace_t t = {0, 0, 1e9, 0};
     uint64_t prev_instr = cpu_instr_count();
     uint64_t prev_vbls = g_vbls;
@@ -825,7 +823,7 @@ TEST(test_governor_climbs_to_cap) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+    gov_trace_t t = gov_drive(&now, 25 * 60, true);
 
     ASSERT_TRUE(t.changes == 6); // rung 0 -> 6, one step at a time
     ASSERT_TRUE(t.min_gap > 1.8); // dwell slew limit respected (2 s nominal)
@@ -845,7 +843,7 @@ TEST(test_governor_slow_host_stays_authentic) {
     g_secs_per_instr = 0.95 * VBL_PERIOD / (double)pf1; // 1x utilization ~0.95
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 10 * 60, true);
+    gov_trace_t t = gov_drive(&now, 10 * 60, true);
 
     ASSERT_TRUE(t.changes == 0); // never climbed
     ASSERT_TRUE(t.final_pf == pf1); // authentic instructions per frame
@@ -864,11 +862,11 @@ TEST(test_governor_spike_backoff) {
     g_secs_per_instr = 0.06 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+    gov_trace_t t = gov_drive(&now, 25 * 60, true);
     ASSERT_TRUE((double)t.final_pf / (double)pf1 > 7.9); // reached the cap
 
     g_secs_per_instr *= 4.0; // spike: 8x now costs ~1.92 of the budget
-    gov_trace_t back = gov_drive(s, &now, 12 * 60, false);
+    gov_trace_t back = gov_drive(&now, 12 * 60, false);
     double settled = (double)back.final_pf / (double)pf1;
     ASSERT_TRUE(settled > 2.9 && settled < 3.1); // backed off to 3x
     ASSERT_TRUE(back.changes >= 3); // stepped down through the rungs
@@ -885,16 +883,16 @@ TEST(test_governor_audio_pressure) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 7 * 60, true);
+    gov_trace_t t = gov_drive(&now, 7 * 60, true);
     ASSERT_TRUE(t.final_pf > pf1); // climbed at least one rung
 
     uint64_t before = t.final_pf;
     g_audio_fill = 0.2; // ring draining: pressure regardless of utilization
-    gov_trace_t drop = gov_drive(s, &now, 3 * 60, false);
+    gov_trace_t drop = gov_drive(&now, 3 * 60, false);
     ASSERT_TRUE(drop.final_pf < before); // backed off
 
     g_audio_fill = 1.0; // ring healthy again: climbing resumes
-    gov_trace_t re = gov_drive(s, &now, 10 * 60, false);
+    gov_trace_t re = gov_drive(&now, 10 * 60, false);
     ASSERT_TRUE(re.final_pf > drop.final_pf);
     teardown(s);
 }
@@ -909,7 +907,7 @@ TEST(test_governor_max_speed_cap) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 15 * 60, true);
+    gov_trace_t t = gov_drive(&now, 15 * 60, true);
     double ratio = (double)t.final_pf / (double)pf1;
     ASSERT_TRUE(ratio > 2.9 && ratio < 3.1); // settled exactly at the 3x cap
     ASSERT_TRUE((double)t.max_pf / (double)pf1 < 3.1); // never above it
@@ -952,7 +950,7 @@ TEST(test_governor_pin_unpin) {
 }
 
 // ============================================================================
-// scheduler_forget_source (proposal-scheduler-source-lifetime §5)
+// scheduler_forget_source
 // ============================================================================
 
 static void forget_cb_a(void *src, uint64_t data) {
@@ -1098,7 +1096,7 @@ TEST(test_checkpoint_carries_no_host_timing) {
     scheduler_delete(b);
 }
 
-// === Corrupt-checkpoint restores (08-core-infra F-05) =======================
+// === Corrupt-checkpoint restores ============================================
 //
 // `scheduler_init(cpu, checkpoint)` fills the whole plain-data prefix straight
 // from the file, so every field in it is attacker-controlled: a checkpoint is
@@ -1119,11 +1117,11 @@ TEST(test_checkpoint_carries_no_host_timing) {
 // The REAL gs_assert_fail() does not: it prints, pauses the scheduler and
 // returns, and under GS_FAST (the wasm release profile) it is not called at
 // all.  So in the build that ships, control reaches the next statement --
-// `total_instructions = cpu_cycles / cpi` -- with cpi == 0, which raises
-// SIGFPE on x86-64 and TRAPS on WebAssembly, i64.div_u being undefined for a
-// zero divisor.  That is the same crash class as INT_MIN / -1, fixed in
-// 07-cpu-mmu A1-A3.  The unit suite cannot demonstrate that trap; it
-// demonstrates that corrupt input reaches the arithmetic at all.
+// `total_instructions = cpu_cycles / cpi` -- with cpi == 0, which raises SIGFPE
+// on x86-64 and TRAPS on WebAssembly, i64.div_u being undefined for a zero
+// divisor.  That is the same crash class as INT_MIN / -1 in the CPU divide
+// instructions.  The unit suite cannot demonstrate that trap; it demonstrates
+// that corrupt input reaches the arithmetic at all.
 
 // Locate a 4-byte little-endian value in the recorded prefix, insisting it
 // occurs exactly once so a test can never silently poison the wrong field.
@@ -1228,8 +1226,8 @@ TEST(test_restore_refuses_absurd_event_count) {
 // The saved event queue is resolved against the types registered by the time
 // scheduler_start runs.  Both checks on a saved event were GS_ASSERTs: in a
 // release build an unknown type indexed event_types[-1] and restored a wild
-// callback (10-network N-05, reproduced with a real AppleShare session --
-// `atp.xo_release` was registered only when first armed).  A checkpoint is
+// callback (reproduced with a real AppleShare session -- `atp.xo_release` was
+// registered only when first armed).  A checkpoint is
 // user input, so both now fail the load instead.
 static int g_restore_owner;
 
@@ -1272,12 +1270,12 @@ TEST(test_restore_refuses_an_event_whose_type_is_not_registered) {
     scheduler_delete(b);
 }
 
-// === scheduler.events / machine-sourced cleanup (08-core-infra F-27, F-30) ==
+// === scheduler.events / machine-sourced cleanup =============================
 
-// F-30: the pending queue had no inspectable form at all.  cmd_events(argc,
-// argv) -- the retired command shape -- had zero callers, so the one thing
-// that could say WHICH event leaked did not exist, while machine_teardown's
-// backstop reported only a count.
+// The pending queue had no inspectable form at all.  cmd_events(argc, argv) --
+// the retired command shape -- had zero callers, so the one thing that could
+// say WHICH event leaked did not exist, while machine_teardown's backstop
+// reported only a count.
 TEST(test_pending_event_counts_track_the_queue) {
     g_now = 1000.0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
@@ -1302,7 +1300,7 @@ TEST(test_pending_event_counts_track_the_queue) {
     scheduler_delete(s);
 }
 
-// === Periodic events (08-core-infra F-28) ==================================
+// === Periodic events ========================================================
 //
 // A repeating event re-arms inside the scheduler instead of from its own
 // handler.  There is no separate periodic API and no handle type: the units

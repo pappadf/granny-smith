@@ -1,4 +1,6 @@
-// Unit tests for M4: argument-position expressions and method
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Unit tests for argument-position expressions and method
 // dispatch over the object model.
 //
 // Strategy: register a small toy `math2` class with methods that
@@ -238,7 +240,7 @@ TEST(test_method_error_propagates) {
 
 TEST(test_zero_arg_method_call_explicit) {
     install_math2();
-    // proposal §3.3: zero-arg calls require parens in expression
+    // Zero-arg calls require parens in expression
     // context. `math2.id()` would call (and error here on missing
     // arg); `math2.id` without parens is an attribute read of a
     // method member, which node_get should reject.
@@ -358,7 +360,7 @@ TEST(test_any_attribute_slot_rejected) {
     ASSERT_TRUE(strstr(err, "ANY") != NULL);
 }
 
-// === An optional slot needs a default to be skippable (08-core-infra F-35) ==
+// === An optional slot needs a default to be skippable ======================
 //
 // node_validate_args says it directly: "argc truncation only works at the
 // tail", so an optional slot with NO default_value cannot be a hole before a
@@ -473,9 +475,9 @@ TEST(test_counter_fields_read_their_block) {
 }
 
 // An indexed collection that gives `slots` and no next(): the core walks
-// get() over the slots, skipping holes, and synthesizes `count` (10-network
-// F-26: 15 of 17 collections carried a next() doing exactly that, and a
-// count() the core never called).
+// get() over the slots, skipping holes, and synthesizes `count` (15 of 17
+// collections once carried a next() doing exactly that, and a count() the core
+// never called).
 static struct object *g_sparse_items[4];
 static struct object *sparse_get(struct object *self, int index) {
     (void)self;

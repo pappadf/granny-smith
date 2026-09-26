@@ -1,14 +1,14 @@
-# The card DRAWS — milestone 3c, driven entirely through the register
-# file (proposal §7).  Included by test.script after the bring-up replay.
+# The card DRAWS, driven entirely through the register file.  Included
+# by test.script after the bring-up replay.
 #
-# THE FILL CONVENTION IS OURS (proposal §4.5, §8 Q1): V2 §7.2 defers the
-# triangle walk to an SST-1 Programming Guide nobody holds, so the pinned
-# pixel values and counts below record what THIS rasteriser draws — they
-# are regression anchors, not hardware conformance, chosen as: sample
-# points at pixel integer coordinates, half-open top-left inclusion,
-# iteration from vertex A's truncated position.
+# THE FILL CONVENTION IS OURS: V2 §7.2 defers the triangle walk to an
+# SST-1 Programming Guide nobody holds, so the pinned pixel values and
+# counts below record what THIS rasteriser draws — they are regression
+# anchors, not hardware conformance, chosen as: sample points at pixel
+# integer coordinates, half-open top-left inclusion, iteration from
+# vertex A's truncated position.
 #
-# Wherever an EQUALITY exists it is preferred over a picture (§8 Q2):
+# Wherever an EQUALITY exists it is preferred over a picture:
 # the statistics counters against analytically-counted pixels, the LFB
 # round-trip identities, and the texture-layout offsets against the
 # spec's own worked examples.
@@ -196,7 +196,7 @@ assert px(55, 52) == 0x8000 "multitexture: red modulated by 50% grey is dark red
 # Write with each (swizzle, wordswap) combination and read back with the
 # MATCHING combination: the round trip is the identity.  A MISMATCHED
 # read is NOT the identity.  This is the assertion that catches a
-# reversed transform order, and it needs no golden (proposal §4.5).
+# reversed transform order, and it needs no golden.
 vreg_wr(0x104, 0x00000000)
 let V = 0x12345678
 let A200 = $LFB + (200 << 11) + (100 << 1)
@@ -238,7 +238,7 @@ assert machine.pci.slot[1].card.regs.tex_offset(0, 4) == 0x2A80 "example 2: 8-bi
 vreg_wr(0x304 | 0x800, 0x00680000)
 assert machine.pci.slot[1].card.regs.tex_offset(0, 4) == 0x2200 "example 3: split even levels 0,2 = $440 units"
 
-# --- Q9: sub-pixel correction mutates the START LATCHES. --------------------
+# --- Sub-pixel correction mutates the START LATCHES. ------------------------
 # With correction enabled the hardware corrects the start registers as
 # they leave the FIFO, so a second triangle issued WITHOUT resending
 # them is corrected twice (V2 p.40, pp.128-129 §12.4).  Two identical
@@ -265,7 +265,7 @@ let FIRST = px(52, 51)
 vreg_wr(0x080, 0x80000000)
 idle3
 let SECOND = px(52, 51)
-assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift (Q9)"
+assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift"
 vreg_wr(0x104, 0x00000000)
 
 # --- Rotate-mode stipple: a per-pixel register mutation, pinned. ------------

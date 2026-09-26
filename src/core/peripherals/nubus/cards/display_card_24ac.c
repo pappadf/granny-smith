@@ -4,26 +4,23 @@
 // display_card_24ac.c
 // "Apple Macintosh Display Card 24AC" — a 24-bit colour NuBus display
 // card with a hardware QuickDraw fill/raster accelerator.  See
-// proposal-nubus-card-display-card-24ac.md and the dossier under
 // docs/core/peripherals/nubus/cards/display_card_24ac.md.  Cloned from the
-// 8•24 (jmfb.c) shape, plus the
-// acceleration engine the dossier's hardware spec (doc 3) describes.
+// 8•24 (jmfb.c) shape, plus the acceleration engine that document describes.
 //
-// Two halves (proposal §0):
-//   * Phase 1 (display): loads the genuine display-card-24ac-d8daab87.vrom and
+// Two halves:
+//   * Display: loads the genuine display-card-24ac-d8daab87.vrom and
 //     presents a linear framebuffer + CLUT + VBL slot IRQ.  The card's own
 //     System 7 video driver (in the vrom) programs the standard video
 //     registers; we model the ones it touches (CLUT, depth/mode latch,
 //     VBL mask/ACK, monitor sense) and accept-and-log the rest (CRTC
 //     timing file, RAMDAC command, serial PLL).  Register offsets and
 //     semantics were reverse-engineered from the vrom driver (see
-//     tmp/24ac-vrom-re.md / display_card_24ac.h).
-//   * Phase 2 (engine): STATUS/CONFIG/CONTROL registers, the operand
-//     aperture (+ commit alias), and the +0x400000 active-bank alias that
-//     transforms writes (run-length fill / block copy / ROP).  Modelled as
-//     a synchronous software-equivalent straight into the passive VRAM
-//     model — its output must match the driver's own CPU fallback (the
-//     built-in oracle, proposal §3.5).
+//     display_card_24ac.h).
+//   * Engine: STATUS/CONFIG/CONTROL registers, the operand aperture
+//     (+ commit alias), and the +0x400000 active-bank alias that transforms
+//     writes (run-length fill / block copy / ROP).  Modelled as a synchronous
+//     software-equivalent straight into the passive VRAM model — its output
+//     must match the driver's own CPU fallback (the built-in oracle).
 //
 // Notable differences from the JMFB (per the RE):
 //   * No VideoBase / RowWords slot register — the framebuffer base is a
@@ -106,7 +103,7 @@ struct display_card_24ac_priv {
     uint8_t mon_sense_primary; // its primary sense code (6 or 7 here)
     bool vbl_enabled; // slot VBL IRQ armed (VIDCTL bit 7 clear)
 
-    // === Phase 2 acceleration engine ===
+    // === Acceleration engine ===
     bool engine_enabled; // false ⇒ active bank behaves as plain VRAM (oracle)
     uint8_t engine_mode; // latched CONTROL byte ($01 fill / $03 stretch /
                          // $7F copy / computed ROP)
@@ -279,12 +276,12 @@ static void clut_write_data(display_card_24ac_priv_t *p, uint8_t comp) {
     }
 }
 
-// === Phase 2: the acceleration engine =======================================
+// === The acceleration engine ================================================
 //
 // Every engine behaviour reduces to "produce the software-equivalent
 // result straight into the passive VRAM model".  The driver feeds the
-// engine synchronously and never polls a busy flag (hardware spec §7), so
-// there is no timing to model.
+// engine synchronously and never polls a busy flag, so there is no timing to
+// model.
 
 // Command flags the live cdev OR-s into the longword it writes through the
 // active aperture, for BOTH the fill run-length and the copy length.  They sit
@@ -363,9 +360,9 @@ static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t
 // direction — decrement for a backward copy (bit 31, dst>src), so a split
 // left-scroll scanline's follow-on execute lands on the right source (E11).
 //
-// `val` is the raw longword written through the active alias.  The earlier
-// "the written longword IS the source pixels, store it at dest" model was an
-// over-broad reading of the §4.3 `[INFER]`: it stored the run-length/flag
+// `val` is the raw longword written through the active alias.  The earlier "the
+// written longword IS the source pixels, store it at dest" model was an
+// over-broad reading of an unverified inference: it stored the run-length/flag
 // *command words* as pixels, which tore scrolled windows apart.  Straight copy
 // for $7F / stretch $03; computed raster-op codes ($00..$3F) fall back to a
 // straight copy with a log (still oracle-checkable, never corrupts the image).
@@ -652,9 +649,9 @@ static memory_interface_t s_display_card_24ac_mem_iface = {
 // === VROM load ==============================================================
 
 // Load the 24AC declaration ROM through the shared content-driven declrom
-// loader (vrom.c Format-Block-CRC catalog: the explicit machine.vrom.load
-// path first, then the catalog name in the search paths; byteLanes
-// expansion).  Returns true on success.
+// loader: the offered candidates in pick order (the explicit machine.boot
+// vrom= first, then the Format-Block-CRC catalog's preferred revision, then
+// catalog order; see vrom.h), then byteLanes expansion.  Returns true on success.
 static bool load_vrom(display_card_24ac_priv_t *p) {
     char *path = NULL;
     if (!declrom_load_vrom_card(display_card_24ac_kind.id, p->vrom, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE, &path))
@@ -674,10 +671,9 @@ static bool load_vrom(display_card_24ac_priv_t *p) {
 // STAGING -- ON DEATH ROW.  This is a construction input travelling as a
 // hidden per-module global: the visible per-slot channel
 // (machine.nubus.slot[N].video_mode) funnels through here, and the factory
-// consumes it destructively.  proposal-construction-inputs.md R1 replaces
-// every one of these with a machine_build_opts_t field passed to the factory
-// as an ARGUMENT, which is also what proposal-reset-and-nonvolatile-state.md
-// R3 means by "no holder, no staged copy, no pending slot".  Do not add
+// consumes it destructively.  The intended end state replaces every one of
+// these with a machine_build_opts_t field passed to the factory as an
+// ARGUMENT -- no holder, no staged copy, no pending slot.  Do not add
 // another one; the per-slot channel is already there to carry it.
 static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 
@@ -746,7 +742,7 @@ static uint8_t savedmode_for_bpp(int bpp) {
 // The monitor id is NOT a sResource id — it indexes the on-vrom timing
 // directory at chip 0x62E, which is what actually picks the geometry.  Which
 // id means which raster was measured by booting 7.5 once per code and reading
-// the resulting GDevice's pixMap bounds (see the ledger's §7 table):
+// the resulting GDevice's pixMap bounds:
 //
 //   $6B 640×480   $6C 832×624   $6D 1152×870
 //   $81 640×480   $80 832×624   $82 1024×768
@@ -788,10 +784,9 @@ static void sense_for_sister(uint8_t sister, uint8_t *primary, uint8_t *ext) {
 // see the paragraph above, and card.h's contract -- but this function used to
 // call display_blank_raster() unconditionally, which memsets stride * height
 // bytes OF VRAM, so every 68k RESET wiped the visible raster (307,200 bytes at
-// the default 640x480x8) in flat contradiction of both (04-video F-37).  The
-// two sibling cards say the same thing in their own words: control.c and
-// mach64gx.c both note the previous frame survives a warm reset, and leave
-// their buffers alone.
+// the default 640x480x8) in flat contradiction of both.  The two sibling cards
+// say the same thing in their own words: control.c and mach64gx.c both note the
+// previous frame survives a warm reset, and leave their buffers alone.
 static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     // VIDCTL power-on default: low 3 bits = 2.  PrimaryInit's monitor-sense
     // path reads VIDCTL ($D00403) at vrom chip 0x176 and, if its low 3 bits
@@ -821,7 +816,7 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     p->clut_pending = (rgba8_t){0};
 
     // Engine geometry bits, kept consistent with the large-VRAM framebuffer
-    // we present (hardware spec §3/§5); engine handshake latches idle.
+    // we present; engine handshake latches idle.
     p->engine_enabled = true;
     p->engine_mode = DISPLAY_CARD_24AC_MODE_COPY;
     p->engine_operand = 0;
@@ -898,8 +893,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     if (generic) {
         // Generic sibling kind ("24ac"): generate the GS declaration ROM at
         // card_init — records from the shared monitors[] table, code
-        // fragments spliced, CRC stamped in C (proposal-nubus-runtime-vrom
-        // §4); the offer registry is never consulted.
+        // fragments spliced, CRC stamped in C; the offer registry is never
+        // consulted.
         declrom_builder_t *bld = gsvrom_generate(GSVROM_BOOGIE, display_card_24ac_generic_kind.monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
@@ -917,8 +912,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     }
 
     // Publish the declaration ROM on the generic card handle so the
-    // object-model `slot[N].card.declrom` node (proposal §3.8) reads it
-    // without reaching into card-private state.
+    // object-model `slot[N].card.declrom` node reads it without reaching into
+    // card-private state.
     card->declrom = p->vrom;
     card->declrom_size = p->vrom_size;
 
@@ -935,7 +930,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         sense_for_sister(seeded_monitor->srsrc_sister, &p->mon_sense_primary, &p->mon_sense_ext);
     }
 
-    // Phase-1 starting state: 8 bpp at the connected monitor's geometry,
+    // Display starting state: 8 bpp at the connected monitor's geometry,
     // framebuffer at VRAM offset 0.  The vrom's video driver re-programs
     // depth/CLUT/timing at boot.  The power-on register/engine/display state
     // (and the grayscale CLUT ramp) is shared with the /RESET hook — see
@@ -1104,7 +1099,7 @@ static const char *card_name_generic(const nubus_card_t *card) {
 }
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model
-// (proposal-generic-nubus-vrom sec. 6.1: "one HLE model per pair").
+// (hard rule: one HLE model per real/generic pair).
 static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     return card_init_common(card, cfg, cp, /*generic*/ false);
 }
@@ -1134,8 +1129,8 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, p, offsetof(struct display_card_24ac_priv, display));
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (04-video
-        // F-41; see display.h).
+        // pixel_format_t, whose size is implementation-defined (see
+        // display.h).
         display_head_t head = display_head_of(&p->display);
         system_write_checkpoint_data(cp, &head, sizeof head);
     }
@@ -1241,7 +1236,7 @@ static nubus_card_t *node_card(struct object *self) {
 // --- machine.nubus.slot[N].card.engine ---------------------------------------
 // This card's own object children, attached through the KIND's attach_objects
 // hook.  They used to live in nubus_class.c behind an is_card() test, which
-// meant a core file knew this card existed (04-video F-10).
+// meant a core file knew this card existed.
 static value_t eng_attr_enabled_get(struct object *self, const member_t *m) {
     (void)m;
     return val_bool(display_card_24ac_engine_enabled(node_card(self)));
@@ -1342,10 +1337,9 @@ const nubus_card_kind_t display_card_24ac_kind = {
     .attach_objects = display_card_24ac_attach_objects,
 };
 
-// Generic sibling kind: always-available twin with the built-in GS
-// declaration ROM (proposal-generic-nubus-vrom sec. 6.1).  Same monitor
-// table — the 24AC entries carry no crt_response and the GS ROM ships
-// identity gamma, so the tables genuinely coincide.
+// Generic sibling kind: always-available twin with the built-in GS declaration
+// ROM.  Same monitor table — the 24AC entries carry no crt_response and the GS
+// ROM ships identity gamma, so the tables genuinely coincide.
 const nubus_card_kind_t display_card_24ac_generic_kind = {
     .id = "24ac",
     .display_name = "Apple Macintosh Display Card 24AC (generic video ROM)",

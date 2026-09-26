@@ -1,4 +1,6 @@
-// Generic PCI core unit tests (proposal-pci-architecture §13).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Generic PCI core unit tests.
 //
 // Links the real config_space.c + pci.c against a stub bus environment and
 // pins the contract every guest on these machines depends on: absent

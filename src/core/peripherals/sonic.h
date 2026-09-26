@@ -3,17 +3,16 @@
 
 // sonic.h
 // National Semiconductor DP83932 SONIC Ethernet controller — the Quadra
-// generation's NIC (proposal-machine-quadra-700-900-950.md §11), machine-
-// independent so the later NIC-equipped machines can reuse it.
+// generation's NIC, machine-independent so the later NIC-equipped machines
+// can reuse it.
 //
-// Phase F (v1) scope: the full 16-bit register file with the semantics
-// Apple's ROM self-tests pin (OS/StartMgr/UnivTestEnv/SONIC_*.c — register
-// bit-march quirks, CAM load/readback via descriptor DMA, interrupt
-// mask/status gating, MAC/ENDEC/transceiver loopback through the real
-// RRA/RDA/TDA linked-list buffer management, DP83932B datasheet §3/§4).
-// There is no wire: non-loopback transmissions complete successfully into
-// the void and nothing is ever received (§11.3 — bridging SONIC to a
-// network is a separate proposal).
+// Scope: the full 16-bit register file with the semantics Apple's ROM
+// self-tests pin (OS/StartMgr/UnivTestEnv/SONIC_*.c — register bit-march
+// quirks, CAM load/readback via descriptor DMA, interrupt mask/status gating,
+// MAC/ENDEC/transceiver loopback through the real RRA/RDA/TDA linked-list
+// buffer management, DP83932B datasheet §3/§4). There is no wire: non-loopback
+// transmissions complete successfully into the void and nothing is ever
+// received (bridging SONIC to a network is not implemented).
 
 #ifndef SONIC_H
 #define SONIC_H
@@ -31,14 +30,12 @@ typedef struct sonic sonic_t;
 typedef void (*sonic_irq_cb)(void *context, bool active);
 
 // Bus-master memory hooks: SONIC DMAs descriptors and packet data to/from
-// guest-PHYSICAL memory (no IOMMU on this family — ref §16.3).  Width is
-// 1, 2, or 4 bytes; values are big-endian guest data in host integers.
-// When no hooks are installed the chip uses the machine bus
-// (mmu_read_physical_* / mmu_write_physical_*); unit tests install mock
-// hooks over a flat buffer.
+// guest-PHYSICAL memory (no IOMMU on this family).  Width is 1, 2, or 4 bytes;
+// values are big-endian guest data in host integers. When no hooks are
+// installed the chip uses the machine bus (mmu_read_physical_* /
+// mmu_write_physical_*); unit tests install mock hooks over a flat buffer.
 // (The pair of typedefs that used to live here is now the shared
-// dma_mem_port_t -- one port type for every bus-master engine, 05-chipsets-irq
-// F-16.)
+// dma_mem_port_t -- one port type for every bus-master engine.)
 
 sonic_t *sonic_init(checkpoint_t *cp);
 void sonic_delete(sonic_t *s);

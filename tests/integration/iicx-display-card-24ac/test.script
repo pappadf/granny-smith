@@ -1,13 +1,12 @@
 # Integration test: IIcx + Apple Macintosh Display Card 24AC NuBus display card
 #
-# See proposal-nubus-card-display-card-24ac.md.  The card is a framebuffer +
-# CLUT + VBL display card (Phase 1) plus a hardware QuickDraw fill/raster
-# accelerator (Phase 2).  This test exercises both halves on the IIcx with
-# the genuine display-card-24ac-d8daab87.vrom, plus the object-model surface
-# (proposal §3.8) and the 8-bpp colour desktop (proposal §2 exit criterion).
+# The card is a framebuffer + CLUT + VBL display card plus a hardware
+# QuickDraw fill/raster accelerator.  This test exercises both halves on the
+# IIcx with the genuine display-card-24ac-d8daab87.vrom, plus the
+# object-model surface and the 8-bpp colour desktop.
 #
-# Slot-space layout (slot $9 -> base 0xF9000000), from the dossier hardware
-# spec + the vrom-driver RE:
+# Slot-space layout (slot $9 -> base 0xF9000000), from the card's hardware
+# behaviour + the vrom-driver RE:
 #   0xF9000000          passive framebuffer VRAM (flat aperture)
 #   0xF93FE000          engine operand aperture (latched 32-bit operand)
 #   0xF9400000..0xF97FFFFF  engine active-bank alias (transforming writes)
@@ -59,8 +58,8 @@ assert machine.memory.peek.l(0xF9001008) == 0x00000000 "solid fill: overran the 
 # The driver (ScrollRect / CopyBits) latches a SOURCE with a no-flag write to
 # the active alias, then triggers the copy with a bit-30-flagged write to the
 # DEST.  (NOT "the written longword is the source pixels" — that older model
-# stored the command words as pixels and tore scrolled windows; see the dossier
-# errata E9.)  Seed source pixels at 0x200, copy 8 bytes to 0x4000.
+# stored the command words as pixels and tore scrolled windows.)  Seed source
+# pixels at 0x200, copy 8 bytes to 0x4000.
 machine.memory.poke.l 0xF9000200 0x11223344
 machine.memory.poke.l 0xF9000204 0x55667788
 machine.memory.poke.b 0xF9D40403 0x7F
@@ -75,14 +74,14 @@ assert machine.memory.peek.l(0xF9000200) == 0x11223344 "source-latch write must 
 assert machine.memory.peek.l(0xF9404000) == 0x11223344 "active-bank alias read != passive VRAM"
 
 # =====================================================================
-# Part C — engine-vs-fallback oracle (proposal §3.5) + object model (§3.8).
+# Part C — engine-vs-fallback oracle + object model.
 #
 # The accelerator's result must equal what the driver's own software
 # fallback (plain CPU framebuffer writes) would produce.  We drive the
 # SAME pattern fill two ways and assert the bytes are identical:
 #   * region E — the engine fills it (engine.enabled = true), and
 #   * region F — with the engine force-disabled (engine.enabled = false,
-#     the gate the proposal calls for), the active-bank alias degrades to
+#     the object-model gate), the active-bank alias degrades to
 #     plain VRAM, so writing the operand longwords there IS the CPU path.
 # Both regions are 4-byte aligned and share the operand, so a correct
 # engine fill is byte-identical to the CPU fill.
@@ -111,7 +110,7 @@ assert machine.memory.peek.l(0xF9003004) == machine.memory.peek.l(0xF9003044) "o
 assert machine.memory.peek.l(0xF900300C) == machine.memory.peek.l(0xF900304C) "oracle: engine fill != CPU fallback (long 3)"
 assert machine.memory.peek.l(0xF9003000) == 0xA1B2C3D4 "oracle: engine fill pattern wrong"
 
-# Object-model surface (proposal §3.8): the populated slot projects a card
+# Object-model surface: the populated slot projects a card
 # node with framebuffer / declrom / clut / mode / engine children.
 assert machine.nubus.slot[9].number == 0x9 "object model: slot[9].number"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "object model: card.name"
@@ -125,7 +124,7 @@ assert machine.nubus.slot[9].card.engine.enabled == true "object model: engine.e
 assert machine.screen.source.depth == 8 "object model: screen.source → framebuffer"
 
 # =====================================================================
-# Part B — Phase-1/2 boot to an 8-bpp COLOUR Finder desktop.  Cold-boot
+# Part B — full boot to an 8-bpp COLOUR Finder desktop.  Cold-boot
 # System 7.0.1 on the IIcx with the display_card_24ac card; the vrom's PrimaryInit
 # senses the 640×480 multisync monitor (sRsrc id $6B = primary sense 6 +
 # extended-sense $03), passes its board self-test (so the DRVR Open

@@ -5,8 +5,6 @@ How Granny Smith executes more than one CPU per machine: exactly one
 **auxiliary cores** — peripheral processors that execute real guest code
 but do not control time.  The first auxiliary core is the AV family's
 DSP3210 (`src/core/cpu/dsp3210/`, wired by `src/machines/av/dsp.c`).
-Design:
-executed by `proposal-dsp3210-plaintalk.md`.
 
 ## Time model
 
@@ -50,7 +48,7 @@ checkpoint as POD, object class) with these core-specific requirements:
 
 | Requirement | Contract |
 |---|---|
-| Interpreter | big-switch decode, plain C, no JIT.  The shared decoder/disassembler template-macro pattern (the 68K's `cpu_decode.h` / `cpu_ops.h` model, spelled out in proposal-multi-cpu.md §3.3.1) is the house style — one guard-free decode tree included by both the emulator (execution `OP_` overloads) and the disassembler (sprintf `OP_` overloads), so the two cannot drift.  Follow it unless the ISA gives a concrete reason not to; the PPC core (`ppc_decode.h`) is the second instantiation of the pattern |
+| Interpreter | big-switch decode, plain C, no JIT.  The shared decoder/disassembler template-macro pattern (the 68K's `cpu_decode.h` / `cpu_ops.h` model) is the house style — one guard-free decode tree included by both the emulator (execution `OP_` overloads) and the disassembler (sprintf `OP_` overloads), so the two cannot drift.  Follow it unless the ISA gives a concrete reason not to; the PPC core (`ppc_decode.h`) is the second instantiation of the pattern |
 | Execution ABI | `void <arch>_run(<arch>_t *, uint32_t *instructions)` — burn-down counter; returns with it 0 (budget spent) or >0 (went idle) |
 | Idle/reset | `<arch>_is_idle()`, `<arch>_reset(...)`, an interrupt-request entry point for external pins.  When guest code polls a pin's *level* (not just its latched request), the entry point must model both — e.g. `dsp3210_ext_pulse(s, vector, slots)` latches the request and asserts the live pin for `slots` of core time, and the status-register pin bits reflect the level, not the latch |
 | **Bus access** | **injected at init** (the guest-physical hook pattern of `sonic.h`/`psc.h`).  The core never touches `g_active_*`, `g_page_table`, the MMU, or any sprint-timing global.  On-chip resources (internal RAM, MMIO) decode *inside* the core before the hooks are consulted |
@@ -136,9 +134,7 @@ a fetch bus error belongs in the same return value rather than in the extra
 `if (g_bus_error_pending) break;` that sits beside it today.
 
 **Known deviations**, all in the deferred-bus-error path and all measured
-above. Removing them is its own piece of work, specified in
-`local/gs-docs/proposals/proposal-interpreter-loop-exit-discipline.md`
-(raised from `2026-09-03-code-review/07-WORK-ORDER.md` §9.2):
+above. Removing them is its own piece of work:
 
 | site | decoders | what it should become |
 |---|---|---|
@@ -164,13 +160,10 @@ them drifting, and that suite checks agreement after the fact rather than by
 construction.
 
 **No ISA reason has been established.** The rule's escape hatch — "unless the
-ISA gives a concrete reason not to" — requires one to be recorded, and neither
-this file nor `proposal-dsp3210-plaintalk.md` records any. Until someone
-examines whether the DA/format encodings genuinely resist a shared tree, this
-is **debt, not a sanctioned exception**, and it is written down here so it
+ISA gives a concrete reason not to" — requires one to be recorded, and this
+file records none. Until someone examines whether the DA/format encodings
+genuinely resist a shared tree, this is **debt, not a sanctioned exception**, and it is written down here so it
 cannot be mistaken for one.
-
-Raised as F-06b in the 2026-09-03 code review, batch 07.
 
 Why injected hooks and not the global fast path: aux cores are physical
 bus masters (the main CPU's translated, mode-switched view would be
@@ -179,8 +172,8 @@ the in-flight main sprint, private address spaces come free, and a core
 then links against nothing — unit tests hand it a 16-line mock bus.
 
 The injected-hook rule is an **auxiliary-core** rule.  A core serving as
-the machine's *main* CPU (the 68K today, PowerPC per
-proposal-powerpc-601-pdm.md) is what the global fast path exists for: it
+the machine's *main* CPU (the 68K, or the PowerPC on the PDM and TNT
+machines) is what the global fast path exists for: it
 reads and writes through the same inline accessors, gets I/O penalties
 charged to its own sprint, and owns the supervisor/user SoA switch.  A
 main CPU likewise registers `machine.cpu` and the `$` register aliases —

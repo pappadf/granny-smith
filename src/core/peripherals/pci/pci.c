@@ -5,13 +5,13 @@
 // The PCI bus controller: device tables, config dispatch, bridge-window
 // decode, the card-kind registry, staged per-slot configuration, the slot
 // walk and the lifecycle / interrupt fan-outs.  See pci.h and
-// proposal-pci-architecture.md §5.
+// docs/core/peripherals/pci.md.
 //
 // Nothing here knows about any machine: a family creates a bus per host
 // bridge, hands the bus its decode windows, seats its own builtin devices
 // and lets the slot walk seat the user's cards.  The two facts that make
-// the whole model work are inherited from bandit-chaos-pci.md and kept
-// verbatim from the hand-rolled model this replaces:
+// the whole model work are kept verbatim from the hand-rolled Bandit
+// model this replaces:
 //
 //   * an IDSEL with no device registered reads ALL-ONES and swallows
 //     writes — a probe must never hang, and
@@ -527,7 +527,7 @@ void pci_bus_add_device(pci_bus_t *bus, pci_device_t *dev, int device_num) {
     dev->device_num = device_num;
     bus->dev[device_num] = dev;
     pci_device_regions_changed(dev); // a hardwired command register may
-                                     // already decode (proposal §6.2)
+                                     // already decode (command_reset)
 }
 
 pci_device_t *pci_bus_device(pci_bus_t *bus, int device_num) {
@@ -617,7 +617,7 @@ static const char *socket_card_id(const pci_slot_decl_t *s, bool is_first_socket
 // Route this slot's staged options into the resolved kind through its own
 // stage_option() hook.  A kind that rejects the key logs and the option is
 // dropped — the generic layer never learns a card's identity (the fix for
-// the NuBus stage_mode_for_kind wart, proposal §5.1).
+// the NuBus stage_mode_for_kind wart).
 static void stage_one_option(int slot, const pci_card_kind_t *kind, const char *key, const char *value) {
     if (kind->stage_option && kind->stage_option(key, value))
         return;
@@ -820,7 +820,7 @@ void pci_checkpoint_restore(pci_root_t *root, checkpoint_t *cp) {
         if (devs[i]->ops && devs[i]->ops->checkpoint_restore)
             devs[i]->ops->checkpoint_restore(devs[i], cp);
         // Replay the BAR transitions from the restored latches so the
-        // decode is rebuilt without any card code (proposal §5.8).
+        // decode is rebuilt without any card code.
         pci_device_regions_changed(devs[i]);
     }
 }
@@ -878,9 +878,9 @@ static void pci_route_slot_irq(config_t *cfg, int slot, bool active) {
 }
 
 // Like the NuBus side, the PCI root keeps NO aggregate of asserted slot
-// lines: the chipset owns the OR (05-chipsets-irq F-46), and the mask here
-// was maintained and checkpointed but read by nothing.  See the note above
-// nubus_assert_irq before reintroducing it.
+// lines: the chipset owns the OR, and the mask here was maintained and
+// checkpointed but read by nothing.  See the note above nubus_assert_irq
+// before reintroducing it.
 void pci_assert_irq(pci_device_t *dev) {
     if (!dev || !dev->bus || dev->slot_index <= 0 || dev->slot_index >= PCI_MAX_SLOTS)
         return;

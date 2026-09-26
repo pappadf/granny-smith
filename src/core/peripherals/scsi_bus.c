@@ -80,7 +80,7 @@ LOG_USE_CATEGORY_NAME("scsi");
 // spills the tail of the CDB into whichever phase follows.  An opcode we do not
 // implement still has to be *counted* correctly, so that run_cmd can decline it
 // with ILLEGAL REQUEST / INVALID OPCODE instead of corrupting the next phase.
-int cmd_size(uint8_t opcode) {
+size_t cmd_size(uint8_t opcode) {
     switch (opcode >> 5) {
     case 0:
         return 6;
@@ -336,7 +336,7 @@ void phase_status(scsi_t *scsi, uint8_t status) {
     // transfer round-trips.  Parked in STATUS there is no transfer in flight,
     // and that span is dead payload -- measured at 518 bytes on the
     // machine-restart row, and up to 34 KB after a CD-ROM read the initiator
-    // abandoned mid-block (03-scsi F-47).
+    // abandoned mid-block.
     //
     // Abandoning one is ordinary, not an error path: the Mac CD driver arms a
     // 2048-byte read, takes 512, and drives C/D+I/O in TCR to force STATUS --
@@ -433,12 +433,12 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
 // compiled out by -DNDEBUG in the release wasm profile (Makefile:131), so an
 // out-of-range WRITE reached disk_write_data, which drops the unbacked tail --
 // and the SCSI layer then reported STATUS GOOD.  Silent data loss reported as
-// success (03-scsi F-02).
+// success.
 //
 // Everything is computed in uint64_t because size_t is 32 bits on wasm32,
 // where `(size_t)lba * blk_sz` wraps: a READ(10) at lba 0x00400000 with
 // 2048-byte blocks gives 0x800000000, which truncates to 0, so the old check
-// passed and the wrong blocks were served as valid data (03-scsi F-04).
+// passed and the wrong blocks were served as valid data.
 static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_t blocks, size_t *off_out,
                            size_t *cnt_out) {
     const image_t *img = scsi->device_images[target];
@@ -449,8 +449,8 @@ static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_
     // >= 0x80: a CDB of FF FF FF FF landed as -1, and casting that straight to
     // uint64_t sign-extended to 0xFFFF...FFFF, whose product with the block
     // size wrapped and passed any bound.  (Found by the scsi_bounds unit test,
-    // against the first version of THIS function; the decode itself is fixed
-    // in 03-scsi F-48, so the compensating cast is gone.)
+    // against the first version of THIS function; the decode itself is now
+    // fixed, so the compensating cast is gone.)
     uint64_t blk = scsi->devices[target].block_size;
     uint64_t off = (uint64_t)lba * blk;
     uint64_t cnt = (uint64_t)blocks * blk;
@@ -540,7 +540,7 @@ void run_cmd(scsi_t *scsi) {
     // a CD-ROM's, so a hard disk could be left with medium_present false and no
     // image -- and then TEST UNIT READY answered GOOD ("are you ready?" "yes")
     // while READ CAPACITY divided a size of zero and reported 0xFFFFFFFF as the
-    // last block, four billion of them, also with GOOD (03-scsi F-40).
+    // last block, four billion of them, also with GOOD.
     //
     // START UNIT joins them, and only in its START form (CDB byte 4 bit 0 —
     // stopping or ejecting an empty drive is fine): a drive with no disc
@@ -706,8 +706,14 @@ void run_cmd(scsi_t *scsi) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
             phase_data_in(scsi, (int)byte_cnt);
+            // The range is already known to fit, so a short read is a backing-store
+            // failure: report it as a MEDIUM ERROR, never as GOOD over stale bytes
+            // (an assert() here was compiled out by -DNDEBUG in the release build).
             size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
-            assert(n == byte_cnt);
+            if (n != byte_cnt) {
+                LOG(1, "SCSI READ: storage gave %zu of %zu bytes at offset %zu", n, byte_cnt, byte_off);
+                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+            }
         }
         break;
     }
@@ -717,7 +723,7 @@ void run_cmd(scsi_t *scsi) {
         // 10-byte CDB: LBA in bytes 2-5, transfer length in bytes 7-8.
         // Promote each byte to uint32_t before shifting, as the 6-byte decode
         // above already does: data[2] promotes to `int`, and `<< 24` on
-        // anything >= 0x80 overflows it, which is undefined (03-scsi F-48).
+        // anything >= 0x80 overflows it, which is undefined.
         scsi->cmd.lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
                         ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
         scsi->cmd.tl = ((uint32_t)scsi->buf.data[7] << 8) | (uint32_t)scsi->buf.data[8];
@@ -767,8 +773,12 @@ void run_cmd(scsi_t *scsi) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
             phase_data_in(scsi, (int)byte_cnt);
+            // A short read is a backing-store failure, as for READ(6) above.
             size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
-            assert(n == byte_cnt);
+            if (n != byte_cnt) {
+                LOG(1, "SCSI READ_10: storage gave %zu of %zu bytes at offset %zu", n, byte_cnt, byte_off);
+                scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+            }
         }
         break;
     }
@@ -1157,7 +1167,7 @@ void run_cmd(scsi_t *scsi) {
         // command descriptor block shall be set to zero for this option" --
         // and prescribes no penalty, and these drives report ANSI version 01h
         // in their INQUIRY data.  Enforcing a SCSI-2 rule on a SCSI-1 drive is
-        // the anachronism that F-38 and F-39 each had to back out of.
+        // an anachronism.
         image_t *image = scsi->device_images[target];
         uint16_t blk_sz = scsi->devices[target].block_size;
         size_t sz = disk_size(image) / blk_sz;
@@ -1174,7 +1184,7 @@ void run_cmd(scsi_t *scsi) {
         // question with medium_present true.  There is no honest last-block
         // address for a medium with no blocks, so report block zero: it claims
         // the least that can be claimed, and every read of it is refused by the
-        // range check anyway (03-scsi F-40).
+        // range check anyway.
         uint32_t last_lba = BE32(sz > 0 ? (uint32_t)sz - 1 : 0u);
         uint32_t be_blk_sz = BE32((uint32_t)blk_sz);
         memcpy(scsi->buf.data, &last_lba, 4);
@@ -1327,7 +1337,7 @@ void command_complete(scsi_t *scsi) {
         // the check for a data phase that did not deliver what was asked for.
         // Both used to be assert()s, which -DNDEBUG removes from the release
         // wasm build -- so the failure they were meant to catch became a silent
-        // short write reported as STATUS GOOD (03-scsi F-02).
+        // short write reported as STATUS GOOD.
         size_t byte_off = 0, byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
             LOG(1, "SCSI WRITE: refusing tl=%u blk_sz=%u (%zu bytes) against buf.size=%zu raw_size=%zu", scsi->cmd.tl,

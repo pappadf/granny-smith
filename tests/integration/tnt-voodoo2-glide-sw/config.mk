@@ -1,5 +1,5 @@
 # Integration test: the tnt-voodoo2-glide flow on the NORMATIVE synchronous
-# walker (proposal-voodoo2-raster-thread §7).
+# walker.
 #
 # The SAME script, the SAME media, the SAME golden as tnt-voodoo2-glide
 # (quake-ingame.png is a symlink into that directory): the only
@@ -8,7 +8,7 @@
 # claim is equivalence: the threaded backend's in-game frame, counters
 # and LFB reads are byte-identical to the walker's.  Queue order is
 # submission order and every observation point fences, so this is the
-# acceptance criterion the proposal states, not a hope.
+# acceptance criterion, not a hope.
 #
 # MEDIA-GATED like its sibling; skips cleanly without the Quake image.
 
@@ -21,5 +21,5 @@ TEST_SETUP := test ! -f "$(TEST_DATA)/apps/quake_8_1_voodoo2.img" || cp "$(TEST_
 
 TEST_ARGS := model=pm7500 ram=65536
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

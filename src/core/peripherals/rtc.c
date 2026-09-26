@@ -345,6 +345,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
 }
 
 static void one_second_interrupt(void *source, uint64_t data) {
+    (void)data;
     rtc_t *rtc = (rtc_t *)source;
 
     rtc->seconds++;
@@ -363,7 +364,7 @@ static void one_second_interrupt(void *source, uint64_t data) {
     // No self re-arm: the event is periodic, so the scheduler re-arms it at
     // the SCHEDULED deadline rather than at this handler's dispatch time.
     // That is drift-free -- re-arming from "now" accumulated every sprint's
-    // dispatch lateness into the guest's second (08-core-infra F-28).
+    // dispatch lateness into the guest's second.
 }
 
 // A property of the toolchain, not of any run: it belongs at compile time,
@@ -401,12 +402,12 @@ void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
 // one ($0C..$0F) so seeded XPRAM survives.  It does NOT stamp the low-PRAM
 // one: that is the SysParam validity byte, which on the extended RTC lives at
 // physical $10 (legacy_pram_addr), not $00 -- where validate used to write it,
-// into a reserved XPRAM byte (N-14).  SysParam is left for each ROM to
+// into a reserved XPRAM byte.  SysParam is left for each ROM to
 // initialise with its own defaults.
 #define RTC_PRAM_VALIDITY_XPRAM_OFFSET 0x0C // 4 bytes BE
 #define RTC_PRAM_TOKEN_NUMC            0x4E754D63u // 'NuMc'
 
-// === M7b — object-model views ===============================================
+// === Object-model views =====================================================
 
 uint32_t rtc_get_seconds(const rtc_t *rtc) {
     return rtc ? rtc->seconds : 0;
@@ -515,7 +516,7 @@ void rtc_delete(rtc_t *rtc) {
     if (!rtc)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(rtc->scheduler, rtc);
     LOG(1, "rtc_delete: freeing rtc seconds=%u", rtc->seconds);
     if (rtc->pram_object) {
@@ -777,9 +778,9 @@ static value_t rtc_pram_method_validate(struct object *self, const member_t *m, 
 // `rtc.pram.boot_device` — the Start Manager's default startup device
 // (PRAMInitTbl $77..$7B, pram.md §4.2) as the SCSI id it names: $77 = the
 // default OS (Macintosh), $78..$7B = the SCSI driver refnum -(33 + id).  The
-// formula lives here so no caller spells PRAM bytes (F-04: the web wrote
-// them itself, always for id 0).  Reads back -1 when the bytes name no SCSI
-// driver.
+// formula lives here so no caller spells PRAM bytes (the web front end used
+// to write them itself, always for id 0).  Reads back -1 when the bytes name
+// no SCSI driver.
 #define PRAM_DEFAULT_OS   0x77
 #define PRAM_BOOT_REFNUM  0x78
 #define PRAM_OS_MACINTOSH 0x01

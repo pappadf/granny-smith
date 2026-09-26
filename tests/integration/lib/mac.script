@@ -1,5 +1,5 @@
 # tests/integration/lib/mac.script — shared integration-suite library
-# (proposal-integration-test-rework §5.1/§5.2/§5.6/§5.7).
+# (docs/guide/TESTING.md, "Suites and the shared script library").
 #
 # Pull in with `include "../lib/mac.script"` from a suite's test.script
 # (paths resolve relative to the including file). The library reads
@@ -54,10 +54,10 @@ def row_end(label, r) {
     }
 }
 
-# Milestone close (§7 "The RAM axis"): the row runs and its result is
-# reported, but red does not fail the suite — milestones track known
-# emulator gaps (A/UX bring-up, RAM-config stalls) until they start
-# passing, at which point they promote to enforced rows via review.
+# Milestone close: the row runs and its result is reported, but red
+# does not fail the suite — milestones track known emulator gaps (A/UX
+# bring-up, RAM-config stalls) until they start passing, at which point
+# they promote to enforced rows via review.
 def row_end_milestone(label, r) {
     $rows_run = $rows_run + 1
     if $r == "FAILED" {
@@ -75,7 +75,7 @@ def suite_done() {
     assert $rows_failed == 0 "suite:${$rows_failed} row(s) failed:${$failed_labels}"
 }
 
-# --- goldens (§5.5) ----------------------------------------------------------
+# --- goldens -----------------------------------------------------------------
 
 # Match `ref` against the screen — or capture it when REGEN=1 (adopted
 # from iifx-install-76). Regenerating a suite is
@@ -142,9 +142,9 @@ def check_sound(ref, want_frames) {
     }
 }
 
-# --- waits (§5.2): a wait states its condition; ceilings are hang -----------
+# --- waits: a wait states its condition; ceilings are hang ------------------
 # detectors, not tuning. All return the instructions actually spent, the
-# per-row perf telemetry (§5.8).
+# per-row perf telemetry.
 
 # Run until the screen matches `golden`, in `step`-instruction quanta,
 # up to `ceiling`. On timeout, screen.match fails the row with the usual
@@ -232,7 +232,7 @@ def wait_global(name, want, ceiling) {
     return $spent
 }
 
-# --- guest-time choreography (§5.2) ------------------------------------------
+# --- guest-time choreography -------------------------------------------------
 
 # Run for `n` guest ticks (1/60 s each): interaction delays are guest-
 # time constraints (DoubleTime is in ticks), so choreography built on
@@ -291,7 +291,7 @@ def double_click(x, y) {
 
 # Apple menu → first item ("About ...") via a fixed guest-tick render
 # window; the caller matches or checks the resulting frame. Fixed, not
-# a stability wait, deliberately (§5.2): the About box's memory figures
+# a stability wait, deliberately: the About box's memory figures
 # update live when another heap is active (e.g. a control panel DA
 # open), so the screen may never settle — determinism makes the fixed
 # instant phase-exact instead. Byte-identical dance previously pasted
@@ -348,7 +348,7 @@ def about_box_quad() {
 # rtc.h pram_defaults_t.  skip_boot_wait(), a KeyMap Cmd-Shift-Power poke,
 # is gone with it.  A row that wants the wait clears $01 bit 7.)
 
-# Assert the booted System's addressing mode (§3.4): MMU32bit ($0CB2)
+# Assert the booted System's addressing mode: MMU32bit ($0CB2)
 # is 0 in 24-bit mode, nonzero in 32-bit mode.
 #
 # Only meaningful on 68020-and-later machines. The 68000 models (Plus,
@@ -361,9 +361,9 @@ def assert_addr(want32) {
     # practice the machine did not finish booting, and the byte is
     # uninitialised memory. (Measured 2026-07-28: a IIci at 5 MB reads
     # $6D here, which is a byte of the $DB6DB6DB uninitialised pattern
-    # MemTop shows too; the machine never completes POST below 8 MB —
-    # proposal-emulator-bug-fixes.md §3.) Fail with the raw byte rather
-    # than silently reading garbage as an addressing mode.
+    # MemTop shows too; the machine never completes POST below 8 MB.)
+    # Fail with the raw byte rather than silently reading garbage as an
+    # addressing mode.
     assert ($m == 0) || ($m == 1) "addressing: MMU32bit=${$m:02x} is not a boolean in this configuration"
     if $want32 {
         assert $m == 1 "addressing: expected 32-bit, MMU32bit=${$m:02x}"
@@ -372,14 +372,14 @@ def assert_addr(want32) {
     }
 }
 
-# True when optional media exists — the §9 skip pattern: rows whose
-# prepared image has not been fetched echo "skip:" and report an
+# True when optional media exists — the media-gated skip pattern: rows
+# whose prepared image has not been fetched echo "skip:" and report an
 # uncovered target cell instead of failing.
 def have_media(path) {
     return storage.path_exists("${$path}")
 }
 
-# --- performance telemetry (§5.8) --------------------------------------------
+# --- performance telemetry ---------------------------------------------------
 
 # Emit this row's deterministic instruction spend; nightly tooling
 # diffs these against perf-baselines.json.
@@ -398,7 +398,7 @@ def mips_floor(label, t0, floor_mips) {
     }
 }
 
-# --- coverage records (§5.6) -------------------------------------------------
+# --- coverage records --------------------------------------------------------
 
 # Emit the machine-read coverage record for a row that reached its
 # golden: machine, RAM, geometry, depth and addressing mode are read from
@@ -416,4 +416,11 @@ def mips_floor(label, t0, floor_mips) {
 # in matrix-targets.json.
 def report_row(system, card, feature) {
     echo "@@COV {\"machine\":\"${machine.id}\",\"ram\":${machine.ram},\"system\":\"${$system}\",\"card\":\"${$card}\",\"width\":${machine.screen.width},\"height\":${machine.screen.height},\"depth\":${machine.screen.depth},\"addr32\":${debug.mac.globals.read("MMU32bit") == 1},\"feature\":\"${$feature}\"}"
+}
+
+# The same record for a row running an OS other than Mac OS (MkLinux, AIX,
+# Open Firmware): addr32 is the Mac OS global MMU32bit, which such an OS does
+# not have, so it is reported as null rather than as a false reading.
+def report_row_foreign(system, card, feature) {
+    echo "@@COV {\"machine\":\"${machine.id}\",\"ram\":${machine.ram},\"system\":\"${$system}\",\"card\":\"${$card}\",\"width\":${machine.screen.width},\"height\":${machine.screen.height},\"depth\":${machine.screen.depth},\"addr32\":null,\"feature\":\"${$feature}\"}"
 }

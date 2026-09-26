@@ -65,7 +65,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 // sizes happen to match: different sizes surface as a confusing mismatch
 // several blocks later, pointing at an innocent bystander; **equal sizes are
 // not detected at all, in either format**, and each subsystem silently
-// restores the other's state.  F-20 was exactly this -- the IIfx saved
+// restores the other's state.  The IIfx once did exactly this -- it saved
 // ASC -> ADB -> floppy and restored ASC -> floppy -> ADB.
 //
 // So every block carries a 32-bit tag beside its size.  Pass an optional
@@ -104,7 +104,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 // A checkpoint is a user-supplied file and the build-ID gate is not a defence
 // (the ID is in the file).  Restore paths read counts and strings through
 // these rather than trusting the writer, so an on-disk length cannot drive an
-// allocation or a loop bound.  See 08-core-infra F-22/F-23/F-24.
+// allocation or a loop bound.
 
 // Longest path a restore may claim for an image or its delta directory.
 #define CHECKPOINT_MAX_PATH 4096u

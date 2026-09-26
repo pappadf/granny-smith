@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Unit tests for the shared half of an interrupt-controller node
-// (05-chipsets-irq F-26).
+// Unit tests for the shared half of an interrupt-controller node.
 //
 // The point of irq_controller.h is that five different parts -- OSS, RBV,
 // PSC, AMIC, Grand Central -- answer the same four questions the same way,

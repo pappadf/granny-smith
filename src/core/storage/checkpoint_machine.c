@@ -26,7 +26,7 @@
 // One category for the whole checkpoint path.  This file used "checkpoint"
 // while checkpoint.c uses "ckpt" and system.c reached for "ckpt" inline, so
 // `debug.log checkpoint 2` turned up a third of the subsystem and the other
-// two thirds stayed silent (08-core-infra F-34/F-36).
+// two thirds stayed silent.
 LOG_USE_CATEGORY_NAME("ckpt")
 
 static char *g_machine_id = NULL;
@@ -48,14 +48,16 @@ void checkpoint_machine_set_root(const char *root) {
     }
 }
 
-// Undo a partial checkpoint_machine_set so a retry is possible.
-static void checkpoint_machine_forget_identity(void) {
+// Undo a partial checkpoint_machine_set so a retry is possible, putting
+// back the directory that was in place before it (a verbatim
+// checkpoint_machine_set_dir, or none).
+static void checkpoint_machine_forget_identity(char *prev_dir) {
     free(g_machine_id);
     free(g_machine_created);
     free(g_machine_dir);
     g_machine_id = NULL;
     g_machine_created = NULL;
-    g_machine_dir = NULL;
+    g_machine_dir = prev_dir;
 }
 
 int checkpoint_machine_set(const char *machine_id, const char *created) {
@@ -78,29 +80,36 @@ int checkpoint_machine_set(const char *machine_id, const char *created) {
     // So a transient OPFS mkdir failure left the process with no machine
     // directory and no way to establish one: quick checkpoints and image
     // deltas disabled for the session, behind a single level-1 log line, and
-    // the documented recovery is a page reload (08-core-infra F-47).
+    // the documented recovery is a page reload.
+    //
+    // A directory set verbatim (checkpoint_machine_set_dir, headless
+    // --checkpoint-dir) is replaced by the identity's own; it was overwritten
+    // without being freed.  Keep it until the new one exists.
+    char *prev_dir = g_machine_dir;
+    g_machine_dir = NULL;
     g_machine_id = gs_strdup(machine_id);
     g_machine_created = gs_strdup(created);
     if (!g_machine_id || !g_machine_created) {
-        checkpoint_machine_forget_identity();
+        checkpoint_machine_forget_identity(prev_dir);
         return -1;
     }
     // Ensure parent + machine dir exist.
     if (gs_mkdir_p(machine_root()) != 0) {
         LOG(1, "checkpoint_machine_set: cannot create root %s", machine_root());
-        checkpoint_machine_forget_identity();
+        checkpoint_machine_forget_identity(prev_dir);
         return -1;
     }
     g_machine_dir = gs_str_printf("%s/%s-%s", machine_root(), machine_id, created);
     if (!g_machine_dir) {
-        checkpoint_machine_forget_identity();
+        checkpoint_machine_forget_identity(prev_dir);
         return -1;
     }
     if (gs_mkdir_p(g_machine_dir) != 0) {
         LOG(1, "checkpoint_machine_set: cannot create machine dir %s", g_machine_dir);
-        checkpoint_machine_forget_identity();
+        checkpoint_machine_forget_identity(prev_dir);
         return -1;
     }
+    free(prev_dir);
     return 0;
 }
 
@@ -191,8 +200,7 @@ int checkpoint_machine_sweep_others(void) {
         // directory containing anything else lost all of it, silently, behind
         // one level-2 log line per entry.  The code already recognised the
         // danger -- it bails above rather than risk sweeping its own dir on a
-        // truncated key -- and this extends that caution to everything else
-        // (08-core-infra F-48).
+        // truncated key -- and this extends that caution to everything else.
         if (!is_machine_dir_name(name)) {
             LOG(2, "checkpoint_machine: leaving unrecognised entry %s alone", name);
             continue;
@@ -290,7 +298,7 @@ int checkpoint_machine_write_manifest(void) {
     // Image list, built by appending: at most MAX_IMAGES entries, so the
     // copying costs nothing, and there is no capacity arithmetic to get
     // wrong -- the hand-grown buffer this replaces overran on a failed
-    // realloc (09-storage F-35).  A failure writes no manifest rather than
+    // realloc.  A failure writes no manifest rather than
     // a truncated one.
     char *img_buf = gs_strdup("  \"images\": [");
     bool first = true;

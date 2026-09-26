@@ -3,7 +3,7 @@
 
 // host_vfs.c
 // libc-backed VFS backend.  Every method wraps the POSIX call the shell
-// used to invoke directly before the Phase 1 refactor, so behaviour is
+// used to invoke directly before the VFS existed, so behaviour is
 // byte-identical.  File I/O uses pread-on-fd so vfs_read can accept
 // arbitrary offsets without seek races.
 

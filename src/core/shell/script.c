@@ -2,14 +2,14 @@
 // Copyright (c) pappadf
 
 // script.c
-// Shell v2 statement parser + interpreter. See script.h and
-// proposal-shell-control-flow-and-functions.md §3.
+// Shell statement parser + interpreter. See script.h and
+// docs/core/shell/shell.md.
 //
 // Pipeline: source text → lines → statement tree (blocks resolved by
 // the line-position rule; inline blocks allowed for one statement) →
 // interpretation. Expressions are stored as text and evaluated with
 // expr_eval where they appear, so loop conditions re-test naturally.
-// Two parsing modes (§3.2): command arguments parse bare words as
+// Two parsing modes: command arguments parse bare words as
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
@@ -1185,8 +1185,8 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
 // Scan `('.' seg | '[' EXPR ']')*` at *p, appending to out (bracket
 // expressions evaluated to integers). Returns false with *errv set.
 static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char *out, size_t out_size, value_t *errv) {
-    // One grammar, in expr.c.  This used to be a second implementation of it
-    // (F-38): identifier scanning, `.seg` and `[expr]` appending, and the
+    // One grammar, in expr.c.  This used to be a second implementation of it:
+    // identifier scanning, `.seg` and `[expr]` appending, and the
     // same `"`/`\` rejection for map keys, ~170 lines that had to be kept in
     // step with expr.c by hand and had already drifted.
     char err[160];
@@ -1343,11 +1343,10 @@ static char *scan_bare_word(const char **p) {
     return buf ? buf : strdup("");
 }
 
-// Parse one argument-mode value at *p (§3.2). Returns V_ERROR on
-// failure. Advances *p. `raw_template` marks a template-typed slot
-// (§6.3): a double-quoted value is captured as its raw body — no escape
-// decoding, no interpolation — for the subsystem to evaluate at fire
-// time.
+// Parse one argument-mode value at *p. Returns V_ERROR on
+// failure. Advances *p. `raw_template` marks a template-typed slot: a
+// double-quoted value is captured as its raw body — no escape decoding, no
+// interpolation — for the subsystem to evaluate at fire time.
 static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_template) {
     const char *q = *p;
     // Interpolating string (or raw capture for template slots).
@@ -1508,7 +1507,7 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
             }
         }
         // Template slot? Look up the declared argument this value will
-        // land in; template-typed strings are captured raw (§6.3).
+        // land in; template-typed strings are captured raw.
         bool raw_template = false;
         if (node.member && node.member->kind == M_METHOD && node.member->method.args) {
             const arg_decl_t *args = node.member->method.args;
@@ -1848,7 +1847,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     }
 
     // Save any shadowed same-named binding in the current scope; the
-    // loop variable is removed at every exit route (§3.8).
+    // loop variable is removed at every exit route.
     value_t saved = val_none();
     bool had = shell_binding_save_top(st->name, &saved);
 
@@ -1860,7 +1859,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     //
     // Real collections are NOT capped: iterating a list, map or bytes walks
     // data that already exists, and its size is whatever the machine already
-    // holds (08-core-infra F-37, decision D-2).
+    // holds.
     size_t count = 0;
     if (iter.kind == V_LIST)
         count = iter.list.len;
@@ -1941,7 +1940,7 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
     bool ok = !is_err && val_as_bool(&v);
     if (ok) {
         value_free(&v);
-        return; // silent on success (§5)
+        return; // silent on success
     }
     // Failure: format the message (interpolated now, at failure time).
     char msg[512] = "";
@@ -1957,7 +1956,7 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
     // stderr, with its predicate error.  These are one failure event and used
     // to go to two streams, so a test log could interleave them in either
     // order or split them across files -- and that output is exactly what a
-    // failure investigation reads (08-core-infra F-61).  Results go to stdout,
+    // failure investigation reads.  Results go to stdout,
     // diagnostics to stderr.
     fprintf(stderr, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
     value_free(&v);

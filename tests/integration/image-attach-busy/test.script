@@ -12,13 +12,12 @@ assert vfs.list("${$fd}/partition1") "the floppy is not readable before insert"
 
 # A hard disk attached writable: the mount made above now refuses.  The
 # image the SCSI disk opened is the decoded scratch copy of the .dmg, so a
-# key taken from the opened image would have protected the wrong file (F-41).
+# key taken from the opened image would have protected the wrong file.
 machine.scsi.attach_hd "${$dmg}" 2
 assert !vfs.list("${$dmg}/partition1") "a writable hard disk is still served by the VFS"
 
 # A floppy inserted writable refuses the same way.  The floppy path never
-# notified anything, so the VFS served the base under the guest's writes
-# (F-40).
+# notified anything, so the VFS served the base under the guest's writes.
 machine.floppy.drive[0].insert "${$fd}" true
 assert !vfs.list("${$fd}/partition1") "a writable floppy is still served by the VFS"
 
@@ -30,8 +29,8 @@ assert !vfs.list("${$raw}/partition1") "a disk attached before its first mount i
 
 # machine.restart hands the media to the new machine and re-attaches them.
 # The re-attach notified with the opened image's path -- for the .dmg, its
-# decoded scratch copy -- so a .dmg mount made after the restart was served
-# (F-41).  Unmount first so no mount carries state across.
+# decoded scratch copy -- so a .dmg mount made after the restart was served.
+# Unmount first so no mount carries state across.
 storage.unmount "${$dmg}"
 machine.restart
 assert !vfs.list("${$dmg}/partition1") "a re-attached .dmg is served by the VFS after machine.restart"

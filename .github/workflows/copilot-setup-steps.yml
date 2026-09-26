@@ -8,7 +8,8 @@ name: "Copilot Setup Steps"
 # - Build tools (gcc, make, cmake, etc.)
 # - Test data (if token is available)
 #
-# Based on: todo/agent-setup.md and .devcontainer/devcontainer.json
+# Mirrors .devcontainer/Dockerfile and .devcontainer/devcontainer.json;
+# keep the package lists in sync with the Dockerfile.
 
 on:
   workflow_dispatch:
@@ -49,18 +50,26 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
+          # The Dockerfile's list, minus gh (preinstalled on the runner).
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             binutils-m68k-linux-gnu \
+            7zip \
             cmake \
             ninja-build \
+            valgrind \
             python3 \
             python3-pip \
+            python3-venv \
             ca-certificates \
             curl \
             git \
+            git-lfs \
             xz-utils \
-            valgrind
+            clang-format-18
+          # The commit hooks (clang-format, the external-reference check).
+          pip3 install --break-system-packages --no-cache-dir pre-commit
+          pre-commit install
           echo "System dependencies installed."
 
       # ============================================
@@ -228,7 +237,7 @@ jobs:
             echo "Test data fetched successfully."
           else
             echo "::notice::Test data token not available. Integration and e2e tests will be skipped."
-            echo "See docs/TEST_DATA.md for information on obtaining test data."
+            echo "See docs/guide/TEST_DATA.md for information on obtaining test data."
           fi
 
       # ============================================
@@ -261,6 +270,8 @@ jobs:
           echo "  npm: $(npm -v)"
           echo "  gcc: $(gcc --version | head -n 1)"
           echo "  make: $(make --version | head -n 1)"
+          echo "  clang-format: $(clang-format-18 --version)"
+          echo "  pre-commit: $(pre-commit --version)"
           source ${{ env.EMSDK_PATH }}/emsdk_env.sh
           echo "  emcc: $(emcc --version | head -n 1)"
           echo ""

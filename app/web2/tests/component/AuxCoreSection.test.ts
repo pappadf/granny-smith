@@ -64,7 +64,7 @@ describe('AuxCoreSection', () => {
 });
 
 describe('SectionsPane', () => {
-  // capabilities.aux_cpus used to be read by nothing (F-08).
+  // capabilities.aux_cpus used to be read by nothing.
   it('renders one section per auxiliary core, and none without', () => {
     const none = render(SectionsPane);
     expect(none.container.textContent).not.toContain('DSP (dsp3210)');

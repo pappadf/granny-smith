@@ -1,4 +1,4 @@
-# Integration test: Phase 3 image-VFS descent into A/UX UFS.
+# Integration test: image-VFS descent into A/UX UFS.
 # Runner cd's into this directory; paths are relative.
 
 # Partition 6 is "UNIX Root&Usr slice 0" — the A/UX root filesystem.

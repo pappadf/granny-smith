@@ -6,29 +6,31 @@
 # fields.  Each model's profile is a single JSON line containing
 # "id":"<model>", so we isolate a model's line by that key.
 #
-# MODELS= is deliberately NOT "every registered model": every assertion here is
-# hand-written and names its model explicitly, so adding a model to the list
-# alone buys no coverage — it just dumps a JSON line nothing inspects.  A new
-# machine earns coverage here only by having assertions written for it.  (The
-# shape of the profile JSON *is* checked for every registered model, by the
-# sibling machine-profile-schema test.)
+# Every assertion here is hand-written and names its model, so listing a model
+# buys no coverage by itself.  What the test does enforce is a floor: it dumps
+# every registered model (machine.models) and fails if any has no assertion at
+# all -- which is how the three MCU Quadras went uncovered here while the
+# sibling machine-profile-schema test already carried them.
 set -euo pipefail
 
 OUT="$WORK_DIR/profiles.txt"
 SCRIPT="$WORK_DIR/profiles.script"
 mkdir -p "$WORK_DIR"
 
-MODELS="plus se30 iicx iix iifx iici iisi q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 lisa macxl"
-
-: > "$SCRIPT"
-for m in $MODELS; do
-    echo "echo \"\${machine.profile(\"$m\")}\"" >> "$SCRIPT"
-done
-echo "quit" >> "$SCRIPT"
+# Every registered model, read from the emulator itself (machine.models),
+# so a newly registered machine cannot be silently left out.
+cat > "$SCRIPT" <<'SCRIPT'
+let ms = machine.models
+for m in $ms {
+    echo "${machine.profile($m)}"
+}
+quit
+SCRIPT
 
 "$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=max > "$OUT" 2>&1
 
 fail=0
+declare -A count=()
 
 # Return the single JSON line for a model id.
 profile_line() {
@@ -45,7 +47,10 @@ assert_contains() {
         fail=1
         return
     fi
-    if ! printf '%s' "$line" | grep -qF "$needle"; then
+    count[$model]=$(( ${count[$model]:-0} + 1 ))
+    # A here-string, not printf | grep -q: under pipefail, grep -q exiting at
+    # the first match can SIGPIPE the printf and fail a passing assertion.
+    if ! grep -qF -- "$needle" <<<"$line"; then
         echo "FAIL: $model: expected $desc ($needle)"
         fail=1
     fi
@@ -61,7 +66,8 @@ assert_not_contains() {
         fail=1
         return
     fi
-    if printf '%s' "$line" | grep -qF "$needle"; then
+    count[$model]=$(( ${count[$model]:-0} + 1 ))
+    if grep -qF -- "$needle" <<<"$line"; then
         echo "FAIL: $model: expected NOT $desc ($needle)"
         fail=1
     fi
@@ -72,7 +78,8 @@ assert_absent() {
     local model="$1" needle="$2" desc="$3"
     local line
     line=$(profile_line "$model")
-    if printf '%s' "$line" | grep -qF "$needle"; then
+    count[$model]=$(( ${count[$model]:-0} + 1 ))
+    if grep -qF -- "$needle" <<<"$line"; then
         echo "FAIL: $model: unexpected $desc ($needle)"
         fail=1
     fi
@@ -104,9 +111,9 @@ assert_contains iicx '"nubus":true'   "iicx has nubus"
 assert_contains iicx '"id":"mdc_8_24"'        "iicx 8·24 video card"
 assert_contains iicx '"requires_vrom":true'   "iicx card needs vrom"
 # IIci built-in RBV video carries its declaration in main ROM — no VROM.
-# (Match the whole card object: since stage 2 the IIci also declares three
-# sockets whose pluggable candidates DO need a vROM, so a profile-wide
-# requires_vrom:true absence check would be wrong.)
+# (Match the whole card object: the IIci also declares three sockets whose
+# pluggable candidates DO need a vROM, so a profile-wide requires_vrom:true
+# absence check would be wrong.)
 assert_contains iici '"id":"builtin_rbv_video","display_name":"Macintosh IIci Built-in Video","requires_vrom":false' \
     "iici builtin video needs no vrom"
 
@@ -114,14 +121,14 @@ assert_contains iici '"id":"builtin_rbv_video","display_name":"Macintosh IIci Bu
 # Socket candidates are computed from the card registry by attachment
 # (nubus_card_fits_socket): every CARD_ATTACH_NUBUS video card is offered on
 # every machine with a user-configurable socket — including the IIci's three
-# empty sockets next to its builtin video
-# (proposal-nubus-computed-card-compatibility.md §5.3).
+# empty sockets next to its builtin video (docs/guide/ARCHITECTURE.md,
+# "Computed card compatibility").
 for m in iicx iix iifx iici; do
     assert_contains "$m" '"id":"mdc_8_24"'          "$m offers 8·24"
     assert_contains "$m" '"id":"display_card_24ac"' "$m offers 24AC"
     assert_contains "$m" '"id":"824gc"'             "$m offers 8·24 GC"
 done
-# Stage 2: machines declare EVERY socket (topology), not just one video
+# Machines declare EVERY socket (topology), not just one video
 # slot — the IIcx's three, the IIx/IIfx's six, the IIci's three.
 for m in iicx iix iifx; do
     assert_contains "$m" '"slot":"9"' "$m declares socket \$9"
@@ -163,16 +170,17 @@ for m in q840av q660av; do
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets"
     assert_contains "$m" '"has_cdrom":true' "$m offers a CD-ROM bay"
-    # The New Age FDC is stubbed as 'no drive', so no floppy slot is offered.
-    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive"
+    # A GAP, pinned so that closing it shows up here: the real machines have
+    # a SuperDrive, but the New Age FDC is not modeled (a 'no drive' stub),
+    # so the profile offers no floppy slot (#178).
+    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy slot (New Age unmodeled, #178)"
 done
 # --- PDM family (Power Macintosh 6100/7100/8100): the first PowerPC
 # machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug
-# panels; fpu:true since Phase E landed the 601 FPU datapath and the
-# machine.cpu.fpu object (proposal-powerpc-601-pdm.md §3.6).  Phase G
-# landed the Curio SCSI bus, so two HD slots AND the CD bay are offered —
-# a CD-ROM is an ordinary SCSI target on that same bus, with no
-# CD-specific hardware behind it.  ONE floppy slot, not two: the family
+# panels; fpu:true since the 601 FPU datapath and the machine.cpu.fpu
+# object landed.  The Curio SCSI bus is modelled, so two HD slots AND the
+# CD bay are offered — a CD-ROM is an ordinary SCSI target on that same
+# bus, with no CD-specific hardware behind it.  ONE floppy slot, not two: the family
 # has a single internal manual-inject SuperDrive and no external port, and
 # this assertion moved only after a 1.44 MB disk mounted in the Finder on
 # a booted 7100 and a PowerPC application launched off it (suite-pdm rows
@@ -181,12 +189,12 @@ done
 for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"model":601' "$m is a PowerPC 601"
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
-    assert_contains "$m" '"fpu":true' "$m FPU capability on since Phase E"
+    assert_contains "$m" '"fpu":true' "$m FPU capability on"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"has_cdrom":true' "$m offers the Curio-bus CD bay"
     assert_contains "$m" '"cdrom_id":3' "$m puts the CD at SCSI ID 3"
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers the two Curio SCSI HD slots on one bus (Phase G)"
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers the two Curio SCSI HD slots on one bus"
 done
 # NuBus splits the family in two, and that split is the point of these
 # rows.  The 7100 and 8100 carry BART and three connectors on the logic
@@ -227,9 +235,9 @@ assert_contains pm7100 '"freq":66000000' "pm7100 runs at 66 MHz"
 assert_contains pm8100 '"freq":80000000' "pm8100 runs at 80 MHz"
 
 # The TNT family: the 7500 keeps the 601, the 8500/9500 are the first
-# 604 machines.  Phase E wired the internal MESH bus, so the two HD
-# slots are offered, and the SWIM3 + DBDMA-channel-1 floppy datapath is
-# complete too -- ans-diag-floppy boots the Network Server Diagnostic
+# 604 machines.  The internal MESH bus is wired, so the two HD slots
+# are offered, and the SWIM3 + DBDMA-channel-1 floppy datapath is
+# complete too -- suite-ans's ans500-diag-floppy boots the Network Server Diagnostic
 # Utility from drive 0 -- so the one internal SuperDrive is offered on
 # every board in the family.  No NuBus on a PCI machine; PCI slot
 # capability arrives with the pluggable-card follow-up.
@@ -244,19 +252,18 @@ for m in pm7500 pm8500 pm9500; do
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"Internal HD0","id":0,"boot":false},{"label":"Internal HD1","id":1,"boot":false}]}]' "$m offers the two internal MESH HD slots on one bus (Phase E)"
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"Internal HD0","id":0,"boot":false},{"label":"Internal HD1","id":1,"boot":false}]}]' "$m offers the two internal MESH HD slots on one bus"
 done
 assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
 assert_contains pm9500 '"freq":132000000' "pm9500 runs at 132 MHz"
 
 # The Apple Network Servers — the same TNT substrate with the Macintosh
-# removed (proposal-apple-network-server-500-700 §3.1).  Both are plain
-# 604s and both advertise PCI; what distinguishes them in the profile is
-# the CPU clock, the shipping memory size and the 512 MB ROM decode
-# ceiling that replaces the 9500's 1.5 GB (§5.9 — being LESS permissive
-# than the silicon is the faithful choice, because above it the guest
-# hangs during the RAM test rather than reporting an error).
+# removed.  Both are plain 604s and both advertise PCI; what distinguishes
+# them in the profile is the CPU clock, the shipping memory size and the
+# 512 MB ROM decode ceiling that replaces the 9500's 1.5 GB (being LESS
+# permissive than the silicon is the faithful choice, because above it the
+# guest hangs during the RAM test rather than reporting an error).
 for m in ans500 ans700; do
     assert_contains "$m" '"model":604' "$m is a PowerPC 604"
     assert_contains "$m" '"kind":"ppc_604"' "$m has the 604 split-BAT MMU"
@@ -265,7 +272,7 @@ for m in ans500 ans700; do
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"pci":true' "$m advertises PCI"
     assert_contains "$m" '"video_in":false' "$m has no video digitizer"
-    # The bay the diagnostic floppy goes in (ans-diag-floppy).
+    # The bay the diagnostic floppy goes in (suite-ans's ans500-diag-floppy).
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '"ram_max":524288' "$m caps RAM at the ROM's 512 MB decode limit (in KB, as every profile publishes it)"
     assert_contains "$m" '"has_cdrom":true' "$m boots its Install CD from a SCSI bay"
@@ -278,7 +285,7 @@ for m in ans500 ans700; do
     assert_contains "$m" '"object":"scsi2"' "$m offers a second fast/wide bus"
 done
 # The 700's two REAR bays cable to fast/wide 1 -- the topology its comment
-# described long before the table expressed it (F-17).
+# described long before the table expressed it.
 assert_contains ans700 '"label":"Rear bay 1 (fast/wide 1)","id":0' "ans700 declares its first rear bay"
 assert_contains ans700 '"label":"Rear bay 2 (fast/wide 1)","id":1' "ans700 declares its second rear bay"
 assert_not_contains ans500 'Rear bay' "ans500 has no rear bays"
@@ -303,6 +310,45 @@ for m in q840av q660av; do
     for card in mdc_8_24 display_card_24ac 824gc; do
         assert_absent "$m" "\"id\":\"$card\"" "$m has no socket for $card"
     done
+done
+
+# The three MCU Quadras.  The profile states their CPU, clocks, sockets and
+# media; it does not carry an IOP flag or a DAFB monitor list, so those are
+# not asserted here.  No RAM ceiling is pinned: the 900's 64 MB and the 950's
+# 256 MB on the same board are unsettled (#184).
+for m in q700 q900 q950; do
+    assert_contains "$m" '"cpu":{"model":68040,"address_bits":32,"fpu":true}' "$m has a 68040 with FPU"
+    assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"
+    assert_contains "$m" '"nubus":true,"pci":false' "$m is a NuBus machine"
+    assert_contains "$m" '"video_in":false,"audio_in":false,"aux_cpus":[]' "$m has no video/audio input or aux CPU"
+    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m has one SuperDrive"
+    assert_contains "$m" '"cdrom":{"bus":"scsi","id":3,"label":"CD-ROM"}' "$m seats its CD at SCSI 3"
+    # A GAP, pinned so that closing it shows up here: the 900/950 have two
+    # 53C96 buses, and the model builds the second (machine.scsi2), but the
+    # profile offers bays on the internal bus only (#185).
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers one SCSI bus"
+done
+assert_contains q700 '"freq":25000000' "q700 runs at 25 MHz"
+assert_contains q900 '"freq":25000000' "q900 runs at 25 MHz"
+assert_contains q950 '"freq":33333333' "q950 runs at 33 MHz"
+# NuBus sockets: two on the 700 ($D, $E), five on the 900/950 tower ($A-$E).
+assert_contains q700 '"video_slots":[{"slot":"D"' "q700's first socket is D"
+assert_contains q700 '{"slot":"E"' "q700 has socket E"
+assert_absent q700 '{"slot":"A"' "q700 has no socket A"
+for m in q900 q950; do
+    for s in A B C D E; do
+        assert_contains "$m" "{\"slot\":\"$s\"" "$m has socket $s"
+    done
+done
+
+# The floor: every registered model carries at least one assertion above.
+models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
+[ -n "$models" ] || { echo "FAIL: machine.models dumped no profiles"; fail=1; }
+for m in $models; do
+    if [ "${count[$m]:-0}" -eq 0 ]; then
+        echo "FAIL: $m: registered, but no capability assertion names it"
+        fail=1
+    fi
 done
 
 if [ "$fail" -ne 0 ]; then

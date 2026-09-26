@@ -174,7 +174,7 @@ typedef struct {
     // address cast straight to a host pointer.  Nothing dereferences it (the
     // resource-name parsing is unfinished), so it is inert, but it handed the
     // next person to finish that parsing a ready-made arbitrary-host-read
-    // primitive (08-core-infra F-44).  Read it through read_bytes /
+    // primitive.  Read it through read_bytes /
     // debug_mac_xlate like every other field in this file.
     uint32_t name_list_addr;
 } resource_map;
@@ -286,6 +286,8 @@ resource_map *read_resource_map(void) {
  * name, memory layout (heap and stack), and other relevant details.
  */
 uint64_t cmd_process_info(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     printf("--- Current Application Info ---\n");
 
     // 1. Get the Application Name
@@ -784,6 +786,7 @@ static int trace_mouse_have_last = 0; // whether we have a previous sample
 static int16_t trace_mouse_last_h = 0;
 static int16_t trace_mouse_last_v = 0;
 static void trace_mouse_tick(void *source, uint64_t data) {
+    (void)source;
     (void)data;
     if (!trace_mouse_active)
         return; // Do not reschedule if stopped during callback
@@ -1007,7 +1010,7 @@ int debug_mac_resolve_key_name(const char *name) {
         return 0x33;
     // The arrows' RAW codes, $3B-$3E.  These were the virtual codes $7B-$7E,
     // which on the ADB wire are the right-hand modifiers: "left" pressed
-    // Right Shift (N-34).
+    // Right Shift.
     if (!strcasecmp(name, "up"))
         return 0x3E;
     if (!strcasecmp(name, "down"))
@@ -1042,7 +1045,7 @@ int debug_mac_resolve_key_name(const char *name) {
     // fourteen named keys and the hex form and nothing else, while adb.c's
     // argument doc promised `Key name ("return"/"esc"/"a"/...)` and its
     // keyboard.type doc promised a-z and 0-9.  So keyboard.press("a") failed
-    // on EVERY machine, Mac included (06-io-controllers N-04).
+    // on EVERY machine, Mac included.
     //
     // debug_mac_resolve_ascii already holds the layout; it simply was never
     // consulted from here.  Shift is deliberately ignored: this resolves the

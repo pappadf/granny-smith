@@ -5,12 +5,11 @@
 // The one config_t-owned checkpoint prefix, shared by every machine family
 // whose construction order allows it.
 //
-// This is `mac030_checkpoint_save_core()` renamed and generalised
-// (05-chipsets-irq F-18).  The finding asks for "a single
-// system_checkpoint_common"; the helper already served five of the nine
-// families, and the `mac030_` prefix -- plus a header comment saying the
-// PowerPC families do not use it -- was most of what stopped the other four
-// adopting it.  It is a rename and an extension, not a second helper.
+// This is `mac030_checkpoint_save_core()` renamed and generalised.  The
+// helper already served five of the nine families, and the `mac030_` prefix
+// -- plus a header comment saying the PowerPC families do not use it -- was
+// most of what stopped the other four adopting it.  It is a rename and an
+// extension, not a second helper.
 //
 // Nothing is parameterised, because nothing needed to be: every difference
 // between the families falls out of which handles the config actually has.

@@ -1,12 +1,15 @@
-// Declaration-ROM builder unit tests (runtime-vrom proposal stages B/C).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Declaration-ROM builder unit tests.  The builder is described in
+// docs/core/peripherals/nubus_generic_vrom.md.
 //
-// gsvrom_generate builds every personality's image host-side from a
-// monitors[] table mirroring the card kinds'; each image must pass the
-// §5 structural validator, carry the expected identity (BoardId, vendor
-// string, sResource names), splice the assembled fragments verbatim,
-// and regenerate bit-identically (checkpoint-restore determinism).
-// Plus the validation guards: zero offsets, non-ascending ids, and CRC
-// corruption must all be caught.
+// gsvrom_generate builds every personality's image host-side from a monitors[]
+// table mirroring the card kinds'; each image must pass the structural
+// validator, carry the expected identity (BoardId, vendor string, sResource
+// names), splice the assembled fragments verbatim, and regenerate
+// bit-identically (checkpoint-restore determinism).  Plus the validation
+// guards: zero offsets, non-ascending ids, and CRC corruption must all be
+// caught.
 
 #include "card.h"
 #include "declrom.h"
@@ -196,7 +199,7 @@ TEST(test_generate_all_personalities) {
         size_t n = 0;
         const uint8_t *img = declrom_builder_bytes(b, &n);
         ASSERT_TRUE(img != NULL && n > 20);
-        // §5 structural validation.
+        // Structural validation.
         ASSERT_TRUE(declrom_image_validate(img, n));
         // Identity: vendor string + BoardId (the structural-recognition
         // pair vrom.identify keys on).
@@ -227,7 +230,7 @@ TEST(test_generate_all_personalities) {
 
 TEST(test_generate_determinism) {
     // Regeneration must be bit-identical (checkpoint restore rebuilds the
-    // image from the recorded configuration; proposal §4).
+    // image from the recorded configuration).
     for (size_t i = 0; i < sizeof(PERSONALITIES) / sizeof(PERSONALITIES[0]); i++) {
         declrom_builder_t *b1 = gsvrom_generate(PERSONALITIES[i].p, PERSONALITIES[i].mons);
         declrom_builder_t *b2 = gsvrom_generate(PERSONALITIES[i].p, PERSONALITIES[i].mons);

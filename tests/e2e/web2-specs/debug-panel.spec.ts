@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Debug view against a real machine (unit 0.4).
+// web2 e2e: the Debug view against a real machine.
 //
 // Until this spec there was no e2e coverage of the Debug view at all, and its
 // component tests mock the bus functions under test — so register editing
@@ -106,7 +106,7 @@ test('breakpoints are listed, and Remove removes', async ({ page }) => {
   expect(await gsEvalInPage(page, 'debug.breakpoints.count')).toBe(0);
 });
 
-// A paused machine repaints after a request that changes the screen (D8).
+// A paused machine repaints after a request that changes the screen.
 // Before, video was refreshed only while the scheduler ran, so a poke into the
 // framebuffer (or a step) stayed invisible until the next resume.
 test('a paused machine repaints after a framebuffer poke', async ({ page }) => {

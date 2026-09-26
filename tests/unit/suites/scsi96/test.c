@@ -1,4 +1,6 @@
-// NCR 53C96 chip-model tests (Quadra proposal Phase E).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// NCR 53C96 chip-model tests.
 //
 // scsi_53c96.c drives its bus through the external-initiator API
 // (scsi_external_* / scsi_pop_data_in_byte / scsi_push_data_out_byte /
@@ -161,9 +163,9 @@ void scsi_external_release(struct scsi *bus) {
     mb.phase = MB_free;
 }
 
-// The device side of a bus reset (F-17): the chip calls it, the bus implements
-// it.  This suite drives the 53C96 against a mock bus with no scsi_t behind it,
-// so there are no targets to return to a power-on state -- count the call, so a
+// The device side of a bus reset: the chip calls it, the bus implements it.
+// This suite drives the 53C96 against a mock bus with no scsi_t behind it, so
+// there are no targets to return to a power-on state -- count the call, so a
 // test can assert the chip made it.
 int g_bus_resets;
 void scsi_bus_reset(struct scsi *bus) {
@@ -171,10 +173,10 @@ void scsi_bus_reset(struct scsi *bus) {
     g_bus_resets++;
 }
 
-// The selection time-out wait belongs to the bus (F-18); the chip supplies the
-// period and the reporting.  This suite has no bus and no scheduler, so there
-// is no time for a wait to pass in -- report straight away, which is what the
-// real helper does when it finds no scheduler underneath.
+// The selection time-out wait belongs to the bus; the chip supplies the period
+// and the reporting.  This suite has no bus and no scheduler, so there is no
+// time for a wait to pass in -- report straight away, which is what the real
+// helper does when it finds no scheduler underneath.
 void scsi_bus_arm_select_timeout(struct scsi *bus, uint64_t ns, void (*fn)(void *), void *ctx) {
     (void)bus, (void)ns;
     if (fn)
@@ -560,7 +562,7 @@ TEST(repeated_preloads_do_not_wedge_the_fifo) {
 }
 
 // ============================================================
-// Bus-master short transfer (F-42)
+// Bus-master short transfer
 // ============================================================
 // A CPU draining the aperture discovers a short transfer by asking the chip
 // for a byte that is not there.  A bus-master pump never asks: it watches the

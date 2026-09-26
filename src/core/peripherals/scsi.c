@@ -1236,7 +1236,7 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
             scsi->device_links[i].slot = i;
             scsi->device_objects[i] = object_new(&scsi_device_class, &scsi->device_links[i], NULL);
             // The per-slot medium node shares the same device link so it can
-            // fetch the live image_t lazily (proposal §5.4). Returned by the
+            // fetch the live image_t lazily. Returned by the
             // device's `image` child lookup only when a medium is present.
             scsi->image_objects[i] = object_new(&scsi_image_class, &scsi->device_links[i], "image");
         }
@@ -1404,7 +1404,7 @@ bool scsi_get_loopback(scsi_t *scsi) {
     return scsi->loopback;
 }
 
-// === M7d — read-only views for the object model =============================
+// === Read-only views for the object model ===================================
 
 int scsi_device_type(const scsi_t *scsi, unsigned which) {
     if (!scsi || which > 7)
@@ -1578,9 +1578,9 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
 // `scsi` exposes:
 //   - `loopback` (R/W bool) — wraps scsi_get/set_loopback
 //   - `bus` named child with `phase` (V_ENUM), `target`, `initiator`
-//   - `devices` indexed children — sparse stable indices = SCSI ID 0..7
-//     (proposal §5.4: "scsi.devices (indexed; each device exposes id,
-//     type, image (path attribute), methods eject(), insert)")
+//   - `devices` indexed children — sparse stable indices = SCSI ID 0..7;
+//     each device exposes id, type and other attributes, an `image` child,
+//     and eject() / insert()
 //
 // Empty SCSI IDs are holes in the indexed collection: `count()`
 // returns the number of populated slots, `next()` skips empties.
@@ -1696,7 +1696,7 @@ static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int
 //
 // This used to call add_scsi_cdrom() whatever was in the slot, so inserting
 // into a hard disk turned it into a read-only SONY CDU-8002 with 2048-byte
-// blocks -- a running machine's boot disk, mid-session (03-scsi F-45).
+// blocks -- a running machine's boot disk, mid-session.
 //
 // eject() is deliberately type-agnostic (it doubles as "detach this disk", see
 // scsi_eject_device), which made the asymmetry easy to hit: eject a hard disk,
@@ -1719,7 +1719,7 @@ static value_t scsi_dev_method_insert(struct object *self, const member_t *m, in
     if (slot > 6)
         return val_err("scsi.devices[%u].insert: %u is the initiator slot, expected 0..6", slot, slot);
 
-    // The attach's own result (it answered true whatever happened, N-04).
+    // The attach's own result (it used to answer true whatever happened).
     if (scsi_device_type(scsi, slot) == scsi_dev_cdrom)
         return val_bool(add_scsi_cdrom_on(global_emulator, scsi, argv[0].s, (int)slot));
     return val_bool(system_hd_attach_on(scsi, argv[0].s, (int)slot) == 0);
@@ -1756,13 +1756,13 @@ static const arg_decl_t scsi_dev_insert_args[] = {
 
 // --- Medium (image) node: machine.scsi.device[N].image ---------------------
 //
-// The first-class node for the medium currently in this device
-// (proposal-system-object-model.md §5.4). instance_data is the same
-// device-link as the parent entry, so the live image_t is fetched lazily via
-// scsi_device_image(scsi, slot). The node carries the canonical "save this
-// disk" action — export(path) — keyed on device identity, not a filename. It
-// is returned by the device's `image` child lookup only when a medium is
-// present; the device owns the node (freed in scsi_delete).
+// The first-class node for the medium currently in this device.
+// instance_data is the same device-link as the parent entry, so the live
+// image_t is fetched lazily via scsi_device_image(scsi, slot). The node
+// carries the canonical "save this disk" action — export(path) — keyed on
+// device identity, not a filename. It is returned by the device's `image`
+// child lookup only when a medium is present; the device owns the node
+// (freed in scsi_delete).
 
 static value_t scsi_image_attr_path(struct object *self, const member_t *m) {
     (void)m;
@@ -1802,7 +1802,7 @@ static value_t scsi_image_attr_present(struct object *self, const member_t *m) {
 
 // `export(path)` — flatten this device's live image (base + delta) into a
 // NEW file. image_export_to refuses to overwrite, so this is always a
-// "Save As…" and never mutates the source image (proposal §5.4, export-only).
+// "Save As…" and never mutates the source image.
 static value_t scsi_image_method_export(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc;

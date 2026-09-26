@@ -18,5 +18,5 @@ TEST_ROM := roms/ans500-ans700-962f6c13.rom
 TEST_SETUP := truncate -s 20M "$(WORK_DIR)/hd.img" && truncate -s 20M "$(WORK_DIR)/hd2.img" && truncate -s 4M "$(WORK_DIR)/cd.iso"
 TEST_ARGS := model=ans500 ram=32768 hd=$(WORK_DIR)/hd.img cdrom=$(WORK_DIR)/cd.iso
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

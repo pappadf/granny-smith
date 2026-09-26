@@ -290,7 +290,6 @@ machine.adb.mouse.move 0 0
 # RAM1..." status display.
 scheduler.run 600000000
 machine.screen.save "$WORK_DIR/post-floppy-state.png"
-machine.screen.save "post-floppy-state.png"
 
 # Let the RAM test run.  On real IIcx hardware MacTest's RAM test
 # fills + verifies all 4 MB with several patterns (~4 min @ 16 MHz),
@@ -314,6 +313,5 @@ machine.screen.save "post-floppy-state.png"
 # test stops at the RAM-running display.
 scheduler.run 4000000000
 machine.screen.save "$WORK_DIR/ram-running.png"
-machine.screen.save "ram-running.png"
 
 quit

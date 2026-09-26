@@ -377,10 +377,10 @@ static void write_segment_listing(FILE *fp, int16_t code_id, const re_code_segme
 
 // ---- Code-bearing types beyond CODE --------------------------------------
 //
-// Per proposal §2.11 — several resource types other than CODE carry 68k
-// instructions, each with a type-specific header.  We disassemble those
-// too so the dump covers patches, drivers, defprocs, and the System
-// file's linked-patch (lpch) machinery.  The header skip per type is
+// Several resource types other than CODE carry 68k instructions, each with
+// a type-specific header.  We disassemble those too so the dump covers
+// patches, drivers, defprocs, and the System file's linked-patch (lpch)
+// machinery.  The header skip per type is
 // documented inline below.
 
 // Linked-patch resource — see the System 7.1 source drop,
@@ -442,14 +442,12 @@ static void write_generic_code_listing(FILE *fp, const char *type_str, int16_t i
     re_annotate_disasm_write(fp, bytes + header_bytes, code_len, (uint32_t)header_bytes, RE_DISASM_ALL, &ctx);
 }
 
-// Table of code-bearing types we treat as disassembly fodder.  Per
-// proposal §2.11 — `CODE` gets full near/far-model parsing + jump-table
-// xref handling (the existing path); `lpch` parses the linked-patches
-// header to find the code region; `DRVR` skips an 18-byte fixed header
-// plus the driver-name pstring before disassembling.  Everything else
-// disassembles from offset 0 with a single `entry` label — that's the
-// generic fallback the proposal endorses for unrecognised code-bearing
-// types.
+// Table of code-bearing types we treat as disassembly fodder.  `CODE` gets
+// full near/far-model parsing + jump-table xref handling (the existing
+// path); `lpch` parses the linked-patches header to find the code region;
+// `DRVR` skips an 18-byte fixed header plus the driver-name pstring before
+// disassembling.  Everything else disassembles from offset 0 with a single
+// `entry` label — the generic fallback for unrecognised code-bearing types.
 //
 // Lowercase variants (`dcmp`, `boot`, `lmem`, `lmgr`, `mcky`, `proc`,
 // `scod`, `snth`, `ptch`) cover the System-file's wide spread of
@@ -501,7 +499,7 @@ static const cbtype_t g_code_bearing[] = {
     // code in these non-Apple resource types instead of CODE.  All are
     // plain code from offset 0; 'QCOD' additionally prefixes an 8-byte
     // header + a trap-patch table (trap-word/patch-offset/saved-original
-    // 8-byte entries, see notes/2026-06-26-apple-macintosh-24ac-*) ahead of
+    // 8-byte entries) ahead of
     // its routine bodies, so its leading bytes decode as table data.
     {{'Q', 'C', 'O', 'D'},  CBKIND_GENERIC, "QuickDraw-accelerator code + trap-patch table (header @0, table @+8)"        },
     {{'Q', 'D', 'P', 'A'},  CBKIND_GENERIC, "QuickDraw-accelerator patch routine (stScanLoop / bMAIN0 / bEND0 bodies)"    },

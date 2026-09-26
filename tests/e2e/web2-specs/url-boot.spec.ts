@@ -76,7 +76,7 @@ async function terminalExpect(page: Page, line: string, pattern: RegExp): Promis
 
 // URL media is kept the way an upload is: the fetched floppy is stored in
 // /opfs/images/fd/ under its URL's name and inserted from there, not from
-// volatile /tmp (09-storage D-1).  It then survives a reload and shows in
+// volatile /tmp.  It then survives a reload and shows in
 // the Images tab like any other floppy.
 test('?fd0= media is persisted to /opfs/images/fd and inserted from there', async ({ page }) => {
   test.setTimeout(120_000);

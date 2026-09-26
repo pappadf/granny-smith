@@ -1,5 +1,5 @@
 # Integration test: TNT PCI slot topology and the empty-socket contract
-# (proposal-pci-architecture, Phase 1).
+# (docs/core/peripherals/pci.md).
 #
 # The gate for the generic PCI core's TNT integration: the machine's slot
 # table reaches the profile, the object model and the runtime from one
@@ -17,5 +17,5 @@ TEST_ROM := roms/pm7500-pm8500-pm9500-96cd923d.rom
 
 TEST_ARGS := model=pm7500 ram=32768
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
-TEST_TIER := unit
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
+TEST_TIER := matrix

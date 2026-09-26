@@ -17,6 +17,18 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
+# Least privilege: the default GITHUB_TOKEN may write to the repository,
+# and nothing here needs to. packages: read pulls the dev container.
+permissions:
+  contents: read
+  packages: read
+
+# One run per branch: a push to a PR supersedes the run still going on its
+# previous commit. Every commit on main keeps its own run and verdict.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Every `run:` uses bash, not the container's default sh. Steps here pipe into
 # tee and then `exit "${PIPESTATUS[0]}"` to surface the real command's status
 # rather than tee's — PIPESTATUS is a bashism, and under dash it expands to
@@ -30,6 +42,8 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    # Bounds a hang the per-test timeout cannot see (the build, a fetch).
+    timeout-minutes: 150
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       # Optionally, after a build you can pin by digest instead for immutability:
@@ -43,9 +57,12 @@ jobs:
     # Secrets are not available to fork PRs, so external PRs see an empty value.
 
     steps:
+      # Submodules: the unit suites build against single-step-tests and
+      # powerpc-test.
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          persist-credentials: false
 
       # 7z extracts the large binary archives (CD-ROM images and the like).
       # The devcontainer Dockerfile installs `7zip`, so this VERIFIES rather
@@ -106,42 +123,52 @@ jobs:
         run: |
           node -v
           npm -v
-          emcc -v | head -n 5
           g++ --version | head -n 1
           cmake --version | head -n 1
           ninja --version
 
-      - name: Install dependencies (root)
-        run: |
-          if [ -f package-lock.json ]; then npm ci; fi
-
-      - name: Build (clean)
+      # The native headless build, ungated: it needs no test data, so a fork
+      # PR compiles it too (the WASM build runs in the ui job).  PLATEN=1 as
+      # the integration steps below build it, so they reuse these objects
+      # instead of rebuilding the tree.
+      - name: Build headless (clean)
         shell: bash
         run: |
           rm -rf build
-          make
+          make -f Makefile.headless PLATEN=1 WERROR=1 -j"$(nproc)"
 
       - name: List build artifacts
-        run: ls -l build || true
+        run: ls -l build/headless || true
 
-      # CPU unit tests can run without proprietary test data
-      # (they use third-party/single-step-tests)
-      - name: Run unit tests (CPU)
+      # Static checks that need neither data nor a build: the core layering
+      # rules (tests/integration/core-layering/run.sh, also run in the unit
+      # tier) and every integration test having a tier CI will run.
+      - name: Check core layering
+        run: bash tests/integration/core-layering/run.sh
+
+      - name: Check every integration test has a tier
+        run: make -C tests/integration check-tiers
+
+      # The unit suites need no proprietary data (the CPU corpora are the
+      # single-step-tests and powerpc-test submodules).  Built in parallel:
+      # every suite has its own object directory.
+      - name: Run unit tests (native)
         run: |
-          make -C tests/unit run
+          make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
       # The parser and storage suites again, built with emcc and run under node:
       # the shipping build is wasm32, where size_t and long are 32 bits, and a
-      # defect that only wraps at 32 bits is invisible to the native run above
-      # (09-WORK-ORDER.md §0.2). ~10 s.
+      # defect that only wraps at 32 bits is invisible to the native run above.
+      # ~10 s.
       - name: Run unit tests (wasm32)
         run: |
-          make -C tests/unit run-wasm32
+          make -C tests/unit run-wasm32 WERROR=1
 
       # Integration and e2e tests require proprietary test data.
       #
-      # §5.4 tiers: unit is seconds, matrix is the per-machine boot suites,
-      # extended is the long diagnostics, installers and app choreography.
+      # Tiers (docs/guide/TESTING.md): unit is seconds, matrix is the
+      # per-machine boot suites, extended is the long diagnostics, installers
+      # and app choreography.
       # Normally the PR gate is unit + matrix and extended is nightly-only —
       # but while the integration-test rework settles, extended runs here too
       # (see its step below). Suites are parallel-safe because each test gets a
@@ -157,23 +184,25 @@ jobs:
       # all three: toggling PLATEN rebuilds the tree.
       - name: Run integration tests (unit tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
+        timeout-minutes: 15
         run: |
-          make integration-test PLATEN=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
+          make integration-test PLATEN=1 WERROR=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
           exit "${PIPESTATUS[0]}"
 
       - name: Run integration tests (matrix tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
+        timeout-minutes: 30
         run: |
-          make integration-test PLATEN=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
+          make integration-test PLATEN=1 WERROR=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
           exit "${PIPESTATUS[0]}"
 
       # Extended tier on the PR gate as well as the nightly, TEMPORARILY.
-      # §5.4 puts the long diagnostics, installers and app choreography in the
-      # nightly so the PR gate stays quick; while the integration-test rework
-      # settles we want the full set on every PR and every push to main
+      # The tiers put the long diagnostics, installers and app choreography in
+      # the nightly so the PR gate stays quick; while the integration-test
+      # rework settles we want the full set on every PR and every push to main
       # instead, so a regression in a long row is caught before merge rather
       # than the following morning. KEEP_GOING=1 so one red row does not
-      # truncate the report (§5.7) — the build still fails at the end.
+      # truncate the report — the build still fails at the end.
       #
       # Revert to nightly-only once the rework has proven stable: delete this
       # step, and the nightly workflow already covers the tier unchanged.
@@ -181,11 +210,11 @@ jobs:
         if: steps.fetch-data.outputs.has_test_data == 'true'
         timeout-minutes: 120
         run: |
-          make integration-test PLATEN=1 TIER=extended TEST_VARS="KEEP_GOING=1" \
+          make integration-test PLATEN=1 WERROR=1 TIER=extended TEST_VARS="KEEP_GOING=1" \
             2>&1 | tee /tmp/it-extended.log
           exit "${PIPESTATUS[0]}"
 
-      # Coverage contract (§5.6): diff the cells the run actually reported
+      # Coverage contract: diff the cells the run actually reported
       # (@@COV records, read from the live machine) against the declared
       # roster in tests/integration/matrix-targets.json. A declared cell that
       # went uncovered fails; cells owed by another tier, blocked by a known
@@ -197,6 +226,15 @@ jobs:
             | tee /tmp/coverage.log
           exit "${PIPESTATUS[0]}"
 
+      # The extended tier owns cells too, and runs on the PR gate (see its
+      # step above), so its check gates as well.
+      - name: Check coverage contract (extended tier)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          python3 scripts/test-matrix.py --check --tier=extended /tmp/it-extended.log \
+            | tee /tmp/coverage-extended.log
+          exit "${PIPESTATUS[0]}"
+
       # Golden-collision gate: two DIFFERENT goldens asserted in one script must
       # not hold identical bytes, or one frame is silently doing the work of
       # several assertions. Needs no test data and no build — it only reads the
@@ -205,7 +243,7 @@ jobs:
       - name: Check golden distinctness
         run: python3 scripts/check-goldens.py
 
-      # Performance gate (§5.8, dimension 1): per-row guest instruction spend
+      # Performance gate: per-row guest instruction spend
       # is host-independent and bit-reproducible, so a row outside its
       # tolerance band is a real change and fails like a pixel golden.
       # Absorbing a legitimate timing change means committing a reviewed
@@ -213,7 +251,8 @@ jobs:
       - name: Check performance baselines
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
-          python3 scripts/test-matrix.py --perf /tmp/it-matrix.log | tee /tmp/perf.log
+          python3 scripts/test-matrix.py --perf /tmp/it-unit.log /tmp/it-matrix.log \
+            /tmp/it-extended.log | tee /tmp/perf.log
           exit "${PIPESTATUS[0]}"
 
       - name: Coverage + row report into the step summary
@@ -228,9 +267,9 @@ jobs:
             python3 scripts/test-matrix.py --from-results /tmp/it-matrix.log 2>/dev/null || true
             echo "### Milestone rows (known gaps, non-fatal)"
             grep -h "MILESTONE" /tmp/it-matrix.log /tmp/it-extended.log 2>/dev/null || echo "(none)"
-            echo "### Extended-tier coverage (temporarily on the PR gate)"
+            echo "### Extended-tier coverage"
             echo '```'
-            python3 scripts/test-matrix.py --check --tier=extended /tmp/it-extended.log 2>&1 || true
+            cat /tmp/coverage-extended.log 2>/dev/null || echo "(no extended coverage log)"
             echo '```'
             echo "### Per-row instruction spend vs baselines"
             echo '```'
@@ -245,18 +284,20 @@ jobs:
       - name: Summary for builds without test data
         if: steps.fetch-data.outputs.has_test_data == 'false'
         run: |
-          echo "## ⚠️ Limited Test Coverage" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "This build ran with **limited test coverage** because proprietary test data is not available." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tests that ran:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Unit tests (CPU instruction tests)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tests that were skipped:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ⏭️ Integration tests (require ROM and disk images)" >> $GITHUB_STEP_SUMMARY
-          echo "- ⏭️ E2E Playwright tests (require ROM and disk images; run in the ui job)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "For full test coverage, see [docs/TEST_DATA.md](../docs/TEST_DATA.md)." >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Limited test coverage"
+            echo ""
+            echo "Proprietary test data (ROM and disk images) is not available to this run."
+            echo ""
+            echo "**Ran:** the headless build, core layering and tier checks, the unit"
+            echo "suites (native and wasm32), golden distinctness; in the ui job,"
+            echo "svelte-check, lint, vitest, the WASM and Vite builds and prod-smoke."
+            echo ""
+            echo "**Skipped:** the integration tiers, the coverage and performance"
+            echo "contracts, and the functional web2 e2e."
+            echo ""
+            echo "For full coverage see https://github.com/${{ github.repository }}/blob/main/docs/guide/TEST_DATA.md"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # New Svelte UI at app/web2. Typecheck + lint + Vitest + Vite build, then
   # the WASM build and the browser end-to-end suites: prod-smoke (always) and
@@ -264,6 +305,7 @@ jobs:
   # This is the sole home of browser e2e since the legacy web UI was retired.
   ui:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       credentials:
@@ -271,12 +313,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      # `submodules: recursive` pulls the remaining submodules (e.g.
-      # single-step-tests). Peeler is now in-tree under src/peeler, so the
-      # WASM build no longer depends on a submodule checkout.
+      # No submodules: nothing in this job builds the unit suites.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          persist-credentials: false
 
       # 7z extracts the large binary archives (e.g. the A/UX HD) the functional
       # web2 e2e specs boot from (see the matching step in the test job).
@@ -345,7 +385,7 @@ jobs:
       # Full WASM build, then copy artifacts into dist/ so the
       # prod-smoke test below can actually bootstrap the bridge.
       - name: WASM build (for prod-smoke)
-        run: make
+        run: make WERROR=1
 
       - name: ui2 (copy WASM into app/web2/dist/)
         run: make ui2

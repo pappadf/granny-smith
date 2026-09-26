@@ -1,10 +1,9 @@
-// The page side of the Voodoo2 WebGPU takeover (proposal-voodoo2-webgpu-
-// takeover §5.8, §5.10): starts the GPU worker once with the overlay
-// canvas, answers the core's availability question through the bridge,
-// and relays the core's attach/detach requests (Module.onVoodooGpuAttach
-// / onVoodooGpuDetach, fired from em_gpu.c) to the worker.  The worker
-// then talks to the emulator through shared memory only; this module
-// never sees a frame.
+// The page side of the Voodoo2 WebGPU takeover: starts the GPU worker
+// once with the overlay canvas, answers the core's availability
+// question through the bridge, and relays the core's attach/detach
+// requests (Module.onVoodooGpuAttach / onVoodooGpuDetach, fired from
+// em_gpu.c) to the worker.  The worker then talks to the emulator
+// through shared memory only; this module never sees a frame.
 //
 // The overlay: `#screen3d` sits over `#screen` and is shown exactly
 // while the card drives the monitor in GPU mode (the worker posts the

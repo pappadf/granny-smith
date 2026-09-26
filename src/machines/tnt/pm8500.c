@@ -22,7 +22,7 @@ static const scsi_bus_decl_t pm8500_scsi_buses[] = {
     {0},
 };
 
-// PCI topology (proposal-pci-architecture §6.1).  Three sockets on Bandit
+// PCI topology.  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
 // the bandit node, corroborated by Apple's Network Server developer note
 // IDSEL table — with their strapped INTA-D lines on Grand Central

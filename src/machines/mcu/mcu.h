@@ -3,21 +3,20 @@
 
 // mcu.h
 // The MCU/Orwell family (Quadra 700/900/950): the 68040 + MCU + JDB/Relayer +
-// YANCC + stand-alone-DAFB generation (proposal-machine-quadra-700-900-950.md
-// §5).  Chip-named like glue/, mdu/, oss/ — MCU is the memory controller that
-// defines the generation.
+// YANCC + stand-alone-DAFB generation.  Chip-named like glue/, mdu/, oss/ —
+// MCU is the memory controller that defines the generation.
 //
 // Family traits this substrate implements:
 //   * access-triggered ROM-at-zero overlay: the MCU maps the 1 MiB boot ROM
 //     at $00000000 out of reset; the FIRST access to the normal ROM aperture
-//     ($40000000-$4FFFFFFF) restores RAM at zero (ref §4.3) — unlike GLUE/MDU,
+//     ($40000000-$4FFFFFFF) restores RAM at zero — unlike GLUE/MDU,
 //     where a VIA output bit controls the overlay
-//   * MCU register file at $5000E000: accept-and-log with readback (ref §8;
-//     register semantics are not publicly documented — Trap 24: no silent
-//     zeros, every access is loggable)
-//   * the 256 KiB I/O island at $50000000 with the family decode (ref §6),
+//   * MCU register file at $5000E000: accept-and-log with readback
+//     (register semantics are not publicly documented: no silent zeros,
+//     every access is loggable)
+//   * the 256 KiB I/O island at $50000000 with the family decode,
 //     run on the shared mac030 I/O engine
-//   * interrupts: VIA1→1, VIA2→2, SCC→4, NMI→7 (ref §13; same routing table
+//   * interrupts: VIA1→1, VIA2→2, SCC→4, NMI→7 (same routing table
 //     as GLUE, so mac030_glue_update_ipl is reused verbatim)
 
 #ifndef GS_MACHINES_MCU_H
@@ -74,7 +73,7 @@ struct sonic;
 #define ORWELL_BANK_WINDOW 0x04000000u // 64 MB decode window per bank
 
 // Same policy for the YANCC system-bus/NuBus bridge register file
-// ($50028000; ref §10.2 [A][U] — the address is Apple-documented, the bit
+// ($50028000; the address is Apple-documented, the bit
 // layout is not, so writes latch and read back under a log).
 #define MCU_YANCC_REG_COUNT 64
 
@@ -86,8 +85,8 @@ typedef struct mcu_board_desc {
     mac030_board_desc_t common;
     uint32_t ram_onboard_size; // soldered RAM forming bank A (Q700: 4 MB; 0 = SIMM banks only)
     uint8_t ram_bank_count; // physical banks the board decodes (Q700: 2, towers: 4)
-    uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950; ref §7.4 [R])
-    uint8_t dafb_version; // DAFB_Test bits 11:9 (0 = Q700/Q900, 3 = Q950 "DAFB 3"; ref §11.8)
+    uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950)
+    uint8_t dafb_version; // DAFB_Test bits 11:9 (0 = Q700/Q900, 3 = Q950 "DAFB 3")
     bool has_ac842a; // AC842a RAMDAC (PCBR1 + x555 16-bit mode; Q950 only)
     // VRAM fitted, into the fixed 2 MiB CPU aperture every board decodes.
     // The BASE configurations genuinely differ -- the Q700 has one soldered
@@ -107,24 +106,24 @@ typedef struct mcu_board {
     void (*via2_output)(void *context, uint8_t port, uint8_t value);
     int (*build_devices)(config_t *cfg, checkpoint_t *cp); // machine-specific tail
     // SCC chip IRQ callback override (NULL → mac030_glue_scc_irq).  The towers
-    // OR the SCC chip INT with the SCC IOP host INT onto the level-4 source
-    // (ref §15.12), so they intercept the chip line here.
+    // OR the SCC chip INT with the SCC IOP host INT onto the level-4 source,
+    // so they intercept the chip line here.
     void (*scc_irq)(void *context, bool active);
 } mcu_board_t;
 
 // Unified MCU-family machine state.
 typedef struct mcu_state {
     struct adb *adb;
-    struct asc *asc; // EASC (ASC-compatible core until Phase D)
+    struct asc *asc; // EASC (ASC-compatible core)
     struct floppy *floppy;
-    struct dafb *dafb; // DAFB video (register stub until Phase D)
-    struct scsi_53c96 *scsi96; // NCR 53C96 (bus/targets attach in Phase E)
-    struct sonic *sonic; // DP83932 SONIC Ethernet (Phase F; no wire in v1)
+    struct dafb *dafb; // DAFB video
+    struct scsi_53c96 *scsi96; // NCR 53C96
+    struct sonic *sonic; // DP83932 SONIC Ethernet (no wire in v1)
     uint8_t sonic_byte2; // high byte latched from an in-flight register write
 
-    // --- Tower (Q900/Q950) devices — NULL on the Q700 (Phase G) ---
-    struct egret *caboose; // Egret-protocol system manager ("Caboose" firmware; ref §15.14)
-    struct iop *scc_iop; // SCC behind an Apple PIC/IOP at island $C000 (ref §6.3)
+    // --- Tower (Q900/Q950) devices — NULL on the Q700 ---
+    struct egret *caboose; // Egret-protocol system manager ("Caboose" firmware)
+    struct iop *scc_iop; // SCC behind an Apple PIC/IOP at island $C000
     struct iop *swim_iop; // SWIM/ADB behind the second IOP at island $1E000
     struct scsi_53c96 *scsi96_ext; // second 53C96 — external bus (regs $F402, pdma $F502)
     struct scsi *scsi_ext; // external SCSI bus (no default devices in v1)
@@ -144,11 +143,11 @@ typedef struct mcu_state {
     uint32_t bank_image_off[ORWELL_MAX_BANKS]; // where the bank lives in the flat RAM image
     int bank_count; // populated banks
 
-    // Accept-and-log YANCC bridge register file ($50028000, ref §10.2 [U]).
+    // Accept-and-log YANCC bridge register file ($50028000).
     uint32_t yancc_regs[MCU_YANCC_REG_COUNT];
     uint64_t yancc_touched; // log-once bitmap, parallel to mcu_touched
 
-    // /SLOTIRQ aggregate (ref §13.3): bit n set = the VIA2 PA n source is
+    // /SLOTIRQ aggregate: bit n set = the VIA2 PA n source is
     // asserting (Ethernet 0, NuBus A-E 1-5, built-in video 6).  CA1 follows
     // the OR of the mask.
     uint8_t slot_pa_mask;
@@ -163,14 +162,13 @@ extern const machine_substrate_t mcu_substrate;
 extern const mac030_io_range_t mcu_q700_io_ranges[];
 
 // Q900/Q950 tower I/O window table: IOP apertures replace direct SCC/SWIM,
-// second 53C96 windows at $F400/$F500 (ref §6.3).
+// second 53C96 windows at $F400/$F500.
 extern const mac030_io_range_t mcu_q900_io_ranges[];
 
 // Bind the family device set + board tables into the shared I/O engine.
 // Bind the MCU's I/O dispatcher.  Deliberately NOT a call through to
-// mac030_glue_io_bind, even though desc->common is now the same type it takes
-// (F-32 removed that barrier, and F-36 proposes the merge): the two bind
-// different device sets.  The GLUE version also binds MAC030_DEV_SCSI, and
+// mac030_glue_io_bind, even though desc->common is now the same type it
+// takes: the two bind different device sets.  The GLUE version also binds MAC030_DEV_SCSI, and
 // neither this family's window table nor the AV's ever routes to that device
 // index -- both decode a 53C96 through their own windows instead -- so
 // delegating would install a handle nothing consults.  Merging these is a
@@ -201,7 +199,7 @@ void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc);
 void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
 
 // Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):
-// sets the active-low PA input and re-resolves the CA1 aggregate (ref §13.3).
+// sets the active-low PA input and re-resolves the CA1 aggregate.
 // Build the DAFB and everything that hangs off it, for every MCU board.
 // The Q700 and the towers differ in exactly ONE thing here -- the towers
 // have a second 53C96 whose DRQ feeds TurboSCSI channel 1 -- so that is the

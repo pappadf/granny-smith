@@ -1,7 +1,8 @@
-// Apple Lisa 2 / Macintosh XL boot-ROM interleave + identification unit tests
-// (Step 1 of proposal-machine-lisa-xl.md).  Hermetic: synthesises chip images
-// carrying the Lisa reset SSP ($00000480) and version word rather than
-// depending on the proprietary Lisa ROM files.
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Apple Lisa 2 / Macintosh XL boot-ROM interleave + identification unit tests.
+// Hermetic: synthesises chip images carrying the Lisa reset SSP ($00000480) and
+// version word rather than depending on the proprietary Lisa ROM files.
 
 #include "rom.h"
 #include "test_assert.h"

@@ -42,7 +42,7 @@ describe('CollapsibleSection', () => {
   });
 
   // The header used to be role="button" with tabindex -1: no keyboard could
-  // reach it, and the actions (a "+") were nested inside it (F-55).
+  // reach it, and the actions (a "+") were nested inside it.
   it('toggles through a real, focusable button that reports its state', () => {
     const { container } = render(CollapsibleSection, {
       title: 'ROM',

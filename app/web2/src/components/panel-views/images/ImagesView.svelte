@@ -4,7 +4,7 @@
   import { detectFdDriveCount } from '@/bus/media';
   import type { ImageCategory } from '@/bus/types';
 
-  // Spec §4.3.3 fixes this order.
+  // Category order.
   const CATEGORIES: ImageCategory[] = ['rom', 'vrom', 'prom', 'fd', 'hd', 'cd'];
 
   // Re-probe the floppy drive count when the panel opens (the active machine may

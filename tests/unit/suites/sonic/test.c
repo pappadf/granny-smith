@@ -1,4 +1,6 @@
-// DP83932 SONIC chip-model tests (Quadra proposal Phase F).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// DP83932 SONIC chip-model tests.
 //
 // Each case mirrors one of Apple's ROM self-tests
 // (OS/StartMgr/UnivTestEnv/SONIC_BitMarch.c / _CAMDMA.c / _Interrupt.c /
@@ -412,11 +414,11 @@ TEST(test_mac_loopback_two_fragments_and_rde) {
 }
 
 // ============================================================
-// Checkpoint and power-on defaults (code review 2026-09-03, unit E1/E3)
+// Checkpoint and power-on defaults
 // ============================================================
 
-// A recording checkpoint stream.  This suite used to link the no-op stub;
-// F-41 is precisely about what goes INTO the stream, so it needs to see it.
+// A recording checkpoint stream.  This suite used to link the no-op stub; what
+// goes INTO the stream is precisely what it tests, so it needs to see it.
 static uint8_t cp_buf[8192];
 static size_t cp_w, cp_r;
 

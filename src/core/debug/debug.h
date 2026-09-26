@@ -22,7 +22,7 @@ struct cpu;
 struct object;
 struct value_map_builder;
 
-// === Main-CPU debug interface (PPC proposal §3.9b) ===
+// === Main-CPU debug interface ===
 // The handful of debugger paths that reach into the main CPU (PC reads for
 // breakpoints/trace, disassembly, logical→physical translation) go through
 // this vtable so they work unchanged whichever architecture owns the machine.
@@ -52,7 +52,7 @@ typedef struct cpu_debug_if {
     // sprint stopped.  NULL means the mac world is the core's own space
     // (every 68K machine); the PPC core supplies the user-data view here,
     // because on PDM the nanokernel relocates logical page 0 away from
-    // physical 0 once the framebuffer claims it (§3.9e).
+    // physical 0 once the framebuffer claims it.
     uint32_t (*translate_mac)(void *ctx, uint32_t logical, bool *ok);
     // --- for debug.frame, so it needs no architecture-specific code ---
     // Short architecture tag: "m68k", "ppc" or "dsp3210".
@@ -136,7 +136,7 @@ struct debug {
     breakpoint_t *breakpoints;
     uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
     logpoint_t *logpoints;
-    // Sparse stable id counters (proposal §2.1). Incremented on every
+    // Sparse stable id counters. Incremented on every
     // add; never reset, never recycled. The first allocated id is 0.
     int next_breakpoint_id;
     int next_logpoint_id;
@@ -196,9 +196,8 @@ int delete_all_logpoints(debug_t *debug);
 
 // Framebuffer utilities — used by typed `screen.*` wrappers and the
 // legacy `screenshot` command.  Each takes a const display_t * so the
-// helper can read `bits`, `width`, `height`, `stride`, `format`, and (in
-// later steps) `clut`.  v1 supports PIXEL_1BPP_MSB only — paths for the
-// other pixel formats land alongside the JMFB driver in step 6.
+// helper can read `bits`, `width`, `height`, `stride`, `format`, and, for
+// the indexed formats, `clut`.
 struct display;
 typedef struct display display_t;
 uint32_t framebuffer_checksum(const display_t *d);
@@ -214,7 +213,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename);
 // (width*height*4 bytes).  Returns 0 / -1 (the machine.videoin.load path).
 int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *out_rgba);
 
-// === M6: object-model accessors ============================================
+// === Object-model accessors ================================================
 //
 // debug.{breakpoints,logpoints}.add(...) / .N.remove() and the
 // per-entry attribute getters live in src/core/object/debug_classes.c.
@@ -223,7 +222,7 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
 // definitions live in debug.c).
 //
 // Identity: every breakpoint and logpoint carries a sparse stable id
-// (proposal §2.1 — never recycled, max-id-ever + 1 on add). The id is
+// (never recycled, max-id-ever + 1 on add). The id is
 // what the indexed-child callbacks expose as the "index" segment.
 
 // Allocate a fresh sparse id. Caller assigns it to its entry struct
@@ -303,8 +302,8 @@ void debug_set_prompt_default(bool enabled);
 // streaming with `log exceptions 1`, dump the ring with `info exceptions`.
 
 // Which architecture recorded a ring entry.  One shared ring for all main-CPU
-// architectures — the fields below are reused by role per arch (PPC proposal
-// §3.9c): on PPC, `vbr` carries MSR, `format_frame` carries the vector
+// architectures — the fields below are reused by role per arch: on PPC,
+// `vbr` carries MSR, `format_frame` carries the vector
 // offset, and `fault_addr` carries DAR.  The dump prints per-arch.
 enum exc_trace_arch {
     EXC_ARCH_M68K = 0,

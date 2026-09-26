@@ -35,7 +35,7 @@ void afp_reset_transient_state(void);
 // Forks a session currently holds open.
 uint32_t afp_session_open_forks(uint16_t session_id);
 
-// Build the ASP GetStatus Service Status Block (per docs/errata.md layout).
+// Build the ASP GetStatus Service Status Block.
 // Inputs: server_name and machine_type as C-strings (may be NULL -> treated as empty).
 // Contents: the AFP version list the server actually implements and the UAM
 //           list ["No User Authent"].  No icon/mask is included (offset=0).

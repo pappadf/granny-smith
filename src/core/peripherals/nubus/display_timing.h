@@ -10,7 +10,7 @@
 // every part.  It was nevertheless spelled out in four places -- a per-card
 // nubus_monitor_t catalogue keyed by sense code, a chip-local switch in Ariel,
 // a literal in Civic, and a derivation in DAFB -- so "sense 2 is 512x384" had
-// four chances to disagree (04-video F-17).  This is the one table.
+// four chances to disagree.  This is the one table.
 //
 // SCOPE: the PASSIVE 3-bit space only, codes 0..7.  It deliberately does NOT
 // cover the extended (tie-matrix) monitors, because the parts that support

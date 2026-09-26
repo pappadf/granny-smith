@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 # rom_naming.py - Canonical fixture-filename grammar for the gs-test-data repo.
 #
 # The emulator core identifies every ROM/vROM purely by content (checksum /
 # NuBus Format-Block CRC) and knows no filenames.  Fixture files in
 # gs-test-data's roms/ directory, however, are browsed by humans, so they
-# keep the legible canonical grammar from proposal-test-rom-naming.md:
+# keep a legible canonical grammar:
 #
 #   <targets>[-<rev>]-<checksum8>.rom       e.g. iix-iicx-se30-97221136.rom
 #   <card-id, _ -> ->[-<rev>]-<crc8>.vrom   e.g. mdc-8-24-revb-d1629664.vrom
@@ -13,9 +15,8 @@
 # The <targets>/<rev> parts are human facts (marketing revs, Apple part
 # generations) that cannot be derived from the bytes, so the grammar reduces
 # to a pure content-identity -> name table.  This module is the single owner
-# of that mapping (proposal-content-addressed-rom-provisioning.md section 3.6b);
-# its only consumers are scripts/rom-manifest.sh and the rom-naming
-# conformance test.  The emulator never sees it.
+# of that mapping; its only consumers are scripts/rom-manifest.sh and the
+# rom-naming conformance test.  The emulator never sees it.
 
 # Content identity (8 lowercase hex digits: the stored checksum for CPU ROMs,
 # the Format-Block CRC for vROMs, the whole-image CRC-32 for PCI expansion
@@ -35,7 +36,7 @@ CANONICAL_NAMES = {
     "9630c68b": "pm7500-pm8500-pm9500-v2-9630c68b.rom",  # Power Macintosh 7500/8500/9500 (1995-08 TNT ROM v2)
     # The Apple Network Servers.  The production image carries the SAME
     # version string as the 9500 v2 ROM above, so only the checksum tells
-    # them apart (proposal-apple-network-server-500-700 §2.3).
+    # them apart.
     "962f6c13": "ans500-ans700-962f6c13.rom",  # Apple Network Server 500/700 (Open Firmware 1.1.22, AIX)
     "49b2be8f": "ans500-ans700-proto20-49b2be8f.rom",  # Apple Network Server 500/700 (2.0 prototype, Mac OS)
     "098917b2": "lisa2-revh-098917b2.rom",  # Apple Lisa 2 boot ROM rev H (computed checksum)

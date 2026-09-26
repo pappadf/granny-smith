@@ -1,4 +1,4 @@
-# Integration test: object-model `eval` command (M2)
+# Integration test: object-model `eval` command
 # Verifies that the new gs_eval entry point resolves paths against a
 # booted Plus image and prints the expected JSON shapes. The legacy
 # shell continues to operate alongside.
@@ -8,5 +8,5 @@ TEST_DESC := Smoke test for `eval` shell command — cpu/memory/machine paths
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

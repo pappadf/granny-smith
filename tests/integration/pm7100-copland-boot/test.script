@@ -1,6 +1,6 @@
 # Integration test: Power Macintosh 7100 — boot Copland D11E4 (Caps Lock).
 #
-# Plan §6.3, and the test that answers plan open question 1.
+# Also settles which input Copland's boot blocks read the Caps Lock latch from.
 #
 # HOW THE LATCH ACTUALLY REACHES COPLAND, measured here rather than assumed.
 # Copland's installer rewrites the volume's HFS boot blocks: `bbEntry` moves on
@@ -16,7 +16,7 @@
 #     jmp    (a0)
 #
 # So the gate is KeyMap, not ADB Register 2 — this ROM issues zero Talk R2
-# commands across an entire boot.  That is what open question 1 asked, and it
+# commands across an entire boot.  That settles the open question, and it
 # is why the fix that makes this work lives in adb_reset/flush_device: a
 # mechanically locking Caps Lock has to be re-reported on Register 0 after the
 # ROM's ADB init clears the keyboard, or KeyMap never learns about it.
@@ -79,11 +79,11 @@ def row_keymap_latch() {
     assert ($km & 0x02) != 0 "the latched Caps Lock never reached KeyMap — the ADB init discarded it"
 }
 
-# THE DIVERT (plan §6.2's milestone 2).  With the latch, the machine must leave
-# the 68k world entirely.  Asserted structurally rather than by a golden: the
-# loader repaints the framebuffer in a mode we do not model yet, so the frame is
-# not yet meaningful, but low memory ceasing to translate is unambiguous — in
-# the control boot ($017B) reads fine, and here nothing at 68k addresses does.
+# THE DIVERT.  With the latch, the machine must leave the 68k world entirely.
+# Asserted structurally rather than by a golden: the loader repaints the
+# framebuffer in a mode we do not model yet, so the frame is not yet
+# meaningful, but low memory ceasing to translate is unambiguous — in the
+# control boot ($017B) reads fine, and here nothing at 68k addresses does.
 def row_capslock_diverts() {
     boot_image($img, true)
     try(machine.screen.save("${$RESULTS_DIR}/capslock-diverted.png"), none)
@@ -91,10 +91,9 @@ def row_capslock_diverts() {
     assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "still in the 68k address space — the Caps Lock latch did not divert the boot"
 }
 
-# REGRESSION (plan §4.1 item 4).  A latched Caps Lock must not disturb an
-# ordinary boot of a volume that has no Copland on it: the re-report is a real
-# key-down, and a System that acts on it would be a regression for every other
-# suite.
+# REGRESSION.  A latched Caps Lock must not disturb an ordinary boot of a
+# volume that has no Copland on it: the re-report is a real key-down, and a
+# System that acts on it would be a regression for every other suite.
 def row_plain_75_with_latch() {
     boot_image($plain_75, true)
     wait_stable(900000000)
@@ -104,33 +103,33 @@ def row_plain_75_with_latch() {
     check_ex("plain-75-capslock.png", 0, 440, 20, 640)
 }
 
-# MILESTONE 3-4 (plan §6.3), now enforced: the verbose boot console over the
-# Mac OS logo.  The microkernel is up by here — the console's own words are
-# "Microkernel initialization starting...complete." — and the golden is the
-# frame wait_stable settles on once the servers start reporting in:
-# "ProcessServer: Launching System Process", "TrueTypeServer: TrueType is
-# Listening" and "Type 1 Scaler (OFA 2): Type 1 is Listening".  That third
-# line joined the golden when the CD bay went on the bus from power-on: the
-# bay's SCSI traffic moves the timeline enough that the console holds still
-# one line later than it used to.  (The same shift is what exposed the Cuda
-# sync/autopoll defect fixed in cuda.c — a boot that once stalled right at
-# the microkernel line now runs through to the Finder.)
+# MILESTONE 3-4, now enforced: the verbose boot console over the Mac OS logo.
+# The microkernel is up by here — the console's own words are "Microkernel
+# initialization starting...complete." — and the golden is the frame
+# wait_stable settles on once the servers start reporting in: "ProcessServer:
+# Launching System Process", "TrueTypeServer: TrueType is Listening" and "Type
+# 1 Scaler (OFA 2): Type 1 is Listening".  That third line joined the golden
+# when the CD bay went on the bus from power-on: the bay's SCSI traffic moves
+# the timeline enough that the console holds still one line later than it used
+# to.  (The same shift is what exposed the Cuda sync/autopoll defect fixed in
+# cuda.c — a boot that once stalled right at the microkernel line now runs
+# through to the Finder.)
 def row_copland_logo() {
     boot_image($img, true)
     wait_stable(900000000)
     # The console's "Getting to know the System libraries ... done =>
     # N.NNN" line prints a LIVE elapsed-time measurement — a guest-side
     # stopwatch, not pinned by the RTC seed.  Any timing-adjacent change
-    # moves the milliseconds (the TNT branch shifted it 1.885 -> 1.884),
+    # moves the milliseconds (the TNT work shifted it 1.885 -> 1.884),
     # so exclude the number field (the menu-clock precedent).
     check_ex("copland-logo.png", 48, 310, 64, 372)
 }
 
-# MILESTONE 5 (plan §6.3), the finish line: the Copland Finder desktop —
-# menu bar, volume icon, Trash, arrow cursor.  Copland relocates the
-# framebuffer to physical $100000 by clearing HMC config bit 33, so this
-# golden is also the regression test for the moved scan base (ariel.c).
-# The Finder is idle by ~8.5 G instructions; wait_stable settles the frame.
+# MILESTONE 5, the finish line: the Copland Finder desktop — menu bar, volume
+# icon, Trash, arrow cursor.  Copland relocates the framebuffer to physical
+# $100000 by clearing HMC config bit 33, so this golden is also the regression
+# test for the moved scan base (ariel.c). The Finder is idle by ~8.5 G
+# instructions; wait_stable settles the frame.
 def row_copland_desktop() {
     boot_image($img, true)
     scheduler.run 7000000000
@@ -147,7 +146,7 @@ if have_media($img) {
     if row_on("copland-desktop") { row_end("copland-desktop", try(row_copland_desktop(), "FAILED")) }
     suite_done()
 } else {
-    echo "skip: pm7100-copland-boot (Copland media not present — see the bring-up plan §6.0)"
+    echo "skip: pm7100-copland-boot (Copland media not present)"
 }
 
 quit

@@ -1,6 +1,6 @@
-// The camera's stream reconciliation is single-flight (F-41): overlapping
+// The camera's stream reconciliation is single-flight: overlapping
 // triggers acquire one device, a stream the intent no longer wants is
-// released, and a toggle-off during play() leaves nothing running (N-59).
+// released, and a toggle-off during play() leaves nothing running.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/bus/emulator', () => ({

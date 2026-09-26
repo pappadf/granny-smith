@@ -19,8 +19,7 @@
 //
 // Free-form dispatch is gone; only the typed path-form remains. JS
 // callers use gs_eval() directly — including for free-form lines,
-// which go through `gs_eval("shell.run", [line])` (see
-// proposal-shell-as-object-model-citizen.md). The headless REPL uses
+// which go through `gs_eval("shell.run", [line])`. The headless REPL uses
 // shell_dispatch() directly; the Shell class's `run` method calls the
 // file-static `dispatch_command()` in shell.c.
 

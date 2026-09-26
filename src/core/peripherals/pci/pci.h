@@ -4,7 +4,7 @@
 // pci.h
 // PCI subsystem — the bus controller, the per-machine slot table, the
 // card-kind registry, staged per-slot configuration and the lifecycle
-// hooks every PCI family uses.  See proposal-pci-architecture.md.
+// hooks every PCI family uses.  See docs/core/peripherals/pci.md.
 //
 // The shape is deliberately the proven NuBus one (nubus.h), upgraded
 // where PCI is genuinely different:
@@ -30,8 +30,8 @@
 #ifndef PCI_H
 #define PCI_H
 
-#include "card.h"
 #include "common.h"
+#include "pci_card.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -47,7 +47,7 @@ typedef struct display display_t;
 struct pci_root;
 typedef struct pci_root pci_root_t;
 
-// === Machine topology (proposal §6.1) =======================================
+// === Machine topology =======================================================
 
 typedef enum pci_slot_kind {
     PCI_SLOT_ABSENT = 0, // not declared (an unpopulated IDSEL is
@@ -135,16 +135,15 @@ bool pci_bus_is_populated(const pci_bus_t *bus);
 uint32_t pci_bus_cfg_read(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg);
 void pci_bus_cfg_write(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg, uint32_t byte, uint8_t value);
 
-// === Region backing (proposal §5.4) =========================================
+// === Region backing =========================================================
 //
 // A device declares WHAT backs each BAR; the bus decides WHERE and WHEN it
-// appears.  v1 offers the dispatcher backing only: the region answers
-// through the owning bridge window, which costs one linear probe per
-// access and buys correct fault semantics, no memory-map churn (so
-// goldens and determinism are safe) and support for non-linear apertures
-// like Control's banked VRAM view.  The host-overlay fast path the
-// proposal sketches for a framebuffer needs a memory-map primitive that
-// does not exist yet (there is no removal counterpart to
+// appears.  v1 offers the dispatcher backing only: the region answers through
+// the owning bridge window, which costs one linear probe per access and buys
+// correct fault semantics, no memory-map churn (so goldens and determinism
+// are safe) and support for non-linear apertures like Control's banked VRAM
+// view.  A host-overlay fast path for a framebuffer needs a memory-map
+// primitive that does not exist yet (there is no removal counterpart to
 // memory_map_host_region), so it lands with the first card that wants it.
 void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t *iface, void *ctx);
 
@@ -169,7 +168,7 @@ void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t 
 // by the bus after a checkpoint restore.
 void pci_device_regions_changed(pci_device_t *dev);
 
-// === Staged per-slot configuration (proposal §7) ============================
+// === Staged per-slot configuration =========================================
 //
 // User picks for the NEXT machine.boot live in a small staged table keyed
 // by slot number, consumed (and cleared) by pci_seat_slots.  Slot 0 is the
@@ -219,7 +218,7 @@ void pci_reset(pci_root_t *root);
 // VBL fan-out, for video cards' VSync (the NuBus shape, verbatim).
 void pci_tick_vbl(pci_root_t *root);
 
-// === Interrupts (proposal §5.5) =============================================
+// === Interrupts =============================================================
 //
 // One line per slot: INTA-D are strapped together on these machines, so a
 // multi-function card collapses onto one line.  The bus keeps the
@@ -229,7 +228,7 @@ void pci_tick_vbl(pci_root_t *root);
 void pci_assert_irq(pci_device_t *dev);
 void pci_deassert_irq(pci_device_t *dev);
 
-// === Object model (proposal §7) =============================================
+// === Object model ===========================================================
 
 // The `machine.pci` class lives in pci_class.c; root.c attaches it (the
 // declaration is beside nubus_class's there, not in this header, so core

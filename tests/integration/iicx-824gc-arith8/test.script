@@ -5,7 +5,7 @@
 # bytes on the power-on CLUT (grey ramp, with the 1-bpp mono seed clut[0] =
 # white / clut[1] = black — Mac convention, bg pixel 0 = white):
 #
-#   * arithmetic transfer modes $20-$27 (qd-transfer-modes §3.1): 16-bit
+#   * arithmetic transfer modes $20-$27: 16-bit
 #     component math on CLUT entries, result via the card-side Color2Index —
 #     blend (default $7FFF weight = 50/50), addPin (carry/pin clamp), addOver
 #     (wraps), subPin (borrow/pin clamp), transparent (full-pixel compare

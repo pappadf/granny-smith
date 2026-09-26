@@ -32,7 +32,7 @@
 // It lives in peeler, which writes the sidecars of extracted files and must
 // build on its own; the core (archive extraction, image fork acquisition,
 // the AFP server's metadata) includes it from here.  One writer, so every
-// sidecar has the same shape (09-storage F-61).
+// sidecar has the same shape.
 
 #pragma once
 

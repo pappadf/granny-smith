@@ -448,7 +448,7 @@ peel_buf_t peel_hqx(const uint8_t *src, size_t len, peel_err_t **err) {
     // Use setjmp/longjmp for deep-error abort throughout the decode pipeline.
     // Both forks stay owned by ctx until the whole file has decoded, so a
     // resource fork that fails frees the data fork already decoded -- which
-    // used to leak (09-storage F-12).
+    // used to leak.
     decode_ctx_t ctx;
     dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {

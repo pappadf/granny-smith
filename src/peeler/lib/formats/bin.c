@@ -251,7 +251,7 @@ peel_buf_t peel_bin(const uint8_t *src, size_t len, peel_err_t **err) {
 
     // bin.md § 10.3 — apply fork selection heuristic.  Whether the data
     // fork is a StuffIt archive is sit.c's own detector's call: this file
-    // kept a second copy of its signature tables (09-storage F-62).
+    // kept a second copy of its signature tables.
     peel_buf_t result;
     bool data_is_sit = file.data_fork.data &&
                        sit_detect(file.data_fork.data, file.data_fork.size);

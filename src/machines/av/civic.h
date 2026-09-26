@@ -5,10 +5,9 @@
 // CIVIC (Cyclone Integrated Video Interfaces Controller, 343S1096) — the AV
 // frame-buffer / video-timing controller — plus its downstream Sebastian
 // RAMDAC/CLUT (343S0704) and the Endeavor/Clifton/PUMA pixel-clock
-// synthesizer latches.  Contracts: docs/machines/av/civic.md,
-// sebastian.md, endeavor-clifton-puma.md.
+// synthesizer latches.  Contract: docs/machines/av/civic.md.
 //
-// The one thing to get right first (civic.md §2): CIVIC's register
+// The one thing to get right first: CIVIC's register
 // interface is BIT-SERIAL — one bit per longword, only D[0] meaningful,
 // LSB at the lowest address, stride 4.  A 12-bit register at $380 occupies
 // $380..$3AC.  Five 1-bit registers are also poked as plain longwords;
@@ -55,7 +54,7 @@ void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t 
 uint8_t av_civic_clk_read(config_t *cfg, uint32_t win_off, uint32_t addr);
 void av_civic_clk_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
-// === Video-in datapath hooks (consumed by vdc.c; video-in.md §5) ============
+// === Video-in datapath hooks (consumed by vdc.c) ============================
 
 // Gate states the frame engine consults each field.  (VDCEnb is deliberately
 // not exposed: arming is CIVIC's own business, applied in av_civic_vdc_field.)

@@ -2,12 +2,12 @@
 // Copyright (c) pappadf
 
 // shell_var.h
-// Scoped shell binding store (shell v2 §3.4/§3.7).
+// Scoped shell binding store.
 //
 // One namespace, one sigil: `$name` resolves through a stack of scopes
 // (function frame(s) → script top level → process globals) and then
 // falls back to the built-in/user alias table, whose entries surface as
-// V_REF reference values (path text, re-resolved per access — §3.5).
+// V_REF reference values (path text, re-resolved per access).
 // `let` creates in the top scope, `$x =` mutates the innermost holding
 // scope, and mutating an undeclared name is a loud error.
 
@@ -28,7 +28,7 @@ void shell_var_init(void);
 // `$name` lookup: walk scopes top-down, then the alias table (aliases
 // come back as V_REF). Returns an OWNED value; V_ERROR("no such
 // binding …") when the name is nowhere. A binding holding a destroyed
-// V_OBJECT reads as V_ERROR (§3.5 snapshot semantics).
+// V_OBJECT reads as V_ERROR (snapshot semantics).
 value_t shell_binding_get(const char *name);
 
 // `let NAME = v` — create (or overwrite) in the current top scope.
@@ -55,7 +55,7 @@ shell_binding_kind_t shell_binding_classify(const char *name, const value_t **va
 int shell_binding_push_scope(void);
 void shell_binding_pop_scope(void);
 
-// Loop-variable support (§3.8): save a duplicate of the top-scope
+// Loop-variable support: save a duplicate of the top-scope
 // binding if present (returns true), and remove a name from the top
 // scope only.
 bool shell_binding_save_top(const char *name, value_t *saved_out);

@@ -71,7 +71,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     // 25 MHz IIci and the 20 MHz IIsi, so a single literal is wrong for one of
     // them.  It used to be 20 — correct for the 16 MHz IIcx this code was
     // adapted from, and 1.6x too fast on a IIci, which is what made MacTest's
-    // VIA timer test overshoot its interrupt-count window (ledger §9).
+    // VIA timer test overshoot its interrupt-count window.
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          board->via1_output, board->via1_shift_out, mac030_glue_via1_irq, cfg, cp);
     // Exact-rational phi2: the integer divisor above rounds, and on this
@@ -156,7 +156,7 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     floppy_checkpoint(st->floppy, cp);
     rbv_checkpoint(st->rbv, cp);
     // The RBV chip's registers are above; this covers the display CARD behind
-    // it — VRAM, palette and active mode (ledger §2).
+    // it — VRAM, palette and active mode.
     nubus_checkpoint_save(cfg->nubus, cp);
     mmu_checkpoint_save(st->mmu, cp);
 }
@@ -172,7 +172,7 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // IICI_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in slot $C asserted
 // the NMI source and the machine took a level-7 autovector every few
 // instructions forever -- which is what "a 24AC beside the live built-in RBV
-// hangs the boot at Welcome" actually was (ledger §8).  Slot numbering only
+// hangs the boot at Welcome" actually was.  Slot numbering only
 // coincidentally matches a machine's interrupt-source numbering; every family
 // now converts it itself.
 //

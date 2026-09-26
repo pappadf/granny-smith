@@ -598,7 +598,7 @@ assert $e.errn == 0
 ```
 
 Named arguments use the shell's `name=value` form — `timeout=`, `tag=`,
-`mode=` — not the `name:` spelling the original proposal sketched.
+`mode=` — not a `name:` spelling.
 
 Event objects are append-only for the life of the run, so the `V_OBJECT` a
 `send` returns stays valid in a `let` binding.
@@ -622,8 +622,7 @@ sessions, connections and the events collection, and keeps only
 
 ## Appendix A — Provenance
 
-Per proposal §2: the System 7 sources under `/workspaces/gs-archive` are read
-to *understand* protocols and are never copied. Facts learned there are
+By policy, the System 7 sources are read to *understand* protocols and are never copied. Facts learned there are
 recorded here, in our own words, and the implementation cites this document.
 
 | Section | Fact | Learned from |

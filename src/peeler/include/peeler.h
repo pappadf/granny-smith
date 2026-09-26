@@ -104,7 +104,7 @@ const char *peel_detect(const uint8_t *src, size_t len);
 // True if `path` is safe to write beneath an output directory: non-empty, not
 // absolute, and no component empty, "." or "..".  Anything that turns peeler
 // names into files must check this first -- archive extraction wrote
-// attacker-named paths outside its output directory (09-storage F-13).
+// attacker-named paths outside its output directory.
 bool peel_path_is_confined(const char *path);
 
 // The AppleDouble sidecar ("._NAME") that carries an extracted file's

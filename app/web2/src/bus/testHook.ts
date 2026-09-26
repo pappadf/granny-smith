@@ -1,4 +1,4 @@
-// A test-only door into the gsEval bridge (unit 0.3).
+// A test-only door into the gsEval bridge.
 //
 // web2 deliberately exposes no `window.gsEval`: real users drive the emulator
 // through the UI and the terminal.  e2e specs, though, need to read what the

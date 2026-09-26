@@ -47,7 +47,7 @@ static int ensure_dir_exists(const archive_ctx_t *ctx, const char *path) {
 // file at `data_full_path`, carrying the resource fork (entry 2) and Finder
 // Info (entry 9).  This keeps a Mac file lossless on the flat host FS — e.g. a
 // StuffIt/MacBinary-wrapped NDIF disk image unpacks to a mountable pair — and
-// interoperates with macOS/Netatalk (proposal-appledouble-support.md §Phase 3).
+// interoperates with macOS/Netatalk.
 // A file with neither a resource fork nor Finder Info gets no sidecar.
 // Returns 0 on success (including the no-sidecar case), -1 on write failure.
 static int write_ad_sidecar(const char *data_full_path, const peel_file_t *file) {
@@ -95,7 +95,7 @@ static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *fil
 
     // The entry name comes from the archive.  Unchecked, "../x" -- or a Mac
     // name containing '/', legal on HFS -- was written outside output_dir,
-    // with the directories created on the way (09-storage F-13).  peeler now
+    // with the directories created on the way.  peeler now
     // builds names that cannot do this; this is the boundary, so check anyway.
     if (!peel_path_is_confined(name)) {
         fprintf(stderr, "archive: refusing entry '%s': it would land outside '%s'\n", name, ctx->output_dir);

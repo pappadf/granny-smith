@@ -7,9 +7,9 @@
 // SPWrite; what a command means is the client's business (appletalk_asp.h).
 //
 // This lived inside appletalk.c and called the AFP server by name: the one
-// place in the stack where the transport depended on the application above it
-// (10-network F-21).  It now has ADSP's shape -- a client registered by the
-// layer above -- so ASP can be driven, and tested, without AFP.
+// place in the stack where the transport depended on the application above
+// it.  It now has ADSP's shape -- a client registered by the layer above -- so
+// ASP can be driven, and tested, without AFP.
 //
 // Every packet but GetStatus and OpenSess names its session by the one-byte
 // session id in ATP user byte 1 (Inside AppleTalk Fig. 11-10).  The session is
@@ -140,7 +140,7 @@ static bool sess_id_in_use(uint32_t id, const void *ctx) {
 // among live sessions, and a packet must come from the node that opened the
 // session.  It used to be the low byte of a 16-bit counter, so two live
 // sessions 256 opens apart shared it, and any node could drive any session by
-// guessing one byte (10-network F-06).
+// guessing one byte.
 static asp_session_t *asp_find(uint8_t sess_id, const ddp_header_t *ddp) {
     for (int i = 0; i < MAX_ASP_SESS; i++) {
         asp_session_t *s = &g_sessions[i];
@@ -185,7 +185,7 @@ void asp_set_next_ref(uint16_t ref) {
         g_next_sess_ref = ref;
 }
 
-// === ASP session views, attention and expiry (WP-8) =========================
+// === ASP session views, attention and expiry ================================
 
 // Session-table accessors for `appletalk.afp.sessions`.
 int atalk_asp_session_max(void) {
@@ -386,8 +386,7 @@ static const atp_request_callbacks_t g_asp_wc_callbacks = {
 // it is in.  One write per session at a time; a second one while the first
 // waits is answered with an error rather than dropped.  There used to be one
 // pending write for the whole server: a second session's Write got no reply
-// at all, and its XO entry swallowed the retransmissions for 30 s (10-network
-// F-14).
+// at all, and its XO entry swallowed the retransmissions for 30 s.
 static void asp_write(asp_session_t *s, const ddp_header_t *ddp, const atp_packet_t *atp) {
     const uint8_t *cmd = atp->data;
     int cmd_len = atp->data_len;
@@ -452,8 +451,7 @@ static void asp_write(asp_session_t *s, const ddp_header_t *ddp, const atp_packe
 
 // SPGetStatus: the service status block, whatever the request carried.  It
 // used to hand a GetStatus that carried data to the AFP dispatcher as a
-// command from session 0 -- a second, session-free command channel
-// (10-network F-05).
+// command from session 0 -- a second, session-free command channel.
 static void asp_get_status(const ddp_header_t *ddp, const atp_packet_t *atp) {
     LOG(3, "ASP GetStatus: request from node=%u socket=%u", ddp->llap.src, ddp->src_socket);
     uint8_t *block = NULL;
@@ -469,7 +467,7 @@ static void asp_get_status(const ddp_header_t *ddp, const atp_packet_t *atp) {
 // (Inside AppleTalk 11-26).  A refusal is by the spec's codes: BadVersNum for
 // a version other than 1.0, ServerBusy when the table is full or the client
 // will not take the session (the AFP server is disabled).  A full table used
-// to answer "1", no ASP code at all (10-network N-04).
+// to answer "1", no ASP code at all.
 static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
     uint8_t wss = atp->user[1];
     uint16_t version = RD_BE16(&atp->user[2]);
@@ -533,7 +531,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         case ASP_COMMAND:
         case ASP_WRITE:
             // A command on a session that is not open is answered, not run.
-            // It used to run as "session 0", with no login (10-network F-05).
+            // It used to run as "session 0", with no login.
             LOG(2, "ASP: function %u for unknown session 0x%02X from node %u", func, atp->user[1], ddp->llap.src);
             asp_reply_result(ddp, atp, AFPERR_SessClosed, NULL, 0);
             return;
@@ -556,9 +554,8 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         // (Fig. 11-10).  This read a "session ref" from the ATP data, which
         // is always absent, so no CloseSess ever closed anything: every
         // unmount left the session held until the two-minute sweep, and with
-        // four slots a fifth mount inside that window was refused
-        // (10-network N-03).  The reply's user bytes are zero, and it carries
-        // no data.
+        // four slots a fifth mount inside that window was refused.  The
+        // reply's user bytes are zero, and it carries no data.
         LOG(3, "ASP CloseSess: session=0x%02X", s->sess_id);
         asp_session_release(s);
         atp_responder_send_simple(ddp, atp, zero, NULL, 0, false);

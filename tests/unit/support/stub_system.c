@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // System accessor stubs for unit tests
 // Routes system_*() calls to the active test context via the harness API.
 

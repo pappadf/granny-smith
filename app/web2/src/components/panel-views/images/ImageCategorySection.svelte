@@ -129,9 +129,9 @@
   // (bus/media.ts): a floppy into the first empty drive the machine has, a
   // hard disk into the model's boot bay on whatever bus it is (this attached
   // at the default SCSI id on the first bus, ignoring the Lisa's ProFile and
-  // a Network Server's second channel, N-05), a CD into the model's CD bay.
+  // a Network Server's second channel), a CD into the model's CD bay.
   // Every result is checked; an unmount ejects from where the mount put it
-  // (it called scsi methods that do not exist and toasted success, N-02).
+  // (it called scsi methods that do not exist and toasted success).
   async function mount(entry: OpfsEntry) {
     const r =
       cat === 'fd'
