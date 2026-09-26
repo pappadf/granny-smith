@@ -54,7 +54,7 @@ static void set_err(char *err_buf, size_t err_size, const char *fmt, ...) {
 }
 
 // Linear lookup. Returns the index in g_table or -1 if not found.
-// Case-sensitive — proposal §2.3 makes member names (and so aliases)
+// Case-sensitive — member names (and so aliases) are
 // pure identifiers in [A-Za-z_][A-Za-z0-9_]* with case-sensitive match.
 static int find_index(const char *name) {
     if (!name)
@@ -272,7 +272,7 @@ static bool list_acc_collect(const char *name, const char *path, alias_kind_t ki
     list_acc_t *acc = (list_acc_t *)ud;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s=%s%s", name, path, kind == ALIAS_BUILTIN ? " (built-in)" : "");
-    // The shared accumulator (F-15); this was the third of five copies.
+    // The shared accumulator; this was the third of five copies.
     if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(buf)))
         return false;
     return true;

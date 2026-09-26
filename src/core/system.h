@@ -125,7 +125,7 @@ config_t *system_restore(const char *filename);
 // Checkpoint save / load / probe.  These replace the retired
 // cmd_save_checkpoint(argc, argv) and cmd_load_checkpoint(argc, argv), which
 // the typed checkpoint.* methods reached by building a fake argv[] and then
-// string-matching their arguments back out of it (08-core-infra F-31).
+// string-matching their arguments back out of it.
 int system_checkpoint_save(const char *filename, bool files_as_refs);
 int system_checkpoint_load(const char *filename); // NULL/empty = auto-load latest
 bool system_checkpoint_probe(void);
@@ -179,7 +179,7 @@ debug_t *system_debug(void);
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void);
 
-// Main-CPU debug interface accessor (PPC proposal §3.9b): the vtable the
+// Main-CPU debug interface accessor: the vtable the
 // debugger routes PC/disasm/translate through, populated by system_create
 // from whichever core is the machine's main CPU.  NULL before a machine is
 // built.  The pointed-to struct lives inside config_t (stable until destroy).
@@ -327,11 +327,10 @@ int gs_checkpoint_clear(void);
 int gs_register_machine(const char *machine_id, const char *created);
 int gs_find_media(const char *dir_path, const char *dest);
 
-// Host video-input seam (the AV video digitizer's webcam source —
-// proposal-av-video-in.md §2.2).  The weak defaults model "no camera":
-// headless machines use the deterministic machine.videoin sources
-// instead; the WASM platform overrides these with the getUserMedia
-// frame path (em_camera.c).
+// Host video-input seam (the AV video digitizer's webcam source).  The weak
+// defaults model "no camera": headless machines use the deterministic
+// machine.videoin sources instead; the WASM platform overrides these with the
+// getUserMedia frame path (em_camera.c).
 //
 //   gs_video_in_connected()  — true when a host camera is attached and
 //                              delivering frames (drives the DMSD's
@@ -359,11 +358,10 @@ bool gs_video_in_connected(void);
 int gs_video_in_frame(uint8_t *rgba);
 void gs_video_in_state(bool active);
 
-// Host audio-input seam (the AV Singer codec's microphone source —
-// proposal-dsp3210-plaintalk.md §2.5, mirroring the video-in seam).  The
-// weak defaults model "no microphone": headless machines use the
-// deterministic machine.audioin sources instead; a browser platform
-// override (getUserMedia audio) can trail in a follow-up.
+// Host audio-input seam (the AV Singer codec's microphone source,
+// mirroring the video-in seam).  The weak defaults model "no microphone":
+// headless machines use the deterministic machine.audioin sources instead; a
+// browser platform override (getUserMedia audio) can trail in a follow-up.
 //
 //   gs_audio_in_connected()      — true when a host microphone is
 //                                  attached and delivering samples

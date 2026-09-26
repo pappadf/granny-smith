@@ -32,11 +32,11 @@
 #include "scheduler.h"
 
 // One log category for the whole subsystem -- drive mechanics AND every
-// controller (02-floppy F-21).  `debug.log swim 10` on an SE/30 used to turn on
-// the ISM register trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush
-// or eject, because those live in floppy.c under a different name; the same
-// split hid the DBDMA ring from `debug.log swim3 10` on a 7500.  Level
-// convention: 1-2 state changes, 3-5 per-operation, 6+ per-register/per-byte.
+// controller.  `debug.log swim 10` on an SE/30 used to turn on the ISM register
+// trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush or eject,
+// because those live in floppy.c under a different name; the same split hid the
+// DBDMA ring from `debug.log swim3 10` on a 7500.  Level convention: 1-2 state
+// changes, 3-5 per-operation, 6+ per-register/per-byte.
 LOG_USE_CATEGORY_NAME("floppy");
 
 // Register indices (offset >> 9)
@@ -220,11 +220,10 @@ void swim3_raise(swim3_t *sw, uint8_t bits) {
 // when the count reaches zero.  The ERS leaves the read-back of a running
 // count and write-0-to-stop unstated; both are modelled, because Copland's
 // floppy plugin POLLS the running count (SwimIIISmallWait loads N+1 and
-// spins until the register reads zero — measured, see
-// gs-docs/projects/copland re/bsfloppypdm.dis.txt), which is only
-// meaningful if the live count reads back.  The 7.5 .Sony driver never
-// touches the register (it uses the Time Manager), so this path is
-// exercised by Copland alone.
+// spins until the register reads zero — measured from the plugin's
+// disassembly), which is only meaningful if the live count reads back.  The
+// 7.5 .Sony driver never touches the register (it uses the Time Manager),
+// so this path is exercised by Copland alone.
 
 static void swim3_timer_event(void *source, uint64_t data) {
     (void)data;
@@ -343,7 +342,7 @@ uint8_t swim3_read(swim3_t *sw, unsigned reg) {
 // family (system_reset_common_devices calls it "the SWIM of that list",
 // against the Guide's /RESET destinations "MC68000, VIA, SWIM, SCC, SCSI,
 // BBU").  Until this existed the SWIM3 was the one floppy controller in the
-// tree that survived a machine reset: `W-01` from the 2026-09-03 review.
+// tree that survived a machine reset.
 //
 // The bound pointers survive, because they are wiring rather than state --
 // the drive, the scheduler and the DMA backend are still attached to the

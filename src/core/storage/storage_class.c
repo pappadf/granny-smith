@@ -31,7 +31,7 @@
 
 // === Object-model class descriptors =========================================
 //
-// Replaces the M2 `storage` stub with a real class. `storage.images`
+// A real class in place of the old `storage` stub. `storage.images`
 // enumerates the cfg->images[] entries. Slot index in the indexed
 // child matches the slot in cfg->images[]; n_images is dense from
 // 0..n_images-1, so the collection's count() returns cfg->n_images
@@ -171,7 +171,7 @@ static struct object *storage_images_get(struct object *self, int index) {
 // `storage.import(host_path, dst_path)` — copy `host_path` to `dst_path`
 // through the VFS, e.g. into "/opfs/images/hd/foo.img".  The destination is
 // the caller's to choose: the core does not pick where media lives
-// (09-storage D-1; it used to fall back to /opfs/images/<hash>.img).
+// (it used to fall back to /opfs/images/<hash>.img).
 //
 // Returns the destination path as a V_STRING.
 static value_t storage_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {

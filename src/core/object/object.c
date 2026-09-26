@@ -40,10 +40,10 @@ struct object {
     const class_desc_t *cls;
     void *instance_data;
     const char *name;
-    const char *label; // optional display label (proposal §7.1); NULL = use name
-    int order; // ordering weight for the SYSTEM tree (proposal §7.4); default 0
+    const char *label; // optional display label; NULL = use name
+    int order; // ordering weight for the SYSTEM tree; default 0
     int attach_seq; // monotonic attach sequence; the stable tiebreak for order
-    uint16_t category; // M_CAT_* visibility for attached nodes (proposal §7.2)
+    uint16_t category; // M_CAT_* visibility for attached nodes
     object_dtor_fn dtor; // optional destructor for instance_data (default NULL)
     struct object *parent;
     struct object *first_child;
@@ -105,7 +105,7 @@ void object_root_reset(void) {
     // makes a held node safe: shell_var.c's binding_store registers one on
     // whatever V_OBJECT it holds, and without the fire it keeps a `watched`
     // pointer into freed memory and is never marked stale, so the next read
-    // dereferences it.  This was the one path that bypassed it (F-57).
+    // dereferences it.  This was the one path that bypassed it.
     //
     // Blast radius is small -- tests and process exit are the callers -- but
     // it is the contract, not an optimisation, and a path that opts out of it
@@ -448,17 +448,17 @@ static struct object *find_attached_child(struct object *parent, const char *nam
 // === Reserved words / name validation =======================================
 //
 // One closed list. Match string equality (case-sensitive) — identifiers
-// are case-sensitive everywhere else in the codebase. This list mirrors
-// proposal-module-object-model.md §2.3.
+// are case-sensitive everywhere else in the codebase. This is the set
+// docs/core/shell/object-model.md ("Reserved words") documents.
 
 static const char *const RESERVED_WORDS[] = {
     // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
-    // words to bool-slot input coercions (validate_slot) per shell v2
-    // §3.11 — they are ordinary identifiers again.
+    // words to bool-slot input coercions (validate_slot) — they are
+    // ordinary identifiers again.
     "true",
     "false",
     "none",
-    // Statement keywords (shell v2 §3.11).
+    // Statement keywords.
     "let",
     "alias",
     "if",
@@ -485,7 +485,7 @@ bool object_is_reserved_word(const char *name) {
     return false;
 }
 
-// Pure identifier per §2.3: [A-Za-z_][A-Za-z0-9_]*
+// Pure identifier: [A-Za-z_][A-Za-z0-9_]*
 static bool is_valid_identifier(const char *name) {
     if (!name || !*name)
         return false;
@@ -519,7 +519,7 @@ static const char *kind_name(value_kind_t k);
 // both walk one looking for the sentinel, so a table without it reads past its
 // own end.  Checking only [0] -- which is all this used to do -- catches an
 // absent table and misses an unterminated one, and three tables in the tree
-// were unterminated (08-core-infra N-01, the shape F-04 warns about).
+// were unterminated.
 //
 // The bound is generous: it exists so a malformed table is a validation
 // failure rather than a walk off the end, not to limit real enums.
@@ -534,7 +534,7 @@ static bool enum_table_ok(const char *const *table) {
     return false;
 }
 
-// Helpers for §3.13 ordering / coercion checks.
+// Helpers for the method-arg ordering / coercion checks.
 static bool kind_supports_width(value_kind_t k) {
     return k == V_INT || k == V_UINT;
 }
@@ -561,8 +561,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                 snprintf(err_buf, err_size, "class %s member[%zu]: %s", cls->name, i, sub_err);
             return false;
         }
-        // `meta` is reserved for the synthetic introspection node — see
-        // proposal-introspection-via-meta-attribute.md §2.1.
+        // `meta` is reserved for the synthetic introspection node.
         if (m->name && strcmp(m->name, "meta") == 0) {
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "class %s: 'meta' is reserved for introspection", cls->name);
@@ -590,7 +589,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             return false;
         }
 
-        // Method-arg ordering / coercion invariants (proposal §3.13).
+        // Method-arg ordering / coercion invariants.
         if (m->kind == M_METHOD && m->method.args && m->method.nargs > 0) {
             const arg_decl_t *args = m->method.args;
             int nargs = m->method.nargs;
@@ -767,7 +766,7 @@ static const char *skip_ws(const char *p) {
 // This was a third hand-rolled scanner accepting decimal, 0x and 0b -- while
 // parse_integer_literal also accepts 0o, 0d, `$`, `_` separators and u/i
 // suffixes, and node_child's accepted base-0 octal.  Three grammars, all
-// reachable from path resolution (08-core-infra F-11).
+// reachable from path resolution.
 static const char *parse_int(const char *p, long long *out) {
     if (!p)
         return NULL;
@@ -832,7 +831,7 @@ static const member_t *sole_indexed_child(const class_desc_t *cls) {
 
 // `count` for a class with one indexed child and no count of its own: its
 // live entries.  Collections had to declare one each (with a callback the
-// core never called), and three did not (10-network F-26).
+// core never called), and three did not.
 static value_t synth_count_get(struct object *self, const member_t *m) {
     (void)m;
     const member_t *child = sole_indexed_child(object_class(self));
@@ -874,8 +873,7 @@ node_t node_child(node_t n, const char *segment) {
         // while the bracket form `devices[010]` went through parse_int and
         // read base 10.  So `devices.010` selected index 8 and
         // `devices[010]` selected index 10, for the same object, and nobody
-        // writing a script could predict which grammar applied where
-        // (08-core-infra F-11).
+        // writing a script could predict which grammar applied where.
         const char *q = segment;
         value_t iv = parse_integer_literal(&q);
         if (!val_is_error(&iv) && q && *q == '\0') {
@@ -922,7 +920,7 @@ node_t node_child(node_t n, const char *segment) {
         }
     }
 
-    // Synthetic `meta` segment (proposal-introspection-via-meta-attribute.md).
+    // Synthetic `meta` segment.
     // Every object implicitly carries a `meta` attribute whose value is a
     // Meta node bound to it. The segment intercept lives here — after the
     // M_CHILD descent computes the real target object, before the regular
@@ -1096,7 +1094,8 @@ node_t object_resolve(struct object *root, const char *path) {
 // Single engine drives both: arg_decl_t (one per method param) and
 // member.attr (one per attribute) project onto the same `typed_slot_t`
 // view, then validate_slot() enforces kind / width / non-empty / enum
-// rules with limited coercion. See proposal-typed-dispatch.md §3.
+// rules with limited coercion. See docs/core/shell/object-model.md
+// ("Typed dispatch validation").
 
 #define OBJ_VALIDATE_MAX_ARGS 16
 
@@ -1227,11 +1226,11 @@ static void coerce_int_sign(value_t *out, value_kind_t target_kind, uint8_t widt
 // length.  Once the names exceeded the buffer, `off` grew past `buf_size`,
 // the loop exited on `off < buf_size`, and the closing brace was written at
 // `buf + off` -- past the end of the array -- with `buf_size - off`
-// underflowing to a near-SIZE_MAX size_t (08-core-infra F-03).
+// underflowing to a near-SIZE_MAX size_t.
 //
-// The work order calls this latent, because the longest enum table in the
-// tree totalled about 45 characters against a 120-byte buffer.  F-35 armed
-// it: `debug.log`'s category slot is an enum over all 62 log categories, so
+// It stayed latent while the longest enum table in the tree totalled about 45
+// characters against a 120-byte buffer.  Typed `debug.log` arguments armed
+// it: the category slot is an enum over all 62 log categories, so
 // a mistyped category now formats a ~400-character list.  The first thing
 // the typed method did on a bad name was overflow this.
 static void format_enum_list(char *buf, size_t buf_size, const char *const *values) {
@@ -1319,7 +1318,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
             rewrote = true;
         }
         // string → bool: accept the classic switch spellings. `on`/`off`/
-        // `yes`/`no` stopped being reserved words (shell v2 §3.11), so they
+        // `yes`/`no` stopped being reserved words, so they
         // arrive as V_STRING from argument mode; map them here so bool slots
         // keep their old ergonomics.
         else if (s->kind == V_BOOL && in->kind == V_STRING) {
@@ -1648,9 +1647,9 @@ value_t node_get(node_t n) {
                 return val_err("indexed child '%s' has no get callback", n.member->name);
             if (n.index < 0) {
                 // Index-less read of an indexed collection returns the
-                // whole collection as V_LIST of entry objects (shell v2
-                // §6.1: `.entries` is the data; the REPL's table
-                // formatter is the presentation).
+                // whole collection as V_LIST of entry objects (`.entries`
+                // is the data; the REPL's table formatter is the
+                // presentation).
                 size_t cap = 8, len = 0;
                 value_t *items = (value_t *)malloc(cap * sizeof(value_t));
                 if (!items)

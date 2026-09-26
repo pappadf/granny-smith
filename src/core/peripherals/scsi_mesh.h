@@ -45,7 +45,7 @@ typedef struct mesh {
     //
     // This struct had NO pointers before the move, so tnt.c could save it with
     // sizeof() and get away with it.  Adding the bus and the two callbacks is
-    // exactly what makes that unsafe -- it is how F-21's host addresses got
+    // exactly what makes that unsafe -- it is how host addresses once got
     // into the 53C96's checkpoint -- so the bound is explicit from the start.
 
     BYTE_FIFO(MESH_FIFO) fifo;
@@ -63,7 +63,7 @@ typedef struct mesh {
     uint8_t connected; // a target is selected (bus not free)
     uint8_t msgout_pending; // select-with-ATN: present MSG OUT until sent
     uint8_t resel_enabled, parity_enabled;
-    // SDTR message engine (mesh.c §"Sync negotiation"): the assembled
+    // SDTR message engine (scsi_mesh.c, "SDTR responses"): the assembled
     // message-out bytes of the current session and the virtual
     // message-in queue the target speaks through.  All of it is
     // per-connection state.
@@ -99,8 +99,8 @@ void mesh_reset(mesh_t *m);
 // DBDMA engine.
 // Bytes the channel-10 DBDMA port moves per activation before yielding
 // (tnt_dbdma_port_t.burst).  2 KB, the per-firing cap av.c and amic.c
-// already use for the same job on the two other families -- see
-// 05-chipsets-irq F-15 in scsi_mesh.c.
+// already use for the same job on the two other families -- see the DMA
+// pump comment in scsi_mesh.c.
 #define MESH_DMA_BURST 2048
 
 int mesh_port_in(void *ctx, uint8_t *buf, int len);

@@ -4,9 +4,8 @@
 // ppc_disasm.c
 // Dependency-free MPC601/MPC604 disassembler: the second instantiation of
 // the shared decode tree (ppc_decode.h), with the OP_ leaves overloaded by
-// sprintf-style printing macros — the cpu_disasm.c pattern
-// (proposal-heterogeneous-multi-cpu.md §3.3.1).  Because this is literally
-// the same decode tree the interpreter runs, the two cannot drift.
+// sprintf-style printing macros — the cpu_disasm.c pattern.  Because this is
+// literally the same decode tree the interpreter runs, the two cannot drift.
 //
 // Output uses standard mnemonics with the common simplified forms (li,
 // lis, mr, nop, blr, bctr, cmpwi, mflr, ...) the way the development

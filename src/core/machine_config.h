@@ -2,14 +2,13 @@
 // Copyright (c) pappadf
 
 // machine_config.h
-// Construction-time boot document and the per-machine "built-from" record
-// (proposal-named-args-boot-config §4).
+// Construction-time boot document and the per-machine "built-from" record.
 //
 // The boot document carries every construction-time setting of one
 // machine.boot call; the record is the live machine's immutable birth
 // certificate — written by boot (plus the rom.load write-back), read by
-// the read-only machine.config object, replayed by machine.restart
-// (proposal-boot-vs-reset §3.2), and serialized into checkpoints.
+// the read-only machine.config object, replayed by machine.restart, and
+// serialized into checkpoints.
 
 #ifndef GS_MACHINE_CONFIG_H
 #define GS_MACHINE_CONFIG_H
@@ -54,7 +53,7 @@ typedef enum mc_bus_kind {
 // machine construction.  This is what makes machine.restart rebuild a
 // multi-card machine faithfully: the boot document's wildcard card covers
 // only the first socket, and concrete per-slot picks are staged state that
-// the slot walk consumes and clears (proposal-pci-architecture §8.2).
+// the slot walk consumes and clears.
 typedef struct {
     uint8_t bus_kind; // mc_bus_kind_t
     int16_t slot; // slot number within that bus's numbering
@@ -99,7 +98,7 @@ typedef struct machine_config_record {
 
 // The in-flight boot document: pointers borrow from the caller; NULL/0/-1
 // mean "not given" (the model's own defaults fill them; model and rom are
-// required — proposal-boot-vs-reset §3.1).
+// required).
 typedef struct boot_config {
     const char *model;
     uint32_t ram_kb; // 0 = inherit / profile default
@@ -165,7 +164,7 @@ value_t machine_boot_apply(const boot_config_t *doc);
 // machine.restart (a power-cycle), false while it is building a NEW machine
 // for machine.boot.  Non-volatile hardware that outlives the power switch —
 // the mounted media, the Caps Lock latch, the TNT's soldered NVRAM part —
-// is carried across a restart only; a machine.boot inherits nothing (§2).
+// is carried across a restart only; a machine.boot inherits nothing.
 bool machine_boot_is_restart(void);
 
 #ifdef __cplusplus

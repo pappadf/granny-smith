@@ -4,7 +4,7 @@
 // meta.c
 // The `Meta` class. Every node implicitly carries a `meta` attribute
 // whose value is a synthetic Meta node bound to the inspected object.
-// See proposal-introspection-via-meta-attribute.md.
+// See docs/core/shell/object-model.md.
 //
 // Lifetime: meta nodes are allocated lazily on first access and cached
 // on the inspected object's private `meta_node` slot. object_delete
@@ -97,8 +97,7 @@ typedef struct {
 // The shared accumulator, val_list_push.  This was the second of five
 // near-identical copies, and like the others it discarded the failure -- so
 // meta.children and meta.indices returned a SILENTLY TRUNCATED list under
-// memory pressure, which the inspector renders as the complete set
-// (08-core-infra F-15, F-63).
+// memory pressure, which the inspector renders as the complete set.
 static bool name_list_push(name_list_t *acc, const char *name) {
     if (!name)
         return true;
@@ -131,8 +130,8 @@ static value_t meta_get_doc(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     // Class descriptors do not carry a doc string today. Reserved for a
-    // future class_desc_t.doc field; the proposal lists this surface as
-    // part of v1 but Record/doc encoding is the §7 open question.
+    // future class_desc_t.doc field; how a class doc would be encoded is
+    // still an open question.
     return val_str("");
 }
 
@@ -158,7 +157,7 @@ static value_t meta_get_children(struct object *self, const member_t *m) {
                     acc.oom = true;
     }
     // Attached (runtime) children in deterministic (order, attach_seq)
-    // sequence so the SYSTEM tab renders stably (proposal §7.4).
+    // sequence so the SYSTEM tab renders stably.
     object_each_attached_ordered(insp, each_attached_collect, &acc);
     if (acc.oom) {
         for (size_t i = 0; i < acc.len; i++)
@@ -214,7 +213,7 @@ static value_t meta_get_methods(struct object *self, const member_t *m) {
 }
 
 // Map a visibility-category bitfield (M_CAT_*) to its string name. Used by
-// the SYSTEM tab / command browser to honour the §7.2 three-tier model.
+// the SYSTEM tab / command browser to honour the three-tier model.
 static const char *category_name(uint16_t flags) {
     switch (flags & M_CAT_MASK) {
     case M_CAT_ADVANCED:
@@ -226,7 +225,7 @@ static const char *category_name(uint16_t flags) {
     }
 }
 
-// `label` — the inspected node's display label (proposal §7.1). Falls back
+// `label` — the inspected node's display label. Falls back
 // to its path-segment name when no explicit label was set.
 static value_t meta_get_label(struct object *self, const member_t *m) {
     (void)m;
@@ -237,7 +236,7 @@ static value_t meta_get_label(struct object *self, const member_t *m) {
 
 // `category` — the inspected node's own visibility tier (basic / advanced /
 // internal). Lets the SYSTEM tab decide whether to show a child object
-// without a separate allowlist (proposal §7.2 / §8.2).
+// without a separate allowlist.
 static value_t meta_get_category(struct object *self, const member_t *m) {
     (void)m;
     struct object *insp = meta_inspected(self);
@@ -298,9 +297,9 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
 }
 
 // `member_category(name)` — visibility tier of a named member on the
-// inspected class: "basic" / "advanced" / "internal" (proposal §7.2). The
+// inspected class: "basic" / "advanced" / "internal". The
 // SYSTEM tab reads this to decide whether to show an attribute/method row.
-// Unknown names default to "basic" (faithful-by-default, §P6).
+// Unknown names default to "basic" (faithful-by-default).
 static value_t meta_method_member_category(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
@@ -310,7 +309,7 @@ static value_t meta_method_member_category(struct object *self, const member_t *
 }
 
 // `member_label(name)` — display label of a named member, falling back to the
-// name itself (proposal §7.1).
+// name itself.
 static value_t meta_method_member_label(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
@@ -321,9 +320,9 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
 }
 
 // `method_info(name)` — UI metadata for a method member, a typed map so the
-// context menu and command browser render it without a static catalogue
-// (proposal §7.3/§8.3/§8.6): verb label, task category, destructive/mutate/
-// hidden flags, declared arg count, and doc. Returns a V_ERROR if the member
+// context menu and command browser render it without a static catalogue:
+// verb label, task category, destructive/mutate/hidden flags, declared arg
+// count, and doc. Returns a V_ERROR if the member
 // is not a method.
 static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
@@ -345,8 +344,8 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
     return val_map_finish(b);
 }
 
-// `indices(name)` — the live indices of an indexed-child member (proposal
-// §5.3). Lets a tree walker enumerate a sparse collection's occupants
+// `indices(name)` — the live indices of an indexed-child member. Lets a
+// tree walker enumerate a sparse collection's occupants
 // (machine.scsi.device[0], [3], …) instead of stopping at the bare collection
 // member. Returns a V_LIST<V_INT> for an indexed member (possibly empty), or
 // a V_ERROR for a non-indexed / unknown member — so a caller can use the
@@ -369,7 +368,7 @@ static value_t meta_method_indices(struct object *self, const member_t *m, int a
 // (and `indices`) for a child, and the method_info fields for a method.
 // Runtime-attached children are listed after the class members with their
 // own label and category.  A tree view used to spend two or three round
-// trips per member on member_category / member_label / indices (F-46).
+// trips per member on member_category / member_label / indices.
 // Values are opt-in: some attributes are volatile or costly to read.
 
 // The live indices of an indexed-child member, as a V_LIST<V_INT>.

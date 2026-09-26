@@ -10,10 +10,10 @@
 // called its byte count `raw_size` and the PCI one called it `size`, NuBus
 // typed width/height/depth as V_INT and PCI as V_UINT, and only NuBus had
 // `format` -- so a script reading `.raw_size` worked on a IIcx and errored on
-// a pm9500, and one reading `.format` worked on NuBus only (04-video F-15).
+// a pm9500, and one reading `.format` worked on NuBus only.
 // The built-in video chips had no framebuffer node at all, which is why the
 // headless-debug workflow on a Quadra or an 8100 was strictly poorer than on
-// a card-based machine (04-video F-16).
+// a card-based machine.
 //
 // A source attaches this class with a display_fb_node_t describing how to
 // reach its live display_t.  Nothing is copied: every read goes to the
@@ -49,8 +49,7 @@ extern const class_desc_t display_fb_class;
 // Civic, Ariel, Control, RBV, the SE/30's built-in video.  Those machines had
 // no framebuffer node at all, so on a Quadra or an 8100 there was no way to
 // read the stride, the pixel format or the scan base from the shell, and the
-// headless-debug workflow was strictly poorer than on a card-based machine
-// (04-video F-16).
+// headless-debug workflow was strictly poorer than on a card-based machine.
 //
 // `node` must outlive the machine (the chip's own state is the natural home).
 // Returns the `video` node, or NULL; the caller owns detaching it at teardown.

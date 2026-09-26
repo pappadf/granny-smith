@@ -5,11 +5,9 @@
 // The one `machine.sound` contract, shared by every sound engine in the tree.
 //
 // Five engines used to define their own class: the Plus PWM, the ASC, the AV's
-// Singer, and the AWACS on the PDM and TNT.  The review's F-34 read that as
-// five copies of one class.  It is not quite -- the five member lists really do
-// differ -- but the differences turned out to be mostly OUR gaps rather than
-// the hardware's:
-//
+// Singer, and the AWACS on the PDM and TNT.  That looks like five copies of
+// one class.  It is not quite -- the five member lists really do differ -- but
+// the differences turned out to be mostly OUR gaps rather than the hardware's:
 //   * Volume exists on all five.  The Plus and ASC pass a real 0..7 level to
 //     audio_out_push(); the AWACS and Singer machines apply their attenuation
 //     ladder during their own mixing and push a hardcoded 7 ("attenuation

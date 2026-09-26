@@ -81,11 +81,11 @@ static void enqueue(keyboard_t *keyboard, uint8_t byte) {
 }
 
 static uint8_t dequeue(keyboard_t *keyboard) {
-    // The sole caller guards with `if (!queue_empty(...))`.  (F-40 called
-    // this reachable by analogy with adb.c's kbd_dequeue; adb.c's really is,
-    // from a bare guest register poll, and this one is not.)  A tripped
-    // GS_ASSERT returns, which here would hand back a stale byte and advance
-    // tail past head -- worth knowing, and the reason not to lean on it.
+    // The sole caller guards with `if (!queue_empty(...))`.  (Unlike adb.c's
+    // kbd_dequeue, which a bare guest register poll can reach, this one is not
+    // reachable.)  A tripped GS_ASSERT returns, which here would hand back a
+    // stale byte and advance tail past head -- worth knowing, and the reason
+    // not to lean on it.
     GS_ASSERT(keyboard->queue.tail != keyboard->queue.head);
 
     uint8_t byte = keyboard->queue.buf[keyboard->queue.tail];
@@ -475,7 +475,7 @@ void keyboard_delete(keyboard_t *keyboard) {
     if (!keyboard)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(keyboard->scheduler, keyboard);
     free(keyboard);
 }

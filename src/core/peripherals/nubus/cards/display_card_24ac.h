@@ -7,17 +7,17 @@
 // the genuine Apple declaration ROM and cdev.  See
 // docs/core/peripherals/nubus/cards/display_card_24ac.md.
 //
-// The model splits into two halves (mirrors the proposal):
-//   * Phase 1 — a plain framebuffer + CLUT + VBL display card driven by
+// The model splits into two halves:
+//   * Display — a plain framebuffer + CLUT + VBL display card driven by
 //     the genuine declaration ROM's System 7 video driver.  Boots a
 //     colour desktop with no accelerator at all.
-//   * Phase 2 — the acceleration engine (registers $D00402 / $D40402 /
+//   * Engine — the acceleration engine (registers $D00402 / $D40402 /
 //     $D40403 + the operand aperture and the +0x400000 active-bank
-//     alias) that the cdev drives.  Fully reverse-engineered in
-//     the dossier (doc 3); modelled here as a synchronous software-
-//     equivalent whose output must match the driver's own CPU fallback.
+//     alias) that the cdev drives.  Reverse-engineered (see the doc
+//     above); modelled here as a synchronous software-equivalent whose
+//     output must match the driver's own CPU fallback.
 //
-// Register / bit names mirror the dossier's hardware spec.
+// Register / bit names follow the doc's register map.
 
 #ifndef NUBUS_CARDS_DISPLAY_CARD_24AC_H
 #define NUBUS_CARDS_DISPLAY_CARD_24AC_H
@@ -30,9 +30,9 @@
 //
 // All offsets are relative to the card's slot base (0xFs000000).  We model
 // the *large-VRAM* card variant (4 MB passive bank, operand aperture near
-// its top at 0x3FE000) so 24-bit colour at the advertised modes fits — see
-// the hardware spec §3/§5 (STATUS[3]/CONFIG[0] geometry select) and the
-// proposal's open question on the variant bit.
+// its top at 0x3FE000) so 24-bit colour at the advertised modes fits.
+// STATUS[3]/CONFIG[0] select the geometry; which bit distinguishes the
+// variant is still an open question.
 
 // Passive framebuffer VRAM at offset 0 (4 MB — covers 832×624 at 32 bpp).
 #define DISPLAY_CARD_24AC_VRAM_SIZE 0x00400000u // 4 MB
@@ -69,7 +69,7 @@
 // register-level test poke uses.
 #define DISPLAY_CARD_24AC_OPERAND_APERTURE 0x003FE000u
 
-// Engine registers, high in slot space (hardware spec §2 + vrom RE).  All
+// Engine registers, high in slot space (from the vrom RE).  All
 // display registers are byte-wide, lane-3 only (spaced by 4).
 //   STATUS  read  : byte at 0xD00402 — [2:0] depth/mode (cdev), [3] card
 //                   class, [4] VBL/sync busy poll (vrom video driver)
@@ -85,7 +85,7 @@
 // VBL-sync window; we toggle it so the poll loop always sees both edges.
 #define DISPLAY_CARD_24AC_STATUS_BUSY 0x10u // bit 4
 
-// VIDCTL (0xD00403) bits the vrom video driver drives (RE doc §"VIDCTL").
+// VIDCTL (0xD00403) bits the vrom video driver drives.
 #define DISPLAY_CARD_24AC_VIDCTL_VBL_MASK 0x80u // bit 7 — 1 = slot VBL IRQ masked/off
 #define DISPLAY_CARD_24AC_VIDCTL_COMMIT   0x20u // bit 5 — config-commit / load strobe
 #define DISPLAY_CARD_24AC_VIDCTL_DIRECT   0x08u // bit 3 — direct/"magic" mode enable
@@ -116,7 +116,7 @@
 #define DISPLAY_CARD_24AC_D40_PAGE  0x00D40000u // CONFIG + CONTROL (engine)
 #define DISPLAY_CARD_24AC_D80_PAGE  0x00D80000u // MODE / DEPTH / SENSE / CRTC
 
-// CONTROL (mode) byte values the cdev video driver emits (hardware spec §2.3).
+// CONTROL (mode) byte values the cdev video driver emits.
 #define DISPLAY_CARD_24AC_MODE_FILL    0x01u // pattern / solid fill (replicate operand)
 #define DISPLAY_CARD_24AC_MODE_STRETCH 0x03u // stretch / scale (driver-side DDA)
 #define DISPLAY_CARD_24AC_MODE_COPY    0x7Fu // fast block copy ("all planes")
@@ -140,7 +140,7 @@
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t display_card_24ac_kind;
 // Generic sibling ("24ac") with the built-in GS declaration ROM — same HLE
-// model, no vROM file needed (proposal-generic-nubus-vrom.md sec. 6.1).
+// model, no vROM file needed (see docs/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t display_card_24ac_generic_kind;
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
@@ -155,9 +155,9 @@ bool display_card_24ac_video_mode_lookup(const char *id, const nubus_monitor_t *
 // === Engine introspection (object model — slot[N].card.engine) ==============
 // True iff `card` is a display_card_24ac.  The getters return 0/false and the
 // setter is a no-op for any other card kind, so the object-model layer can
-// call them without first knowing the card type.  `enabled` is the Phase-2
-// acceleration gate (proposal §4 step 4 / §3.5): clearing it forces the
-// active-bank alias to behave as plain VRAM (the software-fallback oracle).
+// call them without first knowing the card type.  `enabled` is the engine's
+// acceleration gate: clearing it forces the active-bank alias to behave as
+// plain VRAM (the software-fallback oracle).
 bool display_card_24ac_is_card(const nubus_card_t *card);
 bool display_card_24ac_engine_enabled(const nubus_card_t *card);
 void display_card_24ac_engine_set_enabled(nubus_card_t *card, bool enabled);

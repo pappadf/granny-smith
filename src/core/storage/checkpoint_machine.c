@@ -26,7 +26,7 @@
 // One category for the whole checkpoint path.  This file used "checkpoint"
 // while checkpoint.c uses "ckpt" and system.c reached for "ckpt" inline, so
 // `debug.log checkpoint 2` turned up a third of the subsystem and the other
-// two thirds stayed silent (08-core-infra F-34/F-36).
+// two thirds stayed silent.
 LOG_USE_CATEGORY_NAME("ckpt")
 
 static char *g_machine_id = NULL;
@@ -78,7 +78,7 @@ int checkpoint_machine_set(const char *machine_id, const char *created) {
     // So a transient OPFS mkdir failure left the process with no machine
     // directory and no way to establish one: quick checkpoints and image
     // deltas disabled for the session, behind a single level-1 log line, and
-    // the documented recovery is a page reload (08-core-infra F-47).
+    // the documented recovery is a page reload.
     g_machine_id = gs_strdup(machine_id);
     g_machine_created = gs_strdup(created);
     if (!g_machine_id || !g_machine_created) {
@@ -191,8 +191,7 @@ int checkpoint_machine_sweep_others(void) {
         // directory containing anything else lost all of it, silently, behind
         // one level-2 log line per entry.  The code already recognised the
         // danger -- it bails above rather than risk sweeping its own dir on a
-        // truncated key -- and this extends that caution to everything else
-        // (08-core-infra F-48).
+        // truncated key -- and this extends that caution to everything else.
         if (!is_machine_dir_name(name)) {
             LOG(2, "checkpoint_machine: leaving unrecognised entry %s alone", name);
             continue;
@@ -290,7 +289,7 @@ int checkpoint_machine_write_manifest(void) {
     // Image list, built by appending: at most MAX_IMAGES entries, so the
     // copying costs nothing, and there is no capacity arithmetic to get
     // wrong -- the hand-grown buffer this replaces overran on a failed
-    // realloc (09-storage F-35).  A failure writes no manifest rather than
+    // realloc.  A failure writes no manifest rather than
     // a truncated one.
     char *img_buf = gs_strdup("  \"images\": [");
     bool first = true;

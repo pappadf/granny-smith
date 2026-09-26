@@ -3,12 +3,7 @@
 
 // nubus.h
 // NuBus subsystem — bus controller, slot table, slot-IRQ aggregation, and
-// the public API every glue030-family machine uses.  See
-// proposal-machine-iicx-iix.md §3.2 for the full design.  Step-3 status:
-// types, slot-decl shape, and the public API are in place; the bus
-// controller body is a skeleton — no machine creates a bus yet, so the
-// registry is empty and nubus_init is unused.  Step 4 lands the first
-// card and starts using this from se30_init.
+// the public API every glue030-family machine uses.
 
 #ifndef NUBUS_H
 #define NUBUS_H
@@ -26,8 +21,7 @@ typedef struct config config_t;
 typedef struct checkpoint checkpoint_t;
 typedef struct display display_t;
 
-// Slot-table kinds.  See proposal §3.2.2 and
-// proposal-nubus-computed-card-compatibility.md §5.2.
+// Slot-table kinds.
 typedef enum nubus_slot_kind {
     NUBUS_SLOT_ABSENT = 0, // physical absence — bus errors on access
     NUBUS_SLOT_EMPTY, // electrically decoded as empty (GLUE rule) but NOT
@@ -44,7 +38,7 @@ typedef enum nubus_slot_kind {
 // user-configurable, and what card a configurable slot ships with by
 // default.  Which cards *fit* a configurable slot is not a machine fact:
 // it is computed from each card kind's declared attachment
-// (nubus_card_fits_socket; proposal-nubus-computed-card-compatibility.md).
+// (nubus_card_fits_socket).
 typedef struct nubus_slot_decl {
     int slot; // $9..$E (0 ends the array)
     nubus_slot_kind_t kind;
@@ -82,8 +76,8 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 // was REFUTED BY TEST -- worth recording, because the argument for extending
 // it was good and still lost.
 //
-// 05-chipsets-irq F-23 presents the three different windows as "three
-// separate policies for the same architectural question", and the tree looks
+// It is tempting to read the three different windows as "three separate
+// policies for the same architectural question", and the tree looks
 // like it has already decided: the AV pair start at $A0, covering super-slot
 // space, and PDM's BART explicitly claims super-slot space for empty slots so
 // they fault (bart.c:318) -- with bart.c:300 recording "there read $FF
@@ -95,11 +89,10 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 // suite-iicx and suite-iici outright -- iicx-gc-beep and iici-701-fd stop
 // matching -- so something on those machines legitimately reads super-slot
 // space and expects the bus to float.  Taking PDM's fact and applying it to
-// nine other boards is exactly the mistake HANDOVER §4.0 warns about, in the
-// direction that is harder to see: the evidence was real, it was just
-// evidence about a different machine.  The per-board question belongs to the
-// float-or-fault audit (proposal-bus-timeout-audit.md), which reads each
-// board's own address map.
+// nine other boards is the classic mistake of carrying one machine's evidence
+// to another, in the direction that is harder to see: the evidence was real,
+// it was just evidence about a different machine.  The per-board question
+// belongs to a float-or-fault audit that reads each board's own address map.
 //
 // These are the same arithmetic as nubus_slot_base above, spelled as constant
 // expressions because a board descriptor is a static initialiser and a
@@ -128,7 +121,7 @@ void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp);
 void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp);
 void nubus_delete(nubus_bus_t *bus);
 
-// === Staged per-slot configuration (proposal §5.6, stage 2) ================
+// === Staged per-slot configuration ==========================================
 //
 // User picks for the NEXT machine.boot live in a small staged table keyed by
 // slot number, consumed (and cleared) by nubus_init.  Slot 0 is the WILDCARD
@@ -147,7 +140,7 @@ const char *nubus_staged_card_get(int slot);
 void nubus_staged_mode_set(int slot, const char *id); // NULL/"" clears
 const char *nubus_staged_mode_get(int slot);
 
-// Staged "WxHxD" custom resolution (proposal-nubus-runtime-vrom §3.6):
+// Staged "WxHxD" custom resolution:
 // the generic display kinds generate a video sResource for it and boot
 // their default monitor at that geometry.  NULL/"" clears.
 void nubus_staged_custom_mode_set(int slot, const char *spec);
@@ -189,7 +182,7 @@ display_t *nubus_primary_display(nubus_bus_t *bus);
 // card's framebuffer node.
 nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
 
-// === Object-model surface (proposal §3.8) ===================================
+// === Object-model surface ===================================================
 //
 // Build / tear down the per-slot `slot[N].card.{framebuffer,declrom,clut,mode}`
 // object trees for every populated slot.  nubus_init calls _build after the

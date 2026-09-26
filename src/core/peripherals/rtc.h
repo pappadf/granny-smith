@@ -43,8 +43,8 @@ typedef struct pram_defaults {
 #define PRAM_STARTMGR_LEN  20
 #define PRAM_MMFLAGS       0x8A
 #define PRAM_STARTMGR_WAIT 0x01 // Start Manager wait byte (StartSearch.a)
-// $01 bit 7: disable the dynamic startup-drive wait.  Set at construction
-// (D-2): a deliberate departure from a factory-fresh chip, whose first boot
+// $01 bit 7: disable the dynamic startup-drive wait.  Set at construction:
+// a deliberate departure from a factory-fresh chip, whose first boot
 // waits up to 20 s for drives to spin up.  A row that wants that path
 // clears the bit after construction and keeps the token.
 #define PRAM_STARTMGR_NO_WAIT 0x80
@@ -99,7 +99,7 @@ void rtc_via1_pb_output(rtc_t *restrict rtc, uint8_t port_b);
 // Used by the `set-time` script command to make boot deterministic.
 void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds);
 
-// === M7b — object-model accessors ===========================================
+// === Object-model accessors =================================================
 //
 // Read-only views and a controlled PRAM-write helper for the `rtc`
 // object class. The PRAM read/write helpers honor the write-protect

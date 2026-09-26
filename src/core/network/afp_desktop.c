@@ -68,8 +68,8 @@ static long icon_slot(afp_desktop_t *dt, uint32_t creator, uint32_t file_type, u
 
 // The caller's view of a slot.  The bitmap pointer is set here, on every
 // hand-out, because the slot's bytes move whenever the table grows: set once
-// at store time, it dangled for every icon stored before the 17th
-// (10-network F-03).  The catalog's view_of works the same way.
+// at store time, it dangled for every icon stored before the 17th.  The
+// catalog's view_of works the same way.
 static const afp_icon_t *icon_view(afp_desktop_t *dt, size_t si) {
     icon_slot_t *s = &dt->icons[si];
     s->v.bitmap = s->bytes;
@@ -102,7 +102,7 @@ static int icon_apply(afp_desktop_t *dt, uint8_t op, uint32_t creator, uint32_t 
         return 0;
     }
     if (op != DT_OP_PUT)
-        return 0; // a later format's record -- it was taken as a PUT (N-16)
+        return 0; // a later format's record -- it was taken as a PUT
     if (size > AFP_ICON_MAX_BYTES)
         return -EINVAL;
     if (si < 0) {

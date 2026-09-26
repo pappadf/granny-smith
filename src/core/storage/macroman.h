@@ -30,8 +30,8 @@ int macroman_from_utf8(const char *utf8, uint8_t *dst, size_t dst_cap);
 
 // === Mac file names on a host filesystem ===================================
 //
-// One convention for every place a Mac name becomes a host file name and back
-// (10-network D-1): the name is UTF-8 on the host, and a Mac '/' -- legal in
+// One convention for every place a Mac name becomes a host file name and
+// back: the name is UTF-8 on the host, and a Mac '/' -- legal in
 // an HFS name, a separator in a host path -- is a host ':' (and a host ':',
 // illegal in a Mac name, is a Mac '/').  macOS stores Finder names the same
 // way, and image_hfs.c exposes HFS names through the VFS the same way.

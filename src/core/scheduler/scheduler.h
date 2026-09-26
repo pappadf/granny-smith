@@ -30,7 +30,7 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 // producers that raise their own frame event were each carrying a private
 // nanosecond literal derived from it (Civic 16625103, DAFB 16625000, the
 // latter 103 ns short per frame), which is three chances to disagree about a
-// constant (04-video F-17).  A card whose timing registers give a real refresh
+// constant.  A card whose timing registers give a real refresh
 // rate should derive the period from THOSE and not use this; this is the
 // rate of the machine's own retrace.
 #define MAC_VBL_FREQUENCY 60.15
@@ -60,7 +60,7 @@ typedef struct scheduler scheduler_t;
 
 // What the scheduler needs from "the main CPU" — the four-entry seam that
 // lets a future main-CPU architecture replace the 68K without touching the
-// scheduler (proposal-heterogeneous-multi-cpu.md §3.6).  The struct is
+// scheduler.  The struct is
 // copied at scheduler_init; the ctx outlives the scheduler.
 typedef struct sched_cpu_if {
     void *ctx; // the core instance
@@ -114,8 +114,7 @@ double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callb
 // have to duplicate the cycles/ns handling or pick one and be wrong for half
 // its callers -- and cancellation is already answered too: remove_event() and
 // scheduler_forget_source() cancel a periodic exactly as they cancel a
-// one-shot, so a repeating event adds no second lifetime to get wrong
-// (08-core-infra F-28).
+// one-shot, so a repeating event adds no second lifetime to get wrong.
 //
 // The interval is the initial delay, and the next deadline is computed from
 // the SCHEDULED time rather than from the dispatch time, so a periodic does
@@ -215,7 +214,7 @@ bool scheduler_is_running(struct scheduler *restrict s);
 
 // Set scheduler pacing mode (paced/unthrottled/accelerated)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
-// The one parser of a pacing-mode name (S4), for scheduler.mode and headless
+// The one parser of a pacing-mode name, for scheduler.mode and headless
 // --speed alike: "paced" (and the legacy real/realtime/hw/hardware),
 // "accelerated" (accel), "turbo" (max).  False for anything else.
 bool scheduler_mode_from_string(const char *name, enum schedule_mode *out);

@@ -7,7 +7,7 @@
 // identity), afp_params.c (the parameter-area codec) and afp_enum.c
 // (FPEnumerate).  Not for use outside them.
 //
-// The server was one 4,000-line file holding five concerns (10-network F-20);
+// The server was one 4,000-line file holding five concerns;
 // the split follows the section banners it already had.
 
 #ifndef AFP_INTERNAL_H
@@ -54,7 +54,7 @@
 #define AFP_ENTITY_TYPE   "AFPServer"
 
 // Wire fields are 32-bit and classic clients cap a volume at 2 GB, so every
-// size we report is clamped here (proposal §5 WP-1).
+// size we report is clamped here.
 #define AFP_VOL_SIZE_CEILING   AFP_FORK_MAX_LENGTH // 2 GB - 1 KB, kept 512-byte aligned
 #define AFP_VOL_FALLBACK_TOTAL (1024u * 1024u * 1024u)
 #define AFP_VOL_FALLBACK_FREE  (512u * 1024u * 1024u)
@@ -155,15 +155,15 @@ typedef struct {
 // for a path type other than 1 or 2 or a length past the request.
 int afp_read_path(const uint8_t *in, int in_len, int pos, afp_path_t *out);
 // Resolve `path` below `base_rel` into a volume-relative host path.  An element
-// that names nothing exactly is the one entry whose name folds equal (D-7).
+// that names nothing exactly is the one entry whose name folds equal.
 bool afp_walk_path(vol_t *vol, const char *base_rel, const afp_path_t *path, char *out, size_t out_len);
 // A host name as a client sees it: MacRoman, and at most 31 characters -- a
-// longer one is shortened to its first bytes and "#<CNID in hex>" (D-5).
+// longer one is shortened to its first bytes and "#<CNID in hex>".
 int afp_client_name(const char *host_name, uint32_t cnid, uint8_t *out, size_t cap);
 // A new name (FPRename, FPMoveAndRename, FPCopyFile): exactly one element, as
 // its host name.
 bool afp_parse_leaf(const afp_path_t *path, char *out, size_t cap);
-// Case (Inside AppleTalk App. D, Table D-2; 10-network D-7).  afp_fold maps a
+// Case (Inside AppleTalk App. D, Table D-2).  afp_fold maps a
 // MacRoman byte to its uppercase equivalent; the comparisons fold both sides,
 // host names through their Mac form.
 uint8_t afp_fold(uint8_t c);
@@ -175,7 +175,7 @@ bool afp_name_fold_contains(const char *host_haystack, const char *host_needle);
 // moved, or NULL), which may change the case of its own name.
 bool afp_name_taken(vol_t *vol, const char *dir_rel, const char *name, const char *self_rel);
 // True if the server shows the host name `host_name` to clients: not one of
-// its own, and representable as a Mac name (10-network D-1).
+// its own, and representable as a Mac name.
 bool afp_name_visible(const char *host_name);
 // A host name, or a host string, as the Mac bytes that go on the wire (at most
 // `cap`); the length.  Names go through the name codec; text only through
@@ -194,7 +194,7 @@ uint16_t afp_attributes_of(const char *host_path, const struct stat *st, const a
 uint32_t afp_cmd_enumerate(afp_req_t *r);
 // Drop the FPEnumerate snapshots a session holds on a volume; ENUM_ANY for
 // either matches every one.  A volume's go when it is withdrawn -- or a later
-// volume given its ID would serve its listing (10-network F-09).
+// volume given its ID would serve its listing.
 #define ENUM_ANY UINT32_MAX
 void enum_snapshots_drop(uint32_t session_id, uint32_t vol_id);
 

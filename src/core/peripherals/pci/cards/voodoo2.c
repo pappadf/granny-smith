@@ -32,8 +32,8 @@
 // real silicon: work completes synchronously at the point of issue and
 // the card reports idle unless there is a specific, bounded reason not
 // to; every such reason must state what clears it.  This is a
-// documented divergence (proposal §8 Q3, docs/core/peripherals/pci/
-// cards/voodoo2.md).
+// documented divergence (divergence 1 in
+// docs/core/peripherals/pci/cards/voodoo2.md).
 //
 // ENDIANNESS.  The register file and LFB are little-endian PCI domain.
 // This card is not a TNT device — it must not use a family macro — so
@@ -200,10 +200,10 @@ LOG_USE_CATEGORY_NAME("voodoo2");
 #define R_SETUPMODE     0x98 // ..0xA9: the on-chip setup block
 #define R_SDRAWTRICMD   0xA8
 #define R_SBEGINTRICMD  0xA9
-// The 2D BitBLT engine, 0xB0..0xBF.  The proposal called it a non-goal;
-// that was wrong by one operation: Mac Glide's grBufferClear clears the
-// screen with the SGRAM fill (FRECTFILL), so that one command is
-// modelled (v2_blt_go) and the rest stay registers-only.
+// The 2D BitBLT engine, 0xB0..0xBF.  It was first scoped out as a
+// non-goal; that was wrong by one operation: Mac Glide's grBufferClear
+// clears the screen with the SGRAM fill (FRECTFILL), so that one
+// command is modelled (v2_blt_go) and the rest stay registers-only.
 // Word indices from the vendor struct [Glide-src incsrc/cvgregs.h].
 #define R_BLT_FIRST   0xB0
 #define R_BLT_DSTBASE 0xB1
@@ -389,7 +389,7 @@ typedef struct voodoo2 {
     int sv_count; // vertices accumulated (0..3)
     bool sv_flip; // strip ping-pong: odd triangles reverse the sign
 
-    // The raster backend (proposal §3.6): sw (default, normative), null
+    // The raster backend (voodoo2_raster.h): sw (default, normative), null
     // (pins the analytic-timing invariant) or thread (the worker).
     v2_raster_t *raster;
 
@@ -430,10 +430,10 @@ typedef struct voodoo2 {
     uint8_t gamma_lut[3][256]; // [0]=R, [1]=G, [2]=B
 
     // The CMDFIFO ring lives INSIDE fb_ram, written by the producer while
-    // the executor writes pixels elsewhere in the same allocation (thread
-    // proposal §5.6).  The ranges are disjoint in every real
-    // configuration; this flag records the configuration in which they
-    // are not, so a silent race becomes a loud diagnostic and a fence.
+    // the executor writes pixels elsewhere in the same allocation.  The
+    // ranges are disjoint in every real configuration; this flag records
+    // the configuration in which they are not, so a silent race becomes a
+    // loud diagnostic and a fence.
     bool fifo_overlaps_buffers;
 
     // One-shot log guards.
@@ -631,7 +631,7 @@ static void v2_dac_access(voodoo2_t *v, uint32_t value) {
 }
 
 // PLL output frequency in kHz: Fout = Fref x (M+2) / (2^P x (N+2)),
-// Fref = 14.318 MHz [proposal §4.4; ICS5342 as programmed by 3dfx-src].
+// Fref = 14.318 MHz [ICS5342 as programmed by 3dfx-src].
 static uint32_t v2_pll_khz(const voodoo2_t *v, int pll_index) {
     uint32_t m = v->dac_pll[pll_index][0];
     uint32_t pn = v->dac_pll[pll_index][1];
@@ -917,7 +917,7 @@ static uint32_t v2_tex_lod_base(const voodoo2_t *v, int tmu, int lod) {
 // reaches, and as many lines.  videoDimensions is guest-programmed (11
 // bits each way), so both screen dimensions are clamped to it -- a height
 // of up to 2047 used to be taken as programmed and the conversion wrote the
-// rows past 1024 beyond the allocation every frame (N-51).
+// rows past 1024 beyond the allocation every frame.
 #define V2_SCANOUT_MAX_W 1024u
 #define V2_SCANOUT_MAX_H 1024u
 
@@ -989,8 +989,8 @@ static bool v2_is_state_reg(int idx) {
 
 // Fill a draw-state slot from the live registers (the v2_state_build_fn
 // the backend calls when a command needs a fresher snapshot).  Every
-// derived field is the per-draw decode of the bits its comment names
-// (walker proposal §3.1); the executor reads nothing else.
+// derived field is the per-draw decode of the bits its comment names;
+// the executor reads nothing else.
 static void v2_build_state(void *ctx, v2_draw_state_t *st) {
     voodoo2_t *v = (voodoo2_t *)ctx;
     uint32_t fcp = v->reg[R_FBZCOLORPATH];
@@ -1066,8 +1066,8 @@ static void v2_build_state(void *ctx, v2_draw_state_t *st) {
         tm->tc_add = ((mode >> 19) & 1u) ? 2u : (((mode >> 18) & 1u) ? 1u : 0u);
         tm->tca_add = ((mode >> 28) & 1u) || ((mode >> 27) & 1u);
         // The combine consumes nothing from its chain input when both
-        // zero_other bits are set and neither mselect picks a_other
-        // (walker proposal §3.2) — and it is not echoing config words.
+        // zero_other bits are set and neither mselect picks a_other — and
+        // it is not echoing config words.
         tm->ignores_other =
             (tm->tc_ctl & 1u) && (tm->tca_ctl & 1u) && tm->tc_msel != 2u && tm->tca_msel != 2u && !tm->send_config;
     }
@@ -1129,7 +1129,7 @@ static void v2_tex_write_words(voodoo2_t *v, uint32_t off, const uint32_t *words
         s_tsc_tex += v2_tsc() - t0;
 }
 
-// Hand a converged triangle to the backend.  The §9.2 trace line — one
+// Hand a converged triangle to the backend.  The trace line — one
 // per drawn triangle with its pixel-space bbox and the state that will
 // shade it — is emitted HERE, on the producer, so the instrument reads
 // the same under every backend.
@@ -1162,9 +1162,9 @@ static int32_t v2_sx24(uint32_t x) {
 // latches and hand it to the backend.  With sub-pixel correction
 // enabled (fbzColorPath[26]) the correction is applied TO THE LATCHES —
 // so a second triangle issued without resending its start parameters is
-// corrected twice, exactly as V2 p.40 documents the hardware doing
-// (proposal §8 Q9: a model that caches uncorrected values would be more
-// correct than the hardware and disagree with it).
+// corrected twice, exactly as V2 p.40 documents the hardware doing (a
+// model that caches uncorrected values would be more correct than the
+// hardware and disagree with it).
 static void v2_triangle_cmd(voodoo2_t *v, bool sign_bit) {
     if ((v->reg[R_FBZCOLORPATH] >> 26) & 1u) {
         int32_t fx = v2_sx16(v->reg[0x02]) & 0xF;
@@ -1621,7 +1621,7 @@ static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t val
         // §12.5].  Entry index in bits 29:24 (0..32), packed 00RRGGBB
         // in the low 24 [Glide-src init/gamma.c]; the display path
         // interpolates the 33 entries into the per-channel gamma ramp.
-        // The §9.2 instrument at level 4 beside the init-block writes:
+        // The trace instrument at level 4 beside the init-block writes:
         // a gamma table the guest loads that never shows is either
         // dropped here or never arrives — this line tells which.
         LOG(4, "clutData entry %u = %06X%s", (value >> 24) & 0x3Fu, value & 0xFFFFFFu,
@@ -1814,7 +1814,7 @@ static uint32_t v2_fifo_end_bytes(const voodoo2_t *v) {
     return ((((v->reg[R_CMDFIFO_BASE] >> 16) & 0x3FFu) + 1u) << 12); // pageEnd, inclusive
 }
 
-// The §5.6 disjointness check: does the fifo's page range intersect
+// The disjointness check: does the fifo's page range intersect
 // any colour/aux buffer's extent (rows of the programmed raster at the
 // programmed stride)?  Re-evaluated when the fifo or the buffer
 // geometry is programmed; a true answer is logged once and makes every
@@ -2090,7 +2090,7 @@ static void v2_cmdfifo_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
     if (off & (1u << 18))
         le_value = __builtin_bswap32(le_value); // per-access byte swizzle
     if (v->fifo_overlaps_buffers)
-        v2_raster_sync(v->raster); // §5.6: the ring shares pages with a buffer
+        v2_raster_sync(v->raster); // the ring shares pages with a buffer
     uint32_t fb_addr = (v2_fifo_base_bytes(v) + (off & 0x3FFFCu)) & (V2_FB_SIZE - 1u);
     v->fb_ram[fb_addr] = (uint8_t)le_value;
     v->fb_ram[(fb_addr + 1) & (V2_FB_SIZE - 1u)] = (uint8_t)(le_value >> 8);
@@ -2154,7 +2154,7 @@ static void v2_reg_face_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
             return;
     }
     uint32_t chip_mask = (off >> 10) & 0xFu;
-    // The §9.2 instrument: writes to the non-FIFO'd init/video/DAC
+    // The trace instrument: writes to the non-FIFO'd init/video/DAC
     // block at level 4, everything else at level 5 (read the offsets
     // through scripts/voodoo2/voodoo2_regs.py for names).
     LOG(idx >= R_CMDFIFO_BASE && idx < V2_TMU_REG_FIRST ? 4 : 5, "wr $%03X = %08X (chip %X)", idx * 4, le_value,
@@ -2480,11 +2480,10 @@ static bool v2_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
         // [Glide-src init/util.c sst1InitMeasureSiProcess].  A
         // read-as-written model leaves the countdown frozen and that
         // poll spins forever — this register follows the same contract
-        // as every busy bit on the card (§8 Q3): the measurement
-        // completes at issue.  Once RUN is set the countdown reads
-        // zero and the count reads the die-grade constant for the
-        // selected tree; in reset the preload reads back and the
-        // count is zero.
+        // as every busy bit on the card: the measurement completes at
+        // issue.  Once RUN is set the countdown reads zero and the
+        // count reads the die-grade constant for the selected tree; in
+        // reset the preload reads back and the count is zero.
         if (v->si_process & SIPROCESS_OSC_RUN)
             *out = (v->si_process & SIPROCESS_CTRL_MASK) |
                    ((v->si_process & SIPROCESS_NOR_SEL) ? SIPROCESS_NOR_COUNT : SIPROCESS_NAND_COUNT);
@@ -2716,8 +2715,8 @@ static void v2_display_convert(voodoo2_t *v) {
         v2_gamma_rebuild(v);
     bool gamma = v->clut_written;
     // Scanout reads the framebuffer: the once-per-frame fence that
-    // bounds how far a threaded backend may lag (thread proposal §5.5);
-    // under the takeover, the readback of the displayed buffer.
+    // bounds how far a threaded backend may lag; under the takeover,
+    // the readback of the displayed buffer.
     uint32_t stride = v2_tiles_in_x(v) * 32u * 2u;
     v2_raster_sync_fb(v->raster, v2_buffer_addr(v, 0u, 0u, 0u), h * stride, false);
     for (uint32_t y = 0; y < h; y++) {
@@ -2786,7 +2785,7 @@ static void v2_display_update(voodoo2_t *v) {
     v2_display_convert(v);
 }
 
-// The pass-through contract (§3.2): re-resolved every frame by
+// The pass-through contract: re-resolved every frame by
 // pci_primary_display_card(), which calls this as its test.  Returning
 // NULL yields the monitor to the 2D card; the ONE obligation on the
 // card is to flag shape_dirty on BOTH edges of the switch, because two
@@ -2797,7 +2796,7 @@ static display_t *v2_display(pci_device_t *dev) {
     if (drives != v->driving) {
         v->driving = drives;
         v->display.shape_dirty = true;
-        // The takeover's engagement rule (§5.1): GPU mode from the edge
+        // The takeover's engagement rule: GPU mode from the edge
         // where the card drives the monitor to the edge where it stops,
         // reading the GPU's pixels back into the shadow on the way out.
         v2_raster_engage(v->raster, drives, false);
@@ -2818,7 +2817,7 @@ static void v2_on_vbl(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (v->driving) {
-        // The takeover presents the displayed buffer itself (§5.8); the
+        // The takeover presents the displayed buffer itself; the
         // conversion below then sees presented_externally and returns.
         if (!v->gpu_no_present)
             v2_raster_present(v->raster, v2_buffer_addr(v, 0u, 0u, 0u));
@@ -3436,8 +3435,7 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
 // No ADVERTISED options: the two the card accepts — the board memory
 // and the rasteriser — are not choices a user should have to make.
 // Nothing needs the 8 MB board, and the rasteriser is the difference
-// between the two REGISTERED KINDS below (proposal-voodoo2-webgpu-
-// takeover, simplified configuration): "voodoo2" draws exactly on its
+// between the two REGISTERED KINDS below: "voodoo2" draws exactly on its
 // worker thread, "voodoo2_webgpu" on the host GPU.  Both keys stay
 // accepted through pci_option for the tests and the terminal:
 // memory=8m|12m, raster=thread|sw|null|webgpu.

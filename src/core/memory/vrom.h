@@ -8,7 +8,7 @@
 // or interprets a filename.  The platform — which owns the filesystem —
 // enumerates candidate files and *offers* them via vrom_offer(); the card
 // factories then match, by content, among the offered candidates
-// (declrom_load_vrom_card).  See proposal-content-addressed-rom-provisioning.md.
+// (declrom_load_vrom_card).
 
 #ifndef VROM_H
 #define VROM_H
@@ -79,8 +79,7 @@ const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size)
 bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit);
 
 // True iff the catalog lists a declaration ROM for this card id — i.e. the
-// card needs a vROM and boot's strict-resolution validation applies
-// (proposal-named-args-boot-config §4.1).
+// card needs a vROM and boot's strict-resolution validation applies.
 bool vrom_card_catalogued(const char *card_id);
 
 // True iff an offered candidate resolves for this card id (pick order as
@@ -89,8 +88,8 @@ bool vrom_card_catalogued(const char *card_id);
 bool vrom_card_resolvable(const char *card_id);
 
 // Register the boot document's vrom= explicit pick: an offer that is also
-// the *preferred* candidate for whichever card its content provides
-// (proposal-named-args-boot-config §4.1).  Returns 0 on success, -1 on an
+// the *preferred* candidate for whichever card its content provides.
+// Returns 0 on success, -1 on an
 // empty path.
 int vrom_set_path(const char *path);
 

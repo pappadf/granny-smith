@@ -5,9 +5,8 @@
 // Recursive `cp` command built on the VFS.  Copying between any two
 // backends works because both source reads and destination writes go
 // through vfs_* — copying out of an auto-mounted image into OPFS or the
-// host filesystem is the primary Phase 2 user story.  Destination is
-// always the host backend in v1 (image writes return -EROFS
-// structurally; see §2.9 in proposal-image-vfs.md).
+// host filesystem is the primary use.  Destination is always the host
+// backend in v1 (image writes return -EROFS structurally).
 //
 // Fork handling: a file copied OUT of an image that carries a resource fork
 // and/or non-trivial Finder Info is materialised as an AppleDouble pair — the
@@ -15,7 +14,7 @@
 // the resource fork (entry 2) + Finder Info (entry 9).  This is lossless (an
 // NDIF `.img`, whose block map lives in the resource fork, survives a
 // round-trip) and interoperates with macOS/Netatalk/tar.  Data-only files stay
-// single clean streams.  See proposal-appledouble-support.md §4.3.
+// single clean streams.
 
 #include "appledouble.h"
 #include "shell.h"

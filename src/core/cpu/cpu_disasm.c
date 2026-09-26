@@ -21,7 +21,7 @@ static uint16_t disasm_fetch_16_without_inc(uint16_t *fetch_pos) {
 
 static uint32_t disasm_fetch_32_without_inc(uint16_t *fetch_pos) {
     // Widen before the shift: a promoted int shifted past its sign bit is
-    // undefined for any word at or above $8000 (N-44).
+    // undefined for any word at or above $8000.
     uint32_t v = (uint32_t)fetch_pos[1] << 16 | fetch_pos[2];
 
     return v;

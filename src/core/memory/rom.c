@@ -39,15 +39,15 @@ static const char *const UNIVERSAL_COMPATIBLE[] = {"se30", "iicx", "iix", NULL};
 static const char *const IIFX_COMPATIBLE[] = {"iifx", NULL};
 // Dedicated 512 KB Macintosh IIci ("Aurora") ROM — not the universal ROM.
 static const char *const IICI_COMPATIBLE[] = {"iici", NULL};
-// Apple Lisa 2 (rev H) and Macintosh XL ("3A") interleaved boot ROMs (§4.11 of
-// proposal-machine-lisa-xl.md). Each is two 8 KB byte-slice chips interleaved
+// Apple Lisa 2 (rev H) and Macintosh XL ("3A") interleaved boot ROMs
+// (docs/machines/lisa/lisa.md §16). Each is two 8 KB byte-slice chips interleaved
 // into a 16 KB image; see rom_load_lisa_pair / rom_identify_lisa below.
 static const char *const LISA_COMPATIBLE[] = {"lisa", NULL};
 static const char *const MACXL_COMPATIBLE[] = {"macxl", NULL};
 // Dedicated 512 KB Macintosh IIsi ("Erickson") ROM — not the universal ROM.
 static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 // Quadra 700/900 shared 1 MB ROM (also shipped in the PowerBook 140/170 —
-// portables are out of scope and not listed as targets; proposal §13.2).
+// portables are out of scope and not listed as targets).
 static const char *const Q700_Q900_COMPATIBLE[] = {"q700", "q900", NULL};
 // Dedicated Quadra 950 ("Zydeco") 1 MB ROM.
 static const char *const Q950_COMPATIBLE[] = {"q950", NULL};
@@ -87,9 +87,8 @@ static const rom_info_t ROM_TABLE[] = {
     // The Network Server ROMs.  The production image runs Open Firmware
     // 1.1.22 and boots AIX; it carries NO Mac OS Toolbox.  The 2.0
     // prototype is the mirror image — Mac OS only, no AIX — and exercises
-    // the same hardware model through an entirely different software stack
-    // (proposal §5.1, ladder rung S14).  Both span 3 MB of a 4 MB image,
-    // the family convention.
+    // the same hardware model through an entirely different software stack.
+    // Both span 3 MB of a 4 MB image, the family convention.
     {"Apple Network Server 500/700 ROM (Open Firmware 1.1.22)",  ANS_COMPATIBLE,       0x962F6C13, 4096 * 1024, 3072 * 1024},
     {"Apple Network Server 500/700 ROM (2.0 prototype, Mac OS)", ANS_COMPATIBLE,       0x49B2BE8F, 4096 * 1024, 3072 * 1024},
 };
@@ -102,7 +101,7 @@ static const rom_info_t ROM_TABLE[] = {
 // longword is the reset SSP ($00000480), identical across revisions, so it
 // cannot be told apart by rom_stored_checksum(). Identify the interleaved
 // 16 KB image instead by (size == 16 KB) + the version word at offset $3FFC
-// (proposal §4.11 / docs/machines/lisa/lisa.md §16). The `info.checksum` field carries the
+// (docs/machines/lisa/lisa.md §16). The `info.checksum` field carries the
 // Mac-style *computed* checksum of the combined image so the rom.* object
 // surface (rom.checksum, OPFS naming) still has a unique content identifier.
 #define LISA_ROM_SIZE           (16 * 1024) // interleaved image size

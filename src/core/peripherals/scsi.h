@@ -115,12 +115,11 @@ void scsi_bus_reset(scsi_t *bus);
 // ACROSS A CHECKPOINT: a restore lands the bus with NO selection in flight.
 //
 // The armed callback is a host function pointer and its context a host
-// address; neither can cross a checkpoint (that is F-21's whole subject), so
-// they sit below the bus's plain-data line and are not written.  A controller
-// that was waiting on a time-out therefore comes back as though the wait had
-// been abandoned, and it is the driver's own timer that recovers -- which is
-// the same thing that happens on real hardware when a machine is reset out of
-// an arbitration.
+// address; neither can cross a checkpoint, so they sit below the bus's
+// plain-data line and are not written.  A controller that was waiting on a
+// time-out therefore comes back as though the wait had been abandoned, and it
+// is the driver's own timer that recovers -- which is the same thing that
+// happens on real hardware when a machine is reset out of an arbitration.
 //
 // This is stated here, once, because the wait is shared: every controller that
 // arms one inherits this answer rather than deciding its own.  The 53C825 is
@@ -309,12 +308,12 @@ bool scsi_get_loopback(scsi_t *scsi);
 // message.
 int scsi_eject_device(scsi_t *scsi, int id);
 
-// === M7d — object-model accessors ==========================================
+// === Object-model accessors ================================================
 //
 // Read-only views over the SCSI controller and its 8 device slots used
 // by the `scsi` / `scsi.bus` / `scsi.devices` object classes. Phase is
 // exposed as an integer with the canonical name table living in the
-// object class so the proposal's V_ENUM display works without leaking
+// object class so the V_ENUM display works without leaking
 // the internal phase enum across the public header.
 //
 // Slot index is 0..7 (the SCSI ID). Reads on an unpopulated slot

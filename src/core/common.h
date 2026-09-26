@@ -25,7 +25,7 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 
 // Basic assert macros.  Enabled in every build except the GS_FAST production
 // profile (wasm release / headless MODE=fast), where they compile to nothing —
-// measured ~4.5% of steady-state gameplay host time (perf proposal §5.3).
+// measured ~4.5% of steady-state gameplay host time.
 // The default headless build keeps them: it is the debugging tool, and CI
 // runs it so the checks retain their value.
 #ifdef GS_FAST

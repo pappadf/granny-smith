@@ -15,7 +15,7 @@
 
 #define V2_FB_MASK (V2_RASTER_FB_SIZE - 1u)
 
-// The per-pixel leaf helpers are forced inline (walker proposal §3.6).
+// The per-pixel leaf helpers are forced inline.
 #define V2_INLINE static inline __attribute__((always_inline))
 
 // Physical byte address of a 16-bit pixel in a software-selected

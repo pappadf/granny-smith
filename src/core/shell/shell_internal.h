@@ -25,7 +25,7 @@ extern "C" {
 // false and writes a brief reason into `err_buf` (if non-NULL).
 bool shell_internal_dispatch_command(char *line, char *err_buf, size_t err_size);
 
-// The REPL value formatter (§5): scalars, object attribute tables, and
+// The REPL value formatter: scalars, object attribute tables, and
 // object-list tables. Used by the script interpreter for interactive
 // statement results.
 void shell_print_value(const value_t *v);

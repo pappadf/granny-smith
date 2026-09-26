@@ -5,16 +5,16 @@
 // The Sony/SuperDrive media geometry, as one public answer.
 //
 // Four different rules for "what disk is this" used to live across the
-// subsystem (02-floppy F-04/F-17): image_t::type in floppy_gcr.c and floppy.c,
-// `disk_size(img) > 1000000` in three places in floppy_swim.c, an exact-size
-// switch in swim3_xfer.c, and a format-bitmask derivation in iop_swim.c.  They
-// disagreed -- only the third handled 720K -- and adding a geometry meant
-// editing five places.
+// subsystem: image_t::type in floppy_gcr.c and floppy.c, `disk_size(img) >
+// 1000000` in three places in floppy_swim.c, an exact-size switch in
+// swim3_xfer.c, and a format-bitmask derivation in iop_swim.c.  They disagreed
+// -- only the third handled 720K -- and adding a geometry meant editing five
+// places.
 //
 // This header is PUBLIC on purpose.  lisa_fdc.c already reached into
 // floppy_internal.h for the zone helpers in violation of that header's own
-// rule (F-29), which was third-consumer evidence that the geometry belongs in
-// an API rather than behind the controller's private types.
+// rule, which was third-consumer evidence that the geometry belongs in an API
+// rather than behind the controller's private types.
 
 #ifndef FLOPPY_GEOMETRY_H
 #define FLOPPY_GEOMETRY_H
@@ -50,9 +50,9 @@ size_t floppy_zone_image_offset(int track, int side, int num_sides);
 // image's byte size, which can only ever tell you the first.  An 800K image and
 // a 720K image are not two kinds of media: they are ONE kind -- double density
 // -- carrying two different formats, and a DD disk moves between them every
-// time it is reformatted.  Conflating them is why 02-floppy F-09's predicate
-// could not be applied: it compares the chip's framing against the medium's
-// encoding, and only `format` answers that.
+// time it is reformatted.  Conflating them is why the ISM's framing check (see
+// floppy_swim.c) could not be applied: it compares the chip's framing against
+// the medium's encoding, and only `format` answers that.
 typedef enum {
     FLOPPY_FMT_GCR_400K, // DD, single-sided Apple GCR
     FLOPPY_FMT_GCR_800K, // DD, double-sided Apple GCR
@@ -109,10 +109,10 @@ size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, 
 
 // The 64-entry 6-to-8 GCR codeword table, and the Apple rotate-add-xor
 // checksum chain.  Both existed twice -- the table byte-identically, the chain
-// once as dst-capturing macros and once as these functions (02-floppy F-18).
-// The chain is subtle (the carry feed between ca/cb/cc, and the final
-// pair-not-triplet case), so one implementation with a unit test beats two
-// that happen to agree.
+// once as dst-capturing macros and once as these functions.  The chain is
+// subtle (the carry feed between ca/cb/cc, and the final pair-not-triplet
+// case), so one implementation with a unit test beats two that happen to
+// agree.
 extern const uint8_t gcr_codewords[];
 
 // Three bytes -> four six-bit values, advancing the checksum registers.
@@ -126,10 +126,10 @@ uint8_t decode_gcr(uint8_t gcr_codeword);
 // === Index / tachometer =====================================================
 //
 // Sense register $B carries a different signal depending on how the drive is
-// being driven, and each controller had its own model of it (02-floppy F-23):
-// the IWM's FG tachometer, the ISM's low-frequency INDEX, and SWIM3's again.
-// Three answers for one register, with three different "no motion" polarities.
-// One function, with the mode as a parameter and each mode's numbers preserved.
+// being driven, and each controller had its own model of it: the IWM's FG
+// tachometer, the ISM's low-frequency INDEX, and SWIM3's again.  Three answers
+// for one register, with three different "no motion" polarities.  One function,
+// with the mode as a parameter and each mode's numbers preserved.
 typedef enum {
     FLOPPY_INDEX_GCR_TACH, // FG tachometer: 60 pulses/rev, square, zoned RPM
     FLOPPY_INDEX_ISM, // ISM INDEX: short ~2 ms HIGH spike at 300 RPM
@@ -141,25 +141,24 @@ typedef enum {
 // square-wave tach.
 //
 // NOTE the polarity difference between modes is preserved, not unified: the
-// IWM tach reads 1 when the motor is off and SWIM3's reads 0, and no source in
-// local/gs-docs/library/floppy settles which is right for a stopped spindle.
-// Recorded as an open question in proposal-floppy-controller-unification.
+// IWM tach reads 1 when the motor is off and SWIM3's reads 0, and no
+// documentation consulted settles which is right for a stopped spindle.  It
+// remains an open question.
 int floppy_index_signal(floppy_index_mode_t mode, double now_ns, double rev_ns, int pulses_per_rev);
 
 // === MFM sector layout ======================================================
 //
 // One description of the IBM System-34 sector the SuperDrive lays down, for
-// every controller.  It was written twice (02-floppy F-20): once in
-// floppy_swim.c filling a byte buffer with a parallel mark array, once in
-// swim3_xfer.c emitting (clock, data) pairs into a DMA stream.  Identical field
-// order and values; they differed only in output SINK -- and, unexplained, in
-// gap-3 length and whether CRC bytes were emitted at all.
+// every controller.  It was written twice: once in floppy_swim.c filling a byte
+// buffer with a parallel mark array, once in swim3_xfer.c emitting (clock,
+// data) pairs into a DMA stream.  Identical field order and values; they
+// differed only in output SINK -- and, unexplained, in gap-3 length and whether
+// CRC bytes were emitted at all.
 //
 // Those two remain parameters rather than being unified to one value: gap 3 is
-// format-dependent and nothing in the SWIM or SWIM3 specs in
-// local/gs-docs/library/floppy pins the numbers these two chose, so preserving
-// each caller's behaviour is the honest option until a source settles it.
-// Recorded as an open question in proposal-floppy-controller-unification.
+// format-dependent and nothing in the SWIM or SWIM3 specs pins the numbers
+// these two chose, so preserving each caller's behaviour is the honest option
+// until a source settles it.  It remains an open question.
 
 // Emits one byte of the layout.  `is_mark` marks the $A1/$C2 bytes written
 // with a missing clock transition.

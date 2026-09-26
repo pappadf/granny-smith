@@ -17,7 +17,7 @@ struct scheduler *atalk_scheduler(void);
 
 // The stack's clock: guest time from the machine's scheduler, in ns, so a run
 // is deterministic; 0 before a scheduler is attached.  ASP, PAP and ADSP all
-// read it -- PAP used to fall back to the host's clock (10-network N-22).
+// read it -- PAP used to fall back to the host's clock.
 uint64_t atalk_now_ns(void);
 
 // A guest-time timer the stack owns -- one scheduler event type.
@@ -27,9 +27,9 @@ uint64_t atalk_now_ns(void);
 // appletalk_init reaches.  Never lazily at first arm: a checkpoint restore
 // replays the saved event queue into a fresh scheduler before any session
 // exists, and a saved event whose type nothing has registered fails the load
-// (10-network N-05 -- ATP, PAP and the LaserWriter job all registered at first
-// arm, so a checkpoint taken during file sharing or printing could not be
-// restored).  appletalk_teardown forgets every initialised timer.
+// (when ATP, PAP and the LaserWriter job registered at first arm, a
+// checkpoint taken during file sharing or printing could not be restored).
+// appletalk_teardown forgets every initialised timer.
 //
 // The scheduler source is the timer itself, so a timer's callback receives
 // its own address as `source`.

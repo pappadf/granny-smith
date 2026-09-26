@@ -6,7 +6,7 @@
 | here is sourced from our own documentation — docs/core/peripherals/
 | nubus_vrom.md, the three annotated whole-ROM disassemblies under
 | the published *Designing Cards and Drivers for the
-| Macintosh Family* text — NOT from Apple's AIncludes (proposal sec. 6.3).
+| Macintosh Family* text — NOT from Apple's AIncludes.
 
 | --- Format Block ------------------------------------------------------------
 .equ TestPattern,     0x5A932BC7      | Apple declROM magic

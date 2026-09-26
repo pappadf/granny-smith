@@ -2,7 +2,8 @@
 // Copyright (c) pappadf
 
 // pci_class.c
-// The `machine.pci.*` object-model surface (proposal-pci-architecture §7).
+// The `machine.pci.*` object-model surface (docs/core/peripherals/pci.md,
+// "Object model").
 //
 // The nubus_class.c shape, ported — with its two warts fixed.  A slot node
 // exists for EVERY declared socket and builtin, populated or not, because
@@ -486,8 +487,7 @@ void pci_objects_build(pci_root_t *root) {
         }
 
         // Card-specific children, through the KIND that actually seated
-        // this slot — pci_class.c never tests a device's identity
-        // (proposal §5.1, §10 fix 2).
+        // this slot — pci_class.c never tests a device's identity.
         const pci_card_kind_t *kind = pci_slot_kind(root, i);
         if (kind && kind->attach_objects)
             kind->attach_objects(n->dev, n->card);

@@ -2,10 +2,10 @@
 // Copyright (c) pappadf
 
 // jmfb.c
-// Apple Macintosh Display Card 8•24 (Rev B, ROM `341-0868`).  See
-// proposal-machine-iicx-iix.md §3.2.5 + jmfb.h for the contract.
+// Apple Macintosh Display Card 8•24 (Rev B, ROM `341-0868`).  See jmfb.h
+// for the contract.
 //
-// Implementation status (proposal step 6, minimum-viable):
+// Implementation status (minimum-viable):
 //   * Card factory loads `mdc-8-24-revb-d1629664.vrom` and registers VRAM,
 //     declrom, and the register window on the bus.
 //   * I/O dispatcher in this file handles all four register blocks at
@@ -61,10 +61,9 @@ static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 // STAGING -- ON DEATH ROW.  This is a construction input travelling as a
 // hidden per-module global: the visible per-slot channel
 // (machine.nubus.slot[N].video_mode) funnels through here, and the factory
-// consumes it destructively.  proposal-construction-inputs.md R1 replaces
-// every one of these with a machine_build_opts_t field passed to the factory
-// as an ARGUMENT, which is also what proposal-reset-and-nonvolatile-state.md
-// R3 means by "no holder, no staged copy, no pending slot".  Do not add
+// consumes it destructively.  The intended end state replaces every one of
+// these with a machine_build_opts_t field passed to the factory as an
+// ARGUMENT -- no holder, no staged copy, no pending slot.  Do not add
 // another one; the per-slot channel is already there to carry it.
 // The default monitor when the caller chooses nothing: $6, Standard RGB /
 // 13" AppleColor.  The sense itself is no longer a file static -- it arrives
@@ -75,14 +74,14 @@ static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 // (a pending video-mode id, consumed in the same factory
 // invocation).  At most 31 chars + NUL fits any "monitor_Nbpp" id.
 // Empty string means "no pending mode — fall back to plain sense".
-// STAGING -- see the note above; R1 deletes this too.
+// STAGING -- see the note above; slated to go with it.
 static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 
-// Pending "WxHxD" custom resolution set via `custom_mode=` (proposal-
-// nubus-runtime-vrom §3.6).  The generic kind generates a video
-// sResource at this geometry and boots its default monitor on it.
+// Pending "WxHxD" custom resolution set via `custom_mode=`.  The generic
+// kind generates a video sResource at this geometry and boots its default
+// monitor on it.
 // Empty string means "no custom mode".
-// STAGING -- see the note above; R1 deletes this too.
+// STAGING -- see the note above; slated to go with it.
 static char s_pending_custom_mode[40] = "";
 
 // === Per-card private state =================================================
@@ -190,9 +189,8 @@ _Static_assert(offsetof(jmfb_priv_t, display) < offsetof(jmfb_priv_t, card),
 // VideoBase and RowWords arrive in separate register writes, so before this
 // existed each handler updated its own half of the descriptor and nothing ever
 // compared the result against the 2 MB allocation: a 16-bit VideoBase yields
-// an offset of up to 5,592,320 bytes, 2.7x past the end (04-video F-20).  Both
-// handlers now call this, so `bits` and `stride * height` are always decided
-// together.
+// an offset of up to 5,592,320 bytes, 2.7x past the end.  Both handlers now
+// call this, so `bits` and `stride * height` are always decided together.
 //
 // No blank buffer: the JMFB has only its VRAM, so a refused descriptor scans
 // nothing at all (height 0, bits NULL) and every consumer already guards on
@@ -352,8 +350,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // to be a file-static "pending" slot that machine.c poked by name and the
     // factory consumed destructively -- so a second card of this kind in a
     // second slot silently got the default, and nothing outside these two
-    // modules could see the value (issue #156, proposal-construction-inputs
-    // R1).  It is now an ordinary local, seeded from what the caller chose.
+    // modules could see the value (issue #156).  It is now an ordinary local,
+    // seeded from what the caller chose.
     uint8_t sense = JMFB_SENSE_DEFAULT;
     if (cfg->build_opts.video_sense >= 0 && cfg->build_opts.video_sense <= 7)
         sense = (uint8_t)cfg->build_opts.video_sense;
@@ -387,14 +385,13 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
                             .card = card,
                             .tag = "JMFB"};
 
-    // A staged custom resolution overrides the default monitor's geometry
-    // (proposal-nubus-runtime-vrom §3.6): the card senses its default 13"
-    // RGB monitor, but that monitor's video sResource — and the HLE
-    // display — carry the WxHxD the user asked for.  Consumed here so the
-    // generic build below emits records for it; validated against this
-    // card's framebuffer window.  custom_monitors backs the pointers in
-    // the runtime monitor list; it is read only within this call (the
-    // builder copies what it needs and the display geometry is captured
+    // A staged custom resolution overrides the default monitor's geometry: the
+    // card senses its default 13" RGB monitor, but that monitor's video
+    // sResource — and the HLE display — carry the WxHxD the user asked for.
+    // Consumed here so the generic build below emits records for it; validated
+    // against this card's framebuffer window.  custom_monitors backs the
+    // pointers in the runtime monitor list; it is read only within this call
+    // (the builder copies what it needs and the display geometry is captured
     // into p->display), so a local is enough.
     nubus_monitor_t custom_monitors[5];
     const nubus_monitor_t *gen_monitors = generic ? jmfb_generic_kind.monitors : NULL;
@@ -434,8 +431,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     if (generic) {
         // Generic sibling kind ("8_24"): generate the GS declaration ROM at
         // card_init — records from the (possibly custom-overridden) monitor
-        // list, code fragments spliced, CRC stamped in C (proposal-nubus-
-        // runtime-vrom §4); the offer registry is never consulted.
+        // list, code fragments spliced, CRC stamped in C; the offer registry
+        // is never consulted.
         declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
@@ -520,7 +517,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // until the driver first wrote RowWords: the blank below covered 80x870
     // of a 144x870 raster (the rest stayed white at 1 bpp -- the exact cold
     // boot flash this blank exists to prevent) and every consumer sheared its
-    // rows walking width=1152 over a stride-80 row (04-video F-29).
+    // rows walking width=1152 over a stride-80 row.
     jmfb_apply_scanout(&p->regs, &p->bind);
     // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
     display_blank_raster(&p->display);
@@ -666,8 +663,8 @@ static const char *card_name(const nubus_card_t *card) {
 }
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model
-// (card_init_common); only the declROM source differs (proposal-generic-
-// nubus-vrom sec. 6.1: "one HLE model per pair — hard rule").
+// (card_init_common); only the declROM source differs.  Hard rule: one HLE
+// model per real/generic pair, never a second copy of the register model.
 static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     return card_init_common(card, cfg, cp, /*generic*/ false);
 }
@@ -702,8 +699,8 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
     {
         // Fixed widths, not a raw struct prefix: the prefix carried a bare
-        // pixel_format_t, whose size is implementation-defined (04-video
-        // F-41; see display.h).
+        // pixel_format_t, whose size is implementation-defined (see
+        // display.h).
         display_head_t head = display_head_of(&p->display);
         system_write_checkpoint_data(cp, &head, sizeof head);
     }
@@ -757,8 +754,8 @@ static const nubus_card_ops_t jmfb_generic_ops = {
 
 // === Factory + kind descriptor ==============================================
 
-// Monitor types the Rev B ROM supports (proposal §3.2.5 + the mode
-// catalog Apple ships in chip[$4000..$502B] of the JMFB VROM).
+// Monitor types the Rev B ROM supports (the mode catalog Apple ships in
+// chip[$4000..$502B] of the JMFB VROM).
 //
 // `depths` lists the supported bit-depths that are PRAM-reachable on
 // this card — i.e. modes the user could pick in the Monitors control
@@ -966,8 +963,9 @@ const nubus_card_kind_t mdc_8_24_kind = {
 };
 
 // Generic sibling kind: always-available twin of mdc_8_24 with a built-in
-// declaration ROM — zero-configuration by construction (proposal-generic-
-// nubus-vrom sec. 6.1).  The short id is what users type in boot documents.
+// declaration ROM — zero-configuration by construction (see
+// docs/core/peripherals/nubus_generic_vrom.md).  The short id is what users
+// type in boot documents.
 const nubus_card_kind_t jmfb_generic_kind = {
     .id = "8_24",
     .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
@@ -976,10 +974,10 @@ const nubus_card_kind_t jmfb_generic_kind = {
     .requires_vrom = false,
     // ONE table for both siblings.  The generic copy repeated all four rows to
     // drop a single field (21" Kong's crt_response), and the copy was already
-    // redundant: card_init's `(!generic && monitor) ? monitor->crt_response
-    // : NULL` decides identity gamma from the kind, not from the row (04-video
-    // F-08).  Two tables feeding one GS vROM generator is how a geometry fix
-    // lands on one sibling and not the other.
+    // redundant: card_init's `(!generic && monitor) ? monitor->crt_response :
+    // NULL` decides identity gamma from the kind, not from the row.  Two tables
+    // feeding one GS vROM generator is how a geometry fix lands on one sibling
+    // and not the other.
     .monitors = mdc_8_24_monitors,
     .ops = &jmfb_generic_ops,
     .stage_video_mode = jmfb_pending_video_mode_set,

@@ -5,7 +5,7 @@
 // Instruction decoder for the PPC (MPC601 / MPC604) core.
 // Note: this header is a template intended for multiple inclusion with
 // different macro parameters; it intentionally has no include guard (the
-// cpu_decode.h pattern — proposal-heterogeneous-multi-cpu.md §3.3.1).
+// cpu_decode.h pattern).
 // Current includers: ppc_run.c (execution) and ppc_disasm.c (printing).
 // Because emulator and disassembler are literally the same decode tree,
 // they cannot drift out of sync.

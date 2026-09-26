@@ -3,7 +3,7 @@
 
 // expr.h
 // Recursive-descent expression parser/evaluator for the shell's
-// `${...}` form. See proposal-shell-expressions.md.
+// `${...}` form. See docs/core/shell/shell.md.
 //
 // The parser is pure (no parse-time side effects). Evaluation may
 // invoke methods on the object tree, which can have side effects;
@@ -30,7 +30,7 @@ extern "C" {
 
 struct object;
 
-// User-function call hook (shell v2 §3.10): when a single-segment call
+// User-function call hook: when a single-segment call
 // form (`step_to(0x400128)`) does not resolve against the object tree,
 // the evaluator hands it to this hook. The shell registers its script-
 // function registry here so functions work in any expression — asserts,
@@ -39,7 +39,7 @@ typedef value_t (*expr_func_hook_fn)(void *ud, const char *name, int argc, const
                                      const named_arg_t *named);
 void expr_set_func_hook(expr_func_hook_fn fn, void *ud);
 
-// Bindings callback: resolve `$name` to a value_t (shell v2 §3.4/§3.5).
+// Bindings callback: resolve `$name` to a value_t.
 // One namespace, one sigil: the callback is the single lookup path for
 // `$name` in expressions, command arguments, and string interpolation.
 // The shell wires this to its scoped binding store (which itself falls
@@ -89,7 +89,7 @@ value_t expr_eval_at(const char **p, const expr_ctx_t *ctx);
 // call_open = NULL where a call form is not accepted.
 //
 // Exported so the shell's command/lvalue parser uses the same grammar the
-// expression parser does, rather than its own copy (08-core-infra F-38).
+// expression parser does, rather than its own copy.
 bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, size_t out_size, bool *call_open,
                              char *err_buf, size_t err_size);
 
@@ -99,8 +99,8 @@ bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, s
 // values. ${ that is not closed is an error.
 value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx);
 
-// Decode + interpolate a raw double-quoted string *body* in one pass
-// (shell v2 §3.3). `body` is the text between the quotes with escapes
+// Decode + interpolate a raw double-quoted string *body* in one pass.
+// `body` is the text between the quotes with escapes
 // NOT yet decoded. Handles `\n \t \r \0 \\ \" \' \$ \xHH` escapes,
 // `${EXPR[:FMT]}` splices, and `$name` binding splices. Returns
 // V_STRING, or V_ERROR on an unterminated `${` or a failed splice.

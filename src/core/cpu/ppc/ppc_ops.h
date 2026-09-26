@@ -2,11 +2,10 @@
 // Copyright (c) pappadf
 
 // ppc_ops.h
-// The PPC (MPC601/MPC604) emulator's instruction bodies: factored helpers first,
-// then the one-liner OP_ table that overloads the shared decode tree
-// (ppc_decode.h) with execution content — the cpu_ops.h pattern
-// (proposal-heterogeneous-multi-cpu.md §3.3.1).  Included by ppc_run.c
-// only; the disassembler overloads the same OP_ names with printing.
+// The PPC (MPC601/MPC604) emulator's instruction bodies: factored helpers
+// first, then the one-liner OP_ table that overloads the shared decode tree
+// (ppc_decode.h) with execution content — the cpu_ops.h pattern.  Included by
+// ppc_run.c only; the disassembler overloads the same OP_ names with printing.
 //
 // Alignment rules, DSISR encodings, and POWER-holdover semantics cite the
 // MPC601 User's Manual (601UM) chapter 5 / chapter 10 instruction pages.
@@ -200,7 +199,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // write back the architected EA, and translation happens before any
 // register writeback (a faulted access abandons with no side effects).
 // M601/M604 reject the other model's encodings with the illegal program
-// exception (TNT proposal §4.2 — decode-tree validity per model).
+// exception (decode-tree validity per model).
 // CHKA_* route through ppc_scalar_gate (per-model alignment + the 604's
 // hardware-split page crossings): loads read their value via LDV(bits) —
 // the gate's byte-wise value when it split, a normal access at xa
@@ -372,7 +371,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_MFTB       OP(M604(); ppc_do_mftb(p, iw)) // user-readable (PEM §2.2.1)
 #define OP_TLBSYNC    OP(M604(); PRIV()) // ordering only: tlbie takes effect synchronously here (604UM §5.4.3.2)
 
-// --- storage control (no cache model; semantics per proposal §3.8) ---
+// --- storage control (no cache model) ---
 #define OP_SYNC       OP((void)0)
 #define OP_EIEIO      OP((void)0)
 #define OP_ICBI       OP((void)0)
@@ -481,7 +480,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_MTFSB1     OP(FP(); ppc_do_mtfsb(p, iw, true))
 #define OP_MCRFS      OP(FP(); ppc_do_mcrfs(p, iw))
 
-// --- FP arithmetic: the Phase-E integer-kernel datapath (ppc_softfp.c) ---
+// --- FP arithmetic: the integer-kernel datapath (ppc_softfp.c) ---
 #define OP_FRSP       OP(FP(); ppc_do_frsp(p, iw))
 #define OP_FCTIW      OP(FP(); ppc_do_fctiw(p, iw, false))
 #define OP_FCTIWZ     OP(FP(); ppc_do_fctiw(p, iw, true))

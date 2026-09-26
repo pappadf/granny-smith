@@ -4,7 +4,7 @@
 // card.h
 // PCI device abstraction — the analogue of nubus/card.h, and the only
 // header a pluggable card driver under pci/cards/ needs.  See
-// proposal-pci-architecture.md §5.1.
+// docs/core/peripherals/pci.md.
 //
 // Three things live here:
 //   * pci_config_decl_t — everything the GENERIC config header
@@ -79,10 +79,10 @@ typedef struct pci_device_ops {
 
 // How a device backs one decoded region.  Set once at init through
 // pci_bar_backing_iface(); the generic layer decides WHERE and WHEN the
-// region appears (proposal §5.4 — the region-registration helper NuBus
-// never had).  v1 has one backing kind: the device's own handler,
-// dispatched by the owning bridge window.  See pci.h for why the
-// host-memory overlay fast path is not here yet.
+// region appears (the region-registration helper NuBus never had).  v1 has
+// one backing kind: the device's own handler, dispatched by the owning
+// bridge window.  See pci.h for why the host-memory overlay fast path is
+// not here yet.
 typedef enum pci_backing_kind {
     PCI_BACKING_NONE = 0, // the BAR decodes nothing (probe hole)
     PCI_BACKING_IFACE, // device handler, dispatched by the bus window
@@ -202,9 +202,9 @@ typedef struct pci_card_kind {
     // not the accepted set.
     const struct pci_card_option *options;
 
-    // The two seams NuBus lacked (proposal §5.1): the generic layer routes
-    // staged options and attaches extra object children through the KIND,
-    // never by testing card identity.  Both optional.
+    // The two seams NuBus lacked: the generic layer routes staged options and
+    // attaches extra object children through the KIND, never by testing card
+    // identity.  Both optional.
     bool (*stage_option)(const char *key, const char *value);
     void (*attach_objects)(pci_device_t *dev, struct object *card_node);
 

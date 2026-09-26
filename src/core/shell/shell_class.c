@@ -6,8 +6,7 @@
 // the object model. After this lands, the JS bridge's free-form-line
 // kind (pending=4) retires; every JS→C call rides on `gs_eval` (kind=1),
 // either against typed paths (`cpu.pc`) or against the shell's own
-// methods (`shell.run`, `shell.complete`, `shell.expand`, …). See
-// proposal-shell-as-object-model-citizen.md.
+// methods (`shell.run`, `shell.complete`, `shell.expand`, …).
 //
 // The Shell class is a thin wrapper. Its method bodies forward to the
 // existing shell internals (the static `dispatch_command` in shell.c
@@ -44,8 +43,8 @@ static value_t shell_get_prompt(struct object *self, const member_t *m) {
     return val_str(buf);
 }
 
-// `shell.running` — true while the scheduler is running. The proposal
-// frames this as "true while a command is in flight"; in practice the
+// `shell.running` — true while the scheduler is running. The intent is
+// "true while a command is in flight"; in practice the
 // only commands that meaningfully run are scheduler-driven (the rest
 // finish synchronously), so this is the right proxy.
 static value_t shell_get_running(struct object *self, const member_t *m) {
@@ -64,8 +63,7 @@ typedef struct {
     size_t cap;
 } str_list_t;
 
-// The shared accumulator (F-15); this was the fourth of five copies, and the
-// one the report does not list.
+// The shared accumulator; this was the fourth of five copies.
 static bool str_list_push(str_list_t *acc, const char *s) {
     if (!s)
         return true;
@@ -93,9 +91,9 @@ static value_t shell_get_aliases(struct object *self, const member_t *m) {
 // internal table; for V_STRING entries the value is rendered verbatim,
 // other kinds emit their JSON-ish formatter shape.
 // `shell.vars` renders each entry as `name=value`.  This was an EIGHTH
-// per-kind formatter -- 08-core-infra F-39 counts seven and misses it -- with
-// its own cruder default (`<%d>` for every kind it did not name, including
-// objects and errors) and its own habit of ignoring VAL_HEX.  It is a table
+// per-kind formatter, with its own cruder default (`<%d>` for every kind it
+// did not name, including objects and errors) and its own habit of ignoring
+// VAL_HEX.  It is a table
 // cell by any other name, so it is one now.
 static void format_value_compact(const value_t *v, char *buf, size_t buf_size) {
     value_format_into(v, VFMT_CELL, buf, buf_size);
@@ -263,7 +261,7 @@ static value_t shell_method_alias_unset(struct object *self, const member_t *m, 
 }
 
 // `shell.interrupt()` — stop the running scheduler and cancel any
-// running script loop at its next iteration check (§3.8). Equivalent
+// running script loop at its next iteration check. Equivalent
 // to the terminal's Ctrl-C path, exposed as a method so JS callers
 // route through `gs_eval` like every other interaction.
 static value_t shell_method_interrupt(struct object *self, const member_t *m, int argc, const value_t *argv) {

@@ -31,7 +31,7 @@ LOG_USE_CATEGORY_NAME("memory");
 // pull-ups and reading $FF.  Per board; see each machine's bus_err_lo/hi.
 //
 // It lives HERE, not in mmu_state_t, because it is a property of the BUS.
-// Keeping it in the MMU had two consequences (05-chipsets-irq F-23): the test
+// Keeping it in the MMU had two consequences: the test
 // was written out twice, once in mmu.c and once in mmu040.c, and it could
 // only ever fire on the MMU's transparent-translation path -- so with the MMU
 // disabled, which is most of POST, the same address returned $FF and never
@@ -140,8 +140,7 @@ uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown
 //
 // An extreme configuration, but a silent wrong answer in a debugger is the
 // worst failure mode a debugging tool has -- it makes you conclude the guest
-// never touched the address.  One extra byte per 4 KB of address space
-// (08-core-infra F-41).
+// never touched the address.  One extra byte per 4 KB of address space.
 uint16_t *g_mem_logpoint_page_count = NULL;
 uint16_t *g_mem_logpoint_phys_page_count = NULL;
 // Armed-logpoint count (install calls minus uninstall calls).  Zero lets
@@ -595,7 +594,7 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
         // fires; outside it the bus floats to the pull-ups and reads $FF.  The
         // window used to be consulted only on the transparent-translation path,
         // so with the MMU disabled -- most of POST -- an unpopulated slot read
-        // $FF and never faulted (05-chipsets-irq F-23).
+        // $FF and never faulted.
         //
         // $FF on a float matches real 68k Mac hardware and is load-bearing for
         // ROM RAM sizing (write pattern, read back $FF, find the boundary) and
@@ -1212,11 +1211,10 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     map->next = mem->map;
     mem->map = map;
 
-    // Three registration mistakes that used to be silent (05-chipsets-irq
-    // F-24).  All three are init-only, so the cost is nil, and each one
-    // produced a mapping that LOOKED registered -- it is in the linked list
-    // above and memory_map_print shows it -- while claiming the wrong pages
-    // or none at all.
+    // Three registration mistakes that used to be silent.  All three are
+    // init-only, so the cost is nil, and each one produced a mapping that
+    // LOOKED registered -- it is in the linked list above and memory_map_print
+    // shows it -- while claiming the wrong pages or none at all.
     //
     // 1. WRAP.  end_page is computed from `addr + size - 1` masked to the
     //    address space.  If that overflows 32 bits, or exceeds the 24-bit
@@ -1998,7 +1996,7 @@ static const class_desc_t memory_class = {
 //
 // Three methods (b/w/l) that read sized values from guest memory at a
 // caller-supplied address. Used by ${...} interpolation in logpoint
-// messages (proposal §5.3) and any expression that needs a peek.
+// messages and any expression that needs a peek.
 
 static value_t method_mem_peek_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;

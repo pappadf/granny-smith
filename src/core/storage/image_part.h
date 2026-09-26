@@ -5,8 +5,7 @@
 // Byte-granular reads from a disk image, and reads bounded by a partition.
 // disk_read_data works in whole blocks; the HFS and UFS walkers read records
 // at arbitrary byte offsets within one partition.  They each carried a copy
-// of these, and only one copy's bounds check was wrap-safe (09-storage F-38,
-// F-54).
+// of these, and only one copy's bounds check was wrap-safe.
 
 #ifndef IMAGE_PART_H
 #define IMAGE_PART_H

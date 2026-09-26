@@ -13,8 +13,7 @@
 // "<scratch>.id" holding the identity itself is written only once the file
 // is complete.  Reuse compares the whole identity, so a name collision can
 // only cost a re-decode, and an interrupted decode (which may have left a
-// full-size file of zeros) is never mistaken for a finished one
-// (09-storage F-33).
+// full-size file of zeros) is never mistaken for a finished one.
 //
 // Use:
 //   image_scratch_path(tag, identity, path, sizeof(path));

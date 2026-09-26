@@ -314,7 +314,7 @@ static __attribute__((noinline)) uint32_t calculate_ea_slow(cpu_t *restrict cpu,
 // Force-inlined hot switch covering the frequent register-indirect modes
 // (An)/(An)+/-(An)/(d16,An); everything else takes the out-of-line cold tail
 // above.  Out-of-line entirely, these helpers measured ~11% of gameplay
-// runtime in call overhead (perf proposal §5.2).
+// runtime in call overhead.
 static inline __attribute__((always_inline)) uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int reg,
                                                                    bool increment) {
     switch (mode) {

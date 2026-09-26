@@ -2,7 +2,7 @@
 | Copyright (c) pappadf
 |
 | gsvrom_init.s
-| Shared PrimaryInit framework (proposal sec. 3.1): locate personality ->
+| Shared PrimaryInit framework: locate personality ->
 | read sense -> prune the sResource directory to the sensed monitor ->
 | program the 1-bpp boot mode -> gray the screen -> default slot PRAM.
 | Personality specifics come exclusively from the CPB data and ops
@@ -39,13 +39,14 @@ GSPrimaryInit:
 
 	| prune: delete every top-level video sResource except the sensed
 	| monitor's (and the deferred 32-bit family, when the personality has
-	| one — the boot-time Slot Manager follows the PRAM savedSRsrcID to
-	| the boot family, and 32-Bit QuickDraw's slot upgrade re-opens the
-	| driver on the 32-bit sister once it loads).  The set of top-level
-	| spIDs is the one private convention the fragment still carries
-	| (§3.4: "the sister ids the emulator seeds into PRAM"); it is NOT
-	| mode geometry (that now lives only in the generated records) — so
-	| the personality's SpidTab lists ids alone, no width/height.
+	| one — the boot-time Slot Manager follows the PRAM savedSRsrcID to the
+	| boot family, and 32-Bit QuickDraw's slot upgrade re-opens the driver
+	| on the 32-bit sister once it loads).  The set of top-level spIDs is
+	| the one private convention the fragment still carries ("the sister
+	| ids the emulator seeds into PRAM" -- see
+	| docs/core/peripherals/nubus_generic_vrom.md); it is NOT mode geometry
+	| (that now lives only in the generated records) — so the personality's
+	| SpidTab lists ids alone, no width/height.
 	lea	PISpidTab(pc),a3
 PIPruneLoop:
 	move.w	(a3),d0
@@ -73,7 +74,7 @@ PIPruned:
 
 	| geometry of the chosen monitor: its boot-mode (0x80) VPBlock read
 	| from the generated records — the monitors[] table's single source
-	| of truth (§3.4).  Allocation-free Slot Manager forms only: no
+	| of truth.  Allocation-free Slot Manager forms only: no
 	| Memory Manager exists yet, so sGetBlock is off the table here.
 	suba.w	#spBlockSize+20,sp
 	movea.l	sp,a3                   | A3 = spBlock

@@ -168,7 +168,7 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
         *valid = true;
 
     // The Lisa's segment MMU: its own translation, not the PMMU's (before,
-    // this reported every Lisa address as mapped to itself, N-28).
+    // this reported every Lisa address as mapped to itself).
     if (g_lisa_mmu) {
         uint32_t phys = logical_addr;
         bool ok = lisa_mmu_translate(g_lisa_mmu, logical_addr, debug_cpu_is_supervisor(), &phys, NULL);

@@ -14,8 +14,7 @@
 //
 // Coordinate/state conventions, the accept envelopes, and the per-primitive
 // algorithm provenance (which ROM QuickDraw sources each rasterizer is a
-// port of) are documented inline and in
-// docs/core/peripherals/nubus/cards/display_card_8_24.md §3.
+// port of) are documented inline.
 
 #include "display_card_824gc_priv.h"
 
@@ -32,24 +31,23 @@ LOG_USE_CATEGORY_NAME("video");
 static struct gc_cache_ent *gc_cache_find(struct gc_cache_ent *tab, int n, uint32_t key);
 static void gc_draw_text(display_card_824gc_priv_t *p, uint32_t off);
 
-// === Stage 2: DrawMultiObject interpreter + 1-bpp rasterizers (proposal §3.7) =
-// The GCQD marshaller stages drawing as a queue of opcode records
-// (gc-ipc-protocol.md §10.1) and submits it via func $26/$38.  When func $2D
-// (SetPort) is accepted the card interprets the stream over the port's device;
-// primitives rasterize into the 1-bpp framebuffer the display surfaces.  The
-// per-primitive algorithms follow gc-quickdraw-call-reference.md (§1 line,
-// §2 rect, §3 rrect, §7 region).  Depth: 1 bpp only for now (the boot mode);
-// other depths still decline (proposal §3.7).
+// === DrawMultiObject interpreter + 1-bpp rasterizers ========================
+// The GCQD marshaller stages drawing as a queue of opcode records and submits
+// it via func $26/$38.  When func $2D (SetPort) is accepted the card
+// interprets the stream over the port's device; primitives rasterize into the
+// 1-bpp framebuffer the display surfaces.  The per-primitive algorithms
+// (line, rect, rrect, region) follow ROM QuickDraw's.  Depth: 1 bpp only for
+// now (the boot mode); other depths still decline.
 
 static uint32_t gc_resolve_rgb(display_card_824gc_priv_t *p, uint16_t r, uint16_t g, uint16_t b);
 
 // Arithmetic transfer modes $20-$27 (and their pattern twins $28-$2F) at the
-// indexed and direct depths — qd-transfer-modes.md §3.1/§3.2.  The source
-// pixel is the colorized pattern pixel (8×8 patterns DO take fg/bk under
-// arithmetic modes, §4.1); component math runs on 16-bit components (8 bpp:
-// CLUT entries replicated 8→16; 32 bpp: native bytes replicated); the result
-// lands via the card-side Color2Index (8 bpp) or packs directly (32 bpp).
-// pin EQU weight: one opColor RGB serves blend weight and add/sub pin.
+// indexed and direct depths.  The source pixel is the colorized pattern pixel
+// (8×8 patterns DO take fg/bk under arithmetic modes); component math runs on
+// 16-bit components (8 bpp: CLUT entries replicated 8→16; 32 bpp: native bytes
+// replicated); the result lands via the card-side Color2Index (8 bpp) or packs
+// directly (32 bpp).  pin EQU weight: one opColor RGB serves blend weight and
+// add/sub pin.
 static inline uint16_t gc_c5to16(uint32_t v5) { // replicate 5 bits to 16
     v5 &= 0x1F;
     return (uint16_t)((v5 << 11) | (v5 << 6) | (v5 << 1) | (v5 >> 4));
@@ -136,23 +134,22 @@ static void gc_px_arith(display_card_824gc_priv_t *p, uint8_t *b, uint32_t srcpi
 }
 
 // Apply one source/pattern INK bit `s` (0/1, pre-invert) at (x,y) under the
-// current mode + clip, at the screen depth (1 or 8 bpp — func $2D only
-// accepts those).  The classic boolean cores of qd-transfer-modes.md §2.1,
-// colorized: the invert bit (modes 4-7 / 12-15) flips the source first, then
-// Copy paints fg on ink and bg elsewhere, Or paints fg where the source has
-// ink, Bic paints bg where the source has ink, and Xor flips the ink pixels'
-// index bits (never colorized — at 8 bpp that is dst ^= $FF, the B/W-mask
-// expansion of §4.1).  fg/bg are the pixel values from opFg/BkColor's
-// pixValue.  Arithmetic modes ($20+) need the CLUT→component→ITab model —
-// not implemented; they draw nothing (also the ROM's illegal-mode behavior)
-// and log so a scene that needs them is visible.
+// current mode + clip, at the screen depth (1 or 8 bpp — func $2D only accepts
+// those).  The classic boolean cores, colorized: the invert bit (modes 4-7 /
+// 12-15) flips the source first, then Copy paints fg on ink and bg elsewhere,
+// Or paints fg where the source has ink, Bic paints bg where the source has
+// ink, and Xor flips the ink pixels' index bits (never colorized — at 8 bpp
+// that is dst ^= $FF, the B/W-mask expansion).  fg/bg are the pixel values from
+// opFg/BkColor's pixValue.  Arithmetic modes ($20+) need the
+// CLUT→component→ITab model — not implemented; they draw nothing (also the
+// ROM's illegal-mode behavior) and log so a scene that needs them is visible.
 static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
     // Bounded by the clip mask as well as the descriptor: the mask is one bit
     // per pixel of a fixed GC824_CLIP_STRIDE*8 x GC824_CLIP_ROWS screen, and x
     // used to be checked only against display.width -- which at a wider raster
-    // walks off the end of the row (04-video F-23).  The literals 80 and 480
-    // that used to be here were the same two constants, spelled so that changing
-    // them would not have moved the guards that enforce them.
+    // walks off the end of the row.  The literals 80 and 480 that used to be
+    // here were the same two constants, spelled so that changing them would not
+    // have moved the guards that enforce them.
     if (x < 0 || x >= (int)p->display.width || x >= GC824_CLIP_STRIDE * 8 || y < 0 || y >= (int)p->display.height ||
         y >= GC824_CLIP_ROWS)
         return;
@@ -162,11 +159,11 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
         return;
     if (p->gc_mode & 0x20) { // arithmetic family (incl. hilite $32/$3A)
         if (p->display.format == PIXEL_1BPP_MSB) {
-            // 1-bit dst: arithmetic remaps through arithMode[] (§1); every
-            // variant lands on an xor/or/bic/copy of the B/W source — the
-            // pre-overhaul desktop was pixel-exact treating them via the low
-            // bits, so keep that (hilite $32 -> variant 2 -> srcXor = bit1).
-        } else if ((p->gc_mode & 0x17) == 0x12) { // hilite $32/$3A (§3.1)
+            // 1-bit dst: arithmetic remaps through arithMode[]; every variant
+            // lands on an xor/or/bic/copy of the B/W source — the pre-overhaul
+            // desktop was pixel-exact treating them via the low bits, so keep
+            // that (hilite $32 -> variant 2 -> srcXor = bit1).
+        } else if ((p->gc_mode & 0x17) == 0x12) { // hilite $32/$3A
             // Where the source has ink (pattern pixel ≠ bk): swap bk↔hilite
             // in the destination; every other dst pixel is untouched.
             if (s && p->gc_fg != p->gc_bg) {
@@ -195,7 +192,7 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
                     *b = (uint8_t)p->gc_bg;
             }
             return;
-        } else { // arithmetic $20-$27 / $28-$2F (§3.1/§3.2)
+        } else { // arithmetic $20-$27 / $28-$2F
             uint32_t srcpix = s ? p->gc_fg : p->gc_bg; // colorized pattern pixel
             uint8_t *b;
             if (p->display.format == PIXEL_32BPP_XRGB)
@@ -211,10 +208,10 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
         s ^= 1; // notSrc/notPat: invert the source before colorizing
     }
     if (p->display.format == PIXEL_32BPP_XRGB) {
-        // Direct colour: the §2.3 conjugation folds into the same net visual
-        // rule the cores below implement (Or = fg where ink, Bic = bg where
-        // ink, Copy = fg/bg); Xor inverts the RGB bits under the ink, alpha
-        // byte excluded (NOPfgColorTable masking).
+        // Direct colour: the fg/bk colorize conjugation folds into the same net
+        // visual rule the cores below implement (Or = fg where ink, Bic = bg
+        // where ink, Copy = fg/bg); Xor inverts the RGB bits under the ink,
+        // alpha byte excluded (NOPfgColorTable masking).
         uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 4;
         switch (p->gc_mode & 3) {
         case 1:
@@ -313,24 +310,24 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
 }
 // The source INK bit at (x,y): the active pattern slot's bit.  (op $73 selects
 // the slot; op $71 sets a slot's bytes; gc_px colorizes with fg/bg.)  The
-// pattern grid is anchored to the PORT's coordinate space (qd-transfer-modes
-// §4.1: dstPix.bounds origin + patAlign) — patterns scroll with SetOrigin'd
-// content (the Control Panel's cdev list flips the ltGray phase without this).
+// pattern grid is anchored to the PORT's coordinate space (dstPix.bounds origin
+// + patAlign) — patterns scroll with SetOrigin'd content (the Control Panel's
+// cdev list flips the ltGray phase without this).
 static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
     const uint8_t *pat = p->gc_pat[p->gc_pat_slot & 3];
     unsigned lx = (unsigned)(x - p->gc_org_x - p->gc_align_x), ly = (unsigned)(y - p->gc_org_y - p->gc_align_y);
     return (pat[ly & 7] >> (7 - (lx & 7))) & 1;
 }
 // Write a full PIXEL VALUE `v` at (x,y) under the current mode + clip — the
-// RGBPat/PixPat path: patType != 0 patterns are never colorized (§2.2), so
-// the §2.1 cores run non-colorized with the pattern pixel as S.
+// RGBPat/PixPat path: patType != 0 patterns are never colorized, so the classic
+// boolean cores run non-colorized with the pattern pixel as S.
 static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
     // Bounded by the clip mask as well as the descriptor: the mask is one bit
     // per pixel of a fixed GC824_CLIP_STRIDE*8 x GC824_CLIP_ROWS screen, and x
     // used to be checked only against display.width -- which at a wider raster
-    // walks off the end of the row (04-video F-23).  The literals 80 and 480
-    // that used to be here were the same two constants, spelled so that changing
-    // them would not have moved the guards that enforce them.
+    // walks off the end of the row.  The literals 80 and 480 that used to be
+    // here were the same two constants, spelled so that changing them would not
+    // have moved the guards that enforce them.
     if (x < 0 || x >= (int)p->display.width || x >= GC824_CLIP_STRIDE * 8 || y < 0 || y >= (int)p->display.height ||
         y >= GC824_CLIP_ROWS)
         return;
@@ -426,8 +423,8 @@ static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
 static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
     if (p->gc_pat_kind[p->gc_pat_slot & 3] == 3) {
         // Cached PixPat tile: port-anchored, power-of-two wrap (QD requires
-        // PixPat bounds to be powers of two).  patType != 0 patterns are
-        // never colorized (§2.2) — value cores, like the RGB dither.
+        // PixPat bounds to be powers of two).  patType != 0 patterns are never
+        // colorized — value cores, like the RGB dither.
         const struct gc_pixpat *pp = &p->gc_pixpats[p->gc_pat_pp[p->gc_pat_slot & 3]];
         const uint32_t *row = pp->pix + ((unsigned)(y - p->gc_org_y - p->gc_align_y) & (pp->h - 1u)) * pp->w;
         for (int x = l; x < r; x++)
@@ -478,30 +475,30 @@ static uint32_t gc_resolve_rgb(display_card_824gc_priv_t *p, uint16_t r, uint16_
     }
     return (uint32_t)best;
 }
-// Cursor shield (gc-cursor-protocol.md §6-§8).  The real card brackets every
-// screen-touching op with erase-cursor / redraw-cursor (text_2e7e0/text_2ead0):
-// it bus-master-reads the live CrsrRect/CrsrVis through the host addresses the
-// driver deposited at CB+$5F8/$5FC, erases the on-screen sprite by restoring
-// the ROM's saved under-cursor bits, and reports through two flags the host
-// cursor stubs and GACursorTask consume — CB+$5F0 "card hid the cursor" (host
-// clears CrsrVis) and CB+$5F4 "cursor changed" (host sets CrsrNew, making the
-// ROM redraw with a FRESH under-cursor save).  Both halves matter: without the
-// flags the ROM later restores its STALE under-cursor bits over whatever the
-// card drew (a 32×6 px desktop-pattern bleed in the menu bar at the boot
-// cursor position), and without the erase the part of the sprite the op does
-// not repaint stays baked into the framebuffer (a watch-cursor fragment).
+// Cursor shield.  The real card brackets every screen-touching op with
+// erase-cursor / redraw-cursor (text_2e7e0/text_2ead0): it bus-master-reads the
+// live CrsrRect/CrsrVis through the host addresses the driver deposited at
+// CB+$5F8/$5FC, erases the on-screen sprite by restoring the ROM's saved
+// under-cursor bits, and reports through two flags the host cursor stubs and
+// GACursorTask consume — CB+$5F0 "card hid the cursor" (host clears CrsrVis)
+// and CB+$5F4 "cursor changed" (host sets CrsrNew, making the ROM redraw with a
+// FRESH under-cursor save).  Both halves matter: without the flags the ROM
+// later restores its STALE under-cursor bits over whatever the card drew (a
+// 32×6 px desktop-pattern bleed in the menu bar at the boot cursor position),
+// and without the erase the part of the sprite the op does not repaint stays
+// baked into the framebuffer (a watch-cursor fragment).
 static void gc_cursor_shield(display_card_824gc_priv_t *p, int t, int l, int b, int r) {
     uint32_t rect_addr = dram_be32(p, GC824_DRAM_CB + GC824_CB_CRSRRECTP);
     uint32_t vis_addr = dram_be32(p, GC824_DRAM_CB + GC824_CB_CRSRVISP);
     if (!rect_addr || !vis_addr) {
         // The driver seeds these at the end of Open (sub_101A) with the
         // physical addresses of the fixed low-memory cursor globals — but the
-        // cursor block at CB+$5F0..$603 lies inside the Boot ACEF's InitMap
-        // BSS section ($7400..$77FF), so a post-Open firmware reload zero-fills
-        // it (our bring-up provokes one; see findings.md).  The seeded values
-        // are architecturally fixed, so recover them — but only once GCQD's
-        // cursor patches are armed (L1 anchor at CrsrAddr $0888 carries the
-        // magic $075BCD15 at +$20), i.e. the cursor contract is actually live.
+        // cursor block at CB+$5F0..$603 lies inside the Boot ACEF's InitMap BSS
+        // section ($7400..$77FF), so a post-Open firmware reload zero-fills it
+        // (our bring-up provokes one).  The seeded values are architecturally
+        // fixed, so recover them — but only once GCQD's cursor patches are
+        // armed (L1 anchor at CrsrAddr $0888 carries the magic $075BCD15 at
+        // +$20), i.e. the cursor contract is actually live.
         uint32_t l1 = memory_debug_read_uint32(0x0888) & 0x00FFFFFFu;
         if (!l1 || memory_debug_read_uint32(l1 + 0x20) != 0x075BCD15u)
             return; // cursor protocol not armed
@@ -509,7 +506,7 @@ static void gc_cursor_shield(display_card_824gc_priv_t *p, int t, int l, int b, 
         vis_addr = 0x08CC; // CrsrVis
     }
     if (dram_be32(p, GC824_DRAM_CB + GC824_CB_CRSRHID))
-        return; // already hidden by us and not yet re-shown (card gate, §6 step 2)
+        return; // already hidden by us and not yet re-shown (card gate)
     if (!memory_debug_read_uint8(vis_addr))
         return; // cursor not on screen — nothing to shield
     int ct = (int16_t)memory_debug_read_uint16(rect_addr);
@@ -559,7 +556,7 @@ static void gc_fill_rect(display_card_824gc_priv_t *p, int t, int l, int b, int 
     for (int y = t; y < b; y++)
         gc_span(p, y, l, r);
 }
-// Frame ring inset by pen (call-reference §2 FrmRect): degenerate → solid fill.
+// Frame ring inset by pen (QuickDraw FrmRect): degenerate → solid fill.
 static void gc_frame_rect(display_card_824gc_priv_t *p, int t, int l, int b, int r) {
     int pw = p->gc_pen_w ? p->gc_pen_w : 1, ph = p->gc_pen_h ? p->gc_pen_h : 1;
     if (l + pw >= r - pw || t + ph >= b - ph) {
@@ -571,9 +568,9 @@ static void gc_frame_rect(display_card_824gc_priv_t *p, int t, int l, int b, int
     gc_fill_rect(p, t + ph, l, b - ph, l + pw); // left bar
     gc_fill_rect(p, t + ph, r - pw, b - ph, r); // right bar
 }
-// Rounded-rect row inset (call-reference §3 DrawArc conic).  For a corner oval
-// of ovW×ovH, row dy (0-based within the oval's vertical extent) starts ovW/2
-// minus the widest dx whose pixel CENTRE lies inside the ellipse — QuickDraw's
+// Rounded-rect row inset (ROM DrawArc conic).  For a corner oval of ovW×ovH,
+// row dy (0-based within the oval's vertical extent) starts ovW/2 minus the
+// widest dx whose pixel CENTRE lies inside the ellipse — QuickDraw's
 // InitOval/BumpOval march evaluates the conic at half-pixel offsets, which in
 // integer form is (2dx+1−W)²·H² + (2dy+1−H)²·W² ≤ W²·H².  Verified pixel-exact
 // against the ROM-rendered menu-bar corners (ov 16 fill + ov 22 frame ring).
@@ -603,9 +600,9 @@ static int gc_rrect_row_inset(int t, int b, int ovW, int ovH, int y) {
     return 0;
 }
 // opRRect ($04): fill / frame with true rounded corners.  The wire record
-// carries ovWd/ovHt (call-reference §3: 16-byte record); the frame's inner
-// rrect is the rect inset by the pen with radii shrunk by 2·pen, an empty
-// inner degenerating to a solid fill — exactly ROM DrawArc's frame path.
+// carries ovWd/ovHt (16-byte record); the frame's inner rrect is the rect inset
+// by the pen with radii shrunk by 2·pen, an empty inner degenerating to a solid
+// fill — exactly ROM DrawArc's frame path.
 static void gc_fill_rrect(display_card_824gc_priv_t *p, int t, int l, int b, int r, int ovW, int ovH) {
     gc_cursor_shield(p, t, l, b, r);
     if (ovW > r - l)
@@ -865,7 +862,7 @@ static void gc_draw_arc(display_card_824gc_priv_t *p, int t, int l, int b, int r
 
 // opLine ($01): pen-sized line from the pen loc to `pt`; pen := pt.  For the
 // axis-aligned lines the desktop draws this reduces to a pen-thick bar; a
-// general Bresenham covers the rest (call-reference §1).
+// general Bresenham covers the rest.
 static void gc_line_to(display_card_824gc_priv_t *p, int x1, int y1) {
     int x0 = p->gc_pen_x, y0 = p->gc_pen_y;
     int pw = p->gc_pen_w ? p->gc_pen_w : 1, ph = p->gc_pen_h ? p->gc_pen_h : 1;
@@ -899,9 +896,9 @@ static void gc_line_to(display_card_824gc_priv_t *p, int x1, int y1) {
     p->gc_pen_x = x1;
     p->gc_pen_y = y1;
 }
-// opRgn ($08): fill a QuickDraw region.  Rectangular regions (rgnSize 0x0A)
-// are their bbox; complex regions are the classic band/inversion list
-// {y, x-pairs, 0x7FFF, …, 0x7FFF} (call-reference §7).
+// opRgn ($08): fill a QuickDraw region.  Rectangular regions (rgnSize 0x0A) are
+// their bbox; complex regions are the classic band/inversion list {y, x-pairs,
+// 0x7FFF, …, 0x7FFF}.
 static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off, int ox, int oy) {
     uint16_t size = (uint16_t)(dram_be32(p, off) >> 16);
     int top = (int16_t)(dram_be32(p, off) & 0xFFFF) + oy;
@@ -1097,8 +1094,8 @@ static void gc_fill_poly(display_card_824gc_priv_t *p, uint32_t off, int npts, i
 // === Clip mask (region-accurate) ============================================
 // gc_clipmask is 1 bit/pixel over 640x480 (stride 80): 1 = drawable.  Reset to
 // all-drawable at a cycle start, then AND'd by opClipRgn/opVisRgn so a fill
-// clipped to the desktop region leaves icons/windows untouched (call-ref §2:
-// "rect ∩ device rect then the cached clip/vis region masks").
+// clipped to the desktop region leaves icons/windows untouched (a rect is
+// intersected with the device rect, then the cached clip/vis region masks).
 static void gc_clip_reset(display_card_824gc_priv_t *p) {
     memset(p->gc_clipmask, 0xFF, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
 }
@@ -1250,10 +1247,10 @@ static uint32_t gc_op_adv(display_card_824gc_priv_t *p, uint32_t off, uint16_t o
     case 0x08:
         return ((uint32_t)w4 + 7) & ~3u; // poly/rgn size.w at +4
     case 0x09:
-        // opBits (inline blit): dataLen.L at +0x20 (protocol §10.1).  Dead in
-        // Sys 7 (emitter removed) and never emitted by Sys 6 either (func $22
-        // is dead code) — but give it an advance so a stream carrying it
-        // doesn't abort the interpreter.
+        // opBits (inline blit): dataLen.L at +0x20.  Dead in Sys 7 (emitter
+        // removed) and never emitted by Sys 6 either (func $22 is dead code) —
+        // but give it an advance so a stream carrying it doesn't abort the
+        // interpreter.
         return (dram_be32(p, off + 0x20) + 0x27) & ~3u;
     case 0x6A:
     case 0x6C:
@@ -1383,8 +1380,8 @@ void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
             // the pixel from the RGB — NOT from pixValue: for old-style
             // GrafPorts the host ships port->fgColor verbatim, which is a
             // CLASSIC COLOUR CONSTANT (33 = blackColor…), not a pixel (the
-            // Finder desktop port does exactly this; §2.2 "old ports map
-            // classic planar constants").  The RGB words are always the truth.
+            // Finder desktop port does exactly this; old ports map classic
+            // planar constants).  The RGB words are always the truth.
             p->gc_fg = gc_resolve_rgb(p, dram_be16(p, off + 2), dram_be16(p, off + 4), dram_be16(p, off + 6));
             break;
         case 0x6B:
@@ -1428,7 +1425,7 @@ void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
             p->draw_count++;
             break;
         }
-        case 0x04: { // opRRect: {frameFlag.w, Rect, ovWd.w, ovHt.w} (§3)
+        case 0x04: { // opRRect: {frameFlag.w, Rect, ovWd.w, ovHt.w}
             uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
             int t = (int16_t)(dram_be32(p, off + 4) >> 16) + oy;
             int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + ox;
@@ -1476,7 +1473,7 @@ void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
             if (npts <= 0)
                 break; // pen untouched (== ROM / card 0xC688)
             // Sys 6 card: pen := points[0] UNCONDITIONALLY (0xC694) — even for
-            // fills (the divergence Sys 7 fixes; call-reference §6).
+            // fills (the divergence Sys 7 fixes).
             p->gc_pen_y = (int16_t)((int16_t)dram_be16(p, off + 0x0E) + oy);
             p->gc_pen_x = (int16_t)((int16_t)dram_be16(p, off + 0x10) + ox);
             if (frame) {
@@ -1582,15 +1579,14 @@ static uint32_t gc_fetch_guest_rgn(uint32_t addr, uint16_t size, uint8_t *buf) {
     return size;
 }
 
-// func $15 StretchBits (CopyBits) — the blit.  Stage-2 accept envelope
-// (proposal §3.8 v1 + 1-bit masks): the classic boolean modes 0-7 (colorized
-// at 1 bpp from the request's fg/bk indices; §2.1 cores), no stretch, 1-bpp,
-// destination = the screen framebuffer; everything else declines to the ROM
-// path (result 0).  Request block at CB+$58 (protocol §9.1); the blit is
-// clipped to rgnA ∩ rgnB ∩ rgnC — the request block's own deref'd region
-// pointers (mask/clip/vis, +0xC0/C4/C8, sizes +0x104/6/8), which is what the
-// card's blit lane (text_28c14) consumes — NOT the queue-port clip mask.
-// Returns 1 if drawn, 0 to decline.
+// func $15 StretchBits (CopyBits) — the blit.  Accept envelope (v1 + 1-bit
+// masks): the classic boolean modes 0-7 (colorized at 1 bpp from the request's
+// fg/bk indices; the classic boolean cores), no stretch, 1-bpp, destination =
+// the screen framebuffer; everything else declines to the ROM path (result 0).
+// Request block at CB+$58; the blit is clipped to rgnA ∩ rgnB ∩ rgnC — the
+// request block's own deref'd region pointers (mask/clip/vis, +0xC0/C4/C8,
+// sizes +0x104/6/8), which is what the card's blit lane (text_28c14) consumes —
+// NOT the queue-port clip mask.  Returns 1 if drawn, 0 to decline.
 // Resolve a request PixMap's pixel-image base through its pmVersion tag
 // (+$E in the copied record at `pm`).  Returns 0 to decline.
 static uint32_t gc_offscreen_base(display_card_824gc_priv_t *p, uint32_t pm, uint32_t base) {
@@ -1689,7 +1685,7 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
     // loops below bound y and x by the LIVE descriptor -- so on a taller mode
     // (the card advertises 832x624, where display.height is 624) every row past
     // 479 indexed ~11 KB past the allocation, and the destination writes had no
-    // buffer bound at all (04-video F-22).
+    // buffer bound at all.
     //
     // Declining is the fix rather than clamping: this function's contract is
     // that 0 means "I did not draw it", and the caller then runs QuickDraw's
@@ -1697,8 +1693,8 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
     // still answering 1, so nothing would draw them at all.  Declining costs
     // acceleration on a raster the mask cannot describe and keeps the picture
     // correct, which is the right trade for a clip mask that is sized for one
-    // resolution.  (That it IS sized for one resolution is the separate
-    // question -- see local/gs-docs/projects/8-24GC.)
+    // resolution.  (That it IS sized for one resolution is a separate,
+    // still-open question.)
     if (p->display.height > GC824_CLIP_ROWS || p->display.width > GC824_CLIP_STRIDE * 8u) {
         LOG(2, "8*24 GC QD: blit declined: %ux%u exceeds the %ux%u clip mask", p->display.width, p->display.height,
             GC824_CLIP_STRIDE * 8u, GC824_CLIP_ROWS);
@@ -1726,14 +1722,13 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
         return 0;
     }
     // Offscreen (GWorld) sources: pmVersion tags the baseAddr form the GCQD
-    // marshaller shipped (protocol §13 / marshaller §7.1) — 1 = locked
-    // (baseAddr is a real pointer), 2 = unlocked (baseAddr IS the pixel-image
-    // Handle: dereference the master pointer), 4 = the transient
-    // $4842-swizzle state (mid-ROM-fallback; never in a live request —
-    // decline).  The real card copies the image into its type-6 cache and
-    // blits from the copy; the HLE reads the live host pixels instead —
-    // coherent by construction, because queued draws only ever target the
-    // SCREEN here, so the host copy is always the authority (which is also
+    // marshaller shipped — 1 = locked (baseAddr is a real pointer), 2 =
+    // unlocked (baseAddr IS the pixel-image Handle: dereference the master
+    // pointer), 4 = the transient $4842-swizzle state (mid-ROM-fallback; never
+    // in a live request — decline).  The real card copies the image into its
+    // type-6 cache and blits from the copy; the HLE reads the live host pixels
+    // instead — coherent by construction, because queued draws only ever target
+    // the SCREEN here, so the host copy is always the authority (which is also
     // why func $0D correctly returns 0 and $19/$33 stay no-ops).
     srcBase = gc_offscreen_base(p, rb + 0x36, srcBase);
     if (!srcBase)
@@ -1757,9 +1752,9 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
         return 0;
     }
     if (depth == 8 || depth == 16 || depth == 32) {
-        // v1 colorize envelope at 8 bpp: only the B/W port (fg black, bk
-        // white — the colorize-NOP case, §2.3).  Anything colorized routes
-        // through MakeScaleTbl in RGB space on the ROM path.
+        // v1 colorize envelope at 8 bpp: only the B/W port (fg black, bk white
+        // — the colorize-NOP case).  Anything colorized routes through
+        // MakeScaleTbl in RGB space on the ROM path.
         if (dram_be16(p, rb + 0xE8) != 0 || dram_be16(p, rb + 0xEA) != 0 || dram_be16(p, rb + 0xEC) != 0 ||
             dram_be16(p, rb + 0xEE) != 0xFFFF || dram_be16(p, rb + 0xF0) != 0xFFFF ||
             dram_be16(p, rb + 0xF2) != 0xFFFF) {
@@ -1871,8 +1866,9 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
                 continue; // outside the CopyMask 1-bit mask → leave the dst
             if (depth == 8) {
                 // 8-bpp dst: same-depth source = bitwise index math on bytes
-                // (§2.1, colorize-NOP guaranteed by the envelope); 1-bit
-                // source expands 1→fg pixel / 0→bk pixel first (§2.4).
+                // (classic boolean cores, colorize-NOP guaranteed by the
+                // envelope); 1-bit source expands 1→fg pixel / 0→bk pixel
+                // first.
                 uint8_t s;
                 if (srcPS == 8) {
                     s = gc_src_read8(p, srcBase, (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx);
@@ -1999,10 +1995,10 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
     return 1;
 }
 
-// === Text (func $30 FontDownload + ops $67/$06; proposal §3.10) ==============
+// === Text (func $30 FontDownload + ops $67/$06) =============================
 // The host measures (StdTxMeas) and downloads font data; the card only draws.
 // Func $30 args (packing byte-verified from the host's sub_4A44 emitter,
-// gc24--4048.s $4D80-$4E5C): arg0 = group mask, then in order —
+// gc24 -4048 $4D80-$4E5C): arg0 = group mask, then in order —
 //   bit 0:        {WidthTabHandle, ptr}        type-10 width table (0x434 B;
 //                 the host stamps its checksum into wt+$432 first)
 //   bit 1/bit 3:  {strikeH, ptr, size} / {strikeH, ptr}   type-8 strike,
@@ -2309,13 +2305,13 @@ void gc824_reset_draw_state(display_card_824gc_priv_t *p) {
                : (p->display.format == PIXEL_16BPP_555) ? 0x7FFFu
                                                         : 0u;
     // Default hilite = the architectural low-mem HiliteRGB ($0DA0, 3 words) —
-    // what an old-style port uses when no op $70 arrives (§3.1).
+    // what an old-style port uses when no op $70 arrives.
     p->gc_hilite = gc_resolve_rgb(p, memory_debug_read_uint16(0x0DA0), memory_debug_read_uint16(0x0DA2),
                                   memory_debug_read_uint16(0x0DA4));
     p->gc_op_color = 0;
-    // Old-port arithmetic defaults (§3.1): blend weight = 50% gray $7FFF
-    // (addPin pins to white, subPin to black — mode-specific fallbacks in
-    // gc_px_arith when the weight is the default).
+    // Old-port arithmetic defaults: blend weight = 50% gray $7FFF (addPin pins
+    // to white, subPin to black — mode-specific fallbacks in gc_px_arith when
+    // the weight is the default).
     p->gc_op_rgb[0] = p->gc_op_rgb[1] = p->gc_op_rgb[2] = 0x7FFF;
     p->gc_pen_hfrac = 0x8000; // pnLocHFrac default (a half pixel)
     p->gc_pat_slot = 1;

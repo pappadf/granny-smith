@@ -7,18 +7,18 @@
 // The Apple Macintosh Display Card 8•24 and the 8•24 GC are the same display
 // chip in two products -- the GC is an 8•24 with an accelerator bolted on --
 // and the emulator carried the chip twice: `jmfb.c` and the display half of
-// `display_card_824gc.c`, the latter opening with "ported from jmfb.c"
-// (04-video F-07).  Not two things that resemble each other: the register maps
-// are identical constant for constant, block offset $200000 and register
-// window $400, CSR $00 / VideoBase $08 / RowWords $0C / SWICReg $3C /
-// SWClrVInt $48 / SWStatusReg $C0 / CLUTAddr $00 / CLUTData $04 / CLUTPBCR $08,
-// with MaskSenseLine $F1FF and VRSTB $8000 on both sides.  One map, transcribed
+// `display_card_824gc.c`, the latter opening with "ported from jmfb.c".  Not
+// two things that resemble each other: the register maps are identical
+// constant for constant, block offset $200000 and register window $400,
+// CSR $00 / VideoBase $08 / RowWords $0C / SWICReg $3C / SWClrVInt $48 /
+// SWStatusReg $C0 / CLUTAddr $00 / CLUTData $04 / CLUTPBCR $08, with
+// MaskSenseLine $F1FF and VRSTB $8000 on both sides.  One map, transcribed
 // twice under two prefixes.
 //
-// The copy had already cost: F-20 and F-21 are the same missing bounds check,
-// filed twice, because the code was copied.  And the two had drifted --
-// jmfb.c logs an unmodelled register access, the GC's dispatcher had a bare
-// `return`, so an unmodelled write to the GC's JMFB block was invisible.
+// The copy had already cost: the same missing VideoBase bounds check had to
+// be found twice, once in each copy.  And the two had drifted -- jmfb.c logs
+// an unmodelled register access, the GC's dispatcher had a bare `return`, so
+// an unmodelled write to the GC's JMFB block was invisible.
 //
 // WHAT STAYS PER-CARD.  Everything the chip acts ON, because that genuinely
 // differs: the 8•24 scans its own 2 MB VRAM, while the GC's registers address

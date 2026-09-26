@@ -293,8 +293,8 @@ static bool has_pending_data(const adb_t *adb) {
 
 // Returns true if the device at `addr` both has data AND is allowed to say so
 // unasked -- Register 3 bit 13, the Service Request enable.  This is what the
-// bit MEANS: once it is real per-device state (F-04), a device with it clear
-// must stop triggering the SRQ path, or the state is cosmetic readback and
+// bit MEANS: as real per-device state, a device with it clear must stop
+// triggering the SRQ path, or the state is cosmetic readback and
 // the host's SetSRQ has no effect.  A device with SRQ off is still polled and
 // still answers; it simply cannot interrupt to announce itself.
 static bool device_can_service_request(const adb_t *adb, uint8_t addr);
@@ -981,7 +981,7 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
 
     // There is something to do only if the polled device answers, or if some
     // other device is SERVICE-REQUESTING.  The second half is where Register
-    // 3 bit 13 bites (F-04): a device the host has told to stop
+    // 3 bit 13 bites: a device the host has told to stop
     // service-requesting has data nobody has asked for, and the transceiver
     // stays quiet until that device is polled again.  Before bit 13 was real
     // state the test here was has_pending_data(), which could not tell the
@@ -1069,8 +1069,8 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 void adb_delete(adb_t *adb) {
     if (!adb)
         return;
-    // Four callbacks are scheduled with `adb` as their source and the
-    // destructor removed none of them (proposal-scheduler-source-lifetime).
+    // Four callbacks are scheduled with `adb` as their source; drop them all
+    // before the controller is freed.
     scheduler_forget_source(adb->scheduler, adb);
     free(adb);
 }
@@ -1381,21 +1381,21 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
 
 // === ADB bus container ======================================================
 //
-// `machine.adb` is the logical input-device node (proposal-system-object-model.md
-// §5.6). The physical transport is an implementation detail; this node just
-// groups the two well-known devices — keyboard and mouse — as named children,
-// the shape the user expects. It is a namespace-only process-singleton (like
-// the keyboard/mouse facades it parents), created lazily under machine_object().
+// `machine.adb` is the logical input-device node. The physical transport is
+// an implementation detail; this node just groups the two well-known devices
+// — keyboard and mouse — as named children, the shape the user expects. It
+// is a namespace-only process-singleton (like the keyboard/mouse facades it
+// parents), created lazily under machine_object().
 //
 // The name is ADB but the contents are not: `keyboard.press` and `mouse.move`
 // route through the machine substrate, so on a Mac Plus they reach the VIA
 // shift-register keyboard and the quadrature mouse, and on a Lisa they reach
 // the COPS.  Neither machine has an ADB bus.  That mismatch is known and the
-// name is deliberate — §5.6 chose the logical bus the user expects over the
-// wire that happens to carry it, and the path is load-bearing (AGENTS.md's
+// name is deliberate — it is the logical bus the user expects, not the wire
+// that happens to carry it, and the path is load-bearing (AGENTS.md's
 // canonical node list, ~1,588 references across the tests, the web UI and the
-// docs).  06-io-controllers F-12 proposed renaming it to `machine.input` with
-// an alias; that was refused.  Read this node as "input devices", not "ADB".
+// docs).  Renaming it to `machine.input` with an alias was considered and
+// refused.  Read this node as "input devices", not "ADB".
 static const class_desc_t adb_class = {
     .name = "adb",
     .members = NULL,

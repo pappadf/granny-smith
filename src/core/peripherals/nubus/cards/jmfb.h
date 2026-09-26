@@ -2,22 +2,19 @@
 // Copyright (c) pappadf
 
 // jmfb.h
-// Apple Macintosh Display Card 8•24 (Rev B, ROM `341-0868`).  See
-// proposal-machine-iicx-iix.md §3.2.5.  Driver class
+// Apple Macintosh Display Card 8•24 (Rev B, ROM `341-0868`).  Driver class
 // `Display_Video_Apple_MDC` (`catDisplay / typeVideo / DrSwApple /
 // DrHwMDC`).  All register / bit-field names mirror Apple's
 // JMFBDepVideoEqu.a verbatim.
 //
-// v1 status (per the proposal's "Steps 1-5 done, Step 6 minimum-viable"
-// scope).  The four register blocks (JMFB / Stopwatch / CLUT / Endeavor)
-// each have their offsets defined here, and the I/O dispatcher in
-// jmfb.c handles every named register; a subset (CLUTAddrReg /
-// CLUTDataReg / CLUTPBCR / JMFBVideoBase / JMFBRowWords / SWClrVInt /
-// SWICReg / JMFBCSR sense-bits) is *modelled*, the rest are
-// *accept-and-log* per §3.2.5's policy.  The card boots far enough to
-// run the System 7 JMFB driver's PrimaryInit; full mode-switch
-// (`cscSwitchMode`) lands as the JMFB driver's behavioural surface
-// expands.
+// v1 status (minimum-viable).  The four register blocks (JMFB / Stopwatch /
+// CLUT / Endeavor) each have their offsets defined here, and the I/O dispatcher
+// in jmfb.c handles every named register; a subset (CLUTAddrReg / CLUTDataReg /
+// CLUTPBCR / JMFBVideoBase / JMFBRowWords / SWClrVInt / SWICReg / JMFBCSR
+// sense-bits) is *modelled*, the rest are *accept-and-log* (logged, never a bus
+// error).  The card boots far enough to run the System 7 JMFB driver's
+// PrimaryInit; full mode-switch (`cscSwitchMode`) lands as the JMFB driver's
+// behavioural surface expands.
 
 #ifndef NUBUS_CARDS_JMFB_H
 #define NUBUS_CARDS_JMFB_H
@@ -86,7 +83,8 @@
 // Per-card kind descriptors — registered in nubus.c's g_card_registry.
 // mdc_8_24 is the real card (needs an offered vROM dump); 8_24 is its
 // always-available generic sibling with the built-in GS declaration ROM
-// (same HLE register model — see proposal-generic-nubus-vrom.md sec. 6.1).
+// (same HLE register model — see
+// docs/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t mdc_8_24_kind;
 extern const nubus_card_kind_t jmfb_generic_kind;
 
@@ -114,7 +112,7 @@ extern const nubus_card_kind_t jmfb_generic_kind;
 // the pending selection.
 void jmfb_pending_video_mode_set(const char *id);
 
-// Pending "WxHxD" custom resolution (proposal-nubus-runtime-vrom §3.6):
+// Pending "WxHxD" custom resolution:
 // the generic 8_24 kind generates a video sResource at this geometry and
 // boots its default 13" RGB monitor on it.  NULL/"" clears.
 void jmfb_pending_custom_mode_set(const char *spec);

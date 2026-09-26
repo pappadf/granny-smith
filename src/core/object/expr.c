@@ -4,14 +4,13 @@
 // expr.c
 // Recursive-descent expression parser + evaluator. See expr.h.
 //
-// Grammar (tightest first; matches proposal-shell-expressions.md §2.3).
+// Grammar (tightest first).
 //
 // NOTE the bitwise levels: `&`, `^` and `|` bind TIGHTER than the relational
 // and equality operators, which is the opposite of C.  That is deliberate --
 // C's order is a well-known trap, and `sr & 0x2000 == 0x2000` means
 // `(sr & 0x2000) == 0x2000` here and `sr & (0x2000 == 0x2000)` in C -- but
-// object-model.md and the proposal both described it as "as in C", which it
-// is not (08-core-infra F-10).
+// it was once documented as "as in C", which it is not.
 //
 //   primary    := literal | path-or-call | '(' expr ')'
 //   postfix    := primary ( '.' IDENT | '[' expr ']' )*
@@ -114,7 +113,7 @@ static value_t value_subpath_read(const value_t *base, const char *sub);
 
 // === Numeric promotion helpers ==============================================
 //
-// Two-operand promotion ladder per proposal §3.1:
+// Two-operand promotion ladder:
 //   bool          → uint
 //   int + uint    → int (if either is int)
 //   int|uint + f  → float
@@ -324,7 +323,7 @@ static bool append_index_segment(const value_t *idx, char *buf, size_t buf_size,
 // binding when one happens to share the prefix rather than erroring.  Real
 // member names are short, so this is theoretical for paths a human types; a
 // generated script or a long machine.nubus.slot[N].card... path can reach the
-// 64-byte sub-path buffers (08-core-infra F-58).
+// 64-byte sub-path buffers.
 static bool lex_read_ident(lex_t *L, char *buf, size_t buf_size) {
     if (!isalpha((unsigned char)*L->p) && *L->p != '_')
         return false;
@@ -353,8 +352,7 @@ static bool lex_read_ident(lex_t *L, char *buf, size_t buf_size) {
 // they had already drifted: this one accepts a numeric `.N` segment and
 // script.c's required ident_char after the dot, which agreed only because
 // isalnum happens to include digits.  Buffer sizes differed too, so the
-// longest usable path depended on which surface you typed it on
-// (08-core-infra F-38).
+// longest usable path depended on which surface you typed it on.
 bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, size_t out_size, bool *call_open,
                              char *err_buf, size_t err_size) {
     if (call_open)
@@ -367,7 +365,7 @@ bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, s
             while (isalnum((unsigned char)*q) || *q == '_')
                 q++;
             // snprintf truncates; the length check below is what turns that
-            // into a refusal rather than a silently shortened path (F-58).
+            // into a refusal rather than a silently shortened path.
             int n = snprintf(out + pi, out_size - pi, ".%.*s", (int)(q - start), start);
             if (n < 0 || (size_t)n >= out_size - pi) {
                 snprintf(err_buf, err_size, "path too long");
@@ -429,7 +427,7 @@ static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, 
         return false;
     }
     // The head is this function's own business; everything after it is the
-    // shared grammar (F-38).
+    // shared grammar.
     char err[160];
     err[0] = '\0';
     if (expr_read_path_segments(&L->p, ctx, path_buf, path_size, call_open, err, sizeof(err)))
@@ -484,9 +482,8 @@ static char *lex_named_arg_ident(lex_t *L) {
 }
 
 // Parse a comma-separated argument list inside a method call: positional
-// expressions first, then `name=expr` named arguments (proposal
-// proposal-named-args-boot-config §3.3). The opening `(` has already
-// been consumed. On success, consumes the closing `)` and writes the
+// expressions first, then `name=expr` named arguments. The opening `(`
+// has already been consumed. On success, consumes the closing `)` and writes the
 // positional argv/argc plus the named list; caller frees everything via
 // free_call_args.
 static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv, int *out_argc,
@@ -659,7 +656,7 @@ static value_t value_subpath_read(const value_t *base, const char *sub) {
                 return val_err("bad index segment in '%s'", sub);
             // A range indexes like the list it replaced: range(10)[3] and
             // (0..10)[3] both answer 3.  Without this the lazy form would
-            // lose a capability the materialised one had (F-37).
+            // lose a capability the materialised one had.
             if (cur->kind == V_RANGE) {
                 uint64_t n = val_range_count(cur);
                 if (idx < 0 || (uint64_t)idx >= n)
@@ -766,7 +763,7 @@ value_t expr_object_path_read(struct object *root, const char *path) {
 
 // `$name` primary: look the binding up via ctx->binding, then apply
 // continuation segments. A V_REF binding re-resolves its stored path on
-// every access (reference semantics, §3.5); a V_OBJECT binding resolves
+// every access (reference semantics); a V_OBJECT binding resolves
 // segments relative to the captured object (snapshot semantics); any
 // other kind is a plain value and admits no continuation.
 static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
@@ -822,7 +819,7 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
     }
 
     // V_RANGE joins the indexable kinds: range(4) is a lazy range now rather
-    // than a materialised list, and `$hits[3]` has to keep working (F-37).
+    // than a materialised list, and `$hits[3]` has to keep working.
     if ((base.kind == V_LIST || base.kind == V_MAP || base.kind == V_RANGE) && has_sub && !call_open) {
         // Structured-value access: `$hits[0]`, `$m[1][2]`, `$info.name`,
         // `$info["name"]` — descend the continuation segments.
@@ -858,7 +855,7 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
 //
 // `range(start, stop[, step])`, `len(x)`, `error(msg)` are ordinary
 // call-form builtins; `try(EXPR, FALLBACK)` is a special form that
-// catches evaluation errors from its first argument (§3.9). They are
+// catches evaluation errors from its first argument. They are
 // recognised by name in primary position, before object-tree lookup.
 
 static value_t eval_builtin_range(int argc, const value_t *argv) {
@@ -884,8 +881,8 @@ static value_t eval_builtin_range(int argc, const value_t *argv) {
     // This used to build a V_LIST capped at 2^20 entries, which at
     // sizeof(value_t) == 32 permitted a 32 MB single calloc on the 32-bit wasm
     // heap -- to run a loop.  `range(a,b)` and `a..b` are now the SAME value,
-    // which is what dissolves the finding: two spellings of one loop no longer
-    // have opposite safety properties (08-core-infra F-37).  The only cap left
+    // so two spellings of one loop no longer have opposite safety
+    // properties.  The only cap left
     // is on ITERATIONS, in exec_for, and it bounds time rather than memory.
     return val_range_step(start, stop, step);
 }
@@ -1086,7 +1083,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
 
     // `$name` binding read, with path continuation (`$d.present`,
     // `$bp[0]`) and call form (`$d.insert(...)`) through V_REF and
-    // V_OBJECT bindings (shell v2 §3.5/§3.6).
+    // V_OBJECT bindings.
     if (c == '$') {
         L->p++;
         return eval_binding_expr(L, ctx);
@@ -1102,7 +1099,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         if (lit.kind == V_BOOL)
             return lit;
         if (lit.kind == V_NONE)
-            return lit; // the `none` literal (§3.9)
+            return lit; // the `none` literal
         // Other literal kinds returned by parse_literal: V_STRING (bare
         // ident — handled below as path) or V_ERROR. Discard and parse
         // as a path-or-call.
@@ -1114,7 +1111,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         bool call_open = false;
         if (!read_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
             return val_err("bad path");
-        // Builtins (§3.6): recognised by name in call form, before
+        // Builtins: recognised by name in call form, before
         // object-tree lookup. `try` is a special form (lazy w.r.t.
         // errors); the rest evaluate their args normally.
         if (call_open && strchr(path_buf, '.') == NULL) {
@@ -1273,7 +1270,7 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
         value_t v = parse_unary(L, ctx);
         if (L->err_set)
             return v;
-        // Per proposal §3.2: V_ERROR is falsy, so `!error` is true.
+        // V_ERROR is falsy, so `!error` is true.
         // This is what makes `assert $(!cpu.broken)` clean for "either
         // the attribute does not exist, or it is false".
         bool t = val_as_bool(&v);
@@ -1448,7 +1445,7 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
                 NUM_FAIL("shift count out of range");
             }
             z = x >> y;
-            break; // arithmetic shift on signed (proposal §2.3)
+            break; // arithmetic shift on signed
         default:
             value_free(&pa);
             value_free(&pb);
@@ -1741,7 +1738,7 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Range (`a..b`) =========================================================
 //
-// Binds looser than arithmetic/bitwise, tighter than comparison (§3.6):
+// Binds looser than arithmetic/bitwise, tighter than comparison:
 // `$base..$base+4` is `$base..($base+4)`. Half-open; `a >= b` yields an
 // empty range. Endpoints must be integral (V_INT / V_UINT).
 
@@ -1866,7 +1863,7 @@ static value_t parse_equality(lex_t *L, const expr_ctx_t *ctx) {
 
 // === Logical short-circuit ==================================================
 //
-// Per proposal §3.2: errors propagate. A V_ERROR encountered anywhere
+// Errors propagate. A V_ERROR encountered anywhere
 // in the chain becomes the result, with the original message preserved,
 // **except** that short-circuit short-cuts skip evaluation entirely.
 // `false && X` returns false even if evaluating X would have errored;
@@ -1903,8 +1900,8 @@ static void skip_logand(lex_t *L, const expr_ctx_t *ctx) {
 // "Skip" means what it means for `&&` and `||`: parse the branch, discard its
 // value, and suppress any error it raised.  It does NOT mean the branch goes
 // unevaluated -- a method call in it still runs, exactly as one in the
-// short-circuited side of `&&` still runs.  08-core-infra F-08 reads the
-// existing helpers as laziness; they are not, and the ternary now has parity
+// short-circuited side of `&&` still runs.  The existing helpers are easy
+// to read as laziness; they are not, and the ternary now has parity
 // with them rather than a property the language does not offer.
 //
 // What this does fix is the guard idiom.  `${x != 0 ? 100/x : 0}` used to
@@ -2107,7 +2104,7 @@ static void buf_append(char **buf, size_t *len, size_t *cap, const char *s, size
 //
 // The easiest trigger is not a format spec at all: `<error: %s>` rendered into
 // a 64-byte buffer overreads for any error message longer than about 54
-// characters, with no `${...:FMT}` involved (F-02).
+// characters, with no `${...:FMT}` involved.
 static void buf_append_formatted(char **buf, size_t *len, size_t *cap, const char *tmp, size_t tmp_size, int n) {
     if (n <= 0)
         return;
@@ -2136,7 +2133,7 @@ static void format_value_json_text(const value_t *v, char **buf, size_t *len, si
     vbuf_bridge(v, VFMT_JSON, buf, len, cap);
 }
 
-// Format a value with an optional spec (proposal §4.2.1).
+// Format a value with an optional spec.
 // `spec` may be NULL or empty (native formatter), or one of:
 //   d              force decimal
 //   x / X          force lowercase / uppercase hex (no `$` prefix)
@@ -2176,7 +2173,7 @@ typedef struct {
 // Width and precision are clamped so the rendered field cannot approach the
 // scratch buffer's size.  ${1:0500d} asked for a 500-character field out of a
 // 160-byte buffer, and snprintf's return value -- the length it WOULD have
-// written -- was then used as the copy length (F-02).
+// written -- was then used as the copy length.
 #define SPEC_MAX_FIELD 64
 
 static bool spec_conv_valid(char c) {
@@ -2335,7 +2332,7 @@ static void format_value_with_spec(const value_t *v, const char *spec, char **bu
     }
 
     // snprintf returns the length it WOULD have written.  Clamping here is
-    // what stops that value being used as a copy length out of `tmp` (F-02);
+    // what stops that value being used as a copy length out of `tmp`;
     // the field clamps above make truncation unreachable in practice, and
     // this is the guard that holds if one is ever relaxed.
     buf_append_formatted(buf, len, cap, tmp, sizeof(tmp), n);
@@ -2375,7 +2372,7 @@ static int find_format_colon(const char *body, size_t blen) {
             // split `${a ? 1 : 2}` into the expression `a ? 1 ` and the spec
             // ` 2`, so the expression then failed with "expected ':' in
             // ternary" -- making the ternary and `${...}` mutually exclusive,
-            // though both are documented parts of the language (F-09).
+            // though both are documented parts of the language.
             ternary_depth++;
         else if (c == ':' && depth == 0 && ternary_depth > 0)
             ternary_depth--;
@@ -2401,7 +2398,7 @@ static value_t deref_if_ref(value_t v, const expr_ctx_t *ctx) {
     return node_get(n);
 }
 
-// The one interpolation walker (shell v2 §3.3). Handles `${EXPR[:FMT]}`
+// The one interpolation walker. Handles `${EXPR[:FMT]}`
 // splices, `$name` binding splices, and — when decode_escapes is set —
 // the dq-string escapes `\n \t \r \0 \\ \" \' \$ \xHH`.
 static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_escapes) {
@@ -2543,7 +2540,7 @@ static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_e
             free(body);
             v = deref_if_ref(v, ctx);
             if (val_is_error(&v)) {
-                // A failed splice fails the whole string (§3.9) — the v1
+                // A failed splice fails the whole string — the v1
                 // "<error: …>" inline rendering hid failures in output.
                 free(spec);
                 free(out);

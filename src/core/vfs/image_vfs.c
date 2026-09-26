@@ -42,7 +42,7 @@
 // Every filesystem a partition can hold sits behind one fs_ops_t: open the
 // volume, look a path up, list a directory, read a file.  The backend
 // methods dispatch through it rather than branching on HFS vs UFS at every
-// site (09-storage F-52).  What only HFS has -- forks, Finder info, and the
+// site.  What only HFS has -- forks, Finder info, and the
 // synthetic /rsrc and /finf paths built on them -- is handled first, for a
 // filesystem with has_forks, and everything else takes the generic path.
 
@@ -272,7 +272,7 @@ static rsrc_cache_entry_t *rsrc_cache_find(const image_mount_t *m, uint32_t cnid
 // Open handles borrow from an entry -- a resource file reads straight out of
 // fork_buf, a resource directory walks parsed -- and this used to evict the
 // LRU entry regardless, so the ninth fork opened freed the bytes an open
-// handle was reading (09-storage F-42).  The mount refcount the handles hold
+// handle was reading.  The mount refcount the handles hold
 // keeps the mount alive, not its cache entries.
 static rsrc_cache_entry_t *rsrc_cache_pick(void) {
     rsrc_cache_entry_t *victim = NULL;
@@ -308,7 +308,7 @@ static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, hfs_volume_t *hf
     if (e)
         return e;
     // The catalog's size is only a claim: refuse one no resource fork can
-    // have before allocating it (09-storage F-26 -- it was malloc'd as given).
+    // have before allocating it (it used to be malloc'd as given).
     if (d->rsrc_fork.logical_size > RFORK_MAX_FORK_LEN)
         return NULL;
     size_t flen = (size_t)d->rsrc_fork.logical_size;
@@ -471,8 +471,7 @@ static bool probe_bare_volume(image_mount_t *m) {
         return true;
     }
     // A bare UFS volume: an A/UX partition dumped without its map.  The
-    // listing code for it was already here; nothing probed for it
-    // (09-storage F-45).
+    // listing code for it was already here; nothing probed for it.
     if (ufs_probe(m->img, 0, img_size)) {
         set_synthetic_partition(m, img_size, "UFS", "Apple_UNIX_SVR2", APM_FS_UFS);
         return true;
@@ -1544,8 +1543,8 @@ char *image_vfs_materialize_nested(image_mount_t *m, const char *file_subpath) {
     // path, inode, mtime), the inner path and the inner size, so repeated
     // descents reuse the same decoded file (and its cached mount) and a
     // changed outer file re-decodes.  It lives under the scratch root, so
-    // GS_STORAGE_CACHE redirects it like every other sidecar (09-storage
-    // F-64), and it is reused only once sealed complete (F-33).
+    // GS_STORAGE_CACHE redirects it like every other sidecar, and it is
+    // reused only once sealed complete.
     char identity[PATH_MAX + VFS_PATH_MAX + 128];
     int n =
         snprintf(identity, sizeof(identity), "nested\x1f%s\x1f%llu:%u\x1f%s\x1f%llu", m->host_path ? m->host_path : "",

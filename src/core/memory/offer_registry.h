@@ -10,7 +10,7 @@
 // with one explicit pick that wins the order and catalog order deciding the
 // rest.  vrom.c (NuBus declaration ROMs) and prom.c (PCI Open Firmware
 // expansion ROMs) each had their own copy of it -- 86 of 123 lines identical,
-// and the improvements made to one never reached the other (04-video F-09).
+// and the improvements made to one never reached the other.
 //
 // What genuinely differs between the two is IDENTIFICATION: the validation
 // gates, size classes and identity spans of a declaration ROM and a PCI
@@ -62,7 +62,7 @@ void offer_registry_add(offer_registry_t *r, const char *path, bool explicit_pic
 
 // Offer every file in `dir` whose name ends in `ext` (NULL: any name),
 // skipping dotfiles -- each identified by content like any offer.  The one
-// directory walk the platforms share (S3): headless offers the ROM's sibling
+// directory walk the platforms share: headless offers the ROM's sibling
 // *.vrom / *.prom, the browser its persistent vROM and PROM stores.
 void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ext);
 

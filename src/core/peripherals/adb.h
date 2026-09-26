@@ -22,7 +22,7 @@
 struct adb;
 struct object;
 
-// The `machine.adb` bus container node (proposal-system-object-model.md §5.6).
+// The `machine.adb` bus container node (see docs/core/shell/object-model.md).
 // Lazily created under machine_object(); keyboard and mouse attach to it as
 // named children. Process-singleton, shared by adb.c (keyboard) and mouse.c.
 struct object *adb_bus_object(void);

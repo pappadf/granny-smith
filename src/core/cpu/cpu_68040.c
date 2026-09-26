@@ -8,8 +8,8 @@
 // defines CPU_DECODER_IS_68030 to inherit that operation set, then overrides
 // the handful of ops that differ on the 040 before generating the decoder:
 //   - MOVE16 (all five forms) is a real instruction, not an F-line trap
-//   - CINV/CPUSH decode + privilege are real (caches modeled functionally,
-//     proposal §6.3: no line state to invalidate in an interpreter)
+//   - CINV/CPUSH decode + privilege are real (caches modeled functionally:
+//     no line state to invalidate in an interpreter)
 //   - PFLUSH/PTEST take their 040 forms (MMU registers live in mmu040_state_t,
 //     reached via MOVEC — the 040 has no PMOVE)
 //   - the 68851/030 coprocessor MMU ops (PMOVE dispatch, PBcc, PSAVE,
@@ -31,7 +31,7 @@
 LOG_USE_CATEGORY_NAME("cpu");
 
 // 68040 memory access: identical to the 68030 path; the SoA fast path in
-// memory.h resolves translations, and the (Phase B) 040 MMU fills it.
+// memory.h resolves translations, and the 040 MMU fills it.
 #define D(n)                                         cpu->d[n]
 #define A(n)                                         cpu->a[n]
 #define PC                                           cpu->pc
@@ -256,12 +256,12 @@ static bool cpu_move16_copy(uint32_t src, uint32_t dst) {
 // ============================================================================
 // CINV / CPUSH (MC68040UM §4: cache maintenance)
 // ============================================================================
-// Caches are modeled functionally (proposal §6.3): CACR holds the enable
-// state, and CINV/CPUSH have correct decode and privilege, but there is no
-// host-side line state to invalidate — the interpreter reads guest memory
-// directly and the SoA arrays hold MMU translations (flushed by PFLUSH),
-// not cached data.  DMA in this model is therefore always coherent — a
-// documented divergence, more forgiving than hardware.
+// Caches are modeled functionally: CACR holds the enable state, and CINV/CPUSH
+// have correct decode and privilege, but there is no host-side line state to
+// invalidate — the interpreter reads guest memory directly and the SoA arrays
+// hold MMU translations (flushed by PFLUSH), not cached data.  DMA in this
+// model is therefore always coherent — a documented divergence, more forgiving
+// than hardware.
 static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
     (void)cpu;
     (void)opcode;

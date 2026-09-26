@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // afp_enum.c
-// FPEnumerate and the snapshots that make its paging consistent (WP-4).
+// FPEnumerate and the snapshots that make its paging consistent.
 // Part of the AFP server; afp_internal.h has what its files share.
 
 #include "afp_internal.h"
@@ -40,7 +40,7 @@
 LOG_USE_CATEGORY_NAME("afp");
 
 // ============================================================================
-// FPEnumerate snapshots (WP-4)
+// FPEnumerate snapshots
 // ============================================================================
 
 // One directory entry captured in a snapshot; its path is the snapshot's
@@ -70,7 +70,7 @@ typedef struct {
 
 // Snapshots held at once, and by one session: a session walking more
 // directories than its share evicts its own oldest, not another session's
-// listing in progress (10-network F-23).
+// listing in progress.
 #define AFP_MAX_ENUM_SNAPSHOTS         8
 #define AFP_ENUM_SNAPSHOTS_PER_SESSION 4
 // Entries one listing holds.  StartIndex is 16 bits, so no client can page
@@ -93,8 +93,8 @@ void enum_snapshots_drop(uint32_t session_id, uint32_t vol_id) {
     }
 }
 
-// Name order for a stable listing: by Mac name, folded as AFP compares names
-// (D-7), then exactly, so names differing in case alone keep one order.
+// Name order for a stable listing: by Mac name, folded as AFP compares names,
+// then exactly, so names differing in case alone keep one order.
 static int enum_entry_cmp(const void *a, const void *b) {
     const enum_entry_t *ea = (const enum_entry_t *)a;
     const enum_entry_t *eb = (const enum_entry_t *)b;
@@ -165,7 +165,7 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
             continue;
         // Sidecars and the .gs-afp control directory, and host names MacRoman
         // cannot hold: listed under a lossy name, such a file could never be
-        // addressed again (10-network D-1).
+        // addressed again.
         if (!afp_name_visible(dent->d_name))
             continue;
         char child_rel[AFP_MAX_REL_PATH];
@@ -298,7 +298,7 @@ uint32_t afp_cmd_enumerate(afp_req_t *r) {
     // StartIndex counts the entries of the kinds asked for: with a null file
     // bitmap it indexes the directories alone, with a null directory bitmap
     // the files.  It indexed the mixed listing, so a directories-only walk
-    // repeated entries (10-network N-13a).
+    // repeated entries.
     size_t i = 0, seen = 0;
     if (file_bm && dir_bm)
         i = seen = start_index - 1u; // every entry counts: go straight there

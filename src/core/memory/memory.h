@@ -86,10 +86,10 @@ extern void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, cons
 // Register a host-backed region on the physical bus map.  `writable`
 // distinguishes RAM-shaped (VRAM, framebuffer) from ROM-shaped (declrom)
 // regions.  The NuBus bus controller calls this once per card region
-// during nubus_init().  See proposal-machine-iicx-iix.md §3.2.3 for the
-// rename rationale: the storage still lives in mmu_state_t (4-slot fixed
-// layout in v1) but the call-site lie ("the MMU manages mappings") is
-// fixed by exposing the API on the memory map.  No fast-path change.
+// during nubus_init().  The name is deliberate: the storage still lives in
+// mmu_state_t (4-slot fixed layout in v1) but the call-site lie ("the MMU
+// manages mappings") is fixed by exposing the API on the memory map.  No
+// fast-path change.
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
                             bool writable);
 
@@ -249,7 +249,7 @@ extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this
 extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
 extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
 
-// --- VIA E-clock synchronization (proposal-via-eclock-sync) -----------------
+// --- VIA E-clock synchronization --------------------------------------------
 //
 // 6522 VIA accesses are synchronized to the 783.360 kHz E clock on real
 // hardware: an access completes at the next E boundary, so back-to-back

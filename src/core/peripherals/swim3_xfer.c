@@ -48,11 +48,11 @@
 #include <string.h>
 
 // One log category for the whole subsystem -- drive mechanics AND every
-// controller (02-floppy F-21).  `debug.log swim 10` on an SE/30 used to turn on
-// the ISM register trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush
-// or eject, because those live in floppy.c under a different name; the same
-// split hid the DBDMA ring from `debug.log swim3 10` on a 7500.  Level
-// convention: 1-2 state changes, 3-5 per-operation, 6+ per-register/per-byte.
+// controller.  `debug.log swim 10` on an SE/30 used to turn on the ISM register
+// trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush or eject,
+// because those live in floppy.c under a different name; the same split hid the
+// DBDMA ring from `debug.log swim3 10` on a 7500.  Level convention: 1-2 state
+// changes, 3-5 per-operation, 6+ per-register/per-byte.
 LOG_USE_CATEGORY_NAME("floppy");
 
 // The internal drive is always drive 1; PDM has no second drive.
@@ -75,13 +75,13 @@ LOG_USE_CATEGORY_NAME("floppy");
 
 // The medium in the drive, as floppy_geometry.h derives it once for every
 // controller.  This file used to carry its own exact-size switch and its own
-// copies of the zone helpers (02-floppy F-17/F-19); the classifier was the
-// only one of the four that was right, so it was promoted rather than deleted.
+// copies of the zone helpers; the classifier was the only one of the four that
+// was right, so it was promoted rather than deleted.
 typedef floppy_media_t swim3_media_t;
 
 // GCR speed zones come from floppy_geometry.h.  The local gcr_rpm() masked the
-// zone index with & 7 over a five-entry table (02-floppy F-31), which reads
-// like a bounds guard while being wider than the array.
+// zone index with & 7 over a five-entry table, which reads like a bounds
+// guard while being wider than the array.
 #define gcr_sectors_per_track floppy_zone_sectors_per_track
 #define gcr_rpm               floppy_zone_rpm
 
@@ -143,7 +143,7 @@ int swim3_index_pulse(swim3_t *sw) {
     int track = floppy_drive_track(sw->fd, FD);
     double now = scheduler_time_ns(sw->sched);
     double rev_ns = swim3_rev_ns(&m, track);
-    // One index/tach model for every controller (02-floppy F-23).
+    // One index/tach model for every controller.
     return floppy_index_signal(m.mfm ? FLOPPY_INDEX_SWIM3_MFM : FLOPPY_INDEX_GCR_TACH, now, rev_ns, 60);
 }
 
@@ -501,18 +501,18 @@ static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int 
         if (!swim3_read_sector(m, track, side, s, data, tag))
             return;
         if (m->mfm) {
-            // One MFM layout for every controller (02-floppy F-20).  The sink
-            // pairs each byte with its clock byte: $80 for the $A1 marks
-            // (missing clock transition), $00 otherwise.  Gap 3 and the absent
-            // CRC fields stay this caller's choices -- see the header.
+            // One MFM layout for every controller.  The sink pairs each byte
+            // with its clock byte: $80 for the $A1 marks (missing clock
+            // transition), $00 otherwise.  Gap 3 and the absent CRC fields stay
+            // this caller's choices -- see the header.
             swim3_raw_sink_t sink = {sw, true};
             floppy_mfm_emit_sector(swim3_raw_emit, &sink, track, side, s + 1, data, 54, false);
             if (!sink.ok)
                 return;
         } else {
-            // The 6-to-8 GCR codeword table, shared (02-floppy F-18): this used
-            // to be a byte-identical second copy, kept here only because the
-            // shared one lived behind a private header.
+            // The 6-to-8 GCR codeword table, shared: this used to be a
+            // byte-identical second copy, kept here only because the shared one
+            // lived behind a private header.
             const uint8_t *gcr6 = gcr_codewords;
             uint8_t side_enc = (uint8_t)((side << 5) | ((track >> 6) & 0x1F));
             uint8_t hdr[5] = {(uint8_t)track, (uint8_t)s, side_enc, m->fmt_byte,
@@ -739,10 +739,10 @@ static void swim3_engine_event(void *source, uint64_t data) {
     // Head 1 of single-sided media has no surface under it, so -- exactly as
     // above -- the head sees nothing.  Checked once here rather than per slot:
     // read and write each skipped their slot, but format and raw silently
-    // REMAPPED side 1 onto side 0 (02-floppy F-37), so formatting side 1 of a
-    // 400K disk overwrote side 0's data and a raw capture of side 1 returned
-    // side 0's bytes as if they were genuine.  One check cannot disagree with
-    // itself the way four did.
+    // REMAPPED side 1 onto side 0, so formatting side 1 of a 400K disk
+    // overwrote side 0's data and a raw capture of side 1 returned side 0's
+    // bytes as if they were genuine.  One check cannot disagree with itself the
+    // way four did.
     if (sw->xfer_side >= m.sides) {
         swim3_arm(sw, 5.0e6);
         return;

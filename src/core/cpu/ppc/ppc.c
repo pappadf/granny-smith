@@ -77,22 +77,22 @@ void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_
     // DEC or external interrupt arriving between lwarx and stwcx. leaves the
     // reservation live across the handler and the rfi, so the conditional
     // store succeeds where hardware fails it -- the exact atomicity break the
-    // pair exists to prevent.  reserve_addr is deliberately left alone:
-    // proposal-multi-cpu.md 11.7 needs it for the granule compare.
+    // pair exists to prevent.  reserve_addr is deliberately left alone: the
+    // reservation-granule compare needs it.
     p->reserve = 0;
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
     p->msr &= ppc_msr_exception_keep(p);
     ppc_update_active_maps(p);
     p->pc = ((p->msr & PPC_MSR_EP) ? 0xFFF00000u : 0u) + vector;
-    // Record in the shared exception trace ring (§3.9c field mapping:
+    // Record in the shared exception trace ring (field mapping:
     // vbr slot = MSR, format_frame = vector offset, fault_addr = DAR).
     exc_trace_record(vector, resume_pc, p->srr0, p->dar, 0, p->msr, 0, (uint16_t)vector, 0);
 }
 
 // Take a pending external/decrementer interrupt when MSR[EE] allows.
 // Level-sensitive: called before each instruction and from the sched-if
-// poll hook (the just-re-enabled case after rfi/mtmsr, proposal §4.6).
+// poll hook (the just-re-enabled case after rfi/mtmsr).
 void ppc_poll_interrupt(ppc_t *p) {
     if (!(p->msr & PPC_MSR_EE))
         return;
@@ -111,7 +111,7 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
     p->ext_irq = next;
 }
 
-// === RTC/TB/DEC time derivation (§3.7; TNT proposal §4.4) ===================
+// === RTC/TB/DEC time derivation =============================================
 
 // Exact rational cycles→ticks: q*mul + r*mul/div never overflows (r < div,
 // both 32-bit after reduction) and is exact over any interval.
@@ -370,7 +370,7 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         break;
     }
     case 952: // MMCR0 — 604 performance monitor group: read-zero stubs
-    case 953: // PMC1     (TNT proposal §4.2; the $00F00 interrupt never fires)
+    case 953: // PMC1     (the $00F00 interrupt never fires)
     case 954: // PMC2
     case 955: // SIA
     case 959: // SDA
@@ -786,13 +786,13 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         object_set_label(p->cpu_object, "CPU");
         object_set_order(p->cpu_object, 10);
         object_attach(machine_object(), p->cpu_object);
-        // machine.cpu.mmu: the translation debug window (§3.9d).
+        // machine.cpu.mmu: the translation debug window.
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
         if (p->mmu_object) {
             object_set_label(p->mmu_object, "MMU");
             object_attach(p->cpu_object, p->mmu_object);
         }
-        // machine.cpu.fpu: the FPR file + FPSCR (Phase E, §3.9d).
+        // machine.cpu.fpu: the FPR file + FPSCR.
         p->fpu_object = object_new(&ppc_fpu_class, p, "fpu");
         if (p->fpu_object) {
             object_set_label(p->fpu_object, "FPU");
@@ -801,7 +801,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     }
 
     // `$pc`, `$r0`... — the 68K `$d0`-style aliases simply don't exist on a
-    // PPC machine (§3.9d); registration is idempotent.
+    // PPC machine; registration is idempotent.
     register_ppc_aliases();
 
     return p;
@@ -845,8 +845,8 @@ void ppc_checkpoint(ppc_t *restrict p, checkpoint_t *checkpoint) {
     // pointers into a user-shareable save file and made two saves of the same
     // guest state differ between processes, which defeats diff-based
     // checkpoint testing.  Measured: four 4-byte runs at 8-byte stride,
-    // exactly cpu_object/fpu_object/mmu_object/scheduler.  05-chipsets-irq
-    // F-09 names the 68k twin (cpu.c) and misses this one.
+    // exactly cpu_object/fpu_object/mmu_object/scheduler.  cpu.c's 68k
+    // checkpoint stops short of its pointers the same way.
     system_write_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
 }
 
@@ -857,7 +857,7 @@ static void ppc_if_run_sprint(void *ctx, uint32_t *instructions) {
 }
 
 // The 601 never parks: PowerPC has no STOP-equivalent the Mac uses — the
-// guest idles in loops, exactly as the real machine burns its CPU (§3.7).
+// guest idles in loops, exactly as the real machine burns its CPU.
 static bool ppc_if_is_stopped(void *ctx) {
     (void)ctx;
     return false;
@@ -872,7 +872,7 @@ sched_cpu_if_t ppc_sched_if(ppc_t *p) {
     return cif;
 }
 
-// === Debugger adapter (§3.9b) ===============================================
+// === Debugger adapter =======================================================
 
 static uint32_t ppc_dbgif_get_pc(void *ctx) {
     return ((ppc_t *)ctx)->pc;
@@ -984,7 +984,7 @@ cpu_debug_if_t ppc_debug_if(ppc_t *p) {
     return dif;
 }
 
-// === Object-model class (§3.9d) =============================================
+// === Object-model class =====================================================
 
 static ppc_t *ppc_from(struct object *self) {
     return (ppc_t *)object_data(self);
@@ -1098,7 +1098,7 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
     if (!slot)
         return val_err("bad register id");
     *slot = (uint32_t)in.u;
-    // An MSR poke must keep the SoA maps coherent (the §3.5 discipline);
+    // An MSR poke must keep the SoA maps coherent (ppc_update_active_maps);
     // SR/BAT/SDR1 pokes invalidate the translation caches like their
     // instruction-level counterparts do.
     if (id == PA_MSR) {
@@ -1206,7 +1206,7 @@ static const class_desc_t ppc_cpu_class = {
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
 };
 
-// === machine.cpu.mmu (§3.9d) ================================================
+// === machine.cpu.mmu ========================================================
 // Debug window into the 601 translation: side-effect-free logical→physical
 // and a translated peek — the way tests and debugging reach the 68k
 // world's logical memory without knowing the HTAB layout.
@@ -1306,8 +1306,8 @@ static const class_desc_t ppc_mmu_class = {
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
 };
 
-// === machine.cpu.fpu (§3.9d) — the FPR file and FPSCR =======================
-// Registered by Phase E alongside the arithmetic datapath; its existence is
+// === machine.cpu.fpu — the FPR file and FPSCR ===============================
+// Registered alongside the arithmetic datapath; its existence is
 // also what flips the capability probe's `fpu` bit for the PDM machines.
 
 static value_t attr_fpr_get(struct object *self, const member_t *m) {

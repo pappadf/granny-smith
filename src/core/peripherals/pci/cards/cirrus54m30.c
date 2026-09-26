@@ -435,7 +435,7 @@ static void c54m30_update(c54m30_t *c) {
     // this has always done.  It is not a bound on the SPAN, though -- the
     // Offset register reaches stride 2040 and height reaches 1536, which is
     // 3,133,440 bytes of raster over a 1 MB store, and resetting the base does
-    // nothing about that (04-video F-26).
+    // nothing about that.
     if ((uint64_t)start + (uint64_t)stride * height > C54M30_VRAM)
         start = 0;
 
@@ -671,8 +671,7 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t 
 // The framebuffer node, shared with every other display source
 // (display_class.h).  This card declared no attach_objects at all, so on a
 // Network Server `machine.screen.source` resolved to nothing and there was no
-// way to read the geometry the VGA CRTC had been programmed with
-// (04-video F-15).
+// way to read the geometry the VGA CRTC had been programmed with.
 static display_t *c54m30_fb_resolve(void *owner) {
     c54m30_t *c = (c54m30_t *)owner;
     return c ? &c->display : NULL;

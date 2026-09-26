@@ -318,7 +318,7 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     // coincidence of the current control flow, not an invariant anyone stated,
     // and any future pass that iterates all logpoints (a unified hit test, an
     // entries column, a checkpoint of the list) reads uninitialised memory.
-    // MSan and valgrind flag it now (08-core-infra F-40).
+    // MSan and valgrind flag it now.
     logpoint_t *lp = calloc(1, sizeof(logpoint_t));
     if (!lp)
         return NULL;
@@ -397,7 +397,7 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     return lp;
 }
 
-// Expand a logpoint message template at fire time (shell v2 §6.3).
+// Expand a logpoint message template at fire time.
 // The message is a stored (raw) interpolating-string body: `${expr}`
 // splices any expression, `$name` splices a binding. The three
 // event-intrinsic values (`$value`, `$addr`, `$size`) live nowhere
@@ -437,10 +437,10 @@ static value_t lp_binding(void *ud, const char *name) {
 //
 // The template is stored raw and re-interpolated on every fire, so each hit
 // runs interp_walk -> expr_eval -> object_resolve with a malloc per `${...}`
-// body.  08-core-infra F-42 calls this a performance defect and says a write
-// logpoint on a hot page is "effectively unusable".
+// body.  That looks like a performance defect, bad enough to make a write
+// logpoint on a hot page "effectively unusable".
 //
-// MEASURED before restructuring, per the work order's rule for this unit.
+// MEASURED before restructuring.
 // A Plus, a write logpoint over 0x0000-0xFFFF, 20M cycles, 71,650 fires in
 // every run, output discarded, best of three:
 //
@@ -456,7 +456,7 @@ static value_t lp_binding(void *ud, const char *name) {
 // invalidation to recover a small fraction of an already-slow debugging path.
 //
 // Deliberately not restructured.  If that changes, the number to beat is
-// above and the shape is in the finding.
+// above.
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
@@ -560,7 +560,7 @@ void debug_exc_trace_dump(int filter) {
                 e->vector == 0x024 || (e->vector >= 0x060 && e->vector <= 0x07C))
                 continue;
         }
-        // Per-arch line format (§3.9c): the 68K entry prints as always; a PPC
+        // Per-arch line format: the 68K entry prints as always; a PPC
         // entry carries MSR in the vbr slot, the vector offset in
         // format_frame, and DAR in fault_addr.
         if (e->arch == EXC_ARCH_PPC) {
@@ -662,7 +662,7 @@ int delete_all_logpoints(debug_t *debug);
 // when no machine/core is up.
 // The split text's buffers: the longest mnemonic the 68K decoder produces is
 // a 32-character trap name (_CaseAndMarkSensitiveEqualString, measured over
-// every opcode), which a 31-character cap used to truncate (N-40).
+// every opcode), which a 31-character cap used to truncate.
 #define DISASM_MNEMONIC_MAX 48
 #define DISASM_OPERANDS_MAX 80
 
@@ -876,7 +876,7 @@ bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
     return false;
 }
 
-// Delete breakpoint by sparse stable id (proposal §2.1). Walks the list
+// Delete breakpoint by sparse stable id. Walks the list
 // matching `bp->id` rather than the position-in-list — positions shift
 // when other entries are removed, ids do not.
 static bool delete_breakpoint_by_id(debug_t *debug, int id) {
@@ -1025,10 +1025,8 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
 // Screenshot command - save emulated screen as PNG
 // ────────────────────────────────────────────────────────────────────────────
 //
-// Pixel-format support, v1: PIXEL_1BPP_MSB only — every machine that ships
-// today (Plus, SE/30 built-in video) drives a 1bpp framebuffer.  The wider
-// indexed/direct paths land alongside the JMFB driver in step 6 of the
-// IIcx/IIx proposal; for now an unsupported format is a hard error.
+// Pixel-format support: 1/2/4/8 bpp indexed (through the display's CLUT),
+// 16-bit 555/565 and 32-bit XRGB; any other format is a hard error.
 
 // Write 32-bit big-endian value to buffer
 // Write a PNG chunk to file
@@ -1249,7 +1247,7 @@ uint32_t framebuffer_checksum(const display_t *d) {
 }
 
 // Calculate checksum for a region of the framebuffer (top, left, bottom, right)
-// Region is specified in pixels; v1 supports 1bpp only.
+// Region is specified in pixels.
 
 uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right) {
     if (!d || !d->bits)
@@ -1262,7 +1260,7 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
     // tell.  1 bpp keeps its exact bit-packing walk below so existing
     // baselines are unchanged.
     if (d->format != PIXEL_1BPP_MSB) {
-        // display.h owns bits-per-pixel (04-video F-01).  This was a third
+        // display.h owns bits-per-pixel.  This was a third
         // copy of that switch, with a 0 return meaning "not a format I can
         // walk"; display_bpp answers for every format in the enum and faults
         // on anything else, so the sentinel had nothing left to signal.
@@ -1287,7 +1285,7 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
     // each row boundary (independent of `left % 8`), so we initialise it
     // here rather than relying on byte_bit==7 inside the loop — that path
     // fires only when `left` is byte-aligned and would leak bits across
-    // rows otherwise. (F-1288)
+    // rows otherwise.
     for (int y = top; y < bottom; y++) {
         uint8_t accum_byte = 0;
         // Process each pixel in the row, packing into bytes
@@ -1325,7 +1323,7 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
 static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba) {
     // The conversion itself is display.h's (display_row_to_rgba): it was
     // written twice in this file, byte for byte, and the PNG writer below is
-    // the other copy.  04-video F-02.
+    // the other copy.
     display_row_to_rgba(d, (uint32_t)y, out_rgba);
 }
 
@@ -1739,9 +1737,8 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
 }
 
 // Save framebuffer as PNG to the given file path.
-// v1 emits an 8-bit RGBA truecolour PNG; the 1bpp encoder is the only path
-// implemented (every shipping machine drives 1bpp).  Indexed/direct format
-// support lands with step 6's JMFB driver.
+// Emits an 8-bit RGBA truecolour PNG whatever the display's pixel format;
+// indexed formats are decoded through the display's CLUT.
 int save_framebuffer_as_png(const display_t *d, const char *filename) {
     if (!d || !d->bits) {
         printf("Error: No active display.\n");
@@ -1809,7 +1806,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     // Convert framebuffer to 8-bit RGBA, one row at a time.  The per-pixel
     // decode is display.h's, shared with framebuffer_row_to_rgba above and
     // with the object model -- this was a second, byte-identical copy of that
-    // switch (04-video F-02).  `row + 1` steps past the PNG filter byte.
+    // switch.  `row + 1` steps past the PNG filter byte.
     for (int y = 0; y < height; y++) {
         uint8_t *row = raw_data + y * row_size;
         row[0] = 0; // filter byte: none
@@ -1934,7 +1931,7 @@ static void free_logpoint(logpoint_t *lp) {
     free(lp);
 }
 
-// Delete logpoint by sparse stable id (proposal §2.1). Same shape as
+// Delete logpoint by sparse stable id. Same shape as
 // delete_breakpoint_by_id — match `lp->id`, not list position.
 static int delete_logpoint_by_id(debug_t *debug, int id) {
     logpoint_t **pp = &debug->logpoints;
@@ -2390,7 +2387,7 @@ static breakpoint_t *bp_from(struct object *self) {
 // file.  So reads were typed and writes were not: an unrecognised string
 // silently meant "logical", nothing could complete the values, and
 // object-model.md explicitly lists enum membership as something bodies must
-// not re-check (08-core-infra F-32).
+// not re-check.
 static const char *const debug_space_values[] = {"logical", "physical", NULL};
 #define DEBUG_SPACE_COUNT 2
 
@@ -2777,10 +2774,10 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-// `debug.logpoints.add` — typed named-argument surface (shell v2 §6.2):
+// `debug.logpoints.add` — typed named-argument surface:
 //   debug.logpoints.add addr=0x16A width=l mode=write level=5
 //       message="Ticks pc=${machine.cpu.pc:08x} val=${$value:08x}"
-// `message` is a template slot (§6.3): stored raw, evaluated per fire
+// `message` is a template slot: stored raw, evaluated per fire
 // with `$value`/`$addr`/`$size` bindings in scope. Returns the created
 // entry object, like breakpoints.add.
 static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2964,7 +2961,7 @@ static const member_t bp_collection_members[] = {
      .name = "clear",
      .doc = "Remove every breakpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
-    // `list` retired (shell v2 §6.1): read `entries` — the REPL renders
+    // `list` retired: read `entries` — the REPL renders
     // an object list as a table.
     {.kind = M_CHILD,
      .name = "entries",
@@ -2990,7 +2987,7 @@ static const member_t lp_collection_members[] = {
      .name = "clear",
      .doc = "Remove every logpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
-    // `list` retired (shell v2 §6.1): read `entries`.
+    // `list` retired: read `entries`.
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &logpoint_entry_class,
@@ -3015,9 +3012,9 @@ static const class_desc_t lp_collection_class = {
 // framework validated nothing (it had been told nothing to validate),
 // completion could offer neither the keys nor their values, and the method
 // carried its own boolean vocabulary and its own error wording.
-// object-model.md 6 says in as many words that named arguments exist to
-// retire exactly this: "no flag grammars inside strings" (08-core-infra
-// F-35).
+// docs/core/shell/object-model.md ("Library conventions") says in as many
+// words that named arguments exist to retire exactly this: "no flag
+// grammars inside strings".
 //
 // `debug.log(cat)` with nothing else prints the category's current settings,
 // which is what the bare form always did.
@@ -3863,8 +3860,7 @@ static value_t screen_attr_height(struct object *self, const member_t *m) {
 // is driving it (built-in video or a NuBus card).  Per-card depth is
 // reachable as `nubus.slot[N].card.framebuffer.depth`, but the coverage
 // records the integration suites emit need the depth of the screen that
-// is actually live, without first knowing which device owns it
-// (proposal-integration-test-rework §5.6).
+// is actually live, without first knowing which device owns it.
 static value_t screen_attr_depth(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -3872,7 +3868,7 @@ static value_t screen_attr_depth(struct object *self, const member_t *m) {
     // A fourth copy of the bits-per-pixel switch lived here -- and this is the
     // one every integration row asserts on (`machine.screen.depth`), so it is
     // the copy that had to stay right while the others drifted.  display.h
-    // owns it now (04-video F-01).
+    // owns it now.
     return val_int(d ? (int)display_bpp(d->format) : 0);
 }
 
@@ -3895,12 +3891,13 @@ static value_t screen_attr_par_h(struct object *self, const member_t *m) {
 }
 
 // `screen.source` — a non-owning reference edge to the active NuBus card's
-// framebuffer node (proposal §3.8: machine.screen.source → reference →
+// framebuffer node (machine.screen.source → reference →
 // machine.nubus.slot[N].card.framebuffer).  Re-resolved on each access via
 // nubus_active_framebuffer_object(), so a card swap or machine teardown can
-// never leave it dangling (the proposal's pointer+invalidator hot-path concern
-// applies to per-frame rendering, which uses nubus_primary_display() directly —
-// not this navigational link).  NULL (no source) on builtin-video machines.
+// never leave it dangling (a held pointer plus an invalidator is the hot-path
+// pattern, and it applies to per-frame rendering, which uses
+// nubus_primary_display() directly — not this navigational link).  NULL (no
+// source) on builtin-video machines.
 // `machine.screen.source` — a reference edge to whichever framebuffer node
 // is currently driving the display.  A seated PCI display card wins over a
 // NuBus one: on the machines that have both, the PCI card is the primary
@@ -4008,8 +4005,7 @@ static const arg_decl_t screen_checksum_args[] = {
 };
 // Stride and format: every per-card framebuffer node has had these, and the
 // generic `screen` node -- the one node that exists on EVERY machine,
-// including the ones with built-in video and no card node at all -- did not
-// (04-video F-16).
+// including the ones with built-in video and no card node at all -- did not.
 static value_t screen_attr_stride(struct object *self, const member_t *m) {
     (void)self;
     (void)m;

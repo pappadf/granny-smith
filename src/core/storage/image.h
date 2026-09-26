@@ -22,7 +22,7 @@ typedef struct config config_t;
 // Floppy kinds are named by capacity because that is what distinguishes them
 // on the wire; the encoding follows from it.  image_fd_dd_mfm (720K) was
 // missing, so a 737,280-byte floppy classified as a hard disk and every
-// consumer got a wrong answer (02-floppy F-04).  Ask "is this MFM media?" with
+// consumer got a wrong answer.  Ask "is this MFM media?" with
 // image_is_mfm_floppy(), never `type == image_fd_hd`.
 enum image_type {
     image_other,

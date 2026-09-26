@@ -253,7 +253,7 @@ int ndif_materialize(const ndif_map_t *map, ndif_read_fn read, void *ctx, FILE *
         if (c->type == NDIF_CHUNK_ZERO || c->count == 0)
             continue;
         // Every chunk stays inside the image the header declares; checked
-        // without an addition that could wrap (09-storage F-23).
+        // without an addition that could wrap.
         if (c->count > map->sectors || c->sector > map->sectors - c->count)
             return -EINVAL;
         int rc = (c->type == NDIF_CHUNK_COPY) ? copy_chunk(c, read, ctx, out) : decode_chunk_to(c, read, ctx, out);

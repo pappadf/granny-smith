@@ -3,13 +3,12 @@
 
 // declrom.c
 // Declaration-ROM builder + loader.  The builder generates a complete
-// declaration-ROM image at runtime from declarative inputs — board
-// identity, functional video sResources, spliced 68K code fragments —
-// and stamps the Format Block CRC in C (proposal-nubus-runtime-vrom
-// §3.3).  Serialisation is single-pass bottom-up: leaf records first,
-// then the lists that reference them, then the directory, then the
-// Format Block, so every stored offset is a backward self-relative
-// reference and no patching pass exists to get wrong.
+// declaration-ROM image at runtime from declarative inputs — board identity,
+// functional video sResources, spliced 68K code fragments — and stamps the
+// Format Block CRC in C.  Serialisation is single-pass bottom-up: leaf records
+// first, then the lists that reference them, then the directory, then the
+// Format Block, so every stored offset is a backward self-relative reference
+// and no patching pass exists to get wrong.
 
 #include "declrom.h"
 #include "card.h"
@@ -525,10 +524,10 @@ bool declrom_finalise(declrom_builder_t *b, uint8_t byte_lanes) {
 }
 
 // === Structural validation ==================================================
-// The §5 permanent guard: a walk of the generated (or any dense $0F)
-// image that fails loudly instead of handing the Slot Manager a corrupt
-// directory.  The zero-offset check specifically fences the silent
-// `|`-fold class of assembler/serialiser bugs.
+// The permanent guard: a walk of the generated (or any dense $0F) image that
+// fails loudly instead of handing the Slot Manager a corrupt directory.  The
+// zero-offset check specifically fences the silent `|`-fold class of
+// assembler/serialiser bugs.
 
 // Read a big-endian long inside the image with bounds checking.
 static bool img_be32(const uint8_t *img, size_t size, size_t at, uint32_t *out) {
@@ -973,7 +972,7 @@ bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_si
         if (load_chip_into_bus(path, chip_size, bus_buf, bus_size)) {
             // Report the winning pick into the built-from record so
             // machine.config.vroms answers which revision this machine
-            // actually runs (proposal-named-args-boot-config §4.2).
+            // actually runs.
             uint32_t crc = 0;
             bool explicit_pick = false;
             vrom_offer_info(path, &crc, &explicit_pick);

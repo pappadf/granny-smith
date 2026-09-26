@@ -61,10 +61,10 @@ void tlb_track_page(uint32_t page_index) {
 // caches one descriptor for the whole covered range and never re-walks; the
 // old emulator approximation eagerly materialised every covered 4 KB page
 // into the SoA arrays (~9,200 entries per walk), which dominated steady-state
-// host time under System 6's per-VBL _SwapMMUMode invalidation storm (see
-// docs/proposals/proposal-performance-optimizations.md §5.1).  Instead, cache
-// the walked descriptor itself; on a later fault inside the covered range,
-// fill only the touched 4 KB page from the cached descriptor — no re-walk.
+// host time under System 6's per-VBL _SwapMMUMode invalidation storm.
+// Instead, cache the walked descriptor itself; on a later fault inside the
+// covered range, fill only the touched 4 KB page from the cached descriptor —
+// no re-walk.
 typedef struct atc_block {
     uint32_t log_base; // logical range base (aligned to coverage)
     uint32_t log_mask; // ~(coverage-1)
@@ -751,7 +751,7 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
     }
 }
 
-// === memory_map_host_region — public bus-map API (proposal §3.2.3) =========
+// === memory_map_host_region — public bus-map API ===========================
 //
 // The names below live on the memory map (declared in memory.h) but the
 // storage they manipulate is still the 4-slot mmu_state_t today; this
@@ -863,7 +863,7 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
 }
 
 // memory_set_bus_error_range now lives in memory.c: the window is a bus
-// property, not an MMU one (05-chipsets-irq F-23).
+// property, not an MMU one.
 
 // Invalidate the software TLB.  Uses the tracking list to zero only
 // populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.

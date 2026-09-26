@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // script.h
-// Shell v2 statement parser + interpreter (proposal-shell-control-flow-
-// and-functions.md §3). A script is parsed into a statement tree
-// (blocks resolved by the line-position rule), then interpreted.
+// Shell statement parser + interpreter (see docs/core/shell/shell.md).
+// A script is parsed into a statement tree (blocks resolved by the
+// line-position rule), then interpreted.
 // Expressions are stored as text and evaluated where they appear, at
 // statement-execution time — which is what makes `while` conditions
 // re-test per iteration.
@@ -34,7 +34,7 @@ void script_free(script_t *s);
 
 // Execute a parsed script at top level. `interactive` selects REPL
 // semantics (non-V_NONE statement results print); scripts print
-// nothing implicitly (§5). Returns 0 on success, -1 if the script
+// nothing implicitly. Returns 0 on success, -1 if the script
 // aborted on an error.
 int script_exec(script_t *s, bool interactive);
 
@@ -65,7 +65,7 @@ typedef bool (*script_pump_fn)(void);
 void script_set_pump_hook(script_pump_fn fn);
 
 // Ctrl-C for loops: the interpreter checks this once per iteration and
-// unwinds with an error (§3.8). Wired to `shell.interrupt`.
+// unwinds with an error. Wired to `shell.interrupt`.
 void script_interrupt(void);
 
 // Fill an expr_ctx bound to the object root and the shell binding

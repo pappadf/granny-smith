@@ -43,7 +43,7 @@
 LOG_USE_CATEGORY_NAME("afp");
 
 // AFP versions we speak.  "AFPVersion 2.1" is only advertised because every
-// 2.1 command below is implemented (WP-5); the honest-negotiation rule is
+// 2.1 command below is implemented; the honest-negotiation rule is
 // that this list and the dispatch table move together.
 static const char *const k_afp_versions[] = {"AFPVersion 2.0", "AFPVersion 2.1"};
 
@@ -140,7 +140,7 @@ void vol_record_store(const vol_t *v) {
     uint8_t rec[8];
     WR_BE32(rec, AFP_VOLREC_MAGIC);
     WR_BE32(rec + 4, v->backup_date);
-    if (gs_write_atomic(path, rec, sizeof(rec)) != 0) // it was rewritten in place (N-26)
+    if (gs_write_atomic(path, rec, sizeof(rec)) != 0) // it was rewritten in place
         LOG(1, "AFP: cannot record the backup date of '%s'", v->name);
 }
 
@@ -173,8 +173,8 @@ vol_t *find_vol_by_name(const char *name) {
 }
 
 // Report a failure through the caller's message buffer as well as the log, so
-// the object model can surface the real reason instead of "see log"
-// (object-model proposal §2.1, "errors in-band").
+// the object model can surface the real reason instead of "see log": errors
+// travel in-band.
 static int vol_fail(char *err, size_t err_len, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 static int vol_fail(char *err, size_t err_len, const char *fmt, ...) {
     char buf[192];
@@ -400,7 +400,7 @@ int atalk_afp_set_name(const char *name, char *err, size_t err_len) {
     if (strlen(name) > 32)
         return vol_fail(err, err_len, "server name max 32 chars ('%s' is %zu)", name, strlen(name));
     // Published under the new name first, stored after: a name another entity
-    // holds leaves the server advertised, and named, as it was (N-23).
+    // holds leaves the server advertised, and named, as it was.
     if (g_afp_enabled && afp_nbp_publish(name) != 0)
         return vol_fail(err, err_len, "the name '%s' is already taken on the network", name);
     snprintf(g_afp_server_object, sizeof(g_afp_server_object), "%s", name);
@@ -528,7 +528,7 @@ static size_t write_pstr(uint8_t *dst, const char *cstr) {
 
 // Flags word we advertise.  Every bit here is backed by an implementation:
 // FPCopyFile is dispatched, FPChangePassword is not, and server messages are
-// live now that FPGetSrvrMsg and ASP Attention exist (WP-5/WP-8).
+// live now that FPGetSrvrMsg and ASP Attention exist.
 static uint16_t afp_srvr_flags(void) {
     return (uint16_t)(AFP_SRVR_FLAG_COPYFILE | AFP_SRVR_FLAG_SERVERMESSAGES | AFP_SRVR_FLAG_NOSAVEPWD);
 }

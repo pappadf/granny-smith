@@ -87,8 +87,8 @@ size_t floppy_zone_image_offset(int track, int side, int num_sides) {
 }
 
 // Keyed on image_t::type, which classify_image() derives from the exact byte
-// size -- the only classifier that was ever right (02-floppy F-17 preferred
-// swim3_media's version, and this is it, promoted).
+// size -- the only classifier that was ever right (this is swim3_media's
+// version, promoted).
 // Fills in everything that follows from a format: side count, sectors per
 // track, the header's format byte, and the MFM/GCR framing flag.
 void floppy_media_apply_format(floppy_media_t *m, floppy_format_t format) {
@@ -383,7 +383,7 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
         // used to synthesise zeros ("just assume an empty tag for now"), so a
         // DiskCopy 4.2 image with tags lost them on any read through the
         // IWM/SWIM path -- and the same image behaved differently on a IIci and
-        // a 7100, which does round-trip them (02-floppy F-14).
+        // a 7100, which does round-trip them.
         uint8_t tag[12];
         memset(tag, 0, sizeof tag);
         if (img)
@@ -409,7 +409,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         return NULL;
     // MFM media is not GCR — reject it so the ROM falls through to the ISM
     // (SWIM) read path.  This used to test `== image_fd_hd`, so a 720K disk
-    // (which classified as a hard disk before F-04) was GCR-encoded from
+    // (which once classified as a hard disk) was GCR-encoded from
     // MFM-laid-out bytes and handed to the IWM as if it were an 800K disk.
     if (image_is_mfm_floppy(img->type))
         return NULL;
@@ -501,8 +501,8 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 // malloc'd 128 keyed on `codeword & 0x7F` -- and since every legal codeword has
 // bit 7 set ($96..$FF), that aliased 64 illegal bytes onto legal values ($16 ->
 // $96, $1F -> $9F, ...), defeating the very check meant to catch corrupt
-// nibbles (02-floppy F-33).  The old table was also never freed and made the
-// function non-reentrant.
+// nibbles.  The old table was also never freed and made the function
+// non-reentrant.
 uint8_t decode_gcr(uint8_t gcr_codeword) {
     static uint8_t decode_table[256];
     static bool built = false;
@@ -521,14 +521,14 @@ uint8_t decode_gcr(uint8_t gcr_codeword) {
 // prints and pauses the scheduler and then CONTINUES, so a guest that writes a
 // plausible header with a bad checksum used to halt the emulator from inside a
 // flush; and under GS_FAST the asserts vanish entirely and corrupt nibbles were
-// written to the user's disk image as data (02-floppy F-07).
+// written to the user's disk image as data.
 //
 // Returns NULL on any malformed field, having consumed nothing the caller
-// relies on; the caller skips the sector and rescans.  `end` bounds every read
-// (02-floppy F-06): the old scan guard allowed 730 bytes from the mark while
-// the worst case here is 817 -- 10 header bytes, a data-mark search of up to
-// 100, then 4 + 16 + 680 + 3 + 4 -- so up to ~87 bytes past the end of the
-// malloc'd track buffer were read on every flush.
+// relies on; the caller skips the sector and rescans.  `end` bounds every
+// read: the old scan guard allowed 730 bytes from the mark while the worst
+// case here is 817 -- 10 header bytes, a data-mark search of up to 100, then
+// 4 + 16 + 680 + 3 + 4 -- so up to ~87 bytes past the end of the malloc'd
+// track buffer were read on every flush.
 static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const uint8_t *end, int *track_out,
                               int *side_out, int *sector_out) {
 #define NEED(n)                                                                                                        \
@@ -833,7 +833,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
             // decode_sector bounds every read against `end` and returns
             // NULL on anything malformed, so the scan only has to find a
             // plausible mark.  The old guard was `p + 730 < end`, ~87 bytes
-            // short of the decoder's 817-byte worst case (02-floppy F-06).
+            // short of the decoder's 817-byte worst case.
             while (p + 3 <= end) {
                 if (p[0] == 0xD5 && p[1] == 0xAA && p[2] == 0x96) {
                     uint8_t tag[12];
@@ -854,7 +854,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
                     // Unchecked, a header claiming sector 40 wrote 20 KB past
                     // the start of its own track, into neighbouring tracks'
                     // data -- arbitrary corruption of a mounted writable image
-                    // from one track write (02-floppy F-13).
+                    // from one track write.
                     if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < NUM_SIDES &&
                         hdr_sector >= 0 && hdr_sector < iwm_sectors_per_track(hdr_track)) {
                         size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
@@ -863,7 +863,7 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
                             // The 12 GCR tag bytes carry HFS/MFS scavenger
                             // metadata; SWIM3 round-trips them and this path
                             // used to decode them into a local and throw them
-                            // away (02-floppy F-14).
+                            // away.
                             disk_write_tag(img, off / 512u, tag, sizeof tag);
                             LOG(5, "Drive %d: Write sector track=%d side=%d sector=%d", drive_index, hdr_track,
                                 hdr_side, hdr_sector);

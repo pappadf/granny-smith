@@ -119,7 +119,7 @@ void sound_enable(sound_t *sound, bool enabled) {
     sound->enabled = enabled;
 }
 
-// === M7f — read-only views and mute helper ==================================
+// === Read-only views and mute helper ========================================
 
 bool sound_get_enabled(const sound_t *sound) {
     return sound ? sound->enabled : false;
@@ -206,7 +206,7 @@ void sound_vbl(sound_t *restrict sound) {
 
     // sound_init calls sound_use_buffer unconditionally, and
     // ram_native_pointer is mem->image + addr -- it cannot be NULL for a
-    // live machine.  (F-40 listed this as reachable; it is not.)
+    // live machine.
     GS_ASSERT(sound->buffer != NULL);
     sound->scan_idx = VBL_OFFSET;
     sound->scan_left = SCAN_BATCHES;
@@ -315,7 +315,7 @@ void sound_delete(sound_t *sound) {
     if (!sound)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(sound->scheduler, sound);
     if (sound->object) {
         sound_object_delete(sound->object);
@@ -336,10 +336,10 @@ void sound_checkpoint(sound_t *restrict sound, checkpoint_t *checkpoint) {
 
 // === Object-model class descriptor =========================================
 //
-// Plus's PWM sound module per proposal §5.4: `sound.enabled`,
-// `sound.sample_rate`, `sound.volume` attributes plus `mute(bool)`
-// method. SE/30 / IIcx use the Apple Sound Chip and don't populate
-// `cfg->sound`; the object is only attached when the field is set.
+// Plus's PWM sound module: `sound.enabled`, `sound.sample_rate`,
+// `sound.volume` attributes plus `mute(bool)` method. SE/30 / IIcx use the
+// Apple Sound Chip and don't populate `cfg->sound`; the object is only
+// attached when the field is set.
 //
 // instance_data is the sound_t* itself; lifetime is tied to
 // sound_init / sound_delete.

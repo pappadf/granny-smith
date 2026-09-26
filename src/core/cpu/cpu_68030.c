@@ -528,7 +528,7 @@ static int cpu_movec_rn_rc(cpu_t *cpu) {
 // The CPU half of a reset, and only that half: everything inside the package.
 // MC68030 User's Manual §5.2.1.  Exported because level 2 -- machine.reset(),
 // the reset button, Cuda CMD_RESET -- is "bus_reset plus this", and the Cuda
-// path used to do neither on a 68k machine (05-chipsets-irq F-04).
+// path used to do neither on a 68k machine.
 //
 // The caller must have asserted the bus reset FIRST: the vectors are read from
 // $00000000, which is ROM only while the overlay is armed, and re-arming the
@@ -557,8 +557,8 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     // board's /RESET net.  The family bus_reset handlers used to clear it --
     // mac030_glue_reset took an `mmu` argument for exactly this -- which put
     // CPU-internal state on the wrong side of the package boundary, the only
-    // line the hardware actually draws (reset proposal §3.1.3).  The 68040
-    // equivalent was already on this side, in cpu_hardware_reset_040.
+    // line the hardware actually draws.  The 68040 equivalent was already on
+    // this side, in cpu_hardware_reset_040.
     mmu_state_t *mmu = (mmu_state_t *)cpu->mmu;
     if (mmu) {
         mmu->enabled = false;
@@ -631,9 +631,9 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     /* INTERRUPT.  Reset is highest and address error outranks bus error -- the  */                                    \
     /* old comment here had both backwards.  No behavioural consequence today    */                                    \
     /* (we implement neither reset-as-exception nor address error), but it would */                                    \
-    /* mislead whoever implements F-05.  Handle the deferred bus error first so  */                                    \
-    /* trace > interrupt. Handle deferred bus error first so it preempts a trace */                                    \
-    /* that the same instruction would otherwise have raised. */                                                       \
+    /* mislead whoever implements address error.  Handle the deferred bus error  */                                    \
+    /* first so trace > interrupt, and so it preempts a trace that the same      */                                    \
+    /* instruction would otherwise have raised.                                  */                                    \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
         g_bus_error_pending = false;                                                                                   \
         /* PMMU table-walk failures use Format $B (retry) so the kernel's                                              \

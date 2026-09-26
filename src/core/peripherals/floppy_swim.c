@@ -19,11 +19,11 @@
 #include "image.h"
 
 // One log category for the whole subsystem -- drive mechanics AND every
-// controller (02-floppy F-21).  `debug.log swim 10` on an SE/30 used to turn on
-// the ISM register trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush
-// or eject, because those live in floppy.c under a different name; the same
-// split hid the DBDMA ring from `debug.log swim3 10` on a 7500.  Level
-// convention: 1-2 state changes, 3-5 per-operation, 6+ per-register/per-byte.
+// controller.  `debug.log swim 10` on an SE/30 used to turn on the ISM register
+// trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush or eject,
+// because those live in floppy.c under a different name; the same split hid the
+// DBDMA ring from `debug.log swim3 10` on a 7500.  Level convention: 1-2 state
+// changes, 3-5 per-operation, 6+ per-register/per-byte.
 LOG_USE_CATEGORY_NAME("floppy");
 
 // IWM->ISM mode switch pattern
@@ -93,10 +93,10 @@ static uint8_t ism_fifo_pop(floppy_t *floppy, bool *is_mark_out) {
 // MFM Sector-Level Emulation
 // ============================================================================
 
-// MFM sectors per track for the medium.  Three copies of
-// `disk_size(img) > 1000000 ? 18 : 9` used to live in this file (02-floppy
-// F-17); they happened to give the right answer for 720K only because 737,280
-// is under the threshold.  The geometry now comes from one place.
+// MFM sectors per track for the medium.  Three copies of `disk_size(img) >
+// 1000000 ? 18 : 9` used to live in this file; they happened to give the right
+// answer for 720K only because 737,280 is under the threshold.  The geometry
+// now comes from one place.
 static int ism_mfm_spt(floppy_t *floppy, int drv) {
     floppy_media_t m;
     if (!floppy_media_current(floppy, (unsigned)drv, &m))
@@ -112,9 +112,8 @@ static int ism_mfm_spt(floppy_t *floppy, int drv) {
 // ISM ASIC spec, Setup register $5: bit 2 sets GCR mode, and bit 6 ("the read
 // and write Trans-Space logic bypassed") "must be set whenever the GCR mode is
 // set".  Neither bit is read anywhere: wSetup just stores the byte and
-// mfm_build_sector synthesises an MFM address+data field unconditionally
-// (02-floppy F-09).  SWIM3 builds its whole format-detection walk on exactly
-// this predicate.
+// mfm_build_sector synthesises an MFM address+data field unconditionally.
+// SWIM3 builds its whole format-detection walk on exactly this predicate.
 //
 // THE PREDICATE IS CORRECT AND CANNOT BE APPLIED YET.  Measured, not guessed:
 // instrumenting it over se30-mactest without acting on it shows it would refuse
@@ -133,10 +132,10 @@ static int ism_mfm_spt(floppy_t *floppy, int drv) {
 // not "this disk currently carries MFM".  A predicate over the chip's framing
 // and the medium's encoding needs the second, and there is nowhere to get it.
 //
-// Implementing F-09 therefore means giving the ISM path a real GCR mode -- the
-// S_GCR framing SWIM2 has -- so that GCR framing over GCR media produces GCR
-// fields, and a genuine mismatch produces nothing.  That is a new capability,
-// not a gate in front of the existing one.  The IOP protocol's
+// Enforcing the check therefore means giving the ISM path a real GCR mode --
+// the S_GCR framing SWIM2 has -- so that GCR framing over GCR media produces
+// GCR fields, and a genuine mismatch produces nothing.  That is a new
+// capability, not a gate in front of the existing one.  The IOP protocol's
 // CurrentFormat/FormatsAllowed is the shape of the missing state.
 //
 // Kept, unused, because it is what that work will need.  Do not wire it in
@@ -181,10 +180,10 @@ static void mfm_build_sector(floppy_t *floppy) {
     int side = floppy->mfm_cur_side;
     int sector = floppy->mfm_cur_sector; // 1-based
 
-    // The chip must be framing what this medium actually carries (02-floppy
-    // F-09).  READ path only: a WRITE is how a format gets laid down, so
-    // gating writes on the format already present would make the first format
-    // of a disk impossible -- the medium could never change its encoding.
+    // The chip must be framing what this medium actually carries.  READ path
+    // only: a WRITE is how a format gets laid down, so gating writes on the
+    // format already present would make the first format of a disk impossible
+    // -- the medium could never change its encoding.
     //
     // Applying this at all only became possible once the medium's CURRENT
     // format was tracked separately from its physical class: the predicate
@@ -222,7 +221,7 @@ static void mfm_build_sector(floppy_t *floppy) {
 
     // Fill the sector buffer from the one MFM layout (floppy_geometry.h).
     // This used to be ~70 lines laying the fields down by hand, a second
-    // description of the same format as swim3_xfer.c's (02-floppy F-20).
+    // description of the same format as swim3_xfer.c's.
     mfm_buf_sink_t sink = {floppy->mfm_sector_buf, floppy->mfm_sector_mark, 0};
     memset(sink.marks, 0, MFM_SECTOR_BUF_SIZE);
     floppy_mfm_emit_sector(mfm_buf_emit, &sink, track, side, sector, sector_data, (sectors_per_track == 18) ? 101 : 80,
@@ -233,7 +232,7 @@ static void mfm_build_sector(floppy_t *floppy) {
     floppy->mfm_buf_pos = 0;
     // mfm_cur_track is what ism_write_capture_flush later uses as the WRITE
     // target, so refreshing it here is what let a head step between ACTION and
-    // the flush redirect a captured sector to the new track (02-floppy F-45).
+    // the flush redirect a captured sector to the new track.
     // `side` is read from mfm_cur_side at the top of this function, so assigning
     // it back was a self-assignment that made the data flow unreadable.
     floppy->mfm_cur_track = (uint8_t)track;
@@ -300,7 +299,7 @@ static void mfm_deliver_byte(floppy_t *floppy) {
 // engine, so the FIFO's only observable role on the write side is the
 // handshake's free-space report, and taking the byte here keeps that report
 // truthful WITHOUT the handshake register draining the FIFO as a side effect
-// of being read -- which is the half of 02-floppy F-25 that matters here.
+// of being read -- the side effect the note above rHandshake describes.
 //
 // Pacing writes at the real 16 us/byte was tried and reverted: MacTest formats
 // an 800K disk through ISM write mode, roughly a million bytes, which at the
@@ -320,7 +319,7 @@ static void ism_write_shifter_take(floppy_t *floppy) {
 // The ISM moves one byte per bit-cell time, on its own clock, and the FIFO is
 // the buffer between that clock and the CPU.  Modelling it that way is what
 // lets rHandshake be what the hardware is -- a STATUS register -- instead of
-// the thing that pumps the transfer (02-floppy F-25).
+// the thing that pumps the transfer.
 //
 // MFM at 500 kbit/s is 16 us per byte (swim.md: "a new byte arrives every 16
 // microseconds", and the 2-byte FIFO extends the allowable CPU latency to
@@ -364,7 +363,7 @@ void floppy_swim_service_callback(void *source, uint64_t data) {
         // Raising the bit would be stricter than the model's own behaviour.
         // Making it truthful means modelling the dropped byte -- at which point
         // reads genuinely fail, which is a fidelity step well beyond this
-        // finding.  See ISM_ERR_UNDERRUN in floppy_internal.h.
+        // model.  See ISM_ERR_UNDERRUN in floppy_internal.h.
     }
 
     floppy_swim_service_arm(floppy);
@@ -453,7 +452,7 @@ static void ism_write_capture_flush(floppy_t *floppy) {
     // ran, the model only knew the medium's CLASS (from the image size) and
     // guessed its format; now it knows.  This is what lets the framing
     // predicate work at all -- MacTest formats a DD disk as MFM, which the
-    // image's 800K size can never express (02-floppy F-09).
+    // image's 800K size can never express.
     floppy_media_set_format(floppy, (unsigned)drv, m.hd ? FLOPPY_FMT_MFM_1440K : FLOPPY_FMT_MFM_720K);
 
     size_t written = disk_write_data(img, offset, floppy->ism_write_buf, 512);
@@ -664,11 +663,10 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
 
         // Bits 6-7: FIFO status.
         //
-        // READING THIS REGISTER MOVES DATA, and that is 02-floppy F-25: in
-        // write mode it drains the FIFO, and in read mode it calls
-        // mfm_fill_fifo, which can advance the sector and perform a
-        // disk_read_data.  The finding is right that this is wrong -- SWIM3,
-        // which is scheduler-driven, keeps its register reads pure.
+        // READING THIS REGISTER MOVES DATA: in write mode it drains the FIFO,
+        // and in read mode it calls mfm_fill_fifo, which can advance the
+        // sector and perform a disk_read_data.  That is wrong -- SWIM3, which
+        // is scheduler-driven, keeps its register reads pure.
         //
         // TRIED AND REVERTED (2026-09-11).  Making it pure -- reporting
         // availability without performing the refill, and having wData/wMark
@@ -679,19 +677,18 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         // on the handshake read to pump the transfer and rData's own refill is
         // not enough in the sequence the ROM actually uses.
         //
-        // So F-25 cannot be fixed by making this register pure.  It needs what
-        // the proposal calls for and this branch deliberately did not attempt:
-        // a scheduler-paced service slot at the data rate (16 us/byte at
-        // 500 kbit/s), the way swim3_xfer.c works, so that data moves on its
-        // own clock and the register has something truthful to report without
-        // doing the work.  That is the real shape of the fix, and it is now
-        // known to be the ONLY shape -- which is more than the finding knew.
+        // So this cannot be fixed by making the register pure.  It needs what
+        // was deliberately not attempted here: a scheduler-paced service slot
+        // at the data rate (16 us/byte at 500 kbit/s), the way swim3_xfer.c
+        // works, so that data moves on its own clock and the register has
+        // something truthful to report without doing the work.  That is the
+        // real shape of the fix, and it is now known to be the ONLY shape.
         if (floppy->ism_mode & ISM_MODE_WRITE) {
-            // Drains the FIFO as a side effect of being READ.  This is the
-            // defect F-25 names and it is REAL -- a debugger read, a logpoint
-            // or the object model touching this register changes emulated
-            // state, and throughput depends on poll count rather than time.
-            // It cannot be removed on its own: see the note above rHandshake.
+            // Drains the FIFO as a side effect of being READ.  This defect is
+            // REAL -- a debugger read, a logpoint or the object model touching
+            // this register changes emulated state, and throughput depends on
+            // poll count rather than time.  It cannot be removed on its own:
+            // see the note above rHandshake.
             if (floppy->ism_mode & ISM_MODE_ACTION)
                 floppy->ism_fifo_count = 0;
             int space = ISM_FIFO_SIZE - floppy->ism_fifo_count;
@@ -840,9 +837,9 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             // every other push site, which checks and sets an error -- so with
             // a byte already in a two-entry FIFO the CRC low byte, or both,
             // vanished with no error flag and the field reached the disk with
-            // no CRC (02-floppy F-34).  Modelling it as a token makes the
-            // capacity question disappear: the token rides with the entry
-            // rather than occupying one.
+            // no CRC.  Modelling it as a token makes the capacity question
+            // disappear: the token rides with the entry rather than occupying
+            // one.
             // The token rides the FIFO and the CRC bytes shift out after the
             // last data byte.  With no flux-level engine the token and an
             // immediate emission are indistinguishable, so what is modelled is
@@ -1009,7 +1006,7 @@ void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t byte) {
 // MAC030_IO_STRIDE_512 (the chip's A0-A3 are wired to A9-A12), and the IIfx /
 // Q900 IOP via swim_bypass_addr() (2-byte centres from +$20).  This file used
 // to bake the SE/30's `(addr >> 9) & 0x0F` in, which is why every register
-// aliased to index 0 through the IOP bypass (02-floppy F-03).
+// aliased to index 0 through the IOP bypass.
 
 // Memory interface handler for 8-bit reads
 static uint8_t swim_read_uint8(void *ctx, uint32_t addr) {
@@ -1019,8 +1016,8 @@ static uint8_t swim_read_uint8(void *ctx, uint32_t addr) {
 // The chip is on one byte of the data bus, so a wide access reaches nothing.
 // These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
-// halted the emulator and surfaced in CI as an unexplained hang (02-floppy
-// F-32).  Log it and return open bus, as grand_central.c does.
+// halted the emulator and surfaced in CI as an unexplained hang.  Log it and
+// return open bus, as grand_central.c does.
 static uint16_t swim_read_uint16(void *ctx, uint32_t addr) {
     (void)ctx;
     LOG(1, "%s: 16-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);

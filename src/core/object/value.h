@@ -138,7 +138,7 @@ value_t val_ref(const char *path); // node reference by path text (strdup'd)
 // capped at 2^20 entries -- which at sizeof(value_t) == 32 permitted a 32 MB
 // single calloc on the 32-bit wasm heap, to run a loop.  `for` over a real
 // collection legitimately walks a list that already exists; range() was the
-// only iterable that fabricated one (08-core-infra F-37).
+// only iterable that fabricated one.
 value_t val_range_step(int64_t start, int64_t stop, int64_t step);
 
 // Shorthand for step 1, the `a..b` spelling.
@@ -212,7 +212,7 @@ void value_free_ptr(value_t *v); // wrapper compatible with cleanup attribute
 uint64_t val_as_u64(const value_t *v, bool *ok);
 int64_t val_as_i64(const value_t *v, bool *ok);
 double val_as_f64(const value_t *v, bool *ok);
-bool val_as_bool(const value_t *v); // truthiness (proposal §2.5)
+bool val_as_bool(const value_t *v); // truthiness
 
 // Borrowed pointer to the string body or NULL. The pointer is only valid
 // while *v is alive.
@@ -226,7 +226,7 @@ const char *val_as_str(const value_t *v);
 // case-sensitive and log.c's parse_onoff was case-INsensitive and accepted a
 // narrower set, so `debug.log cpu stdout=ON` worked while
 // `machine.floppy.drive[0].insert path ON` did not, for no reason a user
-// could infer (08-core-infra F-55).  Note this does NOT subsume the
+// could infer.  Note this does NOT subsume the
 // true/false/none LITERAL grammars in parse.c and script.c: those are
 // language keywords, not coercions, and must not start accepting "yes".
 bool val_parse_bool(const char *s, bool *out);

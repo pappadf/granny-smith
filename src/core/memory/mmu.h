@@ -140,7 +140,7 @@ typedef struct mmu_state {
     // range generate bus errors.  Outside this range, unmapped TT-mapped
     // reads return 0 silently (as the hardware does for non-NuBus slots).
 
-    // 68040 front-end (Quadra proposal §6.5): when non-NULL, this machine's
+    // 68040 front-end: when non-NULL, this machine's
     // translation front-end (TTR match + fixed three-level walk in mmu040.c)
     // replaces the PMMU one; the physical resolver, SoA fill, and TLB
     // tracking above are shared.  `enabled` mirrors the 040 TC.E bit so the

@@ -264,8 +264,7 @@ struct scsi {
         // It produced the right answer anyway, because scsi_blocks_ok casts
         // back through uint32_t and carries a comment explaining why it has
         // to.  Fixing the type removes the need for that compensation, and
-        // makes the %u the LOG lines already use correct rather than lucky
-        // (03-scsi F-48).
+        // makes the %u the LOG lines already use correct rather than lucky.
         //
         // tl is 32 bits rather than the CDB's 16 so the same is true of it and
         // so the assignments below do not narrow; scsi_get_cmd_tl() still

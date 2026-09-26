@@ -48,8 +48,8 @@ struct config {
     uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
-    // Core CPU and memory subsystems.  The main CPU is a tagged handle
-    // (PPC proposal §3.9a): cpu_arch discriminates, and exactly one of
+    // Core CPU and memory subsystems.  The main CPU is a tagged handle:
+    // cpu_arch discriminates, and exactly one of
     // cpu / ppc is non-NULL on a built machine.
     cpu_arch_t cpu_arch; // set by system_create from machine->cpu_model
     cpu_t *cpu; // 68K main CPU (NULL on PPC machines)

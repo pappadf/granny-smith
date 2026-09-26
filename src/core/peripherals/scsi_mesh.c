@@ -3,9 +3,9 @@
 
 // mesh.c
 // MESH (343S1146) — Apple's fast internal SCSI cell, new with TNT.
-// Sixteen byte-wide registers on $10 centres at island +$18000
-// (mesh-scsi.md §2), a 16-byte FIFO for the non-data phases, DBDMA
-// channel 10 for the data phases, Grand Central interrupt 13.
+// Sixteen byte-wide registers on $10 centres at island +$18000, a 16-byte FIFO
+// for the non-data phases, DBDMA channel 10 for the data phases, Grand Central
+// interrupt 13.
 //
 // The register core is a behavioral model over the shared bus/target
 // machinery (scsi.c) through the same scsi_external_* API the 53C96
@@ -17,8 +17,8 @@
 // driver class spin-waits on REQ before dropping ATN), and each
 // completed sequence command latches INT_CMDDONE.
 //
-// Contract points pinned from the driver corpus (linux mesh.c,
-// mesh-scsi.md §5-§8):
+// Contract points pinned from the driver corpus (Linux's mesh.c and the
+// Mac OS ROM and disk drivers):
 //   * Quick commands (ENBRESEL, DISRESEL, FLUSHFIFO, ENBPARITY,
 //     DISPARITY, and a zero sequence write) complete SILENTLY — the
 //     driver reads `interrupt` right after DISRESEL and treats a
@@ -37,7 +37,7 @@
 //   * The count registers are a LIVE down-counter: drivers read the
 //     residue back after halting a short DMA transfer.
 //   * Cause bits (exception/error) latch BEFORE the interrupt summary
-//     bit, and all three registers are W1C (§8).
+//     bit, and all three registers are W1C.
 
 #include "scsi_mesh.h"
 
@@ -52,7 +52,7 @@
 
 LOG_USE_CATEGORY_NAME("mesh");
 
-// Register indices (offset / $10) — mesh-scsi.md §2.
+// Register indices (offset / $10).
 #define MR_COUNT_LO    0x0
 #define MR_COUNT_HI    0x1
 #define MR_FIFO        0x2
@@ -70,7 +70,7 @@ LOG_USE_CATEGORY_NAME("mesh");
 #define MR_MESH_ID     0xE
 #define MR_SEL_TIMEOUT 0xF
 
-// sequence (§3.1): modifiers high nibble, command low nibble.
+// sequence: modifiers high nibble, command low nibble.
 #define SEQ_DMA_MODE  0x80u
 #define SEQ_ATN       0x20u
 #define CMD_ARBITRATE 0x1
@@ -89,7 +89,7 @@ LOG_USE_CATEGORY_NAME("mesh");
 #define CMD_RESETMESH 0xE
 #define CMD_FLUSHFIFO 0xF
 
-// bus_status0 (§3.2)
+// bus_status0
 #define BS0_REQ 0x20u
 #define BS0_ACK 0x10u
 #define BS0_ATN 0x08u
@@ -97,30 +97,29 @@ LOG_USE_CATEGORY_NAME("mesh");
 #define BS1_RST 0x80u
 #define BS1_BSY 0x40u
 
-// exception (§3.3) / error (§3.4) / interrupt (§3.5)
+// exception / error / interrupt
 #define EXC_PHASEMM   0x02u
 #define EXC_SELTO     0x01u
 #define INT_ERROR     0x04u
 #define INT_EXCEPTION 0x02u
 #define INT_CMDDONE   0x01u
 
-// SDTR responses (Phase E part 3).  Message-out bytes absorbed here
-// are assembled and parsed; an initiator-offered SDTR (the SIM
-// framework's needNegot path, or the loaded driver's inline probe that
-// renegotiates with 01 03 01 00 00) gets an SDTR response presented
-// through a virtual MESSAGE IN phase, with EXC_PHASEMM latched on the
-// completed message-out — the phase change to MESSAGE IN is
-// target-driven, and the loaded driver's post-msgout check keys on
-// exception&6 to fix up the sent count and hand the message phase to
-// the SIM framework.  A plain identify raises nothing: the underlying
-// bus phase was COMMAND throughout, the MSG OUT the driver saw was our
-// virtual overlay.  The target never INITIATES negotiation: neither
-// shipping driver can accept an unsolicited extended message (the
-// unsolicited-message hooks — ROM $FFEB89BC, driver $1A335C — and the
-// driver's message-in state $1A2EF4 all BUSFREE on one).  Negotiation
-// is NOT what arms the data phases either — the T12 wall fell to the
-// SEQ_BUSFREE expect-free law (see CMD_BUSFREE) — the full forensic
-// story lives in the handover §8.
+// SDTR responses.  Message-out bytes absorbed here are assembled and
+// parsed; an initiator-offered SDTR (the SIM framework's needNegot
+// path, or the loaded driver's inline probe that renegotiates with 01
+// 03 01 00 00) gets an SDTR response presented through a virtual
+// MESSAGE IN phase, with EXC_PHASEMM latched on the completed
+// message-out — the phase change to MESSAGE IN is target-driven, and
+// the loaded driver's post-msgout check keys on exception&6 to fix up
+// the sent count and hand the message phase to the SIM framework.  A
+// plain identify raises nothing: the underlying bus phase was COMMAND
+// throughout, the MSG OUT the driver saw was our virtual overlay.  The
+// target never INITIATES negotiation: neither shipping driver can
+// accept an unsolicited extended message (the unsolicited-message hooks
+// — ROM $FFEB89BC, driver $1A335C — and the driver's message-in state
+// $1A2EF4 all BUSFREE on one).  Negotiation is NOT what arms the data
+// phases either — they hang off the SEQ_BUSFREE expect-free law (see
+// CMD_BUSFREE).
 // The response values mirror the framework's own offer (block+48/49):
 // offset 15, period factor 25 (100 ns, fast SCSI).
 #define MESH_SDTR_PERIOD 25u
@@ -150,7 +149,7 @@ static void raise_int(mesh_t *m, uint8_t bits) {
     mesh_update_irq(m);
 }
 
-// Cause first, summary second (§8): the latched exception/error bit
+// Cause first, summary second: the latched exception/error bit
 // must be readable before (and independent of) the interrupt bit.
 static void raise_exception(mesh_t *m, uint8_t cause) {
     m->exception |= cause;
@@ -159,8 +158,8 @@ static void raise_exception(mesh_t *m, uint8_t cause) {
 
 // How long the driver asked us to wait for a target to answer.
 //
-// MR_SEL_TIMEOUT is programmed in units of 10 ms.  There is no MESH manual in
-// gs-docs to cite for that, but two things agree on it: Mac OS programs 25,
+// MR_SEL_TIMEOUT is programmed in units of 10 ms.  There is no public MESH
+// manual to cite for that, but two things agree on it: Mac OS programs 25,
 // and 25 x 10 ms is 250 ms, which is the selection time-out ANSI X3.131-1986
 // specifies and what Linux's drivers/scsi/mesh.c writes for the same reason.
 //
@@ -220,7 +219,7 @@ static void finish_command(mesh_t *m) {
 }
 
 // ============================================================
-// SDTR message engine (see the "Sync negotiation" header block)
+// SDTR message engine (see the "SDTR responses" header block)
 // ============================================================
 
 // MESH can express a four-bit synchronous offset (sync_params 0xD0:
@@ -297,13 +296,12 @@ static void pump_out(mesh_t *m) {
             if (msgin_pending(m))
                 raise_exception(m, EXC_PHASEMM);
         }
-        // NOTE (T12 forensics): raising EXC_PHASEMM on a COMMAND
-        // completion whose target has already changed phase was tried
-        // and REVERTED: it routes Apple_Driver43 into its interrupt&6
-        // exception states, which drain the data phase byte-wise into
-        // a scratch buffer (proven: the wire bytes never reach the
-        // client's scsiDataPtr) — and it breaks the ROM engine's
-        // media scan outright.  See the handover §8 rewrite.
+        // NOTE: raising EXC_PHASEMM on a COMMAND completion whose
+        // target has already changed phase was tried and REVERTED: it
+        // routes Apple_Driver43 into its interrupt&6 exception states,
+        // which drain the data phase byte-wise into a scratch buffer
+        // (proven: the wire bytes never reach the client's scsiDataPtr)
+        // — and it breaks the ROM engine's media scan outright.
     }
 }
 
@@ -341,20 +339,19 @@ static void pump_in(mesh_t *m) {
 // PDM_SCSI_PUMP_NS): a 2 KB burst -- one CD sector and change -- every
 // 10 us.
 //
-// Why this exists (05-chipsets-irq F-15).  The port used to drain the whole
-// `remaining` count in one call, so a DBDMA data command completed inside
-// the guest's control-register store, in zero emulated time.  Measured over
-// tnt-hd-boot: up to **61,440 bytes moved in a single run_channel call**, 30x
-// the per-firing cap the other two families observe and with no cadence at
-// all.  F-15 reads that as DBDMA needing a scheduler-paced pump; the
-// measurement puts it one level down.  DBDMA already stalls whenever a port
-// returns short -- 18,310 run_channel calls for 8.3 MB on that same run say
-// so -- and MESH was simply the one port that never returned short.  So the
-// pacing goes where the other two families put it -- a per-firing byte
-// budget and a scheduler cadence on the SCSI side.  The budget is declared
-// on the channel-10 port (tnt_dbdma_port_t.burst) because only the engine
-// can count bytes across the 512-byte chunks it already splits a command
-// into; the cadence is the pump below.
+// Why this exists.  The port used to drain the whole `remaining` count in one
+// call, so a DBDMA data command completed inside the guest's control-register
+// store, in zero emulated time.  Measured over tnt-hd-boot: up to **61,440
+// bytes moved in a single run_channel call**, 30x the per-firing cap the other
+// two families observe and with no cadence at all.  That looks like DBDMA
+// needing a scheduler-paced pump; the measurement puts it one level down.
+// DBDMA already stalls whenever a port returns short -- 18,310 run_channel
+// calls for 8.3 MB on that same run say so -- and MESH was simply the one port
+// that never returned short.  So the pacing goes where the other two families
+// put it -- a per-firing byte budget and a scheduler cadence on the SCSI side.
+// The budget is declared on the channel-10 port (tnt_dbdma_port_t.burst)
+// because only the engine can count bytes across the 512-byte chunks it
+// already splits a command into; the cadence is the pump below.
 #define MESH_DMA_PUMP_NS 10000.0 // 10 us cadence
 
 static void mesh_pump_event(void *source, uint64_t data);
@@ -437,8 +434,7 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
     // in its completion path and never W1Cs it — after a selection
     // timeout it moves straight to the next target, and a stale SELTO
     // surviving into that target's successful select reads as failure.
-    // (Refines mesh-scsi.md §8's "hold until W1C" — that holds only
-    // within one command's lifetime.)
+    // (The cause bits hold until W1C only within one command's lifetime.)
     m->exception = 0;
     m->error = 0;
 
@@ -508,7 +504,7 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         if (m->active_dma) {
             // Data flows through the channel-10 port; wake a program
             // that stalled waiting for the device to arm, then keep it
-            // moving at the bus's pace (F-15).
+            // moving at the bus's pace.
             if (m->dbdma_kick)
                 m->dbdma_kick(m->dbdma_ctx);
             mesh_pump_arm(m);
@@ -529,8 +525,7 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
             return; // parked (see above)
         if (dma) {
             // Data flows through the channel-10 port; the machine owns the
-            // engine, so ask it to run, then keep it moving at the bus's
-            // pace (F-15).
+            // engine, so ask it to run, then keep it moving at the bus's pace.
             if (m->dbdma_kick)
                 m->dbdma_kick(m->dbdma_ctx);
             mesh_pump_arm(m);
@@ -611,10 +606,10 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         // hang off the same law — its unarmed-sync path ([114]==4)
         // issues BUSFREE as an expect-free PROBE, and the mismatch
         // exception is what tells it the target still has data, so it
-        // continues the transaction.  This one semantic was the whole
-        // T12/T13 "data-phase arming wall": with it pinned, the 7.6
-        // disk boots to the Finder.  A stale connection left behind
-        // by an abandoned transaction is swept by the next ARBITRATE.
+        // continues the transaction.  The data phases depend on this
+        // one semantic: with it pinned, the 7.6 disk boots to the
+        // Finder.  A stale connection left behind by an abandoned
+        // transaction is swept by the next ARBITRATE.
         bool req_pending = false;
         if (m->connected && m->bus) {
             switch (scsi_get_bus_phase(m->bus)) {
@@ -684,9 +679,9 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         // -- so a silent reset hangs the machine outright.  Linux's
         // mesh_init() agrees from the other side: it does not wait, but
         // it does write `interrupt <- 0xFF` immediately afterwards,
-        // which is only meaningful if the reset left a bit set.  And
-        // mesh-scsi.md §8 states the rule without a carve-out:
-        // "Sequence command completes -> INT_CMDDONE".
+        // which is only meaningful if the reset left a bit set.  The
+        // rule, without a carve-out, is that a completed sequence
+        // command raises INT_CMDDONE.
         //
         // The carve-out the other quick commands need is real and stays:
         // DR3 issues FLUSHFIFO *inside* live sequences (immediately
@@ -937,8 +932,7 @@ void mesh_delete(mesh_t *m) {
     if (!m)
         return;
     // Any selection time-out this controller armed is queued on the BUS, so it
-    // must be cancelled through the bus -- an event outliving its source is
-    // what F-11/F-12 were about.
+    // must be cancelled through the bus, or the event outlives its source.
     scsi_bus_cancel_select_timeout(m->bus);
     // The DMA pump IS this controller's own event, so it goes with it.
     // (remove_event, not scheduler_forget_source: that primitive drops the

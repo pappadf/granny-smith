@@ -72,19 +72,17 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions);
 // has no STOP-equivalent the Mac uses (guest idles in loops).
 sched_cpu_if_t ppc_sched_if(ppc_t *p);
 
-// Bind the RTC/TB/DEC time source (601 proposal §3.7, generalized per the
-// TNT proposal §4.4): the time SPRs are derived from scheduler_cpu_cycles
-// via the reduced rational tick_hz/freq_hz.  On the 601 `tick_hz` is the
-// 7.8336 MHz RTC input (RTCL advances 128 ns-units, DEC decrements 128
-// units per tick — the dossier's hard constraint); on the 604 it is the
-// timebase rate (bus clock / 4 — 604UM §1.3.2.2), with TB incrementing and
-// DEC decrementing once per tick.  Registers the "ppc.dec" event type, so
-// call before scheduler_start.  Unbound (unit tests), the time SPRs are
-// static state.
+// Bind the RTC/TB/DEC time source: the time SPRs are derived from
+// scheduler_cpu_cycles via the reduced rational tick_hz/freq_hz.  On the 601
+// `tick_hz` is the 7.8336 MHz RTC input (RTCL advances 128 ns-units, DEC
+// decrements 128 units per tick); on the 604 it is the timebase rate (bus
+// clock / 4 — 604UM §1.3.2.2), with TB incrementing and DEC decrementing once
+// per tick.  Registers the "ppc.dec" event type, so call before scheduler_start.
+// Unbound (unit tests), the time SPRs are static state.
 void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz, uint32_t tick_hz);
 
-// Debugger adapter (PPC proposal §3.9b): PC access, pc-based disassembly,
-// logical→physical translation.
+// Debugger adapter: PC access, pc-based disassembly, logical→physical
+// translation.
 cpu_debug_if_t ppc_debug_if(ppc_t *p);
 
 // === External interrupt line ===
@@ -92,14 +90,14 @@ cpu_debug_if_t ppc_debug_if(ppc_t *p);
 // Level of the external-interrupt input (PDM: AMIC's CpuInt*).  Level-
 // sensitive: while high and MSR[EE]=1 the core takes the $00500 exception,
 // including immediately after rfi/mtmsr re-enable (the family recomputes and
-// re-asserts after every flag/enable write, proposal §4.6).
+// re-asserts after every flag/enable write).
 void ppc_set_ext_irq(ppc_t *p, bool level);
 
 // Re-evaluate pending interrupts now (the sched-if poll hook): takes the
 // external or decrementer exception if one is pending and MSR[EE] allows.
 void ppc_poll_interrupt(ppc_t *p);
 
-// === MMU (Phase D) ===
+// === MMU ===
 
 // Drop every cached translation (user-SoA fills, translation TLB, fetch
 // window).  The family calls this when the PHYSICAL map changes under

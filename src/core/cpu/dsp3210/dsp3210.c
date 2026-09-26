@@ -7,8 +7,8 @@
  * Adapted from the validated reference core in
  * the standalone DSP3210 reference emulator (exact integer DAU); see dsp3210.h
  * for provenance and scope.  Section references below ([IM §x.y],
- * instruction page names) are to the AT&T DSP3210 Information Manual;
- * [DOC §x] refers to the AV DSP3210 hardware notes; see docs/machines/av/dsp.md.
+ * instruction page names) are to the AT&T DSP3210 Information Manual; the
+ * AV board wiring is in docs/machines/av/dsp.md.
  *
  * The interpreter is deliberately the simplest possible shape: one big
  * switch on the 6-bit top-level opcode, mirroring the reference
@@ -74,7 +74,7 @@ static regcode rc_decode(unsigned code) {
 
 /*
  * Operand read.  pc reads the address of the instruction after the
- * latent instruction, i.e. insn_addr + 8 [IM CALL page; DOC §1.5.4].
+ * latent instruction, i.e. insn_addr + 8 [IM CALL page].
  * The -n/+n pseudo-operands read as -1/+1 in ALU source positions
  * (INCR/DECR pages); the sp-bump ±4 special case is handled by the ALU.
  * Reserved codes read as 0 (hardware behaviour undocumented).
@@ -176,7 +176,7 @@ static int pending_vector(dsp3210_t *s) {
 /* PS.IR0/IR1 read the LIVE pin level, 1 = negated: the board's frame tick
  * is a short active-low pulse, and the RTM kernel's `if (ir1s)` spins wait
  * for the pulse both in the frame-period calibration gadget and in the
- * per-module overrun poll (dsp-kernel-messages.md §3.2/§3.4).  A latched
+ * per-module overrun poll.  A latched
  * mirror here makes both spins fall through instantly and the kernel
  * measures a ~0-tick frame period — killing the GPB admission check. */
 static void update_irq_ps(dsp3210_t *s) {
@@ -258,7 +258,7 @@ static void do_ireturn(dsp3210_t *s) {
 }
 
 /* ------------------------------------------------------------------ */
-/* on-chip timer + BIO [IM §9.3, §9.4; DOC §1.4]                       */
+/* on-chip timer + BIO [IM §9.3, §9.4]                                 */
 
 /* MMIO word offsets inside the on-chip window (aligned big-endian slots;
  * the narrow registers live in the LOW lanes of their word — which is why
@@ -402,7 +402,7 @@ static int mmio_write(dsp3210_t *s, uint32_t off, uint32_t val, int size) {
 }
 
 /* ------------------------------------------------------------------ */
-/* memory [DOC §1.1]                                                   */
+/* memory                                                              */
 
 /* On-chip window offset for addr, or -1 when the access is external.
  * The window is 64 KB (boot ROM, MMIO, RAM) decoded at $0000xxxx in
@@ -1025,7 +1025,7 @@ static uint32_t bitrev(uint32_t x, int nbits) {
     return r;
 }
 
-/* condition evaluation (Table 4-7 / DOC §1.5.2) */
+/* condition evaluation (Table 4-7) */
 #define DSP3210_PS_DAU (DSP3210_PS_N | DSP3210_PS_Z | DSP3210_PS_U | DSP3210_PS_V)
 
 static int cond_eval(dsp3210_t *s, unsigned c) {
@@ -1121,7 +1121,7 @@ static int cond_eval(dsp3210_t *s, unsigned c) {
 }
 
 /* ------------------------------------------------------------------ */
-/* IO registers (format 7b/7d) [DOC §1.4]                              */
+/* IO registers (format 7b/7d)                                         */
 
 /* spc write side effects, distinguished only by the W size */
 enum { SPC_NONE = 0, SPC_SFTRST, SPC_BKPT, SPC_WAITI };
@@ -1154,7 +1154,7 @@ static int ior_write(dsp3210_t *s, unsigned n, uint32_t v, int size) {
         s->emr = (uint16_t)v;
         /* emr bit 0 has no maskable source; the kernel pulses it to drop a
          * latched-but-untaken EXT1 edge without taking the interrupt
-         * (dsp-kernel-messages.md §3.5 — gadget, slave entry, overrun) */
+         * (the calibration gadget, slave entry and overrun paths) */
         if (v & 1u)
             s->pending &= (uint16_t) ~(1u << DSP3210_VEC_EXT1);
         break;
@@ -1253,7 +1253,7 @@ static void ca_postmod(dsp3210_t *s, unsigned rp, unsigned ri, int size) {
  * Flags and the clip-test history from an exact result.  Overflow and
  * underflow are judged against the 40-bit range: |value| <= (2-2^-31) *
  * 2^127 and >= 1 * 2^-127, i.e. the exponent leaving [1,255] after
- * normalisation [IM §8.2.1, DOC §1.5.6].
+ * normalisation [IM §8.2.1].
  */
 static dsp3210_acc da_flags(dsp3210_t *s, dsp3210_acc res, int affect_vu) {
     unsigned N, Z, V = 0, U = 0;
@@ -1278,7 +1278,7 @@ static dsp3210_acc da_flags(dsp3210_t *s, dsp3210_acc res, int affect_vu) {
 }
 
 /* ------------------------------------------------------------------ */
-/* DA operands (7-bit X/Y/Z fields) [IM Table 10-3; DOC §1.5.3]        */
+/* DA operands (7-bit X/Y/Z fields) [IM Table 10-3]                    */
 
 typedef struct {
     int from_acc; /* 1: accumulator (or reserved field) */
@@ -1905,7 +1905,7 @@ static int exec_move(dsp3210_t *s, uint32_t w) {
     if (!io && bits(w, 10, 10)) {
         /* 7b: rH = (w) iorN / iorN = (w) rH — and the three spc
          * pseudo-instructions (waiti/bkpt/sftrst), which differ only in
-         * the W field [DOC §1.5.4] */
+         * the W field */
         unsigned ior = w & 31;
         if (t == 0) {
             regw(s, rh, w_extend(wsz, ior_read(s, ior)));

@@ -457,7 +457,7 @@ double val_as_f64(const value_t *v, bool *ok) {
     }
 }
 
-// Truthiness rule per proposal-shell-expressions.md §2.5.
+// Truthiness, per kind.
 bool val_as_bool(const value_t *v) {
     if (!v)
         return false;

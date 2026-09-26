@@ -11,7 +11,7 @@
 // 1 is the script/session top level; function calls push above that.
 // The built-in/user alias table (alias.c) is the read-only fallback
 // behind every scope — its entries surface as V_REF values, which is
-// exactly the reference-binding semantics of §3.5.
+// exactly the reference-binding semantics.
 
 #include "shell_var.h"
 
@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Function frames on top of the two fixed scopes (§3.7: 16-frame cap).
+// Function frames on top of the two fixed scopes (16-frame cap).
 #define SCOPE_FRAMES_MAX 16
 #define SCOPE_MAX        (2 + SCOPE_FRAMES_MAX)
 
@@ -147,7 +147,7 @@ value_t shell_binding_get(const char *name) {
             return val_err("'$%s' holds an object that was destroyed (e.g. by machine.boot)", name);
         return value_dup(&b->value);
     }
-    // Alias-table fallback: aliases are reference bindings (§3.5).
+    // Alias-table fallback: aliases are reference bindings.
     const char *path = alias_lookup(name, NULL);
     if (path)
         return val_ref(path);

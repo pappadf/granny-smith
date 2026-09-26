@@ -33,16 +33,16 @@ log_category_t *log_register_category(const char *name);
 
 // Create every category GS_LOG_CATEGORIES declares.  Called once from
 // setup_init so `debug.log` with no arguments lists the complete set rather
-// than only what has been hit so far (08-core-infra F-34).
+// than only what has been hit so far.
 void log_register_manifest(void);
 
 // === Typed per-category configuration ===
 //
 // These replace log_configure(category, "level=5 stdout=off ..."), a flag
 // grammar inside a string that the framework could not validate and
-// completion could not offer (08-core-infra F-35).  Each takes the category
-// by name and validates it against the manifest, so a typo is rejected here
-// rather than silently creating a category that can never emit.
+// completion could not offer.  Each takes the category by name and validates
+// it against the manifest, so a typo is rejected here rather than silently
+// creating a category that can never emit.
 //
 // All return 0 on success, -1 on an unknown category or a bad value.
 int log_set_category_level(const char *category, int level);

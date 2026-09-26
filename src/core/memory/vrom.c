@@ -39,7 +39,7 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
     if (!path || !*path)
         return false;
     // stat is portable for binary-file sizing; fseek(SEEK_END)+ftell on a
-    // binary stream is implementation-defined per ISO C. See [F-354].
+    // binary stream is implementation-defined per ISO C.
     struct stat st;
     if (stat(path, &st) != 0 || st.st_size <= 0)
         return false;
@@ -159,8 +159,7 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
     // own GENERATED generic images structurally: the runtime-generated GS
     // vROM has no fixed CRC to match (its content varies with the mode
     // set and the toolchain that assembled the fragments), so identity is
-    // the board sResource's "granny-smith" VendorId plus its BoardId
-    // (proposal-nubus-runtime-vrom §4).
+    // the board sResource's "granny-smith" VendorId plus its BoardId.
     static const struct {
         uint16_t board_id;
         const char *card_id;

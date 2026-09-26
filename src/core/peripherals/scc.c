@@ -1401,7 +1401,7 @@ bool scc_get_external_loopback(scc_t *scc) {
     return scc ? scc->external_loopback : false;
 }
 
-// === M7a — read-only views for the object model =============================
+// === Read-only views for the object model ===================================
 
 uint32_t scc_get_pclk_hz(const scc_t *scc) {
     return scc ? scc->pclk_hz : 0;
@@ -1462,7 +1462,7 @@ void scc_delete(scc_t *scc) {
     if (!scc)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down.
     scheduler_forget_source(scc->scheduler, scc);
     // Tear down object-tree nodes in reverse order (children first).
     if (scc->channel_b) {
@@ -1495,10 +1495,10 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     // are not: the stride is sizeof(ch_t), eight bytes larger because of the
     // back-pointer.  So the single block ran off the end of ch[0]'s prefix
     // and covered ch[0]'s `scc` pointer -- a host heap address, in the save
-    // file, which is what 05-chipsets-irq F-09 was about -- and then stopped
-    // eight bytes short of the end of ch[1]'s, silently dropping channel B's
-    // `brg` (baud rate generator: time constant, counter, enable, clock
-    // source), `loopback_prev_dtr` and `rx_special` from every checkpoint.
+    // file -- and then stopped eight bytes short of the end of ch[1]'s,
+    // silently dropping channel B's `brg` (baud rate generator: time
+    // constant, counter, enable, clock source), `loopback_prev_dtr` and
+    // `rx_special` from every checkpoint.
     // Channel B is the LocalTalk channel on a Mac, and rx_special is the
     // SDLC end-of-frame latch the PDM native LocalTalk driver waits on.
     //
@@ -1508,7 +1508,7 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     for (int i = 0; i < 2; i++)
         system_write_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
 
-    // The external loopback cable (N-16).  It sits outside the per-channel
+    // The external loopback cable.  It sits outside the per-channel
     // blocks because it is a property of the two ports TOGETHER, and it was
     // left out of the stream entirely -- so a restore quietly unplugged the
     // cable, and a serial loopback row that saved and resumed found port A
@@ -1524,11 +1524,9 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
 
 // === Object-model class descriptors =========================================
 //
-// Replaces the bespoke `scc loopback` command (proposal §5.4). The
-// `scc` root object has a writable `loopback` attribute, an immutable
+// The `scc` root object has a writable `loopback` attribute, an immutable
 // view of the BRG source clocks, a `reset()` method, and per-channel
-// children `a` / `b` (proposal goal: "scc class with loopback, reset,
-// channel children a/b").
+// children `a` / `b`.
 //
 // The root object's instance_data is the scc_t* (lifetime is tied to
 // scc_init / scc_delete).  Each CHANNEL object's instance_data is its own
@@ -1596,13 +1594,11 @@ static value_t scc_method_reset(struct object *self, const member_t *m, int argc
 
 // --- Channel attributes -----------------------------------------------------
 //
-// One getter per logical attribute, dispatched by `m->attr.user_data`
-// holding the channel index (cast through uintptr_t). Three small
-// channel attrs exposed for now — the proposal lists "loopback,
-// reset, channel children a/b" without enumerating channel members,
-// so we expose the three things existing code already encapsulates
-// (`scc_channel_*`). Heavier per-channel views (BRG, baud, sync mode)
-// can land later once a real consumer needs them.
+// One getter per logical attribute, dispatched by `m->attr.user_data` holding
+// the channel index (cast through uintptr_t). Three small channel attrs
+// exposed for now — the three things existing code already encapsulates
+// (`scc_channel_*`). Heavier per-channel views (BRG, baud, sync mode) can land
+// later once a real consumer needs them.
 
 static value_t scc_ch_attr_index(struct object *self, const member_t *m) {
     (void)m;

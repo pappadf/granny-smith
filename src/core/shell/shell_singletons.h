@@ -10,8 +10,7 @@
 // compiler when it checks the DEFINITION, so a signature change in any of
 // them produced a silent ABI mismatch rather than an error -- and AGENTS.md
 // says prototypes belong in headers.  The block was also the de facto list of
-// what a process has installed, which is worth being able to find
-// (08-core-infra F-60).
+// what a process has installed, which is worth being able to find.
 //
 // Each of these is defined in its own module.  They are gathered rather than
 // each module's header being included because several of those headers pull

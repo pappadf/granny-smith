@@ -7,8 +7,8 @@
 // The SONIC, the PSC's seven-channel engine, the AMIC's and Grand Central's
 // DBDMA all move bytes the CPU never sees, and each declared its own pair of
 // hook typedefs plus its own setter.  Two SHAPES were in use --
-// `(phys, value, width)` and `(phys, buf, len)` -- and 05-chipsets-irq F-16
-// reads that as duplication "for no reason".
+// `(phys, value, width)` and `(phys, buf, len)` -- which reads as
+// duplication "for no reason".
 //
 // It is not quite that.  The shapes differ because the engines do: an engine
 // that reads a descriptor field wants a width-sized scalar, and one that

@@ -9,7 +9,7 @@
 # Any m68k-targeted as/objcopy works — override M68K_AS/M68K_OBJCOPY.
 # There is deliberately NO fallback when the assembler is missing:
 # builds whose content depends on the environment are worse than a loud
-# failure (runtime-vrom proposal §3.2).
+# failure.
 
 # This file is included before the including Makefile's first target;
 # save and restore the default goal so our header rule doesn't hijack it.

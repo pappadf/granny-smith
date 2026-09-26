@@ -128,9 +128,8 @@ static bool rle_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t o
         // with op = 16 and count = 0xFFFFFFF8 it evaluates to 8, which passes
         // a 64-byte bound and admits a four-gigabyte memcpy.  The subtraction
         // form cannot wrap because op <= out_size and ip <= in_size are loop
-        // invariants.  (08-core-infra F-06.  Not reproducible on a 64-bit
-        // host, where the sum is computed in 64 bits and is correct -- see
-        // tests/unit/suites/checkpoint.)
+        // invariants.  (Not reproducible on a 64-bit host, where the sum is
+        // computed in 64 bits and is correct -- see tests/unit/suites/checkpoint.)
         if (marker == 0x01) {
             // RUN: fill count bytes with next byte value
             if (ip >= in_size)
@@ -218,9 +217,9 @@ static bool buf_read(checkpoint_t *cp, void *data, size_t len) {
 // Every length in a checkpoint comes off disk, and a checkpoint is a file the
 // user supplies.  The helpers here exist so that adding the next
 // variable-length field cannot reintroduce the same three bugs: an unbounded
-// allocation driven by an on-disk count (F-22), a string used without a
-// terminator the writer merely promised (F-23), and a loop bound taken from
-// the file (F-24).  Read a count through checkpoint_read_count(), a string
+// allocation driven by an on-disk count, a string used without a terminator
+// the writer merely promised, and a loop bound taken from the file.  Read a
+// count through checkpoint_read_count(), a string
 // through checkpoint_read_string(), and both are correct by construction.
 
 // Longest diagnostic filename a block header may claim.  These are __FILE__
@@ -416,7 +415,7 @@ static void read_checkpoint_block(checkpoint_t *checkpoint, void *data, size_t s
 
     // Reject sizes that can't fit in size_t before comparing — otherwise a
     // 32-bit size_t may silently truncate a 5 GB stored_size and pretend
-    // it matches a 1 GB `size` request. (F-1012)
+    // it matches a 1 GB `size` request.
     if (stored_size > (uint64_t)SIZE_MAX || (uint64_t)size != stored_size) {
         LOG(0, "Error: Checkpoint size mismatch: expected %zu at %s:%d but file contains %llu at %s:%d", size,
             file ? file : "(unknown)", line, (unsigned long long)stored_size, saved_file ? saved_file : "(unknown)",
@@ -510,8 +509,7 @@ static void read_checkpoint_block(checkpoint_t *checkpoint, void *data, size_t s
 // the local used to keep whatever the stack held, so a failed or mismatched
 // block could be applied as garbage -- the AppleTalk restore, whose state is
 // process-wide and so survives into the machine that keeps running when the
-// load fails, did exactly that (10-network F-10).  One zero-fill here covers
-// every caller.
+// load fails, did exactly that.  One zero-fill here covers every caller.
 void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
                                      const char *file, int line) {
     read_checkpoint_block(checkpoint, data, size, tag, file, line);
@@ -1125,7 +1123,7 @@ void checkpoint_write_file_loc(checkpoint_t *checkpoint, const char *path, const
             if (!f) {
                 // The source file went away between probe and write — there's
                 // no honest payload to emit, and zero-padding the slot would
-                // silently corrupt restore (F-1017). Fail the checkpoint so
+                // silently corrupt restore. Fail the checkpoint so
                 // the user sees the error rather than a half-written file.
                 LOG(0, "Error: cannot read '%s' for checkpoint write: source file missing", path);
                 checkpoint->error = true;
@@ -1392,8 +1390,7 @@ static value_t checkpoint_method_clear(struct object *self, const member_t *m, i
 // literal "probe", and argv[1] is where this method put the user's path -- so
 // `checkpoint.load("probe")` ran a probe instead of loading a file called
 // probe.  `checkpoint.probe()` above has been the real entry point all along,
-// so that string-match was vestigial -- reachable, but only by accident
-// (08-core-infra F-31).
+// so that string-match was vestigial -- reachable, but only by accident.
 static value_t checkpoint_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;

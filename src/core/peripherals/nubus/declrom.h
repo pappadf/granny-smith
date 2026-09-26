@@ -3,20 +3,13 @@
 
 // declrom.h
 // NuBus declaration-ROM helpers — used both to *build* a synthesised ROM
-// (the SE/30 built-in card today; pseudo_video later) and to *parse* a
-// real ROM image (the JMFB / Display Card 8•24 in step 6).
+// (the generic GS images, see gsvrom.h) and to *load* a real ROM image
+// supplied as a file (the dumped-vROM card kinds).
 //
-// Step-3 status: the type and the public API exist as a skeleton; the
-// builder actually emits a working Format Header and CRC, but the higher-
-// level "add a video sResource" / "add a board sResource" helpers are
-// stubs because the SE/30 built-in card hasn't moved over yet.  Step 4
-// fleshes those out as the SE/30's hand-rolled VROM in se30.c migrates
-// onto the helpers.
-//
-// Byte-lane mask — v1 limit (per proposal §3.2.4): every shipped card
-// uses byte-lane mask `$0F` (all four lanes valid; bytes are contiguous
-// when read across longwords).  Sparser masks ($01, $05, …) are a future
-// follow-up; the helpers assert mask = $0F today.
+// Byte-lane mask — v1 limit: the builder only generates byte-lane mask
+// `$0F` (all four lanes valid; bytes are contiguous when read across
+// longwords).  Sparser masks ($01, $05, …) are a future follow-up;
+// declrom_finalise refuses anything but $0F today.
 
 #ifndef NUBUS_DECLROM_H
 #define NUBUS_DECLROM_H
@@ -46,7 +39,7 @@ void declrom_builder_free(declrom_builder_t *b);
 // with the builder.
 const uint8_t *declrom_builder_bytes(const declrom_builder_t *b, size_t *out_size);
 
-// --- Structured builder inputs (proposal-nubus-runtime-vrom §3.3) ----------
+// --- Structured builder inputs ----------------------------------------------
 //
 // The builder collects declarative inputs (board identity, functional
 // video sResources, spliced 68K code fragments) and serialises the whole
@@ -130,22 +123,20 @@ bool declrom_add_drvr(declrom_builder_t *b, const uint8_t *frag, size_t size);
 // success, declrom_builder_bytes returns the finished image.
 bool declrom_finalise(declrom_builder_t *b, uint8_t byte_lanes);
 
-// Structural validation of a finished declaration-ROM image (§5 of the
-// runtime-vrom proposal): Format Block sanity, directory walk
-// terminates with ascending IDs, NO offset-form entry carries a zero
-// offset (the fence against gas's silent `|`-fold hazard), every
-// offset lands inside the image, and exec blocks carry the sExec
-// revision $02 prologue.  `img` is a dense chip image with the Format
-// Block in its last 20 bytes.
+// Structural validation of a finished declaration-ROM image: Format Block
+// sanity, directory walk terminates with ascending IDs, NO offset-form entry
+// carries a zero offset (the fence against gas's silent `|`-fold hazard), every
+// offset lands inside the image, and exec blocks carry the sExec revision $02
+// prologue.  `img` is a dense chip image with the Format Block in its last 20
+// bytes.
 bool declrom_image_validate(const uint8_t *img, size_t size);
 
-// Structural identification of a generated GS image (or a dumped copy
-// of one): walks the image's board sResource and returns true — with
-// the 16-bit BoardId in *out_board_id — when its VendorInfo VendorId
-// cString equals `vendor`.  Tolerates leading zero padding (a dump of
-// the slot window carries the tail-placed image).  Replaces the
-// fixed-CRC recognition rows: a runtime-generated image has no stable
-// CRC to match (proposal-nubus-runtime-vrom §4).
+// Structural identification of a generated GS image (or a dumped copy of one):
+// walks the image's board sResource and returns true — with the 16-bit BoardId
+// in *out_board_id — when its VendorInfo VendorId cString equals `vendor`.
+// Tolerates leading zero padding (a dump of the slot window carries the
+// tail-placed image).  Replaces the fixed-CRC recognition rows: a
+// runtime-generated image has no stable CRC to match.
 bool declrom_identify_vendor(const uint8_t *img, size_t size, const char *vendor, uint16_t *out_board_id);
 
 // Copy the builder's buffer into the card's declrom slot.  Increments
@@ -157,7 +148,7 @@ void declrom_install(nubus_card_t *card, const declrom_builder_t *b);
 // buffer of size `expected_size`.  Returns the buffer (caller owns) on
 // success, NULL on miss.  Used by cards that prefer a real ROM file
 // (e.g. the JMFB card with `mdc-8-24-revb-d1629664.vrom`) and fall back to the
-// builder on miss.  v1 stub — body lands in step 6.
+// builder on miss.
 uint8_t *declrom_load(const char *path, size_t expected_size);
 
 // Expand a chip image whose byteLanes value is `$78` (lane 3 only — the
@@ -195,7 +186,7 @@ bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_si
 // of the card's bus window, exactly as declrom_load_vrom_card lays out a
 // file-backed chip — byteLanes read from the chip's last byte — and report
 // the pick into the built-from record with the "builtin:<card_id>" locator
-// (path-less, identified by CRC; proposal-generic-nubus-vrom.md sec. 6.2).
+// (path-less, identified by CRC).
 // Returns true on success.
 bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t chip_size, uint8_t *bus_buf,
                              size_t bus_size);

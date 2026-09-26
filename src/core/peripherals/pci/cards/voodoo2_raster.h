@@ -2,9 +2,8 @@
 // Copyright (c) pappadf
 
 // voodoo2_raster.h
-// The raster-backend seam (proposal-pci-3dfx-voodoo2 §3.6, extended by
-// proposal-voodoo2-raster-thread §5 and proposal-voodoo2-walker-
-// optimization §3.1).
+// The raster-backend seam (docs/core/peripherals/pci/cards/voodoo2.md,
+// "The raster seam: commands, snapshot, backends").
 //
 // The two triangle routes — host-setup and on-chip setup — converge on
 // voodoo2_tri_t; everything downstream of it sits behind this seam.
@@ -33,26 +32,26 @@
 // commands, or after a sync().  The executor never sees the card
 // struct at all — this translation unit does not include its
 // definition — which is the strongest available form of the rule that
-// a worker thread must never read live card state (thread proposal
-// §4).  A backend is only WHERE the executor runs:
+// a worker thread must never read live card state.  A backend is only
+// WHERE the executor runs:
 //
 //   sw      the executor runs inline at submit — the NORMATIVE backend:
 //           it defines the semantics; the equivalence rows replay on it
 //   null    as sw, but TRIANGLE commands are dropped — pins invariant 1
 //   thread  commands go to a bounded SPSC queue drained by one worker
-//           pthread; sync() is a fence.  The DEFAULT on every build
-//           (native pthreads; in the browser a second Web Worker,
-//           preallocated by the link — thread proposal §5.7).  A build
-//           can default to sw with -DGS_V2_RASTER_DEFAULT='"sw"', or
-//           leave the backend out with -DGS_V2_THREAD_BACKEND=0; any
-//           boot can pick one with pci_option="raster=...".
+//           pthread; sync() is a fence.  The DEFAULT on every build (native
+//           pthreads; in the browser a second Web Worker, created on demand
+//           — see voodoo2_raster.c).  A build can default to sw with
+//           -DGS_V2_RASTER_DEFAULT='"sw"', or leave the backend out with
+//           -DGS_V2_THREAD_BACKEND=0; any boot can pick one with
+//           pci_option="raster=...".
 //   webgpu  the thread backend whose worker TRANSLATES for the
 //           browser's GPU while the card drives the monitor
-//           (voodoo2_gpu.c; proposal-voodoo2-webgpu-takeover): an
-//           ALTERNATIVE the user picks, approximate by design (the
-//           browser frame is a rendering of the scene, the model's
-//           frame is the walker's), falling back to `thread` wherever
-//           no GPU worker attaches (native builds, no WebGPU).
+//           (voodoo2_gpu.c): an ALTERNATIVE the user picks, approximate
+//           by design (the browser frame is a rendering of the scene,
+//           the model's frame is the walker's), falling back to
+//           `thread` wherever no GPU worker attaches (native builds, no
+//           WebGPU).
 //
 // Because queue order is submission order and every observation point
 // fences first, the thread backend's output is byte-identical to the
@@ -97,9 +96,9 @@ typedef struct voodoo2_tri {
     bool area_sign; // triangleCMD bit 31: 1 = clockwise / negative area
 } voodoo2_tri_t;
 
-// Everything one TMU's sampler reads, snapshotted per draw (walker
-// proposal §3.1: the raw registers plus their derived, per-draw
-// constant decode — each derived field names the bits it caches).
+// Everything one TMU's sampler reads, snapshotted per draw: the raw
+// registers plus their derived, per-draw constant decode — each derived
+// field names the bits it caches.
 typedef struct v2_tmu_state {
     uint32_t mode; // textureMode
     uint32_t tlod; // tLOD
@@ -275,7 +274,7 @@ void v2_raster_sync(v2_raster_t *r);
 // everything back once and must never cost the GPU its engagement.
 void v2_raster_sync_fb(v2_raster_t *r, uint32_t addr, uint32_t len, bool guest);
 
-// --- the WebGPU takeover (proposal-voodoo2-webgpu-takeover) ---------------
+// --- the WebGPU takeover -------------------------------------------------------
 // No-ops on every backend but "webgpu".  The card calls them from the
 // producer side; each travels through the queue so it is ordered with
 // the draws around it.

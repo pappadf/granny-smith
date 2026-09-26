@@ -3,7 +3,7 @@
 
 // alias.h
 // Two-tier alias table for `$name` substitution. See
-// proposal-module-object-model.md §4.4.
+// docs/core/shell/shell.md ("Bindings").
 //
 // - **Built-in aliases** are registered by classes / the framework at
 //   init time (alias_register_builtin). Re-registration of the same
@@ -13,7 +13,7 @@
 //   alias_remove_user). They cannot collide with built-ins or with
 //   reserved words.
 //
-// Aliases are session-only — no persistence layer in M3. Reset on
+// Aliases are session-only — no persistence layer. Reset on
 // emulator destroy via alias_reset().
 
 #ifndef GS_OBJECT_ALIAS_H
@@ -65,8 +65,8 @@ size_t alias_count(void);
 // Drop every alias (both tiers). Tests use this to start clean.
 void alias_reset(void);
 
-// Drop only user aliases — used by checkpoint restore (per
-// proposal §4.4.5: checkpoints don't preserve user aliases).
+// Drop only user aliases — used by checkpoint restore (checkpoints don't
+// preserve user aliases).
 void alias_clear_user(void);
 
 #ifdef __cplusplus

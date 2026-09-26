@@ -3,17 +3,17 @@
 
 // ppc_fpu.c
 // PPC (MPC601) floating-point bodies: the FPR file's load/store format
-// conversions, compares, the FPSCR-instruction semantics, and the Phase-E
-// arithmetic surface — thin wrappers over the integer-only kernel in
-// ppc_softfp.c (values, rounding, and every status bit computed in
-// integer code; see ppc_softfp.h for the determinism rationale).
+// conversions, compares, the FPSCR-instruction semantics, and the arithmetic
+// surface — thin wrappers over the integer-only kernel in ppc_softfp.c (values,
+// rounding, and every status bit computed in integer code; see ppc_softfp.h for
+// the determinism rationale).
 //
-// Determinism rule (§3.6): NaN bit patterns never pass through host
-// floating-point arithmetic — WASM does not guarantee NaN payload/sign
-// propagation, and checkpoints must be byte-identical across hosts.  The
-// single<->double conversions below therefore handle NaN in integer code
-// and use host conversion (exact or correctly-rounded IEEE, deterministic
-// on both hosts) only for numeric values.
+// Determinism rule: NaN bit patterns never pass through host floating-point
+// arithmetic — WASM does not guarantee NaN payload/sign propagation, and
+// checkpoints must be byte-identical across hosts.  The single<->double
+// conversions below therefore handle NaN in integer code and use host
+// conversion (exact or correctly-rounded IEEE, deterministic on both hosts)
+// only for numeric values.
 
 #include "ppc_ops.h"
 

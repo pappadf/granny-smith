@@ -557,18 +557,18 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
     while (*instructions > 0) {
         // Level-sensitive interrupt inputs re-checked at every boundary —
         // this is what makes the "loop until all flags clear" dispatch and
-        // post-rfi redelivery work (proposal §4.6).
+        // post-rfi redelivery work.
         if ((p->ext_irq | p->dec_pending) && (p->msr & PPC_MSR_EE))
             ppc_poll_interrupt(p);
         p->instruction_pc = p->pc;
         uint32_t iw;
         // ISI raised; pc now at the vector, and the redirect deliberately
         // consumes no slot -- the handler's first instruction does (the
-        // single-step semantics the ISI-vector test pins down).  The review
-        // wanted a slot consumed here as a second liveness guard, but the ISI
-        // cannot recur: MPC601UM Table 5-11 clears MSR[IT] on entry and the
-        // IT == 0 arm of ppc_fetch_fill always succeeds.  The fold budget
-        // above is the bound that was actually missing.
+        // single-step semantics the ISI-vector test pins down).  Consuming a
+        // slot here as a second liveness guard is not needed, as the ISI cannot
+        // recur: MPC601UM Table 5-11 clears MSR[IT] on entry and the IT == 0
+        // arm of ppc_fetch_fill always succeeds.  The fold budget above is the
+        // bound that was actually missing.
         if (!ppc_fetch(p, &iw))
             continue;
         if (__builtin_expect(g_bus_error_pending, 0))
@@ -577,13 +577,12 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
         ppc_execute(p, iw);
         // 601 branch folding: b/bc/bclr/bcctr issue to the branch unit in
         // parallel and retire in zero cycles — the reason HWInit's timed
-        // 8-addi + bdnz measurement loop really runs at CPI 1.0 (proposal
-        // §5.2).  The handlers record the classification in p->fold
-        // (self-branch excluded there), keeping the opcode test off the
-        // every-instruction path.  The last budget slot never folds — a
-        // folded branch there would run the branch AND its target in one
-        // nominal instruction, which breaks single-step and makes PC
-        // breakpoints/logpoints skip branch targets.
+        // 8-addi + bdnz measurement loop really runs at CPI 1.0.  The
+        // handlers record the classification in p->fold (self-branch excluded
+        // there), keeping the opcode test off the every-instruction path.
+        // The last budget slot never folds — a folded branch there would run
+        // the branch AND its target in one nominal instruction, which breaks
+        // single-step and makes PC breakpoints/logpoints skip branch targets.
         if (__builtin_expect(p->fold != 0, 0)) {
             p->fold = 0;
             if (*instructions > 1 && folds_left != 0) {

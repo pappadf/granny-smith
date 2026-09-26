@@ -114,7 +114,7 @@ uint32_t disk_block_size(image_t *disk) {
 // Every image opened writable and not yet closed, keyed on the canonical
 // path its caller named.  image_vfs asks image_path_is_open_writable() at the
 // point of use rather than being told on attach and detach, so there is no
-// notification for an attach or detach site to forget (09-storage F-39..F-41).
+// notification for an attach or detach site to forget.
 static image_t *g_open_writable;
 
 static void image_canonicalise(const char *path, char *out, size_t cap);
@@ -254,7 +254,7 @@ static void image_load_diskcopy_tags(image_t *image) {
     }
     // Every value here is re-derived from this header and checked against
     // this file, rather than trusted because detect_diskcopy checked it on
-    // an earlier open (09-storage F-50).  The sector count is the header's
+    // an earlier open.  The sector count is the header's
     // own: DiskCopy 4.2 sectors are 512 data bytes whatever geometry the
     // image is opened with.  Bounding the tag section by the file bounds
     // the allocation by the file.
@@ -328,8 +328,7 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // of an HFS volume as an AppleDouble pair, the resource fork lives in a sibling
 // "._<name>" (or legacy "%<name>", or a raw "<name>.rsrc").  This reunites the
 // forks and, when the data fork is NDIF-encoded, decodes it to a scratch raw
-// image so the rest of image.c opens it as an ordinary base.  See
-// proposal-appledouble-support.md §4.4.
+// image so the rest of image.c opens it as an ordinary base.
 
 // Split base_path into "<dir>/" prefix (with trailing slash, or empty) and
 // basename, writing the "._<name>"-style sidecar into `out`.
@@ -554,7 +553,7 @@ static int materialize_udif_host(const char *base_path, const udif_trailer_t *tr
             udif_chunk_t *c = &t->chunks[j];
             // Absolute position is the table's base plus the chunk's own
             // sector, which restarts at 0 in every table.
-            // Checked without an addition that could wrap (09-storage F-25).
+            // Checked without an addition that could wrap.
             if (c->count > tr->sectors || t->base_sector > tr->sectors - c->count ||
                 c->sector > tr->sectors - c->count - t->base_sector) {
                 rc = -EINVAL;
@@ -683,8 +682,7 @@ static char *ndif_decode(const char *base_path) {
 // Image formats
 // ============================================================================
 //
-// Every format a disk image file can be in, in probe order (09-storage
-// F-51).  Two kinds:
+// Every format a disk image file can be in, in probe order.  Two kinds:
 //   - a container is decoded to a raw scratch file first (UDIF, NDIF); the
 //     first that decodes wins, else the file itself is used;
 //   - a layout says where the disk data sits in that file (DiskCopy 4.2's
@@ -840,7 +838,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     // Default delta_dir: GS_STORAGE_CACHE when set (sidecars routed away
     // from the media — see image_scratch_dir), else the directory
     // containing the (original) base image.  Headless callers may pass
-    // NULL when they have no machine-id concept (§2.4).
+    // NULL when they have no machine-id concept.
     char *derived_dir = NULL;
     if (!delta_dir || !*delta_dir) {
         const char *cache = getenv("GS_STORAGE_CACHE");
@@ -1234,7 +1232,7 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
 
     // Persist the instance path so a future restore can reopen the same delta
-    // directory without relying on adjacent-to-base sidecars (§2.8).  Empty
+    // directory without relying on adjacent-to-base sidecars.  Empty
     // string for read-only / ghost mounts.
     const char *instance = (image->writable && image->instance_path) ? image->instance_path : "";
     uint32_t instance_len = (uint32_t)(strlen(instance) + 1);

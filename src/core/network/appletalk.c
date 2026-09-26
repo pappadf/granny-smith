@@ -136,7 +136,7 @@ static struct object *g_atalk_printer_object;
 static struct object *g_atalk_printer_stats_object;
 
 // Checkpoint record. Only durable state travels; open forks, locks and
-// enumeration snapshots are reconstructible client-session state (§4.5).
+// enumeration snapshots are reconstructible client-session state.
 #define ATALK_PERSIST_MAGIC 0x41544B31u // 'ATK1'
 
 typedef struct {
@@ -148,9 +148,9 @@ typedef struct {
 
 // The stack's configuration: what a user or a script set, as opposed to what
 // the guest is doing.  One record, used three ways -- written to a checkpoint
-// and applied from one (10-network D-3: a restored machine finds its shares,
+// and applied from one (a restored machine finds its shares,
 // server identity and printer as they were), and captured before a checkpoint
-// load replaces the stack so a load that fails can put it back (N-06).
+// load replaces the stack so a load that fails can put it back.
 // Sessions, forks and print jobs are not configuration and are not here.
 #define ATALK_CONFIG_MAX_VOLUMES 8
 typedef struct {
@@ -174,7 +174,7 @@ typedef struct {
 // it down and keeps what it needs to put it back here, until one of the two
 // machines is destroyed (appletalk_delete): the old one -- the load
 // succeeded, drop this -- or the new one -- the load failed, so rebuild the
-// stack for the machine that keeps running (10-network N-06).
+// stack for the machine that keeps running.
 static struct {
     scc_t *scc;
     scheduler_t *scheduler;
@@ -184,8 +184,8 @@ static struct {
 static void appletalk_teardown(void);
 
 // Stack enablement. The stack is attached to the SCC link by default; the
-// object model is the user's switch to take the machine off the network
-// (object-model proposal §8.3). Every frame in and out passes this guard.
+// object model is the user's switch to take the machine off the network.
+// Every frame in and out passes this guard.
 static bool g_atalk_enabled = true;
 
 // Link/transport counters published as `appletalk.stats`.
@@ -226,7 +226,7 @@ static log_category_t *atp_log_category(void);
 #define LOG_ATP(level, fmt, ...)  LOG_WITH(atp_log_category(), (level), (fmt), ##__VA_ARGS__)
 
 // Every frame the stack discards goes through here, counted by why, so
-// `appletalk.stats` says what was thrown away (10-network F-35).  There is no
+// `appletalk.stats` says what was thrown away.  There is no
 // CRC anywhere in the stack -- the SCC hands over whole frames -- so there is
 // no "CRC error"; what the old crc_errors counted was malformed frames, and
 // only three of the thirty-odd places that drop one counted anything.
@@ -847,12 +847,12 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     // Restore the reconstructible session view from a checkpoint, then drop
     // every fork and enumeration snapshot the old machine held: the backing
     // bytes are on disk, but the client's refnums belong to a session that no
-    // longer has a transport (WP-11).
+    // longer has a transport.
     if (checkpoint) {
         // The reader zero-fills on failure, and a checkpoint in error is not
         // applied at all: this stack's state is process-wide, so a block
         // applied during a load that then fails survives into the machine
-        // that keeps running (10-network F-10).
+        // that keeps running.
         atalk_persist_t saved;
         system_read_checkpoint_data(checkpoint, &saved, sizeof(saved), "appletalk");
         if (!checkpoint_has_error(checkpoint) && saved.magic == ATALK_PERSIST_MAGIC) {
@@ -935,7 +935,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
 }
 
 // ============================================================================
-// Checkpointing (WP-11)
+// Checkpointing
 // ============================================================================
 
 void appletalk_checkpoint(checkpoint_t *checkpoint) {
@@ -944,7 +944,7 @@ void appletalk_checkpoint(checkpoint_t *checkpoint) {
     // Only durable, reconstructible-from-disk state is written.  Open forks,
     // byte-range locks and enumeration snapshots are deliberately not: their
     // backing bytes already live on the host filesystem, and a restored
-    // machine's clients re-open what they need (proposal §4.5).
+    // machine's clients re-open what they need.
     atalk_persist_t out;
     memset(&out, 0, sizeof(out));
     out.magic = ATALK_PERSIST_MAGIC;
@@ -979,10 +979,10 @@ static void appletalk_teardown(void) {
     atalk_printer_shutdown();
 
     // Then the transport, top down: nothing above can call into it any more,
-    // so requests are dropped without completing (10-network N-08 -- none of
-    // this was reset, so a rebuilt machine inherited the old one's ATP
-    // requests, XO cache, pending ASP write and NBP registrations, and a new
-    // session's Write was never served).
+    // so requests are dropped without completing.  (When none of this was
+    // reset, a rebuilt machine inherited the old one's ATP requests, XO cache,
+    // pending ASP write and NBP registrations, and a new session's Write was
+    // never served.)
     asp_shutdown();
     atp_reset(true);
     nbp_reset();
@@ -1033,7 +1033,7 @@ static void appletalk_teardown(void) {
 // the one destroyed while the old one keeps running: the stack is bound to
 // the new machine's freed SCC and scheduler, so it goes, and is rebuilt for the
 // old machine from what init kept.  (It used to stay bound to the freed
-// machine: the next frame read the freed SCC -- N-06.)  The guest's sessions
+// machine: the next frame read the freed SCC.)  The guest's sessions
 // do not survive that; its shares, names and printer do.
 void appletalk_delete(scc_t *scc) {
     if (!scc || scc != g_scc) {
@@ -1078,7 +1078,7 @@ void atalk_set_enabled(bool enabled) {
         atalk_printer_link_down();
         // ...and nothing below them keeps talking: outgoing requests end as
         // ABORTED, the lookup is cancelled, and frames waiting for a CTS are
-        // dropped (10-network N-09).
+        // dropped.
         atp_reset(false);
         atalk_nbp_lookup_cancel();
         llap_rts_reset();
@@ -1165,7 +1165,7 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         // 6), and responses to whoever sent the request; ATP drops -- and
         // counts -- the rest.  A list of sockets here duplicated that registry
         // and would have dropped the response to any request sent from a
-        // socket not on it (10-network F-21).
+        // socket not on it.
         atp_in(ddp, buf, (int)len);
         break;
 
@@ -1174,8 +1174,7 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         // on socket 4, discards a packet with no data, and answers an Echo
         // Request (function 1) by sending it back with the function set to 2,
         // Echo Reply.  It used to echo anything on any socket unchanged -- so a
-        // pinging client never saw a reply, only its own request coming back
-        // (10-network N-35).
+        // pinging client never saw a reply, only its own request coming back.
         if (ddp->dst_socket != 4) {
             atalk_drop(ATALK_DROP_UNHANDLED, "AEP on socket %u", (unsigned)ddp->dst_socket);
             break;
@@ -1221,7 +1220,7 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
 static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
     ddp_header_t ddp;
 
-    // These three were asserts, on bytes the guest wrote (10-network F-02).
+    // These three were asserts, on bytes the guest wrote.
     // In a build with asserts one bad frame aborted the emulator; in the
     // browser build, which compiles them out, a frame under five bytes was
     // parsed from stale buffer bytes and passed on with len - 5 wrapped.
@@ -1284,7 +1283,7 @@ static const char *nbp_function_name(int function) {
 // They were `int : 4` bit-fields here, which gcc and clang make signed: a count
 // of 8..15 read back as -8..-1, so an inbound packet with eight or more tuples
 // was dropped whole and a reply carrying exactly eight said "8" and carried
-// none (10-network F-07).  The struct never touches the wire; plain bytes.
+// none.  The struct never touches the wire; plain bytes.
 typedef struct {
     uint8_t function;
     uint8_t tuple_count;
@@ -1332,7 +1331,7 @@ static bool nbp_parse_pstr32(const uint8_t **p, int *len, uint8_t *dst, size_t d
 // Logging: implicit category for this file -- DDP, NBP and the stack's own
 // business.  LLAP and ATP log under their own categories, the names their
 // scheduler sources carry, so one layer can be turned up alone: the whole
-// stack logged as "appletalk" (10-network F-27).
+// stack logged as "appletalk".
 LOG_USE_CATEGORY_NAME("appletalk");
 
 static log_category_t *llap_log_category(void) {
@@ -2114,7 +2113,7 @@ static bool atp_decode_event_data(uint64_t data, uint16_t *index, uint32_t *gene
 
 // Called from appletalk_init.  These used to be registered at first arm, so a
 // checkpoint taken with an ATP transaction in flight -- any AFP command, any
-// print job -- could not be restored (10-network N-05).
+// print job -- could not be restored.
 static void atp_timers_init(void) {
     atalk_timer_init(&g_atp_retry_timer, "atp", "retry_timeout", &atp_retry_timeout_cb);
     atalk_timer_init(&g_atp_release_timer, "atp", "xo_release", &atp_release_timeout_cb);
@@ -2665,8 +2664,7 @@ static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
 
 // === Object-model class descriptors =========================================
 //
-// The tree published here is the one described in
-// proposal-appletalk-afp-object-model.md §2:
+// The tree published here:
 //
 //   appletalk            enabled / node_id / stats / nbp
 //     afp                enabled / name / message / versions
@@ -2927,7 +2925,7 @@ static struct object *atalk_volumes_lookup(struct object *self, const char *name
 }
 
 // Constructive methods return the object they made, so a script can chain
-// straight into it (object-model proposal §2.1).
+// straight into it.
 static value_t atalk_volumes_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;

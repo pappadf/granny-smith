@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // ppc_mmu.c
-// The 601/604 MMU front end (proposal-powerpc-601-pdm.md §3.5; TNT
-// proposal §4.3): T=1 I/O-controller segments, BAT match, and the hashed
-// page table search, with three software caches in front of the full walk:
+// The 601/604 MMU front end: T=1 I/O-controller segments, BAT match, and the
+// hashed page table search, with three software caches in front of the full
+// walk:
 //
 //   1. the user SoA fast path — with MSR[PR]=1 and MSR[DT]=1 the active
 //      maps are g_user_read/write, which hold LOGICAL page fills made
@@ -815,7 +815,7 @@ uint32_t ppc_mmu_translate_debug_ex(ppc_t *p, uint32_t ea, bool data, bool user,
 // independent of where the sprint stopped (the nanokernel relocates
 // logical low memory once the framebuffer claims physical 0, so a
 // supervisor-context read of a 68k global lands in the frame buffer —
-// debug.mac must always resolve against the user mapping; §3.9e).
+// debug.mac must always resolve against the user mapping).
 uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok) {
     xl_out_t out;
     if (ok)

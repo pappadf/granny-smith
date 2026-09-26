@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // shell_funcs.h
-// User-defined script functions (`def`, shell v2 §3.10). The registry
+// User-defined script functions (`def`). The registry
 // owns each function's parsed body; functions are callable from command
 // form (script.c), call form in any expression (via the expr function
 // hook), and are surfaced for introspection/removal as attached entry

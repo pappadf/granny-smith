@@ -165,7 +165,7 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     // ever transmitted.  Of the bytes that ARE sent, every page zeroes its own
     // body and the block descriptor writes all eight of its bytes -- exactly
     // two, the header's medium type and device-specific parameter, depended on
-    // that 128 KB memset, and sizeof(resp) covers them for free (03-scsi F-41).
+    // that 128 KB memset, and sizeof(resp) covers them for free.
     uint8_t resp[CD_MODE_SENSE_MAX];
     memset(resp, 0, sizeof(resp));
     uint8_t *buf = resp;

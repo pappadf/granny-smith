@@ -5,7 +5,7 @@
 // Filesystem, string and JSON helpers the storage code shares.  Each of these
 // used to exist two to four times across image.c, checkpoint_machine.c,
 // archive.c, storage_class.c, image_scratch.c and tools/dump, with differing
-// edge cases (09-storage F-56, F-57, F-63, F-36).  src/peeler keeps its own
+// edge cases.  src/peeler keeps its own
 // copies so it stays buildable on its own.
 
 #ifndef GS_STORAGE_UTIL_H

@@ -685,13 +685,13 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     return 4 + size;
 }
 
-// MC68040 FSAVE: the on-chip FPU's frames are a single status longword —
-// NULL (version $00) when the FPU is in the reset state, IDLE (version $41,
-// size byte $00) otherwise.  The larger UNIMP/BUSY frames only exist mid-
-// exception on real silicon; this functional model completes every FP
-// operation synchronously (proposal §6.4 decision A), so there is never a
-// mid-instruction state to dump.  Frame sizes cross-checked against the
-// FPSP equates (fpsp.h: IDLE_SIZE=4, UNIMP_41_SIZE=52, BUSY_SIZE=100).
+// MC68040 FSAVE: the on-chip FPU's frames are a single status longword — NULL
+// (version $00) when the FPU is in the reset state, IDLE (version $41, size
+// byte $00) otherwise.  The larger UNIMP/BUSY frames only exist mid-exception
+// on real silicon; this functional model completes every FP operation
+// synchronously, so there is never a mid-instruction state to dump.  Frame
+// sizes cross-checked against the FPSP equates (fpsp.h: IDLE_SIZE=4,
+// UNIMP_41_SIZE=52, BUSY_SIZE=100).
 int fpu_fsave040(fpu_state_t *fpu, uint32_t addr) {
     memory_write_uint32(addr, fpu->initialized ? 0x41000000u : 0x00000000u);
     // After FSAVE the FPU is in the null state; the programmer model

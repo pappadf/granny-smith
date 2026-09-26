@@ -57,11 +57,10 @@ static floppy_drive_t *current_drive(floppy_t *floppy) {
 //
 // Everything is computed in uint64: the side-0 copy of this was fixed for
 // `(int)` truncation once emulated time passes ~2.1 s, and the side-1 copy --
-// the same four lines, pasted -- was not (02-floppy F-15).  After ~35 s
-// `now_ns / 2040.0` exceeds INT_MAX and casting the out-of-range double is
-// undefined behaviour, so the side-1 sense line returned a constant and any
-// software polling RDDATA1 for a double-sided read stalled.  Extracted so
-// there is one copy to fix.
+// the same four lines, pasted -- was not.  After ~35 s `now_ns / 2040.0`
+// exceeds INT_MAX and casting the out-of-range double is undefined behaviour,
+// so the side-1 sense line returned a constant and any software polling RDDATA1
+// for a double-sided read stalled.  Extracted so there is one copy to fix.
 static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, int side) {
     enum { GCR_NS_PER_BYTE = 16340, GCR_NS_PER_BIT = 2040 };
     uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
@@ -87,7 +86,7 @@ static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, i
 // and motor speed zones crossed a timeout is required before accessing the
 // drive after stepping.  This is left to the software."  The chip paces the
 // step pulses (80 us apart) and raises step_done; the settle is the driver's
-// business (02-floppy F-22).
+// business.
 static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int count, bool model_settle) {
     if (!floppy || drv >= NUM_DRIVES || count <= 0)
         return;
@@ -136,7 +135,7 @@ static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int 
 // poll it.  SWIM3 does not -- nothing on that path consults motor_spinning_up
 // (swim3.c reads the motor LATCH through floppy_drive_motor_on), so modelling
 // it there would model nothing observable.  Stated rather than left to be
-// inferred from two separate entry points (02-floppy F-22).
+// inferred from two separate entry points.
 static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool model_spinup) {
     if (!floppy || drv >= NUM_DRIVES)
         return;
@@ -159,7 +158,7 @@ static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool mod
         // with that pair whatever its data, so on a two-drive machine spinning
         // up drive 1 cancelled drive 0's pending spin-up and left it
         // motor_spinning_up forever -- /READY stuck at 1 for the rest of the
-        // run (02-floppy F-05).
+        // run.
         remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
         scheduler_new_cpu_event(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv, 0, MOTOR_SPINUP_TIME_NS);
         LOG(2, "Drive %u: Motor ON (spinning up)", drv);
@@ -243,9 +242,8 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         // countdown here, but the only writer set it to 0, so the branch was
         // unreachable and the feature did not exist -- while the field was
         // still checkpointed and the decrement meant a DEBUGGER read of this
-        // sense line would have mutated it (02-floppy F-12).  If the delay is
-        // ever wanted, it needs a writer and a scheduler event, not a
-        // read-side counter.
+        // sense line would have mutated it.  If the delay is ever wanted, it
+        // needs a writer and a scheduler event, not a read-side counter.
         ret = (floppy->disk[drv] == NULL);
         break;
     case 0x09: // /WRTPRT: zero when write protected
@@ -451,9 +449,9 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
     int drv = DRIVE_INDEX(floppy);
 
     // Mode register is WRITE ONLY.  Guest-reachable -- any code can set Q6 and
-    // Q7 and then read -- so it logs rather than asserting (02-floppy F-32);
-    // GS_ASSERT pauses the scheduler and continues, which turns a wrong guest
-    // instruction into an emulator hang.
+    // Q7 and then read -- so it logs rather than asserting; GS_ASSERT pauses
+    // the scheduler and continues, which turns a wrong guest instruction into
+    // an emulator hang.
     if (IWM_Q6(floppy) && IWM_Q7(floppy))
         LOG(2, "IWM: read of the write-only mode register (Q6=Q7=1)");
 
@@ -486,7 +484,7 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         if (!IWM_ENABLE(floppy)) {
             // The SWIM echoes the last byte the CPU put on the data bus; the
             // plain IWM floats high.  One of the three real differences
-            // between the two register files (02-floppy F-10).
+            // between the two register files.
             if (floppy->type == FLOPPY_TYPE_SWIM) {
                 uint8_t val = floppy->iwm_latch_valid ? floppy->iwm_write_latch : 0xFF;
                 floppy->iwm_latch_valid = false;
@@ -508,8 +506,8 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
             // MFM media in the drive, or an allocation failure.  The SWIM
             // returns 0x00 so the ROM's GCR sync detection fails and it falls
             // through to the ISM path; the plain IWM floats high.  Whether
-            // these should differ at all is an open question (02-floppy F-10,
-            // proposal Q2) -- preserved per-variant rather than guessed.
+            // these should differ at all is an open question -- preserved
+            // per-variant rather than guessed.
             uint8_t no_data = (floppy->type == FLOPPY_TYPE_SWIM) ? 0x00 : 0xFF;
             LOG(5, "Drive %d: No GCR track data (MFM disk or alloc failure)", drv);
             return no_data;
@@ -578,8 +576,9 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // This used to store unchecked and then wrap with `==`, so any path
         // leaving offset > trk_len turned the write into an unbounded walk off
         // the end of the heap track buffer -- the equality could never fire
-        // again (02-floppy F-16).  offset is checkpointed plain data, so a
-        // corrupt checkpoint supplied one directly until F-02's validator.
+        // again.  offset is checkpointed plain data, so a corrupt checkpoint
+        // could supply one directly too; the restore path now resets an
+        // out-of-range offset.
         size_t trk_len_w = iwm_track_length(drive->track);
         if (drive->offset < 0 || (size_t)drive->offset >= trk_len_w)
             drive->offset = 0;
@@ -658,7 +657,7 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
 
     // The drive being loaded, not whichever the IWM SELECT line happens to
     // point at: this used to leave a stale offset on the freshly loaded drive
-    // and clobber the other drive's in-progress read position (02-floppy F-12).
+    // and clobber the other drive's in-progress read position.
     floppy->drives[drive].offset = 0;
     // A new medium: what it carries is whatever its image implies, until
     // something writes a format.
@@ -687,7 +686,7 @@ const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy) {
     return &floppy->memory_interface;
 }
 
-// === M7e — read-only views for the object model =============================
+// === Read-only views for the object model ===================================
 
 int floppy_get_type(const floppy_t *floppy) {
     return floppy ? floppy->type : 0;
@@ -876,7 +875,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         // motor_spinup event type is registered: nothing on the SWIM3 path
         // consults motor_spinning_up -- swim3.c reads the motor LATCH through
         // floppy_drive_motor_on -- so the type used to be registered and never
-        // armed (02-floppy F-22).
+        // armed.
     } else if (type == FLOPPY_TYPE_SWIM) {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
         scheduler_new_event_type(scheduler, "floppy", floppy, "ism_service", &floppy_swim_service_callback);
@@ -967,7 +966,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
             floppy->drive_links[i].floppy = floppy;
             floppy->drive_links[i].slot = i;
             floppy->drive_objects[i] = object_new(&floppy_drive_class, &floppy->drive_links[i], NULL);
-            // Per-drive medium node, sharing the same drive link (proposal §5.6).
+            // Per-drive medium node, sharing the same drive link.
             floppy->disk_objects[i] = object_new(&floppy_disk_class, &floppy->drive_links[i], "disk");
         }
     }
@@ -997,8 +996,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
 //     drive's business, not the controller's, so those events keep running.
 //
 // Before this existed there was no floppy_reset at all: the IWM mode register
-// and the whole ISM register file survived every reset path
-// (05-chipsets-irq F-03).
+// and the whole ISM register file survived every reset path.
 void floppy_reset(floppy_t *floppy) {
     if (!floppy)
         return;
@@ -1022,7 +1020,7 @@ void floppy_delete(floppy_t *floppy) {
     if (!floppy)
         return;
     // Drop everything the scheduler still holds for this object before any
-    // of it is torn down (proposal-scheduler-source-lifetime).
+    // of it is torn down, so no queued event can fire into freed memory.
     scheduler_forget_source(floppy->scheduler, floppy);
     LOG(2, "Floppy: Deleting controller");
 
@@ -1076,11 +1074,11 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
     // floppy_drive_t, which is a field of floppy_t before the `disk` boundary),
     // so a straight memcpy wrote 320 live heap pointers -- 2560 bytes of ASLR
     // addresses -- into every save file, and the restore then read them back
-    // over the pointers it had just carefully NULLed (02-floppy F-01).  The
-    // per-track loop below replaces them, so nothing depended on the values;
-    // they were pure leak, pure noise to the RLE, and a trap for any future
-    // reader.  Scrubbing a copy fixes it without moving the field and churning
-    // every `drive->tracks[...]` call site.
+    // over the pointers it had just carefully NULLed.  The per-track loop
+    // below replaces them, so nothing depended on the values; they were pure
+    // leak, pure noise to the RLE, and a trap for any future reader.  Scrubbing
+    // a copy fixes it without moving the field and churning every
+    // `drive->tracks[...]` call site.
     uint8_t *prefix = malloc(FLOPPY_CHECKPOINT_SIZE);
     if (!prefix) {
         LOG(1, "Floppy: checkpoint allocation failed");
@@ -1137,11 +1135,11 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
 // and SE/30 (SWIM dual-mode) attach a floppy_t at machine init, so
 // the object is always present when cfg->floppy is non-NULL.
 //
-// Drive layout matches the proposal: `floppy.drives[0]` is the
-// internal drive, `floppy.drives[1]` is external. Indexed children
-// are dense (always exactly 2 slots) — index sparseness only matters
-// for collections that grow (breakpoints, scsi.devices); the floppy
-// drive count is a hardware constant.
+// Drive layout: `floppy.drives[0]` is the internal drive,
+// `floppy.drives[1]` is external. Indexed children are dense (always
+// exactly 2 slots) — index sparseness only matters for collections
+// that grow (breakpoints, scsi.devices); the floppy drive count is a
+// hardware constant.
 //
 // instance_data on the floppy / drives nodes is the floppy_t* itself;
 // per-drive entry objects carry a pointer to floppy->drive_links[i].
@@ -1271,11 +1269,11 @@ static const class_desc_t floppy_class = {
 
 // --- Controller node: the live register file, per variant -------------------
 //
-// 02-floppy F-41: the object model exposed nothing variant-specific at all, so
-// a floppy problem could only be inspected by raising a log category and
-// reading a trace -- while AGENTS.md positions the object tree as THE debugging
-// surface and the headless shell as the primary tool.  The register files are
-// plain data and trivially exposable.
+// Without this the object model exposed nothing variant-specific at all, so a
+// floppy problem could only be inspected by raising a log category and reading
+// a trace -- while AGENTS.md positions the object tree as THE debugging surface
+// and the headless shell as the primary tool.  The register files are plain
+// data and trivially exposable.
 //
 // Members read as zero on a variant that has no such register; `type` on the
 // parent says which variant is in front of you.
@@ -1419,10 +1417,10 @@ static value_t floppy_drive_attr_motor_on(struct object *self, const member_t *m
 
 // --- Medium (disk) node: machine.floppy.drive[N].disk ----------------------
 //
-// First-class node for the disk currently in this drive (proposal §5.6),
-// mirroring machine.scsi.device[N].image. instance_data is the same drive
-// link as the parent entry; present/path are read live. Returned by the
-// drive's `disk` child lookup only when a disk is inserted.
+// First-class node for the disk currently in this drive, mirroring
+// machine.scsi.device[N].image. instance_data is the same drive link as the
+// parent entry; present/path are read live. Returned by the drive's `disk`
+// child lookup only when a disk is inserted.
 
 static value_t floppy_disk_attr_present(struct object *self, const member_t *m) {
     (void)m;
@@ -1432,8 +1430,8 @@ static value_t floppy_disk_attr_present(struct object *self, const member_t *m) 
 }
 
 // Write-protect is user-visible state the UI had no way to read back, and
-// density is what distinguishes the four capacities the drive can hold
-// (02-floppy F-41).  Both come straight from the medium.
+// density is what distinguishes the four capacities the drive can hold.  Both
+// come straight from the medium.
 static value_t floppy_disk_attr_writable(struct object *self, const member_t *m) {
     (void)m;
     unsigned slot = 0;
@@ -1631,7 +1629,7 @@ static const class_desc_t floppy_drive_class = {
 static struct object *floppy_drives_get(struct object *self, int index) {
     floppy_t *floppy = (floppy_t *)object_data(self);
     if (!floppy || index < 0 || index >= floppy->n_drives)
-        return NULL; // a drive the machine does not have (N-06)
+        return NULL; // a drive the machine does not have
     return floppy->drive_objects[index];
 }
 

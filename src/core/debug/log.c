@@ -138,11 +138,11 @@ static void print_category_config(const struct log_category *c) {
 //
 // These replace log_configure(category, "level=5 stdout=off file=..."), which
 // was a flag grammar inside a string parsed with strtok_r -- the exact shape
-// docs/core/shell/object-model.md 6 says named arguments exist to retire.
+// docs/core/shell/object-model.md ("Library conventions") says named
+// arguments exist to retire.
 // The framework could not validate it (the slot was declared V_NONE, so it
 // was told nothing to validate), completion could not offer the keys or their
-// values, and it carried its own boolean vocabulary and its own error wording
-// (08-core-infra F-35).
+// values, and it carried its own boolean vocabulary and its own error wording.
 //
 // Each setter takes the category by name so the caller does not have to hold
 // a handle, and validates against the manifest by going through
@@ -202,8 +202,8 @@ void log_print_category(const char *category) {
 
 // Public API ----------------------------------------------------------------
 
-// Initializes the logging system. Phase 5c: legacy `log` shell command
-// registration retired; the typed `log_set` root method calls cmd_log
+// Initializes the logging system. The legacy `log` shell command
+// registration is retired; the typed `log_set` root method calls cmd_log
 // directly.
 void log_init(void) {
     if (!s_sink_fn)
@@ -235,7 +235,7 @@ const char *log_category_description(const char *name) {
 
 // Create every category the manifest declares, so `debug.log` with no
 // arguments lists the real, complete set rather than only what has been hit
-// or configured so far (08-core-infra F-34).
+// or configured so far.
 void log_register_manifest(void) {
 #define X(n, lvl, desc)                                                                                                \
     do {                                                                                                               \
@@ -253,7 +253,7 @@ log_category_t *log_register_category(const char *name) {
         return NULL;
     // A category that is not in the manifest is a typo, in code or in a
     // `debug.log` argument.  It used to be created on the spot, which is how
-    // `debug.log cpuu 10` reported success and produced nothing (F-34).
+    // `debug.log cpuu 10` reported success and produced nothing.
     GS_ASSERTF(name_in_manifest(name), "log category '%s' is not in GS_LOG_CATEGORIES", name);
     if (!name_in_manifest(name))
         return NULL;

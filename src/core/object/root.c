@@ -79,7 +79,7 @@ typedef struct {
 // instead of erroring: objects(), attributes(), methods(), meta.children and
 // meta.indices would report a short list as if it were complete, which the
 // inspector then renders as "these are all the members".  A truncated schema
-// is worse than an error because the caller cannot tell (F-15, F-63).
+// is worse than an error because the caller cannot tell.
 static bool string_list_push(string_list_acc_t *acc, const char *name) {
     if (!name)
         return true;
@@ -345,7 +345,7 @@ static struct object *attach_stub(struct object *parent, const class_desc_t *cls
         // Two callers discard this result (storage.images, shell.alias), so an
         // exhausted table made a whole subtree quietly absent -- which reads
         // as a missing feature, not a resource limit.  The class-validation
-        // failure a few lines below already prints; this one did not (F-62).
+        // failure a few lines below already prints; this one did not.
         fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS, name ? name : "(unnamed)");
         return NULL;
     }
@@ -401,7 +401,7 @@ void root_install(struct config *cfg) {
     // `shell.alias.{add,remove,list}` surface).
     struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
     if (shell_obj)
-        shell_funcs_install(shell_obj); // `shell.functions` container (§3.10)
+        shell_funcs_install(shell_obj); // `shell.functions` container
     struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
     if (storage_obj) {
         attach_stub(storage_obj, &storage_images_collection_class, cfg, "images");
@@ -413,10 +413,9 @@ void root_install(struct config *cfg) {
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
 
     // `machine.nubus.*` namespace.  Attached under the machine node — NuBus
-    // is emulated hardware, not a meta object (proposal-system-object-model.md
-    // §2.2/§5.5).  The registry is empty until cfg->nubus exists, so
-    // `machine.nubus.cards()` returns [] pre-population; once populated the
-    // surface gains slot.<n>/ children per proposal §3.5.3.
+    // is emulated hardware, not a meta object.  The registry is empty until
+    // cfg->nubus exists, so `machine.nubus.cards()` returns [] pre-population;
+    // once populated the surface gains slot.<n>/ children.
     struct object *nubus_obj = attach_stub(machine_object(), &nubus_class, cfg, "nubus");
     if (nubus_obj) {
         object_set_label(nubus_obj, "NuBus");
@@ -460,9 +459,9 @@ void root_uninstall(void) {
     // feared "stale members", but the stale things are the STUBS, and the loop
     // above already detached them.  emu_root_class_real is a static descriptor
     // whose members take a path and walk the tree; not one of them holds or
-    // dereferences a cfg, so there is nothing about it to go stale (F-16).
+    // dereferences a cfg, so there is nothing about it to go stale.
     // Aliases (built-in and user) survive machine teardown: they store
-    // path text and re-resolve per access (shell v2 §3.5), so a
+    // path text and re-resolve per access, so a
     // reference like `alias d = machine.floppy.drive[0]` tracks the
     // *new* drive object after a reboot instead of being wiped.
     g_installed_cfg = NULL;

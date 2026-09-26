@@ -2,8 +2,7 @@
 // Copyright (c) pappadf
 
 // machine_config.c
-// Storage and object-model surface for the built-from record
-// (proposal-named-args-boot-config §4.2).
+// Storage and object-model surface for the built-from record.
 
 #include "machine_config.h"
 

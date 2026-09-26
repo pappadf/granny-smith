@@ -8,7 +8,7 @@
 //
 // The Sony zone geometry that machine files legitimately need lives in the
 // public floppy_geometry.h instead -- lisa_fdc.c used to include THIS header
-// for it, in violation of the rule above (02-floppy F-29).
+// for it, in violation of the rule above.
 
 #ifndef FLOPPY_INTERNAL_H
 #define FLOPPY_INTERNAL_H
@@ -133,14 +133,6 @@
 #define ISM_SETUP_MOTOR_TMO  0x80
 
 // ISM error register bits
-// UNDERRUN is defined by the ISM ASIC spec in BOTH directions -- write mode:
-// the FIFO emptied and the processor has not written another byte; read mode:
-// the FIFO holds two bytes and the processor is not reading them fast enough.
-// Both conditions require the transfer engine to be producing or consuming on
-// its own clock, which this model does not have (the ISM path is CPU-paced,
-// unlike SWIM3's scheduler-driven engine), so it is never set.  That is the
-// surviving half of 02-floppy F-24; the rest of that finding is false -- the
-// two ISM_ERR_OVERRUN assignments are both correct per the same spec.
 // UNDERRUN is defined by the ISM ASIC spec in BOTH directions: write mode --
 // the FIFO emptied and the processor has not written another byte; read mode --
 // the FIFO holds two bytes and the processor is not reading them fast enough.
@@ -155,7 +147,8 @@
 //   write -- writes are drained at the register rather than paced (see
 //            ism_write_shifter_take), so a shifter that does not run on a clock
 //            can never find the FIFO empty.
-// Both want more fidelity than this model has.  02-floppy F-24.
+// Both want more fidelity than this model has.  The two ISM_ERR_OVERRUN
+// assignments, by contrast, are both correct per the same spec.
 #define ISM_ERR_UNDERRUN     0x01
 #define ISM_ERR_MARK_IN_DATA 0x02
 #define ISM_ERR_OVERRUN      0x04
@@ -306,8 +299,8 @@ struct floppy {
     // How many of the controller's NUM_DRIVES the machine has cabled
     // (its profile's floppy_slots).  The chip always has two drive selects;
     // a one-drive Mac simply has nothing on the second, and neither the host
-    // nor the object model may put a disk there (N-06).  Set from the
-    // profile at every build, so not checkpointed.
+    // nor the object model may put a disk there.  Set from the profile at
+    // every build, so not checkpointed.
     int n_drives;
 };
 
@@ -354,8 +347,8 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
 // floppy_swim.c.  floppy_iwm_read/floppy_iwm_write ARE the SWIM's IWM-mode
 // register file: the SWIM used to carry its own near-identical copy, with the
 // three real differences (the data-bus echo latch, the ISM entry-sequence
-// watcher and the no-track-data return value) buried in 77 lines of drift
-// (02-floppy F-10).  Those three are now explicit inside the shared core.
+// watcher and the no-track-data return value) buried in 77 lines of drift.
+// Those three are now explicit inside the shared core.
 // ============================================================================
 
 // Returns the current disk status based on IWM CA lines and SEL signal

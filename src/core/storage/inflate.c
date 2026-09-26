@@ -108,7 +108,7 @@ static int inflate_push(inflate_out_t *o, uint8_t byte) {
         // it means the stream disagrees, which is an error rather than a clamp.
         if (!o->grow || o->cap >= o->max)
             return 0;
-        // Doubling stops at `max`, the caller's ceiling (09-storage F-28):
+        // Doubling stops at `max`, the caller's ceiling:
         // unbounded, a small stream of long runs asked for any size at all,
         // and the doubling itself could wrap to 0.
         size_t new_cap = o->cap > o->max / 2 ? o->max : o->cap * 2;

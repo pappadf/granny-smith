@@ -3,7 +3,7 @@
 
 // host_keys.h
 // A host keyboard, as the browser presents it, turned into key transitions
-// for whatever machine is running (I4).
+// for whatever machine is running.
 //
 // The web host used to keep two paths: DOM codes to ADB for a Mac, and DOM
 // codes straight to COPS bytes for a Lisa, chosen by model id -- with the

@@ -8,11 +8,11 @@
 // LOG_USE_CATEGORY_NAME's lazy register on first hit, explicit
 // log_register_category calls, and log_configure creating whatever name it
 // was handed -- and there was no manifest.  Three consequences, all of which
-// this batch hit:
+// were hit in practice:
 //
 //   * `debug.log cpuu 10` succeeded, reported a configured `cpuu`, and
 //     produced no output and no error: a silent dead end for anyone
-//     debugging (F-34).
+//     debugging.
 //   * `debug.log` with no arguments listed only categories that had already
 //     been HIT or configured, so it could not be used to discover the right
 //     name either.

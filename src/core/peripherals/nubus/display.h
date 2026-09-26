@@ -88,8 +88,8 @@ static inline uint32_t display_bpp(pixel_format_t format) {
     // 5-6-5 arm above was absent until 2026-09-16, and -Wswitch had been
     // saying so on every build of both targets for as long as the format
     // existed.  Nothing reached it -- the Mach64 selects 565 and computes its
-    // own stride -- but the fix for 04-video F-01 is to route callers HERE,
-    // which would have turned a latent 8-for-16 into a live one.
+    // own stride -- but the point of this function is to route every caller
+    // HERE, which would have turned a latent 8-for-16 into a live one.
     GS_UNIMPLEMENTED("display_bpp: pixel format %d has no bits-per-pixel rule", (int)format);
     return 8;
 }
@@ -108,7 +108,7 @@ typedef struct rgba8 {
 // WHO APPLIES crt_response, AND WHY THE TWO CONSUMERS DIFFER ON PURPOSE
 //
 // The WebGL renderer applies it; `screen.save` and `screen.match` do not.
-// 04-video F-03 reads that as a divergence to unify.  It is not:
+// That can look like a divergence to unify.  It is not:
 //
 //   * Capture answers "did the emulation produce the right bytes".  It emits
 //     what the card put on the bus, which is byte-stable against the model
@@ -201,13 +201,13 @@ typedef struct display {
 // existed two to eight times across debug.c, nubus_class.c and the WebGL
 // renderer, and the copies had drifted: display_bpp answered 8 for a 5-6-5
 // format while nubus_class.c's copy answered 16, and the two disagreed about
-// what an unknown format means (8 vs 0).  04-video F-01, F-02, F-04.
+// what an unknown format means (8 vs 0).
 
 // 5-bit and 6-bit channels expanded to 8, by bit replication.  (v << 3) |
 // (v >> 2) maps 31 to 255 and 0 to 0, and is exactly round(v * 255 / 31) at
 // every input -- the WebGL shaders divide instead and land on the same values.
 //
-// 04-video F-04 calls these "three different 5-bit->8-bit expansions,
+// These have been described as "three different 5-bit->8-bit expansions,
 // disagreeing by 1 LSB".  Audited 2026-09-16: they do NOT disagree.  Every
 // copy in the tree is this same replication, and the renderer's /31.0 is the
 // identity above, not a rival.  The duplication is real -- it was six copies,
@@ -252,16 +252,15 @@ static inline const char *display_format_name(pixel_format_t format) {
 // head with `system_write_checkpoint_data(cp, &display, offsetof(display_t,
 // bits))`.  That puts a bare `pixel_format_t` into a positional, untagged
 // stream, and `sizeof(enum)` is implementation-defined: a `-fshort-enums`
-// build shifts every field after it, in five files at once (04-video F-41,
-// filed against the RBV alone -- it is five producers, not one).
+// build shifts every field after it, in five files at once -- five
+// producers, not just the RBV.
 //
 // This is LATENT rather than live, and the reason is worth writing down so
 // nobody "fixes" the gate instead: checkpoints carry the build id
 // (`__DATE__ " " __TIME__`, force-recompiled every build), and a stream from a
 // differently-compiled binary is refused before any of these bytes are read.
-// The fix is still worth having -- it is the same shape 03-scsi F-21 applied
-// to the 53C96, and it stops the trap arming itself the day checkpoints
-// become portable between the wasm and native builds.
+// The fix is still worth having: it stops the trap arming itself the day
+// checkpoints become portable between the wasm and native builds.
 //
 // Fixed widths throughout, so the layout is the same on every target.
 typedef struct display_head {
@@ -312,9 +311,9 @@ static inline void display_head_apply(display_t *d, const display_head_t *h) {
 
 // One pixel of a row, as RGB.
 //
-// `clut_len` of zero used to reach `idx % clut_len` and divide by zero
-// (04-video F-30); a direct format has no CLUT and an indexed one with an
-// empty CLUT has nothing to look up, so both answer black.
+// `clut_len` of zero used to reach `idx % clut_len` and divide by zero; a
+// direct format has no CLUT and an indexed one with an empty CLUT has
+// nothing to look up, so both answer black.
 static inline void display_pixel_rgb(const display_t *d, const uint8_t *src_row, uint32_t x, uint8_t out[3]) {
     const rgba8_t *clut = d->clut;
     const uint32_t clut_len = d->clut_len;
@@ -407,34 +406,33 @@ static inline void display_blank_raster(display_t *d) {
 // ============================================================================
 // Point a descriptor at a framebuffer, or refuse and blank it.
 //
-// This exists because nine separate findings in 04-video are one bug: the
-// descriptor is assembled from guest registers and never checked against the
-// buffer behind it, so `bits` and `stride * height` come from different
+// This exists because many separate symptoms across the producers are one bug:
+// the descriptor is assembled from guest registers and never checked against
+// the buffer behind it, so `bits` and `stride * height` come from different
 // authorities and a consumer reads past the end.  Measured instances:
 //
-//   F-20  the JMFB's 16-bit VideoBase yields a 5,592,320-byte offset into a
-//         2 MB VRAM -- 2.7x past the end, from one move.l
-//   F-21  display_card_824gc.c carries the identical val*32*8/3, and can
-//         repoint the descriptor between two different allocations
-//   F-24  Civic masks its base into range, leaves stride unbounded, and never
-//         checks base + stride*h
-//   F-25  PDM's depth and mode registers are independent: 640x870 at 16 bpp
-//         advertises 1,113,600 bytes from a 614,400-byte blank buffer
-//   F-26  Control caps 2048x1536 -- 12 MB at 32 bpp against 4 MB of VRAM --
-//         with stride taken from the raw, uncapped CR_PITCH
-//   F-29  the JMFB's power-on stride is hard-coded 640/8 while width can be
-//         512, 640 or 1152
+//   - the JMFB's 16-bit VideoBase yields a 5,592,320-byte offset into a
+//     2 MB VRAM -- 2.7x past the end, from one move.l
+//   - display_card_824gc.c carries the identical val*32*8/3, and can
+//     repoint the descriptor between two different allocations
+//   - Civic masks its base into range, leaves stride unbounded, and never
+//     checks base + stride*h
+//   - PDM's depth and mode registers are independent: 640x870 at 16 bpp
+//     advertises 1,113,600 bytes from a 614,400-byte blank buffer
+//   - Control caps 2048x1536 -- 12 MB at 32 bpp against 4 MB of VRAM --
+//     with stride taken from the raw, uncapped CR_PITCH
+//   - the JMFB's power-on stride is hard-coded 640/8 while width can be
+//     512, 640 or 1152
 //
 // Three of them already clamp their memset.  Clamping the FILL was never the
 // problem: the descriptor kept the large geometry, so the consumer still read
 // what the producer advertised.  The fix is that the geometry and the buffer
 // are decided together, here, and cannot disagree afterwards.
 //
-// REFUSING, not clamping (proposal-video-shared-model.md S5b).  A descriptor
-// that does not fit blanks -- the producer shows black, which is what a
-// misprogrammed guest already gets on the paths that set `blanked` by hand.
-// Clamping would present a shortened raster that reads as an emulation bug
-// rather than a guest one.
+// REFUSING, not clamping.  A descriptor that does not fit blanks -- the
+// producer shows black, which is what a misprogrammed guest already gets on the
+// paths that set `blanked` by hand.  Clamping would present a shortened raster
+// that reads as an emulation bug rather than a guest one.
 //
 // `blank` is the producer's zero buffer and `blank_size` its real allocated
 // size -- not its nominal VRAM size.  On refusal the geometry is reduced to

@@ -3,7 +3,8 @@
 
 // config_space.c
 // The generic PCI type-0 configuration header.  See config_space.h for
-// the contract and proposal-pci-architecture.md §5.2 for the design.
+// the contract and docs/core/peripherals/pci.md ("Config space") for the
+// design.
 //
 // This file knows nothing about any particular device: it assembles reads
 // out of the static declaration plus the live latches, applies the size

@@ -47,7 +47,7 @@ typedef struct vfs_dir vfs_dir_t;
 // Backend vtable.  Every method receives the backend's own ctx pointer
 // (which is NULL for the host backend since it is stateless).
 typedef struct vfs_backend {
-    const char *scheme; // "host" today; "image" in Phase 2
+    const char *scheme; // "host" or "image"
 
     int (*stat)(void *ctx, const char *path, vfs_stat_t *out);
     int (*opendir)(void *ctx, const char *path, vfs_dir_t **out);
@@ -87,7 +87,7 @@ int vfs_resolve(const char *input, char *resolved, size_t resolved_len, const vf
 // Like vfs_resolve, but if the resolved path terminates exactly at an
 // image file (no trailing slash, no further segments) the resolver still
 // descends into the image's partition-list root.  This implements the
-// ergonomic "ls/cd on a bare image path" rule from the proposal (§2.9)
+// ergonomic "ls/cd on a bare image path" rule
 // without changing the strict semantics of vfs_resolve — cat/size/stat
 // keep the "bare image = file" behaviour.
 int vfs_resolve_descend(const char *input, char *resolved, size_t resolved_len, const vfs_backend_t **be, void **ctx,
