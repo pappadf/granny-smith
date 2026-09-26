@@ -435,8 +435,10 @@ test: unit-test integration-test
 
 ui2:
 	cd $(WEB2_DIR) && npm ci --silent && npm run build
-	@# Phase 3: copy WASM build artifacts into the served dist directory.
-	@# Skipped silently if the WASM build hasn't run yet — `make` produces them.
+	@# Copy the WASM build's runtime artifacts into the served dist directory:
+	@# the module, the service worker and the LaserWriter interpreter.  Never
+	@# the object tree ($(BUILD_DIR)/wasm): nothing loads it, and dist/ is what
+	@# gets deployed.  Skipped if the WASM build hasn't run yet.
 	@if [ -f $(BUILD_DIR)/main.mjs ]; then \
 		cp $(BUILD_DIR)/main.mjs $(BUILD_DIR)/main.wasm $(WEB2_DIST)/ ; \
 		if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
@@ -445,9 +447,6 @@ ui2:
 		for f in $(BUILD_DIR)/platen-*.js $(BUILD_DIR)/platen-*.wasm; do \
 			[ -f "$$f" ] && cp "$$f" $(WEB2_DIST)/ ; \
 		done ; \
-		if [ -d $(BUILD_DIR)/wasm ]; then \
-			cp -R $(BUILD_DIR)/wasm $(WEB2_DIST)/wasm ; \
-		fi ; \
 	else \
 		echo "Note: $(BUILD_DIR)/main.mjs not found; run 'make' first to produce WASM artifacts" ; \
 	fi

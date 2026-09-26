@@ -69,7 +69,7 @@ jobs:
       # 4. Copy the new UI's dist/ tree into the versioned folder + /latest/.
       # app/web2/dist/ is produced by `make ui2` and contains:
       #   index.html, assets/, icons/, main.mjs, main.wasm,
-      #   coi-serviceworker.js, wasm/, NOTICE
+      #   coi-serviceworker.js, platen-*.{js,wasm}, NOTICE
       # The Vite bundle is self-contained, so a whole-directory copy is
       # both simpler and more robust than the legacy per-file list.
       - name: Place artifacts
