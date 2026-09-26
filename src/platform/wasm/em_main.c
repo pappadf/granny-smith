@@ -282,7 +282,7 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 }
 
 // ============================================================================
-// Shared-heap Command Queue (and gs_eval queue)
+// The mailbox (every JS -> C request)
 // ============================================================================
 //
 // THREADING MODEL — read this before changing anything in this section.
@@ -319,54 +319,79 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 //
 // THE RULE
 // --------
-// JS → C must always go through the SAB queue below. JS writes the
-// request into shared globals, sets a pending flag, and polls a done
-// flag. The worker's `shell_poll()` (called from `em_main_tick`)
-// drains the queue and writes the result. ccall on `_em_*` exports is
-// forbidden -- and no longer possible: the Makefile stopped exporting
-// ccall/cwrap, so only the bridge remains.
+// JS -> C must always go through the mailbox below: the page writes a
+// request record into the request ring and wakes the worker; the worker's
+// `shell_poll()` (called from `em_main_tick`, and from the idle wait on a
+// stopped machine) drains the ring and writes each result into the event
+// ring.  ccall on `_em_*` exports is forbidden -- and no longer possible:
+// the Makefile stopped exporting ccall/cwrap, so only the mailbox remains.
 //
-// The single shared-memory region. Layout in em.h, mirrored in
-// app/web2/src/bus/emulator.ts (offsets pinned by em.h's _Static_asserts).
-// Path and args are fixed-size; gsEval refuses a request that would not
-// fit rather than let it be truncated.  Output carries `meta.*`
-// introspection dumps, which dominate.
-static js_bridge_t g_bridge = {.version = JS_BRIDGE_VERSION};
+// The region is static so its address is fixed for the process lifetime
+// (shared memory grows in place, em_audio.c).  It is laid out by a
+// constructor, before main() and before the page can see it, so the MAGIC
+// and VERSION words are valid from the first read.  READY stays 0 until
+// main() has run shell_init/setup_init.
+static gs_mailbox_t g_mailbox;
+static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
-EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
-    return &g_bridge;
+__attribute__((constructor)) static void mailbox_construct(void) {
+    if (!gs_mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, gs_eval))
+        abort();
 }
+
+EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
+    return (uint32_t *)g_mailbox.ctrl;
+}
+
+// The page parks in Atomics.waitAsync on READY and EVT_HEAD.
+void gs_mailbox_notify(volatile uint32_t *word) {
+    emscripten_atomic_notify((void *)word, INT_MAX);
+}
+
+static double mailbox_now_us(void) {
+    return emscripten_get_now() * 1000.0;
+}
+
+// Host microseconds one drain may spend serving a burst of requests before
+// giving the tick back; a leaf that is running when it expires still
+// completes (leaves are bounded by their data, not by this).  Set from
+// the tick instrumentation once it has been measured.
+#define GS_MAILBOX_DRAIN_US 2000.0
+
+// On a stopped machine the tick parks here between frames so a request is
+// served at once instead of at the next RAF.  Bounded, in slices, with the
+// pthread's proxied tasks (keyboard, mouse, pointer lock: all delivered as
+// tasks to this thread) drained between slices -- a plain futex wait would
+// hold them until the next request arrived.  Returns to the event loop
+// after GS_MAILBOX_IDLE_MS whatever happened.
+#define GS_MAILBOX_IDLE_SLICE_MS 4.0
+#define GS_MAILBOX_IDLE_MS       12.0
 
 int shell_poll(void) {
-    // Drain the bridge slot. With the shell folded into the object
-    // model, exactly one request kind remains:
-    //   1 = gs_eval(path, args)  — typed object-model call. Includes
-    //                              free-form shell lines via
-    //                              `shell.run`, schema queries via
-    //                              `<path>.meta.*`, and tab completion
-    //                              via `shell.complete` / `meta.complete`.
-    // Acquire pairs with JS's Atomics.store of `pending`, which it makes after
-    // writing path/args: seeing 1 here makes those bytes visible too.
-    if (!__atomic_load_n(&g_bridge.pending, __ATOMIC_ACQUIRE))
-        return 0;
-
-    const char *args = (g_bridge.args[0] != '\0') ? g_bridge.args : NULL;
-    gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
-    // Relaxed is enough: the seq-cst store of `done` below orders it, and JS
-    // writes `pending` again only after it has seen `done`.
-    __atomic_store_n(&g_bridge.pending, 0, __ATOMIC_RELAXED);
-    // Atomic store + wake any JS thread parked in Atomics.waitAsync on
-    // `done`. Sequentially consistent so the result/output writes above
-    // are visible before JS observes done == 1.
-    __atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
-    emscripten_atomic_notify((void *)&g_bridge.done, 1);
-    return 1;
+    int n = gs_mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
+    if (n > 0)
+        gs_mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
+    return n;
 }
 
-// Tab-complete and shell-line dispatch used to live here behind separate
-// `pending` kinds. Both have been folded into gs_eval: tab completion goes
-// through `meta.complete`, free-form lines through `shell.run`. Nothing
-// in this file needs to know about them anymore.
+// The idle wait of a stopped machine: serve requests as they arrive for up
+// to GS_MAILBOX_IDLE_MS, then return to the event loop.  Returns the
+// number of results written.
+static int mailbox_idle_wait(void) {
+    double t0 = emscripten_get_now();
+    int served = 0;
+    while (emscripten_get_now() - t0 < GS_MAILBOX_IDLE_MS) {
+        if (gs_mailbox_has_requests(&g_mailbox)) {
+            served += shell_poll();
+            continue;
+        }
+        uint32_t seen = mbx_load(g_mailbox.ctrl, GS_MBX_C_REQ_HEAD);
+        emscripten_futex_wait(&g_mailbox.ctrl[GS_MBX_C_REQ_HEAD], seen, GS_MAILBOX_IDLE_SLICE_MS);
+        emscripten_current_thread_process_queued_calls();
+        gs_mailbox_heartbeat(&g_mailbox);
+    }
+    return served;
+}
 
 // Main tick function called by the Emscripten main loop
 void em_main_tick(void) {
@@ -431,8 +456,13 @@ void em_main_tick(void) {
     // nothing.
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
+    gs_mailbox_heartbeat(&g_mailbox);
     double poll_t0 = emscripten_get_now();
     int served = shell_poll();
+    // A stopped machine has nothing to do until the next request: wait for
+    // one here (bounded) instead of at the next RAF.
+    if (!(sched && scheduler_is_running(sched)))
+        served += mailbox_idle_wait();
     tick_poll_ms_current = emscripten_get_now() - poll_t0;
     if (served) {
         scheduler_t *after = system_scheduler();
@@ -792,12 +822,11 @@ int main(void) {
     // categories registered later (setup_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
 
-    // Bridge is open for business. JS gates its first gsEval on this
-    // flag so requests issued during the boot window don't dispatch
+    // The mailbox is open for business. JS gates its first gsEval on
+    // READY so requests issued during the boot window don't dispatch
     // against the empty default root class. The notify wakes any JS
-    // thread parked in Atomics.waitAsync on this field.
-    __atomic_store_n(&g_bridge.ready, 1, __ATOMIC_SEQ_CST);
-    emscripten_atomic_notify((void *)&g_bridge.ready, INT_MAX);
+    // thread parked in Atomics.waitAsync on that word.
+    gs_mailbox_set_ready(&g_mailbox);
 
     // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();

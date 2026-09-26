@@ -58,24 +58,22 @@ fdhd,hd,cd}` and `/opfs/{checkpoints,upload}` at boot via
 
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
-a single shared-memory region — `js_bridge_t`, defined in
-[`src/platform/wasm/em.h`](../../src/platform/wasm/em.h) and exported via
-the lone `_get_js_bridge()` accessor. JS resolves the base pointer once
-at init and reads/writes fields by offset through `Module.HEAP32` /
-`Module.HEAPU8`. The struct carries a `version` field that JS verifies
-against `BRIDGE_VERSION` at startup so layout drift fails loudly.
+the **mailbox** — a control block and two record rings in shared memory
+(`src/core/mailbox/mailbox.h`, exported via the lone `_get_gs_mailbox()`
+accessor; see "The Mailbox" below). JS binds to it once at init, checks
+its MAGIC and VERSION so layout drift fails loudly, and from then on
+writes request records and reads result records through `Module.HEAPU8`
+and Atomics.
 
-Every JS→C request rides on the single `pending=1` kind (`gs_eval`).
+Every JS→C request is a `REQ_EVAL` record (`gs_eval`) carrying an id.
 Introspection rides on `<path>.meta.*`; free-form shell lines and tab
-completion ride on the `Shell` class's `run` / `complete` methods.
-The `pending` slot is sized as a 32-bit field for future kinds, but
-only kind 1 is currently in use. JS writes `path` / `args`, sets
-`pending`, and parks on the `done` field via `Atomics.waitAsync`. The
-worker's `shell_poll()` (called every tick) drains the slot, writes
-the JSON response into `output`, then issues `__atomic_store_n(&done,
-1, SEQ_CST)` followed by `emscripten_atomic_notify` to wake JS — no
-polling, no `setTimeout` spin. A JS-side `cmdInFlight` lock serialises
-requests, so the slot is single-buffered by design.
+completion ride on the `Shell` class's `run` / `complete` methods. The
+worker's `shell_poll()` (called every tick, and from the idle wait on a
+stopped machine) drains every pending request and writes one
+`EVT_RESULT` per request; the page's reader loop wakes on `EVT_HEAD` via
+`Atomics.waitAsync` — no polling, no `setTimeout` spin — and resolves the
+promise whose id the result carries. Requests are not serialised on the
+page: any number may be in flight.
 
 **The result contract.** `gsEval(path, args)` resolves to one of three
 shapes, and callers must tell them apart:
@@ -200,48 +198,56 @@ SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback
 retired when the new prompt started coming back as `shell.run`'s return
 value.)
 
-## The Bridge Struct
+## The Mailbox
 
-Layout (mirrored as `OFF_*` constants in
-[`app/web2/src/bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)):
+Every JS↔C request travels through the mailbox: a control block and two
+record rings in the wasm heap (`src/core/mailbox/mailbox.h`; mirrored in
+[`app/web2/src/bus/mailbox.ts`](../../app/web2/src/bus/mailbox.ts), on the
+record-ring primitive `mailbox_ring.h` / `bus/mailboxRing.ts` the platen and
+Voodoo2 GPU transports share). The page writes `REQ_EVAL` records into the
+request ring and wakes the worker; the emulator thread drains them at every
+tick — all of them, under a 2 ms budget — and writes an `EVT_RESULT` per
+request into the event ring; a reader loop on the page resolves the promise
+whose id it carries. Any number of requests may be in flight; a late answer
+can never be mistaken for another call's.
 
 ```
-offset    0   version    int32     must equal JS_BRIDGE_VERSION
-offset    4   ready      int32     1 once worker can dispatch requests
-offset    8   pending    int32     request kind (1 = gs_eval); 0 = idle
-offset   12   done       int32     flipped to 1 by worker on completion
-offset   16   reserved   int32     unused (was a result code JS never read)
-offset   20   path[1024] char[]    JS→C: request path
-offset 1044   args[8192] char[]    JS→C: JSON-encoded arg array
-offset 9236   output[262144] char[] C→JS: JSON-encoded response
-offset 271380 gpu_available int32   JS→C: 1 once the page has a WebGPU device (Voodoo2 takeover)
-total       271384 bytes
+control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
+  [0]  MAGIC 'GSMB'   [1] VERSION 8
+  [2]  REQ_OFF  [3] REQ_SIZE  256 KB   request ring, page → core
+  [4]  EVT_OFF  [5] EVT_SIZE  1 MB     event ring,   core → page
+  [6]  REQ_HEAD (page)  [7] REQ_TAIL (core)   free-running byte counts
+  [8]  EVT_HEAD (core)  [9] EVT_TAIL (page)
+  [10] STATUS  [11] HEARTBEAT  [12] READY  [13] GPU_AVAILABLE
+  [14..18] statistics: requests, events, stalls, longest drain µs, refused
+records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
+  REQ_EVAL   {id, client, deadline_ms, path_len, args_len} + path + args
+  EVT_RESULT {id, ok, json_len} + json
 ```
 
-Only `pending=1` is in use. JS writes `path` / `args`, sets `pending`,
-parks on `done`; the worker writes `output`, then flips `done`. `cmdInFlight` on the JS side serialises requests so the
-single-buffered slot is safe.
+Limits: a path of up to 1023 bytes and an arguments document of up to
+128 KB (the page refuses larger ones before writing); a result of up to
+256 KB. A result the event ring has no room for is held back and delivered
+once the page has read; the core never blocks on the page.
 
-### Request Wakeup (Atomics)
+### Wake-ups and the idle wait
 
-```c
-// shell_poll(), after writing output:
-__atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
-emscripten_atomic_notify((void *)&g_bridge.done, 1);
-```
+The page stores `REQ_HEAD` and `Atomics.notify`s it; the core stores
+`EVT_HEAD` and wakes the page's `Atomics.waitAsync`. While the machine runs,
+a request is served at the next tick (≤ one frame). While it is **stopped**
+the tick parks in a bounded futex wait on `REQ_HEAD` — 4 ms slices, 12 ms in
+all, draining the pthread's proxied input events between slices — so a
+request on an idle machine is served in about a millisecond.
 
-```ts
-// bus/emulator.ts: waitForBridgeDone
-const w = Atomics.waitAsync(Module.HEAP32, doneIdx, 0);
-if (w.async) await w.value;          // resolves on the notify
-Atomics.store(Module.HEAP32, doneIdx, 0);
-```
+### Liveness
 
-`Atomics.waitAsync` returns synchronously with `not-equal` if the
-worker beat JS to it; otherwise it yields a Promise that resolves on
-the notify. Minimum round-trip is one event-loop turn after the
-worker's tick — no `setTimeout` spin, no main-thread CPU burn. The same
-pattern gates the initial `ready` flip.
+`HEARTBEAT` is bumped once per tick and once per idle slice. The page samples
+it every second while visible: three seconds without a change while requests
+are pending marks the emulator dead (every pending request fails with a
+transport error, the crash banner shows). A wasm trap or `abort()` does the
+same through `Module.onAbort`. An ordinary request past 120 s fails for its
+own caller only; known-long requests (`checkpoint.*`, `storage.cp`, …) have
+no deadline.
 
 ## Module Bootstrapping
 
@@ -298,9 +304,10 @@ works under any deploy path.
 The canvas reference is passed once; Emscripten transfers it to the
 worker via `transferControlToOffscreen` and resolves the `#screen` DOM
 id from `OFFSCREENCANVASES_TO_PTHREAD`. After `createModule` returns,
-JS calls `Module._get_js_bridge()` to resolve the bridge base pointer,
-verifies the version, then `await gsEval('machine.register', …)` to
-activate the per-machine checkpoint directory.
+JS calls `Module._get_gs_mailbox()` to resolve the mailbox's control
+block, verifies its MAGIC and VERSION, waits for `READY`, then
+`await gsEval('machine.register', …)` to activate the per-machine
+checkpoint directory.
 
 ## Major UI Surfaces
 
@@ -552,7 +559,7 @@ The same sequence as Module Bootstrapping above, end to end:
    never mounted).
 2. Mount Svelte; `ScreenView` calls `bootstrap(canvas)`: load the
    module (`createModule`, no command line), wire the callbacks, resolve
-   the `js_bridge_t` base pointer and verify its version.
+   the mailbox's control block and verify its MAGIC and VERSION.
 3. Run `machine.register(<machine-id>, <created>)` to set the per-
    machine checkpoint dir.
 4. `whenModuleReady()` resolves; `__gsReady = true`.

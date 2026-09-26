@@ -1,5 +1,5 @@
 // Real emulator bus — boots the WASM Module and exposes `gsEval` over the
-// SAB-backed js_bridge_t slot (src/platform/wasm/em.h).
+// mailbox in shared memory (src/core/mailbox/mailbox.h; bus/mailbox.ts).
 //
 // THREADING — read before adding any new JS→C call site.
 //
@@ -34,18 +34,11 @@ import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
 import { bridgeBusy } from '@/state/activity.svelte';
+import { Mailbox, PATH_MAX, ARGS_MAX, type MailboxFailure } from './mailbox';
 
-const BRIDGE_VERSION = 7;
-const OFF_VERSION = 0;
-const OFF_READY = 4;
-const OFF_PENDING = 8;
-const OFF_DONE = 12;
-const OFF_PATH = 20;
-const OFF_ARGS = 1044;
-const OFF_OUTPUT = 9236;
-const OFF_GPU_AVAILABLE = 271380; // int32: the Voodoo2 takeover has a WebGPU device
-const PATH_SIZE = 1024;
-const ARGS_SIZE = 8192;
+// The client id this page writes into every request (the daemon and the
+// script runner will have their own).
+const CLIENT_PAGE = 1;
 
 // Minimal Emscripten module surface — enough to type-check what bus uses.
 interface EmscriptenModule {
@@ -80,7 +73,7 @@ interface EmscriptenModule {
     ): number;
     close(stream: unknown): void;
   };
-  _get_js_bridge(): number;
+  _get_gs_mailbox(): number;
   // Returns the bytes written, excluding the terminating NUL.
   stringToUTF8(s: string, ptr: number, max: number): number;
   UTF8ToString(ptr: number): string;
@@ -125,9 +118,10 @@ type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule
 
 let Module: EmscriptenModule | null = null;
 let moduleReady = false;
-let bridgePtr = 0;
-let cmdInFlight = false;
-const cmdWaiters: Array<() => void> = [];
+// The mailbox: the control block and two rings in the wasm heap through
+// which every request travels (bus/mailbox.ts).  Bound in bootstrap once
+// the module is up; null before that and after a crash.
+let mailbox: Mailbox | null = null;
 
 // Single-source-of-truth ready signal. Consumers `await whenModuleReady()`
 // rather than polling isModuleReady() — bootstrap() resolves this exactly
@@ -168,20 +162,18 @@ function failBoot(reason: string): void {
   rejectReady?.(new Error(reason));
 }
 
-// The worker sets the bridge's `ready` word once it can dispatch.  A pthread
+// The worker sets the mailbox's READY word once it can dispatch.  A pthread
 // that never starts (a stale worker script, a crash at load) never sets it,
 // and nothing else would ever notice.  Wait in slices and fail after this
 // much *visible* time: a background tab throttles the worker, so hidden time
 // is not evidence of anything.
 const WORKER_READY_BUDGET_MS = 30_000;
 async function waitForWorkerReady(): Promise<void> {
-  if (!Module || !bridgePtr) throw new Error('emulator module not loaded');
-  const idx = (bridgePtr + OFF_READY) >> 2;
+  if (!Module || !mailbox) throw new Error('emulator module not loaded');
   let visibleMs = 0;
-  while (Atomics.load(Module.HEAP32, idx) === 0) {
+  while (!mailbox.isReady()) {
     const slice = 1_000;
-    const w = Atomics.waitAsync(Module.HEAP32, idx, 0, slice);
-    const outcome = w.async ? await w.value : w.value;
+    const outcome = await mailbox.waitReady(slice);
     if (outcome !== 'timed-out') continue;
     if (document.visibilityState === 'visible') visibleMs += slice;
     if (visibleMs >= WORKER_READY_BUDGET_MS)
@@ -264,23 +256,21 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     gsAudioWorkletUrl,
   });
 
-  bridgePtr = Module._get_js_bridge();
-  const v = Module.HEAP32[(bridgePtr + OFF_VERSION) >> 2];
-  if (v !== BRIDGE_VERSION) {
-    throw new Error(`js_bridge version mismatch: C=${v}, JS=${BRIDGE_VERSION}`);
-  }
+  // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core
+  // out of step).  The control block is laid out by a constructor in the
+  // core, so it is valid before main() runs.
+  mailbox = new Mailbox(Module.HEAP32.buffer, Module._get_gs_mailbox(), CLIENT_PAGE);
+  mailbox.setLostHandler((why) => markBridgeDead(why));
   // Tell the core whether the Voodoo2 takeover has a WebGPU device
   // (the worker was started by ScreenView before the module; its answer
   // is normally in long before a machine boots).
-  void whenVoodooGpuReady().then((ok) => {
-    if (Module && bridgePtr)
-      Atomics.store(Module.HEAP32, (bridgePtr + OFF_GPU_AVAILABLE) >> 2, ok ? 1 : 0);
-  });
+  void whenVoodooGpuReady().then((ok) => mailbox?.setGpuAvailable(ok));
   // Nothing is sent until the worker says it can dispatch; a worker that
   // never comes up fails the boot here instead of parking the first
   // request forever.
   await waitForWorkerReady();
   moduleReady = true;
+  startHeartbeatWatch();
 
   // Activate per-machine checkpoint directory before anything that opens
   // images. Matches app/web/js/main.js:81-83.
@@ -323,57 +313,48 @@ export async function gsEval(
   args?: unknown[] | Record<string, unknown>,
 ): Promise<unknown> {
   if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
-  if (!Module || !moduleReady) return transportError('emulator not ready');
-  await waitForBridgeReady();
+  if (!Module || !moduleReady || !mailbox) return transportError('emulator not ready');
   // An array is positional; a plain object binds by declared argument name.
   const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
-  // Refuse before touching the shared slot: a too-large request is the
-  // caller's error, not the bridge's, so it carries no `transport` flag.
+  // Refuse before touching the ring: a too-large request is the caller's
+  // error, not the mailbox's, so it carries no `transport` flag.
   const tooLarge = requestTooLarge(path || '', argsJson);
   if (tooLarge) return { error: tooLarge };
-  try {
-    return await executeGsRequest(path || '', argsJson);
-  } catch (e) {
-    return transportError(`bridge request failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  return executeMailboxRequest(path || '', argsJson);
 }
 
-// Why a request cannot be sent, or null if it fits.  The bridge's path and
-// args buffers are fixed-size (em.h), and stringToUTF8 silently truncates to
-// fit — an args document cut after a ',' used to run with its trailing
-// arguments dropped.  Measure in UTF-8 bytes, leaving room for the NUL.
+// Refuse a request beyond the core's limits (mailbox.h): the core would
+// answer it with an error anyway, and refusing here keeps the ring for
+// requests that can be served.  Sizes are UTF-8 bytes, not characters.
+// Returns the reason, or null when it fits.
 const utf8 = new TextEncoder();
 export function requestTooLarge(path: string, argsJson: string): string | null {
   const pathBytes = utf8.encode(path).length;
-  if (pathBytes > PATH_SIZE - 1)
-    return `request path too large (${pathBytes} bytes > ${PATH_SIZE - 1})`;
+  if (pathBytes > PATH_MAX) return `request path too large (${pathBytes} bytes > ${PATH_MAX})`;
   const argsBytes = utf8.encode(argsJson).length;
-  if (argsBytes > ARGS_SIZE - 1)
-    return `request arguments too large (${argsBytes} bytes > ${ARGS_SIZE - 1})`;
+  if (argsBytes > ARGS_MAX) return `request arguments too large (${argsBytes} bytes > ${ARGS_MAX})`;
   return null;
 }
 
 // --- Slow is not dead --------------------------------------
 //
-// The bridge has one slot and no request id, so a slow request is never
-// abandoned on a timer: freeing the slot while the worker is still inside the
-// old request would hand its reply to the next caller and erase that caller's
-// request.  Instead a request that runs long raises a status-bar notice, and
-// only a real crash — a wasm trap or abort on the worker — ends the bridge.
-// (Cancelling a request needs a per-request id the bridge does not have; an
-// out-of-band interrupt word was considered as a stopgap and declined.)
+// Every request carries an id, so any number can be in flight and a slow
+// one is nobody else's problem: a request that runs long raises a
+// status-bar notice; an ordinary request past its deadline fails for its
+// caller alone (the late answer, if it ever comes, is dropped by id); and
+// a *dead* worker -- a wasm trap or abort, or a heartbeat that stops while
+// requests are pending -- fails every request at once.
 
 // Paths that are legitimately long: the notice waits longer for them.
 const LONG_REQUEST =
   /^(checkpoint\.|machine\.(boot|restart)|storage\.(cp|mv|hd_create)|archive\.|download$|vfs\.)/;
 const BUSY_AFTER_MS = 5_000;
 const BUSY_AFTER_LONG_MS = 30_000;
-// An ordinary request still in flight after this much visible time is not
-// slow, it is wedged (on wasm `scheduler.run` returns at once, so only a
-// runaway — a script loop that can never finish — gets here).  The caller is
-// rejected and the bridge marked dead; the slot is never reused, so no later
-// reply can be misattributed.  Known-long requests have no deadline.
-const DEADLINE_MS = 120_000;
+// An ordinary request still in flight after this long is not slow, it is
+// stuck (a script loop that can never finish, until Phase 2 makes scripts
+// cancellable): its caller gets a transport error and its id is forgotten.
+// Known-long requests have no deadline.
+export const DEADLINE_MS = 120_000;
 
 // Count visible time a request has been in flight; raise the notice past its
 // threshold.  Background tabs throttle the worker, so hidden time is not
@@ -389,8 +370,6 @@ export function watchRequest(path: string): () => void {
       bridgeBusy.path = path;
       bridgeBusy.seconds = Math.round(visibleMs / 1000);
     }
-    if (!LONG_REQUEST.test(path) && visibleMs >= DEADLINE_MS)
-      markBridgeDead(`'${path}' did not complete within ${DEADLINE_MS / 1000} s`);
   }, tick);
   return () => {
     clearInterval(timer);
@@ -398,15 +377,49 @@ export function watchRequest(path: string): () => void {
   };
 }
 
+// The heartbeat: the core bumps a control word once per tick and once per
+// idle-wait slice.  A page with requests pending that sees it stand still
+// for this many visible seconds has a wedged worker -- a runaway script,
+// a leaf that never returns -- and marks it dead, which fails every
+// request at once (bridgeCrash.test.ts covers the crash half, this covers
+// the silent one).  Hidden tabs are excluded: the RAF loop legitimately
+// stops there.  `sample` is injected so the watch is unit-testable.
+export const STALL_AFTER_S = 3;
+export function watchHeartbeat(
+  sample: () => { heartbeat: number; inFlight: number },
+  onStall: (reason: string) => void,
+): () => void {
+  let last = -1;
+  let still = 0;
+  const timer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    const s = sample();
+    if (s.inFlight === 0 || s.heartbeat !== last) {
+      last = s.heartbeat;
+      still = 0;
+      return;
+    }
+    still++;
+    if (still >= STALL_AFTER_S) {
+      onStall(`emulator not responding: no heartbeat for ${STALL_AFTER_S} s with requests pending`);
+      clearInterval(timer);
+    }
+  }, 1_000);
+  return () => clearInterval(timer);
+}
+
+function startHeartbeatWatch(): void {
+  watchHeartbeat(
+    () => ({ heartbeat: mailbox?.heartbeat() ?? -1, inFlight: mailbox?.inFlight() ?? 0 }),
+    (reason) => markBridgeDead(reason),
+  );
+}
+
 // A dead worker: a wasm trap (the glue's worker.onerror prints "worker sent
 // an error!") or an explicit abort (Module.onAbort).  Once dead, every
 // in-flight and queued request fails at once instead of waiting forever,
 // and the page is told so it can say why (onEmulatorCrash).
 let bridgeDead: string | null = null;
-let resolveDead: ((reason: string) => void) | null = null;
-const deadSignal: Promise<string> = new Promise((res) => {
-  resolveDead = res;
-});
 const crashListeners: Array<(reason: string) => void> = [];
 
 export function onEmulatorCrash(cb: (reason: string) => void): void {
@@ -417,7 +430,9 @@ export function markBridgeDead(reason: string): void {
   if (bridgeDead) return;
   bridgeDead = reason;
   machine.status = 'crashed';
-  resolveDead?.(reason);
+  // Fails every pending and future request; the lost handler is this
+  // function, and the guard above makes the re-entry a no-op.
+  mailbox?.markLost('lost', reason);
   for (const cb of crashListeners) cb(reason);
 }
 
@@ -521,58 +536,32 @@ export async function tabComplete(line: string, cursor: number): Promise<Complet
   return null;
 }
 
-async function waitForBridgeReady(): Promise<void> {
-  if (!bridgePtr || !Module) return;
-  const idx = (bridgePtr + OFF_READY) >> 2;
-  const w = Atomics.waitAsync(Module.HEAP32, idx, 0);
-  if (w.async) await w.value;
-}
-
-async function waitForBridgeDone(): Promise<void> {
-  if (!Module) return;
-  const doneIdx = (bridgePtr + OFF_DONE) >> 2;
-  const w = Atomics.waitAsync(Module.HEAP32, doneIdx, 0);
-  if (w.async) await w.value;
-  Atomics.store(Module.HEAP32, doneIdx, 0);
-}
-
-function readBridgeOutput(): unknown {
-  if (!Module || !bridgePtr) return null;
-  const s = Module.UTF8ToString(bridgePtr + OFF_OUTPUT);
-  if (!s) return null;
+// One request through the mailbox: post, await the answer by id, decode.
+// A failure of the mailbox itself (deadline, crash) is a transport error;
+// the core's own {error} documents pass through as they are.
+async function executeMailboxRequest(path: string, argsJson: string): Promise<unknown> {
+  if (!mailbox) return transportError('emulator not ready');
+  const stopWatch = watchRequest(path);
   try {
-    return JSON.parse(s);
-  } catch {
-    return s;
-  }
-}
-
-async function executeGsRequest(path: string, argsJson: string): Promise<unknown> {
-  while (cmdInFlight) {
-    await new Promise<void>((r) => cmdWaiters.push(r));
-  }
-  cmdInFlight = true;
-  let stopWatch: (() => void) | null = null;
-  try {
-    // A queued request that wakes after a crash fails at once.
-    if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
-    // Never write a request at heap address 0 (+offset): the bridge pointer
-    // is set before moduleReady, so this is a guard, not a code path.
-    if (!Module || !bridgePtr) return transportError('emulator not ready');
-    Module.stringToUTF8(path, bridgePtr + OFF_PATH, PATH_SIZE);
-    Module.stringToUTF8(argsJson, bridgePtr + OFF_ARGS, ARGS_SIZE);
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, 1);
-    stopWatch = watchRequest(path);
-    // A dead worker never sets `done`: race the completion against the crash.
-    const crashed = await Promise.race([waitForBridgeDone().then(() => null), deadSignal]);
-    if (crashed !== null) return transportError(`emulator crashed: ${crashed}`);
-    return readBridgeOutput();
+    const deadline = LONG_REQUEST.test(path) ? 0 : DEADLINE_MS;
+    const r = await mailbox.request(path, argsJson, deadline);
+    if (!r.json) return null;
+    try {
+      return JSON.parse(r.json);
+    } catch {
+      return r.json;
+    }
+  } catch (e) {
+    const why = e as MailboxFailure | Error;
+    if (why === 'deadline')
+      return transportError(`'${path}' did not complete within ${DEADLINE_MS / 1000} s`);
+    if (why === 'lost' || why === 'detached')
+      return transportError(`emulator crashed: ${bridgeDead ?? 'mailbox lost'}`);
+    return transportError(
+      `mailbox request failed: ${why instanceof Error ? why.message : String(why)}`,
+    );
   } finally {
-    stopWatch?.();
-    cmdInFlight = false;
-    const next = cmdWaiters.shift();
-    if (next) next();
+    stopWatch();
   }
 }
 

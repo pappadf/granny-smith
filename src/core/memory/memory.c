@@ -2065,7 +2065,7 @@ static value_t method_mem_peek_bytes(struct object *self, const member_t *m, int
     if (count == 0)
         return val_bytes(NULL, 0);
     // Cap at 4 KB. The bridge serialises V_BYTES as a base64-ish JSON
-    // string; 4 KB × 4/3 ≈ 5.5 KB, well under JS_BRIDGE_OUTPUT_SIZE.
+    // string; 4 KB × 4/3 ≈ 5.5 KB, well under the mailbox result limit (GS_MBX_RESULT_MAX).
     if (count > 4096)
         count = 4096;
     uint8_t *buf = (uint8_t *)malloc(count);
