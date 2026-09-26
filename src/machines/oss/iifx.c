@@ -247,25 +247,26 @@ typedef struct iifx_state {
     //   The DMAEN gate naturally restricts the chip-internal cur_addr
     //   behaviour to A/UX-driven bus-master transfers.
     //
-    //   A 2026-05-26 byte-level trace audit ESTABLISHED
-    //   that this chip-faithful model alone CANNOT load libc1_s
-    //   correctly: A/UX writes $100 = $2EBA00 byte-identically before
-    //   every arm of the 10-arm exec-load, with no other chip-bus
-    //   signal (no $080 bit 4 reset, no ARBEN cycling, no different
-    //   $020 sequence) distinguishing arm 1 (must overwrite) from
-    //   arms 2..10 (must advance).  Arm 1 vs arm 9 diff = exactly the
-    //   3 CDB bytes containing the LBA field.  The 343S0064-A DMA
-    //   engine cannot decode CDBs.
-    //
-    //   To get past libc1_s we run an A/UX-driver-specific software
-    //   shim on top of this chip-faithful model that inspects the
-    //   SCSI READ CDB's LBA field and computes a "credit offset"
-    //   added to the latch at MR_DMA-edge load.  See the big warning
-    //   header above iifx_scsidma_compute_credit_advance().  The shim
-    //   is a known dead-end; it lives here as scaffolding until we
-    //   find the real mechanism (most likely something invisible to
-    //   our current trace — e.g., FMC/OSS state, MMU activity, or a
-    //   second wrapper aperture we haven't mapped).
+    //   A 2026-05-26 byte-level trace audit observed that A/UX
+    //   writes $100 = $2EBA00 byte-identically before every arm of
+    //   the 10-arm exec-load, with no chip-bus signal (no $080 bit 4
+    //   reset, no ARBEN cycling, no different $020 sequence)
+    //   distinguishing arm 1 (must overwrite) from arms 2..10 (must
+    //   advance), and concluded that this chip-faithful model alone
+    //   cannot load libc1_s — that a "credit offset" derived from
+    //   the CDB's LBA field was needed.  That conclusion was WRONG:
+    //   the 343S0064-A engine cannot decode CDBs, and none is
+    //   needed.  The distinguishing state lives on the 53C80 side
+    //   of the wrapper, in scsi.c: the faithful scatter-gather READ
+    //   (scsi_pop_data_in_byte keeps /REQ asserted so the driver
+    //   re-arms a fresh $100 per SG segment) and the WRITE path
+    //   (the bus-master engine supersedes the iHSKEN primer instead
+    //   of force-completing data_out per segment).  With both in
+    //   place, the driver programs a new $100 per segment and the
+    //   chip simply loads it on the MR_DMA edge — libc1_s loads
+    //   with no CDB inspection.  The temporary shim the audit
+    //   spawned was verified inert and removed; see the note above
+    //   iifx_scsidma_pump().
     uint32_t scsi_dma_ctrl;
     uint32_t scsi_dma_count;
     uint32_t scsi_dma_addr; // internal DMA Address Counter

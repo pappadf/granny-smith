@@ -301,16 +301,22 @@ machine.screen.save "$WORK_DIR/post-floppy-state.png"
 # SE/30 version of this floppy through the full sequence with
 # scheduler.run 7B.
 #
-# IIcx finding (2026-05-13): the CPU stays in the ROM RAM-test +
-# exception code at $40802EE0-$40803304 indefinitely.  Instr_count
-# grows steadily (CPU is executing, not halted) but the screen
-# never updates past "Testing RAM1...".  16 B cycles is more than
-# 4× the real-hardware 4-minute budget — the auto-reboot path that
-# leads to the success screen does not fire on IIcx in this build,
-# even though the analogous SE/30 path does.  Likely IIcx is
-# missing the IIcx-side equivalent of the SE/30 hardware-reset
-# wiring exercised by MacTest.  Filed as future work — for now the
-# test stops at the RAM-running display.
+# IIcx note (resolved 2026-05-14): an earlier session believed the
+# auto-reboot path "did not fire on IIcx" — the CPU sat in the ROM's
+# SCC error-dispatch loop at $40802EC0-$40803304, never updating
+# past "Testing RAM1...".  That was never a reset-path problem; it
+# was this script running the 600 M post-floppy window with the
+# mouse guard still firing, and its 1 kHz writes to
+# MTemp/RawMouse/Mouse overwrote the RAM-test verify patterns,
+# tripping ROM POST's pattern-mismatch error path — hence the
+# mouse.move 0 0 before that run above.  A second, independent bug
+# had the ASC IRQ line wired to VIA2 CB1 without initialising CB1's
+# stored level, so its zero-init LOW meant the first ASC assertion
+# (active-low) produced no edge and MacTest reported a logic-board
+# failure; asc.c now drives CB1 to its idle HIGH in asc_set_via.
+# With both fixes the destructive phase completes, GLU resets the
+# machine, and MacTest re-boots to the "All selected tests have
+# passed" success screen.
 scheduler.run 4000000000
 machine.screen.save "$WORK_DIR/ram-running.png"
 
