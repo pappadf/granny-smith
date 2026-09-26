@@ -94,10 +94,14 @@ void job_seam_set_current(gs_job_t *job, uint32_t client, const bool *cancel);
 // Runs one script source to completion on the calling thread: 0 ok, -1
 // failed.  `interactive` prints REPL results.
 int job_glue_run_source(const char *src, bool interactive);
-// Whether a mode the job must wait for is running: owned by `client` and
-// bounded (an unbounded `scheduler.run` returns at once; a `scheduler.run
-// N` returns when N has run).
+// Whether a mode the job must wait for is running: owned by `client`, and
+// either bounded (`scheduler.run N` returns when N has run) or unbounded
+// on a client whose scripts wait for the machine to stop (below).
 bool job_glue_mode_waits(uint32_t client);
+// Whether a bare `scheduler.run` holds this client's script until the
+// machine stops (weak; true by default -- the script suites' semantics;
+// the browser's terminal says false: the line returns, the machine runs).
+bool job_glue_unbounded_waits(uint32_t client);
 // The current mode id (0: none yet).
 uint32_t job_glue_mode_id(void);
 // Stops every mode owned by `client`; returns whether one was.

@@ -269,8 +269,10 @@ printing of a result) is handed to the emulator thread through the
 the page — at the next frame boundary while the machine runs, within a
 millisecond while it is stopped. A leaf that starts a *bounded* mode
 (`scheduler.run N`, `debug.step N`) holds the job until that mode ends, so
-`scheduler.run N` inside a script means "run N"; an unbounded
-`scheduler.run` returns at once. The job's answer is an `EVT_RESULT`
+`scheduler.run N` inside a script means "run N"; a bare `scheduler.run`
+from the terminal returns at once (the machine runs on; Ctrl-C stops it),
+while a headless script's bare `scheduler.run` waits for the machine to
+stop (`job_glue_unbounded_waits`). The job's answer is an `EVT_RESULT`
 carrying the shell's new prompt (what `shell.run` returned), or
 `{"error"}` when the script failed or was cancelled. A build without a
 job thread (headless today, the unit suites) runs the script inline in

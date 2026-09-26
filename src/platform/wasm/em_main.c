@@ -355,6 +355,14 @@ uint32_t gs_current_client(void) {
     return gs_mailbox_current_client(&g_mailbox);
 }
 
+// A bare `scheduler.run` typed in the browser's terminal returns at once
+// and the machine runs on (Ctrl-C stops it); only a budgeted run holds
+// the line.  The script suites' "run until stopped" is headless's.
+bool job_glue_unbounded_waits(uint32_t client) {
+    (void)client;
+    return false;
+}
+
 // The page parks in Atomics.waitAsync on READY and EVT_HEAD.
 void gs_mailbox_notify(volatile uint32_t *word) {
     emscripten_atomic_notify((void *)word, INT_MAX);

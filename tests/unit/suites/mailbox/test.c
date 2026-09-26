@@ -168,6 +168,10 @@ int job_glue_run_source(const char *src, bool interactive) {
 bool job_glue_mode_waits(uint32_t client) {
     return g_mode_owner != 0 && g_mode_owner == client;
 }
+bool job_glue_unbounded_waits(uint32_t client) {
+    (void)client;
+    return true;
+}
 uint32_t job_glue_mode_id(void) {
     return g_mode_id;
 }

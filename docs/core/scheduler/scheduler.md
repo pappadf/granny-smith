@@ -688,13 +688,14 @@ Headless does not arm any VBL event. Its run loops
   is a job on the job thread, and the loop pumps while it waits for the job's result,
   emitting the ~1 Hz heartbeat and polling the daemon socket for disconnect / `stop`;
 - so the REPL stays responsive to Ctrl-C and the `--max-cycles` cap, and a
-  `scheduler.run` with no budget leaves the machine running between statements.
+  `scheduler.run` with no budget holds the statement until the machine stops.
 
 An instruction-budget `scheduler.run N` schedules a `run_stop_event`; the inner
 `scheduler_run` inside a frame-unit clamps to it (§6.1), so the budget stops mid-frame
 at exactly `N` instructions; the job that issued it is held until that mode ends
-(§10.5). `scheduler.run` with no argument returns at once and runs until
-`scheduler.stop`, a client's stop, or its disconnect — exactly what web2 does.
+(§10.5). `scheduler.run` with no argument runs until a breakpoint, `scheduler.stop`,
+a client's stop or its disconnect; a headless script waits for that (its next
+statement sees the stopped machine), the browser's terminal does not.
 
 No `host_time()` value ever feeds guest execution on the headless path.
 

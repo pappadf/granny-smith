@@ -14,9 +14,22 @@ int job_glue_run_source(const char *src, bool interactive) {
     return script_run_text(src, interactive);
 }
 
+// Whether a script's bare `scheduler.run` (no budget) holds the script
+// until the machine stops.  It does: a script file, stdin and a daemon
+// client mean "run until a breakpoint, an assertion or a stop, then go
+// on" -- the integration suites are written that way.  The browser's
+// terminal overrides this to false: a line typed there returns at once
+// and the machine runs on, with Ctrl-C to stop it (job.h).
+__attribute__((weak)) bool job_glue_unbounded_waits(uint32_t client) {
+    (void)client;
+    return true;
+}
+
 bool job_glue_mode_waits(uint32_t client) {
     scheduler_t *s = system_scheduler();
-    return s && scheduler_is_running(s) && scheduler_run_owner(s) == client && scheduler_mode_bounded(s);
+    if (!s || !scheduler_is_running(s) || scheduler_run_owner(s) != client)
+        return false;
+    return scheduler_mode_bounded(s) || job_glue_unbounded_waits(client);
 }
 
 uint32_t job_glue_mode_id(void) {

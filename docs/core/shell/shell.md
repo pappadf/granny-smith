@@ -200,9 +200,12 @@ on the job thread, the way every statement runs on every platform
 each object-tree access is served by the emulator thread at a frame
 boundary, and a `scheduler.run N` (or `debug.step N`) waits inside its
 call until those N instructions have run, so the next statement sees the
-machine stopped. A bare `scheduler.run` returns at once and the machine
-runs on between statements. The first error aborts the script and exits
-non-zero. `shell.script_run(path)` and `shell.eval(text)` are the
+machine stopped. A bare `scheduler.run` in a script (a file, stdin, a
+daemon statement) holds the script until the machine stops — a
+breakpoint, an assertion, a stop from a control connection — which is how
+the suites are written; only the browser's terminal lets a bare
+`scheduler.run` return at once and run on (Ctrl-C stops it). The first
+error aborts the script and exits non-zero. `shell.script_run(path)` and `shell.eval(text)` are the
 platform-neutral equivalents (run inline, on the emulator thread, as a
 leaf).
 
