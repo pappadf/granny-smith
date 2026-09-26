@@ -194,7 +194,7 @@ These callbacks are the template for any future C→JS event: install on
 `Module.*`, fire from C with `MAIN_THREAD_*_EM_ASM`. No exports, no
 SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback
 retired when the new prompt started coming back as `shell.run`'s return
-value under proposal-shell-as-object-model-citizen.)
+value.)
 
 ## The Bridge Struct
 
@@ -390,8 +390,8 @@ in [`state/toasts.svelte.ts`](../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
 
-Highlights — see the typed-dispatch / introspection proposals for the
-full surface.
+Highlights — see [object-model.md](../core/shell/object-model.md) for the
+typed-dispatch and introspection surface.
 
 - **`machine.rom.identify(path)`** → `{recognised, checksum, name,
   compatible[], size}`. Drives the Model dropdown in the New Machine

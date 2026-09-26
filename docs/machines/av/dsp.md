@@ -2,9 +2,8 @@
 
 The AT&T DSP3210 — the AV family's floating-point DSP — as a live
 auxiliary core.  The generic core lives in `src/core/cpu/dsp3210/`
-(adapted from the validated dossier core, see the header of
-`dsp3210.h`); this file binds it to the board.  Contracts:
-the AV DSP3210 hardware notes §8 and the PlainTalk gap-closure findings.
+(adapted from a validated reference core, see the header of
+`dsp3210.h`); this file binds it to the board.
 
 ## Execution
 
@@ -41,15 +40,14 @@ tick, timer`) re-arm at +1 cycle and `cpu_reschedule()`.
   16-bit `bio` write op `%11` on field 0) surfaces through the core's
   BIO callback; the glue latches **PSC L5 bit 0**.  The RTM's `DSPhndlr`
   acks L5IR itself.  The output register is watched regardless of
-  `bioc` (gap-closure B1).
+  `bioc`.
 - **Frame tick in** — the Singer engine pulses **EXT1 (vector 15)** once
   per sound frame while `pFrmIntEn` is set (see singer.md); the on-chip
   timer (vector 9) is the kernel's steady-state heartbeat.  The pulse is
   a **4-instruction-slot active-low pin assertion**
   (`av_dsp_ext1_tick`, `AV_DSP_EXT1_PULSE_SLOTS`): PS.IR0/IR1 mirror
   the **live pin level** (1 = negated), which the kernel's boot
-  calibration gadget and overrun poll both spin on
-  (dsp-kernel-messages.md §3.2/§3.4).  The width is load-bearing in
+  calibration gadget and overrun poll both spin on.  The width is load-bearing in
   both directions — it must outlast the gadget's 2-slot spin but expire
   before its next check ~9 slots later; a 48-slot pulse reproduces the
   original "period = 11 ticks" calibration failure.  A write to `emr`
@@ -57,8 +55,7 @@ tick, timer`) re-arm at +1 cycle and `cpu_reschedule()`.
   (the kernel's `r=emr; emr=r|1; emr=r` pulse); the pin level is not
   affected.
 - **FRMOVRN** — L5 bit 1 is a level view of the sticky `pdspFrameOvr`
-  latch: it re-latches until the host clears the $21C bit itself
-  (rtm-rom-host-side.md §2).
+  latch: it re-latches until the host clears the $21C bit itself.
 
 ## What boot looks like (verified on the 7.1 AV image)
 

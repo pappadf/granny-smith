@@ -815,15 +815,12 @@ codes through the layout table for the configured layout.
 
 #### The final-US key code table
 
-Transcribed from the boot ROM's own `AsciiTable`
-(`local/gs-docs/projects/Lisa/AppleLisa - Boot ROM Source/Lisa Boot ROM RM248.G.TEXT`),
+Transcribed from the boot ROM's own `AsciiTable` (the *Lisa Boot ROM*
+source, `RM248.G.TEXT`),
 96 bytes covering key codes `$20`–`$7F`. The indexing law is in
 *Lisa Boot ROM Asm Listing*, routine `KeyToAscii`: `ANDI #$007F,D1` then
 `SUBI #32,D1` — so the first table byte is key code `$20`, and bit 7 is the
 direction bit rather than part of the index.
-
-This table was previously undocumented here, which is worth recording because
-a code review cited "lisa.md §11" as its location and the citation was wrong.
 
 |      | `+0`  | `+1` | `+2` | `+3` | `+4` | `+5` | `+6` | `+7` |
 | ---- | ----- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |

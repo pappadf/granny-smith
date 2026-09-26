@@ -186,9 +186,8 @@ in C, **with one deliberate exception**: the bitwise operators `&`, `^` and
 `|` bind *tighter* than the comparisons, where C binds them looser. So
 `${machine.cpu.sr & 0x2000 == 0x2000}` means `(sr & 0x2000) == 0x2000` here
 and `sr & (0x2000 == 0x2000)` in C. C's order is a well-known trap and this
-is the friendlier reading; the full precedence table is in
-`proposal-shell-expressions.md` §2.3, and `expr.c`'s grammar comment is the
-authority in code. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
+is the friendlier reading; the full precedence table is `expr.c`'s grammar
+comment, the authority in code. Truthiness is per kind: numbers ≠ 0, non-empty
 strings/lists/bytes/maps, `none` never, and errors are not truth values —
 an error reaching a condition aborts.
 
@@ -208,7 +207,7 @@ segments work after a call form and through bindings:
 `len(map)` counts entries. Maps are read-only through this surface —
 there is no `map.key = …` write path.
 
-`$name` is the unified binding surface (shell v2 §3.4/§3.5): scoped
+`$name` is the unified binding surface: scoped
 `let` bindings first, then the alias table, whose entries behave as
 **reference bindings** — they store path text and re-resolve on every
 access, so they survive `machine.boot`:
@@ -221,7 +220,7 @@ access, so they survive `machine.boot`:
   (or `shell.alias.add`). They cannot collide with built-ins or
   reserved words, and they don't persist across the process.
 
-### Reserved words (shell v2 §3.11)
+### Reserved words
 
 Statement keywords: `let`, `alias`, `if`, `elif`, `else`, `while`,
 `for`, `in`, `break`, `continue`, `return`, `def`, `assert`. Literals:
@@ -230,7 +229,7 @@ alias, or binding names (`object_validate_name`). `on`/`off`/`yes`/`no`
 are **not** reserved — they remain accepted as input coercions for
 bool-typed argument slots only.
 
-### Library conventions (shell v2 §6)
+### Library conventions
 
 - **Methods return data; surfaces do the printing.** Search results
   come back as lists (`find.str(...)` → list of addresses; empty =
@@ -550,6 +549,6 @@ lifetime needs one, and a half-built teardown story is worse than none.
 `object_root_reset()` is the test-only path that tears the tree down, and it
 routes through `object_delete` so the invalidator contract still holds.
 
-*(Decision recorded working 08-core-infra F-49. If a future embedding needs to
-build and tear down the emulator repeatedly in one process, that is the change
-that should add `shell_shutdown()` — with all of it, not a piece.)*
+*(If a future embedding needs to build and tear down the emulator repeatedly
+in one process, that is the change that should add `shell_shutdown()` — with
+all of it, not a piece.)*

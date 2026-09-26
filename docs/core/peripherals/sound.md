@@ -2,20 +2,19 @@
 
 This document explains the Macintosh Plus audio model and the emulator's current WebAudio implementation. It focuses on the **AudioWorklet ring-buffer path with micro rate trim and silence-aware depth management** that is active today.
 
-Since the stage-0 audio generalization (proposal-sound-support-all-models), the
-platform boundary is a single parameterized stream shared by all machines —
+The platform boundary is a single parameterized stream shared by all machines —
 `platform_audio_open` / `platform_audio_push` / `platform_audio_set_rate`,
 carrying interleaved **int16** frames (mono or stereo) at a runtime-settable
 source rate — fronted core-side by `audio_out.c`, which also hosts the
 deterministic capture sink for golden-WAV tests (§4a). The Plus PWM path
-described here and the ASC producer (stage 1: `asc.c`'s sample-rate drain
+described here and the ASC producer (`asc.c`'s sample-rate drain
 event renders FIFO/wavetable frames, batches them, and pushes with the
 board's speaker mix — SE/30 sums both channels, IIx/IIcx/IIci/IIsi take
 channel A) share that stream; see [asc.md](asc.md) for the chip model.
 The ASC's interrupt output is chipset-agnostic (`asc_set_irq_handler`):
 GLUE machines adapt it to VIA2 CB1, the IIci/IIsi wire it to the RBV's
-RvSndIRQ flag (bit 4, stage 2), and the IIfx routes it to OSS interrupt
-source 8 (OSSIntSound, stage 3). With stage 3, every supported Mac model
+RvSndIRQ flag (bit 4), and the IIfx routes it to OSS interrupt
+source 8 (OSSIntSound). So every supported Mac model
 boots with its chime through this one pipeline.
 
 ---
@@ -146,7 +145,7 @@ Implemented via `EM_JS` in `src/platform/wasm/em_audio.c` (compiled into `build/
 
 Autoplay unlock: Modern browsers (especially Safari) start `AudioContext` in a suspended state until a user gesture. `gs_audio_push` attempts a `resume()` on every push, and the web2 UI resumes the context on the first user gesture.
 
-## 4a. Platform Audio API & Deterministic Capture (stage 0)
+## 4a. Platform Audio API & Deterministic Capture
 
 The platform boundary (`src/platform/*/platform.h`) is three functions, shared
 by every machine:

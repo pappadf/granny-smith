@@ -4,7 +4,7 @@ This document describes the SCSI subsystem at the Macintosh-system level:
 how the bus is wired, how pseudo-DMA is implemented on each machine,
 and how classic Mac OS and A/UX drive the NCR 5380 so differently that
 a single emulator must model both flows correctly.  Chip-internal
-register-level details live in [ncr_5380.md](ncr_5380.md); SCSI
+register-level details live in [scsi_5380.md](scsi_5380.md); SCSI
 protocol / command-set details are at the end of this file.
 
 Status of our emulator:
@@ -62,7 +62,7 @@ Apple machines are single-initiator, every Mac SCSI driver we've seen
 skips the arbitrate step and performs **non-arbitrated selection**:
 write the target ID to ODR, assert `ICR.SEL`, `ICR.DATA`, then drop
 BSY.  The 5380 is perfectly willing to do this — see
-[ncr_5380.md §5.2](ncr_5380.md).
+[scsi_5380.md §5.2](scsi_5380.md).
 
 ---
 
@@ -205,7 +205,7 @@ Within the SE/30 I/O decode, the SCSI chip occupies four sub-ranges
 All four map through the chip's `read_uint8` / `write_uint8`.  The
 emulator does *not* need to distinguish blind-vs-DRQ: our chip model
 asserts `BSR.DR` only when the bus phase matches TCR (see
-[ncr_5380.md §3.3](ncr_5380.md)), which is the real signal behind the
+[scsi_5380.md §3.3](scsi_5380.md)), which is the real signal behind the
 glue logic's DRQ wait.
 
 The absolute SCSI base on the SE/30 I/O page is `$50010000`.

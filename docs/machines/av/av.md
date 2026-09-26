@@ -96,7 +96,7 @@ is left stale, and the next transaction's select is never issued — the boot
 hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 `Ticks + $FFFFFF`, i.e. effectively never). `av_scsi96_irq` therefore drives
 **only bit 3**. Chased through the SCSI Manager's own last-interrupt ring at
-`$148(A5)`; see the Phase E commit message for the full trail.
+`$148(A5)`.
 
 ## Devices
 

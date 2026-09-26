@@ -197,9 +197,10 @@ struct with a comment; several modules already do.
 Every `*_delete` that owns a scheduler-visible object calls it before `free`.
 It also unregisters the event *types*, so calling it on a live device makes
 the next `scheduler_new_cpu_event` trip "event type not registered" — a live
-device that wants to cancel one event uses `remove_event` instead. See
-[`proposal-scheduler-source-lifetime`](../../local/gs-docs/completed/proposal-scheduler-source-lifetime.md)
-for the reasoning and the teardown warning that guards it.
+device that wants to cancel one event uses `remove_event` instead. The
+comment on `scheduler_forget_source` in
+[`src/core/scheduler/scheduler.h`](../../src/core/scheduler/scheduler.h) carries
+the warning that guards it.
 
 Deliberately not converted, and not a defect: modules whose events are
 sourced on `cfg` rather than on the device (`pdm/awacs.c`, `tnt/awacs.c`,

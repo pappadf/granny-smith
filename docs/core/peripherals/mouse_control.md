@@ -637,7 +637,7 @@ approaches for a proper fix:
 - **Buffer pre-clear:** In `adb_autopoll_deferred()`, write zero-delta mouse
   bytes (`$80 $80`) to `ADBBase+$164`/`$165` via direct memory access before
   signaling the ROM.  This is the same approach used by ChromiVNC and MiniVNC.
-  — **CONSIDERED AND REJECTED, 2026-09-21** (06-io-controllers F-55). Three
+  — **CONSIDERED AND REJECTED, 2026-09-21.** Three
   reasons. (1) `ADBBase` is a Mac OS low-memory global invented by the ROM;
   real ADB hardware knows nothing of it. The guard at least lives in
   `debug_mac.c`, whose job *is* poking guest globals — moving it into
@@ -979,16 +979,12 @@ never fires, yet the OS tracks cursor position correctly.
 
 ### WRONG: "ROM handler maintains a private position accumulator"
 
-*Source: `why-set-mouse-global-fails.md`, `handover-set-mouse-determinism.md`*
-
 The handler never references A2 (data area pointer).  Deltas go directly to
 MTemp.  The observed "overwrite" was caused by phantom ADB data, not a
 separate accumulator.  Verified by disassembly: no instructions in
 `$408074CE`-`$40807538` read or write through A2.
 
 ### WRONG: "CrsrThresh doubles deltas when |delta| > threshold"
-
-*Source: `solution-precise-mouse-injection.md`, `mouse-workflow.md`*
 
 The SE/30 handler never reads CrsrThresh (`$08EC`).  The `ADD.B D0,D0` /
 `ASR.B #1,D0` sequence is 7-bit sign extension, not doubling.  The
@@ -1001,8 +997,6 @@ at JCrsrTask does implement MickeyBytes-based acceleration.  But the SE/30's
 interrupt-time handler does not reference CrsrThresh.
 
 ### WRONG: "PostEvent can't be called from the emulator"
-
-*Source: `why-set-mouse-global-fails.md`*
 
 The `post-event` debugger command successfully constructs event records and
 links them into the EvQHdr queue via direct memory manipulation.

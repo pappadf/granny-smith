@@ -7,8 +7,8 @@ decode.  Sources: Apple, *Power Macintosh Computers* Developer Note (1994)
 Fig 2-2 and pp. 15–23, the 8100 schematics, and the shipping ROM's
 hardware-init writes.  The sound block dispatches to `awacs.c`
 (`awacs.md`), video control and the Ariel CLUT to `ariel.c` (`video.md`);
-remaining DMA datapaths (SCSI, floppy, SCC, Ethernet) land with their
-ladder rungs (proposal-powerpc-601-pdm.md §6).
+remaining DMA datapaths (SCSI, floppy, SCC, Ethernet) land as the boot
+ladder (`tests/integration/pdm-rom-ladder`) needs them.
 
 ## Decode (island offsets from `$50F00000`)
 
@@ -44,9 +44,9 @@ after **every** flag/enable write:
   the 68k emulator's posted interrupt level — the emulator then redelivers
   the stale level forever.  The 68k dispatcher's "no source" jump-table
   entry exists precisely for the deassertion-change interrupts.  The
-  source summary bits stay live levels, which is where the dossier's
+  source summary bits stay live levels, which is where the warning
   "a pure edge model that drops interrupts while masked will hang
-  drivers" warning applies — the 68k handlers loop on the flag registers.
+  drivers" applies — the 68k handlers loop on the flag registers.
 - Pseudo-VIA2 slot IFR reads **active-low** with unused bits high (reset
   `$7F`); slot bits are live card levels (`bit = slot - 9`) — bit 2 = the
   decoded-but-unpopulated `$B`, bits 3/4/5 = the connectors `$C`/`$D`/`$E`
@@ -56,16 +56,16 @@ after **every** flag/enable write:
   software-clearable bit (write `$40`).  The device bank aggregates
   SCSI/FDC/any-slot levels gated by set/clear-convention IERs (writable
   masks `$78` slot / `$3B` device).
-- **VBL (Phase E)**: a free-running raster event asserts the slot IFR VBL
+- **VBL**: a free-running raster event asserts the slot IFR VBL
   flag (drives bit 6 LOW) every frame at 66⅔ Hz — the Hi-Res 640×480
   mode's field rate, an exact cycle count (freq×3/200) on every PDM
-  clock.  This resolves the dossier's §11.6 polarity suspect empirically:
+  clock.  This resolves the polarity question empirically:
   the ROM's `SonoraWaitVSync` clears the flag with a `$40` write and then
   spins until bit 6 **reads 0**, so assertion is active-low — and without
   the raster that spin is exactly where the boot hangs.  The enable bit
   (`SonoraSlotIER` bit 6) gates only the interrupt, never the flag.
 
-## Monitor sense (Phase E)
+## Monitor sense
 
 `SonoraVdSenseRg` (`+$28002`) models the three open-collector HDI-45
 sense lines with 10 kΩ pull-ups: readback bits 6:4 = wired-AND of the
@@ -73,7 +73,7 @@ drive nibble (bit *n* = 0 drives line *n* low; `$07` = tristate) and the
 monitor's straps.  The emulated monitor is the **14" AppleColor Hi-Res**
 (sense code 6: A,B floating, C grounded), chosen because `HMCMerge`
 allocates the framebuffer window only when a monitor senses present
-(rung L18) and it is the Phase-F gray-desktop profile.  The extended-
+(rung L18) and it is the gray-desktop profile.  The extended-
 sense walk over a strap-only monitor yields the non-Multiple-Scan code,
 so the ROM falls back to the plain Hi-Res configuration — the real
 hardware behaviour for this monitor.
@@ -83,7 +83,7 @@ hardware behaviour for this monitor.
   own register — the ROM never writes the mirrors — and any set mirror
   bit asserts the ICR's DMA source level.
 
-## DMA register file (Phase-C subset)
+## DMA register file (subset)
 
 The register surface stores and reads back with the documented semantics
 (RST self-clears and stops a channel; SCSI keeps DIR and the bus-speed

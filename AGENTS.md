@@ -192,12 +192,12 @@ to not break this rule in the first place.
 
 **Logpoints (`src/core/debug/debug.c`):**
 - PC logpoints emit a log message when the CPU executes a specific address or range, without stopping
-- Set via shell (named arguments, shell v2 §6.2): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
+- Set via shell (named arguments): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
 - The default category is `logpoint` for PC logpoints; enable it with `debug.log logpoint 10`
 - Memory logpoints fire on **read** or **write** accesses without halting:
   - `debug.logpoints.add addr=<addr> mode=write width=l message="…"` — log every write (`mode=read` / `mode=rw` likewise; `width` is `b`/`w`/`l`)
   - Default category is `memory` (enable with `debug.log memory 1`)
-  - `message=` is a fire-time template (shell v2 §6.3): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
+  - `message=` is a fire-time template (see `docs/core/shell/shell.md`): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
   - Implemented without slowing the fast path: covered pages are zeroed in the
     SoA arrays so only logged pages take the slow-path penalty (see `docs/core/memory/memory.md`)
 - Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
@@ -223,7 +223,7 @@ to not break this rule in the first place.
 Every emulator subsystem is exposed through a single tagged-union value
 type and an opaque `object_t` tree rooted at the implicit `emu` root (never
 typed). Emulated hardware nests under one `machine` node
-(proposal-system-object-model.md); the emulator's own services and the
+(see `docs/core/shell/object-model.md`); the emulator's own services and the
 simulated network are its siblings at the root:
 
 - **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`;

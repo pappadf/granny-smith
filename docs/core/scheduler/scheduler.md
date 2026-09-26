@@ -137,9 +137,8 @@ the **one guest timeline** property (§9, §10.4).
 
 ### 2.2 Effective CPI and the accelerated mode
 
-The `accelerated` mode (proposal-scheduler-accelerated-mode.md, stage 1: fixed
-multiplier) re-introduces a *faster-than-authentic* CPU as an **explicit, opt-in
-mode** — the "CPU accelerator card" model: the machine keeps its real-time timebase
+The `accelerated` mode re-introduces a *faster-than-authentic* CPU as an
+**explicit, opt-in mode** — the "CPU accelerator card" model: the machine keeps its real-time timebase
 (VBL, VIA φ2, sound, SCC) while the CPU retires more instructions per frame-unit.
 
 The mechanism is a **fractional effective CPI** (`cpi_eff_x256`, x256 fixed point),
@@ -168,9 +167,8 @@ re-derived/cleared on restore and on every mode/CPI/speed change.
 
 ### 2.3 The adaptive governor (speed = auto)
 
-With `scheduler.speed = 0`, a closed-loop governor (stage 2 of the proposal, §4)
-picks the highest speed the host can sustain *without missing the real-time
-deadline* — overrunning it stalls the paced accumulator, which surfaces as audio
+With `scheduler.speed = 0`, a closed-loop governor picks the highest speed the
+host can sustain *without missing the real-time deadline* — overrunning it stalls the paced accumulator, which surfaces as audio
 underruns and stutter. Per paced main-loop tick that executed frame-units, it:
 
 1. **Measures** utilization `u = host seconds to emulate one frame-unit /
@@ -186,7 +184,7 @@ underruns and stutter. Per paced main-loop tick that executed frame-units, it:
    ceiling = `scheduler.max_speed` (default 8×, persisted).
 
 The dwell/holdoff slew limit and the coarse quantization are **correctness
-requirements**, not tuning niceties (proposal §4.4): the guest calibrates
+requirements**, not tuning niceties: the guest calibrates
 instruction-counted delays (`TimeDBRA` etc.) against the VIA at boot, so the
 machine must dwell at stable speeds rather than glide. The utilization EWMA is
 rescaled on every step (utilization is proportional to instructions per frame),
@@ -202,7 +200,7 @@ strictly optional.
 **Headless**: the governor's input is the paced main loop's host-timing signal,
 which the budget-driven headless path never produces — so accelerated-auto stays
 at the authentic floor there. Headless acceleration uses a pinned
-`scheduler.speed`, which is also the §4.4-safe configuration (a constant speed is
+`scheduler.speed`, which is also the calibration-safe configuration (a constant speed is
 self-consistent with the guest's boot-time calibration).
 
 ---

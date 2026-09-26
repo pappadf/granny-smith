@@ -656,8 +656,7 @@ GetStatus returns the status block whatever it carries.
 
 (An earlier version of this section described a six-byte SessionRefNum /
 ReqRefNum / CmdResult header in the ATP data. No such header exists; the
-server's CloseSess read its session from it, and so never closed one —
-10-network N-03.)
+server's CloseSess read its session from it, and so never closed one.)
 
 ---
 

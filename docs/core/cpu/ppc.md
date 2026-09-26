@@ -1,13 +1,12 @@
 # PPC core — MPC601/MPC604 main CPU
 
 `src/core/cpu/ppc/` implements the PowerPC 601 and 604 as a **main CPU** —
-the first non-68K architecture to own emulated time
-(proposal-powerpc-601-pdm.md).  The module is named `ppc`, not `ppc601`:
+the first non-68K architecture to own emulated time.  The module is named `ppc`, not `ppc601`:
 the decode tree and register file are architectural 32-bit PowerPC with
 model-specific behavior behind `cpu_model` discrimination, exactly the way
 `cpu.c` discriminates 68000/030/040.  Two models exist —
-`CPU_MODEL_PPC601` (the PDM machines) and `CPU_MODEL_PPC604` (Phase A of
-the TNT proposal; see "The 604 model" below).  `ppc_init` takes the model;
+`CPU_MODEL_PPC601` (the PDM machines) and `CPU_MODEL_PPC604` (the TNT
+machines; see "The 604 model" below).  `ppc_init` takes the model;
 `ppc_reset` preserves it.
 
 Sources of truth: Motorola/IBM, *PowerPC 601 RISC Microprocessor User's
@@ -19,7 +18,7 @@ chapter/table in the code.
 ## Files — the shared decoder/disassembler pattern
 
 The module follows the house decode-template pattern (the 68K's
-`cpu_decode.h` model, proposal-multi-cpu.md §3.3.1): one
+`cpu_decode.h` model, see [cores.md](cores.md)): one
 decode tree shared by the emulator and the disassembler, so the two cannot
 drift out of sync and each cross-checks the other.
 
@@ -31,9 +30,9 @@ drift out of sync and each cross-checks the other.
 | `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (reserved fields, BO forms, strict `sc`) so both includers agree by construction |
 | `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
 | `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop |
-| `ppc_mmu.c` | the 601 MMU front end (Phase D): T=1 segments, 601 BATs, hashed page table search, the translation caches and their invalidation (see below) |
-| `ppc_fpu.c` | FP bodies: single↔double conversions, compares, the FPSCR-instruction write rules, and the Phase-E arithmetic wrappers (writeback/CR1/precise-trap delivery) |
-| `ppc_softfp.c/.h` | **the FPU arithmetic kernel** (Phase E): integer-only IEEE 754 with the full FPSCR status model — pure functions of (operands, FPSCR), dependency-free (the `ppc_disasm` precedent) |
+| `ppc_mmu.c` | the 601 MMU front end: T=1 segments, 601 BATs, hashed page table search, the translation caches and their invalidation (see below) |
+| `ppc_fpu.c` | FP bodies: single↔double conversions, compares, the FPSCR-instruction write rules, and the arithmetic wrappers (writeback/CR1/precise-trap delivery) |
+| `ppc_softfp.c/.h` | **the FPU arithmetic kernel**: integer-only IEEE 754 with the full FPSCR status model — pure functions of (operands, FPSCR), dependency-free (the `ppc_disasm` precedent) |
 | `ppc_disasm.c/.h` | the second instantiation of the same tree with sprintf-style `ASM(…)` overloads; dependency-free (`tools/disasm --arch ppc`) |
 
 One consequence of the shared tree: invalid forms (reserved fields set,
@@ -71,7 +70,7 @@ untranslated kernel handler) is a pointer swap, not an invalidation.
 `g_user_soa_reserved` (memory.h) tells the generic identity-restore paths
 in memory.c to keep their hands off the user arrays.
 
-### MMU (Phase D)
+### MMU
 
 `ppc_mmu.c` implements 601UM Chapter 6 with the 601's own quirks:
 
@@ -124,7 +123,7 @@ in memory.c to keep their hands off the user arrays.
   logical-address memory logpoints on translated pages degrade (the slow
   path sees the physical address) — use physical logpoints on PDM.
 
-## Implemented (Phase B)
+## Implemented: the integer core
 
 - Full integer ISA including the POWER-architecture holdovers the 601
   retains (`abs clcs div divs doz dozi lscbx maskg maskir mul nabs rlmi
@@ -143,14 +142,14 @@ in memory.c to keep their hands off the user arrays.
   never pass through host FP arithmetic — WASM byte-determinism), FP
   moves/compares/FPSCR ops.
 
-## FPU arithmetic (Phase E) — `ppc_softfp.c`
+## FPU arithmetic — `ppc_softfp.c`
 
 The datapath is an **integer-only IEEE 754 kernel** ("software floating
 point"): significand arithmetic, rounding decisions, and every FPSCR
 status bit are computed in integer code, so results and status images are
 byte-identical on native and WASM hosts *by construction* rather than by
-auditing host-FP corner cases.  (This deliberately goes one step past the
-proposal §3.6 wording — "host doubles for the arithmetic" — because the
+auditing host-FP corner cases.  (This deliberately goes one step past
+"host doubles for the arithmetic", because the
 FR/FI/OX/UX flags and the directed rounding modes need exact knowledge of
 the infinitely precise result anyway; once that machinery exists, host
 doubles are redundant as the implementation and become the test *oracle*
@@ -175,24 +174,23 @@ untouched (architecturally undefined — deterministic choice).  Corner
 cases whose full RTL lived in the manual's absent Appendix F are marked
 AUTHORITY-PENDING in the kernel and the suite: frsp/single-op NaN payload
 truncation, fctiw's rounded-result VXCVI boundary, and the FR
-magnitude-increment reading (§11 acquisition item).
+magnitude-increment reading.
 
 `machine.cpu.fpu` exposes `fpscr` and `fpr0..fpr31` (raw 64-bit
 patterns); its registration is what flips the machine-capabilities `fpu`
 bit for the PDM profiles.
 
-## Implemented (Phase C — with the PDM family)
+## Implemented with the PDM family
 
 - **RTC/DEC time derivation** (`ppc_bind_time`): RTCU/RTCL/DEC derive from
   `scheduler_cpu_cycles` at exactly 7.8336 MHz-equivalent via the reduced
-  rational 7,833,600/freq — the dossier's hard constraint (HWInit measures
+  rational 7,833,600/freq — a hard constraint (HWInit measures
   the CPU clock against DEC and snaps within ±1/1024; the derivation must
   be exact over any interval, not on average).  RTCL advances 128 units
   per tick and rolls into RTCU at 10⁹; DEC decrements 128/tick, with the
   sign-transition latched by a scheduler event (`ppc.dec`) and taken when
   MSR[EE] allows.  Unbound (unit tests) the SPRs are static state.
-- **Translation**: superseded by the Phase-D MMU front end — see "MMU
-  (Phase D)" above.  The 601-format BAT layout (BLPI/PBN/BSM, V+BSM in
+- **Translation**: superseded by the MMU front end — see "MMU" above.  The 601-format BAT layout (BLPI/PBN/BSM, V+BSM in
   the LOWER register, WIM/Ks/Ku/PP in the upper — NOT the later
   architecture's layout) and the T=1 memory-forced segments landed here.
 - **601 branch folding**: `b`/`bc`/`bclr`/`bcctr` retire in zero sprint
@@ -204,7 +202,7 @@ bit for the PDM profiles.
   timed guest measurements are only exact in free-running execution — an
   active debugger single-steps and suppresses folding.
 
-## The 604 model (TNT proposal Phase A)
+## The 604 model
 
 `CPU_MODEL_PPC604` is a bounded delta over the shared machinery — decoder
 template, softfloat kernel, exception plumbing, sched-if/debug-if, SoA
@@ -265,7 +263,7 @@ deltas, each keyed on `cpu_model`:
   FPSCR effects — never XX; FR/FI ("undefined") read cleared.  `fsqrt`
   remains illegal: the 604 does not implement it.
 - **Superscalar timing is not modeled**: the 604 keeps the sprint/CPI-1.0
-  model and 601-style branch folding (TNT proposal §4.2), for the same
+  model and 601-style branch folding, for the same
   determinism-and-measurement reasons as the 601.
 - **Object model**: `machine.cpu` adds `dbat0u..dbat3l` and `tbu`/`tbl`
   (aliases of the rtcu/rtcl storage); the members are static per class,
@@ -288,8 +286,7 @@ deltas, each keyed on `cpu_model`:
   consults a register it should not, or writes one it should not, fails
   almost surely.  Vectors assert conformance to the powerpc-sail formal
   model, not to silicon; the eight defects the first replay found here,
-  and the six it found upstream, are adjudicated against the 601UM in
-  gs-docs `notes/2026-08-18-powerpc-test-vector-disagreements.md`.
+  and the six it found upstream, were adjudicated against the 601UM.
   The tier replays TWICE: once as the 601 (every file), once as the 604
   with the model-divergent mnemonics filtered (POWER holdovers,
   mfspr/mtspr/mtmsr/rfi, the word-alignment classes, dcbz) — the shared
@@ -304,7 +301,7 @@ deltas, each keyed on `cpu_model`:
   the split-BAT SPR file and PM stubs, the word-alignment classes, the
   TEA machine-check image, and the optional-FP group (with the 601-side
   rejections).
-- `tests/unit/suites/ppc_mmu/` — the Phase-D proof list: 601 BAT
+- `tests/unit/suites/ppc_mmu/` — the MMU proof list: 601 BAT
   protection keys, T=1 with DT off and the SR-toggle alias, primary and
   secondary HTAB search with R/C write-back (PTEG addresses computed
   independently from Figure 6-19), exact DSI/ISI images, the abandoned

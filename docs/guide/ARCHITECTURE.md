@@ -500,15 +500,15 @@ offers is **computed** by matching the two (`nubus_card_fits_socket`), used
 identically by the `machine.profile` encoder and `nubus_init`'s boot-time
 pick validation. Adding a NuBus card is one registry line plus one
 `VROM_CATALOG` row — it is then offered on every machine with a socket, with
-no per-machine edits (see `proposal-nubus-computed-card-compatibility.md`).
+no per-machine edits (`nubus_card_fits_socket` in
+`src/core/peripherals/nubus/nubus.c`).
 
 Each socket resolves its configuration independently at boot, so machines
 boot multi-card (e.g. two displays). Picks are staged per slot in the object
 model — `machine.nubus.slot[N].card_id` / `.video_mode`, consumed by the
 next `machine.boot` — while the boot document's `video_card=` /
 `video_sense=` / `video_mode=` arguments name "the first socket" (what the
-config dialog and the headless `video_card=` arg use; see
-proposal-named-args-boot-config.md). `machine.screen` shows the *primary*
+config dialog and the headless `video_card=` arg use). `machine.screen` shows the *primary*
 display: the first populated video slot in declared order. The **resolved**
 per-slot picks are captured in the built-from record, so `machine.restart`
 re-seats every populated socket rather than only the wildcard one.

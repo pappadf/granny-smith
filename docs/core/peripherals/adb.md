@@ -410,7 +410,7 @@ Byte 0 is **not** the bare address. Per the table above it is bit 14 set
 11–8 the address — so an ordinary idle device answers `$6X`. That value is
 *derived* from the bit table, not quoted: the Guide has register-0 and
 register-2 content tables per device (8-4, 8-7, 8-8, 8-10, 8-11) and no
-register-3 one. The model answered `$0X` until code review 06 — bits 14 and
+register-3 one. The model once answered `$0X` — bits 14 and
 13 both clear, which reads as "an exceptional event is in progress and I
 cannot service-request".
 
@@ -898,8 +898,7 @@ was not issuing Talk R0 commands because the emulator had no transceiver-level
 auto-poll. The real ADB transceiver IC repeats the last Talk R0 every ~11 ms in
 idle state; this fires IFR_SR to restart the ROM's ADB state machine. Fix:
 implemented `adb_autopoll_deferred`, a scheduler callback that prepares a Talk R0
-reply and fires IFR_SR when a device has pending data. See
-`docs/adb-debug-handover.md` for the full investigation history.
+reply and fires IFR_SR when a device has pending data.
 
 **BUG-009** (fixed): Mouse button release (`mouse-button up`) was lost on
 SE/30 when delivered through the ADB hardware path. Two sub-issues:

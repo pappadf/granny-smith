@@ -16,7 +16,7 @@ begins with a predicted-not-taken `if (g_lisa_mmu) return lisa_mmu_*(...)`
 delegate. For every Mac-architecture machine `g_lisa_mmu` is NULL and the
 behaviour is byte-for-byte unchanged.
 
-**Page-size decision (proposal R1).** The hot-path SoA cache hard-codes
+**Page-size decision.** The hot-path SoA cache hard-codes
 `PAGE_SHIFT 12` (4 KB). Rather than parameterise it (approach A, which perturbs
 the tuned 68030/A-UX paths), the Lisa takes approach **B**: its SoA arrays are
 left empty, so every Lisa access misses the fast path and is fully translated in
@@ -122,7 +122,7 @@ transition → memory sizing → preliminary memory test → **VIA timer self-te
 (both VIAs, via the stride-2/stride-8 adapter), and reaches the **COPS POST**.
 
 With the COPS ([cops.c](cops.md)), video (Step 3), the SCC, the floppy
-controller ([lisa_fdc.c](lisa_fdc.md)), the **serial-number PROM**, and the
+controller ([lisa_fdc.c](fdc.md)), the **serial-number PROM**, and the
 **parity-error NMI** all modelled, the rev-H boot ROM **completes the entire
 power-on self-test and auto-boots**, reading the inserted floppy. The chain of
 gates cleared along the way: video self-test (`VIDTST`, frame-accurate retrace
@@ -152,4 +152,4 @@ model would otherwise re-fire). This surfaced a genuine CPU bug:
 (regression-clean across the Mac machines).
 
 **Remaining gate to running an OS:** the boot block's sector tag — see
-[lisa_fdc.md](lisa_fdc.md) (needs DC42 tag-load infrastructure).
+[fdc.md](fdc.md) (needs DC42 tag-load infrastructure).

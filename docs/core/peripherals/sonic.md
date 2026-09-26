@@ -17,8 +17,8 @@ DP83932B datasheet (§3/§4) plus **Apple's own ROM self-tests**
 - **MAC / ENDEC / transceiver loopback** through the real RRA/RDA/TDA
   linked-list buffer management.
 - **No wire:** non-loopback transmissions complete successfully into the
-  void and nothing is ever received. Bridging SONIC to a network is a
-  separate proposal.
+  void and nothing is ever received. Bridging SONIC to a network is
+  separate, future work.
 
 ## Bus mastering
 
