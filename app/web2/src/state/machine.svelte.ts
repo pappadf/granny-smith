@@ -24,14 +24,15 @@ export type SchedulerMode = 'live' | 'accel' | 'turbo';
 // (no longer guessed from the model's display name). The debug panels gate
 // their PMMU register views on this so the Lisa's segment MMU never shows
 // the wrong (68030) panels.
-export type MmuKind = 'none' | '68030_pmmu' | 'lisa_segment';
+export type MmuKind = 'none' | '68030_pmmu' | '68040' | 'ppc_601' | 'ppc_604' | 'lisa_segment';
 
 interface MachineState {
   status: MachineStatus;
   model: string | null;
   ram: string | null;
-  // True iff the active machine has a 68030 PMMU (i.e. the panels that show
-  // TC/CRP/SRP/TT0/TT1/MMUSR are meaningful). Derived from mmuKind.
+  // True iff the active machine has an MMU of any kind — logical and physical
+  // addresses can differ, so the panels show L:/P: labels and offer a
+  // physical memory view.  Derived from mmuKind.
   mmuEnabled: boolean;
   mmuKind: MmuKind;
   // True iff the active machine has an FPU (capabilities.cpu.fpu). The FPU

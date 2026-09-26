@@ -1,7 +1,9 @@
 // Reactive state for the Debug panel view. UI-only — not persisted.
 // Section expansion lives here (Phase 7 will tee this to OPFS).
 
-export type MmuSubtab = 'state' | 'translate' | 'map' | 'descriptors';
+// Map and Descriptors return when the core can walk a table (they showed
+// fixtures before, 11-WORK-ORDER D5).
+export type MmuSubtab = 'state' | 'translate';
 export type MemoryMode = 'logical' | 'physical';
 
 interface DebugState {

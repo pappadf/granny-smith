@@ -7,14 +7,15 @@ import { machine } from '@/state/machine.svelte';
 const peekCalls: Array<{ mode: 'logical' | 'physical'; addr: number; count: number }> = [];
 
 vi.mock('@/bus/debug', () => ({
-  peekBytes: vi.fn(async (addr: number, count: number) => {
-    peekCalls.push({ mode: 'logical', addr, count });
-    return new Uint8Array(count).fill(0xab);
+  peekBytes: vi.fn(async (addr: number, count: number, space: 'logical' | 'physical') => {
+    peekCalls.push({ mode: space, addr, count });
+    return new Uint8Array(count).fill(space === 'physical' ? 0xcd : 0xab);
   }),
-  peekPhysBytes: vi.fn(async (addr: number, count: number) => {
-    peekCalls.push({ mode: 'physical', addr, count });
-    return new Uint8Array(count).fill(0xcd);
-  }),
+}));
+// The row labels ask the core for translations; answer "unknown".
+vi.mock('@/bus/mmu', () => ({
+  translateMany: vi.fn(async () => ({})),
+  addrLabel: (addr: number) => `$${addr.toString(16)}`,
 }));
 
 beforeEach(() => {
@@ -23,6 +24,7 @@ beforeEach(() => {
   debug.memoryAddress = 0x00000000;
   debug.memoryMode = 'logical';
   machine.mmuEnabled = true;
+  machine.mmuKind = '68030_pmmu';
 });
 
 describe('MemorySection', () => {
@@ -33,7 +35,7 @@ describe('MemorySection', () => {
     });
   });
 
-  it('Mode toggle switches between peekBytes and peekPhysBytes', async () => {
+  it('the Mode toggle passes the space to the core', async () => {
     const { container } = render(MemorySection);
     await waitFor(() => {
       expect(peekCalls.length).toBeGreaterThan(0);
@@ -50,6 +52,13 @@ describe('MemorySection', () => {
 
   it('Mode toggle is hidden when machine.mmuEnabled is false', () => {
     machine.mmuEnabled = false;
+    const { container } = render(MemorySection);
+    expect(container.querySelector('.mem-mode')).toBeNull();
+  });
+
+  // The Lisa's physical spaces cannot be named by a bare address.
+  it('offers no Physical mode on the Lisa', () => {
+    machine.mmuKind = 'lisa_segment';
     const { container } = render(MemorySection);
     expect(container.querySelector('.mem-mode')).toBeNull();
   });

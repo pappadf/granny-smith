@@ -33,7 +33,6 @@ export {
   writeRegister,
   peekL,
   peekBytes,
-  peekPhysBytes,
   listBreakpoints,
   addBreakpoint,
   removeBreakpoint,

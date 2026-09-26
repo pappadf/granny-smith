@@ -672,10 +672,11 @@ export async function defaultHdId(): Promise<number> {
 // Read a model's capability probe from `machine.profile().capabilities` and
 // apply it to the shared machine state. Replaces the old display-name regex
 // that silently misclassified any MMU machine whose name didn't match the
-// hardcoded pattern. `mmuEnabled` stays the boolean the debug panels gate on,
-// but it is now derived from the typed kind (only a 68030 PMMU enables the
-// register views; the Lisa segment MMU and "none" leave them off); `mmuKind`
-// carries the full typed kind for display, and `fpu` gates the FPU panel.
+// hardcoded pattern. `mmuKind` is the full typed kind the core exports (all
+// six; this used to keep two and collapse the 68040 and PowerPC MMUs to
+// "none", F-05), and `mmuEnabled` means "has an MMU of any kind" — every
+// kind answers the same machine.cpu.mmu.translate/peek (bus/mmu.ts).  `fpu`
+// gates the FPU panel.
 export async function applyCapabilities(model: string): Promise<void> {
   let kind: MmuKind = 'none';
   let fpu = false;
@@ -695,7 +696,14 @@ export async function applyCapabilities(model: string): Promise<void> {
         };
       };
       const k = parsed.capabilities?.mmu?.kind;
-      if (k === '68030_pmmu' || k === 'lisa_segment') kind = k;
+      const KINDS: readonly MmuKind[] = [
+        '68030_pmmu',
+        '68040',
+        'ppc_601',
+        'ppc_604',
+        'lisa_segment',
+      ];
+      if (KINDS.includes(k as MmuKind)) kind = k as MmuKind;
       fpu = parsed.capabilities?.cpu?.fpu === true;
       videoIn = parsed.capabilities?.video_in === true;
       audioIn = parsed.capabilities?.audio_in === true;
@@ -704,7 +712,7 @@ export async function applyCapabilities(model: string): Promise<void> {
     /* leave kind = 'none', fpu = false, videoIn/audioIn = false */
   }
   machine.mmuKind = kind;
-  machine.mmuEnabled = kind === '68030_pmmu';
+  machine.mmuEnabled = kind !== 'none';
   machine.fpu = fpu;
   machine.videoIn = videoIn;
   machine.audioIn = audioIn;

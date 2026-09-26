@@ -6,7 +6,7 @@
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
+  import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
 
   let rows = $state<Breakpoint[]>([]);
@@ -81,12 +81,17 @@
     await refresh();
   }
 
+  // Real translations for the L:/P: labels (the core's, bus/mmu.ts).
+  let xl = $state<Record<number, Translation>>({});
+  $effect(() => {
+    const addrs = rows.map((r) => r.addr);
+    if (!machine.mmuEnabled || addrs.length === 0) return;
+    void translateMany(addrs).then((m) => (xl = m));
+  });
+
   function labelFor(addr: number): string {
     if (!machine.mmuEnabled) return `$${fmtHex32(addr)}`;
-    const r = mmuLookup(addr);
-    const phys = r.valid && r.phys !== undefined ? fmtHex32(r.phys) : '!';
-    const tag = r.valid ? (r.kind ?? 'PT') : 'INVALID';
-    return `L:$${fmtHex32(addr)}  P:$${phys}  ${tag}`;
+    return addrLabel(addr, xl[addr >>> 0]);
   }
 </script>
 

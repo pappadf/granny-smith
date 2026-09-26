@@ -231,14 +231,17 @@ export async function peekL(addr: number): Promise<number | null> {
   return coerceNum(r);
 }
 
-export async function peekBytes(addr: number, count: number): Promise<Uint8Array | null> {
+// `count` bytes at `addr`, in one bridge round-trip.  `space` is passed
+// explicitly: "logical" reads through the CPU's own translation on every
+// architecture (68K MMU, Lisa segment MMU, PowerPC), "physical" reads the
+// physical address.  The C side serialises V_BYTES as "0x<hex>".
+export async function peekBytes(
+  addr: number,
+  count: number,
+  space: 'logical' | 'physical' = 'logical',
+): Promise<Uint8Array | null> {
   if (!isModuleReady()) return null;
-  // Single bridge round-trip via `machine.memory.peek.bytes(addr, count)`. The
-  // C side serialises V_BYTES as the string "0x<hex>", which we
-  // decode into a Uint8Array. This replaces the previous per-byte
-  // fan-out (128 round-trips for a 128-byte window) that made the
-  // Memory pane drag noticeably while single-stepping.
-  const r = await gsEval('machine.memory.peek.bytes', [addr >>> 0, count]);
+  const r = await gsEval('machine.memory.peek.bytes', [addr >>> 0, count, space]);
   if (typeof r !== 'string') return null;
   const hex = r.startsWith('0x') ? r.slice(2) : r;
   const bytes = hex.length / 2;
@@ -247,15 +250,6 @@ export async function peekBytes(addr: number, count: number): Promise<Uint8Array
     out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16) & 0xff;
   }
   return out;
-}
-
-export async function peekPhysBytes(addr: number, count: number): Promise<Uint8Array | null> {
-  // Phase 6: physical mode uses the same peek path on machines without
-  // MMU (logical == physical), and falls back to a shell call on
-  // MMU-on. The shell exposes `info phys-bytes <addr> <count>`; until
-  // we have a typed bus wrapper we delegate to the existing peek
-  // helper, which is correct on no-MMU machines.
-  return peekBytes(addr, count);
 }
 
 export async function listBreakpoints(): Promise<Breakpoint[]> {
