@@ -39,6 +39,10 @@ assert !machine.boot(model="iicx", rom="${$ROM}", ram=999) "off-menu ram must be
 assert !machine.boot(model="iicx", rom="does/not/exist.rom") "unreadable rom must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", vrom="../../data/roms/plus-v3-4d1f8172.rom") "non-vROM vrom= must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_card="nonesuch") "unknown card id must be rejected"
+# A real card that fits no slot of this model (the IIci's built-in RBV video
+# on a IIcx) is rejected too: seated nowhere, it used to boot the default
+# display and leave the row that named it testing something else.
+assert !machine.boot(model="iicx", rom="${$ROM}", video_card="builtin_rbv_video") "a card that fits no slot must be rejected"
 # 15 is one past the top of Apple's indexed sense numbering: 0..7 is the
 # passive 3-bit code, 8..14 names a monitor that answers the EXTENDED
 # tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).

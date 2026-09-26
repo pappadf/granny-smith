@@ -191,6 +191,9 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="tnt_control"
 assert try(machine.pci.slot[1].card.name, none) == none "a non-fitting staged card must not be seated"
 # An unknown id is rejected before the running machine is touched.
 assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="nonesuch") "unknown pci_card id must be rejected"
+# So is a real card that fits no socket of this model: the Network Server's
+# fixed Cirrus 54M30 is not a card any TNT Mac can seat.
+assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="cirrus_54m30") "a card that fits no socket must be rejected"
 assert machine.id == "pm9500" "machine survives the rejected boot"
 
 # --- The built-from record captures the resolved per-slot picks. -------------

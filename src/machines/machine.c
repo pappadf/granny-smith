@@ -863,6 +863,42 @@ static void stamp_created(char *buf, size_t bufsize) {
 // Shared by machine.boot, machine.restart and headless startup.  Returns
 // V_NONE on success, V_ERROR (with the old machine still running) on
 // rejection.
+// Would a video_card= pick be honoured by this model?  The same rules the
+// slot walk applies (nubus.c): with a socket, the pick goes to the FIRST
+// socket and must physically fit it; with none, it replaces the builtin and
+// must be a builtin-attach kind.  Naming a card the model already has
+// built in is always accepted -- a no-op.  Checked up front so a pick that
+// could never be seated fails the boot instead of silently booting the
+// default display.
+static bool video_card_pick_fits(const hw_profile_t *p, const nubus_card_kind_t *k) {
+    const nubus_slot_decl_t *first_socket = NULL;
+    bool has_builtin = false;
+    for (const nubus_slot_decl_t *s = p->nubus_slots; s && s->slot != 0; s++) {
+        if (s->kind == NUBUS_SLOT_BUILTIN) {
+            has_builtin = true;
+            if (s->builtin_card_id && strcmp(s->builtin_card_id, k->id) == 0)
+                return true;
+        } else if (s->kind == NUBUS_SLOT_SOCKET && !first_socket)
+            first_socket = s;
+    }
+    if (first_socket)
+        return nubus_card_fits_socket(first_socket, k);
+    return has_builtin && k->attach == CARD_ATTACH_BUILTIN;
+}
+
+// The same for pci_card=: the pick goes to the first socket and must fit
+// it; naming a card the model already has built in is accepted as a no-op.
+static bool pci_card_pick_fits(const hw_profile_t *p, const pci_card_kind_t *k) {
+    const pci_slot_decl_t *first_socket = NULL;
+    for (const pci_slot_decl_t *s = p->pci_slots; s && s->slot != 0; s++) {
+        if (s->kind != PCI_SLOT_SOCKET && s->builtin_card_id && strcmp(s->builtin_card_id, k->id) == 0)
+            return true;
+        if (s->kind == PCI_SLOT_SOCKET && !first_socket)
+            first_socket = s;
+    }
+    return first_socket && pci_card_fits_socket(first_socket, k);
+}
+
 value_t machine_boot_apply(const boot_config_t *doc_in) {
     boot_config_t doc = *doc_in;
 
@@ -925,6 +961,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
                                doc.video_card, near);
             return val_err("machine.boot: unknown card id '%s' (see nubus.cards())", doc.video_card);
         }
+        if (!video_card_pick_fits(profile, nubus_card_find(doc.video_card)))
+            return val_err(
+                "machine.boot: card '%s' fits no slot on model '%s' (see machine.profile(\"%s\").video_slots)",
+                doc.video_card, profile->id, profile->id);
     }
     if (doc.pci_card && *doc.pci_card) {
         if (!profile->pci_slots)
@@ -936,6 +976,9 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
                                doc.pci_card, near);
             return val_err("machine.boot: unknown card id '%s' (see machine.pci.cards())", doc.pci_card);
         }
+        if (!pci_card_pick_fits(profile, pci_card_find(doc.pci_card)))
+            return val_err("machine.boot: card '%s' fits no slot on model '%s' (see machine.profile(\"%s\").pci_slots)",
+                           doc.pci_card, profile->id, profile->id);
     }
     // 0..7 is the passive sense code; 8..14 is Apple's own indexed numbering
     // for the monitors that answer the EXTENDED (tie-matrix) probe instead
