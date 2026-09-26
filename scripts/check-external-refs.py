@@ -13,6 +13,9 @@ Checked patterns (generic shapes, not names):
   - paths into the untracked local/ tree (local/platen/, the fetched
     interpreter cache, is allowed)
   - review provenance: "NN-area F-NN" tags and bare F-NN / N-NN labels
+  - research notes: "the dossier", "ref §N" section citations
+  - any NAME.md that is not a file in this repository (files that document
+    another project, listed in EXTERNAL_DOCS, may name that project's docs)
 
 A developer checkout may add patterns of its own: every
 local/*/forbidden-refs.txt (one regex per line, '#' comments) is read when
@@ -30,9 +33,8 @@ import re
 import subprocess
 import sys
 
-# Lines allowed to match in the tracked tree.  The tree is being cleaned in
-# steps; this ceiling only ever goes down, and the check fails above it.
-MAX_MATCHES = 1693
+# Lines allowed to match in the tracked tree.  Zero: any match fails.
+MAX_MATCHES = 0
 
 PATTERNS = [
     ("design-document name", r"proposal-[a-z0-9]"),
@@ -41,7 +43,18 @@ PATTERNS = [
     ("path into local/", r"local/(?!platen/)[a-z][a-z0-9_-]*/"),
     ("review tag", r"\b[01][0-9]-[a-z]+(?:-[a-z]+)*[ ,]+[A-Z]-?[0-9]"),
     ("review label", r"\b[FN]-[0-9]{2}\b"),
+    ("research note", r"\bdossier\b"),
+    ("reference section", r"\bref(?:erence)?\.? §"),
 ]
+
+MD_NAME = re.compile(r"\b[A-Za-z0-9_.-]+\.md\b")
+# Names that are not files here by design: a per-checkout agent file, and
+# the documents of the external project these files describe.
+ALLOWED_MD = {"AGENTS.local.md"}
+EXTERNAL_DOCS = {
+    "docs/notes/2026-09-16-efterscript-platen-bridge.md",
+    "scripts/fetch_platen.sh",
+}
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
                       text=True, check=True).stdout.strip()
@@ -65,8 +78,19 @@ def tracked_files():
     return [p for p in out.decode().split("\0") if p]
 
 
+def tracked_md_names():
+    return {os.path.basename(p) for p in tracked_files() if p.endswith(".md")}
+
+
+def missing_doc(rel, line, md_names):
+    if rel in EXTERNAL_DOCS or rel == ".gitignore":
+        return False
+    return any(m not in md_names and m not in ALLOWED_MD for m in MD_NAME.findall(line))
+
+
 def scan(files, patterns):
     compiled = [(label, re.compile(rx)) for label, rx in patterns]
+    md_names = tracked_md_names()
     hits = []
     for rel in files:
         if rel == SELF or rel.startswith("local/"):
@@ -85,6 +109,9 @@ def scan(files, patterns):
                 if rx.search(line):
                     hits.append((rel, n, label, line.strip()))
                     break
+            else:
+                if missing_doc(rel, line, md_names):
+                    hits.append((rel, n, "document not in this repository", line.strip()))
     return hits
 
 
@@ -107,7 +134,7 @@ def main(argv):
             old = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=ROOT, capture_output=True)
             before = 0
             if old.returncode == 0 and b"\0" not in old.stdout[:8192]:
-                before = len(scan_text(old.stdout.decode("utf-8", errors="replace"), patterns))
+                before = len(scan_text(rel, old.stdout.decode("utf-8", errors="replace"), patterns))
             if now > before:
                 grown.append((rel, before, now))
         if grown:
@@ -141,9 +168,11 @@ def main(argv):
     return status
 
 
-def scan_text(text, patterns):
+def scan_text(rel, text, patterns):
     compiled = [re.compile(rx) for _, rx in patterns]
-    return [n for n, line in enumerate(text.splitlines(), 1) if any(rx.search(line) for rx in compiled)]
+    md_names = tracked_md_names()
+    return [n for n, line in enumerate(text.splitlines(), 1)
+            if any(rx.search(line) for rx in compiled) or missing_doc(rel, line, md_names)]
 
 
 if __name__ == "__main__":
