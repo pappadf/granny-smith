@@ -127,14 +127,27 @@ jobs:
           cmake --version | head -n 1
           ninja --version
 
-      - name: Build (clean)
+      # The native headless build, ungated: it needs no test data, so a fork
+      # PR compiles it too (the WASM build runs in the ui job).  PLATEN=1 as
+      # the integration steps below build it, so they reuse these objects
+      # instead of rebuilding the tree.
+      - name: Build headless (clean)
         shell: bash
         run: |
           rm -rf build
-          make
+          make -f Makefile.headless PLATEN=1 -j"$(nproc)"
 
       - name: List build artifacts
-        run: ls -l build || true
+        run: ls -l build/headless || true
+
+      # Static checks that need neither data nor a build: the core layering
+      # rules (tests/integration/core-layering/run.sh, also run in the unit
+      # tier) and every integration test having a tier CI will run.
+      - name: Check core layering
+        run: bash tests/integration/core-layering/run.sh
+
+      - name: Check every integration test has a tier
+        run: make -C tests/integration check-tiers
 
       # CPU unit tests can run without proprietary test data
       # (they use third-party/single-step-tests)
