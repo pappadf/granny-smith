@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // HFS Plus catalog-walker unit tests.
 //
 // image_hfs.c's only dependency on the storage stack is disk_read_data()

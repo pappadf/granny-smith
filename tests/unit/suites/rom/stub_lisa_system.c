@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Minimal system accessor stubs for the Lisa ROM unit test.
 //
 // We cannot link the shared support/stub_system.c here because it also stubs

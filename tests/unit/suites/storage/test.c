@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Storage engine unit tests (delta-file model)
 
 #include "storage.h"

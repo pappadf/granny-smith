@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // 68020+ full-extension-word effective-address tests.
 //
 // Validates calculate_ea_full() (in src/core/cpu/cpu_internal.h) by

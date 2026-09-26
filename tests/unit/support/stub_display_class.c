@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Framebuffer-object stubs for unit tests.
 //
 // display_class.c builds `machine.video{,.framebuffer}` out of the object

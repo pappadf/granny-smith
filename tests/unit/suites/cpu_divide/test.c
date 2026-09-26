@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Signed-divide overflow conformance.
 //
 // The three most-negative-dividend divides (DIVS.W, DIVS.L 64/32, and the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // 68020+ bit-field instruction conformance.
 //
 // The single-step conformance vectors in suites/cpu are 68000 vectors, so the

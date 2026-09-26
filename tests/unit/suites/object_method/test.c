@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for argument-position expressions and method
 // dispatch over the object model.
 //

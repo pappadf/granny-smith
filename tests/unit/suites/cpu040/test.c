@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // MC68040 CPU model tests.
 //
 // Hand-written cases covering the 040-specific decoder surface:

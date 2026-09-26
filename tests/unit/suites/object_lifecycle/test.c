@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for the system-object-model substrate additions:
 //
 //   - cascade delete over owning (attached) edges, post-order

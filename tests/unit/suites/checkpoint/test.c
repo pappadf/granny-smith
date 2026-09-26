@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // The checkpoint stream reader, tested as an untrusted parser.
 //
 // There was no core checkpoint suite: scsi_checkpoint and scc_checkpoint each

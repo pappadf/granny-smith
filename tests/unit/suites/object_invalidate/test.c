@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for per-object invalidation hooks.
 //
 // Hot-path consumers that hold a pre-resolved node_t (breakpoint

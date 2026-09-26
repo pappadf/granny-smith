@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // MC68040 MMU unit tests.
 //
 // Verifies the mmu040.c translation front-end dispatched through mmu.c:

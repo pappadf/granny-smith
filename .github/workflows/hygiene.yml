@@ -30,3 +30,8 @@ jobs:
 
       - name: No references outside the repository
         run: python3 scripts/check-external-refs.py
+
+      # STYLE_GUIDE.md "File Structure": C sources in src/, tests/, tools/ and
+      # the scripts begin with both lines of the notice.
+      - name: SPDX and copyright headers
+        run: python3 scripts/check-spdx.py

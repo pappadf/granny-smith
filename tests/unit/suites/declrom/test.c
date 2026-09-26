@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Declaration-ROM builder unit tests.  The builder is described in
 // docs/core/peripherals/nubus_generic_vrom.md.
 //

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for the named-argument binder (node_bind_args) and the
 // `name=expr` call-form grammar.
 //

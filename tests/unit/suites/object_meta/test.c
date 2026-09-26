@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for the Meta class (`<path>.meta` introspection).
 //
 // Covers:

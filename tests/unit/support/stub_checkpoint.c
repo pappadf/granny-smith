@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Checkpoint stubs for unit tests
 // Provides no-op implementations of checkpoint read/write functions.
 

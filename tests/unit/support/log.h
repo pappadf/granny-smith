@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 #ifndef LOG_H
 #define LOG_H
 /* Minimal no-op logging API for unit tests.

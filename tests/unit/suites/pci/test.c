@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Generic PCI core unit tests.
 //
 // Links the real config_space.c + pci.c against a stub bus environment and

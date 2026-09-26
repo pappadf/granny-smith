@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Memory subsystem unit tests
 // Verifies parameterised memory_map_init() for 24-bit and 32-bit address spaces,
 // correct page table allocation, and page population for RAM and ROM regions.

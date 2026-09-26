@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for parse.{c,h} — the unified literal parser.
 
 #include "object.h"

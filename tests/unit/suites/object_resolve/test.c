@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for object_resolve and the indexed-child contract.
 //
 // Covers:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for value.{c,h} — the tagged-union value type used across
 // every object-model boundary.
 

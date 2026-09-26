@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Apple Lisa 2 / Macintosh XL boot-ROM interleave + identification unit tests.
 // Hermetic: synthesises chip images carrying the Lisa reset SSP ($00000480) and
 // version word rather than depending on the proprietary Lisa ROM files.

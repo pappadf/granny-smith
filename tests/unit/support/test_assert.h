@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 #ifndef TEST_ASSERT_H
 #define TEST_ASSERT_H
 #include <stdio.h>

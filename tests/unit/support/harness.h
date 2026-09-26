@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Test harness API for unit tests
 // Provides a clean abstraction over test context management, replacing
 // direct use of global_emulator in tests.

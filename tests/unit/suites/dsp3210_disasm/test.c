@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 /*
  * test_dsp3210.c — unit tests for the DSP3210 reference disassembler.
  *

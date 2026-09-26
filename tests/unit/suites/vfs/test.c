@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for the VFS layer and APM parser.
 // The APM tests drive image_apm_parse_buffer with synthetic bytes to avoid
 // pulling in the full image/storage stack.  The VFS tests exercise the

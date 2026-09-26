@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Disassembler test - validates cpu_disasm() against a corpus of expected outputs.
 
 #include "cpu.h"

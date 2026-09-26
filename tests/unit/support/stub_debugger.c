@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Debugger stubs for unit tests
 // Provides no-op implementations of debugger functions.
 

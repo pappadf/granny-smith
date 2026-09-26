@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // DP83932 SONIC chip-model tests.
 //
 // Each case mirrors one of Apple's ROM self-tests

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // NCR 53C96 chip-model tests.
 //
 // scsi_53c96.c drives its bus through the external-initiator API

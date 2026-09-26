@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Unit tests for expr.{c,h} — recursive-descent expression parser/evaluator.
 //
 // Covers: operator table against known results, type promotion, short-circuit

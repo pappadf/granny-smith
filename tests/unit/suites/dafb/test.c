@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // DAFB register-level tests.
 //
 // Drives dafb.c through its memory interface exactly as the bus would.

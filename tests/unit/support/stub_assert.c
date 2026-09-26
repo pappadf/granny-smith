@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Assert and test harness stubs for unit tests
 
 #include <stdarg.h>
