@@ -588,7 +588,7 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
 // ABCD: add decimal with extend (based on research at https://gendev.spritesmind.net/forum/viewtopic.php?t=1964)
 static inline uint8_t abcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t ss = xx + yy + !!cpu->extend;
-    uint8_t dc = (ss + 0x66 ^ ss) >> 1;
+    uint8_t dc = ((ss + 0x66) ^ ss) >> 1;
     uint8_t bc = (xx & yy) | ((xx | yy) & ~ss);
     uint8_t corr = (bc | dc) & 0x88;
     uint8_t rr = ss + corr - (corr >> 2);
