@@ -74,6 +74,7 @@ import {
   U_BYTES,
   VERTEX_BYTES,
 } from './voodoo2Protocol';
+import { recordOk } from '@/bus/mailboxRing';
 import { VOODOO2_WGSL, PRESENT_WGSL, DEPTH_RESTORE_WGSL } from './voodoo2.wgsl';
 
 // --- messages from the page -----------------------------------------------
@@ -834,7 +835,7 @@ async function drain(head: number): Promise<boolean> {
     // platen's ringRead makes.  Only a writer bug could break them, and a
     // record that does would read past the ring into the readback area and
     // mis-decode.
-    if (len < 8 || len & 7 || off + len > ringSize || len > (head - consumed) >>> 0) {
+    if (!recordOk(len, off, ringSize, (head - consumed) >>> 0)) {
       console.error('[voodoo2-gpu] corrupt record', kind, len);
       return false;
     }
