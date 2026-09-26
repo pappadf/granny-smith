@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "em.h"
+#include "io/io_worker.h"
 #include "job/job.h"
 
 #include <assert.h>
@@ -779,6 +780,10 @@ int main(void) {
     // recursion (16 frames of functions, the expression parser).
     if (!job_thread_start(512u << 10))
         fprintf(stderr, "job thread could not be started; scripts run inline\n");
+    // The I/O worker: the checkpoint's write and rename run there, not in
+    // the tick (io/io_worker.h).  Same reason to create it now.
+    if (!io_worker_start(256u << 10))
+        fprintf(stderr, "I/O worker could not be started; writes run inline\n");
 
     // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();

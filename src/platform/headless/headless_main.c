@@ -29,6 +29,7 @@
 #include "system.h"
 #include "vrom.h"
 #include "event/gs_event.h"
+#include "io/io_worker.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h"
 
@@ -359,6 +360,7 @@ static gs_mailbox_t g_mbx;
 static uint8_t g_mbx_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + 2 * HL_MBX_RING];
 static gs_mailbox_client_t g_cli;
 static int g_framed = 0; // --framed: @event / @end lines on stdout
+static int g_io_sync = 0; // --io=sync: no I/O worker
 static uint32_t g_foreground_job = 0; // the statement in flight (its request id)
 static uint32_t g_foreground_client = 0;
 
@@ -468,15 +470,19 @@ static int hl_run_statement(uint32_t client, const char *src) {
                 last_heartbeat = now;
             }
         }
-        if (g_daemon_mode && g_client_fd >= 0) {
+        if (g_daemon_mode && g_client_fd >= 0 && !g_client_lost) {
             if (daemon_client_gone(g_client_fd)) {
                 // Nobody left to read the result: this client's run and
                 // script end here; nothing else is touched.
                 g_client_lost = true;
                 job_cancel_client(client);
                 job_glue_stop_modes(client);
+            } else if (running) {
+                // A second connection during a run is a control connection
+                // (stop / quit); once the run is over, the next connection
+                // is the next client and waits its turn in the backlog.
+                daemon_serve_control_connection();
             }
-            daemon_serve_control_connection();
         }
         if (!did && !running)
             usleep(1000);
@@ -499,6 +505,10 @@ static void daemon_redirect_output(int client_fd) {
     g_saved_stderr = dup(STDERR_FILENO);
     dup2(client_fd, STDOUT_FILENO);
     dup2(client_fd, STDERR_FILENO);
+    // A previous client that vanished left the streams' error flags set;
+    // daemon_client_gone reads them for this client.
+    clearerr(stdout);
+    clearerr(stderr);
 }
 
 // Restore stdout/stderr to their original destinations
@@ -1137,6 +1147,11 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        if (strcmp(arg, "--io=sync") == 0) {
+            g_io_sync = 1; // no I/O worker: writes run inline, byte-identical (a bisecting aid)
+            continue;
+        }
+
         if (strcmp(arg, "--framed") == 0) {
             g_framed = 1; // core events as `@event` lines, `@end` after each statement
             continue;
@@ -1339,6 +1354,8 @@ int main(int argc, char *argv[]) {
     hl_mailbox_init();
     if (!job_thread_start(512u << 10))
         fprintf(stderr, "headless: job thread could not be started; scripts run inline\n");
+    if (!g_io_sync && !io_worker_start(256u << 10))
+        fprintf(stderr, "headless: I/O worker could not be started; writes run inline\n");
 
     // Apply --var definitions (after shell_init which calls shell_var_init)
     for (int i = 0; i < var_count; i++) {

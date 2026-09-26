@@ -7,6 +7,7 @@
 // storage.c so the storage block-I/O unit test can link only the core
 // delta-storage API without pulling in image / vfs / shell dependencies.
 
+#include "checkpoint.h"
 #include "storage.h"
 
 #include "image.h"
@@ -366,6 +367,7 @@ static bool storage_path_is_protected(const char *p) {
 // later worker-side create at the same path (e.g. re-copying a file out of an
 // image after deleting it) doesn't hit a dangling inode.
 static value_t storage_method_rm(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
     (void)argc;
@@ -383,6 +385,7 @@ static value_t storage_method_rm(struct object *self, const member_t *m, int arg
 // browser's main-thread OPFS API) keeps WasmFS coherent. Tries rename() first
 // (fast / atomic on the same volume); falls back to a recursive copy + remove.
 static value_t storage_method_mv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
     (void)argc;

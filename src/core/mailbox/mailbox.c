@@ -7,6 +7,7 @@
 
 #include "common.h"
 #include "log.h"
+#include "io/io_worker.h"
 #include "job/job.h"
 
 #include <stdlib.h>
@@ -16,6 +17,14 @@ LOG_USE_CATEGORY_NAME("mailbox");
 
 __attribute__((weak)) void gs_mailbox_notify(volatile uint32_t *word) {
     (void)word;
+}
+
+// The I/O worker's completions wake the emulator thread the way a request
+// does: on REQ_HEAD, where the idle wait parks.
+static volatile uint32_t *g_wake_word;
+static void wake_on_req_head(void) {
+    if (g_wake_word)
+        gs_mailbox_notify(g_wake_word);
 }
 
 size_t gs_mailbox_region_bytes(uint32_t req_bytes, uint32_t evt_bytes) {
@@ -48,7 +57,9 @@ volatile uint32_t *gs_mailbox_init(gs_mailbox_t *m, void *region, uint32_t req_b
     m->ctrl[GS_MBX_C_EVT_SIZE] = evt_bytes;
     m->ctrl[GS_MBX_C_STATUS] = GS_MBX_STATUS_ATTACHED;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    g_wake_word = &m->ctrl[GS_MBX_C_REQ_HEAD];
     job_layer_set_wake_word(&m->ctrl[GS_MBX_C_REQ_HEAD]);
+    io_worker_set_waker(wake_on_req_head);
     return m->ctrl;
 }
 
@@ -70,7 +81,7 @@ void gs_mailbox_heartbeat(gs_mailbox_t *m) {
 }
 
 bool gs_mailbox_has_requests(const gs_mailbox_t *m) {
-    return mbx_load(m->ctrl, GS_MBX_C_REQ_HEAD) != m->req.rd || job_layer_has_work();
+    return mbx_load(m->ctrl, GS_MBX_C_REQ_HEAD) != m->req.rd || job_layer_has_work() || io_worker_has_work();
 }
 
 static void stat_add(gs_mailbox_t *m, int word, uint32_t n) {
@@ -286,8 +297,10 @@ int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) 
         if (now_us && budget_us > 0.0 && now_us() - t0 >= budget_us)
             break;
     }
-    // The jobs: a call posted by the job thread, a job's result.
+    // The jobs: a call posted by the job thread, a job's result; and the
+    // I/O worker's completions.
     written += job_layer_service(m);
+    io_worker_service();
     if (written) {
         mbx_publish(&m->evt);
         if (now_us) {

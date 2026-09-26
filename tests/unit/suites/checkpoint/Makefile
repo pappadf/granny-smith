@@ -15,6 +15,7 @@ STUBS        := machine_object assert
 # also lets the test drive the build-ID gate.
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/checkpoint.c \
+              ../../../../src/core/io/io_worker.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \

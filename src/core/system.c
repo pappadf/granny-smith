@@ -794,6 +794,8 @@ __attribute__((weak)) int gs_download(const char *path) {
 #define QUICK_CHECKPOINT_MIN_INTERVAL_MS 750.0
 
 static double g_last_quick_checkpoint_ms = 0.0;
+static bool g_quick_verbose = false;
+static char g_quick_final_path[QUICK_CHECKPOINT_PATH_MAX];
 
 // Build "<machine_dir>/state.checkpoint" into out_path.  Returns GS_SUCCESS
 // when the machine dir is set and the path fits.
@@ -857,34 +859,50 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // a pause the user never asked for).
     cpu_reschedule();
 
-    double start = host_time_ms();
-    // Drop any stale tmp from a crashed prior run.
-    unlink(tmp_path);
-    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
-    if (rc == GS_SUCCESS) {
-        if (rename(tmp_path, final_path) != 0) {
-            printf("[checkpoint] rename %s -> %s failed: %s\n", tmp_path, final_path, strerror(errno));
-            unlink(tmp_path);
-            rc = GS_ERROR;
-        }
-    } else {
-        unlink(tmp_path);
+    // The previous save's write is still in flight on the I/O worker: the
+    // buffer is its, and a save now would have nothing to save into.  Skip
+    // (the rate limit already says "not yet") and count.
+    if (checkpoint_quick_in_flight()) {
+        checkpoint_quick_note_skipped();
+        return GS_SUCCESS;
     }
-    double elapsed_ms = host_time_ms() - start;
 
-    if (rc == GS_SUCCESS) {
-        g_last_quick_checkpoint_ms = now;
-        gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", elapsed_ms);
+    // Serialise here (the guest state is this thread's); the write and the
+    // rename over final_path run on the I/O worker, which reports through
+    // system_quick_checkpoint_written -- or, without a worker, inline and
+    // before system_checkpoint returns.
+    g_quick_verbose = verbose;
+    snprintf(g_quick_final_path, sizeof g_quick_final_path, "%s", final_path);
+    checkpoint_publish_next(final_path);
+    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
+    if (rc != GS_SUCCESS) {
+        checkpoint_publish_next(NULL);
+        unlink(tmp_path);
         if (verbose)
-            printf("Checkpoint saved to %s (%.2f ms)\n", final_path, elapsed_ms);
-    } else if (verbose) {
-        printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
+            printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
+        return rc;
     }
-    return rc;
+    g_last_quick_checkpoint_ms = now;
+    return GS_SUCCESS;
+}
+
+void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
+    if (ok) {
+        gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"checkpoint_saved\",\"elapsed_ms\":%.2f}", ms);
+        if (g_quick_verbose)
+            printf("Checkpoint saved to %s (%.2f ms)\n", g_quick_final_path, ms);
+    } else {
+        printf("[checkpoint] quick checkpoint write failed: %s\n", error ? error : "?");
+    }
 }
 
 int gs_background_checkpoint(const char *reason) {
-    return system_quick_checkpoint(reason ? reason : "manual", true, false) == GS_SUCCESS ? 0 : -1;
+    // A snapshot promises a complete file when it returns: let a publish in
+    // flight land first, save, and wait for this one's publish too.
+    checkpoint_quick_wait();
+    int rc = system_quick_checkpoint(reason ? reason : "manual", true, false);
+    checkpoint_quick_wait();
+    return rc == GS_SUCCESS ? 0 : -1;
 }
 
 // Clear checkpoint files inside the current machine directory: drops
