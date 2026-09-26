@@ -290,6 +290,20 @@ queued one finishes at once, a running one unwinds at its next statement
 one is running, is stopped. `REQ_MODE_STOP {id, client, owner}` stops a
 running mode by owner (0: any); both answer `true` / `false`.
 
+**I/O jobs.** A leaf whose cost is the size of a file rather than of the
+machine — `storage.cp`, `storage.import`, `storage.export_raw`,
+`storage.hd_create` / `fd_create` / `profile_create`, `download`, and the
+quick checkpoint's publish — runs on the **I/O worker**
+(`src/core/io/io_worker.h`), a second thread created at boot. The leaf
+takes its request off the drain's answer path (`gs_result_defer`) and
+returns at once; the worker does the work; the completion, reported at a
+later drain, writes the request's `EVT_RESULT` (`gs_result_complete`), so
+the page's promise settles when the file is done and the emulator thread
+served frames throughout. A script's call is held the same way and a
+failure is the call's error. Writing over, moving or removing a path a
+device has open answers `E_BUSY`. Without a worker (`--io=sync`) the same
+work runs inline.
+
 **Ctrl-C, exactly.** The terminal is client 2 (the rest of the page is
 client 1). Ctrl-C cancels the terminal's foreground job if it has one;
 else stops a run *the terminal* started (`REQ_MODE_STOP {owner: 2}`);

@@ -214,6 +214,18 @@ static void post_ctl(uint32_t kind, uint32_t id, uint32_t client, uint32_t arg) 
     mbx_publish(&g_req);
 }
 
+// A leaf that answers later: it defers, and the test completes it.
+static uint32_t g_defer_token;
+static int deferring_eval(const char *path, const char *args, char *out, size_t out_size) {
+    (void)args;
+    if (strncmp(path, "defer", 5) == 0) {
+        g_defer_token = gs_result_defer();
+        snprintf(out, out_size, "true");
+        return 0;
+    }
+    return stub_eval(path, args, out, out_size);
+}
+
 static double fake_now_us(void) {
     static double t = 0;
     t += 100.0; // every call is 100 us later
@@ -626,6 +638,37 @@ TEST(the_in_process_client_posts_and_reads_like_the_page) {
     ASSERT_EQ_INT(gs_mailbox_client_script(&c, 3, "x", GS_MBX_SCRIPT_MAX + 1), 0);
 }
 
+TEST(a_deferred_leaf_answers_when_completed_not_when_served) {
+    fresh();
+    g_m.eval = deferring_eval;
+    g_defer_token = 0;
+    ASSERT_TRUE(post(51, "defer", NULL));
+    ASSERT_TRUE(post(52, "plain", NULL));
+    // The drain served both; only the plain one has an answer now, and the
+    // request ring is consumed for both.
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_TRUE(g_defer_token != 0);
+    ASSERT_EQ_INT(g_ctrl[GS_MBX_C_REQ_TAIL], g_ctrl[GS_MBX_C_REQ_HEAD]);
+    uint32_t id, ok;
+    char json[512];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 52);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 0);
+    // Completion writes the deferred answer, published at once.
+    g_notified = 0;
+    gs_result_complete_error(g_defer_token, "disk \"full\"");
+    ASSERT_EQ_INT(g_notified, 1);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 51);
+    ASSERT_EQ_INT(ok, 0);
+    ASSERT_TRUE(strcmp(json, "{\"error\":\"disk \\\"full\\\"\"}") == 0);
+    // Outside any request there is nothing to defer.
+    ASSERT_EQ_INT(gs_result_defer(), 0);
+    // An unknown token is ignored.
+    gs_result_complete_ok(12345);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 0);
+}
+
 int main(void) {
     RUN(the_control_block_is_laid_out_and_versioned);
     RUN(a_request_is_served_and_its_id_comes_back);
@@ -641,6 +684,7 @@ int main(void) {
     RUN(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt);
     RUN(cancel_and_mode_stop_are_answered_and_stop_only_the_owner);
     RUN(the_in_process_client_posts_and_reads_like_the_page);
+    RUN(a_deferred_leaf_answers_when_completed_not_when_served);
     RUN(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode);
     return 0;
 }

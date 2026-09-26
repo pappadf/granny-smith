@@ -9,6 +9,8 @@
 
 #include "checkpoint.h"
 #include "storage.h"
+#include "io/io_worker.h"
+#include "mailbox/mailbox.h"
 
 #include "image.h"
 #include "image_apm.h"
@@ -174,6 +176,149 @@ static struct object *storage_images_get(struct object *self, int index) {
 // the caller's to choose: the core does not pick where media lives
 // (it used to fall back to /opfs/images/<hash>.img).
 //
+// === Work whose cost is the size of a file: I/O jobs ==========================
+//
+// A copy, an export or a blank image is proportional to a file, not to
+// the machine, so it runs on the I/O worker (io/io_worker.h) and the leaf
+// answers later (gs_result_defer / gs_result_complete): the page's promise
+// or the script's call settles when the work ends, and the emulator thread
+// serves frames meanwhile.  Without a worker, or when nothing is being
+// served that can wait, the same work runs here and now.
+
+typedef struct io_leaf {
+    uint32_t token;
+    char *a, *b; // paths
+    bool flag;
+    char size_str[64];
+    uint32_t blocks;
+    char err[256];
+    int (*work)(struct io_leaf *j); // the work, on either thread
+    value_t (*answer)(struct io_leaf *j); // the success value
+} io_leaf_t;
+
+static void io_leaf_free(io_leaf_t *j) {
+    free(j->a);
+    free(j->b);
+    free(j);
+}
+
+static int io_leaf_run(void *ud, char *err, size_t cap) {
+    io_leaf_t *j = (io_leaf_t *)ud;
+    int rc = j->work(j);
+    if (rc != 0 && err)
+        snprintf(err, cap, "%s", j->err[0] ? j->err : "failed");
+    return rc;
+}
+
+static void io_leaf_done(bool ok, double ms, const char *error, void *ud) {
+    (void)ms;
+    io_leaf_t *j = (io_leaf_t *)ud;
+    if (ok) {
+        value_t v = j->answer ? j->answer(j) : val_bool(true);
+        if (v.kind == V_STRING && v.s) {
+            char json[1100];
+            size_t o = (size_t)snprintf(json, sizeof json, "\"");
+            for (const char *c = v.s; *c && o + 4 < sizeof json; c++) {
+                if (*c == '"' || *c == '\\')
+                    json[o++] = '\\';
+                json[o++] = *c;
+            }
+            snprintf(json + o, sizeof json - o, "\"");
+            gs_result_complete(j->token, true, json);
+        } else {
+            gs_result_complete_ok(j->token);
+        }
+        value_free(&v);
+    } else {
+        gs_result_complete_error(j->token, error ? error : j->err);
+    }
+    io_leaf_free(j);
+}
+
+// Runs the leaf's work as an I/O job when it can answer later, else now.
+// Consumes `j`.  `what` names the leaf in an error.
+static value_t io_leaf_dispatch(io_leaf_t *j, const char *what) {
+    j->token = gs_result_defer();
+    if (j->token) {
+        // Provisional, of the declared kind (a script's call sees it on
+        // success; the completion carries the real answer or the error).
+        value_t provisional = j->answer ? j->answer(j) : val_bool(true);
+        if (io_submit_work(io_leaf_run, j, io_leaf_done, j))
+            return provisional;
+        value_free(&provisional);
+    }
+    if (j->token) {
+        // Deferred but no worker: work now and answer the deferral at once.
+        value_t provisional = j->answer ? j->answer(j) : val_bool(true);
+        int rc = j->work(j);
+        if (rc == 0)
+            io_leaf_done(true, 0.0, NULL, j);
+        else
+            io_leaf_done(false, 0.0, j->err[0] ? j->err : "failed", j);
+        return provisional;
+    }
+    int rc = j->work(j);
+    value_t v;
+    if (rc == 0)
+        v = j->answer ? j->answer(j) : val_bool(true);
+    else
+        v = val_err("%s: %s", what, j->err[0] ? j->err : "failed");
+    io_leaf_free(j);
+    return v;
+}
+
+static io_leaf_t *io_leaf_new(const char *a, const char *b) {
+    io_leaf_t *j = (io_leaf_t *)calloc(1, sizeof(*j));
+    if (!j)
+        return NULL;
+    j->a = a ? strdup(a) : NULL;
+    j->b = b ? strdup(b) : NULL;
+    return j;
+}
+
+// A destination under a device is never written over (E_BUSY): the guest
+// is using it.  (image_vfs.c applies the same predicate to descents.)
+static bool destination_attached(const char *dst) {
+    return dst && image_path_is_open_writable(dst);
+}
+
+static int work_cp(io_leaf_t *j) {
+    return shell_cp(j->a, j->b, j->flag, j->err, sizeof j->err);
+}
+
+static value_t answer_import(io_leaf_t *j) {
+    return val_str(j->b);
+}
+
+static int work_export_raw(io_leaf_t *j) {
+    return vfs_export_raw_image(j->a, j->b, j->err, sizeof j->err);
+}
+
+static int work_hd_create(io_leaf_t *j) {
+    int rc = system_hd_create(j->a, j->size_str);
+    if (rc != 0)
+        snprintf(j->err, sizeof j->err, "could not create '%s' (%s)", j->a, j->size_str);
+    return rc == 0 ? 0 : -EIO;
+}
+
+static int work_fd_create(io_leaf_t *j) {
+    int rc = image_create_blank_floppy(j->a, false, j->flag);
+    if (rc == -2)
+        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
+    else if (rc != 0)
+        snprintf(j->err, sizeof j->err, "failed to create blank floppy '%s'", j->a);
+    return rc == 0 ? 0 : -EIO;
+}
+
+static int work_profile_create(io_leaf_t *j) {
+    int rc = image_create_blank_profile(j->a, j->blocks);
+    if (rc == -2)
+        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
+    else if (rc != 0)
+        snprintf(j->err, sizeof j->err, "failed to create blank ProFile image '%s'", j->a);
+    return rc == 0 ? 0 : -EIO;
+}
+
 // Returns the destination path as a V_STRING.
 static value_t storage_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -184,12 +329,16 @@ static value_t storage_method_import(struct object *self, const member_t *m, int
     if (!dst_path || !*dst_path)
         return val_err("storage.import: a destination path is required");
 
-    // Explicit destination — call shell_cp directly so VFS handling
-    // stays in one place (no shell_dispatch).
-    char err[256] = {0};
-    if (shell_cp(host_path, dst_path, false, err, sizeof(err)) < 0)
-        return val_err("storage.import: cp '%s' -> '%s' failed: %s", host_path, dst_path, err[0] ? err : "unknown");
-    return val_str(dst_path);
+    if (destination_attached(dst_path))
+        return val_err("storage.import: '%s' is attached to a device (E_BUSY)", dst_path);
+    // The copy is an I/O job; its answer, the destination path, comes when
+    // it ends.
+    io_leaf_t *j = io_leaf_new(host_path, dst_path);
+    if (!j)
+        return val_err("storage.import: out of memory");
+    j->work = work_cp;
+    j->answer = answer_import;
+    return io_leaf_dispatch(j, "storage.import");
 }
 
 static const arg_decl_t storage_import_args[] = {
@@ -285,11 +434,14 @@ static value_t storage_method_cp(struct object *self, const member_t *m, int arg
     }
     if (!src || !dst)
         return val_err("storage.cp: expected ([-r], src, dst)");
-    char err[256] = {0};
-    int rc = shell_cp(src, dst, recursive, err, sizeof(err));
-    if (rc < 0)
-        return val_err("%s", err[0] ? err : "storage.cp: failed");
-    return val_bool(true);
+    if (destination_attached(dst))
+        return val_err("storage.cp: '%s' is attached to a device (E_BUSY)", dst);
+    io_leaf_t *j = io_leaf_new(src, dst);
+    if (!j)
+        return val_err("storage.cp: out of memory");
+    j->flag = recursive;
+    j->work = work_cp;
+    return io_leaf_dispatch(j, "storage.cp");
 }
 
 // `storage.export_raw(src, dst)` — write a disk image referenced by a VFS
@@ -304,11 +456,13 @@ static value_t storage_method_export_raw(struct object *self, const member_t *m,
     (void)argc;
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
-    char err[256] = {0};
-    int rc = vfs_export_raw_image(src, dst, err, sizeof(err));
-    if (rc < 0)
-        return val_err("%s", err[0] ? err : "storage.export_raw: failed");
-    return val_bool(true);
+    if (destination_attached(dst))
+        return val_err("storage.export_raw: '%s' is attached to a device (E_BUSY)", dst);
+    io_leaf_t *j = io_leaf_new(src, dst);
+    if (!j)
+        return val_err("storage.export_raw: out of memory");
+    j->work = work_export_raw;
+    return io_leaf_dispatch(j, "storage.export_raw");
 }
 
 // `storage.find_media(dir, [dst])` — search a directory for a recognised
@@ -345,7 +499,14 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
     } else {
         return val_err("storage.hd_create: size must be string or integer");
     }
-    return val_bool(system_hd_create(argv[0].s, size_str) == 0);
+    if (destination_attached(argv[0].s))
+        return val_err("storage.hd_create: '%s' is attached to a device (E_BUSY)", argv[0].s);
+    io_leaf_t *j = io_leaf_new(argv[0].s, NULL);
+    if (!j)
+        return val_err("storage.hd_create: out of memory");
+    snprintf(j->size_str, sizeof j->size_str, "%s", size_str);
+    j->work = work_hd_create;
+    return io_leaf_dispatch(j, "storage.hd_create");
 }
 
 // Paths storage.rm / storage.mv must never destroy: the filesystem root and
@@ -431,12 +592,12 @@ static value_t storage_method_fd_create(struct object *self, const member_t *m, 
     if (!path || !*path)
         return val_err("storage.fd_create: empty path");
     bool high_density = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : false;
-    int rc = image_create_blank_floppy(path, false, high_density);
-    if (rc == -2)
-        return val_err("storage.fd_create: file already exists: %s", path);
-    if (rc != 0)
-        return val_err("storage.fd_create: failed to create blank floppy '%s'", path);
-    return val_bool(true);
+    io_leaf_t *j = io_leaf_new(path, NULL);
+    if (!j)
+        return val_err("storage.fd_create: out of memory");
+    j->flag = high_density;
+    j->work = work_fd_create;
+    return io_leaf_dispatch(j, "storage.fd_create");
 }
 
 // `storage.profile_create(path, blocks)` — create a blank Lisa/XL ParaPort
@@ -466,12 +627,12 @@ static value_t storage_method_profile_create(struct object *self, const member_t
     }
     if (blocks == 0)
         return val_err("storage.profile_create: block count must be positive");
-    int rc = image_create_blank_profile(path, (uint32_t)blocks);
-    if (rc == -2)
-        return val_err("storage.profile_create: file already exists: %s", path);
-    if (rc != 0)
-        return val_err("storage.profile_create: failed to create blank ProFile '%s'", path);
-    return val_bool(true);
+    io_leaf_t *j = io_leaf_new(path, NULL);
+    if (!j)
+        return val_err("storage.profile_create: out of memory");
+    j->blocks = (uint32_t)blocks;
+    j->work = work_profile_create;
+    return io_leaf_dispatch(j, "storage.profile_create");
 }
 
 static const char *apm_fs_kind_label(enum apm_fs_kind k) {

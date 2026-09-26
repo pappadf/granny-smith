@@ -1814,6 +1814,13 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
         return node_call_here(n, argc, argv);
     node_marshal_t m = {.n = n, .argc = argc, .argv = argv};
     job_on_emulator(marshal_call, &m);
+    // A leaf that answered later (an I/O job) and failed: the failure is
+    // the call's result, not the provisional value it returned at once.
+    char err[256];
+    if (job_call_take_failure(err, sizeof err)) {
+        value_free(&m.out);
+        return val_err("%s", err);
+    }
     return m.out;
 }
 

@@ -622,47 +622,90 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
 // Platform impl of gs_download (weak default in system.c stubs out).
 // Returns 0 on success, non-zero on any failure (so the typed
 // `download` attribute reports the real outcome rather than always-true).
-int gs_download(const char *path) {
+// The download's work: read the file and hand it to the page.  On the I/O
+// worker when there is one -- the read is proportional to the file, and
+// em_download_bytes blocks its caller until the page has copied the bytes,
+// which must never be the emulator thread.
+typedef struct {
+    char *path;
+    uint32_t token;
+} download_job_t;
+
+static int download_work(void *ud, char *err, size_t err_cap) {
+    download_job_t *d = (download_job_t *)ud;
+    const char *path = d->path;
     struct stat st;
     if (stat(path, &st) != 0) {
-        printf("download: cannot access '%s': %s\n", path, strerror(errno));
-        return -1;
+        snprintf(err, err_cap, "cannot access '%s': %s", path, strerror(errno));
+        return -errno;
     }
     if (!S_ISREG(st.st_mode)) {
-        printf("download: '%s' is not a regular file\n", path);
-        return -1;
+        snprintf(err, err_cap, "'%s' is not a regular file", path);
+        return -EINVAL;
     }
-
-    // Read file on the worker thread (OPFS accessible here)
     FILE *f = fopen(path, "rb");
     if (!f) {
-        printf("download: cannot open '%s': %s\n", path, strerror(errno));
-        return -1;
+        snprintf(err, err_cap, "cannot open '%s': %s", path, strerror(errno));
+        return -errno;
     }
     size_t file_size = (size_t)st.st_size;
     uint8_t *buf = (uint8_t *)malloc(file_size);
     if (!buf) {
         fclose(f);
-        printf("download: out of memory (%zu bytes)\n", file_size);
-        return -1;
+        snprintf(err, err_cap, "out of memory (%zu bytes)", file_size);
+        return -ENOMEM;
     }
     size_t nread = fread(buf, 1, file_size, f);
     fclose(f);
     if (nread != file_size) {
-        // Short read silently truncating the download would corrupt the
+        // A short read silently truncating the download would corrupt the
         // user's saved file.  Fail loudly instead.
-        printf("download: short read on '%s' (%zu of %zu bytes)\n", path, nread, file_size);
+        snprintf(err, err_cap, "short read on '%s' (%zu of %zu bytes)", path, nread, file_size);
         free(buf);
-        return -1;
+        return -EIO;
     }
-
-    // Extract filename from path
     const char *name = strrchr(path, '/');
     name = name ? name + 1 : path;
     em_download_bytes(name, buf, nread);
     free(buf);
-    printf("download: requested '%s'\n", path);
     return 0;
+}
+
+static void download_done(bool ok, double ms, const char *error, void *ud) {
+    (void)ms;
+    download_job_t *d = (download_job_t *)ud;
+    if (ok) {
+        printf("download: requested '%s'\n", d->path);
+        gs_result_complete_ok(d->token);
+    } else {
+        printf("download: %s\n", error ? error : "failed");
+        gs_result_complete_error(d->token, error ? error : "download failed");
+    }
+    free(d->path);
+    free(d);
+}
+
+int gs_download(const char *path) {
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return -1;
+    d->path = strdup(path);
+    d->token = gs_result_defer();
+    if (d->token && io_submit_work(download_work, d, download_done, d))
+        return 0; // provisional; the completion answers
+    char err[256] = "";
+    int rc = download_work(d, err, sizeof err);
+    if (d->token) {
+        download_done(rc == 0, 0.0, rc == 0 ? NULL : err, d);
+        return 0;
+    }
+    if (rc != 0)
+        printf("download: %s\n", err);
+    else
+        printf("download: requested '%s'\n", path);
+    free(d->path);
+    free(d);
+    return rc == 0 ? 0 : -1;
 }
 
 // ============================================================================

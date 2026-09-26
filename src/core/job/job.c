@@ -30,6 +30,10 @@ typedef struct {
     bool pending; // posted by the job thread, not yet served
     bool served; // fn has run; the job may still be held for its mode
     bool done; // the job thread may continue
+    bool serving; // fn is running right now
+    uint32_t defer_token; // the leaf deferred its answer (0: none)
+    bool failed; // the deferred answer was an error
+    char error[256];
 } emu_call_t;
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -130,6 +134,47 @@ static void post_call(void (*fn)(void *ud), void *ud) {
     pthread_mutex_unlock(&g_mu);
 }
 
+// --- a call's deferred answer (emulator thread) --------------------------------
+
+static uint32_t g_defer_seq;
+
+uint32_t job_call_defer(void) {
+    if (!g_call.serving || g_call.defer_token)
+        return 0;
+    g_defer_seq = (g_defer_seq + 1) & 0x7fffffffu;
+    if (!g_defer_seq)
+        g_defer_seq = 1;
+    g_call.defer_token = g_defer_seq | 0x80000000u;
+    return g_call.defer_token;
+}
+
+void job_call_complete(uint32_t token, bool ok, const char *json) {
+    pthread_mutex_lock(&g_mu);
+    if (g_call.defer_token != token) {
+        pthread_mutex_unlock(&g_mu);
+        return;
+    }
+    g_call.defer_token = 0;
+    g_call.failed = !ok;
+    if (!ok) {
+        // The error text out of {"error":"..."}; anything else verbatim.
+        const char *q = json ? strstr(json, "\"error\":\"") : NULL;
+        snprintf(g_call.error, sizeof g_call.error, "%s", q ? q + 9 : (json ? json : "failed"));
+        size_t n = strlen(g_call.error);
+        if (n >= 2 && strcmp(g_call.error + n - 2, "\"}") == 0)
+            g_call.error[n - 2] = '\0';
+    }
+    pthread_mutex_unlock(&g_mu);
+}
+
+bool job_call_take_failure(char *err, size_t cap) {
+    bool failed = g_call.failed;
+    if (failed && err && cap)
+        snprintf(err, cap, "%s", g_call.error);
+    g_call.failed = false;
+    return failed;
+}
+
 // --- submission and cancel (any thread) -------------------------------------
 
 bool job_submit_script(uint32_t client, uint32_t req_id, const char *src, size_t len) {
@@ -222,10 +267,14 @@ int job_layer_service(struct gs_mailbox *m) {
         uint32_t mode_before = job_glue_mode_id();
         uint32_t prev_client = m->client;
         m->client = client;
+        g_call.serving = true;
+        g_call.defer_token = 0;
+        g_call.failed = false;
         fn(ud);
+        g_call.serving = false;
         m->client = prev_client;
         uint32_t mode_after = job_glue_mode_id();
-        bool hold = mode_after != mode_before && job_glue_mode_waits(client);
+        bool hold = (mode_after != mode_before && job_glue_mode_waits(client)) || g_call.defer_token != 0;
         pthread_mutex_lock(&g_mu);
         if (mode_after != mode_before && g_active)
             g_active->mode_id = mode_after;
@@ -236,12 +285,14 @@ int job_layer_service(struct gs_mailbox *m) {
         }
         pthread_mutex_unlock(&g_mu);
     }
-    // 2. A call held for its mode: release it once the mode has ended.
+    // 2. A call held for its mode or a deferred answer: release it once the
+    // mode has ended and the answer has come.
     pthread_mutex_lock(&g_mu);
     bool held = g_call.pending && g_call.served && !g_call.done;
     client = g_call.client;
+    bool deferred_open = g_call.defer_token != 0;
     pthread_mutex_unlock(&g_mu);
-    if (held && !job_glue_mode_waits(client)) {
+    if (held && !deferred_open && !job_glue_mode_waits(client)) {
         pthread_mutex_lock(&g_mu);
         g_call.done = true;
         pthread_cond_signal(&g_cv_call);

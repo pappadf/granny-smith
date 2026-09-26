@@ -16,6 +16,8 @@
 
 typedef struct io_job {
     uint32_t id;
+    io_work_fn work; // a function job, else a publish
+    void *work_ud;
     const uint8_t *buf;
     size_t len;
     char *tmp_path;
@@ -91,6 +93,8 @@ int io_write_publish(const uint8_t *buf, size_t len, const char *tmp_path, const
     return 0;
 }
 
+static void enqueue(io_job_t *j);
+
 static void job_free(io_job_t *j) {
     free(j->tmp_path);
     free(j->final_path);
@@ -112,7 +116,8 @@ static void *worker_main(void *arg) {
         pthread_mutex_unlock(&g_mu);
 
         double t0 = io_now_ms();
-        int rc = io_write_publish(j->buf, j->len, j->tmp_path, j->final_path, j->error, sizeof j->error);
+        int rc = j->work ? j->work(j->work_ud, j->error, sizeof j->error)
+                         : io_write_publish(j->buf, j->len, j->tmp_path, j->final_path, j->error, sizeof j->error);
         j->ok = rc == 0;
         j->ms = io_now_ms() - t0;
 
@@ -170,6 +175,11 @@ uint32_t io_submit_publish(const uint8_t *buf, size_t len, const char *tmp_path,
     j->len = len;
     j->done = done;
     j->ud = ud;
+    enqueue(j);
+    return j->id;
+}
+
+static void enqueue(io_job_t *j) {
     pthread_mutex_lock(&g_mu);
     j->id = g_next_id++;
     if (g_next_id == 0)
@@ -181,6 +191,19 @@ uint32_t io_submit_publish(const uint8_t *buf, size_t len, const char *tmp_path,
     g_queue_tail = j;
     pthread_cond_signal(&g_cv);
     pthread_mutex_unlock(&g_mu);
+}
+
+uint32_t io_submit_work(io_work_fn work, void *ud, io_done_fn done, void *dud) {
+    if (!g_running || !work)
+        return 0;
+    io_job_t *j = (io_job_t *)calloc(1, sizeof(*j));
+    if (!j)
+        return 0;
+    j->work = work;
+    j->work_ud = ud;
+    j->done = done;
+    j->ud = dud;
+    enqueue(j);
     return j->id;
 }
 

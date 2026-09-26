@@ -84,6 +84,14 @@ int job_layer_service(struct gs_mailbox *m);
 void job_tables_lock(void);
 void job_tables_unlock(void);
 
+// A leaf served for a job's call may answer later (gs_result_defer): the
+// call stays held until job_call_complete(token) -- tokens have the top
+// bit set -- and a failure becomes the call's error, which the job thread
+// picks up with job_call_take_failure right after the seam returns.
+uint32_t job_call_defer(void); // 0 when no call is being served
+void job_call_complete(uint32_t token, bool ok, const char *json);
+bool job_call_take_failure(char *err, size_t cap);
+
 // --- Between seam.c and job.c ---------------------------------------------
 typedef void (*job_post_fn)(void (*fn)(void *ud), void *ud);
 void job_seam_set_poster(job_post_fn post);

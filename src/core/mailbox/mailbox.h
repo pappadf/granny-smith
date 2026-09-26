@@ -147,6 +147,8 @@
 #define GS_MBX_EVENT_JSON_LEN 0
 #define GS_MBX_EVENT_WORDS    1
 
+#define GS_MBX_DEFER_MAX 16 // leaves with an answer still to come
+
 // The leaf executor: gs_eval's signature.  Injected so the unit suite can
 // drive the mailbox without the object model.
 typedef int (*gs_mailbox_eval_fn)(const char *path, const char *args_json, char *out, size_t out_size);
@@ -168,6 +170,17 @@ typedef struct gs_mailbox {
     char *args;
     uint32_t heartbeat;
     uint32_t client; // the client whose request is being served, 0 between requests
+    // Deferred results: a leaf that finishes later (an I/O job) takes its
+    // request off the answer path with gs_result_defer and answers it
+    // through gs_result_complete.
+    bool serving; // inside serve_eval
+    bool deferred; // the leaf being served deferred its answer
+    struct {
+        uint32_t token;
+        uint32_t req_id;
+    } defers[GS_MBX_DEFER_MAX];
+    int n_defers;
+    uint32_t defer_seq;
 } gs_mailbox_t;
 
 // Bytes the whole region needs (alignment slack included) for the given
@@ -246,6 +259,19 @@ uint32_t gs_mailbox_client_mode_stop(gs_mailbox_client_t *c, uint32_t client, ui
 // Takes the next event off the ring: its kind (0: none, PADs skipped),
 // the payload copied into `buf` (at most `cap` bytes; *len the real size).
 uint32_t gs_mailbox_client_take(gs_mailbox_client_t *c, uint8_t *buf, size_t cap, uint32_t *len);
+
+// --- Deferred results --------------------------------------------------------
+// A leaf whose work goes to the I/O worker answers later: it calls
+// gs_result_defer() while it is being served, gets a token, returns any
+// value (dropped), and the completion calls gs_result_complete*.  The
+// token is 0 when nothing is being served that can wait (the leaf then
+// does its work now).  Works for a page request (the EVT_RESULT is written
+// at completion) and for a job's call through the seam (the job is held,
+// and a failure becomes the call's error).  Emulator thread only.
+uint32_t gs_result_defer(void);
+void gs_result_complete(uint32_t token, bool ok, const char *json);
+void gs_result_complete_ok(uint32_t token);
+void gs_result_complete_error(uint32_t token, const char *message);
 
 // Platform hook: wake whoever waits on a control word (the client parks in
 // Atomics.waitAsync on EVT_HEAD and READY).  Weak no-op by default.

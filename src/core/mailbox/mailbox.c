@@ -22,6 +22,10 @@ __attribute__((weak)) void gs_mailbox_notify(volatile uint32_t *word) {
 // The I/O worker's completions wake the emulator thread the way a request
 // does: on REQ_HEAD, where the idle wait parks.
 static volatile uint32_t *g_wake_word;
+// The mailbox serving a leaf right now (gs_result_defer looks here), and
+// the one completions go to (there is one mailbox per process).
+static gs_mailbox_t *g_serving_mailbox;
+static gs_mailbox_t *g_mailbox_for_completion;
 static void wake_on_req_head(void) {
     if (g_wake_word)
         gs_mailbox_notify(g_wake_word);
@@ -58,6 +62,7 @@ volatile uint32_t *gs_mailbox_init(gs_mailbox_t *m, void *region, uint32_t req_b
     m->ctrl[GS_MBX_C_STATUS] = GS_MBX_STATUS_ATTACHED;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     g_wake_word = &m->ctrl[GS_MBX_C_REQ_HEAD];
+    g_mailbox_for_completion = m;
     job_layer_set_wake_word(&m->ctrl[GS_MBX_C_REQ_HEAD]);
     io_worker_set_waker(wake_on_req_head);
     return m->ctrl;
@@ -177,14 +182,14 @@ static bool serve_script(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len
 
 // Serves one REQ_EVAL: fills m->out / out_id / out_ok.  A malformed request
 // answers with an error result rather than being dropped, so the client's
-// promise settles.
-static void serve_eval(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
+// promise settles.  Returns whether an answer exists now (false: deferred).
+static bool serve_eval(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) {
     m->out_id = payload_len >= 4 ? RD_LE32(p + 4 * GS_MBX_EVAL_ID) : 0;
     m->out_ok = 0;
     if (payload_len < 4u * GS_MBX_EVAL_WORDS) {
         m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"mailbox: short REQ_EVAL\"}");
         stat_add(m, GS_MBX_C_STAT_BAD, 1);
-        return;
+        return true;
     }
     uint32_t path_len = RD_LE32(p + 4 * GS_MBX_EVAL_PATH_LEN);
     uint32_t args_len = RD_LE32(p + 4 * GS_MBX_EVAL_ARGS_LEN);
@@ -194,7 +199,7 @@ static void serve_eval(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) 
         m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX,
                                         "{\"error\":\"mailbox: REQ_EVAL lengths exceed the record\"}");
         stat_add(m, GS_MBX_C_STAT_BAD, 1);
-        return;
+        return true;
     }
     const uint8_t *path = p + 4 * GS_MBX_EVAL_WORDS;
     memcpy(m->path, path, path_len);
@@ -202,11 +207,89 @@ static void serve_eval(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) 
     memcpy(m->args, path + path_pad, args_len);
     m->args[args_len] = '\0';
     m->client = RD_LE32(p + 4 * GS_MBX_EVAL_CLIENT);
+    m->serving = true;
+    m->deferred = false;
+    g_serving_mailbox = m;
     int rc = m->eval(m->path, args_len ? m->args : NULL, m->out, GS_MBX_RESULT_MAX);
+    g_serving_mailbox = NULL;
+    m->serving = false;
     m->client = 0;
     m->out_ok = rc == 0 ? 1 : 0;
     m->out_len = (uint32_t)strlen(m->out);
     stat_add(m, GS_MBX_C_STAT_REQUESTS, 1);
+    // A deferred leaf has no answer yet: the request is consumed, the
+    // answer comes with gs_result_complete.
+    return !m->deferred;
+}
+
+// The mailbox serving a leaf right now (gs_result_defer looks here).
+
+uint32_t gs_result_defer(void) {
+    gs_mailbox_t *m = g_serving_mailbox;
+    if (m && m->serving && !m->deferred) {
+        if (m->n_defers >= GS_MBX_DEFER_MAX)
+            return 0; // too many in flight: the leaf works now
+        uint32_t token = ++m->defer_seq & 0x7fffffffu;
+        if (!token)
+            token = ++m->defer_seq & 0x7fffffffu;
+        m->defers[m->n_defers].token = token;
+        m->defers[m->n_defers].req_id = m->out_id;
+        m->n_defers++;
+        m->deferred = true;
+        return token;
+    }
+    // Not a request: perhaps a job's call through the seam.
+    return job_call_defer();
+}
+
+void gs_result_complete(uint32_t token, bool ok, const char *json) {
+    if (token & 0x80000000u) {
+        job_call_complete(token, ok, json);
+        return;
+    }
+    gs_mailbox_t *m = g_mailbox_for_completion;
+    if (!m)
+        return;
+    for (int i = 0; i < m->n_defers; i++) {
+        if (m->defers[i].token != token)
+            continue;
+        uint32_t req_id = m->defers[i].req_id;
+        m->defers[i] = m->defers[--m->n_defers];
+        // No room on the event ring is the one thing that can go wrong
+        // here; the answer is then held like a drain's result.
+        if (!gs_mailbox_write_result(m, req_id, ok, json, (uint32_t)strlen(json))) {
+            m->out_id = req_id;
+            m->out_ok = ok ? 1 : 0;
+            m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "%s", json);
+            m->held = true;
+            stat_add(m, GS_MBX_C_STAT_STALLS, 1);
+            return;
+        }
+        mbx_publish(&m->evt);
+        gs_mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+        return;
+    }
+}
+
+void gs_result_complete_ok(uint32_t token) {
+    gs_result_complete(token, true, "true");
+}
+
+void gs_result_complete_error(uint32_t token, const char *message) {
+    char buf[512];
+    size_t o = (size_t)snprintf(buf, sizeof buf, "{\"error\":\"");
+    for (const char *c = message ? message : "failed"; *c && o + 8 < sizeof buf; c++) {
+        if (*c == '"' || *c == '\\') {
+            buf[o++] = '\\';
+            buf[o++] = *c;
+        } else if ((unsigned char)*c < 0x20) {
+            buf[o++] = ' ';
+        } else {
+            buf[o++] = *c;
+        }
+    }
+    snprintf(buf + o, sizeof buf - o, "\"}");
+    gs_result_complete(token, false, buf);
 }
 
 uint32_t gs_mailbox_current_client(const gs_mailbox_t *m) {
@@ -262,7 +345,7 @@ int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) 
         }
         bool answered = true;
         if (rec.kind == GS_MBX_REQ_EVAL) {
-            serve_eval(m, mbx_rec_payload(&m->req, &rec), rec.len - MBX_HDR_BYTES);
+            answered = serve_eval(m, mbx_rec_payload(&m->req, &rec), rec.len - MBX_HDR_BYTES);
         } else if (rec.kind == GS_MBX_REQ_SCRIPT) {
             answered = serve_script(m, mbx_rec_payload(&m->req, &rec), rec.len - MBX_HDR_BYTES);
         } else if (rec.kind == GS_MBX_REQ_CANCEL) {

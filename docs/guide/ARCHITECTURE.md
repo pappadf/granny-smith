@@ -155,12 +155,19 @@ Four caller surfaces walk that tree:
   two record rings in shared memory (`src/core/mailbox/mailbox.h`,
   exposed via one `_get_gs_mailbox` WASM export). JS calls
   `gsEval(path, args)`; that writes a `REQ_EVAL` record carrying an id
-  into the request ring, and the worker's `shell_poll()` drains every
-  pending request each tick and answers each with an `EVT_RESULT` the
-  page's reader loop matches by id. C→JS state pushes (run-state,
-  prompt) flow the other way through `Module.*` callbacks fired with
-  `MAIN_THREAD_*_EM_ASM`.
+  into the request ring, and the emulator thread's drain serves every
+  pending request each frame and answers each with an `EVT_RESULT` the
+  page's reader loop matches by id. What the core says on its own —
+  run state, speed, floppies, checkpoint saves, log lines — flows the
+  other way as events on the same ring (`src/core/event/gs_event.h`).
   See [`web.md`](web.md) for the wire layout and protocol.
+- **Threads**: the emulator thread owns all guest state and runs nothing
+  of unbounded length: it ticks frames and drains the mailbox. A script
+  is a **job** on the job thread (`src/core/job/job.h`), reaching guest
+  state only through the seam, one served call at a time; a copy, an
+  export or a checkpoint's write is an **I/O job** on the I/O worker
+  (`src/core/io/io_worker.h`), answered later. Headless runs the same
+  three threads (`--io=sync` folds the worker back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
   `help()` to render the live tree.
 

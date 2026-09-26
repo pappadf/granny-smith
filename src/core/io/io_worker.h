@@ -45,6 +45,12 @@ bool io_worker_running(void);
 uint32_t io_submit_publish(const uint8_t *buf, size_t len, const char *tmp_path, const char *final_path,
                            io_done_fn done, void *ud);
 
+// Any work as a job: `work(ud, err, err_cap)` runs on the worker and
+// returns 0 or -errno (err: a short description); `done` reports on the
+// emulator thread.  0 when there is no worker (the caller works now).
+typedef int (*io_work_fn)(void *ud, char *err, size_t err_cap);
+uint32_t io_submit_work(io_work_fn work, void *ud, io_done_fn done, void *dud);
+
 // The same publish, here and now, on the calling thread.  0 on success,
 // else -errno; `err` (may be NULL) gets a short description.
 int io_write_publish(const uint8_t *buf, size_t len, const char *tmp_path, const char *final_path, char *err,
