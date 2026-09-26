@@ -627,6 +627,23 @@ TEST(reset_clears_registers_not_vram) {
     unseat(dev);
 }
 
+// PCI reset clears the registers the mode is derived from, so the card has
+// no mode until the firmware programs one.  It used to keep presenting the
+// old geometry over stale memory: "keep the last good mode" swallowed the
+// reset state too.
+TEST(reset_withdraws_the_mode) {
+    pci_device_t *dev = seat();
+    program_of_640x480x8();
+    ASSERT_TRUE(dev->ops->display(dev) != NULL);
+    dev->ops->reset(dev, &s_cfg);
+    ASSERT_TRUE(dev->ops->display(dev) == NULL);
+    program_of_640x480x8(); // and the firmware's next mode set brings it back
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->width, 640);
+    unseat(dev);
+}
+
 // --- Checkpoints and the framebuffer node -----------------------------------
 
 // The mode is DERIVED state: restore rebuilds it from the saved registers
@@ -668,6 +685,38 @@ TEST(checkpoint_round_trips_the_mode) {
     s_cp_buf = NULL;
 }
 
+// A checkpoint taken between an index write and its data write, or partway
+// through a palette entry, resumes there: the index latches, the attribute
+// flip-flop and the DAC position are part of the state.  They were not
+// saved, so after a restore $3C5 answered SR00 instead of the selected SR07,
+// and the rest of an interrupted palette load landed in entry 0.
+TEST(checkpoint_keeps_the_port_latches) {
+    s_cp_buf = (uint8_t *)malloc(CP_CAP);
+    ASSERT_TRUE(s_cp_buf != NULL);
+    s_cp_len = s_cp_pos = 0;
+
+    pci_device_t *a = seat();
+    seq(0x07, 0xF1); // leaves the sequencer index at 7
+    port_out(P_DAC_WINDEX, 9);
+    port_out(P_DAC_DATA, 0x3F); // entry 9, red written: green is next
+    a->ops->checkpoint_save(a, TEST_CP);
+    unseat(a);
+
+    pci_device_t *b = seat();
+    b->ops->checkpoint_restore(b, TEST_CP);
+    ASSERT_TRUE(s_cp_pos == s_cp_len);
+    ASSERT_EQ_INT(port_in(P_SEQ_DATA), 0xF1);
+    port_out(P_DAC_DATA, 0x3F);
+    port_out(P_DAC_DATA, 0x3F);
+    port_out(P_DAC_RINDEX, 9);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x3F);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x3F);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x3F);
+    unseat(b);
+    free(s_cp_buf);
+    s_cp_buf = NULL;
+}
+
 // The shared framebuffer node resolves to the live descriptor and reports
 // the CR0C/CR0D start address as a byte offset into display memory.
 TEST(framebuffer_node_resolves_the_descriptor) {
@@ -679,6 +728,24 @@ TEST(framebuffer_node_resolves_the_descriptor) {
     crtc(0x0D, 0x40); // $0040 doublewords = byte $100
     ASSERT_TRUE(s_fb_node->resolve(s_fb_node->owner) == dev->ops->display(dev));
     ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0x100u);
+    unseat(dev);
+}
+
+// The node's base is where the scanout starts, not the CR0C/CR0D pair alone:
+// it includes the CR1B extension, and follows the fall-back to 0 when the
+// start would run the raster off the end of display memory.
+TEST(framebuffer_node_base_is_the_scanout_start) {
+    pci_device_t *dev = seat();
+    s_fb_node = NULL;
+    cirrus_54m30_kind.attach_objects(dev, (struct object *)&s_fake_object);
+    program_of_640x480x8();
+    fb_poke(0x40000, 0x22);
+    crtc(0x1B, 0x01); // start bit 16: doubleword $10000 = byte $40000
+    display_t *d = dev->ops->display(dev);
+    ASSERT_EQ_INT(d->bits[0], 0x22);
+    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0x40000u);
+    crtc(0x1B, 0x0C); // bits 18:17 set: byte $C0000, and 640x480 does not fit
+    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0u);
     unseat(dev);
 }
 
@@ -706,7 +773,10 @@ int main(void) {
     RUN(input_status_1_follows_emulated_time);
     RUN(aperture_beyond_the_fitted_megabyte_is_empty);
     RUN(reset_clears_registers_not_vram);
+    RUN(reset_withdraws_the_mode);
     RUN(checkpoint_round_trips_the_mode);
+    RUN(checkpoint_keeps_the_port_latches);
     RUN(framebuffer_node_resolves_the_descriptor);
+    RUN(framebuffer_node_base_is_the_scanout_start);
     return 0;
 }

@@ -25,7 +25,7 @@ CL-GD543X/4X Technical Reference Manual*, 4th ed., sections 4.14-4.20).
 ## Registers the model decodes
 
 Both I/O windows (BAR1, indexed by the port's low byte, and the legacy block)
-reach one register file (`io_read8` / `io_write8`, lines 251-355):
+reach one register file (`io_read8` / `io_write8`, lines 252-356):
 
 - **Sequencer** `$3C4`/`$3C5`, **CRTC** `$3D4`/`$3D5`, **graphics** `$3CE`/`$3CF`:
   index/data pairs, store and read back. A data write re-derives the mode.
@@ -34,23 +34,23 @@ reach one register file (`io_read8` / `io_write8`, lines 251-355):
 - **DAC** `$3C8` (write index), `$3C7` (read index), `$3C9` (data): R, G, B per
   entry with auto-advance. Values are six bits; the palette handed to the
   renderer replicates the top two bits into the bottom, so `$3F` becomes `$FF`
-  (line 339).
+  (line 340).
 - **Input Status 1** `$3BA`/`$3DA`: not store-and-readback. Bits 3 (vertical
   retrace) and 0 (display enable inactive) are set for the last 1/14 of each
   1/60 s frame of emulated time, from the scheduler's cycle count
-  (`status1_value`, line 223), so a wait-for-retrace loop ends and a run stays
+  (`status1_value`, line 224), so a wait-for-retrace loop ends and a run stays
   deterministic.
 
 Every other port stores the byte and reads it back.
 
 ## How the mode is derived
 
-The card has no mode register. `c54m30_update` (line 402) runs after every
+The card has no mode register. `c54m30_update` (line 403) runs after every
 sequencer, CRTC or graphics data write and computes:
 
 | Quantity | Source |
 |---|---|
-| depth | SR07 bit 0 enables the extended modes; bits 3:1 = `000` is 8 bpp (`c54m30_bpp`, line 383) |
+| depth | SR07 bit 0 enables the extended modes; bits 3:1 = `000` is 8 bpp (`c54m30_bpp`, line 384) |
 | width | (CR01 + 1) x 8, or x 9 when SR01 bit 0 is clear |
 | height | CR12, plus CR07 bit 1 as bit 8 and CR07 bit 6 as bit 9, plus 1 |
 | stride | CR13 x 8 bytes |
@@ -59,7 +59,7 @@ sequencer, CRTC or graphics data write and computes:
 Open Firmware's 640x480 sequence (SR07 = `$F1`, CR01 = `$4F`, CR12 = `$DF` with
 CR07 bit 1, CR13 = `$50`) therefore gives 640x480, 8 bpp, 640 bytes per line.
 
-What the model does with a register state it cannot present (lines 403-446):
+What the model does with a register state it cannot present (lines 404-455):
 
 - **Not 8 bpp** (standard VGA, or a 16/24/32 bpp extended mode): nothing
   changes; the last good mode stays. Before any good mode there is none, and
@@ -72,8 +72,14 @@ What the model does with a register state it cannot present (lines 403-446):
   768 lines, say): `display_set_scanout` refuses it and, with no blank buffer,
   the display op returns NULL.
 
-A checkpoint stores the register files, the palette and all of display memory;
-restore rebuilds the palette and the scanout from them (line 574).
+PCI reset clears the register files and palette (not display memory), and with
+them the mode: the display op returns NULL until the firmware programs one.
+
+A checkpoint stores the register files, the port latches (the index
+registers, the attribute flip-flop and the DAC's position within an entry),
+the palette and all of display memory; restore rebuilds the palette and the
+scanout from them (line 589). The framebuffer node's base is the byte offset
+the scanout actually starts at, after the fall-back above.
 
 ## What it does not implement
 
