@@ -1509,8 +1509,23 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             instr_to_exec = 1;
 
         // Single-step when debugger is active
-        if (debugger_active)
+        if (debugger_active) {
             instr_to_exec = 1;
+            // The probes run after each instruction, at the PC about to
+            // execute.  A pending interrupt is taken at the sprint's entry,
+            // so the handler's first instruction executed before any probe
+            // saw its address: a breakpoint or PC logpoint there almost
+            // never fired (#173).  Take the interrupt here and, when it
+            // moved the PC, probe the handler's entry before it runs.
+            const cpu_debug_if_t *dif = system_cpu_debug_if();
+            uint32_t pc_before = dif ? dif->get_pc(dif->ctx) : 0;
+            cpu->poll_interrupt(cpu->ctx);
+            if (dif && dif->get_pc(dif->ctx) != pc_before && debug_break_and_trace()) {
+                remaining_cycles = 0;
+                s->running = false;
+                break;
+            }
+        }
 
         // Execute sprint — expose burndown pointer and CPI for I/O penalty mechanism
         s->sprint_total = instr_to_exec;

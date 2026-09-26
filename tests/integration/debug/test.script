@@ -115,6 +115,34 @@ assert machine.cpu.pc == $loop_pc "and stops the machine at its address"
 debug.breakpoints.clear
 echo "bp-contract-ok"
 
+# === probes on an interrupt handler's first instruction ===============
+#
+# The probes ran after each instruction, at the next PC, while a pending
+# interrupt was taken at the sprint's entry: the handler's first instruction
+# executed before any probe saw its address, so a breakpoint or PC logpoint
+# there almost never fired (#173).  The Plus ROM's level-1 autovector ($64)
+# is its VIA handler, entered at least once per VBL; Ticks counts the VBLs.
+# The ROM's RAM test runs for the first ~20 M instructions; the vector and
+# Ticks are live once it idles at the disk icon.
+debug.logpoints.clear
+scheduler.run 25000000
+let lvl1 = machine.memory.peek.l(0x64)
+assert $lvl1 >= 0x400000 && $lvl1 < 0x420000 "the level-1 vector points into the ROM (${$lvl1:08x})"
+let t0 = debug.mac.globals.read("Ticks")
+debug.logpoints.add addr=$lvl1 message="lvl1"
+scheduler.run 1000000
+let vbls = debug.mac.globals.read("Ticks") - $t0
+assert $vbls > 10 "VBLs during the run (${$vbls})"
+let lp = debug.logpoints.meta.indices("entries")[0]
+let hits = debug.logpoints.entries[$lp].hit_count
+assert $hits >= $vbls "the handler's first instruction is probed on every entry (${$hits} hits, ${$vbls} VBLs)"
+debug.logpoints.clear
+debug.breakpoints.add $lvl1
+scheduler.run 1000000
+assert machine.cpu.pc == $lvl1 "a breakpoint on the handler's first instruction stops there"
+debug.breakpoints.clear
+echo "irq-entry-probe-ok"
+
 # === debug.disasm with explicit address =================================
 #
 # `debug.disasm` accepts an optional starting address. The two-arg form
