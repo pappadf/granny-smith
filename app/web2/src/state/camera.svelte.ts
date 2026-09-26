@@ -205,7 +205,30 @@ function stopStream(): void {
 }
 
 // Reconcile the physical camera with (enabled && guestActive).
+//
+// Serialised, as the microphone's is: the guest's capture gate and the
+// user's toggle can fire together, and two overlapping runs each saw no
+// stream across the getUserMedia await, each acquired one, and each started
+// a pump -- the first camera was never stopped, its light stayed on, and two
+// pumps wrote the slots (F-41).
+let syncing: Promise<void> | null = null;
 async function syncStream(): Promise<void> {
+  // Coalesce: a call arriving mid-flight waits for the in-flight one, then
+  // re-reconciles, so the final state always matches the latest intent.
+  while (syncing) {
+    const inFlight = syncing;
+    await inFlight;
+    if (syncing === inFlight) break;
+  }
+  syncing = syncStreamInner();
+  try {
+    await syncing;
+  } finally {
+    syncing = null;
+  }
+}
+
+async function syncStreamInner(): Promise<void> {
   const want = camera.enabled && camera.guestActive;
   if (want && !stream) {
     const s = await acquireStream();
@@ -222,16 +245,21 @@ async function syncStream(): Promise<void> {
       return;
     }
     stream = s;
-    videoEl = document.createElement('video');
-    videoEl.muted = true;
-    videoEl.playsInline = true;
-    videoEl.srcObject = s;
+    const video = document.createElement('video');
+    videoEl = video;
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = s;
     try {
-      await videoEl.play();
+      await video.play();
     } catch {
       /* autoplay of a muted camera element does not reject in practice */
     }
-    startPump(videoEl);
+    // The toggle may have gone off during play(): stopStream() released this
+    // stream, and there is nothing to pump (N-59: the module's videoEl was
+    // read here, null by then).
+    if (stream !== s) return;
+    startPump(video);
     camera.live = true;
   } else if (!want && stream) {
     stopStream();

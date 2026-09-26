@@ -10,11 +10,14 @@
 // Singer's frame cadence while the browser produces on its own, so the two
 // rates have to be decoupled by a queue.
 //
-// Lifecycle & privacy: the browser's recording indicator is lit only while
-// the guest is genuinely listening. `enabled` is the user's master toggle
-// (the click is also the user gesture getUserMedia wants); `guestActive`
-// follows pSndInEn via Module.onAudioInState. The MediaStreamTrack is
-// attached only while BOTH hold — the same discipline as the camera.
+// Lifecycle & privacy: `enabled` is the user's master toggle (the click is
+// also the user gesture getUserMedia wants); `guestActive` follows pSndInEn
+// via Module.onAudioInState. The MediaStreamTrack attaches the first time
+// the guest listens with the toggle on, and then stays until the toggle goes
+// off -- not until the guest stops listening, because a recognizer's
+// endpointer stops and starts input all the time (see syncStreamInner). So
+// the recording indicator does not light on the toggle alone, but it stays
+// lit between utterances.
 //
 // Capture settings matter more than they look. The browser's own
 // echoCancellation / noiseSuppression / autoGainControl are all turned OFF
@@ -464,7 +467,8 @@ async function syncStreamInner(): Promise<void> {
   // flow again on every open, and reset the ring counters each time. The
   // utterance arrived shredded across those gaps and recognition failed, with
   // `produced` reporting time-since-last-rebuild rather than the session.
-  // `guestActive` now gates only whether samples are WRITTEN (see pushSamples).
+  // `guestActive` now gates only whether samples are WRITTEN (see pushSamples),
+  // and when the stream first ATTACHES: the check after acquireStream below.
   const want = microphone.enabled;
   if (want && !stream) {
     const s = await acquireStream();
@@ -475,7 +479,11 @@ async function syncStreamInner(): Promise<void> {
       }
       return;
     }
-    // The toggle may have flipped while the permission prompt was up.
+    // Attach only once the guest is listening (the toggle alone does not
+    // light the recording indicator), and not if the toggle went off while
+    // the permission prompt was up.  An acquire that stops here straight
+    // away is the permission prompt under the click's gesture -- the only
+    // one: setMicrophoneEnabled used to prime a second time (N-60).
     if (!(microphone.enabled && microphone.guestActive)) {
       for (const t of s.getTracks()) t.stop();
       return;
@@ -509,8 +517,8 @@ async function syncStreamInner(): Promise<void> {
 
 // User intent: connect/disconnect the microphone from the guest's sound
 // input. Connecting selects the `host` source on machine.audioin (the Singer
-// then reports a microphone present); the device itself attaches only while
-// the guest is actually recording (syncStream).
+// then reports a microphone present); the device itself attaches once the
+// guest starts recording (syncStream).
 export async function setMicrophoneEnabled(on: boolean): Promise<void> {
   microphone.enabled = on;
   if (on) {
@@ -522,18 +530,9 @@ export async function setMicrophoneEnabled(on: boolean): Promise<void> {
     // noise floor rather than stale audio.
     setConnected(true);
     await gsEval('machine.audioin.source', ['host']);
-    // Prime the permission prompt under the click's user gesture, then
-    // release the device again if the guest is not recording yet.
+    // Under the click's user gesture: attaches the device if the guest is
+    // recording, and otherwise asks for permission and releases it again.
     await syncStream();
-    if (!microphone.guestActive && microphone.enabled) {
-      const s = await acquireStream();
-      if (s) {
-        for (const t of s.getTracks()) t.stop();
-      } else {
-        showNotification('Microphone unavailable — permission denied or no device', 'warning');
-        await setMicrophoneEnabled(false);
-      }
-    }
   } else {
     setConnected(false);
     stopStream();

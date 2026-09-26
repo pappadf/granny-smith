@@ -93,10 +93,13 @@ microphone with `machine.audioin.source = "host"`.
 
 `src/platform/wasm/em_audio_in.c` overrides the seam for the WASM build and
 `app/web2/src/state/microphone.svelte.ts` drives it, mirroring the camera
-path exactly: a toolbar toggle gated on the `audio_in` capability, and a
-`MediaStreamTrack` attached only while the user's toggle AND the guest's
-`pSndInEn` both hold, so the browser's recording indicator is lit only while
-the guest is genuinely listening.
+path: a toolbar toggle gated on the `audio_in` capability, and a
+`MediaStreamTrack` that attaches the first time the guest's `pSndInEn` goes
+on with the toggle on — so the browser's recording indicator does not light
+on the toggle alone — and then stays until the toggle goes off.  Unlike the
+camera it does not detach when the guest stops listening: a recognizer's
+endpointer stops and restarts input continuously, and rebuilding the capture
+graph each time shredded the utterance.
 
 Samples cross on a lock-free SPSC ring in the shared wasm heap rather than
 the camera's latest-wins slot pair: the guest pulls whole 10 ms half-buffers
