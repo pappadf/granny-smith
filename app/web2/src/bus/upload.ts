@@ -10,24 +10,23 @@
 //   5. Persist to the right /opfs/images/<category>/ via gsEval('storage.cp').
 //   6. Cleanup the staging copy.
 //
-// STAGING (see stageUpload): the write goes THROUGH WASMFS, the same filesystem
-// the emulator uses.  Under WASMFS a Module.FS call runs on the calling (main)
-// thread, and WasmFS's OPFS backend hands the actual OPFS I/O to its own worker
-// thread, which uses createSyncAccessHandle — the only browser-portable OPFS
-// write path.  The main thread blocks, servicing proxied calls, until each
-// chunk lands: that is jank while a large upload streams, not a deadlock (the
-// emulator thread's sync MAIN_THREAD_EM_ASM calls are serviced meanwhile —
-// A8, refuting N-61).  Moving the writes off the main thread needs an I/O
-// worker, which the bridge does not have yet.  Writing staging with the page's
-// own navigator.storage — the old approach — failed two ways: Safari's OPFS
-// rejects main-thread createWritable() with "UnknownError", and on Chromium the
-// emulator's WasmFS can't see an out-of-band OPFS write, so the follow-up
-// storage.cp can't find the file and strands it in /opfs/upload. The file is sliced and written chunk by
-// chunk, so uploads of any size (including hundreds-of-MB CD-ROMs) never buffer
-// the whole file. This mirrors how move/delete route through the worker
-// (storage.mv/storage.rm).
+// STAGING (see stageUpload): the write goes through the emulator's own
+// filesystem, on the emulator thread: the page copies each chunk into the
+// core's transfer window and storage.xfer_write puts it in the file
+// (bus/xfer.ts).  The page never touches the filesystem itself.  It used to
+// call Module.FS, which under WasmFS runs on the page's thread and busy-waits
+// for WasmFS's OPFS thread -- jank on Chrome, and a deadlock on Safari, where
+// WebKit serves that thread's OPFS requests through the busy page thread.
+// Writing staging with the page's own navigator.storage failed too: Safari's
+// OPFS rejects main-thread createWritable() with "UnknownError", and on
+// Chromium the emulator's WasmFS can't see an out-of-band OPFS write, so the
+// follow-up storage.cp strands the file in /opfs/upload.  The file is sliced
+// and written chunk by chunk, so uploads of any size (including hundreds-of-MB
+// CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
+// through the worker (storage.mv/storage.rm).
 
-import { gsEval, gsErrorText, isModuleReady, getModule } from './emulator';
+import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { xferChunkBytes, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
@@ -38,65 +37,59 @@ import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPath
 import { MEDIA_TYPES, identifyRom, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
 import { attachCdrom, insertFloppy } from './media';
 
-// Bytes copied to the worker per FS.write. Bounds peak memory (one slice in the
-// JS heap + one in the WASM heap at a time) so uploads of any size — including
-// hundreds-of-MB CD-ROM images — never buffer the whole file anywhere.
-const STAGE_CHUNK_BYTES = 4 * 1024 * 1024;
-
-// The one chunked writer (R3): everything the page puts on the worker's
+// The one chunked writer (R3): everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
-// checkpoint — goes through here, to an OPFS path, a chunk at a time,
-// through WasmFS (see STAGING above): the FS call runs here, WasmFS's own
-// OPFS worker does the createSyncAccessHandle I/O, and this thread blocks per
-// chunk.  Main-thread createWritable() throws "UnknownError" on Safari, and
-// an out-of-band OPFS write isn't visible to the emulator's WasmFS on
-// Chromium (stranding the file).  Nothing buffers the whole file, so any size
-// (incl. large CD-ROMs) works — where the URL path and the dropped checkpoint
-// used to read the whole file into memory and write it to the memory-backed
-// /tmp, which is the wasm heap.  Returns true on success.
+// checkpoint — goes through here, to an OPFS path, a transfer window at a time
+// (bus/xfer.ts; see STAGING above).  A stream's small network chunks are
+// gathered into full windows first, so a download costs one request per
+// window, not per packet.  Nothing buffers the whole file, so any size works.
+// Returns true on success.
 export async function streamToOpfs(
   opfsPath: string,
   source: Blob | ReadableStream<Uint8Array> | Uint8Array,
 ): Promise<boolean> {
-  const mod = getModule();
-  if (!mod) return false;
-  let stream: unknown;
   try {
-    stream = mod.FS.open(opfsPath, 'w');
+    const size = await xferChunkBytes();
     let pos = 0;
-    const put = (chunk: Uint8Array) => {
-      mod.FS.write(stream, chunk, 0, chunk.length, pos);
+    let wrote = false;
+    const put = async (chunk: Uint8Array) => {
+      await xferWrite(opfsPath, pos, chunk);
       pos += chunk.length;
+      wrote = true;
     };
     if (source instanceof Uint8Array) {
-      // Already in memory (an unzipped entry): still written a chunk at a time.
-      for (let at = 0; at < source.length; at += STAGE_CHUNK_BYTES)
-        put(source.subarray(at, Math.min(at + STAGE_CHUNK_BYTES, source.length)));
+      for (let at = 0; at < source.length; at += size)
+        await put(source.subarray(at, Math.min(at + size, source.length)));
     } else if (source instanceof Blob) {
-      while (pos < source.size) {
-        const end = Math.min(pos + STAGE_CHUNK_BYTES, source.size);
-        put(new Uint8Array(await source.slice(pos, end).arrayBuffer()));
-      }
+      for (let at = 0; at < source.size; at += size)
+        await put(
+          new Uint8Array(await source.slice(at, Math.min(at + size, source.size)).arrayBuffer()),
+        );
     } else {
       const reader = source.getReader();
+      const pending = new Uint8Array(size);
+      let fill = 0;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value?.length) put(value);
+        for (let at = 0; value && at < value.length; ) {
+          const n = Math.min(size - fill, value.length - at);
+          pending.set(value.subarray(at, at + n), fill);
+          fill += n;
+          at += n;
+          if (fill === size) {
+            await put(pending);
+            fill = 0;
+          }
+        }
       }
+      if (fill) await put(pending.subarray(0, fill));
     }
+    if (!wrote) await put(new Uint8Array(0)); // an empty file still exists
     return true;
   } catch (err) {
-    console.error('upload: OPFS stream write failed', err);
+    console.error('upload: staging write failed', err);
     return false;
-  } finally {
-    if (stream !== undefined) {
-      try {
-        mod.FS.close(stream);
-      } catch {
-        // Already closed / open failed — nothing to release.
-      }
-    }
   }
 }
 

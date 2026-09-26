@@ -19,11 +19,14 @@
 // ("UnknownError"); on Chromium the worker couldn't see the main-thread write
 // and stranded the file in /opfs/upload.
 //
-// Fix: bus/upload.ts::stageUpload now streams the staging write ON THE WORKER
-// (Module.FS.open/write/close, proxied to the runtime thread whose WasmFS drives
-// OPFS via createSyncAccessHandle — the browser-portable OPFS write path),
-// slicing the file so nothing buffers the whole thing (works for any size,
-// including large CD-ROM/HD images, with no size threshold).
+// Fix: bus/upload.ts::stageUpload streams the staging write through WasmFS,
+// slicing the file so nothing buffers the whole thing (any size, including
+// large CD-ROM/HD images).  A second Safari failure followed: the page hung
+// outright on upload.  The Module.FS calls ran ON the page's thread, which
+// busy-waits for WasmFS's OPFS thread -- and WebKit serves a worker's OPFS
+// request through the page's thread, so they deadlocked.  The page now only
+// copies each chunk into the core's transfer window and the emulator thread
+// writes it (storage.xfer_write, bus/xfer.ts).
 //
 // These tests assert uploads succeed, so they FAIL if the bug returns. On
 // Chromium they PASS with the fix (before it, they failed — stranded in

@@ -335,7 +335,14 @@ layer at [`app/web2/src/bus/`](../app/web2/src/bus/) wraps every
 ## Upload Pipeline
 
 Four deliberate ways to get a media image into OPFS, all routing
-through [`app/web2/src/bus/upload.ts`](../app/web2/src/bus/upload.ts):
+through [`app/web2/src/bus/upload.ts`](../app/web2/src/bus/upload.ts).
+Every byte goes through the core's **transfer window**
+([`bus/xfer.ts`](../app/web2/src/bus/xfer.ts)): the page copies a chunk
+into a fixed buffer in wasm memory and `storage.xfer_write` writes it on
+the emulator thread (`storage.xfer_read` is the reverse).  The page never
+calls `Module.FS`: under WasmFS that runs on the page's thread and
+busy-waits for the OPFS thread, and in Safari — where WebKit serves a
+worker's OPFS request through the page's thread — it deadlocked the page.
 
 1. **New Machine dialog dropdowns** — picking "Upload image…" in a
    floppy / HD / CD / ROM / VROM slot calls

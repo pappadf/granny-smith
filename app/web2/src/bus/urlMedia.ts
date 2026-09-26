@@ -13,7 +13,8 @@
 // validate as its slot's category is attached from its staging copy, with a
 // warning.
 
-import { gsEval, gsErrorText, getModule, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { xferRead, xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
@@ -209,20 +210,13 @@ async function fetchAndPersist(
   return staged.path;
 }
 
-// Whether the file at `path` starts with the ZIP signature.
-function stagedIsZip(path: string): boolean {
-  const mod = getModule();
-  if (!mod) return false;
-  let stream: unknown;
+// Whether the file at `path` starts with the ZIP signature.  Read through
+// the core (bus/xfer.ts), never with Module.FS on this thread.
+async function stagedIsZip(path: string): Promise<boolean> {
   try {
-    stream = mod.FS.open(path, 'r');
-    const head = new Uint8Array(4);
-    mod.FS.read(stream, head, 0, 4, 0);
-    return isZipMagic(head);
+    return isZipMagic(await xferRead(path, 0, 4));
   } catch {
     return false;
-  } finally {
-    if (stream !== undefined) mod.FS.close(stream);
   }
 }
 
@@ -247,11 +241,10 @@ async function fetchAndStage(
     if (!(await streamToOpfs(staged, body))) return null;
 
     const ct = res.headers.get('Content-Type') ?? '';
-    const looksLikeZip = /\.zip($|[?#])/i.test(url) || /zip/i.test(ct) || stagedIsZip(staged);
+    const looksLikeZip =
+      /\.zip($|[?#])/i.test(url) || /zip/i.test(ct) || (await stagedIsZip(staged));
     if (looksLikeZip) {
-      const mod = getModule();
-      if (!mod) return null;
-      const first = await unzipFirstFile(mod.FS.readFile(staged));
+      const first = await unzipFirstFile(await xferReadAll(staged));
       if (!first) {
         showNotification(`${slot}: zip is empty`, 'error');
         await discardStaging(staged);
