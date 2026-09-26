@@ -234,10 +234,14 @@ PLATEN_MODULE_LDFLAGS := -O2 \
            -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,UTF8ToString \
            -sINCOMING_MODULE_JS_API=locateFile,print,printErr
 
-# PLATEN changes what the printer compiles to; a stamp named after the
-# value is a prerequisite of every object, so toggling the switch rebuilds
-# the tree instead of mixing objects compiled either way.
-PLATEN_STAMP := $(OBJ_DIR)/platen-$(PLATEN).stamp
+# Objects depend on the flags they were compiled with, not only on their
+# sources: a stamp named after a hash of CFLAGS (MODE, EXTRA_CFLAGS, PLATEN,
+# the include list) is a prerequisite of every object, so `make debug` after
+# `make` recompiles instead of linking release objects with the asserts
+# compiled out, and toggling PLATEN rebuilds the tree instead of mixing
+# objects compiled either way.
+FLAGS_HASH  := $(shell printf '%s' '$(subst ','\'',$(CFLAGS) PLATEN=$(PLATEN))' | md5sum | cut -c1-12)
+FLAGS_STAMP := $(OBJ_DIR)/flags-$(FLAGS_HASH).stamp
 
 # -- Link flags (objects -> final binary) --
 
@@ -311,12 +315,12 @@ $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 # laserwriter_job.c embeds the generated prelude header.
 $(OBJ_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
 
-# The PLATEN stamp: creating it (a value change) outdates every object.
-$(PLATEN_STAMP):
+# The flags stamp: creating it (any flag change) outdates every object.
+$(FLAGS_STAMP):
 	@mkdir -p $(dir $@)
-	@rm -f $(OBJ_DIR)/platen-*.stamp
+	@rm -f $(OBJ_DIR)/flags-*.stamp $(OBJ_DIR)/platen-*.stamp
 	@touch $@
-$(OBJ): $(PLATEN_STAMP) $(PLATEN_PREREQS)
+$(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS)
 
 # Link all objects into the final WASM module
 $(OUTPUT): $(OBJ)

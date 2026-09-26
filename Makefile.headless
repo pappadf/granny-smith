@@ -28,9 +28,9 @@ endif
 
 # -- Directories --
 
-# fast mode builds into its own tree: CFLAGS changes don't retrigger object
-# rebuilds, so sharing build/headless would silently mix assert-enabled and
-# assert-free objects.
+# fast mode builds into its own tree, so switching between it and the default
+# build does not recompile everything each time (a flags change does trigger
+# a full rebuild -- see FLAGS_STAMP -- but only within one tree).
 ifeq ($(MODE),fast)
 BUILD_DIR     := build/headless-fast
 else
@@ -166,10 +166,14 @@ PLATEN_LDLIBS :=
 PLATEN_PREREQS :=
 endif
 
-# PLATEN changes what the printer compiles to; a stamp named after the
-# value is a prerequisite of every object, so toggling the switch rebuilds
-# the tree instead of mixing objects compiled either way.
-PLATEN_STAMP := $(BUILD_DIR)/platen-$(PLATEN).stamp
+# Objects depend on the flags they were compiled with, not only on their
+# sources: a stamp named after a hash of CFLAGS (MODE, EXTRA_CFLAGS, PLATEN,
+# the include list) is a prerequisite of every object, so `make debug` after
+# `make` recompiles instead of linking release objects with the asserts
+# compiled out, and toggling PLATEN rebuilds the tree instead of mixing
+# objects compiled either way.
+FLAGS_HASH  := $(shell printf '%s' '$(subst ','\'',$(CFLAGS) PLATEN=$(PLATEN))' | md5sum | cut -c1-12)
+FLAGS_STAMP := $(BUILD_DIR)/flags-$(FLAGS_HASH).stamp
 
 # -- Targets --
 
@@ -194,12 +198,12 @@ $(BUILD_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 # laserwriter_job.c embeds the generated prelude header.
 $(BUILD_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
 
-# The PLATEN stamp: creating it (a value change) outdates every object.
-$(PLATEN_STAMP):
+# The flags stamp: creating it (any flag change) outdates every object.
+$(FLAGS_STAMP):
 	@mkdir -p $(dir $@)
-	@rm -f $(BUILD_DIR)/platen-*.stamp
+	@rm -f $(BUILD_DIR)/flags-*.stamp $(BUILD_DIR)/platen-*.stamp
 	@touch $@
-$(OBJ): $(PLATEN_STAMP) $(PLATEN_PREREQS)
+$(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS)
 
 # Link all objects into the headless binary
 $(OUTPUT): $(OBJ)
