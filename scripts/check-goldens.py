@@ -27,14 +27,22 @@ It also fails on a literal reference that names no file (a check that can
 only ever fail, or a golden never captured), and on a tracked golden that no
 script names (an orphan, which asserts nothing).
 
+"Identical" means identical PIXELS as the emulator reads them, not identical
+files: two encodings of one frame are one claim.  And every tracked golden
+must be a PNG the emulator's reader (load_png_to_rgba, src/core/debug/debug.c)
+decodes as intended: 8-bit grey, RGB or RGBA, and every row's filter type 0,
+because that reader skips the filter byte rather than applying it.
+
 Usage:  scripts/check-goldens.py [tests/integration]
 Exit:   0 clean, 1 collisions, unresolved references or orphans found.
 """
 
 import hashlib
 import re
+import struct
 import subprocess
 import sys
+import zlib
 from collections import defaultdict
 from pathlib import Path
 
@@ -71,6 +79,59 @@ PATTERNS = [
 # author to write down the separate proof. A waiver with no such proof behind it
 # is the mactest failure mode wearing a comment.
 WAIVER = re.compile(r"#\s*golden-collision-ok:\s*(.+)$")
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+CHANNELS = {0: 1, 2: 3, 6: 4}  # colour type -> bytes per pixel, at bit depth 8
+
+
+def decode(path: Path):
+    """The frame the emulator reads from a golden: (digest, problem).
+
+    The digest covers the dimensions and the pixels expanded to RGBA exactly
+    as load_png_to_rgba expands them, so it is independent of the encoding.
+    `problem` is None, or why the emulator would misread the file."""
+    data = path.read_bytes()
+    if not data.startswith(PNG_SIG):
+        return None, "not a PNG"
+    pos, ihdr, idat = 8, None, b""
+    while pos + 8 <= len(data):
+        length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if ctype == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", body)
+        elif ctype == b"IDAT":
+            idat += body
+    if not ihdr or not idat:
+        return None, "no IHDR or IDAT"
+    width, height, depth, colour, _, _, interlace = ihdr
+    if depth != 8 or colour not in CHANNELS or interlace:
+        return None, f"bit depth {depth}, colour type {colour}, interlace {interlace}: " \
+                     "the reader takes 8-bit grey, RGB or RGBA, not interlaced"
+    try:
+        raw = zlib.decompress(idat)
+    except zlib.error as e:
+        return None, f"IDAT does not inflate ({e})"
+    bpp = CHANNELS[colour]
+    stride = 1 + width * bpp
+    if len(raw) != stride * height:
+        return None, f"IDAT holds {len(raw)} bytes, {stride * height} expected"
+    rgba = bytearray()
+    for y in range(height):
+        row = raw[y * stride:(y + 1) * stride]
+        if row[0] != 0:
+            return None, f"row {y} has filter type {row[0]}; the reader ignores filters, so only 0 decodes"
+        px = row[1:]
+        if colour == 6:
+            rgba += px
+        elif colour == 2:
+            for x in range(0, len(px), 3):
+                rgba += px[x:x + 3] + b"\xff"
+        else:
+            for v in px:
+                rgba += bytes((v, v, v, 255))
+    digest = hashlib.md5(struct.pack(">II", width, height) + bytes(rgba)).hexdigest()
+    return digest, None
 
 
 def scan(script: Path):
@@ -124,6 +185,7 @@ def main() -> int:
     waived_count = 0
     unresolved = []
     missing = []
+    undecodable = []
     named = set()  # every golden path a script names, resolved
     dynamic_patterns = []  # regexes for names built from a variable
     for script in sorted(root.glob("*/*.script")):
@@ -150,7 +212,10 @@ def main() -> int:
                 missing.append(f"{script.relative_to(root)}: {ref}")
                 continue
             named.add(golden)
-            digest = hashlib.md5(golden.read_bytes()).hexdigest()
+            digest, problem = decode(golden)
+            if problem:
+                undecodable.append(f"{script.relative_to(root)}: {ref}: {problem}")
+                continue
             by_digest[digest].add(ref)
             checked += 1
 
@@ -169,6 +234,13 @@ def main() -> int:
                   f"one frame ({digest[:8]})")
             for ref in sorted(group):
                 print(f"    {ref}")
+
+    if undecodable:
+        for u in undecodable:
+            print(f"UNREADABLE {u}")
+        print("The emulator would not read these goldens as the pixels they hold; "
+              "re-encode them (8-bit RGBA, filter 0).")
+        return 1
 
     if collisions:
         print()
