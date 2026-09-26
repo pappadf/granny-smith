@@ -48,6 +48,7 @@
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
+#include "host_keys.h"
 #include "keyboard.h"
 #include "laserwriter_job.h"
 #include "laserwriter_transport.h"
@@ -74,40 +75,24 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
 static volatile int pointer_locked = 0;
 static bool mouse_button_down = false;
 
-// True when the active machine is a Lisa-family box (Lisa 2 / Macintosh XL),
-// whose keyboard/mouse live on the COPS rather than the Mac ADB/quadrature
-// devices.  Host input is then routed through the machine substrate's COPS path
-// (system_input_*) instead of the Mac-direct system_keyboard_update/
-// system_mouse_update, which have no device to talk to on the Lisa.
-static bool host_machine_is_lisa(void) {
-    const char *id = system_machine_model_id();
-    return id && (strcmp(id, "lisa") == 0 || strcmp(id, "macxl") == 0);
+// The host keys held down, and the keys they were delivered as (host_keys.c:
+// one path for every machine, by ADB raw keycode).
+static host_keys_t g_host_keys;
+
+// Where host key transitions go: the machine's own keyboard, through its
+// substrate (a Mac's ADB or M0110A, a Lisa's COPS).  0 = taken, <0 = refused.
+static int host_key_sink(int adb_code, bool down) {
+    return system_input_key(adb_code, down) < 0 ? -1 : 0;
 }
 
-// Inject a raw Lisa COPS key byte through the substrate.  A down code is
-// 0xC0-0xFF; the matching up code is the same byte with bit 7 cleared
-// (code & 0x7F), which is why this is the raw path and not system_input_key:
-// the browser side already holds COPS codes with their direction bit.
-static void host_lisa_key(uint8_t code) {
-    system_input_key_raw(code);
-}
-
-// Track which Lisa COPS keys we've sent a down for but not yet an up, indexed by
-// the down code (0xC0-0xFF; bit 7 set).  Used to (a) deliver a key-up even if the
-// browser swallowed the keyup event — e.g. a Ctrl/Cmd chord the browser claimed
-// as an accelerator, which steals focus and the key-up, leaving the guest's
-// keyboard driver typematic-repeating a stuck key forever — and (b) release
-// everything when the page loses input focus.
-static bool lisa_key_held[256];
-
-// Send key-ups for every still-held Lisa key (down & 0x7F clears bit 7).  Called
-// on focus/pointer-lock loss so a lost keyup can't strand a key down.
-static void lisa_release_all_keys(void) {
-    for (int i = 0xC0; i <= 0xFF; i++) {
-        if (lisa_key_held[i]) {
-            lisa_key_held[i] = false;
-            host_lisa_key((uint8_t)i & 0x7F);
-        }
+// Focus or pointer lock lost: the key-ups (and the button-up) will land
+// elsewhere, so let go of everything now -- except Caps Lock, which the web
+// frontend owns (app/web2 lib/capslock.ts).
+static void host_release_all(void) {
+    host_keys_release_all(&g_host_keys, host_key_sink);
+    if (mouse_button_down) {
+        mouse_button_down = false;
+        system_input_mouse_button(false, "relative");
     }
 }
 
@@ -120,35 +105,27 @@ static EM_BOOL mouse_move_cb(int, const EmscriptenMouseEvent *, void *);
 static EM_BOOL key_down_cb(int, const EmscriptenKeyboardEvent *, void *);
 static EM_BOOL key_up_cb(int, const EmscriptenKeyboardEvent *, void *);
 
-// Mouse movement handler
-static void emulator_mouse_move(bool button, int dx, int dy) {
-    if (!pointer_locked)
-        return; // Ignore mouse movement if pointer is not locked
-
-    // Lisa/Mac XL: the mouse hangs off the COPS, which the Mac-direct
-    // system_mouse_update (ADB / quadrature) can't reach.  Feed the signed
-    // pointer-lock deltas to the COPS report path; the button is injected
-    // separately on its edges (below), matching the COPS keycode model.
-    if (host_machine_is_lisa()) {
-        if (dx || dy)
-            system_input_mouse_move(dx, dy, NULL);
+// Pointer-lock deltas, on every machine through the substrate's relative
+// operation (the Mac's hardware deltas, the Lisa's COPS reports).  This used
+// to call the Mac-only system_mouse_update and special-case the Lisa by model
+// id.
+static void emulator_mouse_move(int dx, int dy) {
+    if (!pointer_locked || (!dx && !dy))
         return;
-    }
-
-    // Call the actual mouse update routine
-    system_mouse_update(button, dx, dy);
+    system_input_mouse_move(dx, dy, "relative");
 }
 
 // Mouse button down callback
 static EM_BOOL mouse_down_cb(int type, const EmscriptenMouseEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    if (!pointer_locked)
+    if (!pointer_locked) {
         emscripten_request_pointerlock("#screen", EM_FALSE);
+        return EM_TRUE;
+    }
     mouse_button_down = true;
-    if (pointer_locked && host_machine_is_lisa())
-        system_input_mouse_button(true, NULL); // COPS mouse-button keycode
-    emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
+    system_input_mouse_button(true, "relative");
+    emulator_mouse_move(e->movementX, e->movementY);
     return EM_TRUE;
 }
 
@@ -156,10 +133,11 @@ static EM_BOOL mouse_down_cb(int type, const EmscriptenMouseEvent *e, void *ud) 
 static EM_BOOL mouse_up_cb(int type, const EmscriptenMouseEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    mouse_button_down = false;
-    if (pointer_locked && host_machine_is_lisa())
-        system_input_mouse_button(false, NULL);
-    emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
+    if (mouse_button_down) {
+        mouse_button_down = false;
+        system_input_mouse_button(false, "relative");
+    }
+    emulator_mouse_move(e->movementX, e->movementY);
     return EM_TRUE;
 }
 
@@ -169,7 +147,7 @@ static EM_BOOL plock_change_cb(int type, const EmscriptenPointerlockChangeEvent 
     (void)ud;
     pointer_locked = e->isActive;
     if (!e->isActive)
-        lisa_release_all_keys(); // lock lost (Esc, a browser dialog stealing focus) → don't strand keys
+        host_release_all(); // lock lost (Esc, a browser dialog stealing focus) → strand nothing
     return EM_TRUE;
 }
 
@@ -179,7 +157,7 @@ static EM_BOOL blur_cb(int type, const EmscriptenFocusEvent *e, void *ud) {
     (void)type;
     (void)e;
     (void)ud;
-    lisa_release_all_keys();
+    host_release_all();
     return EM_FALSE; // observe only; don't consume the blur
 }
 
@@ -189,435 +167,58 @@ static EM_BOOL mouse_move_cb(int type, const EmscriptenMouseEvent *e, void *ud) 
     (void)ud;
     if (!pointer_locked)
         return EM_FALSE;
-    emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
+    emulator_mouse_move(e->movementX, e->movementY);
     return EM_TRUE;
 }
 
 // ============================================================================
-// Keyboard Mapping (DOM to Macintosh ADB)
+// Keyboard: one path for every machine
 // ============================================================================
-
-// Map DOM keyboard codes to Macintosh ADB virtual key codes.
-// ADB virtual codes are the standard key identifiers from Inside Macintosh Vol V.
-// The keyboard.c module translates these to Mac Plus raw codes for the VIA protocol.
-static int map_dom_code_to_mac(const char *code, const char *key) {
-    (void)key; // key parameter kept for potential future use
-    if (!code)
-        return -1;
-
-    // ── Letters (A-Z) ───────────────────────────────────────────────────────
-    if (!strcmp(code, "KeyA"))
-        return 0x00;
-    if (!strcmp(code, "KeyS"))
-        return 0x01;
-    if (!strcmp(code, "KeyD"))
-        return 0x02;
-    if (!strcmp(code, "KeyF"))
-        return 0x03;
-    if (!strcmp(code, "KeyH"))
-        return 0x04;
-    if (!strcmp(code, "KeyG"))
-        return 0x05;
-    if (!strcmp(code, "KeyZ"))
-        return 0x06;
-    if (!strcmp(code, "KeyX"))
-        return 0x07;
-    if (!strcmp(code, "KeyC"))
-        return 0x08;
-    if (!strcmp(code, "KeyV"))
-        return 0x09;
-    if (!strcmp(code, "KeyB"))
-        return 0x0B;
-    if (!strcmp(code, "KeyQ"))
-        return 0x0C;
-    if (!strcmp(code, "KeyW"))
-        return 0x0D;
-    if (!strcmp(code, "KeyE"))
-        return 0x0E;
-    if (!strcmp(code, "KeyR"))
-        return 0x0F;
-    if (!strcmp(code, "KeyY"))
-        return 0x10;
-    if (!strcmp(code, "KeyT"))
-        return 0x11;
-    if (!strcmp(code, "KeyU"))
-        return 0x20;
-    if (!strcmp(code, "KeyI"))
-        return 0x22;
-    if (!strcmp(code, "KeyO"))
-        return 0x1F;
-    if (!strcmp(code, "KeyP"))
-        return 0x23;
-    if (!strcmp(code, "KeyL"))
-        return 0x25;
-    if (!strcmp(code, "KeyJ"))
-        return 0x26;
-    if (!strcmp(code, "KeyK"))
-        return 0x28;
-    if (!strcmp(code, "KeyN"))
-        return 0x2D;
-    if (!strcmp(code, "KeyM"))
-        return 0x2E;
-
-    // ── Number row (0-9 and symbols) ────────────────────────────────────────
-    if (!strcmp(code, "Digit1"))
-        return 0x12;
-    if (!strcmp(code, "Digit2"))
-        return 0x13;
-    if (!strcmp(code, "Digit3"))
-        return 0x14;
-    if (!strcmp(code, "Digit4"))
-        return 0x15;
-    if (!strcmp(code, "Digit5"))
-        return 0x17;
-    if (!strcmp(code, "Digit6"))
-        return 0x16;
-    if (!strcmp(code, "Digit7"))
-        return 0x1A;
-    if (!strcmp(code, "Digit8"))
-        return 0x1C;
-    if (!strcmp(code, "Digit9"))
-        return 0x19;
-    if (!strcmp(code, "Digit0"))
-        return 0x1D;
-    if (!strcmp(code, "Minus"))
-        return 0x1B; // - / _
-    if (!strcmp(code, "Equal"))
-        return 0x18; // = / +
-
-    // ── Punctuation and brackets ────────────────────────────────────────────
-    if (!strcmp(code, "BracketLeft"))
-        return 0x21; // [ / {
-    if (!strcmp(code, "BracketRight"))
-        return 0x1E; // ] / }
-    if (!strcmp(code, "Backslash"))
-        return 0x2A; // \ / |
-    if (!strcmp(code, "Semicolon"))
-        return 0x29; // ; / :
-    if (!strcmp(code, "Quote"))
-        return 0x27; // ' / "
-    if (!strcmp(code, "Comma"))
-        return 0x2B; // , / <
-    if (!strcmp(code, "Period"))
-        return 0x2F; // . / >
-    if (!strcmp(code, "Slash"))
-        return 0x2C; // / / ?
-    if (!strcmp(code, "Backquote"))
-        return 0x32; // ` / ~
-    if (!strcmp(code, "IntlBackslash"))
-        return 0x0A; // § / ± (non-US ISO layout)
-
-    // ── Control keys ────────────────────────────────────────────────────────
-    if (!strcmp(code, "Tab"))
-        return 0x30;
-    if (!strcmp(code, "Space"))
-        return 0x31;
-    if (!strcmp(code, "Backspace"))
-        return 0x33; // Delete key on Mac
-    if (!strcmp(code, "Enter"))
-        return 0x24; // Return
-    if (!strcmp(code, "Escape"))
-        return 0x35;
-
-    // ── Modifier keys ───────────────────────────────────────────────────────
-    // Mac Plus has single Shift/Option/Command keys but we map both left/right
-    if (!strcmp(code, "ControlLeft"))
-        return 0x36;
-    if (!strcmp(code, "ControlRight"))
-        return 0x36;
-    if (!strcmp(code, "ShiftLeft"))
-        return 0x38;
-    if (!strcmp(code, "ShiftRight"))
-        return 0x38;
-    if (!strcmp(code, "CapsLock"))
-        return 0x39;
-    if (!strcmp(code, "AltLeft"))
-        return 0x3A; // Option (left)
-    if (!strcmp(code, "AltRight"))
-        return 0x3A; // Option (right)
-    if (!strcmp(code, "MetaLeft"))
-        return 0x37; // Command (left)
-    if (!strcmp(code, "MetaRight"))
-        return 0x37; // Command (right)
-    if (!strcmp(code, "OSLeft"))
-        return 0x37; // Command (Windows key)
-    if (!strcmp(code, "OSRight"))
-        return 0x37; // Command (Windows key)
-
-    // ── Arrow keys ──────────────────────────────────────────────────────────
-    // RAW scan codes 0x3B-0x3E, not the Extended-layout VIRTUAL codes
-    // 0x7B-0x7E: the ADB keyboard forwards register-0 scan codes to the
-    // guest untranslated, and raw 0x7B-0x7D on a real ADB keyboard are
-    // the RIGHT SHIFT/OPTION/CONTROL modifiers — sending those made
-    // arrows press phantom modifiers on every ADB machine (found by
-    // Quake ignoring the web UI's arrows while scripted 0x3D worked).
-    // keyboard.c (Mac Plus VIA path) accepts both sets.
-    if (!strcmp(code, "ArrowLeft"))
-        return 0x3B;
-    if (!strcmp(code, "ArrowRight"))
-        return 0x3C;
-    if (!strcmp(code, "ArrowDown"))
-        return 0x3D;
-    if (!strcmp(code, "ArrowUp"))
-        return 0x3E;
-
-    // ── Numeric keypad ──────────────────────────────────────────────────────
-    if (!strcmp(code, "NumpadDecimal"))
-        return 0x41; // Keypad .
-    if (!strcmp(code, "NumpadMultiply"))
-        return 0x43; // Keypad *
-    if (!strcmp(code, "NumpadAdd"))
-        return 0x45; // Keypad +
-    if (!strcmp(code, "NumLock"))
-        return 0x47; // Keypad Clear
-    if (!strcmp(code, "NumpadDivide"))
-        return 0x4B; // Keypad /
-    if (!strcmp(code, "NumpadEnter"))
-        return 0x4C; // Keypad Enter
-    if (!strcmp(code, "NumpadSubtract"))
-        return 0x4E; // Keypad -
-    if (!strcmp(code, "NumpadEqual"))
-        return 0x51; // Keypad =
-    if (!strcmp(code, "Numpad0"))
-        return 0x52;
-    if (!strcmp(code, "Numpad1"))
-        return 0x53;
-    if (!strcmp(code, "Numpad2"))
-        return 0x54;
-    if (!strcmp(code, "Numpad3"))
-        return 0x55;
-    if (!strcmp(code, "Numpad4"))
-        return 0x56;
-    if (!strcmp(code, "Numpad5"))
-        return 0x57;
-    if (!strcmp(code, "Numpad6"))
-        return 0x58;
-    if (!strcmp(code, "Numpad7"))
-        return 0x59;
-    if (!strcmp(code, "Numpad8"))
-        return 0x5B;
-    if (!strcmp(code, "Numpad9"))
-        return 0x5C;
-
-    return -1; // unmapped key
-}
-
-// ============================================================================
-// Keyboard Mapping (DOM to Lisa COPS)
-// ============================================================================
-
-// Map a DOM physical-key code to the Lisa COPS key-DOWN scancode (final-US
-// layout, id $3F — see lisa.md §11.3).  Returns the down byte (0xC0-0xFF) or -1
-// if unmapped; the matching up byte is (down & 0x7F).  Codes are from LisaEm's
-// keytable.h cross-checked against the boot ROM (KEY1=$F4 '1', KEY2=$F1 '2',
-// KEY3=$F2 '3', Command=$FF), which the boot menu compares directly.
-static int map_dom_code_to_lisa(const char *code) {
-    if (!code)
-        return -1;
-
-    // ── Letters ─────────────────────────────────────────────────────────────
-    if (!strcmp(code, "KeyA"))
-        return 0xF0;
-    if (!strcmp(code, "KeyB"))
-        return 0xEE;
-    if (!strcmp(code, "KeyC"))
-        return 0xED;
-    if (!strcmp(code, "KeyD"))
-        return 0xFB;
-    if (!strcmp(code, "KeyE"))
-        return 0xE0;
-    if (!strcmp(code, "KeyF"))
-        return 0xE9;
-    if (!strcmp(code, "KeyG"))
-        return 0xEA;
-    if (!strcmp(code, "KeyH"))
-        return 0xEB;
-    if (!strcmp(code, "KeyI"))
-        return 0xD3;
-    if (!strcmp(code, "KeyJ"))
-        return 0xD4;
-    if (!strcmp(code, "KeyK"))
-        return 0xD5;
-    if (!strcmp(code, "KeyL"))
-        return 0xD9;
-    if (!strcmp(code, "KeyM"))
-        return 0xD8;
-    if (!strcmp(code, "KeyN"))
-        return 0xEF;
-    if (!strcmp(code, "KeyO"))
-        return 0xDF;
-    if (!strcmp(code, "KeyP"))
-        return 0xC4;
-    if (!strcmp(code, "KeyQ"))
-        return 0xF5;
-    if (!strcmp(code, "KeyR"))
-        return 0xE5;
-    if (!strcmp(code, "KeyS"))
-        return 0xF6;
-    if (!strcmp(code, "KeyT"))
-        return 0xE6;
-    if (!strcmp(code, "KeyU"))
-        return 0xD2;
-    if (!strcmp(code, "KeyV"))
-        return 0xEC;
-    if (!strcmp(code, "KeyW"))
-        return 0xF7;
-    if (!strcmp(code, "KeyX"))
-        return 0xFA;
-    if (!strcmp(code, "KeyY"))
-        return 0xE7;
-    if (!strcmp(code, "KeyZ"))
-        return 0xF9;
-
-    // ── Number row ──────────────────────────────────────────────────────────
-    if (!strcmp(code, "Digit1"))
-        return 0xF4;
-    if (!strcmp(code, "Digit2"))
-        return 0xF1;
-    if (!strcmp(code, "Digit3"))
-        return 0xF2;
-    if (!strcmp(code, "Digit4"))
-        return 0xF3;
-    if (!strcmp(code, "Digit5"))
-        return 0xE4;
-    if (!strcmp(code, "Digit6"))
-        return 0xE1;
-    if (!strcmp(code, "Digit7"))
-        return 0xE2;
-    if (!strcmp(code, "Digit8"))
-        return 0xE3;
-    if (!strcmp(code, "Digit9"))
-        return 0xD0;
-    if (!strcmp(code, "Digit0"))
-        return 0xD1;
-    if (!strcmp(code, "Minus"))
-        return 0xC0; // - / _
-    if (!strcmp(code, "Equal"))
-        return 0xC1; // = / +
-
-    // ── Punctuation ─────────────────────────────────────────────────────────
-    if (!strcmp(code, "BracketLeft"))
-        return 0xD6; // [ / {
-    if (!strcmp(code, "BracketRight"))
-        return 0xD7; // ] / }
-    if (!strcmp(code, "Backslash"))
-        return 0xC2; // \ / |
-    if (!strcmp(code, "Semicolon"))
-        return 0xDA; // ; / :
-    if (!strcmp(code, "Quote"))
-        return 0xDB; // ' / "
-    if (!strcmp(code, "Comma"))
-        return 0xDD; // , / <
-    if (!strcmp(code, "Period"))
-        return 0xDE; // . / >
-    if (!strcmp(code, "Slash"))
-        return 0xCC; // / / ?
-    if (!strcmp(code, "Backquote"))
-        return 0xE8; // ` / ~
-
-    // ── Control keys ────────────────────────────────────────────────────────
-    if (!strcmp(code, "Space"))
-        return 0xDC;
-    if (!strcmp(code, "Enter"))
-        return 0xC8; // Return
-    if (!strcmp(code, "Tab"))
-        return 0xF8;
-    if (!strcmp(code, "Backspace"))
-        return 0xC5; // Backspace / Delete
-
-    // ── Modifiers ───────────────────────────────────────────────────────────
-    if (!strcmp(code, "ShiftLeft"))
-        return 0xFE;
-    if (!strcmp(code, "ShiftRight"))
-        return 0xFE;
-    if (!strcmp(code, "CapsLock"))
-        return 0xFD; // Caps Lock (Alpha Lock)
-    if (!strcmp(code, "MetaLeft"))
-        return 0xFF; // Command (Apple) key
-    if (!strcmp(code, "MetaRight"))
-        return 0xFF;
-    if (!strcmp(code, "OSLeft"))
-        return 0xFF; // Command (Windows key)
-    if (!strcmp(code, "OSRight"))
-        return 0xFF;
-    // The Lisa keyboard has no Control key — software that needs Control uses the
-    // Apple/Command key (e.g. SCO Xenix: Apple-D = Ctrl-D).  Map the host Control
-    // key to it so the natural browser Ctrl chord works, and so the keydown is
-    // preventDefault'd (we return EM_TRUE for mapped keys) — otherwise the
-    // browser eats Ctrl-D as a bookmark and steals the key-up, sticking the key.
-    if (!strcmp(code, "ControlLeft"))
-        return 0xFF; // Control → Apple/Command
-    if (!strcmp(code, "ControlRight"))
-        return 0xFF;
-
-    return -1; // unmapped key
-}
+//
+// DOM code -> ADB raw keycode (host_keys.c) -> the machine's substrate.  There
+// used to be a second table, DOM -> Lisa COPS bytes, chosen by model id, and
+// only that path kept a held-key set, so a Mac whose key-up the browser kept
+// (an accelerator, a focus change) was left with the key down.
 
 // Key down callback
 static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    if (host_machine_is_lisa()) {
-        // Keyboard goes to the emulated Lisa only while the screen has grabbed
-        // input (pointer lock) — otherwise keys belong to the web2 UI (config
-        // dialog, debug fields, the gs terminal).  Gate on the C-side
-        // pointer_locked flag, NOT on document.activeElement: these html5 input
-        // callbacks run on the emscripten worker thread (PROXY_TO_PTHREAD), where
-        // `document` is undefined — querying it throws "document is not defined"
-        // and drops every key.
-        if (!pointer_locked)
-            return EM_FALSE;
-        int code = map_dom_code_to_lisa(e->code);
-        if (code < 0)
-            return EM_FALSE;
-        lisa_key_held[code & 0xFF] = true; // remember it so the up is guaranteed
-        host_lisa_key((uint8_t)code); // COPS down byte (bit 7 set)
-        return EM_TRUE;
-    }
-    // Mac (ADB): keep the pointer-lock focus gate.
+    // Keyboard goes to the machine only while the screen has grabbed input
+    // (pointer lock) -- otherwise keys belong to the web2 UI (config dialog,
+    // debug fields, the gs terminal).  Gate on the C-side pointer_locked flag,
+    // NOT on document.activeElement: these html5 input callbacks run on the
+    // emscripten worker thread (PROXY_TO_PTHREAD), where `document` is
+    // undefined.
     if (!pointer_locked)
         return EM_FALSE;
-    int k = map_dom_code_to_mac(e->code, e->key);
-    if (k < 0)
+    int k = host_keymap_dom_to_adb(e->code);
+    // Caps Lock (0x39) is a mechanically LOCKING key, and only the DOM layer
+    // can see the host's true caps state (getModifierState) -- the emscripten
+    // C callback cannot.  So the C side never touches it: the event is left
+    // unconsumed for the web2 frontend, which mirrors the host caps state into
+    // the guest latch and the ⇪ indicator, and re-asserts it across
+    // boot/restart (app/web2 lib/capslock.ts).
+    if (k < 0 || k == 0x39)
         return EM_FALSE;
-    // Caps Lock (0x39) is a mechanically LOCKING key, and only the DOM
-    // layer can see the host's true caps state (getModifierState) — the
-    // emscripten C callback cannot.  So the C side never touches it: the
-    // event is left unconsumed for the web2 frontend, which mirrors the
-    // host caps state into the guest latch and the ⇪ indicator, and
-    // re-asserts it across boot/restart (app/web2 lib/capslock.ts).
-    if (k == 0x39)
-        return EM_FALSE;
-    system_keyboard_update(key_down, k);
-    return EM_TRUE;
+    // A key the machine refuses is left to the browser -- except Control,
+    // which host_keys retries as Command where the keyboard has no Control
+    // (the Lisa: SCO Xenix reads Apple-D as Control-D), so Control-D is not
+    // left for the browser to take as "bookmark".
+    return host_keys_down(&g_host_keys, k, host_key_sink) ? EM_TRUE : EM_FALSE;
 }
 
 // Key up callback
 static EM_BOOL key_up_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    // Always deliver the up for a key we sent down — even if focus moved to a
-    // web2 field meanwhile, or a browser accelerator stole the keyup — otherwise
-    // the key sticks down and the guest typematic-repeats it forever.
-    if (host_machine_is_lisa()) {
-        int code = map_dom_code_to_lisa(e->code);
-        if (code < 0)
-            return EM_FALSE;
-        if (!lisa_key_held[code & 0xFF])
-            return EM_TRUE; // we never delivered this down — nothing to release
-        lisa_key_held[code & 0xFF] = false;
-        host_lisa_key((uint8_t)code & 0x7F); // COPS up byte (bit 7 clear)
-        return EM_TRUE;
-    }
-    if (!pointer_locked)
+    // Always deliver the up for a key we sent down -- even if focus moved to a
+    // web2 field meanwhile, or pointer lock was lost -- otherwise the key sticks
+    // down and the guest typematic-repeats it forever.
+    int k = host_keymap_dom_to_adb(e->code);
+    if (k < 0 || k == 0x39)
         return EM_FALSE;
-    int k = map_dom_code_to_mac(e->code, e->key);
-    if (k < 0)
-        return EM_FALSE;
-    if (k == 0x39)
-        return EM_FALSE; // Caps Lock belongs to the web2 frontend (see key_down_cb)
-    system_keyboard_update(key_up, k);
-    return EM_TRUE;
+    return host_keys_up(&g_host_keys, k, host_key_sink) ? EM_TRUE : EM_FALSE;
 }
 
 // Setup pointer lock callbacks

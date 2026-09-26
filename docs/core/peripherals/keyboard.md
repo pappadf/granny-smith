@@ -58,6 +58,18 @@ there — the Plus to M0110A wire codes, the Lisa to COPS keycodes
 (`lisa_keymap.c`). A key this keyboard has not got is an error rather than a
 substitution, so pressing `"control"` on a Lisa says so.
 
+### The browser host
+
+The web build's keyboard takes the same path on every machine
+(`src/core/host_keys.c`): DOM `KeyboardEvent.code` → ADB raw keycode →
+`system_input_key` → the machine's own keyboard.  It keeps the set of keys
+the host holds, so every down gets its up even when focus or the pointer
+lock moved meanwhile; losing either releases everything held except Caps
+Lock, which the web frontend owns.  A machine that refuses Control gets
+Command instead — the Lisa, whose SCO Xenix reads Apple-D as Control-D.
+The mouse moves through `mouse.move`'s `"relative"` mode, which every
+machine implements as hardware deltas.
+
 `raw(byte)` is the exception and deliberately not portable: it hands one byte
 to the machine's own keyboard encoding, direction bit and all, for rows that
 are testing a keyboard wire rather than pressing a key. Only the Lisa

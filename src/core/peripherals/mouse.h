@@ -43,9 +43,15 @@ void mouse_move(mouse_t *restrict mouse, int dx, int dy);
 // it, and the machine-side hooks (mac_host_io.c) decode with it.  It used to
 // exist twice, and the copies had already drifted apart in what they accepted.
 //
-//   "default" (or empty/NULL) -> 'd'   Toolbox cursor, the usual path
+//   "default" (or empty/NULL) -> 'd'   the machine's usual path -- NOT the
+//                                      same operation everywhere: on a Mac,
+//                                      x/y is an absolute Toolbox cursor
+//                                      target; on a Lisa, x/y are deltas
+//   "relative" / "hw"         -> 'h'   x/y are hardware deltas, no Toolbox
+//                                      help, on EVERY machine -- the
+//                                      operation a host with a relative
+//                                      pointer (a pointer lock) uses (N-33)
 //   "global"                  -> 'g'   absolute screen position (warp)
-//   "hw"                      -> 'h'   raw hardware deltas, no Toolbox help
 //   "aux"                     -> 'a'   A/UX MAE routing
 //
 // Returns 0 for anything else, which callers report as a bad argument.

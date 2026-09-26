@@ -185,9 +185,10 @@ const struct cpu_debug_if *system_cpu_debug_if(void);
 // mouse object methods to find a machine-specific host-input hook.
 config_t *system_config(void);
 
-// Host-input dispatch to a machine-specific hook (e.g. the Lisa COPS).  Each
-// returns 1 if the machine hook handled the request, 0 if there is no hook (the
-// caller should use the default Mac path), or -1 if the hook rejected it.
+// Host-input dispatch through the machine's substrate (a Mac's ADB or M0110A,
+// the Lisa's COPS).  Each returns 0 when the machine took the request and -1
+// when it refused it (a key its keyboard has not got, a bad mouse mode) or no
+// machine is running.
 // `adb_code` is an ADB raw keycode (0x00-0x7F) -- the model's universal
 // key identity, see machine_profile.h.  Resolve names with
 // debug_mac_resolve_key_name before calling.
