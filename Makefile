@@ -448,10 +448,10 @@ run2: run
 # Removes all build artifacts: wasm, headless, unit, integration, e2e
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(WEB2_DIST)
 	$(MAKE) -C tests/unit clean
 	rm -rf tests/integration/test-results
-	rm -rf tests/e2e/test-results
+	rm -rf tests/e2e/test-results tests/e2e/playwright-report
 
 # -- Help --
 

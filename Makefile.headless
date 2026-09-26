@@ -167,8 +167,11 @@ sanitize:
 	$(MAKE) MODE=sanitize
 
 # Clean build artifacts
+# Both headless trees (default and MODE=fast).  build/vrom68k and
+# build/laserwriter are shared with the WASM build; the top-level `make
+# clean` owns them.
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf build/headless build/headless-fast
 
 # Show build configuration
 info:

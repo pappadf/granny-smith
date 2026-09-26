@@ -42,15 +42,22 @@ VROM68K_SRC_DEPS := $(wildcard $(VROM68K_DIR)/*.s) $(wildcard $(VROM68K_DIR)/*.i
 # frag_<pers>_<block>.bin: assemble frag_<block>.s with the personality
 # symbol, then flatten (objcopy -O binary is safe: every reference is a
 # same-section difference, so no relocations survive to be dropped).
-$(VROM68K_OUT)/frag_%.bin: $(VROM68K_SRC_DEPS)
+#
+# This file is a prerequisite too: M68K_ASFLAGS and the VROM68K_SYM_* symbols
+# live here, and editing them must reassemble.  The .o and .bin are written
+# under temporary names and renamed, so a build interrupted (or racing
+# another target's build -- both Makefiles and the declrom unit suite write
+# here) never leaves a torn fragment that make then trusts as up to date.
+$(VROM68K_OUT)/frag_%.bin: $(VROM68K_SRC_DEPS) $(VROM68K_DIR)/vrom68k.mk
 	@command -v $(M68K_AS) >/dev/null 2>&1 || { \
 	  echo "error: $(M68K_AS) not found — install binutils-m68k-linux-gnu" >&2; \
 	  echo "       (or point M68K_AS/M68K_OBJCOPY at another m68k binutils)" >&2; \
 	  exit 1; }
 	@mkdir -p $(VROM68K_OUT)
 	$(M68K_AS) $(M68K_ASFLAGS) --defsym $(VROM68K_SYM_$(word 1,$(subst _, ,$*)))=1 \
-	  -o $(VROM68K_OUT)/frag_$*.o $(VROM68K_DIR)/frag_$(word 2,$(subst _, ,$*)).s
-	$(M68K_OBJCOPY) -O binary $(VROM68K_OUT)/frag_$*.o $@
+	  -o $(VROM68K_OUT)/frag_$*.o.$$$$ $(VROM68K_DIR)/frag_$(word 2,$(subst _, ,$*)).s && \
+	$(M68K_OBJCOPY) -O binary $(VROM68K_OUT)/frag_$*.o.$$$$ $@.$$$$ && \
+	mv -f $(VROM68K_OUT)/frag_$*.o.$$$$ $(VROM68K_OUT)/frag_$*.o && mv -f $@.$$$$ $@
 
 # The generated header gsvrom_data.c includes (-I$(VROM68K_OUT)).
 $(VROM68K_HEADER): $(VROM68K_BINS) scripts/bin2c.py
