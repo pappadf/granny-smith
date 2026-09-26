@@ -103,10 +103,10 @@ test('drop workflow: ROM auto-boots, floppy auto-mounts, unknown file warns', as
   });
 });
 
-test('checkpoint drop restores the saved machine state', async ({ page }) => {
-  test.setTimeout(240_000);
-  await gotoWeb2(page);
-
+// Boot a Plus from a dropped ROM, pause it, save a checkpoint through the
+// Checkpoints panel and read the checkpoint file's bytes back out of OPFS.
+// Returns them with the paused instruction count they restore to.
+async function captureCheckpoint(page: Page): Promise<{ bytes: Uint8Array; savedInstr: number }> {
   // Boot a machine via ROM drop, then pause it so the snapshot captures a
   // deterministic instruction count (a paused snapshot restores paused).
   await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
@@ -154,6 +154,15 @@ test('checkpoint drop restores the saved machine state', async ({ page }) => {
   // The drop handler detects checkpoints by this signature.
   expect(String.fromCharCode(...bytes.slice(0, 7))).toBe('GSCHKPT');
 
+  return { bytes, savedInstr: savedInstr as number };
+}
+
+test('checkpoint drop restores the saved machine state', async ({ page }) => {
+  test.setTimeout(240_000);
+  await gotoWeb2(page);
+
+  const { bytes, savedInstr } = await captureCheckpoint(page);
+
   // Advance the machine past the saved state via the toolbar Run button
   // (resume free-run), let it run briefly, then stop and read — reading
   // instr_count through the terminal is only reliable against the stable
@@ -181,3 +190,37 @@ test('checkpoint drop restores the saved machine state', async ({ page }) => {
     .poll(async () => await readInstr(page), { timeout: 30_000, intervals: [1_000] })
     .toBe(savedInstr);
 });
+
+// Welcome's "Open Checkpoint...": the same checkpoint, picked from disk on a
+// fresh page, restores the machine it came from.
+test('Open Checkpoint on the Welcome page restores a saved state', async ({ page }) => {
+  test.setTimeout(240_000);
+  await gotoWeb2(page);
+  const { bytes, savedInstr } = await captureCheckpoint(page);
+
+  // A fresh page: no machine, the Welcome view up.  The store's own
+  // checkpoint offers a resume first -- decline it, so the restore below is
+  // the picked file's doing.
+  await page.reload();
+  const resume = page
+    .locator('.modal, [role="dialog"]')
+    .filter({ hasText: 'Continue from saved checkpoint?' });
+  await expect(resume).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('button', { name: 'Start fresh' }).click();
+  await expect(resume).toHaveCount(0);
+
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.getByRole('button', { name: 'Open Checkpoint...' }).click(),
+  ]);
+  await chooser.setFiles({
+    name: 'saved-state.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from(bytes),
+  });
+  await expect(toast(page, /Checkpoint loaded/)).toBeVisible({ timeout: 60_000 });
+  await expect
+    .poll(async () => await readInstr(page), { timeout: 30_000, intervals: [1_000] })
+    .toBe(savedInstr);
+});
+

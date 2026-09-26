@@ -1,10 +1,8 @@
 <script lang="ts">
   import { setWelcomeSlide } from '@/state/layout.svelte';
-  import { pickAndUpload } from '@/bus/upload';
+  import { pickAndUpload, pickAndLoadCheckpoint } from '@/bus/upload';
   import Icon from '../common/Icon.svelte';
 
-  // (An "Open Checkpoint..." row only toasted that it was not written yet;
-  // saved states live in the Checkpoints view.)
   // (A "Recent" card used to list /opfs/config/recent.json, which nothing in
   // production ever wrote — only test fixtures, which held display names
   // where machine.boot takes model ids, N-13.  It is gone until something
@@ -21,6 +19,13 @@
     // path still auto-boots, which is where that shortcut belongs.
     await pickAndUpload('', { autoBootOnRom: false });
   }
+
+  // A saved state from disk (Save State's download, or any checkpoint file):
+  // loading it IS starting a machine, so it belongs on this card.  The ones
+  // this browser keeps are in the Checkpoints panel.
+  async function openCheckpoint() {
+    await pickAndLoadCheckpoint();
+  }
 </script>
 
 <div class="home-content">
@@ -32,6 +37,10 @@
       <button class="card-row" onclick={openConfigSlide}>
         <Icon name="mac" />
         <span>New Machine...</span>
+      </button>
+      <button class="card-row" onclick={openCheckpoint}>
+        <Icon name="clock" />
+        <span>Open Checkpoint...</span>
       </button>
       <button class="card-row" onclick={openUploadRom}>
         <Icon name="upload" />

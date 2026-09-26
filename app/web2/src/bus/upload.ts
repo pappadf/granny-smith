@@ -476,6 +476,29 @@ async function loadCheckpointFile(file: File): Promise<void> {
   }
 }
 
+// Welcome's "Open Checkpoint...": pick a saved state from disk and load it
+// through the path a dropped one takes.  The file's own signature decides,
+// not its name -- Save State downloads a .bin, the store keeps
+// state.checkpoint -- so the picker is not filtered by extension.
+export async function pickAndLoadCheckpoint(): Promise<void> {
+  const [file] = await openFilePicker('', false);
+  if (!file) return;
+  if (!isModuleReady()) {
+    showNotification('Emulator still starting; please retry', 'warning');
+    return;
+  }
+  if (!(await fileHasCheckpointSignature(file))) {
+    showNotification(`'${file.name}' is not a Granny Smith checkpoint`, 'error');
+    return;
+  }
+  startActivity(file.name);
+  try {
+    await loadCheckpointFile(file);
+  } finally {
+    endActivity();
+  }
+}
+
 // Programmatic file-picker entry — Welcome's "Upload ROM..." button calls
 // this. Wraps an invisible `<input type="file">` click.  Resolves with the
 // chosen files, or [] when the user cancels the dialog: `cancel` fires
