@@ -275,43 +275,47 @@ uint32_t system_get_pending_ram_kb(void);
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);
 
-// Background auto-checkpoint state. WASM platform overrides the weak
-// defaults in em_main.c to read/write the live flag; the headless
-// build has no auto-checkpoint loop and the defaults stub out.
+// Background auto-checkpoint state.  The wasm platform overrides the weak
+// defaults to read/write its live flag; a platform with no auto-checkpoint
+// loop (headless) reads false and refuses the set (-2, "not supported").
 bool gs_checkpoint_auto_get(void);
-void gs_checkpoint_auto_set(bool enabled);
+int gs_checkpoint_auto_set(bool enabled);
 
-// Platform-specific entry points used by typed root methods.  Each has
-// a weak default in system.c that stubs to the headless behaviour;
-// em_main.c overrides them on the WASM platform with the real
-// browser-driven implementations.
+// Platform-specific entry points used by typed root methods: a weak default
+// in system.c answers -2 ("not supported on this platform"), and the
+// platform that has the thing overrides it.  0 on success.
 //
-//   gs_quit()                — request emulator shutdown.  Headless
-//                              sets the quit flag; WASM no-ops.
-//   gs_download(path)        — trigger a browser download of a file.
-//                              Headless prints a "not supported"
-//                              message; WASM streams via blob+anchor.
-//   gs_background_checkpoint(reason)
-//                            — capture a quick checkpoint.  Headless
-//                              prints "not supported"; WASM saves via
-//                              save_quick_checkpoint.
-//   gs_checkpoint_clear()    — delete all checkpoint files for the
-//                              active machine.  Headless prints
-//                              "not supported"; WASM nukes the
-//                              per-machine checkpoint dir contents.
-//   gs_register_machine(id, created)
-//                            — register the active machine identity
-//                              for checkpoint scoping.  Headless
-//                              no-ops; WASM updates the OPFS layout.
-// Returns 0 on success, non-zero on failure.
-void gs_quit(void);
+//   gs_quit()                — request emulator shutdown.  Headless sets
+//                              the quit flag; the browser owns the page.
+//   gs_download(path)        — hand a file to the browser as a download
+//                              (wasm, via blob+anchor); headless has none.
+int gs_quit(void);
 int gs_download(const char *path);
+// The quick-checkpoint heartbeat: called after every quick checkpoint that
+// saved, with its duration.  Weak no-op; the web status bar flashes on it.
+void gs_checkpoint_saved(double elapsed_ms);
+
+// Checkpoints of the running machine, and finding media -- core, the same on
+// every platform (system.c).  0 on success, non-zero on failure.
+//
+//   system_quick_checkpoint(reason, verbose, rate_limit)
+//                            — save state.checkpoint in the machine's
+//                              directory (tmp + rename), at most once per
+//                              750 ms when rate-limited.  GS_SUCCESS/GS_ERROR.
+//   gs_background_checkpoint(reason)
+//                            — the same, unthrottled and verbose.
+//   gs_checkpoint_clear()    — delete the machine's checkpoint files.
+//   gs_register_machine(id, created)
+//                            — set the machine identity that scopes its
+//                              checkpoint directory.
+//   gs_find_media(dir, [dest])
+//                            — find the first floppy image in `dir`,
+//                              optionally copy it to `dest`; prints the
+//                              path on success.
+int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit);
 int gs_background_checkpoint(const char *reason);
 int gs_checkpoint_clear(void);
 int gs_register_machine(const char *machine_id, const char *created);
-// gs_find_media(dir, [dest]) — find the first floppy image in `dir`,
-// optionally copy to `dest`.  WASM provides the impl; headless gets
-// the weak stub.  Prints the discovered path on success.
 int gs_find_media(const char *dir_path, const char *dest);
 
 // Host video-input seam (the AV video digitizer's webcam source —

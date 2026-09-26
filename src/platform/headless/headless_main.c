@@ -325,14 +325,16 @@ static int headless_exit_code(void) {
 // Quit flag for headless mode - set by quit command
 static volatile int quit_requested = 0;
 
-// Platform impl of gs_quit (weak default in system.c is a no-op).
-void gs_quit(void) {
+// Platform impl of gs_quit (the weak default in system.c says "not
+// supported": the browser owns the page).
+int gs_quit(void) {
     quit_requested = 1;
     // Stop scheduler to break out of any running emulation
     scheduler_t *sched = system_scheduler();
     if (sched) {
         scheduler_stop(sched);
     }
+    return 0;
 }
 
 // Legacy shell `quit` — thin shim.
@@ -1237,13 +1239,17 @@ int main(int argc, char *argv[]) {
                 "warning: --print-dir set but this build has no PostScript interpreter (build with PLATEN=1)\n");
 
     // If a --checkpoint-dir was given, point the machine layer at it
-    // verbatim so writable image deltas land there.  No id/timestamp
-    // suffix — headless callers manage the directory themselves.
+    // verbatim so writable image deltas and quick checkpoints land there.  No
+    // id/timestamp suffix — headless callers manage the directory themselves.
+    // It is also the root a machine.register'ed identity nests under, as
+    // /opfs/checkpoints is in the browser (the default root does not exist
+    // on a host).
     if (checkpoint_dir && *checkpoint_dir) {
         if (checkpoint_machine_set_dir(checkpoint_dir) != 0) {
             fprintf(stderr, "Error: cannot create --checkpoint-dir %s: %s\n", checkpoint_dir, strerror(errno));
             return 1;
         }
+        checkpoint_machine_set_root(checkpoint_dir);
     }
 
     // Probe the ROM to find compatible machines, then explicitly boot one.

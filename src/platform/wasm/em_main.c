@@ -236,7 +236,6 @@ static void setup_pointer_lock(void) {
 #define CHECKPOINT_INTERVAL  900 // Background checkpoint every 900 ticks (~15 seconds at 60 ticks/sec)
 
 // Forward declaration
-static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_limit);
 
 // Global state variables
 static int tick_counter = 0;
@@ -376,7 +375,7 @@ void em_main_tick(void) {
             checkpoint_tick_counter++;
             if (checkpoint_tick_counter >= CHECKPOINT_INTERVAL) {
                 checkpoint_tick_counter = 0;
-                save_quick_checkpoint("tick-auto", false, true);
+                system_quick_checkpoint("tick-auto", false, true);
             }
         }
 
@@ -490,76 +489,6 @@ void sigint_handler(int sig) {
 // ============================================================================
 // Filesystem Commands
 // ============================================================================
-
-// Find a mountable media file in a directory.
-// Scans the directory for files that pass floppy image validation (fd probe).
-// Prints the path of the first match and returns 0, or returns 1 if none found.
-// Used by JS after peeler extraction (FS.readdir from main thread is broken
-// with WasmFS pthreads, so this runs on the worker).
-// Platform impl of gs_find_media (weak default in system.c stubs out
-// for headless).  Walks `dir_path`, picks the first regular file
-// recognised as a floppy image, optionally copies it to `dest`, and
-// prints the path on success.  Returns 0 on success, non-zero on
-// "no media found" / IO error.
-int gs_find_media(const char *dir_path, const char *dest) {
-    DIR *dir = opendir(dir_path);
-    if (!dir) {
-        printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
-        return 1;
-    }
-
-    struct dirent *entry;
-    char found_path[1024] = {0};
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.')
-            continue;
-        char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", dir_path, entry->d_name);
-        struct stat st;
-        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
-            continue;
-        // Try as floppy image
-        image_t *img = image_open_readonly(full);
-        if (img) {
-            bool is_floppy = image_is_floppy(img->type);
-            image_close(img);
-            if (is_floppy) {
-                snprintf(found_path, sizeof(found_path), "%s", full);
-                break;
-            }
-        }
-    }
-    closedir(dir);
-
-    if (!found_path[0])
-        return 1;
-
-    // Optionally copy to dest
-    if (dest) {
-        FILE *fin = fopen(found_path, "rb");
-        if (!fin)
-            return 1;
-        FILE *fout = fopen(dest, "wb");
-        if (!fout) {
-            fclose(fin);
-            return 1;
-        }
-        char buf[65536];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
-            if (fwrite(buf, 1, n, fout) != n) {
-                fclose(fin);
-                fclose(fout);
-                return 1;
-            }
-        }
-        fclose(fin);
-        fclose(fout);
-    }
-
-    printf("%s\n", found_path);
-    return 0;
-}
 
 // ============================================================================
 // LaserWriter interpreter worker (the ring transport's platform hooks)
@@ -687,118 +616,22 @@ int gs_download(const char *path) {
 //   /opfs/checkpoints/<machine_id>-<created>/state.checkpoint.tmp  (in-flight)
 // One file per machine; tmp+rename is the atomic swap.
 
-#define BACKGROUND_CHECKPOINT_PATH_MAX        512
-#define BACKGROUND_CHECKPOINT_MIN_INTERVAL_MS 750.0
-
-static double g_last_background_checkpoint_ms = 0.0;
 static bool g_background_handlers_installed = false;
 
-// Build "<machine_dir>/state.checkpoint" into out_path.  Returns GS_SUCCESS
-// when the machine dir is set and the path fits.
-static int build_state_checkpoint_path(char *out_path, size_t out_len) {
-    const char *dir = checkpoint_machine_dir();
-    if (!dir)
-        return GS_ERROR;
-    int written = snprintf(out_path, out_len, "%s/state.checkpoint", dir);
-    return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
-}
-
-// Find the path to the current valid background checkpoint.
-// Overrides the weak default in system.c for the WASM platform.
-// Returns a static buffer with the path, or NULL if none found.
-const char *find_valid_checkpoint_path(void) {
-    static char path_buf[BACKGROUND_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != GS_SUCCESS)
-        return NULL;
-    struct stat st;
-    if (stat(path_buf, &st) != 0)
-        return NULL;
-    // Reject checkpoints from a different build (incompatible state layout)
-    if (!checkpoint_validate_build_id(path_buf))
-        return NULL;
-    return path_buf;
-}
-
-// Save a quick checkpoint via tmp+rename inside the per-machine directory.
-static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
-    scheduler_t *sched = system_scheduler();
-    if (!sched)
-        return GS_ERROR;
-
-    // Skip checkpointing when the emulator is idle — nothing meaningful to save
-    if (!scheduler_is_running(sched) && cpu_instr_count() == 0)
-        return GS_SUCCESS;
-
-    // No machine identity yet → nothing to save under.
-    if (!checkpoint_machine_dir()) {
-        if (verbose)
-            printf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
-        return GS_SUCCESS;
-    }
-
-    double now = emscripten_get_now();
-
-    if (rate_limit && g_last_background_checkpoint_ms > 0.0) {
-        double delta = now - g_last_background_checkpoint_ms;
-        if (delta >= 0.0 && delta < BACKGROUND_CHECKPOINT_MIN_INTERVAL_MS)
-            return GS_SUCCESS;
-    }
-
-    char final_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    char tmp_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(final_path, sizeof(final_path)) != GS_SUCCESS)
-        return GS_ERROR;
-    int wn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
-    if (wn <= 0 || (size_t)wn >= sizeof(tmp_path))
-        return GS_ERROR;
-
-    // Record running state before stopping - this will be saved in the checkpoint
-    bool was_running = scheduler_is_running(sched);
-    if (was_running)
-        scheduler_stop(sched);
-
-    // Temporarily restore running flag so checkpoint captures the pre-stop state
-    if (was_running && sched)
-        scheduler_set_running(sched, true);
-
-    double checkpoint_start_time = emscripten_get_now();
-
-    // Drop any stale tmp from a crashed prior run.
-    unlink(tmp_path);
-    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
-    if (rc == GS_SUCCESS) {
-        if (rename(tmp_path, final_path) != 0) {
-            printf("[checkpoint] rename %s -> %s failed: %s\n", tmp_path, final_path, strerror(errno));
-            unlink(tmp_path);
-            rc = GS_ERROR;
-        }
-    } else {
-        unlink(tmp_path);
-    }
-
-    double checkpoint_elapsed_ms = emscripten_get_now() - checkpoint_start_time;
-
-    if (rc == GS_SUCCESS) {
-        g_last_background_checkpoint_ms = now;
-        // Status-bar heartbeat: push the save duration so the CP glyph
-        // flashes and its tooltip updates. x100 fixed-point since
-        // MAIN_THREAD_ASYNC_EM_ASM carries ints.
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onCheckpointSaved === 'function') Module.onCheckpointSaved($0); },
-            (int)(checkpoint_elapsed_ms * 100.0));
-        // clang-format on
-        if (verbose)
-            printf("Checkpoint saved to %s (%.2f ms)\n", final_path, checkpoint_elapsed_ms);
-    } else if (verbose) {
-        printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
-    }
-    return rc;
+// The core's quick-checkpoint heartbeat (system.h gs_checkpoint_saved): the
+// status bar's CP glyph flashes and its tooltip shows the save duration.
+// x100 fixed-point since MAIN_THREAD_ASYNC_EM_ASM carries ints.
+void gs_checkpoint_saved(double elapsed_ms) {
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM(
+        { if (typeof Module.onCheckpointSaved === 'function') Module.onCheckpointSaved($0); },
+        (int)(elapsed_ms * 100.0));
+    // clang-format on
 }
 
 // Request background checkpoint (with rate limiting)
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
-    int rc = save_quick_checkpoint(reason, false, rate_limit);
+    int rc = system_quick_checkpoint(reason, false, rate_limit);
     if (rc != GS_SUCCESS) {
         printf("[checkpoint] background checkpoint failed (%s)\n", reason ? reason : "background");
     }
@@ -829,73 +662,6 @@ static void install_background_checkpoint_handlers(void) {
         return;
     emscripten_set_visibilitychange_callback((void *)"visibilitychange", EM_FALSE, background_visibility_callback);
     g_background_handlers_installed = true;
-}
-
-// Background checkpoint command
-// Platform impl of gs_background_checkpoint (weak default in system.c
-// stubs out for headless).
-int gs_background_checkpoint(const char *reason) {
-    int rc = save_quick_checkpoint(reason ? reason : "manual", true, false);
-    return (rc == GS_SUCCESS) ? 0 : -1;
-}
-
-// Forward declaration — definition is below.
-static int clear_checkpoint_files(void);
-
-// Platform impl of gs_checkpoint_clear / gs_register_machine.  Both
-// only mean something on WASM (where OPFS hosts per-machine
-// checkpoint directories); headless gets the weak no-op stubs.
-int gs_checkpoint_clear(void) {
-    int removed = clear_checkpoint_files();
-    printf("Cleared %d checkpoint file(s)\n", removed);
-    return 0;
-}
-
-int gs_register_machine(const char *machine_id, const char *created) {
-    if (!machine_id || !created)
-        return -1;
-    int rc = checkpoint_machine_set(machine_id, created);
-    if (rc != 0)
-        printf("register_machine: failed to set %s-%s\n", machine_id, created);
-    return rc == 0 ? 0 : -1;
-}
-
-// Clear checkpoint files inside the current machine directory.  Drops
-// state.checkpoint, any leftover *.tmp, and (defensive) any legacy
-// sequence-numbered *.checkpoint / *.pending / *.complete files.  The
-// machine directory itself is left in place.
-static int clear_checkpoint_files(void) {
-    const char *dir_path = checkpoint_machine_dir();
-    if (!dir_path)
-        return 0;
-    DIR *dir = opendir(dir_path);
-    if (!dir)
-        return 0;
-    struct dirent *entry;
-    int removed = 0;
-    char path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    while ((entry = readdir(dir)) != NULL) {
-        const char *name = entry->d_name;
-        if (!name || name[0] == '.')
-            continue;
-        size_t len = strlen(name);
-        bool match = false;
-        if (strcmp(name, "state.checkpoint") == 0)
-            match = true;
-        else if (len >= 4 && strcmp(name + len - 4, ".tmp") == 0)
-            match = true;
-        else if (len >= 11 && strcmp(name + len - 11, ".checkpoint") == 0)
-            match = true; // legacy
-        else if (strstr(name, ".complete") || strstr(name, ".pending"))
-            match = true; // legacy
-        if (match) {
-            snprintf(path, sizeof(path), "%s/%s", dir_path, name);
-            if (unlink(path) == 0)
-                removed++;
-        }
-    }
-    closedir(dir);
-    return removed;
 }
 
 // ============================================================================
@@ -1048,10 +814,11 @@ bool gs_checkpoint_auto_get(void) {
     return checkpoint_auto_enabled;
 }
 
-void gs_checkpoint_auto_set(bool enabled) {
+int gs_checkpoint_auto_set(bool enabled) {
     checkpoint_auto_enabled = enabled;
     if (!enabled)
         checkpoint_tick_counter = 0;
+    return 0;
 }
 
 // The always-present AppleShare volume.  The path literal lives here, in the

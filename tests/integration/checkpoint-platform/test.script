@@ -1,0 +1,17 @@
+# A registered machine checkpoints under <checkpoint dir>/<id>-<created>.
+machine.register "0123456789abcdef" "20260926T000000Z"
+scheduler.run 1000000
+assert checkpoint.snapshot("test") "quick checkpoint saved"
+assert checkpoint.probe() "probe finds it"
+checkpoint.clear
+assert !checkpoint.probe() "clear removed it"
+
+# find_media picks the floppy image out of a directory, and copies it.
+assert storage.find_media("${$WORK_DIR}/media", "${$WORK_DIR}/found.dsk") "a floppy image was found"
+assert try(storage.find_media("${$WORK_DIR}/cp"), "none") == "none" "no media in the checkpoint dir"
+
+# Browser-only: a download.
+assert try(download("${$WORK_DIR}/found.dsk"), "unsupported") == "unsupported" "download says it is not supported"
+
+echo "checkpoint-platform-ok"
+quit
