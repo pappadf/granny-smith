@@ -22,7 +22,6 @@
 
 #include "asc.h"
 #include "iicx_internal.h"
-#include "log.h"
 #include "nubus.h"
 #include "pram_defaults.h"
 #include "via.h"
@@ -34,8 +33,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Forward declarations

@@ -264,14 +264,14 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
                          mac030_fill_fn fill, bool writable) {
     if (size_pages == 0)
         return; // a bank smaller than one page decodes nothing
-    for (uint32_t i = 0; i < window_pages && (int)(start_page + i) < g_page_count; i++)
+    for (uint32_t i = 0; i < window_pages && start_page + i < g_page_count; i++)
         fill(start_page + i, host + ((i % size_pages) << PAGE_SHIFT), writable);
 }
 
 // Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages
 // leave the write SoA entries at their zero-initialised value (slow path).
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if ((int)page_index >= g_page_count)
+    if (page_index >= g_page_count)
         return;
     g_page_table[page_index].host_base = host_ptr;
     g_page_table[page_index].dev = NULL;
@@ -301,11 +301,11 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint32_t rom_start_page = rom_start >> PAGE_SHIFT;
     if (on) {
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
+        for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, g_page_table[rom_start_page + p].host_base, false);
     } else {
         uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
+        for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
             mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
     }
 }

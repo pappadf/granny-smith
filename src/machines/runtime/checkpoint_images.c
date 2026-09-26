@@ -8,7 +8,6 @@
 
 #include "checkpoint_machine.h"
 #include "image.h"
-#include "log.h"
 #include "storage.h"
 #include "system.h" // MAX_IMAGES -- the real bound on the restored list
 
@@ -17,8 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-LOG_USE_CATEGORY_NAME("setup");
 
 // Save the image list into a checkpoint stream.  Layout:
 //   uint32_t count

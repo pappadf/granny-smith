@@ -534,7 +534,7 @@ static void mcu_memory_layout_init(config_t *cfg) {
     uint8_t *vram = dafb_vram(st->dafb);
     uint32_t vram_pages = dafb_vram_size(st->dafb) >> PAGE_SHIFT;
     uint32_t vram_start = DAFB_VRAM_BASE >> PAGE_SHIFT;
-    for (uint32_t i = 0; i < vram_pages && (int)(vram_start + i) < g_page_count; i++)
+    for (uint32_t i = 0; i < vram_pages && vram_start + i < g_page_count; i++)
         mac030_fill_page(vram_start + i, vram + (i << PAGE_SHIFT), true);
     // Register VRAM with the bus resolver so 040 table walks / TT matches
     // reaching physical $F9xxxxxx resolve to the buffer.

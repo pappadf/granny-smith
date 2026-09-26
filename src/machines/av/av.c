@@ -458,7 +458,7 @@ static void av_scc_irq(void *context, bool active) {
 static void av_map_ram(config_t *cfg) {
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t pages = cfg->ram_size >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < pages && (int)p < g_page_count; p++)
+    for (uint32_t p = 0; p < pages && p < g_page_count; p++)
         mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
 }
 

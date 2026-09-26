@@ -104,7 +104,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
     uint32_t rom_start_page = IISI_ROM_START >> PAGE_SHIFT;
     uint32_t rom_end_page = IISI_ROM_END >> PAGE_SHIFT;
     if (rom_pages > 0) {
-        for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
+        for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
             mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
         }

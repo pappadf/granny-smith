@@ -7,7 +7,6 @@
 #include "oss.h"
 
 #include "irq_controller.h"
-#include "log.h"
 #include "machine.h"
 #include "object.h"
 #include "regfile.h"
@@ -17,8 +16,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("board");
 
 // Number of software-visible OSS interrupt sources.
 #define OSS_NUM_SOURCES 15

@@ -655,7 +655,7 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
     // walker and DMA reach it by physical address.
     uint32_t pages = AV_CIVIC_VRAM_SIZE >> PAGE_SHIFT;
     uint32_t start = AV_CIVIC_VRAM_BASE >> PAGE_SHIFT;
-    for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
+    for (uint32_t i = 0; i < pages && start + i < g_page_count; i++)
         mac030_fill_page(start + i, cv->vram + (i << PAGE_SHIFT), true);
     memory_map_host_region(cfg->mem_map, "civic_vram", cv->vram, AV_CIVIC_VRAM_BASE, AV_CIVIC_VRAM_SIZE,
                            /*writable*/ true);

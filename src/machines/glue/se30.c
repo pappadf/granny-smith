@@ -24,7 +24,6 @@
 #include "builtin_se30_video.h" // SE/30 built-in video as a NuBus card (slot $E)
 #include "floppy.h"
 #include "image.h"
-#include "log.h"
 #include "memory.h"
 #include "nubus.h"
 #include "pram_defaults.h"
@@ -38,8 +37,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Constants
@@ -153,7 +150,7 @@ static void se30_memory_layout_tail(config_t *cfg) {
         uint32_t vram_pages = SE30_VRAM_SIZE >> PAGE_SHIFT; // 16 pages
         uint32_t vram_start_page = SE30_VRAM_BASE >> PAGE_SHIFT;
         uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> PAGE_SHIFT; // 1 MB window
-        for (uint32_t p = vram_start_page; p < vram_mirror_end && (int)p < g_page_count; p++) {
+        for (uint32_t p = vram_start_page; p < vram_mirror_end && p < g_page_count; p++) {
             uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << PAGE_SHIFT;
             mac030_fill_page(p, se30->vram + offset_in_vram, true);
         }
@@ -163,7 +160,7 @@ static void se30_memory_layout_tail(config_t *cfg) {
     {
         uint32_t vrom_pages = SE30_VROM_SIZE >> PAGE_SHIFT; // 8 pages
         uint32_t vrom_start_page = SE30_VROM_BASE >> PAGE_SHIFT;
-        for (uint32_t p = 0; p < vrom_pages && (int)(vrom_start_page + p) < g_page_count; p++)
+        for (uint32_t p = 0; p < vrom_pages && vrom_start_page + p < g_page_count; p++)
             mac030_fill_page(vrom_start_page + p, se30->vrom + (p << PAGE_SHIFT), false);
     }
 

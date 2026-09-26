@@ -26,7 +26,7 @@ void mac030_rom_overlay_fill_aperture(const mac030_rom_overlay_t *ov) {
     uint8_t *rom_data = overlay_rom_data(ov);
     uint32_t start_page = ov->rom_base >> PAGE_SHIFT;
     uint32_t end_page = ov->rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
+    for (uint32_t p = start_page; p < end_page && p < g_page_count; p++)
         mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
 }
 
@@ -48,14 +48,14 @@ void mac030_rom_overlay_arm(mac030_rom_overlay_t *ov) {
     ov->armed = true;
 
     // ROM mapped read-only at zero.
-    for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
+    for (uint32_t p = 0; p < rom_pages && p < g_page_count; p++)
         mac030_fill_page(p, rom_data + (p << PAGE_SHIFT), false);
 
     // Route the aperture through the trigger device: memory_map_add did the
     // page plumbing once, and later arms re-point the pages by hand.
     uint32_t start_page = ov->rom_base >> PAGE_SHIFT;
     uint32_t end_page = ov->rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
+    for (uint32_t p = start_page; p < end_page && p < g_page_count; p++) {
         g_page_table[p].host_base = NULL;
         g_page_table[p].dev = &ov->iface;
         g_page_table[p].dev_context = ov;
