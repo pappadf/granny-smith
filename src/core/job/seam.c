@@ -9,6 +9,7 @@
 #include "job.h"
 
 #include <pthread.h>
+#include <stdio.h>
 
 static pthread_t g_emu_thread;
 static bool g_emu_thread_set;
@@ -77,4 +78,23 @@ void job_tables_lock(void) {
 
 void job_tables_unlock(void) {
     pthread_mutex_unlock(&g_tables);
+}
+
+// A deferred answer that failed, noted by job.c when the completion lands
+// and taken by the job thread right after its seam call returns.  Lives
+// here so the object model, which reads it, links without the queue.
+static bool g_call_failed;
+static char g_call_error[256];
+
+void job_seam_note_failure(const char *error) {
+    g_call_failed = true;
+    snprintf(g_call_error, sizeof g_call_error, "%s", error ? error : "failed");
+}
+
+bool job_call_take_failure(char *err, size_t cap) {
+    bool failed = g_call_failed;
+    if (failed && err && cap)
+        snprintf(err, cap, "%s", g_call_error);
+    g_call_failed = false;
+    return failed;
 }

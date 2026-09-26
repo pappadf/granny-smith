@@ -32,8 +32,6 @@ typedef struct {
     bool done; // the job thread may continue
     bool serving; // fn is running right now
     uint32_t defer_token; // the leaf deferred its answer (0: none)
-    bool failed; // the deferred answer was an error
-    char error[256];
 } emu_call_t;
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -155,24 +153,17 @@ void job_call_complete(uint32_t token, bool ok, const char *json) {
         return;
     }
     g_call.defer_token = 0;
-    g_call.failed = !ok;
     if (!ok) {
         // The error text out of {"error":"..."}; anything else verbatim.
+        char error[256];
         const char *q = json ? strstr(json, "\"error\":\"") : NULL;
-        snprintf(g_call.error, sizeof g_call.error, "%s", q ? q + 9 : (json ? json : "failed"));
-        size_t n = strlen(g_call.error);
-        if (n >= 2 && strcmp(g_call.error + n - 2, "\"}") == 0)
-            g_call.error[n - 2] = '\0';
+        snprintf(error, sizeof error, "%s", q ? q + 9 : (json ? json : "failed"));
+        size_t n = strlen(error);
+        if (n >= 2 && strcmp(error + n - 2, "\"}") == 0)
+            error[n - 2] = '\0';
+        job_seam_note_failure(error);
     }
     pthread_mutex_unlock(&g_mu);
-}
-
-bool job_call_take_failure(char *err, size_t cap) {
-    bool failed = g_call.failed;
-    if (failed && err && cap)
-        snprintf(err, cap, "%s", g_call.error);
-    g_call.failed = false;
-    return failed;
 }
 
 // --- submission and cancel (any thread) -------------------------------------
@@ -269,7 +260,6 @@ int job_layer_service(struct gs_mailbox *m) {
         m->client = client;
         g_call.serving = true;
         g_call.defer_token = 0;
-        g_call.failed = false;
         fn(ud);
         g_call.serving = false;
         m->client = prev_client;

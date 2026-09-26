@@ -96,6 +96,7 @@ bool job_call_take_failure(char *err, size_t cap);
 typedef void (*job_post_fn)(void (*fn)(void *ud), void *ud);
 void job_seam_set_poster(job_post_fn post);
 void job_seam_set_current(gs_job_t *job, uint32_t client, const bool *cancel);
+void job_seam_note_failure(const char *error);
 
 // --- Glue the platform-independent job.c needs from the rest of the core
 // (a unit suite stubs these) --------------------------------------------
