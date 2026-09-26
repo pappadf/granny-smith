@@ -42,6 +42,8 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    # Bounds a hang the per-test timeout cannot see (the build, a fetch).
+    timeout-minutes: 150
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       # Optionally, after a build you can pin by digest instead for immutability:
@@ -168,12 +170,14 @@ jobs:
       # all three: toggling PLATEN rebuilds the tree.
       - name: Run integration tests (unit tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
+        timeout-minutes: 15
         run: |
           make integration-test PLATEN=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
           exit "${PIPESTATUS[0]}"
 
       - name: Run integration tests (matrix tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
+        timeout-minutes: 30
         run: |
           make integration-test PLATEN=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
           exit "${PIPESTATUS[0]}"
@@ -275,6 +279,7 @@ jobs:
   # This is the sole home of browser e2e since the legacy web UI was retired.
   ui:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       credentials:

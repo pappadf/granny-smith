@@ -53,6 +53,7 @@ defaults:
 jobs:
   extended:
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       credentials:
