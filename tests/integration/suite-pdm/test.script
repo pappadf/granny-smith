@@ -103,7 +103,7 @@ def bart_exists() {
 }
 
 # Shared post-boot facts + the two goldens for one model row.
-def pdm_75_row(model, ram_kb, boxflag, want_bart, id) {
+def pdm_75_row(model, ram_kb, boxflag, want_bart, id, finder, about) {
     boot_pdm_75($model, $ram_kb, $id)
     assert machine.id == $model "${$model}: machine.id != ${$model}"
     assert machine.ram == $ram_kb "${$model}: machine.ram != ${$ram_kb}"
@@ -118,20 +118,21 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart, id) {
     assert machine.cpu.mmu.peek(0xCB3, 1) == $boxflag "${$model}: BoxFlag ${machine.cpu.mmu.peek(0xCB3, 1)}, want ${$boxflag}"
     # ...and, read the same way, what the ROM concluded about BART.
     assert bart_exists() == $want_bart "${$model}: BARTExists ${bart_exists()}, want ${$want_bart}"
-    check_ex("goldens/${$model}-7.5-640x480-finder.png", 0, 440, 20, 640)
+    check_ex("${$finder}", 0, 440, 20, 640)
     # About This Macintosh: the Gestalt machine name end-to-end.
     about_box()
-    check_ex("goldens/${$model}-7.5-640x480-about.png", 0, 440, 20, 640)
+    check_ex("${$about}", 0, 440, 20, 640)
     report_row("7.5", "ariel", "hd-boot 53c96 about")
     report_perf("suite-pdm/${$model}-75-hd", scheduler.instr_count)
 }
 
+# golden-collision-ok: pm6100-7.5-640x480-finder.png pm7100-7.5-640x480-finder.png pm8100-7.5-640x480-finder.png — the same System 7.5 Finder desktop on the same 640x480x8 Ariel raster; pdm_75_row asserts each machine's BoxFlag and BART presence, and the three About-box goldens (which name the model) differ.
 # The 6100 is the row where BART must be ABSENT: its bridge ships on an
 # optional PDS adapter, so the probe faults and the machine boots anyway.
-def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false, 0) }
+def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false, 0, "goldens/pm6100-7.5-640x480-finder.png", "goldens/pm6100-7.5-640x480-about.png") }
 # The disk at id 2, not 0: the startup device follows it.
-def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true, 2) }
-def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true, 0) }
+def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true, 2, "goldens/pm7100-7.5-640x480-finder.png", "goldens/pm7100-7.5-640x480-about.png") }
+def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true, 0, "goldens/pm8100-7.5-640x480-finder.png", "goldens/pm8100-7.5-640x480-about.png") }
 
 # ---- 8100-75-24ac -----------------------------------------------------------
 # The BART acceptance row: a Macintosh Display Card 24AC in NuBus slot $C of

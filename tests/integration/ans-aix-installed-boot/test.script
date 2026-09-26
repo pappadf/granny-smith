@@ -74,10 +74,10 @@ def installed_boot() {
     assert $saw_scsi2 == 1 "S13: the LCD never showed 890 (cfgmgr configuring the SCSI-2 adapter)"
     assert $saw_integrated == 1 "S13: the LCD never showed 868 (the integrated SCSI adapter)"
     if $saw_login == 0 {
-        # Leave the frame the row did see next to the golden, for the diff.
-        machine.screen.save "console-login-actual.png"
+        # Leave the frame the row did see in the work directory, for the diff.
+        machine.screen.save "${$WORK_DIR}/console-login-actual.png"
     }
-    assert $saw_login == 1 "S13: the graphics console never showed 'Console login:' (see console-login-actual.png)"
+    assert $saw_login == 1 "S13: the graphics console never showed 'Console login:' (see console-login-actual.png in the work directory)"
     check_ex("console-login.png", 0, 0, 64, 640)
 
     # --- The ADB keyboard: log in as root (the install set no password) ----

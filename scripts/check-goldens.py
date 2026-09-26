@@ -9,7 +9,7 @@ byte-identical, they are one claim written twice: any frame satisfying one
 satisfies the other, so a regression that breaks only the state b.png describes
 still passes. The test stays green while its coverage silently halves.
 
-That is not hypothetical. The §7 re-host of iicx-mactest to the IIci landed with
+That is not hypothetical. The re-host of iicx-mactest to the IIci landed with
 all seven of its checkpoints recaptured to the same frame — and that frame was
 MacTest's "SUSPECTED PROBLEM: Logic board" dialog, so a golden named
 floppy-test-success.png asserted a hardware failure. It passed CI. The
@@ -23,12 +23,17 @@ on screen into the expected result. A collision after a recapture nearly always
 means the choreography stopped advancing and every later checkpoint settled on
 one stuck frame.
 
+It also fails on a literal reference that names no file (a check that can
+only ever fail, or a golden never captured), and on a tracked golden that no
+script names (an orphan, which asserts nothing).
+
 Usage:  scripts/check-goldens.py [tests/integration]
-Exit:   0 clean, 1 collisions found.
+Exit:   0 clean, 1 collisions, unresolved references or orphans found.
 """
 
 import hashlib
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -71,6 +76,9 @@ WAIVER = re.compile(r"#\s*golden-collision-ok:\s*(.+)$")
 def scan(script: Path):
     """Return (resolvable targets, waived basename-sets, dynamic refs)."""
     text = script.read_text(encoding="utf-8", errors="replace")
+    # The runner defines $TEST_DIR (the script's own directory), so a path
+    # built on it resolves; $WORK_DIR is per-run scratch, never a golden.
+    text = text.replace("${$TEST_DIR}/", "")
     out, waivers, dynamic = [], [], []
     for line in text.splitlines():
         waiver = WAIVER.search(line)
@@ -91,6 +99,8 @@ def scan(script: Path):
             for ref in pat.findall(line):
                 if not ref.endswith(".png") and "${" not in ref:
                     continue  # a check() arg that is not a golden reference
+                if "${$WORK_DIR}" in ref:
+                    continue  # a runtime artifact the row wrote itself
                 # A reference built from a variable — check("goldens/${$g}") in
                 # a parameterised sweep helper — cannot be resolved by reading
                 # the script, so those goldens are NOT covered by this gate.
@@ -113,19 +123,33 @@ def main() -> int:
     checked = 0
     waived_count = 0
     unresolved = []
+    missing = []
+    named = set()  # every golden path a script names, resolved
+    dynamic_patterns = []  # regexes for names built from a variable
     for script in sorted(root.glob("*/*.script")):
         if script.parent.name == "lib":
             continue
         refs, waivers, dynamic = scan(script)
         for ref in dynamic:
             unresolved.append(f"{script.relative_to(root)}: {ref}")
+            # A name built partly from a variable (insert-disk${$n:d}.png)
+            # accounts for the goldens in its own directory that fit it.  A
+            # bare variable (a helper's ${$golden}) accounts for nothing: its
+            # call sites name the real files.
+            base = Path(ref).name
+            rx = re.sub(r"\\\$\\\{[^}]*\\\}", ".*", re.escape(base))
+            if rx.replace(".*", ""):
+                dynamic_patterns.append((script.parent.resolve(), re.compile("^" + rx + "$")))
         by_digest = defaultdict(set)
         for ref in refs:
             golden = (script.parent / ref).resolve()
             if not golden.is_file():
-                # Missing goldens are the runner's problem, not this lint's:
-                # a REGEN run creates them and a verify run fails loudly.
+                # A literal that names no file is a check that can only fail,
+                # or a golden never captured (a row that runs only on request
+                # hides it).  Report it: silence would read as "checked".
+                missing.append(f"{script.relative_to(root)}: {ref}")
                 continue
+            named.add(golden)
             digest = hashlib.md5(golden.read_bytes()).hexdigest()
             by_digest[digest].add(ref)
             checked += 1
@@ -156,6 +180,33 @@ def main() -> int:
               "the states differ,")
         print("waive it explicitly:  # golden-collision-ok: a.png b.png - "
               "<why, and what proves it>")
+        return 1
+
+    # Orphans: tracked goldens no script names, literally or through a name
+    # built from a variable.
+    tracked = subprocess.run(["git", "ls-files", "--", f"{root}/*.png"], capture_output=True,
+                             text=True).stdout.split()
+    def named_elsewhere(t):
+        # A TEST_RUNNER test names its goldens in run.sh / config.mk.
+        d, name = Path(t).parent, Path(t).name
+        while d != root and d.parent != d and not (d / "config.mk").exists():
+            d = d.parent
+        return any(name in f.read_text(errors="replace")
+                   for f in list(d.glob("*.sh")) + list(d.glob("*.mk")))
+
+    orphans = [t for t in tracked
+               if Path(t).resolve() not in named
+               and not named_elsewhere(t)
+               and not any(Path(t).resolve().is_relative_to(d) and p.match(Path(t).name)
+                           for d, p in dynamic_patterns)]
+
+    if missing or orphans:
+        for m in missing:
+            print(f"UNRESOLVED {m}: no such file")
+        for o in orphans:
+            print(f"ORPHAN {o}: no script names it")
+        print("Capture the missing golden (and prove it by a normal run), fix the path, "
+              "or delete the orphan.")
         return 1
 
     if unresolved:

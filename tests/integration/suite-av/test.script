@@ -348,7 +348,7 @@ def row_video_in(model, golden) {
     # Sebastian: video-in enable + overlay bits both set (PCBR bit 4 + 7).
     assert (machine.memory.peek.b(0x50F30820) & 0x90) == 0x90 "video-in: PCBR ${machine.memory.peek.b(0x50F30820):02x} — overlay not enabled"
 
-    check("goldens/${$golden}")
+    check("${$golden}")
     # No report_row() here, deliberately.  The coverage matrix is keyed on the
     # raster (machine x system x card x WxHxD), and these rows add none: the
     # -hd-desktop rows above already claim 640x480x8 for both models.  Worse,
@@ -888,14 +888,14 @@ if row_on("av-checkpoint") {
 }
 if row_on("q840av-71-video-in") {
     if have_media($av_rom) && have_media($av_hd) {
-        row_end("q840av-71-video-in", try(row_video_in("q840av", "q840av-7.1-640x480x8-video-monitor.png"), "FAILED"))
+        row_end("q840av-71-video-in", try(row_video_in("q840av", "goldens/q840av-7.1-640x480x8-video-monitor.png"), "FAILED"))
     } else {
         echo "skip: q840av-71-video-in — ${$av_hd} not fetched"
     }
 }
 if row_on("q660av-71-video-in") {
     if have_media($av_rom) && have_media($av_hd) {
-        row_end("q660av-71-video-in", try(row_video_in("q660av", "q660av-7.1-640x480x8-video-monitor.png"), "FAILED"))
+        row_end("q660av-71-video-in", try(row_video_in("q660av", "goldens/q660av-7.1-640x480x8-video-monitor.png"), "FAILED"))
     } else {
         echo "skip: q660av-71-video-in — ${$av_hd} not fetched"
     }
