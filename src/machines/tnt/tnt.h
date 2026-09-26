@@ -39,6 +39,7 @@
 #include "display_class.h" // scanout descriptor (control.c presents through it)
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
 #include "machine.h"
+#include "machine_profile.h"
 #include "memory.h"
 #include "pci.h" // the generic PCI core: bus, device, config header
 #include "system_config.h"
@@ -309,7 +310,14 @@ typedef struct tnt_control {
     // The pixel-clock synthesiser (Cuda I2C device $50, subaddresses 1..3):
     // divisor p0, multiplier p1, post-scale exponent p2.  Zero = unprogrammed.
     uint8_t clk[3];
+    // The monitor on the sense lines, as the lines it straps to ground
+    // (bits {A,B,C} = {2,1,0}): the built-in port's `monitor=` pick.
+    uint8_t mon_grounded;
 } tnt_control_t;
+
+// hw_profile_t.builtin_video for the machines with Control (control.c): the
+// registry publishes and validates `monitor=` through it.
+extern const builtin_video_desc_t tnt_builtin_video;
 
 // === MESH state (mesh.c) ====================================================
 // MESH (343S1146) — Apple's fast internal-bus SCSI cell: sixteen
