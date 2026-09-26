@@ -70,6 +70,10 @@ LOG_USE_CATEGORY_NAME("adb");
 #define KBD_HANDLER_ID   0x01
 #define MOUSE_HANDLER_ID 0x01
 
+// The other handler ID the classic two-byte Apple Desktop Bus Mouse answers
+// to: $02 is the 200 cpi variant of the same report format.
+#define MOUSE_HANDLER_ID_200CPI 0x02
+
 // ADB command byte bit-field masks
 #define CMD_ADDR_MASK 0xF0 // bits 7-4: target device address
 #define CMD_TYPE_MASK 0x0C // bits 3-2: command type
@@ -791,6 +795,16 @@ static void apply_listen_data(adb_t *adb) {
                 LOG(2, "listen R3 addr=%d: command 0x%02X (no state change)", adb->listen_addr, cmd_byte);
                 break;
             default:
+                // A device adopts only the handler IDs it implements.  The
+                // mouse models the classic two-byte Apple mouse, $01/$02;
+                // MkLinux's driver probes for a three-button mouse with
+                // handler 4, and a mouse that adopted it kept moving the
+                // pointer but never delivered its button to X (#144).
+                if (dev == &adb->mouse && cmd_byte != MOUSE_HANDLER_ID && cmd_byte != MOUSE_HANDLER_ID_200CPI) {
+                    LOG(2, "listen R3 addr=%d: handler 0x%02X not implemented by the mouse, kept 0x%02X",
+                        adb->listen_addr, cmd_byte, dev->handler);
+                    break;
+                }
                 LOG(2, "listen R3 addr=%d: handler 0x%02X adopted", adb->listen_addr, cmd_byte);
                 dev->handler = cmd_byte;
                 break;
