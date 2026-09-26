@@ -172,6 +172,34 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
   await expect
     .poll(() => lastTermLine(page), { timeout: 15_000 })
     .toMatch(/^gs se30>$/);
+
+  // --- The core's own events -------------------------------------------
+  // Each stop above ended a mode, reported on the event ring with its
+  // reason; the last run opened one that is still running.  A bounded
+  // step ends by budget, before its own result lands.
+  type Ev = { kind: string; event: string; data: Record<string, unknown> };
+  const events = () =>
+    page.evaluate(
+      () => (window as unknown as { __gsCoreEvents?: Ev[] }).__gsCoreEvents ?? [],
+    );
+  const before = await events();
+  const stops = before.filter((e) => e.event === 'mode_ended');
+  expect(stops.length).toBeGreaterThanOrEqual(2);
+  expect(stops.every((e) => e.data.reason === 'stop_request')).toBe(true);
+  expect(before[before.length - 1]?.event).toBe('mode_started');
+  await terminalRun(page, 'scheduler.stop');
+  await terminalRun(page, 'debug.step 100');
+  await expect
+    .poll(
+      async () => (await events()).filter((e) => e.event === 'mode_ended').length,
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(stops.length + 2);
+  const after = await events();
+  const last = after[after.length - 1];
+  expect(last.event).toBe('mode_ended');
+  expect(last.data.reason).toBe('budget');
+  expect(typeof last.data.pc).toBe('number');
 });
 
 // The terminal stays mounted while another tab shows: its scrollback

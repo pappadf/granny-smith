@@ -100,6 +100,7 @@
 #define GS_MBX_C_STAT_STALLS   16 // drains that found no room for a result
 #define GS_MBX_C_STAT_DRAIN_US 17 // the longest drain so far, microseconds
 #define GS_MBX_C_STAT_BAD      18 // requests refused (unknown kind, bad lengths)
+#define GS_MBX_C_STAT_DROPPED  19 // core events dropped for lack of event-ring room
 
 #define GS_MBX_STATUS_DETACHED 0u
 #define GS_MBX_STATUS_ATTACHED 1u
@@ -113,9 +114,9 @@
 #define GS_MBX_REQ_ACK_BUF   5u // reserved: Phase 4
 #define GS_MBX_EVT_RESULT    16u
 #define GS_MBX_EVT_PROGRESS  17u // reserved: Phase 4
-#define GS_MBX_EVT_STATE     18u // reserved: Phase 2
-#define GS_MBX_EVT_NOTIFY    19u // reserved: Phase 3
-#define GS_MBX_EVT_LOG       20u // reserved: Phase 2
+#define GS_MBX_EVT_STATE     18u // a core event (gs_event.h): run state
+#define GS_MBX_EVT_NOTIFY    19u // a core event: something the UI shows
+#define GS_MBX_EVT_LOG       20u // a core event: a log line
 
 // REQ_EVAL payload words.
 #define GS_MBX_EVAL_ID       0
@@ -129,6 +130,9 @@
 #define GS_MBX_RESULT_OK       1
 #define GS_MBX_RESULT_JSON_LEN 2
 #define GS_MBX_RESULT_WORDS    3
+// EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json.
+#define GS_MBX_EVENT_JSON_LEN 0
+#define GS_MBX_EVENT_WORDS    1
 
 // The leaf executor: gs_eval's signature.  Injected so the unit suite can
 // drive the mailbox without the object model.
@@ -150,6 +154,7 @@ typedef struct gs_mailbox {
     char path[GS_MBX_PATH_MAX + 1];
     char *args;
     uint32_t heartbeat;
+    uint32_t client; // the client whose request is being served, 0 between requests
 } gs_mailbox_t;
 
 // Bytes the whole region needs (alignment slack included) for the given
@@ -186,6 +191,17 @@ int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void));
 
 // True when a request is waiting (a cheap peek for the idle wait).
 bool gs_mailbox_has_requests(const gs_mailbox_t *m);
+
+// Writes one core event (`kind` is GS_MBX_EVT_STATE / NOTIFY / LOG, the
+// payload {json_len} + json) and publishes it at once, waking the client.
+// Emulator thread only, from anywhere in a leaf or the tick: no record is
+// ever half-written across a call, so publishing mid-drain is safe.  False
+// when the event ring has no room: the event is dropped and counted
+// (STAT_DROPPED) -- an event never blocks the emulator thread.
+bool gs_mailbox_emit(gs_mailbox_t *m, uint32_t kind, const char *json);
+
+// The client whose request is being served, 0 outside a drain.
+uint32_t gs_mailbox_current_client(const gs_mailbox_t *m);
 
 // Platform hook: wake whoever waits on a control word (the client parks in
 // Atomics.waitAsync on EVT_HEAD and READY).  Weak no-op by default.

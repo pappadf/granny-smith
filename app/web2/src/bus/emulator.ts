@@ -34,7 +34,15 @@ import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
 import { bridgeBusy } from '@/state/activity.svelte';
-import { Mailbox, PATH_MAX, ARGS_MAX, type MailboxFailure } from './mailbox';
+import {
+  Mailbox,
+  PATH_MAX,
+  ARGS_MAX,
+  EVT_STATE,
+  EVT_NOTIFY,
+  EVT_LOG,
+  type MailboxFailure,
+} from './mailbox';
 
 // The client id this page writes into every request (the daemon and the
 // script runner will have their own).
@@ -261,6 +269,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   // core, so it is valid before main() runs.
   mailbox = new Mailbox(Module.HEAP32.buffer, Module._get_gs_mailbox(), CLIENT_PAGE);
   mailbox.setLostHandler((why) => markBridgeDead(why));
+  mailbox.on(dispatchCoreEvent);
   // Tell the core whether the Voodoo2 takeover has a WebGPU device
   // (the worker was started by ScreenView before the module; its answer
   // is normally in long before a machine boots).
@@ -563,6 +572,64 @@ async function executeMailboxRequest(path: string, argsJson: string): Promise<un
   } finally {
     stopWatch();
   }
+}
+
+// --- Events from the core ------------------------------------------------
+
+// What the core emits on its own (src/core/event/gs_event.h), decoded off
+// the mailbox's event ring: `kind` is the ring's family, `data` the JSON
+// object the emitter wrote, whose `event` names it.  Today: 'state' with
+// `mode_started {mode, owner, budget}` and `mode_ended {mode, owner,
+// reason, pc, instr_count}` from the scheduler.
+export type CoreEventKind = 'state' | 'notify' | 'log';
+export interface CoreEvent {
+  kind: CoreEventKind;
+  event: string;
+  data: Record<string, unknown>;
+}
+
+const coreEventListeners = new Set<(ev: CoreEvent) => void>();
+
+// Subscribes to core events; returns the unsubscribe.
+export function onCoreEvent(cb: (ev: CoreEvent) => void): () => void {
+  coreEventListeners.add(cb);
+  return () => {
+    coreEventListeners.delete(cb);
+  };
+}
+
+const CORE_EVENT_KINDS: Record<number, CoreEventKind> = {
+  [EVT_STATE]: 'state',
+  [EVT_NOTIFY]: 'notify',
+  [EVT_LOG]: 'log',
+};
+
+// The last few events, for automation and the browser console
+// (window.__gsCoreEvents): the e2e tests assert on them.
+const CORE_EVENT_TRACE_MAX = 64;
+const coreEventTrace: CoreEvent[] = [];
+
+export function dispatchCoreEvent(kindWord: number, json: string): void {
+  const kind = CORE_EVENT_KINDS[kindWord];
+  if (!kind) return;
+  let data: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== 'object') return;
+    data = parsed as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const ev: CoreEvent = { kind, event: typeof data.event === 'string' ? data.event : '', data };
+  if (coreEventTrace.push(ev) > CORE_EVENT_TRACE_MAX) coreEventTrace.shift();
+  if (typeof window !== 'undefined')
+    (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
+  // The run state: a mode's start and end are the transitions the
+  // Module.onRunStateChange push also reports; both feed the same
+  // idempotent handler until the push goes.
+  if (kind === 'state' && ev.event === 'mode_started') handleRunStateChange(true);
+  else if (kind === 'state' && ev.event === 'mode_ended') handleRunStateChange(false);
+  for (const cb of coreEventListeners) cb(ev);
 }
 
 // --- C→JS push callbacks -----------------------------------------------

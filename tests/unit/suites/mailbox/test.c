@@ -117,6 +117,35 @@ static int take(uint32_t *id, uint32_t *ok, char *json, size_t cap) {
     }
 }
 
+// The client reads the next record of any kind (skipping PADs): returns its
+// kind (0: none), the payload copied into buf.
+static uint32_t take_any(uint8_t *buf, size_t cap, uint32_t *len) {
+    for (;;) {
+        uint32_t head = mbx_load(g_ctrl, GS_MBX_C_EVT_HEAD);
+        mbx_rec_t rec;
+        int got = mbx_next(&g_evt, head, &rec);
+        if (got <= 0)
+            return 0;
+        if (rec.kind == MBX_R_PAD) {
+            mbx_consume(&g_evt, &rec);
+            continue;
+        }
+        *len = rec.len - MBX_HDR_BYTES;
+        memcpy(buf, mbx_rec_payload(&g_evt, &rec), *len < cap ? *len : cap);
+        mbx_consume(&g_evt, &rec);
+        return rec.kind;
+    }
+}
+
+// A leaf that emits an event while it runs, the way debug.step emits
+// mode_ended before its own result is written.
+static uint32_t g_client_seen;
+static int emitting_eval(const char *path, const char *args, char *out, size_t out_size) {
+    g_client_seen = gs_mailbox_current_client(&g_m);
+    gs_mailbox_emit(&g_m, GS_MBX_EVT_STATE, "{\"event\":\"mode_ended\"}");
+    return stub_eval(path, args, out, out_size);
+}
+
 static double fake_now_us(void) {
     static double t = 0;
     t += 100.0; // every call is 100 us later
@@ -335,6 +364,49 @@ TEST(both_rings_wrap_across_thousands_of_round_trips) {
     ASSERT_TRUE(g_evt.rd > 4096u * 8u);
 }
 
+TEST(an_event_is_published_at_once_and_ordered_before_the_result) {
+    fresh();
+    ASSERT_EQ_INT(gs_mailbox_current_client(&g_m), 0);
+    // Emitted from the tick (no request in flight): visible without a drain.
+    ASSERT_TRUE(gs_mailbox_emit(&g_m, GS_MBX_EVT_NOTIFY, "{\"event\":\"floppy\"}"));
+    ASSERT_EQ_INT(g_notified, 1);
+    uint8_t buf[256];
+    uint32_t len;
+    ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_NOTIFY);
+    ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_EVENT_JSON_LEN), 18);
+    ASSERT_TRUE(memcmp(buf + 4 * GS_MBX_EVENT_WORDS, "{\"event\":\"floppy\"}", 18) == 0);
+    // Emitted inside a leaf: the event precedes that leaf's result, and the
+    // leaf saw the requesting client.
+    g_m.eval = emitting_eval;
+    ASSERT_TRUE(post(5, "debug.step", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(g_client_seen, 1);
+    ASSERT_EQ_INT(gs_mailbox_current_client(&g_m), 0);
+    ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_STATE);
+    ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
+    ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), 5);
+    ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), 0);
+    ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_EVENTS], 3);
+}
+
+TEST(an_event_with_no_room_is_dropped_and_counted_never_blocking) {
+    fresh();
+    char big[2000];
+    memset(big, 'e', sizeof big - 1);
+    big[sizeof big - 1] = '\0';
+    int written = 0;
+    while (gs_mailbox_emit(&g_m, GS_MBX_EVT_LOG, big))
+        written++;
+    ASSERT_TRUE(written >= 1);
+    ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_DROPPED], 1);
+    ASSERT_EQ_INT(g_ctrl[GS_MBX_C_STAT_EVENTS], written);
+    // The client reads one; the next emit fits again.
+    uint8_t buf[8];
+    uint32_t len;
+    ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_LOG);
+    ASSERT_TRUE(gs_mailbox_emit(&g_m, GS_MBX_EVT_LOG, big));
+}
+
 int main(void) {
     RUN(the_control_block_is_laid_out_and_versioned);
     RUN(a_request_is_served_and_its_id_comes_back);
@@ -345,5 +417,7 @@ int main(void) {
     RUN(a_malformed_request_is_answered_not_dropped);
     RUN(corrupt_framing_marks_the_mailbox_lost);
     RUN(both_rings_wrap_across_thousands_of_round_trips);
+    RUN(an_event_is_published_at_once_and_ordered_before_the_result);
+    RUN(an_event_with_no_room_is_dropped_and_counted_never_blocking);
     return 0;
 }

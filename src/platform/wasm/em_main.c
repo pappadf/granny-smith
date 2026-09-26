@@ -343,6 +343,16 @@ EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
     return (uint32_t *)g_mailbox.ctrl;
 }
 
+// Core events (gs_event.h) go out as records on the event ring.
+void gs_event_emit(gs_event_kind_t kind, const char *json) {
+    uint32_t k = kind == GS_EVENT_STATE ? GS_MBX_EVT_STATE : kind == GS_EVENT_LOG ? GS_MBX_EVT_LOG : GS_MBX_EVT_NOTIFY;
+    gs_mailbox_emit(&g_mailbox, k, json);
+}
+
+uint32_t gs_current_client(void) {
+    return gs_mailbox_current_client(&g_mailbox);
+}
+
 // The page parks in Atomics.waitAsync on READY and EVT_HEAD.
 void gs_mailbox_notify(volatile uint32_t *word) {
     emscripten_atomic_notify((void *)word, INT_MAX);

@@ -62,6 +62,7 @@ void em_print_host_callstack(void);
 // ticks.  The protocol and the result contract are described in
 // docs/guide/web.md.
 
+#include "event/gs_event.h"
 #include "mailbox/mailbox.h"
 
 // The control block (32 uint32 words, 64-byte aligned, fixed address).

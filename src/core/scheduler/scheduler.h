@@ -197,8 +197,33 @@ void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs);
 // Complete deferred checkpoint restore after all devices have registered event types
 void scheduler_start(struct scheduler *restrict s);
 
-// Stop the scheduler immediately, halting CPU execution
+// Why a run ended.  A mode (a run started by scheduler_run_with_budget)
+// carries the reason it stopped and whose it was; scheduler_run_frame
+// reports both in a mode_ended event (gs_event.h) at the point where
+// `running` drops.
+typedef enum sched_stop_reason {
+    SCHED_STOP_NONE = 0, // still running, or never ran
+    SCHED_STOP_BUDGET, // the instruction budget ran out
+    SCHED_STOP_BREAKPOINT, // the debugger broke in (breakpoint, trace, watch)
+    SCHED_STOP_REQUEST, // scheduler.stop, a client's stop, a signal
+    SCHED_STOP_CANCELLED, // the owner's job was cancelled
+    SCHED_STOP_ASSERT, // a failed assertion halted the machine
+} sched_stop_reason_t;
+
+const char *sched_stop_reason_name(sched_stop_reason_t reason);
+
+// Stop the scheduler immediately, halting CPU execution (reason: request)
 void scheduler_stop(struct scheduler *restrict scheduler);
+
+// scheduler_stop with the reason the mode_ended event will carry.
+void scheduler_stop_reason(struct scheduler *restrict scheduler, sched_stop_reason_t reason);
+
+// Stops only a mode owned by `owner` (0: any owner).  Returns whether it
+// stopped anything -- a client's stop must not end another's run.
+bool scheduler_stop_owned(struct scheduler *restrict scheduler, uint32_t owner);
+
+// The client that started the current (or last) mode, 0 for none.
+uint32_t scheduler_run_owner(struct scheduler *restrict scheduler);
 
 // Start running with a stop scheduled after `instructions` more instructions
 // (0 = until stopped).  scheduler_run_frame does the executing: the

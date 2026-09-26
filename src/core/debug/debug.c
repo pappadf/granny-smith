@@ -2134,7 +2134,7 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     bool paused = false;
     scheduler_t *sched = system_scheduler();
     if (sched && scheduler_is_running(sched)) {
-        scheduler_stop(sched);
+        scheduler_stop_reason(sched, SCHED_STOP_ASSERT);
         paused = true;
     }
 

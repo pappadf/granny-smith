@@ -219,16 +219,45 @@ control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
   [6]  REQ_HEAD (page)  [7] REQ_TAIL (core)   free-running byte counts
   [8]  EVT_HEAD (core)  [9] EVT_TAIL (page)
   [10] STATUS  [11] HEARTBEAT  [12] READY  [13] GPU_AVAILABLE
-  [14..18] statistics: requests, events, stalls, longest drain µs, refused
+  [14..19] statistics: requests, events, stalls, longest drain µs, refused,
+           events dropped
 records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
   REQ_EVAL   {id, client, deadline_ms, path_len, args_len} + path + args
   EVT_RESULT {id, ok, json_len} + json
+  EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json      (events from the core)
 ```
 
 Limits: a path of up to 1023 bytes and an arguments document of up to
 128 KB (the page refuses larger ones before writing); a result of up to
 256 KB. A result the event ring has no room for is held back and delivered
 once the page has read; the core never blocks on the page.
+
+### Events from the core
+
+The core also speaks first. `gs_event_emit` (`src/core/event/gs_event.h`)
+takes a kind and a small JSON object and, in the browser, writes it as an
+`EVT_STATE` / `EVT_NOTIFY` / `EVT_LOG` record on the event ring at once,
+waking the page — from a leaf, from the tick, from anywhere on the emulator
+thread; an event never blocks (no room: dropped and counted). The page's
+reader loop runs for as long as anyone listens and hands each event to
+`onCoreEvent` subscribers in `bus/emulator.ts` as `{kind, event, data}`;
+the last 64 are on `window.__gsCoreEvents` for automation.
+
+The scheduler is the first emitter. Every run is a **mode** with an owner
+(the client whose request started it) and, once it stops, a reason:
+
+```
+EVT_STATE {"event":"mode_started","mode":N,"owner":C,"budget":I}
+EVT_STATE {"event":"mode_ended","mode":N,"owner":C,"reason":R,"pc":P,"instr_count":I}
+  R ∈ budget | breakpoint | stop_request | cancelled | assert
+```
+
+`mode_ended` goes out from `scheduler_run_frame` at the point where the
+run stops, whichever path stopped it — the instruction budget, a
+breakpoint, `scheduler.stop`, an assertion — so a `debug.step` emits it
+before its own result. The page's run/paused state follows these events;
+the older `Module.onRunStateChange` push reports the same transitions to
+the same handler until it is removed.
 
 ### Wake-ups and the idle wait
 

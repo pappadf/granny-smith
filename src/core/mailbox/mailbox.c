@@ -118,10 +118,35 @@ static void serve_eval(gs_mailbox_t *m, const uint8_t *p, uint32_t payload_len) 
     m->path[path_len] = '\0';
     memcpy(m->args, path + path_pad, args_len);
     m->args[args_len] = '\0';
+    m->client = RD_LE32(p + 4 * GS_MBX_EVAL_CLIENT);
     int rc = m->eval(m->path, args_len ? m->args : NULL, m->out, GS_MBX_RESULT_MAX);
+    m->client = 0;
     m->out_ok = rc == 0 ? 1 : 0;
     m->out_len = (uint32_t)strlen(m->out);
     stat_add(m, GS_MBX_C_STAT_REQUESTS, 1);
+}
+
+uint32_t gs_mailbox_current_client(const gs_mailbox_t *m) {
+    return m->client;
+}
+
+bool gs_mailbox_emit(gs_mailbox_t *m, uint32_t kind, const char *json) {
+    if (mbx_load(m->ctrl, GS_MBX_C_STATUS) == GS_MBX_STATUS_LOST)
+        return false;
+    uint32_t n = (uint32_t)strlen(json);
+    uint32_t len = MBX_HDR_BYTES + 4u * GS_MBX_EVENT_WORDS + ((n + 3u) & ~3u);
+    uint32_t at = mbx_reserve(&m->evt, kind, len);
+    if (at == UINT32_MAX) {
+        stat_add(m, GS_MBX_C_STAT_DROPPED, 1);
+        return false;
+    }
+    uint8_t *p = mbx_payload(&m->evt, at);
+    WR_LE32(p + 4 * GS_MBX_EVENT_JSON_LEN, n);
+    memcpy(p + 4 * GS_MBX_EVENT_WORDS, json, n);
+    stat_add(m, GS_MBX_C_STAT_EVENTS, 1);
+    mbx_publish(&m->evt);
+    gs_mailbox_notify(&m->ctrl[GS_MBX_C_EVT_HEAD]);
+    return true;
 }
 
 int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) {

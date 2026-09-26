@@ -853,13 +853,11 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     if (wn <= 0 || (size_t)wn >= sizeof(tmp_path))
         return GS_ERROR;
 
-    // Record running state before stopping - this will be saved in the checkpoint
-    bool was_running = scheduler_is_running(sched);
-    if (was_running)
-        scheduler_stop(sched);
-    // Temporarily restore running flag so checkpoint captures the pre-stop state
-    if (was_running)
-        scheduler_set_running(sched, true);
+    // Settle the sprint counters so the checkpoint captures an exact
+    // instruction count.  Not a stop: the machine's run state is saved as
+    // it is, and no mode ends (the run-state event would otherwise report
+    // a pause the user never asked for).
+    cpu_reschedule();
 
     double start = host_time_ms();
     // Drop any stale tmp from a crashed prior run.

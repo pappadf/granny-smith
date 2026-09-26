@@ -48,6 +48,7 @@ export const C_STAT_EVENTS = 15;
 export const C_STAT_STALLS = 16;
 export const C_STAT_DRAIN_US = 17;
 export const C_STAT_BAD = 18;
+export const C_STAT_DROPPED = 19;
 
 export const STATUS_DETACHED = 0;
 export const STATUS_ATTACHED = 1;
@@ -56,14 +57,20 @@ export const STATUS_LOST = 2;
 // Record kinds.
 export const REQ_EVAL = 1;
 export const EVT_RESULT = 16;
+export const EVT_STATE = 18;
+export const EVT_NOTIFY = 19;
+export const EVT_LOG = 20;
 
 // REQ_EVAL payload words: {id, client, deadline_ms, path_len, args_len} + path + args.
 // EVT_RESULT payload words: {id, ok, json_len} + json.
+// EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json.
 const EVAL_WORDS = 5;
 const RESULT_ID = 0;
 const RESULT_OK = 1;
 const RESULT_JSON_LEN = 2;
 const RESULT_WORDS = 3;
+const EVENT_JSON_LEN = 0;
+const EVENT_WORDS = 1;
 
 // The core's limits (mailbox.h): a longer request is the caller's error.
 export const PATH_MAX = 1023;
@@ -75,6 +82,9 @@ export interface MailboxResult {
 }
 
 export type MailboxFailure = 'deadline' | 'lost' | 'detached';
+
+// A core event as it comes off the ring: the record kind and its JSON text.
+export type EventListener = (kind: number, json: string) => void;
 
 interface Pending {
   resolve(r: MailboxResult): void;
@@ -98,6 +108,7 @@ export class Mailbox {
   private failed: MailboxFailure | null = null;
   private reading = false;
   private onLost: ((why: string) => void) | null = null;
+  private readonly listeners = new Set<EventListener>();
 
   // Binds to the control block at `ctrlPtr` in `heap`.  Throws on a MAGIC
   // or VERSION mismatch: the page and the core are out of step.
@@ -142,13 +153,32 @@ export class Mailbox {
     Atomics.store(this.ctrl, C_GPU_AVAILABLE, ok ? 1 : 0);
   }
 
-  stats(): { requests: number; events: number; stalls: number; drainMaxUs: number; bad: number } {
+  stats(): {
+    requests: number;
+    events: number;
+    stalls: number;
+    drainMaxUs: number;
+    bad: number;
+    dropped: number;
+  } {
     return {
       requests: Atomics.load(this.ctrl, C_STAT_REQUESTS) >>> 0,
       events: Atomics.load(this.ctrl, C_STAT_EVENTS) >>> 0,
       stalls: Atomics.load(this.ctrl, C_STAT_STALLS) >>> 0,
       drainMaxUs: Atomics.load(this.ctrl, C_STAT_DRAIN_US) >>> 0,
       bad: Atomics.load(this.ctrl, C_STAT_BAD) >>> 0,
+      dropped: Atomics.load(this.ctrl, C_STAT_DROPPED) >>> 0,
+    };
+  }
+
+  // Subscribes to the core's own events (EVT_STATE / EVT_NOTIFY / EVT_LOG),
+  // which arrive whether or not a request is pending, so the reader loop
+  // runs for as long as anyone listens.  Returns the unsubscribe.
+  on(cb: EventListener): () => void {
+    this.listeners.add(cb);
+    void this.readLoop();
+    return () => {
+      this.listeners.delete(cb);
     };
   }
 
@@ -235,7 +265,7 @@ export class Mailbox {
     if (this.reading) return;
     this.reading = true;
     try {
-      while (this.pending.size > 0 && !this.failed) {
+      while ((this.pending.size > 0 || this.listeners.size > 0) && !this.failed) {
         const head = Atomics.load(this.ctrl, C_EVT_HEAD) >>> 0;
         if (head === this.rd) {
           if (Atomics.load(this.ctrl, C_STATUS) === STATUS_LOST) {
@@ -280,6 +310,20 @@ export class Mailbox {
           pending.resolve({ ok, json });
         }
         // else: a late answer past its deadline, or an id we never issued -- dropped.
+      } else if (rec.kind === EVT_STATE || rec.kind === EVT_NOTIFY || rec.kind === EVT_LOG) {
+        const p = rec.payload;
+        const n = getU32(this.evt.u8, p + 4 * EVENT_JSON_LEN);
+        const json = utf8dec.decode(
+          this.evt.u8.slice(p + 4 * EVENT_WORDS, p + 4 * EVENT_WORDS + n),
+        );
+        for (const cb of this.listeners) {
+          // A listener that throws must not desynchronise the ring position.
+          try {
+            cb(rec.kind, json);
+          } catch (e) {
+            console.error('mailbox event listener failed:', e);
+          }
+        }
       } else if (rec.kind !== R_PAD) {
         // An event kind this page does not consume yet (later phases): skip.
       }

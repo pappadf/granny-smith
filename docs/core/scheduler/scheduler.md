@@ -770,6 +770,31 @@ tests, reproduction) use `paced` with the authentic CPI.
 > hang). Unifying on the frame-unit removed that divergence: headless now reproduces the
 > web2 boot exactly, differing only in pacing.
 
+### 10.5 Modes: every run has an owner and a reason
+
+A run started by `scheduler_run_with_budget` (`scheduler.run [N]`, `debug.step N`)
+is a **mode**: the scheduler records whose it is — `gs_current_client()`, the client
+whose request the emulator thread was serving, 0 for the tick or a signal — and,
+once it stops, why (`sched_stop_reason_t`: `budget`, `breakpoint`, `stop_request`,
+`cancelled`, `assert`). `scheduler_stop()` is `scheduler_stop_reason(s,
+SCHED_STOP_REQUEST)`; `run_stop_event` and the breakpoint path set their own reason;
+`scheduler_stop_owned(s, owner)` stops only a mode with that owner (0 = any), which is
+what lets one client's stop leave another's run alone.
+
+Both edges go out as events (`src/core/event/gs_event.h`, delivered on the mailbox's
+event ring in the browser):
+
+```
+mode_started {mode, owner, budget}
+mode_ended   {mode, owner, reason, pc, instr_count}
+```
+
+`mode_ended` is emitted exactly once per mode, at the point where `running` drops: at
+the end of `scheduler_run_frame` for a stop from inside the frame (budget, breakpoint),
+or from `scheduler_stop_reason` itself for one from outside (a `scheduler.stop` leaf
+served between ticks). A machine that is already stopped reports nothing. The mode
+fields live after the checkpointed prefix: a restored machine starts with no mode open.
+
 ---
 
 ## 11. Checkpoint save/restore
