@@ -91,16 +91,38 @@ static inline int log_would_log(const log_category_t *cat, int level) {
 #define LOG_COMPILE_MIN_LEVEL 0
 #endif
 
+/* Never-called sinks for LOG / LOG_WITH: taking the arguments type-checks them
+   (format attribute included) and counts them as used, as the real macros do */
+static inline void log_noop_(int level, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
+static inline void log_noop_(int level, const char *fmt, ...) {
+    (void)level;
+    (void)fmt;
+}
+static inline void log_noop_with_(const log_category_t *cat, int level, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
+static inline void log_noop_with_(const log_category_t *cat, int level, const char *fmt, ...) {
+    (void)cat;
+    (void)level;
+    (void)fmt;
+}
+
+/* The arguments are compiled but never evaluated (if (0)) */
 #define LOG_WITH(cat, level, fmt, ...)                                                                                 \
     do {                                                                                                               \
-        (void)(cat);                                                                                                   \
-        (void)(level);                                                                                                 \
-        (void)(fmt);                                                                                                   \
+        if (0)                                                                                                         \
+            log_noop_with_((cat), (level), fmt, ##__VA_ARGS__);                                                        \
     } while (0)
 #define LOG(level, fmt, ...)                                                                                           \
     do {                                                                                                               \
-        (void)(level);                                                                                                 \
-        (void)(fmt);                                                                                                   \
+        if (0)                                                                                                         \
+            log_noop_((level), fmt, ##__VA_ARGS__);                                                                    \
     } while (0)
 
 #ifdef __cplusplus
