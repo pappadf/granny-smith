@@ -78,7 +78,6 @@ interface EmscriptenModule {
 
 interface EmscriptenModuleConfig {
   canvas: HTMLCanvasElement;
-  arguments?: string[];
   mainScriptUrlOrBlob?: string;
   locateFile?(path: string): string;
   print?(s: string): void;
@@ -184,10 +183,10 @@ let lastScreenParH = 0;
 
 // Initialise the WASM module. The canvas is handed to Emscripten; subsequent
 // resize callbacks update machine.screen so ScreenView can reflow.
-export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = []): Promise<void> {
+export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   if (moduleReady || bootState.phase === 'failed') return;
   try {
-    await bootstrapModule(canvas, wasmArgs);
+    await bootstrapModule(canvas);
   } catch (e) {
     failBoot(e instanceof Error ? e.message : String(e));
     throw e;
@@ -195,7 +194,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
 }
 
 // bootstrap()'s body: load the module, check the bridge, wait for the worker.
-async function bootstrapModule(canvas: HTMLCanvasElement, wasmArgs: string[]): Promise<void> {
+async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   const bust = Date.now();
   // Resolve main.mjs / main.wasm against the document base URL, not
   // origin-rooted. Dynamic `import()` resolves relative URLs against
@@ -212,7 +211,6 @@ async function bootstrapModule(canvas: HTMLCanvasElement, wasmArgs: string[]): P
 
   Module = await createModule({
     canvas,
-    arguments: wasmArgs,
     // Pthread workers must load the exact same main.mjs URL as the main
     // thread. Without this, Emscripten spawns them with
     // `new URL('main.mjs', import.meta.url)` — the literal filename, which

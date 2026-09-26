@@ -220,15 +220,15 @@ Entry point: [`app/web2/src/main.ts`](../app/web2/src/main.ts).
      true` for headless automation
      ([`scripts/ui2-diag.mjs`](../scripts/ui2-diag.mjs)).
    - `maybeOfferBackgroundCheckpoint()` — surfaces a resume prompt if
-     a checkpoint exists for the URL-encoded machine.
-   - `processUrlMedia()` — handles `?rom=` / `?fd0=` etc. URL params.
+     this browser's machine has a saved checkpoint.
+   - `processUrlMedia()` — handles the URL's media parameters (any of
+     them starts it).
 
 Module-construction call ([`bus/emulator.ts::bootstrap`](../app/web2/src/bus/emulator.ts)):
 
 ```ts
 Module = await createModule({
   canvas,
-  arguments: wasmArgs,
   locateFile: (p) => (p.endsWith('.wasm') ? `/main.wasm?v=${bust}` : p),
   print:       routePrintLine,
   printErr:    routePrintLine,
@@ -450,8 +450,10 @@ invoked from `main.ts` after `whenModuleReady()` resolves:
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
   IIfx).
-- `speed=paced|turbo` — forwarded to the wasm module as `--speed=`
-  (legacy `max`/`realtime`/`hardware` still accepted as aliases).
+- `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
+  start: a boot pushes it to the core (`scheduler.mode`), and a resumed
+  machine is switched to it (legacy `max`/`realtime`/`hardware` are
+  accepted as aliases).  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 
@@ -460,25 +462,30 @@ of Mac archives via `archive.extract`.
 
 ## Startup Flow
 
-1. Boot WASM module (`createModule`), transfer canvas, wire callbacks.
-2. WebGL2 probe — abort to full-page error if unavailable.
-3. Resolve `js_bridge_t` base pointer, verify version.
-4. Run `machine.register(<machine-id>, <created>)` to set the per-
+The same sequence as Module Bootstrapping above, end to end:
+
+1. WebGL2 probe — abort to a full-page error if unavailable (Svelte is
+   never mounted).
+2. Mount Svelte; `ScreenView` calls `bootstrap(canvas)`: load the
+   module (`createModule`, no command line), wire the callbacks, resolve
+   the `js_bridge_t` base pointer and verify its version.
+3. Run `machine.register(<machine-id>, <created>)` to set the per-
    machine checkpoint dir.
-5. `whenModuleReady()` resolves; `__gsReady = true`.
-6. `maybeOfferBackgroundCheckpoint()` — surfaces a resume modal if
-   a `state.checkpoint.tmp` exists.
-7. If URL has media params → `processUrlMedia()` downloads + auto-boots.
-8. Otherwise the Welcome view sits on top of the canvas. The user
-   either picks a Recent machine, drops a ROM on the Display, or opens
-   the New Machine dialog.
-9. New Machine dialog scans `/opfs/images/rom/`, identifies each via
+4. `whenModuleReady()` resolves; `__gsReady = true`.
+5. `maybeOfferBackgroundCheckpoint()` — surfaces a resume prompt if a
+   `state.checkpoint` exists.
+6. If the URL has any media parameter → `processUrlMedia()` downloads
+   and auto-boots.
+7. Otherwise the Welcome view sits on top of the canvas. The user drops
+   a ROM on the Display or opens the New Machine dialog.
+8. The New Machine dialog scans `/opfs/images/rom/`, identifies each via
    `rom.identify`, builds the Model dropdown from `compatible[]` model
-   ids, and fetches profiles via `machine.profile(id)` to drive RAM /
-   VROM / floppy-slot UI.
-10. `Start Machine` → `machine.boot`, `rom.load`, optional VROM /
-    floppy / HD / CD attach, `scheduler.run`. The Welcome layer fades
-    out; the canvas takes over.
+   ids, and reads profiles (`bus/profile.ts`) to drive the RAM, video,
+   floppy, hard-disk bay and CD rows.
+9. `Start Machine` → one `machine.boot` document (the ROM included),
+   the media into their bays (`bus/media.ts`), the post-boot
+   reconciliation, `scheduler.run`. The Welcome layer fades out; the
+   canvas takes over.
 
 ## Terminal Integration (xterm.js)
 

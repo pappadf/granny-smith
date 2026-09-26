@@ -7,8 +7,14 @@ import { applyThemeToHtml, theme } from '@/state/theme.svelte';
 import { autoPickPanelPos, layout } from '@/state/layout.svelte';
 import { setOpfsBackend, BrowserOpfs } from '@/bus/opfs';
 import { maybeOfferBackgroundCheckpoint } from '@/bus/checkpoint';
-import { processUrlMedia, parseUrlMediaParams } from '@/bus/urlMedia';
-import { whenModuleReady, onEmulatorCrash } from '@/bus/emulator';
+import {
+  processUrlMedia,
+  parseUrlMediaParams,
+  hasUrlMedia,
+  urlSchedulerMode,
+} from '@/bus/urlMedia';
+import { whenModuleReady, onEmulatorCrash, applySchedulerMode } from '@/bus/emulator';
+import { setSchedulerMode } from '@/state/machine.svelte';
 import { installEvalHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
@@ -53,6 +59,11 @@ function bootApp(target: HTMLElement): unknown {
   // `whenModuleReady()` exactly when the bridge is live.
   const urlParams = new URLSearchParams(window.location.search);
   const mediaParams = parseUrlMediaParams(urlParams);
+  // ?speed= is the toolbar's pacing preference from the start: a boot pushes
+  // it to the fresh core (reconcileUiWithMachine), and a resumed machine is
+  // switched to it below.
+  const urlMode = urlSchedulerMode(mediaParams.speed);
+  if (urlMode) setSchedulerMode(urlMode);
 
   void (async () => {
     try {
@@ -82,11 +93,14 @@ function bootApp(target: HTMLElement): unknown {
     installEvalHookForAutomation();
 
     const resumed = await maybeOfferBackgroundCheckpoint();
-    if (resumed) return;
-
-    if (urlParams.has('rom') || mediaParams.floppies.length || mediaParams.hardDisks.length) {
-      await processUrlMedia(urlParams);
+    if (resumed) {
+      if (urlMode) await applySchedulerMode(urlMode);
+      return;
     }
+
+    // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
+    // be ignored (N-20).
+    if (hasUrlMedia(mediaParams)) await processUrlMedia(urlParams);
     // Otherwise the Welcome view stays up and waits for the user.
   })();
 

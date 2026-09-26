@@ -21,7 +21,6 @@
 #include <emscripten/version.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <getopt.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
@@ -67,11 +66,6 @@
 // ============================================================================
 
 static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func);
-
-// Deferred speed mode: saved at parse time, applied in system_post_create()
-// when the machine (and scheduler) are created later via rom load.
-static enum schedule_mode g_deferred_speed = schedule_paced;
-static bool g_deferred_speed_set = false;
 
 // ============================================================================
 // Pointer-lock and Input Handling
@@ -887,15 +881,6 @@ static void js_log_sink(const char *line, void *user) {
     // clang-format on
 }
 
-// Print usage
-static void print_usage(const char *program_name) {
-    printf("Usage: %s [options]\n", program_name);
-    printf("Options:\n");
-    printf("  --model=MODEL    Specify the model type (e.g., plus)\n");
-    printf("  --speed=MODE     Scheduler mode (paced|accelerated|turbo; legacy max|realtime|hardware)\n");
-    printf("  --help           Display this help message\n");
-}
-
 // SIGINT handler — stops the scheduler so a real Ctrl-C in the headless
 // driver, or any other process-level signal, halts emulation cleanly.
 // JS pauses the emulator via gsEval('scheduler.stop'), which routes
@@ -1326,7 +1311,7 @@ static int clear_checkpoint_files(void) {
 // Main Entry Point
 // ============================================================================
 
-int main(int argc, char *argv[]) {
+int main(void) {
     signal(SIGINT, sigint_handler);
     debug_set_failure_hook(em_assertion_callback);
 
@@ -1394,40 +1379,10 @@ int main(int argc, char *argv[]) {
     mkdir("/tmp/upload", 0777);
     mkdir("/tmp/extract", 0777);
 
-    // Define the supported options
-    static struct option long_options[] = {
-        {"model", required_argument, 0, 'm'},
-        {"help",  no_argument,       0, 'h'},
-        {"speed", required_argument, 0, 's'},
-        {0,       0,                 0, 0  }
-    };
-
-    // Variables to store parsed options
-    int option_index = 0;
-    int c;
-    char *model = NULL;
-    char *speed_mode = NULL;
-
-    // Parse command-line options
-    while ((c = getopt_long(argc, argv, "m:hs:", long_options, &option_index)) != -1) {
-        switch (c) {
-        case 'm':
-            model = optarg;
-            break;
-        case 'h':
-            print_usage(argv[0]);
-            return 0;
-        case 's':
-            speed_mode = optarg;
-            break;
-        case '?':
-            print_usage(argv[0]);
-            return 1;
-        default:
-            break;
-        }
-    }
-
+    // The page passes no command line: a machine is made by machine.boot and
+    // the pacing is scheduler.mode, both over the bridge like everything
+    // else.  (--model and --speed used to be parsed here; nothing passed
+    // them, and ?speed= documented as reaching --speed never did.)
     shell_init();
     setup_init();
 
@@ -1444,52 +1399,6 @@ int main(int argc, char *argv[]) {
     __atomic_store_n(&g_bridge.ready, 1, __ATOMIC_SEQ_CST);
     emscripten_atomic_notify((void *)&g_bridge.ready, INT_MAX);
 
-    // Deferred machine instantiation: global_emulator stays NULL until a ROM
-    // is loaded via the `rom load` command, which identifies the machine type
-    // and creates it automatically.  If --model was provided, create it now
-    // for backward compatibility.
-    if (model) {
-        const hw_profile_t *profile = machine_find(model);
-        if (profile) {
-            // system_create assigns global_emulator internally on success.
-            // Don't shadow that here — a NULL return would clobber it.
-            if (system_create(profile, NULL, NULL))
-                printf("%s (%u KB RAM)\n", profile->name, profile->ram_default / 1024);
-            else
-                printf("Failed to create machine: %s\n", profile->name);
-        } else {
-            printf("Unknown model: %s\n", model);
-        }
-    }
-
-    // Parse and save speed mode for deferred application.
-    // When the machine already exists (--model was given), apply immediately.
-    // Otherwise, system_post_create() will apply it when rom load creates the machine.
-    if (speed_mode) {
-        // Legacy three-mode names map onto the pacing modes:
-        // realtime/hardware were wall-clock modes → paced; max → turbo.
-        if (strcmp(speed_mode, "turbo") == 0 || strcmp(speed_mode, "max") == 0) {
-            g_deferred_speed = schedule_unthrottled;
-            g_deferred_speed_set = true;
-        } else if (strcmp(speed_mode, "accelerated") == 0 || strcmp(speed_mode, "accel") == 0) {
-            g_deferred_speed = schedule_accelerated;
-            g_deferred_speed_set = true;
-        } else if (strcmp(speed_mode, "paced") == 0 || strcmp(speed_mode, "realtime") == 0 ||
-                   strcmp(speed_mode, "real") == 0 || strcmp(speed_mode, "hardware") == 0 ||
-                   strcmp(speed_mode, "hw") == 0 || strcmp(speed_mode, "accuracy") == 0) {
-            g_deferred_speed = schedule_paced;
-            g_deferred_speed_set = true;
-        } else {
-            printf("[C] Unknown --speed mode '%s' (valid: paced|accelerated|turbo)\n", speed_mode);
-        }
-
-        scheduler_t *sched = system_scheduler();
-        if (sched && g_deferred_speed_set) {
-            scheduler_set_mode(sched, g_deferred_speed);
-            printf("[C] Scheduler mode set via --speed=%s\n", speed_mode);
-        }
-    }
-
     // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();
     em_audio_init();
@@ -1500,7 +1409,7 @@ int main(int argc, char *argv[]) {
     install_background_checkpoint_handlers();
 
     // Assertion callback is installed automatically by system_post_create()
-    // whenever a machine is created (either here via --model or later via rom load).
+    // whenever a machine is created.
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
@@ -1574,23 +1483,10 @@ static void provision_default_share(void) {
         printf("[C] default share: %s\n", err);
 }
 
-// Platform hook: publish the default share and apply deferred speed mode
-// after each system_create (including deferred creation via rom load).
+// Platform hook: publish the default share after each system_create.
 void system_post_create(config_t *cfg) {
     (void)cfg;
     provision_default_share();
-
-    // Apply deferred speed mode from --speed flag parsed at startup
-    if (g_deferred_speed_set) {
-        scheduler_t *sched = system_scheduler();
-        if (sched) {
-            scheduler_set_mode(sched, g_deferred_speed);
-            printf("[C] Deferred scheduler mode applied: --speed=%s\n",
-                   g_deferred_speed == schedule_unthrottled   ? "turbo"
-                   : g_deferred_speed == schedule_accelerated ? "accelerated"
-                                                              : "paced");
-        }
-    }
 }
 
 // ============================================================================

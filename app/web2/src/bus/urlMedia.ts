@@ -15,6 +15,7 @@
 import { gsEval, gsErrorText, getModule, isModuleReady } from './emulator';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
+import type { SchedulerMode } from '@/state/machine.svelte';
 import { setMounted } from '@/state/images.svelte';
 import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
 import { identifyRom, type MediaTypeId } from '@/lib/media';
@@ -48,6 +49,29 @@ export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
     if (/^hd\d+$/.test(k)) out.hardDisks.push({ slot: k, url: v });
   }
   return out;
+}
+
+// ?speed= as the toolbar's pacing mode, or null when absent or unknown.
+// Accepts the core's names and their legacy aliases (max, realtime,
+// hardware).  It used to be documented as reaching the wasm module's
+// --speed flag, which nothing ever passed (F-22).
+export function urlSchedulerMode(speed: string | null): SchedulerMode | null {
+  switch ((speed ?? '').toLowerCase()) {
+    case 'paced':
+    case 'realtime':
+    case 'real':
+    case 'hardware':
+    case 'hw':
+      return 'live';
+    case 'accelerated':
+    case 'accel':
+      return 'accel';
+    case 'turbo':
+    case 'max':
+      return 'turbo';
+    default:
+      return null;
+  }
 }
 
 export function hasUrlMedia(params: UrlMediaParams): boolean {
