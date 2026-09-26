@@ -274,34 +274,59 @@ def check_perf(baseline_path, log_paths):
     row outside its tolerance band is a real change, not flake, and fails like
     a pixel golden. Absorbing a legitimate change means committing a reviewed
     baselines diff in the PR that caused it (scripts/gen-baselines.py).
+
+    Two more ways a row escapes the gate, both failures too:
+      * a row that reports with no baseline (a new row is baselined in the
+        commit that adds it);
+      * a baselined row that stops reporting although its test ran (a
+        renamed row, a row that now skips, a suite that exits early).
+    A test "ran" when the log carries the runner's "=== Running: ... (<dir>)"
+    line; a row belongs to the test directory named before its first '/'.
+    A row that announced itself skipped ("skip: <row> (...)", the media-gated
+    and known-defect rows) is listed, not failed.
     """
     doc = json.loads(Path(baseline_path).read_text())
     rows = doc["rows"]
-    seen, bad, new = {}, [], []
+    seen, ran, skipped, bad, new = {}, set(), set(), [], []
     for lp in log_paths:
         for line in Path(lp).read_text(errors="replace").splitlines():
             m = re.search(r"@@PERF (\{.*\})", line)
             if m:
                 rec = json.loads(m.group(1))
                 seen[rec["row"]] = rec["instr"]
+            m = re.match(r"=== Running(?: \(valgrind\))?: .* \(([^()]+)\) ===$", line)
+            if m:
+                ran.add(m.group(1))
+            m = re.match(r"skip: (\S+)", line)
+            if m:
+                skipped.add(m.group(1))
     for row, instr in sorted(seen.items()):
         base = rows.get(row)
         if not base:
             new.append((row, instr))
             continue
         want, tol = base["instr"], base.get("tolerance", 0.20)
-        if want and abs(instr - want) > want * tol:
+        if abs(instr - want) > want * tol:
             bad.append((row, instr, want, tol))
-    print(f"perf rows measured: {len(seen)}   baselined: {len(rows)}")
+    quiet = [r for r in rows if r not in seen and r.split("/", 1)[0] in ran]
+    skips = sorted(r for r in quiet if r.split("/", 1)[-1] in skipped)
+    silent = sorted(r for r in quiet if r not in skips)
+    print(f"perf rows measured: {len(seen)}   baselined: {len(rows)}   tests run: {len(ran)}")
     for row, instr, want, tol in bad:
         delta = (instr - want) / want * 100.0
         print(f"  OUT OF BAND {row}: {instr} vs baseline {want} "
               f"({delta:+.1f}%, tolerance ±{tol * 100:.0f}%)")
     for row, instr in new:
-        print(f"  no baseline yet: {row} = {instr}")
-    if not bad:
-        print("OK: every baselined row is within its tolerance band")
-    return 1 if bad else 0
+        print(f"  NO BASELINE {row} = {instr} (add it: scripts/gen-baselines.py)")
+    for row in silent:
+        print(f"  NOT REPORTED {row}: its test ran, the row did not report")
+    for row in skips:
+        print(f"  skipped: {row}")
+    if bad or new or silent:
+        return 1
+    print("OK: every reported row is baselined and within its band, "
+          "and every baselined row of the tests that ran reported")
+    return 0
 
 
 def owner_tier(suite_root, suite):
@@ -339,6 +364,11 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
     missing = [c for k, c in by_key_declared.items() if k not in by_key_achieved]
     extra = [c for k, c in by_key_achieved.items() if k not in by_key_declared]
 
+    # A cell is only enforceable if its owner runs in a tier whose check can
+    # fail the build; the unit tier has no coverage check (its tests boot no
+    # guest to speak of), so a cell owned there could never fail.
+    unit_owned = [c for c in declared if owner_tier(suite_root, c.get("suite", "")) == "unit"]
+
     pending, gated, blocked, other_tier, failed = [], [], [], [], []
     for c in missing:
         suite = c.get("suite", "")
@@ -355,6 +385,7 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
 
     print(f"declared cells: {len(declared)}   achieved: {len(by_key_achieved)}")
     for label, group in (("NOT COVERED (regression)", failed),
+                         ("OWNED BY A UNIT-TIER TEST (move it to a matrix or extended test)", unit_owned),
                          ("not covered — suite not built yet", pending),
                          ("not covered — blocked by an emulator defect", blocked),
                          ("not covered — owed by another tier (not in this run)", other_tier),
@@ -365,9 +396,9 @@ def check_coverage(target_path, log_paths, suite_root, tier=None):
             for c in sorted(group, key=cell_key):
                 why = f"  {c['blocked']}" if c.get("blocked") else ""
                 print(f"  {cell_str(c)}  [{c.get('suite','?')}]{why}")
-    if not failed:
+    if not failed and not unit_owned:
         print("\nOK: every declared cell that can be covered was covered")
-    return 1 if failed else 0
+    return 1 if failed or unit_owned else 0
 
 
 def main():

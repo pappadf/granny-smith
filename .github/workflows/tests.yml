@@ -225,6 +225,15 @@ jobs:
             | tee /tmp/coverage.log
           exit "${PIPESTATUS[0]}"
 
+      # The extended tier owns cells too, and runs on the PR gate (see its
+      # step above), so its check gates as well.
+      - name: Check coverage contract (extended tier)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          python3 scripts/test-matrix.py --check --tier=extended /tmp/it-extended.log \
+            | tee /tmp/coverage-extended.log
+          exit "${PIPESTATUS[0]}"
+
       # Golden-collision gate: two DIFFERENT goldens asserted in one script must
       # not hold identical bytes, or one frame is silently doing the work of
       # several assertions. Needs no test data and no build — it only reads the
@@ -241,7 +250,8 @@ jobs:
       - name: Check performance baselines
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
-          python3 scripts/test-matrix.py --perf /tmp/it-matrix.log | tee /tmp/perf.log
+          python3 scripts/test-matrix.py --perf /tmp/it-unit.log /tmp/it-matrix.log \
+            /tmp/it-extended.log | tee /tmp/perf.log
           exit "${PIPESTATUS[0]}"
 
       - name: Coverage + row report into the step summary
@@ -256,9 +266,9 @@ jobs:
             python3 scripts/test-matrix.py --from-results /tmp/it-matrix.log 2>/dev/null || true
             echo "### Milestone rows (known gaps, non-fatal)"
             grep -h "MILESTONE" /tmp/it-matrix.log /tmp/it-extended.log 2>/dev/null || echo "(none)"
-            echo "### Extended-tier coverage (temporarily on the PR gate)"
+            echo "### Extended-tier coverage"
             echo '```'
-            python3 scripts/test-matrix.py --check --tier=extended /tmp/it-extended.log 2>&1 || true
+            cat /tmp/coverage-extended.log 2>/dev/null || echo "(no extended coverage log)"
             echo '```'
             echo "### Per-row instruction spend vs baselines"
             echo '```'
