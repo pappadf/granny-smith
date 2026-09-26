@@ -49,10 +49,11 @@ Thumbs.db
 *~
 
 # ── Internal development notes and checklists (not shipped) ─────
-notes/
-todo/
-local/
-tmp/
+# Anchored to the root: docs/notes/ is tracked.
+/notes/
+/todo/
+/local/
+/tmp/
 .claude/scheduled_tasks.lock
 __pycache__/
 

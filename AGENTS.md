@@ -287,14 +287,15 @@ boot calls (`main.js` / `checkpoint.js`); everything else goes through
 
 ## When AGENTS.md Is Wrong
 
-If instructions in AGENTS.md are incorrect, incomplete, or misleading (e.g., wrong paths, missing build steps, outdated commands), log it in `notes/feedback.md`:
+If instructions in AGENTS.md are incorrect, incomplete, or misleading (e.g., wrong paths, missing build steps, outdated commands), fix AGENTS.md in the same change, and say so in the commit message:
 
 ```
-- [YYYY-MM-DD] <What was wrong in AGENTS.md>
-  - Problem: <Instruction that didn't work or was missing>
-  - Fix: <What you had to do instead>
-  - Update needed: <How to fix AGENTS.md>
+AGENTS.md: <what was wrong>
+  - Problem: <instruction that didn't work or was missing>
+  - Fix: <what you had to do instead>
 ```
+
+A correction kept anywhere else is invisible to the next reader: `/notes/` at the repository root is ignored by git and exists only on the machine that wrote it.
 
 This is ONLY for documentation gaps in AGENTS.md — not for general code changes or feature work.
 
