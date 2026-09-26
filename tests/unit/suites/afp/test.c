@@ -3473,23 +3473,31 @@ TEST(the_catalog_index_follows_every_change) {
 
 // A listing holds at most 65,535 entries -- the reach of StartIndex.  A
 // larger directory is MiscErr, not a listing cut short.
+// A directory one entry past the listing limit is refused, and one exactly at
+// it lists to its last entry.  The limit is 65535 in the product (StartIndex
+// is 16 bits); this suite builds afp_enum.c with a small one (Makefile), so
+// the test makes 1,024 files, not 65,536.
 TEST(a_directory_too_large_to_page_is_refused_whole) {
     fixture_up("f23cap");
     char path[512];
     host_path("Big", path, sizeof path);
     ASSERT_EQ_INT(0, mkdir(path, 0755));
+    const int cap = (int)AFP_MAX_ENUM_ENTRIES;
     char file[64];
-    for (int i = 0; i < 65536; i++) {
+    for (int i = 0; i <= cap; i++) {
         snprintf(file, sizeof file, "Big/%05d", i);
         write_file(file, "");
     }
     char names[16][96];
     int n = 0;
     ASSERT_EQ_INT((int)ERR_MISC, (int)enum_dir_as(SESSION, "Big", 1, 1, names, &n));
-    host_path("Big/65535", path, sizeof path);
+    snprintf(file, sizeof file, "Big/%05d", cap);
+    host_path(file, path, sizeof path);
     ASSERT_EQ_INT(0, unlink(path));
-    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(SESSION, "Big", 65535, 1, names, &n));
-    ASSERT_EQ_INT(0, strcmp(names[0], "65534"));
+    ASSERT_EQ_INT((int)ERR_OK, (int)enum_dir_as(SESSION, "Big", (uint16_t)cap, 1, names, &n));
+    char last[8];
+    snprintf(last, sizeof last, "%05d", cap - 1);
+    ASSERT_EQ_INT(0, strcmp(names[0], last));
     fixture_down();
 }
 

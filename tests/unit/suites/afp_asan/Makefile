@@ -22,6 +22,6 @@ EXTRA_SRCS := ../../../../src/core/network/appletalk_server.c \
               ../../../../src/core/network/afp_meta.c \
               ../../../../src/core/storage/macroman.c \
               ../../../../src/peeler/lib/appledouble.c
-EXTRA_CFLAGS := -fsanitize=address -fno-omit-frame-pointer
+EXTRA_CFLAGS := -fsanitize=address -fno-omit-frame-pointer -DAFP_MAX_ENUM_ENTRIES=1023u
 LDFLAGS := -fsanitize=address
 include ../../common.mk

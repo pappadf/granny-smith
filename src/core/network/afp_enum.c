@@ -75,7 +75,11 @@ typedef struct {
 #define AFP_ENUM_SNAPSHOTS_PER_SESSION 4
 // Entries one listing holds.  StartIndex is 16 bits, so no client can page
 // past this; a larger directory is MiscErr rather than a listing cut short.
+// The unit suites build with a smaller value, so reaching the limit does not
+// take 65,536 files.
+#ifndef AFP_MAX_ENUM_ENTRIES
 #define AFP_MAX_ENUM_ENTRIES 65535u
+#endif
 static enum_snapshot_t g_enum_snapshots[AFP_MAX_ENUM_SNAPSHOTS];
 static uint64_t g_enum_clock;
 
