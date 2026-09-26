@@ -6,6 +6,7 @@
 
 #include "platform.h"
 
+#include "api.h"
 #include "appletalk.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
@@ -27,6 +28,9 @@
 #include "shell_var.h"
 #include "system.h"
 #include "vrom.h"
+#include "event/gs_event.h"
+#include "job/job.h"
+#include "mailbox/mailbox.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -148,7 +152,7 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
 // VBL is
 // no longer a scheduler event armed per machine: the run loop injects it
 // imperatively, one VBL pulse per frame-unit, via scheduler_run_frame() — the
-// same path web2's scheduler_main_loop() takes.  See pump_scheduler_with_heartbeat
+// same path web2's scheduler_main_loop() takes.  See hl_run_statement
 // / the main loop below, and docs/core/scheduler/scheduler.md §10.
 
 // Signal handling for graceful shutdown
@@ -157,10 +161,7 @@ static volatile sig_atomic_t g_interrupted = 0;
 
 static void sigint_handler(int sig) {
     (void)sig;
-    g_interrupted = 1;
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        scheduler_stop(sched);
+    g_interrupted = 1; // the loop acts: cancel stdin's job, stop its run
 }
 
 static void sigterm_handler(int sig) {
@@ -324,13 +325,6 @@ int gs_quit(void) {
 // Forward declaration for run_script_file (used by main script-flag path).
 static int run_script_file(const char *filename);
 
-// Forward decl — used by the daemon-mode loop.
-static void pump_scheduler_with_heartbeat(void);
-
-// ============================================================================
-// Daemon mode: TCP socket interface for AI agents
-// ============================================================================
-
 // Default daemon port (Motorola 68xx heritage)
 #define DAEMON_DEFAULT_PORT 6800
 
@@ -342,6 +336,162 @@ static int g_client_fd = -1;
 static bool g_client_lost = false; // a write to the client failed: stop serving it
 static int g_saved_stdout = -1;
 static int g_saved_stderr = -1;
+
+// ============================================================================
+// The loop: frame, drain, and scripts as jobs
+// ============================================================================
+//
+// Headless is a client of its own mailbox (mailbox.h, "an in-process
+// client").  Every statement -- from the script file, stdin, the REPL or a
+// daemon connection -- is posted as a REQ_SCRIPT and runs as a job on the
+// job thread (job/job.h), exactly as a terminal line does in the browser;
+// this thread meanwhile does what the browser's tick does: one frame-unit
+// when the machine runs, then a drain, which serves the job's calls into
+// the object tree and delivers its result.  `scheduler.run N` inside a
+// script waits for N because the job waits for its mode; `scheduler.run`
+// returns at once and the machine runs on between statements.
+
+#define HL_CLIENT_STDIN  3u // the script file, --script-stdin and the REPL
+#define HL_CLIENT_DAEMON 4u // a daemon connection
+#define HL_MBX_RING      (64u << 10)
+
+static gs_mailbox_t g_mbx;
+static uint8_t g_mbx_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + 2 * HL_MBX_RING];
+static gs_mailbox_client_t g_cli;
+static int g_framed = 0; // --framed: @event / @end lines on stdout
+static uint32_t g_foreground_job = 0; // the statement in flight (its request id)
+static uint32_t g_foreground_client = 0;
+
+// Core events (gs_event.h): with --framed each one is a line a client can
+// parse; otherwise they are silent here (the REPL prints its own state).
+void gs_event_emit(gs_event_kind_t kind, const char *json) {
+    if (!g_framed)
+        return;
+    printf("@event %u %s\n", (unsigned)kind, json);
+    fflush(stdout);
+}
+
+uint32_t gs_current_client(void) {
+    return gs_mailbox_current_client(&g_mbx);
+}
+
+static void hl_mailbox_init(void) {
+    if (!gs_mailbox_init(&g_mbx, g_mbx_region, HL_MBX_RING, HL_MBX_RING, gs_eval)) {
+        fprintf(stderr, "headless: mailbox init failed\n");
+        exit(1);
+    }
+    gs_mailbox_client_init(&g_cli, &g_mbx);
+    gs_mailbox_set_ready(&g_mbx);
+}
+
+// One turn of the loop: a frame-unit if the machine runs, then the drain.
+// Returns whether anything happened (a frame ran or a request was served).
+static bool hl_pump_once(void) {
+    bool did = false;
+    scheduler_t *sched = system_scheduler();
+    if (sched && global_emulator && scheduler_is_running(sched)) {
+        scheduler_run_frame(sched, global_emulator);
+        did = true;
+    }
+    if (gs_mailbox_drain(&g_mbx, 0, NULL) > 0)
+        did = true;
+    if (job_layer_has_work())
+        did = true;
+    return did;
+}
+
+// Ctrl-C, exactly (the same rule as the browser terminal): cancel the
+// statement in flight if there is one, else stop a run stdin started, else
+// stop whatever runs -- headless has no toolbar, so an unowned run (the
+// boot) is the user's to stop too.
+static void hl_interrupt(uint32_t client) {
+    scheduler_t *s = system_scheduler();
+    if (g_foreground_job && g_foreground_client == client) {
+        job_cancel(client, g_foreground_job);
+        return;
+    }
+    if (s && !scheduler_stop_owned(s, client))
+        scheduler_stop_owned(s, 0);
+}
+
+static void daemon_serve_control_connection(void);
+static bool daemon_client_gone(int client_fd);
+
+// Runs one statement as a job and waits for its result, driving the loop
+// meanwhile.  Returns 0 (ok), -1 (the script failed or was cancelled).
+static int hl_run_statement(uint32_t client, const char *src) {
+    uint32_t id = gs_mailbox_client_script(&g_cli, client, src, strlen(src));
+    if (!id) {
+        printf("error: statement too long for the mailbox\n");
+        return -1;
+    }
+    g_foreground_job = id;
+    g_foreground_client = client;
+    double last_heartbeat = host_time();
+    uint64_t start_instr = cpu_instr_count();
+    bool cancelled_for_quit = false;
+    int rc = -1;
+    for (;;) {
+        bool did = hl_pump_once();
+        // Results: ours ends the wait; another client's (none today) is dropped.
+        uint8_t buf[512];
+        uint32_t len, kind;
+        bool got = false;
+        while ((kind = gs_mailbox_client_take(&g_cli, buf, sizeof buf, &len)) != 0) {
+            if (kind == GS_MBX_EVT_RESULT && RD_LE32(buf + 4 * GS_MBX_RESULT_ID) == id) {
+                rc = RD_LE32(buf + 4 * GS_MBX_RESULT_OK) ? 0 : -1;
+                got = true;
+            }
+        }
+        if (got)
+            break;
+        if (g_interrupted) {
+            g_interrupted = 0;
+            hl_interrupt(HL_CLIENT_STDIN);
+            printf("\n[Interrupted]\n");
+        }
+        if (quit_requested && !cancelled_for_quit) {
+            // `quit` inside a script: the machine is stopped; the script
+            // must not start the next run.
+            cancelled_for_quit = true;
+            job_cancel(client, id);
+        }
+        scheduler_t *sched = system_scheduler();
+        bool running = sched && scheduler_is_running(sched);
+        if (running) {
+            double now = host_time();
+            if (now - last_heartbeat >= 1.0) {
+                uint64_t current = cpu_instr_count();
+                printf("# running... %llu instructions (+%llu since start)\n", (unsigned long long)current,
+                       (unsigned long long)(current - start_instr));
+                fflush(stdout);
+                last_heartbeat = now;
+            }
+        }
+        if (g_daemon_mode && g_client_fd >= 0) {
+            if (daemon_client_gone(g_client_fd)) {
+                // Nobody left to read the result: this client's run and
+                // script end here; nothing else is touched.
+                g_client_lost = true;
+                job_cancel_client(client);
+                job_glue_stop_modes(client);
+            }
+            daemon_serve_control_connection();
+        }
+        if (!did && !running)
+            usleep(1000);
+    }
+    g_foreground_job = 0;
+    if (g_framed) {
+        printf("@end %s\n", rc == 0 ? "ok" : "error");
+        fflush(stdout);
+    }
+    return rc;
+}
+
+// ============================================================================
+// Daemon mode: TCP socket interface for AI agents
+// ============================================================================
 
 // Redirect stdout/stderr to the client socket so printf output goes to the agent
 static void daemon_redirect_output(int client_fd) {
@@ -448,12 +598,11 @@ static void daemon_serve_control_connection(void) {
     const char *reply;
     if (strcmp(cmd, "stop") == 0 || strcmp(cmd, "scheduler.stop") == 0 || strcmp(cmd, "shell.interrupt") == 0 ||
         strcmp(cmd, "shell.interrupt()") == 0) {
-        // The two halves of the terminal's Ctrl-C: end the run in flight, and
-        // cancel the script loop that would otherwise start the next one.
-        scheduler_t *s = system_scheduler();
-        if (s)
-            scheduler_stop(s);
-        script_interrupt();
+        // The two halves of the terminal's Ctrl-C, for the daemon's client:
+        // cancel its statement in flight (which ends the run that statement
+        // started), and stop a run an earlier statement left going.
+        job_cancel_client(HL_CLIENT_DAEMON);
+        job_glue_stop_modes(HL_CLIENT_DAEMON);
         reply = "# run stopped by control connection\n";
     } else if (strcmp(cmd, "quit") == 0) {
         quit_requested = 1;
@@ -464,64 +613,6 @@ static void daemon_serve_control_connection(void) {
     }
     (void)!write(fd, reply, strlen(reply));
     close(fd);
-}
-
-// Pump the scheduler until it stops, emitting periodic heartbeat lines.
-// In daemon mode the heartbeat prevents nc -w timeouts; in script/stdin modes it
-// lets callers follow progress. Emits once per second with instruction count.
-// Also: if the daemon client is gone mid-run, stop the scheduler — a dead
-// client has no way to see the result, and letting it run billions more
-// instructions is wasteful.  Data arriving mid-run does NOT stop the run: it
-// is the client's next statement, and it waits its turn.  Stopping a run is
-// a second connection's job (daemon_serve_control_connection).
-static void pump_scheduler_with_heartbeat(void) {
-    scheduler_t *sched = system_scheduler();
-    config_t *cfg = global_emulator;
-    double last_heartbeat = host_time();
-    uint64_t start_instr = cpu_instr_count();
-
-    // Drive execution exactly like web2's RAF loop: one VBL frame-unit at a
-    // time (trigger_vbl + one VBL-period run, via scheduler_run_frame), as fast
-    // as the host allows.  Yielding between frame-units lets the heartbeat fire
-    // and the daemon poll for disconnect/new-data.  The frame-unit is the same
-    // deterministic step web2 runs, so headless reproduces the web2 boot
-    // bit-for-bit (only the pacing — max speed here, host-clock there —
-    // differs).  That includes the power-up PRAM: the machine is built with
-    // it (rtc.h pram_defaults_t) on both, where on the PDM machines the page
-    // used to seed its own and headless booted differently.  An
-    // instruction-budget `scheduler.run N` schedules a
-    // run_stop_event; scheduler_run_frame's inner scheduler_run clamps to it, so
-    // the budget stops mid-frame at exactly N and the loop below exits.
-
-    while (sched && cfg && scheduler_is_running(sched) && !quit_requested) {
-        scheduler_run_frame(sched, cfg);
-
-        // Heartbeat: once per second, print progress
-        double now = host_time();
-        if (now - last_heartbeat >= 1.0) {
-            uint64_t current = cpu_instr_count();
-            printf("# running... %llu instructions (+%llu since start)\n", (unsigned long long)current,
-                   (unsigned long long)(current - start_instr));
-            fflush(stdout);
-            last_heartbeat = now;
-        }
-
-        // Daemon mode: is the client still there to read the result?
-        if (g_daemon_mode && g_client_fd >= 0) {
-            if (daemon_client_gone(g_client_fd)) {
-                // Client gone — cancel the run rather than execute billions
-                // more.  Cancel the script too: a shell `while` loop would
-                // otherwise start the next `scheduler.run` immediately and
-                // spin on forever with nobody left to read its output.
-                g_client_lost = true;
-                scheduler_stop(sched);
-                script_interrupt();
-                break;
-            }
-            // A second client with something to say about this run.
-            daemon_serve_control_connection();
-        }
-    }
 }
 
 // === Statements from a stream ==============================================
@@ -587,8 +678,7 @@ static void stmt_free(stmt_asm_t *a) {
 // Run one complete daemon statement, pump the run it starts, and report the
 // PC as a status line.
 static void daemon_run_statement(char *stmt) {
-    shell_dispatch(stmt);
-    pump_scheduler_with_heartbeat();
+    hl_run_statement(HL_CLIENT_DAEMON, stmt);
     if (!g_client_lost && system_is_initialized() && debug_prompt_enabled()) {
         char disasm_buf[160];
         debugger_disasm_pc(disasm_buf, sizeof(disasm_buf));
@@ -662,8 +752,11 @@ static void daemon_handle_client(int client_fd) {
         double idle = host_time_ms() - idle_since;
         if (idle >= DAEMON_IDLE_CLOSE_MS)
             break;
+        // The machine runs on between statements: a frame, then a look
+        // at the socket, instead of one long poll.
         struct pollfd pfd = {.fd = client_fd, .events = POLLIN, .revents = 0};
-        int ready = poll(&pfd, 1, (int)(DAEMON_IDLE_CLOSE_MS - idle) + 1);
+        bool busy = hl_pump_once();
+        int ready = poll(&pfd, 1, busy ? 0 : 5);
         if (ready < 0 && errno != EINTR)
             break;
         if (ready <= 0)
@@ -741,9 +834,11 @@ static void daemon_loop(void) {
     fflush(stdout);
 
     while (g_running && !quit_requested) {
-        // Use select() so we can check g_running periodically
+        // A frame if the machine runs (a `scheduler.run` left it going),
+        // then the listener: no long wait while there is work.
+        bool busy = hl_pump_once();
         fd_set fds;
-        struct timeval tv = {1, 0}; // 1 second timeout
+        struct timeval tv = {0, busy ? 0 : 10000};
         FD_ZERO(&fds);
         FD_SET(g_listen_fd, &fds);
 
@@ -782,21 +877,20 @@ static const char *parse_arg(const char *arg, const char *key) {
     return NULL;
 }
 
-// Script-interpreter pump hook: after each executed statement, drive
-// the scheduler to completion (heartbeat included) and report
-// whether a quit was requested so the interpreter can stop cleanly.
-static bool headless_script_pump(void) {
-    pump_scheduler_with_heartbeat();
-    return quit_requested != 0;
-}
-
-// Run a script file through the v2 interpreter. script_run_file keeps
-// the include stack, so `include` paths resolve relative to the script
-// and diagnostics carry the file name; the pump hook drives the
-// scheduler between statements.
+// Run a script file: one `include` statement as a job, so `include` paths
+// inside it resolve relative to the file and diagnostics carry its name.
 static int run_script_file(const char *filename) {
     printf("> running %s\n", filename);
-    int result = script_run_file(filename);
+    char stmt[4096];
+    size_t o = 0;
+    o += (size_t)snprintf(stmt + o, sizeof stmt - o, "include \"");
+    for (const char *c = filename; *c && o + 3 < sizeof stmt; c++) {
+        if (*c == '"' || *c == '\\')
+            stmt[o++] = '\\';
+        stmt[o++] = *c;
+    }
+    snprintf(stmt + o, sizeof stmt - o, "\"");
+    int result = hl_run_statement(HL_CLIENT_STDIN, stmt);
     if (result != 0) {
         // v2 scripts abort on the first error; a script that
         // aborted never reaches its `quit`, so exit here instead of
@@ -852,7 +946,7 @@ static int run_script_stdin(void) {
             continue;
 
         printf("> %s\n", stmt.buf);
-        int result = script_run_line(stmt.buf); // interactive: results print
+        int result = hl_run_statement(HL_CLIENT_STDIN, stmt.buf); // interactive: results print
         stmt_reset(&stmt);
         if (result != 0)
             g_script_exit_code = 1;
@@ -917,7 +1011,7 @@ int shell_poll(void) {
         return 1;
     }
 
-    shell_dispatch(g_repl.buf);
+    hl_run_statement(HL_CLIENT_STDIN, g_repl.buf);
     stmt_reset(&g_repl);
     return 1;
 }
@@ -1040,6 +1134,11 @@ int main(int argc, char *argv[]) {
 
         if (strcmp(arg, "--script-stdin") == 0) {
             script_stdin = 1;
+            continue;
+        }
+
+        if (strcmp(arg, "--framed") == 0) {
+            g_framed = 1; // core events as `@event` lines, `@end` after each statement
             continue;
         }
 
@@ -1208,7 +1307,7 @@ int main(int argc, char *argv[]) {
     // Ignore SIGPIPE: in daemon mode stdout/stderr are dup2'd to the
     // client socket, so any printf after the client disconnects would
     // otherwise kill the daemon.  With SIG_IGN, write() returns -1 /
-    // EPIPE, and daemon_client_gone (in pump_scheduler_with_heartbeat)
+    // EPIPE, and daemon_client_gone (in hl_run_statement)
     // notices the failed write and cancels the run.
     signal(SIGPIPE, SIG_IGN);
 
@@ -1235,8 +1334,11 @@ int main(int argc, char *argv[]) {
     // Initialize shell and emulator
     shell_init();
 
-    // Between-statement scheduler pump for the script interpreter.
-    script_set_pump_hook(headless_script_pump);
+    // The mailbox this process is a client of, and the job thread that runs
+    // its scripts (falls back to inline scripts if the thread cannot start).
+    hl_mailbox_init();
+    if (!job_thread_start(512u << 10))
+        fprintf(stderr, "headless: job thread could not be started; scripts run inline\n");
 
     // Apply --var definitions (after shell_init which calls shell_var_init)
     for (int i = 0; i < var_count; i++) {
@@ -1528,24 +1630,17 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Run emulation if scheduler is active
-        scheduler_t *loop_sched = system_scheduler();
-        if (loop_sched && global_emulator && scheduler_is_running(loop_sched)) {
-            // Headless: run one VBL frame-unit per iteration (trigger_vbl + one
-            // VBL-period run), as fast as the host allows — the same step web2's
-            // RAF loop runs, just unthrottled.  Looping one frame at a time keeps
-            // the REPL responsive to Ctrl+C (g_interrupted) and the max-cycles
-            // cap above; a run_stop_event / scheduler_stop ends the run.
-            scheduler_run_frame(loop_sched, global_emulator);
-        } else {
-            // Poll for shell input when idle
-            shell_poll();
-            usleep(10000); // 10ms sleep when idle
-        }
+        // One frame-unit per iteration while the machine runs (the same
+        // step web2's tick runs, unthrottled), then the drain; a REPL line
+        // runs as a job, the loop pumping inside its wait.
+        bool busy = hl_pump_once();
+        if (!shell_poll() && !busy)
+            usleep(1000);
 
         // Handle interrupt (Ctrl+C stops emulation but doesn't exit)
         if (g_interrupted) {
             g_interrupted = 0;
+            hl_interrupt(HL_CLIENT_STDIN);
             printf("\n[Interrupted]\n");
             print_prompt();
         }

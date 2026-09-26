@@ -194,12 +194,27 @@ The headless REPL shows a `... ` continuation prompt while a multi-line
 
 ## Scripts
 
-`gs-headless script=<file>` parses the whole file (multi-line blocks
-need the full source) and interprets it; the platform pump hook drives
-the scheduler between statements, so `scheduler.run N` completes before
-the next statement. The first error aborts the script and exits
+`gs-headless script=<file>` runs the file as one job (`include "<file>"`)
+on the job thread, the way every statement runs on every platform
+(`src/core/job/job.h`): the interpreter never touches guest state itself,
+each object-tree access is served by the emulator thread at a frame
+boundary, and a `scheduler.run N` (or `debug.step N`) waits inside its
+call until those N instructions have run, so the next statement sees the
+machine stopped. A bare `scheduler.run` returns at once and the machine
+runs on between statements. The first error aborts the script and exits
 non-zero. `shell.script_run(path)` and `shell.eval(text)` are the
-platform-neutral equivalents.
+platform-neutral equivalents (run inline, on the emulator thread, as a
+leaf).
+
+Headless's own loop is the browser's tick minus the frame pacing: one
+frame-unit while the machine runs, then the mailbox drain that serves the
+job's calls and the daemon's or stdin's statements. `--framed` adds
+`@event <kind> <json>` lines for every core event (`mode_started`,
+`mode_ended` with its reason) and `@end ok|error` after each statement,
+for a client that wants to parse where a statement ended rather than time
+out on silence. Ctrl-C cancels the statement in flight, else stops a run
+stdin started, else stops the machine; the daemon's control connection
+does the same for the daemon's client.
 
 `include "path"` pulls another script file into the run at the point of
 the statement: its `def`s land in the shared function registry, its

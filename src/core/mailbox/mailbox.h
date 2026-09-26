@@ -222,6 +222,31 @@ uint32_t gs_mailbox_current_client(const gs_mailbox_t *m);
 // when a job ends rather than when a request is served.
 bool gs_mailbox_write_result(gs_mailbox_t *m, uint32_t id, bool ok, const char *json, uint32_t len);
 
+// --- An in-process client ---------------------------------------------------
+// The other side of the same mailbox, in C: what the headless driver's
+// stdin, script file and daemon socket are.  Posts records on the request
+// ring and reads results off the event ring; the caller drives the
+// emulator thread's loop (frame, drain) in between.  Single client per
+// struct, same thread as the emulator (this is not a second producer: the
+// page and this never coexist in one process).
+typedef struct gs_mailbox_client {
+    gs_mailbox_t *m;
+    mbx_ring_t req; // this side writes
+    mbx_ring_t evt; // this side reads
+    uint32_t next_id;
+} gs_mailbox_client_t;
+
+void gs_mailbox_client_init(gs_mailbox_client_t *c, gs_mailbox_t *m);
+// Posts a REQ_SCRIPT for `client`; returns its id, 0 when the ring is full
+// or the source too large.
+uint32_t gs_mailbox_client_script(gs_mailbox_client_t *c, uint32_t client, const char *src, size_t len);
+// Posts a REQ_CANCEL / REQ_MODE_STOP; returns the id, 0 when no room.
+uint32_t gs_mailbox_client_cancel(gs_mailbox_client_t *c, uint32_t client, uint32_t target_id);
+uint32_t gs_mailbox_client_mode_stop(gs_mailbox_client_t *c, uint32_t client, uint32_t owner);
+// Takes the next event off the ring: its kind (0: none, PADs skipped),
+// the payload copied into `buf` (at most `cap` bytes; *len the real size).
+uint32_t gs_mailbox_client_take(gs_mailbox_client_t *c, uint8_t *buf, size_t cap, uint32_t *len);
+
 // Platform hook: wake whoever waits on a control word (the client parks in
 // Atomics.waitAsync on EVT_HEAD and READY).  Weak no-op by default.
 void gs_mailbox_notify(volatile uint32_t *word);

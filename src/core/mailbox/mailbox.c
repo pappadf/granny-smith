@@ -298,3 +298,80 @@ int gs_mailbox_drain(gs_mailbox_t *m, double budget_us, double (*now_us)(void)) 
     }
     return written;
 }
+
+// === An in-process client =====================================================
+
+void gs_mailbox_client_init(gs_mailbox_client_t *c, gs_mailbox_t *m) {
+    memset(c, 0, sizeof(*c));
+    c->m = m;
+    uint8_t *base = (uint8_t *)m->ctrl;
+    mbx_ring_init(&c->req, m->ctrl, GS_MBX_C_REQ_HEAD, GS_MBX_C_REQ_TAIL, base + m->ctrl[GS_MBX_C_REQ_OFF],
+                  m->ctrl[GS_MBX_C_REQ_SIZE]);
+    mbx_ring_init(&c->evt, m->ctrl, GS_MBX_C_EVT_HEAD, GS_MBX_C_EVT_TAIL, base + m->ctrl[GS_MBX_C_EVT_OFF],
+                  m->ctrl[GS_MBX_C_EVT_SIZE]);
+    c->next_id = 1;
+}
+
+static uint32_t client_next_id(gs_mailbox_client_t *c) {
+    uint32_t id = c->next_id++;
+    if (c->next_id > 0x7fffffffu)
+        c->next_id = 1;
+    return id;
+}
+
+uint32_t gs_mailbox_client_script(gs_mailbox_client_t *c, uint32_t client, const char *src, size_t len) {
+    if (len > GS_MBX_SCRIPT_MAX)
+        return 0;
+    uint32_t n = (uint32_t)len;
+    uint32_t at = mbx_reserve(&c->req, GS_MBX_REQ_SCRIPT, MBX_HDR_BYTES + 4u * GS_MBX_SCRIPT_WORDS + ((n + 3u) & ~3u));
+    if (at == UINT32_MAX)
+        return 0;
+    uint32_t id = client_next_id(c);
+    uint8_t *p = mbx_payload(&c->req, at);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_ID, id);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_CLIENT, client);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_DEADLINE, 0);
+    WR_LE32(p + 4 * GS_MBX_SCRIPT_SRC_LEN, n);
+    memcpy(p + 4 * GS_MBX_SCRIPT_WORDS, src, n);
+    mbx_publish(&c->req);
+    return id;
+}
+
+static uint32_t client_ctl(gs_mailbox_client_t *c, uint32_t kind, uint32_t client, uint32_t arg) {
+    uint32_t at = mbx_reserve(&c->req, kind, MBX_HDR_BYTES + 4u * GS_MBX_CTL_WORDS);
+    if (at == UINT32_MAX)
+        return 0;
+    uint32_t id = client_next_id(c);
+    uint8_t *p = mbx_payload(&c->req, at);
+    WR_LE32(p + 4 * GS_MBX_CTL_ID, id);
+    WR_LE32(p + 4 * GS_MBX_CTL_CLIENT, client);
+    WR_LE32(p + 4 * GS_MBX_CTL_ARG, arg);
+    mbx_publish(&c->req);
+    return id;
+}
+
+uint32_t gs_mailbox_client_cancel(gs_mailbox_client_t *c, uint32_t client, uint32_t target_id) {
+    return client_ctl(c, GS_MBX_REQ_CANCEL, client, target_id);
+}
+
+uint32_t gs_mailbox_client_mode_stop(gs_mailbox_client_t *c, uint32_t client, uint32_t owner) {
+    return client_ctl(c, GS_MBX_REQ_MODE_STOP, client, owner);
+}
+
+uint32_t gs_mailbox_client_take(gs_mailbox_client_t *c, uint8_t *buf, size_t cap, uint32_t *len) {
+    for (;;) {
+        uint32_t head = mbx_load(c->m->ctrl, GS_MBX_C_EVT_HEAD);
+        mbx_rec_t rec;
+        int got = mbx_next(&c->evt, head, &rec);
+        if (got <= 0)
+            return 0;
+        if (rec.kind == MBX_R_PAD) {
+            mbx_consume(&c->evt, &rec);
+            continue;
+        }
+        *len = rec.len - MBX_HDR_BYTES;
+        memcpy(buf, mbx_rec_payload(&c->evt, &rec), *len < cap ? *len : cap);
+        mbx_consume(&c->evt, &rec);
+        return rec.kind;
+    }
+}

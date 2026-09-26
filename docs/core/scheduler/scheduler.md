@@ -683,16 +683,18 @@ Headless does not arm any VBL event. Its run loops
 ([headless_main.c](../../../src/platform/headless/headless_main.c)) call
 `scheduler_run_frame()` back-to-back as fast as the host CPU allows:
 
-- the daemon/script pump (`pump_scheduler_with_heartbeat`) runs one frame-unit per
-  iteration, yielding between them only to emit the ~1 Hz heartbeat and poll the daemon
-  socket for disconnect/`stop`;
-- the interactive REPL loop runs one frame-unit per iteration, staying responsive to
-  Ctrl-C and the `--max-cycles` cap.
+- one loop (`hl_pump_once`: a frame-unit while the machine runs, then the mailbox
+  drain) serves the script file, stdin, the REPL and the daemon alike — each statement
+  is a job on the job thread, and the loop pumps while it waits for the job's result,
+  emitting the ~1 Hz heartbeat and polling the daemon socket for disconnect / `stop`;
+- so the REPL stays responsive to Ctrl-C and the `--max-cycles` cap, and a
+  `scheduler.run` with no budget leaves the machine running between statements.
 
 An instruction-budget `scheduler.run N` schedules a `run_stop_event`; the inner
 `scheduler_run` inside a frame-unit clamps to it (§6.1), so the budget stops mid-frame
-at exactly `N` instructions and the loop exits. `scheduler.run` with no argument runs
-until `scheduler.stop` (or client disconnect) — exactly what web2 does.
+at exactly `N` instructions; the job that issued it is held until that mode ends
+(§10.5). `scheduler.run` with no argument returns at once and runs until
+`scheduler.stop`, a client's stop, or its disconnect — exactly what web2 does.
 
 No `host_time()` value ever feeds guest execution on the headless path.
 

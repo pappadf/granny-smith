@@ -1014,7 +1014,7 @@ typedef enum {
     SIG_CONTINUE,
     SIG_RETURN,
     SIG_ERROR,
-    SIG_QUIT, // pump hook requested a clean stop (quit)
+    SIG_QUIT, // the job was cancelled: a clean stop, not an error
 } exec_sig_t;
 
 typedef struct exec_ctx {
@@ -1025,12 +1025,7 @@ typedef struct exec_ctx {
     value_t ret; // SIG_RETURN payload
 } exec_ctx_t;
 
-static script_pump_fn g_pump_hook = NULL;
 static volatile bool g_interrupt = false;
-
-void script_set_pump_hook(script_pump_fn fn) {
-    g_pump_hook = fn;
-}
 
 void script_interrupt(void) {
     g_interrupt = true;
@@ -2107,18 +2102,12 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
 }
 
 // The statement boundary: where a job notices it was cancelled (job/job.h)
-// and unwinds, and, for an inline script on a platform that still pumps
-// between statements, where the pump runs.
-static bool stop_requested(void) {
-    if (job_current())
-        return job_current_cancelled();
-    return g_pump_hook && g_pump_hook();
-}
-
+// and unwinds.  Nothing else happens between statements -- the emulator
+// runs on its own thread, and a `scheduler.run N` waited inside its call.
 static void exec_block(script_block_t *b, exec_ctx_t *cx) {
     for (int i = 0; i < b->n && cx->sig == SIG_NONE; i++) {
         exec_stmt(b->stmts[i], cx);
-        if (cx->sig == SIG_NONE && stop_requested())
+        if (cx->sig == SIG_NONE && job_current_cancelled())
             cx->sig = SIG_QUIT;
     }
 }

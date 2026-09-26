@@ -61,13 +61,6 @@ int script_run_file(const char *path);
 // more lines before submitting.
 bool script_needs_continuation(const char *buf);
 
-// Platform pump hook: called after every executed statement so the
-// platform can drive the scheduler to completion (`scheduler.run N`
-// merely schedules a stop event; the platform loop executes it).
-// Return true to abort the script cleanly (quit requested).
-typedef bool (*script_pump_fn)(void);
-void script_set_pump_hook(script_pump_fn fn);
-
 // Ctrl-C for loops: the interpreter checks this once per iteration and
 // unwinds with an error. Wired to `shell.interrupt`.
 void script_interrupt(void);

@@ -599,6 +599,29 @@ TEST(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode) {
     ASSERT_EQ_INT(g_stops, 0);
 }
 
+TEST(the_in_process_client_posts_and_reads_like_the_page) {
+    fresh();
+    gs_mailbox_client_t c;
+    gs_mailbox_client_init(&c, &g_m);
+    uint32_t id1 = gs_mailbox_client_script(&c, 3, "echo one", 8);
+    uint32_t id2 = gs_mailbox_client_mode_stop(&c, 3, 0);
+    uint32_t id3 = gs_mailbox_client_cancel(&c, 3, id1);
+    ASSERT_TRUE(id1 && id2 && id3 && id1 != id2 && id2 != id3);
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 3); // inline: all answered now
+    uint8_t buf[256];
+    uint32_t len;
+    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
+    ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id1);
+    ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_OK), 1);
+    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
+    ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id2);
+    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), GS_MBX_EVT_RESULT);
+    ASSERT_EQ_INT(RD_LE32(buf + 4 * GS_MBX_RESULT_ID), id3);
+    ASSERT_EQ_INT(gs_mailbox_client_take(&c, buf, sizeof buf, &len), 0);
+    // Too large a source is refused before the ring.
+    ASSERT_EQ_INT(gs_mailbox_client_script(&c, 3, "x", GS_MBX_SCRIPT_MAX + 1), 0);
+}
+
 int main(void) {
     RUN(the_control_block_is_laid_out_and_versioned);
     RUN(a_request_is_served_and_its_id_comes_back);
@@ -613,6 +636,7 @@ int main(void) {
     RUN(an_event_with_no_room_is_dropped_and_counted_never_blocking);
     RUN(a_script_without_a_job_thread_runs_inline_and_answers_the_prompt);
     RUN(cancel_and_mode_stop_are_answered_and_stop_only_the_owner);
+    RUN(the_in_process_client_posts_and_reads_like_the_page);
     RUN(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode);
     return 0;
 }
