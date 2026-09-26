@@ -451,7 +451,7 @@ Objects in the tree fall into two camps:
   needed but do not hold per-machine state on the object node itself.
 - **Cfg-scoped subsystems.** CPU, memory, scheduler, peripherals
   (scc / rtc / via / scsi / floppy / sound / appletalk), and the per-
-  entry debug objects (breakpoints / logpoints) are attached when a
+  entry debug objects (breakpoints / logpoints / watchpoints) are attached when a
   machine is created (`system_create` → `profile->init`) and torn
   down when the machine is destroyed. Their `_init` is the place
   where the object node is allocated and attached to the root, and

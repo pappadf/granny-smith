@@ -153,8 +153,14 @@ The board model is the chipset skeleton plus the DMA architecture:
   (bank 2 shows through at `+$600000`; the framebuffer lives in the
   `+$800000` half with pixel 0 at +16), the RaDACal byte cells at GC
   `+$1B000` (index/cursor/misc/CLUT on `$10` centres; misc `$20` bits 3:2
-  = 8/16/32 bpp), monitor sense modeled as a 13"/14" strap (line C
-  grounded — extended sense `$2B`, the head of the ROM's own mode table),
+  = 8/16/32 bpp; in the direct-colour modes the table stays in the DAC
+  path, published as `display_t.dac_lut` and applied by the renderer and
+  by capture alike — MkLinux's console draws palette indexes into 32 bpp
+  pixels and relies on it, #147), monitor sense strapped from the boot
+  document's `monitor=` (`hires`, the default: line C grounded — extended
+  sense `$2B`, the head of the ROM's own mode table; `twopage` grounds all
+  three and Open Firmware programs 1152x870; `portrait`, `rubik`, `none`;
+  the pick survives `machine.restart` and a checkpoint, #146),
   and VBL as Grand Central interrupt **26** at 60 Hz while `intr_ena` is
   set (an earlier map guessed 30; the shipping video driver toggles
   mask bit 26 as it writes `INTR_ENA`, and Apple's own 9500

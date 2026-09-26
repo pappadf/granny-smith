@@ -136,6 +136,10 @@ struct debug {
     breakpoint_t *breakpoints;
     uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
     logpoint_t *logpoints;
+    // A watchpoint (a stopping memory logpoint, in the list above) fired
+    // inside the instruction in flight; debug_break_and_trace stops the
+    // machine after that instruction and clears it.
+    bool watch_hit;
     // Sparse stable id counters. Incremented on every
     // add; never reset, never recycled. The first allocated id is 0.
     int next_breakpoint_id;
@@ -160,6 +164,7 @@ struct debug {
     struct object *object; // root `debug` node
     struct object *bp_collection_object;
     struct object *lp_collection_object;
+    struct object *wp_collection_object;
     struct object *mac_object; // debug.mac
     struct object *mac_globals_object; // debug.mac.globals
 };
@@ -243,6 +248,11 @@ int debug_breakpoint_count(debug_t *debug);
 int debug_breakpoint_next_id(debug_t *debug, int prev_id);
 int debug_logpoint_count(debug_t *debug);
 int debug_logpoint_next_id(debug_t *debug, int prev_id);
+// The watchpoints: the stopping entries of the same list, which the two
+// collections split between them (`debug.logpoints` never lists one).
+int debug_watchpoint_count(debug_t *debug);
+int debug_watchpoint_next_id(debug_t *debug, int prev_id);
+int delete_all_watchpoints(debug_t *debug);
 
 // Remove by sparse id. Returns true if an entry was removed. Frees the
 // entry's attached object_t (which fires invalidators) before freeing

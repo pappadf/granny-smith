@@ -19,6 +19,7 @@ interface DebugState {
     memory: boolean;
     mmu: boolean;
     breakpoints: boolean;
+    watchpoints: boolean;
     callstack: boolean;
   };
   /** Open state of each auxiliary core's section, by its node name. */
@@ -52,6 +53,7 @@ export const debug: DebugState = $state({
     memory: false,
     mmu: false,
     breakpoints: false,
+    watchpoints: false,
     callstack: false,
   },
   auxOpen: {},
@@ -95,6 +97,7 @@ export function resetDebugSections(): void {
     memory: false,
     mmu: false,
     breakpoints: false,
+    watchpoints: false,
     callstack: false,
   };
 }

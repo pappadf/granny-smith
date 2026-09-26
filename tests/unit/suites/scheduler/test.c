@@ -104,6 +104,11 @@ bool debug_active(debug_t *debug) {
 int debug_break_and_trace(void) {
     return 0;
 }
+// No main-CPU debug interface here: the debugger-active path probes an
+// interrupt handler's entry through it, and this suite never engages it.
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    return NULL;
+}
 
 void trigger_vbl(config_t *restrict config) {
     (void)config;

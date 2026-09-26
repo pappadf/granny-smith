@@ -98,6 +98,12 @@ try:
             break
         time.sleep(0.5)
     check(stopped, "a client that disconnects mid-run cancels it")
+
+    # The cancellation must not leak: the run above was a top-level
+    # statement, so nothing consumed the interrupt it raised, and the first
+    # loop on the next connection aborted at once with "interrupted" (#171).
+    out = session(port, ['let n = 0\nwhile $n < 3 {\nscheduler.run 100000\n$n = $n + 1\n}\necho "n=${$n}"\n'])
+    check("n=3" in out and "interrupted" not in out, "a cancelled run does not interrupt the next connection's loop")
 finally:
     proc.kill()
     proc.wait()

@@ -190,8 +190,9 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
-    // External SCSI bus: electrically isolated second 53C96.
-    // No default devices in v1 — selections time out like an empty chain.
+    // External SCSI bus: electrically isolated second 53C96.  The profile
+    // declares its bays (mac_scsi_slots_ext01); with nothing attached,
+    // selections time out like an empty chain.
     //
     // It mounts as `machine.scsi2`, not `machine.scsi`.  Both buses used to
     // call scsi_init(), which names its object "scsi"; object_attach()
@@ -282,6 +283,9 @@ static const uint32_t q900_ram_options_kb[] = {4096, 8192, 16384, 20480, 32768, 
 
 static const scsi_bus_decl_t q900_scsi_buses[] = {
     {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
+    // The external 53C96 chain (machine.scsi2): declared so a device can be
+    // placed on it (#185).  Nothing sits there by default.
+    {.object = "scsi2", .label = "External SCSI", .slots = mac_scsi_slots_ext01},
     {0},
 };
 

@@ -563,14 +563,21 @@ static void init_gl(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-// Upload the per-channel CRT response LUT.  If the display source has a
-// non-NULL crt_response pointer, upload its 3x256 bytes; otherwise upload
-// the identity table so the response pass is a no-op for monitors whose
-// gamma is near-identity (12"/13" RGB, Portrait B&W).
+// Upload the per-channel response LUT: the card's direct-colour DAC table
+// (dac_lut) followed by the monitor's CRT response (crt_response), composed
+// into one 3x256 table.  With neither, the identity table makes the response
+// pass a no-op (12"/13" RGB, Portrait B&W).
 static void upload_response(const display_t *d) {
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, s_response_tex);
     const uint8_t *table = d->crt_response ? &d->crt_response[0][0] : s_identity_response;
+    static uint8_t composed[3][256];
+    if (d->dac_lut) {
+        for (int c = 0; c < 3; c++)
+            for (int v = 0; v < 256; v++)
+                composed[c][v] = table[c * 256 + d->dac_lut[c][v]];
+        table = &composed[0][0];
+    }
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, table);
 }
 

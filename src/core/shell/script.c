@@ -2119,6 +2119,11 @@ int script_exec(script_t *s, bool interactive) {
     cx.interactive = interactive;
     exec_block(s->top, &cx);
     value_free(&cx.ret);
+    // An interrupt cancels the script that is running.  One raised while a
+    // top-level statement (a plain `scheduler.run`) was in flight has no loop
+    // to consume it; left set, it aborted the next loop the shell saw, on the
+    // daemon's next connection (#171).
+    g_interrupt = false;
     return cx.sig == SIG_ERROR ? -1 : 0;
 }
 

@@ -648,8 +648,12 @@ void gs_checkpoint_saved(double elapsed_ms) {
     // clang-format on
 }
 
-// Request background checkpoint (with rate limiting)
+// Request background checkpoint (with rate limiting).  Honours checkpoint.auto
+// like the tick loop does: with automatic saving off, hiding the tab must not
+// write a checkpoint either (#148).  Explicit checkpoint.save is unaffected.
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
+    if (!checkpoint_auto_enabled)
+        return;
     int rc = system_quick_checkpoint(reason, false, rate_limit);
     if (rc != GS_SUCCESS) {
         printf("[checkpoint] background checkpoint failed (%s)\n", reason ? reason : "background");
@@ -828,6 +832,12 @@ void em_print_host_callstack(void) {
         printf("%s\n", stackbuf);
     else
         printf("(unavailable)\n");
+}
+
+// Nothing to walk: the browser's card ROMs live under /opfs/images/vrom and
+// /opfs/images/prom, offered at startup and on every upload (persistAs).
+void platform_offer_sibling_card_roms(const char *rom_path) {
+    (void)rom_path;
 }
 
 // Platform-specific callstack function (exposed to core via platform.h)

@@ -323,10 +323,13 @@ for m in q700 q900 q950; do
     assert_contains "$m" '"video_in":false,"audio_in":false,"aux_cpus":[]' "$m has no video/audio input or aux CPU"
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m has one SuperDrive"
     assert_contains "$m" '"cdrom":{"bus":"scsi","id":3,"label":"CD-ROM"}' "$m seats its CD at SCSI 3"
-    # A GAP, pinned so that closing it shows up here: the 900/950 have two
-    # 53C96 buses, and the model builds the second (machine.scsi2), but the
-    # profile offers bays on the internal bus only (#185).
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers one SCSI bus"
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}' "$m offers the two internal SCSI HD slots first"
+done
+# The 700 has one 53C96; the 900/950 towers have two, and the external
+# chain (machine.scsi2) is declared so a device can be placed on it (#185).
+assert_contains q700 '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "q700 offers one SCSI bus"
+for m in q900 q950; do
+    assert_contains "$m" '{"object":"scsi2","label":"External SCSI","slots":[{"label":"External SCSI 0","id":0,"boot":false},{"label":"External SCSI 1","id":1,"boot":false}]}]' "$m offers the external SCSI bus"
 done
 assert_contains q700 '"freq":25000000' "q700 runs at 25 MHz"
 assert_contains q900 '"freq":25000000' "q900 runs at 25 MHz"

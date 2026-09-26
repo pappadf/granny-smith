@@ -59,6 +59,14 @@ double platform_audio_ring_fill(void);
 // Print the host's callstack, for the failure handler.
 void platform_print_host_callstack(void);
 
+// A ROM at `rom_path` is about to boot (machine_boot_apply, after the
+// document validated): the host's chance to offer the card ROMs it keeps
+// beside it (vrom_offer_dir / prom_offer_dir).  Core builds no search path
+// of its own (docs/core/memory/rom.md).  Headless walks the ROM's directory
+// for *.vrom / *.prom, as it does for the CLI's rom= at startup; the browser
+// has nothing to do, its card ROMs live in OPFS and are offered on upload.
+void platform_offer_sibling_card_roms(const char *rom_path);
+
 // The target's clock: host_time() (seconds) and host_time_ms().
 #include "platform_clock.h"
 

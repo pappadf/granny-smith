@@ -9,11 +9,13 @@
 # browser as a download -- now says "not supported on this platform".
 
 TEST_NAME := Checkpoint platform seam
-TEST_DESC := machine.register, checkpoint.snapshot/probe/clear and storage.find_media work headless; download says it is not supported
+TEST_DESC := machine.register, checkpoint.snapshot/probe/clear and storage.find_media work headless; clear drops stale image deltas and keeps live ones; download says it is not supported
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
-TEST_SETUP := mkdir -p "$(WORK_DIR)/cp" "$(WORK_DIR)/media" && cp "$(TEST_DATA)/systems/System_3_2_0.dsk" "$(WORK_DIR)/media/"
+# A stale delta and journal in the machine directory, as a discarded
+# previous session leaves them (#149).
+TEST_SETUP := mkdir -p "$(WORK_DIR)/cp/0123456789abcdef-20260926T000000Z" "$(WORK_DIR)/media" && cp "$(TEST_DATA)/systems/System_3_2_0.dsk" "$(WORK_DIR)/media/" && printf 'stale' > "$(WORK_DIR)/cp/0123456789abcdef-20260926T000000Z/stale.delta" && printf '' > "$(WORK_DIR)/cp/0123456789abcdef-20260926T000000Z/stale.journal"
 TEST_ARGS := --checkpoint-dir=$(WORK_DIR)/cp
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

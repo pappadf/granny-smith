@@ -77,7 +77,8 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
   - `checkpoint --load <file>`: Constructs a new `config_t` via the active machine profile, restoring each subsystem from the stream.
   - `checkpoint --validate <path>`: Checks if the file contains a valid checkpoint (magic bytes).
   - `checkpoint --probe`: Returns 0 if a valid `state.checkpoint` exists in the current machine directory.
-  - `checkpoint clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory; the directory itself is left in place.
+  - `checkpoint load`: Rebuilds the machine from the stream (the new machine is constructed before the old one is destroyed). The debug object is part of the machine, so the previous machine's breakpoints and logpoints do not survive a load; add them again afterwards. Memory logpoints added after a load fire as they did before it (#172).
+  - `checkpoint clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory, together with the image deltas and journals there that no open image holds — the discarded state's deltas can never be reached again, and would otherwise accumulate one per session; the directory itself is left in place.
 
 - **File format & signature:**
   - Two on-disk formats are used:
