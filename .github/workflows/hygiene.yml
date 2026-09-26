@@ -1,0 +1,32 @@
+name: Hygiene
+
+# Static checks over the tracked tree: no build, no test data, no container.
+# Deliberately not filtered by path, since most of what these check is docs.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: No references outside the repository
+        run: python3 scripts/check-external-refs.py

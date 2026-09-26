@@ -10,3 +10,12 @@ repos:
       - id: clang-format
         types_or: [c, c++]
         exclude: ^src/peeler/
+  - repo: local
+    hooks:
+        # Comments and docs state their reasons in full: no citations of
+        # documents or paths a clean checkout cannot follow.
+      - id: external-refs
+        name: no references outside the repository
+        entry: scripts/check-external-refs.py
+        language: system
+        types: [text]
