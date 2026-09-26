@@ -13,6 +13,7 @@
 #include <stdlib.h> // malloc / free
 
 #include "alias.h"
+#include "debug.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -1195,35 +1196,47 @@ static const class_desc_t ppc_cpu_class = {
 // and a translated peek — the way tests and debugging reach the 68k
 // world's logical memory without knowing the HTAB layout.
 
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via}: the same
+// shape as every other MMU kind's (debug.h).  Omitted `supervisor` means the
+// current MSR[PR]; `fetch` translates with the instruction-side rules (the
+// IBATs, MSR[IT]) instead of the data side.
 static value_t mmu_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    (void)argc;
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
+    bool user = (argc >= 2 && argv[1].kind == V_BOOL) ? !argv[1].b : (p->msr & PPC_MSR_PR) != 0;
+    bool fetch = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
     bool ok;
-    uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u, true, &ok);
-    if (!ok)
-        return val_err("no translation for $%08X", (uint32_t)argv[0].u);
-    value_t v = val_uint(4, pa);
-    v.flags |= VAL_HEX;
-    return v;
+    const char *via = "page";
+    uint32_t pa = ppc_mmu_translate_debug_ex(p, (uint32_t)argv[0].u, !fetch, user, &ok, &via);
+    return debug_translation_result(pa, ok, via);
 }
 
+// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
+// reads through the data-side translation; "physical" reads the address as
+// is.  (machine.memory.peek on a PowerPC machine is physical; this is the
+// logical read a debugger wants.)
 static value_t mmu_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
-    uint32_t size = (argc >= 2) ? (uint32_t)argv[1].u : 4u;
+    uint32_t size = (argc >= 2 && argv[1].kind == V_UINT) ? (uint32_t)argv[1].u : 4u;
     if (size != 1 && size != 2 && size != 4)
         return val_err("size must be 1, 2 or 4");
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("peek: space must be \"logical\" or \"physical\"");
     uint32_t raw = 0;
     for (uint32_t i = 0; i < size; i++) {
-        bool ok;
-        uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u + i, true, &ok);
-        if (!ok)
-            return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
+        uint32_t pa = (uint32_t)argv[0].u + i;
+        if (!physical) {
+            bool ok;
+            pa = ppc_mmu_translate_debug(p, pa, true, &ok);
+            if (!ok)
+                return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
+        }
         raw = (raw << 8) | memory_debug_read_uint8(pa);
     }
     value_t v = val_uint((int)size, raw);
@@ -1231,23 +1244,45 @@ static value_t mmu_method_peek(struct object *self, const member_t *m, int argc,
     return v;
 }
 
+// peek's default size: a named `space` must be reachable past it.
+static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+
 static const arg_decl_t mmu_translate_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+    {.name = "supervisor",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "translate for supervisor (true) or user (false); default: MSR[PR]"},
+    {.name = "fetch",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "instruction-side translation (IBATs, MSR[IT]) rather than data-side"},
 };
 static const arg_decl_t mmu_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX,        .doc = "effective (logical) address"},
-    {.name = "size", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+    {.name = "size",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_peek_size4,
+     .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "\"logical\" (default) or \"physical\""},
 };
 
 static const member_t ppc_mmu_members[] = {
     {.kind = M_METHOD,
      .name = "translate",
-     .doc = "Translate a data-side effective address (current MSR context, no side effects)",
-     .method = {.args = mmu_translate_args, .nargs = 1, .result = V_UINT, .fn = mmu_method_translate}},
+     .doc = "Translate an address: {phys, valid, via}, side-effect-free (same shape on every MMU kind)",
+     .method = {.args = mmu_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu_method_translate}},
     {.kind = M_METHOD,
      .name = "peek",
-     .doc = "Read guest memory through the current translation (side-effect-free)",
-     .method = {.args = mmu_peek_args, .nargs = 2, .result = V_UINT, .fn = mmu_method_peek}          },
+     .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
+     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}         },
 };
 
 static const class_desc_t ppc_mmu_class = {

@@ -17,6 +17,24 @@ def check_frame(arch) {
     assert machine.cpu.instr_count > 0 "instr_count on every architecture"
 }
 
+# The typed translate/peek every MMU kind has (D3): the frame's row
+# translation agrees with translate(), and a logical read equals a physical
+# read of the translated address (`physical_ok` false on the Lisa, whose
+# three physical spaces a bare address cannot name).
+def check_mmu(physical_ok) {
+    let pc = machine.cpu.pc
+    let t = machine.cpu.mmu.translate($pc)
+    assert $t.valid "the PC translates"
+    assert $t.phys == debug.frame(count=1).rows[0].phys "frame rows use the same translation"
+    assert machine.cpu.mmu.translate($pc, fetch=true).valid "fetch-side translation"
+    if $physical_ok {
+        assert machine.cpu.mmu.peek($pc, 4) == machine.cpu.mmu.peek($t.phys, 4, "physical") "logical == physical at the translation"
+    } else {
+        assert try(machine.cpu.mmu.peek($pc, 4, "physical"), none) == none "physical refused"
+        assert machine.cpu.mmu.peek($pc, 2) == machine.memory.peek.w($pc) "logical peek"
+    }
+}
+
 # 68000 (the startup machine from TEST_ROM).
 check_frame("m68k")
 assert debug.frame(count=1).regs.d0 == machine.cpu.d0 "68K register names"
@@ -24,25 +42,32 @@ assert debug.frame(count=1).regs.d0 == machine.cpu.d0 "68K register names"
 # Lisa: 68000 behind the segment MMU.
 machine.boot model="lisa" rom="../../data/roms/lisa2-revh-098917b2.rom"
 check_frame("m68k")
+check_mmu(false)
+assert machine.cpu.mmu.translate(machine.cpu.pc).via == "segment" "the segment MMU, not identity"
+assert machine.cpu.mmu.context >= 0 "the Lisa MMU node exists
 
 # 68030 with PMMU and FPU.
 machine.boot model="se30" rom="../../data/roms/iix-iicx-se30-97221136.rom"
 check_frame("m68k")
 assert len(debug.frame(count=1).fpu.fp) == 8 "68882 register file"
+check_mmu(true)
 
 # 68040.
 machine.boot model="q700" rom="../../data/roms/q700-q900-420dbff3.rom"
 check_frame("m68k")
+check_mmu(true)
 
 # PowerPC 601: before, debug.frame returned "CPU not initialised" here.
 machine.boot model="pm7100" rom="../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
 check_frame("ppc")
 assert debug.frame(count=1).regs.r1 == machine.cpu.r1 "PPC register names"
 assert len(debug.frame(count=1).fpu.fpr) == 32 "PPC FPU register file"
+check_mmu(true)
 
 # PowerPC 604.
 machine.boot model="pm8500" rom="../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom"
 check_frame("ppc")
+check_mmu(true)
 
 echo "debug-frame-ok"
 quit

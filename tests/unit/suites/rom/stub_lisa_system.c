@@ -89,3 +89,10 @@ const char *system_machine_model_id(void) {
 rtc_t *system_rtc(void) {
     return NULL;
 }
+
+// memory.translate asks the CPU's debug interface when there is no 68K MMU;
+// this harness has no CPU.
+struct cpu_debug_if;
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    return NULL;
+}

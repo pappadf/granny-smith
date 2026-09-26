@@ -726,6 +726,32 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
     return ((uint32_t)memory_debug_read_uint16(addr) << 16) | memory_debug_read_uint16(addr + 2);
 }
 
+uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok) {
+    if (ok)
+        *ok = false;
+    if (g_lisa_mmu || (size != 1 && size != 2 && size != 4))
+        return 0;
+    uint32_t value = 0;
+    for (unsigned i = 0; i < size; i++) { // byte-wise: an access may straddle pages
+        uint32_t a = phys + i;
+        uint32_t page = a >> PAGE_SHIFT;
+        if ((int)page >= g_page_count)
+            return 0;
+        page_entry_t *pe = &g_page_table[page];
+        uint8_t b;
+        if (pe->host_base)
+            b = pe->host_base[a & PAGE_MASK];
+        else if (pe->dev)
+            b = (uint8_t)debug_dev_read(pe, a, 1);
+        else
+            return 0; // unmapped
+        value = (value << 8) | b;
+    }
+    if (ok)
+        *ok = true;
+    return value;
+}
+
 // Bulk side-effect-free read of `len` bytes into `dst`.  Copies whole spans out
 // of a page's host backing with memcpy when possible (RAM/ROM, no MMU, no Lisa,
 // no device), and falls back to the per-byte path across page boundaries or for
@@ -1871,6 +1897,17 @@ static value_t method_mem_translate(struct object *self, const member_t *m, int 
     (void)argc;
     uint32_t addr = (uint32_t)argv[0].u & g_address_mask;
     char buf[256];
+    // No 68K PMMU/040 state, but the CPU translates by other means (the
+    // PowerPC MMU, the Lisa's segment MMU): ask it, through the debug
+    // interface.  This used to report "mmu=off" and the address itself.
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!g_mmu && dif && dif->translate && (g_lisa_mmu || dif->translate_mac)) {
+        bool ok = false;
+        uint32_t pa = dif->translate(dif->ctx, addr, &ok);
+        snprintf(buf, sizeof(buf), "mmu=%s phys=0x%08x %s (machine.cpu.mmu.translate gives the typed form)",
+                 dif->arch ? dif->arch : "cpu", pa, ok ? "valid" : "INVALID");
+        return val_str(buf);
+    }
     if (!g_mmu || !g_mmu->enabled) {
         uint32_t page = addr >> PAGE_SHIFT;
         const char *backing = "unmapped";
@@ -1993,12 +2030,39 @@ static value_t method_mem_peek_l(struct object *self, const member_t *m, int arg
 // JSON-encoded payload. Replaces the per-byte fan-out the debug UI's
 // memory pane used to do (128 separate gsEval calls → 128 bridge
 // round-trips → noticeable lag while stepping). One call now suffices.
+// One byte for peek.bytes with an explicit space.  "physical" reads the
+// physical page table; "logical" reads through the CPU's own translation on
+// every architecture -- the 68K MMU (or the Lisa's) inside
+// memory_debug_read_uint8, and on a PowerPC machine, where the plain debug
+// read is physical, the core's data-side translation first.
+static uint8_t peek_byte_in_space(uint32_t addr, bool physical) {
+    if (physical) {
+        bool ok;
+        uint32_t v = memory_debug_read_phys(addr, 1, &ok);
+        return ok ? (uint8_t)v : 0xFF;
+    }
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!g_mmu && !g_lisa_mmu && dif && dif->translate_mac && dif->translate) { // PowerPC
+        bool ok;
+        uint32_t pa = dif->translate(dif->ctx, addr, &ok);
+        return ok ? memory_debug_read_uint8(pa) : 0xFF;
+    }
+    return memory_debug_read_uint8(addr);
+}
+
 static value_t method_mem_peek_bytes(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    (void)argc;
     uint32_t addr = (uint32_t)argv[0].u;
     uint64_t count = argv[1].u;
+    // `space` omitted keeps the historical meaning (through the 68K MMU;
+    // physical on PowerPC); given, it means the same on every architecture.
+    bool have_space = argc >= 3 && argv[2].kind == V_STRING;
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("memory.peek.bytes: space must be \"logical\" or \"physical\"");
+    if (have_space && physical && g_lisa_mmu)
+        return val_err("memory.peek.bytes: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
     if (count == 0)
         return val_bytes(NULL, 0);
     // Cap at 4 KB. The bridge serialises V_BYTES as a base64-ish JSON
@@ -2009,7 +2073,8 @@ static value_t method_mem_peek_bytes(struct object *self, const member_t *m, int
     if (!buf)
         return val_err("memory.peek.bytes: out of memory");
     for (uint64_t i = 0; i < count; i++)
-        buf[i] = memory_debug_read_uint8((uint32_t)(addr + i));
+        buf[i] = have_space ? peek_byte_in_space((uint32_t)(addr + i), physical)
+                            : memory_debug_read_uint8((uint32_t)(addr + i));
     value_t v = val_bytes(buf, (size_t)count);
     free(buf);
     return v;
@@ -2022,6 +2087,11 @@ static const arg_decl_t mem_peek_args[] = {
 static const arg_decl_t mem_peek_bytes_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
     {.name = "count", .kind = V_UINT, .doc = "byte count (max 4096)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "\"logical\" (through the CPU's translation) or \"physical\"; omitted: 68K logical, PowerPC physical"},
 };
 
 static const member_t mem_peek_members[] = {
@@ -2040,7 +2110,7 @@ static const member_t mem_peek_members[] = {
     {.kind = M_METHOD,
      .name = "bytes",
      .doc = "Read `count` bytes at addr (bulk; max 4096 bytes per call)",
-     .method = {.args = mem_peek_bytes_args, .nargs = 2, .result = V_BYTES, .fn = method_mem_peek_bytes}},
+     .method = {.args = mem_peek_bytes_args, .nargs = 3, .result = V_BYTES, .fn = method_mem_peek_bytes}},
 };
 
 static const class_desc_t mem_peek_class = {

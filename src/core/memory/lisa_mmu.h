@@ -55,6 +55,18 @@ void lisa_mmu_delete(lisa_mmu_t *m);
 // for API compatibility but ignored (the cursor lives in supervisor space).
 bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
 
+// Side-effect-free translation of a logical address, for debuggers: the
+// physical address and, in *space (may be NULL), which physical space it is
+// in -- "ram", "io", "rom" or "mmureg" (descriptor RAM in START mode).
+// False for an invalid, unprogrammed or out-of-limit segment.  Supervisor
+// mode uses context 0, as the hardware does.
+bool lisa_mmu_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, uint32_t *phys, const char **space);
+
+// The object-model class of `machine.cpu.mmu` on the Lisa (instance data:
+// the lisa_mmu_t).  lisa.c binds it with cpu_attach_mmu_node.
+struct class_desc;
+extern const struct class_desc lisa_mmu_class;
+
 // Save / restore descriptor RAM + latches (checkpoint parity).
 void lisa_mmu_checkpoint(lisa_mmu_t *m, checkpoint_t *cp);
 void lisa_mmu_checkpoint_restore(lisa_mmu_t *m, checkpoint_t *cp);

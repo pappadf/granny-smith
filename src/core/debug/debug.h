@@ -10,6 +10,7 @@
 // === Includes ===
 #include "addr_format.h"
 #include "common.h"
+#include "value.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -66,6 +67,17 @@ typedef struct cpu_debug_if {
     // True in supervisor state: which MMU context a debugger read uses.
     bool (*is_supervisor)(void *ctx);
 } cpu_debug_if_t;
+
+// The result of a typed `machine.cpu.mmu.translate`, the same shape on every
+// MMU kind: {phys, valid, via}.  `phys` is absent when the translation is
+// invalid; `via` says how it resolved: "identity" (translation off), "tt"
+// (68K transparent translation), "bat" (PPC block translation), "page"
+// (a table walk), "segment" (PPC direct-store segment, or the Lisa's MMU).
+value_t debug_translation_result(uint32_t phys, bool valid, const char *via);
+
+// Read the optional `space` argument at argv[idx]: "logical" (the default,
+// also when omitted) or "physical".  Returns false for anything else.
+bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);
 
 // Resolve a 68k low-memory address through the mac-world translation
 // (identity on 68K machines and when no machine is live).  Shared by

@@ -46,6 +46,7 @@ SRCS := $(CURDIR)/test.c \
         $(UNIT_ROOT)/support/stub_checkpoint.c \
         $(UNIT_ROOT)/support/stub_assert.c \
         $(UNIT_ROOT)/support/stub_cpu.c \
+        $(UNIT_ROOT)/support/stub_debugger.c \
         $(EMU_ROOT)/core/memory/rom.c \
         $(EMU_ROOT)/core/memory/memory.c \
         $(EMU_ROOT)/core/memory/mmu.c \

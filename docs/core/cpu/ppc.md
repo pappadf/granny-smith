@@ -113,9 +113,13 @@ in memory.c to keep their hands off the user arrays.
   instruction-page host pointers.  All of it lives in file statics — NOT
   in the checkpointed `ppc_t` blob (host pointers in the stream would
   break checkpoint byte-determinism) — and rebuilds lazily after restore.
-- **Debug surface**: `machine.cpu.mmu.translate(ea)` and
-  `machine.cpu.mmu.peek(ea, size)` are side-effect-free reads through the
-  current translation; the debug-if `translate` hook feeds `debug.mac`, so
+- **Debug surface**: `machine.cpu.mmu.translate(ea, [supervisor], [fetch])`
+  returns `{phys, valid, via}` (`via` is identity / bat / segment / page) and
+  `machine.cpu.mmu.peek(ea, [size], [space])` reads logical (the default,
+  through the data-side translation) or `space="physical"`; both are
+  side-effect-free, with the same signatures and shapes as the 68K and Lisa
+  `machine.cpu.mmu` nodes.  `machine.memory.peek` on these machines is
+  PHYSICAL.  The debug-if `translate` hook feeds `debug.mac`, so
   the 68k world's logical memory reads normally on PDM.  Limitation:
   logical-address memory logpoints on translated pages degrade (the slow
   path sees the physical address) — use physical logpoints on PDM.

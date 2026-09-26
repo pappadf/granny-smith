@@ -767,12 +767,37 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
 // disassembler view): no R/C updates, no fills, no exceptions.
 // data=true follows the data-access rules (MSR[DT]), else fetch rules.
 uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok) {
+    return ppc_mmu_translate_debug_ex(p, ea, data, (p->msr & PPC_MSR_PR) != 0, ok, NULL);
+}
+
+// ppc_mmu_translate_debug with the privilege given explicitly and, in *via,
+// how the address resolved -- "identity", "bat", "segment" (a T=1
+// direct-store segment) or "page" -- following xlate's decision order.
+uint32_t ppc_mmu_translate_debug_ex(ppc_t *p, uint32_t ea, bool data, bool user, bool *ok, const char **via) {
     if (ok)
         *ok = true;
     bool on = data ? (p->msr & PPC_MSR_DT) != 0 : (p->msr & PPC_MSR_IT) != 0;
+    if (via) {
+        const uint32_t *bu = data ? (ppc_is_604(p) ? p->dbatu : p->batu) : p->ibatu_cs;
+        const uint32_t *bl = data ? (ppc_is_604(p) ? p->dbatl : p->batl) : p->ibatl_cs;
+        bool tseg = (p->sr[ea >> 28] & 0x80000000u) != 0;
+        xl_out_t probe;
+        xl_result_t pres;
+        if (!data && !on)
+            *via = "identity";
+        else if (ppc_is_604(p))
+            *via = !on                                                    ? "identity"
+                   : bat604_xlate(bu, bl, ea, user, false, &probe, &pres) ? "bat"
+                   : tseg                                                 ? "segment"
+                                                                          : "page";
+        else
+            *via = tseg                                                ? "segment"
+                   : !on                                               ? "identity"
+                   : bat_xlate(bu, bl, ea, user, false, &probe, &pres) ? "bat"
+                                                                       : "page";
+    }
     if (!data && !on)
         return ea; // fetch with IT off is always direct
-    bool user = (p->msr & PPC_MSR_PR) != 0;
     xl_out_t out;
     xl_result_t res = xlate(p, ea, user, false, !data, on, true, &out);
     if (res == XL_OK)

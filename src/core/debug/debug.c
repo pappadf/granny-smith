@@ -3236,6 +3236,33 @@ static uint32_t frame_anchor(const cpu_debug_if_t *dif, uint32_t pc, int before)
     return best;
 }
 
+value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
+    value_map_builder_t *b = val_map_new();
+    if (valid) {
+        value_t p = val_uint(4, phys);
+        p.flags |= VAL_HEX;
+        val_map_put(b, "phys", p);
+    }
+    val_map_put(b, "valid", val_bool(valid));
+    val_map_put(b, "via", val_str(via));
+    return val_map_finish(b);
+}
+
+bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
+    *physical = false;
+    if (argc <= idx || argv[idx].kind == V_NONE)
+        return true; // omitted: logical
+    if (argv[idx].kind != V_STRING || !argv[idx].s)
+        return false;
+    if (strcmp(argv[idx].s, "logical") == 0)
+        return true;
+    if (strcmp(argv[idx].s, "physical") == 0) {
+        *physical = true;
+        return true;
+    }
+    return false;
+}
+
 // `debug.frame([addr], [count], [before])` — one-shot bundled snapshot for
 // the debug UI, on every CPU architecture.  Bundles the register file, a
 // disassembly window and per-row MMU translation into one map, so the panel
@@ -3324,13 +3351,20 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     return val_map_finish(b);
 }
 
+// debug.frame's default row count: a named `before` must be reachable past it.
+static const value_t k_frame_count32 = {.kind = V_INT, .i = 32};
+
 static const arg_decl_t debug_frame_args[] = {
     {.name = "addr",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
      .doc = "Start address (default PC)"},
-    {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Number of rows (default 32)"},
+    {.name = "count",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_frame_count32,
+     .doc = "Number of rows (default 32)"},
     {.name = "before",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,

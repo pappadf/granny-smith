@@ -6,6 +6,7 @@
 
 #include "cpu.h"
 #include "debug.h"
+#include "lisa_mmu.h"
 #include "mmu.h"
 #include "system.h"
 
@@ -165,6 +166,18 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
         *tt_hit = false;
     if (valid)
         *valid = true;
+
+    // The Lisa's segment MMU: its own translation, not the PMMU's (before,
+    // this reported every Lisa address as mapped to itself, N-28).
+    if (g_lisa_mmu) {
+        uint32_t phys = logical_addr;
+        bool ok = lisa_mmu_translate(g_lisa_mmu, logical_addr, debug_cpu_is_supervisor(), &phys, NULL);
+        if (valid)
+            *valid = ok;
+        if (is_identity)
+            *is_identity = ok && phys == logical_addr;
+        return ok ? phys : logical_addr;
+    }
 
     // No MMU or MMU disabled: identity mapping
     if (!g_mmu || !g_mmu->enabled)

@@ -60,8 +60,8 @@ const char *floppy_kind_to_string(floppy_kind_t kind) {
     return "";
 }
 
-// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" /
-// "lisa_segment").  This is the value the capability probe exports as
+// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" / "68040" /
+// "ppc_601" / "ppc_604" / "lisa_segment").  This is the value the capability probe exports as
 // `mmu.kind` so the debug UI can pick the right register views.
 const char *mmu_kind_to_string(mmu_kind_t kind) {
     switch (kind) {

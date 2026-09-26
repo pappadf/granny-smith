@@ -7,6 +7,7 @@
 #include "cpu_internal.h"
 
 #include "alias.h"
+#include "debug.h"
 #include "fpu.h"
 #include "log.h"
 #include "memory.h"
@@ -351,6 +352,16 @@ void cpu_attach_mmu(cpu_t *cpu, void *mmu) {
     if (cpu->mmu_object)
         return; // already attached (idempotent)
     cpu->mmu_object = object_new(&mmu_class, mmu, "mmu");
+    if (cpu->mmu_object)
+        object_attach(cpu->cpu_object, cpu->mmu_object);
+}
+
+// Bind a `cpu.mmu` child of an MMU kind this file does not model (the Lisa's
+// segment MMU), so every MMU is reached at the same path.  Idempotent.
+void cpu_attach_mmu_node(cpu_t *cpu, const class_desc_t *cls, void *data) {
+    if (!cpu || !cpu->cpu_object || !cls || cpu->mmu_object)
+        return;
+    cpu->mmu_object = object_new(cls, data, "mmu");
     if (cpu->mmu_object)
         object_attach(cpu->cpu_object, cpu->mmu_object);
 }
@@ -1112,6 +1123,119 @@ static value_t attr_mmu_enabled(struct object *self, const member_t *m) {
     return val_uint(1, mmu->enabled ? 1 : 0);
 }
 
+// === Typed translate / peek, shared by the 030 and 040 nodes ================
+//
+// The same two methods exist on every MMU kind (68030, 68040, PowerPC, the
+// Lisa's segment MMU), with the same result shapes, so a debugger needs no
+// per-kind code to label an address or read memory (11-WORK-ORDER D3).
+
+// Whether a 68040 transparent-translation register maps `addr` for this
+// privilege: enabled, base/mask match on A31-A24, and the S field allows it.
+static bool tt040_hit(uint32_t tt, uint32_t addr, bool supervisor) {
+    if (!TT040_E(tt))
+        return false;
+    uint32_t mask = ~TT040_MASK(tt) & 0xFFu;
+    if (((addr >> 24) & mask) != (TT040_BASE(tt) & mask))
+        return false;
+    uint32_t sf = TT040_SFIELD(tt);
+    return sf >= 2 || (sf == 1) == supervisor;
+}
+
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via}.  Omitted
+// `supervisor` means the CPU's current state.  `fetch` selects the 040's
+// instruction TT registers; the 030 PMMU's TT match does not distinguish.
+static value_t mmu68k_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr = (uint32_t)argv[0].u;
+    bool sup = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : debug_cpu_is_supervisor();
+    bool fetch = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
+    if (!g_mmu || !g_mmu->enabled)
+        return debug_translation_result(addr, true, "identity");
+    if (g_mmu->m040) {
+        mmu040_state_t *m4 = g_mmu->m040;
+        if (tt040_hit(fetch ? m4->itt0 : m4->dtt0, addr, sup) || tt040_hit(fetch ? m4->itt1 : m4->dtt1, addr, sup))
+            return debug_translation_result(addr, true, "tt");
+    } else if (mmu_check_tt(g_mmu, addr, false, sup)) {
+        return debug_translation_result(addr, true, "tt");
+    }
+    uint32_t pa = addr;
+    bool ok = mmu_translate_checked(g_mmu, addr, sup, &pa);
+    return debug_translation_result(pa, ok, "page");
+}
+
+// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
+// reads through the MMU in the CPU's current state; "physical" reads the
+// physical address directly.
+static value_t mmu68k_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr = (uint32_t)argv[0].u;
+    unsigned size = (argc >= 2 && argv[1].kind == V_UINT) ? (unsigned)argv[1].u : 4;
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("peek: space must be \"logical\" or \"physical\"");
+    if (size != 1 && size != 2 && size != 4)
+        return val_err("peek: size must be 1, 2 or 4");
+    if (physical) {
+        bool ok;
+        uint32_t v = memory_debug_read_phys(addr, size, &ok);
+        return ok ? val_uint((uint8_t)size, v) : val_err("peek: nothing at physical $%08X", addr);
+    }
+    uint32_t v = size == 1   ? memory_debug_read_uint8(addr)
+                 : size == 2 ? memory_debug_read_uint16(addr)
+                             : memory_debug_read_uint32(addr);
+    return val_uint((uint8_t)size, v);
+}
+
+// peek's default size: a named `space` must be reachable past it.
+static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+
+static const arg_decl_t mmu68k_translate_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical address"},
+    {.name = "supervisor",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "translate for supervisor (true) or user (false); default: the CPU's current state"},
+    {.name = "fetch",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "instruction fetch (the 040's ITT registers) rather than a data access"},
+};
+static const arg_decl_t mmu68k_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address"},
+    {.name = "size",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_peek_size4,
+     .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "\"logical\" (default) or \"physical\""},
+};
+
+// The two methods, appended to both 68K mmu member tables.
+#define MMU68K_METHODS                                                                                                 \
+    {                                                                                                                  \
+        .kind = M_METHOD,                                                                                              \
+        .name = "translate",                                                                                           \
+        .doc = "Translate an address: {phys, valid, via}, side-effect-free (same shape on every MMU kind)",            \
+        .method = {.args = mmu68k_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu68k_method_translate} \
+},        \
+    {                                                                                                                  \
+        .kind = M_METHOD, .name = "peek",                                                                              \
+        .doc = "Read memory, logical (through the MMU) or physical; side-effect-free", .method = {                     \
+            .args = mmu68k_peek_args,                                                                                  \
+            .nargs = 3,                                                                                                \
+            .result = V_UINT,                                                                                          \
+            .fn = mmu68k_method_peek                                                                                   \
+        }                                                                                                              \
+    }
+
 static const member_t mmu_members[] = {
     {.kind = M_ATTR,
      .name = "tc",
@@ -1158,6 +1282,7 @@ static const member_t mmu_members[] = {
      .flags = VAL_RO,
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}                              },
+    MMU68K_METHODS,
 };
 
 static const class_desc_t mmu_class = {
@@ -1253,6 +1378,7 @@ static const member_t mmu040_members[] = {
      .flags = VAL_RO,
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}                             },
+    MMU68K_METHODS,
 };
 
 static const class_desc_t mmu040_class = {

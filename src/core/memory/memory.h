@@ -328,6 +328,11 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 uint8_t memory_debug_read_uint8(uint32_t addr);
 uint16_t memory_debug_read_uint16(uint32_t addr);
 uint32_t memory_debug_read_uint32(uint32_t addr);
+// Side-effect-free read of `size` (1, 2 or 4) bytes at a PHYSICAL address,
+// straight from the physical page table (host RAM/ROM or a device read).
+// *ok is false for unmapped addresses, and on the Lisa, whose three physical
+// spaces (RAM, I/O, boot ROM) are not in the page table.  Big-endian.
+uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok);
 // Bulk equivalent of len consecutive memory_debug_read_uint8 calls, but copies
 // contiguous host-backed spans with memcpy.  Same result, far cheaper for RAM.
 void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len);
