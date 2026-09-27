@@ -49,8 +49,10 @@ static const tnt_board_desc_t pm8500_board = {
     // bit 13 CLEAR = 8500 in Open Firmware's decode (OpenFW $10592 picks
     // "AAPL,7500" over "AAPL,8500" on bit 13 of xw@>>11 — the earlier
     // "composite video" reading of bit 13 was wrong).  MESH present,
-    // idle-high straps.
-    .boxid = 0x8000u | 0x4000u | 0x0800u,
+    // idle-high straps, and bit 8 — the factory-test strap — HIGH: POST
+    // tests it on every boot after the first on a formatted store and a
+    // clear bit is the Serial Test Manager instead of a boot (pm7500.c).
+    .boxid = 0x8000u | 0x4000u | 0x0800u | 0x0100u,
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
     // +$20 bit 31 SET = the 7500/8500 class in Open Firmware's selector
     // (see pm7500.c); bit 30 clear = not a 9500 for the 68k routine.
@@ -81,6 +83,8 @@ const hw_profile_t machine_pm8500 = {
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm8500_pci_slots,
+
+    .builtin_video = &tnt_builtin_video,
 
     .substrate = &tnt_substrate,
     .board = &pm8500_board,

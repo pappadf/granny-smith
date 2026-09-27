@@ -44,12 +44,22 @@ static const pci_slot_decl_t pm7500_pci_slots[] = {
 
 static const tnt_board_desc_t pm7500_board = {
     // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
-    // present, bit 8 factory-test strap CLEAR (set sends the ROM into its
-    // serial test monitor), bit 11 CLEAR (set = 8500 — the shipping ROM's
-    // identification routine at $FFC14844), and bit 13 SET — Open
-    // Firmware's model decode (OpenFW image $10592) reads BoxID as xw@>>11 into its
-    // machine word and picks "AAPL,7500" over "AAPL,8500" on bit 13.
-    .boxid = 0x8000u | 0x4000u | 0x2000u,
+    // present, bit 8 the factory-test strap idling HIGH, bit 11 CLEAR (set
+    // = 8500 — the shipping ROM's identification routine at $FFC14844),
+    // and bit 13 SET — Open Firmware's model decode (OpenFW image $10592)
+    // reads BoxID as xw@>>11 into its machine word and picks "AAPL,7500"
+    // over "AAPL,8500" on bit 13.
+    //
+    // Bit 8 is read by POST ($FFF201FC, `lwbrx` + `andi. r6,r6,0x100`) on
+    // every boot whose NVRAM already carries POST's "RobG" log signature —
+    // i.e. every boot but the first on a formatted store — and CLEAR sends
+    // the machine into the ROM's Serial Test Manager (`>` on ttya, no
+    // timeout) before Open Firmware ever runs: no device tree, no BAR
+    // assignment, a black screen (#115).  The earlier reading of the strap
+    // as "set = test monitor" was made on ladder rows that always booted a
+    // virgin store, where POST takes the fresh-log path and never tests
+    // the bit.  The Network Server board (ans500.c) found the same law.
+    .boxid = 0x8000u | 0x4000u | 0x2000u | 0x0100u,
     // Hammerhead identity: first byte $39 selects the ROM's TNT path
     // (a $3001xxxx identifier is the 7200/Catalyst); +$20 bit 31 SET =
     // the 7500/8500 class in Open Firmware's selector (m = (b>>5) |
@@ -105,6 +115,8 @@ const hw_profile_t machine_pm7500 = {
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm7500_pci_slots,
+
+    .builtin_video = &tnt_builtin_video,
 
     .substrate = &tnt_substrate,
     .board = &pm7500_board,

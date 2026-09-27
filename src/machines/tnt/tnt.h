@@ -39,6 +39,7 @@
 #include "display_class.h" // scanout descriptor (control.c presents through it)
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
 #include "machine.h"
+#include "machine_profile.h"
 #include "memory.h"
 #include "pci.h" // the generic PCI core: bus, device, config header
 #include "system_config.h"
@@ -306,7 +307,17 @@ typedef struct tnt_control {
     uint8_t clut[256][3];
     uint8_t crsr[8][3]; // cursor palette (+$10 port)
     uint8_t crsr_phase;
+    // The pixel-clock synthesiser (Cuda I2C device $50, subaddresses 1..3):
+    // divisor p0, multiplier p1, post-scale exponent p2.  Zero = unprogrammed.
+    uint8_t clk[3];
+    // The monitor on the sense lines, as the lines it straps to ground
+    // (bits {A,B,C} = {2,1,0}): the built-in port's `monitor=` pick.
+    uint8_t mon_grounded;
 } tnt_control_t;
+
+// hw_profile_t.builtin_video for the machines with Control (control.c): the
+// registry publishes and validates `monitor=` through it.
+extern const builtin_video_desc_t tnt_builtin_video;
 
 // === MESH state (mesh.c) ====================================================
 // MESH (343S1146) — Apple's fast internal-bus SCSI cell: sixteen
@@ -372,6 +383,7 @@ typedef struct tnt_state {
     tnt_gbus_t gbus;
     tnt_lcd_t lcd;
     struct object *gc_object; // machine.gc node (grand_central.c)
+    struct object *nvram_object; // machine.nvram node (grand_central.c)
     struct object *board_object; // machine.board node (gbus.c)
     struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
@@ -382,6 +394,7 @@ typedef struct tnt_state {
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
     struct display display; // scanout descriptor (display.h)
     rgba8_t clut_view[256]; // materialized CLUT for the renderer
+    uint8_t dac_view[3][256]; // the RaDACal table per channel, for the direct-colour modes
     uint8_t *blank; // black stub presented while the raster is blanked
     uint8_t *compose; // hardware-cursor composite (derived, not checkpointed)
 
@@ -479,6 +492,8 @@ void tnt_control_teardown(config_t *cfg);
 // RaDACal byte cells (Grand Central +$1B000, $10 centres).
 uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
+// The pixel-clock synthesiser on Cuda's I2C bus (av_cuda_attach_i2c_write).
+bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
 // Presentation: the primary display descriptor (NULL before init), and the
 // host-frame dirty mark (guest CPU writes bypass the renderer).
 struct display *tnt_control_display(config_t *cfg);

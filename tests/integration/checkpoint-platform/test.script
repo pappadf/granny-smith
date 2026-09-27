@@ -1,10 +1,30 @@
-# A registered machine checkpoints under <checkpoint dir>/<id>-<created>.
+# A registered machine checkpoints under <checkpoint dir>/<id>-<created>,
+# and a writable image's delta lives there too.  The setup planted a delta
+# and journal from a "previous session" in that directory: files no
+# checkpoint refers to and no image holds open.
 machine.register "0123456789abcdef" "20260926T000000Z"
+let cpdir = "${$WORK_DIR}/cp/0123456789abcdef-20260926T000000Z"
+def count(needle) {
+    let n = 0
+    for e in vfs.list($cpdir) {
+        if contains($e.name, $needle) {
+            $n = $n + 1
+        }
+    }
+    return $n
+}
+machine.floppy.drive[0].insert("${$WORK_DIR}/media/System_3_2_0.dsk", true)
 scheduler.run 1000000
+assert count(".delta") == 2 "the inserted floppy's delta joined the stale one"
 assert checkpoint.snapshot("test") "quick checkpoint saved"
 assert checkpoint.probe() "probe finds it"
+
+# clear takes the stale delta and journal with the checkpoint, and keeps the
+# live image's (#149).
 checkpoint.clear
 assert !checkpoint.probe() "clear removed it"
+assert count("stale") == 0 "clear removed the stale delta and journal"
+assert count(".delta") == 1 "clear kept the live image's delta"
 
 # find_media picks the floppy image out of a directory, and copies it.
 assert storage.find_media("${$WORK_DIR}/media", "${$WORK_DIR}/found.dsk") "a floppy image was found"

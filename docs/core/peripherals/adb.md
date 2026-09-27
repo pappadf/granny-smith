@@ -586,8 +586,30 @@ The emulator sets bit 3 via `set_adb_int()`:
 The third interrupt delivers a dummy byte that is not consumed; bit 3 = 0 signals
 end of data.
 
-**No-reply scenario**: bit 3 = 0 on the first interrupt → sets `fDBNoReply`,
-`fDBCnt` zeroed at `@fetchDone`.
+**No-reply scenario**: bit 3 = 0 on the first EVEN byte → sets fDBFlag bit 1
+("no reply", `$408070DA`). The byte is still read into the buffer and the ROM
+goes on to the ODD byte, whose bit 3 it reads as the **Service Request** line
+(`$40807124`: low → fDBFlag bit 2 + `$15D` bit 3 → rescan every device from
+`$408071F2`). The completion routine is *not* called on this path — the
+no-reply exits through `$4080719C` (next device of an SRQ scan) or `$40807184`
+(resume the auto-poll, `$4080724C`) — so the byte count is never seen by a
+service routine. In init mode (`$15D` bit 5, the boot enumeration) the ROM
+jumps to the completion routine straight from the no-reply EVEN byte with the
+count still 0, and the enumerator tests fDBFlag bit 1.
+
+The line therefore means something different in each phase, and the model
+delivers it accordingly (`adb_deliver_next_byte`):
+
+| Phase | bit 3 low means | Emulator |
+|-------|-----------------|----------|
+| CMD completion | SRQ at command time: re-queue this command, run the poll (`$40807046`) | always high |
+| first EVEN byte | device did not answer | low for `reply_len == 0` |
+| first ODD byte | some device is service-requesting | low only if a device with data has R3 bit 13 set |
+| later EVEN byte | end of data → completion routine | low (the end-of-transfer dummy) |
+
+Pulling the ODD byte low after every idle poll used to make the ROM set its
+SRQ-pending bit each time and never leave the scan loop: two explicit Talk R0s
+every ~12 ms for the life of the machine, and no transceiver auto-poll at all.
 
 ### Data Replay Phase (Phase 2)
 
@@ -788,8 +810,9 @@ The ADB controller is driven primarily by the port B output callback:
 
    - **State 1/2 (EVEN/ODD)**: If a Listen command is active, read the data
      byte from SR. Otherwise, schedule deferred delivery of the next reply byte
-     (or dummy) via `adb_deliver_next_byte_deferred`. A `dummy_sent` guard
-     suppresses scheduling during the ROM's data replay phase (see below).
+     (or dummy) via `adb_deliver_next_byte_deferred`; a delivery past the
+     end of the reply is the end-of-transfer dummy (or, for a no-reply
+     Talk's ODD byte, the SRQ status — see "No-reply scenario" above).
 
    - **State 3 (IDLE)**: Cancel stale `adb_shift_complete_deferred` and
      `adb_deliver_next_byte_deferred` events from the previous transaction.
@@ -824,13 +847,33 @@ may enter a **data replay phase** (Phase 2) where it writes processed data back
 to VIA SR and toggles EVEN/ODD on port B. These port B transitions trigger the
 EVEN/ODD handler, which would normally schedule another `deliver_next_byte`.
 
-The `dummy_sent` flag prevents this:
+The `dummy_sent` flag records this:
 - Set to `true` when the dummy byte is delivered in `adb_deliver_next_byte()`
 - Cleared when a new command is decoded in `adb_decode_command()`
-- The EVEN/ODD handler checks `if (!dummy_sent)` before scheduling delivery
+- The IDLE handler uses it to tell an aborted Talk (reply prepared, nothing
+  fetched, no dummy sent) from a completed one
 
-Without this guard, the emulator delivers spurious dummy bytes during replay,
-overwriting the ROM's SR writes and corrupting the data stream.
+### The command byte must not complete itself (issue #122)
+
+The ROM writes the command to SR (`$40807406`, ACR already in mode 7) about
+120 CPU cycles *before* it writes ST1:ST0 = CMD to port B (`$408073DC`), with
+interrupts masked in between. `via.c` used to schedule its generic 8-VIA-cycle
+shift-out completion (~160 CPU cycles) at that SR write and rely on
+`adb_port_b_output`'s `via_cancel_pending_shift()` to cancel it at the port-B
+write. On the wrong E-clock phase the timer won first: IFR_SR was set before
+the command was even started, the ROM took the interrupt as the command
+completion, stepped to EVEN, and read the SR — still holding the command byte
+— as the reply's first data byte. `adb_shift_complete_deferred` then fired in
+state 1 and supplied the second byte, the end-of-transfer dummy completed a
+two-byte "reply" of `3C FF`, and the mouse service routine posted `$3C` (bit 7
+clear) as a button-down: `MBState` flipped to `$00` with no report behind it.
+The log signature is `adb_shift_complete_deferred: state=1`.
+
+A 6522 in mode 7 has no clock of its own — CB1 belongs to the transceiver —
+so `via.c` now schedules no completion timer for a mode-7 SR write on a VIA
+with no shift-out device registered (the SE/30, IIx, IIcx, IIci and Q700 pass
+`via1_shift_out = NULL`). The Plus keyboard, Egret and Cuda machines register
+one, and for them the timer remains the modelled external clock.
 
 ### Null Responses
 

@@ -432,6 +432,29 @@ TEST(test_a_device_with_srq_off_does_not_interrupt_the_poll) {
     adb_delete(adb);
 }
 
+// A device adopts only the handler IDs it implements.  MkLinux's mouse
+// driver probes for a three-button mouse with Listen R3 handler 4; the
+// classic two-byte mouse must refuse it and stay on $01 (#144).
+TEST(test_the_mouse_refuses_a_handler_it_does_not_implement) {
+    adb_t *adb = setup();
+    uint8_t r3[8];
+    uint8_t out[8];
+    int n = 0;
+
+    uint8_t three_button[2] = {0x63, 0x04};
+    adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x0B), three_button, 2, out, &n);
+    talk_r3(adb, 3, r3);
+    ASSERT_EQ_INT(0x01, r3[1]); // still the classic mouse
+
+    // The 200 cpi variant of the same report format is implemented.
+    uint8_t cpi200[2] = {0x63, 0x02};
+    adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x0B), cpi200, 2, out, &n);
+    talk_r3(adb, 3, r3);
+    ASSERT_EQ_INT(0x02, r3[1]);
+
+    adb_delete(adb);
+}
+
 int main(void) {
     RUN(test_rtc_bit_banging_is_not_an_adb_transition);
     RUN(test_an_st_change_still_lands_under_rtc_traffic);
@@ -445,6 +468,7 @@ int main(void) {
     RUN(test_register_three_reports_its_upper_bits);
     RUN(test_listen_r3_carries_the_srq_bit);
     RUN(test_a_device_with_srq_off_does_not_interrupt_the_poll);
+    RUN(test_the_mouse_refuses_a_handler_it_does_not_implement);
     printf("[PASS] All ADB tests passed\n");
     return 0;
 }

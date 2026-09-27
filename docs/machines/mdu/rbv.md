@@ -11,9 +11,10 @@ On the IIci the RBV **replaces the VIA2** of the IIcx-family machines: it
 lives at physical `$50F26000`, aggregates the slot / SCSI / sound
 interrupts into a single 68030 **IPL 2** assertion, owns the
 soft-power-off and external-cache control bits, and carries the built-in
-video's monitor-sense + depth register. The framebuffer itself is owned
-by the [builtin_rbv_video](../../../src/machines/mdu/builtin_rbv_video.c)
-NuBus pseudo-card and a Bt450 VDAC at `$50F24000`; the RBV only holds the
+video's monitor-sense + depth register. The framebuffer (the bottom of
+Bank A in main RAM) is scanned out by the
+[builtin_rbv_video](../../../src/machines/mdu/builtin_rbv_video.c)
+NuBus pseudo-card through a Bt450 VDAC at `$50F24000`; the RBV only holds the
 depth/monitor register (`RvMonP`) and the slot-0 video VBL interrupt
 (`RvIRQ0`).
 
@@ -38,9 +39,12 @@ Apple's *shared* VIA2/RBV OS code reaches the IFR and IER not at the
 native offsets `$003`/`$013` but at the VIA-register-spaced aliases
 `Rv2IFR = vIFR + RvIFR = $1A03` and `Rv2IER = vIER + RvIER = $1C13` (the
 IER decode requires A4=1 — an RBV ASIC quirk documented in the mac68k
-headers). The RBV memory interface decodes **both** the native small
-offsets and these two aliases, so code written either way reaches the
-same register.
+headers). A/UX 3.0.1's level-2 interrupt handler likewise reads the
+slot-interrupt register at `vBufA + RvSInt = $1E02` (the 6522 VIA2's port
+A carried the slot lines). The RBV memory interface decodes the native
+small offsets and these three aliases, so code written either way reaches
+the same register. Undecoded, `$1E02` read `$FF` ("no slot pending") and the
+IIci kernel spun in its handler on the built-in video's VBL (`RvIRQ0`).
 
 ## Behavioural model (v1)
 

@@ -13,6 +13,7 @@
 #include "machine_config.h"
 #include "nubus.h"
 #include "object.h"
+#include "platform.h"
 #include "prom.h"
 #include "rom.h"
 #include "scheduler.h"
@@ -1034,6 +1035,12 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
                            "(see prom.identify for what it is instead)",
                            doc.prom);
     }
+
+    // The card ROMs beside this ROM join the offer registry before the
+    // resolution check reads it.  Offers are content-addressed and persist,
+    // so this only adds; a ROM booted from another directory than the
+    // platform's startup one used to find none of its siblings (#187).
+    platform_offer_sibling_card_roms(doc.rom);
 
     // Strict resolution for explicitly picked socket cards (per-slot staged
     // entries and the document's wildcard card).  The resolution check reads

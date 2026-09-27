@@ -123,10 +123,10 @@
 | visible framebuffer lives in super-slot DRAM, which classic 24-bit
 | QuickDraw cannot address — answer the 24-bit boot-family base until
 | 32-Bit QuickDraw is loaded, the super-slot DRAM framebuffer after.
-| (Known gap: the OS's gDevice rebuild reads the
-| DEVICE base + vpBaseOffset rather than asking the driver, so on
-| System 6.0.8 the Finder still paints into std-slot VRAM; the
-| accelerator bring-up itself is unaffected.)
+| (The live boot GDevice is re-pointed at the DRAM framebuffer by
+| SecondaryInit -- gsvrom_sinit.s -- not through this op: the OS's
+| gDevice rebuild reads the DEVICE base + vpBaseOffset rather than
+| asking the driver.)
 \pfx&BaseAddr:
 	movem.l	d1/a0-a1,-(sp)
 	move.w	#TrapNumGestalt,d0

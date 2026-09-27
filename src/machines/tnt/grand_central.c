@@ -402,6 +402,164 @@ static const class_desc_t gc_class = {
     .n_members = sizeof(gc_members) / sizeof(gc_members[0]),
 };
 
+// ============================================================
+// machine.nvram — the 8 KB non-volatile store as the test lever
+// ============================================================
+// The banked store read flat: byte i is bank i/32, cell i%32.  The same
+// shape as machine.rtc.pram on the 68k machines (peek/poke/dump/snapshot/
+// restore), so a row can pin what lives here — the Mac OS XPRAM image at
+// +$1300 (the display depth, the startup device) and Open Firmware's
+// environment in the top bank — without driving a control panel.
+static uint8_t *nvram_store(struct object *self) {
+    tnt_state_t *st = tnt_st((config_t *)object_data(self));
+    return st ? st->gc.nvram : NULL;
+}
+
+static value_t nvram_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    uint64_t addr = argv[0].u;
+    if (addr >= TNT_NVRAM_SIZE)
+        return val_err("nvram.peek: offset 0x%llX is outside the %u-byte store", (unsigned long long)addr,
+                       TNT_NVRAM_SIZE);
+    return val_uint(1, nv[addr]);
+}
+
+static value_t nvram_method_poke(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    uint64_t addr = argv[0].u;
+    const value_t *bytes = &argv[1];
+    if (bytes->kind != V_BYTES || !bytes->bytes.p)
+        return val_err("nvram.poke: bytes argument must be V_BYTES (use the :N width suffix, e.g. 0x80:1)");
+    size_t n = bytes->bytes.n;
+    if (n == 0)
+        return val_err("nvram.poke: bytes argument is empty");
+    if (addr >= TNT_NVRAM_SIZE || addr + n > TNT_NVRAM_SIZE)
+        return val_err("nvram.poke: write of %zu bytes at 0x%llX would overflow the %u-byte store", n,
+                       (unsigned long long)addr, TNT_NVRAM_SIZE);
+    memcpy(nv + addr, bytes->bytes.p, n);
+    return val_none();
+}
+
+static value_t nvram_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    uint64_t addr = argv[0].u;
+    uint64_t n = argv[1].u;
+    if (addr >= TNT_NVRAM_SIZE || n == 0 || addr + n > TNT_NVRAM_SIZE)
+        return val_err("nvram.dump: read of %llu bytes at 0x%llX would overflow the %u-byte store",
+                       (unsigned long long)n, (unsigned long long)addr, TNT_NVRAM_SIZE);
+    return val_bytes(nv + addr, (size_t)n);
+}
+
+static value_t nvram_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    return val_bytes(nv, TNT_NVRAM_SIZE);
+}
+
+// Whole-store restore from a snapshot: how a row seeds one boot's formatted
+// store into another.
+static value_t nvram_method_restore(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    const value_t *bytes = &argv[0];
+    if (bytes->kind != V_BYTES || bytes->bytes.n != TNT_NVRAM_SIZE || !bytes->bytes.p)
+        return val_err("nvram.restore: expected V_BYTES of length %u (got len=%zu)", TNT_NVRAM_SIZE,
+                       bytes->kind == V_BYTES ? bytes->bytes.n : 0);
+    memcpy(nv, bytes->bytes.p, TNT_NVRAM_SIZE);
+    return val_none();
+}
+
+// `machine.nvram.clear()` — the battery pull, on every TNT board (the
+// Network Server's `machine.board.clear_nvram()` is the same call).
+static value_t nvram_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || !tnt_st(cfg))
+        return val_err("nvram not available");
+    tnt_nvram_clear(cfg);
+    return val_bool(true);
+}
+
+static value_t nvram_attr_size(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(4, TNT_NVRAM_SIZE);
+}
+
+static const arg_decl_t nvram_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+};
+static const arg_decl_t nvram_poke_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "bytes", .kind = V_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
+};
+static const arg_decl_t nvram_dump_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "n", .kind = V_UINT, .doc = "byte count"},
+};
+static const arg_decl_t nvram_restore_args[] = {
+    {.name = "bytes", .kind = V_BYTES, .doc = "8192-byte buffer (typically from nvram.snapshot)"},
+};
+
+static const member_t nvram_members[] = {
+    {.kind = M_ATTR,
+     .name = "size",
+     .doc = "Store size in bytes (256 banks of 32)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "peek",
+     .doc = "Read one byte at a flat offset (the Mac OS XPRAM image is at $1300 + PRAM address)",
+     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}},
+    {.kind = M_METHOD,
+     .name = "poke",
+     .doc = "Write 1..N bytes at a flat offset",
+     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}},
+    {.kind = M_METHOD,
+     .name = "dump",
+     .doc = "Read N bytes starting at a flat offset",
+     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}},
+    {.kind = M_METHOD,
+     .name = "snapshot",
+     .doc = "Read the whole 8 KB store",
+     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}},
+    {.kind = M_METHOD,
+     .name = "restore",
+     .doc = "Write the whole store from a snapshot",
+     .method = {.args = nvram_restore_args, .nargs = 1, .result = V_NONE, .fn = nvram_method_restore}},
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Blank the store — what removing the board battery does (Open Firmware reformats it next boot)",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}},
+};
+
+static const class_desc_t nvram_class = {
+    .name = "nvram",
+    .members = nvram_members,
+    .n_members = sizeof(nvram_members) / sizeof(nvram_members[0]),
+};
+
 void tnt_gc_attach_object(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (!st || st->gc_object)
@@ -411,10 +569,22 @@ void tnt_gc_attach_object(config_t *cfg) {
         return;
     object_set_order(st->gc_object, 45);
     object_attach(machine_object(), st->gc_object);
+    // The non-volatile store beside it: machine.nvram.
+    st->nvram_object = object_new(&nvram_class, cfg, "nvram");
+    if (st->nvram_object) {
+        object_set_label(st->nvram_object, "NVRAM");
+        object_set_order(st->nvram_object, 46);
+        object_attach(machine_object(), st->nvram_object);
+    }
 }
 
 void tnt_gc_detach_object(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
+    if (st && st->nvram_object) {
+        object_detach(st->nvram_object);
+        object_delete(st->nvram_object);
+        st->nvram_object = NULL;
+    }
     if (st && st->gc_object) {
         object_detach(st->gc_object);
         object_delete(st->gc_object);

@@ -153,12 +153,30 @@ The board model is the chipset skeleton plus the DMA architecture:
   (bank 2 shows through at `+$600000`; the framebuffer lives in the
   `+$800000` half with pixel 0 at +16), the RaDACal byte cells at GC
   `+$1B000` (index/cursor/misc/CLUT on `$10` centres; misc `$20` bits 3:2
-  = 8/16/32 bpp), monitor sense modeled as a 13"/14" strap (line C
-  grounded — extended sense `$2B`, the head of the ROM's own mode table),
-  and VBL as Grand Central interrupt **26** at 60 Hz while `intr_ena` is
+  = 8/16/32 bpp; in the direct-colour modes the table stays in the DAC
+  path, published as `display_t.dac_lut` and applied by the renderer and
+  by capture alike — MkLinux's console draws palette indexes into 32 bpp
+  pixels and relies on it, #147), monitor sense strapped from the boot
+  document's `monitor=` (`hires`, the default: line C grounded — extended
+  sense `$2B`, the head of the ROM's own mode table; `twopage` grounds all
+  three and Open Firmware programs 1152x870; `portrait`, `rubik`, `none`;
+  the pick survives `machine.restart` and a checkpoint, #146),
+  and VBL as Grand Central interrupt **26** while `intr_ena` is
   set (an earlier map guessed 30; the shipping video driver toggles
   mask bit 26 as it writes `INTR_ENA`, and Apple's own 9500
-  external-interrupt table gives 30 to the second-CPU doorbell).
+  external-interrupt table gives 30 to the second-CPU doorbell).  The
+  retrace period is the chip's own: pixel clock / (htotal × vtotal),
+  with htotal = (hperiod + 2) × 2 and vtotal = vperiod / 2 from the
+  timing registers and the pixel clock from the synthesiser the driver
+  programs over Cuda I2C (device `$50`, three RdWrIIC packets per
+  mode-set carrying {p0, p1, p2}; dot clock = 3.9064 MHz × p1 × 2^p2 /
+  p0).  The ROM's 640x480 boot mode is {14, 27, 2} = 30.135 MHz over
+  864 × 525 — Apple's 66.67 Hz 13"/14" raster, 66.43 Hz here — and its
+  1152x870 mode {11, 35, 3} = 99.44 MHz over 1456 × 915 = 74.63 Hz.
+  Until the synthesiser and both period registers are programmed (power
+  on, the blanked window of a mode-set) the event runs at a nominal
+  60 Hz.  This is Control's retrace and not the 60.15 Hz machine tick:
+  `tnt_trigger_vbl()` still feeds VIA1 CA1 once per scheduler frame-unit.
   Scanout presents through the shared `display_t`; geometry derives from
   the blank-pair timing registers (width = (hsblank − heblank) × 2,
   height = (vsblank − veblank) / 2) with the pitch as the scan-line
@@ -329,6 +347,28 @@ community's "BoxID bits 11-12" reading:
   right, OF instantiates both nodes, probes the VCI bus and
   assigns Control's BARs; the 9500 correctly gets neither node (no
   onboard video on the real machine).
+
+**BoxID bit 8 — the factory-test strap — idles HIGH, and POST tests it
+on every boot but the first.** POST (`HWInit`, `$FFF20428`) keeps a log in
+Grand Central's NVRAM at `$1040`–`$125F`: a `'RobG'` signature at `$117C`,
+a boot counter at `$1180` it increments each boot, its saved return address
+at `$1254`. On a boot that finds the signature already there — every boot
+after the first on a formatted store, since nothing but Open Firmware's
+virgin-store format ever clears the region — it reads BoxID (`lwbrx
+$F301A000`, `andi. r6,r6,$100`, `$FFF201FC`) and a CLEAR bit 8 calls
+`$FFF21650`: the ROM's **Serial Test Manager** (`*   Serial Test Manager
+*` on ttya, `T0`..`T7`/`A`/`Q`/`X) Exit STM` menu, a `>` prompt, a `getc`
+with no timeout). Open Firmware never runs, no device tree is built,
+Control's BARs are never assigned, the screen stays black. The Macintosh
+profiles kept the bit clear on an earlier reading of the strap as "set =
+test monitor", which the ladder rows never contradicted because they boot
+a virgin store, where POST takes the fresh-log path and never tests the
+bit; the Network Server board found the law first (`ans500.c`). The
+symptom was #115 — "256 colours leaves Control uninitialised" — which was
+really "the second `machine.restart` on any store never boots"; the colour
+depth was the innocent bystander that made the reporter restart.
+`suite-tnt`'s `pm7500-76-8bpp-restart` holds it: a formatted store, the
+depth pinned through `machine.nvram`, a power-cycle, the Finder at 8 bpp.
 
 Known open items:
 
@@ -548,6 +588,20 @@ A row that wants the same chip across two cold boots says so with
 `machine.restart` (the DIMM table in `suite-ans`'s `ans500-diag-floppy`,
 `ans_boot_serial`'s console setting); `machine.board.clear_nvram()` is
 still the battery pull.
+
+**The store is a test lever: `machine.nvram`.** Every TNT board exposes
+the 8 KB store flat — `peek(addr)`, `poke(addr, bytes)`, `dump(addr, n)`,
+`snapshot()`, `restore(bytes)`, `clear()` — the shape `machine.rtc.pram`
+has on the 68k machines, so a row can pin what lives there instead of
+driving a control panel: the Mac OS XPRAM image at `$1300` + PRAM address
+(`$1377` = Default OS, `$1310` = the `$A8` signature), the Name Registry's
+persistent properties above it (the Control driver's `gprf` record at
+`$1409`, whose byte at `$1410` is the Monitors depth: 0 = 256 colours,
+2 = millions), POST's log at `$1040`–`$125F` ("Machine identity" above),
+and Open Firmware's environment in the top bank. The store the object
+edits is the live chip, so a poke followed by `machine.restart` is what
+the machine boots on; a poke followed by `machine.boot` is lost with the
+rest of the old machine.
 
 The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
 than its relocatable BAR, because this board installs no pull-down on MD51

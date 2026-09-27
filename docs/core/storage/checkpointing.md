@@ -16,7 +16,7 @@ Supporting both checkpoint types balances performance and reliability, enabling 
 
 ## Background Checkpoints
 
-Background checkpoints (quick checkpoints saved automatically) are written directly to OPFS-backed storage. With OPFS + pthreads, every `fclose()` is immediately durable — no async sync step or marker protocol is needed. Each machine owns a directory under `/opfs/checkpoints/`; the quick-checkpoint slot, the writable image deltas, and the manifest all live together under that directory and are treated as one atomic unit.
+Background checkpoints (quick checkpoints saved automatically) are serialised into a buffer on the emulator thread and written to OPFS-backed storage by the I/O worker (the save flow below). With OPFS + pthreads, every `fclose()` is immediately durable — no async sync step or marker protocol is needed. Each machine owns a directory under `/opfs/checkpoints/`; the quick-checkpoint slot, the writable image deltas, and the manifest all live together under that directory and are treated as one atomic unit.
 
 ### Per-Machine Directory
 
@@ -78,7 +78,8 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
   - `checkpoint --load <file>`: Constructs a new `config_t` via the active machine profile, restoring each subsystem from the stream.
   - `checkpoint --validate <path>`: Checks if the file contains a valid checkpoint (magic bytes).
   - `checkpoint --probe`: Returns 0 if a valid `state.checkpoint` exists in the current machine directory.
-  - `checkpoint clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory; the directory itself is left in place.
+  - `checkpoint load`: Rebuilds the machine from the stream (the new machine is constructed before the old one is destroyed). The debug object is part of the machine, so the previous machine's breakpoints and logpoints do not survive a load; add them again afterwards. Memory logpoints added after a load fire as they did before it (#172).
+  - `checkpoint clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory, together with the image deltas and journals there that no open image holds — the discarded state's deltas can never be reached again, and would otherwise accumulate one per session; the directory itself is left in place.
 
 - **File format & signature:**
   - Two on-disk formats are used:

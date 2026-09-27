@@ -1,0 +1,56 @@
+# Past the ROM's RAM test, into its idle at the disk icon, where Ticks
+# advances once per VBL.
+scheduler.run 25000000
+let t0 = debug.mac.globals.read("Ticks")
+scheduler.run 1000000
+assert debug.mac.globals.read("Ticks") > $t0 "Ticks advances at the ROM's idle"
+
+# A write watchpoint on Ticks stops the machine long before the budget ends.
+debug.watchpoints.add addr=0x16A mode="write" width="l"
+assert debug.watchpoints.count == 1 "one watchpoint"
+assert len(debug.logpoints.entries) == 0 "a watchpoint is not listed as a logpoint"
+let wid = debug.watchpoints.meta.indices("entries")[0]
+assert debug.watchpoints.entries[$wid].mode == "write" "mode reads back"
+assert debug.watchpoints.entries[$wid].addr == 0x16A "addr reads back"
+assert debug.watchpoints.entries[$wid].end_addr == 0x16D "width=l widens to the longword"
+assert debug.watchpoints.entries[$wid].enabled "enabled by default"
+
+let i0 = machine.cpu.instr_count
+scheduler.run 5000000
+let ran = machine.cpu.instr_count - $i0
+assert $ran < 1000000 "the machine stopped at the write, not at the budget (ran ${$ran})"
+assert debug.watchpoints.entries[$wid].hit_count == 1 "one hit"
+
+# Resuming runs to the next write and stops again.
+let i1 = machine.cpu.instr_count
+scheduler.run 5000000
+assert machine.cpu.instr_count - $i1 < 1000000 "stopped again at the next write"
+assert debug.watchpoints.entries[$wid].hit_count == 2 "two hits"
+
+# Disabled: kept, listed, and the machine runs the whole budget.
+debug.watchpoints.entries[$wid].enabled = false
+let i2 = machine.cpu.instr_count
+scheduler.run 2000000
+assert machine.cpu.instr_count - $i2 >= 1999000 "a disabled watchpoint does not stop the machine"
+assert debug.watchpoints.entries[$wid].hit_count == 2 "and does not count"
+assert debug.watchpoints.count == 1 "still listed"
+
+# Removed: gone from the collection, and the machine runs freely.
+debug.watchpoints.entries[$wid].remove
+assert debug.watchpoints.count == 0 "removed"
+let i3 = machine.cpu.instr_count
+scheduler.run 2000000
+assert machine.cpu.instr_count - $i3 >= 1999000 "no watchpoint, no stop"
+
+# clear empties the collection and leaves the logpoints alone.
+debug.logpoints.add addr=0x16A width=l mode=write message="ticks"
+debug.watchpoints.add addr=0x16A
+debug.watchpoints.add addr=0x16E mode="rw"
+assert debug.watchpoints.count == 2 "two watchpoints"
+debug.watchpoints.clear
+assert debug.watchpoints.count == 0 "clear removed the watchpoints"
+assert len(debug.logpoints.entries) == 1 "and kept the logpoint"
+debug.logpoints.clear
+
+echo "watchpoints-ok"
+quit

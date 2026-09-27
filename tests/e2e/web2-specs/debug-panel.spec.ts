@@ -106,6 +106,30 @@ test('breakpoints are listed, and Remove removes', async ({ page }) => {
   expect(await gsEvalInPage(page, 'debug.breakpoints.count')).toBe(0);
 });
 
+test('watchpoints are listed, and Remove removes', async ({ page }) => {
+  test.setTimeout(120_000);
+  await bootPlusPaused(page);
+  await openSection(page, 'Watchpoints');
+
+  // Add through the section's own row: a long-word write watchpoint.
+  await page.locator('.add-btn[title="Add watchpoint"]').click();
+  const addr = page.getByLabel('Watchpoint address');
+  await addr.fill('0x16A');
+  await addr.press('Enter');
+
+  const rows = page.locator('.wp-row');
+  await expect(rows).toHaveCount(1, { timeout: 10_000 });
+  await expect(rows.first()).toContainText('0000016A-$0000016D');
+  await expect(rows.first()).toContainText('write');
+  expect(await gsEvalInPage(page, 'debug.watchpoints.count')).toBe(1);
+
+  // Remove through the row's context menu: gone from the list and the core.
+  await rows.first().click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Remove' }).click();
+  await expect(rows).toHaveCount(0, { timeout: 10_000 });
+  expect(await gsEvalInPage(page, 'debug.watchpoints.count')).toBe(0);
+});
+
 // A paused machine repaints after a request that changes the screen.
 // Before, video was refreshed only while the scheduler ran, so a poke into the
 // framebuffer (or a step) stayed invisible until the next resume.

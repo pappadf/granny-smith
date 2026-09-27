@@ -18,11 +18,15 @@ Two callers reach the emulator through the shell layer:
   (`script=...`), stdin, or its TCP daemon socket.
 
 Both go through the same statement parser and interpreter
-(`script.c`). JavaScript callers reach the shell through the `Shell`
-class on the object root: typed object-model calls
-(`gs_eval('machine.cpu.pc')`) stay on their typed paths; free-form
-lines route through `gs_eval('shell.run', [line])`; multi-line sources
-go through `shell.eval(text)`.
+(`script.c`). Every client reaches it the same way: a free-form line or a
+whole source is posted to the mailbox as a **script job** (`REQ_SCRIPT`,
+see "Scripts" below) and runs on the job thread; typed
+object-model calls (`gs_eval('machine.cpu.pc')`) stay on their typed
+paths. The `Shell` class on the object root keeps `shell.run` and
+`shell.eval(text)` as leaves for a caller that wants a line run inline on
+the emulator thread (the unit suites, a script running another script),
+plus `shell.complete`, `shell.expand`, the alias leaves and
+`shell.interrupt`.
 
 ## Source Files
 

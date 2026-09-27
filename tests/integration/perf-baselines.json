@@ -1,5 +1,9 @@
 {
   "rows": {
+    "iici-aux3-8bpp/login": {
+      "instr": 601513402,
+      "tolerance": 0.2
+    },
     "iici-cdrom-boot/cd-boot": {
       "instr": 1379448961,
       "tolerance": 0.2
@@ -13,7 +17,7 @@
       "tolerance": 0.2
     },
     "iicx-gsvrom/gsvrom-824gc": {
-      "instr": 184615229,
+      "instr": 196743951,
       "tolerance": 0.2
     },
     "iicx-gsvrom/gsvrom-custom-mode": {
@@ -38,6 +42,10 @@
     },
     "mklinux-boot/pm8100": {
       "instr": 2779983600,
+      "tolerance": 0.2
+    },
+    "pdm-afp-copy-motion/copy": {
+      "instr": 6384983600,
       "tolerance": 0.2
     },
     "pm8100-24ac-sysinfo/bench": {
@@ -478,6 +486,10 @@
     },
     "suite-tnt/tnt-voodoo2-display": {
       "instr": 2540000000,
+      "tolerance": 0.2
+    },
+    "suite-tnt/pm7500-76-8bpp-restart": {
+      "instr": 2500000000,
       "tolerance": 0.2
     },
     "tnt-pci-voodoo2": {

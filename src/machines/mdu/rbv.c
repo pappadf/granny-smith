@@ -22,8 +22,10 @@
 // the VIA-register-spaced aliases Rv2IFR = vIFR+RvIFR = $1A03 and
 // Rv2IER = vIER+RvIER = $1C13 (the IER decode requires A4=1 — an RBV ASIC
 // quirk documented in the mac68k headers).
-// We decode both the native small offsets and those two aliases so code
-// written either way reaches the same register.
+// A/UX 3.0.1's level-2 handler reads the slot-interrupt register the same
+// way, at vBufA+RvSInt = $1E02 (the 6522 VIA2's port A carried the slot
+// lines).  We decode the native small offsets and those three aliases so
+// code written either way reaches the same register.
 //
 // Interrupt model.  RBV's SCSI / slot / sound interrupts are level inputs;
 // we recompute the aggregated IFR from the live source state on every
@@ -58,8 +60,9 @@ LOG_USE_CATEGORY_NAME("rbv");
 #define RV_IER   0x013 // RvIER
 
 // VIA2-spaced aliases the shared OS code uses (see file header).
-#define RV_IFR_ALIAS 0x1A03 // Rv2IFR = vIFR($1A00) + RvIFR($003)
-#define RV_IER_ALIAS 0x1C13 // Rv2IER = vIER($1C00) + RvIER($013)
+#define RV_IFR_ALIAS  0x1A03 // Rv2IFR = vIFR($1A00) + RvIFR($003)
+#define RV_IER_ALIAS  0x1C13 // Rv2IER = vIER($1C00) + RvIER($013)
+#define RV_SINT_ALIAS 0x1E02 // vBufA($1E00) + RvSInt($002): A/UX's slot-interrupt read
 
 // === RvDataB bits ===========================================================
 
@@ -171,10 +174,14 @@ static void rbv_update_irq(rbv_t *rbv) {
 // whole window.  That difference looks like a gap that `off & 0x1F` here
 // would close.  It must not be applied:
 //
-//   - The two accesses the AMIC comment names as load-bearing -- the compact
-//     offsets and the classic-VIA stride ($1A03 for the IFR, $1C13 for the
-//     IER) -- are already covered, by RV_IFR_ALIAS and RV_IER_ALIAS.  Widening
-//     buys no access we have evidence anyone makes.
+//   - The accesses we have evidence of -- the compact offsets, the
+//     classic-VIA stride ($1A03 for the IFR, $1C13 for the IER), and A/UX's
+//     $1E02 slot-interrupt read -- are covered by RV_IFR_ALIAS, RV_IER_ALIAS
+//     and RV_SINT_ALIAS.  ($1E02 was the one that bit: undecoded, it read
+//     $FF = "no slot pending", so the IIci kernel's level-2 handler could
+//     never see or clear the built-in video VBL (RvIRQ0) and spun in
+//     via2intr for the rest of the boot.)  Widening buys no access we have
+//     evidence anyone makes.
 //   - It would alias offsets we have no evidence about onto registers with
 //     side effects.  $1A00 -- vBufB, the VIA2 base the same shared OS code
 //     touches -- masks to $00, which is RvDataB, whose write path runs the
@@ -199,6 +206,8 @@ static uint16_t rbv_decode(uint32_t off) {
         return RV_IFR;
     case RV_IER_ALIAS:
         return RV_IER;
+    case RV_SINT_ALIAS:
+        return RV_SINT;
     default:
         return 0xFFFF;
     }

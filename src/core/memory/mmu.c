@@ -497,9 +497,22 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             }
             uint32_t page_mask = (1u << bit_pos) - 1;
             // Short: address in same word as flags; Long: address in lower word.
-            uint32_t phys_base = desc_lo & ~page_mask & 0xFFFFFFFC;
+            // The page address field is bits 31..PS: only the bits below the
+            // PAGE SIZE are unused, however many index bits the early
+            // termination left unwalked.  MC68030UM 9.5.3.1: "the physical
+            // address in the ATC entry is the sum of the page address field in
+            // the descriptor plus an offset.  The offset is the logical address
+            // with the bits used in the search set to zero."  Masking the frame
+            // to the whole covered range instead dropped the frame's low bits:
+            // the IIci ROM maps logical 0 to physical $50000 (past the RBV's
+            // in-RAM screen buffer) with a level-A descriptor $00050019, and that
+            // came out as logical == physical, so the A/UX launcher's root
+            // pointer block, written through logical $2000, landed at physical
+            // $2000 while the ROM trampoline read it (MMU off) at $52000.
+            uint32_t ps_mask = (1u << TC_PS(tc)) - 1;
+            uint32_t phys_base = desc_lo & ~ps_mask & 0xFFFFFFFC;
 
-            result.physical_addr = phys_base | (logical_addr & page_mask);
+            result.physical_addr = phys_base + (logical_addr & page_mask);
             result.page_size_bits = bit_pos;
             result.valid = true;
             // Accumulated above, this descriptor included.  M is deliberately
@@ -1065,8 +1078,12 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     uint32_t ps_bits = result.page_size_bits;
     if (ps_bits > PAGE_SHIFT && ps_bits < 32) {
         uint32_t log_mask = ~((1u << ps_bits) - 1);
-        atc_record(logical_addr & log_mask, log_mask, result.physical_addr & log_mask, result.supervisor_only,
-                   result.write_protected, result.modified, supervisor);
+        // The physical range starts at the descriptor's page frame, which need
+        // not be aligned to the coverage (see the walk): recover it from the
+        // translated address rather than masking it to the range.
+        uint32_t phys_range_base = result.physical_addr - (logical_addr & ~log_mask);
+        atc_record(logical_addr & log_mask, log_mask, phys_range_base, result.supervisor_only, result.write_protected,
+                   result.modified, supervisor);
     }
 
     // If phys_to_host returned NULL (unmapped physical), the SoA entry

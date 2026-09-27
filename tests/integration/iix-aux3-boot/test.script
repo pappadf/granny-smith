@@ -44,7 +44,12 @@ machine.adb.keyboard.press return
 # enter empty password
 machine.adb.keyboard.press return
 
-scheduler.run 100000000
+# 110M, not 100M: since the VIA stopped completing ADB shift-outs on its own
+# timer (issue #122 — the transceiver clocks them, as on the hardware), the
+# login's ADB traffic takes its real time and the Finder is still showing
+# the watch cursor at 100M.  shell.png's clock moved 21:33:47 -> 21:33:49
+# for the same reason; the listing is unchanged.
+scheduler.run 110000000
 
 check("desktop.png")
 
