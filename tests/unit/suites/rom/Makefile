@@ -1,6 +1,6 @@
-# Lisa/XL ROM interleave + identification unit test (Step 1 of the Lisa-XL work)
-# Links the real rom.c against real memory.c/mmu.c/object/value/meta,
-# with stub system/cpu, to exercise interleaving and signature identification.
+# ROM content identity unit test: per-kind ids and self-checks, the ROM
+# table, and the Lisa/XL interleave.  Links the real rom.c + rom_table.c
+# against real memory.c/mmu.c/object/value/meta, with stub system/cpu.
 
 TEST_NAME    := rom
 TEST_SRCS    := test.c stub_lisa_system.c
@@ -11,6 +11,7 @@ OMIT_STUBS   := system memory peripherals
 STUBS        := cpu
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/memory/rom.c \
+                ../../../../src/core/memory/rom_table.c \
                 ../../../../src/core/memory/memory.c \
                 ../../../../src/core/memory/mmu.c \
                 ../../../../src/core/memory/mmu040.c \

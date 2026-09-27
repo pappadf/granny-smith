@@ -167,9 +167,8 @@ const char *memory_rom_filename(memory_map_t *mem);
 // the memory map and remains valid until the next memory_install_rom() call.
 const uint8_t *memory_rom_bytes(memory_map_t *mem);
 uint32_t memory_rom_size(memory_map_t *mem);
-uint32_t memory_rom_checksum(memory_map_t *mem);
 
-// Copy ROM bytes into the ROM region, refresh internal checksum, and store
+// Copy ROM bytes into the ROM region and store
 // the filename for checkpointing. Truncates if size > rom_size. Returns the
 // number of bytes actually written.
 size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename);
