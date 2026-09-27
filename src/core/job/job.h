@@ -84,6 +84,10 @@ int job_layer_service(struct gs_mailbox *m);
 void job_tables_lock(void);
 void job_tables_unlock(void);
 
+// True while the emulator thread is serving a job's call through the seam
+// (the leaf running now was called by a script).
+bool job_serving_call(void);
+
 // A leaf served for a job's call may answer later (gs_result_defer): the
 // call stays held until job_call_complete(token) -- tokens have the top
 // bit set -- and a failure becomes the call's error, which the job thread

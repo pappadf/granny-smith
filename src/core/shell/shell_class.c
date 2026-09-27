@@ -282,7 +282,9 @@ static value_t shell_method_interrupt(struct object *self, const member_t *m, in
         script_interrupt();
         return val_none();
     }
-    job_cancel_client(client);
+    // From inside a script it is the script asking: stop my run, not me.
+    if (!job_serving_call())
+        job_cancel_client(client);
     job_glue_stop_modes(client);
     return val_none();
 }

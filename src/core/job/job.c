@@ -132,6 +132,10 @@ static void post_call(void (*fn)(void *ud), void *ud) {
     pthread_mutex_unlock(&g_mu);
 }
 
+bool job_serving_call(void) {
+    return g_call.serving;
+}
+
 // --- a call's deferred answer (emulator thread) --------------------------------
 
 static uint32_t g_defer_seq;
