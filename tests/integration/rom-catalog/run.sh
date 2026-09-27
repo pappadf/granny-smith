@@ -1,21 +1,16 @@
 #!/bin/bash
-# Canonical ROM/vROM filename conformance, checked against the tooling
-# naming grammar (scripts/rom_naming.py).
+# Every test-data ROM is one the core knows.
 #
 # Enumerate every file in $TEST_DATA/roms and drive a single headless
 # identify pass over all of them, then assert:
 #   1. every file is RECOGNISED by machine.rom.identify / vrom.identify /
 #      prom.identify;
-#   2. each file's basename == the canonical name the tooling grammar
-#      (scripts/rom_naming.py) derives from its content id — identify itself
-#      reports content facts only, no filenames;
-#   3. no two files share a checksum (CPU ROM) or Format-Block CRC (vROM).
+#   2. every CPU ROM is intact (its own stored checksum verifies) and
+#      supported (its table row names an emulated model).
 #
 # The identify surface is picked by extension (.rom → rom, .vrom → vrom,
-# .prom → prom).  Each surface reports a content identity under its own key
-# — `checksum` for a CPU ROM, `crc` for a vROM or a PCI expansion ROM — and
-# the naming grammar keys on that, so adding a store means adding a case
-# here and nothing else.
+# .prom → prom).  Filenames are otherwise free-form: nothing here parses
+# them — what a file is comes from the core alone.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -47,18 +42,16 @@ done < <(find "$ROMS_DIR" -maxdepth 1 -type f -print0 | sort -z)
 echo "quit" >> "$SCRIPT"
 
 [ "$count" -gt 0 ] || { echo "FAIL: no files found in $ROMS_DIR"; exit 1; }
-echo "rom-naming: identifying $count file(s) in $ROMS_DIR"
+echo "rom-catalog: identifying $count file(s) in $ROMS_DIR"
 
 OUT="$WORK_DIR/identify.out"
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     rom="$ROM_PATH" --no-prompt --speed=max "script=$SCRIPT" > "$OUT" 2>/dev/null
 
-python3 - "$OUT" "$count" "$REPO_ROOT/scripts" <<'PY'
+python3 - "$OUT" "$count" <<'PY'
 import re, sys
 
-out_path, expected, scripts_dir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-sys.path.insert(0, scripts_dir)
-from rom_naming import canonical_name  # the tooling naming grammar
+out_path, expected = sys.argv[1], int(sys.argv[2])
 
 lines = open(out_path, encoding="utf-8", errors="replace").read().splitlines()
 
@@ -73,8 +66,7 @@ for ln in lines:
     if m:
         pending = m.group(1)
         continue
-    # v2 echoes the identify JSON verbatim (quoted keys); the v1
-    # tokenizer used to strip the quotes. Normalize both to unquoted.
+    # The identify map echoes as JSON; normalize away the key quotes.
     stripped = ln.replace('"', '')
     if pending is not None and '{recognised:' in stripped:
         js = stripped[stripped.index('{recognised:'):]
@@ -86,36 +78,21 @@ if len(records) != expected:
     fail.append(f"parsed {len(records)} identify results but expected {expected} "
                 f"(a file may have produced an error instead of a result)")
 
-seen_ids = {}
 for base, js in records:
     if field(js, "recognised") != "true":
         fail.append(f"{base}: NOT recognised (unknown blobs may not live in roms/) -> {js}")
         continue
-    # checksum for CPU ROMs, crc for vROMs — either way a content identity.
-    ident = field(js, "checksum") or field(js, "crc")
-    if not ident:
-        fail.append(f"{base}: identify reported no content id -> {js}")
-        continue
-    # The canonical name is a pure function of the content id, owned by
-    # tooling — the emulator only reported the content facts above.
-    canon = canonical_name(ident)
-    if canon is None:
-        fail.append(f"{base}: content id {ident} has no canonical name in "
-                    f"scripts/rom_naming.py (add the row)")
-    elif canon != base:
-        fail.append(f"{base}: filename != canonical name (expected {canon!r})")
-    ident = ident.lower()
-    if ident in seen_ids:
-        fail.append(f"duplicate content id {ident}: {base} and {seen_ids[ident]}")
-    else:
-        seen_ids[ident] = base
+    if base.endswith(".rom"):
+        if field(js, "intact") != "true":
+            fail.append(f"{base}: its own checksum does not verify ({field(js, 'reason')}) -> {js}")
+        if field(js, "supported") != "true":
+            fail.append(f"{base}: recognised but not supported (no emulated model) -> {js}")
 
 if fail:
-    print("=== rom-naming conformance FAILURES ===")
+    print("=== rom-catalog FAILURES ===")
     for f in fail:
         print("  - " + f)
     sys.exit(1)
 
-print(f"rom-naming: {len(records)} files OK — all recognised, canonically named, "
-      f"{len(seen_ids)} unique content ids, no duplicates")
+print(f"rom-catalog: {len(records)} files OK — all recognised; every CPU ROM intact and supported")
 PY

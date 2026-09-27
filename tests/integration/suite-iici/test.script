@@ -78,7 +78,7 @@ def row_iici_701_fd() {
     scheduler.run 300000000
     wait_stable(900000000)
     assert machine.id == "iici" "iici-701-fd: machine.id != iici"
-    assert machine.rom.checksum == "368CADFE" "iici-701-fd: rom.checksum != 368CADFE"
+    assert machine.rom.id == "368cadfe" "iici-701-fd: rom.id != 368cadfe"
     assert machine.ram == 8192 "iici-701-fd: machine.ram != 8192"
     assert machine.screen.width == 640 "iici-701-fd: screen.width != 640"
     assert machine.screen.height == 480 "iici-701-fd: screen.height != 480"

@@ -67,13 +67,12 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
 
 // Catalog of known VROM blobs.  Maps the declaration ROM's Format-Block CRC
 // to the nubus card-kind id the blob provides — content→hardware facts only,
-// no filenames (canonical fixture naming is a tooling concern; see
-// scripts/rom_naming.py).  The id is the machine-readable link a UI uses to
+// no filenames (a file's name is never evidence of what it is).  The id is the machine-readable link a UI uses to
 // pick the card (machine.nubus.video_card); the human label is owned by the
 // card kind (nubus_card_find(id)->display_name) so it never drifts.  The
 // `preferred` bit marks the default revision when one card has several ROMs.
-// Adding a new VROM = one row here.  Keyed exactly like rom.c's ROM_TABLE
-// {checksum -> ...}.
+// Adding a new VROM = one row here.  Keyed by content, like rom_table.c's
+// {id -> ...}.
 struct vrom_known {
     uint32_t crc;
     size_t chip_size; // dense chip image size on disk

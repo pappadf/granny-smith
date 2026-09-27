@@ -111,7 +111,7 @@ machine.floppy.drive[0].insert "$src/Disk Tools 1.img" true
 scheduler.run 600000000
 
 assert machine.id == "iifx" "machine.id != iifx"
-assert machine.rom.checksum == "4147DD77" "rom.checksum != 4147DD77"
+assert machine.rom.id == "4147dd77" "rom.id != 4147dd77"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot $9 card != Display Card 8•24"
 assert machine.screen.width == 640 "screen.width != 640"
 assert machine.screen.height == 480 "screen.height != 480"
