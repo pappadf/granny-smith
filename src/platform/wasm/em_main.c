@@ -9,7 +9,6 @@
 // ============================================================================
 
 #include "em.h"
-#include "imagewriter.h"
 #include "io/io_worker.h"
 #include "job/job.h"
 
@@ -771,24 +770,6 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
     }
     memcpy(d->bytes, cap->ps, cap->ps_len);
     d->bytes_len = cap->ps_len;
-    download_start(d);
-}
-
-// Platform sink for a finished ImageWriter job (imagewriter.h): the raw
-// ImageWriter command stream downloaded as iw-<job>.iw, like a captured
-// LaserWriter job.
-void imagewriter_sink_job(const imagewriter_job_t *job) {
-    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
-    if (!d)
-        return;
-    snprintf(d->name, sizeof d->name, "iw-%05u.iw", (unsigned)job->job_id);
-    d->bytes = (uint8_t *)malloc(job->len ? job->len : 1);
-    if (!d->bytes) {
-        free(d);
-        return;
-    }
-    memcpy(d->bytes, job->data, job->len);
-    d->bytes_len = job->len;
     download_start(d);
 }
 

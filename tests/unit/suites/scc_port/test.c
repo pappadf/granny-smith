@@ -8,7 +8,9 @@
 // - input pins a device drives (scc_set_input_pin) show in RR0 the way the
 //   chip reports them -- SYNC only in asynchronous mode -- and survive a
 //   channel reset, because they are the cable's, not the chip's;
-// - the transmit byte hook (scc_set_tx_byte_sink) sees asynchronous bytes;
+// - a channel's output file (scc_set_output) receives its asynchronous
+//   bytes, and the port's wired ready line (scc_set_port_ready_line)
+//   follows whether an output is attached;
 // - the WR1 enables gate what reaches the INT pin: a pending bit whose
 //   enable is off stays in RR3 but requests nothing;
 // - Reset Tx Int Pending holds the Tx interrupt off until another character
@@ -25,7 +27,9 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // ============================================================
 // Link stubs
@@ -127,14 +131,19 @@ static scc_t *make_async(void) {
     return scc;
 }
 
-// Records what the transmit hook saw.
-static uint8_t g_sent[16];
-static int g_sent_len;
+// A scratch path for an output file, unique per run.
+static void scratch_path(char *buf, size_t n) {
+    snprintf(buf, n, "/tmp/scc_port_%d.bin", (int)getpid());
+}
 
-static void tx_sink(void *ctx, uint8_t byte) {
-    (void)ctx;
-    if (g_sent_len < (int)sizeof(g_sent))
-        g_sent[g_sent_len++] = byte;
+// Reads back up to `cap` bytes of `path`; the count read.
+static size_t read_back(const char *path, uint8_t *buf, size_t cap) {
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    size_t n = fread(buf, 1, cap, f);
+    fclose(f);
+    return n;
 }
 
 // ============================================================
@@ -188,20 +197,52 @@ TEST(test_pin_change_raises_ext_interrupt) {
     scc_delete(scc);
 }
 
-// The transmit hook receives asynchronous bytes, in order.
-TEST(test_tx_byte_sink_sees_async_bytes) {
+// The output file receives the asynchronous bytes, in order, as they are
+// written (a reader need not wait for the file to close); `none` closes it
+// and later bytes go nowhere.
+TEST(test_output_file_receives_async_bytes) {
+    char path[64];
+    scratch_path(path, sizeof(path));
     scc_t *scc = make_async();
-    g_sent_len = 0;
-    scc_set_tx_byte_sink(scc, 0, tx_sink, NULL);
+    ASSERT_TRUE(scc_get_output(scc, 0) == NULL);
+    ASSERT_TRUE(scc_set_output(scc, 0, path));
+    ASSERT_TRUE(strcmp(scc_get_output(scc, 0), path) == 0);
     send_a(scc, 0x18);
     send_a(scc, 0x1B);
-    ASSERT_EQ_INT(2, g_sent_len);
-    ASSERT_EQ_INT(0x18, g_sent[0]);
-    ASSERT_EQ_INT(0x1B, g_sent[1]);
-    scc_set_tx_byte_sink(scc, 0, NULL, NULL);
+    uint8_t got[8];
+    ASSERT_EQ_INT(2, (int)read_back(path, got, sizeof(got)));
+    ASSERT_EQ_INT(0x18, got[0]);
+    ASSERT_EQ_INT(0x1B, got[1]);
+    ASSERT_TRUE(scc_set_output(scc, 0, NULL));
+    ASSERT_TRUE(scc_get_output(scc, 0) == NULL);
     send_a(scc, 0x41);
-    ASSERT_EQ_INT(2, g_sent_len); // detached
+    ASSERT_EQ_INT(2, (int)read_back(path, got, sizeof(got)));
     scc_delete(scc);
+    unlink(path);
+}
+
+// A path that cannot be opened is refused and changes nothing.
+TEST(test_output_bad_path_refused) {
+    scc_t *scc = make_async();
+    ASSERT_TRUE(!scc_set_output(scc, 0, "/nonexistent-dir/x/y.bin"));
+    ASSERT_TRUE(scc_get_output(scc, 0) == NULL);
+    scc_delete(scc);
+}
+
+// The wired ready line is "not ready" with no output and "ready" while one
+// is open -- here the Lisa's port A wiring: SYNC, asserted when ready.
+TEST(test_ready_line_follows_output) {
+    char path[64];
+    scratch_path(path, sizeof(path));
+    scc_t *scc = make_async();
+    scc_set_port_ready_line(scc, 0, SCC_PIN_SYNC, true);
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 0) & RR0_SYNC));
+    ASSERT_TRUE(scc_set_output(scc, 0, path));
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 0) & RR0_SYNC);
+    ASSERT_TRUE(scc_set_output(scc, 0, NULL));
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 0) & RR0_SYNC));
+    scc_delete(scc);
+    unlink(path);
 }
 
 // A pending Tx interrupt whose enable is turned off stays in RR3 but no
@@ -242,7 +283,9 @@ int main(void) {
     RUN(test_sync_pin_not_reported_in_sdlc);
     RUN(test_cts_pin_reported);
     RUN(test_pin_change_raises_ext_interrupt);
-    RUN(test_tx_byte_sink_sees_async_bytes);
+    RUN(test_output_file_receives_async_bytes);
+    RUN(test_output_bad_path_refused);
+    RUN(test_ready_line_follows_output);
     RUN(test_wr1_enables_gate_int);
     RUN(test_reset_tx_pending_holds_until_next_char);
     printf("[PASS] All scc_port tests passed\n");

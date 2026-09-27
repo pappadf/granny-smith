@@ -163,16 +163,21 @@ struct scc {
     // External loopback: port A TX → port B RX, port B TX → port A RX
     bool external_loopback;
 
-    // A device plugged into each port (scc_set_tx_byte_sink /
-    // scc_set_input_pin): where its transmitted bytes go, and the input
-    // pins it drives.  Outside ch_t so a channel reset keeps them -- they
-    // are the cable's, not the chip's.  `pins_driven` is a mask of
-    // (1 << scc_pin_t); `pins_level` the asserted ones.
+    // The far end of each port's cable: the host file its transmitted bytes
+    // go to (scc_set_output), the input pins a device drives
+    // (scc_set_input_pin), and how the machine wires a ready device's
+    // handshake (scc_set_port_ready_line).  Outside ch_t so a channel reset
+    // keeps them -- they are the cable's, not the chip's -- and not
+    // checkpointed: a host file is not machine state.  `pins_driven` is a
+    // mask of (1 << scc_pin_t); `pins_level` the asserted ones.
     struct {
-        scc_tx_byte_fn tx_sink;
-        void *tx_ctx;
+        FILE *out;
+        char *out_path;
         uint8_t pins_driven;
         uint8_t pins_level;
+        bool ready_wired;
+        scc_pin_t ready_pin;
+        bool ready_level;
     } port[2];
 
     // Host-side transmit capture, one per channel: every byte the guest hands
@@ -890,9 +895,13 @@ static void wr8(ch_t *c, uint8_t value) {
         scc->sent[c->index].buf[scc->sent[c->index].len++] = value;
     else
         scc->sent[c->index].dropped++;
-    // An asynchronous byte also goes down the cable to a plugged-in device
-    if (scc->port[c->index].tx_sink && ASYNC_MODE(c))
-        scc->port[c->index].tx_sink(scc->port[c->index].tx_ctx, value);
+    // An asynchronous byte also goes down the cable to the port's output
+    // file, flushed at once so a reader of the file sees it (serial rates
+    // are low; a byte per flush is cheap)
+    if (scc->port[c->index].out && ASYNC_MODE(c)) {
+        fputc(value, scc->port[c->index].out);
+        fflush(scc->port[c->index].out);
+    }
 
     int prev_len = c->tx.len;
     // Drop on overflow rather than asserting — a guest that streams output
@@ -1186,11 +1195,52 @@ void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context) {
     scc->frame_ctx = fn ? context : NULL;
 }
 
-void scc_set_tx_byte_sink(scc_t *scc, unsigned int ch, scc_tx_byte_fn fn, void *context) {
+bool scc_set_output(scc_t *scc, unsigned int ch, const char *path) {
     if (!scc || ch > 1)
+        return false;
+    FILE *f = NULL;
+    char *copy = NULL;
+    if (path) {
+        f = fopen(path, "wb");
+        if (!f) {
+            LOG(1, "scc: cannot open output %s for channel %c", path, ch ? 'B' : 'A');
+            return false;
+        }
+        copy = strdup(path);
+        if (!copy) {
+            fclose(f);
+            return false;
+        }
+    }
+    if (scc->port[ch].out)
+        fclose(scc->port[ch].out);
+    free(scc->port[ch].out_path);
+    scc->port[ch].out = f;
+    scc->port[ch].out_path = copy;
+    LOG(2, "scc: channel %c output %s", ch ? 'B' : 'A', path ? path : "closed");
+    // An output is a device on the cable: the wired ready line follows it
+    if (scc->port[ch].ready_wired) {
+        bool ready = f != NULL;
+        scc_set_input_pin(scc, ch, scc->port[ch].ready_pin,
+                          ready ? scc->port[ch].ready_level : !scc->port[ch].ready_level);
+    }
+    return true;
+}
+
+const char *scc_get_output(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return NULL;
+    return scc->port[ch].out_path;
+}
+
+void scc_set_port_ready_line(scc_t *scc, unsigned int ch, scc_pin_t pin, bool ready_level) {
+    if (!scc || ch > 1 || pin > SCC_PIN_CTS)
         return;
-    scc->port[ch].tx_sink = fn;
-    scc->port[ch].tx_ctx = fn ? context : NULL;
+    scc->port[ch].ready_wired = true;
+    scc->port[ch].ready_pin = pin;
+    scc->port[ch].ready_level = ready_level;
+    bool ready = scc->port[ch].out != NULL;
+    scc_set_input_pin(scc, ch, pin, ready ? ready_level : !ready_level);
 }
 
 void scc_set_input_pin(scc_t *scc, unsigned int ch, scc_pin_t pin, bool asserted) {
@@ -1596,6 +1646,12 @@ void scc_delete(scc_t *scc) {
         object_delete(scc->object);
         scc->object = NULL;
     }
+    // Close the ports' output files
+    for (int ch = 0; ch < 2; ch++) {
+        if (scc->port[ch].out)
+            fclose(scc->port[ch].out);
+        free(scc->port[ch].out_path);
+    }
     free(scc);
 }
 
@@ -1765,6 +1821,35 @@ static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
     return val_uint(4, scc_channel_rx_pending(c->scc, (unsigned)c->index));
 }
 
+// `output`: the host file this channel's transmitted bytes go to, or none.
+static value_t scc_ch_attr_output(struct object *self, const member_t *m) {
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    const char *path = scc_get_output(c->scc, (unsigned)c->index);
+    return path ? val_str(path) : val_none();
+}
+
+// `output = "path"` opens (creating or truncating) the file and streams
+// every asynchronous byte the guest transmits into it; `output = none`
+// closes it.  Either way the port's wired ready line follows.
+static value_t scc_ch_attr_output_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    if (in.kind == V_NONE) {
+        scc_set_output(c->scc, (unsigned)c->index, NULL);
+        return val_none();
+    }
+    if (!in.s || !*in.s)
+        return val_err("output: expected a file path or none");
+    if (!scc_set_output(c->scc, (unsigned)c->index, in.s))
+        return val_err("output: cannot open '%s' for writing", in.s);
+    return val_none();
+}
+
 // Feed bytes into a channel's receive FIFO as though they had arrived on the
 // wire.  Delivery mirrors the loopback path in wr8: buffer the byte, latch
 // RR0's Rx Character Available, and raise the receive interrupt when the
@@ -1910,6 +1995,13 @@ static const member_t scc_ch_members[] = {
      .flags = VAL_RO,
      .doc = "Transmitted bytes lost because the capture buffer overflowed; nonzero means a script drained too "
             "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}},
+    {.kind = M_ATTR,
+     .name = "output",
+     .doc = "Host file the channel's transmitted bytes stream into (asynchronous mode), or none; setting it "
+            "stands for a ready device on the cable", .attr = {.type = V_STRING,
+              .validation_flags = OBJ_ARG_NONE_OK,
+              .get = scc_ch_attr_output,
+              .set = scc_ch_attr_output_set}},
     {.kind = M_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",

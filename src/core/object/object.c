@@ -1279,6 +1279,10 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
     bool rewrote = false;
     *out = *in;
 
+    // `none` is a legal "unset" for a slot that says so
+    if ((s->flags & OBJ_ARG_NONE_OK) && in->kind == V_NONE)
+        return VALIDATE_OK;
+
     // V_ANY — and V_NONE, its historical spelling on an argument slot —
     // is the "accept any kind" sentinel: the body sees the value as-is
     // and does its own discrimination. Used today for slots that
@@ -1596,6 +1600,9 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
     // (node_call handles a V_NONE *result* slot itself — there it means
     // "returns nothing"). Either way there is nothing to check.
     if (slot->kind == V_ANY || slot->kind == V_NONE)
+        return;
+    // An unset OBJ_ARG_NONE_OK slot answers `none`
+    if ((slot->flags & OBJ_ARG_NONE_OK) && out->kind == V_NONE)
         return;
     if (slot->kind != out->kind) {
         fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, kind_name(slot->kind),

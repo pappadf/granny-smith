@@ -63,7 +63,6 @@
     X("via", 0, "VIA 6522 ports, timers and shift register")                                                           \
     /* Serial, network and sound */                                                                                    \
     X("scc", 0, "Z8530 serial controller")                                                                             \
-    X("imagewriter", 0, "ImageWriter printer on a serial port")                                                        \
     X("appletalk", 0, "AppleTalk stack: DDP, NBP, configuration")                                                      \
     X("llap", 0, "AppleTalk LLAP link and node address")                                                               \
     X("atp", 0, "AppleTalk ATP transactions")                                                                          \

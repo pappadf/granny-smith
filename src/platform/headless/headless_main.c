@@ -13,7 +13,6 @@
 #include "debug.h"
 #include "floppy.h"
 #include "image.h"
-#include "imagewriter.h"
 #include "laserwriter_job.h"
 #include "log.h"
 #include "machine.h"
@@ -149,32 +148,6 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
     if (wrote != cap->ps_len)
         printf("laserwriter: short write to %s (%zu of %zu bytes)\n", path, wrote, cap->ps_len);
     printf("laserwriter: job %u PostScript%s -> %s\n", (unsigned)cap->job_id, cap->complete ? "" : " (cut off)", path);
-}
-
-// Platform sink for a finished ImageWriter job (weak default in
-// imagewriter.c drops it): <print-dir>/iw-<job>.iw, the raw ImageWriter
-// command stream the guest's driver sent.
-void imagewriter_sink_job(const imagewriter_job_t *job) {
-    if (!g_print_dir[0]) {
-        printf("imagewriter: job %u (%zu bytes) discarded: no --print-dir\n", (unsigned)job->job_id, job->len);
-        return;
-    }
-    if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
-        printf("imagewriter: cannot create print directory %s: %s\n", g_print_dir, strerror(errno));
-        return;
-    }
-    char path[PATH_MAX + 32];
-    snprintf(path, sizeof(path), "%s/iw-%05u.iw", g_print_dir, (unsigned)job->job_id);
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        printf("imagewriter: cannot write %s: %s\n", path, strerror(errno));
-        return;
-    }
-    size_t wrote = fwrite(job->data, 1, job->len, f);
-    fclose(f);
-    if (wrote != job->len)
-        printf("imagewriter: short write to %s (%zu of %zu bytes)\n", path, wrote, job->len);
-    printf("imagewriter: job %u%s -> %s\n", (unsigned)job->job_id, job->truncated ? " (truncated)" : "", path);
 }
 
 // VBL is

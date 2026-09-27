@@ -747,25 +747,36 @@ chip rather than convenience:
   enabling Tx interrupts on a freshly reset, empty channel still interrupts
   once, which the Mac drivers use to prime their output.
 
-## Devices on a port
+## The far end of a port: `output` and the ready line
 
-A peripheral at the far end of a port's cable (the Lisa's on-board
-ImageWriter, [imagewriter.md](imagewriter.md)) attaches through two calls:
+What is plugged into a port is not modelled as a device. A port has an
+**output**, a host file that stands in for whatever is on the cable, and the
+machine says how a ready device's **handshake line** is wired into the chip.
 
-| Call | What it models |
+| Call | What it does |
 |---|---|
-| `scc_set_tx_byte_sink(scc, ch, fn, ctx)` | The cable's transmit wire: `fn` receives every byte the guest writes to WR8 while the channel is in asynchronous mode (WR4 stop bits non-zero).  SDLC frames still go to the frame sink. |
-| `scc_set_input_pin(scc, ch, pin, asserted)` | A handshake line the device drives into `/DCD`, `/SYNC` or `/CTS`.  RR0 reports it the way the chip does, bit set when the active-low pin is asserted: DCD bit 3, SYNC bit 4, CTS bit 5.  SYNC is reported only in asynchronous mode, where RR0 bit 4 is the pin; in the synchronous modes it is the receiver's hunt state. |
+| `scc_set_output(scc, ch, path)` | Opens (creates or truncates) `path` and streams into it every byte the guest writes to WR8 while the channel is in asynchronous mode (WR4 stop bits non-zero), flushed as it is written. `NULL` closes it. An open output counts as a ready device on the cable. SDLC frames are not written; they go to the frame sink. |
+| `scc_set_port_ready_line(scc, ch, pin, ready_level)` | Machine glue: which input a ready device drives, and at which level. The pin is driven "not ready" at once, "ready" while an output is open, and "not ready" again when it closes. A port not wired this way has no handshake an output touches. |
+| `scc_set_input_pin(scc, ch, pin, asserted)` | The primitive underneath: a level a device drives into `/DCD`, `/SYNC` or `/CTS`. RR0 reports it as the chip does, bit set when the active-low pin is asserted: DCD bit 3, SYNC bit 4, CTS bit 5. SYNC is reported only in asynchronous mode, where RR0 bit 4 is the pin; in the synchronous modes it is the receiver's hunt state. |
 
-The pin levels are the cable's, not the chip's: they live outside the
-channel state, a channel reset (`WR9`) or chip reset keeps them, and they are
-re-applied whenever WR4 changes the mode.  Leaving asynchronous mode hands
-RR0 bit 4 back to the receiver's hunt logic (the pin's level is cleared from
-it and the hunt state sets it as usual).  A change raises the
-External/Status interrupt when WR15 enables it for that input (DCD `$08`,
-SYNC/HUNT `$10`, CTS `$20`) and WR1 enables External/Status interrupts.
-Lines no device drives are left to the rest of the model (the loopback-cable
-mirroring, `scc_dcd`).
+Pin levels and the output are the cable's, not the chip's: they live
+outside the channel state, a channel reset (`WR9`) or chip reset keeps them,
+and the pins are re-applied whenever WR4 changes the mode. Leaving
+asynchronous mode hands RR0 bit 4 back to the receiver's hunt logic (the
+pin's level is cleared from it and the hunt state sets it as usual). A pin
+change raises the External/Status interrupt when WR15 enables it for that
+input (DCD `$08`, SYNC/HUNT `$10`, CTS `$20`) and WR1 enables
+External/Status interrupts. Lines nothing drives are left to the rest of the
+model (the loopback-cable mirroring, `scc_dcd`).
+
+The output is not checkpointed and does not survive `machine.boot` or a
+checkpoint load, both of which build a new SCC: set it again afterwards.
+
+The Lisa wires port A's ready line to `/SYNC`, asserted
+([lisa.md](../../machines/lisa/lisa.md) §15), so the Office System prints
+through Serial A only while `machine.scc.a.output` is set; with none, its
+driver reports the printer not ready. The Macintosh drivers use no
+hardware handshake by default and send whether or not an output is set.
 
 ## Host-side test surfaces (`machine.scc.a` / `machine.scc.b`)
 
@@ -780,6 +791,7 @@ loader, MkLinux's `console=ttya`) are driven and asserted.
 | `sent()` | method | Drain and return everything the channel has transmitted since the last call. |
 | `sent_pending` | attribute | Bytes waiting in that capture. |
 | `sent_dropped` | attribute | Bytes the capture had to discard because it filled before anyone drained it. |
+| `output` | attribute | The host file the channel's transmitted bytes stream into, or `none`. `machine.scc.a.output = "/path/file"` opens (creating or truncating) the file; `machine.scc.a.output = none` closes it. Unlike the capture it has no size limit and holds the raw bytes. Setting it also stands for a ready device on the cable (see "The far end of a port" above). |
 
 ### What the capture is, and is not
 

@@ -1171,15 +1171,20 @@ when mapped across `$00D000–$00D3FF`. (It was mapped at `$00D240` only, eight
 bytes, which served the boot ROM and silently dropped every access the OS's
 serial driver made.)
 
-- **Serial A: an ImageWriter, always.** The machine fits an ImageWriter to
-  channel A as an on-board device (`machine.printer`,
-  [imagewriter.md](../../core/peripherals/imagewriter.md)). The OS's RS-232
-  driver transmits on port A only while DSR is asserted, which the Lisa wires
-  to the SCC's `/SYNC` input and reads as RR0 bit 4 (`source-rs232`:
-  `xmtrr0 := $10` for channel 0), so the printer holds SYNC asserted. With the
-  Office System's device configuration set to "Imagewriter / II DMP" on
-  Serial A (the LOS 3.1 install default), File/Print sends the document to it
-  and each job lands in the print directory as `iw-<job>.iw`.
+- **Serial A's handshake and output.** The OS's RS-232 driver transmits on
+  port A only while DSR is asserted, which the Lisa wires to the SCC's
+  `/SYNC` input and reads as RR0 bit 4 (`source-rs232`: `xmtrr0 := $10` for
+  channel 0). The machine declares that wiring
+  (`scc_set_port_ready_line`), and a host file attached to the port stands
+  for a ready device on the cable: `machine.scc.a.output = "/path/file"`
+  raises DSR and streams everything the guest transmits into the file;
+  `machine.scc.a.output = none` lowers it again. With the Office System's
+  device configuration set to "Imagewriter / II DMP" on Serial A (the
+  LOS 3.1 install default), File/Print then writes the document's
+  ImageWriter command stream into the file; with no output set, the driver
+  reports "difficulty printing" and sends nothing. Port B (AppleBus) has no
+  wired handshake. See [scc.md](../../core/peripherals/scc.md), "The far end
+  of a port", and the `lisa-serial-output` integration row.
 
 ---
 
