@@ -427,6 +427,18 @@ configure, and what the JS frontend operates on:
   callers see numbers, strings, lists, and `{error: "…"}` shapes —
   never raw exit codes. See [`web.md`](../../guide/web.md) for the wire layout
   and protocol.
+- **Which thread runs a leaf.** Always the emulator thread. A script runs
+  on the job thread (`src/core/job/job.h`), but its `node_get` /
+  `node_set` / `node_call` marshal through the **seam**
+  (`job_on_emulator`) and execute in the emulator thread's drain, so a
+  leaf's author never sees another thread: guest state is reachable
+  without locks, and the seam is what makes the interpreter's scope,
+  alias and function tables the only shared ones (behind
+  `job_tables_lock`). A leaf whose cost is the size of a file — flagged
+  `io` (above) — hands its work to the I/O worker through `io_leaf.h` and
+  answers later (`gs_result_defer` / `gs_result_complete`); the worker
+  touches host files only. What a leaf prints goes through `gs_out.h`
+  (`gs_outf`, never `printf`) to the client whose request it is.
 
   **The result contract** (what `gsEval` in `app/web2/src/bus/emulator.ts`
   resolves to): a value is the result; `null` is **only** a successful

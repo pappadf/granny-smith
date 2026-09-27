@@ -16,7 +16,7 @@ Supporting both checkpoint types balances performance and reliability, enabling 
 
 ## Background Checkpoints
 
-Background checkpoints (quick checkpoints saved automatically) are written directly to OPFS-backed storage. With OPFS + pthreads, every `fclose()` is immediately durable — no async sync step or marker protocol is needed. Each machine owns a directory under `/opfs/checkpoints/`; the quick-checkpoint slot, the writable image deltas, and the manifest all live together under that directory and are treated as one atomic unit.
+Background checkpoints (quick checkpoints saved automatically) are serialised into a buffer on the emulator thread and written to OPFS-backed storage by the I/O worker (the save flow below). With OPFS + pthreads, every `fclose()` is immediately durable — no async sync step or marker protocol is needed. Each machine owns a directory under `/opfs/checkpoints/`; the quick-checkpoint slot, the writable image deltas, and the manifest all live together under that directory and are treated as one atomic unit.
 
 ### Per-Machine Directory
 

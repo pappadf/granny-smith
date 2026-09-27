@@ -171,11 +171,13 @@ One input rides the module config the other way: **`gsAudioWorkletUrl`**,
 the bundled audio-out worklet, which `em_audio.c` loads when sound
 starts.
 
-These callbacks are the template for any future C→JS event: install on
-`Module.*`, fire from C with `MAIN_THREAD_*_EM_ASM`. No exports, no
-SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback
-retired when the new prompt started coming back as `shell.run`'s return
-value.)
+These callbacks are for one thing only: a platform transport handing the
+page a handle or a buffer (screen geometry, a ring's control block, a
+worklet URL). Anything the core has to *say* — run state, a media change,
+a log line, progress, a download's chunk — is an event on the mailbox's
+event ring (`gs_event_emit`, "Events from the core" below), not a new
+`Module.on*` callback: an event never blocks the emulator thread, is
+ordered with the results, and reaches headless clients the same way.
 
 ## The Mailbox
 
@@ -715,15 +717,20 @@ and [`lineDiscipline.ts`](../../app/web2/src/components/panel-views/terminal/lin
 turns it into editing actions, which apply one at a time while the input
 line is live: whatever is typed while a command runs waits for the next
 prompt, and a multi-line paste runs line by line. On Enter the pane calls
-`gsEvalLine(line)`, which routes to the Shell class's `run` method;
-the next prompt is returned from `shell.run` and cached for the next
-`showPrompt()`. Stdout / stderr from `Module.print` lands in the same
-pane via [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts), which holds
-what is printed before the terminal first opens and replays it then.
+`gsEvalLine(line)`, which posts the line as a **script job** (`REQ_SCRIPT`,
+"Jobs" above) as the terminal's own client; the job's result is the
+shell's new prompt, cached for the next `showPrompt()`. What the line
+prints arrives as output records (`log:output` events) in order before
+that result and is written to the pane as it comes; text printed outside
+any request (boot messages, a breakpoint hit) still arrives through
+`Module.print`. Both land via [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts),
+which holds what is printed before the terminal first opens and replays it
+then.
 
 Tab completion uses the typed `shell.complete(line, cursor)` method.
-Ctrl-C calls `shell.interrupt` and drops the type-ahead; Cmd-C on macOS
-is the browser's copy.
+Ctrl-C cancels the terminal's foreground job, else stops a run the
+terminal started, else prints a hint ("Ctrl-C, exactly" above), and drops
+the type-ahead; Cmd-C on macOS is the browser's copy.
 
 xterm's theme is fed from the design tokens `--gs-terminal-bg` /
 `--gs-terminal-fg` / `--gs-terminal-cursor`; an `$effect` watching

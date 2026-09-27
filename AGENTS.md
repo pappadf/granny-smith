@@ -186,7 +186,7 @@ to not break this rule in the first place.
 - `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
 
-- `printf()` and `LOG(...)` output goes to **xterm.js** (browser terminal panel), not the JS console
+- Core code prints through the output sink (`gs_outf` / `gs_outs` / `gs_out`, `src/core/gs_out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in **xterm.js** (browser terminal panel), not the JS console
 - In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
 - Test specs live in `tests/e2e/web2-specs/`, shared helper in `tests/e2e/helpers/web2-fs.ts`
 
@@ -286,10 +286,12 @@ The v2 language also has `if`/`elif`/`else`, `while`, `for … in`,
 FALLBACK)`/`none` for expected-failure probes. Scripts print nothing
 implicitly (use `echo`); the first error aborts the script.
 
-The legacy `eval <path>` and `runCommand`/`runCommandJSON` JS helpers
-remain only as the terminal-input bridge and the two pre-main-loop
-boot calls (`main.js` / `checkpoint.js`); everything else goes through
-`gsEval`.
+A terminal line is a script job (`REQ_SCRIPT` on the mailbox, run on the
+job thread; `gsEvalLine` in `bus/emulator.ts` is its only caller);
+everything else on the page goes through `gsEval`. There is no other
+JS→C path: no `ccall`, no `Module.on*` callback carrying machine state
+(the core's events come back on the mailbox's event ring — see
+`docs/guide/web.md`, "Events from the core").
 
 ## When AGENTS.md Is Wrong
 

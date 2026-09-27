@@ -39,23 +39,52 @@ contributions.
 At its heart, the emulator core is intentionally headless and platform-agnostic.
 It emulates the full memory and device state of a Macintosh, including video
 RAM, but does not itself render graphics or provide a graphical user interface.
-Instead, the core exposes a simple command-line shell for user interaction,
-communicating via standard input and output streams. File system access is
-performed using standard C11/POSIX primitives, ensuring portability and ease of
-integration.
+Instead, the core exposes one **object model** (`docs/core/shell/object-model.md`):
+every subsystem is a node in a tree, and every operation is a read, a write or
+a call on one of its members. Callers reach the tree through the **mailbox**
+(`src/core/mailbox/mailbox.h`), a control block and two record rings in memory
+both sides can see: a client posts request records, the emulator thread
+serves them at frame boundaries, and answers and the core's own events come
+back on the event ring. A free-form shell line is a **script**, run as a job
+(below); the shell is a client of the tree, not a second interface to it.
+File system access is performed using standard C11/POSIX primitives, ensuring
+portability and ease of integration.
 
 To present a user-friendly experience, the core is typically wrapped by a
 platform-specific frontend. These frontends are responsible for visualizing the
 emulated screen, handling user input, and providing enhanced access to emulator
-features. For example, the browser-based frontend renders the Macintosh display
-in a canvas, maps host keyboard and mouse events to the emulator, and may
-surface shell commands through a graphical interface. Similarly, desktop or
-headless builds can provide their own mechanisms for display, input, and
-automation, all while relying on the same portable core logic.
+features. The browser-based frontend renders the Macintosh display in a
+canvas, maps host keyboard and mouse events to the emulator, and drives every
+feature through the mailbox from the page (`docs/guide/web.md`); the headless
+build is an in-process client of the same mailbox, feeding it a script file,
+stdin or a TCP daemon connection (`docs/core/shell/shell.md`). Both rely on the
+same portable core logic.
 
 This separation of concerns allows the emulator to be easily embedded in
 different environments, from web browsers to native applications, while
 maintaining a clean and testable architecture.
+
+### Threads
+
+The core runs on a small, fixed set of threads, created at boot. Who may touch
+what is the rule that keeps the machine deterministic:
+
+| Thread | Runs | Touches |
+|---|---|---|
+| **Emulator thread** | the tick: one VBL frame-unit at a time, then the mailbox drain | **all guest state**. Nothing of unbounded length runs here; every leaf of the object tree executes here, served from the drain |
+| **Job thread** (`src/core/job/job.h`) | scripts (a terminal line, a script file, a daemon statement), one at a time, FIFO | only the interpreter's own memory. Every read, write or call of the tree is handed to the emulator thread through the **seam** (`job_on_emulator`) and served in the next drain; a call that starts a mode holds the job until the mode ends |
+| **I/O worker** (`src/core/io/io_worker.h`) | work proportional to a file: copies, exports, blank images, archive extraction, downloads, the quick checkpoint's write and rename | host files only, through its own handles; never guest state. Reports progress and completion back through the drain; cancellable between chunks |
+| **Platen worker**, **Voodoo2 raster / GPU worker** (browser) | the LaserWriter's PostScript interpreter; the Voodoo2's rasteriser | their own shared-memory rings (`mailbox_ring.h`), fed by the emulator thread |
+| **Browser main thread** | the page, the canvas, input | the mailbox's client side through `Module.HEAPU8` and Atomics; never a direct call into the core |
+| **WasmFS OPFS proxy** (browser) | every OPFS read, write and rename, one at a time | the filesystem — which is why file work is chunked and yields between chunks |
+
+Output follows the same ownership: what a leaf or the interpreter prints goes
+through the sink (`src/core/gs_out.h`) to the client that asked — a job's text
+as output records before its result, a page leaf's text with its answer —
+and only text printed outside any request (boot messages, a breakpoint hit)
+reaches stdout directly. Headless can fold the job thread and the I/O worker
+back into the emulator thread (`--jobs=inline`, `--io=sync`) for bisecting;
+the output must not change.
 
 ## Modularized Architecture
 
@@ -315,7 +344,9 @@ There are two primary types of checkpoints, each serving a distinct purpose:
   serializing state that already exists in persistent storage (e.g., modified
   disk image blocks), relying on the underlying file system to persist those
   changes. This approach allows for fast, frequent state saves without
-  unnecessary duplication.
+  unnecessary duplication. The emulator thread only serialises into a buffer;
+  the write and the atomic rename run on the I/O worker, so the machine keeps
+  running while the file lands (`docs/core/storage/checkpointing.md`).
 
 - **Consolidated checkpoint:** Explicitly created by the user to export the
   entire machine state into a single file or stream. In this mode, _all_
