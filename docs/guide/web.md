@@ -192,7 +192,7 @@ can never be mistaken for another call's.
 
 ```
 control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
-  [0]  MAGIC 'GSMB'   [1] VERSION 8
+  [0]  MAGIC 'GSMB'   [1] VERSION 9
   [2]  REQ_OFF  [3] REQ_SIZE  256 KB   request ring, page → core
   [4]  EVT_OFF  [5] EVT_SIZE  1 MB     event ring,   core → page
   [6]  REQ_HEAD (page)  [7] REQ_TAIL (core)   free-running byte counts
@@ -201,15 +201,39 @@ control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
   [14..19] statistics: requests, events, stalls, longest drain µs, refused,
            events dropped
 records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
-  REQ_EVAL   {id, client, deadline_ms, path_len, args_len} + path + args
-  EVT_RESULT {id, ok, json_len} + json
+  REQ_EVAL      {id, client, deadline_ms, path_len, args_len} + path + args
+  REQ_SCRIPT    {id, client, deadline_ms, src_len} + src          (a job)
+  REQ_CANCEL    {id, client, target_id}     REQ_MODE_STOP {id, client, owner}
+  REQ_ACK_BUF   {id, client, handle}        (a staged buffer was consumed)
+  EVT_RESULT    {id, ok, json_len, out_len} + json + output
+  EVT_PROGRESS  {json_len} + {"id":request,"done":n,"total":n}
   EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json      (events from the core)
 ```
 
 Limits: a path of up to 1023 bytes and an arguments document of up to
 128 KB (the page refuses larger ones before writing); a result of up to
-256 KB. A result the event ring has no room for is held back and delivered
-once the page has read; the core never blocks on the page.
+256 KB in the answer slot. A result the event ring has no room for is held
+back and delivered once the page has read; the core never blocks on the
+page.
+
+**Output.** What a leaf prints while it runs (every stdout site in the core
+goes through the sink `gs_out.h`) travels with its answer: `EVT_RESULT`'s
+`output` text, which the page hands to the terminal, so a page leaf's
+printout reads as it did when stdout reached the terminal directly. A
+job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
+"client":c,"text":...}` records in the order the job produced it, before
+the job's result. Outside any request — boot messages, a breakpoint hit —
+text still goes to stdout and `Module.print`.
+
+**Staged buffers.** A result larger than the answer slot is not refused:
+the core formats it into a buffer in its heap and answers
+`{"$buf":handle,"ptr":p,"len":n}`; the page reads the JSON through the
+memory as it is at that moment (`Module.wasmMemory.buffer`, never a cached
+view: the heap grows) and releases it with `REQ_ACK_BUF {handle}`. The
+same mechanism carries a download to the page, chunk by chunk (below),
+and could carry an upload's chunks; today the transfer window
+(`storage.xfer_buffer`, 2 MB, static) already is a shared buffer the page
+fills, and its `xfer_write` / `xfer_read` run as I/O jobs.
 
 ### Events from the core
 
@@ -249,7 +273,9 @@ callbacks is emitted at its source too; the page routes each in
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
+| `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
 | `log:log` | the log sink, every line | `{line}` |
+| `log:output` | the job layer, a job's printed text | `{id, client, text}` |
 
 What still crosses as a `Module.on*` callback is a platform transport
 handing the page a handle or a buffer (screen geometry, the Voodoo2 and
@@ -292,17 +318,36 @@ running mode by owner (0: any); both answer `true` / `false`.
 
 **I/O jobs.** A leaf whose cost is the size of a file rather than of the
 machine — `storage.cp`, `storage.import`, `storage.export_raw`,
-`storage.hd_create` / `fd_create` / `profile_create`, `download`, and the
-quick checkpoint's publish — runs on the **I/O worker**
-(`src/core/io/io_worker.h`), a second thread created at boot. The leaf
-takes its request off the drain's answer path (`gs_result_defer`) and
-returns at once; the worker does the work; the completion, reported at a
-later drain, writes the request's `EVT_RESULT` (`gs_result_complete`), so
-the page's promise settles when the file is done and the emulator thread
-served frames throughout. A script's call is held the same way and a
-failure is the call's error. Writing over, moving or removing a path a
-device has open answers `E_BUSY`. Without a worker (`--io=sync`) the same
-work runs inline.
+`storage.hd_create` / `fd_create` / `profile_create`, `storage.xfer_write`
+/ `xfer_read`, `archive.extract`, a SCSI `image.export` and the Lisa
+`profile.save`, `download`, and the quick checkpoint's publish — runs on
+the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
+at boot. `meta.method_info` reports such a method with `io: true`
+(`MM_IO`). The leaf takes its request off the drain's answer path
+(`gs_result_defer`) and returns at once; the worker does the work in
+1 MB chunks (`GS_IO_CHUNK_KB`), yielding between them and reporting
+progress (`io_progress` → `EVT_PROGRESS {id, done, total}`; `gsEvalWithProgress`
+on the page); the completion, reported at a later drain, writes the
+request's `EVT_RESULT` (`gs_result_complete`), so the page's promise
+settles when the file is done and the emulator thread served frames
+throughout. A script's call is held the same way and a failure is the
+call's error. `REQ_CANCEL` of the request — or of the script whose call it
+is — cancels the job at its next chunk (`io_cancelled`); a cancelled copy
+leaves no partial destination. Writing over, moving or removing a path a
+device has open answers `E_BUSY`. An `image.export` snapshots the disk's
+read side (its own handles, a copy of the modification bitmap) on the
+emulator thread and write-locks the device until the file is written: a
+guest write to it fails meanwhile, as a drive being copied does. Without
+a worker (`--io=sync`) the same work runs inline, with the same hooks.
+
+**Downloads.** `download path` is an I/O job that reads the file 4 MB at
+a time into a staged buffer and announces each chunk as
+`notify:download_chunk`; the page copies the bytes into a Blob part,
+acknowledges the buffer (the worker refills it), and on the last chunk
+saves the Blob through a transient anchor (`bus/download.ts`). Neither
+thread waits on the other; a page that never acknowledges times the job
+out after 30 s, not the machine. The LaserWriter's PostScript capture
+(`appletalk.printer.capture`) takes the same road.
 
 **Ctrl-C, exactly.** The terminal is client 2 (the rest of the page is
 client 1). Ctrl-C cancels the terminal's foreground job if it has one;

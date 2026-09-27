@@ -211,13 +211,29 @@ leaf).
 
 Headless's own loop is the browser's tick minus the frame pacing: one
 frame-unit while the machine runs, then the mailbox drain that serves the
-job's calls and the daemon's or stdin's statements. `--framed` adds
-`@event <kind> <json>` lines for every core event (`mode_started`,
-`mode_ended` with its reason) and `@end ok|error` after each statement,
-for a client that wants to parse where a statement ended rather than time
-out on silence. Ctrl-C cancels the statement in flight, else stops a run
-stdin started, else stops the machine; the daemon's control connection
-does the same for the daemon's client.
+job's calls and the daemon's or stdin's statements. What a statement
+prints reaches the client through the same drain: every stdout site in the
+core goes through the output sink (`gs_out.h`), a job's text is delivered
+as output records in order before the statement's result, and the driver
+writes it to stdout (or the daemon's socket) as it arrives. `--framed`
+adds `@event <kind> <json>` lines for every core event (`mode_started`,
+`mode_ended` with its reason), `@out <json>` for each output record
+(`{"event":"output","id":..,"client":..,"text":..}`), `@progress <json>`
+for an I/O job's progress (`{"id":..,"done":..,"total":..}`), and
+`@end ok|error` after each statement, for a client that wants to parse
+where a statement ended rather than time out on silence. Ctrl-C cancels
+the statement in flight, else stops a run stdin started, else stops the
+machine; the daemon's control connection does the same for the daemon's
+client.
+
+Two bisecting aids fold a thread back in: `--io=sync` runs every I/O job
+(a copy, an export, a checkpoint's write) on the emulator thread, and
+`--jobs=inline` runs scripts there too — the interpreter executes inside
+the drain, and a `scheduler.run N` waits by driving frames itself instead
+of holding a call. Output is then printed directly rather than captured.
+Both modes are meant to produce the same stdout as the threaded run
+(`scripts/compare-jobs-inline.sh` runs the integration corpus both ways and
+diffs it); a difference is a bug in the threading, not in the script.
 
 `include "path"` pulls another script file into the run at the point of
 the statement: its `def`s land in the shared function registry, its

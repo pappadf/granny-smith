@@ -2149,6 +2149,22 @@ int script_run_line(const char *line) {
     return rc;
 }
 
+// Runs a parsed text as its own context: an error in it is attributed to
+// its line, not to whatever file the caller was including -- which is what
+// a job thread's empty stack gives a `shell.eval` from a script, and what
+// an inline run (the same thread, the includer's frames still on the
+// stack) must give too.
+static int exec_isolated(script_t *s, bool interactive) {
+    char *saved[INCLUDE_MAX_DEPTH];
+    int saved_depth = g_include_depth;
+    memcpy(saved, g_include_stack, sizeof saved);
+    g_include_depth = 0;
+    int rc = script_exec(s, interactive);
+    g_include_depth = saved_depth;
+    memcpy(g_include_stack, saved, sizeof saved);
+    return rc;
+}
+
 int script_run_text(const char *src, bool interactive) {
     char err[256];
     script_t *s = script_parse(src, err, sizeof(err));
@@ -2156,7 +2172,7 @@ int script_run_text(const char *src, bool interactive) {
         fprintf(stderr, "%s\n", err);
         return -1;
     }
-    int rc = script_exec(s, interactive);
+    int rc = exec_isolated(s, interactive);
     script_free(s);
     return rc;
 }
@@ -2168,7 +2184,7 @@ int script_run_source(const char *src) {
         fprintf(stderr, "%s\n", err);
         return -1;
     }
-    int rc = script_exec(s, false);
+    int rc = exec_isolated(s, false);
     script_free(s);
     return rc;
 }

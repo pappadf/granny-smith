@@ -165,9 +165,12 @@ Four caller surfaces walk that tree:
   of unbounded length: it ticks frames and drains the mailbox. A script
   is a **job** on the job thread (`src/core/job/job.h`), reaching guest
   state only through the seam, one served call at a time; a copy, an
-  export or a checkpoint's write is an **I/O job** on the I/O worker
-  (`src/core/io/io_worker.h`), answered later. Headless runs the same
-  three threads (`--io=sync` folds the worker back in for bisecting).
+  export, an archive's extraction, a download or a checkpoint's write is
+  an **I/O job** on the I/O worker (`src/core/io/io_worker.h`), answered
+  later, reporting progress and cancellable between chunks. What any of
+  them prints goes through the output sink (`src/core/gs_out.h`) to the
+  client that asked. Headless runs the same three threads (`--io=sync`
+  and `--jobs=inline` fold a thread back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
   `help()` to render the live tree.
 
