@@ -1624,6 +1624,8 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             cpu->poll_interrupt(cpu->ctx);
             if (dif && dif->get_pc(dif->ctx) != pc_before && debug_break_and_trace()) {
                 remaining_cycles = 0;
+                if (s->running)
+                    s->stop_reason = SCHED_STOP_BREAKPOINT;
                 s->running = false;
                 break;
             }

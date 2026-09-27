@@ -662,12 +662,12 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             if (!debug->watch_hit) {
                 const cpu_debug_if_t *dif = system_cpu_debug_if();
                 uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
-                printf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id, is_write ? "WRITE" : "READ",
-                       addr,
-                       (size == 1)   ? 'b'
-                       : (size == 2) ? 'w'
-                                     : 'l',
-                       (int)(size * 2), value, pc);
+                gs_outf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id, is_write ? "WRITE" : "READ",
+                        addr,
+                        (size == 1)   ? 'b'
+                        : (size == 2) ? 'w'
+                                      : 'l',
+                        (int)(size * 2), value, pc);
                 debug->watch_hit = true;
             }
             continue;
