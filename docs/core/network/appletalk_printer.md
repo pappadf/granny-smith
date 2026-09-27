@@ -205,9 +205,21 @@ in both), and the session follows its events:
   for the next job on the connection, and a SendData reads for it. A
   later job on the same connection opens on its first data; that data
   waits for its OPENED.
-- **Connection loss** mid-job (CloseConn, the inactivity timer, a SendData
-  failure) issues ABANDON: the interpreter job is freed without finishing
-  and no document is produced.
+- **Connection loss** mid-job (CloseConn before the EOF, the inactivity
+  timer, a SendData failure) issues ABANDON: the interpreter job is freed
+  without finishing and no document is produced.
+- **A clean CloseConn after the EOF** does not end the job. The
+  LaserWriter 7.0 driver closes the instant its last write (the one
+  carrying EOF) is acknowledged, without waiting for the printer; a
+  LaserWriter has the whole program by then and prints it. The job is
+  *detached*: it stays with the bridge (FINISH outstanding, or a feed
+  outstanding whose FED then issues the FINISH), its FINISHED counts the
+  job and drops the completion's output (there is no reader), and the
+  status returns to idle. An OpenConn meanwhile is answered busy. This
+  matters in the browser, where the worker's FINISHED arrives in host
+  time and a guest in turbo mode has long since closed; with the direct
+  transport (headless) the FINISHED lands 1 ms of guest time after the
+  FINISH and the race is normally won.
 
 Two things stay as before: the SendData issue gap (§6.1) and the guest-time
 inactivity timer (§6.3).

@@ -89,6 +89,11 @@ five states: idle, opening, ready, feeding, finishing.
 - **abort** (`laserwriter_job_abort`) — a connection torn down mid-job
   issues ABANDON: the interpreter is freed without finishing, no document
   is produced, and any result still on its way for that job id is dropped.
+  A connection closed cleanly *after* its EOF is not mid-job: the PAP
+  layer keeps the job (`laserwriter_job_finishing()` says the FINISH is
+  out) and lets it finish detached, dropping its output with
+  `laserwriter_job_discard_output()` (see
+  [`appletalk_printer.md`](appletalk_printer.md) §6.3a).
 
 One request is outstanding at a time. The PAP layer asks
 `laserwriter_job_ready()` before reading more data and

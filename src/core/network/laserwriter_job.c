@@ -413,6 +413,10 @@ bool laserwriter_job_ready(void) {
     return g_lw.state == JOB_READY;
 }
 
+bool laserwriter_job_finishing(void) {
+    return g_lw.state == JOB_FINISHING;
+}
+
 bool laserwriter_job_feed_pending(void) {
     return g_lw.state == JOB_FEEDING || g_lw.state == JOB_FINISHING;
 }
@@ -435,6 +439,11 @@ bool laserwriter_job_feed(uint32_t sequence, const uint8_t *data, size_t len) {
 
 size_t laserwriter_job_read_output(uint8_t *buf, size_t cap) {
     return buf ? byteq_read(&g_lw.output, buf, cap) : 0;
+}
+
+void laserwriter_job_discard_output(void) {
+    byteq_clear(&g_lw.output);
+    g_lw.output_dropped = 0;
 }
 
 bool laserwriter_job_finish(void) {
@@ -532,6 +541,10 @@ bool laserwriter_job_ready(void) {
     return false;
 }
 
+bool laserwriter_job_finishing(void) {
+    return false;
+}
+
 bool laserwriter_job_feed_pending(void) {
     return false;
 }
@@ -548,6 +561,8 @@ size_t laserwriter_job_read_output(uint8_t *buf, size_t cap) {
     (void)cap;
     return 0;
 }
+
+void laserwriter_job_discard_output(void) {}
 
 bool laserwriter_job_finish(void) {
     return false;

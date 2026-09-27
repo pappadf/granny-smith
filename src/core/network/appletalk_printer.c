@@ -161,6 +161,21 @@ static pap_session_t g_session;
 static atalk_printer_stats_t g_pap_stats;
 static pap_completion_stream_t g_completion;
 
+#if GS_PLATEN
+// A job that outlives its connection.  The LaserWriter 7.0 driver closes
+// the connection the instant its last write (the one carrying EOF) is
+// acknowledged, without waiting for the printer; a LaserWriter has the
+// whole program by then and prints it.  With the interpreter in the page's
+// worker (the ring transport) its FINISHED arrives in host time, long after
+// that close at turbo speed, so the job must not go down with the session:
+// it stays with the bridge, its events go to pap_platen_detached_event,
+// and an OpenConn meanwhile is answered busy.  `g_detached_eof` says the
+// close overtook an unacknowledged feed: the EOF's FINISH goes out at its
+// FED.
+static bool g_detached_job;
+static bool g_detached_eof;
+#endif
+
 // Forward declarations for helper routines.
 static void pap_printer_init(void);
 static void pap_session_reset(void);
@@ -174,6 +189,11 @@ static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uin
                                     size_t out_max);
 static void pap_session_finish(bool success, const char *reason, bool notify_client);
 static void pap_session_abort(const char *reason);
+#if GS_PLATEN
+static bool pap_platen_detach_job(bool clean_close);
+static void pap_platen_forget_detached(void);
+static void pap_platen_detached_event(laserwriter_event_t event, const char *detail);
+#endif
 static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete);
 #if !GS_PLATEN
 #endif
@@ -296,8 +316,12 @@ static void pap_session_reset(void) {
         g_session.send_handle = NULL;
     }
     byteq_free(&g_session.capture);
-    // A connection that goes away mid-job takes its interpreter with it
-    laserwriter_job_abort();
+    // A connection that goes away mid-job takes its interpreter with it --
+    // unless the job was detached at a clean close (its data is complete)
+#if GS_PLATEN
+    if (!g_detached_job)
+#endif
+        laserwriter_job_abort();
     byteq_free(&g_session.reply);
     g_session.reply_eof_pending = false;
     g_session.rx_len = 0;
@@ -402,11 +426,21 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
     if (closing_conn)
         pap_completion_set(closing_conn, final_msg, &g_session.client_addr);
 
+#if GS_PLATEN
+    // A clean close after the EOF leaves the job to finish on its own
+    bool detached = pap_platen_detach_job(success);
+#endif
     pap_session_reset();
     if (!g_printer.enabled) {
         pap_printer_set_status_idle();
         return;
     }
+#if GS_PLATEN
+    if (detached) {
+        pap_update_progress_status();
+        return;
+    }
+#endif
     pap_printer_set_status_fmt("%s", final_msg);
 }
 
@@ -441,8 +475,13 @@ static bool pap_capture_fragment(pap_session_t *sess, const uint8_t *data, size_
 
 // Updates the status string with the current job progress.
 static void pap_update_progress_status(void) {
+#if GS_PLATEN
+    if (!g_session.active && !g_detached_job)
+        return;
+#else
     if (!g_session.active)
         return;
+#endif
 #if GS_PLATEN
     // Composed from the interpreter's facts: the job name and pages shown so far
     char text[PRINTER_STATUS_MAX + 1];
@@ -1175,6 +1214,10 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         result = PAP_RESULT_BUSY;
     } else if (g_session.active) {
         result = PAP_RESULT_BUSY;
+    } else if (laserwriter_job_active()) {
+        // The previous job still finishes after its close: the printer is busy
+        LOG(2, "pap: OpenConn conn=%u while the last job finishes: busy", (unsigned)conn_id);
+        result = PAP_RESULT_BUSY;
     } else if (!atp || atp->data_len < 4) {
         result = PAP_RESULT_BUSY;
     } else {
@@ -1474,8 +1517,10 @@ static void pap_platen_finalize_job(void) {
 static void pap_platen_event(laserwriter_event_t event, const char *detail, void *ctx) {
     (void)ctx;
     pap_session_t *sess = &g_session;
-    if (!sess->active)
+    if (!sess->active) {
+        pap_platen_detached_event(event, detail);
         return;
+    }
     switch (event) {
     case LASERWRITER_EVENT_OPENED:
         pap_update_progress_status();
@@ -1514,6 +1559,64 @@ static void pap_platen_event(laserwriter_event_t event, const char *detail, void
     }
 }
 
+// At a session's end: keeps the job when the close was clean and its data
+// complete (the EOF handed over: FINISH outstanding, or a feed outstanding
+// with the EOF behind it).  True when the job stays.  An incomplete job
+// (the driver cancelled, the connection failed) is abandoned as before.
+static bool pap_platen_detach_job(bool clean_close) {
+    if (!clean_close || !laserwriter_job_active())
+        return false;
+    bool finishing = laserwriter_job_finishing();
+    if (!finishing && !g_session.eof_pending)
+        return false;
+    g_detached_job = true;
+    g_detached_eof = !finishing; // the FED that comes issues the FINISH
+    LOG(2, "pap: job %u finishes after the close (%s)", g_session.job_id,
+        finishing ? "finish outstanding" : "EOF behind the last feed");
+    return true;
+}
+
+// The detached job is over (or is to be dropped with the printer).
+static void pap_platen_forget_detached(void) {
+    g_detached_job = false;
+    g_detached_eof = false;
+}
+
+// The interpreter's events for a job whose connection is gone: the FED
+// that the close overtook issues the FINISH; FINISHED counts the job (the
+// document went to the sink already) and drops its output, which has no
+// reader; the printer returns to idle.
+static void pap_platen_detached_event(laserwriter_event_t event, const char *detail) {
+    if (!g_detached_job)
+        return;
+    switch (event) {
+    case LASERWRITER_EVENT_OPENED:
+        break; // not reachable: a job detaches only once it is open
+    case LASERWRITER_EVENT_FED:
+        pap_update_progress_status();
+        if (g_detached_eof) {
+            g_detached_eof = false;
+            LOG(2, "pap: detached job EOF; finishing");
+            // A refusal raises FAILED, handled below
+            laserwriter_job_finish();
+        }
+        break;
+    case LASERWRITER_EVENT_FINISHED:
+        LOG(2, "pap: detached job complete (%s)", laserwriter_job_last_outcome());
+        g_pap_stats.jobs++;
+        laserwriter_job_discard_output();
+        pap_platen_forget_detached();
+        pap_printer_set_status_idle();
+        break;
+    case LASERWRITER_EVENT_FAILED:
+        LOG(1, "pap: detached job failed: %s", detail);
+        laserwriter_job_discard_output();
+        pap_platen_forget_detached();
+        pap_printer_set_status_fmt("%s; error: %s", PRINTER_STATUS_IDLE, detail);
+        break;
+    }
+}
+
 #endif // GS_PLATEN
 
 // Registers the printer PAP socket handler and auto-enables the LaserWriter advertisement.
@@ -1539,6 +1642,9 @@ void atalk_printer_register(void) {
 void atalk_printer_shutdown(void) {
     if (!g_printer.initialized)
         return;
+#if GS_PLATEN
+    pap_platen_forget_detached(); // a job finishing after its close goes too
+#endif
     pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
     memset(&g_completion, 0, sizeof(g_completion));
     atalk_nbp_withdraw(&g_printer.nbp_entry);
@@ -1589,6 +1695,9 @@ int atalk_printer_disable(void) {
     pap_printer_init();
     atalk_nbp_withdraw(&g_printer.nbp_entry);
     g_printer.enabled = false;
+#if GS_PLATEN
+    pap_platen_forget_detached(); // a job finishing after its close goes too
+#endif
     pap_session_abort("printer disabled");
     pap_printer_set_status_idle();
     LOG(1, "atalk: printer disabled");
