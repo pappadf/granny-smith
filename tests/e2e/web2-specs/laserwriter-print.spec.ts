@@ -95,12 +95,11 @@ assert appletalk.printer.stats.bytes > 1000 "the job's PostScript was not counte
 echo done
 `;
 
-// fixme: reproduces a pre-existing defect (present on main too): the guest job
-// completes and the platen worker runs every FEED, but FINISHED reports zero
-// pages, so no document is posted and nothing downloads.  The headless
-// appletalk-print row (native platen library) renders one page from the same
-// flow.  Un-skip once the worker-side interpreter produces the page.
-test.fixme('a print job from the guest ends as a PDF download', async ({ page }) => {
+// The driver closes the connection the instant its EOF write is acknowledged,
+// before the worker's FINISHED comes back (host time, against a guest in
+// turbo mode); the bridge keeps the job past that close (appletalk_printer.c,
+// the detached job) so the document is counted and downloaded.
+test('a print job from the guest ends as a PDF download', async ({ page }) => {
   test.setTimeout(12 * 60 * 1000);
   await gotoWeb2(page);
   await stageOpfsFile(page, '/opfs/images/hd/print-hd.img', SYSTEM_HD);

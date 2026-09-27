@@ -96,6 +96,11 @@ bool laserwriter_job_active(void);
 // layer may read the next SendData's worth of data.
 bool laserwriter_job_ready(void);
 
+// True while the finish awaits FINISHED: the whole program is with the
+// interpreter, so the job can outlive its connection (appletalk_printer.c
+// keeps it when the workstation closes right after its EOF).
+bool laserwriter_job_finishing(void);
+
 // True while a feed or a finish awaits its acknowledgement.  A query's
 // reply arrives with that acknowledgement, so the PAP layer answers no
 // read credit with a status line meanwhile (Inside AppleTalk 2e ch. 10:
@@ -111,6 +116,10 @@ bool laserwriter_job_feed(uint32_t sequence, const uint8_t *data, size_t len);
 // each channel produced them) into `buf`, at most `cap`; returns the count,
 // 0 when nothing is pending.  Call until it returns 0.
 size_t laserwriter_job_read_output(uint8_t *buf, size_t cap);
+
+// Drops pending program output unread (a job that finished after its
+// connection closed has no reader; the next job's must not see it).
+void laserwriter_job_discard_output(void);
 
 // End of data: the program runs to completion; FINISHED follows, after the
 // document went to the platform sink and the counters moved.  False when
