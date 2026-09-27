@@ -127,6 +127,14 @@ typedef struct rgba8 {
 // Apple's driver, and make a gamma bug indistinguishable from an emulation bug
 // in a diff.
 //
+// `dac_lut` is the other side of that line, and BOTH consumers apply it.  It
+// is the card's own RAMDAC lookup in a direct-colour mode -- Control's
+// RaDACal keeps its 256-entry table in the DAC path at 16 and 32 bpp, one
+// lookup per channel, and MkLinux's console relies on it: it programs the
+// Linux palette and draws by replicating the colour index into every pixel
+// byte, letting the DAC expand it.  That table is what the card puts on the
+// bus, the same way the CLUT is at 8 bpp, so capture applies it too (#147).
+//
 // `crt_response` models the physical response curve of the monitor on the
 // far end of the cable.  Mac System 7's video drivers gamma-pre-correct
 // every CLUT write per a per-monitor gamma table (see the JMFB driver's
@@ -175,11 +183,12 @@ typedef struct display {
     const rgba8_t *clut; // 0/4/16/256-entry palette; NULL for direct formats
     uint32_t clut_len; // entries in clut (0 for direct formats)
     const uint8_t (*crt_response)[256]; // 3 × 256 bytes (R/G/B inverse gamma); NULL = identity
+    const uint8_t (*dac_lut)[256]; // the card's DAC table in a direct-colour mode (see above); NULL = none
 
     bool fb_dirty; // `bits` contents may have changed (incl. pointer swap)
     bool shape_dirty; // width/height/stride/format changed — texture needs reallocation
     bool clut_dirty; // CLUT entries changed
-    bool response_dirty; // crt_response changed (effectively init-only today)
+    bool response_dirty; // crt_response or dac_lut changed
 
     // The frame is being presented by someone else — the Voodoo2 under
     // the WebGPU takeover shows its own frames on an overlay canvas —
@@ -363,6 +372,12 @@ static inline void display_pixel_rgb(const display_t *d, const uint8_t *src_row,
         b = c.b;
     }
 done:
+    // A direct-colour DAC table sits between the pixel and the cable.
+    if (d->dac_lut) {
+        r = d->dac_lut[0][r];
+        g = d->dac_lut[1][g];
+        b = d->dac_lut[2][b];
+    }
     out[0] = r;
     out[1] = g;
     out[2] = b;

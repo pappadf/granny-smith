@@ -73,6 +73,16 @@ export interface Breakpoint {
   hits: number;
 }
 
+// A watchpoint: a memory logpoint that stops the machine (debug.watchpoints).
+export interface Watchpoint {
+  id: number;
+  addr: number;
+  end: number;
+  mode: 'read' | 'write' | 'rw';
+  enabled: boolean;
+  hits: number;
+}
+
 function coerceNum(v: unknown): number {
   if (typeof v === 'number') return v >>> 0;
   if (typeof v === 'string') {
@@ -279,6 +289,52 @@ export async function removeBreakpoint(id: number): Promise<boolean> {
 export async function removeBreakpointAt(addr: number): Promise<boolean> {
   const hit = (await listBreakpoints()).find((b) => b.addr === addr >>> 0);
   return hit ? removeBreakpoint(hit.id) : false;
+}
+
+// The watchpoints, enumerated by stable id like the breakpoints.
+export async function listWatchpoints(): Promise<Watchpoint[]> {
+  if (!isModuleReady()) return [];
+  const ids = await gsEval('debug.watchpoints.meta.indices', ['entries']);
+  if (!Array.isArray(ids)) return [];
+  const out: Watchpoint[] = [];
+  for (const raw of ids) {
+    const id = coerceNum(raw);
+    const base = `debug.watchpoints.entries[${id}]`;
+    const addr = await gsEval(`${base}.addr`);
+    if (isGsError(addr)) continue; // removed between the listing and this read
+    const end = await gsEval(`${base}.end_addr`);
+    const mode = await gsEval(`${base}.mode`);
+    const enabled = await gsEval(`${base}.enabled`);
+    const hits = await gsEval(`${base}.hit_count`);
+    out.push({
+      id,
+      addr: coerceNum(addr),
+      end: coerceNum(end),
+      mode: mode === 'read' || mode === 'rw' ? mode : 'write',
+      enabled: enabled === true,
+      hits: coerceNum(hits),
+    });
+  }
+  return out;
+}
+
+// Add a watchpoint on `addr`; `width` widens it to the b/w/l access
+// overlapping the address.
+export async function addWatchpoint(
+  addr: number,
+  mode: 'read' | 'write' | 'rw' = 'write',
+  width: 'b' | 'w' | 'l' | '' = '',
+): Promise<boolean> {
+  if (!isModuleReady()) return false;
+  const r = await gsEval('debug.watchpoints.add', [addr >>> 0, mode, width]);
+  return gsOk(r);
+}
+
+// Remove the watchpoint with stable id `id`.
+export async function removeWatchpoint(id: number): Promise<boolean> {
+  if (!isModuleReady()) return false;
+  const r = await gsEval(`debug.watchpoints.entries[${id}].remove`);
+  return gsOk(r);
 }
 
 export async function continueExec(): Promise<void> {
