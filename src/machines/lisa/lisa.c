@@ -20,6 +20,7 @@
 #include "debug_mac.h"
 #include "display.h"
 #include "image.h"
+#include "imagewriter.h"
 #include "io_leaf.h"
 #include "lisa_fdc.h"
 #include "lisa_keymap.h"
@@ -72,6 +73,7 @@ typedef struct lisa_state {
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
     struct object *hd_obj; // `profile` object (parallel hard disk)
     struct object *power_obj; // `power` object (soft power-off switch)
+    imagewriter_t *printer; // the on-board ImageWriter on Serial A (`printer` object)
     // Which keys the host holds down, by ADB raw code.  A repeated down (a
     // host's auto-repeat) or an up with no down is not a key transition, and
     // the COPS must not report one -- the ADB and Plus keyboards suppress the
@@ -1065,12 +1067,23 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_register_profile_object(cfg);
     lisa_register_power_object(cfg); // soft power-off switch (COPS) → `power.off`
 
-    // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
-    // $00D240 via the standard A1/A2 convention (docs/machines/lisa/lisa.md §15).  PCLK 4 MHz
-    // (chan A) / 3.6864 MHz (chan B).  Autovectored at IPL 6.
+    // Z8530 SCC (reused as-is).  Its chip select is the whole Serial Ports
+    // Control block, physical $00D000-$00D3FF (Lisa Hardware Manual 1983,
+    // Fig. 2-5), and only A1 (A/B) and A2 (D/C) reach the chip, so every
+    // 8-byte mirror is the same four registers: the boot ROM uses
+    // $00D241/43/45/47, the OS's RS-232 driver $00D201/03/05/07
+    // (docs/machines/lisa/lisa.md §15).  PCLK 4 MHz (chan A) / 3.6864 MHz
+    // (chan B).  Autovectored at IPL 6.
     cfg->scc = scc_init(NULL, cfg->scheduler, lisa_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 4000000, 3686400);
-    lisa_mmu_map_io(ls->mmu, 0xD240, 8, (memory_interface_t *)scc_get_memory_interface(cfg->scc), cfg->scc);
+    lisa_mmu_map_io(ls->mmu, 0xD000, 0x400, (memory_interface_t *)scc_get_memory_interface(cfg->scc), cfg->scc);
+
+    // An ImageWriter is always on the end of Serial A: an on-board device,
+    // not an option.  The OS's RS-232 driver holds port A output until DSR,
+    // which the Lisa wires to the SCC's /SYNC input and reads as RR0 bit 4
+    // set (source-rs232: xmtrr0 := $10 for channel 0), so the printer's
+    // ready line is SYNC, asserted.
+    ls->printer = imagewriter_init(cfg->scc, 0, SCC_PIN_SYNC, true, cfg->scheduler);
 
     lisa_display_init(cfg);
     scheduler_new_event_type(cfg->scheduler, "lisa", cfg, "vbl_off", &lisa_vbl_off);
@@ -1119,6 +1132,10 @@ static void lisa_teardown(config_t *cfg) {
             object_delete(ls0->power_obj);
             ls0->power_obj = NULL;
         }
+    }
+    if (ls0 && ls0->printer) {
+        imagewriter_delete(ls0->printer); // before the SCC it is plugged into
+        ls0->printer = NULL;
     }
     if (ls0 && ls0->profile) {
         lisa_profile_delete(ls0->profile);

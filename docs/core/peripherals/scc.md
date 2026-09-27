@@ -724,6 +724,49 @@ Delivery still flows through the existing `check_rx()` path, so RR0/RR1/RR3 bits
 
 ---
 
+## Interrupt request: what reaches the INT pin
+
+Two rules decide whether a pending interrupt interrupts, and both follow the
+chip rather than convenience:
+
+- **The WR1 enables gate each channel's pending bits.** RR3 keeps an
+  interrupt pending whether or not it is enabled, but only the bits whose
+  enable is on request INT: External/Status by WR1 bit 0, Transmit by bit 1,
+  Receive by bits 4:3 non-zero (`rr3_enabled`).  A WR1 write re-evaluates
+  the line, so a pending interrupt appears when its enable comes back on.
+  The Lisa OS RS-232 driver depends on this: its handler writes WR1 = 0 (its
+  comment: "no more ints this port"), then lowers the CPU mask so the other
+  port can interrupt, with an External/Status bit still latched.  When the
+  latch alone drove INT, the handler re-entered itself until the supervisor
+  stack ran into code.
+- **A Tx interrupt is pending only after the buffer has emptied since the
+  last Reset Tx Int Pending** (WR0 command 5, `tx_ip_armed`).  The command
+  clears the pending transmit interrupt and it stays clear until another
+  character is written and leaves the buffer; enabling Tx interrupts again
+  with nothing sent raises nothing.  The latch is set at channel reset, so
+  enabling Tx interrupts on a freshly reset, empty channel still interrupts
+  once, which the Mac drivers use to prime their output.
+
+## Devices on a port
+
+A peripheral at the far end of a port's cable (the Lisa's on-board
+ImageWriter, [imagewriter.md](imagewriter.md)) attaches through two calls:
+
+| Call | What it models |
+|---|---|
+| `scc_set_tx_byte_sink(scc, ch, fn, ctx)` | The cable's transmit wire: `fn` receives every byte the guest writes to WR8 while the channel is in asynchronous mode (WR4 stop bits non-zero).  SDLC frames still go to the frame sink. |
+| `scc_set_input_pin(scc, ch, pin, asserted)` | A handshake line the device drives into `/DCD`, `/SYNC` or `/CTS`.  RR0 reports it the way the chip does, bit set when the active-low pin is asserted: DCD bit 3, SYNC bit 4, CTS bit 5.  SYNC is reported only in asynchronous mode, where RR0 bit 4 is the pin; in the synchronous modes it is the receiver's hunt state. |
+
+The pin levels are the cable's, not the chip's: they live outside the
+channel state, a channel reset (`WR9`) or chip reset keeps them, and they are
+re-applied whenever WR4 changes the mode.  Leaving asynchronous mode hands
+RR0 bit 4 back to the receiver's hunt logic (the pin's level is cleared from
+it and the hunt state sets it as usual).  A change raises the
+External/Status interrupt when WR15 enables it for that input (DCD `$08`,
+SYNC/HUNT `$10`, CTS `$20`) and WR1 enables External/Status interrupts.
+Lines no device drives are left to the rest of the model (the loopback-cable
+mirroring, `scc_dcd`).
+
 ## Host-side test surfaces (`machine.scc.a` / `machine.scc.b`)
 
 The object model exposes two taps that have no counterpart in the chip. They
