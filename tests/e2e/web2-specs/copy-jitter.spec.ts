@@ -30,6 +30,9 @@ test('request round trips while a 192 MB copy runs', async ({ page }) => {
   await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
   await typeLine(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
   await page.waitForTimeout(3_000);
+  // A terminal boot leaves the machine stopped: run it, live.
+  await typeLine(page, 'scheduler.run');
+  await page.waitForTimeout(2_000);
   // The source: a sparse blank image is fast to make; the copy reads and
   // writes every byte.
   await typeLine(page, 'storage.hd_create("/opfs/images/hd/src.img", "192mb")');

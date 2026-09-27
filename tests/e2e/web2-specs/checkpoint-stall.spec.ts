@@ -39,6 +39,10 @@ for (const ramKb of [32768, 131072]) {
     await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
     await typeLine(page, `machine.boot model="iicx" ram=${ramKb} rom="/opfs/images/rom/97221136"`);
     await page.waitForTimeout(3_000);
+    // A terminal boot leaves the machine stopped (the page's own boot path
+    // starts it): run it, live.
+    await typeLine(page, 'scheduler.run');
+    await page.waitForTimeout(2_000);
     // The checkpoint needs a machine directory, which an attached disk gives.
     await typeLine(page, 'storage.hd_create("/opfs/images/hd/cp.img", "20mb")');
     await page.waitForTimeout(3_000);
@@ -46,7 +50,7 @@ for (const ramKb of [32768, 131072]) {
     await page.waitForTimeout(3_000);
     // A terminal boot carries no checkpoint identity (the page registers one
     // once at module ready, before its own boots); give this machine one.
-    await typeLine(page, 'machine.register "measure" "2026-09-27T00:00:00Z"');
+    await typeLine(page, 'machine.register "measure" "20260927T000000Z"');
     await page.waitForTimeout(1_000);
     await typeLine(page, 'checkpoint.auto = true');
     await page.waitForTimeout(1_000);
