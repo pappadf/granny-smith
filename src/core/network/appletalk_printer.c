@@ -23,7 +23,7 @@ LOG_USE_CATEGORY_NAME("pap");
 
 #define PRINTER_STATUS_MAX       255
 #define PRINTER_OBJECT_MAX       32
-#define PRINTER_DEFAULT_OBJECT   "LaserWriter (Sim)"
+#define PRINTER_DEFAULT_OBJECT   "Virtual LaserWriter"
 #define PRINTER_STATUS_IDLE      "status: idle"
 #define PRINTER_STATUS_BUSY      "status: print spooler processing job"
 #define PRINTER_ENTITY_TYPE      "LaserWriter"
