@@ -8,8 +8,14 @@ export type MediaTypeId = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cdrom';
 
 export interface ValidateResult {
   valid: boolean;
+  // Set with valid:false when the file IS this media type but is refused
+  // (a damaged ROM dump, a ROM of a machine that is not emulated).  The text
+  // completes a sentence that starts with the file's name, and the upload
+  // stops there instead of trying the next media type.
+  reject?: string;
   info?: {
     checksum?: string;
+    id?: string;
     persistDir?: string;
     [k: string]: unknown;
   };
@@ -33,12 +39,20 @@ const FD_800 = 800 * 1024;
 const FD_HD = 1440 * 1024;
 const DC42_HEADER = 0x54;
 
+// Shape returned by C-side `machine.rom.identify` (src/core/memory/rom.c).
+// `id` is the ROM's own stored checksum, the only thing a ROM file is ever
+// named by, and only when `intact`.  `recognised` = the core's ROM table knows
+// it; `supported` = it boots at least one emulated model (`compatible`).
 interface RomIdentifyResult {
   recognised?: boolean;
+  supported?: boolean;
   compatible?: string[];
-  checksum?: string;
   name?: string;
   size?: number;
+  kind?: string;
+  id?: string;
+  intact?: boolean;
+  reason?: string;
 }
 
 // Shape returned by C-side `machine.vrom.identify`. Identity is keyed off the
@@ -99,7 +113,8 @@ async function parseCardRomIdentify(
 export interface RomIdentity {
   path: string;
   name: string;
-  checksum: string;
+  id: string; // content id: the ROM's own stored checksum (rom.identify)
+  intact: boolean;
   compatible: string[];
   size: number;
 }
@@ -112,14 +127,16 @@ export interface CardRomIdentity {
   compatible: string[];
 }
 
-// The ROM at `path`, or null when the core does not recognise it.
+// The ROM at `path`, or null when the core does not recognise it or it boots
+// no emulated model (a known ROM of a machine Granny Smith does not emulate).
 export async function identifyRom(gsEval: GsEval, path: string): Promise<RomIdentity | null> {
   const r = await parseRomIdentify(gsEval, path);
-  if (!r?.recognised || !Array.isArray(r.compatible)) return null;
+  if (!r?.recognised || !r.supported || !Array.isArray(r.compatible)) return null;
   return {
     path,
     name: r.name || path.split('/').pop() || path,
-    checksum: r.checksum ?? '',
+    id: r.id ?? '',
+    intact: r.intact ?? false,
     compatible: r.compatible,
     size: r.size ?? 0,
   };
@@ -148,11 +165,24 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     async validate(path, gsEval) {
       const info = await parseRomIdentify(gsEval, path);
       if (!info?.recognised) return { valid: false };
-      return { valid: true, info: { checksum: info.checksum } };
+      // A known ROM that fails its own checksum is never stored: its id is
+      // the good dump's, and a damaged ROM in the picker helps nobody.
+      if (!info.intact)
+        return {
+          valid: false,
+          reject: `looks like the ${info.name}, but its ${info.reason} — the dump is probably damaged`,
+        };
+      if (!info.supported)
+        return {
+          valid: false,
+          reject: `is the ${info.name}; Granny Smith does not emulate that machine`,
+        };
+      return { valid: true, info: { id: info.id } };
     },
-    // ROMs are stored by checksum, not original filename.
+    // ROMs are stored by content id (the ROM's own stored checksum), not
+    // original filename.
     nameFn(originalName, info) {
-      return (info?.checksum as string) || originalName;
+      return (info?.id as string) || originalName;
     },
   },
 
@@ -173,7 +203,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
       };
     },
     // VROMs are stored by content hash (the declaration ROM's Format-Block
-    // CRC), mirroring how CPU ROMs are stored by checksum. Discovery is
+    // CRC), mirroring how CPU ROMs are stored by content id. Discovery is
     // content-based (the core's offer registry), so the on-disk name never
     // matters — and the UI carries no naming grammar of its own. The
     // identify payload's crc is "0x"-prefixed; strip it for the filename.

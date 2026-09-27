@@ -30,7 +30,9 @@ const terminalRun = (page: Page, line: string) =>
 
 const DATA = path.resolve(__dirname, '../../data');
 const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
-const STORED_ROM = '/opfs/images/rom/96CD923D';
+// Uploads are stored under the ROM's content id (rom.identify): its header
+// sum plus the ConfigInfo 64-bit sum.
+const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
 
 // Bandit 1's config ports are little-endian and machine.memory.poke is a
 // raw big-endian bus view (the tnt-pci-voodoo2 row's idiom), so the

@@ -183,7 +183,9 @@ export async function acceptFilesAsCategory(
     const descriptor = MEDIA_TYPES[category];
     const result = await descriptor.validate(staging, gsEval);
     if (!result.valid) {
-      showNotification(`'${file.name}' is not a valid ${descriptor.label}`, 'error');
+      // A refusal says why; anything else is simply not this kind of file.
+      const why = result.reject ?? `is not a valid ${descriptor.label}`;
+      showNotification(`'${file.name}' ${why}`, 'error');
       await discardStaging(staging);
       return null;
     }
@@ -289,7 +291,7 @@ async function probeAndPersist(
   // (the HD probe accepts anything that just opens and isn't floppy-
   // sized, so it will happily classify a 32 KB VROM as a tiny "hard
   // disk" if VROM hasn't already claimed the file).
-  //   rom    — machine.rom.identify: checksum against the ROM catalog
+  //   rom    — machine.rom.identify: content id against the core's ROM table
   //   vrom   — machine.vrom.identify: Format-Block CRC against the catalog
   //   prom   — $55AA + a reachable PCIR + Open Firmware code type
   //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
@@ -305,6 +307,13 @@ async function probeAndPersist(
   for (const id of ORDER) {
     const descriptor = MEDIA_TYPES[id];
     const result = await descriptor.validate(stagingPath, gsEval);
+    if (result.reject) {
+      // This IS that kind of file, refused: say why and stop, rather than
+      // letting the permissive hd probe store it as a disk image.
+      showNotification(`'${file.name}' ${result.reject}`, 'error');
+      await discardStaging(stagingPath);
+      return;
+    }
     if (!result.valid) continue;
     const persisted = await persist(stagingPath, file.name, descriptor, result.info);
     if (persisted) {
@@ -339,6 +348,12 @@ async function probeAndPersist(
     for (const id of ORDER) {
       const descriptor = MEDIA_TYPES[id];
       const result = await descriptor.validate(innerPath, gsEval);
+      if (result.reject) {
+        showNotification(`'${file.name}' ${result.reject}`, 'error');
+        await discardStaging(stagingPath);
+        await discardStaging(extractDir);
+        return;
+      }
       if (!result.valid) continue;
       const persisted = await persist(innerPath, file.name, descriptor, result.info);
       if (persisted) {

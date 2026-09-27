@@ -746,7 +746,9 @@
           <label for="cfg-rom">ROM Image</label>
           <select id="cfg-rom" bind:value={romPath}>
             {#each romsForCurrentModel as r (r.path)}
-              <option value={r.path}>{r.name}</option>
+              <!-- The core's name plus the content id, so two files of one ROM read
+                   as the same ROM and two different ROMs never read alike. -->
+              <option value={r.path}>{r.name} · {r.id}{r.intact ? '' : ' · damaged'}</option>
             {/each}
           </select>
         </div>
