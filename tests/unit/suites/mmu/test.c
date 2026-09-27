@@ -99,6 +99,55 @@ TEST(test_limit_field_bounds_index) {
 }
 
 // ============================================================================
+// Test: an early-termination page frame keeps its low address bits
+// ============================================================================
+//
+// MC68030UM 9.5.3.1: for an early termination descriptor "the physical address
+// in the ATC entry is the sum of the page address field in the descriptor plus
+// an offset.  The offset is the logical address with the bits used in the
+// search set to zero."  The page address field is bits 31..PS, so a frame may
+// sit anywhere on a PAGE boundary, not only on a boundary of the whole range
+// the descriptor covers.  The walker masked the frame to the covered range,
+// which turned the IIci ROM's level-A descriptor $00050019 (logical 0 -> the
+// RAM past the 320 KB in-RAM screen buffer) into an identity map.
+TEST(test_early_termination_unaligned_frame) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // The IIci ROM's 32-bit layout: IS=8, TIA=4, TIB=5, PS=15 (32 KB pages).
+    uint32_t tc = (1u << 31) | (15u << 20) | (8u << 16) | (4u << 12) | (5u << 8);
+    uint32_t level_a_base = 0x10000;
+    // Level-A entry 0 terminates early: 1 MB of logical space from a frame at
+    // physical $50000 -- a page boundary, not a 1 MB boundary.
+    store_be32(ram + level_a_base + 0, 0x00050000 | DESC_DT_PAGE | (1u << 3) | (1u << 4));
+    // Level-A entry 1 (logical $100000..) maps the next megabyte of RAM.
+    store_be32(ram + level_a_base + 4, 0x00150000 | DESC_DT_PAGE | (1u << 3) | (1u << 4));
+
+    mmu->tc = tc;
+    mmu->crp = ((uint64_t)((0u << 31) | (0x7FFFu << 16) | DESC_DT_TABLE4) << 32) | level_a_base;
+    mmu->enabled = true;
+    mmu_invalidate_tlb(mmu);
+
+    // The frame's low bits survive, and the offset ADDS to the frame.
+    ASSERT_EQ_INT((int)0x00050000u, (int)mmu_translate_debug(mmu, 0x00000000, true));
+    ASSERT_EQ_INT((int)0x00052000u, (int)mmu_translate_debug(mmu, 0x00002000, true));
+    ASSERT_EQ_INT((int)0x0014FFFFu, (int)mmu_translate_debug(mmu, 0x000FFFFF, true));
+    ASSERT_EQ_INT((int)0x00150000u, (int)mmu_translate_debug(mmu, 0x00100000, true));
+
+    // The same through the fault path, and again once the block cache holds the
+    // walked descriptor: the SoA entry must point at the shifted frame.
+    ASSERT_TRUE(mmu_handle_fault(mmu, 0x00002000, false, true));
+    ASSERT_TRUE(mmu_handle_fault(mmu, 0x00003000, false, true)); // block-cache hit
+    ram[0x52010] = 0x5A;
+    ram[0x53010] = 0xA5;
+    ASSERT_EQ_INT(0x5A, memory_read_uint8(0x00002010));
+    ASSERT_EQ_INT(0xA5, memory_read_uint8(0x00003010));
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
 // Test: the architectural U/M history-bit protocol
 // ============================================================================
 //
@@ -636,6 +685,7 @@ int main(void) {
     RUN(test_two_level_translation);
     RUN(test_short_table_descriptor_with_wp_bit);
     RUN(test_limit_field_bounds_index);
+    RUN(test_early_termination_unaligned_frame);
     RUN(test_um_history_bits);
     RUN(test_invalid_descriptor_bus_error);
     RUN(test_transparent_translation);

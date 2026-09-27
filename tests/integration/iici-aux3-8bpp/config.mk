@@ -1,5 +1,5 @@
 # Integration test configuration: IIci A/UX 3.0.1 HD boot at 8 bpp, on the
-# built-in RBV video (MILESTONE class: run, reported, not fatal).
+# built-in RBV video.
 #
 # RBV-under-A/UX is a video path nothing else exercises.  The IIci rather
 # than the IIsi because A/UX requires an FPU and the IIci has a 68882.  The
@@ -7,11 +7,14 @@
 # iici-701-depths does (PRAM $56, BoardID $001F, depth spID $83; see
 # test.script), and expects the graphical login window at 8 bpp.
 #
-# It does not get there today: the guest draws at 8 bpp while the RBV scans
-# out, and machine.screen reports, 1 bpp (#183).  Under System 7.0.1 the same
-# seed gives a correct 8-bpp desktop, so the defect is on the A/UX path.  The
-# row reproduces it nightly; promotion to enforced is a reviewed edit here
-# plus removing the cell's blocked marker in matrix-targets.json.
+# It ran as a milestone while #183 kept it from the login window.  Three
+# IIci defects stood in the way, all fixed: an undecoded RBV slot-interrupt
+# alias ($1E02) hung the kernel on the video VBL; the ROM space did not repeat
+# through $40000000, where A/UX reads the ROM header; and the 68030 walker
+# dropped the low bits of an early-termination page frame, so the ROM's
+# logical-0-at-physical-$50000 map came out as an identity map, and with it
+# the built-in video was modelled as a private buffer instead of the bottom
+# of Bank A -- where A/UX, following the hardware, draws the screen.
 #
 # The 8-bpp configuration also exposed two IIfx defects when this test ran on
 # that machine, both fixed: the JMFB's PRAM seeding (the token stamp once

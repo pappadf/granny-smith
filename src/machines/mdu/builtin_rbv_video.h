@@ -11,8 +11,9 @@
 //
 // v1 models the framebuffer pointer + depth/CLUT (driven by RvMonP and the
 // VDAC), not the cycle-stealing DMA.  The card owns the display_t and the
-// 256-entry CLUT; the machine registers the framebuffer buffer at the
-// $FBB00000 aperture and routes the VDAC ($50F24000) window here.  The
+// 256-entry CLUT; the machine points it at the bottom of Bank A (physical 0,
+// where the ROM's tables map $FBB08000) and routes the VDAC ($50F24000)
+// window here.  The
 // monitor-sense + depth register lives on the RBV chip (rbv.c).
 
 #ifndef NUBUS_CARDS_BUILTIN_RBV_VIDEO_H
@@ -23,14 +24,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Framebuffer aperture.  The slot-$B 32-bit base $FB000000 + within-slot
-// offset $B00000 gives the aligned aperture base; VideoInfoMDU's screen
-// base $FBB08000 is $8000 into it (mirrors the SE/30's $FEE00000 + $8040).
-// Aligning the aperture to the $B<<20 boundary lets the IIcx-style mode-24
-// alias ($00B00000) resolve the 24-bit screen base $00B08000 correctly.
-#define BUILTIN_RBV_VRAM_BASE     0xFBB00000UL // slot-$B aligned aperture base
+// Size of the window the card scans out of, and of the private buffer it
+// starts with before the machine points it at main RAM (both the IIci and the
+// IIsi do: the RBV/V8 frame buffer is the bottom of Bank A).
 #define BUILTIN_RBV_VRAM_SIZE     0x00100000UL // 1 MB — covers 640×480×8bpp + offset
-#define BUILTIN_RBV_SCREEN_OFFSET 0x8000UL // VideoInfoMDU screen base within the aperture
+#define BUILTIN_RBV_SCREEN_OFFSET 0x8000UL // screen offset within the private buffer
 
 // Card-kind descriptor — registered in nubus.c's g_card_registry under the
 // id "builtin_rbv_video"; the IIci machine names it in its slot-$0 decl.
@@ -38,19 +36,15 @@ extern const nubus_card_kind_t builtin_rbv_video_kind;
 
 // === Machine-facing hooks (outside the nubus_card_ops_t vtable) =============
 
-// Borrowed accessor for the card's framebuffer buffer.  iici_init registers
-// this region on the bus map at BUILTIN_RBV_VRAM_BASE (mirroring how
-// se30_init registers the SE/30 VRAM).  NULL if `card` is NULL.
-uint8_t *builtin_rbv_video_framebuffer(nubus_card_t *card);
-
 // Point the card's framebuffer at a machine-owned aperture (a window into main
-// RAM) rather than the card's private buffer.  Used by the IIsi, whose V8 reads
-// the framebuffer directly out of main DRAM.  `aperture` is the base of the
-// framebuffer in host memory; `screen_offset` is where the active screen begins
-// within it (the IIsi V8 puts the screen at the very start of Bank A — physical
-// 0 — so its offset is 0, unlike the IIci's separate $8000-offset buffer).  The
-// machine owns the memory (not freed by the card).
-void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset);
+// RAM) rather than the card's private buffer.  Used by the IIci and the IIsi,
+// whose RBV / V8 read the framebuffer directly out of main DRAM.  `aperture` is
+// the base of the framebuffer in host memory; `screen_offset` is where the
+// active screen begins within it (both put the screen at the very start of
+// Bank A — physical 0 — so their offset is 0).  The machine owns the memory
+// (not freed by the card).  `blank` clears the visible window: true on a cold
+// boot, false on a checkpoint restore, whose RAM image already holds the screen.
+void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset, bool blank);
 
 // Wire the RBV chip to the card so the card can assert the slot-0 video
 // VBL interrupt and read the current depth.  Called from iici_init after
