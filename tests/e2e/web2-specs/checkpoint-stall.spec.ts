@@ -45,6 +45,8 @@ for (const ramKb of [32768, 131072]) {
     const result = await page.evaluate(async (windowMs) => {
       const w = window as unknown as { __gsEval?: (p: string) => Promise<unknown> };
       if (!w.__gsEval) throw new Error('window.__gsEval is not exposed in this build');
+      // No checkpoint before the window; at least one must land during it.
+      await w.__gsEval('checkpoint.clear');
       const lat: number[] = [];
       const t_end = performance.now() + windowMs;
       while (performance.now() < t_end) {
@@ -53,9 +55,11 @@ for (const ramKb of [32768, 131072]) {
         lat.push(performance.now() - t0);
         await new Promise((r) => setTimeout(r, 10));
       }
+      const saved = (await w.__gsEval('checkpoint.probe')) === true;
       lat.sort((a, b) => a - b);
       const q = (p: number) => lat[Math.min(lat.length - 1, Math.floor(p * lat.length))];
       return {
+        saved,
         samples: lat.length,
         p50: q(0.5),
         p99: q(0.99),
@@ -68,5 +72,6 @@ for (const ramKb of [32768, 131072]) {
     console.log(`checkpoint-stall ${line}`);
     if (process.env.GS_MEASURE_OUT) fs.appendFileSync(process.env.GS_MEASURE_OUT, line + '\n');
     expect(result.samples).toBeGreaterThan(100);
+    expect(result.saved).toBe(true);
   });
 }
