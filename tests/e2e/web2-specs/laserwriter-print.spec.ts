@@ -95,8 +95,11 @@ assert appletalk.printer.stats.bytes > 1000 "the job's PostScript was not counte
 echo done
 `;
 
-// fixme: the browser repro is being worked out (the headless appletalk-print
-// row passes); un-skip once it reproduces the user-reported missing download.
+// fixme: reproduces a pre-existing defect (present on main too): the guest job
+// completes and the platen worker runs every FEED, but FINISHED reports zero
+// pages, so no document is posted and nothing downloads.  The headless
+// appletalk-print row (native platen library) renders one page from the same
+// flow.  Un-skip once the worker-side interpreter produces the page.
 test.fixme('a print job from the guest ends as a PDF download', async ({ page }) => {
   test.setTimeout(12 * 60 * 1000);
   await gotoWeb2(page);
