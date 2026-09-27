@@ -14,13 +14,22 @@ echo "${machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom")}"
 # state is touched.
 echo "${machine.rom.identify("../../data/roms/iix-iicx-se30-97221136.rom")}"
 
+# The map's content fields: kind, the ROM's own stored checksum as its id,
+# and the self-check verdict.  A known ROM of an emulated model is supported.
+assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").kind == "mac68k" "Plus is a 68k ROM"
+assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").id == "4d1f8172" "Plus id is its header sum"
+assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").intact "Plus ROM self-check"
+assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").supported "Plus ROM is supported"
+assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").reason == "" "an intact ROM has no reason"
+
 # Unrecognised file: probing /dev/null/nonexistent must yield V_ERROR.
 # The shell's truthiness rule treats errors as falsy.
 assert !machine.rom.identify("/dev/null/nonexistent") "expected V_ERROR for unreadable path"
 
 # Per-instance attributes describe the *loaded* ROM (Plus_v3 in this run).
 assert machine.rom.loaded == true "Plus ROM must be loaded"
-assert machine.rom.checksum == "4D1F8172" "Plus_v3 checksum is 4D1F8172"
+assert machine.rom.id == "4d1f8172" "Plus_v3 id is 4d1f8172"
+assert machine.rom.intact "loaded Plus ROM self-check"
 assert machine.rom.name == "Macintosh Plus (Rev 3, Loud Harmonicas)" "Plus_v3 family name"
 assert machine.rom.size == 131072 "Plus ROM is 128 KiB"
 

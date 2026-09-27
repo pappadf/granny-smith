@@ -620,7 +620,7 @@ typed-dispatch and introspection surface.
 /                              Memory (default WasmFS root)
 ├── opfs/                       Single OPFS mount — persistent
 │   ├── images/
-│   │   ├── rom/                ROM images, named by checksum
+│   │   ├── rom/                ROM images, named by content id
 │   │   ├── vrom/               Video ROM images
 │   │   ├── fd/                 Floppy images (400K / 800K / 1.44 MB)
 │   │   ├── hd/                 SCSI hard-disk images

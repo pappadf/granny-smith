@@ -204,10 +204,11 @@ int system_ensure_machine(const char *model_id) {
 
 // ROM identification stub (used by cmd_rom in memory.c)
 typedef struct rom_info rom_info_t;
-const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *out_checksum) {
+struct rom_identity;
+const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, struct rom_identity *out) {
     (void)data;
     (void)size;
-    (void)out_checksum;
+    (void)out;
     return NULL;
 }
 

@@ -76,7 +76,7 @@ typedef struct machine_config_record {
     char model[MC_ID_MAX];
     uint32_t ram_kb;
     char rom[MC_PATH_MAX];
-    uint32_t rom_crc;
+    char rom_id[32]; // content id of the installed ROM (rom.h ROM_ID_MAX)
     char rom2[MC_PATH_MAX]; // Lisa second chip ("" = single-file ROM)
     char vrom[MC_PATH_MAX]; // explicit vrom= pick ("" = auto-resolve)
     char prom[MC_PATH_MAX]; // explicit prom= pick ("" = auto-resolve)
@@ -154,7 +154,7 @@ void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id, 
 
 // rom.load write-back: keep the record answering "how do I recreate
 // what I'm looking at" after a live ROM swap.
-void machine_config_note_rom(const char *path, uint32_t crc);
+void machine_config_note_rom(const char *path, const char *rom_id);
 
 // Attach the read-only `machine.config` child object (idempotent).
 void machine_config_object_init(struct object *machine_obj);

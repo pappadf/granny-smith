@@ -33,7 +33,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('plus-v3-4d1f8172.rom'))
           return {
             recognised: true,
-            checksum: 'plus-checksum',
+            supported: true,
+            intact: true,
+            id: 'plus-checksum',
             name: 'Macintosh Plus ROM',
             compatible: ['plus'],
             size: 128 * 1024,

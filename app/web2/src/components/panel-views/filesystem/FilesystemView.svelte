@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Tree, { type TreeNode, type SelectMods } from '@/components/common/Tree.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import RenameDialog from './RenameDialog.svelte';
@@ -20,7 +20,7 @@
   import { isMacArchive } from '@/lib/archive';
   import { isDiskImage, isInImageSpace, listViaVfs } from '@/lib/diskImage';
   import { showNotification } from '@/state/toasts.svelte';
-  import { bumpImagesRevision } from '@/state/images.svelte';
+  import { images, bumpImagesRevision } from '@/state/images.svelte';
   import { startActivity, endActivity } from '@/state/activity.svelte';
   import {
     filesystem,
@@ -32,7 +32,7 @@
     clearFsSelection,
   } from '@/state/filesystem.svelte';
   import { iconForFsEntry } from '@/lib/iconForFsEntry';
-  import { pathIsAncestorOrSelf, pathKey } from '@/lib/treePath';
+  import { pathIsAncestorOrSelf, pathKey, pathKeyToArray } from '@/lib/treePath';
 
   const DRAG_MIME = 'application/x-gs-tree-path';
 
@@ -137,6 +137,25 @@
 
   onMount(() => {
     void loadChildren(['/opfs']);
+  });
+
+  // An upload elsewhere (the Welcome page, the New Machine dialog, the Images
+  // tab) changes /opfs/images/ behind this tree's cache and bumps
+  // images.revision.  Drop the cached listings under /opfs/images and remount,
+  // so the new file shows without a tab switch.  (refresh() bumps the same
+  // counter for this view's own mutations; the extra remount is harmless.)
+  const imagesPath = ['/opfs', '/opfs/images'];
+  let seenRevision = images.revision;
+  $effect(() => {
+    const rev = images.revision;
+    if (rev === seenRevision) return;
+    seenRevision = rev;
+    untrack(() => {
+      for (const k of Object.keys(childrenCache)) {
+        if (pathIsAncestorOrSelf(imagesPath, pathKeyToArray(k))) delete childrenCache[k];
+      }
+      treeKey++;
+    });
   });
 
   function handleDragStart(path: string[], ev: DragEvent) {

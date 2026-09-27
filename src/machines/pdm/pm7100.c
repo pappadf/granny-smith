@@ -37,7 +37,7 @@ static const pdm_board_desc_t pm7100_board = {
 };
 
 const hw_profile_t machine_pm7100 = {
-    .name = "Power Macintosh 7100/66",
+    .name = "Power Macintosh 7100",
     .id = "pm7100",
 
     .cpu_model = CPU_MODEL_PPC601,

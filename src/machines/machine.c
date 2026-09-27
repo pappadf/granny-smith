@@ -935,6 +935,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         if (!f)
             return val_err("machine.boot: cannot read rom2 '%s'", doc.rom2);
         fclose(f);
+    } else if (rom_fi.info && !rom_is_supported(rom_fi.info)) {
+        // A real ROM we know, for a machine that is not emulated.
+        return val_err("machine.boot: rom '%s' is the %s, for a machine Granny Smith does not emulate", doc.rom,
+                       rom_fi.info->family_name);
     } else if (rom_fi.info) {
         bool ok = false;
         for (const char *const *p = rom_fi.info->compatible; *p; p++) {
@@ -947,8 +951,8 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             return val_err("machine.boot: rom '%s' (%s) is not compatible with model '%s'", doc.rom,
                            rom_fi.info->family_name, profile->id);
     } else {
-        return val_err("machine.boot: rom '%s' is not a recognised ROM image (checksum %08X)", doc.rom,
-                       rom_fi.checksum);
+        return val_err("machine.boot: rom '%s' is not a recognised ROM image (id %s)", doc.rom,
+                       rom_fi.identity.id[0] ? rom_fi.identity.id : "none");
     }
 
     if (doc.video_card && *doc.video_card) {
@@ -1175,7 +1179,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     snprintf(w->model, sizeof(w->model), "%s", profile->id);
     w->ram_kb = cfg->ram_size / 1024u;
     snprintf(w->rom, sizeof(w->rom), "%s", doc.rom);
-    w->rom_crc = rom_fi.checksum;
+    snprintf(w->rom_id, sizeof(w->rom_id), "%s", rom_fi.identity.id);
     snprintf(w->rom2, sizeof(w->rom2), "%s", doc.rom2 ? doc.rom2 : "");
     snprintf(w->vrom, sizeof(w->vrom), "%s", doc.vrom ? doc.vrom : "");
     snprintf(w->prom, sizeof(w->prom), "%s", doc.prom ? doc.prom : "");

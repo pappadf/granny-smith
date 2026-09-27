@@ -44,7 +44,12 @@
     }
   }
 
+  // Re-scan when the section opens and whenever anything changes the image
+  // store (images.revision): an upload from the Welcome page, the New
+  // Machine dialog or the Filesystem tab would otherwise leave an open
+  // section showing its old listing.
   $effect(() => {
+    void images.revision;
     if (open) void refresh();
   });
 

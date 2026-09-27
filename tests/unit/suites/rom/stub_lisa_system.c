@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
-// Minimal system accessor stubs for the Lisa ROM unit test.
+// Minimal system accessor stubs for the ROM identity unit test.
 //
 // We cannot link the shared support/stub_system.c here because it also stubs
 // rom_identify_data(), which collides with the real rom.c under test. These
 // tests never create a machine, so NULL returns are sufficient — the ROM
-// interleave / identification paths exercised here don't touch the machine.
+// identity / interleave paths exercised here don't touch the machine.
 
 #include <stdbool.h>
 #include <stddef.h>

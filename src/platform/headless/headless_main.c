@@ -1534,6 +1534,12 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: ROM file %s could not be identified\n", rom_file);
         return 1;
     }
+    // A known ROM for a machine that is not emulated has no model to boot.
+    if (!rom_is_supported(rom_fi.info)) {
+        fprintf(stderr, "Error: ROM file %s is the %s, for a machine Granny Smith does not emulate\n", rom_file,
+                rom_fi.info->family_name);
+        return 1;
+    }
 
     // Resolve target machine: model= overrides; else use the first entry in
     // the ROM's compatible list (the family default, e.g. SE/30 for Universal).

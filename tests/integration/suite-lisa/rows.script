@@ -24,7 +24,7 @@ def row_lisa_los31_profile() {
 
     machine.hd.attach "$WORK_DIR/profile.image"
     assert machine.id == "lisa" "machine.id != lisa"
-    assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+    assert machine.rom.id == "3f7b" "rom.id != 3f7b (rev-H)"
     assert machine.hd.present == true "ProFile should be attached"
 
     # Seed the parameter memory before the ROM reads it at startup, IN THE
@@ -80,7 +80,7 @@ def row_lisa_xenix_hdinit() {
     # target).  Without it the kernel panics "pf0 not on line".
     machine.hd.attach
     assert machine.id == "lisa" "machine.id != lisa"
-    assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+    assert machine.rom.id == "3f7b" "rom.id != 3f7b (rev-H)"
     assert machine.hd.present == true "ProFile should be attached"
 
     # (§1.5.1) Boot the floppy to the loader's "boot :" prompt (a COPS poll loop).
@@ -157,7 +157,7 @@ def row_lisa_xenix_boot() {
 
     machine.hd.attach "$WORK_DIR/xenix-profile.image"
     assert machine.id == "lisa" "machine.id != lisa"
-    assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+    assert machine.rom.id == "3f7b" "rom.id != 3f7b (rev-H)"
     assert machine.hd.present == true "ProFile should be attached"
 
     # Boot the floppy loader to its "boot :" prompt.
@@ -232,7 +232,7 @@ def row_lisa_xenix_nofloppy() {
 
     machine.hd.attach "$WORK_DIR/xenix-profile.image"
     assert machine.id == "lisa" "machine.id != lisa"
-    assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+    assert machine.rom.id == "3f7b" "rom.id != 3f7b (rev-H)"
     assert machine.hd.present == true "ProFile should be attached"
 
     # === No floppy: the ROM "insert diskette / STARTUP FROM…" screen =============
@@ -299,7 +299,7 @@ def row_xl_macworks_boot() {
     scheduler.run 200000000
 
     assert machine.id == "macxl" "machine.id != macxl"
-    assert machine.rom.checksum == "094C82F0" "rom.checksum != 094C82F0"
+    assert machine.rom.id == "d905" "rom.id != d905"
     # Macintosh XL screen-modification raster (square pixels), not the Lisa 2's 720x364.
     assert machine.screen.width == 608 "screen.width != 608"
     assert machine.screen.height == 431 "screen.height != 431"
@@ -339,7 +339,7 @@ def row_xl_no_media() {
 
     # Confirm we are on the Macintosh XL, on the "3A" boot ROM, before there is any media.
     assert machine.id == "macxl" "machine.id != macxl"
-    assert machine.rom.checksum == "094C82F0" "rom.checksum != 094C82F0"
+    assert machine.rom.id == "d905" "rom.id != d905"
     # Macintosh XL screen-modification raster (square pixels), not the Lisa 2's 720x364.
     assert machine.screen.width == 608 "screen.width != 608"
     assert machine.screen.height == 431 "screen.height != 431"
@@ -399,7 +399,7 @@ def row_lisa_checkpoint() {
     assert checkpoint.load("${$WORK_DIR}/suite-lisa.gsc") "lisa-checkpoint: load failed"
     assert machine.id == "lisa" "lisa-checkpoint: restored machine.id wrong"
     assert machine.ram == 2048 "lisa-checkpoint: restored RAM size wrong"
-    assert machine.rom.checksum == "098917B2" "lisa-checkpoint: restored rom.checksum wrong"
+    assert machine.rom.id == "3f7b" "lisa-checkpoint: restored rom.id wrong"
     # The restored machine must keep executing, not just load.  With the COPS
     # now in the stream, a mismatched save/restore pair fails HERE with a
     # positional size error naming both sites, which is the failure mode this

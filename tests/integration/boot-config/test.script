@@ -21,7 +21,7 @@
 assert machine.config.valid "record valid after startup boot"
 assert machine.config.model == "iicx" "record model from CLI"
 assert machine.config.ram == 8192 "record ram from CLI"
-assert machine.config.rom_crc == 0x97221136 "record rom_crc"
+assert machine.config.rom_id == "97221136" "record rom_id"
 assert machine.config.created != "" "record created stamped"
 
 # --- Empty sockets exist as slot nodes before any staging. ---

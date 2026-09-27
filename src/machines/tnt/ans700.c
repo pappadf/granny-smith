@@ -72,7 +72,7 @@ static const tnt_board_desc_t ans700_board = {
 };
 
 const hw_profile_t machine_ans700 = {
-    .name = "Apple Network Server 700/150",
+    .name = "Apple Network Server 700",
     .id = "ans700",
 
     .cpu_model = CPU_MODEL_PPC604,
