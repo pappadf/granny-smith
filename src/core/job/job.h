@@ -95,6 +95,32 @@ bool job_serving_call(void);
 uint32_t job_call_defer(void); // 0 when no call is being served
 void job_call_complete(uint32_t token, bool ok, const char *json);
 bool job_call_take_failure(char *err, size_t cap);
+// The I/O job answering the deferred call (a cancel of the script cancels
+// it), and the request id of the script the call belongs to.
+void job_call_bind_io(uint32_t token, uint32_t io_job);
+uint32_t job_call_request_id(uint32_t token);
+
+// --- Output ------------------------------------------------------------------
+// gs_out.c: appends text to the job that owns the calling context -- the
+// job running on this thread, or the job whose call the emulator thread is
+// serving.  False when there is none (the text goes elsewhere).  The
+// buffered text is delivered by job_layer_service as EVT_LOG
+// {"event":"output","id":req,"client":c,"text":...} records, in order,
+// before the job's result.
+bool job_output_append(const char *text, size_t len);
+
+// --- Inline mode --------------------------------------------------------------
+// Without a job thread a script runs on the emulator thread inside the
+// drain (mailbox.c serve_script), and a leaf that starts a mode cannot be
+// waited for by holding a call.  Inline mode supplies the wait: after a
+// tree call on the emulator thread that opened a mode the client waits
+// for, `run_frame` is called until the mode ends.  `--jobs=inline` on
+// headless sets it; the seam's callers (object.c) consult it.
+void job_inline_enable(void (*run_frame)(void));
+bool job_inline_enabled(void);
+// Emulator thread, around a tree call: the mode id before, and the wait
+// after (a no-op when nothing changed or the client does not wait).
+void job_inline_after_call(uint32_t mode_before);
 
 // --- Between seam.c and job.c ---------------------------------------------
 typedef void (*job_post_fn)(void (*fn)(void *ud), void *ud);

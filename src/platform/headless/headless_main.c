@@ -270,6 +270,11 @@ static void print_usage(const char *program) {
     printf("                       (also settable with $GS_SHARED_DIR; created if missing)\n");
     printf("  --print-dir=DIR      Write each LaserWriter job's PDF as DIR/<job>-<title>.pdf\n");
     printf("                       (also $GS_PRINT_DIR; created if missing; needs a PLATEN=1 build)\n");
+    printf("  --framed        Core events as `@event <kind> <json>` lines, a job's output as `@out <json>`,\n");
+    printf("                  an I/O job's progress as `@progress <json>`, and `@end ok|error` after each\n");
+    printf("                  statement (for a client that parses)\n");
+    printf("  --io=sync       No I/O worker: file work runs on the emulator thread (a bisecting aid)\n");
+    printf("  --jobs=inline   No job thread: scripts run on the emulator thread (a bisecting aid)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -361,6 +366,7 @@ static uint8_t g_mbx_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + 2 * HL_MBX_R
 static gs_mailbox_client_t g_cli;
 static int g_framed = 0; // --framed: @event / @end lines on stdout
 static int g_io_sync = 0; // --io=sync: no I/O worker
+static int g_jobs_inline = 0; // --jobs=inline: no job thread; scripts run on the emulator thread
 static uint32_t g_foreground_job = 0; // the statement in flight (its request id)
 static uint32_t g_foreground_client = 0;
 
@@ -388,18 +394,106 @@ static void hl_mailbox_init(void) {
 
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
-static bool hl_pump_once(void) {
-    bool did = false;
+// One frame, when the machine runs.  Also what inline mode (job.h) calls
+// while a script waits for the mode it started.
+static bool hl_run_frame(void) {
     scheduler_t *sched = system_scheduler();
     if (sched && global_emulator && scheduler_is_running(sched)) {
         scheduler_run_frame(sched, global_emulator);
-        did = true;
+        return true;
     }
+    return false;
+}
+
+static void hl_inline_frame(void) {
+    if (!hl_run_frame())
+        usleep(1000);
+}
+
+static bool hl_pump_once(void) {
+    bool did = hl_run_frame();
     if (gs_mailbox_drain(&g_mbx, 0, NULL) > 0)
         did = true;
     if (job_layer_has_work())
         did = true;
     return did;
+}
+
+// A job's printed output arrives as EVT_LOG output records (mailbox.h);
+// this prints the text -- or, framed, hands the record to the client as an
+// `@out` line.
+static void hl_print_output_record(const char *json) {
+    if (g_framed) {
+        printf("@out %s\n", json);
+        fflush(stdout);
+        return;
+    }
+    const char *t = strstr(json, "\"text\":\"");
+    if (!t)
+        return;
+    t += 8;
+    // Unescape the JSON string up to its closing quote.
+    while (*t && *t != '"') {
+        if (*t == '\\' && t[1]) {
+            t++;
+            switch (*t) {
+            case 'n':
+                putchar('\n');
+                break;
+            case 't':
+                putchar('\t');
+                break;
+            case 'u': {
+                unsigned c = 0;
+                if (sscanf(t + 1, "%4x", &c) == 1) {
+                    putchar((int)c);
+                    t += 4;
+                }
+                break;
+            }
+            default:
+                putchar(*t);
+            }
+            t++;
+        } else {
+            putchar(*t++);
+        }
+    }
+    fflush(stdout);
+}
+
+// Takes every event off the ring: a job's output is printed, the result
+// of `id` (when non-zero) is reported through *rc.  Returns whether that
+// result arrived.
+static bool hl_take_events(uint32_t id, int *rc) {
+    static uint8_t buf[128u << 10];
+    uint32_t len, kind;
+    bool got = false;
+    while ((kind = gs_mailbox_client_take(&g_cli, buf, sizeof buf, &len)) != 0) {
+        if (kind == GS_MBX_EVT_RESULT) {
+            if (id && RD_LE32(buf + 4 * GS_MBX_RESULT_ID) == id) {
+                *rc = RD_LE32(buf + 4 * GS_MBX_RESULT_OK) ? 0 : -1;
+                got = true;
+            }
+        } else if (kind == GS_MBX_EVT_PROGRESS && g_framed && len < sizeof buf) {
+            uint32_t n = RD_LE32(buf + 4 * GS_MBX_EVENT_JSON_LEN);
+            char *json = (char *)buf + 4 * GS_MBX_EVENT_WORDS;
+            if (4 * GS_MBX_EVENT_WORDS + n < sizeof buf) {
+                json[n] = '\0';
+                printf("@progress %s\n", json);
+                fflush(stdout);
+            }
+        } else if (kind == GS_MBX_EVT_LOG && len < sizeof buf) {
+            uint32_t n = RD_LE32(buf + 4 * GS_MBX_EVENT_JSON_LEN);
+            char *json = (char *)buf + 4 * GS_MBX_EVENT_WORDS;
+            if (4 * GS_MBX_EVENT_WORDS + n < sizeof buf) {
+                json[n] = '\0';
+                if (strstr(json, "\"event\":\"output\"") == json + 1)
+                    hl_print_output_record(json);
+            }
+        }
+    }
+    return got;
 }
 
 // Ctrl-C, exactly (the same rule as the browser terminal): cancel the
@@ -435,17 +529,9 @@ static int hl_run_statement(uint32_t client, const char *src) {
     int rc = -1;
     for (;;) {
         bool did = hl_pump_once();
-        // Results: ours ends the wait; another client's (none today) is dropped.
-        uint8_t buf[512];
-        uint32_t len, kind;
-        bool got = false;
-        while ((kind = gs_mailbox_client_take(&g_cli, buf, sizeof buf, &len)) != 0) {
-            if (kind == GS_MBX_EVT_RESULT && RD_LE32(buf + 4 * GS_MBX_RESULT_ID) == id) {
-                rc = RD_LE32(buf + 4 * GS_MBX_RESULT_OK) ? 0 : -1;
-                got = true;
-            }
-        }
-        if (got)
+        // Results: ours ends the wait; another client's (none today) is
+        // dropped.  The job's output is printed as it arrives.
+        if (hl_take_events(id, &rc))
             break;
         if (g_interrupted) {
             g_interrupted = 0;
@@ -1152,6 +1238,11 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        if (strcmp(arg, "--jobs=inline") == 0) {
+            g_jobs_inline = 1; // no job thread: scripts run on the emulator thread (a bisecting aid)
+            continue;
+        }
+
         if (strcmp(arg, "--framed") == 0) {
             g_framed = 1; // core events as `@event` lines, `@end` after each statement
             continue;
@@ -1352,7 +1443,9 @@ int main(int argc, char *argv[]) {
     // The mailbox this process is a client of, and the job thread that runs
     // its scripts (falls back to inline scripts if the thread cannot start).
     hl_mailbox_init();
-    if (!job_thread_start(512u << 10))
+    if (g_jobs_inline)
+        job_inline_enable(hl_inline_frame);
+    else if (!job_thread_start(512u << 10))
         fprintf(stderr, "headless: job thread could not be started; scripts run inline\n");
     if (!g_io_sync && !io_worker_start(256u << 10))
         fprintf(stderr, "headless: I/O worker could not be started; writes run inline\n");

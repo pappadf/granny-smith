@@ -9,10 +9,13 @@
 // to force.
 
 #include "common.h"
+#include "gs_out.h"
 #include "test_assert.h"
+#include "io/io_worker.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,6 +123,37 @@ static int take(uint32_t *id, uint32_t *ok, char *json, size_t cap) {
     }
 }
 
+// The client reads the next EVT_RESULT with its captured output.
+static int take_out(uint32_t *id, uint32_t *ok, char *json, size_t cap, char *out, size_t out_cap) {
+    for (;;) {
+        uint32_t head = mbx_load(g_ctrl, GS_MBX_C_EVT_HEAD);
+        mbx_rec_t rec;
+        int got = mbx_next(&g_evt, head, &rec);
+        if (got <= 0)
+            return got;
+        if (rec.kind == MBX_R_PAD) {
+            mbx_consume(&g_evt, &rec);
+            continue;
+        }
+        ASSERT_EQ_INT(rec.kind, GS_MBX_EVT_RESULT);
+        const uint8_t *p = mbx_rec_payload(&g_evt, &rec);
+        *id = RD_LE32(p + 4 * GS_MBX_RESULT_ID);
+        *ok = RD_LE32(p + 4 * GS_MBX_RESULT_OK);
+        uint32_t n = RD_LE32(p + 4 * GS_MBX_RESULT_JSON_LEN);
+        uint32_t on = RD_LE32(p + 4 * GS_MBX_RESULT_OUT_LEN);
+        if (n >= cap)
+            n = (uint32_t)cap - 1;
+        memcpy(json, p + 4 * GS_MBX_RESULT_WORDS, n);
+        json[n] = '\0';
+        if (on >= out_cap)
+            on = (uint32_t)out_cap - 1;
+        memcpy(out, p + 4 * GS_MBX_RESULT_WORDS + ((RD_LE32(p + 4 * GS_MBX_RESULT_JSON_LEN) + 3u) & ~3u), on);
+        out[on] = '\0';
+        mbx_consume(&g_evt, &rec);
+        return 1;
+    }
+}
+
 // The client reads the next record of any kind (skipping PADs): returns its
 // kind (0: none), the payload copied into buf.
 static uint32_t take_any(uint8_t *buf, size_t cap, uint32_t *len) {
@@ -157,10 +191,22 @@ static uint32_t g_mode_owner; // 0: no mode running
 static uint32_t g_mode_id;
 static int g_stops;
 int job_glue_run_source_threaded(const char *src);
+static void print_on_emulator(void *ud) {
+    (void)ud;
+    gs_outs("two\n"); // the emulator thread, serving the job's call
+}
+int job_glue_run_source_printing(const char *src) {
+    (void)src;
+    gs_outf("one %s\n", "\"quoted\""); // the job thread itself
+    job_on_emulator(print_on_emulator, NULL);
+    return 0;
+}
 int job_glue_run_source(const char *src, bool interactive) {
     (void)interactive;
     if (strcmp(src, "threaded") == 0)
         return job_glue_run_source_threaded(src);
+    if (strcmp(src, "printing") == 0)
+        return job_glue_run_source_printing(src);
     g_scripts++;
     snprintf(g_last_script, sizeof g_last_script, "%s", src);
     return strncmp(src, "fail", 4) == 0 ? -1 : 0;
@@ -669,6 +715,212 @@ TEST(a_deferred_leaf_answers_when_completed_not_when_served) {
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 0);
 }
 
+// A leaf that prints while it runs (gs_out.h): the text travels with its
+// answer when the platform captures output, else to stdout.
+static int printing_eval(const char *path, const char *args, char *out, size_t out_size) {
+    gs_outf("hello %s\n", path);
+    gs_outs("second line\n");
+    return stub_eval(path, args, out, out_size);
+}
+
+TEST(what_a_leaf_prints_travels_with_its_answer_when_captured) {
+    fresh();
+    g_m.eval = printing_eval;
+    gs_mailbox_set_capture_output(&g_m, true);
+    ASSERT_TRUE(post(61, "p", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    uint32_t id, ok;
+    char json[128], out[128];
+    ASSERT_EQ_INT(take_out(&id, &ok, json, sizeof json, out, sizeof out), 1);
+    ASSERT_EQ_INT(id, 61);
+    ASSERT_TRUE(strcmp(out, "hello p\nsecond line\n") == 0);
+    ASSERT_TRUE(strstr(json, "\"path\":\"p\"") != NULL);
+    // Not captured: the answer carries no output (the text went to fd 1).
+    gs_mailbox_set_capture_output(&g_m, false);
+    ASSERT_TRUE(post(62, "q", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(take_out(&id, &ok, json, sizeof json, out, sizeof out), 1);
+    ASSERT_EQ_INT(id, 62);
+    ASSERT_TRUE(out[0] == '\0');
+}
+
+TEST(progress_of_a_deferred_leaf_reaches_the_client_as_evt_progress) {
+    fresh();
+    g_m.eval = deferring_eval;
+    g_defer_token = 0;
+    ASSERT_TRUE(post(71, "defer", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    ASSERT_TRUE(g_defer_token != 0);
+    ASSERT_EQ_INT(gs_result_request_id(g_defer_token), 71);
+    gs_result_progress(g_defer_token, 5, 10);
+    uint8_t buf[256];
+    uint32_t len;
+    ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), GS_MBX_EVT_PROGRESS);
+    uint32_t n = RD_LE32(buf + 4 * GS_MBX_EVENT_JSON_LEN);
+    buf[4 * GS_MBX_EVENT_WORDS + n] = '\0';
+    ASSERT_TRUE(strcmp((char *)buf + 4 * GS_MBX_EVENT_WORDS, "{\"id\":71,\"done\":5,\"total\":10}") == 0);
+    gs_result_complete_ok(g_defer_token);
+    uint32_t id, ok;
+    char json[64];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 71);
+    // A token nobody holds names no request and reports nowhere.
+    ASSERT_EQ_INT(gs_result_request_id(g_defer_token), 0);
+    gs_result_progress(g_defer_token, 1, 1);
+    ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), 0);
+}
+
+TEST(a_staged_buffer_is_named_looked_up_and_freed_by_the_ack) {
+    fresh();
+    char *buf = (char *)malloc(64);
+    strcpy(buf, "spilled");
+    uint32_t h = gs_staged_publish(buf, 8, 0);
+    ASSERT_TRUE(h != 0);
+    void *ptr = NULL;
+    size_t len = 0;
+    ASSERT_TRUE(gs_staged_lookup(h, &ptr, &len));
+    ASSERT_TRUE(ptr == buf && len == 8);
+    // The client's ack frees it and is answered true; a second ack of the
+    // same handle finds nothing.
+    post_ctl(GS_MBX_REQ_ACK_BUF, 81, 1, h);
+    post_ctl(GS_MBX_REQ_ACK_BUF, 82, 1, h);
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
+    uint32_t id, ok;
+    char json[64];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 81);
+    ASSERT_TRUE(strcmp(json, "true") == 0);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 82);
+    ASSERT_TRUE(strcmp(json, "false") == 0);
+    ASSERT_TRUE(!gs_staged_lookup(h, NULL, NULL));
+    // The table is bounded; publishing past it fails, releasing makes room.
+    uint32_t hs[GS_MBX_STAGED_MAX + 1];
+    for (int i = 0; i < GS_MBX_STAGED_MAX; i++) {
+        hs[i] = gs_staged_publish(malloc(4), 4, 0);
+        ASSERT_TRUE(hs[i] != 0);
+    }
+    ASSERT_EQ_INT(gs_staged_publish(buf, 1, 0), 0);
+    for (int i = 0; i < GS_MBX_STAGED_MAX; i++)
+        gs_staged_release(hs[i]);
+}
+
+// An I/O job that runs until cancelled, on a real worker thread.
+static int waiting_work(void *ud, char *err, size_t cap) {
+    (void)ud;
+    for (int i = 0; i < 50000; i++) {
+        if (io_cancelled()) {
+            snprintf(err, cap, "cancelled");
+            return -ECANCELED;
+        }
+        io_progress((uint64_t)i, 50000);
+        usleep(100);
+    }
+    return 0;
+}
+static void waiting_done(bool ok, double ms, const char *error, void *ud) {
+    (void)ms;
+    uint32_t token = *(uint32_t *)ud;
+    if (ok)
+        gs_result_complete_ok(token);
+    else
+        gs_result_complete_error(token, error);
+}
+static uint32_t g_io_token;
+static int io_eval(const char *path, const char *args, char *out, size_t out_size) {
+    (void)args;
+    if (strcmp(path, "io") == 0) {
+        g_io_token = gs_result_defer();
+        uint32_t id = io_submit_work(waiting_work, NULL, waiting_done, &g_io_token);
+        ASSERT_TRUE(id != 0);
+        gs_result_bind_io(g_io_token, id);
+        snprintf(out, out_size, "true");
+        return 0;
+    }
+    return stub_eval(path, args, out, out_size);
+}
+
+TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
+    fresh();
+    ASSERT_TRUE(io_worker_start(0));
+    g_m.eval = io_eval;
+    ASSERT_TRUE(post(91, "io", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0); // deferred
+    usleep(5000);
+    // The client gives up on it: the cancel is answered true and the job
+    // ends as cancelled, which is the request's answer.
+    post_ctl(GS_MBX_REQ_CANCEL, 92, 1, 91);
+    gs_mailbox_drain(&g_m, 0, NULL);
+    uint32_t id = 0, ok = 1;
+    char json[128];
+    bool saw_cancel_answer = false, saw_job_answer = false;
+    for (int i = 0; i < 20000 && !(saw_cancel_answer && saw_job_answer); i++) {
+        uint8_t buf[256];
+        uint32_t len, kind;
+        while ((kind = take_any(buf, sizeof buf, &len)) != 0) {
+            if (kind != GS_MBX_EVT_RESULT)
+                continue; // progress along the way
+            id = RD_LE32(buf + 4 * GS_MBX_RESULT_ID);
+            ok = RD_LE32(buf + 4 * GS_MBX_RESULT_OK);
+            uint32_t n = RD_LE32(buf + 4 * GS_MBX_RESULT_JSON_LEN);
+            memcpy(json, buf + 4 * GS_MBX_RESULT_WORDS, n);
+            json[n] = '\0';
+            if (id == 92) {
+                saw_cancel_answer = true;
+                ASSERT_TRUE(strcmp(json, "true") == 0);
+            } else if (id == 91) {
+                saw_job_answer = true;
+                ASSERT_EQ_INT(ok, 0);
+                ASSERT_TRUE(strstr(json, "cancelled") != NULL);
+            }
+        }
+        gs_mailbox_drain(&g_m, 0, NULL);
+        usleep(100);
+    }
+    ASSERT_TRUE(saw_cancel_answer && saw_job_answer);
+}
+
+// A job that prints: its text arrives as EVT_LOG output records, in
+// order, before its result.
+int job_glue_run_source_printing(const char *src);
+TEST(a_jobs_output_arrives_as_output_records_before_its_result) {
+    fresh();
+    ASSERT_TRUE(job_thread_start(256u << 10));
+    ASSERT_TRUE(post_script(101, "printing"));
+    uint32_t id = 0, ok = 0;
+    char json[256];
+    char outputs[512] = "";
+    int results = 0;
+    for (int i = 0; i < 20000 && !results; i++) {
+        gs_mailbox_drain(&g_m, 0, NULL);
+        uint8_t buf[512];
+        uint32_t len, kind;
+        while ((kind = take_any(buf, sizeof buf, &len)) != 0) {
+            if (kind == GS_MBX_EVT_LOG) {
+                uint32_t n = RD_LE32(buf + 4 * GS_MBX_EVENT_JSON_LEN);
+                buf[4 * GS_MBX_EVENT_WORDS + n] = '\0';
+                strncat(outputs, (char *)buf + 4 * GS_MBX_EVENT_WORDS, sizeof outputs - strlen(outputs) - 1);
+                strncat(outputs, "|", sizeof outputs - strlen(outputs) - 1);
+                ASSERT_EQ_INT(results, 0); // output before the result
+            } else if (kind == GS_MBX_EVT_RESULT) {
+                id = RD_LE32(buf + 4 * GS_MBX_RESULT_ID);
+                ok = RD_LE32(buf + 4 * GS_MBX_RESULT_OK);
+                uint32_t n = RD_LE32(buf + 4 * GS_MBX_RESULT_JSON_LEN);
+                memcpy(json, buf + 4 * GS_MBX_RESULT_WORDS, n);
+                json[n] = '\0';
+                results++;
+            }
+        }
+        usleep(100);
+    }
+    ASSERT_EQ_INT(results, 1);
+    ASSERT_EQ_INT(id, 101);
+    ASSERT_EQ_INT(ok, 1);
+    ASSERT_TRUE(strstr(outputs, "{\"event\":\"output\",\"id\":101,\"client\":2,\"text\":\"one \\\"quoted\\\"\\n\"}") !=
+                NULL);
+    ASSERT_TRUE(strstr(outputs, "two\\n") != NULL);
+}
+
 int main(void) {
     RUN(the_control_block_is_laid_out_and_versioned);
     RUN(a_request_is_served_and_its_id_comes_back);
@@ -686,5 +938,10 @@ int main(void) {
     RUN(the_in_process_client_posts_and_reads_like_the_page);
     RUN(a_deferred_leaf_answers_when_completed_not_when_served);
     RUN(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode);
+    RUN(what_a_leaf_prints_travels_with_its_answer_when_captured);
+    RUN(progress_of_a_deferred_leaf_reaches_the_client_as_evt_progress);
+    RUN(a_staged_buffer_is_named_looked_up_and_freed_by_the_ack);
+    RUN(cancelling_a_request_cancels_the_io_job_answering_it);
+    RUN(a_jobs_output_arrives_as_output_records_before_its_result);
     return 0;
 }

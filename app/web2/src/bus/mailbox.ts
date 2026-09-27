@@ -26,7 +26,7 @@ import {
 } from './mailboxRing';
 
 export const MAGIC = 0x47534d42; // 'GSMB'
-export const VERSION = 8;
+export const VERSION = 9;
 
 // Control-block word indices (Int32Array view at the control base).
 export const C_MAGIC = 0;
@@ -59,21 +59,29 @@ export const REQ_EVAL = 1;
 export const REQ_SCRIPT = 2;
 export const REQ_CANCEL = 3;
 export const REQ_MODE_STOP = 4;
+export const REQ_ACK_BUF = 5;
 export const EVT_RESULT = 16;
+export const EVT_PROGRESS = 17;
 export const EVT_STATE = 18;
 export const EVT_NOTIFY = 19;
 export const EVT_LOG = 20;
 
 // REQ_EVAL payload words: {id, client, deadline_ms, path_len, args_len} + path + args.
 // REQ_SCRIPT payload words: {id, client, deadline_ms, src_len} + src.
-// REQ_CANCEL payload words: {id, client, target_id}; REQ_MODE_STOP: {id, client, owner}.
-// EVT_RESULT payload words: {id, ok, json_len} + json.
-// EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json.
+// REQ_CANCEL payload words: {id, client, target_id}; REQ_MODE_STOP: {id, client, owner};
+// REQ_ACK_BUF: {id, client, handle}.
+// EVT_RESULT payload words: {id, ok, json_len, out_len} + json + output (each
+// padded to 4).  A result too large for the ring arrives as
+// {"$buf": handle, "ptr": p, "len": n}: the JSON lies in a STAGED BUFFER in
+// the core's heap, read here and released with REQ_ACK_BUF.
+// EVT_PROGRESS / EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json;
+// progress is {"id": request, "done": n, "total": n}.
 const EVAL_WORDS = 5;
 const RESULT_ID = 0;
 const RESULT_OK = 1;
 const RESULT_JSON_LEN = 2;
-const RESULT_WORDS = 3;
+const RESULT_OUT_LEN = 3;
+const RESULT_WORDS = 4;
 const EVENT_JSON_LEN = 0;
 const EVENT_WORDS = 1;
 
@@ -85,6 +93,9 @@ export const SCRIPT_MAX = 256 << 10;
 export interface MailboxResult {
   ok: boolean;
   json: string;
+  // What the leaf printed while it ran (gs_out.h), when the core captures
+  // it; empty otherwise.
+  output: string;
 }
 
 export type MailboxFailure = 'deadline' | 'lost' | 'detached';
@@ -92,11 +103,28 @@ export type MailboxFailure = 'deadline' | 'lost' | 'detached';
 // A core event as it comes off the ring: the record kind and its JSON text.
 export type EventListener = (kind: number, json: string) => void;
 
+// An I/O job's progress: `done` of `total` (bytes, files; 0 when unknown).
+export type ProgressListener = (done: number, total: number) => void;
+
+export interface RequestOptions {
+  // Who asks (default: this mailbox's client); a mode a request starts
+  // belongs to it.
+  client?: number;
+  // Progress of an I/O job (meta.method_info `io`), as the core reports it.
+  onProgress?: ProgressListener;
+}
+
 interface Pending {
   resolve(r: MailboxResult): void;
   fail(why: MailboxFailure): void;
   timer: ReturnType<typeof setTimeout> | null;
+  progress?: ProgressListener;
 }
+
+// The core's heap, fresh each time: under ALLOW_MEMORY_GROWTH the buffer a
+// view was made over can be replaced, so a staged buffer (anywhere in the
+// heap, unlike the rings) is read through a view made at that moment.
+export type HeapAccessor = () => ArrayBufferLike;
 
 const utf8 = new TextEncoder();
 const utf8dec = new TextDecoder();
@@ -115,12 +143,16 @@ export class Mailbox {
   private reading = false;
   private onLost: ((why: string) => void) | null = null;
   private readonly listeners = new Set<EventListener>();
+  private readonly liveHeap: HeapAccessor;
 
   // Binds to the control block at `ctrlPtr` in `heap`.  Throws on a MAGIC
-  // or VERSION mismatch: the page and the core are out of step.
-  constructor(heap: ArrayBufferLike, ctrlPtr: number, client: number) {
+  // or VERSION mismatch: the page and the core are out of step.  `liveHeap`
+  // returns the heap as it is now (staged buffers are read through it);
+  // default: the buffer given.
+  constructor(heap: ArrayBufferLike, ctrlPtr: number, client: number, liveHeap?: HeapAccessor) {
     this.ctrl = new Int32Array(heap, ctrlPtr, 32);
     this.client = client;
+    this.liveHeap = liveHeap ?? (() => heap);
     const magic = this.ctrl[C_MAGIC] >>> 0;
     const version = this.ctrl[C_VERSION];
     if (magic !== MAGIC || version !== VERSION)
@@ -222,8 +254,10 @@ export class Mailbox {
     path: string,
     argsJson: string,
     deadlineMs: number,
-    client = this.client,
+    clientOrOptions: number | RequestOptions = this.client,
   ): Promise<MailboxResult> {
+    const opts: RequestOptions =
+      typeof clientOrOptions === 'number' ? { client: clientOrOptions } : clientOrOptions;
     const pathBytes = utf8.encode(path);
     const argsBytes = utf8.encode(argsJson);
     if (pathBytes.length > PATH_MAX)
@@ -232,11 +266,25 @@ export class Mailbox {
       throw new RangeError(`request arguments too large (${argsBytes.length} bytes > ${ARGS_MAX})`);
     return this.post(
       REQ_EVAL,
-      client,
+      opts.client ?? this.client,
       deadlineMs,
       [pathBytes.length, argsBytes.length],
       [pathBytes, argsBytes],
+      undefined,
+      opts.onProgress,
     );
+  }
+
+  // Tells the core a staged buffer has been consumed: the core frees it, or
+  // hands it back to the I/O job that fills it.  Resolves true if it was one.
+  async ackBuf(handle: number): Promise<boolean> {
+    const r = await this.post(REQ_ACK_BUF, this.client, 10_000, [handle], []);
+    return r.ok && r.json === 'true';
+  }
+
+  // A view of `len` bytes of the core's heap at `ptr`, as it is now.
+  heapBytes(ptr: number, len: number): Uint8Array {
+    return new Uint8Array(this.liveHeap(), ptr, len);
   }
 
   // Posts a script as a job: the answer comes when the job ends (the
@@ -268,6 +316,7 @@ export class Mailbox {
     tailWords: number[],
     texts: Uint8Array[],
     onId?: (id: number) => void,
+    progress?: ProgressListener,
   ): Promise<MailboxResult> {
     if (this.failed) throw this.failed;
     const id = this.nextId++;
@@ -294,6 +343,7 @@ export class Mailbox {
         resolve,
         fail: (why) => reject(why),
         timer: null,
+        progress,
       };
       if (deadlineMs > 0) {
         p.timer = setTimeout(() => {
@@ -353,19 +403,41 @@ export class Mailbox {
         const id = getU32(this.evt.u8, p + 4 * RESULT_ID);
         const ok = getU32(this.evt.u8, p + 4 * RESULT_OK) !== 0;
         const n = getU32(this.evt.u8, p + 4 * RESULT_JSON_LEN);
+        const outLen = getU32(this.evt.u8, p + 4 * RESULT_OUT_LEN);
         const pending = this.pending.get(id);
         if (pending) {
           // Copy out before consuming (the core may overwrite once TAIL
           // moves) -- and TextDecoder refuses a view over shared memory, so
           // slice(), which copies, not subarray().
-          const json = utf8dec.decode(
-            this.evt.u8.slice(p + 4 * RESULT_WORDS, p + 4 * RESULT_WORDS + n),
-          );
+          const jsonAt = p + 4 * RESULT_WORDS;
+          let json = utf8dec.decode(this.evt.u8.slice(jsonAt, jsonAt + n));
+          const outAt = jsonAt + pad4(n);
+          const output = outLen ? utf8dec.decode(this.evt.u8.slice(outAt, outAt + outLen)) : '';
           this.pending.delete(id);
           if (pending.timer) clearTimeout(pending.timer);
-          pending.resolve({ ok, json });
+          // A spilled result: the JSON is in a staged buffer; read it and
+          // give the buffer back.
+          const staged = ok ? stagedRef(json) : null;
+          if (staged) {
+            json = utf8dec.decode(this.heapBytes(staged.ptr, staged.len).slice());
+            void this.ackBuf(staged.handle);
+          }
+          pending.resolve({ ok, json, output });
         }
         // else: a late answer past its deadline, or an id we never issued -- dropped.
+      } else if (rec.kind === EVT_PROGRESS) {
+        const p = rec.payload;
+        const n = getU32(this.evt.u8, p + 4 * EVENT_JSON_LEN);
+        const json = utf8dec.decode(
+          this.evt.u8.slice(p + 4 * EVENT_WORDS, p + 4 * EVENT_WORDS + n),
+        );
+        try {
+          const d = JSON.parse(json) as { id?: number; done?: number; total?: number };
+          const pending = typeof d.id === 'number' ? this.pending.get(d.id) : undefined;
+          if (pending?.progress) pending.progress(d.done ?? 0, d.total ?? 0);
+        } catch {
+          // a malformed progress record is nobody's failure
+        }
       } else if (rec.kind === EVT_STATE || rec.kind === EVT_NOTIFY || rec.kind === EVT_LOG) {
         const p = rec.payload;
         const n = getU32(this.evt.u8, p + 4 * EVENT_JSON_LEN);
@@ -393,4 +465,17 @@ export class Mailbox {
 // The bytes one REQ_EVAL occupies, for callers that size things.
 export function requestBytes(pathLen: number, argsLen: number): number {
   return pad8(HDR_BYTES + 4 * EVAL_WORDS + pad4(pathLen) + pad4(argsLen));
+}
+
+// A result document naming a staged buffer, or null.
+export function stagedRef(json: string): { handle: number; ptr: number; len: number } | null {
+  if (!json.startsWith('{"$buf"')) return null;
+  try {
+    const d = JSON.parse(json) as { $buf?: number; ptr?: number; len?: number };
+    if (typeof d.$buf === 'number' && typeof d.ptr === 'number' && typeof d.len === 'number')
+      return { handle: d.$buf, ptr: d.ptr, len: d.len };
+  } catch {
+    // not a staged reference
+  }
+  return null;
 }

@@ -36,14 +36,28 @@
 //
 //   REQ_EVAL   {id, client, deadline_ms, path_len, args_len} + path + args
 //              A gs_eval leaf.  `args` is the JSON arguments document, or
-//              empty for none.  `deadline_ms` is advisory in Phase 1.
-//   EVT_RESULT {id, ok, json_len} + json
-//              gs_eval's answer: ok = 1 when it returned 0, else 0 (the
-//              JSON then carries {"error": ...}).
-//
-// Later phases add REQ_SCRIPT / REQ_CANCEL / REQ_MODE_STOP / REQ_ACK_BUF
-// and EVT_PROGRESS / EVT_STATE / EVT_NOTIFY / EVT_LOG; the kinds are
-// reserved here so the version need not move for each.
+//              empty for none.  `deadline_ms` is advisory.
+//   REQ_SCRIPT {id, client, deadline_ms, src_len} + src
+//              A script as a job (job.h); the result is the prompt.
+//   REQ_CANCEL {id, client, target_id}      cancel the job or I/O job that
+//              answers request `target_id` of this client
+//   REQ_MODE_STOP {id, client, owner}       stop a mode by owner (0: any)
+//   REQ_ACK_BUF {id, client, handle}        the client has consumed a
+//              staged buffer (below); the core frees or refills it
+//   EVT_RESULT {id, ok, json_len, out_len} + json + output
+//              The answer: ok = 1 when the leaf or job succeeded, else 0
+//              (the JSON then carries {"error": ...}); `output` is the text
+//              the leaf printed while it ran (gs_out.h), when the platform
+//              captures it.  A result too large for the event ring arrives
+//              as {"$buf": handle, "ptr": p, "len": n}: the JSON lies in a
+//              STAGED BUFFER in the core's heap, which the client reads
+//              and then releases with REQ_ACK_BUF.
+//   EVT_PROGRESS {json_len} + {"id": request, "done": n, "total": n}
+//              An I/O job's progress (bytes, files; total 0 when unknown).
+//   EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json
+//              A core event (gs_event.h); a job's printed output arrives as
+//              EVT_LOG {"event":"output","id":request,"client":c,"text":...}
+//              records in the order the job produced it.
 //
 // The drain never blocks: a result the event ring has no room for is
 // held back and retried at the next drain, and no further requests are
@@ -61,7 +75,7 @@
 #include <stdint.h>
 
 #define GS_MAILBOX_MAGIC   0x47534D42u // 'GSMB'
-#define GS_MAILBOX_VERSION 8u
+#define GS_MAILBOX_VERSION 9u
 
 #define GS_MBX_CTRL_WORDS 32
 #define GS_MBX_ALIGN      64u
@@ -111,9 +125,9 @@
 #define GS_MBX_REQ_SCRIPT    2u // run a script as a job; the result comes when it ends
 #define GS_MBX_REQ_CANCEL    3u // cancel a job of this client
 #define GS_MBX_REQ_MODE_STOP 4u // stop a mode by owner (0: any)
-#define GS_MBX_REQ_ACK_BUF   5u // reserved: Phase 4
+#define GS_MBX_REQ_ACK_BUF   5u // a staged buffer was consumed: {id, client, handle}
 #define GS_MBX_EVT_RESULT    16u
-#define GS_MBX_EVT_PROGRESS  17u // reserved: Phase 4
+#define GS_MBX_EVT_PROGRESS  17u // an I/O job's progress: {json_len} + json
 #define GS_MBX_EVT_STATE     18u // a core event (gs_event.h): run state
 #define GS_MBX_EVT_NOTIFY    19u // a core event: something the UI shows
 #define GS_MBX_EVT_LOG       20u // a core event: a log line
@@ -138,11 +152,19 @@
 #define GS_MBX_CTL_CLIENT 1
 #define GS_MBX_CTL_ARG    2
 #define GS_MBX_CTL_WORDS  3
-// EVT_RESULT payload words.
+// EVT_RESULT payload words: {id, ok, json_len, out_len} + json + output
+// (each text padded to 4).
 #define GS_MBX_RESULT_ID       0
 #define GS_MBX_RESULT_OK       1
 #define GS_MBX_RESULT_JSON_LEN 2
-#define GS_MBX_RESULT_WORDS    3
+#define GS_MBX_RESULT_OUT_LEN  3
+#define GS_MBX_RESULT_WORDS    4
+// The most output one answer carries; beyond it the rest is dropped and
+// the text ends in "...".
+#define GS_MBX_OUTPUT_MAX (64u << 10)
+// Staged buffers: results spilled out of the ring, and I/O hand-offs.
+#define GS_MBX_STAGED_MAX 8
+#define GS_MBX_SPILL_MAX  (64u << 20) // the largest result that is spilled rather than refused
 // EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json.
 #define GS_MBX_EVENT_JSON_LEN 0
 #define GS_MBX_EVENT_WORDS    1
@@ -178,9 +200,16 @@ typedef struct gs_mailbox {
     struct {
         uint32_t token;
         uint32_t req_id;
+        uint32_t io_job; // the I/O job answering it (0: none), for REQ_CANCEL
     } defers[GS_MBX_DEFER_MAX];
     int n_defers;
     uint32_t defer_seq;
+    // Output the leaf being served printed (gs_out.h), when captured.
+    bool capture_output;
+    char *outbuf;
+    uint32_t outbuf_len;
+    bool outbuf_cut;
+    uint32_t held_out_len; // the output that goes with a held answer
 } gs_mailbox_t;
 
 // Bytes the whole region needs (alignment slack included) for the given
@@ -230,10 +259,44 @@ bool gs_mailbox_emit(gs_mailbox_t *m, uint32_t kind, const char *json);
 // The client whose request is being served, 0 outside a drain.
 uint32_t gs_mailbox_current_client(const gs_mailbox_t *m);
 
+// Writes one EVT_LOG output record (a job's printed text, job.c) without
+// publishing; false when the ring has no room -- output is never dropped,
+// the job keeps it for the next drain.
+bool gs_mailbox_emit_output(gs_mailbox_t *m, const char *json);
+
 // Writes one EVT_RESULT (not published: the drain publishes).  False when
 // the event ring has no room.  For the job layer, whose results arrive
-// when a job ends rather than when a request is served.
-bool gs_mailbox_write_result(gs_mailbox_t *m, uint32_t id, bool ok, const char *json, uint32_t len);
+// when a job ends rather than when a request is served.  `output` (may be
+// NULL) is the captured text that goes with the answer.
+bool gs_mailbox_write_result(gs_mailbox_t *m, uint32_t id, bool ok, const char *json, uint32_t len, const char *output,
+                             uint32_t out_len);
+
+// Writes one EVT_PROGRESS for request `id` and publishes it (dropped and
+// counted when the ring has no room, like an event).
+bool gs_mailbox_write_progress(gs_mailbox_t *m, uint32_t id, uint64_t done, uint64_t total);
+
+// Whether answers carry the output the leaf printed (gs_out.h routes a
+// served leaf's stdout into the answer when this is set; the page wants
+// that, the headless driver prints as it goes).
+void gs_mailbox_set_capture_output(gs_mailbox_t *m, bool on);
+// gs_out.c: appends to the output of the request being served; false when
+// nothing is being served that captures.
+bool gs_mailbox_output_append(const char *text, size_t len);
+// The client whose request the process's mailbox is serving (0: none).
+uint32_t gs_mailbox_serving_client(void);
+
+// --- Staged buffers -----------------------------------------------------------
+// A region of the core's heap described to the client by {handle, ptr,
+// len} inside an event or a result; the client reads (or writes) it
+// through the shared memory and releases it with REQ_ACK_BUF.  A buffer
+// bound to an I/O job (`io_job` non-zero) is the job's own: the ack is
+// forwarded to it (io_worker_ack) and the job refills; an unbound one is
+// freed on ack.  Emulator thread only.  Returns the handle, 0 when the
+// table is full.
+uint32_t gs_staged_publish(void *ptr, size_t len, uint32_t io_job);
+// Releases a handle the way an ack would (a job that ends unlinks its own).
+void gs_staged_release(uint32_t handle);
+bool gs_staged_lookup(uint32_t handle, void **ptr, size_t *len);
 
 // --- An in-process client ---------------------------------------------------
 // The other side of the same mailbox, in C: what the headless driver's
@@ -272,6 +335,14 @@ uint32_t gs_result_defer(void);
 void gs_result_complete(uint32_t token, bool ok, const char *json);
 void gs_result_complete_ok(uint32_t token);
 void gs_result_complete_error(uint32_t token, const char *message);
+// Names the I/O job answering the deferral, so a REQ_CANCEL of the request
+// (or of the script whose call it is) cancels the job.
+void gs_result_bind_io(uint32_t token, uint32_t io_job);
+// Reports an I/O job's progress to the client that asked: an EVT_PROGRESS
+// for the request (for a script's call: for the script's request).
+void gs_result_progress(uint32_t token, uint64_t done, uint64_t total);
+// The request id a token answers (0: unknown), for events that name it.
+uint32_t gs_result_request_id(uint32_t token);
 
 // Platform hook: wake whoever waits on a control word (the client parks in
 // Atomics.waitAsync on EVT_HEAD and READY).  Weak no-op by default.

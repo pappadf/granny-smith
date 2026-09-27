@@ -29,6 +29,7 @@ import {
   whenVoodooGpuReady,
 } from '@/gpu/voodoo2Gpu.svelte';
 import { onPrinterAttach } from '@/printer/platen';
+import { onDownloadChunk } from './download';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { getOrCreateMachine } from '@/lib/machineId';
@@ -247,7 +248,16 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core
   // out of step).  The control block is laid out by a constructor in the
   // core, so it is valid before main() runs.
-  mailbox = new Mailbox(Module.HEAP32.buffer, Module._get_gs_mailbox(), CLIENT_PAGE);
+  // The rings are static and below the boot-time heap size; a staged buffer
+  // (a spilled result, a download chunk) is anywhere in the heap, so the
+  // mailbox reads those through the memory as it is at that moment.
+  const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
+  mailbox = new Mailbox(
+    Module.HEAP32.buffer,
+    Module._get_gs_mailbox(),
+    CLIENT_PAGE,
+    () => memMod.wasmMemory?.buffer ?? memMod.HEAPU8.buffer,
+  );
   mailbox.setLostHandler((why) => markBridgeDead(why));
   mailbox.on(dispatchCoreEvent);
   // Tell the core whether the Voodoo2 takeover has a WebGPU device
@@ -312,6 +322,31 @@ export async function gsEval(
   return executeMailboxRequest(path || '', argsJson);
 }
 
+// gsEval for an I/O job (meta.method_info `io`: a copy, an export, an
+// extraction, a download): `onProgress` gets `done` of `total` as the core
+// reports it, and the answer comes when the work ends.
+export async function gsEvalWithProgress(
+  path: string,
+  args: unknown[] | Record<string, unknown> | undefined,
+  onProgress: (done: number, total: number) => void,
+): Promise<unknown> {
+  if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
+  if (!Module || !moduleReady || !mailbox) return transportError('emulator not ready');
+  const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
+  const tooLarge = requestTooLarge(path || '', argsJson);
+  if (tooLarge) return { error: tooLarge };
+  return executeMailboxRequest(path || '', argsJson, onProgress);
+}
+
+// A view of `len` bytes of the core's heap at `ptr`, fresh (a staged
+// buffer named by an event), and the acknowledgement that releases it.
+export function heapBytes(ptr: number, len: number): Uint8Array | null {
+  return mailbox ? mailbox.heapBytes(ptr, len) : null;
+}
+export async function ackStagedBuffer(handle: number): Promise<boolean> {
+  return mailbox ? mailbox.ackBuf(handle) : false;
+}
+
 // Refuse a request beyond the core's limits (mailbox.h): the core would
 // answer it with an error anyway, and refusing here keeps the ring for
 // requests that can be served.  Sizes are UTF-8 bytes, not characters.
@@ -336,7 +371,7 @@ export function requestTooLarge(path: string, argsJson: string): string | null {
 
 // Paths that are legitimately long: the notice waits longer for them.
 const LONG_REQUEST =
-  /^(checkpoint\.|machine\.(boot|restart)|storage\.(cp|mv|hd_create)|archive\.|download$|vfs\.)/;
+  /^(checkpoint\.|machine\.(boot|restart|scsi\.device\[\d+\]\.image\.export|hd\.save)|storage\.(cp|mv|import|export_raw|hd_create|xfer_)|archive\.|download$|vfs\.)/;
 const BUSY_AFTER_MS = 5_000;
 const BUSY_AFTER_LONG_MS = 30_000;
 // An ordinary request still in flight after this long is not slow, it is
@@ -491,6 +526,9 @@ export async function gsEvalLine(line: string): Promise<number> {
     const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
       foregroundJob = id;
     });
+    // The job's output records precede its result on the ring, so what it
+    // printed is in by now; a last line without a newline is shown too.
+    flushOutputText();
     if (r.ok) {
       const prompt: unknown = JSON.parse(r.json);
       if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
@@ -564,12 +602,19 @@ export async function tabComplete(line: string, cursor: number): Promise<Complet
 // One request through the mailbox: post, await the answer by id, decode.
 // A failure of the mailbox itself (deadline, crash) is a transport error;
 // the core's own {error} documents pass through as they are.
-async function executeMailboxRequest(path: string, argsJson: string): Promise<unknown> {
+async function executeMailboxRequest(
+  path: string,
+  argsJson: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<unknown> {
   if (!mailbox) return transportError('emulator not ready');
   const stopWatch = watchRequest(path);
   try {
     const deadline = LONG_REQUEST.test(path) ? 0 : DEADLINE_MS;
-    const r = await mailbox.request(path, argsJson, deadline);
+    const r = await mailbox.request(path, argsJson, deadline, { onProgress });
+    // What the leaf printed goes to the terminal, as it did when stdout
+    // reached it directly.
+    if (r.output) routeOutputText(r.output, true);
     if (!r.json) return null;
     try {
       return JSON.parse(r.json);
@@ -679,8 +724,38 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'log:log':
       if (typeof d.line === 'string') routeLogEmit(d.line);
       break;
+    case 'log:output':
+      // A job's printed text, in order: the terminal shows it.
+      if (typeof d.text === 'string') routeOutputText(d.text, false);
+      break;
+    case 'notify:download_chunk':
+      onDownloadChunk(d);
+      break;
     default:
       break;
+  }
+}
+
+// Output text arrives in pieces (a record per drain, a result's capture),
+// not in lines; the terminal takes lines.  Complete lines go out at once,
+// a trailing partial line waits for its end -- or is flushed when the
+// piece is known to be the last (`flush`), and when the terminal's line
+// finishes (flushOutputText).
+let outputTail = '';
+function routeOutputText(text: string, flush: boolean): void {
+  const all = outputTail + text;
+  const lines = all.split('\n');
+  outputTail = lines.pop() ?? '';
+  for (const line of lines) routePrintLine(line);
+  if (flush && outputTail) {
+    routePrintLine(outputTail);
+    outputTail = '';
+  }
+}
+export function flushOutputText(): void {
+  if (outputTail) {
+    routePrintLine(outputTail);
+    outputTail = '';
   }
 }
 

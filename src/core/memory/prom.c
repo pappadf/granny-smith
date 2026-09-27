@@ -16,6 +16,7 @@
 #include "prom.h"
 #include "common.h"
 #include "crc32.h"
+#include "gs_out.h"
 #include "offer_registry.h"
 
 #include "log.h"
@@ -307,7 +308,7 @@ bool prom_card_resolvable(const char *card_id) {
 
 int prom_set_path(const char *path) {
     if (!path || !*path) {
-        printf("prom: expected a non-empty path\n");
+        gs_outf("prom: expected a non-empty path\n");
         return -1;
     }
     offer_registry_add(&s_offers, path, true);

@@ -1801,17 +1801,44 @@ value_t node_get(node_t n) {
     return m.out;
 }
 
+// Inline mode (job.h): a tree call on the emulator thread that opens a mode
+// is followed by the wait for it.  Weak: linked only where job.c is.
+uint32_t job_glue_mode_id(void) __attribute__((weak));
+void job_inline_after_call(uint32_t mode_before) __attribute__((weak));
+bool job_inline_enabled(void) __attribute__((weak));
+
+// The mode id before the call, tagged (top bit) when inline mode is on --
+// 0 is a legitimate id, so the tag says whether to wait at all.
+static inline uint32_t inline_mode_before(void) {
+    if (job_inline_enabled && job_inline_enabled() && job_glue_mode_id && job_inline_after_call)
+        return job_glue_mode_id() | 0x80000000u;
+    return 0;
+}
+
+static inline void inline_mode_after(uint32_t before) {
+    if (before & 0x80000000u)
+        job_inline_after_call(before & 0x7fffffffu);
+}
+
 value_t node_set(node_t n, value_t v) {
-    if (job_on_emulator_thread())
-        return node_set_here(n, v);
+    if (job_on_emulator_thread()) {
+        uint32_t before = inline_mode_before();
+        value_t r = node_set_here(n, v);
+        inline_mode_after(before);
+        return r;
+    }
     node_marshal_t m = {.n = n, .in = v};
     job_on_emulator(marshal_set, &m);
     return m.out;
 }
 
 value_t node_call(node_t n, int argc, const value_t *argv) {
-    if (job_on_emulator_thread())
-        return node_call_here(n, argc, argv);
+    if (job_on_emulator_thread()) {
+        uint32_t before = inline_mode_before();
+        value_t r = node_call_here(n, argc, argv);
+        inline_mode_after(before);
+        return r;
+    }
     node_marshal_t m = {.n = n, .argc = argc, .argv = argv};
     job_on_emulator(marshal_call, &m);
     // A leaf that answered later (an I/O job) and failed: the failure is

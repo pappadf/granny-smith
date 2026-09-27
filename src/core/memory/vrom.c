@@ -15,6 +15,7 @@
 #include "vrom.h"
 #include "common.h"
 #include "declrom.h" // structural recognition of generated GS images
+#include "gs_out.h"
 #include "offer_registry.h"
 
 #include "log.h"
@@ -267,7 +268,7 @@ bool vrom_card_resolvable(const char *card_id) {
 
 int vrom_set_path(const char *path) {
     if (!path || !*path) {
-        printf("vrom: expected a non-empty path\n");
+        gs_outf("vrom: expected a non-empty path\n");
         return -1;
     }
     // The boot document's vrom= explicit pick: an offer that wins the pick

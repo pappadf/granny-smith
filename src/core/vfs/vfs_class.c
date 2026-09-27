@@ -6,6 +6,7 @@
 // Split out from vfs.c so unit tests linking the core path-resolver
 // don't pull in object-model dependencies.
 
+#include "gs_out.h"
 #include "vfs.h"
 
 #include "image_vfs.h"
@@ -31,17 +32,17 @@ static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, c
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(path, &dir, &be);
     if (rc < 0) {
-        printf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
+        gs_outf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
     vfs_dirent_t entry;
     int r;
     while ((r = be->readdir(dir, &entry)) > 0)
-        printf("%s\n", entry.name);
+        gs_outf("%s\n", entry.name);
     bool ok = (r == 0);
     if (r < 0) {
         // Surface readdir errors instead of silently truncating the listing.
-        printf("ls: readdir error in '%s': %s\n", path, strerror(-r));
+        gs_outf("ls: readdir error in '%s': %s\n", path, strerror(-r));
     }
     be->closedir(dir);
     return val_bool(ok);
@@ -116,10 +117,10 @@ static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc
         return val_err("vfs.mkdir: expected a non-empty path");
     int rc = vfs_mkdir(dir);
     if (rc == 0) {
-        printf("Directory '%s' created\n", dir);
+        gs_outf("Directory '%s' created\n", dir);
         return val_bool(true);
     }
-    printf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
+    gs_outf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
     return val_bool(false);
 }
 
@@ -134,7 +135,7 @@ static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, 
     const vfs_backend_t *be = NULL;
     int rc = vfs_open(path, &f, &be);
     if (rc < 0) {
-        printf("cat: cannot open '%s': %s\n", path, strerror(-rc));
+        gs_outf("cat: cannot open '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
     uint8_t buf[4096];
@@ -143,20 +144,14 @@ static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, 
         size_t got = 0;
         int rr = be->read(f, off, buf, sizeof(buf), &got);
         if (rr < 0) {
-            printf("cat: read error on '%s': %s\n", path, strerror(-rr));
+            gs_outf("cat: read error on '%s': %s\n", path, strerror(-rr));
             be->close(f);
             return val_bool(false);
         }
         if (got == 0)
             break;
-        // Check fwrite return so a closed/redirected stdout doesn't silently
-        // drop bytes.
-        size_t wrote = fwrite(buf, 1, got, stdout);
-        if (wrote != got) {
-            printf("cat: write error on stdout (only %zu/%zu bytes)\n", wrote, got);
-            be->close(f);
-            return val_bool(false);
-        }
+        // The sink (gs_out.h): the job's output, or stdout.
+        gs_out((const char *)buf, got);
         off += got;
     }
     be->close(f);

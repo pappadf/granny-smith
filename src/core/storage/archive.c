@@ -7,6 +7,10 @@
 // leak the library name to users.
 
 #include "archive.h"
+#include "gs_out.h"
+
+#include "io_leaf.h"
+#include "io/io_worker.h"
 
 #include "log.h"
 #include "object.h"
@@ -150,10 +154,17 @@ static int process_archive(archive_ctx_t *ctx, const char *filepath) {
 
     int status = 0;
     for (int i = 0; i < list.count; i++) {
+        // Between files: the client's progress, and its cancel (what was
+        // written so far stays, as a failed extraction's files do).
+        if (io_check_cancelled()) {
+            status = -ECANCELED;
+            break;
+        }
         if (write_extracted_file(ctx, &list.files[i]) != 0) {
             status = -1;
             break;
         }
+        io_report_progress((uint64_t)(i + 1), (uint64_t)list.count);
     }
 
     int count = list.count;
@@ -195,9 +206,22 @@ int archive_extract_file(const char *path, const char *out_dir) {
         return -1;
     }
     int rc = process_archive(&ctx, path);
+    if (rc == -ECANCELED)
+        return rc;
     if (rc == 0)
-        printf("Successfully extracted '%s' (%d file%s)\n", path, ctx.file_count, ctx.file_count == 1 ? "" : "s");
+        gs_outf("Successfully extracted '%s' (%d file%s)\n", path, ctx.file_count, ctx.file_count == 1 ? "" : "s");
     return rc;
+}
+
+// The extraction as an I/O job (io_leaf.h): the archive is decoded and its
+// files written on the I/O worker; the answer comes when it is done.
+static int work_extract(io_leaf_t *j) {
+    int rc = archive_extract_file(j->a, j->b);
+    if (rc == -ECANCELED)
+        snprintf(j->err, sizeof j->err, "cancelled");
+    else if (rc != 0)
+        snprintf(j->err, sizeof j->err, "extraction of '%s' failed", j->a);
+    return rc == 0 ? 0 : (rc == -ECANCELED ? -ECANCELED : -EIO);
 }
 
 // ============================================================================
@@ -223,7 +247,11 @@ static value_t archive_method_extract(struct object *self, const member_t *m, in
     (void)m;
     const char *path = argv[0].s;
     const char *out_dir = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    return val_bool(archive_extract_file(path, out_dir) == 0);
+    io_leaf_t *j = io_leaf_new(path, out_dir);
+    if (!j)
+        return val_err("archive.extract: out of memory");
+    j->work = work_extract;
+    return io_leaf_dispatch(j, "archive.extract");
 }
 
 static const arg_decl_t archive_path_arg[] = {
@@ -242,11 +270,12 @@ static const member_t archive_members[] = {
     {.kind = M_METHOD,
      .name = "identify",
      .doc = "Return the archive format (\"sit\" / \"cpt\" / \"hqx\" / \"bin\" / \"sea\") or empty if not an archive",
-     .method = {.args = archive_path_arg, .nargs = 1, .result = V_STRING, .fn = archive_method_identify} },
+     .method = {.args = archive_path_arg, .nargs = 1, .result = V_STRING, .fn = archive_method_identify}              },
     {.kind = M_METHOD,
      .name = "extract",
      .doc = "Extract a Mac archive into out_dir",
-     .method = {.args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},
+     .method =
+         {.ui_flags = MM_IO, .args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},
 };
 
 static const class_desc_t archive_class = {

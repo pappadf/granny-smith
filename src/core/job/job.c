@@ -5,6 +5,7 @@
 
 #include "job.h"
 
+#include "io/io_worker.h"
 #include "mailbox/mailbox.h"
 
 #include <pthread.h>
@@ -19,8 +20,17 @@ struct gs_job {
     bool cancel;
     int rc;
     uint32_t mode_id; // the mode a call of this job started (0: none)
+    // Output the job printed and the emulator thread has not yet delivered
+    // (g_mu): a growable buffer, cut at JOB_OUTPUT_MAX.
+    char *out;
+    size_t out_len, out_cap;
+    bool out_cut;
     gs_job_t *next;
 };
+#define JOB_OUTPUT_MAX (1u << 20)
+// The most output one EVT_LOG record carries (its JSON stays well inside
+// the event ring).
+#define JOB_OUTPUT_CHUNK (16u << 10)
 
 // The pending emulator call: one at a time, since there is one job thread.
 typedef struct {
@@ -32,6 +42,8 @@ typedef struct {
     bool done; // the job thread may continue
     bool serving; // fn is running right now
     uint32_t defer_token; // the leaf deferred its answer (0: none)
+    uint32_t defer_io; // the I/O job answering the deferral (0: none)
+    uint32_t defer_req; // the request id of the job the deferred call belongs to
 } emu_call_t;
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -54,7 +66,116 @@ bool job_thread_running(void) {
 
 static void job_free(gs_job_t *j) {
     free(j->src);
+    free(j->out);
     free(j);
+}
+
+// --- output ------------------------------------------------------------------
+
+static void job_append_locked(gs_job_t *j, const char *text, size_t len) {
+    if (j->out_cut)
+        return;
+    if (j->out_len + len > JOB_OUTPUT_MAX) {
+        len = JOB_OUTPUT_MAX - j->out_len;
+        j->out_cut = true;
+    }
+    if (j->out_len + len + 4 > j->out_cap) {
+        size_t cap = j->out_cap ? j->out_cap : 4096;
+        while (cap < j->out_len + len + 4)
+            cap *= 2;
+        char *n = (char *)realloc(j->out, cap);
+        if (!n)
+            return;
+        j->out = n;
+        j->out_cap = cap;
+    }
+    memcpy(j->out + j->out_len, text, len);
+    j->out_len += len;
+    if (j->out_cut) {
+        memcpy(j->out + j->out_len, "...", 3);
+        j->out_len += 3;
+    }
+}
+
+bool job_output_append(const char *text, size_t len) {
+    gs_job_t *j = job_current();
+    if (!j) {
+        // The emulator thread, serving a job's call?
+        if (!g_call.serving)
+            return false;
+        pthread_mutex_lock(&g_mu);
+        j = g_active;
+        if (j)
+            job_append_locked(j, text, len);
+        pthread_mutex_unlock(&g_mu);
+        return j != NULL;
+    }
+    pthread_mutex_lock(&g_mu);
+    job_append_locked(j, text, len);
+    pthread_mutex_unlock(&g_mu);
+    if (g_wake_word)
+        gs_mailbox_notify(g_wake_word);
+    return true;
+}
+
+// Writes the job's buffered output as EVT_LOG output records (each at most
+// JOB_OUTPUT_CHUNK bytes of text, JSON-escaped), as far as the ring has
+// room.  Returns whether everything was written.  g_mu held by the caller
+// for the buffer; the ring is the emulator thread's own.
+static bool job_flush_output(struct gs_mailbox *m, gs_job_t *j) {
+    while (j->out_len) {
+        size_t n = j->out_len < JOB_OUTPUT_CHUNK ? j->out_len : JOB_OUTPUT_CHUNK;
+        // Do not split a UTF-8 sequence: back up to a boundary unless this
+        // is the tail.
+        if (n < j->out_len)
+            while (n > 1 && ((unsigned char)j->out[n] & 0xC0u) == 0x80u)
+                n--;
+        // {"event":"output","id":N,"client":N,"text":"..."} -- escaping can
+        // grow the text six-fold.
+        size_t cap = 64 + n * 6;
+        char *json = (char *)malloc(cap);
+        if (!json)
+            return true; // drop rather than wedge
+        size_t o = (size_t)snprintf(json, cap, "{\"event\":\"output\",\"id\":%u,\"client\":%u,\"text\":\"",
+                                    (unsigned)j->req_id, (unsigned)j->client);
+        for (size_t i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)j->out[i];
+            if (c == '"' || c == '\\') {
+                json[o++] = '\\';
+                json[o++] = (char)c;
+            } else if (c == '\n') {
+                json[o++] = '\\';
+                json[o++] = 'n';
+            } else if (c == '\t') {
+                json[o++] = '\\';
+                json[o++] = 't';
+            } else if (c < 0x20) {
+                o += (size_t)snprintf(json + o, 8, "\\u%04x", c);
+            } else {
+                json[o++] = (char)c;
+            }
+        }
+        json[o++] = '"';
+        json[o++] = '}';
+        json[o] = '\0';
+        bool ok = gs_mailbox_emit_output(m, json);
+        free(json);
+        if (!ok)
+            return false;
+        memmove(j->out, j->out + n, j->out_len - n);
+        j->out_len -= n;
+    }
+    return true;
+}
+
+// The output every job has pending, to the ring.  Called from the drain.
+static void jobs_flush_output(struct gs_mailbox *m) {
+    pthread_mutex_lock(&g_mu);
+    if (g_active)
+        job_flush_output(m, g_active);
+    for (gs_job_t *j = g_done; j; j = j->next)
+        job_flush_output(m, j);
+    pthread_mutex_unlock(&g_mu);
 }
 
 // Wakes the emulator thread: it parks on REQ_HEAD when the machine is
@@ -147,7 +268,25 @@ uint32_t job_call_defer(void) {
     if (!g_defer_seq)
         g_defer_seq = 1;
     g_call.defer_token = g_defer_seq | 0x80000000u;
+    g_call.defer_io = 0;
+    pthread_mutex_lock(&g_mu);
+    g_call.defer_req = g_active ? g_active->req_id : 0;
+    pthread_mutex_unlock(&g_mu);
     return g_call.defer_token;
+}
+
+void job_call_bind_io(uint32_t token, uint32_t io_job) {
+    pthread_mutex_lock(&g_mu);
+    if (g_call.defer_token == token)
+        g_call.defer_io = io_job;
+    pthread_mutex_unlock(&g_mu);
+}
+
+uint32_t job_call_request_id(uint32_t token) {
+    pthread_mutex_lock(&g_mu);
+    uint32_t id = g_call.defer_token == token ? g_call.defer_req : 0;
+    pthread_mutex_unlock(&g_mu);
+    return id;
 }
 
 void job_call_complete(uint32_t token, bool ok, const char *json) {
@@ -157,6 +296,7 @@ void job_call_complete(uint32_t token, bool ok, const char *json) {
         return;
     }
     g_call.defer_token = 0;
+    g_call.defer_io = 0;
     if (!ok) {
         // The error text out of {"error":"..."}; anything else verbatim.
         char error[256];
@@ -223,15 +363,21 @@ static int cancel_matching(uint32_t client, uint32_t req_id, bool any_req) {
             g_queue_tail = j;
     }
     uint32_t stop_mode = 0;
+    uint32_t io_job = 0;
     if (g_active && g_active->client == client && (any_req || g_active->req_id == req_id)) {
         __atomic_store_n(&g_active->cancel, true, __ATOMIC_RELEASE);
         stop_mode = g_active->mode_id;
+        // A deferred I/O call of the job ends with it too.
+        if (g_call.pending && g_call.defer_token)
+            io_job = g_call.defer_io;
         n++;
     }
     pthread_mutex_unlock(&g_mu);
     // The run the job started ends with it; the client's other runs stay.
     if (stop_mode)
         job_glue_stop_mode(client, stop_mode);
+    if (io_job)
+        io_worker_cancel(io_job);
     return n;
 }
 
@@ -246,11 +392,17 @@ int job_cancel_client(uint32_t client) {
 // --- the emulator thread's side ---------------------------------------------
 
 bool job_layer_has_work(void) {
-    return __atomic_load_n(&g_call.pending, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_done, __ATOMIC_ACQUIRE) != NULL;
+    if (__atomic_load_n(&g_call.pending, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_done, __ATOMIC_ACQUIRE) != NULL)
+        return true;
+    gs_job_t *a = __atomic_load_n(&g_active, __ATOMIC_ACQUIRE);
+    return a && __atomic_load_n(&a->out_len, __ATOMIC_ACQUIRE) != 0;
 }
 
 int job_layer_service(struct gs_mailbox *m) {
     int written = 0;
+    // 0. Output the jobs printed since the last drain, before anything
+    // that might answer them.
+    jobs_flush_output(m);
     // 1. A posted call: run it here, as the job's client.
     pthread_mutex_lock(&g_mu);
     bool run_call = g_call.pending && !g_call.served;
@@ -267,6 +419,7 @@ int job_layer_service(struct gs_mailbox *m) {
         fn(ud);
         g_call.serving = false;
         m->client = prev_client;
+        jobs_flush_output(m);
         uint32_t mode_after = job_glue_mode_id();
         bool hold = (mode_after != mode_before && job_glue_mode_waits(client)) || g_call.defer_token != 0;
         pthread_mutex_lock(&g_mu);
@@ -308,7 +461,13 @@ int job_layer_service(struct gs_mailbox *m) {
             snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"%s\"}", j->cancel ? "cancelled" : "command failed");
             ok = false;
         }
-        if (!gs_mailbox_write_result(m, j->req_id, ok, m->out, (uint32_t)strlen(m->out)))
+        // Its output first, then the result (a client sees them in order).
+        pthread_mutex_lock(&g_mu);
+        bool flushed = job_flush_output(m, j);
+        pthread_mutex_unlock(&g_mu);
+        if (!flushed)
+            break;
+        if (!gs_mailbox_write_result(m, j->req_id, ok, m->out, (uint32_t)strlen(m->out), NULL, 0))
             break; // no room: keep it for the next drain
         written++;
         pthread_mutex_lock(&g_mu);
@@ -317,4 +476,32 @@ int job_layer_service(struct gs_mailbox *m) {
         job_free(j);
     }
     return written;
+}
+
+// --- inline mode -----------------------------------------------------------------
+
+static void (*g_inline_frame)(void);
+
+void job_inline_enable(void (*run_frame)(void)) {
+    g_inline_frame = run_frame;
+}
+
+bool job_inline_enabled(void) {
+    return g_inline_frame != NULL;
+}
+
+void job_inline_after_call(uint32_t mode_before) {
+    if (!g_inline_frame || g_thread_running)
+        return;
+    uint32_t client = gs_mailbox_serving_client();
+    if (!client || job_glue_mode_id() == mode_before)
+        return;
+    // Frames until the mode ends -- what holding the call does in threaded
+    // mode.  The drain is not re-entered (the request being served is not
+    // yet consumed); the I/O worker's completions are, since a leaf may
+    // wait on one.
+    while (job_glue_mode_waits(client)) {
+        g_inline_frame();
+        io_worker_service();
+    }
 }

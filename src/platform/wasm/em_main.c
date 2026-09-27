@@ -339,6 +339,9 @@ static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_R
 __attribute__((constructor)) static void mailbox_construct(void) {
     if (!gs_mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, gs_eval))
         abort();
+    // Answers to the page carry what the leaf printed (gs_out.h); the
+    // terminal shows it with the result.
+    gs_mailbox_set_capture_output(&g_mailbox, true);
 }
 
 EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
@@ -575,137 +578,216 @@ void laserwriter_ring_notify(volatile uint32_t *addr) {
     emscripten_futex_wake(addr, INT_MAX);
 }
 
-// Hand `len` bytes to the page as a download named `name`.  Blocks until the
-// main thread has copied them, so `buf` need only live for the call.
-static void em_download_bytes(const char *name, const uint8_t *buf, size_t nread) {
-    // Trigger browser download on the main thread (DOM access required).
-    // The worker is blocked in MAIN_THREAD_EM_ASM, so buf is valid.
-    // clang-format off
-    MAIN_THREAD_EM_ASM(
-        {
-            try {
-                var ptr = $0;
-                var len = $1;
-                var namePtr = $2;
-                var name = UTF8ToString(namePtr) || 'download.bin';
-                // Access the shared heap — try both global and Module-scoped accessors
-                var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
-                var data = new Uint8Array(heap.buffer, ptr, len);
-                var copy = new Uint8Array(data);  // copy out of shared buffer
-                var blob = new Blob([copy], {type: 'application/octet-stream'});
-                var a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = name;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                setTimeout(function() {
-                    try { URL.revokeObjectURL(a.href); } catch (e) {}
-                }, 0);
-            } catch (e) {
-                console.error('[download] MAIN_THREAD_EM_ASM failed:', e);
-            }
-        },
-        buf, (int)nread, name);
-    // clang-format on
-}
+// ============================================================================
+// Downloads: a file (or a buffer) to the page, in staged chunks
+// ============================================================================
+// An I/O job (io/io_worker.h) reads the file GS_DL_CHUNK bytes at a time
+// into a buffer the page can see; each chunk is announced to the page as
+// EVT_NOTIFY {"event":"download_chunk","id":req,"handle":h,"ptr":p,
+// "len":n,"last":0|1,"name":...} (a note the emulator thread turns into the
+// event: mailbox.h, staged buffers), the page copies the bytes into a Blob
+// part and answers REQ_ACK_BUF {handle}, and the worker refills.  Neither
+// the emulator thread nor the page ever waits on the other; a page that
+// never acks times the JOB out (GS_DL_ACK_MS), not the machine.  This
+// replaced a whole-file malloc + fread and a MAIN_THREAD_EM_ASM that
+// blocked the reading thread until the page had copied everything.
+#define GS_DL_CHUNK  (4u << 20)
+#define GS_DL_ACK_MS 30000u
 
-// Platform sink for a job's captured PostScript (appletalk.printer.capture):
-// downloaded as <job>.ps, the way the page downloads the job's PDF.
-void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
-    char name[32];
-    snprintf(name, sizeof(name), "%05u.ps", (unsigned)cap->job_id);
-    em_download_bytes(name, cap->ps, cap->ps_len);
-}
-
-// Download command - save file to browser
-// Platform impl of gs_download (weak default in system.c stubs out).
-// Returns 0 on success, non-zero on any failure (so the typed
-// `download` attribute reports the real outcome rather than always-true).
-// The download's work: read the file and hand it to the page.  On the I/O
-// worker when there is one -- the read is proportional to the file, and
-// em_download_bytes blocks its caller until the page has copied the bytes,
-// which must never be the emulator thread.
 typedef struct {
-    char *path;
-    uint32_t token;
+    char *path; // the file to read, or NULL for `bytes`
+    uint8_t *bytes; // an in-memory source (copied), or NULL
+    size_t bytes_len;
+    char name[256]; // the download's file name
+    uint32_t token; // the deferral (0: answering now)
+    uint32_t io_id; // the worker job
+    uint32_t handle; // the staged buffer (published on the first chunk)
+    uint8_t *buf; // GS_DL_CHUNK bytes
+    uint32_t req_id; // the request, named in the events
+    uint64_t total;
 } download_job_t;
 
+// The worker: fill the buffer, announce, wait for the page, repeat.
 static int download_work(void *ud, char *err, size_t err_cap) {
     download_job_t *d = (download_job_t *)ud;
-    const char *path = d->path;
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        snprintf(err, err_cap, "cannot access '%s': %s", path, strerror(errno));
-        return -errno;
+    FILE *f = NULL;
+    if (d->path) {
+        struct stat st;
+        if (stat(d->path, &st) != 0) {
+            snprintf(err, err_cap, "cannot access '%s': %s", d->path, strerror(errno));
+            return -errno;
+        }
+        if (!S_ISREG(st.st_mode)) {
+            snprintf(err, err_cap, "'%s' is not a regular file", d->path);
+            return -EINVAL;
+        }
+        f = fopen(d->path, "rb");
+        if (!f) {
+            snprintf(err, err_cap, "cannot open '%s': %s", d->path, strerror(errno));
+            return -errno;
+        }
+        d->total = (uint64_t)st.st_size;
+    } else {
+        d->total = d->bytes_len;
     }
-    if (!S_ISREG(st.st_mode)) {
-        snprintf(err, err_cap, "'%s' is not a regular file", path);
-        return -EINVAL;
+    uint64_t sent = 0;
+    for (;;) {
+        if (io_check_cancelled()) {
+            if (f)
+                fclose(f);
+            snprintf(err, err_cap, "cancelled");
+            return -ECANCELED;
+        }
+        size_t n;
+        if (f) {
+            n = fread(d->buf, 1, GS_DL_CHUNK, f);
+            if (n < GS_DL_CHUNK && ferror(f)) {
+                fclose(f);
+                snprintf(err, err_cap, "read error on '%s'", d->path);
+                return -EIO;
+            }
+        } else {
+            n = d->bytes_len - (size_t)sent;
+            if (n > GS_DL_CHUNK)
+                n = GS_DL_CHUNK;
+            memcpy(d->buf, d->bytes + sent, n);
+        }
+        sent += n;
+        bool last = sent >= d->total;
+        char note[IO_NOTE_MAX];
+        snprintf(note, sizeof note, "{\"chunk\":%u,\"last\":%d}", (unsigned)n, last ? 1 : 0);
+        io_note(note);
+        int rc = io_wait_ack(0, GS_DL_ACK_MS);
+        if (rc != 0) {
+            if (f)
+                fclose(f);
+            snprintf(err, err_cap, rc == -ECANCELED ? "cancelled" : "the page did not take the download");
+            return rc;
+        }
+        io_report_progress(sent, d->total);
+        if (last)
+            break;
     }
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        snprintf(err, err_cap, "cannot open '%s': %s", path, strerror(errno));
-        return -errno;
-    }
-    size_t file_size = (size_t)st.st_size;
-    uint8_t *buf = (uint8_t *)malloc(file_size);
-    if (!buf) {
+    if (f)
         fclose(f);
-        snprintf(err, err_cap, "out of memory (%zu bytes)", file_size);
-        return -ENOMEM;
-    }
-    size_t nread = fread(buf, 1, file_size, f);
-    fclose(f);
-    if (nread != file_size) {
-        // A short read silently truncating the download would corrupt the
-        // user's saved file.  Fail loudly instead.
-        snprintf(err, err_cap, "short read on '%s' (%zu of %zu bytes)", path, nread, file_size);
-        free(buf);
-        return -EIO;
-    }
-    const char *name = strrchr(path, '/');
-    name = name ? name + 1 : path;
-    em_download_bytes(name, buf, nread);
-    free(buf);
     return 0;
+}
+
+// The emulator thread, per chunk: publish the buffer once, tell the page.
+static void download_note(const char *json, void *ud) {
+    download_job_t *d = (download_job_t *)ud;
+    unsigned n = 0;
+    int last = 0;
+    sscanf(json, "{\"chunk\":%u,\"last\":%d}", &n, &last);
+    if (!d->handle)
+        d->handle = gs_staged_publish(d->buf, GS_DL_CHUNK, d->io_id);
+    if (!d->handle) {
+        // No room in the staged table: the job times out on its ack.
+        printf("download: no staged buffer for '%s'\n", d->name);
+        return;
+    }
+    gs_event_emitf(GS_EVENT_NOTIFY,
+                   "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
+                   "\"name\":\"%s\"}",
+                   (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name);
+}
+
+static void download_progress(uint64_t done, uint64_t total, void *ud) {
+    download_job_t *d = (download_job_t *)ud;
+    if (d->token)
+        gs_result_progress(d->token, done, total);
+}
+
+static void download_free(download_job_t *d) {
+    if (d->handle)
+        gs_staged_release(d->handle);
+    free(d->buf);
+    free(d->bytes);
+    free(d->path);
+    free(d);
 }
 
 static void download_done(bool ok, double ms, const char *error, void *ud) {
     (void)ms;
     download_job_t *d = (download_job_t *)ud;
     if (ok) {
-        printf("download: requested '%s'\n", d->path);
-        gs_result_complete_ok(d->token);
+        printf("download: requested '%s'\n", d->name);
+        if (d->token)
+            gs_result_complete_ok(d->token);
     } else {
         printf("download: %s\n", error ? error : "failed");
-        gs_result_complete_error(d->token, error ? error : "download failed");
+        if (d->token)
+            gs_result_complete_error(d->token, error ? error : "download failed");
     }
-    free(d->path);
-    free(d);
+    download_free(d);
 }
 
+// Starts the download job; consumes `d`.  0 when the job runs (the
+// deferral answers), else -1 (no worker: a chunk can never be acked while
+// this thread holds the buffer).
+static int download_start(download_job_t *d) {
+    d->buf = (uint8_t *)malloc(GS_DL_CHUNK);
+    if (!d->buf) {
+        printf("download: out of memory\n");
+        download_free(d);
+        return -1;
+    }
+    d->token = gs_result_defer();
+    d->req_id = gs_result_request_id(d->token);
+    io_job_desc_t desc = {
+        .work = download_work,
+        .work_ud = d,
+        .done = download_done,
+        .done_ud = d,
+        .progress = download_progress,
+        .note = download_note,
+        .observer_ud = d,
+    };
+    d->io_id = io_submit_job(&desc);
+    if (d->io_id) {
+        if (d->token)
+            gs_result_bind_io(d->token, d->io_id);
+        return 0;
+    }
+    printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
+    if (d->token)
+        gs_result_complete_error(d->token, "the I/O worker is not running");
+    download_free(d);
+    return -1;
+}
+
+// Platform sink for a job's captured PostScript (appletalk.printer.capture):
+// downloaded as <job>.ps, the way the page downloads the job's PDF.
+void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return;
+    snprintf(d->name, sizeof d->name, "%05u.ps", (unsigned)cap->job_id);
+    d->bytes = (uint8_t *)malloc(cap->ps_len ? cap->ps_len : 1);
+    if (!d->bytes) {
+        free(d);
+        return;
+    }
+    memcpy(d->bytes, cap->ps, cap->ps_len);
+    d->bytes_len = cap->ps_len;
+    download_start(d);
+}
+
+// Platform impl of gs_download (weak default in system.c stubs out).
+// Returns 0 when the download was started (the answer is deferred: it
+// completes when the page has taken the last chunk), non-zero otherwise.
 int gs_download(const char *path) {
     download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
     if (!d)
         return -1;
     d->path = strdup(path);
-    d->token = gs_result_defer();
-    if (d->token && io_submit_work(download_work, d, download_done, d))
-        return 0; // provisional; the completion answers
-    char err[256] = "";
-    int rc = download_work(d, err, sizeof err);
-    if (d->token) {
-        download_done(rc == 0, 0.0, rc == 0 ? NULL : err, d);
-        return 0;
+    if (!d->path) {
+        free(d);
+        return -1;
     }
-    if (rc != 0)
-        printf("download: %s\n", err);
-    else
-        printf("download: requested '%s'\n", path);
-    free(d->path);
-    free(d);
-    return rc == 0 ? 0 : -1;
+    const char *name = strrchr(path, '/');
+    snprintf(d->name, sizeof d->name, "%s", name ? name + 1 : path);
+    return download_start(d);
 }
 
 // ============================================================================

@@ -7,6 +7,11 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 
 #include "scsi.h"
+#include "gs_out.h"
+
+#include "io_leaf.h"
+
+value_t io_leaf_export_image(struct image *img, const char *dest, const char *what) __attribute__((weak));
 #include "drive_catalog.h"
 #include "image.h"
 #include "log.h"
@@ -1685,9 +1690,9 @@ static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int
     if (rc == -2)
         return val_err("scsi.devices[%u].eject: the guest has locked the drive (PREVENT MEDIUM REMOVAL)", slot);
     if (rc == 0)
-        printf("scsi.devices[%u].eject: no medium present\n", slot);
+        gs_outf("scsi.devices[%u].eject: no medium present\n", slot);
     else
-        printf("scsi.devices[%u].eject: ejected\n", slot);
+        gs_outf("scsi.devices[%u].eject: ejected\n", slot);
     return val_bool(rc != 0);
 }
 
@@ -1735,18 +1740,18 @@ static value_t scsi_dev_method_info(struct object *self, const member_t *m, int 
     if (!scsi)
         return val_err("scsi.devices.N.info: scsi controller not available");
     if (!scsi_device_present(scsi, slot)) {
-        printf("scsi.devices[%u]: no device present\n", slot);
+        gs_outf("scsi.devices[%u]: no device present\n", slot);
         return val_bool(false);
     }
     image_t *img = scsi_device_image(scsi, slot);
     if (!img) {
-        printf("scsi.devices[%u]: device present, no medium\n", slot);
+        gs_outf("scsi.devices[%u]: device present, no medium\n", slot);
         return val_bool(true);
     }
     const char *fname = image_get_filename(img);
     size_t sz = disk_size(img);
     double size_mb = (double)sz / (1024.0 * 1024.0);
-    printf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
+    gs_outf("scsi.devices[%u]: %.1f MB — %s\n", slot, size_mb, fname ? fname : "(unknown)");
     return val_bool(true);
 }
 
@@ -1811,8 +1816,13 @@ static value_t scsi_image_method_export(struct object *self, const member_t *m, 
     image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
     if (!img)
         return val_err("image.export: no medium present in this device");
-    int rc = image_export_to(img, argv[0].s);
-    if (rc != 0)
+    // An I/O job: the disk is snapshotted and write-locked here, streamed
+    // to the file on the I/O worker, and the answer comes when it is done.
+    // (Weak: a unit suite of the controller alone links no I/O leaves and
+    // exports here and now.)
+    if (io_leaf_export_image)
+        return io_leaf_export_image(img, argv[0].s, "image.export");
+    if (image_export_to(img, argv[0].s) != 0)
         return val_err("image.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
     return val_bool(true);
 }
@@ -1862,7 +1872,7 @@ static const member_t scsi_image_members[] = {
                 .nargs = 1,
                 .result = V_BOOL,
                 .fn = scsi_image_method_export,
-                .ui_flags = MM_MUTATE,
+                .ui_flags = MM_MUTATE | MM_IO,
                 .verb_label = "Save image…",
                 .task_category = "storage"}},
     {.kind = M_METHOD,
@@ -2055,20 +2065,20 @@ static value_t scsi_method_identify_hd(struct object *self, const member_t *m, i
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        printf("invalid SCSI HD image: cannot open %s\n", path);
+        gs_outf("invalid SCSI HD image: cannot open %s\n", path);
         return val_bool(false);
     }
     if (image_is_floppy(img->type)) {
-        printf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", img->raw_size);
+        gs_outf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", img->raw_size);
         image_close(img);
         return val_bool(false);
     }
     size_t sz = img->raw_size;
     const struct drive_model *best = drive_catalog_find_closest(sz);
     if (sz == best->size)
-        printf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
+        gs_outf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
     else
-        printf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
+        gs_outf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
     image_close(img);
     return val_bool(true);
 }
@@ -2083,11 +2093,11 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        printf("invalid CD-ROM image: cannot open %s\n", path);
+        gs_outf("invalid CD-ROM image: cannot open %s\n", path);
         return val_bool(false);
     }
     if (image_is_floppy(img->type)) {
-        printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
+        gs_outf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
         image_close(img);
         return val_bool(false);
     }
@@ -2114,15 +2124,15 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
     }
     double size_mb = (double)sz / (1024.0 * 1024.0);
     if (is_iso && is_hfs)
-        printf("valid CD-ROM image: %.1f MB, ISO 9660 + HFS hybrid\n", size_mb);
+        gs_outf("valid CD-ROM image: %.1f MB, ISO 9660 + HFS hybrid\n", size_mb);
     else if (is_iso)
-        printf("valid CD-ROM image: %.1f MB, ISO 9660\n", size_mb);
+        gs_outf("valid CD-ROM image: %.1f MB, ISO 9660\n", size_mb);
     else if (is_hfs)
-        printf("valid CD-ROM image: %.1f MB, HFS\n", size_mb);
+        gs_outf("valid CD-ROM image: %.1f MB, HFS\n", size_mb);
     else if (is_apm)
-        printf("valid CD-ROM image: %.1f MB, Apple Partition Map\n", size_mb);
+        gs_outf("valid CD-ROM image: %.1f MB, Apple Partition Map\n", size_mb);
     else {
-        printf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
+        gs_outf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
         image_close(img);
         return val_bool(false);
     }

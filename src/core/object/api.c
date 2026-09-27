@@ -452,6 +452,34 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
 
 // === Public entry points ====================================================
 
+static gs_eval_spill_fn g_spill;
+
+void gs_eval_set_spill_hook(gs_eval_spill_fn fn) {
+    g_spill = fn;
+}
+
+size_t gs_format_value_json_alloc(const value_t *v, char **out, size_t max) {
+    *out = NULL;
+    for (size_t cap = 1u << 20; cap <= max; cap *= 4) {
+        char *buf = (char *)malloc(cap);
+        if (!buf)
+            return 0;
+        size_t pos = 0;
+        buf[0] = '\0';
+        format_value_json(v, buf, cap, &pos);
+        if (pos < cap - 1) {
+            *out = buf;
+            return pos;
+        }
+        free(buf);
+        if (cap == max)
+            break;
+        if (cap * 4 > max && cap < max)
+            cap = max / 4; // one last try at exactly max
+    }
+    return 0;
+}
+
 int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
     worker_thread_assert("gs_eval");
@@ -535,7 +563,10 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
 
     format_value_json(&v, out_buf, out_size, &pos);
     int rc = val_is_error(&v) ? -1 : 0;
-    if (pos >= out_size - 1) {
+    if (pos >= out_size - 1 && rc == 0 && g_spill && g_spill(&v, out_buf, out_size)) {
+        // Spilled to a staged buffer: out_buf names it (mailbox.h).
+        pos = strlen(out_buf);
+    } else if (pos >= out_size - 1) {
         // The formatted result hit the buffer cap. A silently truncated
         // payload is worse than a failure — the consumer would parse garbage
         // (or, for a string result, a shorter valid-looking document) —
