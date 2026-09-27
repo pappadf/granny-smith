@@ -47,6 +47,10 @@ int script_run_line(const char *line);
 // shell.script_run, the headless script= runner). Returns 0 / -1.
 int script_run_source(const char *src);
 
+// Parse and run `src` with or without REPL result printing.  What a job
+// runs (job/job.h).
+int script_run_text(const char *src, bool interactive);
+
 // Parse + execute a script file with the include stack maintained: an
 // `include "path"` inside the file resolves relative to the file's own
 // directory, and diagnostics carry the file name. Returns 0 / -1.
@@ -56,13 +60,6 @@ int script_run_file(const char *path);
 // counter) — the REPL should show a continuation prompt and accumulate
 // more lines before submitting.
 bool script_needs_continuation(const char *buf);
-
-// Platform pump hook: called after every executed statement so the
-// platform can drive the scheduler to completion (`scheduler.run N`
-// merely schedules a stop event; the platform loop executes it).
-// Return true to abort the script cleanly (quit requested).
-typedef bool (*script_pump_fn)(void);
-void script_set_pump_hook(script_pump_fn fn);
 
 // Ctrl-C for loops: the interpreter checks this once per iteration and
 // unwinds with an error. Wired to `shell.interrupt`.

@@ -110,7 +110,7 @@ int gs_video_in_frame(uint8_t *rgba) {
 }
 
 // The guest gated the capture clock: let JS attach/stop the camera track
-// (same push pattern as Module.onFloppyChange — em_main.c).
+// (the MAIN_THREAD_ASYNC_EM_ASM push pattern).
 void gs_video_in_state(bool active) {
     // clang-format off
     MAIN_THREAD_ASYNC_EM_ASM(

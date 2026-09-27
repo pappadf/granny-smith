@@ -8,7 +8,8 @@ TEST_NAME    := rbv
 TEST_SRCS    := test.c
 TEST_HARNESS := none
 STUBS        := machine_object assert checkpoint
-EXTRA_SRCS   := ../../../../src/machines/mdu/rbv.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/machines/mdu/rbv.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \

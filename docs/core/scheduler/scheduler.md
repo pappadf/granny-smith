@@ -683,16 +683,19 @@ Headless does not arm any VBL event. Its run loops
 ([headless_main.c](../../../src/platform/headless/headless_main.c)) call
 `scheduler_run_frame()` back-to-back as fast as the host CPU allows:
 
-- the daemon/script pump (`pump_scheduler_with_heartbeat`) runs one frame-unit per
-  iteration, yielding between them only to emit the ~1 Hz heartbeat and poll the daemon
-  socket for disconnect/`stop`;
-- the interactive REPL loop runs one frame-unit per iteration, staying responsive to
-  Ctrl-C and the `--max-cycles` cap.
+- one loop (`hl_pump_once`: a frame-unit while the machine runs, then the mailbox
+  drain) serves the script file, stdin, the REPL and the daemon alike — each statement
+  is a job on the job thread, and the loop pumps while it waits for the job's result,
+  emitting the ~1 Hz heartbeat and polling the daemon socket for disconnect / `stop`;
+- so the REPL stays responsive to Ctrl-C and the `--max-cycles` cap, and a
+  `scheduler.run` with no budget holds the statement until the machine stops.
 
 An instruction-budget `scheduler.run N` schedules a `run_stop_event`; the inner
 `scheduler_run` inside a frame-unit clamps to it (§6.1), so the budget stops mid-frame
-at exactly `N` instructions and the loop exits. `scheduler.run` with no argument runs
-until `scheduler.stop` (or client disconnect) — exactly what web2 does.
+at exactly `N` instructions; the job that issued it is held until that mode ends
+(§10.5). `scheduler.run` with no argument runs until a breakpoint, `scheduler.stop`,
+a client's stop or its disconnect; a headless script waits for that (its next
+statement sees the stopped machine), the browser's terminal does not.
 
 No `host_time()` value ever feeds guest execution on the headless path.
 
@@ -769,6 +772,31 @@ tests, reproduction) use `paced` with the authentic CPI.
 > — headless could mask a WASM-only bug (it did, for the IIfx 8bpp `f_trap` double-fault
 > hang). Unifying on the frame-unit removed that divergence: headless now reproduces the
 > web2 boot exactly, differing only in pacing.
+
+### 10.5 Modes: every run has an owner and a reason
+
+A run started by `scheduler_run_with_budget` (`scheduler.run [N]`, `debug.step N`)
+is a **mode**: the scheduler records whose it is — `gs_current_client()`, the client
+whose request the emulator thread was serving, 0 for the tick or a signal — and,
+once it stops, why (`sched_stop_reason_t`: `budget`, `breakpoint`, `stop_request`,
+`cancelled`, `assert`). `scheduler_stop()` is `scheduler_stop_reason(s,
+SCHED_STOP_REQUEST)`; `run_stop_event` and the breakpoint path set their own reason;
+`scheduler_stop_owned(s, owner)` stops only a mode with that owner (0 = any), which is
+what lets one client's stop leave another's run alone.
+
+Both edges go out as events (`src/core/event/gs_event.h`, delivered on the mailbox's
+event ring in the browser):
+
+```
+mode_started {mode, owner, budget}
+mode_ended   {mode, owner, reason, pc, instr_count}
+```
+
+`mode_ended` is emitted exactly once per mode, at the point where `running` drops: at
+the end of `scheduler_run_frame` for a stop from inside the frame (budget, breakpoint),
+or from `scheduler_stop_reason` itself for one from outside (a `scheduler.stop` leaf
+served between ticks). A machine that is already stopped reports nothing. The mode
+fields live after the checkpointed prefix: a restored machine starts with no mode open.
 
 ---
 

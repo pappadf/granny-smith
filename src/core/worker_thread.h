@@ -11,11 +11,13 @@
 // concurrent SAB writes, OPFS file handles owned elsewhere, racy
 // scheduler state.
 //
-// Every JS → C entry point is *supposed* to route through one of the
-// SAB-backed queues in em_main.c (`g_cmd_*`, `g_gs_*`) so the actual
-// dispatch happens inside `shell_poll()` on the worker. A regression
-// that adds a `Module.ccall('em_*', ...)` shortcut from the main JS
-// thread silently violates this invariant.
+// Every JS → C entry point is *supposed* to route through the mailbox
+// (src/core/mailbox/mailbox.h) so the actual dispatch happens inside
+// the emulator thread's drain; the job thread reaches guest state only
+// through the seam (src/core/job/job.h), which lands here too. A
+// regression that adds a `Module.ccall('em_*', ...)` shortcut from the
+// main JS thread, or a leaf called straight from the job thread,
+// silently violates this invariant.
 //
 // This header provides a one-line invariant check: at the worker's
 // startup we latch `pthread_self()`, and gateway functions

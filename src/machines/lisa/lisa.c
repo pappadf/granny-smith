@@ -20,6 +20,7 @@
 #include "debug_mac.h"
 #include "display.h"
 #include "image.h"
+#include "io_leaf.h"
 #include "lisa_fdc.h"
 #include "lisa_keymap.h"
 #include "lisa_mmu.h"
@@ -717,9 +718,10 @@ static value_t lisa_hd_save(struct object *self, const member_t *m, int argc, co
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!path || !*path)
         return val_err("profile.save: a destination path is required");
-    if (!lisa_profile_save_as(ls->profile, path))
-        return val_err("profile.save: cannot write '%s'", path);
-    return val_bool(true);
+    // An I/O job (io_leaf.h): the consolidated 532-bytes/block disk = base
+    // merged with the delta, streamed on the I/O worker from a snapshot
+    // taken here; image_export refuses to overwrite an existing file.
+    return io_leaf_export_image(lisa_profile_image(ls->profile), path, "profile.save");
 }
 
 static const arg_decl_t lisa_hd_save_args[] = {
@@ -838,7 +840,7 @@ static const member_t lisa_hd_members[] = {
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
-            "base+delta pair)", .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
+            "base+delta pair)", .method = {.ui_flags = MM_IO, .args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
     {.kind = M_METHOD,
      .name = "pram_init",
      .doc = "Seed the parameter memory in the model: BootVol nibble, checksum validity, and optionally the LOS "

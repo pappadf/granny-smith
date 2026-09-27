@@ -321,7 +321,7 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
 
 // `method_info(name)` — UI metadata for a method member, a typed map so the
 // context menu and command browser render it without a static catalogue:
-// verb label, task category, destructive/mutate/hidden flags, declared arg
+// verb label, task category, destructive/mutate/hidden/io flags, declared arg
 // count, and doc. Returns a V_ERROR if the member
 // is not a method.
 static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -340,6 +340,7 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
     val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
     val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
     val_map_put(b, "hidden", val_bool((mb->method.ui_flags & MM_HIDDEN) != 0));
+    val_map_put(b, "io", val_bool((mb->method.ui_flags & MM_IO) != 0));
     val_map_put(b, "nargs", val_int((int64_t)mb->method.nargs));
     return val_map_finish(b);
 }
@@ -411,6 +412,7 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
         val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
         val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
         val_map_put(b, "hidden", val_bool((mb->method.ui_flags & MM_HIDDEN) != 0));
+        val_map_put(b, "io", val_bool((mb->method.ui_flags & MM_IO) != 0));
         val_map_put(b, "nargs", val_int((int64_t)mb->method.nargs));
         break;
     }

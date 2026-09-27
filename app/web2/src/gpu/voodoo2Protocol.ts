@@ -4,7 +4,7 @@
 // the wasm heap; the GPU worker (voodoo2Gpu.worker.ts) consumes them.
 // Keep the two in step: PROTOCOL_VERSION is checked at attach.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2; // 2: records are multiples of 8 (mailbox_ring)
 export const MAGIC = 0x56324750; // 'V2GP'
 
 // Control-block word indices (Uint32 view at the control base).

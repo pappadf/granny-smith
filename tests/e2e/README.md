@@ -32,13 +32,17 @@ tests/e2e/
 │   ├── av-sound-record.spec.ts          # Browser mic → the guest's own Sound cdev, record + play
 │   ├── av-speech-recognition.spec.ts    # PlainTalk recognition from the browser mic
 │   ├── checkpoint-resume.spec.ts        # Checkpoint save → reload → resume (+ SE/30 profile restore)
+│   ├── checkpoint-stall.spec.ts         # Measurement: request round trip across the background checkpoint (VITE_GS_MEASURE=1)
 │   ├── debug-panel.spec.ts              # Debug view on a live machine: register edit, breakpoints, repaint while paused
 │   ├── display-card-config.spec.ts      # New Machine dialog: card-by-name video config
+│   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB storage.cp runs (VITE_GS_MEASURE=1)
 │   ├── display-drop.spec.ts             # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
 │   ├── fd-duplicate-name.spec.ts        # Duplicate floppy names in the image library
 │   ├── filesystem-tab.spec.ts           # Filesystem tab: descend image, copy/move/rename/unpack
+│   ├── download-staged.spec.ts          # A core download reaches the page in staged chunks, acked one by one
 │   ├── iicx-video-modes.spec.ts         # Post-shader WebGL canvas baselines (per monitor × depth)
 │   ├── iifx-aux3-realtime.spec.ts       # A/UX 3.0.1 boot to login under the real RAF scheduler
+│   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
 │   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
 │   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance
 │   ├── pci-prom-ingest.spec.ts          # A 9500 configured on an uploaded PCI display card; the .prom survives a reload
@@ -46,6 +50,7 @@ tests/e2e/
 │   ├── perf-bench.spec.ts               # Accelerated + turbo throughput (tracked numbers)
 │   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase
 │   ├── shell-prompt.spec.ts             # Terminal: prompt state, Tab completion, history across reloads, scrollback, paste
+│   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics
 │   ├── upload.spec.ts                   # Upload picker: streamed staging through the core (Safari regression)
 │   ├── url-boot.spec.ts                 # ?rom=… URL-parameter boot
 │   ├── voodoo2-thread.spec.ts           # Voodoo2 raster on a second Web Worker; LFB/counter fences

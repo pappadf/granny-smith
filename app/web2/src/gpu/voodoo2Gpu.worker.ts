@@ -74,6 +74,7 @@ import {
   U_BYTES,
   VERTEX_BYTES,
 } from './voodoo2Protocol';
+import { recordOk } from '@/bus/mailboxRing';
 import { VOODOO2_WGSL, PRESENT_WGSL, DEPTH_RESTORE_WGSL } from './voodoo2.wgsl';
 
 // --- messages from the page -----------------------------------------------
@@ -828,12 +829,13 @@ async function drain(head: number): Promise<boolean> {
     const at = ringBase + off;
     const kind = u32![at >> 2];
     const len = u32![(at >> 2) + 1];
-    // A record is word-aligned, whole within the ring (the writer pads to the
-    // end rather than wrap one), and no longer than what was published -- the
-    // checks platen's ringRead makes.  Only a writer bug could break
-    // them, and a record that does would read past the ring into the
-    // readback area and mis-decode.
-    if (!len || len & 3 || off + len > ringSize || len > (head - consumed) >>> 0) {
+    // A record is a multiple of 8 (the record-ring rule both transports
+    // share), whole within the ring (the writer pads to the end rather than
+    // wrap one), and no longer than what was published -- the checks
+    // platen's ringRead makes.  Only a writer bug could break them, and a
+    // record that does would read past the ring into the readback area and
+    // mis-decode.
+    if (!recordOk(len, off, ringSize, (head - consumed) >>> 0)) {
       console.error('[voodoo2-gpu] corrupt record', kind, len);
       return false;
     }

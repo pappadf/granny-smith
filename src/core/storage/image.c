@@ -9,6 +9,7 @@
 // A .journal file provides crash recovery.
 
 #include "image.h"
+#include "gs_out.h"
 
 #include "appledouble.h"
 #include "crc32.h"
@@ -743,7 +744,7 @@ static int resolve_image(const char *base_path, uint32_t block_size, char **out_
 
     size_t file_size = 0;
     if (read_file_size(path, &file_size) != 0) {
-        printf("image: cannot read file size: %s\n", path);
+        gs_outf("image: cannot read file size: %s\n", path);
         free(path);
         return -1;
     }
@@ -807,7 +808,7 @@ image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry
 
     int err = image_attach_storage(image, is_diskcopy);
     if (err != GS_SUCCESS) {
-        printf("image_open_readonly: storage engine failed for %s (error %d)\n", base_path, err);
+        gs_outf("image_open_readonly: storage engine failed for %s (error %d)\n", base_path, err);
         image_close(image);
         return NULL;
     }
@@ -849,7 +850,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
         }
     }
     if (gs_mkdir_p(delta_dir) != 0) {
-        printf("image_create: cannot create delta directory: %s\n", delta_dir);
+        gs_outf("image_create: cannot create delta directory: %s\n", delta_dir);
         free(derived_dir);
         free(effective);
         return NULL;
@@ -881,7 +882,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
 
     int err = image_attach_storage(image, is_diskcopy);
     if (err != GS_SUCCESS) {
-        printf("image_create: storage engine failed for %s (error %d)\n", base_path, err);
+        gs_outf("image_create: storage engine failed for %s (error %d)\n", base_path, err);
         image_close(image);
         return NULL;
     }
@@ -925,7 +926,7 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
 
     int err = image_attach_storage(image, is_diskcopy);
     if (err != GS_SUCCESS) {
-        printf("image_open: storage engine failed for %s (instance %s, error %d)\n", base_path, instance_path, err);
+        gs_outf("image_open: storage engine failed for %s (instance %s, error %d)\n", base_path, instance_path, err);
         image_close(image);
         return NULL;
     }
@@ -965,8 +966,8 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
 
     int err = image_attach_storage(image, false);
     if (err != GS_SUCCESS) {
-        printf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
-               block_size, err);
+        gs_outf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
+                block_size, err);
         image_close(image);
         return NULL;
     }
@@ -1074,29 +1075,87 @@ static char *stream_set_large_buffer(FILE *f) {
     return buf;
 }
 
-// Export the full disk content (base + delta) to a new file at dest_path.
-int image_export_to(image_t *image, const char *dest_path) {
-    if (!image || !image->storage || !dest_path || !*dest_path)
-        return -1;
+struct image_export {
+    storage_export_view_t *view;
+    char *dest;
+};
+
+image_export_t *image_export_begin(image_t *image, const char *dest_path, char *err, size_t err_cap) {
+    if (err && err_cap)
+        err[0] = '\0';
+    if (!image || !image->storage || !dest_path || !*dest_path) {
+        if (err)
+            snprintf(err, err_cap, "no medium, or no destination");
+        return NULL;
+    }
     // Refuse to overwrite existing files
     FILE *exist = fopen(dest_path, "rb");
     if (exist) {
         fclose(exist);
-        return -1;
+        if (err)
+            snprintf(err, err_cap, "'%s' exists (refuses to overwrite)", dest_path);
+        return NULL;
     }
-    gs_mkdir_parents(dest_path);
-    FILE *f = fopen(dest_path, "wb");
-    if (!f)
-        return -1;
+    image_export_t *e = calloc(1, sizeof *e);
+    if (!e)
+        return NULL;
+    e->dest = strdup(dest_path);
+    e->view = storage_export_view_begin(image->storage);
+    if (!e->dest || !e->view) {
+        if (err)
+            snprintf(err, err_cap, "cannot snapshot the disk for export");
+        image_export_end(e);
+        return NULL;
+    }
+    return e;
+}
+
+int image_export_run(image_export_t *e, char *err, size_t err_cap) {
+    if (!e || !e->view)
+        return -EINVAL;
+    gs_mkdir_parents(e->dest);
+    FILE *f = fopen(e->dest, "wb");
+    if (!f) {
+        int rc = errno ? errno : EIO;
+        if (err)
+            snprintf(err, err_cap, "cannot create '%s': %s", e->dest, strerror(rc));
+        return -rc;
+    }
     char *iobuf = stream_set_large_buffer(f);
-    int rc = storage_save_state(image->storage, f, file_write_cb);
-    fclose(f);
+    int rc = storage_export_view_write(e->view, f, file_write_cb);
+    bool closed = fclose(f) == 0;
     free(iobuf);
-    if (rc != GS_SUCCESS) {
-        remove(dest_path);
-        return -1;
+    if (rc != GS_SUCCESS || !closed) {
+        remove(e->dest);
+        if (rc == -ECANCELED) {
+            if (err)
+                snprintf(err, err_cap, "cancelled");
+            return -ECANCELED;
+        }
+        if (err)
+            snprintf(err, err_cap, "write to '%s' failed", e->dest);
+        return -EIO;
     }
     return 0;
+}
+
+void image_export_end(image_export_t *e) {
+    if (!e)
+        return;
+    storage_export_view_end(e->view);
+    free(e->dest);
+    free(e);
+}
+
+// Export the full disk content (base + delta) to a new file at dest_path,
+// here and now.
+int image_export_to(image_t *image, const char *dest_path) {
+    image_export_t *e = image_export_begin(image, dest_path, NULL, 0);
+    if (!e)
+        return -1;
+    int rc = image_export_run(e, NULL, 0);
+    image_export_end(e);
+    return rc == 0 ? 0 : -1;
 }
 
 // ============================================================================

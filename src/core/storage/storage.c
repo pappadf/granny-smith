@@ -17,6 +17,8 @@
 
 #include "storage.h"
 
+#include "io/io_worker.h"
+
 #include "log.h"
 #include "system.h"
 
@@ -95,7 +97,38 @@ struct storage_t {
     size_t journal_capacity;
 
     bool bitmap_dirty; // True if bitmap changed since last flush
+
+    // The files, for an export view's own handles.
+    char *base_path;
+    char *delta_path;
+    int export_locks; // exports in flight: guest writes are refused
+    struct storage_t *live_next; // the registry of live storages (export_view_end)
 };
+
+// Every storage alive, so a view's end can tell whether the storage it
+// locked still exists.
+static storage_t *g_live_storages;
+
+static void live_add(storage_t *s) {
+    s->live_next = g_live_storages;
+    g_live_storages = s;
+}
+
+static void live_remove(storage_t *s) {
+    for (storage_t **pp = &g_live_storages; *pp; pp = &(*pp)->live_next) {
+        if (*pp == s) {
+            *pp = s->live_next;
+            return;
+        }
+    }
+}
+
+static bool live_has(const storage_t *s) {
+    for (storage_t *p = g_live_storages; p; p = p->live_next)
+        if (p == s)
+            return true;
+    return false;
+}
 
 // ============================================================================
 // Bitmap helpers
@@ -343,6 +376,8 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
 
     s->block_count = config->block_count;
     s->block_size = config->block_size;
+    s->base_path = config->base_path ? strdup(config->base_path) : NULL;
+    s->delta_path = strdup(config->delta_path);
     s->bitmap_bytes = (size_t)((config->block_count + 7) / 8);
     s->bitmap_offset = DELTA_HEADER_SIZE;
     s->data_offset = DELTA_HEADER_SIZE + 2 * s->bitmap_bytes;
@@ -399,6 +434,7 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
     if (journal_load_index(s) != GS_SUCCESS)
         goto fail;
 
+    live_add(s);
     *out_storage = s;
     return GS_SUCCESS;
 
@@ -411,6 +447,9 @@ fail:
 int storage_delete(storage_t *storage) {
     if (!storage)
         return GS_SUCCESS;
+    live_remove(storage);
+    free(storage->base_path);
+    free(storage->delta_path);
     if (storage->base_fp)
         fclose(storage->base_fp);
     if (storage->delta_fp)
@@ -470,6 +509,12 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
     if (lba64 >= storage->block_count)
         return GS_ERROR;
     uint32_t lba = (uint32_t)lba64;
+
+    // An export in flight reads the delta through its own handle from a
+    // bitmap it copied: a write now would tear its copy.  Refused, as a
+    // drive being copied refuses.
+    if (storage->export_locks > 0)
+        return GS_ERROR;
 
     // Capture preimage if this block was committed and not yet journaled
     if (bitmap_test(storage->committed_bitmap, lba) && !journal_has_lba(storage, lba)) {
@@ -719,16 +764,27 @@ typedef enum {
     BLOCK_SRC_ZERO, // unmodified with no base file — reads as zeros
 } block_src_t;
 
-static block_src_t block_source(const storage_t *s, uint64_t block) {
+// The read side an export streams from: the live storage's own handles
+// (the checkpoint, on the emulator thread) or a view's copies (an export on
+// the I/O worker).
+typedef struct {
+    FILE *base_fp;
+    FILE *delta_fp;
+    const uint8_t *bitmap;
+    uint64_t block_count;
+    uint32_t block_size;
+    size_t base_data_offset;
+    size_t data_offset;
+} block_src_view_t;
+
+static block_src_t block_source(const block_src_view_t *s, uint64_t block) {
     if (bitmap_test(s->bitmap, (uint32_t)block))
         return BLOCK_SRC_DELTA;
     return s->base_fp ? BLOCK_SRC_BASE : BLOCK_SRC_ZERO;
 }
 
-int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb) {
-    if (!storage || !context || !write_cb)
-        return GS_ERROR;
-
+static int stream_blocks(const block_src_view_t *storage, void *context, storage_write_callback_t write_cb,
+                         bool cancellable) {
     // Chunk sized in whole blocks.  If the staging allocation fails, fall back
     // to a single block so a memory-starved host still exports, just slowly.
     uint64_t chunk_blocks = STORAGE_STREAM_CHUNK_BYTES / storage->block_size;
@@ -745,6 +801,10 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
     int rc = GS_SUCCESS;
     uint64_t block = 0;
     while (block < storage->block_count) {
+        if (cancellable && io_check_cancelled()) {
+            rc = -ECANCELED;
+            break;
+        }
         // Extend the run while the source stays the same, capped by the chunk.
         block_src_t src = block_source(storage, block);
         uint64_t max_run = storage->block_count - block;
@@ -794,10 +854,98 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
         if (rc != GS_SUCCESS)
             break;
         block += run;
+        if (cancellable)
+            io_report_progress(block * storage->block_size, storage->block_count * storage->block_size);
     }
 
     free(buffer);
     return rc;
+}
+
+int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb) {
+    if (!storage || !context || !write_cb)
+        return GS_ERROR;
+    block_src_view_t v = {
+        .base_fp = storage->base_fp,
+        .delta_fp = storage->delta_fp,
+        .bitmap = storage->bitmap,
+        .block_count = storage->block_count,
+        .block_size = storage->block_size,
+        .base_data_offset = storage->base_data_offset,
+        .data_offset = storage->data_offset,
+    };
+    return stream_blocks(&v, context, write_cb, false);
+}
+
+// === Export views ============================================================
+
+struct storage_export_view {
+    block_src_view_t src;
+    uint8_t *bitmap_copy;
+    storage_t *storage; // locked; checked against the live registry at end
+};
+
+bool storage_export_locked(const storage_t *storage) {
+    return storage && storage->export_locks > 0;
+}
+
+storage_export_view_t *storage_export_view_begin(storage_t *storage) {
+    if (!storage)
+        return NULL;
+    storage_export_view_t *v = calloc(1, sizeof *v);
+    if (!v)
+        return NULL;
+    // What the guest wrote so far is in the delta file once flushed; the
+    // bitmap copy names those blocks.
+    if (storage->delta_fp)
+        fflush(storage->delta_fp);
+    v->bitmap_copy = malloc(storage->bitmap_bytes);
+    if (!v->bitmap_copy) {
+        free(v);
+        return NULL;
+    }
+    memcpy(v->bitmap_copy, storage->bitmap, storage->bitmap_bytes);
+    v->src.bitmap = v->bitmap_copy;
+    v->src.block_count = storage->block_count;
+    v->src.block_size = storage->block_size;
+    v->src.base_data_offset = storage->base_data_offset;
+    v->src.data_offset = storage->data_offset;
+    v->src.base_fp = (storage->base_fp && storage->base_path) ? fopen(storage->base_path, "rb") : NULL;
+    if (storage->base_fp && !v->src.base_fp) {
+        free(v->bitmap_copy);
+        free(v);
+        return NULL;
+    }
+    v->src.delta_fp = storage->delta_path ? fopen(storage->delta_path, "rb") : NULL;
+    if (!v->src.delta_fp) {
+        if (v->src.base_fp)
+            fclose(v->src.base_fp);
+        free(v->bitmap_copy);
+        free(v);
+        return NULL;
+    }
+    v->storage = storage;
+    storage->export_locks++;
+    return v;
+}
+
+int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb) {
+    if (!v || !context || !write_cb)
+        return GS_ERROR;
+    return stream_blocks(&v->src, context, write_cb, true);
+}
+
+void storage_export_view_end(storage_export_view_t *v) {
+    if (!v)
+        return;
+    if (v->src.base_fp)
+        fclose(v->src.base_fp);
+    if (v->src.delta_fp)
+        fclose(v->src.delta_fp);
+    free(v->bitmap_copy);
+    if (v->storage && live_has(v->storage) && v->storage->export_locks > 0)
+        v->storage->export_locks--;
+    free(v);
 }
 
 static int read_exact(storage_read_callback_t read_cb, void *context, void *buf, size_t size) {

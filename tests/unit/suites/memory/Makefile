@@ -8,7 +8,8 @@ TEST_HARNESS := isolated
 # Real memory.c is included; stub_memory.c is excluded to avoid symbol conflicts
 OMIT_STUBS   := memory
 STUBS        := cpu lisa_mmu
-EXTRA_SRCS   := ../../../../src/core/memory/memory.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/memory/memory.c \
                 ../../../../src/core/memory/mmu.c \
                 ../../../../src/core/memory/mmu040.c \
                 ../../../../src/core/object/meta.c \

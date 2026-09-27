@@ -196,6 +196,16 @@ int image_create_blank_profile(const char *filename, uint32_t block_count);
 // Returns 0 on success, -1 on failure.
 int image_export_to(image_t *image, const char *dest_path);
 
+// The same export in three steps, so the write can run off the emulator
+// thread (an I/O job, io_leaf.h): begin on the emulator thread (refuses an
+// existing destination; snapshots the read side and write-locks the
+// storage: storage.h), run on any thread (0, -errno, -ECANCELED; a partial
+// file is removed on failure), end on the emulator thread.
+typedef struct image_export image_export_t;
+image_export_t *image_export_begin(image_t *image, const char *dest_path, char *err, size_t err_cap);
+int image_export_run(image_export_t *e, char *err, size_t err_cap);
+void image_export_end(image_export_t *e);
+
 // Setup images from config
 extern void setup_images(config_t *config);
 

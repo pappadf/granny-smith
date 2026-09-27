@@ -39,8 +39,9 @@ The C side is told about the active machine via `machine.register(<id>, <created
 
 ### Checkpoint Save Flow
 
-1. **Write** the new checkpoint to `<machine_dir>/state.checkpoint.tmp` (synchronous; OPFS auto-persists on `fclose`).
-2. **Atomic rename** to `<machine_dir>/state.checkpoint`. The rename is the swap; readers always see a complete file.
+1. **Serialise** on the emulator thread into the quick buffer (one contiguous copy of RAM, the VRAM blocks, the device state, the disk bitmaps), with the v3 header laid down at the front at `checkpoint_close`.
+2. **Publish** on the I/O worker (`src/core/io/io_worker.h`): write the buffer to `<machine_dir>/state.checkpoint.tmp` in 1 MB chunks (yielding between them so the guest's own disk reads are not queued behind one long write on the filesystem's proxy thread), `fclose` (OPFS auto-persists), then **atomic rename** to `<machine_dir>/state.checkpoint`. The rename is the swap; readers always see a complete file. The emulator thread never waits for it: the tick that serialised goes on with the next frame, and the completion arrives at a later drain as the `checkpoint_saved` event.
+3. **One buffer.** While a publish is in flight the buffer is the worker's; an auto-save that comes due meanwhile is skipped and counted (the 750 ms rate limit already says "not yet"). `checkpoint.snapshot` waits for a publish in flight, saves, and waits for its own — a snapshot promises a complete file when it returns. `checkpoint.load`, `checkpoint.clear`, `storage.rm` and `storage.mv` wait for a publish in flight before touching the directory, so the rename never lands under them. A build without the worker (`--io=sync`, the unit suites) runs the same write inline.
 
 There is no sequence-numbered file scheme any more. A monotonic `generation` counter inside the checkpoint header replaces it for diagnostics; on disk there is only one file.
 
@@ -82,8 +83,8 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
 - **File format & signature:**
   - Two on-disk formats are used:
     - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually.
-    - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer, then the entire buffer is RLE-compressed in a single pass and written to disk in one `fwrite` call. No per-block metadata (filenames, line numbers) is stored.
-  - The v3 format structure: `GSCHKPT3` (8 bytes) + uncompressed_size (8 bytes) + compressed_size (8 bytes) + RLE-compressed payload.
+    - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer behind a header-sized gap; at close the header is filled in and the whole buffer is one file the I/O worker writes and publishes. No RLE (the payload is mostly uncompressible RAM: `compressed_size == uncompressed_size` marks it raw) and no per-block metadata (filenames, line numbers).
+  - The v3 format structure: `GSCHKPT3` (8 bytes) + build id + model id + ram_size_kb + uncompressed_size (8 bytes) + compressed_size (8 bytes) + raw payload.
   - The reader auto-detects the format by inspecting the 8-byte magic signature.
 
 

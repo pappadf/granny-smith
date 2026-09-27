@@ -58,24 +58,22 @@ fdhd,hd,cd}` and `/opfs/{checkpoints,upload}` at boot via
 
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
-a single shared-memory region — `js_bridge_t`, defined in
-[`src/platform/wasm/em.h`](../../src/platform/wasm/em.h) and exported via
-the lone `_get_js_bridge()` accessor. JS resolves the base pointer once
-at init and reads/writes fields by offset through `Module.HEAP32` /
-`Module.HEAPU8`. The struct carries a `version` field that JS verifies
-against `BRIDGE_VERSION` at startup so layout drift fails loudly.
+the **mailbox** — a control block and two record rings in shared memory
+(`src/core/mailbox/mailbox.h`, exported via the lone `_get_gs_mailbox()`
+accessor; see "The Mailbox" below). JS binds to it once at init, checks
+its MAGIC and VERSION so layout drift fails loudly, and from then on
+writes request records and reads result records through `Module.HEAPU8`
+and Atomics.
 
-Every JS→C request rides on the single `pending=1` kind (`gs_eval`).
+Every JS→C request is a `REQ_EVAL` record (`gs_eval`) carrying an id.
 Introspection rides on `<path>.meta.*`; free-form shell lines and tab
-completion ride on the `Shell` class's `run` / `complete` methods.
-The `pending` slot is sized as a 32-bit field for future kinds, but
-only kind 1 is currently in use. JS writes `path` / `args`, sets
-`pending`, and parks on the `done` field via `Atomics.waitAsync`. The
-worker's `shell_poll()` (called every tick) drains the slot, writes
-the JSON response into `output`, then issues `__atomic_store_n(&done,
-1, SEQ_CST)` followed by `emscripten_atomic_notify` to wake JS — no
-polling, no `setTimeout` spin. A JS-side `cmdInFlight` lock serialises
-requests, so the slot is single-buffered by design.
+completion ride on the `Shell` class's `run` / `complete` methods. The
+worker's `shell_poll()` (called every tick, and from the idle wait on a
+stopped machine) drains every pending request and writes one
+`EVT_RESULT` per request; the page's reader loop wakes on `EVT_HEAD` via
+`Atomics.waitAsync` — no polling, no `setTimeout` spin — and resolves the
+promise whose id the result carries. Requests are not serialised on the
+page: any number may be in flight.
 
 **The result contract.** `gsEval(path, args)` resolves to one of three
 shapes, and callers must tell them apart:
@@ -93,13 +91,13 @@ So `r !== null` is never a success test — `{ error }` passes it.  Use
 `gsErrorText(r)` gives the reason
 ([`bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)).
 
-C→JS *state pushes* go through `Module.*` callbacks installed at module
-construction, not through the bridge slot:
+What the core says about the machine arrives as **events on the mailbox's
+event ring** (see "Events from the core" below): the run state, the
+effective speed, the floppy drives, the activity lights, the perf
+samples, checkpoint saves, log lines, breakpoint hits and assertion
+failures. The `Module.*` callbacks that remain are the platform
+transports, installed at module construction:
 
-- **`Module.onRunStateChange(running)`** — fired via
-  `MAIN_THREAD_ASYNC_EM_ASM` from `em_main_tick` when the scheduler
-  transitions between running and stopped, plus once at the first tick
-  to seed JS.
 - **`Module.onScreenResize(width, height, parW, parH)`** — fired via
   `MAIN_THREAD_ASYNC_EM_ASM` from `em_video.c::resize_canvas` whenever
   the framebuffer's intrinsic dimensions change. Transition-only
@@ -109,25 +107,8 @@ construction, not through the bridge slot:
   doesn't block on JS layout. `parW:parH` is the monitor's pixel aspect
   ratio (the Lisa's 720×364 raster is 2:3), so the renderer can show
   non-square pixels.
-- **`Module.onLogEmit(line)`** — fired via `MAIN_THREAD_ASYNC_EM_ASM`
-  per emitted log line, gated by `log_would_log()` so the worker pays
-  the cross-thread cost only when a category's level is above zero.
-  Routed in [`app/web2/src/bus/logSink.ts`](../../app/web2/src/bus/logSink.ts)
-  into the reactive `logs.entries` buffer (rAF-coalesced).
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
-  pipes. The same `logSink` writes these to the xterm pane.
-- **`Module.onFloppyChange(drive, present)`** — a floppy drive's medium
-  came or went, including when the guest ejects on its own; the Images
-  view clears its badge without polling.
-- **`Module.onSchedulerSpeed(speedX256)`** — the effective CPU speed in
-  Accelerated mode (256 = 1×), on change; the status bar's multiplier.
-- **`Module.onPerfUpdate(mipsX100, tpsX10)`** — emulated MIPS and the
-  tick rate, about once a second.
-- **`Module.onCheckpointSaved(elapsedMsX100)`** — a background or quick
-  checkpoint completed; the status bar's CP glyph flashes.
-- **`Module.onDriveActivity(kind, state)`** — an HD / FD / CD light
-  changed (kind 0/1/2; state idle/read/write 0/1/2); see the status bar
-  below.
+  pipes. `logSink` writes these to the xterm pane.
 - **`Module.onAbort(what)`** — the glue's `abort()`: the worker trapped.
   The bridge is marked dead and every request fails at once.
 - **`Module.onVideoInReady(ptr)`** / **`Module.onAudioInReady(ptr)`** —
@@ -196,48 +177,204 @@ SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback
 retired when the new prompt started coming back as `shell.run`'s return
 value.)
 
-## The Bridge Struct
+## The Mailbox
 
-Layout (mirrored as `OFF_*` constants in
-[`app/web2/src/bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)):
+Every JS↔C request travels through the mailbox: a control block and two
+record rings in the wasm heap (`src/core/mailbox/mailbox.h`; mirrored in
+[`app/web2/src/bus/mailbox.ts`](../../app/web2/src/bus/mailbox.ts), on the
+record-ring primitive `mailbox_ring.h` / `bus/mailboxRing.ts` the platen and
+Voodoo2 GPU transports share). The page writes `REQ_EVAL` records into the
+request ring and wakes the worker; the emulator thread drains them at every
+tick — all of them, under a 2 ms budget — and writes an `EVT_RESULT` per
+request into the event ring; a reader loop on the page resolves the promise
+whose id it carries. Any number of requests may be in flight; a late answer
+can never be mistaken for another call's.
 
 ```
-offset    0   version    int32     must equal JS_BRIDGE_VERSION
-offset    4   ready      int32     1 once worker can dispatch requests
-offset    8   pending    int32     request kind (1 = gs_eval); 0 = idle
-offset   12   done       int32     flipped to 1 by worker on completion
-offset   16   reserved   int32     unused (was a result code JS never read)
-offset   20   path[1024] char[]    JS→C: request path
-offset 1044   args[8192] char[]    JS→C: JSON-encoded arg array
-offset 9236   output[262144] char[] C→JS: JSON-encoded response
-offset 271380 gpu_available int32   JS→C: 1 once the page has a WebGPU device (Voodoo2 takeover)
-total       271384 bytes
+control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
+  [0]  MAGIC 'GSMB'   [1] VERSION 9
+  [2]  REQ_OFF  [3] REQ_SIZE  256 KB   request ring, page → core
+  [4]  EVT_OFF  [5] EVT_SIZE  1 MB     event ring,   core → page
+  [6]  REQ_HEAD (page)  [7] REQ_TAIL (core)   free-running byte counts
+  [8]  EVT_HEAD (core)  [9] EVT_TAIL (page)
+  [10] STATUS  [11] HEARTBEAT  [12] READY  [13] GPU_AVAILABLE
+  [14..19] statistics: requests, events, stalls, longest drain µs, refused,
+           events dropped
+records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
+  REQ_EVAL      {id, client, deadline_ms, path_len, args_len} + path + args
+  REQ_SCRIPT    {id, client, deadline_ms, src_len} + src          (a job)
+  REQ_CANCEL    {id, client, target_id}     REQ_MODE_STOP {id, client, owner}
+  REQ_ACK_BUF   {id, client, handle}        (a staged buffer was consumed)
+  EVT_RESULT    {id, ok, json_len, out_len} + json + output
+  EVT_PROGRESS  {json_len} + {"id":request,"done":n,"total":n}
+  EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json      (events from the core)
 ```
 
-Only `pending=1` is in use. JS writes `path` / `args`, sets `pending`,
-parks on `done`; the worker writes `output`, then flips `done`. `cmdInFlight` on the JS side serialises requests so the
-single-buffered slot is safe.
+Limits: a path of up to 1023 bytes and an arguments document of up to
+128 KB (the page refuses larger ones before writing); a result of up to
+256 KB in the answer slot. A result the event ring has no room for is held
+back and delivered once the page has read; the core never blocks on the
+page.
 
-### Request Wakeup (Atomics)
+**Output.** What a leaf prints while it runs (every stdout site in the core
+goes through the sink `gs_out.h`) travels with its answer: `EVT_RESULT`'s
+`output` text, which the page hands to the terminal, so a page leaf's
+printout reads as it did when stdout reached the terminal directly. A
+job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
+"client":c,"text":...}` records in the order the job produced it, before
+the job's result. Outside any request — boot messages, a breakpoint hit —
+text still goes to stdout and `Module.print`.
 
-```c
-// shell_poll(), after writing output:
-__atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
-emscripten_atomic_notify((void *)&g_bridge.done, 1);
+**Staged buffers.** A result larger than the answer slot is not refused:
+the core formats it into a buffer in its heap and answers
+`{"$buf":handle,"ptr":p,"len":n}`; the page reads the JSON through the
+memory as it is at that moment (`Module.wasmMemory.buffer`, never a cached
+view: the heap grows) and releases it with `REQ_ACK_BUF {handle}`. The
+same mechanism carries a download to the page, chunk by chunk (below),
+and could carry an upload's chunks; today the transfer window
+(`storage.xfer_buffer`, 2 MB, static) already is a shared buffer the page
+fills, and its `xfer_write` / `xfer_read` run as I/O jobs.
+
+### Events from the core
+
+The core also speaks first. `gs_event_emit` (`src/core/event/gs_event.h`)
+takes a kind and a small JSON object and, in the browser, writes it as an
+`EVT_STATE` / `EVT_NOTIFY` / `EVT_LOG` record on the event ring at once,
+waking the page — from a leaf, from the tick, from anywhere on the emulator
+thread; an event never blocks (no room: dropped and counted). The page's
+reader loop runs for as long as anyone listens and hands each event to
+`onCoreEvent` subscribers in `bus/emulator.ts` as `{kind, event, data}`;
+the last 64 are on `window.__gsCoreEvents` for automation.
+
+The scheduler is the first emitter. Every run is a **mode** with an owner
+(the client whose request started it) and, once it stops, a reason:
+
+```
+EVT_STATE {"event":"mode_started","mode":N,"owner":C,"budget":I}
+EVT_STATE {"event":"mode_ended","mode":N,"owner":C,"reason":R,"pc":P,"instr_count":I}
+  R ∈ budget | breakpoint | stop_request | cancelled | assert
 ```
 
-```ts
-// bus/emulator.ts: waitForBridgeDone
-const w = Atomics.waitAsync(Module.HEAP32, doneIdx, 0);
-if (w.async) await w.value;          // resolves on the notify
-Atomics.store(Module.HEAP32, doneIdx, 0);
-```
+`mode_ended` goes out from `scheduler_run_frame` at the point where the
+run stops, whichever path stopped it — the instruction budget, a
+breakpoint, `scheduler.stop`, an assertion — so a `debug.step` emits it
+before its own result. The page's run/paused state follows these events.
 
-`Atomics.waitAsync` returns synchronously with `not-equal` if the
-worker beat JS to it; otherwise it yields a Promise that resolves on
-the notify. Minimum round-trip is one event-loop turn after the
-worker's tick — no `setTimeout` spin, no main-thread CPU burn. The same
-pattern gates the initial `ready` flip.
+The rest of what the tick used to diff and push through `Module.on*`
+callbacks is emitted at its source too; the page routes each in
+`routeCoreEvent` (`bus/emulator.ts`):
+
+| Event | Emitted by | Payload |
+|---|---|---|
+| `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
+| `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
+| `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
+| `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
+| `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
+| `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
+| `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
+| `log:log` | the log sink, every line | `{line}` |
+| `log:output` | the job layer, a job's printed text | `{id, client, text}` |
+
+What still crosses as a `Module.on*` callback is a platform transport
+handing the page a handle or a buffer (screen geometry, the Voodoo2 and
+printer rings, camera and microphone rings): not an event about the
+machine.
+
+### Jobs: scripts off the emulator thread
+
+A terminal line is not a `shell.run` call any more. The page posts it as a
+`REQ_SCRIPT` record (`{id, client, deadline_ms, src_len} + src`) and the
+core queues it as a **job** for the one **job thread** (`src/core/job/job.h`),
+created at boot right after `READY`. The interpreter runs there, on its
+own stack, and touches nothing but its own memory: every read or write of
+the object tree (`node_get` / `node_set` / `node_call`, and the REPL's
+printing of a result) is handed to the emulator thread through the
+**seam**, `job_on_emulator()`, and served in the same drain that serves
+the page — at the next frame boundary while the machine runs, within a
+millisecond while it is stopped. A leaf that starts a *bounded* mode
+(`scheduler.run N`, `debug.step N`) holds the job until that mode ends, so
+`scheduler.run N` inside a script means "run N"; a bare `scheduler.run`
+from the terminal returns at once (the machine runs on; Ctrl-C stops it),
+while a headless script's bare `scheduler.run` waits for the machine to
+stop (`job_glue_unbounded_waits`). The job's answer is an `EVT_RESULT`
+carrying the shell's new prompt (what `shell.run` returned), or
+`{"error"}` when the script failed or was cancelled. A build without a
+job thread (headless today, the unit suites) runs the script inline in
+the drain, with the same interface.
+
+Scripts are FIFO — one runs at a time per process; `REQ_EVAL` leaves from
+any client are served alongside. The scope stack, alias table and
+function table are shared behind one lock (`job_tables_lock`), taken per
+operation; function bodies are reference-counted, so a redefinition or
+removal from another client cannot free a body a job is executing.
+
+`REQ_CANCEL {id, client, target_id}` cancels a job of that client: a
+queued one finishes at once, a running one unwinds at its next statement
+(`E_CANCELLED` → `{"error":"cancelled"}`), and the mode it started, if
+one is running, is stopped. `REQ_MODE_STOP {id, client, owner}` stops a
+running mode by owner (0: any); both answer `true` / `false`.
+
+**I/O jobs.** A leaf whose cost is the size of a file rather than of the
+machine — `storage.cp`, `storage.import`, `storage.export_raw`,
+`storage.hd_create` / `fd_create` / `profile_create`, `storage.xfer_write`
+/ `xfer_read`, `archive.extract`, a SCSI `image.export` and the Lisa
+`profile.save`, `download`, and the quick checkpoint's publish — runs on
+the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
+at boot. `meta.method_info` reports such a method with `io: true`
+(`MM_IO`). The leaf takes its request off the drain's answer path
+(`gs_result_defer`) and returns at once; the worker does the work in
+1 MB chunks (`GS_IO_CHUNK_KB`), yielding between them and reporting
+progress (`io_progress` → `EVT_PROGRESS {id, done, total}`; `gsEvalWithProgress`
+on the page); the completion, reported at a later drain, writes the
+request's `EVT_RESULT` (`gs_result_complete`), so the page's promise
+settles when the file is done and the emulator thread served frames
+throughout. A script's call is held the same way and a failure is the
+call's error. `REQ_CANCEL` of the request — or of the script whose call it
+is — cancels the job at its next chunk (`io_cancelled`); a cancelled copy
+leaves no partial destination. Writing over, moving or removing a path a
+device has open answers `E_BUSY`. An `image.export` snapshots the disk's
+read side (its own handles, a copy of the modification bitmap) on the
+emulator thread and write-locks the device until the file is written: a
+guest write to it fails meanwhile, as a drive being copied does. Without
+a worker (`--io=sync`) the same work runs inline, with the same hooks.
+
+**Downloads.** `download path` is an I/O job that reads the file 4 MB at
+a time into a staged buffer and announces each chunk as
+`notify:download_chunk`; the page copies the bytes into a Blob part,
+acknowledges the buffer (the worker refills it), and on the last chunk
+saves the Blob through a transient anchor (`bus/download.ts`). Neither
+thread waits on the other; a page that never acknowledges times the job
+out after 30 s, not the machine. The LaserWriter's PostScript capture
+(`appletalk.printer.capture`) takes the same road.
+
+**Ctrl-C, exactly.** The terminal is client 2 (the rest of the page is
+client 1). Ctrl-C cancels the terminal's foreground job if it has one;
+else stops a run *the terminal* started (`REQ_MODE_STOP {owner: 2}`);
+else prints `^C  (nothing to interrupt; Pause stops the machine)` — a
+machine running because the toolbar or a resume started it is not the
+terminal's to stop. `shell.interrupt` remains as a leaf with the same
+meaning for the client that calls it.
+
+### Wake-ups and the idle wait
+
+The page stores `REQ_HEAD` and `Atomics.notify`s it; the core stores
+`EVT_HEAD` and wakes the page's `Atomics.waitAsync`. While the machine runs,
+a request is served at the next tick (≤ one frame). While it is **stopped**
+the tick parks in a bounded futex wait on `REQ_HEAD` — 4 ms slices, 12 ms in
+all, draining the pthread's proxied input events between slices — so a
+request on an idle machine is served in about a millisecond.
+
+### Liveness
+
+`HEARTBEAT` is bumped once per tick and once per idle slice. The page samples
+it every second while visible: three seconds without a change while requests
+are pending marks the emulator dead (every pending request fails with a
+transport error, the crash banner shows). A wasm trap or `abort()` does the
+same through `Module.onAbort`. An ordinary request past 120 s fails for its
+own caller only; known-long requests (`checkpoint.*`, `storage.cp`, …) have
+no deadline.
 
 ## Module Bootstrapping
 
@@ -280,10 +417,8 @@ Module = await createModule({
   print: routePrintLine,
   printErr: routeErrLine, // also recognises a worker crash
   onAbort: (what) => markBridgeDead(`Aborted(${String(what ?? '')})`),
-  onRunStateChange: handleRunStateChange,
   onScreenResize: handleScreenResize,
-  onLogEmit: routeLogEmit,
-  // ...every other Module.on* callback listed above...
+  // ...the other transport callbacks listed above...
   gsAudioWorkletUrl,
 });
 ```
@@ -294,9 +429,10 @@ works under any deploy path.
 The canvas reference is passed once; Emscripten transfers it to the
 worker via `transferControlToOffscreen` and resolves the `#screen` DOM
 id from `OFFSCREENCANVASES_TO_PTHREAD`. After `createModule` returns,
-JS calls `Module._get_js_bridge()` to resolve the bridge base pointer,
-verifies the version, then `await gsEval('machine.register', …)` to
-activate the per-machine checkpoint directory.
+JS calls `Module._get_gs_mailbox()` to resolve the mailbox's control
+block, verifies its MAGIC and VERSION, waits for `READY`, then
+`await gsEval('machine.register', …)` to activate the per-machine
+checkpoint directory.
 
 ## Major UI Surfaces
 
@@ -318,7 +454,7 @@ The Svelte app is organised under
   — machine state, drive activity, in-flight upload progress. The HD /
   FD / CD lights are real: the core counts every drive read and write on
   the image (`storage.images[i].reads` / `.writes`), the worker tick sums
-  them per kind and pushes `Module.onDriveActivity(kind, state)` only when
+  them per kind and emits a `drive_activity` event only when
   a light changes, holding each on at least 100 ms
   ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
   shows only the lights its profile has drives for.
@@ -548,7 +684,7 @@ The same sequence as Module Bootstrapping above, end to end:
    never mounted).
 2. Mount Svelte; `ScreenView` calls `bootstrap(canvas)`: load the
    module (`createModule`, no command line), wire the callbacks, resolve
-   the `js_bridge_t` base pointer and verify its version.
+   the mailbox's control block and verify its MAGIC and VERSION.
 3. Run `machine.register(<machine-id>, <created>)` to set the per-
    machine checkpoint dir.
 4. `whenModuleReady()` resolves; `__gsReady = true`.

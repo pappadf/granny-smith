@@ -9,6 +9,8 @@
 // ============================================================================
 
 #include "em.h"
+#include "io/io_worker.h"
+#include "job/job.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -251,8 +253,38 @@ static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
 static double ticks_per_second = 0;
 
+// Per-tick wall-clock samples for the last PERF_UPDATE_INTERVAL ticks: the
+// whole em_main_tick, and the part of it spent inside shell_poll serving a
+// bridge request.  The MIPS/ticks-per-second figures above are rates
+// averaged over the window and cannot show a single long tick -- a 300 ms
+// checkpoint or a slow bridge request inside an otherwise 60 Hz window --
+// which is exactly what a frame stutter is.  Pushed with the perf update as
+// the window's max and median (microseconds) so the status bar can show
+// them and a spec can assert on them.
+static double tick_wall_ms[PERF_UPDATE_INTERVAL];
+static double tick_poll_ms[PERF_UPDATE_INTERVAL];
+static double tick_poll_ms_current; // set by em_main_tick, read by tick()
+
+// max and median of `n` samples, without disturbing the ring
+static void perf_window_stats(const double *samples, int n, double *max_out, double *p50_out) {
+    double sorted[PERF_UPDATE_INTERVAL];
+    memcpy(sorted, samples, sizeof(double) * n);
+    // insertion sort: n is 60
+    for (int i = 1; i < n; i++) {
+        double v = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > v) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = v;
+    }
+    *max_out = sorted[n - 1];
+    *p50_out = sorted[n / 2];
+}
+
 // ============================================================================
-// Shared-heap Command Queue (and gs_eval queue)
+// The mailbox (every JS -> C request)
 // ============================================================================
 //
 // THREADING MODEL — read this before changing anything in this section.
@@ -289,54 +321,100 @@ static double ticks_per_second = 0;
 //
 // THE RULE
 // --------
-// JS → C must always go through the SAB queue below. JS writes the
-// request into shared globals, sets a pending flag, and polls a done
-// flag. The worker's `shell_poll()` (called from `em_main_tick`)
-// drains the queue and writes the result. ccall on `_em_*` exports is
-// forbidden -- and no longer possible: the Makefile stopped exporting
-// ccall/cwrap, so only the bridge remains.
+// JS -> C must always go through the mailbox below: the page writes a
+// request record into the request ring and wakes the worker; the worker's
+// `shell_poll()` (called from `em_main_tick`, and from the idle wait on a
+// stopped machine) drains the ring and writes each result into the event
+// ring.  ccall on `_em_*` exports is forbidden -- and no longer possible:
+// the Makefile stopped exporting ccall/cwrap, so only the mailbox remains.
 //
-// The single shared-memory region. Layout in em.h, mirrored in
-// app/web2/src/bus/emulator.ts (offsets pinned by em.h's _Static_asserts).
-// Path and args are fixed-size; gsEval refuses a request that would not
-// fit rather than let it be truncated.  Output carries `meta.*`
-// introspection dumps, which dominate.
-static js_bridge_t g_bridge = {.version = JS_BRIDGE_VERSION};
+// The region is static so its address is fixed for the process lifetime
+// (shared memory grows in place, em_audio.c).  It is laid out by a
+// constructor, before main() and before the page can see it, so the MAGIC
+// and VERSION words are valid from the first read.  READY stays 0 until
+// main() has run shell_init/setup_init.
+static gs_mailbox_t g_mailbox;
+static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
-EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
-    return &g_bridge;
+__attribute__((constructor)) static void mailbox_construct(void) {
+    if (!gs_mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, gs_eval))
+        abort();
+    // Answers to the page carry what the leaf printed (gs_out.h); the
+    // terminal shows it with the result.
+    gs_mailbox_set_capture_output(&g_mailbox, true);
 }
+
+EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
+    return (uint32_t *)g_mailbox.ctrl;
+}
+
+// Core events (gs_event.h) go out as records on the event ring.
+void gs_event_emit(gs_event_kind_t kind, const char *json) {
+    uint32_t k = kind == GS_EVENT_STATE ? GS_MBX_EVT_STATE : kind == GS_EVENT_LOG ? GS_MBX_EVT_LOG : GS_MBX_EVT_NOTIFY;
+    gs_mailbox_emit(&g_mailbox, k, json);
+}
+
+uint32_t gs_current_client(void) {
+    return gs_mailbox_current_client(&g_mailbox);
+}
+
+// A bare `scheduler.run` typed in the browser's terminal returns at once
+// and the machine runs on (Ctrl-C stops it); only a budgeted run holds
+// the line.  The script suites' "run until stopped" is headless's.
+bool job_glue_unbounded_waits(uint32_t client) {
+    (void)client;
+    return false;
+}
+
+// The page parks in Atomics.waitAsync on READY and EVT_HEAD.
+void gs_mailbox_notify(volatile uint32_t *word) {
+    emscripten_atomic_notify((void *)word, INT_MAX);
+}
+
+static double mailbox_now_us(void) {
+    return emscripten_get_now() * 1000.0;
+}
+
+// Host microseconds one drain may spend serving a burst of requests before
+// giving the tick back; a leaf that is running when it expires still
+// completes (leaves are bounded by their data, not by this).  Set from
+// the tick instrumentation once it has been measured.
+#define GS_MAILBOX_DRAIN_US 2000.0
+
+// On a stopped machine the tick parks here between frames so a request is
+// served at once instead of at the next RAF.  Bounded, in slices, with the
+// pthread's proxied tasks (keyboard, mouse, pointer lock: all delivered as
+// tasks to this thread) drained between slices -- a plain futex wait would
+// hold them until the next request arrived.  Returns to the event loop
+// after GS_MAILBOX_IDLE_MS whatever happened.
+#define GS_MAILBOX_IDLE_SLICE_MS 4.0
+#define GS_MAILBOX_IDLE_MS       12.0
 
 int shell_poll(void) {
-    // Drain the bridge slot. With the shell folded into the object
-    // model, exactly one request kind remains:
-    //   1 = gs_eval(path, args)  — typed object-model call. Includes
-    //                              free-form shell lines via
-    //                              `shell.run`, schema queries via
-    //                              `<path>.meta.*`, and tab completion
-    //                              via `shell.complete` / `meta.complete`.
-    // Acquire pairs with JS's Atomics.store of `pending`, which it makes after
-    // writing path/args: seeing 1 here makes those bytes visible too.
-    if (!__atomic_load_n(&g_bridge.pending, __ATOMIC_ACQUIRE))
-        return 0;
-
-    const char *args = (g_bridge.args[0] != '\0') ? g_bridge.args : NULL;
-    gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
-    // Relaxed is enough: the seq-cst store of `done` below orders it, and JS
-    // writes `pending` again only after it has seen `done`.
-    __atomic_store_n(&g_bridge.pending, 0, __ATOMIC_RELAXED);
-    // Atomic store + wake any JS thread parked in Atomics.waitAsync on
-    // `done`. Sequentially consistent so the result/output writes above
-    // are visible before JS observes done == 1.
-    __atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
-    emscripten_atomic_notify((void *)&g_bridge.done, 1);
-    return 1;
+    int n = gs_mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
+    if (n > 0)
+        gs_mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
+    return n;
 }
 
-// Tab-complete and shell-line dispatch used to live here behind separate
-// `pending` kinds. Both have been folded into gs_eval: tab completion goes
-// through `meta.complete`, free-form lines through `shell.run`. Nothing
-// in this file needs to know about them anymore.
+// The idle wait of a stopped machine: serve requests as they arrive for up
+// to GS_MAILBOX_IDLE_MS, then return to the event loop.  Returns the
+// number of results written.
+static int mailbox_idle_wait(void) {
+    double t0 = emscripten_get_now();
+    int served = 0;
+    while (emscripten_get_now() - t0 < GS_MAILBOX_IDLE_MS) {
+        if (gs_mailbox_has_requests(&g_mailbox)) {
+            served += shell_poll();
+            continue;
+        }
+        uint32_t seen = mbx_load(g_mailbox.ctrl, GS_MBX_C_REQ_HEAD);
+        emscripten_futex_wait(&g_mailbox.ctrl[GS_MBX_C_REQ_HEAD], seen, GS_MAILBOX_IDLE_SLICE_MS);
+        emscripten_current_thread_process_queued_calls();
+        gs_mailbox_heartbeat(&g_mailbox);
+    }
+    return served;
+}
 
 // Main tick function called by the Emscripten main loop
 void em_main_tick(void) {
@@ -354,11 +432,13 @@ void em_main_tick(void) {
             double elapsed_ms = current_time - last_time;
             ticks_per_second = (PERF_UPDATE_INTERVAL * 1000.0) / elapsed_ms;
             double mips = (double)(instr_now - last_instr) / (elapsed_ms * 1000.0);
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onPerfUpdate === 'function') Module.onPerfUpdate($0, $1); },
-                (int)(mips * 100.0), (int)(ticks_per_second * 10.0));
-            // clang-format on
+            double tick_max, tick_p50, poll_max, poll_p50;
+            perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
+            perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
+            gs_event_emitf(GS_EVENT_STATE,
+                           "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
+                           "\"poll_max_ms\":%.3f}",
+                           mips, ticks_per_second, tick_max, tick_p50, poll_max);
         }
 
         last_time = current_time;
@@ -397,46 +477,25 @@ void em_main_tick(void) {
     // nothing.
     // Re-fetch the scheduler: the request may have booted or restarted the
     // machine, freeing the one fetched above.
-    if (shell_poll()) {
+    gs_mailbox_heartbeat(&g_mailbox);
+    double poll_t0 = emscripten_get_now();
+    int served = shell_poll();
+    // A stopped machine has nothing to do until the next request: wait for
+    // one here (bounded) instead of at the next RAF.
+    if (!(sched && scheduler_is_running(sched)))
+        served += mailbox_idle_wait();
+    tick_poll_ms_current = emscripten_get_now() - poll_t0;
+    if (served) {
         scheduler_t *after = system_scheduler();
         if (!(after && scheduler_is_running(after)))
             em_video_update();
     }
 
-    // Push a run-state notification to JS on every transition
-    // (including the first tick). The callback is installed via
-    // Module.onRunStateChange at module construction; ASYNC variant so
-    // the worker doesn't block during emulation.
-    int running = (sched && scheduler_is_running(sched)) ? 1 : 0;
-    static int last_reported_running = -1;
-    if (running != last_reported_running) {
-        last_reported_running = running;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onRunStateChange === 'function') Module.onRunStateChange(!!$0); },
-            running);
-        // clang-format on
-    }
+    // The run state and the floppy drives are the core's to announce now
+    // (mode_started / mode_ended from the scheduler, floppy from the
+    // controller): nothing is diffed here any more.
 
-    // Push floppy drive present-state transitions to JS (Module.onFloppyChange),
-    // same diff-and-async-invoke pattern as the run-state push above. This lets
-    // the Images view clear an "Inserted" badge the instant the guest ejects a
-    // disk on its own (e.g. the MacWorks loader eject) — no JS-side polling. Two
-    // drives is the platform's fixed floppy maximum (see system.c do_insert_fd).
-    static int last_fd_present[2] = {-1, -1};
-    for (int d = 0; d < 2; d++) {
-        int present = system_fd_present(d) ? 1 : 0;
-        if (present != last_fd_present[d]) {
-            last_fd_present[d] = present;
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onFloppyChange === 'function') Module.onFloppyChange($0, !!$1); },
-                d, present);
-            // clang-format on
-        }
-    }
-
-    // Push the HD / FD / CD activity lights (Module.onDriveActivity) on a
+    // The HD / FD / CD activity lights (a drive_activity event) on a
     // state edge only: the counters are sampled here, once per tick, and
     // drive_activity_update holds a light on for its minimum visible time.
     {
@@ -447,51 +506,33 @@ void em_main_tick(void) {
         for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
             if (!(changed & (1u << k)))
                 continue;
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onDriveActivity === 'function') Module.onDriveActivity($0, $1); },
-                k, (int)lights.light[k]);
-            // clang-format on
+            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                           (int)lights.light[k]);
         }
     }
-
-    // Push the accelerated-mode effective CPU speed (x256; 256 = 1x) to JS on
-    // change, same diff-and-async pattern as the run-state push. The value is
-    // 1x outside accelerated mode and the governor steps it only on a ≥2 s
-    // dwell, so this fires rarely — the status bar reads it edge-driven rather
-    // than polling. JS divides by 256 for the multiplier.
-    int speed_x256 = sched ? (int)scheduler_effective_speed_x256(sched) : 256;
-    static int last_reported_speed = -1;
-    if (speed_x256 != last_reported_speed) {
-        last_reported_speed = speed_x256;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onSchedulerSpeed === 'function') Module.onSchedulerSpeed($0); },
-            speed_x256);
-        // clang-format on
-    }
 }
 
-// Exposed tick wrapper for Emscripten main loop
+// Exposed tick wrapper for Emscripten main loop.  Times the whole tick and
+// records it, with the shell_poll share em_main_tick measured, into the
+// perf window (see tick_wall_ms).
 void tick(void) {
+    double t0 = emscripten_get_now();
+    tick_poll_ms_current = 0;
     em_main_tick();
+    int slot = tick_counter % PERF_UPDATE_INTERVAL;
+    tick_wall_ms[slot] = emscripten_get_now() - t0;
+    tick_poll_ms[slot] = tick_poll_ms_current;
 }
 
-// Forward formatted log lines to the JS-side Module.onLogEmit callback.
+// Forward formatted log lines to the page as log events.
 // Installed once at boot via log_set_sink so the new-UI Logs view can
 // fan emissions out to a per-category mirror without inferring them
 // from Module.print (which captures everything, not just LOG sites).
-// Same MAIN_THREAD_ASYNC_EM_ASM pattern as the onRunStateChange push
-// above so the worker thread never blocks on the main-thread invoke.
 static void js_log_sink(const char *line, void *user) {
     (void)user;
     if (!line)
         return;
-    // clang-format off
-    MAIN_THREAD_ASYNC_EM_ASM(
-        { if (typeof Module.onLogEmit === 'function') Module.onLogEmit(UTF8ToString($0)); },
-        line);
-    // clang-format on
+    gs_event_emit_text(GS_EVENT_LOG, "log", "line", line);
 }
 
 // SIGINT handler — stops the scheduler so a real Ctrl-C in the headless
@@ -537,94 +578,216 @@ void laserwriter_ring_notify(volatile uint32_t *addr) {
     emscripten_futex_wake(addr, INT_MAX);
 }
 
-// Hand `len` bytes to the page as a download named `name`.  Blocks until the
-// main thread has copied them, so `buf` need only live for the call.
-static void em_download_bytes(const char *name, const uint8_t *buf, size_t nread) {
-    // Trigger browser download on the main thread (DOM access required).
-    // The worker is blocked in MAIN_THREAD_EM_ASM, so buf is valid.
-    // clang-format off
-    MAIN_THREAD_EM_ASM(
-        {
-            try {
-                var ptr = $0;
-                var len = $1;
-                var namePtr = $2;
-                var name = UTF8ToString(namePtr) || 'download.bin';
-                // Access the shared heap — try both global and Module-scoped accessors
-                var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
-                var data = new Uint8Array(heap.buffer, ptr, len);
-                var copy = new Uint8Array(data);  // copy out of shared buffer
-                var blob = new Blob([copy], {type: 'application/octet-stream'});
-                var a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = name;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                setTimeout(function() {
-                    try { URL.revokeObjectURL(a.href); } catch (e) {}
-                }, 0);
-            } catch (e) {
-                console.error('[download] MAIN_THREAD_EM_ASM failed:', e);
+// ============================================================================
+// Downloads: a file (or a buffer) to the page, in staged chunks
+// ============================================================================
+// An I/O job (io/io_worker.h) reads the file GS_DL_CHUNK bytes at a time
+// into a buffer the page can see; each chunk is announced to the page as
+// EVT_NOTIFY {"event":"download_chunk","id":req,"handle":h,"ptr":p,
+// "len":n,"last":0|1,"name":...} (a note the emulator thread turns into the
+// event: mailbox.h, staged buffers), the page copies the bytes into a Blob
+// part and answers REQ_ACK_BUF {handle}, and the worker refills.  Neither
+// the emulator thread nor the page ever waits on the other; a page that
+// never acks times the JOB out (GS_DL_ACK_MS), not the machine.  This
+// replaced a whole-file malloc + fread and a MAIN_THREAD_EM_ASM that
+// blocked the reading thread until the page had copied everything.
+#define GS_DL_CHUNK  (4u << 20)
+#define GS_DL_ACK_MS 30000u
+
+typedef struct {
+    char *path; // the file to read, or NULL for `bytes`
+    uint8_t *bytes; // an in-memory source (copied), or NULL
+    size_t bytes_len;
+    char name[256]; // the download's file name
+    uint32_t token; // the deferral (0: answering now)
+    uint32_t io_id; // the worker job
+    uint32_t handle; // the staged buffer (published on the first chunk)
+    uint8_t *buf; // GS_DL_CHUNK bytes
+    uint32_t req_id; // the request, named in the events
+    uint64_t total;
+} download_job_t;
+
+// The worker: fill the buffer, announce, wait for the page, repeat.
+static int download_work(void *ud, char *err, size_t err_cap) {
+    download_job_t *d = (download_job_t *)ud;
+    FILE *f = NULL;
+    if (d->path) {
+        struct stat st;
+        if (stat(d->path, &st) != 0) {
+            snprintf(err, err_cap, "cannot access '%s': %s", d->path, strerror(errno));
+            return -errno;
+        }
+        if (!S_ISREG(st.st_mode)) {
+            snprintf(err, err_cap, "'%s' is not a regular file", d->path);
+            return -EINVAL;
+        }
+        f = fopen(d->path, "rb");
+        if (!f) {
+            snprintf(err, err_cap, "cannot open '%s': %s", d->path, strerror(errno));
+            return -errno;
+        }
+        d->total = (uint64_t)st.st_size;
+    } else {
+        d->total = d->bytes_len;
+    }
+    uint64_t sent = 0;
+    for (;;) {
+        if (io_check_cancelled()) {
+            if (f)
+                fclose(f);
+            snprintf(err, err_cap, "cancelled");
+            return -ECANCELED;
+        }
+        size_t n;
+        if (f) {
+            n = fread(d->buf, 1, GS_DL_CHUNK, f);
+            if (n < GS_DL_CHUNK && ferror(f)) {
+                fclose(f);
+                snprintf(err, err_cap, "read error on '%s'", d->path);
+                return -EIO;
             }
-        },
-        buf, (int)nread, name);
-    // clang-format on
+        } else {
+            n = d->bytes_len - (size_t)sent;
+            if (n > GS_DL_CHUNK)
+                n = GS_DL_CHUNK;
+            memcpy(d->buf, d->bytes + sent, n);
+        }
+        sent += n;
+        bool last = sent >= d->total;
+        char note[IO_NOTE_MAX];
+        snprintf(note, sizeof note, "{\"chunk\":%u,\"last\":%d}", (unsigned)n, last ? 1 : 0);
+        io_note(note);
+        int rc = io_wait_ack(0, GS_DL_ACK_MS);
+        if (rc != 0) {
+            if (f)
+                fclose(f);
+            snprintf(err, err_cap, rc == -ECANCELED ? "cancelled" : "the page did not take the download");
+            return rc;
+        }
+        io_report_progress(sent, d->total);
+        if (last)
+            break;
+    }
+    if (f)
+        fclose(f);
+    return 0;
+}
+
+// The emulator thread, per chunk: publish the buffer once, tell the page.
+static void download_note(const char *json, void *ud) {
+    download_job_t *d = (download_job_t *)ud;
+    unsigned n = 0;
+    int last = 0;
+    sscanf(json, "{\"chunk\":%u,\"last\":%d}", &n, &last);
+    if (!d->handle)
+        d->handle = gs_staged_publish(d->buf, GS_DL_CHUNK, d->io_id);
+    if (!d->handle) {
+        // No room in the staged table: the job times out on its ack.
+        printf("download: no staged buffer for '%s'\n", d->name);
+        return;
+    }
+    gs_event_emitf(GS_EVENT_NOTIFY,
+                   "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
+                   "\"name\":\"%s\"}",
+                   (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name);
+}
+
+static void download_progress(uint64_t done, uint64_t total, void *ud) {
+    download_job_t *d = (download_job_t *)ud;
+    if (d->token)
+        gs_result_progress(d->token, done, total);
+}
+
+static void download_free(download_job_t *d) {
+    if (d->handle)
+        gs_staged_release(d->handle);
+    free(d->buf);
+    free(d->bytes);
+    free(d->path);
+    free(d);
+}
+
+static void download_done(bool ok, double ms, const char *error, void *ud) {
+    (void)ms;
+    download_job_t *d = (download_job_t *)ud;
+    if (ok) {
+        printf("download: requested '%s'\n", d->name);
+        if (d->token)
+            gs_result_complete_ok(d->token);
+    } else {
+        printf("download: %s\n", error ? error : "failed");
+        if (d->token)
+            gs_result_complete_error(d->token, error ? error : "download failed");
+    }
+    download_free(d);
+}
+
+// Starts the download job; consumes `d`.  0 when the job runs (the
+// deferral answers), else -1 (no worker: a chunk can never be acked while
+// this thread holds the buffer).
+static int download_start(download_job_t *d) {
+    d->buf = (uint8_t *)malloc(GS_DL_CHUNK);
+    if (!d->buf) {
+        printf("download: out of memory\n");
+        download_free(d);
+        return -1;
+    }
+    d->token = gs_result_defer();
+    d->req_id = gs_result_request_id(d->token);
+    io_job_desc_t desc = {
+        .work = download_work,
+        .work_ud = d,
+        .done = download_done,
+        .done_ud = d,
+        .progress = download_progress,
+        .note = download_note,
+        .observer_ud = d,
+    };
+    d->io_id = io_submit_job(&desc);
+    if (d->io_id) {
+        if (d->token)
+            gs_result_bind_io(d->token, d->io_id);
+        return 0;
+    }
+    printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
+    if (d->token)
+        gs_result_complete_error(d->token, "the I/O worker is not running");
+    download_free(d);
+    return -1;
 }
 
 // Platform sink for a job's captured PostScript (appletalk.printer.capture):
 // downloaded as <job>.ps, the way the page downloads the job's PDF.
 void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
-    char name[32];
-    snprintf(name, sizeof(name), "%05u.ps", (unsigned)cap->job_id);
-    em_download_bytes(name, cap->ps, cap->ps_len);
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return;
+    snprintf(d->name, sizeof d->name, "%05u.ps", (unsigned)cap->job_id);
+    d->bytes = (uint8_t *)malloc(cap->ps_len ? cap->ps_len : 1);
+    if (!d->bytes) {
+        free(d);
+        return;
+    }
+    memcpy(d->bytes, cap->ps, cap->ps_len);
+    d->bytes_len = cap->ps_len;
+    download_start(d);
 }
 
-// Download command - save file to browser
 // Platform impl of gs_download (weak default in system.c stubs out).
-// Returns 0 on success, non-zero on any failure (so the typed
-// `download` attribute reports the real outcome rather than always-true).
+// Returns 0 when the download was started (the answer is deferred: it
+// completes when the page has taken the last chunk), non-zero otherwise.
 int gs_download(const char *path) {
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        printf("download: cannot access '%s': %s\n", path, strerror(errno));
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return -1;
+    d->path = strdup(path);
+    if (!d->path) {
+        free(d);
         return -1;
     }
-    if (!S_ISREG(st.st_mode)) {
-        printf("download: '%s' is not a regular file\n", path);
-        return -1;
-    }
-
-    // Read file on the worker thread (OPFS accessible here)
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        printf("download: cannot open '%s': %s\n", path, strerror(errno));
-        return -1;
-    }
-    size_t file_size = (size_t)st.st_size;
-    uint8_t *buf = (uint8_t *)malloc(file_size);
-    if (!buf) {
-        fclose(f);
-        printf("download: out of memory (%zu bytes)\n", file_size);
-        return -1;
-    }
-    size_t nread = fread(buf, 1, file_size, f);
-    fclose(f);
-    if (nread != file_size) {
-        // Short read silently truncating the download would corrupt the
-        // user's saved file.  Fail loudly instead.
-        printf("download: short read on '%s' (%zu of %zu bytes)\n", path, nread, file_size);
-        free(buf);
-        return -1;
-    }
-
-    // Extract filename from path
     const char *name = strrchr(path, '/');
-    name = name ? name + 1 : path;
-    em_download_bytes(name, buf, nread);
-    free(buf);
-    printf("download: requested '%s'\n", path);
-    return 0;
+    snprintf(d->name, sizeof d->name, "%s", name ? name + 1 : path);
+    return download_start(d);
 }
 
 // ============================================================================
@@ -636,17 +799,6 @@ int gs_download(const char *path) {
 // One file per machine; tmp+rename is the atomic swap.
 
 static bool g_background_handlers_installed = false;
-
-// The core's quick-checkpoint heartbeat (system.h gs_checkpoint_saved): the
-// status bar's CP glyph flashes and its tooltip shows the save duration.
-// x100 fixed-point since MAIN_THREAD_ASYNC_EM_ASM carries ints.
-void gs_checkpoint_saved(double elapsed_ms) {
-    // clang-format off
-    MAIN_THREAD_ASYNC_EM_ASM(
-        { if (typeof Module.onCheckpointSaved === 'function') Module.onCheckpointSaved($0); },
-        (int)(elapsed_ms * 100.0));
-    // clang-format on
-}
 
 // Request background checkpoint (with rate limiting)
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
@@ -742,18 +894,29 @@ int main(void) {
     setup_init();
     system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
-    // Route every log_emit through Module.onLogEmit so the new-UI Logs
+    // Route every log_emit onto the event ring so the new-UI Logs
     // view gets a structured stream parallel to stdout. shell_init has
     // already called log_init; setting the sink here also forwards any
     // categories registered later (setup_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
 
-    // Bridge is open for business. JS gates its first gsEval on this
-    // flag so requests issued during the boot window don't dispatch
+    // The mailbox is open for business. JS gates its first gsEval on
+    // READY so requests issued during the boot window don't dispatch
     // against the empty default root class. The notify wakes any JS
-    // thread parked in Atomics.waitAsync on this field.
-    __atomic_store_n(&g_bridge.ready, 1, __ATOMIC_SEQ_CST);
-    emscripten_atomic_notify((void *)&g_bridge.ready, INT_MAX);
+    // thread parked in Atomics.waitAsync on that word.
+    gs_mailbox_set_ready(&g_mailbox);
+
+    // The job thread: scripts run there, not here (job/job.h).  Created
+    // now, not at the first script -- pthread_create from this pthread is
+    // proxied to the browser's main thread, and the Worker takes tens of
+    // milliseconds to come up.  512 KB of stack covers the interpreter's
+    // recursion (16 frames of functions, the expression parser).
+    if (!job_thread_start(512u << 10))
+        fprintf(stderr, "job thread could not be started; scripts run inline\n");
+    // The I/O worker: the checkpoint's write and rename run there, not in
+    // the tick (io/io_worker.h).  Same reason to create it now.
+    if (!io_worker_start(256u << 10))
+        fprintf(stderr, "I/O worker could not be started; writes run inline\n");
 
     // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();
@@ -772,32 +935,16 @@ int main(void) {
 // Assertion Notification for JavaScript
 // ============================================================================
 
-// Platform-specific assertion callback implementation.
-// Notifies the browser (Playwright tests) that an assertion has failed.
-// Must run on main thread (accesses window.__gsAssertionHandler).
+// Platform-specific assertion callback implementation: the failure goes
+// out as an event (assert_failed) the page and its tests read off the
+// event ring; nothing here blocks on the browser's main thread.
 static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func) {
     if (!expr)
         expr = kind;
-    // clang-format off
-    MAIN_THREAD_EM_ASM(
-        {
-            var exprStr = $0 ? UTF8ToString($0) : "";
-            var fileStr = $1 ? UTF8ToString($1) : "<unknown>";
-            var lineNum = $2;
-            var funcStr = $3 ? UTF8ToString($3) : "<unknown>";
-
-            // Call global handler if registered
-            if (typeof window !== 'undefined' && typeof window.__gsAssertionHandler === 'function') {
-                try {
-                    window.__gsAssertionHandler(
-                        {expr: exprStr, file: fileStr, line: lineNum, func: funcStr, timestamp: Date.now()});
-                } catch (e) {
-                    // Handler may throw to stop execution - this is expected
-                }
-            }
-        },
-        expr, file, line, func);
-    // clang-format on
+    char where[512];
+    snprintf(where, sizeof where, "%s:%d %s", file ? file : "<unknown>", line, func ? func : "<unknown>");
+    gs_event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
+    gs_event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in

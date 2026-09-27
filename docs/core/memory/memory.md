@@ -170,6 +170,16 @@ to physical addresses. The page table serves as the translation layer:
 - During normal execution, a translated access uses the same inline fast path
   with **zero additional overhead** — the translation is baked into the SoA
   entry.
+- **With the MMU enabled, the slow path dispatches device I/O on the
+  *physical* page from the table walk, never the logical page-table entry.**
+  A user-virtual address whose upper byte coincides with a host MMIO range
+  (e.g. virtual `$47F01000` landing in the IIfx ROM window
+  `$40000000`–`$4FFFFFFF`) must fault, not silently return the device's
+  value — A/UX's `copyin` depends on that fault to demand-page user pages. A
+  transparent-translation (TT) match means logical == physical, so there the
+  logical entry is the right dispatch and the walk is skipped (kernel I/O is
+  typically TT-mapped). Cross-page accesses split into byte halves, each of
+  which goes through this path.
 - For the Plus (no MMU), the SoA is populated lazily from the identity map and
   changes only when a device window or logpoint is installed.
 

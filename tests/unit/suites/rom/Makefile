@@ -9,7 +9,8 @@ TEST_HARNESS := isolated
 # stub_memory.c; stub_peripherals.c is not needed.
 OMIT_STUBS   := system memory peripherals
 STUBS        := cpu
-EXTRA_SRCS   := ../../../../src/core/memory/rom.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/memory/rom.c \
                 ../../../../src/core/memory/memory.c \
                 ../../../../src/core/memory/mmu.c \
                 ../../../../src/core/memory/mmu040.c \

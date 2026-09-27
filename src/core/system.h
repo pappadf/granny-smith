@@ -301,9 +301,9 @@ int gs_checkpoint_auto_set(bool enabled);
 //                              (wasm, via blob+anchor); headless has none.
 int gs_quit(void);
 int gs_download(const char *path);
-// The quick-checkpoint heartbeat: called after every quick checkpoint that
-// saved, with its duration.  Weak no-op; the web status bar flashes on it.
-void gs_checkpoint_saved(double elapsed_ms);
+// The quick save's publish ended (emulator thread, from checkpoint.c): the
+// checkpoint_saved event goes out here.
+void system_quick_checkpoint_written(bool ok, double ms, const char *error);
 
 // Checkpoints of the running machine, and finding media -- core, the same on
 // every platform (system.c).  0 on success, non-zero on failure.

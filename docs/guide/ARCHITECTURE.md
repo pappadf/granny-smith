@@ -151,14 +151,26 @@ Four caller surfaces walk that tree:
   are scripts.
 - **JavaScript / WASM bridge**: `gs_eval(path, args_json, out, size)`
   resolves the same path, JSON-encodes the result, and returns to JS.
-  The web frontend reaches it through a single shared-memory region
-  (`js_bridge_t` in [`src/platform/wasm/em.h`](../../src/platform/wasm/em.h)),
-  exposed via one `_get_js_bridge` WASM export. JS calls
-  `gsEval(path, args)`; that puts the request in the bridge slot and
-  parks on `Atomics.waitAsync(done)` until the worker's `shell_poll()`
-  services it. C→JS state pushes (run-state, prompt) flow the other
-  way through `Module.*` callbacks fired with `MAIN_THREAD_*_EM_ASM`.
+  The web frontend reaches it through the mailbox — a control block and
+  two record rings in shared memory (`src/core/mailbox/mailbox.h`,
+  exposed via one `_get_gs_mailbox` WASM export). JS calls
+  `gsEval(path, args)`; that writes a `REQ_EVAL` record carrying an id
+  into the request ring, and the emulator thread's drain serves every
+  pending request each frame and answers each with an `EVT_RESULT` the
+  page's reader loop matches by id. What the core says on its own —
+  run state, speed, floppies, checkpoint saves, log lines — flows the
+  other way as events on the same ring (`src/core/event/gs_event.h`).
   See [`web.md`](web.md) for the wire layout and protocol.
+- **Threads**: the emulator thread owns all guest state and runs nothing
+  of unbounded length: it ticks frames and drains the mailbox. A script
+  is a **job** on the job thread (`src/core/job/job.h`), reaching guest
+  state only through the seam, one served call at a time; a copy, an
+  export, an archive's extraction, a download or a checkpoint's write is
+  an **I/O job** on the I/O worker (`src/core/io/io_worker.h`), answered
+  later, reporting progress and cancellable between chunks. What any of
+  them prints goes through the output sink (`src/core/gs_out.h`) to the
+  client that asked. Headless runs the same three threads (`--io=sync`
+  and `--jobs=inline` fold a thread back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
   `help()` to render the live tree.
 

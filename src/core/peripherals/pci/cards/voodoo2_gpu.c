@@ -39,7 +39,9 @@
 #include "log.h"
 #include "system.h"
 #include "voodoo2_gpu_protocol.h"
+
 #include "voodoo2_raster_priv.h"
+#include "mailbox/mailbox_ring.h"
 
 #include <math.h>
 #include <stdatomic.h>
@@ -101,13 +103,9 @@ struct v2_gpu {
     uint8_t *region;
     uint32_t region_bytes;
     volatile uint32_t *ctrl;
-    uint8_t *ring;
-    uint32_t ring_size;
+    mbx_ring_t ring; // the op ring (mailbox_ring.h): HEAD/TAIL in ctrl
     uint8_t *rb;
     uint32_t rb_size;
-    uint32_t head; // published byte count
-    uint32_t wr; // write cursor (head..wr is written, unpublished)
-    uint32_t last_wr0; // monotonic start of the last reserved record
     uint32_t seq; // last sync sequence requested
     bool attached, lost, warned_lost;
     // Mode.
@@ -119,12 +117,11 @@ struct v2_gpu {
     // The open DRAW record: triangles of one state append to it.
     bool draw_open;
     uint32_t draw_off; // record start (ring offset, masked)
-    uint32_t draw_wr0; // record start (the monotonic write cursor)
     v2gpu_draw_hdr_t draw_hdr;
     uint32_t draw_uniform[V2GPU_U_WORDS];
     // The open bypass-upload run: consecutive LFB pixels on one row.
     bool run_open;
-    uint32_t run_off, run_wr0, run_tid, run_x, run_y, run_n;
+    uint32_t run_off, run_tid, run_x, run_y, run_n;
     bool run_depth;
     // The texture cache and the texture-RAM dirty tracking.
     v2gpu_tex_t *tex;
@@ -152,11 +149,11 @@ struct v2_gpu {
 // ============================================================
 
 static inline uint32_t v2gpu_load(v2_gpu_t *g, int word) {
-    return __atomic_load_n(&g->ctrl[word], __ATOMIC_ACQUIRE);
+    return mbx_load(g->ctrl, word);
 }
 
 static inline void v2gpu_store(v2_gpu_t *g, int word, uint32_t v) {
-    __atomic_store_n(&g->ctrl[word], v, __ATOMIC_SEQ_CST);
+    mbx_store(g->ctrl, word, v);
 }
 
 // Real elapsed milliseconds for the wait loops below: they bound TIME,
@@ -201,57 +198,37 @@ static bool v2gpu_worker_lost(v2_gpu_t *g) {
 
 // Publish everything written so far.
 static void v2gpu_publish(v2_gpu_t *g) {
-    if (g->head == g->wr)
+    if (!mbx_unpublished(&g->ring))
         return;
-    g->head = g->wr;
-    v2gpu_store(g, V2GPU_C_HEAD, g->head);
+    mbx_publish(&g->ring);
     gs_v2gpu_notify(&g->ctrl[V2GPU_C_HEAD]);
 }
 
-// Wait until `need` bytes are free in the ring (the worker consumes
-// what was published; an open record between head and wr is never
-// larger than the ring).
-static bool v2gpu_wait_room(v2_gpu_t *g, uint32_t need) {
+// Reserve a record of `len` bytes (header included; the ring rounds it
+// up to 8) that does not wrap, waiting for the worker to free room when
+// the ring is full (the GPU policy: block with a deadline, then lost).
+// Returns its ring offset or UINT32_MAX when lost.
+static uint32_t v2gpu_reserve(v2_gpu_t *g, uint32_t kind, uint32_t len) {
     double t0 = v2gpu_now_ms();
     for (;;) {
         uint32_t tail = v2gpu_load(g, V2GPU_C_TAIL);
-        uint32_t used = g->wr - tail;
-        if (g->ring_size - used >= need)
-            return true;
+        uint32_t at = mbx_reserve(&g->ring, kind, len);
+        if (at != UINT32_MAX)
+            return at;
         if (v2gpu_worker_lost(g))
-            return false;
+            return UINT32_MAX;
         v2gpu_publish(g); // the worker can only free what it can see
         gs_v2gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
         if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped consuming the op ring");
-            return false;
+            return UINT32_MAX;
         }
     }
 }
 
-// Reserve a record of `len` bytes (header included, 4-byte multiple)
-// that does not wrap; returns its ring offset or UINT32_MAX when lost.
-static uint32_t v2gpu_reserve(v2_gpu_t *g, uint32_t kind, uint32_t len) {
-    uint32_t mask = g->ring_size - 1u;
-    uint32_t at = g->wr & mask;
-    uint32_t pad = 0;
-    if (at + len > g->ring_size)
-        pad = g->ring_size - at; // a PAD record to the end first
-    if (!v2gpu_wait_room(g, pad + len))
-        return UINT32_MAX;
-    if (pad) {
-        uint32_t *p = (uint32_t *)(g->ring + at);
-        p[0] = V2GPU_R_PAD;
-        p[1] = pad;
-        g->wr += pad;
-        at = 0;
-    }
-    uint32_t *p = (uint32_t *)(g->ring + at);
-    p[0] = kind;
-    p[1] = len;
-    g->last_wr0 = g->wr; // where this record starts, monotonic
-    g->wr += len;
-    return at;
+// Payload pointer of a record reserved at `at`.
+static inline uint8_t *v2gpu_payload(v2_gpu_t *g, uint32_t at) {
+    return mbx_payload(&g->ring, at);
 }
 
 // Emit a fixed-size record from `words`.
@@ -259,7 +236,7 @@ static bool v2gpu_emit(v2_gpu_t *g, uint32_t kind, const uint32_t *words, uint32
     uint32_t at = v2gpu_reserve(g, kind, 8u + 4u * n_words);
     if (at == UINT32_MAX)
         return false;
-    memcpy(g->ring + at + 8u, words, 4u * n_words);
+    memcpy(v2gpu_payload(g, at), words, 4u * n_words);
     return true;
 }
 
@@ -290,11 +267,11 @@ static void v2gpu_close_draw(v2_gpu_t *g) {
     if (!g->draw_open)
         return;
     g->draw_open = false;
-    uint32_t *p = (uint32_t *)(g->ring + g->draw_off);
     uint32_t len = 8u + (uint32_t)sizeof(v2gpu_draw_hdr_t) + V2GPU_U_BYTES + g->draw_hdr.n_verts * V2GPU_VERTEX_BYTES;
-    p[1] = len;
-    memcpy(g->ring + g->draw_off + 8u, &g->draw_hdr, sizeof(g->draw_hdr));
-    g->wr = g->draw_wr0 + len; // give the unused reservation back
+    memcpy(v2gpu_payload(g, g->draw_off), &g->draw_hdr, sizeof(g->draw_hdr));
+    // The open record is always the last reserved (every other reserve
+    // closes it first): give the unused reservation back.
+    mbx_shrink_last(&g->ring, len);
     g->n_draws++;
 }
 
@@ -303,16 +280,15 @@ static void v2gpu_close_run(v2_gpu_t *g) {
     if (!g->run_open)
         return;
     g->run_open = false;
-    uint32_t *p = (uint32_t *)(g->ring + g->run_off);
+    uint32_t *p = (uint32_t *)v2gpu_payload(g, g->run_off);
     uint32_t bpp = g->run_depth ? 2u : 4u;
     uint32_t len = 8u + 20u + ((g->run_n * bpp + 3u) & ~3u);
-    p[1] = len;
-    p[2] = g->run_tid;
-    p[3] = g->run_x;
-    p[4] = g->run_y;
-    p[5] = g->run_n;
-    p[6] = 1;
-    g->wr = g->run_wr0 + len;
+    p[0] = g->run_tid;
+    p[1] = g->run_x;
+    p[2] = g->run_y;
+    p[3] = g->run_n;
+    p[4] = 1;
+    mbx_shrink_last(&g->ring, len); // the open run is always the last reserved
     g->n_lfb_runs++;
 }
 
@@ -366,13 +342,13 @@ static bool v2gpu_upload_rect(v2_gpu_t *g, v2gpu_target_t *t, uint32_t x0, uint3
         uint32_t at = v2gpu_reserve(g, V2GPU_R_UPLOAD, 8u + 20u + ((bytes + 3u) & ~3u));
         if (at == UINT32_MAX)
             return false;
-        uint32_t *p = (uint32_t *)(g->ring + at + 8u);
+        uint32_t *p = (uint32_t *)v2gpu_payload(g, at);
         p[0] = t->id;
         p[1] = x0;
         p[2] = y;
         p[3] = w;
         p[4] = n;
-        uint8_t *dst = g->ring + at + 28u;
+        uint8_t *dst = v2gpu_payload(g, at) + 20u;
         for (uint32_t row = 0; row < n; row++) {
             uint32_t src = (t->base + (y + row) * g->geom_stride + x0 * 2u) & V2_FB_MASK;
             for (uint32_t x = 0; x < w; x++) {
@@ -694,12 +670,12 @@ static bool v2gpu_tex_upload_level(v2_gpu_t *g, const v2_tmu_state_t *tm, int tm
     uint32_t at = v2gpu_reserve(g, V2GPU_R_TEX_UPLOAD, 8u + 16u + bytes);
     if (at == UINT32_MAX)
         return false;
-    uint32_t *p = (uint32_t *)(g->ring + at + 8u);
+    uint32_t *p = (uint32_t *)v2gpu_payload(g, at);
     p[0] = e->id;
     p[1] = lod - e->base_level;
     p[2] = w;
     p[3] = h;
-    uint8_t *dst = g->ring + at + 24u;
+    uint8_t *dst = v2gpu_payload(g, at) + 16u;
     const uint32_t *lut = tm->is8 ? v2_expand_lut(tm, g->tgt, tmu) : NULL;
     for (uint32_t t = 0; t < h; t++) {
         for (uint32_t s = 0; s < w; s++) {
@@ -924,11 +900,10 @@ static bool v2gpu_open_draw(v2_gpu_t *g, const v2gpu_draw_hdr_t *hdr, const uint
         return false;
     g->draw_open = true;
     g->draw_off = at;
-    g->draw_wr0 = g->last_wr0;
     g->draw_hdr = *hdr;
     g->draw_hdr.n_verts = 0;
     memcpy(g->draw_uniform, uniform, V2GPU_U_BYTES);
-    memcpy(g->ring + at + 8u + sizeof(v2gpu_draw_hdr_t), uniform, V2GPU_U_BYTES);
+    memcpy(v2gpu_payload(g, at) + sizeof(v2gpu_draw_hdr_t), uniform, V2GPU_U_BYTES);
     return true;
 }
 
@@ -945,10 +920,9 @@ static bool v2gpu_draw_matches(const v2_gpu_t *g, const v2gpu_draw_hdr_t *hdr, c
 }
 
 static float *v2gpu_vertex_ptr(v2_gpu_t *g) {
-    uint32_t off = g->draw_off + 8u + (uint32_t)sizeof(v2gpu_draw_hdr_t) + V2GPU_U_BYTES +
-                   g->draw_hdr.n_verts * V2GPU_VERTEX_BYTES;
+    uint32_t off = (uint32_t)sizeof(v2gpu_draw_hdr_t) + V2GPU_U_BYTES + g->draw_hdr.n_verts * V2GPU_VERTEX_BYTES;
     g->draw_hdr.n_verts++;
-    return (float *)(g->ring + off);
+    return (float *)(v2gpu_payload(g, g->draw_off) + off);
 }
 
 // One vertex of a triangle: the walker's iterators, evaluated in closed
@@ -1366,14 +1340,13 @@ static void v2gpu_run_pixel(v2_gpu_t *g, v2gpu_target_t *t, uint32_t x, uint32_t
             return;
         g->run_open = true;
         g->run_off = at;
-        g->run_wr0 = g->last_wr0;
         g->run_tid = t->id;
         g->run_x = x;
         g->run_y = y;
         g->run_n = 0;
         g->run_depth = t->is_depth;
     }
-    uint8_t *dst = g->ring + g->run_off + 28u + g->run_n * (t->is_depth ? 2u : 4u);
+    uint8_t *dst = v2gpu_payload(g, g->run_off) + 20u + g->run_n * (t->is_depth ? 2u : 4u);
     if (t->is_depth) {
         dst[0] = (uint8_t)px;
         dst[1] = (uint8_t)(px >> 8);
@@ -1497,7 +1470,7 @@ static void v2gpu_gamma_chunk(v2_gpu_t *g, const v2_cmd_t *cmd) {
         v2gpu_close_all(g);
         uint32_t at = v2gpu_reserve(g, V2GPU_R_GAMMA, 8u + sizeof(g->gamma));
         if (at != UINT32_MAX)
-            memcpy(g->ring + at + 8u, g->gamma, sizeof(g->gamma));
+            memcpy(v2gpu_payload(g, at), g->gamma, sizeof(g->gamma));
     }
 }
 
@@ -1666,9 +1639,9 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
     for (int t = 0; t < V2_RASTER_TMUS; t++)
         g->page_gen[t] = (uint32_t *)calloc(V2GPU_MAX_PAGES, sizeof(uint32_t));
     uint32_t ctrl_bytes = V2GPU_CTRL_WORDS * 4u;
-    g->ring_size = V2GPU_RING_BYTES;
+    uint32_t ring_size = V2GPU_RING_BYTES;
     g->rb_size = V2GPU_RB_BYTES;
-    g->region_bytes = 64u + ctrl_bytes + g->ring_size + g->rb_size;
+    g->region_bytes = 64u + ctrl_bytes + ring_size + g->rb_size;
     g->region = (uint8_t *)calloc(1, g->region_bytes);
     if (!g->tex || !g->page_gen[0] || !g->page_gen[1] || !g->region) {
         v2_gpu_destroy(g);
@@ -1677,18 +1650,18 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
     // 64-byte align the control block inside the allocation.
     uintptr_t base = ((uintptr_t)g->region + 63u) & ~(uintptr_t)63u;
     g->ctrl = (volatile uint32_t *)base;
-    g->ring = (uint8_t *)(base + ctrl_bytes);
-    g->rb = g->ring + g->ring_size;
+    mbx_ring_init(&g->ring, g->ctrl, V2GPU_C_HEAD, V2GPU_C_TAIL, (uint8_t *)(base + ctrl_bytes), ring_size);
+    g->rb = g->ring.buf + ring_size;
     for (int i = 0; i < V2GPU_CTRL_WORDS; i++)
         g->ctrl[i] = 0;
     g->ctrl[V2GPU_C_MAGIC] = V2GPU_MAGIC;
     g->ctrl[V2GPU_C_VERSION] = V2GPU_PROTOCOL_VERSION;
     g->ctrl[V2GPU_C_RING_OFF] = ctrl_bytes;
-    g->ctrl[V2GPU_C_RING_SIZE] = g->ring_size;
-    g->ctrl[V2GPU_C_RB_OFF] = ctrl_bytes + g->ring_size;
+    g->ctrl[V2GPU_C_RING_SIZE] = ring_size;
+    g->ctrl[V2GPU_C_RB_OFF] = ctrl_bytes + ring_size;
     g->ctrl[V2GPU_C_RB_SIZE] = g->rb_size;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (!gs_v2gpu_attach((void *)g->ctrl, ctrl_bytes + g->ring_size + g->rb_size)) {
+    if (!gs_v2gpu_attach((void *)g->ctrl, ctrl_bytes + ring_size + g->rb_size)) {
         LOG(0, "raster=webgpu: the host refused to attach a GPU worker — using the thread backend");
         v2_gpu_destroy(g);
         return NULL;
@@ -1705,7 +1678,7 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
         gs_v2gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
     }
     g->attached = true;
-    LOG(1, "raster=webgpu: GPU worker attached (op ring %u KB)", g->ring_size >> 10);
+    LOG(1, "raster=webgpu: GPU worker attached (op ring %u KB)", g->ring.size >> 10);
     return g;
 }
 

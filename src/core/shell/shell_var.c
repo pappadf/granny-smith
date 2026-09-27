@@ -19,6 +19,7 @@
 #include "object.h"
 #include "value.h"
 
+#include "job/job.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,7 +139,7 @@ static binding_t *find_binding(const char *name) {
 
 /* --- public API ----------------------------------------------------------- */
 
-value_t shell_binding_get(const char *name) {
+static value_t shell_binding_get_impl(const char *name) {
     if (!name || !*name)
         return val_err("no such binding '$'");
     binding_t *b = find_binding(name);
@@ -154,7 +155,7 @@ value_t shell_binding_get(const char *name) {
     return val_err("no such binding '$%s'", name);
 }
 
-int shell_binding_let(const char *name, value_t v, char *err_buf, size_t err_size) {
+static int shell_binding_let_impl(const char *name, value_t v, char *err_buf, size_t err_size) {
     char err[160];
     if (!object_validate_name(name, err, sizeof(err))) {
         if (err_buf && err_size)
@@ -176,7 +177,7 @@ int shell_binding_let(const char *name, value_t v, char *err_buf, size_t err_siz
     return 0;
 }
 
-int shell_binding_mutate(const char *name, value_t v) {
+static int shell_binding_mutate_impl(const char *name, value_t v) {
     binding_t *b = find_binding(name);
     if (!b) {
         value_free(&v);
@@ -186,7 +187,8 @@ int shell_binding_mutate(const char *name, value_t v) {
     return 0;
 }
 
-shell_binding_kind_t shell_binding_classify(const char *name, const value_t **value_out, const char **alias_path_out) {
+static shell_binding_kind_t shell_binding_classify_impl(const char *name, const value_t **value_out,
+                                                        const char **alias_path_out) {
     if (value_out)
         *value_out = NULL;
     if (alias_path_out)
@@ -206,7 +208,7 @@ shell_binding_kind_t shell_binding_classify(const char *name, const value_t **va
     return SHELL_BINDING_NONE;
 }
 
-int shell_binding_push_scope(void) {
+static int shell_binding_push_scope_impl(void) {
     if (g_n_scopes >= SCOPE_MAX)
         return -1;
     memset(&g_scopes[g_n_scopes], 0, sizeof(scope_t));
@@ -214,7 +216,7 @@ int shell_binding_push_scope(void) {
     return 0;
 }
 
-void shell_binding_pop_scope(void) {
+static void shell_binding_pop_scope_impl(void) {
     if (g_n_scopes <= 2)
         return; // never pop the global / top-level scopes
     scope_t *s = &g_scopes[--g_n_scopes];
@@ -224,7 +226,7 @@ void shell_binding_pop_scope(void) {
     memset(s, 0, sizeof(*s));
 }
 
-bool shell_binding_save_top(const char *name, value_t *saved_out) {
+static bool shell_binding_save_top_impl(const char *name, value_t *saved_out) {
     scope_t *top = &g_scopes[g_n_scopes - 1];
     binding_t *b = scope_find(top, name);
     if (!b)
@@ -234,7 +236,7 @@ bool shell_binding_save_top(const char *name, value_t *saved_out) {
     return true;
 }
 
-void shell_binding_remove_top(const char *name) {
+static void shell_binding_remove_top_impl(const char *name) {
     scope_t *top = &g_scopes[g_n_scopes - 1];
     binding_t *b = scope_find(top, name);
     if (b)
@@ -243,7 +245,7 @@ void shell_binding_remove_top(const char *name) {
 
 /* --- legacy string API ---------------------------------------------------- */
 
-int shell_var_set(const char *name, const char *value) {
+static int shell_var_set_impl(const char *name, const char *value) {
     if (!name || !*name || !value)
         return -1;
     scope_t *globals = &g_scopes[0];
@@ -256,14 +258,14 @@ int shell_var_set(const char *name, const char *value) {
     return 0;
 }
 
-const char *shell_var_get(const char *name) {
+static const char *shell_var_get_impl(const char *name) {
     binding_t *b = name ? find_binding(name) : NULL;
     if (!b || b->value.kind != V_STRING)
         return NULL;
     return b->value.s;
 }
 
-void shell_var_each(shell_var_iter_fn fn, void *ud) {
+static void shell_var_each_impl(shell_var_iter_fn fn, void *ud) {
     if (!fn)
         return;
     for (int i = g_n_scopes - 1; i >= 0; i--) {
@@ -283,4 +285,82 @@ void shell_var_init(void) {
         g_n_scopes = 2; // [0] process globals, [1] script/session top level
     }
     shell_var_set("TMP_DIR", "tmp");
+}
+
+// === The table lock (job/job.h): every public entry takes it for the one
+// operation; the interpreter on the job thread and the emulator thread
+// (breakpoint conditions, completion, shell.vars) both read here. =========
+
+value_t shell_binding_get(const char *name) {
+    job_tables_lock();
+    value_t r = shell_binding_get_impl(name);
+    job_tables_unlock();
+    return r;
+}
+
+int shell_binding_let(const char *name, value_t v, char *err_buf, size_t err_size) {
+    job_tables_lock();
+    int r = shell_binding_let_impl(name, v, err_buf, err_size);
+    job_tables_unlock();
+    return r;
+}
+
+int shell_binding_mutate(const char *name, value_t v) {
+    job_tables_lock();
+    int r = shell_binding_mutate_impl(name, v);
+    job_tables_unlock();
+    return r;
+}
+
+shell_binding_kind_t shell_binding_classify(const char *name, const value_t **value_out, const char **alias_path_out) {
+    job_tables_lock();
+    shell_binding_kind_t r = shell_binding_classify_impl(name, value_out, alias_path_out);
+    job_tables_unlock();
+    return r;
+}
+
+int shell_binding_push_scope(void) {
+    job_tables_lock();
+    int r = shell_binding_push_scope_impl();
+    job_tables_unlock();
+    return r;
+}
+
+void shell_binding_pop_scope(void) {
+    job_tables_lock();
+    shell_binding_pop_scope_impl();
+    job_tables_unlock();
+}
+
+bool shell_binding_save_top(const char *name, value_t *saved_out) {
+    job_tables_lock();
+    bool r = shell_binding_save_top_impl(name, saved_out);
+    job_tables_unlock();
+    return r;
+}
+
+void shell_binding_remove_top(const char *name) {
+    job_tables_lock();
+    shell_binding_remove_top_impl(name);
+    job_tables_unlock();
+}
+
+int shell_var_set(const char *name, const char *value) {
+    job_tables_lock();
+    int r = shell_var_set_impl(name, value);
+    job_tables_unlock();
+    return r;
+}
+
+const char *shell_var_get(const char *name) {
+    job_tables_lock();
+    const char *r = shell_var_get_impl(name);
+    job_tables_unlock();
+    return r;
+}
+
+void shell_var_each(shell_var_iter_fn fn, void *ud) {
+    job_tables_lock();
+    shell_var_each_impl(fn, ud);
+    job_tables_unlock();
 }

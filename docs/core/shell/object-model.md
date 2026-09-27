@@ -77,6 +77,15 @@ Methods build maps with the `val_map_new` / `val_map_put` /
 interpolation a map renders as compact canonical JSON, so
 `echo "${machine.profile("se30")}"` emits machine-parseable text.
 
+A method's UI metadata (`meta.method_info(name)`, and each method entry of
+`meta.members()`) carries four flags from `ui_flags`: `destructive`,
+`mutate`, `hidden` and `io`. `io` (`MM_IO`) marks an I/O job — a method
+whose cost is the size of a file rather than of the machine (`storage.cp`,
+`archive.extract`, `image.export`, `download`, …): it answers when the work
+ends, reports progress (`EVT_PROGRESS`), and a cancel of its request stops
+it between chunks (see [`../../guide/web.md`](../../guide/web.md), "I/O
+jobs").
+
 Display flags follow the value: an attribute declared with `VAL_HEX`
 emits values that the JSON encoder serialises as `"0x12345678"`; the
 shell formatter prints them in hex; the inspector panel renders them
@@ -407,11 +416,12 @@ configure, and what the JS frontend operates on:
 - **JS / WASM bridge.** `gs_eval(path, args_json, out_buf, size)`
   resolves the path, parses arguments from JSON, invokes the right
   read / write / call, and serialises the result back to JSON. JS
-  reaches it through a single shared-memory region (`js_bridge_t`,
-  declared in [`em.h`](../../../src/platform/wasm/em.h) and exposed via the
-  lone `_get_js_bridge` export); the worker's `shell_poll()` services
-  the slot every tick. `Atomics.waitAsync` + `emscripten_atomic_notify`
-  carry the completion signal — no polling. The worker-thread guard
+  reaches it through the mailbox (`src/core/mailbox/mailbox.h`, exposed
+  via the lone `_get_gs_mailbox` export): a request ring the page writes
+  and the worker's `shell_poll()` drains every tick, and an event ring
+  the answers come back on, each carrying its request's id.
+  `Atomics.waitAsync` + `emscripten_atomic_notify` carry the wake-ups —
+  no polling. The worker-thread guard
   in `worker_thread.h` enforces that `gs_eval` only runs on the worker
   pthread, never via direct `Module.ccall` from the main thread. JS
   callers see numbers, strings, lists, and `{error: "…"}` shapes —

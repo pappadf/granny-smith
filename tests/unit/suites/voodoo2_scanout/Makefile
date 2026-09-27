@@ -12,6 +12,7 @@ STUBS         := checkpoint assert
 EXTRA_SRCS    := ../../../../src/core/peripherals/pci/cards/voodoo2.c \
                  ../../../../src/core/peripherals/pci/cards/voodoo2_raster.c \
                  ../../../../src/core/peripherals/pci/cards/voodoo2_gpu.c \
+                 ../../../../src/core/mailbox/mailbox_ring.c \
                  ../../../../src/core/object/value.c
 SANITIZE      := $(if $(filter emcc%,$(notdir $(firstword $(CC)))),,-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
 EXTRA_LDFLAGS := -lpthread

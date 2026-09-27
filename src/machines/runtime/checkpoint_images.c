@@ -5,6 +5,7 @@
 // Image-list checkpoint serialisation — see checkpoint_images.h.
 
 #include "checkpoint_images.h"
+#include "gs_out.h"
 
 #include "checkpoint_machine.h"
 #include "image.h"
@@ -39,7 +40,7 @@ void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
 image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
     // Bounded and terminated by the reader rather than by the writer's
     // promise: `name` goes on to access(), image_open_with_geometry() and
-    // printf("%s"), so a file that omits the NUL used to read off the end of
+    // gs_outf("%s"), so a file that omits the NUL used to read off the end of
     // the allocation, and an unbounded length drove the malloc.
     char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
     char writable = 0;
@@ -82,12 +83,12 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             img = image_open_readonly_with_geometry(name, geom);
         }
         if (!img) {
-            printf("Error: image_open failed for %s while restoring checkpoint\n", name);
+            gs_outf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
         }
     }
     if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
-        printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
+        gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }
     free(name);

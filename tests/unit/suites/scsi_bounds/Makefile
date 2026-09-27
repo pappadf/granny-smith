@@ -14,7 +14,8 @@
 TEST_NAME    := scsi_bounds
 TEST_SRCS    := test.c
 TEST_HARNESS := isolated
-EXTRA_SRCS   := ../../../../src/core/peripherals/scsi.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/storage/image.c \

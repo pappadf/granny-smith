@@ -137,6 +137,7 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/object/alias.c \
               $(EMU_ROOT)/core/object/meta.c \
               $(EMU_ROOT)/core/object/object.c \
+              $(EMU_ROOT)/core/job/seam.c \
               $(EMU_ROOT)/core/object/parse.c \
               $(EMU_ROOT)/core/object/value.c
   COMMON_SRCS := $(HARNESS_SRCS) $(STUB_SRCS)
