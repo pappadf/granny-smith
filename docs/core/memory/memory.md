@@ -177,7 +177,12 @@ The 68030 PMMU is `src/core/memory/mmu.c` (with `mmu.h`, a full interface, not
 a stub); the 68040's on-chip MMU is `mmu040.c`; the Lisa's segment MMU is
 `lisa_mmu.c`; and the PowerPC BAT/HTAB translation is `ppc_mmu.c`. The 68030
 walker also caches early-termination descriptors in a small block cache that
-models the real ATC's residency — see the comments around `atc_record`.
+models the real ATC's residency — see the comments around `atc_record`. An
+early-termination page frame is aligned only to the page size, not to the
+range the descriptor covers: the physical address is the frame *plus* the
+unwalked logical bits (MC68030UM 9.5.3.1). The IIci ROM relies on this — its
+level-A descriptor `$00050019` places logical 0 at physical `$50000`, past
+the RBV's in-RAM screen buffer.
 
 ## Memory Logpoints (Fast-Path-Preserving Watchpoints)
 

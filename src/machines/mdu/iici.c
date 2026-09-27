@@ -11,12 +11,14 @@
 //   * I/O island: VIA2 ($2000) dropped; VDAC ($24000) and RBV ($26000)
 //     added.  The mirror mask widens to $3FFFF so RBV/VDAC decode
 //     distinctly from the SCSI windows.
-//   * ROM base is $40800000 (MDUtable), not $40000000.
+//   * ROMBase is $40800000 (MDUtable; the reset PC is $4080002A), though
+//     the MDU repeats the ROM through all of $40000000-$4FFFFFFF.
 //   * Interrupts: RBV's combined IFR drives IPL 2 (replacing VIA2); SCSI
 //     IRQ/DRQ route through the RBV via scsi_set_irq_callback (no VIA2).
 //   * Soft power-off: RBV RvPowerOff (RvDataB bit 2) instead of VIA2 PB2.
-//   * Built-in video: a NuBus pseudo-card in slot $0 whose framebuffer the
-//     machine maps at $FBB00000; depth follows RvMonP via a mode callback.
+//   * Built-in video: a NuBus pseudo-card whose frame buffer is the bottom
+//     of Bank A (physical 0; the ROM maps $FBB08000 there); depth follows
+//     RvMonP via a mode callback.
 //   * ADB / RTC use the classic VIA1 path (no Egret) — identical to IIcx.
 
 #include "mac030_glue.h"
@@ -155,10 +157,10 @@ static void iici_memory_layout_init(config_t *cfg) {
     mac030_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
-    // Wire the built-in framebuffer (a registered host region) and its
-    // Mode-24 slot-$B alias into the page table — same machinery as the
-    // IIcx VRAM/Mode-24 handling so QuickDraw's 32-bit ($FBB08000) and
-    // 24-bit ($00B08000) screen-base writes both land in the card buffer.
+    // Wire any registered host regions (a socketed card's VRAM) and their
+    // Mode-24 slot aliases into the page table — same machinery as the IIcx
+    // VRAM/Mode-24 handling.  The built-in video needs none: its frame buffer
+    // is Bank A RAM, which the guest reaches through its own PMMU tables.
     mmu_host_regions_fill_pages(st->mmu, mac030_fill_page, /*mode24_alias*/ true);
 
     st->rom_overlay = false;
@@ -258,7 +260,7 @@ static const nubus_slot_decl_t iici_slots[] = {
 };
 
 // The IIci board descriptor: MDU+RBV hardware data, consumed
-// at init by the shared helpers.  ROM at $40800000; the 18-bit $40000 I/O
+// at init by the shared helpers.  ROM repeating through $4xxxxxxx; the 18-bit $40000 I/O
 // mirror; the shared MDU window table.
 static const mac030_board_desc_t iici_board_desc = {
     .chipset = "MDU+RBV",
@@ -326,14 +328,27 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     st->mmu = mac030_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
-    // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).
-    st->mmu->tt1 = 0xF00F8043;
+    // No TT1 preset (the GLUE machines identity-map NuBus $F0-$FF with one).
+    // Reset leaves TT0/TT1 disabled and this ROM never loads them, so its
+    // tables govern slot space -- and they map the built-in video's screen
+    // base $FBB08000 to Bank A, which an identity TT1 would bypass.
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
     st->video_card = nubus_card(cfg->nubus, 0xB);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
-    // Card-side display state (VRAM, palette, mode) — written by
+    // The RBV scans its frame buffer out of the BOTTOM of Bank A -- physical 0,
+    // the 320 KB the ROM keeps out of the logical RAM map (its level-A
+    // descriptor $00050019 starts logical 0 at physical $50000).  The ROM's own
+    // tables map the screen base $FBB08000 (and $00B08000 in 24-bit mode) to
+    // physical 0; A/UX builds its tables the same way.  Point the card at Bank
+    // A so every path to the screen -- ROM tables, A/UX tables, a physical
+    // access -- lands where the renderer reads, as on the IIsi.  Before the
+    // checkpoint restore below, so the card knows it does not own the buffer
+    // (the RAM image already carries it).
+    builtin_rbv_video_set_framebuffer(st->video_card, ram_native_pointer(cfg->mem_map, 0), 0,
+                                      /*blank*/ checkpoint == NULL);
+    // Card-side display state (palette, mode) — written by
     // mdu_checkpoint_save immediately after the RBV chip, so it reads back
     // here, before the MMU tail below.
     if (checkpoint)
@@ -342,26 +357,26 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // Bind device handles + the board's I/O window table for the shared engine.
     mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
 
-    // Register the built-in framebuffer at the slot-$B aperture so the boot
-    // ROM's VideoInfoMDU screen base ($FBB08000) and its Mode-24 alias land
-    // in the card buffer.  Mirrors se30_init's VRAM registration.
-    uint8_t *fb = builtin_rbv_video_framebuffer(st->video_card);
-    assert(fb != NULL);
-    memory_map_host_region(cfg->mem_map, "iici_vram", fb, BUILTIN_RBV_VRAM_BASE, BUILTIN_RBV_VRAM_SIZE,
-                           /*writable*/ true);
-
-    // NuBus expansion slots $9..$E bus-error on unmapped reads; the mapped
-    // built-in video aperture at $FBxxxxxx resolves ahead of this range.
+    // NuBus expansion slots $9..$E bus-error on unmapped reads.  The built-in
+    // video's $FBxxxxxx screen base is logical only: the guest's tables send
+    // it to Bank A before this physical range is consulted.
     memory_set_bus_error_range(cfg->mem_map, iici_board_desc.bus_err_lo, iici_board_desc.bus_err_hi);
 
     iici_memory_layout_init(cfg);
 
     if (checkpoint) {
+        // Re-drive VIA1 first, while the PMMU is still the fresh, disabled one:
+        // its Overlay output switches the ROM overlay off, which writes RAM
+        // identity entries for the low pages straight into the SoA arrays.
+        // That is right with the MMU off and wrong under the guest's tables,
+        // which start logical 0 at physical $50000 (past the frame buffer);
+        // left in place after the invalidate below, those untracked entries
+        // sent the restored guest's low-memory writes into the screen.
+        via_redrive_outputs(cfg->via1);
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
         cpu_attach_mmu(cfg->cpu, st->mmu);
-        via_redrive_outputs(cfg->via1);
     }
     return 0;
 }

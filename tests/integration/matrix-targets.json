@@ -178,9 +178,8 @@
       "width": 640,
       "height": 480,
       "depth": 8,
-      "addr32": false,
-      "suite": "iici-aux3-8bpp",
-      "blocked": "#183 — under A/UX 3.0.1 the guest draws 8 bpp while the RBV scans out, and machine.screen reports, 1 bpp. System 7.0.1 reaches 8 bpp on the same video (suite-iici iici-701-depths), so this is an A/UX-path defect. The milestone row iici-aux3-8bpp reproduces it."
+      "addr32": true,
+      "suite": "iici-aux3-8bpp"
     },
     {
       "machine": "iicx",

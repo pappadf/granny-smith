@@ -220,7 +220,7 @@ static const nubus_slot_decl_t iisi_slots[] = {
 
 // The IIsi board descriptor: MDU+RBV hardware data, consumed
 // at init by the shared helpers.  Shares the MDU window table + 18-bit mirror
-// with the IIci; ROM at $40800000.  (The IIsi's two-bank RAM layout is set up
+// with the IIci; ROM repeating through $4xxxxxxx (ROMBase $40800000).  (The IIsi's two-bank RAM layout is set up
 // in iisi_init after mac030_build_mmu — it isn't board-descriptor data.)
 static const mac030_board_desc_t iisi_board_desc = {
     .chipset = "MDU+RBV",
@@ -321,11 +321,12 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
     // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0).  Point
     // the card at Bank A's base; the active screen is at the frame-buffer start
-    // (offset 0), unlike the IIci's separate $8000-offset buffer.  The OS reaches
+    // (offset 0), as on the IIci.  The OS reaches
     // the screen through its PMMU tree (slot-$E base $FEE08000 / $00E08000 ->
     // physical 0), so the guest's writes and the renderer share Bank A directly —
     // no separate VRAM aperture and no $E00000 offset.
-    builtin_rbv_video_set_framebuffer(st->video_card, ram_base + IISI_FB_PHYS_OFFSET, IISI_FB_SCREEN_OFFSET);
+    builtin_rbv_video_set_framebuffer(st->video_card, ram_base + IISI_FB_PHYS_OFFSET, IISI_FB_SCREEN_OFFSET,
+                                      /*blank*/ checkpoint == NULL);
 
     // Card-side display state (palette, mode, VDAC), written by
     // mdu_checkpoint_save right after the RBV chip.  Restored here rather than
