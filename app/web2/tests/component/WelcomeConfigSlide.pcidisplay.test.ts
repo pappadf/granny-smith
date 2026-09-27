@@ -18,6 +18,7 @@ import { _resetForTests } from '@/state/toasts.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 import { initEmulator } from '@/bus/boot';
+import { modelValue, hasModel, selectedModel } from '../helpers/modelSelect';
 
 const TNT_ROM = '/opfs/images/rom/pm7500-pm8500-pm9500-96cd923d.rom';
 const MACH64_PROM = '/opfs/images/prom/437584e0';
@@ -230,14 +231,14 @@ async function ready(model = 'pm9500'): Promise<HTMLElement> {
   const { container } = render(WelcomeConfigSlide);
   await waitFor(() => {
     const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
-    const has = sel && Array.from(sel.options).some((o) => o.value === model);
+    const has = hasModel(sel, model);
     if (!has) throw new Error(`${model} not scanned yet`);
   });
   const sel = container.querySelector('#cfg-model') as HTMLSelectElement;
-  sel.value = model;
+  sel.value = modelValue(sel, model);
   await fireEvent.change(sel);
   await waitFor(() => {
-    if (sel.value !== model) throw new Error('model not applied');
+    if (selectedModel(sel) !== model) throw new Error('model not applied');
   });
   return container;
 }

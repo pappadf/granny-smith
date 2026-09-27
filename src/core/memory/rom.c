@@ -555,7 +555,8 @@ static value_t rom_method_load_lisa(struct object *self, const member_t *m, int 
 }
 
 // rom.identify(path) → typed info map describing the ROM file:
-//   { recognised, supported, compatible, name, size, kind, id, intact, reason }
+//   { recognised, supported, compatible, name, variant, size, kind, id, intact,
+//     reason }
 // recognised: the id is in the ROM table; supported: its row names at least
 // one emulated model (compatible).  An unrecognised file still reports its
 // kind, id, intact and reason.  id is the only field anything names a file by,
@@ -580,6 +581,9 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
     }
     val_map_put(b, "compatible", val_list(compat, n_compat));
     val_map_put(b, "name", val_str(fi.info ? fi.info->family_name : ""));
+    // What tells this ROM apart from the other ROMs of its models; "" when
+    // no other known ROM boots any of them.
+    val_map_put(b, "variant", val_str(fi.info && fi.info->variant ? fi.info->variant : ""));
     val_map_put(b, "size", val_int((int64_t)fi.size));
     val_map_put(b, "kind", val_str(rom_kind_name(fi.identity.kind)));
     val_map_put(b, "id", val_str(fi.identity.id));
@@ -638,8 +642,8 @@ static const member_t rom_members[] = {
      .method = {.args = rom_lisa_pair_args, .nargs = 2, .result = V_BOOL, .fn = rom_method_load_lisa}},
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "Return a typed info map for a ROM file (recognised/supported/compatible/name/size/kind/id/intact/reason)",
-     .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
+     .doc = "Return a typed info map for a ROM file "
+            "(recognised/supported/compatible/name/variant/size/kind/id/intact/reason)", .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
 };
 
 static const class_desc_t rom_class = {

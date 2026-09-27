@@ -6,6 +6,7 @@ import { layout, setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
+import { modelValue } from '../helpers/modelSelect';
 
 // The Configuration slide drives the model dropdown by calling
 // `machine.rom.identify` on every ROM in OPFS, then `machine.profile` to get the
@@ -128,7 +129,7 @@ describe('WelcomeConfigSlide', () => {
     // Plus: has_cdrom unset → CD row hidden.
     expect(container.querySelector('#cfg-cd')).toBeNull();
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       // SE/30: has_cdrom true → CD row shown.
@@ -155,7 +156,7 @@ describe('WelcomeConfigSlide', () => {
     expect(container.querySelector('#cfg-card')).toBeNull();
     expect(vromHintShown()).toBe(false);
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       // SE/30: built-in video card requires a vROM, none staged → hint shown.
@@ -174,7 +175,7 @@ describe('WelcomeConfigSlide', () => {
     expect(Array.from(ramSel.options).map((o) => o.textContent)).toEqual(['1 MB', '2 MB', '4 MB']);
     expect(ramSel.value).toBe('4096');
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       ramSel = container.querySelector('#cfg-ram') as HTMLSelectElement;
@@ -195,7 +196,7 @@ describe('WelcomeConfigSlide', () => {
     // Plus: two floppy slots.
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       // SE/30: one floppy slot.

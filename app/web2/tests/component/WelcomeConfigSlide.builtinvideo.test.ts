@@ -19,6 +19,7 @@ import { _resetForTests } from '@/state/toasts.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 import { initEmulator } from '@/bus/boot';
+import { modelValue, hasModel, selectedModel } from '../helpers/modelSelect';
 
 const PDM_ROM = '/opfs/images/rom/pm6100-pm7100-pm8100-9feb69b3.rom';
 
@@ -105,10 +106,10 @@ beforeEach(async () => {
 
 async function selectModel(container: HTMLElement, id: string): Promise<void> {
   const sel = container.querySelector('#cfg-model') as HTMLSelectElement;
-  sel.value = id;
+  sel.value = modelValue(sel, id);
   await fireEvent.change(sel);
   await waitFor(() => {
-    if (sel.value !== id) throw new Error('model not applied');
+    if (selectedModel(sel) !== id) throw new Error('model not applied');
   });
 }
 
@@ -118,7 +119,7 @@ async function readyWithPdm(): Promise<HTMLElement> {
   // option rather than for a populated list.
   await waitFor(() => {
     const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
-    const has = sel && Array.from(sel.options).some((o) => o.value === 'pm8100');
+    const has = hasModel(sel, 'pm8100');
     if (!has) throw new Error('pm8100 not scanned yet');
   });
   await selectModel(container, 'pm8100');

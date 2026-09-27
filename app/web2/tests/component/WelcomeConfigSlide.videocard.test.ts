@@ -19,6 +19,7 @@ import { _resetForTests } from '@/state/toasts.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 import { initEmulator } from '@/bus/boot';
+import { modelValue, selectedModel } from '../helpers/modelSelect';
 
 // The boot itself is not under test: record the config it was handed.
 vi.mock('@/bus/boot', () => ({ initEmulator: vi.fn(async () => {}) }));
@@ -127,10 +128,10 @@ beforeEach(async () => {
 
 async function selectModel(container: HTMLElement, id: string): Promise<void> {
   const sel = container.querySelector('#cfg-model') as HTMLSelectElement;
-  sel.value = id;
+  sel.value = modelValue(sel, id);
   await fireEvent.change(sel);
   await waitFor(() => {
-    if (sel.value !== id) throw new Error('model not applied');
+    if (selectedModel(sel) !== id) throw new Error('model not applied');
   });
 }
 

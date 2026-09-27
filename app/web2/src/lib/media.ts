@@ -48,6 +48,7 @@ interface RomIdentifyResult {
   supported?: boolean;
   compatible?: string[];
   name?: string;
+  variant?: string;
   size?: number;
   kind?: string;
   id?: string;
@@ -113,6 +114,9 @@ async function parseCardRomIdentify(
 export interface RomIdentity {
   path: string;
   name: string;
+  // What tells this ROM apart from the other ROMs of its models (core-owned,
+  // e.g. "Open Firmware 2.26NT (Windows NT)"); "" when it is the only one.
+  variant: string;
   id: string; // content id: the ROM's own stored checksum (rom.identify)
   intact: boolean;
   compatible: string[];
@@ -135,6 +139,7 @@ export async function identifyRom(gsEval: GsEval, path: string): Promise<RomIden
   return {
     path,
     name: r.name || path.split('/').pop() || path,
+    variant: r.variant ?? '',
     id: r.id ?? '',
     intact: r.intact ?? false,
     compatible: r.compatible,

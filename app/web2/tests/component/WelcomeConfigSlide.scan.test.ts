@@ -30,6 +30,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
             intact: true,
             id: `cs-${p}`,
             name: 'Macintosh Plus ROM',
+            variant: /v1/i.test(p) ? 'Rev 1' : 'Rev 3',
             compatible: ['plus'],
             size: 128 * 1024,
           };
@@ -128,8 +129,9 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     expect(submit.disabled).toBe(true);
   });
 
-  it('shows the ROM picker only when more than one ROM matches the chosen model', async () => {
-    // Two ROMs, both compatible with 'plus' → the ROM picker should appear.
+  it('lists each ROM that boots a model as its own model entry, named by the core', async () => {
+    // Two ROMs, both compatible with 'plus' → two Macintosh Plus entries,
+    // told apart by the variant rom.identify reports; no separate ROM picker.
     setOpfsBackend(
       new StubOpfs({
         rom: [
@@ -144,15 +146,17 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     );
     const { container } = render(WelcomeConfigSlide);
     await waitFor(() => {
-      const sel = container.querySelector('#cfg-rom') as HTMLSelectElement | null;
-      if (!sel) throw new Error('rom select not rendered yet');
+      const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
+      if (!sel) throw new Error('model select not rendered yet');
       expect(sel.options.length).toBe(2);
     });
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    expect(modelSel.options.length).toBe(1);
+    const labels = Array.from(modelSel.options).map((o) => o.textContent);
+    expect(labels.sort()).toEqual(['Macintosh Plus — Rev 1', 'Macintosh Plus — Rev 3']);
+    expect(container.querySelector('#cfg-rom')).toBeNull();
   });
 
-  it('hides the ROM picker when each model has a single matching ROM', async () => {
+  it('names a model plainly when only one ROM boots it', async () => {
     setOpfsBackend(
       new StubOpfs({
         rom: [

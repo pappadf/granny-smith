@@ -59,6 +59,11 @@ typedef struct rom_info {
     // (the Classic's sum stops where its ROM disk starts); 0 = whole image.
     uint32_t checksum_span;
     uint32_t flags; // ROM_F_*
+    // Short label telling this ROM apart from the other ROMs that boot the
+    // same model ("Open Firmware 2.26NT (Windows NT)", "Rev 2", "v2");
+    // NULL when no other known ROM shares a model with it.  UIs show it next
+    // to the model name so every model/ROM pair reads differently.
+    const char *variant;
 } rom_info_t;
 
 // The identity of one image: its kind, stored id and self-check verdict.

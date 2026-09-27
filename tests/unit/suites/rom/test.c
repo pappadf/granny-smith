@@ -268,6 +268,30 @@ TEST(test_table_integrity) {
     ASSERT_TRUE(supported >= 21);
 }
 
+// Does `a` list a model that `b` also lists?
+static bool share_model(const rom_info_t *a, const rom_info_t *b) {
+    for (const char *const *p = a->compatible; *p; p++)
+        for (const char *const *q = b->compatible; *q; q++)
+            if (strcmp(*p, *q) == 0)
+                return true;
+    return false;
+}
+
+// Any two known ROMs that boot a common model carry distinct, non-empty
+// variant labels, so a UI can list every model/ROM pair under its own name.
+TEST(test_variants_tell_shared_models_apart) {
+    for (size_t i = 0; i < rom_table_count; i++) {
+        for (size_t j = i + 1; j < rom_table_count; j++) {
+            const rom_info_t *a = &rom_table[i], *b = &rom_table[j];
+            if (!share_model(a, b))
+                continue;
+            ASSERT_TRUE(a->variant && a->variant[0]);
+            ASSERT_TRUE(b->variant && b->variant[0]);
+            ASSERT_TRUE(strcmp(a->variant, b->variant) != 0);
+        }
+    }
+}
+
 // rom_load_lisa_pair produces the same correct image whichever file comes
 // first: only the right orientation passes the boot ROM's self-check.
 TEST(test_load_pair_order_independent) {
@@ -306,6 +330,7 @@ int main(void) {
     RUN(test_ppc_foreign_half_not_recognised);
     RUN(test_not_a_rom);
     RUN(test_table_integrity);
+    RUN(test_variants_tell_shared_models_apart);
     RUN(test_load_pair_order_independent);
     printf("[PASS] All ROM identity tests passed\n");
     return 0;
