@@ -79,10 +79,13 @@
     return out;
   });
   // One Machine Model entry per model/ROM pair, so every ROM a model can run
-  // is directly choosable.  A model with one ROM reads as the model alone;
-  // with several, each entry adds the ROM's variant label — which the core
-  // supplies (rom.identify), like everything else about a ROM.  The option
-  // value is the bare model id when one ROM boots it, `model/romId` otherwise.
+  // is directly choosable.  An entry names its ROM by the variant label the
+  // core supplies (rom.identify) whenever other known ROMs boot the same model,
+  // even if only one of them is stored, so the choice is always explicit; a
+  // ROM without a label (the only known one for its models) reads as the
+  // model alone, and two stored ROMs without labels fall back to their ids.
+  // The option value is the bare model id when one stored ROM boots the
+  // model, `model/romId` otherwise.
   let modelOptions = $derived(
     Object.entries(romsByModel).flatMap(([id, roms]) =>
       roms.map((r) => {
@@ -91,7 +94,11 @@
           key: roms.length > 1 ? `${id}/${r.id}` : id,
           model: id,
           rom: r,
-          label: roms.length > 1 ? `${model} — ${r.variant || r.id}` : model,
+          label: r.variant
+            ? `${model} — ${r.variant}`
+            : roms.length > 1
+              ? `${model} — ${r.id}`
+              : model,
         };
       }),
     ),

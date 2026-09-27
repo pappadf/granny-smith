@@ -156,7 +156,7 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     expect(container.querySelector('#cfg-rom')).toBeNull();
   });
 
-  it('names a model plainly when only one ROM boots it', async () => {
+  it('names the ROM whenever the core labels it, even when it is the only one stored', async () => {
     setOpfsBackend(
       new StubOpfs({
         rom: [
@@ -181,7 +181,9 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     expect(container.querySelector('#cfg-rom')).toBeNull();
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
     const labels = Array.from(modelSel.options).map((o) => o.textContent);
-    expect(labels).toEqual(expect.arrayContaining(['Macintosh Plus', 'Macintosh SE/30']));
+    // Plus has other known ROMs (the mock labels it), so its one stored ROM is
+    // still named; the SE/30 ROM carries no label and reads as the model.
+    expect(labels).toEqual(expect.arrayContaining(['Macintosh Plus — Rev 3', 'Macintosh SE/30']));
   });
 
   // Regression: scanImages('fd') folds the legacy /opfs/images/fdhd/ listing
