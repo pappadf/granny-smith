@@ -861,3 +861,10 @@ export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
 
 // Save State button path. Writes to /tmp/saved-state-<ts>.bin, then triggers
 // a browser download via the C-side `download` shell command.
+
+// Measurement builds only (VITE_GS_MEASURE=1 at build time): the
+// checkpoint-stall spec probes request latency through the page's own
+// gsEval.  Not a shipped surface -- the typed UI path to the object model is
+// the terminal (tests/e2e/README.md).
+if (import.meta.env.VITE_GS_MEASURE && typeof window !== 'undefined')
+  (window as unknown as { __gsEval?: unknown }).__gsEval = gsEval;

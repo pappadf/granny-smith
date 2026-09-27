@@ -32,8 +32,10 @@ tests/e2e/
 │   ├── av-sound-record.spec.ts          # Browser mic → the guest's own Sound cdev, record + play
 │   ├── av-speech-recognition.spec.ts    # PlainTalk recognition from the browser mic
 │   ├── checkpoint-resume.spec.ts        # Checkpoint save → reload → resume (+ SE/30 profile restore)
+│   ├── checkpoint-stall.spec.ts         # Measurement: request round trip across the background checkpoint (VITE_GS_MEASURE=1)
 │   ├── debug-panel.spec.ts              # Debug view on a live machine: register edit, breakpoints, repaint while paused
 │   ├── display-card-config.spec.ts      # New Machine dialog: card-by-name video config
+│   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB storage.cp runs (VITE_GS_MEASURE=1)
 │   ├── display-drop.spec.ts             # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
 │   ├── fd-duplicate-name.spec.ts        # Duplicate floppy names in the image library
 │   ├── filesystem-tab.spec.ts           # Filesystem tab: descend image, copy/move/rename/unpack

@@ -77,6 +77,15 @@ Methods build maps with the `val_map_new` / `val_map_put` /
 interpolation a map renders as compact canonical JSON, so
 `echo "${machine.profile("se30")}"` emits machine-parseable text.
 
+A method's UI metadata (`meta.method_info(name)`, and each method entry of
+`meta.members()`) carries four flags from `ui_flags`: `destructive`,
+`mutate`, `hidden` and `io`. `io` (`MM_IO`) marks an I/O job — a method
+whose cost is the size of a file rather than of the machine (`storage.cp`,
+`archive.extract`, `image.export`, `download`, …): it answers when the work
+ends, reports progress (`EVT_PROGRESS`), and a cancel of its request stops
+it between chunks (see [`../../guide/web.md`](../../guide/web.md), "I/O
+jobs").
+
 Display flags follow the value: an attribute declared with `VAL_HEX`
 emits values that the JSON encoder serialises as `"0x12345678"`; the
 shell formatter prints them in hex; the inspector panel renders them
