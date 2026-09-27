@@ -708,6 +708,20 @@ static void daemon_serve_control_connection(void) {
                 "this connection accepts only stop / shell.interrupt / quit\n";
     }
     (void)!write(fd, reply, strlen(reply));
+    // Drain before closing, as daemon_handle_client does: closing with input
+    // unread -- or still in flight, since the recv above takes only what had
+    // arrived -- sends an RST, and the client loses the reply to "connection
+    // reset by peer".  Bounded (~100 ms) so a silent client cannot stall the
+    // run; a half-closing client ends it at once with its FIN.
+    shutdown(fd, SHUT_WR);
+    for (int i = 0; i < 10; i++) {
+        struct pollfd dp = {.fd = fd, .events = POLLIN, .revents = 0};
+        int r = poll(&dp, 1, 10);
+        if (r < 0 && errno != EINTR)
+            break;
+        if (r > 0 && recv(fd, line, sizeof(line), 0) <= 0)
+            break; // the client's FIN (or an error): nothing more can arrive
+    }
     close(fd);
 }
 
