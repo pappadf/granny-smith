@@ -46,7 +46,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('pm7500-pm8500-pm9500-96cd923d.rom')) {
           return {
             recognised: true,
-            checksum: '96cd923d',
+            supported: true,
+            intact: true,
+            id: '96cd923d',
             name: 'Power Macintosh 7500/8500/9500 ROM',
             compatible: romModels,
             size: 4 * 1024 * 1024,

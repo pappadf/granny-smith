@@ -21,7 +21,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('plus-v3-4d1f8172.rom')) {
           return {
             recognised: true,
-            checksum: 'plus-checksum',
+            supported: true,
+            intact: true,
+            id: 'plus-checksum',
             name: 'Macintosh Plus ROM',
             compatible: ['plus'],
             size: 128 * 1024,
@@ -30,7 +32,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('iix-iicx-se30-97221136.rom')) {
           return {
             recognised: true,
-            checksum: 'se30-checksum',
+            supported: true,
+            intact: true,
+            id: 'se30-checksum',
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,

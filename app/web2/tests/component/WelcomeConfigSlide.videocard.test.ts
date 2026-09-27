@@ -34,7 +34,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('iix-iicx-se30-97221136.rom')) {
           return {
             recognised: true,
-            checksum: 'se30-checksum',
+            supported: true,
+            intact: true,
+            id: 'se30-checksum',
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,
@@ -43,7 +45,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('q840av-q660av-5bf10fd1.rom')) {
           return {
             recognised: true,
-            checksum: 'av-checksum',
+            supported: true,
+            intact: true,
+            id: 'av-checksum',
             name: 'Quadra 840AV / Centris 660AV ROM',
             compatible: ['q660av'],
             size: 2 * 1024 * 1024,

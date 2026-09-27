@@ -26,7 +26,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (/Plus/i.test(p)) {
           return {
             recognised: true,
-            checksum: `cs-${p}`,
+            supported: true,
+            intact: true,
+            id: `cs-${p}`,
             name: 'Macintosh Plus ROM',
             compatible: ['plus'],
             size: 128 * 1024,
@@ -35,7 +37,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (/SE30|SE_30|SE\/30/i.test(p)) {
           return {
             recognised: true,
-            checksum: `cs-${p}`,
+            supported: true,
+            intact: true,
+            id: `cs-${p}`,
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,

@@ -36,7 +36,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('pm6100-pm7100-pm8100-9feb69b3.rom')) {
           return {
             recognised: true,
-            checksum: 'pdm-checksum',
+            supported: true,
+            intact: true,
+            id: 'pdm-checksum',
             name: 'Power Macintosh 6100/7100/8100 ROM',
             compatible: ['pm8100'],
             size: 4 * 1024 * 1024,
