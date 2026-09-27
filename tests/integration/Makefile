@@ -197,13 +197,17 @@ check-tiers:
 
 # Pattern rule for running individual tests: delegate to the shared
 # runner with per-test result/work dirs.
+# WRAPPER is a command prefix for the headless binary (valgrind below; a
+# script that appends a flag, scripts/compare-jobs-inline.sh); empty by
+# default.
+WRAPPER ?=
 test-%: $(HEADLESS_BIN) $(DUMP_BIN) FORCE
 	@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
 	DUMP_BIN="$(DUMP_BIN_ABS)" \
 	TEST_DATA="$(TEST_DATA_ABS)" \
 	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*" \
 	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*" \
-	WRAPPER="" \
+	WRAPPER="$(WRAPPER)" \
 	bash $(RUNNER) "$*"
 
 # Clean integration test artifacts (headless binary is cleaned by top-level make)

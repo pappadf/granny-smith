@@ -16,7 +16,8 @@ STUBS        := assert
 # scsi_msgsession.c is the real IDENTIFY/SDTR/WDTR parser, shared with the
 # 53C8xx SCRIPTS engine: pure logic, no emulator dependencies, so the suite
 # links the actual code rather than a stub.
-EXTRA_SRCS   := ../../../../src/core/peripherals/scsi.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/peripherals/scsi_mesh.c \

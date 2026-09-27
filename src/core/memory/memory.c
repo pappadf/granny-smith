@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "memory.h"
+#include "gs_out.h"
 #include "lisa_mmu.h"
 #include "mmu.h"
 
@@ -1758,7 +1759,7 @@ void memory_map_print(memory_map_t *restrict mem) {
 
     while (map != NULL) {
 
-        printf("0x%08x - 0x%08x: %s\n", map->addr, map->addr + map->size - 1, map->name);
+        gs_outf("0x%08x - 0x%08x: %s\n", map->addr, map->addr + map->size - 1, map->name);
         map = map->next;
     }
 }
@@ -1861,21 +1862,21 @@ static value_t method_mem_dump(struct object *self, const member_t *m, int argc,
     // side-effect-free debug read so a dump across unmapped pages can't
     // latch a spurious guest bus error.
     for (uint32_t i = 0; i < nbytes; i += 16) {
-        printf("$%08X  ", addr + i);
+        gs_outf("$%08X  ", addr + i);
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes)
-                printf("%02x ", memory_debug_read_uint8(addr + i + j));
+                gs_outf("%02x ", memory_debug_read_uint8(addr + i + j));
             else
-                printf("   ");
+                gs_outf("   ");
         }
-        printf(" ");
+        gs_outf(" ");
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes) {
                 uint8_t byte = memory_debug_read_uint8(addr + i + j);
-                printf("%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
+                gs_outf("%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
             }
         }
-        printf("\n");
+        gs_outf("\n");
     }
     return val_none();
 }
@@ -2065,7 +2066,7 @@ static value_t method_mem_peek_bytes(struct object *self, const member_t *m, int
     if (count == 0)
         return val_bytes(NULL, 0);
     // Cap at 4 KB. The bridge serialises V_BYTES as a base64-ish JSON
-    // string; 4 KB × 4/3 ≈ 5.5 KB, well under JS_BRIDGE_OUTPUT_SIZE.
+    // string; 4 KB × 4/3 ≈ 5.5 KB, well under the mailbox result limit (GS_MBX_RESULT_MAX).
     if (count > 4096)
         count = 4096;
     uint8_t *buf = (uint8_t *)malloc(count);

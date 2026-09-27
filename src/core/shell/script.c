@@ -13,6 +13,7 @@
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
+#include "job/job.h"
 
 #include "alias.h"
 #include "expr.h"
@@ -1013,7 +1014,7 @@ typedef enum {
     SIG_CONTINUE,
     SIG_RETURN,
     SIG_ERROR,
-    SIG_QUIT, // pump hook requested a clean stop (quit)
+    SIG_QUIT, // the job was cancelled: a clean stop, not an error
 } exec_sig_t;
 
 typedef struct exec_ctx {
@@ -1024,12 +1025,7 @@ typedef struct exec_ctx {
     value_t ret; // SIG_RETURN payload
 } exec_ctx_t;
 
-static script_pump_fn g_pump_hook = NULL;
 static volatile bool g_interrupt = false;
-
-void script_set_pump_hook(script_pump_fn fn) {
-    g_pump_hook = fn;
-}
 
 void script_interrupt(void) {
     g_interrupt = true;
@@ -1050,9 +1046,11 @@ void script_expr_ctx(expr_ctx_t *out) {
 // Include stack (`include "path"`, script_run_file): the chain of files
 // currently executing, innermost last. Drives relative-path resolution,
 // the cycle guard, and file attribution in diagnostics.
+// Per thread: a job on the job thread and an inline script on the emulator
+// thread (a breakpoint action, shell.eval) each have their own chain.
 #define INCLUDE_MAX_DEPTH 16
-static char *g_include_stack[INCLUDE_MAX_DEPTH];
-static int g_include_depth = 0;
+static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
+static _Thread_local int g_include_depth = 0;
 
 static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     char buf[512];
@@ -1636,6 +1634,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     }
 
     value_t result = exec_command_tail(p, &ectx, node, fn);
+    shell_func_release(fn);
     if (val_is_error(&result)) {
         exec_error(cx, st->line, "%s", result.err ? result.err : "command failed");
         value_free(&result);
@@ -1798,7 +1797,7 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
     while (1) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             return;
@@ -1879,7 +1878,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     }
 
     for (size_t i = 0; i < count; i++) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             break;
@@ -2102,12 +2101,13 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
 }
 
+// The statement boundary: where a job notices it was cancelled (job/job.h)
+// and unwinds.  Nothing else happens between statements -- the emulator
+// runs on its own thread, and a `scheduler.run N` waited inside its call.
 static void exec_block(script_block_t *b, exec_ctx_t *cx) {
     for (int i = 0; i < b->n && cx->sig == SIG_NONE; i++) {
         exec_stmt(b->stmts[i], cx);
-        // Give the platform a chance to drive the scheduler after each
-        // statement (`scheduler.run N` schedules; the pump executes).
-        if (cx->sig == SIG_NONE && g_pump_hook && g_pump_hook())
+        if (cx->sig == SIG_NONE && job_current_cancelled())
             cx->sig = SIG_QUIT;
     }
 }
@@ -2149,6 +2149,34 @@ int script_run_line(const char *line) {
     return rc;
 }
 
+// Runs a parsed text as its own context: an error in it is attributed to
+// its line, not to whatever file the caller was including -- which is what
+// a job thread's empty stack gives a `shell.eval` from a script, and what
+// an inline run (the same thread, the includer's frames still on the
+// stack) must give too.
+static int exec_isolated(script_t *s, bool interactive) {
+    char *saved[INCLUDE_MAX_DEPTH];
+    int saved_depth = g_include_depth;
+    memcpy(saved, g_include_stack, sizeof saved);
+    g_include_depth = 0;
+    int rc = script_exec(s, interactive);
+    g_include_depth = saved_depth;
+    memcpy(g_include_stack, saved, sizeof saved);
+    return rc;
+}
+
+int script_run_text(const char *src, bool interactive) {
+    char err[256];
+    script_t *s = script_parse(src, err, sizeof(err));
+    if (!s) {
+        fprintf(stderr, "%s\n", err);
+        return -1;
+    }
+    int rc = exec_isolated(s, interactive);
+    script_free(s);
+    return rc;
+}
+
 int script_run_source(const char *src) {
     char err[256];
     script_t *s = script_parse(src, err, sizeof(err));
@@ -2156,7 +2184,7 @@ int script_run_source(const char *src) {
         fprintf(stderr, "%s\n", err);
         return -1;
     }
-    int rc = script_exec(s, false);
+    int rc = exec_isolated(s, false);
     script_free(s);
     return rc;
 }

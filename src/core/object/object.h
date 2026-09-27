@@ -74,6 +74,7 @@ struct class_desc;
 #define MM_DESTRUCTIVE 0x0001u // confirm before invoking (eject, rm, …)
 #define MM_MUTATE      0x0002u // changes state (vs a pure query)
 #define MM_HIDDEN      0x0004u // not surfaced in UI menus / browser
+#define MM_IO          0x0008u // an I/O job: cost proportional to a file; answers later, reports progress, cancellable
 
 // One declared parameter on a method.
 //
@@ -163,7 +164,7 @@ typedef struct member {
             //            is always allowed, as the in-band error path).
             value_kind_t result;
             method_fn fn;
-            // UI metadata: MM_DESTRUCTIVE | MM_MUTATE | MM_HIDDEN.
+            // UI metadata: MM_DESTRUCTIVE | MM_MUTATE | MM_HIDDEN | MM_IO.
             uint16_t ui_flags;
             // Short verb shown in menus ("Save image…") when distinct from
             // the method name ("export"). NULL = use the method name.

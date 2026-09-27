@@ -5,7 +5,8 @@ TEST_HARNESS := isolated
 # model it publishes through; the PPC session layer beneath it is a stub that
 # records what is written (stub_ppc.c).  Inbound events are handed straight to
 # atalk_aevt_deliver, as the session layer would.
-EXTRA_SRCS := ../../../../src/core/network/appletalk_aevt.c \
+EXTRA_SRCS := ../../../../src/core/job/seam.c \
+              ../../../../src/core/network/appletalk_aevt.c \
               ../../../../src/core/network/appletalk_aevt_codec.c \
               ../../../../src/core/object/value.c \
               ../../../../src/core/object/object.c \

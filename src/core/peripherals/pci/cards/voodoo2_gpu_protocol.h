@@ -17,9 +17,14 @@
 //   readback area   V2GPU_RB_BYTES: pixel rows, worker -> translator
 //
 // The op ring is a byte ring of RECORDS: {uint32 kind, uint32 len}
-// followed by a 4-byte-aligned payload; `len` counts the header.  A
-// record never wraps: when one would not fit before the ring's end the
-// translator writes a PAD record whose len reaches the end.  HEAD is
+// followed by the payload; `len` counts the header and is a MULTIPLE OF
+// 8 (the record-ring primitive, src/core/mailbox/mailbox_ring.h, which
+// this ring and the platen's share).  A record never wraps: when one
+// would not fit before the ring's end the translator writes a PAD record
+// whose len reaches the end -- and the 8-byte rule is what guarantees
+// the PAD's own header fits there (a 4-byte rule let a record end 4
+// bytes short of the end, where the PAD's len word landed past the ring
+// in the readback area).  Payload word offsets are unchanged.  HEAD is
 // the byte count the translator has published (monotonic, mod 2^32),
 // TAIL the count the worker has consumed; both sides wake the other
 // with Atomics.notify on those words (the C side through the
@@ -29,7 +34,7 @@
 #ifndef VOODOO2_GPU_PROTOCOL_H
 #define VOODOO2_GPU_PROTOCOL_H
 
-#define V2GPU_PROTOCOL_VERSION 1u
+#define V2GPU_PROTOCOL_VERSION 2u // 2: records are multiples of 8 (mailbox_ring)
 #define V2GPU_MAGIC            0x56324750u // 'V2GP'
 
 // Control-block word indices.

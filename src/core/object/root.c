@@ -10,6 +10,7 @@
 // cfg->images).
 
 #include "root.h"
+#include "gs_out.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -219,32 +220,32 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
     (void)m;
     for (int i = 0; i < argc; i++) {
         if (i > 0)
-            putchar(' ');
+            gs_outc(' ');
         switch (argv[i].kind) {
         case V_STRING:
-            fputs(argv[i].s ? argv[i].s : "", stdout);
+            gs_outs(argv[i].s ? argv[i].s : "");
             break;
         case V_BOOL:
-            fputs(argv[i].b ? "true" : "false", stdout);
+            gs_outs(argv[i].b ? "true" : "false");
             break;
         case V_INT:
-            printf("%lld", (long long)argv[i].i);
+            gs_outf("%lld", (long long)argv[i].i);
             break;
         case V_UINT:
-            printf("%llu", (unsigned long long)argv[i].u);
+            gs_outf("%llu", (unsigned long long)argv[i].u);
             break;
         case V_FLOAT:
-            printf("%g", argv[i].f);
+            gs_outf("%g", argv[i].f);
             break;
         default:
             // Fall back to a path-form-style label for the kinds we
             // don't usually echo (V_OBJECT, V_LIST). Keeps output
             // deterministic for diff-based regression tests.
-            fputs("<?>", stdout);
+            gs_outs("<?>");
             break;
         }
     }
-    putchar('\n');
+    gs_outc('\n');
     return val_bool(true);
 }
 
@@ -280,37 +281,37 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}                   },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}                },
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}                   },
     {.kind = M_METHOD,
      .name = "help",
      .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}                    },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                                },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                },
     // `assert` is a statement keyword in shell v2 (script.c); the former
     // root method is gone — its name is now a reserved word.
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                                },
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}   },
+     .method = {.ui_flags = MM_IO, .args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}},
 };
 
 static const class_desc_t emu_root_class_real = {

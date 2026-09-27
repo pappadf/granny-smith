@@ -6,7 +6,8 @@ TEST_SRCS    := test.c
 # only support stubs linked in are the machine object and assert.
 TEST_HARNESS := none
 STUBS        := machine_object assert
-EXTRA_SRCS   := ../../../../src/core/peripherals/adb.c \
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/peripherals/adb.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \

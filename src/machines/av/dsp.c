@@ -24,6 +24,7 @@
 //     itself.
 
 #include "dsp.h"
+#include "gs_out.h"
 
 #include "av.h"
 #include "psc.h"
@@ -476,12 +477,12 @@ static value_t dsp_method_disasm(struct object *self, const member_t *m, int arg
         uint32_t a = (addr & ~3u) + 4 * i;
         uint32_t w;
         if (dsp_peek_word(d, a, &w)) {
-            printf("%08x: <bus error>\n", a);
+            gs_outf("%08x: <bus error>\n", a);
             break;
         }
         dsp3210_insn ins;
         dsp3210_disassemble(w, a, &ins);
-        printf("%08x: %08x  %s\n", a, w, ins.text);
+        gs_outf("%08x: %08x  %s\n", a, w, ins.text);
     }
     return val_bool(true);
 }

@@ -11,10 +11,10 @@
 // Atomics.waitAsync in the worker.  No message ever carries a frame.
 //
 // Availability is decided by the page: app/web2 requests a WebGPU
-// adapter at startup and writes the answer into the bridge's
-// gpu_available word before any machine boots, so the card's backend
-// choice is honest at creation (regs.raster reports "thread" when the
-// browser has no adapter).
+// adapter at startup and writes the answer into the mailbox's
+// GPU_AVAILABLE control word before any machine boots, so the card's
+// backend choice is honest at creation (regs.raster reports "thread" when
+// the browser has no adapter).
 
 #include "em.h"
 
@@ -25,10 +25,8 @@
 #include <limits.h>
 #include <stdint.h>
 
-extern js_bridge_t *get_js_bridge(void);
-
 bool gs_v2gpu_available(void) {
-    return __atomic_load_n(&get_js_bridge()->gpu_available, __ATOMIC_SEQ_CST) != 0;
+    return mbx_load(get_gs_mailbox(), GS_MBX_C_GPU_AVAILABLE) != 0;
 }
 
 bool gs_v2gpu_attach(void *ctrl, uint32_t bytes) {

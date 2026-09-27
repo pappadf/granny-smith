@@ -12,6 +12,7 @@
 // is the source of truth.
 
 #include "rom.h"
+#include "gs_out.h"
 
 #include "cpu.h"
 #include "machine_config.h"
@@ -186,7 +187,7 @@ const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *
         size_t span = info->checksum_span && info->checksum_span <= size ? info->checksum_span : size;
         uint32_t computed = rom_compute_checksum(data, span);
         if (computed != stored)
-            printf("Warning: ROM checksum mismatch (stored=%08X, computed=%08X)\n", stored, computed);
+            gs_outf("Warning: ROM checksum mismatch (stored=%08X, computed=%08X)\n", stored, computed);
         return info;
     }
 
@@ -223,7 +224,7 @@ static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet
     struct stat st;
     if (stat(filename, &st) != 0 || st.st_size <= 0) {
         if (!quiet)
-            printf("Failed to stat ROM file: %s\n", filename);
+            gs_outf("Failed to stat ROM file: %s\n", filename);
         return NULL;
     }
     size_t file_size = (size_t)st.st_size;
@@ -231,14 +232,14 @@ static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet
     FILE *f = fopen(filename, "rb");
     if (!f) {
         if (!quiet)
-            printf("Failed to open ROM file: %s\n", filename);
+            gs_outf("Failed to open ROM file: %s\n", filename);
         return NULL;
     }
     uint8_t *rom_data = malloc(file_size);
     if (!rom_data) {
         fclose(f);
         if (!quiet)
-            printf("Failed to allocate memory for ROM\n");
+            gs_outf("Failed to allocate memory for ROM\n");
         return NULL;
     }
     size_t n = fread(rom_data, 1, file_size, f);
@@ -246,7 +247,7 @@ static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet
     if (n != file_size) {
         free(rom_data);
         if (!quiet)
-            printf("Failed to read ROM file: %s\n", filename);
+            gs_outf("Failed to read ROM file: %s\n", filename);
         return NULL;
     }
     *out_size = file_size;
@@ -321,7 +322,7 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
                 rom_interleave_pair(b, b_size, a, a_size, combined);
         }
     } else {
-        printf("rom.load_lisa: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
+        gs_outf("rom.load_lisa: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
     }
 
     free(a);
@@ -329,7 +330,7 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
     if (!combined)
         return NULL;
     if (!rom_identify_lisa(combined, LISA_ROM_SIZE))
-        printf("Warning: interleaved image is not a recognised Lisa/XL ROM\n");
+        gs_outf("Warning: interleaved image is not a recognised Lisa/XL ROM\n");
     *out_size = LISA_ROM_SIZE;
     return combined;
 }
@@ -346,16 +347,16 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
 static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, const char *path) {
     memory_map_t *mem = system_memory();
     if (!mem) {
-        printf("rom.load: no machine — call machine.boot(model) first\n");
+        gs_outf("rom.load: no machine — call machine.boot(model) first\n");
         return -1;
     }
 
     uint32_t checksum = 0;
     const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
     if (info)
-        printf("ROM: %s (checksum %08X)\n", info->family_name, checksum);
+        gs_outf("ROM: %s (checksum %08X)\n", info->family_name, checksum);
     else
-        printf("ROM: unknown (checksum %08X, size %zu bytes)\n", checksum, file_size);
+        gs_outf("ROM: unknown (checksum %08X, size %zu bytes)\n", checksum, file_size);
 
     // Compatibility check against the active machine. Allow load with a
     // warning if the ROM is recognised but the active machine isn't in the
@@ -370,12 +371,12 @@ static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, c
             }
         }
         if (!ok)
-            printf("Warning: this ROM is not listed as compatible with %s — loading anyway\n", active);
+            gs_outf("Warning: this ROM is not listed as compatible with %s — loading anyway\n", active);
     }
 
     if (file_size != memory_rom_size(mem)) {
-        printf("Warning: ROM file is %zu bytes, machine expects %u — truncating/padding to fit\n", file_size,
-               memory_rom_size(mem));
+        gs_outf("Warning: ROM file is %zu bytes, machine expects %u — truncating/padding to fit\n", file_size,
+                memory_rom_size(mem));
     }
 
     // Write the built-from record back so machine.config keeps answering
@@ -402,20 +403,20 @@ static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, c
             ((uint32_t)rom_base[4] << 24) | ((uint32_t)rom_base[5] << 16) | ((uint32_t)rom_base[6] << 8) | rom_base[7];
         cpu_set_an(cpu, 7, initial_ssp);
         cpu_set_pc(cpu, initial_pc);
-        printf("CPU reset: PC=%08X SSP=%08X\n", initial_pc, initial_ssp);
+        gs_outf("CPU reset: PC=%08X SSP=%08X\n", initial_pc, initial_ssp);
     }
 
-    printf("ROM loaded successfully from %s\n", path);
+    gs_outf("ROM loaded successfully from %s\n", path);
     return 0;
 }
 
 int rom_load_into_machine(const char *path) {
     if (!path || !*path) {
-        printf("rom.load: expected a path\n");
+        gs_outf("rom.load: expected a path\n");
         return -1;
     }
     if (!system_memory()) {
-        printf("rom.load: no machine — call machine.boot(model) first\n");
+        gs_outf("rom.load: no machine — call machine.boot(model) first\n");
         return -1;
     }
     size_t file_size = 0;
@@ -429,11 +430,11 @@ int rom_load_into_machine(const char *path) {
 
 int rom_load_lisa_into_machine(const char *path_a, const char *path_b) {
     if (!path_a || !*path_a || !path_b || !*path_b) {
-        printf("rom.load_lisa: expected two chip paths\n");
+        gs_outf("rom.load_lisa: expected two chip paths\n");
         return -1;
     }
     if (!system_memory()) {
-        printf("rom.load_lisa: no machine — call machine.boot(model) first\n");
+        gs_outf("rom.load_lisa: no machine — call machine.boot(model) first\n");
         return -1;
     }
     size_t size = 0;

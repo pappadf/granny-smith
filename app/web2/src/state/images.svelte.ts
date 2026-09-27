@@ -1,6 +1,6 @@
 // Per-category collapsed state for the Images panel view, plus the mount-state
 // mirror that drives each row's badge. The view's own insert/eject actions set
-// it; a guest-initiated floppy eject clears it via C's Module.onFloppyChange
+// it; a guest-initiated floppy eject clears it via the core's floppy event
 // event (onFloppyDriveChange below), so no polling is needed.
 
 import type { ImageCategory } from '@/bus/types';

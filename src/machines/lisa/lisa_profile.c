@@ -362,6 +362,10 @@ bool lisa_profile_connected(const lisa_profile_t *pf) {
     return lisa_profile_attached(pf);
 }
 
+image_t *lisa_profile_image(const lisa_profile_t *pf) {
+    return pf ? pf->image : NULL;
+}
+
 bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
     if (!pf || !pf->image || !path || !*path)
         return false;

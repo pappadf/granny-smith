@@ -11,12 +11,14 @@
 #include "scheduler.h"
 
 #include "cpu.h"
+#include "debug.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
 #include "shell.h"
 #include "system.h"
 #include "value.h"
+#include "event/gs_event.h"
 
 LOG_USE_CATEGORY_NAME("scheduler");
 
@@ -213,6 +215,20 @@ struct scheduler {
     // one recorded in the checkpoint.
     uint64_t frame_cycles_left;
 
+    // The mode: who started the current run and why it stopped.  Live
+    // run-loop state like frame_cycles_left, so never checkpointed; a
+    // restored machine starts with no mode open.  `mode_open` is set by
+    // scheduler_run_with_budget and cleared by scheduler_run_frame when it
+    // sees `running` down, which is where the mode_ended event goes out --
+    // once per mode, whichever path dropped `running`.
+    uint32_t run_owner;
+    uint32_t mode_seq; // id of the current mode, counted from 1
+    sched_stop_reason_t stop_reason;
+    bool mode_open;
+    bool mode_bounded; // the mode has an instruction budget
+    uint32_t speed_reported_x256; // the last effective speed announced (speed event)
+    bool in_frame; // inside scheduler_run_frame: a stop there is reported at its end
+
     // Pointers last
     sched_cpu_if_t cpu; // the main-CPU seam (copied at init; ctx outlives us)
     event_t *cpu_events; // priority queue sorted by timestamp
@@ -301,6 +317,13 @@ static void scheduler_update_cpi_eff(struct scheduler *s) {
     }
     s->cpi_eff_x256 = eff;
     s->cycle_frac_x256 = 0;
+    // The effective speed changed (a governor step, a pin, a mode switch):
+    // say so once, here, where every path that changes it passes.
+    uint32_t sp = s->mode == schedule_accelerated ? scheduler_current_speed_x256(s) : SPEED_X256_ONE;
+    if (sp != s->speed_reported_x256) {
+        s->speed_reported_x256 = sp;
+        gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)sp);
+    }
 }
 
 // Reset the adaptive governor to the authentic floor with fresh estimators.
@@ -674,7 +697,37 @@ static void run_stop_event(void *source, uint64_t data) {
     (void)data;
     scheduler_t *s = (scheduler_t *)source;
     GS_ASSERT(s != NULL);
-    scheduler_stop(s);
+    scheduler_stop_reason(s, SCHED_STOP_BUDGET);
+}
+
+// Opens a mode: the run belongs to whoever is being served right now.
+static void open_mode(struct scheduler *s, uint64_t instructions) {
+    s->run_owner = gs_current_client();
+    s->stop_reason = SCHED_STOP_NONE;
+    s->mode_seq++;
+    s->mode_open = true;
+    s->mode_bounded = instructions != 0;
+    s->running = true;
+    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"mode_started\",\"mode\":%u,\"owner\":%u,\"budget\":%llu}",
+                   (unsigned)s->mode_seq, (unsigned)s->run_owner, (unsigned long long)instructions);
+}
+
+// The main CPU's pc for the mode_ended event, 0 when no debug seam exists.
+static uint32_t mode_pc(void) {
+    const struct cpu_debug_if *d = system_cpu_debug_if();
+    return d && d->get_pc ? d->get_pc(d->ctx) : 0;
+}
+
+// Reports the end of an open mode once `running` has dropped.
+static void close_mode_if_stopped(struct scheduler *s) {
+    if (!s->mode_open || s->running)
+        return;
+    s->mode_open = false;
+    gs_event_emitf(GS_EVENT_STATE,
+                   "{\"event\":\"mode_ended\",\"mode\":%u,\"owner\":%u,\"reason\":\"%s\",\"pc\":%u,"
+                   "\"instr_count\":%llu}",
+                   (unsigned)s->mode_seq, (unsigned)s->run_owner, sched_stop_reason_name(s->stop_reason),
+                   (unsigned)mode_pc(), (unsigned long long)cpu_instr_count());
 }
 
 // Schedule a stop after `instructions` more instructions of execution.
@@ -688,7 +741,7 @@ bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
 
     if (instructions == 0) {
         // Run indefinitely (caller wants to step until externally stopped).
-        s->running = true;
+        open_mode(s, 0);
         return true;
     }
     if (instructions > UINT64_MAX / eff_x256)
@@ -700,7 +753,7 @@ bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     if (cycles == 0)
         cycles = 1; // sub-cycle budget (accelerated, tiny N) still needs a nonzero delay
     scheduler_new_cpu_event(s, run_stop_event, s, 0, cycles, 0);
-    s->running = true;
+    open_mode(s, instructions);
     return true;
 }
 
@@ -1320,14 +1373,63 @@ void cpu_reschedule(void) {
     reconcile_sprint(s);
 }
 
-// Stop the scheduler immediately, halting CPU execution
-void scheduler_stop(struct scheduler *restrict scheduler) {
-    GS_ASSERT(scheduler != NULL);
-    scheduler->running = false;
-    reconcile_sprint(scheduler);
+const char *sched_stop_reason_name(sched_stop_reason_t reason) {
+    switch (reason) {
+    case SCHED_STOP_NONE:
+        return "none";
+    case SCHED_STOP_BUDGET:
+        return "budget";
+    case SCHED_STOP_BREAKPOINT:
+        return "breakpoint";
+    case SCHED_STOP_REQUEST:
+        return "stop_request";
+    case SCHED_STOP_CANCELLED:
+        return "cancelled";
+    case SCHED_STOP_ASSERT:
+        return "assert";
+    }
+    return "?";
 }
 
-// Set the scheduler running state
+// Stop the scheduler immediately, halting CPU execution
+void scheduler_stop_reason(struct scheduler *restrict scheduler, sched_stop_reason_t reason) {
+    GS_ASSERT(scheduler != NULL);
+    if (scheduler->running)
+        scheduler->stop_reason = reason;
+    scheduler->running = false;
+    reconcile_sprint(scheduler);
+    // A stop from outside a frame (a scheduler.stop leaf between ticks, a
+    // signal) is reported here; one from inside (budget, breakpoint) at the
+    // end of the frame, once the sprint has settled.
+    if (!scheduler->in_frame)
+        close_mode_if_stopped(scheduler);
+}
+
+void scheduler_stop(struct scheduler *restrict scheduler) {
+    scheduler_stop_reason(scheduler, SCHED_STOP_REQUEST);
+}
+
+bool scheduler_stop_owned(struct scheduler *restrict scheduler, uint32_t owner) {
+    GS_ASSERT(scheduler != NULL);
+    if (!scheduler->running || (owner != 0 && scheduler->run_owner != owner))
+        return false;
+    scheduler_stop_reason(scheduler, SCHED_STOP_REQUEST);
+    return true;
+}
+
+uint32_t scheduler_run_owner(struct scheduler *restrict scheduler) {
+    return scheduler ? scheduler->run_owner : 0;
+}
+
+uint32_t scheduler_mode_id(struct scheduler *restrict scheduler) {
+    return scheduler ? scheduler->mode_seq : 0;
+}
+
+bool scheduler_mode_bounded(struct scheduler *restrict scheduler) {
+    return scheduler && scheduler->mode_bounded;
+}
+
+// Set the scheduler running state -- the flag only, no mode opens or ends.
 void scheduler_set_running(struct scheduler *restrict scheduler, bool running) {
     if (!scheduler)
         return;
@@ -1571,6 +1673,8 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         if (debugger_active) {
             if (debug_break_and_trace()) {
                 remaining_cycles = 0;
+                if (s->running)
+                    s->stop_reason = SCHED_STOP_BREAKPOINT;
                 s->running = false;
                 break;
             }
@@ -1672,10 +1776,13 @@ void scheduler_run_frame(struct scheduler *restrict s, config_t *config) {
     uint64_t instructions = ((s->frame_cycles_left << 8) + s->cpi_eff_x256 - 1) / s->cpi_eff_x256;
 
     uint64_t before = scheduler_cpu_cycles(s);
+    s->in_frame = true;
     scheduler_run_instructions(s, instructions);
+    s->in_frame = false;
     uint64_t advanced = scheduler_cpu_cycles(s) - before;
 
     s->frame_cycles_left = (advanced < s->frame_cycles_left) ? s->frame_cycles_left - advanced : 0;
+    close_mode_if_stopped(s);
 }
 
 // Main loop iteration for real-time emulation with VBL-based timing

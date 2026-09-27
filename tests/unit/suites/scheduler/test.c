@@ -56,6 +56,7 @@
 #include "scheduler.h"
 #include "test_assert.h"
 #include "value.h"
+#include "event/gs_event.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -103,6 +104,24 @@ bool debug_active(debug_t *debug) {
 }
 int debug_break_and_trace(void) {
     return 0;
+}
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    return NULL;
+}
+
+// The core's events (gs_event.h), captured: the last STATE payload and how
+// many were emitted.  Overrides the weak default.
+static char g_last_event[GS_EVENT_MAX];
+static int g_events;
+static uint32_t g_client = 7; // what gs_current_client answers
+void gs_event_emit(gs_event_kind_t kind, const char *json) {
+    if (kind != GS_EVENT_STATE)
+        return;
+    snprintf(g_last_event, sizeof g_last_event, "%s", json);
+    g_events++;
+}
+uint32_t gs_current_client(void) {
+    return g_client;
 }
 
 void trigger_vbl(config_t *restrict config) {
@@ -1427,7 +1446,57 @@ TEST(test_one_shot_still_fires_once) {
     scheduler_delete(s);
 }
 
+// A run is a mode: it starts with the serving client as its owner and
+// ends with a reason -- budget from inside the frame, a stop from outside
+// it -- reported once, in the mode_ended event, whichever path stopped it.
+TEST(test_a_mode_reports_its_owner_and_its_reason) {
+    scheduler_t *s = fresh_scheduler(false);
+    g_events = 0;
+    g_client = 7;
+    ASSERT_TRUE(scheduler_run_with_budget(s, 1000));
+    ASSERT_EQ_INT(g_events, 1);
+    ASSERT_TRUE(strstr(g_last_event, "\"event\":\"mode_started\"") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"owner\":7") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"budget\":1000") != NULL);
+    ASSERT_EQ_INT(scheduler_run_owner(s), 7);
+    while (scheduler_is_running(s))
+        scheduler_run_frame(s, TEST_CFG);
+    ASSERT_EQ_INT(g_events, 2);
+    ASSERT_TRUE(strstr(g_last_event, "\"event\":\"mode_ended\"") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"reason\":\"budget\"") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"instr_count\":1000") != NULL);
+    // Another frame on the stopped machine reports nothing more.
+    ASSERT_EQ_INT(g_events, 2);
+
+    // Unbounded, stopped from outside a frame: reported at the stop.
+    g_client = 0;
+    ASSERT_TRUE(scheduler_run_with_budget(s, 0));
+    ASSERT_EQ_INT(g_events, 3);
+    ASSERT_TRUE(strstr(g_last_event, "\"owner\":0") != NULL);
+    scheduler_run_frame(s, TEST_CFG);
+    ASSERT_TRUE(scheduler_is_running(s));
+    ASSERT_EQ_INT(g_events, 3);
+    // A client's stop does not end a mode it does not own; any-owner does.
+    ASSERT_TRUE(!scheduler_stop_owned(s, 9));
+    ASSERT_TRUE(scheduler_is_running(s));
+    ASSERT_TRUE(scheduler_stop_owned(s, 0));
+    ASSERT_TRUE(!scheduler_is_running(s));
+    ASSERT_EQ_INT(g_events, 4);
+    ASSERT_TRUE(strstr(g_last_event, "\"reason\":\"stop_request\"") != NULL);
+    // Stopping a stopped machine reports nothing.
+    scheduler_stop(s);
+    ASSERT_EQ_INT(g_events, 4);
+
+    // An assertion stop carries its own reason.
+    ASSERT_TRUE(scheduler_run_with_budget(s, 0));
+    scheduler_stop_reason(s, SCHED_STOP_ASSERT);
+    ASSERT_EQ_INT(g_events, 6);
+    ASSERT_TRUE(strstr(g_last_event, "\"reason\":\"assert\"") != NULL);
+    teardown(s);
+}
+
 int main(void) {
+    RUN(test_a_mode_reports_its_owner_and_its_reason);
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
     RUN(test_paced_rate_120hz);

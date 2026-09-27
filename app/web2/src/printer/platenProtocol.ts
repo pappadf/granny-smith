@@ -48,10 +48,8 @@ export const TEXT_MAX = 64 << 10;
 // Cap on the FINISH title.
 export const TITLE_MAX = 63;
 // The record header: {kind, len}.
-export const HDR_BYTES = 8;
 
 // Records, core -> worker.
-export const R_PAD = 0;
 
 export const R_OPEN = 1;
 export const OPEN_JOB = 0;
@@ -123,108 +121,22 @@ export const OUTCOME_BUDGET = 2;
 export const OUTCOME_FAILED = 3;
 
 // --- helpers ---------------------------------------------------------------
+//
+// The ring itself -- records, PADs, the 8-byte rule, the little-endian
+// header words -- is the record-ring primitive every transport on the page
+// shares (bus/mailboxRing.ts, mirroring src/core/mailbox/mailbox_ring.h).
+// Re-exported here so the platen worker and its tests keep one import.
 
-// Bytes a text field of `n` occupies inside a payload (LWRING_PAD4).
-export function pad4(n: number): number {
-  return (n + 3) & ~3;
-}
-
-// A record's total length for `n` bytes of header plus payload (LWRING_PAD8).
-export function pad8(n: number): number {
-  return (n + 7) & ~7;
-}
-
-// Little-endian u32 access into a byte view (the rings live in shared
-// memory; the byte view is what both sides agree on).
-export function getU32(u8: Uint8Array, at: number): number {
-  return (u8[at] | (u8[at + 1] << 8) | (u8[at + 2] << 16) | (u8[at + 3] << 24)) >>> 0;
-}
-
-export function putU32(u8: Uint8Array, at: number, v: number): void {
-  u8[at] = v & 0xff;
-  u8[at + 1] = (v >>> 8) & 0xff;
-  u8[at + 2] = (v >>> 16) & 0xff;
-  u8[at + 3] = (v >>> 24) & 0xff;
-}
-
-// One byte ring inside a buffer: `base` is its byte offset in `u8`, `size`
-// a power of two.
-export interface Ring {
-  u8: Uint8Array;
-  base: number;
-  size: number;
-}
-
-// The total length of a record with `words` header words and text fields
-// of the given lengths (each padded to 4; the whole padded to 8).
-export function recordBytes(words: number, textLens: number[]): number {
-  let body = 4 * words;
-  for (const n of textLens) body += pad4(n);
-  return pad8(HDR_BYTES + body);
-}
-
-// Writes one record at monotonic position `wr` given the reader's `tail`
-// (both mod 2^32): a PAD first when the record would cross the ring's end,
-// then the header, the words and the text fields.  Returns the new write
-// position, or -1 when there is no room (nothing written).  The caller
-// publishes the position (HEAD) afterwards.
-export function ringWrite(
-  ring: Ring,
-  wr: number,
-  tail: number,
-  kind: number,
-  words: number[],
-  texts: Uint8Array[],
-): number {
-  const len = recordBytes(
-    words.length,
-    texts.map((t) => t.length),
-  );
-  const mask = ring.size - 1;
-  let at = wr & mask;
-  // A PAD to the end first when the record would cross it; every record
-  // starts 8-aligned, so the PAD's own header always fits
-  const pad = at + len > ring.size ? ring.size - at : 0;
-  const used = (wr - tail) >>> 0;
-  if (ring.size - used < pad + len) return -1;
-  if (pad) {
-    putU32(ring.u8, ring.base + at, R_PAD);
-    putU32(ring.u8, ring.base + at + 4, pad);
-    wr = (wr + pad) >>> 0;
-    at = 0;
-  }
-  let p = ring.base + at;
-  putU32(ring.u8, p, kind);
-  putU32(ring.u8, p + 4, len);
-  p += HDR_BYTES;
-  for (const w of words) {
-    putU32(ring.u8, p, w);
-    p += 4;
-  }
-  for (const t of texts) {
-    ring.u8.set(t, p);
-    p += pad4(t.length);
-  }
-  return (wr + len) >>> 0;
-}
-
-// A record read from a ring: its kind, its total length, and the absolute
-// byte offset of its payload in the ring's view.
-export interface RecordHeader {
-  kind: number;
-  len: number;
-  payload: number;
-}
-
-// Reads the record header at monotonic position `rd` with `head` bytes
-// published.  Throws on a framing violation (a len under 8 or not a
-// multiple of 8, a record crossing the end, or more than published): the
-// other side is broken and nothing after this can be trusted.
-export function ringRead(ring: Ring, rd: number, head: number): RecordHeader {
-  const at = rd & (ring.size - 1);
-  const kind = getU32(ring.u8, ring.base + at);
-  const len = getU32(ring.u8, ring.base + at + 4);
-  if (len < HDR_BYTES || len & 7 || at + len > ring.size || (head - rd) >>> 0 < len)
-    throw new Error(`corrupt ring record (kind ${kind} len ${len} at ${at})`);
-  return { kind, len, payload: ring.base + at + HDR_BYTES };
-}
+export {
+  HDR_BYTES,
+  R_PAD,
+  pad4,
+  pad8,
+  getU32,
+  putU32,
+  recordBytes,
+  ringWrite,
+  ringRead,
+  type Ring,
+  type RecordHeader,
+} from '@/bus/mailboxRing';

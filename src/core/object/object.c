@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "meta.h"
+#include "job/job.h"
 
 // === Object representation ==================================================
 //
@@ -1616,7 +1617,7 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
 }
 #endif
 
-value_t node_get(node_t n) {
+static value_t node_get_here(node_t n) {
     if (!node_valid(n))
         return val_err("invalid node");
     if (!n.member)
@@ -1699,7 +1700,7 @@ value_t node_get(node_t n) {
     return val_err("unknown member kind");
 }
 
-value_t node_set(node_t n, value_t v) {
+static value_t node_set_here(node_t n, value_t v) {
     if (!node_valid(n)) {
         value_free(&v);
         return val_err("invalid node");
@@ -1728,7 +1729,7 @@ value_t node_set(node_t n, value_t v) {
     return out;
 }
 
-value_t node_call(node_t n, int argc, const value_t *argv) {
+static value_t node_call_here(node_t n, int argc, const value_t *argv) {
     if (!node_valid(n))
         return val_err("invalid node");
     if (!n.member || n.member->kind != M_METHOD)
@@ -1758,6 +1759,96 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
     }
 #endif
     return out;
+}
+
+// === The seam ================================================================
+//
+// node_get / node_set / node_call are the only way to reach guest state,
+// and guest state belongs to the emulator thread.  A caller on any other
+// thread -- the interpreter on the job thread -- is handed over through
+// job_on_emulator (job/job.h) and waits; on the emulator thread the
+// call is direct.  Path resolution (object_resolve) walks the tree's
+// structure only and stays where the caller is.
+
+typedef struct {
+    node_t n;
+    int argc;
+    const value_t *argv;
+    value_t in;
+    value_t out;
+} node_marshal_t;
+
+static void marshal_get(void *p) {
+    node_marshal_t *m = (node_marshal_t *)p;
+    m->out = node_get_here(m->n);
+}
+
+static void marshal_set(void *p) {
+    node_marshal_t *m = (node_marshal_t *)p;
+    m->out = node_set_here(m->n, m->in);
+}
+
+static void marshal_call(void *p) {
+    node_marshal_t *m = (node_marshal_t *)p;
+    m->out = node_call_here(m->n, m->argc, m->argv);
+}
+
+value_t node_get(node_t n) {
+    if (job_on_emulator_thread())
+        return node_get_here(n);
+    node_marshal_t m = {.n = n};
+    job_on_emulator(marshal_get, &m);
+    return m.out;
+}
+
+// Inline mode (job.h): a tree call on the emulator thread that opens a mode
+// is followed by the wait for it.  Weak: linked only where job.c is.
+uint32_t job_glue_mode_id(void) __attribute__((weak));
+void job_inline_after_call(uint32_t mode_before) __attribute__((weak));
+bool job_inline_enabled(void) __attribute__((weak));
+
+// The mode id before the call, tagged (top bit) when inline mode is on --
+// 0 is a legitimate id, so the tag says whether to wait at all.
+static inline uint32_t inline_mode_before(void) {
+    if (job_inline_enabled && job_inline_enabled() && job_glue_mode_id && job_inline_after_call)
+        return job_glue_mode_id() | 0x80000000u;
+    return 0;
+}
+
+static inline void inline_mode_after(uint32_t before) {
+    if (before & 0x80000000u)
+        job_inline_after_call(before & 0x7fffffffu);
+}
+
+value_t node_set(node_t n, value_t v) {
+    if (job_on_emulator_thread()) {
+        uint32_t before = inline_mode_before();
+        value_t r = node_set_here(n, v);
+        inline_mode_after(before);
+        return r;
+    }
+    node_marshal_t m = {.n = n, .in = v};
+    job_on_emulator(marshal_set, &m);
+    return m.out;
+}
+
+value_t node_call(node_t n, int argc, const value_t *argv) {
+    if (job_on_emulator_thread()) {
+        uint32_t before = inline_mode_before();
+        value_t r = node_call_here(n, argc, argv);
+        inline_mode_after(before);
+        return r;
+    }
+    node_marshal_t m = {.n = n, .argc = argc, .argv = argv};
+    job_on_emulator(marshal_call, &m);
+    // A leaf that answered later (an I/O job) and failed: the failure is
+    // the call's result, not the provisional value it returned at once.
+    char err[256];
+    if (job_call_take_failure(err, sizeof err)) {
+        value_free(&m.out);
+        return val_err("%s", err);
+    }
+    return m.out;
 }
 
 // Append the method's declared fixed-argument names to buf as a

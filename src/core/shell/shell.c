@@ -5,6 +5,7 @@
 // Interactive command shell for emulator debugging and control.
 
 #include "shell.h"
+#include "gs_out.h"
 
 #include "shell_singletons.h"
 #include "value_format.h"
@@ -24,6 +25,7 @@
 #include "value.h"
 #include "vfs.h"
 #include "worker_thread.h"
+#include "job/job.h"
 
 #include <inttypes.h>
 
@@ -72,7 +74,7 @@ static void format_scalar_inline(const value_t *v) {
     vbuf_t b = {0};
     value_format(v, VFMT_INLINE, &b);
     if (b.p)
-        fputs(b.p, stdout);
+        gs_outs(b.p);
     vbuf_free(&b);
 }
 
@@ -87,7 +89,7 @@ static void format_object_table(struct object *o) {
     if (!cls || !cls->members || cls->n_members == 0) {
         const char *cls_name = (cls && cls->name) ? cls->name : "object";
         const char *o_name = object_name(o);
-        printf("<%s:%s>\n", cls_name, o_name ? o_name : "");
+        gs_outf("<%s:%s>\n", cls_name, o_name ? o_name : "");
         return;
     }
     // Pass 1: compute the longest member name so we can right-pad.
@@ -114,9 +116,9 @@ static void format_object_table(struct object *o) {
         if (!mb->attr.get)
             continue;
         value_t v = mb->attr.get(o, mb);
-        printf("%-*s = ", width, mb->name);
+        gs_outf("%-*s = ", width, mb->name);
         format_scalar_inline(&v);
-        printf("\n");
+        gs_outf("\n");
         value_free(&v);
     }
     for (size_t i = 0; i < cls->n_members; i++) {
@@ -124,7 +126,7 @@ static void format_object_table(struct object *o) {
         if (!mb->name || mb->kind != M_CHILD)
             continue;
         const char *child_cls = (mb->child.cls && mb->child.cls->name) ? mb->child.cls->name : "object";
-        printf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.indexed ? "[]" : "");
+        gs_outf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.indexed ? "[]" : "");
     }
 }
 
@@ -185,14 +187,14 @@ static bool try_print_object_table(const value_t *v) {
     }
     // Header + rows.
     for (int c = 0; c < n_cols; c++)
-        printf("%-*s%s", width[c], cls->members[cols[c]].name, c + 1 < n_cols ? "  " : "\n");
+        gs_outf("%-*s%s", width[c], cls->members[cols[c]].name, c + 1 < n_cols ? "  " : "\n");
     for (size_t i = 0; i < v->list.len; i++) {
         for (int c = 0; c < n_cols; c++) {
             const member_t *mb = &cls->members[cols[c]];
             value_t cv = mb->attr.get(v->list.items[i].obj, mb);
             format_cell(&cv, cell, sizeof(cell));
             value_free(&cv);
-            printf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
+            gs_outf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
         }
     }
     return true;
@@ -220,15 +222,15 @@ static void format_value_print(const value_t *v) {
         // A list of same-class objects renders as an attribute table.
         if (try_print_object_table(v))
             break;
-        putchar('[');
+        gs_outc('[');
         for (size_t i = 0; i < v->list.len; i++) {
             if (i)
-                fputs(", ", stdout);
+                gs_outs(", ");
             // Elements compose into one line, so they render quoted and
             // capped -- VFMT_INLINE, not the mode the container used.
             format_scalar_inline(&v->list.items[i]);
         }
-        fputs("]\n", stdout);
+        gs_outs("]\n");
         break;
     }
 
@@ -245,9 +247,9 @@ static void format_value_print(const value_t *v) {
         if (width > 24)
             width = 24; // cap so very long keys don't blow the layout
         for (size_t i = 0; i < v->map.len; i++) {
-            printf("%-*s : ", width, v->map.entries[i].key ? v->map.entries[i].key : "");
+            gs_outf("%-*s : ", width, v->map.entries[i].key ? v->map.entries[i].key : "");
             format_scalar_inline(&v->map.entries[i].val);
-            putchar('\n');
+            gs_outc('\n');
         }
         break;
     }
@@ -268,8 +270,8 @@ static void format_value_print(const value_t *v) {
         vbuf_t b = {0};
         value_format(v, VFMT_REPL, &b);
         if (b.p)
-            fputs(b.p, stdout);
-        putchar('\n');
+            gs_outs(b.p);
+        gs_outc('\n');
         vbuf_free(&b);
         break;
     }
@@ -278,8 +280,14 @@ static void format_value_print(const value_t *v) {
 
 // Public print surface for the script interpreter (REPL result
 // printing).
+// Printing reads attributes (an object renders as its attribute table),
+// so it runs on the emulator thread: a job hands it over (job/job.h).
+static void print_value_here(void *p) {
+    format_value_print((const value_t *)p);
+}
+
 void shell_print_value(const value_t *v) {
-    format_value_print(v);
+    job_on_emulator(print_value_here, (void *)v);
 }
 
 // Dispatch interactively and return integer result. The line runs
@@ -350,6 +358,7 @@ int shell_init(void) {
         return 0;
 
     log_init();
+    job_layer_init(); // this is the emulator thread
     shell_var_init();
 
     // Wire the Meta class's `complete(line, cursor)` method to the

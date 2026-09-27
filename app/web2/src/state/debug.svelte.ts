@@ -30,7 +30,7 @@ interface DebugState {
   /** Monotonic counter bumped after every Step Into / Step Over. The
    *  Debug panes watch this in their $effects in addition to
    *  machine.status — stepping while paused doesn't change run-state
-   *  (paused → paused, no onRunStateChange push), so we need a
+   *  (paused → paused, no mode event), so we need a
    *  reactive signal of "PC moved, re-fetch" to trigger refreshes. */
   refreshGen: number;
 }

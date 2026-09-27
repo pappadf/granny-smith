@@ -49,7 +49,7 @@
   });
 
   // Mounted-state mirror, kept in state/images.svelte.ts. This view's own
-  // insert/eject actions set it, and C's Module.onFloppyChange event clears a
+  // insert/eject actions set it, and the core's floppy event clears a
   // floppy badge when the guest ejects the disk on its own.
   function isMounted(entry: OpfsEntry): boolean {
     return isPathMounted(entry.path);

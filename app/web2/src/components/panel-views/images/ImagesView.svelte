@@ -9,7 +9,7 @@
 
   // Re-probe the floppy drive count when the panel opens (the active machine may
   // have changed) so a floppy badge can name its drive. Guest-initiated ejects
-  // are handled live by Module.onFloppyChange (bus/emulator.ts) — no polling.
+  // are handled live by the core's floppy event (bus/emulator.ts) — no polling.
   $effect(() => {
     void detectFdDriveCount(true);
   });

@@ -296,7 +296,7 @@ export async function stepInto(n = 1): Promise<void> {
   // debug.step runs N instructions through the frame loop (VBL and timers
   // keep running) and stops before it returns.
   if (!gsOk(await gsEval('debug.step', [n]))) return;
-  // The run starts and stops inside one call, so Module.onRunStateChange
+  // The run starts and stops inside one call, so the mode_started / mode_ended events
   // need not fire; bumping refreshGen makes the Debug panes re-fetch.
   bumpDebugRefresh();
 }

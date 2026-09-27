@@ -10,11 +10,14 @@
 //   v3 (GSCHKPT3) — whole-file RLE, no per-block metadata; used for quick checkpoints
 
 #include "checkpoint.h"
+#include "gs_out.h"
+
 #include "build_id.h"
 #include "object.h"
 #include "system.h"
 #include "value.h"
 #include "debug/log.h"
+#include "io/io_worker.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -50,8 +53,25 @@ LOG_USE_CATEGORY_NAME("ckpt");
 // on 32-bit (WASM) builds.
 #define CHECKPOINT_MAX_ALLOC ((size_t)1024 * 1024 * 1024)
 
-// Persistent write buffer for quick checkpoints (allocated once, reused)
+// Persistent write buffer for quick checkpoints (allocated once, reused).
+// Its real capacity is remembered next to it: buf_append grows the buffer
+// with realloc, and a checkpoint opened later must start from that grown
+// capacity, not from QUICK_BUF_CAPACITY, or every save on a machine larger
+// than 8 MB pays a shrink-then-regrow realloc (and its copies) again.
 static uint8_t *g_quick_write_buf = NULL;
+static size_t g_quick_write_cap = 0;
+
+// The quick save's header, laid down at the front of the buffer at close
+// so the whole file is one buffer the I/O worker can write and publish.
+#define QUICK_HDR_LEN (CHECKPOINT_MAGIC_LEN + BUILD_ID_LEN + MODEL_ID_LEN + 4 + 8 + 8)
+
+// The publish the next quick save will end with (checkpoint_publish_next),
+// and the one in flight on the worker: while it is, the buffer is the
+// worker's and a save that comes due is skipped and counted.
+static char g_publish_final[1024];
+static char g_publish_tmp[1024];
+static bool g_quick_in_flight = false;
+static uint32_t g_quick_skipped = 0;
 
 // === RLE Compression ===
 // Format: sequence of chunks, each either:
@@ -191,9 +211,12 @@ static bool buf_append(checkpoint_t *cp, const void *data, size_t len) {
         }
         cp->buf = new_buf;
         cp->buf_cap = new_cap;
-        // Update the static pointer so it stays valid for future checkpoints
-        if (!cp->buf_owned)
+        // Update the static pointer and capacity so future checkpoints start
+        // from the grown buffer instead of growing it again
+        if (!cp->buf_owned) {
             g_quick_write_buf = new_buf;
+            g_quick_write_cap = new_cap;
+        }
     }
     memcpy(cp->buf + cp->buf_used, data, len);
     cp->buf_used += len;
@@ -326,7 +349,7 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
         return NULL;
     // One byte more than claimed, and terminate unconditionally: the writer
     // includes its own NUL in `len`, but a hostile file need not, and the
-    // result is handed to access(), fopen() and printf("%s").
+    // result is handed to access(), fopen() and gs_outf("%s").
     char *buf = (char *)malloc((size_t)len + 1);
     if (!buf) {
         LOG(0, "Error: out of memory reading a %u-byte %s from checkpoint", len, what ? what : "string");
@@ -834,10 +857,17 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
     if (!cp)
         return NULL;
 
-    cp->file = fopen(filename, "wb");
-    if (!cp->file) {
-        free(cp);
-        return NULL;
+    // A quick save is written by the I/O worker at close (or inline by the
+    // same code); only the consolidated kind streams to a FILE here.
+    cp->file = NULL;
+    if (kind != CHECKPOINT_KIND_QUICK) {
+        cp->file = fopen(filename, "wb");
+        if (!cp->file) {
+            free(cp);
+            return NULL;
+        }
+    } else {
+        snprintf(g_publish_tmp, sizeof g_publish_tmp, "%s", filename);
     }
 
     cp->is_writing = true;
@@ -871,10 +901,11 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
                 free(cp);
                 return NULL;
             }
+            g_quick_write_cap = QUICK_BUF_CAPACITY;
         }
         cp->buf = g_quick_write_buf;
-        cp->buf_cap = QUICK_BUF_CAPACITY;
-        cp->buf_used = 0;
+        cp->buf_cap = g_quick_write_cap;
+        cp->buf_used = QUICK_HDR_LEN; // the header is filled in at close
         cp->buf_owned = false; // static buffer, not freed on close
     } else {
         // v2 consolidated: write magic + build ID + model ID immediately, data streamed per-block
@@ -931,6 +962,43 @@ uint32_t checkpoint_get_ram_size_kb(checkpoint_t *checkpoint) {
     return checkpoint->ram_size_kb;
 }
 
+// The system layer's report of a finished publish (system.c); a build
+// without it (a unit suite) hears nothing.
+__attribute__((weak)) void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
+    (void)ok;
+    (void)ms;
+    (void)error;
+}
+
+// The quick save's publish ended (emulator thread): the buffer is ours
+// again; the system layer hears about it.
+static void quick_written(bool ok, double ms, const char *error, void *ud) {
+    (void)ud;
+    g_quick_in_flight = false;
+    system_quick_checkpoint_written(ok, ms, error);
+}
+
+void checkpoint_publish_next(const char *final_path) {
+    snprintf(g_publish_final, sizeof g_publish_final, "%s", final_path ? final_path : "");
+}
+
+bool checkpoint_quick_in_flight(void) {
+    return g_quick_in_flight;
+}
+
+void checkpoint_quick_wait(void) {
+    while (g_quick_in_flight)
+        io_worker_wait_idle();
+}
+
+uint32_t checkpoint_quick_skipped(void) {
+    return g_quick_skipped;
+}
+
+void checkpoint_quick_note_skipped(void) {
+    g_quick_skipped++;
+}
+
 // Close a checkpoint and free its resources
 void checkpoint_close(checkpoint_t *checkpoint) {
     if (!checkpoint)
@@ -941,22 +1009,41 @@ void checkpoint_close(checkpoint_t *checkpoint) {
     // pass was never paying for itself.  Set compressed_size == uncompressed_size
     // on disk to mark the payload as raw.  v2 still RLE-encodes per block.
     if (checkpoint->is_writing && checkpoint->buf && !checkpoint->error) {
-        size_t raw_size = checkpoint->buf_used;
-        // Write v3 header: magic + build ID + model ID + ram_size_kb + uncompressed_size + compressed_size
-        fwrite(CHECKPOINT_MAGIC_V3, 1, CHECKPOINT_MAGIC_LEN, checkpoint->file);
-        fwrite(get_build_id(), 1, BUILD_ID_LEN, checkpoint->file);
-        fwrite(checkpoint->model_id, 1, MODEL_ID_LEN, checkpoint->file);
-        fwrite(&checkpoint->ram_size_kb, 1, sizeof(checkpoint->ram_size_kb), checkpoint->file);
-        uint64_t uc = (uint64_t)raw_size;
-        fwrite(&uc, 1, sizeof(uc), checkpoint->file);
-        uint64_t cs = (uint64_t)raw_size; // "compressed" size = raw size (no compression)
-        fwrite(&cs, 1, sizeof(cs), checkpoint->file);
-        // Write raw payload directly in one call
-        size_t w = fwrite(checkpoint->buf, 1, raw_size, checkpoint->file);
-        if (w != raw_size) {
-            LOG(0, "Error: v3 write failed (wrote %zu of %zu)", w, raw_size);
-            checkpoint->error = true;
+        size_t raw_size = checkpoint->buf_used - QUICK_HDR_LEN;
+        // The v3 header, at the front of the buffer: magic + build ID + model
+        // ID + ram_size_kb + uncompressed_size + compressed_size ("compressed"
+        // = raw: v3 skips RLE, the buffer being mostly uncompressible RAM).
+        uint8_t *h = checkpoint->buf;
+        memcpy(h, CHECKPOINT_MAGIC_V3, CHECKPOINT_MAGIC_LEN);
+        h += CHECKPOINT_MAGIC_LEN;
+        memcpy(h, get_build_id(), BUILD_ID_LEN);
+        h += BUILD_ID_LEN;
+        memcpy(h, checkpoint->model_id, MODEL_ID_LEN);
+        h += MODEL_ID_LEN;
+        memcpy(h, &checkpoint->ram_size_kb, sizeof(checkpoint->ram_size_kb));
+        h += sizeof(checkpoint->ram_size_kb);
+        uint64_t uc = (uint64_t)raw_size, cs = (uint64_t)raw_size;
+        memcpy(h, &uc, sizeof uc);
+        h += sizeof uc;
+        memcpy(h, &cs, sizeof cs);
+        // Publish: the whole buffer to the tmp path, renamed over the final
+        // one -- on the I/O worker when there is one (the buffer is its
+        // until the completion lands), else here.
+        const char *final = g_publish_final[0] ? g_publish_final : g_publish_tmp;
+        if (g_publish_final[0] &&
+            io_submit_publish(checkpoint->buf, checkpoint->buf_used, g_publish_tmp, final, quick_written, NULL)) {
+            g_quick_in_flight = true;
+        } else {
+            char err[160];
+            double t0 = io_now_ms();
+            int rc = io_write_publish(checkpoint->buf, checkpoint->buf_used, g_publish_tmp, final, err, sizeof err);
+            if (rc != 0) {
+                LOG(0, "Error: quick checkpoint write failed: %s", err);
+                checkpoint->error = true;
+            }
+            quick_written(rc == 0, io_now_ms() - t0, rc == 0 ? NULL : err, NULL);
         }
+        g_publish_final[0] = '\0';
     }
 
     // Free owned buffer (v3 read mode allocates its own buffer)
@@ -1377,6 +1464,7 @@ static value_t checkpoint_method_clear(struct object *self, const member_t *m, i
     (void)m;
     (void)argc;
     (void)argv;
+    checkpoint_quick_wait(); // a publish in flight lands first, or the clear would race its rename
     return val_bool(gs_checkpoint_clear() == 0);
 }
 
@@ -1395,6 +1483,7 @@ static value_t checkpoint_method_load(struct object *self, const member_t *m, in
     (void)self;
     (void)m;
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
+    checkpoint_quick_wait(); // load the file the publish in flight is about to complete
     return val_bool(system_checkpoint_load(path) == 0);
 }
 

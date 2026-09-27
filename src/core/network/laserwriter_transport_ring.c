@@ -26,6 +26,7 @@
 
 #include "laserwriter_ring_protocol.h"
 #include "log.h"
+#include "mailbox/mailbox_ring.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -50,12 +51,8 @@ typedef struct {
     void *cb_ctx;
     uint8_t *region; // the allocation; NULL until the first open
     volatile uint32_t *ctrl; // the control block (64-byte aligned inside region)
-    uint8_t *out; // outbound ring
-    uint8_t *in; // inbound ring
-    uint32_t out_size;
-    uint32_t in_size;
-    uint32_t out_wr; // outbound bytes written (monotonic; published as OUT_HEAD)
-    uint32_t in_rd; // inbound bytes consumed (monotonic; published as IN_TAIL)
+    mbx_ring_t out; // outbound ring (this side writes; OUT_HEAD / OUT_TAIL)
+    mbx_ring_t in; // inbound ring (this side reads; IN_HEAD / IN_TAIL)
     uint32_t job_id; // the job the bridge holds (0 = none); other ids' replies are dropped
     uint32_t outstanding; // the LWRING_R_* request awaiting its reply, 0 when none
     uint32_t outstanding_seq; // FEED: its sequence, for a failure report
@@ -89,12 +86,12 @@ __attribute__((weak)) void laserwriter_ring_notify(volatile uint32_t *addr) {
 // Reads a control word with acquire semantics (the other side's stores
 // before its publish are visible after).
 static inline uint32_t ring_load(int word) {
-    return __atomic_load_n(&g_ring.ctrl[word], __ATOMIC_ACQUIRE);
+    return mbx_load(g_ring.ctrl, word);
 }
 
 // Publishes a control word (release: our ring writes precede it).
 static inline void ring_store(int word, uint32_t v) {
-    __atomic_store_n(&g_ring.ctrl[word], v, __ATOMIC_SEQ_CST);
+    mbx_store(g_ring.ctrl, word, v);
 }
 
 // Allocates the region and asks the platform to attach the worker.
@@ -102,9 +99,9 @@ static bool ring_create(void) {
     if (g_ring.region)
         return true;
     uint32_t ctrl_bytes = LWRING_CTRL_WORDS * 4u;
-    g_ring.out_size = LWRING_OUT_BYTES;
-    g_ring.in_size = LWRING_IN_BYTES;
-    size_t bytes = LWRING_ALIGN + ctrl_bytes + g_ring.out_size + g_ring.in_size;
+    uint32_t out_size = LWRING_OUT_BYTES;
+    uint32_t in_size = LWRING_IN_BYTES;
+    size_t bytes = LWRING_ALIGN + ctrl_bytes + out_size + in_size;
     g_ring.region = (uint8_t *)calloc(1, bytes);
     if (!g_ring.region) {
         LOG(1, "laserwriter: cannot allocate the interpreter ring (%zu bytes)", bytes);
@@ -113,55 +110,36 @@ static bool ring_create(void) {
     // Align the control block inside the allocation
     uintptr_t base = ((uintptr_t)g_ring.region + (LWRING_ALIGN - 1u)) & ~(uintptr_t)(LWRING_ALIGN - 1u);
     g_ring.ctrl = (volatile uint32_t *)base;
-    g_ring.out = (uint8_t *)(base + ctrl_bytes);
-    g_ring.in = g_ring.out + g_ring.out_size;
-    g_ring.out_wr = 0;
-    g_ring.in_rd = 0;
+    uint8_t *out = (uint8_t *)(base + ctrl_bytes);
+    mbx_ring_init(&g_ring.out, g_ring.ctrl, LWRING_C_OUT_HEAD, LWRING_C_OUT_TAIL, out, out_size);
+    mbx_ring_init(&g_ring.in, g_ring.ctrl, LWRING_C_IN_HEAD, LWRING_C_IN_TAIL, out + out_size, in_size);
     for (int i = 0; i < LWRING_CTRL_WORDS; i++)
         g_ring.ctrl[i] = 0;
     g_ring.ctrl[LWRING_C_MAGIC] = LWRING_MAGIC;
     g_ring.ctrl[LWRING_C_VERSION] = LWRING_PROTOCOL_VERSION;
     g_ring.ctrl[LWRING_C_OUT_OFF] = ctrl_bytes;
-    g_ring.ctrl[LWRING_C_OUT_SIZE] = g_ring.out_size;
-    g_ring.ctrl[LWRING_C_IN_OFF] = ctrl_bytes + g_ring.out_size;
-    g_ring.ctrl[LWRING_C_IN_SIZE] = g_ring.in_size;
+    g_ring.ctrl[LWRING_C_OUT_SIZE] = out_size;
+    g_ring.ctrl[LWRING_C_IN_OFF] = ctrl_bytes + out_size;
+    g_ring.ctrl[LWRING_C_IN_SIZE] = in_size;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    LOG(2, "laserwriter: interpreter ring allocated (out %u KB, in %u KB); attach requested", g_ring.out_size >> 10,
-        g_ring.in_size >> 10);
+    LOG(2, "laserwriter: interpreter ring allocated (out %u KB, in %u KB); attach requested", out_size >> 10,
+        in_size >> 10);
     laserwriter_ring_attach_requested((uintptr_t)base);
     return true;
 }
 
 // Reserves `len` bytes (header included; rounded up to the 8-byte record
-// rule) for a record that does not wrap, writing a PAD first when needed;
-// returns the record's ring offset or UINT32_MAX when there is no room.
+// rule) for an outbound record; returns the payload pointer or NULL when
+// there is no room (the platen policy: a full ring fails the request).
 // Nothing is published until ring_publish.
-static uint32_t ring_reserve(uint32_t kind, uint32_t len) {
-    len = LWRING_PAD8(len);
-    uint32_t mask = g_ring.out_size - 1u;
-    uint32_t at = g_ring.out_wr & mask;
-    uint32_t pad = 0;
-    if (at + len > g_ring.out_size)
-        pad = g_ring.out_size - at; // a PAD record to the end first: at least 8 bytes, its header
-    uint32_t tail = ring_load(LWRING_C_OUT_TAIL);
-    uint32_t used = g_ring.out_wr - tail;
-    if (g_ring.out_size - used < pad + len)
-        return UINT32_MAX;
-    if (pad) {
-        WR_LE32(g_ring.out + at, LWRING_R_PAD);
-        WR_LE32(g_ring.out + at + 4, pad);
-        g_ring.out_wr += pad;
-        at = 0;
-    }
-    WR_LE32(g_ring.out + at, kind);
-    WR_LE32(g_ring.out + at + 4, len);
-    g_ring.out_wr += len;
-    return at;
+static uint8_t *ring_reserve(uint32_t kind, uint32_t len) {
+    uint32_t at = mbx_reserve(&g_ring.out, kind, len);
+    return at == UINT32_MAX ? NULL : mbx_payload(&g_ring.out, at);
 }
 
 // Publishes everything reserved so far and wakes the worker.
 static void ring_publish(void) {
-    ring_store(LWRING_C_OUT_HEAD, g_ring.out_wr);
+    mbx_publish(&g_ring.out);
     laserwriter_ring_notify(&g_ring.ctrl[LWRING_C_OUT_HEAD]);
 }
 
@@ -330,16 +308,15 @@ bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t 
         id_bytes += (uint32_t)strlen(cfg->identity[i].key) + 1u + (uint32_t)strlen(cfg->identity[i].value) + 1u;
     uint32_t body = 4u * LWRING_OPEN_WORDS + id_bytes + (uint32_t)cfg->prelude_len;
     uint32_t len = LWRING_PAD8(LWRING_HDR_BYTES + body);
-    if (len > g_ring.out_size / 2u) {
+    if (len > g_ring.out.size / 2u) {
         LOG(1, "laserwriter: job %u: open record (%u bytes) too large for the ring", (unsigned)job_id, (unsigned)len);
         return false;
     }
-    uint32_t at = ring_reserve(LWRING_R_OPEN, len);
-    if (at == UINT32_MAX) {
+    uint8_t *p = ring_reserve(LWRING_R_OPEN, len);
+    if (!p) {
         LOG(1, "laserwriter: job %u: no room in the interpreter ring for open", (unsigned)job_id);
         return false;
     }
-    uint8_t *p = g_ring.out + at + LWRING_HDR_BYTES;
     WR_LE32(p + 4 * LWRING_OPEN_JOB, job_id);
     WR_LE32(p + 4 * LWRING_OPEN_COMPRESS, cfg->compress ? 1u : 0u);
     WR_LE32(p + 4 * LWRING_OPEN_EMBED, cfg->embed_all_fonts ? 1u : 0u);
@@ -379,13 +356,12 @@ bool laserwriter_transport_feed(uint32_t job_id, uint32_t sequence, const uint8_
     if (g_ring.outstanding)
         return false;
     uint32_t rec = LWRING_PAD8(LWRING_HDR_BYTES + 4u * LWRING_FEED_WORDS + len);
-    uint32_t at = ring_reserve(LWRING_R_FEED, rec);
-    if (at == UINT32_MAX) {
+    uint8_t *p = ring_reserve(LWRING_R_FEED, rec);
+    if (!p) {
         LOG(1, "laserwriter: job %u: no room in the interpreter ring for feed seq=%u", (unsigned)job_id,
             (unsigned)sequence);
         return false;
     }
-    uint8_t *p = g_ring.out + at + LWRING_HDR_BYTES;
     WR_LE32(p + 4 * LWRING_FEED_JOB, job_id);
     WR_LE32(p + 4 * LWRING_FEED_SEQ, sequence);
     WR_LE32(p + 4 * LWRING_FEED_LEN, (uint32_t)len);
@@ -407,12 +383,11 @@ bool laserwriter_transport_finish(uint32_t job_id, const char *title) {
     uint32_t title_len = title ? (uint32_t)strlen(title) : 0u;
     if (title_len > LWRING_TITLE_MAX)
         title_len = LWRING_TITLE_MAX;
-    uint32_t at = ring_reserve(LWRING_R_FINISH, LWRING_HDR_BYTES + 4u * LWRING_FINISH_WORDS + LWRING_PAD4(title_len));
-    if (at == UINT32_MAX) {
+    uint8_t *p = ring_reserve(LWRING_R_FINISH, LWRING_HDR_BYTES + 4u * LWRING_FINISH_WORDS + LWRING_PAD4(title_len));
+    if (!p) {
         LOG(1, "laserwriter: job %u: no room in the interpreter ring for finish", (unsigned)job_id);
         return false;
     }
-    uint8_t *p = g_ring.out + at + LWRING_HDR_BYTES;
     WR_LE32(p + 4 * LWRING_FINISH_JOB, job_id);
     WR_LE32(p + 4 * LWRING_FINISH_TITLE_LEN, title_len);
     if (title_len)
@@ -428,40 +403,36 @@ void laserwriter_transport_abandon(uint32_t job_id) {
     // Whatever the worker answers for this job from now on is dropped
     g_ring.job_id = 0;
     g_ring.outstanding = 0;
-    uint32_t at = ring_reserve(LWRING_R_ABANDON, LWRING_HDR_BYTES + 4u * LWRING_ABANDON_WORDS);
-    if (at == UINT32_MAX) {
+    uint8_t *p = ring_reserve(LWRING_R_ABANDON, LWRING_HDR_BYTES + 4u * LWRING_ABANDON_WORDS);
+    if (!p) {
         // The worker will meet the next OPEN with this job still alive; it frees on its own open
         LOG(1, "laserwriter: job %u: no room in the interpreter ring for abandon", (unsigned)job_id);
         return;
     }
-    WR_LE32(g_ring.out + at + LWRING_HDR_BYTES + 4 * LWRING_ABANDON_JOB, job_id);
+    WR_LE32(p + 4 * LWRING_ABANDON_JOB, job_id);
     ring_publish();
 }
 
 void laserwriter_transport_poll(void) {
     if (!g_ring.region)
         return;
-    uint32_t mask = g_ring.in_size - 1u;
     bool consumed = false;
     for (;;) {
         uint32_t head = ring_load(LWRING_C_IN_HEAD);
-        if (head - g_ring.in_rd < LWRING_HDR_BYTES)
+        mbx_rec_t rec;
+        int got = mbx_next(&g_ring.in, head, &rec);
+        if (got == 0)
             break;
-        uint32_t at = g_ring.in_rd & mask;
-        uint32_t kind = RD_LE32(g_ring.in + at);
-        uint32_t len = RD_LE32(g_ring.in + at + 4);
-        if (len < LWRING_HDR_BYTES || (len & 7u) || at + len > g_ring.in_size || head - g_ring.in_rd < len) {
+        if (got < 0) {
             // The worker's framing is broken: nothing after this can be trusted
-            LOG(1, "laserwriter: inbound ring corrupt (kind %u len %u at %u); worker lost", (unsigned)kind,
-                (unsigned)len, (unsigned)at);
+            LOG(1, "laserwriter: inbound ring corrupt; worker lost");
             ring_store(LWRING_C_STATUS, LWRING_STATUS_LOST);
-            g_ring.in_rd = head;
+            mbx_abandon(&g_ring.in, head);
             break;
         }
-        if (kind != LWRING_R_PAD)
-            ring_dispatch(kind, g_ring.in + at + LWRING_HDR_BYTES, len - LWRING_HDR_BYTES);
-        g_ring.in_rd += len;
-        ring_store(LWRING_C_IN_TAIL, g_ring.in_rd);
+        if (rec.kind != LWRING_R_PAD)
+            ring_dispatch(rec.kind, mbx_rec_payload(&g_ring.in, &rec), rec.len - LWRING_HDR_BYTES);
+        mbx_consume(&g_ring.in, &rec);
         consumed = true;
     }
     if (consumed)

@@ -161,6 +161,19 @@ bool checkpoint_validate_build_id(const char *filename);
 
 struct class_desc;
 
+// The quick save's publish.  checkpoint_publish_next names the file the
+// next quick save is renamed over at close; the write itself runs on the
+// I/O worker (io/io_worker.h) when there is one, and while it is in flight
+// the quick buffer is the worker's: checkpoint_quick_in_flight says so, a
+// save due meanwhile is skipped (counted), and a caller that must see the
+// file complete (a snapshot, a load, a clear) waits with
+// checkpoint_quick_wait, bounded by that one write.
+void checkpoint_publish_next(const char *final_path);
+bool checkpoint_quick_in_flight(void);
+void checkpoint_quick_wait(void);
+uint32_t checkpoint_quick_skipped(void);
+void checkpoint_quick_note_skipped(void);
+
 void checkpoint_init(void);
 void checkpoint_delete(void);
 
