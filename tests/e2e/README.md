@@ -39,6 +39,7 @@ tests/e2e/
 │   ├── filesystem-tab.spec.ts           # Filesystem tab: descend image, copy/move/rename/unpack
 │   ├── iicx-video-modes.spec.ts         # Post-shader WebGL canvas baselines (per monitor × depth)
 │   ├── iifx-aux3-realtime.spec.ts       # A/UX 3.0.1 boot to login under the real RAF scheduler
+│   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
 │   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
 │   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance
 │   ├── pci-prom-ingest.spec.ts          # A 9500 configured on an uploaded PCI display card; the .prom survives a reload
