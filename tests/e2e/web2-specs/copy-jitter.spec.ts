@@ -61,7 +61,17 @@ test('request round trips while a 192 MB copy runs', async ({ page }) => {
   const during = await probe(20_000);
   await expect(page.locator('.xterm-rows')).toContainText('copied 1 file(s)', { timeout: 240_000 });
   const copyMs = Date.now() - t0;
-  const line = JSON.stringify({ copyBytes: 192 * 1024 * 1024, copyMs, baseline, during });
+  // The core's own view (this build's perf events): the longest tick and
+  // the longest drain per second, over the last 64 events.
+  const perf = await page.evaluate(() => {
+    const evs =
+      (window as unknown as { __gsCoreEvents?: Array<{ event: string; data: Record<string, unknown> }> })
+        .__gsCoreEvents ?? [];
+    return evs
+      .filter((e) => e.event === 'perf')
+      .map((e) => ({ tickMax: e.data.tick_max_ms, pollMax: e.data.poll_max_ms, mips: e.data.mips }));
+  });
+  const line = JSON.stringify({ copyBytes: 192 * 1024 * 1024, copyMs, baseline, during, perf });
   console.log(`copy-jitter ${line}`);
   if (process.env.GS_MEASURE_OUT) fs.appendFileSync(process.env.GS_MEASURE_OUT, line + '\n');
   expect(during.samples).toBeGreaterThan(10);

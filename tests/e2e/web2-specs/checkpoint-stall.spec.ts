@@ -44,6 +44,10 @@ for (const ramKb of [32768, 131072]) {
     await page.waitForTimeout(3_000);
     await typeLine(page, 'machine.scsi.attach_hd "/opfs/images/hd/cp.img" 0');
     await page.waitForTimeout(3_000);
+    // A terminal boot carries no checkpoint identity (the page registers one
+    // once at module ready, before its own boots); give this machine one.
+    await typeLine(page, 'machine.register "measure" "2026-09-27T00:00:00Z"');
+    await page.waitForTimeout(1_000);
     await typeLine(page, 'checkpoint.auto = true');
     await page.waitForTimeout(1_000);
 
