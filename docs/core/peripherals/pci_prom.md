@@ -149,12 +149,10 @@ boots.
   ("requires a display card in a PCI slot") when no `.prom` has been
   uploaded, rather than offering an empty picker.
 
-Fixtures live in `gs-test-data`'s flat `roms/` directory under the naming
-grammar in `scripts/rom_naming.py`:
-
-```
-<card-id, _ -> ->[-<rev>]-<crc8>.prom     e.g. mach64-gx-104-437584e0.prom
-```
+Fixtures live in `gs-test-data`'s flat `roms/` directory, e.g.
+`mach64-gx-104-437584e0.prom`. The names are labels only: what a file is
+comes from `prom.identify`, and the `rom-catalog` integration row checks
+that every file there is recognised.
 
 ## Object surface
 

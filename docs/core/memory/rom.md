@@ -252,34 +252,82 @@ writing; the function names are the stable reference.
 
 | Kind | Identity | Gates before the identity is trusted | Catalog |
 |---|---|---|---|
-| CPU ROM | The **stored checksum** at `$00` (§2) | None beyond reading the file. The computed sum is checked over `checksum_span` (3 MB of the 4 MB PowerPC images), but a mismatch only prints a warning (`rom_identify_data`, `src/core/memory/rom.c:174-203`) | `ROM_TABLE` (`rom.c:72`): checksum → family name, compatible models, size, span |
-| Lisa / Macintosh XL boot ROM | The Mac-style **computed** checksum of the 16 KB interleaved image. The first longword is always the reset SSP `$00000480`, so the stored checksum cannot serve | Exactly 16 KB, the first longword `$00000480`, and a known version word at `$3FFC` (`rom_identify_lisa`, `rom.c:135`) | `LISA_ROM_TABLE` (`rom.c:116`) |
+| CPU ROM | The ROM's own **stored checksum field(s)**, read verbatim (§10.1.1) | None beyond reading the file. The self-check (`intact`) is reported, and gates naming: a damaged dump keeps its id but is never stored by it (`rom_identify_data`, `src/core/memory/rom.c`) | `rom_table` (`src/core/memory/rom_table.c`): id → family name, compatible models, size, per-row exceptions |
 | vROM (NuBus declaration ROM) | The Format Block **CRC**, read from the last 12 bytes of the chip image ([nubus_vrom.md §2](../peripherals/nubus_vrom.md)) | Size 32 KB or 64 KB, and the `$5A932BC7` TestPattern (`vrom_identify_core`, `src/core/memory/vrom.c:113`) | `VROM_CATALOG` (`vrom.c:82`): CRC → card-kind id, plus a `preferred` bit |
 | PROM (PCI expansion ROM) | **CRC-32 of the whole chip image** | Power-of-two size between 2 KB and 256 KB, `$55AA`, a `PCIR` structure, Open Firmware code type, and an FCode start token ([pci_prom.md](../peripherals/pci_prom.md#the-gates)) | `PROM_CATALOG` (`src/core/memory/prom.c`): CRC → card-kind id, plus `preferred` |
 
 A CPU ROM does not choose the machine. The Universal ROM, for example,
 lists `se30`, `iicx` and `iix`, so the caller names the model and the ROM
-only has to be compatible with it (`rom.c:4-12`). The ROMs the emulator
-recognises:
+only has to be compatible with it (`rom.c`, file header).
 
-| Stored checksum | Compatible models |
+#### 10.1.1 The CPU ROM id and self-check
+
+Every family the emulator knows carries its own checksum. The id is those
+stored field(s) as lowercase hex; `intact` is the same checksum recomputed
+over the bytes (`identity_eval`, `rom.c`). The kind is a content rule, so
+an unknown ROM gets an id and a verdict too:
+
+| Kind | Rule | `id` | Self-check |
+|---|---|---|---|
+| `lisa` | 16 KB, first longword `$00000480` (the reset SSP) | the check word at `$3FFE`: `3f7b` | the boot ROM's own first diagnostic: add each word from `$0000` and rotate left one bit, up to `$3FFE`, then add the check word; an intact ROM leaves zero (Lisa Boot ROM source, rev 2H, `ROMTST`) |
+| `ppc` | exactly 4 MiB | the header sum at `$00`, a dash, the ConfigInfo 64-bit sum: `9feb69b3-dedc602cfc3b9221` | the header sum over `[4, $300000)` (the 68k half) **and** the 64-bit sum of big-endian doublewords over the whole image except the 40-byte ConfigInfo record |
+| `mac68k` | anything else with an even size of at least 8 bytes | the header sum at `$00`: `4d1f8172` | the header sum over `[4, size)` (§3) |
+
+The Old World PowerPC ROMs keep, at `$300000 + BE32[$300080]`, a 40-byte
+record Apple's source calls `NKConfigurationInfo`: eight 32-bit byte-lane
+sums (`ROMCheckSumByte0..7`) followed by the 64-bit sum (`ROMCheckSum64`),
+both over the entire image. Apple defined the record in internal source and
+never published it. The header sum covers only the 68k half, so it cannot
+tell apart two ROMs whose first 3 MiB agree — three Apple Network Server
+ROMs share `962F6C13`, and the ANS 2.26B6 ROM shares `9630C68B` with the
+Power Macintosh 9500 v2 ROM — nor see damage in the last megabyte. The
+64-bit part of the id does both. When it fails, the reason names the byte
+lanes whose recomputed sum differs, which narrows a bad dump to a chip.
+
+Why a *stored* label and not a computed one: a dump either passes its
+self-check, and then the recomputed sums equal the stored fields by
+definition, or it fails, and then nothing is ever named by its id (the
+browser refuses it). Under that gate the two schemes agree on everything
+that is stored, and the stored label keeps the one thing a damaged dump
+still knows — which ROM it was meant to be — so the refusal can say so.
+
+Two known ROMs need a per-row exception, applied only when the id matches
+their row: the Classic, whose header sum stops at 256 KB where its built-in
+ROM disk starts (`checksum_span`), and the Bandai Pippin ROMs, whose
+ConfigInfo sums cover some other range (`ROM_F_NO_SUM64`: only the 68k half
+is verified).
+
+#### 10.1.2 The ROM table
+
+`rom_table.c` lists every CPU ROM the emulator knows about — about 135,
+from images verified here, a published list of ROM checksum fields, and
+published checksum values alone — each with the emulated models it boots.
+An empty model list marks a real ROM for a machine that is not emulated:
+`rom.identify` reports it `recognised` but not `supported`, `machine.boot`
+and headless refuse it by name, and the browser refuses the upload by
+name. Adding a machine model means adding its id to the compatible lists
+of the ROMs it runs. The supported ROMs:
+
+| Id | Compatible models |
 |---|---|
-| `4D1EEEE1`, `4D1EEAE1`, `4D1F8172` | `plus` |
+| `4d1eeee1`, `4d1eeae1`, `4d1f8172` | `plus` |
 | `97221136` | `se30`, `iicx`, `iix` |
-| `4147DD77` | `iifx` |
-| `368CADFE` | `iici` |
-| `36B7FB6C` | `iisi` |
-| `420DBFF3` | `q700`, `q900` |
-| `3DC27823` | `q950` |
-| `5BF10FD1` | `q840av`, `q660av` |
-| `9FEB69B3` | `pm6100`, `pm7100`, `pm8100` |
-| `96CD923D`, `9630C68B` | `pm7500`, `pm8500`, `pm9500` |
-| `962F6C13`, `49B2BE8F` | `ans500`, `ans700` |
-| `098917B2` (computed) | `lisa` |
-| `094C82F0` (computed) | `macxl` |
+| `4147dd77` | `iifx` |
+| `368cadfe` | `iici` |
+| `36b7fb6c` | `iisi` |
+| `420dbff3` | `q700`, `q900` |
+| `3dc27823` | `q950` |
+| `5bf10fd1` | `q840av`, `q660av` |
+| `9feb69b3-dedc602cfc3b9221` | `pm6100`, `pm7100`, `pm8100` |
+| `9b7a3aad-ed510ac937721e25` (newer "Boot PDM 601 1.1" ROM) | `pm7100` |
+| `96cd923d-c241cd82bf90797a` (v1), `9630c68b-4db4a42fea3b53b3` (v2) | `pm7500`, `pm8500`, `pm9500` |
+| `962f6c13-c60da96de537f08a` (OF 1.1.20.1), `962f6c13-d540b3dd5bcf9caa` (OF 1.1.22), `962f6c13-50348b3d0126096b` (OF 2.26NT), `9630c68b-a71fb907dd180b8a` (OF 2.26B6), `49b2be8f-5f2aeeb25507b2cb` (2.0 prototype, Mac OS) | `ans500`, `ans700` |
+| `3f7b` | `lisa` |
+| `d905` | `macxl` |
 
 The production Network Server ROM carries the same version fields as the
-9500 v2 ROM. Only the checksum tells the two apart (`rom.c:62-67`).
+9500 v2 ROM, so a ROM is never identified by its version: only the full
+id tells these apart.
 
 A vROM that is not an Apple dump can still be recognised structurally: an
 image produced by one of the emulator's own generic cards is identified by
@@ -293,7 +341,7 @@ identify:
 
 | Method | Answer |
 |---|---|
-| `machine.rom.identify(path)` | `{recognised, compatible, checksum, name, size}`, with `checksum` as 8 uppercase hex digits (`rom.c:532`) |
+| `machine.rom.identify(path)` | `{recognised, supported, compatible, name, size, kind, id, intact, reason}` (`rom_method_identify`, `rom.c`). An unrecognised file still reports `kind`, `id`, `intact` and `reason`; `reason` is empty when intact and otherwise names what does not verify ("PowerPC section does not verify (byte lanes 2)") |
 | `machine.vrom.identify(path)` | `{recognised, card_id?, compatible?, size, crc}`, with `crc` as `0x` plus 8 lowercase hex digits (`vrom.c:320`) |
 | `machine.prom.identify(path)` | `{recognised, card_id?, compatible?, vendor_id?, device_id?, size, crc, reason?}` (`prom.c`, `prom_method_identify`) |
 
@@ -302,27 +350,31 @@ identify:
 `machine.boot rom=` (and `rom.load`) take a **filesystem path**. Nothing
 searches for it or looks it up in a registry. A relative path resolves
 against the process's working directory. At boot the file must be
-readable, must identify through `ROM_TABLE`/`LISA_ROM_TABLE`, and must list
-the requested model as compatible. The two-chip Lisa form (`rom2=`) skips
-the per-file identification (`machine_boot_apply`,
-`src/machines/machine.c:873-899`). Once the new machine is constructed,
-`rom_load_into_machine` copies the bytes into the ROM region. A file of the
-wrong size is truncated or padded, with a warning (`rom.c:376-379`). The
-path and the identity checksum go into the built-from record as
-`machine.config.rom` and `machine.config.rom_crc` (`machine.c:1107-1108`).
+readable, must identify through `rom_table`, must boot at least one
+emulated model, and must list the requested model as compatible. The
+two-chip Lisa form (`rom2=`) skips the per-file identification
+(`machine_boot_apply`, `src/machines/machine.c`). Once the new machine is
+constructed, `rom_load_into_machine` copies the bytes into the ROM region.
+A file of the wrong size is truncated or padded, with a warning. A damaged
+ROM (not `intact`) still loads, with a warning naming the part that does
+not verify: research on damaged or hand-edited images is a legitimate
+headless use. The path and the id go into the built-from record as
+`machine.config.rom` and `machine.config.rom_id`.
 
 `rom.load(path)` swaps the ROM of the running machine. If the ROM is not
 listed as compatible with the model it only warns, then loads anyway,
-writes the new path and checksum into the record so `machine.restart`
+writes the new path and id into the record so `machine.restart`
 rebuilds with it, and resets the CPU from the new vectors
-(`install_rom_into_machine`, `rom.c:346-410`).
+(`install_rom_into_machine`, `rom.c`).
 
-`machine.rom.checksum` is **not** the identity. It is the sum computed
-over the whole loaded ROM region (`calculate_checksum`,
-`src/core/memory/memory.c:1349`). The two agree only when the stored
-checksum covers the whole image, which is not the case for the 4 MB
-PowerPC ROMs (span 3 MB). The identity of the loaded ROM is
-`machine.config.rom_crc`.
+`machine.rom.id`, `machine.rom.intact` and `machine.rom.name` describe the
+loaded ROM by running the same identification over the ROM region, so
+`rom.id` always equals what `rom.identify` said about the file and what
+`machine.config.rom_id` records.
+
+The Lisa two-chip loader (`rom_load_lisa_pair`) picks the high/low chip
+orientation whose interleave passes the boot ROM's own self-check; the check
+covers both chips, so a swapped pair never passes it.
 
 ### 10.3 Card ROMs: the offer registry
 
@@ -369,12 +421,14 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
 
 | | Headless (`src/platform/headless/headless_main.c`) | Browser (`app/web2`, `src/platform/wasm/em_main.c`) |
 |---|---|---|
-| CPU ROM | The `rom=` argument on the command line, which must identify. `model=` picks among the compatible models and otherwise defaults to the first (`headless_main.c:1297-1326`). A script names further ROMs by path in its own `machine.boot rom=`. The integration runner exports the startup path as `$ROM` (`scripts/run-integration-test.sh:154-164`). | Stored in OPFS as `/opfs/images/rom/<checksum>`, named by the 8 uppercase hex digits `rom.identify` reports (`app/web2/src/lib/media.ts:153-156`). The configuration dialog lists that directory and identifies each file. A dropped ROM boots its first compatible model if no machine is running (`maybeBootFromRom`, `app/web2/src/bus/upload.ts:440`). A URL `?rom=` is fetched, stored, and booted, using the URL's `model=` when it is compatible (`app/web2/src/bus/urlMedia.ts:119-134`). |
+| CPU ROM | The `rom=` argument on the command line, which must identify. `model=` picks among the compatible models and otherwise defaults to the first (`headless_main.c:1297-1326`). A script names further ROMs by path in its own `machine.boot rom=`. The integration runner exports the startup path as `$ROM` (`scripts/run-integration-test.sh:154-164`). | Stored in OPFS as `/opfs/images/rom/<id>`, named by the content id `rom.identify` reports, and only when the ROM is `intact` and `supported`: a damaged dump or a ROM of an unemulated machine is refused with a message saying which (`app/web2/src/lib/media.ts`, the `rom` descriptor). The configuration dialog lists that directory and identifies each file. A dropped ROM boots its first compatible model if no machine is running (`maybeBootFromRom`, `app/web2/src/bus/upload.ts:440`). A URL `?rom=` is fetched, stored, and booted, using the URL's `model=` when it is compatible (`app/web2/src/bus/urlMedia.ts:119-134`). |
 | vROM | Before the startup boot, every `*.vrom` in the directory of the command-line ROM is offered (`offer_sibling_card_roms`, `headless_main.c`), and `machine_boot_apply` repeats the walk for the directory of every ROM a script boots, through `platform_offer_sibling_card_roms` (platform.h; the browser's implementation is a no-op) — a `machine.boot rom=<elsewhere>` used to find none of the card ROMs beside it (#187). | Every file in `/opfs/images/vrom/` is offered at startup, whatever its name (`em_main.c:724`). An upload is stored as `<crc>`, 8 lowercase hex digits (`media.ts:180`), and offered at once through `machine.vrom.offer` (`upload.ts:397`). |
 | PROM | The same offer pass for `*.prom` (`headless_main.c:946`). | The same, from `/opfs/images/prom/` (`em_main.c:729`; `upload.ts:401`). |
 
 In the browser, a dropped file is classified by trying the
-identifiers in the order `rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd` (`upload.ts:304`).
+identifiers in the order `rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd` (`upload.ts`, `probeAndPersist`).
+A descriptor that recognises the file but refuses it (`reject`) ends the
+probe with that message, so a refused ROM is never stored as a disk image.
 vROM and PROM cannot claim each other's files, because they identify from
 opposite ends of the image.
 
@@ -385,27 +439,14 @@ directory's `*.vrom`/`*.prom` visible. It has to offer them
 (`machine.vrom.offer`/`machine.prom.offer`) or name one with
 `vrom=`/`prom=`.
 
-### 10.5 Fixture naming: `scripts/rom_naming.py`
+### 10.5 Test-data filenames
 
 The ROM fixtures in `tests/data/roms` (a copy of `gs-test-data`; see
-[TEST_DATA.md](../../guide/TEST_DATA.md)) are read by people, so they use
-a readable canonical grammar keyed on the content identity:
-
-```
-<targets>[-<rev>]-<checksum8>.rom          iix-iicx-se30-97221136.rom
-<card-id, _ -> ->[-<rev>]-<crc8>.vrom      mdc-8-24-revb-d1629664.vrom
-<card-id, _ -> ->[-<rev>]-<crc8>.prom      mach64-gx-104-437584e0.prom
-```
-
-The `<targets>` and `<rev>` parts are facts about the hardware or its
-history that the bytes cannot supply, so the grammar comes down to one
-table, `CANONICAL_NAMES`, mapping a content id to a basename. The content
-id is 8 lowercase hex digits: the stored checksum for CPU ROMs (the
-computed one for the Lisa/XL), the Format Block CRC for vROMs, and the
-whole-image CRC-32 for PROMs. `canonical_name()` also accepts the
-`0x`-prefixed and uppercase forms that the identify surfaces emit. The
-table's consumers are `scripts/rom-manifest.sh` and the
-`tests/integration/rom-naming` conformance row. The emulator never reads
-it, and the browser store does not use it either: it names files by the
-bare content id.
-
+[TEST_DATA.md](../../guide/TEST_DATA.md)) have readable names such as
+`iix-iicx-se30-97221136.rom`, but the names are labels for the people who
+write `TEST_ROM :=`: nothing parses them and nothing checks them against a
+grammar. What a file is comes from the identify surfaces alone. The
+`tests/integration/rom-catalog` row checks that every file there is
+recognised, and every CPU ROM intact and supported; `scripts/rom-manifest.sh`
+and `scripts/test-matrix.py` ask `gs-headless` rather than reading
+filenames. Only the browser store gives a ROM a canonical name, its id.

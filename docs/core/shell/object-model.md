@@ -604,7 +604,7 @@ old machine keeps running.
 | Argument | Kind | Default | Meaning and validation |
 |---|---|---|---|
 | `model` | string | **required** | Machine model id (`machine.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
-| `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by checksum, as a ROM whose compatible list contains `model` ([rom.md §10](../memory/rom.md#10-rom-provisioning); `machine.c:873-899`). |
+| `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by content id, as a known ROM whose compatible list contains `model` ([rom.md §10](../memory/rom.md#10-rom-provisioning); `machine.c:873-899`). |
 | `ram` | uint (KB) | the model's `ram_default` | Must be one of the model's `ram_options` (`ram_option_allowed`, `machine.c:700`, checked at `863-871`). |
 | `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
 | `vrom` | string | resolved from the offers | An explicit NuBus declaration-ROM pick. The file must identify as a known declaration ROM (`vrom_identify_card`, `machine.c:964-969`). It then wins the pick order for the card its content provides. |
@@ -628,7 +628,7 @@ and a soldered-down card such as the SE/30's onboard video synthesises its
 own declaration ROM.
 
 The resolved configuration is recorded in `machine.config` (`model`,
-`ram`, `rom`, `rom_crc`, `rom2`, `vrom`, `vroms`, `slot_cards`,
+`ram`, `rom`, `rom_id`, `rom2`, `vrom`, `vroms`, `slot_cards`,
 `video_card`, `video_sense`, `video_mode`, `custom_mode`, `monitor`,
 `pci_card`, `prom`, `pci_option`, `created`, `valid`;
 `src/core/machine_config.c`). `machine.restart` and `checkpoint.load`
