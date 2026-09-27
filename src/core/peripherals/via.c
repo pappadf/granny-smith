@@ -607,7 +607,26 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
             remove_event(via->scheduler, &sr_shift_complete_callback, via);
             // 8 VIA clock cycles (= 80 CPU cycles) for internal clock modes;
             // external-clock modes complete when the device drives CB1.
-            scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, via_cycles_to_cpu(via, 8), 0);
+            //
+            // Mode 7 with no shift-out device registered: nothing here models
+            // the CB1 clock, so the byte stays pending until the peripheral
+            // that owns CB1 completes it through via_input_sr() -- on the
+            // VIA-transceiver ADB machines (SE/30, IIcx, IIci, Q700) that is
+            // adb.c's shift_complete event, timed from the port-B CMD write.
+            // The fallback timer used to be scheduled here as well and relied
+            // on adb.c cancelling it at that CMD write; but the ROM writes SR
+            // ~120 CPU cycles before port B, and 8 VIA cycles is ~160, so on
+            // the wrong E-clock phase the timer fired first, IFR_SR was set
+            // before the command was even started, and the ROM took the
+            // command byte's echo as the reply's first data byte (issue #122:
+            // a $3C "Talk R0" byte read as button-down).  A machine with a
+            // device on the shift-out side (the Plus keyboard, Egret, Cuda)
+            // keeps the timer: for those the timer IS the external clock.
+            if (((via->acr >> 2) & 7) == 7 && !via->shift_cb)
+                LOG(3, "via SR write: mode 7 with no shift-out device; completion waits for via_input_sr");
+            else
+                scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, via_cycles_to_cpu(via, 8),
+                                        0);
         } else {
             LOG(3, "via SR write: value=0x%02x (shift in mode, not sent)", value);
         }

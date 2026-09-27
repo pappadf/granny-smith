@@ -1,0 +1,52 @@
+# Integration test: IIcx ADB no-reply Talk must not post a button event
+# (issue #122).  The click sequence is the first half of iicx-mactest
+# (Options > Test Selections, two checkboxes, OK), which is where the
+# stale button-down surfaced: MBState ($0172) flipped to $00 tens of
+# millions of instructions after a release with no mouse report behind it.
+# Every release here is followed by a 100 M-instruction window in which
+# MBState must read $80 at both ends; the window covers the ~12 ms poll
+# cadence many times over, so a single bad no-reply Talk shows up.
+#
+# No goldens: the facts asserted are the guest's own globals, so the row
+# is independent of the dialog's pixels.
+
+machine.boot model="iicx" ram=4096 video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.floppy.drive[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
+
+machine.scc.loopback = true
+machine.scsi.loopback = true
+
+# Boot past Happy Mac through splash screens to MacTest's main UI.
+scheduler.run 200000000
+assert machine.id == "iicx" "machine.id != iicx"
+
+# Press, release, then check that no button-down is posted behind the
+# release: MBState must be $80 right after the release settles and still
+# $80 a poll-rich window later.
+def click_and_check(label, x, y, hold, settle) {
+    machine.adb.mouse.move $x $y "global"
+    scheduler.run 5000000
+    machine.adb.mouse.click true
+    scheduler.run $hold
+    assert debug.mac.globals.read("MBState") == 0x00 "${$label}: press not seen (MBState != $00)"
+    machine.adb.mouse.click false
+    scheduler.run 5000000
+    assert debug.mac.globals.read("MBState") == 0x80 "${$label}: release not seen (MBState != $80)"
+    scheduler.run $settle
+    assert debug.mac.globals.read("MBState") == 0x80 "${$label}: stale button-down re-posted after release (MBState == $00)"
+    echo "${$label}: ok at ${machine.cpu.instr_count}"
+}
+
+# Options > Test Selections (menu title at x~115, first item at y~28).
+click_and_check("options-menu", 115, 10, 20000000, 100000000)
+# Let the dialog paint.
+scheduler.run 160000000
+assert debug.mac.globals.read("MBState") == 0x80 "dialog settle: MBState != $80"
+
+# Empty dialog area, the Keyboard and Mouse checkboxes, then OK.
+click_and_check("dialog-blank", 400, 90, 5000000, 100000000)
+click_and_check("keyboard-checkbox", 130, 305, 5000000, 100000000)
+click_and_check("mouse-checkbox", 130, 325, 5000000, 100000000)
+click_and_check("ok-button", 560, 385, 5000000, 100000000)
+
+quit
