@@ -11,6 +11,9 @@
 #   tnt-voodoo2-display  pm8500 + a Voodoo2 in A1: the card takes the
 #                    monitor from Control's live desktop and gives it back
 #                    byte-identical.
+#   pm7500-76-8bpp-restart  pm7500 with the display pinned to 256 colours
+#                    in the Grand Central NVRAM, power-cycled: the second
+#                    boot reaches the Finder at 640x480 8 bpp (#115).
 #
 # ---- the boot chain (tnt_hd_boot) -------------------------------------------
 # The boot-driver selection matches (XPRAM $77 "Default OS" = 1 through the
@@ -295,6 +298,62 @@ def row_tnt_voodoo2_display() {
     report_perf("suite-tnt/tnt-voodoo2-display", scheduler.instr_count)
 }
 
+# ---- pm7500-76-8bpp-restart -------------------------------------------------
+# The 256-colour restart (#115) — which was never about the colours.  A
+# boot on a store that already carries POST's "RobG" log (every boot but
+# the first on a formatted store) has POST test BoxID bit 8, and with the
+# factory-test strap modelled clear it parked in the ROM's Serial Test
+# Manager before Open Firmware ran: no device tree, no BARs, a black
+# screen.  Choosing 256 Colours was simply what made the reporter restart
+# (docs/machines/tnt/tnt.md, "Machine identity").  This row is the
+# regression hold for that law AND the depth lever the issue asked for:
+# the Monitors depth lives neither on the disk nor in the Cuda PRAM but in
+# Grand Central's NVRAM, in the Control driver's persistent `gprf` Name
+# Registry record (the offsets below were found by diffing `machine.nvram`
+# before and after one click on 256 Colours).  The row boots once so Open
+# Firmware formats the store and Mac OS writes the record, pins the depth
+# byte through `machine.nvram` — the lever the 68k rows have in
+# `machine.rtc.pram.poke` — and power-cycles.  The store follows the power
+# switch (machine.restart carries it; machine.boot would hand the new
+# machine a blank one), so the second boot is exactly the one a real owner
+# gets after choosing 256 Colours and restarting: POST takes the warm-log
+# path, Open Firmware assigns Control's BARs, the ndrv programs the 8 bpp
+# mode, and System 7.6 draws its desktop through the CLUT.
+let GPRF_TAG   = 0x1409 # the 4-byte property name "gprf"
+let GPRF_DEPTH = 0x1410 # depth index inside the record: 0 = 256 colours, 2 = millions
+def row_pm7500_76_8bpp_restart() {
+    tnt_hd_boot("pm7500", "", 2500000000)
+    assert machine.screen.depth == 32 "the first boot is the default millions-of-colours desktop"
+
+    # The record the ndrv saved on this first boot, where this ROM's Name
+    # Registry put it — a layout shift fails here, not as a silent no-op.
+    assert machine.nvram.peek($GPRF_TAG) == 0x67 && machine.nvram.peek($GPRF_TAG + 1) == 0x70 && machine.nvram.peek($GPRF_TAG + 2) == 0x72 && machine.nvram.peek($GPRF_TAG + 3) == 0x66 "no 'gprf' record at NVRAM \$1409 — the Name Registry's NVRAM layout moved"
+    assert machine.nvram.peek($GPRF_DEPTH) == 2 "the saved depth index is not the default millions (2)"
+
+    # Choose 256 Colours the way the control panel's click lands in the
+    # store, and press the power switch.
+    machine.nvram.poke $GPRF_DEPTH 0x00:1
+    machine.restart
+    assert machine.nvram.peek($GPRF_DEPTH) == 0 "the store did not survive the power-cycle"
+    scheduler.run 2500000000
+
+    assert debug.mac.globals.read("BootDrive") == 0x8023 "second boot: BootDrive ${debug.mac.globals.read("BootDrive"):04x}, not set"
+    assert debug.mac.globals.read("DSErrCode") == 0 "second boot: system error ${debug.mac.globals.read("DSErrCode"):04x}"
+    # Control came up: the BARs were assigned (the raster is not the blank
+    # buffer) and the ndrv's 8 bpp mode is what the screen shows.
+    assert machine.screen.width == 640 "640 pixels across"
+    assert machine.screen.height == 480 "480 lines"
+    assert machine.screen.depth == 8 "8 bpp — the pinned 256 colours"
+    assert machine.screen.format == "8bpp_clut" "indexed through the RaDACal CLUT"
+    # The golden carries the "not shut down properly" alert over the 8 bpp
+    # desktop: the power switch was thrown on a running desktop, so the
+    # Finder says so — deterministic, and itself proof the first boot was
+    # a complete one.  Menu-bar clock excluded as in the other rows.
+    check_ex("goldens/pm7500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
+    report_row("7.6", "control", "hd-boot nvram-depth restart 8bpp")
+    report_perf("suite-tnt/pm7500-76-8bpp-restart", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("pm7500-76-hd") {
@@ -323,6 +382,13 @@ if row_on("tnt-voodoo2-display") {
         row_end("tnt-voodoo2-display", try(row_tnt_voodoo2_display(), "FAILED"))
     } else {
         echo "skip: tnt-voodoo2-display (7.6 image not fetched)"
+    }
+}
+if row_on("pm7500-76-8bpp-restart") {
+    if have_media($hd_76) {
+        row_end("pm7500-76-8bpp-restart", try(row_pm7500_76_8bpp_restart(), "FAILED"))
+    } else {
+        echo "skip: pm7500-76-8bpp-restart (7.6 image not fetched)"
     }
 }
 

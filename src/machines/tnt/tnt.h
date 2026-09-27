@@ -306,6 +306,9 @@ typedef struct tnt_control {
     uint8_t clut[256][3];
     uint8_t crsr[8][3]; // cursor palette (+$10 port)
     uint8_t crsr_phase;
+    // The pixel-clock synthesiser (Cuda I2C device $50, subaddresses 1..3):
+    // divisor p0, multiplier p1, post-scale exponent p2.  Zero = unprogrammed.
+    uint8_t clk[3];
 } tnt_control_t;
 
 // === MESH state (mesh.c) ====================================================
@@ -372,6 +375,7 @@ typedef struct tnt_state {
     tnt_gbus_t gbus;
     tnt_lcd_t lcd;
     struct object *gc_object; // machine.gc node (grand_central.c)
+    struct object *nvram_object; // machine.nvram node (grand_central.c)
     struct object *board_object; // machine.board node (gbus.c)
     struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
@@ -479,6 +483,8 @@ void tnt_control_teardown(config_t *cfg);
 // RaDACal byte cells (Grand Central +$1B000, $10 centres).
 uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
+// The pixel-clock synthesiser on Cuda's I2C bus (av_cuda_attach_i2c_write).
+bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
 // Presentation: the primary display descriptor (NULL before init), and the
 // host-frame dirty mark (guest CPU writes bypass the renderer).
 struct display *tnt_control_display(config_t *cfg);

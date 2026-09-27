@@ -52,11 +52,14 @@ assert machine.gc.clear_mode == 0 || machine.gc.clear_mode == 1 "gc.clear_mode o
 # an early BoxFlag=$66 puzzle), the 9500 is flagged by Hammerhead +$20 bit
 # 30, and the 8500 by BoxID little-endian bit 11.  The proof is the 68k
 # BoxFlag global: $3E = the Power Macintosh 7500 (gestalt 68). The BoxID
-# model byte carries bit 13 SET (BE byte 1 = $E0) — Open Firmware's half
-# of the identity, decoded separately: its model word takes BoxID xw@>>11
-# and splits 7500 (bit 13 set) from 8500.
+# model byte carries bit 13 SET — Open Firmware's half of the identity,
+# decoded separately: its model word takes BoxID xw@>>11 and splits 7500
+# (bit 13 set) from 8500 — and bit 8, the factory-test strap, HIGH: POST
+# tests it on every boot after the first on a formatted store, and a clear
+# bit is the ROM's Serial Test Manager instead of a boot (#115; pm7500.c).
+# BE byte 1 = $E1.
 assert machine.memory.peek.l(0xF8000000) == 0x39000000 "T4: Hammerhead ID != $39xxxxxx"
-assert machine.memory.peek.b(0xF301A001) == 0xE0 "T4: BoxID model byte"
+assert machine.memory.peek.b(0xF301A001) == 0xE1 "T4: BoxID model byte"
 assert machine.memory.peek.b(0xCB3) == 0x3E "T4: BoxFlag != $3E (not identified as a 7500)"
 
 # --- T6: the Open Firmware device tree carries the display nodes -------------

@@ -178,9 +178,8 @@
       "width": 640,
       "height": 480,
       "depth": 8,
-      "addr32": false,
-      "suite": "iici-aux3-8bpp",
-      "blocked": "#183 — under A/UX 3.0.1 the guest draws 8 bpp while the RBV scans out, and machine.screen reports, 1 bpp. System 7.0.1 reaches 8 bpp on the same video (suite-iici iici-701-depths), so this is an A/UX-path defect. The milestone row iici-aux3-8bpp reproduces it."
+      "addr32": true,
+      "suite": "iici-aux3-8bpp"
     },
     {
       "machine": "iicx",
@@ -915,6 +914,17 @@
       "suite": "suite-pdm"
     },
     {
+      "machine": "pm6100",
+      "system": "8.1",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "pdm-afp-copy-motion",
+      "media_gated": true
+    },
+    {
       "machine": "pm7100",
       "system": "7.5",
       "card": "ariel",
@@ -1111,6 +1121,16 @@
       "width": 640,
       "height": 480,
       "depth": 32,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "pm7500",
+      "system": "7.6",
+      "card": "control",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
       "addr32": true,
       "suite": "suite-tnt"
     },

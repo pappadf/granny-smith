@@ -48,11 +48,13 @@ static inline iisi_state_t *iisi_state(config_t *cfg) {
 
 // (I/O penalties + window offsets live with the shared dispatcher, mdu_io.c.)
 
-// Address-space constants.  Shared MDUtable layout: ROM at $40800000, I/O
-// island at $50F0xxxx mirrored across $50000000 with a $3FFFF mask so RBV
-// ($26000) and VDAC ($24000) decode distinctly from the SCSI windows.
-#define IISI_ROM_START 0x40800000UL
-#define IISI_ROM_END   0x41000000UL
+// Address-space constants.  Shared MDU layout: the 512 KB ROM repeats through
+// the whole $40000000-$4FFFFFFF ROM space (ROMBase $40800000 is one mirror;
+// see iici_internal.h), I/O island at $50F0xxxx mirrored across $50000000
+// with a $3FFFF mask so RBV ($26000) and VDAC ($24000) decode distinctly
+// from the SCSI windows.
+#define IISI_ROM_START 0x40000000UL
+#define IISI_ROM_END   0x50000000UL
 #define IISI_IO_BASE   0x50000000UL
 #define IISI_IO_SIZE   0x10000000UL
 #define IISI_IO_MIRROR 0x0003FFFFUL

@@ -102,7 +102,8 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
 
 // Toggle the ROM/RAM overlay at $00000000.  `overlay_flag` points at the
 // machine's own rom_overlay bool; `rom_start` is the machine's ROM region
-// base (GLUE $40000000, MDU $40800000).
+// base; ROM offset 0 must be at this address (GLUE and MDU both
+// $40000000 -- the MDU's ROMBase $40800000 is one of the ROM's mirrors).
 void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom_start, bool on);
 
 // Hardware RESET: re-enable the ROM overlay and disable the MMU (TC/E off,

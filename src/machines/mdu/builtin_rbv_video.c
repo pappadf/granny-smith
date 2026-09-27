@@ -6,8 +6,8 @@
 // the contract and docs/machines/mdu/rbv.md for the RBV/video
 // split.  Modelled on jmfb.c (CLUT + depth-switch video) but much smaller:
 // the depth/monitor-sense register lives on the RBV chip, there is no slot
-// register window, and the framebuffer is registered by the machine at the
-// $FBB00000 aperture rather than at nubus_slot_base(slot).
+// register window, and the framebuffer is main RAM (the bottom of Bank A,
+// handed over by the machine) rather than a buffer at nubus_slot_base(slot).
 
 #include "builtin_rbv_video.h"
 
@@ -54,7 +54,7 @@ typedef struct {
     // its scalar head is checkpointed separately as a display_head_t.
     display_t display;
     rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
-    uint8_t *fb; // framebuffer buffer (registered by the machine at $FBB00000)
+    uint8_t *fb; // framebuffer: private until the machine hands over Bank A
     bool fb_external; // true if fb points at machine-owned memory (don't free)
     // RvMonP's RvVIDOff bit, and the black raster presented while it is set.
     // A separate buffer because the framebuffer is LIVE GUEST MEMORY on the
@@ -285,17 +285,12 @@ static const nubus_card_ops_t builtin_rbv_video_ops = {
 
 // === Machine-facing hooks ===================================================
 
-uint8_t *builtin_rbv_video_framebuffer(nubus_card_t *card) {
-    rbv_video_priv_t *p = card ? card->priv : NULL;
-    return p ? p->fb : NULL;
-}
-
-void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset) {
+void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset, bool blank) {
     rbv_video_priv_t *p = card ? card->priv : NULL;
     if (!p || !aperture)
         return;
-    // The IIsi reads its framebuffer directly out of main DRAM (the V8 DMAs
-    // Bank A starting at physical 0).  Point the card's framebuffer at the
+    // The IIci and IIsi read their framebuffer directly out of main DRAM (the
+    // RBV / V8 DMA Bank A starting at physical 0).  Point the card's framebuffer at the
     // machine-supplied aperture (a window into main RAM) instead of the private
     // buffer, so the renderer and the guest's screen writes share the same
     // storage.  `screen_offset` locates the active screen within the aperture.
@@ -310,8 +305,10 @@ void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, ui
     // a white screen (zeroed DRAM is white at 1 bpp) while every other machine
     // comes up black.  Only the screen the renderer scans out is touched, and
     // only before the guest has run; the ROM's RAM test writes and reads back
-    // its own patterns over this either way.
-    display_blank_raster(&p->display);
+    // its own patterns over this either way.  A checkpoint restore skips it:
+    // the RAM image it has loaded (or is about to) holds the live screen.
+    if (blank)
+        display_blank_raster(&p->display);
     p->display.fb_dirty = true;
 }
 

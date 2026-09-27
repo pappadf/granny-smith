@@ -135,6 +135,13 @@ void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)offset;
     (void)value;
 }
+// The battery pull lives in machines/tnt/tnt.c (it also drops the process
+// carry); machine.nvram.clear() references it, so stub the store half.
+void tnt_nvram_clear(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (st)
+        memset(st->gc.nvram, 0, TNT_NVRAM_SIZE); // what a battery pull does to the store
+}
 // SWIM3 window: the floppy is not part of this suite's fixture.
 // grand_central.c's ESCC DBDMA ports ask the SCC how much it has received;
 // this suite never runs a DMA program, so no bytes are ever pending.

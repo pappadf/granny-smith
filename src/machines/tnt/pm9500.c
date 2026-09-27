@@ -67,8 +67,11 @@ static const pci_slot_decl_t pm9500_pci_slots[] = {
 static const tnt_board_desc_t pm9500_board = {
     // BoxID: bit 11 clear (the 9500 is flagged by Hammerhead +$20 bit 30
     // instead — the shipping ROM's identification routine at $FFC14844),
-    // MESH present, idle-high straps.
-    .boxid = 0x8000u | 0x4000u,
+    // MESH present, idle-high straps, and bit 8 — the factory-test strap
+    // — HIGH: POST tests it on every boot after the first on a formatted
+    // store and a clear bit is the Serial Test Manager instead of a boot
+    // (pm7500.c).
+    .boxid = 0x8000u | 0x4000u | 0x0100u,
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
     // +$20 bit 30 SET = 9500 (the 68k routine tests it directly; Open
     // Firmware's selector m = (b>>5)|((b>>1)&8) over the top byte reads

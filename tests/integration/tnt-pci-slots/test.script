@@ -125,12 +125,13 @@ machine.memory.poke.l(0xF0800000, 0x00000000)
 # on a machine with no seated card, so the window exists but claims
 # nothing; the per-device decode is pinned in the pci unit suite, and the
 # Mach64 GX row exercises it for real.
-assert machine.memory.peek.l(0xF301A000) == 0x00E00000 "the $F3 window is pass-through MEMORY, not I/O"
+assert machine.memory.peek.l(0xF301A000) == 0x00E10000 "the $F3 window is pass-through MEMORY, not I/O"
 
 # --- BoxID slot-presence pins follow live population, not the board. ---------
 # Bits 0-5 are the sockets' power/present pins; every socket is empty, so
-# they read 0 while the board's own straps ($E000) stand.
-assert machine.memory.peek.l(0xF301A000) == 0x00E00000 "BoxID presence pins must be clear with empty sockets"
+# they read 0 while the board's own straps ($E100, bit 8 the factory-test
+# strap that idles high — #115) stand.
+assert machine.memory.peek.l(0xF301A000) == 0x00E10000 "BoxID presence pins must be clear with empty sockets"
 
 # --- Open Firmware's own probe-slots assigns Control's BARs. -----------------
 # 200M instructions: NanoKernel init, then OF's probe-pci walk (Bandit 1 ->

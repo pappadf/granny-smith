@@ -719,7 +719,11 @@ for a video card is:
      missing and the card cannot operate in 24-bit mode, return
      failure.
    - Otherwise remove the 24-bit sResource lists with `_sDeleteSRTRec`,
-     then add the 32-bit lists with `_sInsertSRTRec`.
+     then add the 32-bit lists with `_sInsertSRTRec`.  `spRefNum` and
+     `spIOReserved` are *inputs* to `_sInsertSRTRec` (they become the new
+     record's fields), so read the driver refNum from the 24-bit record
+     with `_sRsrcInfo` *before* deleting it and pass it in; an spBlock on
+     the stack otherwise hands the Slot Manager a garbage refNum.
 3. If this card is the startup screen (`spRefNum != 0`), update
    `gDevice^^.gdPMap^^.pmBaseAddr` to the 32-bit base address (the
    driver may also need to update its private cached base address).
