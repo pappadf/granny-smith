@@ -1,0 +1,454 @@
+# Installing Windows NT 4.0 for PowerPC on an Apple Network Server 500.
+#
+# Apple never shipped NT for this machine and Microsoft never shipped a HAL
+# for it; powermac-nt-hal (github.com/pappadf/powermac-nt-hal) is that HAL,
+# and its boot floppy carries everything NT needs that the CD lacks: the
+# HAL itself as HALSHINR.DLL, an ADB keyboard/mouse driver that also serves
+# the floppy to Setup from RAM, the Cirrus 54M30 display entry, Microsoft's
+# ARC veneer with its patches baked in, and three Open Firmware scripts.
+# This row installs NT the way that project's wiki tells a person to, and
+# nothing else: three commands typed at `0 >`, and every Setup screen
+# answered with a key.
+#
+#   load fd:,\setup.of     once per machine: little-endian mode, then reset
+#   load fd:,\boot.of      the veneer off the floppy, SETUPLDR off the CD
+#   load fd:,\bootdisk.of  after text-mode Setup restarts: NT off the disk
+#
+# (each followed by `load-base loadsize eval`).
+#
+# WHAT IT EXERCISES IN THE EMULATOR.  More of the Network Server than any
+# other row: the 604 in little-endian mode and Bandit's byte-lane reversal
+# (NT runs little-endian from the veneer onward), both 53C825A SCRIPTS
+# engines under a driver that is not Apple's, SWIM3 reads from Open
+# Firmware, Cuda's ADB auto-poll feeding NT's own keyboard stack, Cuda's
+# RESET SYSTEM (NT's restart), and the 54M30 in VGA text mode, in linear
+# 8-bit mode and through its BitBLT engine, which draws every pixel of
+# GUI Setup's wizard.
+#
+# THE RUNGS, in order; each is asserted, and the row names the one it
+# failed at:
+#
+#   N1  the 2.26NT firmware reaches `0 >` on ttya
+#   N2  setup.of switches to little-endian and the machine comes back
+#   N3  boot.of loads the veneer, reads the OEM disk into RAM, SETUPLDR runs
+#   N4  Setup offers "Apple Network Server 500/700" off the floppy
+#   N5  the ADB driver and the 54M30 display are taken from the floppy
+#   N6  NT's kernel starts under the HAL and text-mode Setup's Welcome shows
+#   N7  licence, hardware list, partition, \WINNT, and the file copy
+#   N8  "This portion of Setup has completed successfully"; NT restarts
+#       the machine through Cuda and the firmware comes back
+#   N9  bootdisk.of starts the installed NT and GUI Setup's wizard is drawn
+#   N10 the wizard, up to the Registration page
+#   N11 (with a Product ID) the rest of the wizard, and "Windows NT 4.00 has
+#       been installed successfully"
+#   N12 (with a Product ID) NT's restart, bootdisk.of again, and the logon
+#       screen of the installed system
+#
+# MEDIA, none of which can be committed; the row SKIPS where any of the
+# first four is absent.  Under local/gs-docs/projects/windows-nt-ppc-ans/:
+#
+#   roms/ans-2.26NT-ad405e01.rom   the Network Server's Windows NT
+#                                  Open Firmware 2.26NT, MD5 ad405e01...
+#   images/nt4-ppc.iso             Windows NT 4.0 Workstation for PowerPC,
+#                                  OEM 000-48303, MD5 ab37556d72818ed0...
+#   images/boot-floppy.img         `make floppy ISO=<that iso>` in
+#                                  powermac-nt-hal
+#   images/nt-disk-blank.img       `make disk` in powermac-nt-hal: 512 MB,
+#                                  an ARC system partition and a FAT volume
+#   product-id.txt                 optional: the CD's Product ID, as printed
+#                                  on its Certificate of Authenticity
+#
+# The disk image is attached, not copied: the guest's writes land in the
+# row's private delta under WORK_DIR, and the image on disk stays blank.
+#
+# PACING.  SETUPLDR draws through the veneer onto ttya, so its screens are
+# waited for by their text.  From the kernel on Setup draws only on the
+# 54M30, so every key waits for the golden of the screen it answers
+# (REGEN=1 captures them, settling on the visible region and tolerating a
+# blinking caret).  Nothing is timed by guesswork, and a wrong screen fails
+# the row with a diff instead of typing into it.
+#
+# TIME.  Deterministic, and about ten minutes at --speed=max on one core
+# of a 2026 container, the whole install included: most of it the
+# firmware reading the floppy a block at a time, NT's two file copies, and
+# GUI Setup's configuration pass.  The ceilings below are generous on
+# purpose; a stall still fails at a named rung rather than hanging.
+
+include "../lib/mac.script"
+include "../lib/ans.script"
+
+let nt_root = "../../../local/gs-docs/projects/windows-nt-ppc-ans"
+let nt_rom = "${$nt_root}/roms/ans-2.26NT-ad405e01.rom"
+let nt_cd = "${$nt_root}/images/nt4-ppc.iso"
+let nt_floppy = "${$nt_root}/images/boot-floppy.img"
+let nt_disk = "${$nt_root}/images/nt-disk-blank.img"
+let nt_export = try($NT_EXPORT, "")
+
+# --- Keys ---------------------------------------------------------------------
+
+# One ADB key, down and up in separate auto-polls.  Not keyboard.press()
+# (both transitions in one Talk R0 packet) and not keyboard.type() (4 ms
+# spacing, inside one 11 ms poll): NT's ADB path acts on the first
+# transition of a packet and drops the rest.  Codes are the Apple Extended
+# Keyboard's on the wire — the arrows in particular are 0x3B-0x3E, not the
+# 0x7B-0x7E virtual codes the Mac OS uses, which NT does not map.
+def nt_key(code) {
+    machine.adb.keyboard.down("${$code}")
+    scheduler.run 3000000
+    machine.adb.keyboard.up("${$code}")
+    scheduler.run 3000000
+}
+
+# `n` presses of one key, with the guest given time to act on each.
+def nt_keys(code, n) {
+    let k = 0
+    while $k < $n {
+        nt_key($code)
+        scheduler.run 60000000
+        $k = $k + 1
+    }
+}
+
+let K_RETURN = "0x24"
+let K_ESCAPE = "0x35"
+let K_PGDN = "0x79"
+let K_F8 = "0x64"
+let K_UP = "0x3E"
+let K_DOWN = "0x3D"
+
+# --- Open Firmware on ttya ---------------------------------------------------
+
+# Run until the prompt comes back, returning everything printed on the way.
+# Drain first: a stale "0 > " from the previous command would end the wait
+# before the command had even run.
+def nt_prompt(ceiling) {
+    let out = ""
+    let spent = 0
+    while !contains($out, "0 > ") {
+        assert $spent < $ceiling "Open Firmware never came back to its prompt: ${$out}"
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        $out = "${$out}${machine.scc.a.sent()}"
+    }
+    return $out
+}
+
+# Type `load fd:,\<file>` and then `load-base loadsize eval`, a few
+# characters at a time (the firmware's console drops a long burst).  Returns
+# what the eval printed within `run` instructions; the caller waits for
+# whatever the script starts.
+def nt_load_eval(chunk1, chunk2, run) {
+    let junk = machine.scc.a.sent()
+    ans_send("load fd:")
+    ans_send(",\\${$chunk1}")
+    ans_send("${$chunk2}")
+    machine.scc.a.receive("\r")
+    let loaded = nt_prompt(600000000)
+    assert contains($loaded, " ok") "load fd:,\\${$chunk1}${$chunk2} failed: ${$loaded}"
+    ans_send("load-bas")
+    ans_send("e loadsi")
+    ans_send("ze eval")
+    machine.scc.a.receive("\r")
+    let out = ""
+    let spent = 0
+    while $spent < $run {
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        $out = "${$out}${machine.scc.a.sent()}"
+    }
+    return $out
+}
+
+# --- SETUPLDR, which draws on ttya ------------------------------------------
+#
+# machine.scc.a.sent() returns the bytes ESCAPED (ESC as \x1B, a backslash
+# doubled), so the markers below avoid backslashes rather than guess at
+# how many to write.
+
+# Send one key over the serial console and run until the next screen says
+# `want`.  A little more time after the text appears lets the screen finish
+# drawing and SETUPLDR get back to its keyboard poll.
+def nt_ldr(key, want, ceiling, rung) {
+    let junk = machine.scc.a.sent()
+    if $key != "" {
+        machine.scc.a.receive("${$key}")
+    }
+    let out = ""
+    let spent = 0
+    while !contains($out, $want) {
+        assert $spent < $ceiling "${$rung}: SETUPLDR never showed '${$want}'"
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        $out = "${$out}${machine.scc.a.sent()}"
+    }
+    scheduler.run 100000000
+    return "${$out}${machine.scc.a.sent()}"
+}
+
+# --- NT, which draws only on the 54M30 ----------------------------------------
+
+# Run until the screen is `golden`, in 20 M quanta, up to `ceiling`.
+#
+# Verify mode polls screen.matches() and fails with the usual diff
+# artifacts at the ceiling.  REGEN mode waits for the picture to hold still
+# and captures it.  Two things about NT's screens make mac.script's
+# wait_match unsuitable for that: its checksum covers the whole
+# framebuffer, whose off-screen stride padding NT's display driver uses as
+# scratch (so it churns under a still picture), and a focused edit control
+# blinks its caret, so a page waiting for input alternates between two
+# pictures for ever.  This one checksums the visible region and counts
+# either of the last two pictures as still.
+def nt_screen(golden, ceiling) {
+    if $REGEN_MODE == "1" {
+        let seen = 0
+        let seen2 = 0
+        let still = 0
+        let spent = 0
+        while $still < 15 {
+            assert $spent < $ceiling "nt_screen(REGEN): ${$golden}: the screen never settled"
+            scheduler.run 20000000
+            $spent = $spent + 20000000
+            let now = machine.screen.checksum(0, 0, machine.screen.height, machine.screen.width)
+            if $now == $seen || $now == $seen2 {
+                $still = $still + 1
+            } else {
+                $seen2 = $seen
+                $seen = $now
+                $still = 0
+            }
+        }
+        machine.screen.save "${$golden}"
+        return $spent
+    }
+    let spent = 0
+    while $spent < $ceiling {
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        if machine.screen.matches("${$golden}") { return $spent }
+    }
+    machine.screen.match "${$golden}"
+    return $spent
+}
+
+# --- The installation ---------------------------------------------------------
+
+# nt_have_pid and nt_type_pid(), generated from product-id.txt by nt-pid.sh.
+include "${$WORK_DIR}/nt-pid.script"
+
+def nt_install() {
+    # N1 — a machine that has never been booted, with 64 MB: setup.of puts
+    # load-base at 62 MB and boot.of stages the veneer and the OEM disk
+    # between 58 and 63 MB, so the 32 MB default cannot work.
+    let cleared = try(machine.board.clear_nvram(), none)
+    machine.boot model="ans500" ram=65536 rom="${$nt_rom}"
+    let fw = ""
+    let spins = 0
+    while !contains($fw, "0 > ") && !contains($fw, "install-console>") && $spins < 24 {
+        scheduler.run 250000000
+        $fw = "${$fw}${machine.scc.a.sent()}"
+        $spins = $spins + 1
+    }
+    let settle = 0
+    while !contains($fw, "0 > ") && $settle < 5 {
+        scheduler.run 250000000
+        $fw = "${$fw}${machine.scc.a.sent()}"
+        $settle = $settle + 1
+    }
+    # The console on ttya.  2.26NT already defaults to it; a store that says
+    # otherwise gets Apple's documented terminal setup, as ans_boot_serial
+    # does for the production ROM, and a power cycle.
+    if !contains($fw, "0 > ") {
+        machine.adb.keyboard.type("setenv output-device ttya\n")
+        scheduler.run 400000000
+        machine.adb.keyboard.type("setenv input-device ttya\n")
+        scheduler.run 400000000
+        let ignored = machine.scc.a.sent()
+        machine.restart
+        $fw = "${$fw}${nt_prompt(3000000000)}"
+    }
+    assert contains($fw, "OpenFirmware2.26") "N1: this is not the 2.26NT firmware"
+    assert contains($fw, "0 > ") "N1: the firmware never reached its prompt"
+
+    # The media where the scripts expect them: the CD at id 0 on the first
+    # fast/wide controller (boot.of's /bandit/53c825@11/sd@0,0), the disk at
+    # id 0 on the second (bootdisk.of's /bandit/53c825@12/sd@0,0), the
+    # floppy write-locked in the internal drive.
+    machine.scsi.attach_cdrom("${$nt_cd}", 0)
+    machine.scsi2.attach_hd("${$nt_disk}", 0)
+    machine.floppy.drive[0].insert "${$nt_floppy}"
+    assert machine.scsi.device[0].type == "cdrom" "the NT CD is not at id 0 on the first controller"
+    assert machine.scsi2.device[0].type == "hd" "the install disk is not at id 0 on the second controller"
+    assert machine.floppy.drive[0].present "the boot floppy is not in the drive"
+
+    # N2 — setup.of: little-endian? true, real-mode? false, real-base and
+    # load-base, reset-all.  It resets the machine itself.
+    let le = nt_load_eval("setup", ".of", 200000000)
+    assert contains($le, "setting little-endian mode") "N2: setup.of did not run: ${$le}"
+    let back = nt_prompt(6000000000)
+    assert contains($back, "OpenFirmware2.26") "N2: the machine did not come back from setup.of's reset"
+    echo "N2: little-endian configuration set; the firmware is back"
+
+    # N3 — boot.of: the veneer off the floppy by read-blocks, all 2880
+    # blocks of the floppy into RAM behind it (NT has no SWIM3 driver, so
+    # the OEM files reach Setup from there), /chosen bootpath at the CD, go.
+    let go = nt_load_eval("boot", ".of", 20000000)
+    let ldr = "${$go}${nt_ldr("", "computer type", 60000000000, "N3")}"
+    assert contains($ldr, "B40 blocks of the OEM disk are in RAM") "N3: the OEM disk was not read into RAM"
+    assert contains($ldr, "Open Firmware ARC Interface") "N3: the veneer did not start"
+    assert contains($ldr, "SETUPLDR'") "N3: the veneer did not boot SETUPLDR off the CD"
+    echo "N3: veneer, OEM disk and SETUPLDR up; Setup asks for the computer type"
+
+    # N4 — "Other" (where the menu opens), the support disk, and the one
+    # computer type on it.
+    let s = nt_ldr("\r", "Manufacturer-supplied hardware support disk", 2000000000, "N4")
+    $s = nt_ldr("\r", "Apple Network Server 500/700", 4000000000, "N4")
+    $s = nt_ldr("\r", "S=Specify Additional Device", 20000000000, "N4")
+    echo "N4: the computer type is Apple Network Server 500/700, off the floppy"
+
+    # N5 — the ADB driver, offered under [SCSI] because that is the only OEM
+    # class SETUPLDR loads arbitrary drivers for.  Without it NT has no
+    # keyboard ("Setup did not find a keyboard", several screens on).  Then
+    # the display: the 54M30 entry, with the floppy's patched cirrus.sys.
+    $s = nt_ldr("S", "Select the SCSI Adapter", 2000000000, "N5")
+    $s = nt_ldr("\r", "Manufacturer-supplied hardware support disk", 2000000000, "N5")
+    $s = nt_ldr("\r", "and the OEM disk (powermac-nt-hal)", 4000000000, "N5")
+    $s = nt_ldr("\r", "Setup will load support for the following mass storage", 8000000000, "N5")
+    assert contains($s, "Symbios Logic C810") "N5: the 53C825A's driver is not in the list"
+    $s = nt_ldr("\r", "type of video adapter", 20000000000, "N5")
+    $s = nt_ldr("\r", "Manufacturer-supplied hardware support disk", 2000000000, "N5")
+    $s = nt_ldr("\r", "Cirrus Logic 54M30 (Apple Network Server 500/700)", 4000000000, "N5")
+    echo "N5: ADB keyboard/mouse/OEM-disk driver and 54M30 display taken off the floppy"
+
+    # N6 — the kernel, under our HAL: the ADB driver connects NT's keyboard
+    # class, drive letters are assigned, and Setup's Welcome is on screen.
+    $s = nt_ldr("\r", "adbport: keyboard class connected", 60000000000, "N6")
+    nt_screen("nt-01-welcome.png", 40000000000)
+    echo "N6: NT's kernel is up on the HAL and text-mode Setup shows its Welcome"
+
+    # N7 — every key from here is on the ADB keyboard.
+    nt_key($K_RETURN)
+    nt_screen("nt-02-mass-storage.png", 20000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-03-licence.png", 20000000000)
+    nt_keys($K_PGDN, 18)
+    nt_screen("nt-04-licence-end.png", 10000000000)
+    nt_key($K_F8)
+    # Computer: Apple Network Server 500/700, Display: Cirrus Logic 54M30.
+    nt_screen("nt-05-hardware.png", 20000000000)
+    nt_key($K_RETURN)
+    # C: the 32 MB ARC system partition, D: the 478 MB volume.
+    nt_screen("nt-06-partitions.png", 40000000000)
+    nt_keys($K_DOWN, 2)
+    nt_screen("nt-07-partition-d.png", 10000000000)
+    nt_key($K_RETURN)
+    # "Leave the current file system intact": FAT, which the firmware reads.
+    nt_screen("nt-08-file-system.png", 20000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-09-directory.png", 20000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-10-examine.png", 40000000000)
+    nt_key($K_ESCAPE)
+    echo "N7: licence, hardware, D:, FAT and \\WINNT accepted; copying"
+
+    # N8 — the copy, including the OEM files off the RAM floppy, and the end.
+    nt_screen("nt-11-text-mode-complete.png", 400000000000)
+    let junk = machine.scc.a.sent()
+    nt_key($K_RETURN)
+    let rst = nt_prompt(60000000000)
+    assert contains($rst, "HalReturnToFirmware") "N8: NT did not restart through the HAL"
+    assert contains($rst, "OpenFirmware2.26") "N8: the firmware did not come back after NT's restart"
+    echo "N8: text-mode Setup completed; NT restarted the machine through Cuda"
+
+    # N9 — the installed system: bootdisk.of (the disk-patched veneer, the
+    # ARC environment on /options, /chosen bootpath at the disk).
+    let gui = nt_load_eval("bootdisk", ".of", 20000000)
+    $gui = "${$gui}${nt_ldr("", "system path -> 'D:", 400000000000, "N9")}"
+    assert contains($gui, "Partition2' -> D:") "N9: NT did not boot from the installed volume"
+    nt_screen("nt-12-gui-welcome.png", 400000000000)
+    echo "N9: the installed NT boots from the disk and GUI Setup's wizard is drawn"
+
+    # N10 — the wizard.  Name "gs"; typed only where an edit control has
+    # focus, since a bare letter elsewhere is a dialog accelerator.
+    nt_key($K_RETURN)
+    nt_screen("nt-13-setup-options.png", 40000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-14-name.png", 40000000000)
+    nt_key("0x05")
+    nt_key("0x01")
+    nt_key($K_RETURN)
+    nt_screen("nt-15-registration.png", 40000000000)
+    echo "N10: GUI Setup's wizard driven to the Registration page"
+    if $nt_have_pid == 0 {
+        echo "N10: no product-id.txt, so the row stops at Registration"
+        return 0
+    }
+
+    # N11 — the Product ID, then the pages that Return alone cannot take:
+    # the Emergency Repair Disk defaults to "Yes" (there is no floppy NT can
+    # write), and the network page to "participate", whose adapter search
+    # finds nothing and leaves Next disabled.
+    nt_type_pid()
+    nt_key($K_RETURN)
+    nt_screen("nt-16-computer-name.png", 40000000000)
+    nt_key("0x00")
+    nt_key("0x2D")
+    nt_key("0x01")
+    nt_key($K_RETURN)
+    nt_screen("nt-17-administrator.png", 40000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-18-repair-disk.png", 40000000000)
+    nt_key($K_DOWN)
+    scheduler.run 100000000
+    nt_key($K_RETURN)
+    nt_screen("nt-19-components.png", 40000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-20-networking.png", 40000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-21-participate.png", 40000000000)
+    nt_key($K_UP)
+    scheduler.run 100000000
+    nt_key($K_RETURN)
+    nt_screen("nt-22-finish.png", 40000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-23-date-time.png", 200000000000)
+    nt_key($K_RETURN)
+    # "The system found the following video adapter: cirrus compatible
+    # display adapter", 256 colours at 640x480.
+    nt_screen("nt-24-detected-display.png", 200000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-25-display.png", 40000000000)
+    nt_key($K_RETURN)
+    nt_screen("nt-26-installed.png", 800000000000)
+    echo "N11: Windows NT 4.00 has been installed successfully"
+
+    # N12 — NT's restart, and the finished system from cold.
+    $junk = machine.scc.a.sent()
+    nt_key($K_RETURN)
+    $rst = nt_prompt(200000000000)
+    assert contains($rst, "HalReturnToFirmware") "N12: NT did not restart through the HAL"
+    let final = nt_load_eval("bootdisk", ".of", 20000000)
+    $final = "${$final}${nt_ldr("", "system path -> 'D:", 400000000000, "N12")}"
+    nt_screen("nt-27-logon.png", 400000000000)
+    echo "N12: the installed Windows NT boots to its logon screen"
+
+    # NT_EXPORT=<path> keeps the installed disk: base image plus this row's
+    # delta, flattened to a new file (export refuses to overwrite one).
+    if $nt_export != "" {
+        machine.scsi2.device[0].image.export("${$nt_export}")
+        echo "the installed disk is at ${$nt_export}"
+    }
+    return 1
+}
+
+if have_media($nt_rom) && have_media($nt_cd) && have_media($nt_floppy) && have_media($nt_disk) {
+    let done = nt_install()
+    if $done == 1 {
+        echo "ans-nt-install: Windows NT 4.0 installed from the powermac-nt-hal floppy and booted to its logon screen (rung N12)"
+    } else {
+        echo "ans-nt-install: text-mode Setup complete and GUI Setup at Registration (rung N10; add product-id.txt for the rest)"
+    }
+} else {
+    echo "skip: ans-nt-install (the 2.26NT ROM, the NT 4.0 PowerPC CD, the boot floppy or the blank disk is not present -- see this row's header)"
+}
+
+quit

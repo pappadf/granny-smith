@@ -692,6 +692,7 @@ boots twice.
 | `ans-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
 | `ans-macos-2rom` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
 | `ans-aix-boot` | extended, fixture-gated | the documented Service-keyswitch install path, up to `bootapple` launching off the AIX 4.1.5 Install CD |
+| `ans-nt-install` | extended, fixture-gated | Windows NT 4.0 PowerPC installed end to end on the 2.26NT ROM from the [powermac-nt-hal](https://github.com/pappadf/powermac-nt-hal) boot floppy — `setup.of`, `boot.of`, text-mode Setup, NT's restart through Cuda, `bootdisk.of`, GUI Setup — to the installed system's logon screen (rungs N1-N12; without a `product-id.txt` fixture it stops at GUI Setup's Registration page, N10). `NT_EXPORT=<path>` keeps the installed disk |
 
 Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
 `probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not
