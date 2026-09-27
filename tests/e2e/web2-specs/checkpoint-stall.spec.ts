@@ -15,33 +15,50 @@
 // import.meta.env.DEV or when GS_MEASURE is set); it is not a shipped
 // surface.
 
-import { test, expect } from '@playwright/test';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { test, expect } from "@playwright/test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { gotoWeb2, stageOpfsFile } from "../helpers/web2-fs";
 
-const DATA = path.resolve(__dirname, '../../data');
-const ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
+const DATA = path.resolve(__dirname, "../../data");
+const ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
 const WINDOW_MS = 50_000; // covers three auto checkpoints
 
-async function typeLine(page: import('@playwright/test').Page, line: string): Promise<void> {
-  await page.locator('.xterm').click();
+async function typeLine(
+  page: import("@playwright/test").Page,
+  line: string,
+): Promise<void> {
+  await page.locator(".xterm").click();
   await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
+  await page.keyboard.press("Enter");
 }
 
 for (const ramKb of [32768, 131072]) {
   test(`checkpoint stall on a ${ramKb / 1024} MB IIcx`, async ({ page }) => {
     test.setTimeout(4 * 60 * 1000);
     await gotoWeb2(page);
-    await stageOpfsFile(page, '/opfs/images/rom/97221136', ROM);
+    // A measurement build only (VITE_GS_MEASURE=1): the ordinary CI build has
+    // no probe, and this is not a gate.
+    const probeExposed = await page.evaluate(
+      () =>
+        typeof (window as unknown as { __gsEval?: unknown }).__gsEval ===
+        "function",
+    );
+    test.skip(
+      !probeExposed,
+      "needs a VITE_GS_MEASURE=1 build (window.__gsEval)",
+    );
+    await stageOpfsFile(page, "/opfs/images/rom/97221136", ROM);
     await page.locator('button.ptab[data-tab="terminal"]').click();
-    await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
-    await typeLine(page, `machine.boot model="iicx" ram=${ramKb} rom="/opfs/images/rom/97221136"`);
+    await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+    await typeLine(
+      page,
+      `machine.boot model="iicx" ram=${ramKb} rom="/opfs/images/rom/97221136"`,
+    );
     await page.waitForTimeout(3_000);
     // A terminal boot leaves the machine stopped (the page's own boot path
     // starts it): run it, live.
-    await typeLine(page, 'scheduler.run');
+    await typeLine(page, "scheduler.run");
     await page.waitForTimeout(2_000);
     // The checkpoint needs a machine directory, which an attached disk gives.
     await typeLine(page, 'storage.hd_create("/opfs/images/hd/cp.img", "20mb")');
@@ -52,25 +69,29 @@ for (const ramKb of [32768, 131072]) {
     // once at module ready, before its own boots); give this machine one.
     await typeLine(page, 'machine.register "measure" "20260927T000000Z"');
     await page.waitForTimeout(1_000);
-    await typeLine(page, 'checkpoint.auto = true');
+    await typeLine(page, "checkpoint.auto = true");
     await page.waitForTimeout(1_000);
 
     const result = await page.evaluate(async (windowMs) => {
-      const w = window as unknown as { __gsEval?: (p: string) => Promise<unknown> };
-      if (!w.__gsEval) throw new Error('window.__gsEval is not exposed in this build');
+      const w = window as unknown as {
+        __gsEval?: (p: string) => Promise<unknown>;
+      };
+      if (!w.__gsEval)
+        throw new Error("window.__gsEval is not exposed in this build");
       // No checkpoint before the window; at least one must land during it.
-      await w.__gsEval('checkpoint.clear');
+      await w.__gsEval("checkpoint.clear");
       const lat: number[] = [];
       const t_end = performance.now() + windowMs;
       while (performance.now() < t_end) {
         const t0 = performance.now();
-        await w.__gsEval('machine.cpu.pc');
+        await w.__gsEval("machine.cpu.pc");
         lat.push(performance.now() - t0);
         await new Promise((r) => setTimeout(r, 10));
       }
-      const saved = (await w.__gsEval('checkpoint.probe')) === true;
+      const saved = (await w.__gsEval("checkpoint.probe")) === true;
       lat.sort((a, b) => a - b);
-      const q = (p: number) => lat[Math.min(lat.length - 1, Math.floor(p * lat.length))];
+      const q = (p: number) =>
+        lat[Math.min(lat.length - 1, Math.floor(p * lat.length))];
       return {
         saved,
         samples: lat.length,
@@ -83,7 +104,8 @@ for (const ramKb of [32768, 131072]) {
     }, WINDOW_MS);
     const line = JSON.stringify({ ramKb, ...result });
     console.log(`checkpoint-stall ${line}`);
-    if (process.env.GS_MEASURE_OUT) fs.appendFileSync(process.env.GS_MEASURE_OUT, line + '\n');
+    if (process.env.GS_MEASURE_OUT)
+      fs.appendFileSync(process.env.GS_MEASURE_OUT, line + "\n");
     expect(result.samples).toBeGreaterThan(100);
     expect(result.saved).toBe(true);
   });
