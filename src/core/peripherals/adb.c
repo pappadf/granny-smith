@@ -311,12 +311,19 @@ static bool device_has_pending_data(const adb_t *adb, uint8_t addr) {
 }
 
 static bool device_can_service_request(const adb_t *adb, uint8_t addr) {
-    if (!device_has_pending_data(adb, addr))
-        return false;
     if (addr == adb->kbd.address)
-        return adb->kbd.srq_enabled;
-    if (addr == adb->mouse.address)
-        return adb->mouse.srq_enabled;
+        return !kbd_queue_empty(adb) && adb->kbd.srq_enabled;
+    if (addr == adb->mouse.address) {
+        // NEW data only.  A held button is a level the mouse re-reports at
+        // every poll (device_has_pending_data), but it is not an event: a
+        // real mouse asserts Service Request for motion or a button change,
+        // not for "still down".  Counting the level here made the ROM's SRQ
+        // scan restart after every poll for as long as a button was held
+        // (the keyboard's no-reply byte carried "SRQ", the mouse answered
+        // the scan, and round again) instead of letting the transceiver
+        // auto-poll the mouse.
+        return adb->mouse_data_pending && adb->mouse.srq_enabled;
+    }
     return false;
 }
 
@@ -897,6 +904,26 @@ static void adb_deliver_next_byte(adb_t *adb) {
             adb->reply_len - adb->reply_index);
         set_adb_int(adb, true); // bit3=1 → continue fetching
         via_input_sr(adb->via, byte);
+    } else if (adb->reply_len == 0 && adb->state == ADB_STATE_ODD) {
+        // Second byte of a no-reply Talk.  The ROM's SR handler reads vADBInt
+        // per phase, not as one "done" line (universal ROM $40807002):
+        //   - first EVEN byte low  = the device did not answer ($4080 70DA,
+        //     fDBFlag bit 1); the byte is still read into the buffer
+        //   - first ODD byte low   = Service Request from some device
+        //     ($40807124: fDBFlag bit 2 + $15D bit 3 -> rescan every device)
+        //   - a later EVEN byte low = end of data -> completion routine
+        // So this byte must carry the bus's SRQ state, not "end of transfer":
+        // pulled low here after every idle poll, the ROM set its SRQ-pending
+        // bit each time and never left the scan loop ($408071F2) -- two
+        // explicit Talk R0s every 12 ms for the life of the machine, and no
+        // transceiver auto-poll at all.  The completion routine is never
+        // reached on this path either way (no-reply exits via $4080719C /
+        // $40807184), so the byte value is irrelevant.
+        bool srq = other_device_service_requesting(adb, 0xFF); // any device at all
+        LOG(3, "adb_deliver_next_byte: no-reply second byte (SRQ=%d)", srq);
+        adb->dummy_sent = true;
+        set_adb_int(adb, !srq);
+        via_input_sr(adb->via, 0xFF);
     } else {
         // All reply bytes delivered (or reply_len=0 for "no device"):
         // Send a dummy byte with vADBInt LOW (asserted) to signal end-of-transfer.
