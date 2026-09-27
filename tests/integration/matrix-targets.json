@@ -915,6 +915,17 @@
       "suite": "suite-pdm"
     },
     {
+      "machine": "pm6100",
+      "system": "8.1",
+      "card": "ariel",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "pdm-afp-copy-motion",
+      "media_gated": true
+    },
+    {
       "machine": "pm7100",
       "system": "7.5",
       "card": "ariel",

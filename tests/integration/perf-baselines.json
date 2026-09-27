@@ -40,6 +40,10 @@
       "instr": 2779983600,
       "tolerance": 0.2
     },
+    "pdm-afp-copy-motion/copy": {
+      "instr": 6384983600,
+      "tolerance": 0.2
+    },
     "pm8100-24ac-sysinfo/bench": {
       "instr": 10302983600,
       "tolerance": 0.2
