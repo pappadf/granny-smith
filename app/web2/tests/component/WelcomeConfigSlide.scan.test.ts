@@ -152,7 +152,7 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     });
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
     const labels = Array.from(modelSel.options).map((o) => o.textContent);
-    expect(labels.sort()).toEqual(['Macintosh Plus — Rev 1', 'Macintosh Plus — Rev 3']);
+    expect(labels.sort()).toEqual(['Macintosh Plus (Rev 1)', 'Macintosh Plus (Rev 3)']);
     expect(container.querySelector('#cfg-rom')).toBeNull();
   });
 
@@ -183,7 +183,7 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     const labels = Array.from(modelSel.options).map((o) => o.textContent);
     // Plus has other known ROMs (the mock labels it), so its one stored ROM is
     // still named; the SE/30 ROM carries no label and reads as the model.
-    expect(labels).toEqual(expect.arrayContaining(['Macintosh Plus — Rev 3', 'Macintosh SE/30']));
+    expect(labels).toEqual(expect.arrayContaining(['Macintosh Plus (Rev 3)', 'Macintosh SE/30']));
   });
 
   // Regression: scanImages('fd') folds the legacy /opfs/images/fdhd/ listing

@@ -60,7 +60,8 @@ static const char *const MACXL[] = {"macxl", NULL};
 // === The table ============================================================
 //
 // {family_name, compatible, id, rom_size, checksum_span, flags, variant}
-// variant: set on every ROM that shares an emulated model with another ROM.
+// variant: set on every ROM that shares an emulated model with another ROM;
+// kept short, since it is shown in a menu as "<model> (<variant>)".
 // Within each kind: rows verified from images first, then rows from the
 // published list, then rows known from checksum values alone.
 
@@ -69,9 +70,9 @@ const rom_info_t rom_table[] = {
     // verified from images
     {"Macintosh-512k ROM", NONE, "28ba4e50", 64 * 1024, 0, 0},
     {"Macintosh-128k ROM", NONE, "28ba61ce", 64 * 1024, 0, 0},
-    {"Macintosh Plus (Rev 2, Lonely Heifers)", PLUS, "4d1eeae1", 128 * 1024, 0, 0, "Rev 2 (Lonely Heifers)"},
-    {"Macintosh Plus (Rev 1, Lonely Hearts)", PLUS, "4d1eeee1", 128 * 1024, 0, 0, "Rev 1 (Lonely Hearts)"},
-    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS, "4d1f8172", 128 * 1024, 0, 0, "Rev 3 (Loud Harmonicas)"},
+    {"Macintosh Plus (Rev 2, Lonely Heifers)", PLUS, "4d1eeae1", 128 * 1024, 0, 0, "Rev 2"},
+    {"Macintosh Plus (Rev 1, Lonely Hearts)", PLUS, "4d1eeee1", 128 * 1024, 0, 0, "Rev 1"},
+    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS, "4d1f8172", 128 * 1024, 0, 0, "Rev 3"},
     {"PowerBook 100 ROM", NONE, "96645f9c", 256 * 1024, 0, 0},
     {"Mac Portable ROM", NONE, "96ca3846", 256 * 1024, 0, 0},
     {"Universal IIx/IIcx/SE/30 ROM", UNIVERSAL, "97221136", 256 * 1024, 0, 0},
@@ -117,7 +118,7 @@ const rom_info_t rom_table[] = {
     {"Bandai Pippin (Kinka 1.0) ROM", NONE, "2bef21b7-0bf68e274dc0720d", 4096 * 1024, 0, ROM_F_NO_SUM64},
     {"Bandai Pippin (Kinka Dev) ROM", NONE, "2bf65931-2b807a9748e78318", 4096 * 1024, 0, ROM_F_NO_SUM64},
     {"Apple Network Server 500/700 ROM (2.0 prototype, Mac OS)", ANS, "49b2be8f-5f2aeeb25507b2cb", 4096 * 1024, 0, 0,
-     "2.0 prototype (Mac OS)"},
+     "2.0 proto"},
     {"Power Mac & Performa 5200,5300,6200,6300 ROM", NONE, "63abfd3f-c5421fbaff3c5a9d", 4096 * 1024, 0, 0},
     {"Power Mac 6500 ROM", NONE, "6e92fe08-c784f8035da2d93a", 4096 * 1024, 0, 0},
     {"Performa 6400 ROM", NONE, "6f5724c0-6703442013f443d8", 4096 * 1024, 0, 0},
@@ -128,21 +129,20 @@ const rom_info_t rom_table[] = {
     {"Power Mac 7300 & 7600 & 8600 & 9600 (v1) ROM", NONE, "960e4be9-949c2c56d07516b7", 4096 * 1024, 0, 0},
     {"Power Mac 8600 & 9600 (v2) ROM", NONE, "960fc647-013bb98cd4ad16c4", 4096 * 1024, 0, 0},
     {"Apple Network Server 500/700 ROM (Open Firmware 2.26NT, Windows NT)", ANS, "962f6c13-50348b3d0126096b",
-     4096 * 1024, 0, 0, "Open Firmware 2.26NT (Windows NT)"},
+     4096 * 1024, 0, 0, "Win NT"},
     {"Apple Network Server 500/700 ROM (Open Firmware 1.1.20.1)", ANS, "962f6c13-c60da96de537f08a", 4096 * 1024, 0, 0,
-     "Open Firmware 1.1.20.1"},
+     "1.1.20.1"},
     {"Apple Network Server 500/700 ROM (Open Firmware 1.1.22)", ANS, "962f6c13-d540b3dd5bcf9caa", 4096 * 1024, 0, 0,
-     "Open Firmware 1.1.22"},
-    {"Power Macintosh 7500/8500/9500 ROM (v2)", TNT, "9630c68b-4db4a42fea3b53b3", 4096 * 1024, 0, 0, "ROM v2"},
+     "1.1.22"},
+    {"Power Macintosh 7500/8500/9500 ROM (v2)", TNT, "9630c68b-4db4a42fea3b53b3", 4096 * 1024, 0, 0, "v2"},
     {"Apple Network Server 500/700 ROM (Open Firmware 2.26B6)", ANS, "9630c68b-a71fb907dd180b8a", 4096 * 1024, 0, 0,
-     "Open Firmware 2.26B6"},
-    {"Power Macintosh 7500/8500/9500 ROM (v1)", TNT, "96cd923d-c241cd82bf90797a", 4096 * 1024, 0, 0, "ROM v1"},
+     "2.26B6"},
+    {"Power Macintosh 7500/8500/9500 ROM (v1)", TNT, "96cd923d-c241cd82bf90797a", 4096 * 1024, 0, 0, "v1"},
     {"Workgroup Server 9150-120 ROM", NONE, "9b037f6f-d20052bd25d88bd6", 4096 * 1024, 0, 0},
     {"Power Macintosh 7100 ROM (newer, Boot PDM 601 1.1)", PM7100, "9b7a3aad-ed510ac937721e25", 4096 * 1024, 0, 0,
-     "ROM 1.1 (Boot PDM 601 1.1)"},
+     "v1.1"},
     {"Workgroup Server 9150-80 ROM", NONE, "9c7c98f7-e9220fe5992ffdf2", 4096 * 1024, 0, 0},
-    {"Power Macintosh 6100/7100/8100 ROM", PDM, "9feb69b3-dedc602cfc3b9221", 4096 * 1024, 0, 0,
-     "ROM 1.0 (Boot PDM 601 1.0)"},
+    {"Power Macintosh 6100/7100/8100 ROM", PDM, "9feb69b3-dedc602cfc3b9221", 4096 * 1024, 0, 0, "v1.0"},
     {"PowerBook G3 Wallstreet PDQ ROM", NONE, "b46ffb63-69e8e6201908f35f", 4096 * 1024, 0, 0},
     {"PowerBook G3 Wallstreet ROM", NONE, "cbb01212-833504c219032ad5", 4096 * 1024, 0, 0},
     // from the published checksum list

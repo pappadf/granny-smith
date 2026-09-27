@@ -85,7 +85,7 @@ static const tnt_board_desc_t pm9500_board = {
 };
 
 const hw_profile_t machine_pm9500 = {
-    .name = "Power Macintosh 9500/132",
+    .name = "Power Macintosh 9500",
     .id = "pm9500",
 
     .cpu_model = CPU_MODEL_PPC604,
