@@ -39,6 +39,11 @@ for (const ramKb of [32768, 131072]) {
     await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
     await typeLine(page, `machine.boot model="iicx" ram=${ramKb} rom="/opfs/images/rom/97221136"`);
     await page.waitForTimeout(3_000);
+    // The checkpoint needs a machine directory, which an attached disk gives.
+    await typeLine(page, 'storage.hd_create("/opfs/images/hd/cp.img", "20mb")');
+    await page.waitForTimeout(3_000);
+    await typeLine(page, 'machine.scsi.attach_hd "/opfs/images/hd/cp.img" 0');
+    await page.waitForTimeout(3_000);
     await typeLine(page, 'checkpoint.auto = true');
     await page.waitForTimeout(1_000);
 
