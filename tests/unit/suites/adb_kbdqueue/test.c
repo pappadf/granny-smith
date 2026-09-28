@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
 // The ADB keyboard queue's overflow policy.
 //
 // Register 0 reports a key release as bit 7 of the keycode, so WHICH byte the

@@ -26,6 +26,7 @@ tests/e2e/
 ├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
+│   ├── ans-bitblt-repro.spec.ts         # Reproduction (REPRO_E28=1): NT GUI Setup on the ANS 500 drawn in the browser
 │   ├── av-boot-no-slots.spec.ts         # A slotless model (q660av) boots after a carded one in the same session
 │   ├── av-camera.spec.ts                # AV video-in against Chromium's fake camera
 │   ├── av-microphone.spec.ts            # Browser mic → shared-heap ring → guest RAM (no OS)

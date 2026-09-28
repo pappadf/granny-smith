@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
 // The Cirrus 54M30's BitBLT engine and its legacy-window mirror.
 //
 // Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical Reference Manual",
