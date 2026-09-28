@@ -1,0 +1,98 @@
+# Capture the Lisa's Serial A output: LOS 3.1 prints the Calculator tape
+# into machine.scc.a.output.  See config.mk for what this row covers.  Screen coordinates are the
+# Office System's 720x364 desktop; mouse.move "global" steers the OS
+# cursor there through the COPS warp (docs/machines/lisa/cops.md).
+
+# Click at (x, y): place the cursor, press, release.
+def lclick(x, y) {
+    machine.adb.mouse.move($x, $y, "global")
+    scheduler.run 3000000
+    machine.adb.mouse.click true
+    scheduler.run 800000
+    machine.adb.mouse.click false
+    scheduler.run 800000
+}
+
+# Pull down the menu at title x `mx` and release on the item at (ix, iy).
+def menu_pick(mx, ix, iy) {
+    machine.adb.mouse.move($mx, 8, "global")
+    scheduler.run 3000000
+    machine.adb.mouse.click true
+    scheduler.run 3000000
+    machine.adb.mouse.move($ix, $iy, "global")
+    scheduler.run 3000000
+    machine.adb.mouse.click false
+}
+
+machine.hd.attach "$WORK_DIR/profile.image"
+assert machine.hd.present == true "ProFile should be attached"
+# BootVol=2 (the ProFile) with a non-verifying checksum, as suite-lisa's
+# lisa-los31-profile row seeds it: the OS restores its configuration from
+# the boot volume, which puts the Imagewriter setting on Serial A
+assert machine.hd.pram_init(2, false) "pram_init failed"
+
+# A host file on the end of Serial A: a ready device on the cable
+let out = "${$TEST_RESULTS_DIR}/serial-a.bin"
+assert machine.scc.a.output == none "Serial A has an output before one is set"
+machine.scc.a.output = $out
+assert machine.scc.a.output == $out "Serial A's output did not take"
+
+# Boot to the Office System desktop
+scheduler.run 112000000
+
+# Disk icon -> File/Print "Open"
+lclick(657, 340)
+scheduler.run 5000000
+menu_pick(100, 140, 83)
+scheduler.run 60000000
+
+# Calculator -> File/Print "Open"
+lclick(309, 62)
+scheduler.run 5000000
+menu_pick(100, 140, 83)
+scheduler.run 80000000
+
+# Customize -> "Show Tape", then select the tape by dragging across it
+menu_pick(310, 318, 83)
+scheduler.run 30000000
+machine.adb.mouse.move(198, 44, "global")
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.move(340, 60, "global")
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+
+# File/Print -> "Print Current Tape Selection"
+menu_pick(100, 170, 113)
+
+# The driver streams the page at once; give it time to finish and settle
+scheduler.run 100000000
+
+let size = storage.path_size($out)
+echo "serial A: ${$size} bytes in serial-a.bin, capture pending ${machine.scc.a.sent_pending}"
+assert $size > 3000 "the file is too short to be a printed page"
+assert $size == machine.scc.a.sent_pending "the file and the channel's capture disagree"
+# The Office System driver resets the printer (CAN), selects its setup
+# (ESC E ...) and sends the page as bit-image bands (ESC F position,
+# ESC g graphics); the capture holds the same bytes as the file
+let sent = machine.scc.a.sent()
+assert contains($sent, '\x18\x18\x18\x18') "no CAN reset from the driver"
+assert contains($sent, '\x1BE') "no ESC E setup"
+assert contains($sent, '\x1BF') "no ESC F head positioning"
+assert contains($sent, '\x1Bg') "no ESC g graphics"
+
+# Detach the output: nothing on the cable, so the same print cannot go out
+machine.scc.a.output = none
+assert machine.scc.a.output == none "Serial A's output did not close"
+menu_pick(100, 170, 113)
+scheduler.run 100000000
+assert machine.scc.a.sent_pending == 0 "bytes went out with no device on Serial A"
+assert storage.path_size($out) == $size "the closed file grew"
+
+# The machine is still alive after printing
+assert machine.cpu.sr < 0x2700 "the CPU is stuck with interrupts masked"
+
+echo "PASS: lisa-serial-output"
+quit

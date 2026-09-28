@@ -25,6 +25,14 @@ typedef void (*scc_irq_fn)(void *context, bool active);
 // channel B, the LocalTalk port: the LLAP header and payload, no CRC.
 typedef void (*scc_frame_fn)(void *context, const uint8_t *frame, size_t len);
 
+// The channel inputs a device on the far end of a port can drive.  RR0 reports
+// each as the chip does: bit set when the (active-low) pin is asserted.
+typedef enum {
+    SCC_PIN_DCD = 0, // /DCD -> RR0 bit 3
+    SCC_PIN_SYNC, // /SYNC -> RR0 bit 4, in asynchronous mode only
+    SCC_PIN_CTS, // /CTS -> RR0 bit 5
+} scc_pin_t;
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Create an SCC instance with per-instance IRQ callback routing.
@@ -59,6 +67,29 @@ int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len);
 // an SDLC frame on channel B is delivered; anything else the transmitter
 // flushes -- async bytes, channel A -- is not a LocalTalk frame.
 void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context);
+
+// Send every byte the guest transmits on channel `ch` (0 = A, 1 = B) in
+// asynchronous mode to the host file `path`, created or truncated; NULL
+// closes it.  An open output is a device on the cable, so the port's
+// ready line (scc_set_port_ready_line) goes to its ready level while it is
+// open.  False, with nothing changed, when the file cannot be opened.
+bool scc_set_output(scc_t *scc, unsigned int ch, const char *path);
+
+// The host file channel `ch`'s output goes to, or NULL when none.
+const char *scc_get_output(const scc_t *scc, unsigned int ch);
+
+// How the machine wires a device's ready line into channel `ch`: input
+// `pin`, at `ready_level` (asserted or not) when a device is there and
+// ready.  Drives the pin to "not ready" now; scc_set_output drives it to
+// ready while an output is open.  A port that is not wired this way has
+// no handshake the output touches.
+void scc_set_port_ready_line(scc_t *scc, unsigned int ch, scc_pin_t pin, bool ready_level);
+
+// A device on channel `ch` drives input `pin` to `asserted`.  The level is
+// the device's, not the chip's, so a channel or chip reset keeps it; RR0
+// reflects it (SYNC only in asynchronous mode) and a change raises the
+// external/status interrupt when the guest enabled it for that input.
+void scc_set_input_pin(scc_t *scc, unsigned int ch, scc_pin_t pin, bool asserted);
 
 // True once channel B is in SDLC mode — the guest's AppleTalk driver is up
 // and a frame we originate has somewhere to go.

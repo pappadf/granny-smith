@@ -171,8 +171,13 @@ remains as a debug override that forces the high base on any model.)
 
 ### 3.2 I/O space map (physical `$00C000–$00FFFF`)
 
-The full I/O space (including the expansion-slot decodes, which are out of scope
-for the built-in machine) is:
+The full I/O space is below. No expansion cards are modelled, so an access to
+any slot decode takes a **bus error**, as it does on a real Lisa with the slot
+empty: the CPU waits 30-300 us for a device to answer and times out (Lisa
+Hardware Manual 1983, bus handshaking). Both the boot ROM's `RDSLOTS` and the
+Lisa OS's `EXISTS_CARD` detect an empty slot by that bus error; the model used
+to read a floating `$FF` there, which the OS took for a card with ID `$FFF` in
+every slot.
 
 | Physical range | Function |
 | --- | --- |
@@ -183,7 +188,9 @@ for the built-in machine) is:
 | `$008000 – $009FFF` | Expansion slot 3, low decode |
 | `$00A000 – $00BFFF` | Expansion slot 3, high decode |
 | `$00C000 – $00CFFF` | Floppy-disk controller (6504A) shared RAM/registers |
-| `$00D000 – $00DFFF` | I/O-board devices: SCC, VIA2 (parallel), VIA1 (keyboard/COPS) |
+| `$00D000 – $00D3FF` | Serial ports: the SCC (§15), every 8-byte mirror |
+| `$00D800 – $00DBFF` | Parallel port: VIA2 |
+| `$00DC00 – $00DFFF` | Keyboard/mouse: VIA1 (COPS) |
 | `$00E000 – $00FFFF` | CPU-board devices: control strobes, video latch, status |
 
 The CPU-board block (`$E000–$FFFF`) decodes into four sub-blocks:
@@ -1140,14 +1147,18 @@ A dual-channel Zilog **Z8530 SCC**. Its internal register file and baud-rate
 generator are described in [scc.md](../../core/peripherals/scc.md); the Lisa specifics are:
 
 - **Addresses** (physical I/O space; the address pins follow the standard
-  A1 = A/B-select, A2 = data/control convention):
+  A1 = A/B-select, A2 = data/control convention). The chip select is the
+  whole Serial Ports Control block, `$00D000–$00D3FF` (Hardware Manual
+  Fig. 2-5), and only A1 and A2 reach the chip, so every 8-byte mirror is
+  the same four registers. The boot ROM and the manual's table use `$D24x`;
+  the Lisa OS RS-232 driver uses `$D20x`:
 
-  | Phys addr | Channel | Access |
+  | Phys addr (ROM / OS) | Channel | Access |
   | --- | --- | --- |
-  | `$00D241` | B | control |
-  | `$00D243` | A | control |
-  | `$00D245` | B | data |
-  | `$00D247` | A | data |
+  | `$00D241` / `$00D201` | B | control |
+  | `$00D243` / `$00D203` | A | control |
+  | `$00D245` / `$00D205` | B | data |
+  | `$00D247` / `$00D207` | A | data |
 
 - **Interrupt:** **IPL 6**, autovectored (vector `$000078`).
 - **Clocks:** channel A's PCLK input is **4.000 MHz**, channel B's is **3.6864
@@ -1156,7 +1167,24 @@ generator are described in [scc.md](../../core/peripherals/scc.md); the Lisa spe
 
 Because the address pins follow the same A1/A2 convention as the Macintosh, a
 generic SCC model that decodes `channel = ~(A1)` and `data = A2` works unchanged
-when mapped at base `$00D240`.
+when mapped across `$00D000–$00D3FF`. (It was mapped at `$00D240` only, eight
+bytes, which served the boot ROM and silently dropped every access the OS's
+serial driver made.)
+
+- **Serial A's handshake and output.** The OS's RS-232 driver transmits on
+  port A only while DSR is asserted, which the Lisa wires to the SCC's
+  `/SYNC` input and reads as RR0 bit 4 (`source-rs232`: `xmtrr0 := $10` for
+  channel 0). The machine declares that wiring
+  (`scc_set_port_ready_line`), and a host file attached to the port stands
+  for a ready device on the cable: `machine.scc.a.output = "/path/file"`
+  raises DSR and streams everything the guest transmits into the file;
+  `machine.scc.a.output = none` lowers it again. With the Office System's
+  device configuration set to "Imagewriter / II DMP" on Serial A (the
+  LOS 3.1 install default), File/Print then writes the document's
+  ImageWriter command stream into the file; with no output set, the driver
+  reports "difficulty printing" and sends nothing. Port B (AppleBus) has no
+  wired handshake. See [scc.md](../../core/peripherals/scc.md), "The far end
+  of a port", and the `lisa-serial-output` integration row.
 
 ---
 
