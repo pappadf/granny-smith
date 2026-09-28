@@ -10,6 +10,7 @@
 // cfg->images).
 
 #include "root.h"
+#include "gs_out.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,29 +67,31 @@ typedef struct {
     value_t *items;
     size_t len;
     size_t cap;
+    bool oom; // set when a push failed; the list must not be returned short
 } string_list_acc_t;
 
-// Append `name` as a V_STRING. Returns false on allocation failure;
-// callers fall through to val_list() with what's been accumulated.
+// Append `name` as a V_STRING through the shared accumulator.
+//
+// This was one of five near-identical {items, len, cap} doublers -- root.c,
+// meta.c, alias.c, an inline one in object.c and another in debug.c -- beside
+// val_list_push, which already existed and which object.c's copy already
+// used.  Each copy had its own OOM behaviour, and four of the five DISCARDED
+// the failure, so an allocation failure silently truncated the returned list
+// instead of erroring: objects(), attributes(), methods(), meta.children and
+// meta.indices would report a short list as if it were complete, which the
+// inspector then renders as "these are all the members".  A truncated schema
+// is worse than an error because the caller cannot tell.
 static bool string_list_push(string_list_acc_t *acc, const char *name) {
     if (!name)
         return true;
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 16;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(name);
-    return true;
+    return val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name));
 }
 
 static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
     (void)parent;
     string_list_acc_t *acc = (string_list_acc_t *)ud;
-    string_list_push(acc, object_name(child));
+    if (!string_list_push(acc, object_name(child)))
+        acc->oom = true; // reported by the caller; see string_list_push
 }
 
 static value_t method_root_objects(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -102,9 +105,16 @@ static value_t method_root_objects(struct object *self, const member_t *m, int a
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_CHILD)
-                string_list_push(&acc, cls->members[i].name);
+                if (!string_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
     }
     object_each_attached(target, each_attached_collect, &acc);
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
     return val_list(acc.items, acc.len);
 }
 
@@ -119,7 +129,14 @@ static value_t method_root_attributes(struct object *self, const member_t *m, in
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_ATTR)
-                string_list_push(&acc, cls->members[i].name);
+                if (!string_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }
@@ -135,7 +152,14 @@ static value_t method_root_methods(struct object *self, const member_t *m, int a
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_METHOD)
-                string_list_push(&acc, cls->members[i].name);
+                if (!string_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }
@@ -175,14 +199,15 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
 // process-wide ones stay here.
 
 // `quit()` — request emulator shutdown. Headless sets the script
-// quit flag and stops the scheduler; WASM is a no-op (the browser
-// owns the lifecycle).
+// quit flag and stops the scheduler; in the browser, which owns the page's
+// lifecycle, it says so rather than doing nothing silently.
 static value_t method_root_quit(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     (void)argv;
-    gs_quit();
+    if (gs_quit() != 0)
+        return val_err("quit: not supported on this platform");
     return val_none();
 }
 
@@ -195,43 +220,46 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
     (void)m;
     for (int i = 0; i < argc; i++) {
         if (i > 0)
-            putchar(' ');
+            gs_outc(' ');
         switch (argv[i].kind) {
         case V_STRING:
-            fputs(argv[i].s ? argv[i].s : "", stdout);
+            gs_outs(argv[i].s ? argv[i].s : "");
             break;
         case V_BOOL:
-            fputs(argv[i].b ? "true" : "false", stdout);
+            gs_outs(argv[i].b ? "true" : "false");
             break;
         case V_INT:
-            printf("%lld", (long long)argv[i].i);
+            gs_outf("%lld", (long long)argv[i].i);
             break;
         case V_UINT:
-            printf("%llu", (unsigned long long)argv[i].u);
+            gs_outf("%llu", (unsigned long long)argv[i].u);
             break;
         case V_FLOAT:
-            printf("%g", argv[i].f);
+            gs_outf("%g", argv[i].f);
             break;
         default:
             // Fall back to a path-form-style label for the kinds we
             // don't usually echo (V_OBJECT, V_LIST). Keeps output
             // deterministic for diff-based regression tests.
-            fputs("<?>", stdout);
+            gs_outs("<?>");
             break;
         }
     }
-    putchar('\n');
+    gs_outc('\n');
     return val_bool(true);
 }
 
 // `download(path)` — trigger a browser file download. Routes to the
-// platform-specific gs_download (WASM streams via Blob+anchor; headless
-// prints a "not supported" stub).
+// platform-specific gs_download (WASM streams via Blob+anchor); a platform
+// with no browser says so.
 static value_t method_root_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    return val_bool(gs_download(argv[0].s) == 0);
+    int rc = gs_download(argv[0].s);
+    if (rc == -2)
+        return val_err("download: not supported on this platform");
+    return val_bool(rc == 0);
 }
 
 static const arg_decl_t root_path_arg[] = {
@@ -253,37 +281,37 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}                   },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}                },
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}                   },
     {.kind = M_METHOD,
      .name = "help",
      .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}                    },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                                },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                },
     // `assert` is a statement keyword in shell v2 (script.c); the former
     // root method is gone — its name is now a reserved word.
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                                },
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}   },
+     .method = {.ui_flags = MM_IO, .args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}},
 };
 
 static const class_desc_t emu_root_class_real = {
@@ -314,8 +342,14 @@ static int g_stub_count = 0;
 static struct config *g_installed_cfg = NULL;
 
 static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
-    if (g_stub_count >= MAX_STUBS)
+    if (g_stub_count >= MAX_STUBS) {
+        // Two callers discard this result (storage.images, shell.alias), so an
+        // exhausted table made a whole subtree quietly absent -- which reads
+        // as a missing feature, not a resource limit.  The class-validation
+        // failure a few lines below already prints; this one did not.
+        fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS, name ? name : "(unnamed)");
         return NULL;
+    }
     char err[200];
     if (!object_validate_class(cls, err, sizeof(err))) {
         fprintf(stderr, "root: class '%s' invalid: %s\n", cls->name ? cls->name : "?", err);
@@ -368,7 +402,7 @@ void root_install(struct config *cfg) {
     // `shell.alias.{add,remove,list}` surface).
     struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
     if (shell_obj)
-        shell_funcs_install(shell_obj); // `shell.functions` container (§3.10)
+        shell_funcs_install(shell_obj); // `shell.functions` container
     struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
     if (storage_obj) {
         attach_stub(storage_obj, &storage_images_collection_class, cfg, "images");
@@ -380,10 +414,9 @@ void root_install(struct config *cfg) {
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
 
     // `machine.nubus.*` namespace.  Attached under the machine node — NuBus
-    // is emulated hardware, not a meta object (proposal-system-object-model.md
-    // §2.2/§5.5).  The registry is empty until cfg->nubus exists, so
-    // `machine.nubus.cards()` returns [] pre-population; once populated the
-    // surface gains slot.<n>/ children per proposal §3.5.3.
+    // is emulated hardware, not a meta object.  The registry is empty until
+    // cfg->nubus exists, so `machine.nubus.cards()` returns [] pre-population;
+    // once populated the surface gains slot.<n>/ children.
     struct object *nubus_obj = attach_stub(machine_object(), &nubus_class, cfg, "nubus");
     if (nubus_obj) {
         object_set_label(nubus_obj, "NuBus");
@@ -417,11 +450,19 @@ void root_uninstall(void) {
     // teardown. Only the cfg-scoped storage.images entry array is freed
     // here.
     storage_object_classes_teardown();
-    // Restore the namespace-only root class so a fresh object_root()
-    // call after uninstall doesn't surface stale members.
-    object_root_set_class(NULL);
+    // The root method table is NOT reverted here, deliberately.
+    //
+    // It used to be, and that was a process-scoped global being undone by a
+    // cfg-scoped teardown: after system_destroy -- a headless quit,
+    // machine.boot's teardown, or a failed restore -- `echo`, `objects`,
+    // `attributes`, `methods`, `help`, `time` and `quit` all stopped
+    // resolving until a new machine existed.  The comment that stood here
+    // feared "stale members", but the stale things are the STUBS, and the loop
+    // above already detached them.  emu_root_class_real is a static descriptor
+    // whose members take a path and walk the tree; not one of them holds or
+    // dereferences a cfg, so there is nothing about it to go stale.
     // Aliases (built-in and user) survive machine teardown: they store
-    // path text and re-resolve per access (shell v2 §3.5), so a
+    // path text and re-resolve per access, so a
     // reference like `alias d = machine.floppy.drive[0]` tracks the
     // *new* drive object after a reboot instead of being wiped.
     g_installed_cfg = NULL;

@@ -14,13 +14,11 @@
 // centres (VIA: $200) so each occupies its own aligned longword slot —
 // they are byte-access only, and wider access logs and reads open bus.
 //
-// Populated so far: the interrupt block (+$20..$2C), the DBDMA channel
-// windows (+$8000+n*$100, Phase C — the engine itself is dbdma.c), the
-// VIA1/Cuda window (+$16000), BoxID (+$1A000), the banked NVRAM
-// (+$1D000 port / +$1F000 data window), AWACS (+$14000, Phase D) and the
-// RaDACal RAMDAC (+$1B000 — control.c, Phase D part 2).  The remaining
-// apertures log and read open bus until their phases land (SCSI/MESH
-// +$10000/+$18000 Phase E; MACE, SCC, SWIM3 Phase F).
+// Populated here: the interrupt block (+$20..$2C), the DBDMA channel
+// windows (+$8000+n*$100 — the engine itself is dbdma.c), the VIA1/Cuda
+// window (+$16000), BoxID (+$1A000), the banked NVRAM (+$1D000 port /
+// +$1F000 data window), AWACS (+$14000) and the RaDACal RAMDAC (+$1B000 —
+// control.c).  An aperture with no model behind it logs and reads open bus.
 //
 // Register truth: the shipping ROM's Open Firmware device tree and 68k
 // DecoderInfo tables, the ROM's own NanoKernel interrupt handler, and
@@ -30,7 +28,10 @@
 #include "tnt.h"
 
 #include "dbdma.h"
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "pci.h"
 #include "ppc.h"
 #include "scc.h"
@@ -45,17 +46,17 @@ LOG_USE_CATEGORY_NAME("gc");
 #define OFF_INTS      0x00020u // +$20 Events / +$24 Mask / +$28 Clear / +$2C Levels
 #define OFF_DBDMA     0x08000u // channels 0-10 at +$8000+n*$100 (dbdma.c)
 #define OFF_DBDMA_END (OFF_DBDMA + 0x100u * TNT_DBDMA_CHANNELS)
-#define OFF_SCSI0     0x10000u // 53C94, external bus (Phase E)
-#define OFF_MACE      0x11000u // MACE Ethernet (Phase F)
-#define OFF_SCCLEG    0x12000u // SCC legacy aperture (Phase F)
-#define OFF_ESCC      0x13000u // ESCC: channel B at +0, channel A at +$20 (Phase F)
-#define OFF_AWACS     0x14000u // AWACS codec + sound control (Phase D)
+#define OFF_SCSI0     0x10000u // 53C94, external bus
+#define OFF_MACE      0x11000u // MACE Ethernet
+#define OFF_SCCLEG    0x12000u // SCC legacy aperture
+#define OFF_ESCC      0x13000u // ESCC: channel B at +0, channel A at +$20
+#define OFF_AWACS     0x14000u // AWACS codec + sound control
 #define OFF_SWIM3     0x15000u // SWIM3 floppy: 16 regs on $10 centres (swim3.c)
 #define OFF_VIA       0x16000u // VIA1/Cuda: 16 byte regs on $200 centres (8 KB)
-#define OFF_MESH      0x18000u // MESH, internal bus (Phase E)
+#define OFF_MESH      0x18000u // MESH, internal bus
 #define OFF_EPROM     0x19000u // Ethernet address PROM (+ the ANS MP doorbell)
 #define OFF_BOXID     0x1A000u // machine-identification register (LE)
-#define OFF_RADACAL   0x1B000u // RAMDAC colormap bank (Phase D)
+#define OFF_RADACAL   0x1B000u // RAMDAC colormap bank
 #define OFF_LCDGB     0x1C000u // GBUS device 3: ANS front-panel LCD (lcd.c)
 #define OFF_BREG2     0x1E000u // ANS Board Register 2: environment (gbus.c)
 #define OFF_NVPORT    0x1D000u // NVRAM bank-select port
@@ -228,6 +229,15 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
                 gc->int_latch = 0; // the acknowledge drops the line
         }
         LOG(3, "clear $%08X -> events $%08X (mode %d)", value, gc->int_events, gc->int_mode1);
+        // The DBDMA channels (sources 0-10) hold their completion request
+        // as a level until acknowledged here (tnt_dbdma_irq): the clear
+        // deasserts it, which in mode 1 is itself the change the
+        // NanoKernel needs to lower the posted IPL again.
+        for (int n = 0; n < TNT_DBDMA_CHANNELS; n++) {
+            uint32_t bit = 1u << n;
+            if ((value & bit) && (gc->int_levels & bit))
+                tnt_gc_set_source(cfg, n, false);
+        }
         break;
     case INT_MASK: {
         // Enabling a source whose event or level is already pending
@@ -299,6 +309,289 @@ static void nvram_write(config_t *cfg, uint32_t offset, uint8_t value) {
 // Island dispatch
 // ============================================================
 
+// === Object node: machine.gc ================================================
+//
+// Grand Central is the whole interrupt controller of a 7500/8500/9500 and an
+// ANS, and it is the chip whose two clear modes make an IRQ storm here
+// specifically hard to read: in mode 0 the line follows
+// ((events | levels) & mask), in mode 1 it follows (latch & mask) alone, and
+// which mode you are in is invisible from the register values.  So the four
+// raw registers and the mode are all first-class here, and `active`
+// overrides the generic `pending & enabled` to answer for the mode actually
+// selected.
+
+static tnt_gc_t *gc_obj(void *ctx) {
+    return &tnt_st((config_t *)ctx)->gc;
+}
+
+static uint32_t gc_obj_pending(void *ctx) {
+    const tnt_gc_t *gc = gc_obj(ctx);
+    return gc->int_events | gc->int_levels;
+}
+static uint32_t gc_obj_enabled(void *ctx) {
+    return gc_obj(ctx)->int_mask;
+}
+static uint32_t gc_obj_active(void *ctx) {
+    const tnt_gc_t *gc = gc_obj(ctx);
+    return gc->int_mode1 ? (gc->int_latch & gc->int_mask) : ((gc->int_events | gc->int_levels) & gc->int_mask);
+}
+// A PowerPC has one external-interrupt pin, not an IPL: 1 = asserted.
+static int gc_obj_ipl(void *ctx) {
+    return gc_obj_active(ctx) ? 1 : 0;
+}
+
+static const irq_controller_ops_t gc_irq_ops = {
+    .chip = "Grand Central",
+    .pending = gc_obj_pending,
+    .enabled = gc_obj_enabled,
+    .active = gc_obj_active,
+    .ipl = gc_obj_ipl,
+};
+
+#define GC_U32_ATTR(NAME, EXPR)                                                                                        \
+    static value_t gc_attr_##NAME(struct object *self, const member_t *m) {                                            \
+        (void)m;                                                                                                       \
+        const tnt_gc_t *gc = gc_obj(object_data(self));                                                                \
+        value_t v = val_uint(4, (EXPR));                                                                               \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+GC_U32_ATTR(events, gc->int_events)
+GC_U32_ATTR(levels, gc->int_levels)
+GC_U32_ATTR(mask, gc->int_mask)
+GC_U32_ATTR(latch, gc->int_latch)
+
+static value_t gc_attr_clear_mode(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, gc_obj(object_data(self))->int_mode1 ? 1u : 0u);
+}
+
+static const member_t gc_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&gc_irq_ops){
+                                        .kind = M_ATTR,
+                                        .name = "events",
+                                        .doc = "Edge-latched source rising edges (write-1-to-clear in mode 0)",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_events, .set = NULL}},
+    {.kind = M_ATTR,
+                                        .name = "source_levels",
+                                        .doc = "Live source picture, never latched",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_levels, .set = NULL}},
+    {.kind = M_ATTR,
+                                        .name = "mask",
+                                        .doc = "Per-source enables",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_mask, .set = NULL}                 },
+    {.kind = M_ATTR,
+                                        .name = "latch",
+                                        .doc = "Mode-1 per-source output latch",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_latch, .set = NULL} },
+    {.kind = M_ATTR,
+                                        .name = "clear_mode",
+                                        .doc = "0 = power-on ((events|levels) & mask); 1 = NanoKernel acknowledge (latch & mask)",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .get = gc_attr_clear_mode, .set = NULL}                                          },
+};
+
+static const class_desc_t gc_class = {
+    .name = "irq_controller",
+    .members = gc_members,
+    .n_members = sizeof(gc_members) / sizeof(gc_members[0]),
+};
+
+// ============================================================
+// machine.nvram — the 8 KB non-volatile store as the test lever
+// ============================================================
+// The banked store read flat: byte i is bank i/32, cell i%32.  The same
+// shape as machine.rtc.pram on the 68k machines (peek/poke/dump/snapshot/
+// restore), so a row can pin what lives here — the Mac OS XPRAM image at
+// +$1300 (the display depth, the startup device) and Open Firmware's
+// environment in the top bank — without driving a control panel.
+static uint8_t *nvram_store(struct object *self) {
+    tnt_state_t *st = tnt_st((config_t *)object_data(self));
+    return st ? st->gc.nvram : NULL;
+}
+
+static value_t nvram_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    uint64_t addr = argv[0].u;
+    if (addr >= TNT_NVRAM_SIZE)
+        return val_err("nvram.peek: offset 0x%llX is outside the %u-byte store", (unsigned long long)addr,
+                       TNT_NVRAM_SIZE);
+    return val_uint(1, nv[addr]);
+}
+
+static value_t nvram_method_poke(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    uint64_t addr = argv[0].u;
+    const value_t *bytes = &argv[1];
+    if (bytes->kind != V_BYTES || !bytes->bytes.p)
+        return val_err("nvram.poke: bytes argument must be V_BYTES (use the :N width suffix, e.g. 0x80:1)");
+    size_t n = bytes->bytes.n;
+    if (n == 0)
+        return val_err("nvram.poke: bytes argument is empty");
+    if (addr >= TNT_NVRAM_SIZE || addr + n > TNT_NVRAM_SIZE)
+        return val_err("nvram.poke: write of %zu bytes at 0x%llX would overflow the %u-byte store", n,
+                       (unsigned long long)addr, TNT_NVRAM_SIZE);
+    memcpy(nv + addr, bytes->bytes.p, n);
+    return val_none();
+}
+
+static value_t nvram_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    uint64_t addr = argv[0].u;
+    uint64_t n = argv[1].u;
+    if (addr >= TNT_NVRAM_SIZE || n == 0 || addr + n > TNT_NVRAM_SIZE)
+        return val_err("nvram.dump: read of %llu bytes at 0x%llX would overflow the %u-byte store",
+                       (unsigned long long)n, (unsigned long long)addr, TNT_NVRAM_SIZE);
+    return val_bytes(nv + addr, (size_t)n);
+}
+
+static value_t nvram_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    return val_bytes(nv, TNT_NVRAM_SIZE);
+}
+
+// Whole-store restore from a snapshot: how a row seeds one boot's formatted
+// store into another.
+static value_t nvram_method_restore(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    const value_t *bytes = &argv[0];
+    if (bytes->kind != V_BYTES || bytes->bytes.n != TNT_NVRAM_SIZE || !bytes->bytes.p)
+        return val_err("nvram.restore: expected V_BYTES of length %u (got len=%zu)", TNT_NVRAM_SIZE,
+                       bytes->kind == V_BYTES ? bytes->bytes.n : 0);
+    memcpy(nv, bytes->bytes.p, TNT_NVRAM_SIZE);
+    return val_none();
+}
+
+// `machine.nvram.clear()` — the battery pull, on every TNT board (the
+// Network Server's `machine.board.clear_nvram()` is the same call).
+static value_t nvram_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || !tnt_st(cfg))
+        return val_err("nvram not available");
+    tnt_nvram_clear(cfg);
+    return val_bool(true);
+}
+
+static value_t nvram_attr_size(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(4, TNT_NVRAM_SIZE);
+}
+
+static const arg_decl_t nvram_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+};
+static const arg_decl_t nvram_poke_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "bytes", .kind = V_BYTES, .doc = "1..N bytes to write (use the :N integer-width suffix)"},
+};
+static const arg_decl_t nvram_dump_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte offset (0..$1FFF)"},
+    {.name = "n", .kind = V_UINT, .doc = "byte count"},
+};
+static const arg_decl_t nvram_restore_args[] = {
+    {.name = "bytes", .kind = V_BYTES, .doc = "8192-byte buffer (typically from nvram.snapshot)"},
+};
+
+static const member_t nvram_members[] = {
+    {.kind = M_ATTR,
+     .name = "size",
+     .doc = "Store size in bytes (256 banks of 32)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "peek",
+     .doc = "Read one byte at a flat offset (the Mac OS XPRAM image is at $1300 + PRAM address)",
+     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}},
+    {.kind = M_METHOD,
+     .name = "poke",
+     .doc = "Write 1..N bytes at a flat offset",
+     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}},
+    {.kind = M_METHOD,
+     .name = "dump",
+     .doc = "Read N bytes starting at a flat offset",
+     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}},
+    {.kind = M_METHOD,
+     .name = "snapshot",
+     .doc = "Read the whole 8 KB store",
+     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}},
+    {.kind = M_METHOD,
+     .name = "restore",
+     .doc = "Write the whole store from a snapshot",
+     .method = {.args = nvram_restore_args, .nargs = 1, .result = V_NONE, .fn = nvram_method_restore}},
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Blank the store — what removing the board battery does (Open Firmware reformats it next boot)",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}},
+};
+
+static const class_desc_t nvram_class = {
+    .name = "nvram",
+    .members = nvram_members,
+    .n_members = sizeof(nvram_members) / sizeof(nvram_members[0]),
+};
+
+void tnt_gc_attach_object(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (!st || st->gc_object)
+        return;
+    st->gc_object = object_new(&gc_class, cfg, "gc");
+    if (!st->gc_object)
+        return;
+    object_set_order(st->gc_object, 45);
+    object_attach(machine_object(), st->gc_object);
+    // The non-volatile store beside it: machine.nvram.
+    st->nvram_object = object_new(&nvram_class, cfg, "nvram");
+    if (st->nvram_object) {
+        object_set_label(st->nvram_object, "NVRAM");
+        object_set_order(st->nvram_object, 46);
+        object_attach(machine_object(), st->nvram_object);
+    }
+}
+
+void tnt_gc_detach_object(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (st && st->nvram_object) {
+        object_detach(st->nvram_object);
+        object_delete(st->nvram_object);
+        st->nvram_object = NULL;
+    }
+    if (st && st->gc_object) {
+        object_detach(st->gc_object);
+        object_delete(st->gc_object);
+        st->gc_object = NULL;
+    }
+}
+
 void tnt_gc_init(config_t *cfg) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
     // Power-on: everything masked, nothing latched.  NVRAM contents are
@@ -307,6 +600,15 @@ void tnt_gc_init(config_t *cfg) {
     gc->int_events = 0;
     gc->int_mask = 0;
     gc->int_levels = 0;
+    // The mode-1 output latch and the clear-mode selector, which this said
+    // "nothing latched" about while leaving both standing.  With int_mask zero
+    // the line is quiet either way, so nothing fired immediately -- but the
+    // moment post-reset firmware writes its first mask, stale pre-reset latch
+    // bits inside it assert the CPU line for sources that never re-asserted.
+    // And a clear mode surviving a reset means a machine restarted out of
+    // MkLinux boots the ROM in mode 1 instead of the power-on mode 0.
+    gc->int_latch = 0;
+    gc->int_mode1 = false;
     gc->nvram_bank = 0;
 }
 
@@ -314,9 +616,8 @@ void tnt_gc_init(config_t *cfg) {
 // Grand Central's PCI presence — device 16 on Bandit 1
 // ============================================================
 // Apple's own device tree calls it /gc@10, and Open Firmware does issue a
-// command + BAR write at IDSEL 16 during probe-slots (handover-phase-d
-// §1).  What that write lands on was a documented open question
-// (proposal-pci-architecture §14 Q7) until the diagnostic utility's bridge
+// command + BAR write at IDSEL 16 during probe-slots.  What that write
+// lands on was an open question until the diagnostic utility's bridge
 // test named the vendor; the header below is the generic type-0 one with
 // Grand Central's ids.
 //
@@ -475,7 +776,7 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
         // Absent on the Network Servers (board delta #4): the aperture
         // decodes nothing, so it falls through to the open-bus log.
         if (tnt_board(cfg)->has_mesh)
-            return tnt_mesh_read(cfg, offset - OFF_MESH);
+            return mesh_read(tnt_st(cfg)->mesh, offset - OFF_MESH);
         LOG(1, "byte read of the absent MESH aperture +$%05X", offset);
         return 0;
     default:
@@ -540,7 +841,7 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     case OFF_MESH:
         if (tnt_board(cfg)->has_mesh)
-            tnt_mesh_write(cfg, offset - OFF_MESH, value);
+            mesh_write(tnt_st(cfg)->mesh, offset - OFF_MESH, value);
         else
             LOG(1, "byte write of the absent MESH aperture +$%05X = $%02X", offset, value);
         return;

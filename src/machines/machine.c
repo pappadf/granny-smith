@@ -13,6 +13,7 @@
 #include "machine_config.h"
 #include "nubus.h"
 #include "object.h"
+#include "platform.h"
 #include "prom.h"
 #include "rom.h"
 #include "scheduler.h"
@@ -36,7 +37,7 @@ LOG_USE_CATEGORY_NAME("setup");
 #include <time.h>
 
 // Registry of built-in machine profiles.  A static const array iterated
-// directly (proposal §4.6): adding a machine is one line here, no runtime
+// directly: adding a machine is one line here, no runtime
 // machine_register(), no MAX_MACHINES cap.  The profiles are defined in each
 // family's machine file (glue/se30.c, mdu/iici.c, …).
 static const hw_profile_t *const builtin_machines[] = {
@@ -60,8 +61,8 @@ const char *floppy_kind_to_string(floppy_kind_t kind) {
     return "";
 }
 
-// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" /
-// "lisa_segment").  This is the value the capability probe exports as
+// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" / "68040" /
+// "ppc_601" / "ppc_604" / "lisa_segment").  This is the value the capability probe exports as
 // `mmu.kind` so the debug UI can pick the right register views.
 const char *mmu_kind_to_string(mmu_kind_t kind) {
     switch (kind) {
@@ -91,6 +92,97 @@ const char *hd_bus_to_string(hd_bus_t bus) {
         return "profile";
     }
     return "scsi";
+}
+
+// === Media bays ==============================================
+// Where a hard disk or a CD goes is a fact the profile already holds -- the
+// buses with their bays, the `boot` flag, hd_bus, has_cdrom/cdrom_id -- but
+// every consumer derived it for itself, and they disagreed: headless put
+// hd=N at SCSI id N, the web dialog at the boot bay, the URL path at N again,
+// the Images panel at the default id on bus 0 whatever the bay's bus.  These
+// derive it once.
+
+const char *media_bus_name(media_bus_t bus) {
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return "floppy";
+    case MEDIA_BUS_SCSI:
+        return "scsi";
+    case MEDIA_BUS_SCSI2:
+        return "scsi2";
+    case MEDIA_BUS_PROFILE:
+        return "profile";
+    }
+    return "scsi";
+}
+
+bool media_bus_parse(const char *name, media_bus_t *out) {
+    static const media_bus_t all[] = {MEDIA_BUS_FLOPPY, MEDIA_BUS_SCSI, MEDIA_BUS_SCSI2, MEDIA_BUS_PROFILE};
+    for (size_t i = 0; name && i < sizeof(all) / sizeof(all[0]); i++) {
+        if (strcmp(name, media_bus_name(all[i])) == 0) {
+            *out = all[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max) {
+    if (!p || max <= 0)
+        return 0;
+    if (p->hd_bus == HD_BUS_PROFILE) {
+        out[0] = (media_bay_t){.bus = MEDIA_BUS_PROFILE, .unit = 0, .label = "ProFile"};
+        return 1;
+    }
+    // Every declared bay, in declared order, remembering the boot one.
+    media_bay_t all[MEDIA_HD_BAYS_MAX];
+    int n = 0, boot = 0;
+    for (const struct scsi_bus_decl *bus = p->scsi_buses; bus && bus->object; bus++) {
+        media_bus_t which;
+        if (!media_bus_parse(bus->object, &which) || (which != MEDIA_BUS_SCSI && which != MEDIA_BUS_SCSI2))
+            continue;
+        for (const struct scsi_slot *s = bus->slots; s && s->label && n < MEDIA_HD_BAYS_MAX; s++) {
+            if (s->boot)
+                boot = n;
+            all[n++] = (media_bay_t){.bus = which, .unit = s->id, .label = s->label};
+        }
+    }
+    // The boot bay first, then the rest in declared order.
+    int count = 0;
+    if (n > 0)
+        out[count++] = all[boot];
+    for (int i = 0; i < n && count < max; i++)
+        if (i != boot)
+            out[count++] = all[i];
+    return count;
+}
+
+bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out) {
+    return profile_hd_bays(p, out, 1) == 1;
+}
+
+bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
+    if (!p || !p->has_cdrom)
+        return false;
+    // The core seats the CD on the machine's first bus (cfg->scsi).
+    *out = (media_bay_t){.bus = MEDIA_BUS_SCSI, .unit = p->cdrom_id, .label = "CD-ROM"};
+    return true;
+}
+
+int profile_floppy_count(const hw_profile_t *p) {
+    int n = 0;
+    for (const struct floppy_slot *s = p ? p->floppy_slots : NULL; s && s->label; s++)
+        n++;
+    return n;
+}
+
+// A bay as the profile exports it: {bus, id, label}.
+static value_t media_bay_value(const media_bay_t *bay) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "bus", val_str(media_bus_name(bay->bus)));
+    val_map_put(b, "id", val_int((int64_t)bay->unit));
+    val_map_put(b, "label", val_str(bay->label ? bay->label : ""));
+    return val_map_finish(b);
 }
 
 // Find a machine profile by its id string
@@ -142,6 +234,22 @@ static value_t attr_machine_id(struct object *self, const member_t *m) {
     return val_str(p->id ? p->id : "");
 }
 
+// `machine.models` — every registered model id, in registry order.  Answers
+// without a running machine, so a script can iterate the roster instead of
+// keeping its own copy of it.
+static value_t attr_machine_models(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    size_t n = 0;
+    const hw_profile_t *const *list = machine_list(&n);
+    value_t *items = n ? (value_t *)calloc(n, sizeof(value_t)) : NULL;
+    if (n && !items)
+        return val_err("machine.models: out of memory");
+    for (size_t i = 0; i < n; i++)
+        items[i] = val_str(list[i]->id);
+    return val_list(items, n);
+}
+
 static value_t attr_machine_name(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -171,6 +279,37 @@ static value_t attr_machine_ram(struct object *self, const member_t *m) {
     return val_uint(4, cfg->ram_size / 1024u);
 }
 
+// `machine.irq` and `machine.ipl` — the family's raw interrupt-source
+// bitmap and the level the CPU is actually seeing.
+//
+// Every family aggregates its controllers into cfg->irq and resolves one
+// IPL from it, and neither was readable from anywhere: an investigation
+// could see a controller's own view through machine.<chip> and the CPU's
+// behaviour, with the step between them invisible.  The bit meanings are
+// per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
+// this is a bitmap and not an enum.
+static value_t attr_machine_irq(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.irq: no machine");
+    value_t v = val_uint(4, (uint64_t)(uint32_t)cfg->irq);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_machine_ipl(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.ipl: no machine");
+    if (!cfg->cpu)
+        return val_uint(1, 0); // a PowerPC machine has an external-interrupt pin, not an IPL
+    return val_uint(1, cpu_get_ipl(cfg->cpu));
+}
+
 static value_t attr_machine_created(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -180,11 +319,11 @@ static value_t attr_machine_created(struct object *self, const member_t *m) {
 
 // Build the `capabilities` map of the profile.  Every field is DERIVED
 // from the hardware facts + mmu_kind so it can never drift from
-// behaviour (proposal §4.4): the frontend probes this instead of guessing
+// behaviour: the frontend probes this instead of guessing
 // from the model's display name.
 static value_t build_capabilities(const hw_profile_t *p) {
     value_map_builder_t *cpu = val_map_new();
-    val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030
+    val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030 / 68040 / 601 / 604
     val_map_put(cpu, "address_bits", val_int((int64_t)p->address_bits));
     val_map_put(cpu, "fpu", val_bool(cpu_has_fpu(p->cpu_model)));
 
@@ -227,7 +366,7 @@ static value_t build_capabilities(const hw_profile_t *p) {
 
 // Build one video card map (id, display_name, requires_vrom, monitors).
 // requires_vrom is read straight off the card kind — the property the
-// dialog drives its VROM row from (proposal §4.4).
+// dialog drives its VROM row from.
 static value_t build_video_card(const char *card_id) {
     const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
     value_map_builder_t *b = val_map_new();
@@ -262,7 +401,7 @@ static value_t build_video_card(const char *card_id) {
 // card → monitor/depth.  VROM-required-ness is per *card* (the SE/30-vs-IIci
 // asymmetry), so the dialog shows the VROM row iff the selected card needs
 // one.  This is the ONLY video shape in the profile — the flat web-legacy
-// `video_modes` compat view was deleted with that UI (proposal §7 stage 3).
+// `video_modes` compat view was deleted with that UI.
 static value_t build_video_slots(const hw_profile_t *p) {
     value_t *slots = NULL;
     size_t n_slots = 0, cap_slots = 0;
@@ -316,8 +455,7 @@ static value_t build_video_slots(const hw_profile_t *p) {
             // Candidates are COMPUTED from the card registry: every kind
             // whose declared attachment fits this slot and that drives a
             // display.  Machines never enumerate cards — adding a card to
-            // the registry offers it on every compatible machine
-            // (proposal-nubus-computed-card-compatibility.md §5.3).
+            // the registry offers it on every compatible machine.
             for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
                 if (nubus_card_fits_socket(s, *k) && (*k)->monitors)
                     val_list_push(&cards, &n_cards, &cap_cards, build_video_card((*k)->id));
@@ -429,8 +567,11 @@ static value_t build_pci_slots(const hw_profile_t *p) {
             // attachment fits this socket.  Adding a card driver offers it
             // on every compatible machine with no machine-side edit.
             for (const pci_card_kind_t *const *k = pci_card_registry(); *k; k++) {
-                if (pci_card_fits_socket(s, *k))
-                    val_list_push(&cards, &n_cards, &cap_cards, build_pci_card((*k)->id));
+                if (!pci_card_fits_socket(s, *k))
+                    continue;
+                if ((*k)->offered && !(*k)->offered())
+                    continue; // needs a host facility this host lacks
+                val_list_push(&cards, &n_cards, &cap_cards, build_pci_card((*k)->id));
             }
         }
         val_map_put(b, "cards", val_list(cards, n_cards));
@@ -522,14 +663,29 @@ static value_t build_profile(const hw_profile_t *p) {
     val_map_put(b, "has_cdrom", val_bool(p->has_cdrom));
     val_map_put(b, "cdrom_id", val_int((int64_t)p->cdrom_id));
 
-    // Derived capability probe + per-card video-slot shape (proposal §4.4) —
+    // The derived bays: every hard-disk bay in attach order, the default
+    // one (hd_bays[0]), and the CD bay -- {bus, id, label}, bus one of
+    // "scsi" / "scsi2" / "profile".  What machine.attach_hd / attach_cdrom
+    // use, exported so a UI can show the same answer before a boot.
+    media_bay_t bays[MEDIA_HD_BAYS_MAX];
+    int n_bays = profile_hd_bays(p, bays, MEDIA_HD_BAYS_MAX);
+    value_t *bay_vals = NULL;
+    size_t n_bay_vals = 0, cap_bay_vals = 0;
+    for (int i = 0; i < n_bays; i++)
+        val_list_push(&bay_vals, &n_bay_vals, &cap_bay_vals, media_bay_value(&bays[i]));
+    val_map_put(b, "hd_bays", val_list(bay_vals, n_bay_vals));
+    val_map_put(b, "hd_default", n_bays > 0 ? media_bay_value(&bays[0]) : val_none());
+    media_bay_t cd;
+    val_map_put(b, "cdrom", profile_cdrom_bay(p, &cd) ? media_bay_value(&cd) : val_none());
+
+    // Derived capability probe + per-card video-slot shape —
     // the source of truth the frontend consumes.  (The web-legacy compat keys
     // needs_vrom / video_modes / video_mode_default were deleted with that UI;
     // everything derives from video_slots now.)
     val_map_put(b, "capabilities", build_capabilities(p));
     val_map_put(b, "video_slots", build_video_slots(p));
     // PCI expansion topology: one row per declared socket / builtin, with
-    // the fitting cards computed per socket (proposal-pci-architecture §8.1).
+    // the fitting cards computed per socket (docs/core/peripherals/pci.md).
     val_map_put(b, "pci_slots", build_pci_slots(p));
     // Substrate built-in video, when the machine has one that is NOT a
     // BUILTIN slot pseudo-card (the PDM family's Ariel scanout).  The
@@ -542,7 +698,7 @@ static value_t build_profile(const hw_profile_t *p) {
 }
 
 // machine.profile(id) — static lookup, returns the model's full configuration
-// shape as a typed map (see proposal §3.2.2).  Errors when id is empty
+// shape as a typed map.  Errors when id is empty
 // or doesn't match a registered profile.
 static value_t machine_method_profile(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -585,8 +741,7 @@ static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p)
         snprintf(buf, bufsize, "<none>");
 }
 
-// === Boot document (proposal-named-args-boot-config §4, revised by
-// proposal-boot-vs-reset §3.1) ==============================================
+// === Boot document ==========================================================
 //
 // machine.boot consumes one atomic, COMPLETE configuration document: model
 // and rom are required, every other field falls back to the model's own
@@ -596,7 +751,7 @@ static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p)
 // leaves the running machine untouched.  machine.restart is the verb for
 // "power-cycle this machine".
 
-// Strict declaration-ROM resolution (§4.1): every catalogued card the
+// Strict declaration-ROM resolution: every catalogued card the
 // user EXPLICITLY picked (per-slot staged entry, or the document's
 // wildcard card for the first socket) must resolve from the offer
 // registry, or the boot is rejected before teardown.  Factory-default
@@ -684,9 +839,8 @@ static void stage_pci_options(const char *spec) {
 }
 
 // Armed by machine.restart for the duration of its machine_boot_apply call:
-// carry the mounted media's open image handles across the teardown
-// (proposal-boot-vs-reset §3.3).  A plain machine.boot never transfers —
-// a new machine starts with empty drives.
+// carry the mounted media's open image handles across the teardown.  A plain
+// machine.boot never transfers — a new machine starts with empty drives.
 static bool s_transfer_media = false;
 
 // Is machine_boot_apply rebuilding the same machine (machine.restart) rather
@@ -706,6 +860,42 @@ static void stamp_created(char *buf, size_t bufsize) {
         snprintf(buf, bufsize, "unknown");
 }
 
+// Would a video_card= pick be honoured by this model?  The same rules the
+// slot walk applies (nubus.c): with a socket, the pick goes to the FIRST
+// socket and must physically fit it; with none, it replaces the builtin and
+// must be a builtin-attach kind.  Naming a card the model already has
+// built in is always accepted -- a no-op.  Checked up front so a pick that
+// could never be seated fails the boot instead of silently booting the
+// default display.
+static bool video_card_pick_fits(const hw_profile_t *p, const nubus_card_kind_t *k) {
+    const nubus_slot_decl_t *first_socket = NULL;
+    bool has_builtin = false;
+    for (const nubus_slot_decl_t *s = p->nubus_slots; s && s->slot != 0; s++) {
+        if (s->kind == NUBUS_SLOT_BUILTIN) {
+            has_builtin = true;
+            if (s->builtin_card_id && strcmp(s->builtin_card_id, k->id) == 0)
+                return true;
+        } else if (s->kind == NUBUS_SLOT_SOCKET && !first_socket)
+            first_socket = s;
+    }
+    if (first_socket)
+        return nubus_card_fits_socket(first_socket, k);
+    return has_builtin && k->attach == CARD_ATTACH_BUILTIN;
+}
+
+// The same for pci_card=: the pick goes to the first socket and must fit
+// it; naming a card the model already has built in is accepted as a no-op.
+static bool pci_card_pick_fits(const hw_profile_t *p, const pci_card_kind_t *k) {
+    const pci_slot_decl_t *first_socket = NULL;
+    for (const pci_slot_decl_t *s = p->pci_slots; s && s->slot != 0; s++) {
+        if (s->kind != PCI_SLOT_SOCKET && s->builtin_card_id && strcmp(s->builtin_card_id, k->id) == 0)
+            return true;
+        if (s->kind == PCI_SLOT_SOCKET && !first_socket)
+            first_socket = s;
+    }
+    return first_socket && pci_card_fits_socket(first_socket, k);
+}
+
 // Apply one boot document: validate → tear down → construct → record.
 // Shared by machine.boot, machine.restart and headless startup.  Returns
 // V_NONE on success, V_ERROR (with the old machine still running) on
@@ -715,7 +905,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
 
     // 1. Validation — all of it before system_destroy.  The document is the
     // whole specification: nothing is filled in from the previous machine's
-    // record (§2 — a field the caller did not write must not arrive from
+    // record (a field the caller did not write must not arrive from
     // somewhere the caller cannot see).
     if (!doc.model || !*doc.model)
         return val_err("machine.boot: model is required (machine.restart power-cycles the running machine)");
@@ -745,6 +935,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         if (!f)
             return val_err("machine.boot: cannot read rom2 '%s'", doc.rom2);
         fclose(f);
+    } else if (rom_fi.info && !rom_is_supported(rom_fi.info)) {
+        // A real ROM we know, for a machine that is not emulated.
+        return val_err("machine.boot: rom '%s' is the %s, for a machine Granny Smith does not emulate", doc.rom,
+                       rom_fi.info->family_name);
     } else if (rom_fi.info) {
         bool ok = false;
         for (const char *const *p = rom_fi.info->compatible; *p; p++) {
@@ -757,8 +951,8 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             return val_err("machine.boot: rom '%s' (%s) is not compatible with model '%s'", doc.rom,
                            rom_fi.info->family_name, profile->id);
     } else {
-        return val_err("machine.boot: rom '%s' is not a recognised ROM image (checksum %08X)", doc.rom,
-                       rom_fi.checksum);
+        return val_err("machine.boot: rom '%s' is not a recognised ROM image (id %s)", doc.rom,
+                       rom_fi.identity.id[0] ? rom_fi.identity.id : "none");
     }
 
     if (doc.video_card && *doc.video_card) {
@@ -772,6 +966,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
                                doc.video_card, near);
             return val_err("machine.boot: unknown card id '%s' (see nubus.cards())", doc.video_card);
         }
+        if (!video_card_pick_fits(profile, nubus_card_find(doc.video_card)))
+            return val_err(
+                "machine.boot: card '%s' fits no slot on model '%s' (see machine.profile(\"%s\").video_slots)",
+                doc.video_card, profile->id, profile->id);
     }
     if (doc.pci_card && *doc.pci_card) {
         if (!profile->pci_slots)
@@ -783,13 +981,21 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
                                doc.pci_card, near);
             return val_err("machine.boot: unknown card id '%s' (see machine.pci.cards())", doc.pci_card);
         }
+        if (!pci_card_pick_fits(profile, pci_card_find(doc.pci_card)))
+            return val_err("machine.boot: card '%s' fits no slot on model '%s' (see machine.profile(\"%s\").pci_slots)",
+                           doc.pci_card, profile->id, profile->id);
     }
     // 0..7 is the passive sense code; 8..14 is Apple's own indexed numbering
     // for the monitors that answer the EXTENDED (tie-matrix) probe instead
     // (dafb.h's DAFB_SENSE_INDEXED_*).  Only the DAFB models the extended
     // range today, so the JMFB is staged from the passive part only.
-    if (doc.video_sense >= (int)DAFB_SENSE_INDEXED_MAX)
-        return val_err("machine.boot: video_sense must be 0..%u (got %d)", DAFB_SENSE_INDEXED_MAX - 1u,
+    // Both bounds.  The ceiling was checked and the floor was not, so any
+    // negative other than the -1 "unset" sentinel fell through to the
+    // `video_sense >= 0` staging guard below and was silently ignored --
+    // demonstrated: video_sense=-7 booted with no diagnostic, and presents to
+    // the caller as "my video_sense= was ignored".
+    if (doc.video_sense < -1 || doc.video_sense >= (int)DAFB_SENSE_INDEXED_MAX)
+        return val_err("machine.boot: video_sense must be 0..%u, or -1 for unset (got %d)", DAFB_SENSE_INDEXED_MAX - 1u,
                        doc.video_sense);
     if (doc.video_mode && *doc.video_mode && !nubus_video_mode_known(doc.video_mode))
         return val_err("machine.boot: unknown video-mode id '%s'", doc.video_mode);
@@ -834,22 +1040,32 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
                            doc.prom);
     }
 
+    // The card ROMs beside this ROM join the offer registry before the
+    // resolution check reads it.  Offers are content-addressed and persist,
+    // so this only adds; a ROM booted from another directory than the
+    // platform's startup one used to find none of its siblings (#187).
+    platform_offer_sibling_card_roms(doc.rom);
+
     // Strict resolution for explicitly picked socket cards (per-slot staged
-    // entries and the document's wildcard card).
-    if (doc.vrom && *doc.vrom)
-        vrom_set_path(doc.vrom);
-    if (doc.prom && *doc.prom)
-        prom_set_path(doc.prom);
+    // entries and the document's wildcard card).  The resolution check reads
+    // the offer registry, so this document's explicit picks go in first, in
+    // place of the previous boot's (a document without vrom= has none); a
+    // rejection puts the running machine's picks back.
+    machine_config_set_explicit_picks(doc.vrom, doc.prom);
     value_t verr = validate_vrom_resolution(profile, doc.video_card);
-    if (val_is_error(&verr))
+    if (val_is_error(&verr)) {
+        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
         return verr;
+    }
     value_t perr = validate_prom_resolution(profile, doc.pci_card);
-    if (val_is_error(&perr))
+    if (val_is_error(&perr)) {
+        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
         return perr;
+    }
 
     // 3. Teardown + atomic construction.  On a machine.restart the mounted
     // media's open handles are detached first so they survive
-    // system_destroy's close loop (§3.3) — the delta stays with its open
+    // system_destroy's close loop — the delta stays with its open
     // instance, so writes survive the power-cycle by construction.
     media_slot_t media[MEDIA_SLOTS_MAX];
     int n_media = 0;
@@ -892,19 +1108,25 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
     if (doc.custom_mode && *doc.custom_mode)
         nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, doc.custom_mode);
-    if (doc.video_sense >= 0) {
-        if (doc.video_sense <= 7)
-            jmfb_pending_sense_set((uint8_t)doc.video_sense);
-        dafb_pending_sense_set((uint8_t)doc.video_sense); // built-in Quadra video
+    // One channel for every video model that needs the sense at construction
+    // -- the JMFB cards, the Quadras' DAFB, PDM's Ariel.  This used to poke
+    // two per-module one-shot statics by name, which is why machine.c had to
+    // include a machine header for each one and why a family added later
+    // would have been missed silently.
+    machine_build_opts_t build_opts = machine_build_opts_default();
+    if (doc.video_sense >= 0)
+        build_opts.video_sense = doc.video_sense;
+    // The built-in monitor strap resolves to a sense code and joins the other
+    // build options.  Validated above, so this cannot fail.
+    if (doc.monitor && *doc.monitor) {
+        uint8_t mon_sense = 0;
+        if (profile->builtin_video->monitor_sense(doc.monitor, &mon_sense))
+            build_opts.video_sense = mon_sense;
     }
-    // The built-in monitor strap, staged by whichever family owns this port.
-    // Validated above, so this cannot fail.
-    if (doc.monitor && *doc.monitor)
-        (void)profile->builtin_video->stage_monitor(doc.monitor);
 
     machine_config_reset_vroms();
     machine_config_reset_slot_cards();
-    config_t *cfg = system_create(profile, NULL);
+    config_t *cfg = system_create(profile, &build_opts, NULL);
     if (!cfg) {
         for (int i = 0; i < n_media; ++i)
             image_close(media[i].img); // machine gone; nothing to attach to
@@ -919,6 +1141,15 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     if (rom_rc != 0) {
         for (int i = 0; i < n_media; ++i)
             image_close(media[i].img); // half-built machine; drop the transfer
+        // system_create() already succeeded, so the object root is installed
+        // for this cfg and global_emulator names it -- and the PREVIOUS machine
+        // is already gone.  Returning here left the process with a fully
+        // installed machine that has no valid ROM: machine.cpu.*,
+        // machine.memory.* and the whole machine.* subtree resolve and answer
+        // with garbage.  The `!cfg` branch a few lines above unwinds; this one
+        // did not, and it was the only partial-init failure in the create flow
+        // that did not.
+        system_destroy(cfg); // clears global_emulator itself
         return val_err("machine.boot: machine created but ROM staging failed for '%s'", doc.rom);
     }
 
@@ -928,7 +1159,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         scheduler_set_mode(cfg->scheduler, pacing);
 
     // Hand the transferred media handles back through the device attach
-    // paths (§3.3).  The rebuilt machine is the same model by construction
+    // paths.  The rebuilt machine is the same model by construction
     // (the restart document IS the record), so every slot re-resolves.
     for (int i = 0; i < n_media; ++i) {
         if (cfg->machine->substrate->media_attach && cfg->machine->substrate->media_attach(cfg, &media[i]) == 0)
@@ -948,7 +1179,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     snprintf(w->model, sizeof(w->model), "%s", profile->id);
     w->ram_kb = cfg->ram_size / 1024u;
     snprintf(w->rom, sizeof(w->rom), "%s", doc.rom);
-    w->rom_crc = rom_fi.checksum;
+    snprintf(w->rom_id, sizeof(w->rom_id), "%s", rom_fi.identity.id);
     snprintf(w->rom2, sizeof(w->rom2), "%s", doc.rom2 ? doc.rom2 : "");
     snprintf(w->vrom, sizeof(w->vrom), "%s", doc.vrom ? doc.vrom : "");
     snprintf(w->prom, sizeof(w->prom), "%s", doc.prom ? doc.prom : "");
@@ -997,14 +1228,30 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
     return val_bool(true);
 }
 
-// machine.restart — power-cycle the running machine (proposal-boot-vs-reset
-// §3.2): rebuild the machine described by the built-from record, taking no
-// configuration arguments, and keep the mounted media attached by
-// transferring the open image handles across the teardown (§3.3).  Errors
-// when no machine is running.  Host-side runtime state that is not
-// construction configuration (volume, host capture sources) is out of scope
-// — the frontend re-asserts it.  Scheduler pacing is the exception every
-// rebuild keeps: it is the harness's setting, not the machine's.
+// machine.reset — level 2, a warm reset: the board's /RESET net plus the CPU
+// back to its reset vector, with the machine left standing.  Nothing is torn
+// down and nothing is rebuilt, so RAM, the PRAM/NVRAM, mounted media and the
+// object tree all survive; this is the reset button.  machine.boot and
+// machine.restart both construct a new machine, so this is the only verb that
+// reboots a machine and keeps its NVRAM.
+static value_t machine_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    if (!global_emulator)
+        return val_err("machine.reset: no machine is running; boot one first");
+    system_machine_reset();
+    return val_bool(true);
+}
+
+// machine.restart — power-cycle the running machine: rebuild the machine
+// described by the built-from record, taking no configuration arguments, and
+// keep the mounted media attached by transferring the open image handles across
+// the teardown.  Errors when no machine is running.  Host-side runtime state
+// that is not construction configuration (volume, host capture sources) is out
+// of scope — the frontend re-asserts it.  Scheduler pacing is the exception
+// every rebuild keeps: it is the harness's setting, not the machine's.
 static value_t machine_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -1017,7 +1264,7 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
     // Work from a snapshot: boot_apply rewrites the record in place, so doc
     // pointers into the live record would alias their own destination — and
     // the original `created` stamp must survive (a power-cycle is not a
-    // re-birth, §6.3).
+    // re-birth).
     machine_config_record_t snap = *rec;
     boot_config_t doc = {
         .model = snap.model,
@@ -1030,12 +1277,13 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
         .video_sense = snap.video_sense,
         .video_mode = snap.video_mode[0] ? snap.video_mode : NULL,
         .custom_mode = snap.custom_mode[0] ? snap.custom_mode : NULL,
+        .monitor = snap.monitor[0] ? snap.monitor : NULL,
         .pci_card = snap.pci_card[0] ? snap.pci_card : NULL,
         .pci_option = snap.pci_option[0] ? snap.pci_option : NULL,
     };
     // Replay the user's per-slot picks: the document's wildcard covers only
     // the first socket, so without these a multi-card machine would come
-    // back with empty slots (proposal-pci-architecture §8.2).
+    // back with empty slots (docs/core/peripherals/pci.md).
     //
     // ONLY the explicit ones.  A slot that resolved its own default must be
     // left to resolve it again: re-staging a default turns it into an
@@ -1075,7 +1323,7 @@ static value_t machine_method_register(struct object *self, const member_t *m, i
 }
 
 // "Not given" sentinels for the boot document's optional fields: empty
-// string / 0 / 0xFF mean "use the model's default" (§3.1); model and rom
+// string / 0 / 0xFF mean "use the model's default"; model and rom
 // are checked as required inside machine_boot_apply so the message can
 // point at machine.restart.  An explicitly empty named value (`rom=`) is
 // rejected by the shell grammar before binding.
@@ -1113,7 +1361,7 @@ static const arg_decl_t machine_boot_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_sense,
-     .doc = "Monitor sense 0..7; default: card default"                             },
+     .doc = "Monitor sense 0..7 (passive), 8..14 (extended); default: card default" },
     {.name = "video_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1161,7 +1409,98 @@ static const arg_decl_t machine_profile_args[] = {
     {.name = "id", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30)"},
 };
 
+// === machine.attach_hd / attach_cdrom / eject_media ===========
+// Media by bay, not by bus: the running machine's profile says where a hard
+// disk or a CD goes (profile_hd_bays / profile_cdrom_bay), and the substrate
+// attaches it there, on whatever bus that is -- machine.scsi, machine.scsi2 or
+// the Lisa's ProFile.  Each answers the bay it used, {bus, id, label}, which
+// is what eject_media takes back.
+
+static value_t machine_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.attach_hd: no machine is running");
+    media_bay_t bays[MEDIA_HD_BAYS_MAX];
+    int n = profile_hd_bays(cfg->machine, bays, MEDIA_HD_BAYS_MAX);
+    int64_t which = (argc >= 2 && argv[1].kind == V_INT) ? argv[1].i : 0;
+    if (n == 0)
+        return val_err("machine.attach_hd: %s has no hard-disk bay", cfg->machine->name);
+    if (which < 0 || which >= n)
+        return val_err("machine.attach_hd: bay %lld does not exist (%s has %d)", (long long)which, cfg->machine->name,
+                       n);
+    char err[256];
+    if (system_media_attach_path(cfg, &bays[which], false, argv[0].s, err, sizeof(err)) != 0)
+        return val_err("machine.attach_hd: %s", err);
+    return media_bay_value(&bays[which]);
+}
+
+static value_t machine_method_attach_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.attach_cdrom: no machine is running");
+    media_bay_t bay;
+    if (!profile_cdrom_bay(cfg->machine, &bay))
+        return val_err("machine.attach_cdrom: %s has no CD-ROM bay", cfg->machine->name);
+    char err[256];
+    if (system_media_attach_path(cfg, &bay, true, argv[0].s, err, sizeof(err)) != 0)
+        return val_err("machine.attach_cdrom: %s", err);
+    return media_bay_value(&bay);
+}
+
+static value_t machine_method_eject_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.eject_media: no machine is running");
+    media_bus_t bus;
+    if (!media_bus_parse(argv[0].s, &bus))
+        return val_err("machine.eject_media: unknown bus '%s' (floppy, scsi, scsi2 or profile)", argv[0].s);
+    int unit = (argc >= 2 && argv[1].kind == V_INT) ? (int)argv[1].i : 0;
+    int rc = system_media_eject(cfg, bus, unit);
+    if (rc == -2)
+        return val_err("machine.eject_media: the guest has locked %s %d", argv[0].s, unit);
+    if (rc != 0)
+        return val_err("machine.eject_media: nothing to eject at %s %d", argv[0].s, unit);
+    return val_none();
+}
+
+// The bay index's default: a named argument after it must stay reachable.
+static const value_t k_bay0 = {.kind = V_INT, .i = 0};
+
+static const arg_decl_t machine_attach_hd_args[] = {
+    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Hard-disk image path"},
+    {.name = "bay",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_bay0,
+     .doc = "Which bay, in profile.hd_bays order (default 0: the boot bay)"},
+};
+
+static const arg_decl_t machine_attach_cdrom_args[] = {
+    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "CD-ROM image path"},
+};
+
+static const arg_decl_t machine_eject_media_args[] = {
+    {.name = "bus", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "floppy, scsi, scsi2 or profile"},
+    {.name = "id",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_bay0,
+     .doc = "Drive index or SCSI id (default 0)"},
+};
+
 static const member_t machine_members[] = {
+    {.kind = M_ATTR,
+     .name = "models",
+     .doc = "Every registered model id, in registry order (no machine needed)",
+     .flags = VAL_RO,
+     .attr = {.type = V_LIST, .get = attr_machine_models, .set = NULL}},
     {.kind = M_ATTR,
      .name = "id",
      .doc = "Active machine's model id (\"plus\" / \"se30\" / …)",
@@ -1183,6 +1522,16 @@ static const member_t machine_members[] = {
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = attr_machine_ram, .set = NULL}},
     {.kind = M_ATTR,
+     .name = "irq",
+     .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = attr_machine_irq, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "ipl",
+     .doc = "CPU interrupt level asserted now (0 on a PowerPC machine, which has a single pin)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = attr_machine_ipl, .set = NULL}},
+    {.kind = M_ATTR,
      .name = "created",
      .doc = "True if a machine has been booted",
      .flags = VAL_RO,
@@ -1199,6 +1548,10 @@ static const member_t machine_members[] = {
                 .result = V_BOOL,
                 .fn = machine_method_boot}},
     {.kind = M_METHOD,
+     .name = "reset",
+     .doc = "Warm-reset the running machine: the /RESET net plus the CPU, keeping RAM, PRAM and media",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_reset}},
+    {.kind = M_METHOD,
      .name = "restart",
      .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_restart}},
@@ -1206,9 +1559,21 @@ static const member_t machine_members[] = {
      .name = "register",
      .doc = "Record the active machine identity for checkpointing",
      .method = {.args = machine_register_args, .nargs = 2, .result = V_BOOL, .fn = machine_method_register}},
+    {.kind = M_METHOD,
+     .name = "attach_hd",
+     .doc = "Attach a hard-disk image to a bay (default: the boot bay) on whatever bus it is; answers {bus, id, label}",
+     .method = {.args = machine_attach_hd_args, .nargs = 2, .result = V_MAP, .fn = machine_method_attach_hd}},
+    {.kind = M_METHOD,
+     .name = "attach_cdrom",
+     .doc = "Insert a CD-ROM image into the machine's CD bay; answers {bus, id, label}",
+     .method = {.args = machine_attach_cdrom_args, .nargs = 1, .result = V_MAP, .fn = machine_method_attach_cdrom}},
+    {.kind = M_METHOD,
+     .name = "eject_media",
+     .doc = "Take the medium out of a bay, named as attach_hd/attach_cdrom answer it (bus, id)",
+     .method = {.args = machine_eject_media_args, .nargs = 2, .result = V_NONE, .fn = machine_method_eject_media}},
 };
 
-const class_desc_t machine_class = {
+static const class_desc_t machine_class = {
     .name = "machine",
     .members = machine_members,
     .n_members = sizeof(machine_members) / sizeof(machine_members[0]),
@@ -1223,7 +1588,7 @@ const class_desc_t machine_class = {
 
 static struct object *s_machine_object = NULL;
 
-// The single `machine` container node (proposal-system-object-model.md §5.1).
+// The single `machine` container node (docs/core/shell/object-model.md).
 // All emulated hardware nests under it; the emulator's own service objects
 // (scheduler/debug/storage/…) and the simulated network (appletalk) stay at
 // the root as its siblings. Created lazily on first use because some

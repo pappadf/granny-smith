@@ -11,6 +11,10 @@
 .equ GS_DRHW,          0x002B          | 24AC DrHW (Display_Video_Apple_Boogie)
 .equ GS_FB_MINOR,      0               | framebuffer at VRAM offset 0
 .equ GS_NMODES,        5               | 0x80..0x84 = 1/4/8/16/32 bpp (no 2 bpp)
+.equ GS_NPAGES,        1               | one framebuffer (mPageCnt); with
+                                        | only one page the driver assembles
+                                        | no page code at all and needs no
+                                        | SetPage op -- see gsvrom_drvr.s
 .equ GS_FIRSTDIRECT,   3               | codes 3 (16 bpp) and 4 (32 bpp) are direct
 .equ GS_DEFER_SPID,    0               | no deferred 32-bit sResource family
 
@@ -33,7 +37,7 @@
 | (0x6B/0x6C/0x6D) so emulator PRAM/mode staging matches.
 	.macro	EmitCPB pfx
 | Top-level video spIDs (the 0x6B/0x6C/0x6D sister scheme); geometry
-| lives only in the generated records (§3.4).
+| lives only in the generated records.
 \pfx&SpidTab:
 	dc.w	0x006B,0x006C,0x006D
 	dc.w	0                       | terminator

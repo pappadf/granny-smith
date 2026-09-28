@@ -1,4 +1,4 @@
-// Phase 3: the bus is now real (no stub state changes), so lifecycle calls
+// The bus is real (no stub state changes), so lifecycle calls
 // against the un-booted bus return null without touching machine state.
 // Real-emulator coverage stays manual in the browser; bus internals are
 // covered via the unit suites (machineId, urlMedia.parse, archive, etc.).
@@ -29,9 +29,8 @@ describe('emulator lifecycle (no Module in jsdom)', () => {
 
   it('initEmulator is a no-op against an un-booted bus', async () => {
     await initEmulator({
-      model: 'Macintosh Plus',
+      model: 'plus',
       vrom: '(auto)',
-      ram: '4 MB',
       floppies: [],
       hd: '(none)',
       cd: '(none)',

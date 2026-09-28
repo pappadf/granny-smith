@@ -29,12 +29,9 @@
 
 #include "dbdma.h"
 #include "floppy.h"
-#include "log.h"
 #include "swim3.h"
 
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("swim3");
 
 #define FD_CHAN 1 // Grand Central DBDMA channel 1: the floppy
 

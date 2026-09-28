@@ -2,18 +2,17 @@
 // Copyright (c) pappadf
 
 // test.c — directed unit tests for the 601 MMU front end
-// (src/core/cpu/ppc/ppc_mmu.c), proposal-powerpc-601-pdm.md Phase D.
+// (src/core/cpu/ppc/ppc_mmu.c).
 //
 // Written from the MPC601 User's Manual Chapter 6 (translation) and the
-// Chapter 5 DSI/ISI register-settings tables; the PTEG addresses are
-// computed here independently from Figure 6-19 so an arithmetic slip in
-// the implementation cannot silently agree with itself.  The §3.4 proof
-// list covered: 601-format BATs with key/PP protection, T=1 memory-forced
-// segments (SR5-toggle aliasing and the DT-off data path), primary and
-// secondary hashed-table search with R/C write-back, exact DSISR/DAR/SRR1
-// images, the (PR,DT)-keyed SoA discipline, tlbie congruence-class
-// invalidation, mtsr change-triggered invalidation, and dcbz's W/I
-// alignment rule.
+// Chapter 5 DSI/ISI register-settings tables; the PTEG addresses are computed
+// here independently from Figure 6-19 so an arithmetic slip in the
+// implementation cannot silently agree with itself.  Covered: 601-format BATs with key/PP
+// protection, T=1 memory-forced segments (SR5-toggle aliasing and the DT-off
+// data path), primary and secondary hashed-table search with R/C write-back,
+// exact DSISR/DAR/SRR1 images, the (PR,DT)-keyed SoA discipline, tlbie
+// congruence-class invalidation, mtsr change-triggered invalidation, and dcbz's
+// W/I alignment rule.
 
 #include "ppc_internal.h"
 
@@ -475,7 +474,7 @@ static void test_ioseg_error(void) {
     CHECK_EQ(P->dar, 0x10000000u);
 }
 
-// === The 604 model (TNT proposal §4.3; PEM Ch. 7 / 604UM Ch. 5) ============
+// === The 604 model (PEM Ch. 7 / 604UM Ch. 5) ===============================
 
 // Reset into the 604 model, low vectors, translation off.
 static void fresh604(void) {
@@ -851,7 +850,7 @@ int main(void) {
     test_fetch_translation();
     test_ioseg_error();
 
-    // The 604 model (TNT proposal §4.3): split BATs, architected format,
+    // The 604 model: split BATs, architected format,
     // ordering/direct-store, hardware-split crossings, tlbie, dcbz.
     test_604_split_bats();
     test_604_bat_format();

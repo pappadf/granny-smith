@@ -5,9 +5,11 @@ SCSI chip, implemented machine-independently in
 [src/core/peripherals/scsi_53c96.c](../../../src/core/peripherals/scsi_53c96.c) /
 [scsi_53c96.h](../../../src/core/peripherals/scsi_53c96.h). It is the
 protocol front-end over the shared bus/target/CD-ROM model in
-[scsi.c](../../../src/core/peripherals/scsi.c), reached through the
-bus's external-initiator API (`scsi_external_*`) — there is no NCR 5380
-register file on this family, and the 5380 path is untouched.
+[scsi_bus.c](../../../src/core/peripherals/scsi_bus.c), reached through
+the bus's external-initiator API (`scsi_external_*`) — there is no NCR
+5380 register file on this family, and the 5380 path is untouched.
+(`scsi.c` is now the 5380 itself; the bus it used to contain was split
+out into `scsi_bus.c`, which is the file this chip actually talks to.)
 
 Ground truth: the NCR 53C94/95/96 Data Manual (register semantics,
 reset/interrupt behaviour) plus the boot ROM's and System 7.1 SCSI

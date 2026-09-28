@@ -31,14 +31,16 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
 const MACH64_PROM = path.join(DATA, 'roms', 'mach64-gx-104-437584e0.prom');
 
-// The ROM is stored under its checksum, the .prom under its CRC-32 — both
-// content-addressed, so the upload filename never matters.
-const STORED_ROM = '/opfs/images/rom/96CD923D';
+// The ROM is stored under its content id (its header sum plus the ConfigInfo
+// 64-bit sum), the .prom under its CRC-32 — both content-addressed, so the
+// upload filename never matters.
+const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
 const STORED_PROM = '/opfs/images/prom/437584e0';
 
 // Upload a host file through the shipped generic ingest path — the Welcome
@@ -159,13 +161,6 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
 });
 
 // --- terminal helpers (same shape as vrom-offer-ingest.spec.ts) ------------
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
 
 // Echo an expression under a unique key and return the printed value. The
 // typed line is echoed too, so values still starting with `$` are the input

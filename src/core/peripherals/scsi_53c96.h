@@ -2,16 +2,15 @@
 // Copyright (c) pappadf
 
 // scsi_53c96.h
-// NCR 53C96 Advanced SCSI Controller — the Quadra generation's SCSI chip
-// (proposal-machine-quadra-700-900-950.md §10), machine-independent so the
-// later 68040/early-PowerPC machines can reuse it.
+// NCR 53C96 Advanced SCSI Controller — the Quadra generation's SCSI chip,
+// machine-independent so the later 68040/early-PowerPC machines can reuse it.
 //
-// Phase C scope: the chip register file with data-manual-faithful reset and
+// Scope: the chip register file with data-manual-faithful reset and
 // interrupt semantics (NCR 53C94/95/96 Data Manual ch. 4/5) — enough for the
 // boot ROM's controller probe and bus scan: chip reset, NOP, flush FIFO,
 // SCSI bus reset, enable/disable selection, and the select sequences ending
-// in a selection time-out interrupt when no target responds.  Phase E
-// attaches the existing bus/target/CD-ROM object model and the TurboSCSI
+// in a selection time-out interrupt when no target responds; plus the
+// attachment to the shared bus/target/CD-ROM model and the TurboSCSI
 // pseudo-DMA path.
 
 #ifndef SCSI_53C96_H
@@ -65,9 +64,26 @@ void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value);
 bool scsi_53c96_dreq(scsi_53c96_t *c);
 
 // The target left the data phase with a DMA read still armed — a short
-// transfer.  For a bus master (the PDM's AMIC pump) the phase change is
-// visible before the chip is asked for another byte, so the master calls
-// this to let the chip terminate the command the way real hardware does.
+// transfer.  For a bus master the phase change is visible before the chip is
+// asked for another byte, so the master calls this to let the chip terminate
+// the command the way real hardware does.
 void scsi_53c96_dma_short_transfer(scsi_53c96_t *c);
+
+// The rule a bus-master pump applies when its byte loop stops: did it stop
+// because the TARGET ran out, rather than because the pump did?
+//
+// Every machine that bus-masters this chip has to ask it, and each one's loop
+// is its own — the AMIC walks a host pointer with a page-table check, the PSC
+// hands bytes to a channel function that returns a count — so what is shared
+// is this question, not the loop that precedes it.  Call it once after the
+// loop with what the loop did:
+//
+//   `moved`      bytes this pass actually transferred
+//   `mem_to_scsi` the channel's direction (true = writing the target)
+//   `phase_ok`   the pump's own data-phase gate, re-read after the loop
+//
+// It is a no-op unless all three say the target quit mid-read with DREQ still
+// up, and the chip checks its own transfer mode on top of that.
+void scsi_53c96_dma_end_if_short(scsi_53c96_t *c, int moved, bool mem_to_scsi, bool phase_ok);
 
 #endif // SCSI_53C96_H

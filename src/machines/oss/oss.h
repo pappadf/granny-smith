@@ -16,6 +16,8 @@
 // Opaque handle for the OSS interrupt controller.
 typedef struct oss oss_t;
 
+struct scheduler;
+
 // Called whenever the OSS pending-source or level map changes.
 typedef void (*oss_irq_fn)(void *context);
 
@@ -23,7 +25,10 @@ typedef void (*oss_irq_fn)(void *context);
 typedef void (*oss_control_fn)(void *context, uint8_t value);
 
 // Creates an OSS instance with optional checkpoint restoration.
-oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, checkpoint_t *checkpoint);
+// `scheduler` drives the free-running counter ($208-$20F), which is derived
+// from emulated time rather than counted per access.
+oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
+                checkpoint_t *checkpoint);
 
 // Frees all resources associated with an OSS instance.
 void oss_delete(oss_t *oss);

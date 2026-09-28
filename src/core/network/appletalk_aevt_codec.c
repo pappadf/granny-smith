@@ -29,8 +29,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("ppc");
-
 // ============================================================================
 // Constants and Macros
 // ============================================================================
@@ -45,21 +43,6 @@ LOG_USE_CATEGORY_NAME("ppc");
 // Every stream item is padded to an even offset (§5.2).
 static int round_up_even(int n) {
     return (n + 1) & ~1;
-}
-
-// Four-character codes travel as four raw bytes and live in the map as
-// four-character strings.  Bytes outside printable ASCII are escaped so a
-// binary code cannot smuggle a quote into the text form.
-static void fourcc_read(const uint8_t *p, char out[5]) {
-    for (int i = 0; i < 4; i++)
-        out[i] = (char)p[i];
-    out[4] = '\0';
-}
-
-static void fourcc_write(const char *code, uint8_t out[4]) {
-    size_t n = code ? strlen(code) : 0;
-    for (int i = 0; i < 4; i++)
-        out[i] = (i < (int)n) ? (uint8_t)code[i] : (uint8_t)' ';
 }
 
 // ============================================================================
@@ -111,7 +94,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
     char shared_type[5] = "    ";
     int fixed_len = -1;
     if (prefix >= 4)
-        fourcc_read(data + 8, shared_type);
+        fourcc_text(RD_BE32(data + 8), shared_type);
     if (prefix >= 8) {
         fixed_len = (int)RD_BE32(data + 12);
         if (fixed_len < 0)
@@ -131,7 +114,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
                 rd_fail(r, "record item %u has no keyword", (unsigned)i);
                 break;
             }
-            fourcc_read(data + pos, key);
+            fourcc_text(RD_BE32(data + pos), key);
             pos += 4;
         }
         char type[5];
@@ -140,7 +123,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
                 rd_fail(r, "item %u has no type", (unsigned)i);
                 break;
             }
-            fourcc_read(data + pos, type);
+            fourcc_text(RD_BE32(data + pos), type);
             pos += 4;
         } else {
             memcpy(type, shared_type, sizeof(type));
@@ -267,7 +250,7 @@ static value_t decode_desc(rd_t *r, const char *type, const uint8_t *data, int l
         opaque = (len != 4);
         if (!opaque) {
             char code[5];
-            fourcc_read(data, code);
+            fourcc_text(RD_BE32(data), code);
             body = val_str(code);
             have_body = true;
         }
@@ -323,7 +306,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
         if (!rd_have(&r, pos, 4))
             break;
         char key[5];
-        fourcc_read(stream + pos, key);
+        fourcc_text(RD_BE32(stream + pos), key);
         if (!strcmp(key, AEVT_META_END)) {
             if (in_params) {
                 rd_fail(&r, "a second meta-section terminator at offset %d", pos);
@@ -336,7 +319,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
         if (!rd_have(&r, pos, 12))
             break;
         char type[5];
-        fourcc_read(stream + pos + 4, type);
+        fourcc_text(RD_BE32(stream + pos + 4), type);
         int dlen = (int)RD_BE32(stream + pos + 8);
         if (dlen < 0 || !rd_have(&r, pos + 12, dlen))
             break;
@@ -388,7 +371,7 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
             const value_t *existing = &event->map.entries[i].val;
             if (existing->kind == V_MAP) {
                 for (size_t j = 0; j < existing->map.len; j++)
-                    val_map_put(attrs, existing->map.entries[j].key, value_copy(&existing->map.entries[j].val));
+                    val_map_put(attrs, existing->map.entries[j].key, value_dup(&existing->map.entries[j].val));
             }
         }
     }
@@ -403,7 +386,7 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
             placed = true;
             continue;
         }
-        val_map_put(out, k, value_copy(&event->map.entries[i].val));
+        val_map_put(out, k, value_dup(&event->map.entries[i].val));
     }
     if (!had_attrs || !placed)
         val_map_put(out, "attrs", merged);
@@ -478,7 +461,7 @@ static void wr_pad_even(wr_t *w) {
 
 static void wr_fourcc(wr_t *w, const char *code) {
     uint8_t buf[4];
-    fourcc_write(code, buf);
+    WR_BE32(buf, fourcc_value(code));
     wr_bytes(w, buf, 4);
 }
 
@@ -1036,7 +1019,7 @@ value_t aevt_parse_text(const char *text, char *err, size_t err_len) {
     // Parameters sit at the top level of the event map (§6.1).
     if (body.kind == V_MAP) {
         for (size_t i = 0; i < body.map.len; i++)
-            val_map_put(ev, body.map.entries[i].key, value_copy(&body.map.entries[i].val));
+            val_map_put(ev, body.map.entries[i].key, value_dup(&body.map.entries[i].val));
     }
     value_free(&body);
     return val_map_finish(ev);

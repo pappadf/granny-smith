@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """Embed binary files as C byte arrays in one generated header.
 
 Usage: bin2c.py --out header.h --guard NAME name=path [name=path ...]
 
 Emits, per file:  static const uint8_t <name>[<size>] = { ... };
 Deterministic output (input order, fixed formatting).  Generated into
-build/ — never committed (runtime-vrom proposal §3.2)."""
+build/ — never committed."""
 
 import argparse
+import os
 
 
 def main() -> None:
@@ -36,8 +39,12 @@ def main() -> None:
         lines.append("};")
         lines.append("")
     lines.append(f"#endif // {args.guard}")
-    with open(args.out, "w") as f:
+    # Write beside the target and rename: an interrupted or concurrent build
+    # must never leave a torn header that make then considers up to date.
+    tmp = f"{args.out}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
         f.write("\n".join(lines) + "\n")
+    os.replace(tmp, args.out)
 
 
 if __name__ == "__main__":

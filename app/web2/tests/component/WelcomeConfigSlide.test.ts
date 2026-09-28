@@ -1,10 +1,12 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { layout, setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
+import { modelValue } from '../helpers/modelSelect';
 
 // The Configuration slide drives the model dropdown by calling
 // `machine.rom.identify` on every ROM in OPFS, then `machine.profile` to get the
@@ -20,7 +22,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('plus-v3-4d1f8172.rom')) {
           return {
             recognised: true,
-            checksum: 'plus-checksum',
+            supported: true,
+            intact: true,
+            id: 'plus-checksum',
             name: 'Macintosh Plus ROM',
             compatible: ['plus'],
             size: 128 * 1024,
@@ -29,7 +33,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('iix-iicx-se30-97221136.rom')) {
           return {
             recognised: true,
-            checksum: 'se30-checksum',
+            supported: true,
+            intact: true,
+            id: 'se30-checksum',
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,
@@ -81,7 +87,6 @@ beforeEach(() => {
   machine.model = null;
   machine.ram = null;
   setWelcomeSlide('configuration');
-  stopDriveActivityMock();
 });
 
 describe('WelcomeConfigSlide', () => {
@@ -109,7 +114,8 @@ describe('WelcomeConfigSlide', () => {
     // (so no display-card row is shown), ram_default=4096 KB, two floppy slots,
     // and no has_cdrom (→ the SCSI CD-ROM row is hidden).
     expect(container.querySelector('#cfg-card')).toBeNull();
-    expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4 MB');
+    // RAM is a number in KB behind the label.
+    expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4096');
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     expect(container.querySelector('#cfg-cd')).toBeNull();
   });
@@ -123,7 +129,7 @@ describe('WelcomeConfigSlide', () => {
     // Plus: has_cdrom unset → CD row hidden.
     expect(container.querySelector('#cfg-cd')).toBeNull();
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       // SE/30: has_cdrom true → CD row shown.
@@ -150,7 +156,7 @@ describe('WelcomeConfigSlide', () => {
     expect(container.querySelector('#cfg-card')).toBeNull();
     expect(vromHintShown()).toBe(false);
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       // SE/30: built-in video card requires a vROM, none staged → hint shown.
@@ -167,9 +173,9 @@ describe('WelcomeConfigSlide', () => {
     let ramSel = container.querySelector('#cfg-ram') as HTMLSelectElement;
     // Plus: ram_options [1, 2, 4] MB, default 4 MB.
     expect(Array.from(ramSel.options).map((o) => o.textContent)).toEqual(['1 MB', '2 MB', '4 MB']);
-    expect(ramSel.value).toBe('4 MB');
+    expect(ramSel.value).toBe('4096');
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       ramSel = container.querySelector('#cfg-ram') as HTMLSelectElement;
@@ -178,7 +184,7 @@ describe('WelcomeConfigSlide', () => {
       if (labels.join() !== ['2 MB', '4 MB', '8 MB', '16 MB'].join())
         throw new Error('ram options not refreshed yet');
     });
-    expect(ramSel.value).toBe('8 MB');
+    expect(ramSel.value).toBe('8192');
   });
 
   it('renders one floppy row per profile.floppy_slots entry', async () => {
@@ -190,7 +196,7 @@ describe('WelcomeConfigSlide', () => {
     // Plus: two floppy slots.
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    modelSel.value = 'se30';
+    modelSel.value = modelValue(modelSel, 'se30');
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
       // SE/30: one floppy slot.

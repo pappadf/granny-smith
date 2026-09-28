@@ -19,7 +19,7 @@
     "esModuleInterop": true,
     "verbatimModuleSyntax": true,
     "allowSyntheticDefaultImports": true,
-    "types": ["svelte", "vite/client", "vitest/globals"],
+    "types": ["svelte", "vite/client", "vitest/globals", "@webgpu/types"],
     "baseUrl": ".",
     "paths": { "@/*": ["src/*"] },
     "noEmit": true

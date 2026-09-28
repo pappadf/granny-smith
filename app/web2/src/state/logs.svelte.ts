@@ -3,7 +3,7 @@
 // Per-category levels mirror the C-side state; setCatLevel writes
 // through via gsEval('log.<cat>.level = N').
 //
-// Phase 7 perf: appendLog coalesces high-frequency emits through
+// Perf: appendLog coalesces high-frequency emits through
 // requestAnimationFrame so a burst of N lines only causes one reactive
 // update per frame. Tests fall back to microtasks (queueMicrotask) so
 // they can assert synchronously after `await Promise.resolve()`.
@@ -125,11 +125,16 @@ export async function refreshCatLevels(): Promise<void> {
 
 // Write a new level for one category and mirror locally on success.
 export async function setCatLevel(cat: string, level: number): Promise<boolean> {
-  const { gsEval, isModuleReady } = await import('@/bus/emulator');
+  const { gsEval, gsOk, isModuleReady } = await import('@/bus/emulator');
   if (!isModuleReady()) return false;
-  // debug.log(category, level) adjusts the per-subsystem level (and registers
-  // the category if it didn't exist yet).
-  await gsEval('debug.log', [cat, level]);
+  // debug.log(category, level) adjusts the per-subsystem level.  `category`
+  // is a typed enum over the log manifest, so an unknown name is REJECTED
+  // rather than silently created -- the names here come from
+  // debug.log_levels(), which lists that manifest, so they are always valid.
+  // Further options are named arguments: debug.log(cat, stdout=, file=, ts=,
+  // pc=).
+  // Mirror the level only if the core took it.
+  if (!gsOk(await gsEval('debug.log', [cat, level]))) return false;
   logs.catLevels[cat] = level;
   return true;
 }

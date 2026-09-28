@@ -7,10 +7,8 @@
 // integer-only ("software floating point"): every significand operation,
 // rounding decision, and status bit is computed in integer code, so results
 // and FPSCR images are byte-identical on every host (native and WASM) by
-// construction — the proposal §3.6 determinism requirement, delivered by
-// construction instead of by auditing host-FP corner cases.  See §0.1
-// "Phase-E findings" for the deviation note (host doubles remain the test
-// oracle, not the implementation).
+// construction instead of by auditing host-FP corner cases.  Host doubles
+// remain the test oracle, not the implementation.
 //
 // All semantics cite Motorola/IBM, "PowerPC 601 RISC Microprocessor User's
 // Manual", 1995 (601UM): FPSCR bits Table 2-1 (folio 2-9/2-10), exception
@@ -18,7 +16,7 @@
 // execution models §2.5 (folios 2-57..2-72), instruction pages Ch. 10.
 // Appendix F (the full frsp/fctiw models) is absent from the scanned
 // manual; the affected corner-case choices are marked AUTHORITY-PENDING
-// here and in tests/unit/suites/ppc_fpu (proposal §11 item 1).
+// here and in tests/unit/suites/ppc_fpu.
 
 #ifndef GS_CPU_PPC_SOFTFP_H
 #define GS_CPU_PPC_SOFTFP_H
@@ -44,8 +42,8 @@
 #define PPC_FPSCR_C      0x00010000u // bit 15: result class descriptor
 #define PPC_FPSCR_FPCC   0x0000F000u // bits 16-19: FL/FG/FE/FU
 #define PPC_FPSCR_FPRF   0x0001F000u // bits 15-19: C + FPCC
-#define PPC_FPSCR_VXSOFT 0x00000400u // bit 21: software-request invalid (601: storage only)
-#define PPC_FPSCR_VXSQRT 0x00000200u // bit 22: invalid sqrt (601: storage only)
+#define PPC_FPSCR_VXSOFT 0x00000400u // bit 21: software-request invalid (not on the 601)
+#define PPC_FPSCR_VXSQRT 0x00000200u // bit 22: invalid sqrt (not on the 601)
 #define PPC_FPSCR_VXCVI  0x00000100u // bit 23: invalid integer convert
 #define PPC_FPSCR_VE     0x00000080u // bit 24: invalid-op exception enable
 #define PPC_FPSCR_OE     0x00000040u // bit 25: overflow exception enable

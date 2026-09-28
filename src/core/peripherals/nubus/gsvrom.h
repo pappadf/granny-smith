@@ -2,13 +2,13 @@
 // Copyright (c) pappadf
 
 // gsvrom.h
-// The GS generic declaration ROM, generated at runtime (proposal-nubus-
-// runtime-vrom §3): the declarative records come from the declrom
-// builder fed by the card kind's monitor table, and the 68K code blocks
-// are fragments assembled by the core build (src/core/peripherals/
-// nubus/vrom68k/, embedded via build/vrom68k/gsvrom_fragments.h).  The
-// generic sibling card kinds call gsvrom_generate at card_init; the
-// offer registry is never consulted.
+// The GS generic declaration ROM, generated at runtime (see
+// docs/core/peripherals/nubus_generic_vrom.md): the declarative records come
+// from the declrom builder fed by the card kind's monitor table, and the 68K
+// code blocks are fragments assembled by the core build
+// (src/core/peripherals/nubus/vrom68k/, embedded via
+// build/vrom68k/gsvrom_fragments.h).  The generic sibling card kinds call
+// gsvrom_generate at card_init; the offer registry is never consulted.
 
 #ifndef NUBUS_GSVROM_H
 #define NUBUS_GSVROM_H

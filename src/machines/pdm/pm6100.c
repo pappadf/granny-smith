@@ -11,6 +11,8 @@
 // adapter — BART space bus-errors, which the base model's probe expects).
 
 #include "pdm.h"
+#include "pram_defaults.h"
+#include "slot_tables.h"
 
 // 8 MB soldered plus the SIMM-bank splits the HMC accepts ({2,8,32} MB
 // banks, at most two): 16 = 8+8x1, 24 = 8+8x2, 40 = 8+32, 72 = 8+32x2.
@@ -19,20 +21,11 @@ static const uint32_t pm6100_ram_options_kb[] = {8192, 16384, 24576, 40960, 7372
 // One internal manual-inject SuperDrive behind SWIM3, and no external
 // port — the PDM family has no second bay (Apple, "Power Macintosh
 // Computers" Developer Note, Table 3-7).
-static const struct floppy_slot pm6100_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
 
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
-static const struct scsi_slot pm6100_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm6100_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm6100_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -41,11 +34,11 @@ static const pdm_board_desc_t pm6100_board = {
     .bus_hz = 30000000u, // 2:1 bus
     .bank_layout = PDM_BANKS_MOVABLE,
     .bank_count = 2,
-    .wait_state_penalty = 2, // pinned by the rung-L7 bus-ratio row
+    .wait_state_penalty = 2, // pinned by the pdm-rom-ladder L7 bus-ratio row
 };
 
 const hw_profile_t machine_pm6100 = {
-    .name = "Power Macintosh 6100/60",
+    .name = "Power Macintosh 6100",
     .id = "pm6100",
 
     .cpu_model = CPU_MODEL_PPC601,
@@ -58,11 +51,11 @@ const hw_profile_t machine_pm6100 = {
     .rom_size = 0x400000, // 4 MB ($9FEB69B3, shared with 7100/8100)
 
     .ram_options = pm6100_ram_options_kb,
-    .floppy_slots = pm6100_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = pm6100_scsi_buses,
-    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
-    // (Phase G): no CD-specific hardware is involved, so the bay is
-    // offered as soon as that bus exists.
+    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots: no
+    // CD-specific hardware is involved, so the bay is offered as soon as that
+    // bus exists.
     .has_cdrom = true,
     .cdrom_id = 3,
 
@@ -73,6 +66,7 @@ const hw_profile_t machine_pm6100 = {
     .builtin_video = &pdm_builtin_video,
     .nubus_slots = NULL,
 
+    .pram = &pram_defaults_pdm,
     .substrate = &pdm_substrate,
     .board = &pm6100_board,
 };

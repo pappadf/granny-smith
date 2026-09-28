@@ -35,13 +35,16 @@ const vfs_backend_t *vfs_image_backend(void);
 // success and sets *out_mount; returns -ENOTDIR if the file is not a
 // recognised image, or a negated errno on other failure.
 //
-// -EBUSY is returned if the file is currently attached via hd/cdrom; the
-// caller must fall through to "cannot descend" behaviour.
+// -EBUSY is returned while the emulator holds the file open writable (an
+// attached hard disk or floppy; see image_path_is_open_writable) or an unmount
+// is pending; the caller must fall through to "cannot descend" behaviour.
+// Every backend call on an existing mount refuses the same way.
 int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount);
 
-// Explicit force-close.  Drops the cache entry for the given absolute
-// path (if any) and invalidates handles.  Returns 0 if something was
-// dropped, -ENOENT if no match.
+// Explicit unmount.  Drops the cache entry for the given absolute path and
+// returns 0; -ENOENT if there is none.  With handles still open it returns
+// -EBUSY instead: the mount refuses every new call from then on, and the
+// last handle to close drops it.
 int image_vfs_unmount(const char *host_path);
 
 // Materialise a disk image that lives *inside* an already-mounted image
@@ -50,24 +53,15 @@ int image_vfs_unmount(const char *host_path);
 // in-image path (e.g. "/partition2/Foo/Bar.img").  Disk Copy 6.x / NDIF
 // images are decoded (bcem + ADC); other files are copied verbatim (nested
 // raw / Disk Copy 4.2).  Returns a malloc'd host path (caller frees) or NULL
-// if the file could not be decoded/extracted.  The scratch name is
-// deterministic, so repeated calls reuse the same file.
+// if the file could not be decoded/extracted.  The copy is cached under the
+// scratch root (image_scratch.h) and reused while the outer file is
+// unchanged; a copy that was not completed is never reused.
 char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_path);
 
 // Iteration over the current cache, for `image list`.  `cb` is called
 // once per live mount; return non-zero to stop early.
 typedef void (*image_vfs_list_cb)(const char *host_path, const char *format_name, uint32_t n_partitions,
-                                  uint32_t refcount, bool conflicted, void *user);
+                                  uint32_t refcount, bool busy, void *user);
 void image_vfs_list(image_vfs_list_cb cb, void *user);
-
-// Notify the mount cache that `host_path` is now attached to the SCSI
-// bus.  Any existing mount for that file is marked conflicted; subsequent
-// backend calls return -EBUSY.  A subsequent image_vfs_notify_detached
-// clears the flag so fresh mounts can proceed.
-void image_vfs_notify_attached(const char *host_path);
-void image_vfs_notify_detached(const char *host_path);
-
-// Clear the entire cache.  Intended for tests that want a fresh state.
-void image_vfs_reset(void);
 
 #endif // IMAGE_VFS_H

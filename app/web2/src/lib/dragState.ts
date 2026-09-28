@@ -1,6 +1,6 @@
 // Pure state-transition table for the Display/Filesystem drag-and-drop
-// state machine specced in ui-design-spec.md §8.5. Lives in lib/ (not
-// the component) so unit tests can drive it without a DOM.
+// state machine drawn below. Lives in lib/ (not the component) so unit
+// tests can drive it without a DOM.
 //
 //   Idle ──dragenter(Files)──▶ Active
 //                              ├─ over-display ──▶ Display

@@ -1,14 +1,15 @@
 <script lang="ts">
   import ImageCategorySection from './ImageCategorySection.svelte';
-  import { images, toggleCategory, detectFdDriveCount } from '@/state/images.svelte';
+  import { images, toggleCategory } from '@/state/images.svelte';
+  import { detectFdDriveCount } from '@/bus/media';
   import type { ImageCategory } from '@/bus/types';
 
-  // Spec §4.3.3 fixes this order.
+  // Category order.
   const CATEGORIES: ImageCategory[] = ['rom', 'vrom', 'prom', 'fd', 'hd', 'cd'];
 
   // Re-probe the floppy drive count when the panel opens (the active machine may
   // have changed) so a floppy badge can name its drive. Guest-initiated ejects
-  // are handled live by Module.onFloppyChange (bus/emulator.ts) — no polling.
+  // are handled live by the core's floppy event (bus/emulator.ts) — no polling.
   $effect(() => {
     void detectFdDriveCount(true);
   });

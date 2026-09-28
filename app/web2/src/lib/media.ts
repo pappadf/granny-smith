@@ -8,8 +8,14 @@ export type MediaTypeId = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cdrom';
 
 export interface ValidateResult {
   valid: boolean;
+  // Set with valid:false when the file IS this media type but is refused
+  // (a damaged ROM dump, a ROM of a machine that is not emulated).  The text
+  // completes a sentence that starts with the file's name, and the upload
+  // stops there instead of trying the next media type.
+  reject?: string;
   info?: {
     checksum?: string;
+    id?: string;
     persistDir?: string;
     [k: string]: unknown;
   };
@@ -33,12 +39,21 @@ const FD_800 = 800 * 1024;
 const FD_HD = 1440 * 1024;
 const DC42_HEADER = 0x54;
 
+// Shape returned by C-side `machine.rom.identify` (src/core/memory/rom.c).
+// `id` is the ROM's own stored checksum, the only thing a ROM file is ever
+// named by, and only when `intact`.  `recognised` = the core's ROM table knows
+// it; `supported` = it boots at least one emulated model (`compatible`).
 interface RomIdentifyResult {
   recognised?: boolean;
+  supported?: boolean;
   compatible?: string[];
-  checksum?: string;
   name?: string;
+  variant?: string;
   size?: number;
+  kind?: string;
+  id?: string;
+  intact?: boolean;
+  reason?: string;
 }
 
 // Shape returned by C-side `machine.vrom.identify`. Identity is keyed off the
@@ -76,9 +91,75 @@ interface PromIdentifyResult {
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
   // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
-  if (r === null || r === undefined) return null;
-  if (typeof r !== 'object' || 'error' in (r as object)) return null;
+  if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
   return r as RomIdentifyResult;
+}
+
+async function parseCardRomIdentify(
+  gsEval: GsEval,
+  what: 'vrom' | 'prom',
+  path: string,
+): Promise<PromIdentifyResult | null> {
+  // vrom.identify / prom.identify return a native object (V_MAP).
+  const r = await gsEval(`machine.${what}.identify`, [path]);
+  if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
+  return r as PromIdentifyResult;
+}
+
+// --- The identify wrappers, one each ----------------------------------------
+// rom.identify was wrapped four times and vrom/prom.identify twice each, with
+// three different result shapes.  These are the only ones.
+
+// A recognised CPU ROM: the models it boots.
+export interface RomIdentity {
+  path: string;
+  name: string;
+  // What tells this ROM apart from the other ROMs of its models (core-owned,
+  // e.g. "Open Firmware 2.26NT (Windows NT)"); "" when it is the only one.
+  variant: string;
+  id: string; // content id: the ROM's own stored checksum (rom.identify)
+  intact: boolean;
+  compatible: string[];
+  size: number;
+}
+
+// A recognised card ROM (a NuBus vROM or a PCI expansion ROM): the card it
+// provides and the cards it can drive.
+export interface CardRomIdentity {
+  path: string;
+  cardId: string;
+  compatible: string[];
+}
+
+// The ROM at `path`, or null when the core does not recognise it or it boots
+// no emulated model (a known ROM of a machine Granny Smith does not emulate).
+export async function identifyRom(gsEval: GsEval, path: string): Promise<RomIdentity | null> {
+  const r = await parseRomIdentify(gsEval, path);
+  if (!r?.recognised || !r.supported || !Array.isArray(r.compatible)) return null;
+  return {
+    path,
+    name: r.name || path.split('/').pop() || path,
+    variant: r.variant ?? '',
+    id: r.id ?? '',
+    intact: r.intact ?? false,
+    compatible: r.compatible,
+    size: r.size ?? 0,
+  };
+}
+
+// The vROM (`what` = 'vrom') or PCI expansion ROM ('prom') at `path`, or null.
+export async function identifyCardRom(
+  gsEval: GsEval,
+  what: 'vrom' | 'prom',
+  path: string,
+): Promise<CardRomIdentity | null> {
+  const r = await parseCardRomIdentify(gsEval, what, path);
+  if (!r?.recognised || !r.card_id) return null;
+  return {
+    path,
+    cardId: r.card_id,
+    compatible: Array.isArray(r.compatible) ? r.compatible : [r.card_id],
+  };
 }
 
 export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
@@ -89,11 +170,24 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     async validate(path, gsEval) {
       const info = await parseRomIdentify(gsEval, path);
       if (!info?.recognised) return { valid: false };
-      return { valid: true, info: { checksum: info.checksum } };
+      // A known ROM that fails its own checksum is never stored: its id is
+      // the good dump's, and a damaged ROM in the picker helps nobody.
+      if (!info.intact)
+        return {
+          valid: false,
+          reject: `looks like the ${info.name}, but its ${info.reason} — the dump is probably damaged`,
+        };
+      if (!info.supported)
+        return {
+          valid: false,
+          reject: `is the ${info.name}; Granny Smith does not emulate that machine`,
+        };
+      return { valid: true, info: { id: info.id } };
     },
-    // ROMs are stored by checksum, not original filename.
+    // ROMs are stored by content id (the ROM's own stored checksum), not
+    // original filename.
     nameFn(originalName, info) {
-      return (info?.checksum as string) || originalName;
+      return (info?.id as string) || originalName;
     },
   },
 
@@ -102,11 +196,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Video ROM image',
     persistDir: VROMS_DIR,
     async validate(path, gsEval) {
-      // vrom.identify returns a native object (V_MAP) — no inner JSON.parse.
-      const r = await gsEval('machine.vrom.identify', [path]);
-      if (!r || typeof r !== 'object' || 'error' in (r as object)) return { valid: false };
-      const parsed = r as VromIdentifyResult;
-      if (!parsed.recognised) return { valid: false };
+      const parsed: VromIdentifyResult | null = await parseCardRomIdentify(gsEval, 'vrom', path);
+      if (!parsed?.recognised) return { valid: false };
       return {
         valid: true,
         info: {
@@ -117,7 +208,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
       };
     },
     // VROMs are stored by content hash (the declaration ROM's Format-Block
-    // CRC), mirroring how CPU ROMs are stored by checksum. Discovery is
+    // CRC), mirroring how CPU ROMs are stored by content id. Discovery is
     // content-based (the core's offer registry), so the on-disk name never
     // matters — and the UI carries no naming grammar of its own. The
     // identify payload's crc is "0x"-prefixed; strip it for the filename.
@@ -132,11 +223,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'PCI expansion ROM',
     persistDir: PROMS_DIR,
     async validate(path, gsEval) {
-      // prom.identify returns a native object (V_MAP) — no inner JSON.parse.
-      const r = await gsEval('machine.prom.identify', [path]);
-      if (!r || typeof r !== 'object' || 'error' in (r as object)) return { valid: false };
-      const parsed = r as PromIdentifyResult;
-      if (!parsed.recognised) return { valid: false };
+      const parsed = await parseCardRomIdentify(gsEval, 'prom', path);
+      if (!parsed?.recognised) return { valid: false };
       return {
         valid: true,
         info: {

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """Seed perf-baselines.json from a suite run log.
 
-Reads the @@PERF records suite rows emit (proposal-integration-test-rework
-§5.8) from one or more test logs and (re)writes tests/integration/
-perf-baselines.json. Rows not present in the logs are preserved, so
+Reads the @@PERF records suite rows emit from one or more test logs and
+(re)writes tests/integration/perf-baselines.json. Rows not present in the logs are preserved, so
 suites can be added incrementally:
 
     python3 scripts/gen-baselines.py tmp/sq-full.log
@@ -14,7 +15,7 @@ review the git diff, and commit it in the PR that legitimately changed
 guest timing.
 
 This script does NOT write matrix-targets.json. That file is the declared
-coverage contract, hand-authored from §7; generating it from a run would
+coverage contract, hand-authored; generating it from a run would
 make it agree with whatever the run happened to cover, which is exactly
 the check it exists to perform. Verify coverage instead with:
 

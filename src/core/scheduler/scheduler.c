@@ -11,12 +11,14 @@
 #include "scheduler.h"
 
 #include "cpu.h"
+#include "debug.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
 #include "shell.h"
 #include "system.h"
 #include "value.h"
+#include "event/gs_event.h"
 
 LOG_USE_CATEGORY_NAME("scheduler");
 
@@ -31,8 +33,8 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // Constants and Macros
 // ============================================================================
 
-#define MAC_VBL_FREQUENCY 60.15 // 60 vertical blanking interrupts per second
-#define MAC_VBL_PERIOD    (1.0 / MAC_VBL_FREQUENCY) // period of one VBL in seconds
+// MAC_VBL_FREQUENCY / MAC_VBL_PERIOD live in scheduler.h -- the display
+// producers that raise their own frame event need the same number.
 // Default cycles per instruction: the authentic average for the original
 // 68000 Macs. Machines override this with one per-machine constant via
 // scheduler_set_cpi(); CPI never depends on the pacing mode.
@@ -45,6 +47,12 @@ LOG_USE_CATEGORY_NAME("scheduler");
 #define MAC_CPU_FREQUENCY 7833600.0
 #define MAX_EVENT_TYPES   64
 #define MAX_SANE_EVENTS   10000 // upper bound for event queue length sanity checks
+// Bounds for plain-data fields restored from a checkpoint.  Real machines use
+// a cpi of 1, 2, 4 or 10 (pdm, tnt, mac030/lisa, plus), so 255 is the same
+// ceiling scheduler.cpi already enforces on the writable attribute; the cycle
+// bound is the one the old assert used.
+#define MAX_SANE_CPI        255
+#define MAX_SANE_CPU_CYCLES (1ULL << 60)
 
 // Paced mode: hard cap on frame-units executed per host tick. A slow or
 // stalled host makes vbl_acc_error grow; without a cap, each oversized burst
@@ -56,18 +64,17 @@ LOG_USE_CATEGORY_NAME("scheduler");
 
 // Unthrottled ("turbo") mode: fraction of the host tick period to fill with
 // emulation, leaving the rest as idle headroom for the browser (rendering,
-// input, GC). Raised from 0.5 (perf proposal P11): with WebGL rendering and
-// the SAB audio ring (P6) the browser work per tick is small, and reserving
-// half of every slice was measured to cost exactly its share of turbo
-// throughput; 0.7 keeps the UI responsive (in-browser bench terminal probes
-// still answer promptly) while returning ~40% more turbo speed.
+// input, GC). Raised from 0.5: with WebGL rendering and the SAB audio ring
+// the browser work per tick is small, and reserving half of every slice was
+// measured to cost exactly its share of turbo throughput; 0.7 keeps the UI
+// responsive (in-browser bench terminal probes still answer promptly) while
+// returning ~40% more turbo speed.
 #define TURBO_HOST_HEADROOM 0.7
 
 // Accelerated mode: bounds for the fixed speed multiplier, x256 fixed point.
 // Floor 1x = authentic (the mode never runs the guest slower than real
 // hardware); the 8x cap keeps instruction-timed guest code (TimeDBRA-derived
-// busy-waits) from drifting absurdly far on fast hosts
-// (proposal-scheduler-accelerated-mode.md §4.3/§4.4).
+// busy-waits) from drifting absurdly far on fast hosts.
 #define SPEED_X256_ONE 256
 #define SPEED_X256_MAX (8 * 256)
 // scheduler.speed == 0 means "auto": the adaptive governor picks the speed.
@@ -75,7 +82,7 @@ LOG_USE_CATEGORY_NAME("scheduler");
 
 // Adaptive governor (accelerated mode with scheduler.speed = auto). AIMD on a
 // quantized speed ladder: additive rung-up only after dwelling at the current
-// speed (the §4.4 slew limit — instruction-counted guest delays calibrated at
+// speed (the slew limit — instruction-counted guest delays calibrated at
 // one speed must not be replayed at a glided-away one), multiplicative
 // rung-down (each rung is ~x1.5) as soon as sustained utilization threatens
 // the real-time deadline. Utilization = host seconds spent emulating one
@@ -105,6 +112,12 @@ struct event {
     event_callback_t callback;
     void *source;
     uint64_t data;
+    // A repeating event re-arms itself inside the scheduler, at
+    // timestamp + interval -- from the time it was SCHEDULED, not from the
+    // time it was dispatched, so a periodic cannot drift.  `interval` is in
+    // CPU cycles, whichever unit the caller armed with.
+    uint64_t interval_cycles;
+    bool periodic;
 };
 
 // Checkpoint-friendly representation of an event (names instead of pointers)
@@ -113,6 +126,11 @@ typedef struct {
     char source_name[64];
     char event_name[64];
     uint64_t data;
+    // Without these a restored periodic fires once and stops -- the machine
+    // would come back with its timers dead and nothing would say so.
+    uint64_t interval_cycles;
+    uint8_t periodic;
+    uint8_t pad[7];
 } event_as_checkpoint_t;
 
 // Maps a source/callback pair to human-readable names for checkpointing
@@ -129,10 +147,6 @@ struct scheduler {
     enum schedule_mode mode;
     bool running;
     uint64_t cpu_cycles; // authoritative cycle counter, updated at sprint boundaries
-    double previous_time; // previous time in seconds
-    double vbl_acc_error; // accumulated VBL timing error (seconds)
-    double host_secs_per_vbl; // smoothed host seconds per VBL
-    double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
     // Per-machine cycles-per-instruction constant — guest-visible, identical
     // in every pacing mode (one guest timeline)
@@ -149,6 +163,23 @@ struct scheduler {
     // speed is clamped to it too), x256 fixed point. Persisted with the
     // prefix; default 8x.
     uint32_t max_speed_x256;
+
+    // --- END OF THE CHECKPOINTED PREFIX -------------------------------------
+    // The save writes up to `previous_time`.  Keep new guest-visible plain
+    // data ABOVE this line; anything host-relative or re-derivable goes
+    // below, the same reason cpi_eff_x256 sits after event_types.
+    //
+    // These four are the pacing governor's wall-clock smoothing.  They used
+    // to be inside the prefix, so every checkpoint carried one host's timing
+    // state -- the restore then overwrote all four from host_time(), so
+    // nothing ever consumed them, but they still made save files
+    // non-reproducible: two processes saving identical guest state produced
+    // files differing in the mantissa of these doubles: host state leaking
+    // into a save file.
+    double previous_time; // previous time in seconds
+    double vbl_acc_error; // accumulated VBL timing error (seconds)
+    double host_secs_per_vbl; // smoothed host seconds per VBL
+    double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];
@@ -184,6 +215,20 @@ struct scheduler {
     // one recorded in the checkpoint.
     uint64_t frame_cycles_left;
 
+    // The mode: who started the current run and why it stopped.  Live
+    // run-loop state like frame_cycles_left, so never checkpointed; a
+    // restored machine starts with no mode open.  `mode_open` is set by
+    // scheduler_run_with_budget and cleared by scheduler_run_frame when it
+    // sees `running` down, which is where the mode_ended event goes out --
+    // once per mode, whichever path dropped `running`.
+    uint32_t run_owner;
+    uint32_t mode_seq; // id of the current mode, counted from 1
+    sched_stop_reason_t stop_reason;
+    bool mode_open;
+    bool mode_bounded; // the mode has an instruction budget
+    uint32_t speed_reported_x256; // the last effective speed announced (speed event)
+    bool in_frame; // inside scheduler_run_frame: a stop there is reported at its end
+
     // Pointers last
     sched_cpu_if_t cpu; // the main-CPU seam (copied at init; ctx outlives us)
     event_t *cpu_events; // priority queue sorted by timestamp
@@ -191,6 +236,9 @@ struct scheduler {
     // Temporary storage used during checkpoint restore
     unsigned int tmp_num_events;
     event_as_checkpoint_t *tmp_events;
+    // The checkpoint those came from, still open until scheduler_start has
+    // resolved them: a saved event that cannot be restored fails the load.
+    checkpoint_t *tmp_checkpoint;
 
     uint32_t frequency;
 
@@ -219,7 +267,7 @@ static inline uint64_t host_clock_ns(clockid_t clk) {
 static uint64_t current_cpu_cycles(struct scheduler *s);
 static int num_events_in_queue(struct scheduler *restrict s);
 
-extern const class_desc_t scheduler_class;
+static const class_desc_t scheduler_class;
 
 // ============================================================================
 // Static Helpers
@@ -254,7 +302,7 @@ static uint32_t scheduler_current_speed_x256(struct scheduler *s) {
 // lowered — never raised — so more instructions fit in the same (real-time)
 // cycle budget. Holding the cycle rate and tuning CPI is what keeps every
 // cycle-derived peripheral clock (VIA φ2, sound scan, SCC fallback) real-time
-// for free (proposal §3).
+// for free.
 static void scheduler_update_cpi_eff(struct scheduler *s) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(s->cpi > 0);
@@ -269,6 +317,13 @@ static void scheduler_update_cpi_eff(struct scheduler *s) {
     }
     s->cpi_eff_x256 = eff;
     s->cycle_frac_x256 = 0;
+    // The effective speed changed (a governor step, a pin, a mode switch):
+    // say so once, here, where every path that changes it passes.
+    uint32_t sp = s->mode == schedule_accelerated ? scheduler_current_speed_x256(s) : SPEED_X256_ONE;
+    if (sp != s->speed_reported_x256) {
+        s->speed_reported_x256 = sp;
+        gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)sp);
+    }
 }
 
 // Reset the adaptive governor to the authentic floor with fresh estimators.
@@ -291,7 +346,7 @@ static void scheduler_governor_reset(struct scheduler *s) {
 //     multiplicative decrease that keeps a spike from becoming a spiral;
 //   - climb one rung only after GOV_DWELL_SECS of residence, outside the
 //     post-back-off holdoff, and only if the utilization *projected* at the
-//     next rung stays under the target — the slew limit §4.4 requires so
+//     next rung stays under the target — the slew limit required so
 //     instruction-counted guest delays see a stable speed, plus headroom.
 // The utilization EWMA is rescaled on every step (utilization is proportional
 // to instructions per frame), so the estimator stays meaningful across steps.
@@ -309,7 +364,7 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
     if (s->gov_holdoff_secs > 0.0)
         s->gov_holdoff_secs -= elapsed_secs;
 
-    // Optional audio feedback (§11.3): the platform reports the host ring's
+    // Optional audio feedback: the platform reports the host ring's
     // fill fraction against its target depth, or <0 where the signal doesn't
     // exist (headless, audio idle). A draining ring means the deadline is
     // already being missed where it hurts first.
@@ -456,7 +511,7 @@ static void reconcile_sprint(struct scheduler *s) {
 
 // Validate that the CPU event queue is properly ordered.
 // GS_FAST: compiled out — this walk runs on every event insertion (22,257×
-// per emulated second during ASC playback; perf proposal §5.3).
+// per emulated second during ASC playback).
 #ifdef GS_FAST
 static inline void validate_cpu_events(struct scheduler *s) {
     (void)s;
@@ -499,7 +554,7 @@ static const event_type_t *find_event_type(struct scheduler *s, void *source, ev
 
 // Events churn at the emulated-sample rate — the ASC FIFO drain re-arms one
 // event per sample (22,257/s during audio playback), each a calloc at insert
-// plus a free at fire (perf proposal §5.4 / P7.1).  Recycle them through a
+// plus a free at fire.  Recycle them through a
 // small LIFO free list instead.  The pool is process-global (event_t carries
 // no per-scheduler state) and bounded; the live queue stays ~5 entries deep,
 // so the cap covers any realistic burst.
@@ -554,7 +609,7 @@ static event_t *insert_event_queue(event_t *queue, event_t *new_event) {
 
 // Create and insert a new event into the scheduler queue
 static event_t *add_event_internal(struct scheduler *restrict s, event_callback_t callback, void *source, uint64_t data,
-                                   uint64_t cycles, uint64_t ns) {
+                                   uint64_t cycles, uint64_t ns, bool periodic) {
     // Exactly one of cycles/ns must be non-zero
     GS_ASSERTF(cycles != 0 || ns != 0, "both cycles and ns are 0");
     GS_ASSERTF(!(cycles != 0 && ns != 0), "both cycles and ns are set");
@@ -572,6 +627,9 @@ static event_t *add_event_internal(struct scheduler *restrict s, event_callback_
     event->callback = callback;
     event->source = source;
     event->data = data;
+    event->periodic = periodic;
+    event->interval_cycles = periodic ? cycles : 0;
+    GS_ASSERTF(!periodic || cycles != 0, "periodic event with a zero interval would spin");
 
     // Timestamp relative to current time including in-sprint progress
     uint64_t now = current_cpu_cycles(s);
@@ -594,6 +652,29 @@ static void process_event_queue(event_t **queue, uint64_t current_time) {
         event_t *e = *queue;
         *queue = e->next;
         g_sched_events_fired++;
+
+        if (e->periodic) {
+            // Re-arm BEFORE the callback runs, and that ordering is
+            // load-bearing.  The event is unlinked above, so a handler that
+            // cancels itself with remove_event() or scheduler_forget_source()
+            // would not find it -- and re-arming afterwards would then
+            // silently reinstate what the handler just cancelled.  Inserting
+            // first means both cancel paths see the next occurrence and
+            // remove it, with no new API and no change to the callback
+            // signature.
+            //
+            // The next deadline comes from the SCHEDULED time, not from
+            // current_time, so a periodic does not drift the way a handler
+            // re-arming itself from "now" does.
+            event_t *next = event_alloc();
+            if (next) {
+                *next = *e;
+                next->next = NULL;
+                next->timestamp = e->timestamp + e->interval_cycles;
+                *queue = insert_event_queue(*queue, next);
+            }
+        }
+
         (e->callback)(e->source, e->data);
         event_free(e);
     }
@@ -613,14 +694,45 @@ static int num_events_in_queue(struct scheduler *restrict s) {
 
 // Event callback used by the run command to stop execution after a fixed instruction budget
 static void run_stop_event(void *source, uint64_t data) {
+    (void)data;
     scheduler_t *s = (scheduler_t *)source;
     GS_ASSERT(s != NULL);
-    scheduler_stop(s);
+    scheduler_stop_reason(s, SCHED_STOP_BUDGET);
+}
+
+// Opens a mode: the run belongs to whoever is being served right now.
+static void open_mode(struct scheduler *s, uint64_t instructions) {
+    s->run_owner = gs_current_client();
+    s->stop_reason = SCHED_STOP_NONE;
+    s->mode_seq++;
+    s->mode_open = true;
+    s->mode_bounded = instructions != 0;
+    s->running = true;
+    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"mode_started\",\"mode\":%u,\"owner\":%u,\"budget\":%llu}",
+                   (unsigned)s->mode_seq, (unsigned)s->run_owner, (unsigned long long)instructions);
+}
+
+// The main CPU's pc for the mode_ended event, 0 when no debug seam exists.
+static uint32_t mode_pc(void) {
+    const struct cpu_debug_if *d = system_cpu_debug_if();
+    return d && d->get_pc ? d->get_pc(d->ctx) : 0;
+}
+
+// Reports the end of an open mode once `running` has dropped.
+static void close_mode_if_stopped(struct scheduler *s) {
+    if (!s->mode_open || s->running)
+        return;
+    s->mode_open = false;
+    gs_event_emitf(GS_EVENT_STATE,
+                   "{\"event\":\"mode_ended\",\"mode\":%u,\"owner\":%u,\"reason\":\"%s\",\"pc\":%u,"
+                   "\"instr_count\":%llu}",
+                   (unsigned)s->mode_seq, (unsigned)s->run_owner, sched_stop_reason_name(s->stop_reason),
+                   (unsigned)mode_pc(), (unsigned long long)cpu_instr_count());
 }
 
 // Schedule a stop after `instructions` more instructions of execution.
 // Returns false on overflow / zero-count / scheduler not initialised.
-static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
+bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     GS_ASSERT(s != NULL);
     uint32_t eff_x256 = s->cpi_eff_x256;
 
@@ -629,7 +741,7 @@ static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
 
     if (instructions == 0) {
         // Run indefinitely (caller wants to step until externally stopped).
-        s->running = true;
+        open_mode(s, 0);
         return true;
     }
     if (instructions > UINT64_MAX / eff_x256)
@@ -641,49 +753,8 @@ static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     if (cycles == 0)
         cycles = 1; // sub-cycle budget (accelerated, tiny N) still needs a nonzero delay
     scheduler_new_cpu_event(s, run_stop_event, s, 0, cycles, 0);
-    s->running = true;
+    open_mode(s, instructions);
     return true;
-}
-
-// Shell command to print a readable view of the event queue
-uint64_t cmd_events(int argc, char *argv[]) {
-    struct scheduler *s = system_scheduler();
-    GS_ASSERT(s != NULL);
-
-    int count = num_events_in_queue(s);
-
-    printf("Event queue: %d pending | cpu_cycles=%llu | instr=%llu | freq=%llu Hz\n", count,
-           (unsigned long long)s->cpu_cycles, (unsigned long long)cpu_instr_count(), (unsigned long long)s->frequency);
-
-    if (count == 0)
-        return 0;
-
-    printf("#   when(cyc)      +Δcyc     +Δµs    source.event                       data\n");
-
-    int idx = 0;
-    for (event_t *e = s->cpu_events; e; e = e->next) {
-        int64_t delta_cycles = (int64_t)e->timestamp - (int64_t)s->cpu_cycles;
-        uint64_t abs_delta = (delta_cycles >= 0) ? (uint64_t)delta_cycles : (uint64_t)(-delta_cycles);
-
-        // Convert cycle delta to microseconds for display
-        double delta_us = 0.0;
-        if (s->frequency != 0)
-            delta_us = (double)(abs_delta * 1000000000ULL / s->frequency) / 1000.0;
-
-        // Look up human-readable name
-        const event_type_t *t = find_event_type(s, e->source, e->callback);
-        char namebuf[96];
-        if (t)
-            snprintf(namebuf, sizeof(namebuf), "%s.%s", t->source_name, t->event_name);
-        else
-            snprintf(namebuf, sizeof(namebuf), "unknown.unknown");
-
-        printf("%-3d %-13llu %-9lld %8.3f  %-30s  0x%016llx\n", idx, (unsigned long long)e->timestamp,
-               (long long)delta_cycles, delta_us, namebuf, (unsigned long long)e->data);
-        idx++;
-    }
-
-    return 0;
 }
 
 // ============================================================================
@@ -691,6 +762,50 @@ uint64_t cmd_events(int argc, char *argv[]) {
 // ============================================================================
 
 // Create and initialize a scheduler instance, optionally restoring from checkpoint
+// Sanity-check the plain-data prefix a checkpoint just wrote into `s`.
+//
+// Everything `system_read_checkpoint_data` fills below is attacker-controlled:
+// a checkpoint is a file the user supplies -- `checkpoint --load <path>`, a
+// browser drag-and-drop, or the quick checkpoint written to OPFS every 15
+// seconds -- and the build-ID gate is not a defence, because the build ID sits
+// in the file and copies from any legitimate checkpoint.
+//
+// These checks were GS_ASSERT / GS_ASSERTF.  That was never a guard.
+// gs_assert_fail() prints, pauses the scheduler and RETURNS, so even in a
+// debug build execution continued into the operation the assert was standing
+// in front of; and GS_FAST -- the wasm release profile and MODE=fast --
+// compiles the call out entirely.  There was no build in which they protected
+// anything.
+//
+// The cpi case was a live crash rather than a latent one.  `cpi` sits inside
+// the restored prefix, and the next statement was
+// `total_instructions = cpu_cycles / cpi`.  On WebAssembly -- the shipping
+// target -- i64.div_u TRAPS when the divisor is zero, exactly as i32.div_s
+// traps on INT_MIN / -1.  A
+// crafted checkpoint therefore killed the browser tab, with no log line in the
+// release build.  A zero cpi also poisons cpi_eff_x256, which two more divides
+// depend on (:449, :1564).
+//
+// Returns false with the checkpoint flagged; scheduler_init then falls back to
+// fresh-boot values so nothing runs on half-validated state in the window
+// before system_restore observes the error.
+static bool scheduler_restore_prefix_ok(const struct scheduler *s, checkpoint_t *checkpoint) {
+    const char *bad = NULL;
+    if (s->cpi == 0 || s->cpi > MAX_SANE_CPI)
+        bad = "cycles-per-instruction out of range";
+    else if (s->mode != schedule_paced && s->mode != schedule_unthrottled && s->mode != schedule_accelerated)
+        bad = "unrecognised pacing mode";
+    else if (s->cpu_cycles >= MAX_SANE_CPU_CYCLES)
+        bad = "cycle counter out of range";
+
+    if (!bad)
+        return true;
+
+    LOG(0, "Error: corrupt scheduler state in checkpoint (%s); refusing the restore", bad);
+    checkpoint_set_error(checkpoint);
+    return false;
+}
+
 struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkpoint) {
     GS_ASSERT(cpu != NULL);
     GS_ASSERT(cpu->run_sprint != NULL && cpu->is_stopped != NULL && cpu->poll_interrupt != NULL);
@@ -721,13 +836,11 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
     if (checkpoint != NULL) {
         // Restore plain-data portion of struct from checkpoint
-        system_read_checkpoint_data(checkpoint, s, offsetof(struct scheduler, event_types));
+        system_read_checkpoint_data(checkpoint, s, offsetof(struct scheduler, previous_time));
 
-        // Reset host-timing fields that are relative to wall-clock time
-        s->previous_time = host_time();
-        s->vbl_acc_error = 0.0;
-        s->host_secs_per_vbl = NAN;
-        s->host_secs_per_loop = 1.0 / 60.0;
+        // The four wall-clock fields used to be restored here and then
+        // immediately overwritten.  They are outside the prefix now, so the
+        // values set above still stand and there is nothing to undo.
         s->frame_cycles_left = 0; // restore begins a fresh VBL frame-unit
 
         // Reconstruct instruction count from restored cycle counter. Cycles
@@ -736,13 +849,21 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
         // accelerated; time spent at a lowered effective CPI makes it an
         // underestimate — acceptable for a display counter, and the reason
         // nothing derives timing from it.
-        GS_ASSERT(s->cpi > 0);
+        if (!scheduler_restore_prefix_ok(s, checkpoint)) {
+            // Put the whole prefix back to the fresh-boot values set above, so
+            // the divide below and every later derivation run on known-good
+            // numbers.  The checkpoint is already flagged; system_restore
+            // unwinds when it looks.
+            s->mode = schedule_paced;
+            s->cpu_cycles = 0;
+            s->cpi = CYCLES_PER_INSTR_DEFAULT;
+            s->speed_x256 = SPEED_X256_AUTO;
+            s->max_speed_x256 = SPEED_X256_MAX;
+        }
+
         s->total_instructions = s->cpu_cycles / s->cpi;
         s->sprint_total = 0;
         s->sprint_burndown = 0;
-
-        GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated);
-        GS_ASSERT(s->cpu_cycles < (1ULL << 60));
 
         // Checkpoints are build-ID-gated so the fields are always present,
         // but corrupt values must not poison the effective-CPI derivation.
@@ -754,16 +875,31 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
         // Save event data for deferred restoration (names must be resolved after device registration).
         system_read_checkpoint_data(checkpoint, &s->tmp_num_events, sizeof(s->tmp_num_events));
-        // Reject negative-decoded / absurdly-large counts on a corrupt checkpoint.
-        GS_ASSERTF(s->tmp_num_events <= MAX_SANE_EVENTS, "checkpoint claims %u pending events (cap %d)",
-                   s->tmp_num_events, MAX_SANE_EVENTS);
+        // An on-disk count drives the allocation below, so it is checked
+        // before it is used rather than asserted after.  MAX_SANE_EVENTS
+        // bounds the allocation at ~10k entries; the largest queue the corpus
+        // produces is orders of magnitude smaller.
+        if (s->tmp_num_events > MAX_SANE_EVENTS) {
+            LOG(0, "Error: checkpoint claims %u pending events (cap %d); refusing the restore", s->tmp_num_events,
+                MAX_SANE_EVENTS);
+            checkpoint_set_error(checkpoint);
+            s->tmp_num_events = 0;
+        }
         if (s->tmp_num_events == 0) {
             s->tmp_events = NULL;
         } else {
             s->tmp_events = (event_as_checkpoint_t *)malloc((size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
-            GS_ASSERT(s->tmp_events != NULL);
-            system_read_checkpoint_data(checkpoint, s->tmp_events,
-                                        (size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
+            if (!s->tmp_events) {
+                // The old GS_ASSERT here fell straight through to a read into
+                // a NULL pointer -- in every build, for the reason above.
+                LOG(0, "Error: out of memory restoring %u scheduler events", s->tmp_num_events);
+                checkpoint_set_error(checkpoint);
+                s->tmp_num_events = 0;
+            } else {
+                system_read_checkpoint_data(checkpoint, s->tmp_events,
+                                            (size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
+                s->tmp_checkpoint = checkpoint;
+            }
         }
     } else {
         // Fresh boot
@@ -845,7 +981,7 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
     validate_cpu_events(scheduler);
 
     // Save plain-data portion of struct
-    system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, event_types));
+    system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, previous_time));
 
     // Convert event queue to checkpoint-friendly format (names instead of pointers)
     unsigned int num_events = num_events_in_queue(scheduler);
@@ -854,26 +990,37 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
     // Skip the alloc entirely on an empty queue.
     event_as_checkpoint_t *events_to_save =
         num_events ? (event_as_checkpoint_t *)calloc(num_events, sizeof(event_as_checkpoint_t)) : NULL;
+    if (num_events && !events_to_save) {
+        // The write loop below indexed this unconditionally.  Flag the
+        // checkpoint rather than writing through NULL; the count is already on
+        // the stream, so the restore will refuse it as a short read.
+        LOG(0, "Error: out of memory saving %u scheduler events", num_events);
+        checkpoint_set_error(checkpoint);
+        return;
+    }
 
     event_t *e = scheduler->cpu_events;
     for (unsigned int i = 0; i < num_events; i++) {
         GS_ASSERT(e != NULL);
         events_to_save[i].timestamp = e->timestamp;
         events_to_save[i].data = e->data;
+        events_to_save[i].interval_cycles = e->interval_cycles;
+        events_to_save[i].periodic = e->periodic ? 1u : 0u;
+        memset(events_to_save[i].pad, 0, sizeof(events_to_save[i].pad));
 
         // Look up names by source+callback pair
-        bool found = false;
-        for (int j = 0; j < scheduler->num_event_types; j++) {
+        int j;
+        for (j = 0; j < scheduler->num_event_types; j++) {
             if (scheduler->event_types[j].callback == e->callback && scheduler->event_types[j].source == e->source) {
                 memcpy(events_to_save[i].source_name, scheduler->event_types[j].source_name,
                        sizeof(events_to_save[i].source_name));
                 memcpy(events_to_save[i].event_name, scheduler->event_types[j].event_name,
                        sizeof(events_to_save[i].event_name));
-                found = true;
                 break;
             }
         }
-        GS_ASSERTF(found, "event at timestamp %llu has no registered type", (unsigned long long)e->timestamp);
+        GS_ASSERTF(j < scheduler->num_event_types, "event at timestamp %llu has no registered type",
+                   (unsigned long long)e->timestamp);
 
         e = e->next;
     }
@@ -896,7 +1043,15 @@ void scheduler_start(struct scheduler *restrict s) {
     if (s->tmp_events == NULL)
         return;
 
-    // Resolve saved event names to live pointers and rebuild the event queue
+    // Resolve saved event names to live pointers and rebuild the event queue.
+    //
+    // Everything below comes off disk, so it is checked, not asserted: a
+    // release build compiles GS_ASSERT out, and an unknown type then indexed
+    // event_types[-1].  A saved event whose type nothing
+    // registered -- a checkpoint from a different build, or a module that
+    // registers its types only when it first arms one -- or whose time is
+    // already past fails the load, and the machine that was running stays.
+    bool ok = true;
     for (unsigned int i = 0; i < s->tmp_num_events; i++) {
         event_as_checkpoint_t *saved = &s->tmp_events[i];
 
@@ -911,16 +1066,22 @@ void scheduler_start(struct scheduler *restrict s) {
                 break;
             }
         }
-
-        GS_ASSERTF(found >= 0, "cannot restore event '%s.%s' — type not registered", saved->source_name,
-                   saved->event_name);
-        // Match the documented invariant: timestamp + CPI >= cpu_cycles (so an
+        if (found < 0) {
+            LOG(0, "Error: checkpoint holds a pending '%.*s.%.*s' event, and no such event type is registered",
+                (int)sizeof(saved->source_name), saved->source_name, (int)sizeof(saved->event_name), saved->event_name);
+            ok = false;
+            continue;
+        }
+        // The documented invariant: timestamp + CPI >= cpu_cycles (so an
         // event that legitimately fired on the same cycle the checkpoint was
         // taken can still be restored).
-        GS_ASSERTF(saved->timestamp + avg_cycles_per_instr(s) >= s->cpu_cycles,
-                   "restored event timestamp (%llu) too far past cpu_cycles (%llu) for '%s.%s'",
-                   (unsigned long long)saved->timestamp, (unsigned long long)s->cpu_cycles, saved->source_name,
-                   saved->event_name);
+        if (saved->timestamp + avg_cycles_per_instr(s) < s->cpu_cycles) {
+            LOG(0, "Error: checkpoint's '%.*s.%.*s' event is due at cycle %llu, before the saved clock (%llu)",
+                (int)sizeof(saved->source_name), saved->source_name, (int)sizeof(saved->event_name), saved->event_name,
+                (unsigned long long)saved->timestamp, (unsigned long long)s->cpu_cycles);
+            ok = false;
+            continue;
+        }
 
         // Recreate and insert event
         event_t *e = event_alloc();
@@ -930,20 +1091,27 @@ void scheduler_start(struct scheduler *restrict s) {
         e->callback = s->event_types[found].callback;
         e->source = s->event_types[found].source;
         e->data = saved->data;
+        // A periodic with a zero interval would spin, so refuse it rather
+        // than restore it -- this value came off disk like the rest.
+        e->periodic = saved->periodic != 0 && saved->interval_cycles != 0;
+        e->interval_cycles = e->periodic ? saved->interval_cycles : 0;
 
         s->cpu_events = insert_event_queue(s->cpu_events, e);
     }
+    if (!ok && s->tmp_checkpoint)
+        checkpoint_set_error(s->tmp_checkpoint);
 
     // Cleanup temporary storage
     free(s->tmp_events);
     s->tmp_events = NULL;
     s->tmp_num_events = 0;
+    s->tmp_checkpoint = NULL;
 
     CHECK_INVARIANTS(s);
 }
 
 // Register a new event type for checkpoint save/restore
-void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *source_name, void *source,
+void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,
                               const char *event_name, event_callback_t callback) {
     GS_ASSERT(scheduler != NULL);
     GS_ASSERT(source_name != NULL && source_name[0] != '\0');
@@ -978,8 +1146,8 @@ void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *
 }
 
 // Schedule a new CPU event to fire after the specified number of cycles or nanoseconds
-event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
-                                 uint64_t data, uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *scheduler, event_callback_t callback, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
     GS_ASSERT(scheduler != NULL);
     GS_ASSERT(scheduler->cpu.run_sprint != NULL);
     GS_ASSERT(callback != NULL);
@@ -997,6 +1165,10 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_cal
     // too: a bare "both cycles and ns are 0" identifies the scheduler, which
     // is never the buggy component, and leaves you grepping ~30 call sites
     // for the one whose delay computed to zero.
+    //
+    // Only the asserts read the result, so GS_FAST (which compiles them out)
+    // skips the lookup too.
+#ifndef GS_FAST
     const char *event_name = "<unregistered>";
     bool registered = false;
     for (int i = 0; i < scheduler->num_event_types; i++) {
@@ -1012,12 +1184,13 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_cal
     GS_ASSERTF(cycles != 0 || ns != 0, "scheduler_new_cpu_event(%s): both cycles and ns are 0", event_name);
     GS_ASSERTF(!(cycles != 0 && ns != 0), "scheduler_new_cpu_event(%s): both cycles and ns are set (%llu, %llu)",
                event_name, (unsigned long long)cycles, (unsigned long long)ns);
+#endif
 
     CHECK_INVARIANTS(scheduler);
     validate_cpu_events(scheduler);
     reconcile_sprint(scheduler);
 
-    event_t *result = add_event_internal(scheduler, callback, source, data, cycles, ns);
+    event_t *result = add_event_internal(scheduler, callback, source, data, cycles, ns, periodic);
     CHECK_INVARIANTS(scheduler);
     return result;
 }
@@ -1040,6 +1213,87 @@ void remove_event(struct scheduler *restrict scheduler, event_callback_t callbac
 }
 
 // Remove events matching callback, source, AND data value
+// Drop everything the scheduler still holds for `source`: every queued event
+// whatever its callback, and the event-type registration row.
+//
+// This exists because remove_event() matches on callback AND source, so a
+// device with N callbacks needs N calls to clean up, and the convention could
+// not be kept even by people trying: a survey found 27 of 38 device destructors
+// leaking at least one queued event -- appletalk.c schedules 5 and removes 2,
+// adb.c 4 and 3, floppy.c 3 and 0, via.c 2 and 0.  Keyed on the source alone,
+// the call is one line per destructor and cannot be half-done, which makes
+// "every *_delete that owns a scheduler-visible object calls
+// scheduler_forget_source before free" a rule a reviewer or a lint can check.
+//
+// remove_event() stays: cancelling ONE pending thing on a live device is a
+// different operation from "this object is going away".
+//
+// DESTRUCTORS ONLY -- see the header.  Removing the type registrations is what
+// makes this unsafe on a live device, and also what makes it complete on a
+// dying one.
+//
+// Safe to call with a source the scheduler has never seen.
+void scheduler_forget_source(struct scheduler *restrict scheduler, void *source) {
+    GS_ASSERT(scheduler != NULL);
+    if (source == NULL)
+        return; // NULL means "any source" to remove_event; refuse it here
+
+    // Queued events first -- these are the dangling pointers that matter.
+    event_t **ev = &scheduler->cpu_events;
+    while (*ev != NULL) {
+        if ((*ev)->source == source) {
+            event_t *to_remove = *ev;
+            *ev = to_remove->next;
+            event_free(to_remove);
+        } else {
+            ev = &(*ev)->next;
+        }
+    }
+
+    // Then the registration rows, which no per-callback remove_event can
+    // reach.  Compact rather than tombstone: the table is scanned linearly by
+    // find_event_type and by both checkpoint paths, and a hole would have to
+    // be skipped in all three.
+    int out = 0;
+    for (int i = 0; i < scheduler->num_event_types; i++) {
+        if (scheduler->event_types[i].source == source)
+            continue;
+        if (out != i)
+            scheduler->event_types[out] = scheduler->event_types[i];
+        out++;
+    }
+    scheduler->num_event_types = out;
+}
+
+// Number of events currently queued.
+int scheduler_pending_events(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    int n = 0;
+    for (const event_t *e = scheduler->cpu_events; e != NULL; e = e->next)
+        n++;
+    return n;
+}
+
+// Number of queued events that belong to an OBJECT, i.e. carry a non-NULL
+// source.  A NULL-sourced event belongs to no device -- debug_mac.c's
+// mouse_guard tick is one, registered for the lifetime of the process -- so it
+// can never dangle and is not evidence of a destructor that forgot to clean
+// up.  This is what the teardown backstop counts.
+int scheduler_pending_device_events(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    int n = 0;
+    for (const event_t *e = scheduler->cpu_events; e != NULL; e = e->next)
+        if (e->source != NULL)
+            n++;
+    return n;
+}
+
+// Number of registered event types.
+int scheduler_event_type_count(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    return scheduler->num_event_types;
+}
+
 void remove_event_by_data(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
                           uint64_t data) {
     GS_ASSERT(scheduler != NULL);
@@ -1067,6 +1321,27 @@ bool has_event(struct scheduler *restrict scheduler, event_callback_t callback) 
             return true;
     }
     return false;
+}
+
+// When the LAST event still queued for this callback is due, in emulated
+// nanoseconds on the same clock as scheduler_time_ns; 0 if none is queued.
+// Read-only, and the same walk has_event does.
+//
+// keyboard.type needs it: each call paces its transitions one spacing apart
+// and has to start after whatever a previous call left in flight.  That
+// instant used to be a shadow field in adb_t, which meant the answer lived in
+// two places and only one of them was per-machine.  Asking the queue cannot
+// drift, and it survives a checkpoint restore for free -- the events are
+// restored, so the answer is too.
+double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callback_t callback) {
+    GS_ASSERT(scheduler != NULL);
+    GS_ASSERT(callback != NULL);
+
+    uint64_t last = 0;
+    for (event_t *e = scheduler->cpu_events; e != NULL; e = e->next)
+        if (e->callback == callback && e->timestamp > last)
+            last = e->timestamp;
+    return (double)last * (1e9 / (double)scheduler->frequency);
 }
 
 // Returns the current cpu_cycles including in-progress sprint execution
@@ -1098,14 +1373,63 @@ void cpu_reschedule(void) {
     reconcile_sprint(s);
 }
 
-// Stop the scheduler immediately, halting CPU execution
-void scheduler_stop(struct scheduler *restrict scheduler) {
-    GS_ASSERT(scheduler != NULL);
-    scheduler->running = false;
-    reconcile_sprint(scheduler);
+const char *sched_stop_reason_name(sched_stop_reason_t reason) {
+    switch (reason) {
+    case SCHED_STOP_NONE:
+        return "none";
+    case SCHED_STOP_BUDGET:
+        return "budget";
+    case SCHED_STOP_BREAKPOINT:
+        return "breakpoint";
+    case SCHED_STOP_REQUEST:
+        return "stop_request";
+    case SCHED_STOP_CANCELLED:
+        return "cancelled";
+    case SCHED_STOP_ASSERT:
+        return "assert";
+    }
+    return "?";
 }
 
-// Set the scheduler running state
+// Stop the scheduler immediately, halting CPU execution
+void scheduler_stop_reason(struct scheduler *restrict scheduler, sched_stop_reason_t reason) {
+    GS_ASSERT(scheduler != NULL);
+    if (scheduler->running)
+        scheduler->stop_reason = reason;
+    scheduler->running = false;
+    reconcile_sprint(scheduler);
+    // A stop from outside a frame (a scheduler.stop leaf between ticks, a
+    // signal) is reported here; one from inside (budget, breakpoint) at the
+    // end of the frame, once the sprint has settled.
+    if (!scheduler->in_frame)
+        close_mode_if_stopped(scheduler);
+}
+
+void scheduler_stop(struct scheduler *restrict scheduler) {
+    scheduler_stop_reason(scheduler, SCHED_STOP_REQUEST);
+}
+
+bool scheduler_stop_owned(struct scheduler *restrict scheduler, uint32_t owner) {
+    GS_ASSERT(scheduler != NULL);
+    if (!scheduler->running || (owner != 0 && scheduler->run_owner != owner))
+        return false;
+    scheduler_stop_reason(scheduler, SCHED_STOP_REQUEST);
+    return true;
+}
+
+uint32_t scheduler_run_owner(struct scheduler *restrict scheduler) {
+    return scheduler ? scheduler->run_owner : 0;
+}
+
+uint32_t scheduler_mode_id(struct scheduler *restrict scheduler) {
+    return scheduler ? scheduler->mode_seq : 0;
+}
+
+bool scheduler_mode_bounded(struct scheduler *restrict scheduler) {
+    return scheduler && scheduler->mode_bounded;
+}
+
+// Set the scheduler running state -- the flag only, no mode opens or ends.
 void scheduler_set_running(struct scheduler *restrict scheduler, bool running) {
     if (!scheduler)
         return;
@@ -1147,7 +1471,7 @@ void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode) {
 
 // Set the accelerated-mode speed multiplier: 0 = auto (the adaptive governor
 // picks, bounded by max_speed), any other value pins a fixed multiplier
-// (clamped to [1x, 8x] — the §4.4 correctness-safe configuration, and the
+// (clamped to [1x, 8x] — the correctness-safe configuration, and the
 // only way to accelerate headless runs, which have no host-timing signal for
 // the governor). Retained across mode switches/checkpoints but inert outside
 // schedule_accelerated.
@@ -1287,8 +1611,25 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             instr_to_exec = 1;
 
         // Single-step when debugger is active
-        if (debugger_active)
+        if (debugger_active) {
             instr_to_exec = 1;
+            // The probes run after each instruction, at the PC about to
+            // execute.  A pending interrupt is taken at the sprint's entry,
+            // so the handler's first instruction executed before any probe
+            // saw its address: a breakpoint or PC logpoint there almost
+            // never fired (#173).  Take the interrupt here and, when it
+            // moved the PC, probe the handler's entry before it runs.
+            const cpu_debug_if_t *dif = system_cpu_debug_if();
+            uint32_t pc_before = dif ? dif->get_pc(dif->ctx) : 0;
+            cpu->poll_interrupt(cpu->ctx);
+            if (dif && dif->get_pc(dif->ctx) != pc_before && debug_break_and_trace()) {
+                remaining_cycles = 0;
+                if (s->running)
+                    s->stop_reason = SCHED_STOP_BREAKPOINT;
+                s->running = false;
+                break;
+            }
+        }
 
         // Execute sprint — expose burndown pointer and CPI for I/O penalty mechanism
         s->sprint_total = instr_to_exec;
@@ -1349,6 +1690,8 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         if (debugger_active) {
             if (debug_break_and_trace()) {
                 remaining_cycles = 0;
+                if (s->running)
+                    s->stop_reason = SCHED_STOP_BREAKPOINT;
                 s->running = false;
                 break;
             }
@@ -1450,10 +1793,13 @@ void scheduler_run_frame(struct scheduler *restrict s, config_t *config) {
     uint64_t instructions = ((s->frame_cycles_left << 8) + s->cpi_eff_x256 - 1) / s->cpi_eff_x256;
 
     uint64_t before = scheduler_cpu_cycles(s);
+    s->in_frame = true;
     scheduler_run_instructions(s, instructions);
+    s->in_frame = false;
     uint64_t advanced = scheduler_cpu_cycles(s) - before;
 
     s->frame_cycles_left = (advanced < s->frame_cycles_left) ? s->frame_cycles_left - advanced : 0;
+    close_mode_if_stopped(s);
 }
 
 // Main loop iteration for real-time emulation with VBL-based timing
@@ -1518,7 +1864,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
             s->vbl_acc_error -= vbls_to_execute * MAC_VBL_PERIOD;
             // Saturate the debt a sustained-slow host can accumulate: the
             // emulator lags real time by at most one capped burst instead of
-            // banking unbounded catch-up work (§8.1 death-spiral).
+            // banking unbounded catch-up work (the death spiral).
             if (s->vbl_acc_error > PACED_MAX_CATCHUP * MAC_VBL_PERIOD)
                 s->vbl_acc_error = PACED_MAX_CATCHUP * MAC_VBL_PERIOD;
         }
@@ -1568,6 +1914,44 @@ static scheduler_t *sched_self_from(struct object *self) {
     return (scheduler_t *)object_data(self);
 }
 
+// `scheduler.events` — the pending queue as a list of maps.
+//
+// Replaces cmd_events(int argc, char *argv[]), which had ZERO callers: the
+// exact argc/argv shape docs/core/shell/object-model.md says was retired, so
+// the event queue was the one piece of scheduler state nothing could inspect.
+// That mattered more than it sounds -- the teardown warning in
+// machine_teardown.c reports a COUNT of leaked events and nothing could then
+// say which.
+static value_t sched_attr_events(struct object *self, const member_t *m) {
+    (void)m;
+    struct scheduler *s = sched_self_from(self);
+    if (!s)
+        return val_err("scheduler.events: no scheduler");
+
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (event_t *e = s->cpu_events; e; e = e->next) {
+        const event_type_t *t = find_event_type(s, e->source, e->callback);
+        int64_t delta = (int64_t)e->timestamp - (int64_t)s->cpu_cycles;
+
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "source", val_str(t ? t->source_name : "unknown"));
+        val_map_put(b, "event", val_str(t ? t->event_name : "unknown"));
+        val_map_put(b, "when", val_uint(8, e->timestamp));
+        val_map_put(b, "delta", val_int(delta));
+        val_map_put(b, "data", val_uint(8, e->data));
+        value_t entry = val_map_finish(b);
+        if (!val_list_push(&items, &len, &cap, entry)) {
+            value_free(&entry);
+            for (size_t i = 0; i < len; i++)
+                value_free(&items[i]);
+            free(items);
+            return val_err("out of memory");
+        }
+    }
+    return val_list(items, len);
+}
+
 static const char *mode_label(enum schedule_mode m) {
     switch (m) {
     case schedule_paced:
@@ -1590,20 +1974,40 @@ static value_t sched_attr_mode_get(struct object *self, const member_t *m) {
     (void)m;
     return val_str(mode_label(sched_self_from(self)->mode));
 }
+bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
+    // Legacy three-mode names stay accepted as aliases so existing scripts
+    // keep working: real/realtime and hw/hardware were the wall-clock modes
+    // → paced; max was the run-flat-out mode → turbo.  (There were three
+    // copies of this table, and they disagreed: the setter took real/hw, the
+    // command lines realtime/hardware.)
+    static const struct {
+        const char *name;
+        enum schedule_mode mode;
+    } names[] = {
+        {"paced",       schedule_paced      },
+        {"real",        schedule_paced      },
+        {"realtime",    schedule_paced      },
+        {"hw",          schedule_paced      },
+        {"hardware",    schedule_paced      },
+        {"accelerated", schedule_accelerated},
+        {"accel",       schedule_accelerated},
+        {"turbo",       schedule_unthrottled},
+        {"max",         schedule_unthrottled},
+    };
+    for (size_t i = 0; name && i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(name, names[i].name) == 0) {
+            *out = names[i].mode;
+            return true;
+        }
+    }
+    return false;
+}
+
 static value_t sched_attr_mode_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
     scheduler_t *s = sched_self_from(self);
     enum schedule_mode mode;
-    // Legacy three-mode names stay accepted as aliases so existing scripts
-    // keep working: 'real'/'hw' were the wall-clock modes → paced; 'max' was
-    // the run-flat-out mode → turbo.
-    if (strcmp(in.s, "paced") == 0 || strcmp(in.s, "real") == 0 || strcmp(in.s, "hw") == 0)
-        mode = schedule_paced;
-    else if (strcmp(in.s, "turbo") == 0 || strcmp(in.s, "max") == 0)
-        mode = schedule_unthrottled;
-    else if (strcmp(in.s, "accelerated") == 0 || strcmp(in.s, "accel") == 0)
-        mode = schedule_accelerated;
-    else {
+    if (!scheduler_mode_from_string(in.s, &mode)) {
         value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: paced, accelerated, turbo)", in.s);
         value_free(&in);
         return e;
@@ -1631,10 +2035,10 @@ static value_t sched_attr_cpi_set(struct object *self, const member_t *m, value_
 
 // Accelerated-mode speed multiplier. Reads back the multiplier currently in
 // force for accelerated mode — the pinned value, or the adaptive governor's
-// live speed when the setting is auto (so it moves on its own; "RO while
-// adaptive" in the proposal's terms). Writing 0 selects auto; 1.0..8.0 pins.
-// The setting is retained (and checkpointed) in every mode but only applies
-// in 'accelerated'; the governor's live speed is transient.
+// live speed when the setting is auto (so it moves on its own). Writing 0
+// selects auto; 1.0..8.0 pins. The setting is retained (and checkpointed) in
+// every mode but only applies in 'accelerated'; the governor's live speed is
+// transient.
 static value_t sched_attr_speed(struct object *self, const member_t *m) {
     (void)m;
     return val_float((double)scheduler_current_speed_x256(sched_self_from(self)) / 256.0);
@@ -1804,6 +2208,11 @@ static const member_t scheduler_members[] = {
             "Sample before+after scheduler.run; divide instr_count delta by the time delta "
             "and multiply by 1e9 for perceived emulator throughput in instructions per real second.", .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = sched_attr_host_wall_ns, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "events",
+     .doc = "Pending event queue: {source, event, when, delta, data} per entry",
+     .flags = VAL_VOLATILE,
+     .attr = {.type = V_LIST, .get = sched_attr_events}},
     {.kind = M_METHOD,
      .name = "run",
      .doc = "Start execution; with an instruction budget, stop after that many",
@@ -1814,7 +2223,7 @@ static const member_t scheduler_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = sched_method_stop}},
 };
 
-const class_desc_t scheduler_class = {
+static const class_desc_t scheduler_class = {
     .name = "scheduler",
     .members = scheduler_members,
     .n_members = sizeof(scheduler_members) / sizeof(scheduler_members[0]),

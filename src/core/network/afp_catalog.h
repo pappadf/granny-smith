@@ -2,8 +2,7 @@
 // Copyright (c) pappadf
 
 // afp_catalog.h
-// Persistent per-volume CNID catalog for the AFP server
-// (proposal-afp-server-completeness.md §4.2).
+// Persistent per-volume CNID catalog for the AFP server.
 //
 // AFP requires catalog node IDs that are unique per volume, stable across
 // rename / move / server restart, never reused, and that cover files as well
@@ -12,16 +11,18 @@
 // is_dir), so a directory rename keeps every descendant's ID for free and a
 // relative path is a walk of the parent chain.
 //
-// It is backed by an append-log at "<share>/.gs-afp/catalog.gsc":
+// It is backed by an append log (afp_applog.h) at
+// "<share>/.gs-afp/catalog.gsc", magic 'GSC2', whose records are
 //
-//   header  'GSC1' | u32 generation | u32 next_cnid
-//   record  u8 op | u32 cnid | u32 parent | u8 is_dir | pstr name | u32 crc
+//   ADD, RENAME, MOVE, DELETE, SET_ID, CLR_ID
+//           u32 cnid | u32 parent | u8 is_dir | name (to the record's end)
+//   STATE   u32 generation | u32 next_cnid
 //
 // Every mutation appends synchronously and is replayed in order at load;
-// the log is compacted (rewritten as pure ADDs) once it grows past 4x the
-// live-entry footprint, or at volume close.  A corrupt log is not fatal: the
-// catalog rebuilds from a tree walk with fresh CNIDs and a bumped generation
-// (aliases break, files do not).
+// the log is compacted (rewritten as a STATE and pure ADDs) once it holds
+// more than four records per live entry.  A missing or unreadable log is not
+// fatal: the catalog rebuilds from a tree walk with fresh CNIDs and a bumped
+// generation (aliases break, files do not).
 //
 // The module owns no AFP wire knowledge and no volume table, so the unit
 // suite drives it directly against a temp directory.
@@ -46,6 +47,17 @@
 #define AFP_CAT_MAX_PATH 768
 
 typedef struct afp_catalog afp_catalog_t;
+
+// A host name that can be one element of a share-relative path: not empty,
+// not "." or "..", and holding no '/'.
+bool afp_host_element(const char *name, size_t len);
+
+// The one place a share-relative path ('/'-separated host names, "" for the
+// share itself) becomes a host path under `root`.  Every element must pass
+// afp_host_element, so the result names something inside the share -- or
+// outside it only through a symlink planted on the host, which is followed
+// (appletalk_server.md §4).  False on a bad element or overflow.
+bool afp_host_join(const char *root, const char *rel, char *out, size_t cap);
 
 // One catalog entry as handed back to callers.  Each entry has its own
 // storage, so holding two at once is safe — but any call that can grow the
@@ -84,7 +96,7 @@ const afp_cat_entry_t *afp_catalog_find_child(afp_catalog_t *cat, uint32_t paren
 
 // Resolve a volume-relative path ("" = root, "a/b/c") to an entry, adopting
 // any missing component along the way when `adopt` is true (the lazy-adoption
-// policy of §4.2: anything the server touches that has no entry gets one).
+// policy: anything the server touches that has no entry gets one).
 // `is_dir` describes the final component; intermediate components are always
 // adopted as directories.  NULL when the path is malformed or absent.
 const afp_cat_entry_t *afp_catalog_resolve_path(afp_catalog_t *cat, const char *rel_path, bool adopt, bool is_dir);

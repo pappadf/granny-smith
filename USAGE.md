@@ -45,4 +45,4 @@ If a required image (such as the ROM) is missing, you can drag and drop the file
 - Supplying images via URL will overwrite any existing images with the same name in persistent storage.
 - The emulator will always use the most recently supplied or available images for each device slot.
 
-For more information on coding style and contributing, see [`docs/STYLE_GUIDE.md`](docs/STYLE_GUIDE.md).
+For more information on coding style and contributing, see [`docs/STYLE_GUIDE.md`](docs/guide/STYLE_GUIDE.md).

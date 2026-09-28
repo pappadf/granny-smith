@@ -20,6 +20,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "keyboard.h"
+#include "machine_build_opts.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
@@ -39,11 +40,16 @@ struct ppc;
 
 struct config {
     const hw_profile_t *machine; // active machine profile (set by system_create)
+    // Choices that had to be known before the devices existed: what the
+    // caller asked for, filled by system_create and READ (never consumed) by
+    // whoever needs it during construction.  Replaces three per-module
+    // one-shot statics -- jmfb/dafb/pdm's pending sense (machine_build_opts.h).
+    machine_build_opts_t build_opts;
     uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
-    // Core CPU and memory subsystems.  The main CPU is a tagged handle
-    // (PPC proposal §3.9a): cpu_arch discriminates, and exactly one of
+    // Core CPU and memory subsystems.  The main CPU is a tagged handle:
+    // cpu_arch discriminates, and exactly one of
     // cpu / ppc is non-NULL on a built machine.
     cpu_arch_t cpu_arch; // set by system_create from machine->cpu_model
     cpu_t *cpu; // 68K main CPU (NULL on PPC machines)
@@ -64,6 +70,9 @@ struct config {
     mouse_t *mouse;
     keyboard_t *keyboard;
     adb_t *adb; // ADB controller (SE/30, IIcx); NULL for Plus
+    // The machine.adb.keyboard object and its paced typing (host_input.h).
+    // Per machine on every family, including the ones with no adb_t.
+    struct host_input *host_input;
 
     debug_t *debugger;
 

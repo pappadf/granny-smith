@@ -32,7 +32,7 @@
     height: 100%;
     position: relative;
   }
-  /* Slide stack — spec §3.5: 250 ms ease-out opacity + 10 px translateX. */
+  /* Slide stack: 250 ms ease-out opacity + 10 px translateX. */
   .welcome-slide {
     position: absolute;
     inset: 0;

@@ -33,9 +33,11 @@ per-test media mapping if you need to know which test needs what.
 
 ### ROM images (`tests/data/roms/`)
 
-Machine ROMs. The filename carries the ROM's checksum, and `rom-naming`
-(unit tier) enforces that grammar, so a mismatched dump is caught rather
-than silently booted.
+Machine ROMs. Filenames are readable labels and nothing parses them: what
+a file is comes from the emulator's own identification. `rom-catalog`
+(unit tier) checks that every file is recognised and that every CPU ROM's
+own checksum verifies and boots an emulated model, so a damaged or unknown
+dump is caught rather than silently booted.
 
 | File | Machines |
 |---|---|
@@ -46,6 +48,14 @@ than silently booted.
 | `iifx-4147dd77.rom` | IIfx |
 | `q700-q900-420dbff3.rom` | Quadra 700 and 900 |
 | `q950-3dc27823.rom` | Quadra 950 |
+| `q840av-q660av-5bf10fd1.rom` | Quadra 840AV, Centris 660AV |
+| `pm6100-pm7100-pm8100-9feb69b3.rom` | Power Macintosh 6100/7100/8100 |
+| `pm7500-pm8500-pm9500-96cd923d.rom` | Power Macintosh 7500/8500/9500 (v1 ROM) |
+| `ans500-ans700-962f6c13.rom` | Apple Network Server 500/700 (Open Firmware 1.1.22) |
+| `ans500-ans700-of1.1.20.1-962f6c13-c60da96de537f08a.rom` | Apple Network Server (Open Firmware 1.1.20.1) |
+| `ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom` | Apple Network Server (Open Firmware 2.26NT) |
+| `ans500-ans700-2.26b6-9630c68b-a71fb907dd180b8a.rom` | Apple Network Server (Open Firmware 2.26B6) |
+| `ans500-ans700-proto20-49b2be8f.rom` | Apple Network Server (2.0 prototype, Mac OS) |
 | `lisa2-revh-098917b2.rom` | Lisa 2 (rev H) |
 | `macxl-3a-094c82f0.rom` | Macintosh XL |
 
@@ -56,8 +66,7 @@ runtime-generated generic GS vROM instead; `iicx-gsvrom` covers that path.
 ### Prepared hard-disk images (`tests/data/systems/`)
 
 These are the workhorses: full installs that boot on any supported
-machine, so a test can pick its host freely. Naming grammar (§6.1 of
-proposal-integration-test-rework):
+machine, so a test can pick its host freely. Naming grammar:
 `system_<ver>_<size>_<trait>[_<trait>…].img`.
 
 | File | Contents |
@@ -71,8 +80,7 @@ proposal-integration-test-rework):
 
 Trait tokens in prepared-image names are a closed vocabulary: `mode32`,
 `24ac`, `824gc`, `32bit`, **`cd` — CD-ROM driver support installed in the
-System Folder** (not "cdev"; the rework proposal briefly proposed renaming it
-on that misreading and the rename was struck), and **`av` — a Quadra 840AV /
+System Folder** (not "cdev"), and **`av` — a Quadra 840AV /
 Centris 660AV install carrying System Enabler 088**, which the AV machines
 cannot boot without (its `gbly` gates on machine IDs 72 and 54, so a stock
 volume will not start them at all).
@@ -127,7 +135,7 @@ Single-disk system images (`System_<ver>.dsk`, 400K/800K raw — exactly
 `SSW-7.0-800K/`, `SSW-7.1-1.4M/`, `SSW-7.5-1.4M/`, `SSW-7.6-1.4M/`.
 
 ⚠️ **Three media labels are known to lie**, so do not trust a filename as
-a system version (each is documented in §6.2/§7 of the rework proposal):
+a system version:
 
 | File | Claims | Actually boots |
 |---|---|---|

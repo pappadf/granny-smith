@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // rom.h
-// ROM identification and loading. Owns the system ROM file: identify-by-
-// checksum, list of machine models a given ROM is compatible with, file
-// I/O, and the rom.* object-model surface.
+// ROM identification and loading. Owns the system ROM file: content
+// identity, the table of known ROMs and the models each boots, file I/O,
+// and the rom.* object-model surface.
 
 #ifndef ROM_H
 #define ROM_H
@@ -19,45 +19,81 @@ struct object;
 
 // === ROM identification =====================================================
 //
-// A single ROM image (identified by checksum + size) maps to one or more
-// machine model_ids. The 256 KB Universal ROM, for example, is shared by
-// the SE/30, IIcx, and IIx — there is no way to derive the machine from the
-// ROM alone, so the user must pick one of `compatible[]`.
+// A ROM's identity (`id`) is the checksum field(s) the ROM itself carries,
+// read verbatim, and its integrity (`intact`) is that checksum recomputed over
+// the bytes.  The id is a stored label, so a damaged dump still says which ROM
+// it was meant to be; nothing may be named by its id unless it is intact.
+//
+//   kind    id                                      self-check
+//   MAC68K  %08x of the header sum at offset 0      header sum over the image
+//   PPC     %08x-%016llx: header sum, ConfigInfo    header sum over the 68k half,
+//           64-bit sum (4 MiB Old World images)     64-bit sum over the whole image
+//   LISA    %04x of the check word at $3FFE         the boot ROM's rotating sum
+//
+// One table (rom_table.c) lists every ROM we know about.  A row's
+// `compatible` list names the emulated models it boots; an empty list is a
+// real ROM for a machine Granny Smith does not emulate.
+
+// Which checksum layout an image carries (a content rule, not a table lookup).
+typedef enum {
+    ROM_KIND_NONE, // not a ROM (odd size, too small)
+    ROM_KIND_MAC68K, // classic 68k header sum
+    ROM_KIND_PPC, // 4 MiB Old World image with a ConfigInfo block
+    ROM_KIND_LISA, // 16 KB interleaved Lisa / Macintosh XL boot ROM
+} rom_kind_t;
+
+// Longest id text plus NUL ("xxxxxxxx-xxxxxxxxxxxxxxxx").
+#define ROM_ID_MAX 32
+
+// Row flag: a PPC ROM whose ConfigInfo sums cover a range we do not know, so
+// only its 68k half can be verified.
+#define ROM_F_NO_SUM64 0x1u
+
+// One ROM we know about.
 typedef struct rom_info {
     const char *family_name; // Human-readable ("Universal IIx/IIcx/SE/30 ROM")
-    const char *const *compatible; // NULL-terminated list of compatible model_ids
-    uint32_t checksum; // Stored checksum (first 4 bytes, big-endian)
+    const char *const *compatible; // NULL-terminated emulated model_ids; empty = not emulated
+    const char *id; // Content id, lowercase hex (see above)
     uint32_t rom_size; // Expected file size in bytes
-    // Bytes the stored checksum covers; 0 = the whole image.  The PDM 4 MB
-    // ROM's header checksum spans only its 3 MB 68k half — the trailing
-    // megabyte (HWInit/nanokernel/emulator) is outside the classic sum.
+    // MAC68K only: bytes the header sum covers when it is not the whole image
+    // (the Classic's sum stops where its ROM disk starts); 0 = whole image.
     uint32_t checksum_span;
-    // Note: canonical fixture filenames are a tooling concern (scripts/
-    // rom_naming.py maps content identity → name for the gs-test-data repo);
-    // core reasons only in content identities and never knows a filename.
+    uint32_t flags; // ROM_F_*
+    // Short label telling this ROM apart from the other ROMs that boot the
+    // same model ("Win NT", "Rev 2", "v2"); NULL when no other known ROM
+    // shares a model with it.  UIs show it after the model name, as
+    // "<model> (<variant>)", so every model/ROM pair reads differently.
+    const char *variant;
 } rom_info_t;
 
-// Look up a ROM by its stored checksum.
-// Returns a pointer to a static rom_info_t entry, or NULL if unknown.
-const rom_info_t *rom_identify(uint32_t checksum);
+// The identity of one image: its kind, stored id and self-check verdict.
+typedef struct rom_identity {
+    rom_kind_t kind;
+    char id[ROM_ID_MAX]; // "" for ROM_KIND_NONE
+    bool intact; // the ROM's own checksum verifies
+    char reason[80]; // which part does not verify; "" when intact
+} rom_identity_t;
 
-// Compute the ROM checksum (sum of 16-bit big-endian words from offset 4).
-uint32_t rom_compute_checksum(const uint8_t *data, size_t size);
+// The ROM table (rom_table.c).
+extern const rom_info_t rom_table[];
+extern const size_t rom_table_count;
 
-// Extract the stored checksum from a ROM image (first 4 bytes, big-endian).
-uint32_t rom_stored_checksum(const uint8_t *data);
+// Kind, stored id and self-check of `data` by the plain per-kind rule.
+void rom_identity_compute(const uint8_t *data, size_t size, rom_identity_t *out);
 
-// Validate a ROM image by comparing stored vs. computed checksum.
-bool rom_validate(const uint8_t *data, size_t size);
+// The table row for `id` whose size is `size`, or NULL if not known.
+const rom_info_t *rom_lookup(const char *id, size_t size);
 
-// Identify a ROM from raw file data; falls back to file-size heuristics for
-// unrecognised checksums. *out_checksum (if non-NULL) is set unconditionally.
-const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *out_checksum);
+// Identify raw ROM bytes: compute the identity, look it up, and re-verify
+// with the matched row's exceptions (checksum_span, ROM_F_NO_SUM64).
+// `out` may be NULL.  Returns the row, or NULL if the ROM is not known.
+const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, rom_identity_t *out);
 
-// Identify an interleaved 16 KB Apple Lisa 2 / Macintosh XL boot ROM by size +
-// the version word at offset $3FFC ($0248 = Lisa 2 rev H, $0341 = Mac XL "3A").
-// Returns a static rom_info_t, or NULL if `data`/`size` aren't a Lisa ROM.
-const rom_info_t *rom_identify_lisa(const uint8_t *data, size_t size);
+// True when a known ROM boots at least one emulated model.
+bool rom_is_supported(const rom_info_t *info);
+
+// Short name of a kind: "mac68k", "ppc", "lisa", or "" for ROM_KIND_NONE.
+const char *rom_kind_name(rom_kind_t kind);
 
 // === Lisa / Macintosh XL two-chip ROM interleaving ==========================
 
@@ -67,8 +103,8 @@ const rom_info_t *rom_identify_lisa(const uint8_t *data, size_t size);
 void rom_interleave_pair(const uint8_t *hi, size_t hi_size, const uint8_t *lo, size_t lo_size, uint8_t *out);
 
 // Read two Lisa/XL ROM chip files and interleave them into a fresh 16 KB image.
-// Order-independent: tries both high/low orientations and keeps the one that
-// identifies as a Lisa ROM. Returns a malloc'd buffer (caller frees) of
+// Order-independent: tries both high/low orientations and keeps the one whose
+// interleave passes the boot ROM's own self-check. Returns a malloc'd buffer (caller frees) of
 // *out_size bytes, or NULL on read/size failure.
 uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_size);
 
@@ -77,9 +113,10 @@ int rom_info_compatible_count(const rom_info_t *info);
 
 // === File-level helpers =====================================================
 
+// What a ROM file is: its table row (if known), identity and size.
 typedef struct rom_file_info {
-    const rom_info_t *info; // NULL if checksum unrecognised
-    uint32_t checksum;
+    const rom_info_t *info; // NULL if the ROM is not known
+    rom_identity_t identity;
     size_t size;
 } rom_file_info_t;
 
@@ -101,14 +138,6 @@ int rom_load_into_machine(const char *path);
 // `path_a` and `path_b` (either order) into 16 KB and install. Returns 0 on
 // success, -1 on failure (no machine, unreadable/wrong-size chips).
 int rom_load_lisa_into_machine(const char *path_a, const char *path_b);
-
-// === Lifecycle =============================================================
-//
-// rom_init() creates the singleton `rom` object node and attaches it under
-// the root; rom_delete() detaches/frees it and clears the pending path.
-// Both are idempotent — repeated calls are safe and turn into no-ops.
-// Called from system_create / system_destroy alongside the other subsystems.
-extern const struct class_desc rom_class;
 
 void rom_init(void);
 void rom_delete(void);

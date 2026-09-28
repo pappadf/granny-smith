@@ -2,17 +2,18 @@
 // Copyright (c) pappadf
 
 // script.c
-// Shell v2 statement parser + interpreter. See script.h and
-// proposal-shell-control-flow-and-functions.md §3.
+// Shell statement parser + interpreter. See script.h and
+// docs/core/shell/shell.md.
 //
 // Pipeline: source text → lines → statement tree (blocks resolved by
 // the line-position rule; inline blocks allowed for one statement) →
 // interpretation. Expressions are stored as text and evaluated with
 // expr_eval where they appear, so loop conditions re-test naturally.
-// Two parsing modes (§3.2): command arguments parse bare words as
+// Two parsing modes: command arguments parse bare words as
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
+#include "job/job.h"
 
 #include "alias.h"
 #include "expr.h"
@@ -1013,7 +1014,7 @@ typedef enum {
     SIG_CONTINUE,
     SIG_RETURN,
     SIG_ERROR,
-    SIG_QUIT, // pump hook requested a clean stop (quit)
+    SIG_QUIT, // the job was cancelled: a clean stop, not an error
 } exec_sig_t;
 
 typedef struct exec_ctx {
@@ -1024,12 +1025,7 @@ typedef struct exec_ctx {
     value_t ret; // SIG_RETURN payload
 } exec_ctx_t;
 
-static script_pump_fn g_pump_hook = NULL;
 static volatile bool g_interrupt = false;
-
-void script_set_pump_hook(script_pump_fn fn) {
-    g_pump_hook = fn;
-}
 
 void script_interrupt(void) {
     g_interrupt = true;
@@ -1050,9 +1046,11 @@ void script_expr_ctx(expr_ctx_t *out) {
 // Include stack (`include "path"`, script_run_file): the chain of files
 // currently executing, innermost last. Drives relative-path resolution,
 // the cycle guard, and file attribution in diagnostics.
+// Per thread: a job on the job thread and an inline script on the emulator
+// thread (a breakpoint action, shell.eval) each have their own chain.
 #define INCLUDE_MAX_DEPTH 16
-static char *g_include_stack[INCLUDE_MAX_DEPTH];
-static int g_include_depth = 0;
+static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
+static _Thread_local int g_include_depth = 0;
 
 static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     char buf[512];
@@ -1185,66 +1183,16 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
 // Scan `('.' seg | '[' EXPR ']')*` at *p, appending to out (bracket
 // expressions evaluated to integers). Returns false with *errv set.
 static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char *out, size_t out_size, value_t *errv) {
-    size_t pi = strlen(out);
-    while (1) {
-        if ((*p)[0] == '.' && (ident_char((*p)[1]))) {
-            const char *q = *p + 1;
-            const char *s = q;
-            while (ident_char(*q))
-                q++;
-            int n = snprintf(out + pi, out_size - pi, ".%.*s", (int)(q - s), s);
-            if (n < 0 || (size_t)n >= out_size - pi) {
-                *errv = val_err("path too long");
-                return false;
-            }
-            pi += (size_t)n;
-            *p = q;
-        } else if ((*p)[0] == '[') {
-            const char *q = *p + 1;
-            value_t idx = expr_eval_at(&q, ectx);
-            if (val_is_error(&idx)) {
-                *errv = idx;
-                return false;
-            }
-            q = skip_sp(q);
-            if (*q != ']') {
-                value_free(&idx);
-                *errv = val_err("expected ']'");
-                return false;
-            }
-            q++;
-            // Integer index (indexed child / list slot) or string index
-            // (map key, emitted as a `["key"]` segment).
-            int n;
-            if (idx.kind == V_STRING) {
-                const char *k = idx.s ? idx.s : "";
-                if (strpbrk(k, "\"\\")) {
-                    value_free(&idx);
-                    *errv = val_err("map key may not contain '\"' or '\\'");
-                    return false;
-                }
-                n = snprintf(out + pi, out_size - pi, "[\"%s\"]", k);
-            } else {
-                bool ok = false;
-                int64_t iv = val_as_i64(&idx, &ok);
-                if (!ok) {
-                    value_free(&idx);
-                    *errv = val_err("index must be numeric or a string key");
-                    return false;
-                }
-                n = snprintf(out + pi, out_size - pi, "[%lld]", (long long)iv);
-            }
-            value_free(&idx);
-            if (n < 0 || (size_t)n >= out_size - pi) {
-                *errv = val_err("path too long");
-                return false;
-            }
-            pi += (size_t)n;
-            *p = q;
-        } else {
-            return true;
-        }
-    }
+    // One grammar, in expr.c.  This used to be a second implementation of it:
+    // identifier scanning, `.seg` and `[expr]` appending, and the
+    // same `"`/`\` rejection for map keys, ~170 lines that had to be kept in
+    // step with expr.c by hand and had already drifted.
+    char err[160];
+    err[0] = '\0';
+    if (expr_read_path_segments(p, ectx, out, out_size, NULL, err, sizeof(err)))
+        return true;
+    *errv = val_err("%s", err[0] ? err : "bad path");
+    return false;
 }
 
 // Resolve a command/lvalue head at *p into a node. Handles both bare
@@ -1393,11 +1341,10 @@ static char *scan_bare_word(const char **p) {
     return buf ? buf : strdup("");
 }
 
-// Parse one argument-mode value at *p (§3.2). Returns V_ERROR on
-// failure. Advances *p. `raw_template` marks a template-typed slot
-// (§6.3): a double-quoted value is captured as its raw body — no escape
-// decoding, no interpolation — for the subsystem to evaluate at fire
-// time.
+// Parse one argument-mode value at *p. Returns V_ERROR on
+// failure. Advances *p. `raw_template` marks a template-typed slot: a
+// double-quoted value is captured as its raw body — no escape decoding, no
+// interpolation — for the subsystem to evaluate at fire time.
 static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_template) {
     const char *q = *p;
     // Interpolating string (or raw capture for template slots).
@@ -1558,7 +1505,7 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
             }
         }
         // Template slot? Look up the declared argument this value will
-        // land in; template-typed strings are captured raw (§6.3).
+        // land in; template-typed strings are captured raw.
         bool raw_template = false;
         if (node.member && node.member->kind == M_METHOD && node.member->method.args) {
             const arg_decl_t *args = node.member->method.args;
@@ -1687,6 +1634,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     }
 
     value_t result = exec_command_tail(p, &ectx, node, fn);
+    shell_func_release(fn);
     if (val_is_error(&result)) {
         exec_error(cx, st->line, "%s", result.err ? result.err : "command failed");
         value_free(&result);
@@ -1849,7 +1797,7 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
     while (1) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             return;
@@ -1878,6 +1826,9 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
     }
 }
 
+// How many times a `for … in <range>` body may run.  See exec_for.
+#define FOR_RANGE_MAX_ITERATIONS (1u << 20)
+
 static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
@@ -1895,10 +1846,19 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     }
 
     // Save any shadowed same-named binding in the current scope; the
-    // loop variable is removed at every exit route (§3.8).
+    // loop variable is removed at every exit route.
     value_t saved = val_none();
     bool had = shell_binding_save_top(st->name, &saved);
 
+    // The one cap, and it bounds TIME rather than memory: a range denotes its
+    // values without allocating, so what needs limiting is how many times the
+    // body runs.  An uncapped loop hangs a headless script or CI, where
+    // g_interrupt below cannot reach it.  The largest `for … in a..b` in the
+    // corpus is 0..4096, so this is 256x headroom.
+    //
+    // Real collections are NOT capped: iterating a list, map or bytes walks
+    // data that already exists, and its size is whatever the machine already
+    // holds.
     size_t count = 0;
     if (iter.kind == V_LIST)
         count = iter.list.len;
@@ -1906,11 +1866,19 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         count = iter.map.len;
     else if (iter.kind == V_BYTES)
         count = iter.bytes.n;
-    else
-        count = iter.range.stop > iter.range.start ? (size_t)(iter.range.stop - iter.range.start) : 0;
+    else {
+        uint64_t n = val_range_count(&iter);
+        if (n > FOR_RANGE_MAX_ITERATIONS) {
+            exec_error(cx, st->line, "for: range of %llu exceeds the %llu-iteration cap", (unsigned long long)n,
+                       (unsigned long long)FOR_RANGE_MAX_ITERATIONS);
+            value_free(&iter);
+            return;
+        }
+        count = (size_t)n;
+    }
 
     for (size_t i = 0; i < count; i++) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             break;
@@ -1924,7 +1892,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         else if (iter.kind == V_BYTES)
             item = val_uint(1, iter.bytes.p[i]);
         else
-            item = val_int(iter.range.start + (int64_t)i);
+            item = val_int(iter.range.start + (int64_t)i * iter.range.step);
         char err[160];
         if (shell_binding_let(st->name, item, err, sizeof(err)) < 0) {
             exec_error(cx, st->line, "%s", err);
@@ -1971,7 +1939,7 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
     bool ok = !is_err && val_as_bool(&v);
     if (ok) {
         value_free(&v);
-        return; // silent on success (§5)
+        return; // silent on success
     }
     // Failure: format the message (interpolated now, at failure time).
     char msg[512] = "";
@@ -1984,7 +1952,12 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
     }
     if (is_err)
         fprintf(stderr, "line %d: %s\n", st->line, v.err ? v.err : "error in assert predicate");
-    printf("ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
+    // stderr, with its predicate error.  These are one failure event and used
+    // to go to two streams, so a test log could interleave them in either
+    // order or split them across files -- and that output is exactly what a
+    // failure investigation reads.  Results go to stdout,
+    // diagnostics to stderr.
+    fprintf(stderr, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
     value_free(&v);
     cx->sig = SIG_ERROR;
 }
@@ -2128,12 +2101,13 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
 }
 
+// The statement boundary: where a job notices it was cancelled (job/job.h)
+// and unwinds.  Nothing else happens between statements -- the emulator
+// runs on its own thread, and a `scheduler.run N` waited inside its call.
 static void exec_block(script_block_t *b, exec_ctx_t *cx) {
     for (int i = 0; i < b->n && cx->sig == SIG_NONE; i++) {
         exec_stmt(b->stmts[i], cx);
-        // Give the platform a chance to drive the scheduler after each
-        // statement (`scheduler.run N` schedules; the pump executes).
-        if (cx->sig == SIG_NONE && g_pump_hook && g_pump_hook())
+        if (cx->sig == SIG_NONE && job_current_cancelled())
             cx->sig = SIG_QUIT;
     }
 }
@@ -2145,6 +2119,11 @@ int script_exec(script_t *s, bool interactive) {
     cx.interactive = interactive;
     exec_block(s->top, &cx);
     value_free(&cx.ret);
+    // An interrupt cancels the script that is running.  One raised while a
+    // top-level statement (a plain `scheduler.run`) was in flight has no loop
+    // to consume it; left set, it aborted the next loop the shell saw, on the
+    // daemon's next connection (#171).
+    g_interrupt = false;
     return cx.sig == SIG_ERROR ? -1 : 0;
 }
 
@@ -2175,6 +2154,34 @@ int script_run_line(const char *line) {
     return rc;
 }
 
+// Runs a parsed text as its own context: an error in it is attributed to
+// its line, not to whatever file the caller was including -- which is what
+// a job thread's empty stack gives a `shell.eval` from a script, and what
+// an inline run (the same thread, the includer's frames still on the
+// stack) must give too.
+static int exec_isolated(script_t *s, bool interactive) {
+    char *saved[INCLUDE_MAX_DEPTH];
+    int saved_depth = g_include_depth;
+    memcpy(saved, g_include_stack, sizeof saved);
+    g_include_depth = 0;
+    int rc = script_exec(s, interactive);
+    g_include_depth = saved_depth;
+    memcpy(g_include_stack, saved, sizeof saved);
+    return rc;
+}
+
+int script_run_text(const char *src, bool interactive) {
+    char err[256];
+    script_t *s = script_parse(src, err, sizeof(err));
+    if (!s) {
+        fprintf(stderr, "%s\n", err);
+        return -1;
+    }
+    int rc = exec_isolated(s, interactive);
+    script_free(s);
+    return rc;
+}
+
 int script_run_source(const char *src) {
     char err[256];
     script_t *s = script_parse(src, err, sizeof(err));
@@ -2182,7 +2189,7 @@ int script_run_source(const char *src) {
         fprintf(stderr, "%s\n", err);
         return -1;
     }
-    int rc = script_exec(s, false);
+    int rc = exec_isolated(s, false);
     script_free(s);
     return rc;
 }

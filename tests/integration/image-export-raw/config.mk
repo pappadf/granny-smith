@@ -8,5 +8,5 @@ TEST_DESC := Export a disk image to a flat raw file and re-mount it via the VFS
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -1,0 +1,25 @@
+# Integration test: a bare UFS volume mounts through the image VFS.
+# The runner cd's into tests/integration/; WORK_DIR is absolute.
+
+let bare = "${$WORK_DIR}/aux-root.ufs"
+let disk = "../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso"
+
+# No partition map: one synthetic partition, as for a bare HFS floppy.
+# Unwired, the volume was "not a recognised image" (ENOTDIR).
+assert len(vfs.list($bare)) == 1 "a bare UFS volume must expose one partition"
+storage.mounts
+
+# Its root is the same directory as partition 6 of the CD it came from.
+let from_bare = vfs.list("${$bare}/partition1")
+let from_disk = vfs.list("${$disk}/partition6")
+assert len($from_bare) > 0 "empty root on the bare volume"
+assert len($from_bare) == len($from_disk) "bare and in-disk roots differ in size"
+for i in 0..len($from_disk) {
+    assert $from_bare[$i].name == $from_disk[$i].name "root entry ${$i} differs"
+}
+
+# And files read through it.
+assert storage.path_exists("${$bare}/partition1/etc/passwd") "etc/passwd missing on the bare volume"
+vfs.cat "${$bare}/partition1/etc/motd"
+
+quit

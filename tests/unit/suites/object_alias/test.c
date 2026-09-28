@@ -1,4 +1,6 @@
-// Unit tests for the alias table (proposal §4.4).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Unit tests for the alias table.
 //
 // Covers:
 //   - registration of built-in and user aliases
@@ -117,7 +119,7 @@ TEST(test_reserved_word_rejected) {
 }
 
 // Closed-namespace: a `$name` lookup must NOT silently fall through
-// to "try `name` as a root child." That's the proposal §4.4.2 rule.
+// to "try `name` as a root child."
 // We assert that alias_lookup returns NULL for a name that has no
 // alias entry, even if the name happens to coincide with a class
 // member somewhere in the tree.

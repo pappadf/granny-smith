@@ -33,6 +33,8 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_checkpoint.h"
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -40,13 +42,54 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "swim3.h"
 #include "via.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
+
+// ============================================================
+// The family's NuBus topology (shared by the 7100 and the 8100)
+// ============================================================
+
+// Apple's own comparison table gives the family as 6100 = 1*, 7100 = 3,
+// 8100 = 3 ("NuBus slots", Developer Note vol. 1), and its prose treats all
+// four 7100/8100 variants as one: "The Power Macintosh 7100/66, 7100/66AV,
+// 8100/80, and 8100/80AV contain three NuBus slots."  Hence one table.  The
+// 6100's asterisk is the optional PDS adapter that carries the bridge itself
+// -- see pm6100.c, which declares no slots AND no BART.
+//
+// The three NuBus connectors behind BART: $C/$D/$E.
+//
+// This is what the SOFTWARE uses, and it is the thing that matters — the
+// slot number selects the address window a card answers in, the sResource
+// the Slot Manager enumerates, and the pseudo-VIA2 interrupt bit the OS
+// enables.  Measured on the shipping ROM: a booted 8100 enables slot-
+// interrupt bits $38, i.e. bits 3/4/5, which under the Mac II bit = slot-9
+// numbering are exactly $C/$D/$E — always those three, whichever connector
+// holds a card — with bit 6 the built-in video VBL (it appears in the mask
+// only when built-in video exists).  The ROM's own PDM slot-interrupt path
+// masks the slot bits with $78, bits 3-6, agreeing.
+//
+// An earlier revision of this file declared $B/$C/$D from the schematic
+// silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors
+// J11/J12/J13 are labelled NuBus Slot B, C and D).  That numbering is a
+// board-level label, not the slot ID the software uses: a card staged into
+// $B lands on interrupt bit 2, which nothing enables and nothing services,
+// so its /NMRQ latched and stayed latched forever.  The Slot Manager then
+// never ran that slot's VBL task queue — which, when the card is the main
+// screen, is where the cursor task lives, so the mouse stopped moving.
+// Each ships empty; the user stages a card per slot.
+const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {0},
+};
 
 // ============================================================
 // Page-table helpers (the mac030_fill_page shape, kept local so the PDM
@@ -182,7 +225,7 @@ static void pdm_memory_layout(config_t *cfg) {
     st->io_interface.write_uint8 = pdm_io_write8;
     st->io_interface.write_uint16 = pdm_io_write16;
     st->io_interface.write_uint32 = pdm_io_write32;
-    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "PDM I/O", &st->io_interface, cfg);
+    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "I/O", &st->io_interface, cfg);
 
     // Machine-ID page.
     st->id_interface.read_uint8 = pdm_id_read8;
@@ -214,20 +257,16 @@ static void pdm_memory_layout(config_t *cfg) {
 // VIA1 (the AMIC pseudo-VIA) callbacks — Cuda transport
 // ============================================================
 
+// Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out, PB5 TIP
+// out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void pdm_via1_output(void *context, uint8_t port, uint8_t value) {
-    config_t *cfg = (config_t *)context;
-    pdm_state_t *st = pdm_st(cfg);
-    // Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out,
-    // PB5 TIP out — the classic Cuda bit positions).
-    if (port == 1 && st && st->cuda)
-        av_cuda_via1_pb_input(st->cuda, value);
+    pdm_state_t *st = pdm_st((config_t *)context);
+    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void pdm_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    pdm_state_t *st = pdm_st(cfg);
-    if (st && st->cuda)
-        av_cuda_via1_shift_input(st->cuda, byte);
+    pdm_state_t *st = pdm_st((config_t *)context);
+    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ → ICR bit 0.
@@ -251,7 +290,7 @@ static void pdm_scsi96b_irq(void *context, bool active) {
 }
 
 // SCC chip INT (one line for both channels) → AMIC ICR source bit 2, 68k
-// level 4 (interrupt-map.md §6.1); channel discrimination is the guest's
+// level 4; channel discrimination is the guest's
 // job via RR2B/RR3.
 static void pdm_scc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
@@ -273,8 +312,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
     // 1.0 — the 601 is near-1-CPI on HWInit's measurement loop, and 1.0
-    // makes the measured clock land exactly on the snap-table value
-    // (proposal §5.2).
+    // makes the measured clock land exactly on the snap-table value.
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
     // No 68k MMU owns this machine's page table, so host-backed regions that
     // core code registers on the bus map — a NuBus card's VRAM and
@@ -290,24 +328,13 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 1);
-    // The 601's RTC input: 7.8336 MHz on every PDM board (601 proposal §3.7).
+    // The 601's RTC input: 7.8336 MHz on every PDM board.
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
 
-    // Deterministic RTC: the PDM guest clock is live (the Mode3Clock tick
-    // carries the RTC), so the seed reaches goldens.  Adopt any `rtc.time`
-    // pinned before machine.boot as the simulated-time seed, so nothing past
-    // this point depends on the host wall clock.  Cold boot only — a
-    // checkpoint restore has already loaded the counter from the stream.
-    if (cfg->rtc && !cp) {
-        uint32_t seed;
-        if (rtc_take_boot_seed(&seed))
-            rtc_set_seconds(cfg->rtc, seed);
-    }
-
-    // The ESCC cell in Curio behind the AMIC island decode (escc-serial.md
-    // §2: single base $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
+    // The ESCC cell in Curio behind the AMIC island decode (single base
+    // $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
     // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC).
     cfg->scc = scc_init(NULL, cfg->scheduler, pdm_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
@@ -321,8 +348,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU
     // clock divides integrally by that — the rounded divisor is display-only
     // and via_set_exact_clock installs the reduced 783360/freq rational so
-    // guest-measured timer rates are exactly φ2-equivalent (the dossier's
-    // hard constraint, owed by rung L17).
+    // guest-measured timer rates are exactly φ2-equivalent (checked at
+    // pdm-rom-ladder rung L17).
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", pdm_via1_output, pdm_via1_shift_out, pdm_via1_irq, cfg, cp);
@@ -357,7 +384,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // discrete 53CF96 on its fast internal bus (40 MHz), instantiated with
     // no bus attached: every select times out, the empty-bus presentation.
     // hd=/cd= media land on cfg->scsi, i.e. the Curio bus, on all models.
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     st->scsi96[0] = scsi_53c96_init(cfg->scheduler, 20000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96[0], pdm_scsi96a_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96[0], cfg->scsi);
@@ -374,6 +401,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
+    pdm_amic_attach_object(cfg); // machine.amic; construction only, not on reset
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);
     pdm_swim3_bind(cfg);
@@ -386,7 +414,19 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
         system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
-        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        // The monitor strap.  It lives in pdm_state_t outside the two structs
+        // above, so it was not saved -- and pdm_video_init below runs on the
+        // restore path too and would overwrite it from the staging default,
+        // so a machine saved with monitor=none came back as hires and its
+        // display topology changed underneath it: pdm_video_display returns
+        // NULL on PDM_SENSE_NONE, which is what lets a NuBus card be the only
+        // screen.  DAFB solved the same problem by riding its
+        // sense in the device's own stream.
+        system_read_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
+        st->video.sense_restored = true;
+        // Mirrors the save: the prefix only, then *_swim3_bind re-attaches
+        // the pointer tail.
+        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
         system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
@@ -423,13 +463,14 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void pdm_reset(config_t *cfg) {
+static void pdm_bus_reset(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
-    // Power-on reset: the 601 back to the reset vector, AMIC and HMC to
-    // their power-on state.  (The 68k-RESET warm path re-enters HWInit
-    // with MSR[IR] on and AMIC state SURVIVING — that path is guest-driven
-    // and becomes a first-class test row in Phase D.)
-    ppc_reset(cfg->ppc);
+    // The chipset half only.  The 601 going back to its reset vector is the
+    // CPU half and belongs to level 2 (system_machine_reset), not to the
+    // board's /RESET net -- this used to call ppc_reset() from here, which is
+    // why the Cuda path happened to work on PDM and TNT while leaving the AV
+    // families' 68040 running.  (The 68k-RESET warm path re-enters HWInit
+    // with MSR[IR] on and AMIC state SURVIVING — that path is guest-driven.)
     // Note pdm_amic_init memsets the whole AMIC.  The SWIM3 model is
     // deliberately NOT inside pdm_amic_t (pdm.h), so this cannot clear the
     // chip's bound fd/sched/backend pointers the way it once did.
@@ -438,6 +479,10 @@ static void pdm_reset(config_t *cfg) {
     // to the cards themselves is the bus controller's (system_reset_devices).
     memset(&st->bart, 0, sizeof(st->bart));
     scc_reset(cfg->scc);
+    // The floppy CONTROLLER.  cfg->floppy (the drive and its media) is reset
+    // by the shared chain; the SWIM3 is this family's controller and was the
+    // one in the tree that survived a reset.
+    swim3_reset(&st->swim3);
     for (int i = 0; i < 2; i++)
         if (st->scsi96[i])
             scsi_53c96_reset(st->scsi96[i]);
@@ -448,6 +493,7 @@ static void pdm_reset(config_t *cfg) {
     st->icr_sources = 0;
     pdm_hmc_remap(cfg);
     pdm_video_update(cfg); // blanked power-on raster follows the reset regs
+    system_reset_common_devices(cfg); // scsi/scsi2, NuBus, PCI -- the same net
 }
 
 static void pdm_teardown(config_t *cfg) {
@@ -455,6 +501,7 @@ static void pdm_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     pdm_state_t *st = pdm_st(cfg);
     if (st) {
+        pdm_amic_detach_object(cfg);
         pdm_awacs_teardown(cfg);
         pdm_video_teardown(cfg);
         for (int i = 0; i < 2; i++) {
@@ -464,10 +511,15 @@ static void pdm_teardown(config_t *cfg) {
             }
         }
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
+    // The three devices that used to sit between cfg->scsi and cfg->via1 in
+    // this family's own copy of the chain.  They move above the shared chain
+    // (machine_teardown.h) rather than into it, because only PDM and TNT have
+    // them; the single ordering change is that cfg->scsi is now freed after
+    // these three instead of before.  That is safe: none of floppy_delete,
+    // av_cuda_delete or adb_delete reads a SCSI handle, the 53C96 controllers
+    // that DO hold the bus are already freed above, and scheduler_stop() ran
+    // first so nothing can fire in between.  Cuda still goes before the via1,
+    // rtc and adb it was handed at init, which is the ordering that matters.
     if (cfg->floppy) {
         floppy_delete(cfg->floppy);
         cfg->floppy = NULL;
@@ -480,37 +532,7 @@ static void pdm_teardown(config_t *cfg) {
         adb_delete(cfg->adb);
         cfg->adb = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->ppc) {
-        ppc_delete(cfg->ppc);
-        cfg->ppc = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -519,13 +541,11 @@ static void pdm_teardown(config_t *cfg) {
 
 static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     pdm_state_t *st = pdm_st(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    ppc_checkpoint(cfg->ppc, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    // The shared core prefix.  Byte-identical to the
+    // seven lines that used to be written out here: this machine has cfg->ppc
+    // and no cfg->via2, so the helper takes the ppc block, skips cfg->irq and
+    // passes straight through the second VIA.
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     // Same relative order as the pdm_init construction sequence (the
@@ -539,7 +559,15 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // Substrate-private tail (mirrored by the restore block in pdm_init).
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
-    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    system_write_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
+    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
+    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
+    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
+    // in a user-shareable save file, and made two saves of the same guest
+    // state differ -- which defeats any diff-based checkpoint testing.  The
+    // restore re-binds through *_swim3_bind either way, so the values were
+    // harmless; the leak and the non-reproducibility were not.
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
     system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
     // Card-side state (framebuffer, palette, mode) last — see the restore
@@ -556,19 +584,10 @@ static void pdm_trigger_vbl(config_t *cfg) {
         nubus_tick_vbl(cfg->nubus);
 }
 
-// Chipset IRQ spine.  Nothing on this family routes through it: the NuBus
-// slots have their own hook below, and every on-board source is already an
-// AMIC ICR bit (pdm_amic_set_source).
-static void pdm_update_ipl(config_t *cfg, int source, bool active) {
-    (void)cfg;
-    LOG(1, "update_ipl source=%d active=%d (PDM sources drive the AMIC ICR directly)", source, active);
-}
-
 // A NuBus card's /NMRQ.  The umbrella edge is AMIC's own business (the
 // pseudo-VIA2 "any slot" bit is recomputed from the slot levels on every
 // read), so the bus controller's edge hint is not needed here.
-static void pdm_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge;
+static void pdm_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     pdm_bart_slot_irq(cfg, slot, active);
 }
 
@@ -586,18 +605,21 @@ static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
     return floppy_insert(cfg->floppy, drive, disk);
 }
 
+// A drive the family does not have holds no disk.  This used to answer
+// "occupied" so the core's drive auto-select would never pick drive 1; the
+// auto-select is now bounded by the profile's floppy_slots (#177), so
+// the answer can be the true one.
 static bool pdm_fd_present(config_t *cfg, int drive) {
     if (!cfg->floppy || drive != 0)
-        return true; // no such bay: report it occupied so nothing targets it
+        return false;
     return floppy_is_inserted(cfg->floppy, drive);
 }
 
 const machine_substrate_t pdm_substrate = {
     .init = pdm_init,
-    .reset = pdm_reset,
+    .bus_reset = pdm_bus_reset,
     .teardown = pdm_teardown,
     .checkpoint_save = pdm_checkpoint_save,
-    .update_ipl = pdm_update_ipl,
     .nubus_slot_irq = pdm_nubus_slot_irq,
     .trigger_vbl = pdm_trigger_vbl,
     .fd_insert = pdm_fd_insert,
@@ -607,5 +629,7 @@ const machine_substrate_t pdm_substrate = {
     .input_mouse_button = mac_input_mouse_button,
     .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
+    .media_present = system_media_present_std,
+    .media_eject = system_media_eject_std,
     .display = pdm_display,
 };

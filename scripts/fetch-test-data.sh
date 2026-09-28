@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 #
 # fetch-test-data.sh - Fetch proprietary test data from private repository
 #

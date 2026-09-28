@@ -3,16 +3,14 @@
   import { nextDragState, isReducedMotion, isOutsideViewport } from '@/lib/dragState';
   import type { DragState } from '@/lib/dragState';
 
-  // Spec §8.5 four-state machine. Phase 7 promotes the basic
-  // dragDepth-only overlay to the full state graph: Idle → Active →
+  // The four-state machine of lib/dragState.ts: Idle → Active →
   // Display | FsTree → back to Idle on drop / leave / viewport exit.
   let dragState = $state<DragState>('idle');
   let depth = 0;
   const reduced = isReducedMotion();
 
   // The Display overlay only shows in the 'display' substate; the
-  // FsTree branch lets the FilesystemView's own drop styling take over
-  // (Phase 5 wired that path).
+  // FsTree branch lets the FilesystemView's own drop styling take over.
   const visible = $derived(dragState === 'display');
 
   function hasFiles(dt: DataTransfer | null): boolean {

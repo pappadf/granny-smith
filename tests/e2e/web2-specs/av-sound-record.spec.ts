@@ -31,6 +31,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
+import { terminalRun } from "../helpers/terminal";
 
 const DATA = path.resolve(__dirname, "../../data");
 const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
@@ -51,13 +52,6 @@ test.use({
 });
 
 // --- terminal plumbing (see av-camera.spec.ts for why answers are bracketed) --
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator(".xterm");
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press("Enter");
-}
 
 async function readKey(page: Page, key: string): Promise<string | null> {
   const text = await page.locator(".xterm-rows").innerText();

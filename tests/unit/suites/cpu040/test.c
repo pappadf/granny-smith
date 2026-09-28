@@ -1,4 +1,6 @@
-// MC68040 CPU model tests (Quadra proposal Phase A gate).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// MC68040 CPU model tests.
 //
 // Hand-written cases covering the 040-specific decoder surface:
 //   - MOVE16 (all five forms): line alignment, post-increment commit,

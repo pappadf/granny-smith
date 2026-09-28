@@ -1,4 +1,5 @@
-# Declaration-ROM builder unit test (runtime-vrom proposal stages B/C).
+# Declaration-ROM builder unit test (the builder is described in
+# docs/core/peripherals/nubus_generic_vrom.md).
 # Links the real declrom.c + gsvrom_data.c (runtime generation over the
 # build-assembled 68K fragments); generates every personality's image
 # host-side, validates it structurally, and exercises the builder's

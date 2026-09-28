@@ -38,7 +38,8 @@
       t.value = String(logs.catLevels[cat] ?? 0);
       return;
     }
-    await setCatLevel(cat, v);
+    // A refused level snaps the field back to what the core holds.
+    if (!(await setCatLevel(cat, v))) t.value = String(logs.catLevels[cat] ?? 0);
   }
 
   onMount(() => {

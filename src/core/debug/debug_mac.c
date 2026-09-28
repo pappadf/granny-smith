@@ -5,6 +5,7 @@
 // Mac-specific debugging utilities: trap names, global variable lookup, and process inspection.
 
 #include "debug_mac.h"
+#include "gs_out.h"
 
 #include "cpu.h"
 #include "debug.h"
@@ -31,13 +32,7 @@ extern struct {
 } mac_global_vars[];
 extern const size_t mac_global_vars_count;
 
-// A-trap info (defined in mac_traps_data.c)
-extern struct {
-    const char *name;
-    uint16_t trap;
-} macos_atraps[];
-extern const size_t macos_atraps_count;
-
+// macos_atrap_name() lives in mac_traps_data.c, beside the table it reads.
 uint32_t debug_mac_lookup_global_address(const char *name) {
     if (!name)
         return 0;
@@ -47,40 +42,6 @@ uint32_t debug_mac_lookup_global_address(const char *name) {
         }
     }
     return 0; // Not found
-}
-
-static const char *lookup_atrap(uint16_t trap) {
-    for (int i = 0; i < macos_atraps_count; i++) {
-        if (macos_atraps[i].trap == trap) {
-            return macos_atraps[i].name;
-        }
-    }
-    return NULL;
-}
-
-const char *macos_atrap_name(uint16_t trap) {
-
-    static char buffer[32];
-
-    // Most A-trap flag-bit combinations are pre-expanded in the table
-    // (e.g. _BlockMove appears at 0xA02E/0xA12E/0xA42E/...).  Try the exact
-    // form first; only fall back to masked lookups if it misses.
-    const char *name = lookup_atrap(trap);
-    if (name)
-        return name;
-
-    // Strip the flag bits that aren't part of the selector and retry.
-    //   Toolbox traps (bit 11 set):  bit 10 ($0400, auto-pop)
-    //   OS traps      (bit 11 clr):  bit 9 ($0200, immediate) + bit 10 ($0400, async)
-    uint16_t masked = (trap & 0x0800) ? (trap & ~0x0400) : (trap & ~0x0600);
-    if (masked != trap) {
-        name = lookup_atrap(masked);
-        if (name)
-            return name;
-    }
-
-    snprintf(buffer, sizeof(buffer), "_%04X", trap);
-    return buffer;
 }
 
 // Every 68k-world address in this file resolves through the mac-world
@@ -208,7 +169,15 @@ typedef struct {
     resource_map_header header; // The parsed header of the map.
     uint16_t num_types; // Number of resource types minus one.
     resource_type_info *type_list; // A dynamically allocated array to hold the parsed types.
-    char *name_list_data; // A buffer holding all resource names.
+    // GUEST address of the resource-name list, not a host pointer.
+    //
+    // This was `char *`, assigned map_base_addr + name_list_offset -- a guest
+    // address cast straight to a host pointer.  Nothing dereferences it (the
+    // resource-name parsing is unfinished), so it is inert, but it handed the
+    // next person to finish that parsing a ready-made arbitrary-host-read
+    // primitive.  Read it through read_bytes /
+    // debug_mac_xlate like every other field in this file.
+    uint32_t name_list_addr;
 } resource_map;
 
 #pragma pack(pop) // Restore default packing
@@ -306,7 +275,7 @@ resource_map *read_resource_map(void) {
     // 7. Store a pointer to the name list data (optional, could be parsed further)
     // For simplicity, we just point to the raw data block.
     // A full implementation would need to know the total size of the name list.
-    parsed_map->name_list_data = (char *)(map_base_addr + parsed_map->header.name_list_offset);
+    parsed_map->name_list_addr = map_base_addr + parsed_map->header.name_list_offset;
 
     return parsed_map;
 }
@@ -318,30 +287,32 @@ resource_map *read_resource_map(void) {
  * name, memory layout (heap and stack), and other relevant details.
  */
 uint64_t cmd_process_info(int argc, char *argv[]) {
-    printf("--- Current Application Info ---\n");
+    (void)argc;
+    (void)argv;
+    gs_outf("--- Current Application Info ---\n");
 
     // 1. Get the Application Name
     char app_name[64];
     read_pstring(0x0910, app_name, sizeof(app_name));
-    printf("Name: %s\n", app_name);
+    gs_outf("Name: %s\n", app_name);
 
     // 2. Get the Application's Memory Map
-    printf("\n--- Memory Map ---\n");
+    gs_outf("\n--- Memory Map ---\n");
 
     uint32_t heap_start_ptr = read_32bit_be(0x02AA);
     uint32_t heap_limit_ptr = read_32bit_be(0x0130);
     uint32_t a5_world_ptr = read_32bit_be(0x0904);
 
-    printf("Application Partition Start: %#010x\n", heap_start_ptr);
-    printf("Application Partition Limit: %#010x\n", heap_limit_ptr);
-    printf("  Heap Start:                %#010x\n", heap_start_ptr);
-    printf("  Stack Base (Top of A5):    %#010x (grows downwards)\n", a5_world_ptr);
+    gs_outf("Application Partition Start: %#010x\n", heap_start_ptr);
+    gs_outf("Application Partition Limit: %#010x\n", heap_limit_ptr);
+    gs_outf("  Heap Start:                %#010x\n", heap_start_ptr);
+    gs_outf("  Stack Base (Top of A5):    %#010x (grows downwards)\n", a5_world_ptr);
     if (heap_limit_ptr >= heap_start_ptr) {
         uint32_t partition_size_bytes = heap_limit_ptr - heap_start_ptr;
-        printf("Total Partition Size:        %u KB\n", partition_size_bytes / 1024);
+        gs_outf("Total Partition Size:        %u KB\n", partition_size_bytes / 1024);
     } else {
-        printf("Total Partition Size:        <invalid: heap limit %#010x < start %#010x>\n", heap_limit_ptr,
-               heap_start_ptr);
+        gs_outf("Total Partition Size:        <invalid: heap limit %#010x < start %#010x>\n", heap_limit_ptr,
+                heap_start_ptr);
     }
 
     return 0;
@@ -412,10 +383,10 @@ static void write32(uint32_t addr, uint32_t value) {
 
 // Print target 68K backtrace by walking stack frames
 void debug_mac_print_target_backtrace(void) {
-    printf("\n=== Target 68K backtrace ===\n");
+    gs_outf("\n=== Target 68K backtrace ===\n");
     cpu_t *cpu = system_cpu();
     if (!cpu) {
-        printf("(CPU not initialized)\n");
+        gs_outf("(CPU not initialized)\n");
         return;
     }
 
@@ -423,7 +394,7 @@ void debug_mac_print_target_backtrace(void) {
     uint32_t pc = cpu_get_pc(cpu);
     char linebuf[160];
     debugger_disasm(linebuf, sizeof(linebuf), pc);
-    printf("#0  %s\n", linebuf);
+    gs_outf("#0  %s\n", linebuf);
 
     uint32_t a6 = cpu_get_an(cpu, 6);
     for (int depth = 1; depth <= 16; depth++) {
@@ -439,7 +410,7 @@ void debug_mac_print_target_backtrace(void) {
         if (ret == 0 || ret > g_address_mask)
             break;
         debugger_disasm(linebuf, sizeof(linebuf), ret);
-        printf("#%d  %s\n", depth, linebuf);
+        gs_outf("#%d  %s\n", depth, linebuf);
         if (prev_a6 == a6)
             break; // prevent loops
         a6 = prev_a6;
@@ -448,7 +419,7 @@ void debug_mac_print_target_backtrace(void) {
 
 // Print current Mac application process info (wrapper for diagnostic output)
 void debug_mac_print_process_info_header(void) {
-    printf("\n=== Current Mac application ===\n");
+    gs_outf("\n=== Current Mac application ===\n");
     debug_mac_print_process_info();
 }
 
@@ -564,7 +535,7 @@ static void set_mouse_global(long x, long y) {
     uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
 
     if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
-        printf("Error: could not resolve mouse-related globals.\n");
+        gs_outf("Error: could not resolve mouse-related globals.\n");
         return;
     }
 
@@ -597,7 +568,7 @@ static void set_mouse_global(long x, long y) {
 static void set_mouse_hw(long dx, long dy) {
     bool injected = system_mouse_move((int)dx, (int)dy);
     if (!injected)
-        printf("Error: no mouse device available for hardware injection.\n");
+        gs_outf("Error: no mouse device available for hardware injection.\n");
 }
 
 // Translate `va` against the cached MAE user CRP and write `value` to the
@@ -670,16 +641,16 @@ static void set_mouse_aux(long x, long y) {
     uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
 
     if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
-        printf("Error: could not resolve mouse-related globals.\n");
+        gs_outf("Error: could not resolve mouse-related globals.\n");
         return;
     }
     if (!g_mmu || !g_mmu->enabled) {
-        printf("set-mouse --aux: MMU not enabled; falling back to active-SoA write.\n");
+        gs_outf("set-mouse --aux: MMU not enabled; falling back to active-SoA write.\n");
         set_mouse_global(x, y);
         return;
     }
     if (g_last_user_crp == 0) {
-        printf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
+        gs_outf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
         return;
     }
 
@@ -720,8 +691,8 @@ static void set_mouse_aux(long x, long y) {
     if (aux_write_uint8(addr_CrsrNew, couple))
         ok++;
 
-    printf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n", (int)x,
-           (int)y, (uint32_t)(g_last_user_crp & 0xFFFFFFFF), ok, total);
+    gs_outf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n", (int)x,
+            (int)y, (uint32_t)(g_last_user_crp & 0xFFFFFFFF), ok, total);
 }
 
 // Default set-mouse: absolute coordinates, platform-dependent strategy.
@@ -730,7 +701,7 @@ static void set_mouse_aux(long x, long y) {
 static void set_mouse_default(long x, long y) {
     uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
     if (!addr_MTemp) {
-        printf("Error: could not resolve MTemp.\n");
+        gs_outf("Error: could not resolve MTemp.\n");
         return;
     }
 
@@ -816,6 +787,7 @@ static int trace_mouse_have_last = 0; // whether we have a previous sample
 static int16_t trace_mouse_last_h = 0;
 static int16_t trace_mouse_last_v = 0;
 static void trace_mouse_tick(void *source, uint64_t data) {
+    (void)source;
     (void)data;
     if (!trace_mouse_active)
         return; // Do not reschedule if stopped during callback
@@ -829,7 +801,7 @@ static void trace_mouse_tick(void *source, uint64_t data) {
     int16_t v = (int16_t)v_be;
     int16_t h = (int16_t)h_be;
     if (!trace_mouse_have_last || h != trace_mouse_last_h || v != trace_mouse_last_v) {
-        printf("[trace-mouse] h=%d v=%d\n", h, v);
+        gs_outf("[trace-mouse] h=%d v=%d\n", h, v);
         trace_mouse_last_h = h;
         trace_mouse_last_v = v;
         trace_mouse_have_last = 1;
@@ -883,7 +855,7 @@ static void mouse_button_global(bool button_down) {
     uint32_t addr_Ticks = debug_mac_lookup_global_address("Ticks");
 
     if (!addr_MBState) {
-        printf("Error: could not resolve MBState.\n");
+        gs_outf("Error: could not resolve MBState.\n");
         return;
     }
 
@@ -910,8 +882,9 @@ void debug_mac_mouse_button_mode(bool button_down, char mode) {
         system_mouse_update(button_down, 0, 0);
 }
 
-// Resolves one printable ASCII character to the US-layout ADB virtual keycode
-// that produces it, setting *shift when the character needs the Shift key.
+// Resolves one printable ASCII character to the US-layout ADB raw keycode
+// that produces it (for these keys the same as the virtual code), setting
+// *shift when the character needs the Shift key.
 // Returns -1 for a character the layout cannot type.  Tab and newline resolve
 // to their keys so a typed line can carry its own terminator.
 int debug_mac_resolve_ascii(char c, bool *shift) {
@@ -1023,7 +996,7 @@ int debug_mac_resolve_ascii(char c, bool *shift) {
     return -1;
 }
 
-// Resolves a key name to an ADB virtual keycode, or -1 if unknown
+// Resolves a key name to an ADB raw keycode, or -1 if unknown
 int debug_mac_resolve_key_name(const char *name) {
     // Named keys (case-insensitive comparison via manual lowering)
     if (!strcasecmp(name, "return") || !strcasecmp(name, "enter"))
@@ -1036,14 +1009,17 @@ int debug_mac_resolve_key_name(const char *name) {
         return 0x30;
     if (!strcasecmp(name, "delete") || !strcasecmp(name, "backspace"))
         return 0x33;
+    // The arrows' RAW codes, $3B-$3E.  These were the virtual codes $7B-$7E,
+    // which on the ADB wire are the right-hand modifiers: "left" pressed
+    // Right Shift.
     if (!strcasecmp(name, "up"))
-        return 0x7E;
+        return 0x3E;
     if (!strcasecmp(name, "down"))
-        return 0x7D;
+        return 0x3D;
     if (!strcasecmp(name, "left"))
-        return 0x7B;
+        return 0x3B;
     if (!strcasecmp(name, "right"))
-        return 0x7C;
+        return 0x3C;
     if (!strcasecmp(name, "command") || !strcasecmp(name, "cmd"))
         return 0x37;
     if (!strcasecmp(name, "shift"))
@@ -1063,6 +1039,26 @@ int debug_mac_resolve_key_name(const char *name) {
         long val = strtol(name, &endp, 16);
         if (*endp == '\0' && val >= 0 && val <= 0x7F)
             return (int)val;
+    }
+
+    // A single printable character -- "a", "7", ";".  This is what makes
+    // keyboard.press("a") work, and it had been missing: the resolver knew
+    // fourteen named keys and the hex form and nothing else, while adb.c's
+    // argument doc promised `Key name ("return"/"esc"/"a"/...)` and its
+    // keyboard.type doc promised a-z and 0-9.  So keyboard.press("a") failed
+    // on EVERY machine, Mac included.
+    //
+    // debug_mac_resolve_ascii already holds the layout; it simply was never
+    // consulted from here.  Shift is deliberately ignored: this resolves the
+    // KEY, and a caller wanting a capital presses shift itself with
+    // keyboard.down "shift".  A character that only exists shifted (e.g. "!")
+    // therefore resolves to its unshifted key, which is the honest answer for
+    // a key-press API.
+    if (name[1] == '\0') {
+        bool shift = false;
+        int code = debug_mac_resolve_ascii(name[0], &shift);
+        if (code >= 0)
+            return code;
     }
 
     return -1;

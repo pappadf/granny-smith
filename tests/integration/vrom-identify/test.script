@@ -4,11 +4,11 @@
 # ROM alike) carries a 20-byte Format Block whose 4-byte CRC is the
 # intrinsic, Slot-Manager-validated checksum (docs/core/peripherals/
 # nubus_vrom.md §2).  vrom.identify reads it — the direct analog of
-# rom.identify keying on the main ROM's checksum word — and maps it to the
+# rom.identify keying on the main ROM's stored checksum — and maps it to the
 # nubus card-kind id the blob provides, plus a `compatible:[card_ids]` list
 # mirroring rom.identify's `compatible:[model_ids]`.  Content facts only —
-# canonical fixture naming lives in tooling (scripts/rom_naming.py, enforced
-# by the rom-naming test), not in the identify payload.  This cross-check is
+# no filenames in the identify payload, and test-data filenames are free-form
+# (the rom-catalog test checks every file is recognised).  This cross-check is
 # what protects against drift between VROM_CATALOG and the card registry.
 
 # --- Part 1: the {card_id, compatible, crc} contract (stateless probe). ---
@@ -40,7 +40,7 @@ assert !machine.vrom.identify("/dev/null/nonexistent") "unreadable path must yie
 
 # --- Part 2: every catalog card_id resolves to a registered nubus card. ---
 # The slot[N].card_id setter validates the id against nubus_card_registry();
-# the readback proves the catalog and the registry don't drift (proposal §6).
+# the readback proves the catalog and the registry don't drift.
 # IIcx has a nubus with socket $9, so the staged attr exists.  Each pick is
 # cleared afterwards so no staging leaks out of the test.
 machine.boot model="iicx" ram=8192 rom="${$ROM}"

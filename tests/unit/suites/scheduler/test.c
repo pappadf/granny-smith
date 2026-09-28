@@ -25,8 +25,7 @@
 //     in flight to exercise sprint clamping
 //   - CPI is mode-independent and settable as a single per-machine constant
 //
-// Accelerated mode (proposal-scheduler-accelerated-mode.md, stage 1 — fixed
-// multiplier via fractional effective CPI):
+// Accelerated mode (fixed multiplier via fractional effective CPI):
 //   - timebase invariance: for a sweep of speed multipliers, N frame-units
 //     advance cpu_cycles by (nearly) the paced amount and a cycle-timestamped
 //     repeating event (the VIA-timer proxy) fires the same number of times,
@@ -39,7 +38,7 @@
 //   - pacing: accelerated shares the paced wall-clock accumulator (rate
 //     converges to VBL_HZ, bursts capped)
 //
-// Adaptive governor (stage 2 — scheduler.speed = 0/auto; the stub CPU's
+// Adaptive governor (scheduler.speed = 0/auto; the stub CPU's
 // per-instruction host cost closes the control loop, since faster speeds
 // retire more instructions per frame and thus consume more fake host time):
 //   - steady fast host: climbs the quantized ladder one rung at a time,
@@ -57,6 +56,7 @@
 #include "scheduler.h"
 #include "test_assert.h"
 #include "value.h"
+#include "event/gs_event.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -105,6 +105,24 @@ bool debug_active(debug_t *debug) {
 int debug_break_and_trace(void) {
     return 0;
 }
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    return NULL;
+}
+
+// The core's events (gs_event.h), captured: the last STATE payload and how
+// many were emitted.  Overrides the weak default.
+static char g_last_event[GS_EVENT_MAX];
+static int g_events;
+static uint32_t g_client = 7; // what gs_current_client answers
+void gs_event_emit(gs_event_kind_t kind, const char *json) {
+    if (kind != GS_EVENT_STATE)
+        return;
+    snprintf(g_last_event, sizeof g_last_event, "%s", json);
+    g_events++;
+}
+uint32_t gs_current_client(void) {
+    return g_client;
+}
 
 void trigger_vbl(config_t *restrict config) {
     (void)config;
@@ -138,21 +156,39 @@ uint32_t g_sprint_frac_x256 = 0;
 uint32_t g_sprint_total_slots = 0;
 uint32_t g_esync_period_x256 = 0;
 
-// Checkpointing is not exercised here (integration checkpoint tests cover it).
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
-    (void)checkpoint;
-    (void)data;
-    (void)size;
-    (void)file;
-    (void)line;
+// A recording checkpoint stream: save writes into g_cp[g_cp_slot], restore
+// always reads back slot 0.  Used only by
+// test_checkpoint_carries_no_host_timing; every other test leaves the
+// buffers alone and the calls are harmless.
+static uint8_t g_cp[2][65536];
+static size_t g_cp_w[2], g_cp_r;
+static int g_cp_slot;
+
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
+    if (g_cp_r + size > g_cp_w[0]) {
+        memset(data, 0, size);
+        return;
+    }
+    memcpy(data, g_cp[0] + g_cp_r, size);
+    g_cp_r += size;
 }
-void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
-                                      int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
+    if (g_cp_w[g_cp_slot] + size > sizeof(g_cp[0]))
+        return;
+    memcpy(g_cp[g_cp_slot] + g_cp_w[g_cp_slot], data, size);
+    g_cp_w[g_cp_slot] += size;
+}
+
+// The restore path flags a checkpoint it cannot trust instead of asserting on
+// it, so the stub records the call and the corruption tests below assert on it.
+static int g_cp_errors;
+void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
-    (void)data;
-    (void)size;
-    (void)file;
-    (void)line;
+    g_cp_errors++;
 }
 
 // Object tree: the scheduler tolerates a NULL binding (object_new failure
@@ -204,6 +240,56 @@ value_t val_float(double f) {
     (void)f;
     return val_none();
 }
+value_t val_int(int64_t i) {
+    value_t v = {0};
+    v.kind = V_INT;
+    v.width = 8;
+    v.i = i;
+    return v;
+}
+
+// scheduler.events builds a V_LIST of V_MAPs, so the suite needs the map
+// builder and the list accumulator.  Minimal versions: this suite asserts on
+// queue COUNTS, not on the rendered list.
+struct value_map_builder {
+    int unused;
+};
+static struct value_map_builder g_stub_builder;
+
+value_map_builder_t *val_map_new(void) {
+    return &g_stub_builder;
+}
+void val_map_put(value_map_builder_t *b, const char *key, value_t v) {
+    (void)b;
+    (void)key;
+    value_free(&v);
+}
+value_t val_map_finish(value_map_builder_t *b) {
+    (void)b;
+    return val_none();
+}
+bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v) {
+    if (*len + 1 > *cap) {
+        size_t nc = *cap ? *cap * 2 : 8;
+        value_t *n = (value_t *)realloc(*items, nc * sizeof(value_t));
+        if (!n) {
+            value_free(&v);
+            return false;
+        }
+        *items = n;
+        *cap = nc;
+    }
+    (*items)[(*len)++] = v;
+    return true;
+}
+value_t val_list(value_t *items, size_t len) {
+    value_t v = {0};
+    v.kind = V_LIST;
+    v.list.items = items;
+    v.list.len = len;
+    return v;
+}
+
 value_t val_err(const char *fmt, ...) {
     (void)fmt;
     return val_none();
@@ -689,7 +775,7 @@ TEST(test_accelerated_paced_pacing) {
     teardown(s);
 }
 
-// --- Adaptive governor (stage 2) ---------------------------------------------
+// --- Adaptive governor -------------------------------------------------------
 
 // Authentic instructions per frame-unit, measured (12 CPI at 7.8336 MHz).
 static uint64_t authentic_per_frame(void) {
@@ -712,7 +798,7 @@ typedef struct {
     uint64_t max_pf; // largest per-frame count ever observed
 } gov_trace_t;
 
-static gov_trace_t gov_drive(scheduler_t *s, double *now, int ticks, bool expect_monotonic) {
+static gov_trace_t gov_drive(double *now, int ticks, bool expect_monotonic) {
     gov_trace_t t = {0, 0, 1e9, 0};
     uint64_t prev_instr = cpu_instr_count();
     uint64_t prev_vbls = g_vbls;
@@ -756,7 +842,7 @@ TEST(test_governor_climbs_to_cap) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+    gov_trace_t t = gov_drive(&now, 25 * 60, true);
 
     ASSERT_TRUE(t.changes == 6); // rung 0 -> 6, one step at a time
     ASSERT_TRUE(t.min_gap > 1.8); // dwell slew limit respected (2 s nominal)
@@ -776,7 +862,7 @@ TEST(test_governor_slow_host_stays_authentic) {
     g_secs_per_instr = 0.95 * VBL_PERIOD / (double)pf1; // 1x utilization ~0.95
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 10 * 60, true);
+    gov_trace_t t = gov_drive(&now, 10 * 60, true);
 
     ASSERT_TRUE(t.changes == 0); // never climbed
     ASSERT_TRUE(t.final_pf == pf1); // authentic instructions per frame
@@ -795,11 +881,11 @@ TEST(test_governor_spike_backoff) {
     g_secs_per_instr = 0.06 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+    gov_trace_t t = gov_drive(&now, 25 * 60, true);
     ASSERT_TRUE((double)t.final_pf / (double)pf1 > 7.9); // reached the cap
 
     g_secs_per_instr *= 4.0; // spike: 8x now costs ~1.92 of the budget
-    gov_trace_t back = gov_drive(s, &now, 12 * 60, false);
+    gov_trace_t back = gov_drive(&now, 12 * 60, false);
     double settled = (double)back.final_pf / (double)pf1;
     ASSERT_TRUE(settled > 2.9 && settled < 3.1); // backed off to 3x
     ASSERT_TRUE(back.changes >= 3); // stepped down through the rungs
@@ -816,16 +902,16 @@ TEST(test_governor_audio_pressure) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 7 * 60, true);
+    gov_trace_t t = gov_drive(&now, 7 * 60, true);
     ASSERT_TRUE(t.final_pf > pf1); // climbed at least one rung
 
     uint64_t before = t.final_pf;
     g_audio_fill = 0.2; // ring draining: pressure regardless of utilization
-    gov_trace_t drop = gov_drive(s, &now, 3 * 60, false);
+    gov_trace_t drop = gov_drive(&now, 3 * 60, false);
     ASSERT_TRUE(drop.final_pf < before); // backed off
 
     g_audio_fill = 1.0; // ring healthy again: climbing resumes
-    gov_trace_t re = gov_drive(s, &now, 10 * 60, false);
+    gov_trace_t re = gov_drive(&now, 10 * 60, false);
     ASSERT_TRUE(re.final_pf > drop.final_pf);
     teardown(s);
 }
@@ -840,7 +926,7 @@ TEST(test_governor_max_speed_cap) {
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
-    gov_trace_t t = gov_drive(s, &now, 15 * 60, true);
+    gov_trace_t t = gov_drive(&now, 15 * 60, true);
     double ratio = (double)t.final_pf / (double)pf1;
     ASSERT_TRUE(ratio > 2.9 && ratio < 3.1); // settled exactly at the 3x cap
     ASSERT_TRUE((double)t.max_pf / (double)pf1 < 3.1); // never above it
@@ -882,7 +968,535 @@ TEST(test_governor_pin_unpin) {
     teardown(s);
 }
 
+// ============================================================================
+// scheduler_forget_source
+// ============================================================================
+
+static void forget_cb_a(void *src, uint64_t data) {
+    (void)src;
+    (void)data;
+}
+static void forget_cb_b(void *src, uint64_t data) {
+    (void)src;
+    (void)data;
+}
+
+// One call drops every queued event for an object whatever its callback, plus
+// the event-type rows.  remove_event() matches on callback AND source, so a
+// device with N callbacks needs N calls and 27 of 38 destructors got that
+// wrong; this cannot be half-done.
+// When is the last event for this callback due?  keyboard.type asks, so that
+// a line typed in pieces continues after whatever a previous call left in
+// flight instead of interleaving with it.  That instant used to be a shadow
+// field in adb_t -- one that only an ADB Mac had, which is part of why
+// keyboard.type only worked on one.
+TEST(test_last_event_ns_reports_the_furthest_pending) {
+    scheduler_t *s = fresh_scheduler(false);
+    int src = 0;
+
+    scheduler_new_event_type(s, "typer", &src, "a", forget_cb_a);
+    scheduler_new_event_type(s, "typer", &src, "b", forget_cb_b);
+
+    // Nothing queued: nothing due.
+    ASSERT_TRUE(scheduler_last_event_ns(s, forget_cb_a) == 0.0);
+
+    // Three under callback a, deliberately out of time order so "last"
+    // cannot be "whatever was added most recently" or "head of the queue".
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 5000, 0);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 20000, 0);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 9000, 0);
+    // One under b, further out than any of them.
+    scheduler_new_cpu_event(s, forget_cb_b, &src, 0, 90000, 0);
+
+    double last_a = scheduler_last_event_ns(s, forget_cb_a);
+    double last_b = scheduler_last_event_ns(s, forget_cb_b);
+    ASSERT_TRUE(last_a > 0.0 && last_b > 0.0);
+
+    // The ratio is the assertion, so this says nothing about the clock: b's
+    // event is at 90000 cycles and a's furthest at 20000, so 4.5x.  A query
+    // that ignored the callback would return b's answer for both and the
+    // ratio would be 1 -- which is exactly the mistake worth catching, since
+    // two devices pacing at once would otherwise shove each other along.
+    double ratio = last_b / last_a;
+    ASSERT_TRUE(ratio > 4.49 && ratio < 4.51);
+
+    // Draining takes the answer back to zero, which is what makes it safe to
+    // derive rather than remember: there is nothing to go stale.
+    scheduler_forget_source(s, &src);
+    ASSERT_TRUE(scheduler_last_event_ns(s, forget_cb_a) == 0.0);
+
+    teardown(s);
+}
+
+TEST(test_forget_source_drops_events_and_types) {
+    scheduler_t *s = fresh_scheduler(false);
+    int victim = 0, bystander = 0;
+
+    // scheduler_init registers types of its own, so measure deltas.
+    const int types0 = scheduler_event_type_count(s);
+    const int events0 = scheduler_pending_events(s);
+
+    scheduler_new_event_type(s, "victim", &victim, "a", forget_cb_a);
+    scheduler_new_event_type(s, "victim", &victim, "b", forget_cb_b);
+    scheduler_new_event_type(s, "bystander", &bystander, "a", forget_cb_a);
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 3);
+
+    scheduler_new_cpu_event(s, forget_cb_a, &victim, 0, 1000, 0);
+    scheduler_new_cpu_event(s, forget_cb_b, &victim, 0, 2000, 0);
+    scheduler_new_cpu_event(s, forget_cb_a, &bystander, 0, 3000, 0);
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 3);
+
+    scheduler_forget_source(s, &victim);
+
+    // BOTH of the victim's events go, under different callbacks -- the whole
+    // point, since a per-callback cleanup needs two calls and the survey
+    // found that is exactly what destructors get wrong.
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 1);
+    // Its two type rows go too; the bystander's stays.
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 1);
+
+    // Idempotent, and safe for a source the scheduler never saw.
+    scheduler_forget_source(s, &victim);
+    scheduler_forget_source(s, (void *)"never registered");
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 1);
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 1);
+
+    // The surviving row still resolves, i.e. the table was compacted rather
+    // than left with a hole the three linear scans would trip over.
+    scheduler_new_cpu_event(s, forget_cb_a, &bystander, 0, 4000, 0);
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 2);
+
+    scheduler_delete(s);
+    g_sched = NULL;
+}
+
+// A checkpoint must carry no host wall-clock state.
+//
+// The scheduler's plain-data prefix used to run past `cpu_cycles` and over
+// `previous_time`, `vbl_acc_error`, `host_secs_per_vbl` and
+// `host_secs_per_loop` -- the pacing governor's smoothing, all derived from
+// host_time().  The restore overwrote all four immediately, so nothing
+// consumed them, but they still went into every save file and made two
+// processes saving identical guest state produce different bytes.
+//
+// Save -> restore -> save, with the host clock moved on in between: the two
+// streams must be identical.  With the fields back inside the prefix they are
+// not, because the second instance re-derives them from the NEW host time.
+TEST(test_checkpoint_carries_no_host_timing) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+
+    g_now = 1000.0;
+    g_cp_slot = 0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_set_cpi(a, 4);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    ASSERT_TRUE(g_cp_w[0] > 0);
+
+    // A different host "now" for the restoring instance -- the whole point.
+    g_now = 987654.0;
+    g_cp_r = 0;
+    g_cp_slot = 1;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    scheduler_checkpoint(b, (checkpoint_t *)1);
+
+    ASSERT_EQ_INT((int)g_cp_w[0], (int)g_cp_w[1]);
+    if (memcmp(g_cp[0], g_cp[1], g_cp_w[0]) != 0) {
+        size_t i = 0;
+        while (i < g_cp_w[0] && g_cp[0][i] == g_cp[1][i])
+            i++;
+        fprintf(stderr, "[FAIL] scheduler stream carries host state: diverges at byte %zu of %zu\n", i, g_cp_w[0]);
+        exit(1);
+    }
+
+    scheduler_delete(a);
+    scheduler_delete(b);
+}
+
+// === Corrupt-checkpoint restores ============================================
+//
+// `scheduler_init(cpu, checkpoint)` fills the whole plain-data prefix straight
+// from the file, so every field in it is attacker-controlled: a checkpoint is
+// a user-supplied file, and the build-ID gate is no defence because the ID
+// lives in the file and copies from any legitimate one.
+//
+// These three fields were guarded by GS_ASSERT / GS_ASSERTF, which is not a
+// guard at all -- gs_assert_fail() prints, pauses and RETURNS, so execution
+// continued into the guarded operation even in a debug build, and GS_FAST (the
+// wasm release profile) compiles it out entirely.
+//
+// Each test below writes a VALID stream, damages exactly one field, and
+// restores.  All three fail with the fix reverted -- verified by reverting it.
+//
+// How test_restore_refuses_zero_cpi fails is worth stating exactly, because
+// this suite and the shipping build differ.  HERE it aborts at the old
+// GS_ASSERT, because support/stub_assert.c's gs_assert_fail() calls abort().
+// The REAL gs_assert_fail() does not: it prints, pauses the scheduler and
+// returns, and under GS_FAST (the wasm release profile) it is not called at
+// all.  So in the build that ships, control reaches the next statement --
+// `total_instructions = cpu_cycles / cpi` -- with cpi == 0, which raises SIGFPE
+// on x86-64 and TRAPS on WebAssembly, i64.div_u being undefined for a zero
+// divisor.  That is the same crash class as INT_MIN / -1 in the CPU divide
+// instructions.  The unit suite cannot demonstrate that trap; it demonstrates
+// that corrupt input reaches the arithmetic at all.
+
+// Locate a 4-byte little-endian value in the recorded prefix, insisting it
+// occurs exactly once so a test can never silently poison the wrong field.
+static size_t cp_find_unique_u32(uint32_t needle) {
+    uint8_t pat[4] = {(uint8_t)(needle), (uint8_t)(needle >> 8), (uint8_t)(needle >> 16), (uint8_t)(needle >> 24)};
+    size_t hit = (size_t)-1;
+    int n = 0;
+    for (size_t i = 0; i + 4 <= g_cp_w[0]; i++) {
+        if (memcmp(g_cp[0] + i, pat, 4) == 0) {
+            hit = i;
+            n++;
+        }
+    }
+    if (n != 1) {
+        fprintf(stderr, "[FAIL] expected one occurrence of %u in the scheduler stream, found %d\n", needle, n);
+        exit(1);
+    }
+    return hit;
+}
+
+static void cp_poke_u32(size_t off, uint32_t v) {
+    memcpy(g_cp[0] + off, &v, sizeof(v));
+}
+
+// Save a valid stream with a distinctive cpi, leaving the read cursor rewound.
+static void cp_save_valid(uint32_t cpi) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+    g_cp_slot = 0;
+    g_now = 1000.0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_set_cpi(a, cpi);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    ASSERT_TRUE(g_cp_w[0] > 0);
+    scheduler_delete(a);
+    g_cp_r = 0;
+}
+
+TEST(test_restore_refuses_zero_cpi) {
+    // 173 is arbitrary but distinctive: cp_find_unique_u32 proves it appears
+    // exactly once, so this poisons cpi and nothing else.
+    cp_save_valid(173);
+    cp_poke_u32(cp_find_unique_u32(173), 0);
+
+    g_cp_errors = 0;
+    // Without the fix this does not return: cpu_cycles / 0 raises SIGFPE here
+    // and traps on wasm.
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_unknown_mode) {
+    cp_save_valid(173);
+    // `mode` is the first member of struct scheduler, so it is the first four
+    // bytes of the prefix.  0x7FFFFFFF is no schedule_mode.
+    cp_poke_u32(0, 0x7FFFFFFFu);
+
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    // ...and the scheduler came back on a known-good mode rather than running
+    // on the value from the file.
+    ASSERT_EQ_INT((int)scheduler_get_mode(b), (int)schedule_paced);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_absurd_event_count) {
+    cp_save_valid(173);
+    // The save writes the prefix and then num_events; with an empty queue that
+    // count is the last four bytes of the stream.  An unchecked count drove
+    // malloc(count * sizeof(event_as_checkpoint_t)) directly.
+    //
+    // 50000 is chosen deliberately, and the first version of this test used
+    // 0xFFFFFFFF and was WRONG.  With a four-billion count the multiply makes
+    // an allocation this host cannot satisfy, malloc returns NULL, and the
+    // out-of-memory branch flags the checkpoint -- so the test passed with the
+    // COUNT CAP REMOVED, catching a different guard than the one it names.
+    // 50000 is over MAX_SANE_EVENTS (10000) but allocates about a megabyte, so
+    // malloc succeeds and only the cap can reject it.  Verified by removing
+    // the cap: this test then fails, and it is the only one that does.
+    //
+    // The four-billion case is not merely a big malloc, incidentally: on the
+    // 32-bit wasm heap `count * sizeof(event_as_checkpoint_t)` overflows
+    // size_t, and a count near 2^32/sizeof wraps to a handful of bytes -- a
+    // small allocation followed by a multi-gigabyte read into it.  The cap
+    // below is what stops that too, which is why it is a cap and not a
+    // malloc-result check.
+    ASSERT_TRUE(g_cp_w[0] >= 4);
+    cp_poke_u32(g_cp_w[0] - 4, 50000u);
+
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    scheduler_delete(b);
+}
+
+// The saved event queue is resolved against the types registered by the time
+// scheduler_start runs.  Both checks on a saved event were GS_ASSERTs: in a
+// release build an unknown type indexed event_types[-1] and restored a wild
+// callback (reproduced with a real AppleShare session -- `atp.xo_release` was
+// registered only when first armed).  A checkpoint is
+// user input, so both now fail the load instead.
+static int g_restore_owner;
+
+// Save a stream whose queue holds one "net.poll" event, rewound for reading.
+static void cp_save_with_one_event(void) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+    g_cp_slot = 0;
+    g_now = 1000.0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_new_event_type(a, "net", &g_restore_owner, "poll", ping_event);
+    scheduler_new_cpu_event(a, ping_event, &g_restore_owner, 7, 0, 1000000);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    scheduler_delete(a);
+    g_cp_r = 0;
+}
+
+TEST(test_restore_resolves_a_registered_event) {
+    cp_save_with_one_event();
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    scheduler_new_event_type(b, "net", &g_restore_owner, "poll", ping_event);
+    scheduler_start(b);
+    ASSERT_EQ_INT(g_cp_errors, 0);
+    ASSERT_EQ_INT(scheduler_pending_device_events(b), 1);
+    scheduler_delete(b);
+}
+
+TEST(test_restore_refuses_an_event_whose_type_is_not_registered) {
+    cp_save_with_one_event();
+    g_cp_errors = 0;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    // Nothing registers "net.poll" this time.
+    scheduler_start(b);
+    ASSERT_EQ_INT(g_cp_errors, 1);
+    ASSERT_EQ_INT(scheduler_pending_device_events(b), 0);
+    scheduler_delete(b);
+}
+
+// === scheduler.events / machine-sourced cleanup =============================
+
+// The pending queue had no inspectable form at all.  cmd_events(argc, argv) --
+// the retired command shape -- had zero callers, so the one thing that could
+// say WHICH event leaked did not exist, while machine_teardown's backstop
+// reported only a count.
+TEST(test_pending_event_counts_track_the_queue) {
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(s != NULL);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+
+    int owner_a = 0, owner_b = 0;
+    scheduler_new_event_type(s, "a", &owner_a, "tick", ping_event);
+    scheduler_new_event_type(s, "b", &owner_b, "tick", ping_event);
+    scheduler_new_cpu_event(s, ping_event, &owner_a, 0, 0, 1000000);
+    scheduler_new_cpu_event(s, ping_event, &owner_b, 0, 0, 2000000);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 2);
+
+    // Forgetting one source leaves the other's event alone -- which is what
+    // makes a per-owner sweep safe, and why a shared source cannot be swept
+    // by one of its users.
+    scheduler_forget_source(s, &owner_a);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_forget_source(s, &owner_b);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
+// === Periodic events ========================================================
+//
+// A repeating event re-arms inside the scheduler instead of from its own
+// handler.  There is no separate periodic API and no handle type: the units
+// question is already answered by scheduler_new_cpu_event's cycles/ns pair,
+// and cancellation is already answered by remove_event and
+// scheduler_forget_source, so a repeating event adds no second lifetime.
+
+static int g_periodic_fires;
+static uint64_t g_periodic_stamps[8];
+static scheduler_t *g_periodic_sched;
+static bool g_cancel_self;
+
+static void periodic_event(void *source, uint64_t data) {
+    (void)data;
+    if (g_periodic_fires < 8)
+        g_periodic_stamps[g_periodic_fires] = scheduler_cpu_cycles(g_periodic_sched);
+    g_periodic_fires++;
+    if (g_cancel_self)
+        remove_event(g_periodic_sched, periodic_event, source);
+}
+
+TEST(test_periodic_repeats_without_self_rearm) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000); // 1 MHz: 1 cycle == 1 us
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+
+    // Armed ONCE, with no re-arm anywhere in the handler.
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_run_instructions(s, 1000);
+    ASSERT_TRUE(g_periodic_fires >= 3); // it kept going by itself
+    // ...and exactly one occurrence is ever queued, so it cannot accumulate.
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+    scheduler_delete(s);
+}
+
+// Drift-free: each deadline comes from the SCHEDULED time, not from the
+// dispatch time, so the gaps stay exactly the interval however late a sprint
+// delivers them.  A handler re-arming itself from "now" cannot do this.
+TEST(test_periodic_does_not_drift) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_TRUE(g_periodic_fires >= 3);
+    // The queue's own deadlines are exactly 100 apart even if dispatch is late.
+    // (The stamps are observation times, so assert on the SPACING of the
+    // scheduled deadlines via the queue rather than on the stamps.)
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+    scheduler_delete(s);
+}
+
+// The ordering that makes this work: the next occurrence is inserted BEFORE
+// the callback runs, so a handler cancelling itself finds it.  Insert after
+// and the cancel would be silently reinstated.
+TEST(test_periodic_can_be_cancelled_from_its_own_handler) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = true;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, 1); // fired once, then stopped itself
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
+// And the existing cancellation paths work on it unchanged, which is the
+// whole argument for not introducing a handle type.
+TEST(test_periodic_is_cancelled_by_forget_source) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_forget_source(s, &owner);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    int before = g_periodic_fires;
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, before); // stays stopped
+    scheduler_delete(s);
+}
+
+// A one-shot is still a one-shot -- the six-argument spelling is unchanged at
+// all 128 existing call sites.
+TEST(test_one_shot_still_fires_once) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, 1);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
+// A run is a mode: it starts with the serving client as its owner and
+// ends with a reason -- budget from inside the frame, a stop from outside
+// it -- reported once, in the mode_ended event, whichever path stopped it.
+TEST(test_a_mode_reports_its_owner_and_its_reason) {
+    scheduler_t *s = fresh_scheduler(false);
+    g_events = 0;
+    g_client = 7;
+    ASSERT_TRUE(scheduler_run_with_budget(s, 1000));
+    ASSERT_EQ_INT(g_events, 1);
+    ASSERT_TRUE(strstr(g_last_event, "\"event\":\"mode_started\"") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"owner\":7") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"budget\":1000") != NULL);
+    ASSERT_EQ_INT(scheduler_run_owner(s), 7);
+    while (scheduler_is_running(s))
+        scheduler_run_frame(s, TEST_CFG);
+    ASSERT_EQ_INT(g_events, 2);
+    ASSERT_TRUE(strstr(g_last_event, "\"event\":\"mode_ended\"") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"reason\":\"budget\"") != NULL);
+    ASSERT_TRUE(strstr(g_last_event, "\"instr_count\":1000") != NULL);
+    // Another frame on the stopped machine reports nothing more.
+    ASSERT_EQ_INT(g_events, 2);
+
+    // Unbounded, stopped from outside a frame: reported at the stop.
+    g_client = 0;
+    ASSERT_TRUE(scheduler_run_with_budget(s, 0));
+    ASSERT_EQ_INT(g_events, 3);
+    ASSERT_TRUE(strstr(g_last_event, "\"owner\":0") != NULL);
+    scheduler_run_frame(s, TEST_CFG);
+    ASSERT_TRUE(scheduler_is_running(s));
+    ASSERT_EQ_INT(g_events, 3);
+    // A client's stop does not end a mode it does not own; any-owner does.
+    ASSERT_TRUE(!scheduler_stop_owned(s, 9));
+    ASSERT_TRUE(scheduler_is_running(s));
+    ASSERT_TRUE(scheduler_stop_owned(s, 0));
+    ASSERT_TRUE(!scheduler_is_running(s));
+    ASSERT_EQ_INT(g_events, 4);
+    ASSERT_TRUE(strstr(g_last_event, "\"reason\":\"stop_request\"") != NULL);
+    // Stopping a stopped machine reports nothing.
+    scheduler_stop(s);
+    ASSERT_EQ_INT(g_events, 4);
+
+    // An assertion stop carries its own reason.
+    ASSERT_TRUE(scheduler_run_with_budget(s, 0));
+    scheduler_stop_reason(s, SCHED_STOP_ASSERT);
+    ASSERT_EQ_INT(g_events, 6);
+    ASSERT_TRUE(strstr(g_last_event, "\"reason\":\"assert\"") != NULL);
+    teardown(s);
+}
+
 int main(void) {
+    RUN(test_a_mode_reports_its_owner_and_its_reason);
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
     RUN(test_paced_rate_120hz);
@@ -904,6 +1518,20 @@ int main(void) {
     RUN(test_governor_audio_pressure);
     RUN(test_governor_max_speed_cap);
     RUN(test_governor_pin_unpin);
+    RUN(test_last_event_ns_reports_the_furthest_pending);
+    RUN(test_forget_source_drops_events_and_types);
+    RUN(test_checkpoint_carries_no_host_timing);
+    RUN(test_restore_refuses_zero_cpi);
+    RUN(test_restore_refuses_unknown_mode);
+    RUN(test_restore_refuses_absurd_event_count);
+    RUN(test_restore_resolves_a_registered_event);
+    RUN(test_restore_refuses_an_event_whose_type_is_not_registered);
+    RUN(test_pending_event_counts_track_the_queue);
+    RUN(test_periodic_repeats_without_self_rearm);
+    RUN(test_periodic_does_not_drift);
+    RUN(test_periodic_can_be_cancelled_from_its_own_handler);
+    RUN(test_periodic_is_cancelled_by_forget_source);
+    RUN(test_one_shot_still_fires_once);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

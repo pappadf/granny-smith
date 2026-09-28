@@ -46,8 +46,8 @@
 // Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical
 // Reference Manual", 4th ed. (Feb 1995), §4.14-§4.20.
 
-#include "card.h"
 #include "display.h"
+#include "display_class.h"
 #include "log.h"
 #include "pci.h"
 #include "scheduler.h"
@@ -57,7 +57,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("54m30");
+LOG_USE_CATEGORY_NAME("video");
 
 // === PCI identity (Alpine TRM §4.14-§4.17) ==================================
 #define C54M30_VENDOR_ID 0x1013u // Cirrus Logic
@@ -189,6 +189,7 @@ typedef struct c54m30 {
     uint8_t pelmask_reads; // consecutive $3C6 reads so far; any other access resets it
     uint8_t hidden_dac;
     bool dac_8bit; // palette data is 8-bit RGB (hidden DAC bit 1, or seen from the values)
+    uint32_t scan_start; // byte offset the scanout starts at (after the fall-back)
     display_t display;
     rgba8_t clut[256]; // the palette materialised for the renderer
     memory_interface_t fb_if;
@@ -196,6 +197,7 @@ typedef struct c54m30 {
     memory_interface_t vga_if; // the fixed legacy $3B0-$3DF block
     c54m30_blt_t blt; // the BitBLT engine's only state that outlives a register write
     uint32_t win_logged; // accesses to the legacy-window mirror logged loudly so far
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } c54m30_t;
 
 static void c54m30_update(c54m30_t *c);
@@ -946,7 +948,11 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
     case C54M30_ATTR_READ:
         return c->attr[c->attr_index & (C54M30_ATTR_REGS - 1u)];
     case C54M30_DAC_DATA: {
+        // Stored as written (see the write side), but read back the way the DAC holds it:
+        // six bits unless the hidden DAC register has put the palette in 8-bit mode.
         uint8_t v = c->dac[c->dac_read_index][c->dac_phase];
+        if (!c->dac_8bit)
+            v &= 0x3Fu;
         if (++c->dac_phase == 3) {
             c->dac_phase = 0;
             c->dac_read_index++;
@@ -961,7 +967,7 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
 static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
     c54m30_t *c = (c54m30_t *)ctx;
     uint32_t port = c54m30_port(offset & (C54M30_REGS - 1u));
-    LOG(5, "VGA I/O +$%03X = $%02X", port, value);
+    LOG(5, "54M30: VGA I/O +$%03X = $%02X", port, value);
     if (port == C54M30_DAC_MASK && c->pelmask_reads >= 4) {
         c->pelmask_reads = 0;
         c->hidden_dac = value;
@@ -1136,18 +1142,28 @@ static void c54m30_update(c54m30_t *c) {
 
     if (width == 0 || width > 2048u || height == 0 || height > 1536u || stride < width)
         return; // a half-programmed CRTC mid-mode-set; wait for the rest
+    // A start address that pushes the raster off the end is the BASE being
+    // wrong, not the mode: scanning from 0 is the useful recovery and the one
+    // this has always done.  It is not a bound on the SPAN, though -- the
+    // Offset register reaches stride 2040 and height reaches 1536, which is
+    // 3,133,440 bytes of raster over a 1 MB store, and resetting the base does
+    // nothing about that.
     if ((uint64_t)start + (uint64_t)stride * height > C54M30_VRAM)
         start = 0;
+    c->scan_start = start;
 
-    if (c->display.width != width || c->display.height != height || c->display.stride != stride ||
-        c->display.bits != c->vram + start) {
-        c->display.width = width;
-        c->display.height = height;
-        c->display.stride = stride;
-        c->display.format = PIXEL_8BPP;
-        c->display.bits = c->vram + start;
+    uint32_t prev_w = c->display.width, prev_h = c->display.height, prev_stride = c->display.stride;
+    const uint8_t *prev_bits = c->display.bits;
+    c->display.format = PIXEL_8BPP;
+    // The card has no blank buffer, so a raster its 1 MB cannot back scans
+    // nothing rather than showing some other part of VRAM as a picture.
+    display_set_scanout(&c->display, c->vram, C54M30_VRAM, start, stride, width, height, NULL, 0);
+
+    if (c->display.width != prev_w || c->display.height != prev_h || c->display.stride != prev_stride ||
+        c->display.bits != prev_bits) {
         c->display.shape_dirty = true;
-        LOG(2, "mode set: %ux%u 8 bpp, stride %u, start $%05X", width, height, stride, start);
+        LOG(2, "54M30: mode set: %ux%u 8 bpp, stride %u, start $%05X", c->display.width, c->display.height,
+            c->display.stride, start);
     }
 }
 
@@ -1252,6 +1268,14 @@ static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     c->display.clut = c->clut;
     c->display.clut_len = 256;
     c->display.format = PIXEL_8BPP;
+    // The mode is derived from the registers just cleared, so there is none
+    // until the firmware programs one: without this the display op kept
+    // presenting the old geometry over stale memory, because "keep the last
+    // good mode" (c54m30_update) also ignores the reset state.
+    c->display.width = 0;
+    c->display.height = 0;
+    c->display.bits = NULL;
+    c->scan_start = 0;
     c->display.clut_dirty = true;
     c->display.shape_dirty = true;
 }
@@ -1276,6 +1300,11 @@ static void c54m30_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, c->gr, sizeof(c->gr));
     system_write_checkpoint_data(cp, c->attr, sizeof(c->attr));
     system_write_checkpoint_data(cp, c->dac, sizeof(c->dac));
+    // The port latches: a checkpoint taken between an index write and its
+    // data write, or partway through a palette entry, must resume there.
+    uint8_t latches[8] = {c->seq_index,           c->crtc_index,      c->gr_index,       c->attr_index,
+                          c->attr_data ? 1u : 0u, c->dac_write_index, c->dac_read_index, c->dac_phase};
+    system_write_checkpoint_data(cp, latches, sizeof(latches));
     system_write_checkpoint_data(cp, c->vram, C54M30_VRAM);
     // A system-to-screen BLT half-fed by the CPU is the only engine state not already in the
     // register shadows; without it a restore would leave the guest polling a status bit that
@@ -1293,6 +1322,16 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, c->gr, sizeof(c->gr));
     system_read_checkpoint_data(cp, c->attr, sizeof(c->attr));
     system_read_checkpoint_data(cp, c->dac, sizeof(c->dac));
+    uint8_t latches[8] = {0};
+    system_read_checkpoint_data(cp, latches, sizeof(latches));
+    c->seq_index = latches[0];
+    c->crtc_index = latches[1];
+    c->gr_index = latches[2];
+    c->attr_index = latches[3];
+    c->attr_data = latches[4] != 0;
+    c->dac_write_index = latches[5];
+    c->dac_read_index = latches[6];
+    c->dac_phase = latches[7];
     system_read_checkpoint_data(cp, c->vram, C54M30_VRAM);
     system_read_checkpoint_data(cp, &c->blt, sizeof(c->blt));
     // The palette view and the scanout descriptor are DERIVED: rebuild them
@@ -1365,8 +1404,40 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t 
     // card does not decode.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &c->vga_if, c);
 
-    LOG(1, "seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
+    LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
     return dev;
+}
+
+// The framebuffer node, shared with every other display source
+// (display_class.h).  This card declared no attach_objects at all, so on a
+// Network Server `machine.screen.source` resolved to nothing and there was no
+// way to read the geometry the VGA CRTC had been programmed with.
+static display_t *c54m30_fb_resolve(void *owner) {
+    c54m30_t *c = (c54m30_t *)owner;
+    return c ? &c->display : NULL;
+}
+static uint64_t c54m30_fb_base(void *owner) {
+    // A byte offset into display memory: where the scanout actually starts,
+    // as c54m30_update derived it (CR0C/CR0D with the CR1B extension, and the
+    // fall-back to 0 for a start that runs the raster off the end).
+    c54m30_t *c = (c54m30_t *)owner;
+    return c ? c->scan_start : 0;
+}
+
+static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
+    c54m30_t *c = dev ? (c54m30_t *)dev->priv : NULL;
+    if (!c || !card_node)
+        return;
+    c->fb_node = (display_fb_node_t){.owner = c, .resolve = c54m30_fb_resolve, .base = c54m30_fb_base};
+    struct object *fb = object_new(&display_fb_class, &c->fb_node, "framebuffer");
+    if (!fb)
+        return;
+    object_set_label(fb, "Framebuffer");
+    object_set_order(fb, 10);
+    object_attach(card_node, fb);
+    // Nominate it, so `machine.screen.source` resolves here when this card is
+    // the primary display.
+    pci_card_set_framebuffer_object(dev, fb);
 }
 
 // BUILTIN: soldered down on the Network Server logic board, instantiable
@@ -1377,4 +1448,5 @@ const pci_card_kind_t cirrus_54m30_kind = {
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .factory = c54m30_factory,
+    .attach_objects = c54m30_attach_objects,
 };

@@ -1,4 +1,4 @@
-# M7a integration: `scc` object class.
+# Integration: `scc` object class.
 # The new `scc.*` paths and the legacy `scc loopback` command must
 # share the same backing state — flipping one and reading via the
 # other is the strongest test that the object surface is a real
@@ -34,9 +34,9 @@ assert machine.scc.loopback == false
 # the absence of an error in the JSON output).
 echo "${machine.scc.reset()}"
 
-# Host-side transmit capture — the mirror of `receive` (mklinux bring-up plan
-# §7).  Write bytes straight into channel A's data register (the Plus decodes
-# the ESCC write base at $BFFFF8, so aData is +6) and drain them back out.
+# Host-side transmit capture — the mirror of `receive`.  Write bytes straight
+# into channel A's data register (the Plus decodes the ESCC write base at
+# $BFFFF8, so aData is +6) and drain them back out.
 # The escape rule is asserted on a non-printable byte, because the whole point
 # of the surface is to make a guest's serial console readable as TEXT: a
 # capture that silently swallowed $01 would look like clean output.

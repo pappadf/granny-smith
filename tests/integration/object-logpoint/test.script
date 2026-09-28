@@ -1,4 +1,4 @@
-# M5 integration: logpoint messages use ${...} interpolation.
+# Integration: logpoint messages use ${...} interpolation.
 #
 # The VBL handler bumps Ticks ($00016A.l) once per VBL — set a write
 # logpoint there with a message that exercises:
@@ -6,8 +6,9 @@
 #   ${$value:08x}          — per-fire bound name, format spec
 #   ${$addr:08x}           — per-fire bound name
 #   ${$size}               — default formatter
-# `message=` is a template slot (shell v2 §6.3): the string body is
-# stored raw and evaluated per fire with $value/$addr/$size bound.
+# `message=` is a template slot (OBJ_ARG_TEMPLATE; docs/core/shell/shell.md):
+# the string body is stored raw and evaluated per fire with $value/$addr/$size
+# bound.
 # After running long enough for at least one VBL, the harness
 # captures the formatted line and the run continues to `quit`.
 

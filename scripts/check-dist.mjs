@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Static validation of app/web2/dist/ produced by `make ui2` / Vite.
 //
 // Catches the deploy-blocker class of bug that shipped in v0.4.0, v0.4.1
@@ -11,7 +13,7 @@
 // Pure Node, no deps. Designed to fail fast in CI immediately after
 // the Vite build step.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,6 +59,17 @@ if (!html.includes('coi-serviceworker.js')) {
 if (!existsSync(swPath)) {
   failures.push(`coi-serviceworker.js missing from dist/ (expected ${swPath})`);
 }
+
+// Build intermediates must never be deployed: dist/ is copied to the site
+// whole, and a copied object tree once shipped 15 MB of .o/.d files.
+function walk(dir, rel = '') {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) walk(join(dir, e.name), r);
+    else if (/\.(o|d|stamp)$/.test(e.name)) failures.push(`build intermediate in dist/: ${r}`);
+  }
+}
+walk(distDir);
 
 if (failures.length) {
   console.error('check-dist: validation FAILED');

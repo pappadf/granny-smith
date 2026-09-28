@@ -3,14 +3,13 @@
 
 // web2 e2e: content-addressed vROM provisioning — offer-on-ingest, no reload.
 //
-// Pins proposal-content-addressed-rom-provisioning.md §5/§8: the wasm
-// platform enumerates /opfs/images/vrom once at startup, so a vROM uploaded
+// Pins offer-on-ingest: the wasm platform enumerates /opfs/images/vrom once at startup, so a vROM uploaded
 // MID-SESSION must be offered to the core's registry by the ingest path
 // itself (upload.ts persist → machine.vrom.offer) or an "(auto)" boot —
 // one with no explicit vrom= pick in the boot document — would not see the
-// file until the next page reload.  Also pins §3.6a: the stored name is the content hash
-// (the declaration ROM's Format-Block CRC), the upload name is discarded,
-// and discovery is content-based so the weird upload name never matters.
+// file until the next page reload.  Also pins content naming: the stored
+// name is the content hash (the declaration ROM's Format-Block CRC), the
+// upload name is discarded, and discovery is content-based so the weird upload name never matters.
 //
 // Flow (all in ONE page session, no reload):
 //   1. drop a JMFB vROM under a deliberately meaningless name — the toast
@@ -25,6 +24,7 @@ import { test, expect, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
+import { terminalRun } from "../helpers/terminal";
 
 const DATA = path.resolve(__dirname, "../../data");
 const IICX_ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
@@ -65,14 +65,6 @@ async function dropOnDisplay(page: Page, fileName: string, hostFile: string) {
     },
     { name: fileName, data: b64 },
   );
-}
-
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator(".xterm");
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press("Enter");
 }
 
 // Echo an expression through the terminal under a unique key and return the

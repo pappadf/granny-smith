@@ -8,8 +8,8 @@
 // defines CPU_DECODER_IS_68030 to inherit that operation set, then overrides
 // the handful of ops that differ on the 040 before generating the decoder:
 //   - MOVE16 (all five forms) is a real instruction, not an F-line trap
-//   - CINV/CPUSH decode + privilege are real (caches modeled functionally,
-//     proposal §6.3: no line state to invalidate in an interpreter)
+//   - CINV/CPUSH decode + privilege are real (caches modeled functionally:
+//     no line state to invalidate in an interpreter)
 //   - PFLUSH/PTEST take their 040 forms (MMU registers live in mmu040_state_t,
 //     reached via MOVEC — the 040 has no PMOVE)
 //   - the 68851/030 coprocessor MMU ops (PMOVE dispatch, PBcc, PSAVE,
@@ -31,7 +31,7 @@
 LOG_USE_CATEGORY_NAME("cpu");
 
 // 68040 memory access: identical to the 68030 path; the SoA fast path in
-// memory.h resolves translations, and the (Phase B) 040 MMU fills it.
+// memory.h resolves translations, and the 040 MMU fills it.
 #define D(n)                                         cpu->d[n]
 #define A(n)                                         cpu->a[n]
 #define PC                                           cpu->pc
@@ -256,12 +256,12 @@ static bool cpu_move16_copy(uint32_t src, uint32_t dst) {
 // ============================================================================
 // CINV / CPUSH (MC68040UM §4: cache maintenance)
 // ============================================================================
-// Caches are modeled functionally (proposal §6.3): CACR holds the enable
-// state, and CINV/CPUSH have correct decode and privilege, but there is no
-// host-side line state to invalidate — the interpreter reads guest memory
-// directly and the SoA arrays hold MMU translations (flushed by PFLUSH),
-// not cached data.  DMA in this model is therefore always coherent — a
-// documented divergence, more forgiving than hardware.
+// Caches are modeled functionally: CACR holds the enable state, and CINV/CPUSH
+// have correct decode and privilege, but there is no host-side line state to
+// invalidate — the interpreter reads guest memory directly and the SoA arrays
+// hold MMU translations (flushed by PFLUSH), not cached data.  DMA in this
+// model is therefore always coherent — a documented divergence, more forgiving
+// than hardware.
 static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
     (void)cpu;
     (void)opcode;
@@ -400,13 +400,12 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
 
 // Hardware reset: same sequence as the 030 (see cpu_68030.c), plus the 040
 // on-chip MMU/caches: TC.E cleared, TTRs disabled, CACR cleared.
-static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restrict cpu) {
-    LOG(1, "Hardware reset (double bus error → HALT → RESET)");
-
-    // Step 1: RESET line → machine-specific peripheral reset (overlay back on).
-    system_hardware_reset();
-
-    // Step 2: CPU hardware reset sequence (MC68040UM §7.1)
+// The CPU half of a reset, and only that half -- see the 68030 twin in
+// cpu_68030.c for why it is exported.  MC68040UM §7.1.  The caller must have
+// asserted the bus reset first: the vectors come from $00000000, which is ROM
+// only while the overlay is armed.
+void cpu_reset_to_vector_68040(cpu_t *restrict cpu) {
+    // CPU hardware reset sequence (MC68040UM §7.1)
     cpu->supervisor = 1;
     cpu->interrupt_mask = 7;
     cpu->trace = 0;
@@ -425,6 +424,13 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     cpu->ssp = memory_read_uint32(0x00000000); // SSP from vector 0 (ROM via overlay)
     cpu->a[7] = cpu->ssp;
     cpu->pc = memory_read_uint32(0x00000004); // PC from vector 1 (ROM via overlay)
+}
+
+// Double bus error → HALT → RESET, as on the 030.
+static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restrict cpu) {
+    LOG(1, "Hardware reset (double bus error → HALT → RESET)");
+    system_reset_devices(); // the board's /RESET net; must precede the vector read
+    cpu_reset_to_vector_68040(cpu);
 }
 
 // Generate the cpu_run_68040 decoder function using the shared template.
@@ -451,9 +457,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
             *instructions = 1;                                                                                         \
     /* Saturating decrement on the trailing (*instructions)--: see cpu_68030.c */                                      \
     while (*instructions > 0) {                                                                                        \
-        uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
+        uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
-        uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         cpu->instruction_pc = cpu->pc;                                                                                 \
         /* Double-fault tracking: see the cpu_68030.c prologue for why this  */                                        \
         /* clears only in user mode once the CPU has moved past the PC.     */                                         \

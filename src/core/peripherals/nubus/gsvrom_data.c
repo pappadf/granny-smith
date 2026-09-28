@@ -8,8 +8,7 @@
 // never committed); this file is the only translation unit that
 // includes them.  gsvrom_generate turns a card kind's monitor table
 // into a finished image via the declrom builder — the C monitors[]
-// array is the single source of truth for mode geometry
-// (proposal-nubus-runtime-vrom §3.3/§3.5).
+// array is the single source of truth for mode geometry.
 
 #include "card.h"
 #include "declrom.h"
@@ -49,18 +48,26 @@ const uint8_t *gsvrom_frag(gsvrom_personality_t p, gsvrom_frag_kind_t k, size_t 
 }
 
 // === Per-personality identity + mode rules ==================================
-// The values the assembled images carried (tools/vrom history): board
-// identity per proposal-generic-nubus-vrom §5.2 (byte-authentic where
-// Mac-side software matches on them), video sResource names the OS
-// pattern-matches, and each card's framebuffer window geometry.
+// The values the assembled images carried (tools/vrom history): board identity
+// (byte-authentic where Mac-side software matches on them), video sResource
+// names the OS pattern-matches, and each card's framebuffer window geometry.
 
 typedef struct {
     const char *board_name; // board sRsrcName
-    uint16_t board_id; // BoardId (load-bearing, §3.5)
+    uint16_t board_id; // BoardId (load-bearing: Mac-side software keys on it)
     const char *rev_level; // VendorInfo RevLevel string
     const char *vid_name; // functional sResource name
     uint16_t drhw; // sRsrcType DrHW
     uint32_t fb_minor; // MinorBaseOS (std-slot framebuffer offset)
+    // mPageCnt: how many framebuffers this personality's card has, as a
+    // counting number (Designing Cards and Drivers 3ed, p.242).  The SE/30 has
+    // two, selected by VIA1 PA6, and the hand-built fallback ROM has always
+    // declared them -- make_mode used to hard-code 1, so the GENERATED ROM
+    // (which is the SE/30 profile's default) under-declared the hardware.  This
+    // must agree with the driver's GS_NPAGES: the declaration and the DRVR are
+    // two halves of one claim, and the DRVR's cscSetMode / GetPages /
+    // GetBaseAddr serve exactly this many pages.
+    uint16_t page_count;
 } gsvrom_traits_t;
 
 // The GC accelerator's host driver version-gates on this exact string
@@ -69,10 +76,11 @@ static const char gc_rev_level[] = "MDC 8\xA5"
                                    "24 GC 1.1";
 
 static const gsvrom_traits_t s_traits[4] = {
-    [GSVROM_JMFB] = {"GS Generic Display (8*24)",    0x0027, "1.0",        "Display_Video_Apple_MDC",    0x0019, 0xA00},
-    [GSVROM_BOOGIE] = {"GS Generic Display (24AC)",    0x05FA, "1.0",        "Display_Video_Apple_Boogie", 0x002B, 0    },
-    [GSVROM_MDCGC] = {"GS Generic Display (8*24 GC)", 0x002C, gc_rev_level, "Display_Video_Apple_MDCGC",  0x001D, 0xA00},
-    [GSVROM_SE30] = {"GS Generic Display (SE/30)",   0x000C, "1.0",        "Display_Video_Apple_SE30",   0x0009, 0    },
+    [GSVROM_JMFB] = {"GS Generic Display (8*24)",    0x0027, "1.0",        "Display_Video_Apple_MDC",    0x0019, 0xA00, 1},
+    [GSVROM_BOOGIE] = {"GS Generic Display (24AC)",    0x05FA, "1.0",        "Display_Video_Apple_Boogie", 0x002B, 0,     1},
+    [GSVROM_MDCGC] = {"GS Generic Display (8*24 GC)", 0x002C, gc_rev_level, "Display_Video_Apple_MDCGC",  0x001D, 0xA00,
+                     1                                                                                                   },
+    [GSVROM_SE30] = {"GS Generic Display (SE/30)",   0x000C, "1.0",        "Display_Video_Apple_SE30",   0x0009, 0,     2},
 };
 
 // GC address-space constants (ops_mdcgc.s equivalents).
@@ -94,7 +102,7 @@ static declrom_vidmode_t make_mode(gsvrom_personality_t p, const nubus_monitor_t
         .cmp_count = 1,
         .cmp_size = (uint16_t)bpp,
         .dev_type = 0, // settable CLUT
-        .page_count = 1,
+        .page_count = s_traits[p].page_count,
     };
     if (p == GSVROM_BOOGIE && bpp >= 16) {
         // The 24AC's direct-RGB depths: 16 bpp = 3×5, 32 bpp = 3×8.

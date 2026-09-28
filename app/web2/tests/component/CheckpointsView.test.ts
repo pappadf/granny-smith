@@ -1,7 +1,8 @@
 import { render, waitFor, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import CheckpointsView from '@/components/panel-views/checkpoints/CheckpointsView.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import { checkpoints } from '@/state/checkpoints.svelte';
 import type { CheckpointEntry } from '@/bus/types';
 

@@ -47,7 +47,7 @@ later worker-side create at that path fails (`I/O error`). To stay coherent,
 the Filesystem tab routes its **mutations through the worker**
 (`storage.rm` / `storage.mv` / `storage.cp`), reserving `navigator.storage`
 for reads. (This is why `BrowserOpfs.delete` / `.move` in
-[`bus/opfs.ts`](../app/web2/src/bus/opfs.ts) call `gsEval` rather than
+[`bus/opfs.ts`](../../app/web2/src/bus/opfs.ts) call `gsEval` rather than
 `removeEntry` directly.)
 
 **Core / frontend separation.** The emulator core is path-agnostic: it
@@ -58,108 +58,329 @@ fdhd,hd,cd}` and `/opfs/{checkpoints,upload}` at boot via
 
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
-a single shared-memory region — `js_bridge_t`, defined in
-[`src/platform/wasm/em.h`](../src/platform/wasm/em.h) and exported via
-the lone `_get_js_bridge()` accessor. JS resolves the base pointer once
-at init and reads/writes fields by offset through `Module.HEAP32` /
-`Module.HEAPU8`. The struct carries a `version` field that JS verifies
-against `BRIDGE_VERSION` at startup so layout drift fails loudly.
+the **mailbox** — a control block and two record rings in shared memory
+(`src/core/mailbox/mailbox.h`, exported via the lone `_get_gs_mailbox()`
+accessor; see "The Mailbox" below). JS binds to it once at init, checks
+its MAGIC and VERSION so layout drift fails loudly, and from then on
+writes request records and reads result records through `Module.HEAPU8`
+and Atomics.
 
-Every JS→C request rides on the single `pending=1` kind (`gs_eval`).
+Every JS→C request is a `REQ_EVAL` record (`gs_eval`) carrying an id.
 Introspection rides on `<path>.meta.*`; free-form shell lines and tab
-completion ride on the `Shell` class's `run` / `complete` methods.
-The `pending` slot is sized as a 32-bit field for future kinds, but
-only kind 1 is currently in use. JS writes `path` / `args`, sets
-`pending`, and parks on the `done` field via `Atomics.waitAsync`. The
-worker's `shell_poll()` (called every tick) drains the slot, writes
-the JSON response into `output`, then issues `__atomic_store_n(&done,
-1, SEQ_CST)` followed by `emscripten_atomic_notify` to wake JS — no
-polling, no `setTimeout` spin. A JS-side `cmdInFlight` lock serialises
-requests, so the slot is single-buffered by design.
+completion ride on the `Shell` class's `run` / `complete` methods. The
+worker's `shell_poll()` (called every tick, and from the idle wait on a
+stopped machine) drains every pending request and writes one
+`EVT_RESULT` per request; the page's reader loop wakes on `EVT_HEAD` via
+`Atomics.waitAsync` — no polling, no `setTimeout` spin — and resolves the
+promise whose id the result carries. Requests are not serialised on the
+page: any number may be in flight.
 
-C→JS *state pushes* go through `Module.*` callbacks installed at module
-construction, not through the bridge slot:
+**The result contract.** `gsEval(path, args)` resolves to one of three
+shapes, and callers must tell them apart:
 
-- **`Module.onRunStateChange(running)`** — fired via
-  `MAIN_THREAD_ASYNC_EM_ASM` from `em_main_tick` when the scheduler
-  transitions between running and stopped, plus once at the first tick
-  to seed JS.
-- **`Module.onScreenResize(width, height)`** — fired via
+- a **value** — the attribute's or method's result (a V_MAP arrives as an
+  object, a V_LIST as an array, a V_BOOL as `true`/`false`);
+- **`null`** — only a *successful* method that returns nothing (V_NONE);
+- **`{ error }`** — failure.  A V_ERROR from the core carries its message;
+  a failure of the bridge itself (the module not ready, a request too
+  large, a dead worker) also sets `transport: true`.
+
+So `r !== null` is never a success test — `{ error }` passes it.  Use
+`gsOk(r)` for "did it work" (neither an error nor a V_BOOL `false`),
+`r === true` for a V_BOOL method, and a shape check for a read;
+`gsErrorText(r)` gives the reason
+([`bus/emulator.ts`](../../app/web2/src/bus/emulator.ts)).
+
+What the core says about the machine arrives as **events on the mailbox's
+event ring** (see "Events from the core" below): the run state, the
+effective speed, the floppy drives, the activity lights, the perf
+samples, checkpoint saves, log lines, breakpoint hits and assertion
+failures. The `Module.*` callbacks that remain are the platform
+transports, installed at module construction:
+
+- **`Module.onScreenResize(width, height, parW, parH)`** — fired via
   `MAIN_THREAD_ASYNC_EM_ASM` from `em_video.c::resize_canvas` whenever
   the framebuffer's intrinsic dimensions change. Transition-only
   (guarded against repeated identical sizes). Fires at minimum once per
   machine boot, again on every video-mode switch (e.g. the JMFB driver
   flipping a IIcx from 512×342 to 640×480). ASYNC because the worker
-  doesn't block on JS layout.
-- **`Module.onLogEmit(line)`** — fired via `MAIN_THREAD_ASYNC_EM_ASM`
-  per emitted log line, gated by `log_would_log()` so the worker pays
-  the cross-thread cost only when a category's level is above zero.
-  Routed in [`app/web2/src/bus/logSink.ts`](../app/web2/src/bus/logSink.ts)
-  into the reactive `logs.entries` buffer (rAF-coalesced).
+  doesn't block on JS layout. `parW:parH` is the monitor's pixel aspect
+  ratio (the Lisa's 720×364 raster is 2:3), so the renderer can show
+  non-square pixels.
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
-  pipes. The same `logSink` writes these to the xterm pane.
-- **`Module.onVideoInReady(ptr, w, h)`** — fired once at startup from
-  `em_camera.c::em_camera_init` with the address of the webcam frame
-  transport in the shared heap (see below). JS keeps the pointer;
-  everything after that is direct heap access, not callbacks.
+  pipes. `logSink` writes these to the xterm pane.
+- **`Module.onAbort(what)`** — the glue's `abort()`: the worker trapped.
+  The bridge is marked dead and every request fails at once.
+- **`Module.onVideoInReady(ptr)`** / **`Module.onAudioInReady(ptr)`** —
+  fired once at startup with the address of the webcam frame transport
+  (`em_camera.c`) or the microphone ring (`em_audio_in.c`) in the shared
+  heap; see "Shared-heap transports" below. JS reads the layout from the
+  block's header on first use; everything after that is direct heap
+  access, not callbacks.
 - **`Module.onVideoInState(active)`** — fired when the guest gates the
   AV digitizer's VDC clock, i.e. when capture actually starts and stops.
-  [`state/camera.svelte.ts`](../app/web2/src/state/camera.svelte.ts)
+  [`state/camera.svelte.ts`](../../app/web2/src/state/camera.svelte.ts)
   attaches or stops the `MediaStreamTrack` on it, so the camera light
   is on only while the guest is capturing.
+- **`Module.onAudioInState(active)`** / **`Module.onAudioInInjected(path)`**
+  — the Singer's capture gate, and the file `machine.audioin.inject` just
+  fed the guest (the page plays it aloud too); see
+  [../machines/av/singer.md](../machines/av/singer.md).
+- **`Module.onVoodooGpuOverlay(visible)`** — whether the Voodoo2
+  takeover's overlay canvas should show.
 
-These callbacks are the template for any future C→JS event: install on
-`Module.*`, fire from C with `MAIN_THREAD_*_EM_ASM`. No exports, no
-SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback
-retired when the new prompt started coming back as `shell.run`'s return
-value under proposal-shell-as-object-model-citizen.)
+- **`Module.onVoodooGpuAttach(ctrl, bytes)` / `onVoodooGpuDetach(ctrl)`**
+  — the Voodoo2 WebGPU takeover (`raster=webgpu`,
+  [`src/platform/wasm/em_gpu.c`](../../src/platform/wasm/em_gpu.c)): the
+  emulator's raster pthread allocated a control block + op ring +
+  readback area at `ctrl` in the shared heap and wants the page's GPU
+  worker attached to it.  [`gpu/voodoo2Gpu.svelte.ts`](../../app/web2/src/gpu/voodoo2Gpu.svelte.ts)
+  posts the wasm memory and the address to the worker
+  ([`gpu/voodoo2Gpu.worker.ts`](../../app/web2/src/gpu/voodoo2Gpu.worker.ts)),
+  which then talks to the emulator through shared memory only —
+  `Atomics.waitAsync` on the ring's head, `Atomics.notify` on its tail
+  and the acknowledge word — while the C side waits with futexes.  The
+  worker is started once at page load with the `#screen3d` overlay
+  canvas (transferred), and writes whether a WebGPU device exists into
+  the bridge's `gpu_available` word so the core's backend choice is
+  honest at machine creation.  The page shows the overlay exactly
+  while GPU mode is engaged (the worker relays the MODE records it
+  consumes).  The protocol is
+  [`voodoo2_gpu_protocol.h`](../../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h)
+  / `voodoo2Protocol.ts`.
 
-## The Bridge Struct
+- **`Module.onPrinterAttach(ctrl, version)`** — the emulated LaserWriter's
+  interpreter (`src/platform/wasm/em_main.c`,
+  `laserwriter_ring_attach_requested`): the printer bridge allocated a
+  control block + two byte rings at `ctrl` in the shared heap on the
+  first print job and wants the page's platen worker attached.
+  [`printer/platen.ts`](../../app/web2/src/printer/platen.ts) starts
+  [`printer/platen.worker.ts`](../../app/web2/src/printer/platen.worker.ts)
+  then (lazily: the worker fetches its own non-threaded module,
+  `platen-<version>.js` beside `main.mjs`, built by `make platen-module`),
+  and posts the wasm memory and the address; the worker parks in
+  `Atomics.waitAsync` on the outbound ring's head while the C side wakes
+  it with `emscripten_futex_wake`.  Each finished PDF comes back to the
+  page as a transferable and is downloaded at once as
+  `<job>-<title>.pdf`.  The protocol is
+  [`laserwriter_ring_protocol.h`](../../src/core/network/laserwriter_ring_protocol.h)
+  / `printer/platenProtocol.ts`; the whole path is
+  [`docs/core/network/laserwriter.md`](../core/network/laserwriter.md) §5.5.
 
-Layout (mirrored as `OFF_*` constants in
-[`app/web2/src/bus/emulator.ts`](../app/web2/src/bus/emulator.ts)):
+One input rides the module config the other way: **`gsAudioWorkletUrl`**,
+the bundled audio-out worklet, which `em_audio.c` loads when sound
+starts.
+
+These callbacks are for one thing only: a platform transport handing the
+page a handle or a buffer (screen geometry, a ring's control block, a
+worklet URL). Anything the core has to *say* — run state, a media change,
+a log line, progress, a download's chunk — is an event on the mailbox's
+event ring (`gs_event_emit`, "Events from the core" below), not a new
+`Module.on*` callback: an event never blocks the emulator thread, is
+ordered with the results, and reaches headless clients the same way.
+
+## The Mailbox
+
+Every JS↔C request travels through the mailbox: a control block and two
+record rings in the wasm heap (`src/core/mailbox/mailbox.h`; mirrored in
+[`app/web2/src/bus/mailbox.ts`](../../app/web2/src/bus/mailbox.ts), on the
+record-ring primitive `mailbox_ring.h` / `bus/mailboxRing.ts` the platen and
+Voodoo2 GPU transports share). The page writes `REQ_EVAL` records into the
+request ring and wakes the worker; the emulator thread drains them at every
+tick — all of them, under a 2 ms budget — and writes an `EVT_RESULT` per
+request into the event ring; a reader loop on the page resolves the promise
+whose id it carries. Any number of requests may be in flight; a late answer
+can never be mistaken for another call's.
 
 ```
-offset    0   version    int32     must equal JS_BRIDGE_VERSION
-offset    4   ready      int32     1 once worker can dispatch requests
-offset    8   pending    int32     request kind (1 = gs_eval); 0 = idle
-offset   12   done       int32     flipped to 1 by worker on completion
-offset   16   result     int32     integer result code
-offset   20   path[1024] char[]    JS→C: request path
-offset 1044   args[8192] char[]    JS→C: JSON-encoded arg array
-offset 9236   output[16384] char[] C→JS: JSON-encoded response
-total       25620 bytes
+control block, 32 × uint32, 64-byte aligned (`_get_gs_mailbox()`)
+  [0]  MAGIC 'GSMB'   [1] VERSION 9
+  [2]  REQ_OFF  [3] REQ_SIZE  256 KB   request ring, page → core
+  [4]  EVT_OFF  [5] EVT_SIZE  1 MB     event ring,   core → page
+  [6]  REQ_HEAD (page)  [7] REQ_TAIL (core)   free-running byte counts
+  [8]  EVT_HEAD (core)  [9] EVT_TAIL (page)
+  [10] STATUS  [11] HEARTBEAT  [12] READY  [13] GPU_AVAILABLE
+  [14..19] statistics: requests, events, stalls, longest drain µs, refused,
+           events dropped
+records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
+  REQ_EVAL      {id, client, deadline_ms, path_len, args_len} + path + args
+  REQ_SCRIPT    {id, client, deadline_ms, src_len} + src          (a job)
+  REQ_CANCEL    {id, client, target_id}     REQ_MODE_STOP {id, client, owner}
+  REQ_ACK_BUF   {id, client, handle}        (a staged buffer was consumed)
+  EVT_RESULT    {id, ok, json_len, out_len} + json + output
+  EVT_PROGRESS  {json_len} + {"id":request,"done":n,"total":n}
+  EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json      (events from the core)
 ```
 
-Only `pending=1` is in use. JS writes `path` / `args`, sets `pending`,
-parks on `done`; the worker writes `result` + `output`, then flips
-`done`. `cmdInFlight` on the JS side serialises requests so the
-single-buffered slot is safe.
+Limits: a path of up to 1023 bytes and an arguments document of up to
+128 KB (the page refuses larger ones before writing); a result of up to
+256 KB in the answer slot. A result the event ring has no room for is held
+back and delivered once the page has read; the core never blocks on the
+page.
 
-### Request Wakeup (Atomics)
+**Output.** What a leaf prints while it runs (every stdout site in the core
+goes through the sink `gs_out.h`) travels with its answer: `EVT_RESULT`'s
+`output` text, which the page hands to the terminal, so a page leaf's
+printout reads as it did when stdout reached the terminal directly. A
+job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
+"client":c,"text":...}` records in the order the job produced it, before
+the job's result. Outside any request — boot messages, a breakpoint hit —
+text still goes to stdout and `Module.print`.
 
-```c
-// shell_poll(), after writing result + output:
-__atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
-emscripten_atomic_notify((void *)&g_bridge.done, 1);
+**Staged buffers.** A result larger than the answer slot is not refused:
+the core formats it into a buffer in its heap and answers
+`{"$buf":handle,"ptr":p,"len":n}`; the page reads the JSON through the
+memory as it is at that moment (`Module.wasmMemory.buffer`, never a cached
+view: the heap grows) and releases it with `REQ_ACK_BUF {handle}`. The
+same mechanism carries a download to the page, chunk by chunk (below),
+and could carry an upload's chunks; today the transfer window
+(`storage.xfer_buffer`, 2 MB, static) already is a shared buffer the page
+fills, and its `xfer_write` / `xfer_read` run as I/O jobs.
+
+### Events from the core
+
+The core also speaks first. `gs_event_emit` (`src/core/event/gs_event.h`)
+takes a kind and a small JSON object and, in the browser, writes it as an
+`EVT_STATE` / `EVT_NOTIFY` / `EVT_LOG` record on the event ring at once,
+waking the page — from a leaf, from the tick, from anywhere on the emulator
+thread; an event never blocks (no room: dropped and counted). The page's
+reader loop runs for as long as anyone listens and hands each event to
+`onCoreEvent` subscribers in `bus/emulator.ts` as `{kind, event, data}`;
+the last 64 are on `window.__gsCoreEvents` for automation.
+
+The scheduler is the first emitter. Every run is a **mode** with an owner
+(the client whose request started it) and, once it stops, a reason:
+
+```
+EVT_STATE {"event":"mode_started","mode":N,"owner":C,"budget":I}
+EVT_STATE {"event":"mode_ended","mode":N,"owner":C,"reason":R,"pc":P,"instr_count":I}
+  R ∈ budget | breakpoint | stop_request | cancelled | assert
 ```
 
-```ts
-// bus/emulator.ts: waitForBridgeDone
-const w = Atomics.waitAsync(Module.HEAP32, doneIdx, 0);
-if (w.async) await w.value;          // resolves on the notify
-Atomics.store(Module.HEAP32, doneIdx, 0);
-```
+`mode_ended` goes out from `scheduler_run_frame` at the point where the
+run stops, whichever path stopped it — the instruction budget, a
+breakpoint, `scheduler.stop`, an assertion — so a `debug.step` emits it
+before its own result. The page's run/paused state follows these events.
 
-`Atomics.waitAsync` returns synchronously with `not-equal` if the
-worker beat JS to it; otherwise it yields a Promise that resolves on
-the notify. Minimum round-trip is one event-loop turn after the
-worker's tick — no `setTimeout` spin, no main-thread CPU burn. The same
-pattern gates the initial `ready` flip.
+The rest of what the tick used to diff and push through `Module.on*`
+callbacks is emitted at its source too; the page routes each in
+`routeCoreEvent` (`bus/emulator.ts`):
+
+| Event | Emitted by | Payload |
+|---|---|---|
+| `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
+| `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
+| `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
+| `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
+| `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
+| `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
+| `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
+| `log:log` | the log sink, every line | `{line}` |
+| `log:output` | the job layer, a job's printed text | `{id, client, text}` |
+
+What still crosses as a `Module.on*` callback is a platform transport
+handing the page a handle or a buffer (screen geometry, the Voodoo2 and
+printer rings, camera and microphone rings): not an event about the
+machine.
+
+### Jobs: scripts off the emulator thread
+
+A terminal line is not a `shell.run` call any more. The page posts it as a
+`REQ_SCRIPT` record (`{id, client, deadline_ms, src_len} + src`) and the
+core queues it as a **job** for the one **job thread** (`src/core/job/job.h`),
+created at boot right after `READY`. The interpreter runs there, on its
+own stack, and touches nothing but its own memory: every read or write of
+the object tree (`node_get` / `node_set` / `node_call`, and the REPL's
+printing of a result) is handed to the emulator thread through the
+**seam**, `job_on_emulator()`, and served in the same drain that serves
+the page — at the next frame boundary while the machine runs, within a
+millisecond while it is stopped. A leaf that starts a *bounded* mode
+(`scheduler.run N`, `debug.step N`) holds the job until that mode ends, so
+`scheduler.run N` inside a script means "run N"; a bare `scheduler.run`
+from the terminal returns at once (the machine runs on; Ctrl-C stops it),
+while a headless script's bare `scheduler.run` waits for the machine to
+stop (`job_glue_unbounded_waits`). The job's answer is an `EVT_RESULT`
+carrying the shell's new prompt (what `shell.run` returned), or
+`{"error"}` when the script failed or was cancelled. A build without a
+job thread (headless today, the unit suites) runs the script inline in
+the drain, with the same interface.
+
+Scripts are FIFO — one runs at a time per process; `REQ_EVAL` leaves from
+any client are served alongside. The scope stack, alias table and
+function table are shared behind one lock (`job_tables_lock`), taken per
+operation; function bodies are reference-counted, so a redefinition or
+removal from another client cannot free a body a job is executing.
+
+`REQ_CANCEL {id, client, target_id}` cancels a job of that client: a
+queued one finishes at once, a running one unwinds at its next statement
+(`E_CANCELLED` → `{"error":"cancelled"}`), and the mode it started, if
+one is running, is stopped. `REQ_MODE_STOP {id, client, owner}` stops a
+running mode by owner (0: any); both answer `true` / `false`.
+
+**I/O jobs.** A leaf whose cost is the size of a file rather than of the
+machine — `storage.cp`, `storage.import`, `storage.export_raw`,
+`storage.hd_create` / `fd_create` / `profile_create`, `storage.xfer_write`
+/ `xfer_read`, `archive.extract`, a SCSI `image.export` and the Lisa
+`profile.save`, `download`, and the quick checkpoint's publish — runs on
+the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
+at boot. `meta.method_info` reports such a method with `io: true`
+(`MM_IO`). The leaf takes its request off the drain's answer path
+(`gs_result_defer`) and returns at once; the worker does the work in
+1 MB chunks (`GS_IO_CHUNK_KB`), yielding between them and reporting
+progress (`io_progress` → `EVT_PROGRESS {id, done, total}`; `gsEvalWithProgress`
+on the page); the completion, reported at a later drain, writes the
+request's `EVT_RESULT` (`gs_result_complete`), so the page's promise
+settles when the file is done and the emulator thread served frames
+throughout. A script's call is held the same way and a failure is the
+call's error. `REQ_CANCEL` of the request — or of the script whose call it
+is — cancels the job at its next chunk (`io_cancelled`); a cancelled copy
+leaves no partial destination. Writing over, moving or removing a path a
+device has open answers `E_BUSY`. An `image.export` snapshots the disk's
+read side (its own handles, a copy of the modification bitmap) on the
+emulator thread and write-locks the device until the file is written: a
+guest write to it fails meanwhile, as a drive being copied does. Without
+a worker (`--io=sync`) the same work runs inline, with the same hooks.
+
+**Downloads.** `download path` is an I/O job that reads the file 4 MB at
+a time into a staged buffer and announces each chunk as
+`notify:download_chunk`; the page copies the bytes into a Blob part,
+acknowledges the buffer (the worker refills it), and on the last chunk
+saves the Blob through a transient anchor (`bus/download.ts`). Neither
+thread waits on the other; a page that never acknowledges times the job
+out after 30 s, not the machine. The LaserWriter's PostScript capture
+(`appletalk.printer.capture`) takes the same road.
+
+**Ctrl-C, exactly.** The terminal is client 2 (the rest of the page is
+client 1). Ctrl-C cancels the terminal's foreground job if it has one;
+else stops a run *the terminal* started (`REQ_MODE_STOP {owner: 2}`);
+else prints `^C  (nothing to interrupt; Pause stops the machine)` — a
+machine running because the toolbar or a resume started it is not the
+terminal's to stop. `shell.interrupt` remains as a leaf with the same
+meaning for the client that calls it.
+
+### Wake-ups and the idle wait
+
+The page stores `REQ_HEAD` and `Atomics.notify`s it; the core stores
+`EVT_HEAD` and wakes the page's `Atomics.waitAsync`. While the machine runs,
+a request is served at the next tick (≤ one frame). While it is **stopped**
+the tick parks in a bounded futex wait on `REQ_HEAD` — 4 ms slices, 12 ms in
+all, draining the pthread's proxied input events between slices — so a
+request on an idle machine is served in about a millisecond.
+
+### Liveness
+
+`HEARTBEAT` is bumped once per tick and once per idle slice. The page samples
+it every second while visible: three seconds without a change while requests
+are pending marks the emulator dead (every pending request fails with a
+transport error, the crash banner shows). A wasm trap or `abort()` does the
+same through `Module.onAbort`. An ordinary request past 120 s fails for its
+own caller only; known-long requests (`checkpoint.*`, `storage.cp`, …) have
+no deadline.
 
 ## Module Bootstrapping
 
-Entry point: [`app/web2/src/main.ts`](../app/web2/src/main.ts).
+Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
 
 1. Synchronous pre-mount work:
    - Load persisted state from `localStorage` (theme, panel pos+size,
@@ -167,11 +388,11 @@ Entry point: [`app/web2/src/main.ts`](../app/web2/src/main.ts).
    - Apply theme to `<html data-theme>` to avoid a flash.
    - Auto-pick panel orientation from viewport size if no persisted
      value.
-2. **WebGL2 probe.** [`lib/webglCheck.ts`](../app/web2/src/lib/webglCheck.ts)
+2. **WebGL2 probe.** [`lib/webglCheck.ts`](../../app/web2/src/lib/webglCheck.ts)
    creates an off-DOM canvas and asks for a `webgl2` context. If
    missing (e.g. Chrome GPU process dead, hardware acceleration
    disabled), the app renders a full-page error overlay via
-   [`lib/webglErrorPage.ts`](../app/web2/src/lib/webglErrorPage.ts) and
+   [`lib/webglErrorPage.ts`](../../app/web2/src/lib/webglErrorPage.ts) and
    does **not** mount Svelte. The error page is vanilla DOM so it
    survives a degraded framework runtime.
 3. Mount the Svelte tree.
@@ -179,142 +400,169 @@ Entry point: [`app/web2/src/main.ts`](../app/web2/src/main.ts).
    - `await whenModuleReady()` (resolved by `bus/emulator.ts::bootstrap`
      once the bridge's `ready` flag flips). Exposes `window.__gsReady =
      true` for headless automation
-     ([`scripts/ui2-diag.mjs`](../scripts/ui2-diag.mjs)).
+     ([`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs)).
    - `maybeOfferBackgroundCheckpoint()` — surfaces a resume prompt if
-     a checkpoint exists for the URL-encoded machine.
-   - `processUrlMedia()` — handles `?rom=` / `?fd0=` etc. URL params.
+     this browser's machine has a saved checkpoint.
+   - `processUrlMedia()` — handles the URL's media parameters (any of
+     them starts it).
 
-Module-construction call ([`bus/emulator.ts::bootstrap`](../app/web2/src/bus/emulator.ts)):
+Module-construction call ([`bus/emulator.ts::bootstrap`](../../app/web2/src/bus/emulator.ts)):
 
 ```ts
+const url = new URL(`main.mjs?v=${bust}`, document.baseURI).href;
 Module = await createModule({
   canvas,
-  arguments: wasmArgs,
-  locateFile: (p) => (p.endsWith('.wasm') ? `/main.wasm?v=${bust}` : p),
-  print:       routePrintLine,
-  printErr:    routePrintLine,
-  onRunStateChange: handleRunStateChange,
-  onScreenResize:   handleScreenResize,
-  onLogEmit:        routeLogEmit,
+  // Pthread workers must load this exact URL, cache-buster included.
+  mainScriptUrlOrBlob: url,
+  locateFile: (p) =>
+    p.endsWith('.wasm') ? new URL(`main.wasm?v=${bust}`, document.baseURI).href : p,
+  print: routePrintLine,
+  printErr: routeErrLine, // also recognises a worker crash
+  onAbort: (what) => markBridgeDead(`Aborted(${String(what ?? '')})`),
+  onScreenResize: handleScreenResize,
+  // ...the other transport callbacks listed above...
+  gsAudioWorkletUrl,
 });
 ```
+
+Both URLs resolve against the document, not the site root, so the build
+works under any deploy path.
 
 The canvas reference is passed once; Emscripten transfers it to the
 worker via `transferControlToOffscreen` and resolves the `#screen` DOM
 id from `OFFSCREENCANVASES_TO_PTHREAD`. After `createModule` returns,
-JS calls `Module._get_js_bridge()` to resolve the bridge base pointer,
-verifies the version, then `await gsEval('machine.register', …)` to
-activate the per-machine checkpoint directory.
+JS calls `Module._get_gs_mailbox()` to resolve the mailbox's control
+block, verifies its MAGIC and VERSION, waits for `READY`, then
+`await gsEval('machine.register', …)` to activate the per-machine
+checkpoint directory.
 
 ## Major UI Surfaces
 
 The Svelte app is organised under
-[`app/web2/src/components/`](../app/web2/src/components/):
+[`app/web2/src/components/`](../../app/web2/src/components/):
 
-- **Display** ([`display/`](../app/web2/src/components/display/)) —
+- **Display** ([`display/`](../../app/web2/src/components/display/)) —
   ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save,
   theme), DropOverlay (drag state machine §8.5), WelcomeView with
   Home / Configuration slides for new-machine setup.
-- **Workbench** ([`workbench/`](../app/web2/src/components/workbench/))
+- **Workbench** ([`workbench/`](../../app/web2/src/components/workbench/))
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.
-- **Panel views** ([`panel-views/`](../app/web2/src/components/panel-views/)):
+- **Panel views** ([`panel-views/`](../../app/web2/src/components/panel-views/)):
   Terminal, Logs, Machine tree, Filesystem tree, Images, Checkpoints,
   Debug (Disassembly + Registers + FPU + Memory + MMU + Breakpoints +
   Watchpoints + Call Stack).
-- **Status bar** ([`status-bar/`](../app/web2/src/components/status-bar/))
-  — machine state, drive activity, in-flight upload progress.
-- **Common** ([`common/`](../app/web2/src/components/common/)) —
+- **Status bar** ([`status-bar/`](../../app/web2/src/components/status-bar/))
+  — machine state, drive activity, in-flight upload progress. The HD /
+  FD / CD lights are real: the core counts every drive read and write on
+  the image (`storage.images[i].reads` / `.writes`), the worker tick sums
+  them per kind and emits a `drive_activity` event only when
+  a light changes, holding each on at least 100 ms
+  ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
+  shows only the lights its profile has drives for.
+- **Common** ([`common/`](../../app/web2/src/components/common/)) —
   CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu, Icon
-  (codicon sprite at [`public/icons/sprite.svg`](../app/web2/public/icons/sprite.svg)).
+  (codicon sprite at [`public/icons/sprite.svg`](../../app/web2/public/icons/sprite.svg)).
 
-State lives under [`app/web2/src/state/`](../app/web2/src/state/) —
+State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
 each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,
 `debug`, `theme`, `logs`, `images`, `uploads`, `toasts`, …). The bus
-layer at [`app/web2/src/bus/`](../app/web2/src/bus/) wraps every
+layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
 `gsEval` call site.
 
 ## Upload Pipeline
 
 Four deliberate ways to get a media image into OPFS, all routing
-through [`app/web2/src/bus/upload.ts`](../app/web2/src/bus/upload.ts):
+through [`app/web2/src/bus/upload.ts`](../../app/web2/src/bus/upload.ts).
+Every byte goes through the core's **transfer window**
+([`bus/xfer.ts`](../../app/web2/src/bus/xfer.ts)): the page copies a chunk
+into a fixed buffer in wasm memory and `storage.xfer_write` writes it on
+the emulator thread (`storage.xfer_read` is the reverse).  The page never
+calls `Module.FS`: under WasmFS that runs on the page's thread and
+busy-waits for the OPFS thread, and in Safari — where WebKit serves a
+worker's OPFS request through the page's thread — it deadlocked the page.
 
 1. **New Machine dialog dropdowns** — picking "Upload image…" in a
    floppy / HD / CD / ROM / VROM slot calls
    `pickAndUploadAs(mediaId)` →
    `acceptFilesAsCategory(files, mediaId)`. Strict per-category
-   validation; rejects mismatched files with a toast. The floppy / HD
+   validation; rejects mismatched files with a toast. The slot then
+   selects what was stored, and a cancelled or rejected upload keeps the
+   previous pick. The floppy / HD
    slots also offer "Create blank image…", which opens
-   [`CreateImageDialog.svelte`](../app/web2/src/components/display/CreateImageDialog.svelte)
+   [`CreateImageDialog.svelte`](../../app/web2/src/components/display/CreateImageDialog.svelte)
    and creates a blank image directly in OPFS via `storage.fd_create`
    (800 KB / 1.4 MB) or `storage.hd_create` (size from
-   `scsi.hd_models`).
+   `machine.scsi.hd_models`).
 2. **Drag-and-drop onto the Display** —
-   [`DropOverlay.svelte`](../app/web2/src/components/display/DropOverlay.svelte)
+   [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
    `acceptFiles(files)`. Auto-detects type by probing each
    `MediaTypeDescriptor` in order; archives (`.zip`, `.sit`, `.hqx`,
    `.cpt`, `.bin`, `.sea`) are extracted via `archive.extract` and the
-   inner image re-probed. Floppy / CD images auto-mount into an empty
-   drive (`floppy.drives[i].present` is checked iteratively, SCSI ID 3
-   for CD); ROMs trigger a full cold boot via `maybeBootFromRom`.
+   inner image re-probed. A floppy goes into the first empty drive the
+   model has, a CD into the model's CD bay (`bus/media.ts`; an occupied
+   bay is refused, not overwritten); ROMs trigger a full cold boot via
+   `maybeBootFromRom`.
 3. **Drag-and-drop onto the Filesystem tab** —
-   [`FilesystemView.svelte`](../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
+   [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls
    `acceptFilesRaw(files, targetDir)`. **No validation** — the
    Filesystem view is the low-level OPFS browser. The same tab also does
    *internal* drags — move within OPFS, and **copy a file/folder out of a
    disk image** to an OPFS folder — through the operations in
-   [`bus/fsOps.ts`](../app/web2/src/bus/fsOps.ts).
+   [`bus/fsOps.ts`](../../app/web2/src/bus/fsOps.ts).
 4. **Drag-and-drop onto an Images-tab category** —
-   [`ImageCategorySection.svelte`](../app/web2/src/components/panel-views/images/ImageCategorySection.svelte)
+   [`ImageCategorySection.svelte`](../../app/web2/src/components/panel-views/images/ImageCategorySection.svelte)
    wraps each section in a drop host. Drop calls
    `acceptFilesAsCategory(files, mediaIdFor(cat))`. Same strict
    per-category validation as path 1.
 
 All four paths run through `startActivity` / `endActivity`
-([`state/activity.svelte.ts`](../app/web2/src/state/activity.svelte.ts)) so
+([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
 the status bar shows a spinner with a "\<verb>: \<name>" label during long
 operations. The verb is general — uploads show "Uploading", and the
 Filesystem-tab worker ops reuse the same indicator ("Copying", "Moving",
 "Deleting", "Unpacking", "Downloading"). Confirmation toasts are centralised
-in [`state/toasts.svelte.ts`](../app/web2/src/state/toasts.svelte.ts).
+in [`state/toasts.svelte.ts`](../../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
 
-Highlights — see the typed-dispatch / introspection proposals for the
-full surface.
+Highlights — see [object-model.md](../core/shell/object-model.md) for the
+typed-dispatch and introspection surface.
 
-- **`rom.identify(path)`** → JSON `{recognised, checksum, name,
+- **`machine.rom.identify(path)`** → `{recognised, checksum, name,
   compatible[], size}`. Drives the Model dropdown in the New Machine
   dialog.
-- **`vrom.identify(path)`** → bool (32-KB check).
-- **`floppy.identify(path)`** → density string (`400K` / `800K` /
+- **`machine.vrom.identify(path)`** / **`machine.prom.identify(path)`** →
+  the card a video ROM / PCI expansion ROM belongs to, or `null`.
+- **`machine.floppy.identify(path)`** → density string (`400K` / `800K` /
   `1.4MB`); empty if not a floppy.
-- **`scsi.identify_hd(path)` / `scsi.identify_cdrom(path)`** → bool.
+- **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
+  → bool.
 - **`archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
   `.bin` / `.sea`. **`archive.extract(path, out_dir)`** → bool; powers the
   Filesystem-tab "Unpack" action.
 - **`vfs.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
   image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
-  browse inside images; see [`target-filesystems.md`](target-filesystems.md).
+  browse inside images; see [`target-filesystems.md`](../core/storage/target-filesystems.md).
 - **`storage.cp([-r], src, dst)`** — copy, including *out of* an image into
   OPFS (backs copy-out and Download). **`storage.rm(path)`** /
   **`storage.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
 - **`storage.hd_create(path, size)`** / **`storage.fd_create(path,
-  high_density)`** — create a blank HD / floppy image; **`scsi.hd_models`** →
+  high_density)`** — create a blank HD / floppy image; **`machine.scsi.hd_models`** →
   drive-size catalog. These drive the New Machine dialog's "Create blank
   image…" option.
-- **`machine.profile(id)`** → JSON profile with `name`, `needs_vrom`,
-  `ram_options[]`, `ram_default`, `floppy_slots[]`, `scsi_slots[]`
-  (`{label, id, boot}` — `boot` marks the bay the firmware boots from
-  when it is not the first listed), `has_cdrom`, … — drives the
-  slot-specific rows in the New Machine dialog (Video ROM hidden when
-  `needs_vrom: false`, RAM dropdown built from `ram_options`, floppy rows
-  = `floppy_slots.length`, a Bay selector when `scsi_slots` has more
-  than one entry, preselecting the `boot` bay; the hard disk attaches at
-  that id, never at an assumed 0).
+- **`machine.profile(id)`** → the model's profile: `name`,
+  `ram_options[]`, `ram_default`, `floppy_slots[]`, `hd_bays[]` (each
+  `{bus, id, label}`, the firmware's boot bay first, on whatever bus it
+  is), `cdrom` (the CD bay, or `null`), `video_slots[]`, `capabilities`
+  (MMU kind, FPU, `video_in`, `audio_in`, `aux_cpus`), … — drives the
+  New Machine dialog's rows (RAM from `ram_options`, one floppy row per
+  slot, a Bay selector when there is more than one hard-disk bay, a CD row
+  only with a CD bay), the Debug view's panels and the status bar's
+  drive lights.  `bus/profile.ts` reads it once per model.
 - **`machine.videoin.source`** (`none`/`pattern`/`file`/`host`) plus the
   read-only `connected` / `fields` — the AV video digitizer's host source.
   The camera toolbar button sets `host`; the button itself is gated on
@@ -326,23 +574,44 @@ full surface.
   machine).
 - **`machine.restart`** — power-cycles the running machine: rebuilds it
   from its built-from record with the mounted media still attached.
-- **`rom.load(path)`** — loads a ROM into the booted machine.
-- **`debug.frame([addr], [count])`** — bundled JSON snapshot for the
-  Debug tab: 16 GPRs + control regs, disasm rows with per-row MMU
-  translation (`phys`/`valid`), optional `fpu` block. One round-trip
-  instead of ~21 per pause.
+- **`debug.frame([addr], [count], [before])`** — bundled snapshot for
+  the Debug tab, the same call as **`machine.cpu.frame`**: `{arch, pc,
+  regs, rows, fpu?}` — the core's own register names, disasm rows with
+  per-row MMU translation (`phys`/`valid`), optional `fpu` block.  One
+  round-trip per pause.  Every CPU-like object answers the same contract:
+  an auxiliary core listed in `capabilities.aux_cpus` has
+  `machine.<name>.frame` (the AV DSP3210's `machine.dsp.frame`).
 - **`debug.disasm([addr], [count])`** — pretty-prints to stdout,
   returns `V_BOOL` (truthy for shell `assert ${…}` use). The web2
   Disasm pane uses `debug.frame` instead.
-- **`debug.breakpoints.add(addr [, condition])`** /
-  **`debug.breakpoints.add(addr, "--remove")`** — set / clear.
-- **`memory.peek.{b,w,l}(addr)`** — single-byte / word / long read.
-- **`memory.peek.bytes(addr, count)`** — bulk read, `V_BYTES`, capped
-  at 4 KB. The Memory pane uses this so a 128-byte refresh is one
+- **`debug.breakpoints.add(addr [, condition])`** — set (a second add at
+  the same address returns the existing entry);
+  **`debug.breakpoints.meta.indices("entries")`** — the live ids (ids are
+  never reused, so never walk by `count`);
+  **`debug.breakpoints.entries[id].{addr,enabled,condition,hit_count}`** and
+  **`.remove()`** — read, toggle, and clear one entry.
+- **`machine.memory.peek.{b,w,l}(addr)`** — single-byte / word / long read.
+- **`machine.memory.peek.bytes(addr, count)`** — bulk read, `V_BYTES`,
+  capped at 4 KB. The Memory pane uses this so a 128-byte refresh is one
   bridge call.
-- **`floppy.drives[i].insert(path, writable)` / `.eject` / `.present`**
-- **`scsi.attach_hd(path, id)` / `scsi.attach_cdrom(path, id)` /
-  `scsi.detach_hd(id)` / `scsi.detach_cdrom(id)`**
+- **`machine.floppy.drive[i].insert(path, writable)` / `.eject()` /
+  `.present`** — only the drives the model has.
+- **`<path>.meta.members([values])`** — every member of a node in one
+  call: `{name, kind, category, label, doc}` plus, per kind, `readonly`
+  and `value`, `indexed` and `indices`, or the method's UI metadata. The
+  Machine tree, its context menu and the command browser read it.
+- **`storage.images[i].reads` / `.writes`** — the drive I/O counters
+  behind the activity lights.
+- **`machine.attach_hd(path, [bay])` / `machine.attach_cdrom(path)` /
+  `machine.eject_media(bus, [id])`** — media by bay, on whatever bus the
+  bay is (`machine.scsi`, `machine.scsi2`, the Lisa's ProFile).  `bay`
+  indexes `machine.profile(id).hd_bays` (0, the default, is the boot bay);
+  the CD goes to `profile.cdrom`.  Each attach answers the bay it used,
+  `{bus, id, label}`, which is what `eject_media` takes; an occupied bay,
+  a bay the model does not have, and a CD on a model with no CD bay are
+  refused.  The per-bus `machine.scsi.attach_hd(path, id)` /
+  `attach_cdrom(path, id)` and `machine.scsi.device[id].eject()` remain
+  for scripts that mean one SCSI id on one bus.
 - **`checkpoint.save(path)` / `checkpoint.load(path)`**
 
 ## Filesystem Layout
@@ -351,20 +620,16 @@ full surface.
 /                              Memory (default WasmFS root)
 ├── opfs/                       Single OPFS mount — persistent
 │   ├── images/
-│   │   ├── rom/                ROM images, named by checksum
+│   │   ├── rom/                ROM images, named by content id
 │   │   ├── vrom/               Video ROM images
-│   │   ├── fd/                 400K/800K floppy images
-│   │   ├── fdhd/               1.44 MB HD floppy images
+│   │   ├── fd/                 Floppy images (400K / 800K / 1.44 MB)
 │   │   ├── hd/                 SCSI hard-disk images
-│   │   ├── cd/                 CD-ROM images (.iso / .toast / .cdr)
-│   │   ├── <hash>.img          Content-addressed disk images
-│   │   ├── <hash>.img.delta    Delta files
-│   │   └── <hash>.img.journal  Pre-image journals
+│   │   └── cd/                 CD-ROM images (.iso / .toast / .cdr)
 │   ├── checkpoints/
 │   │   └── <machine-id>-<ts>/  Per-machine checkpoint dirs
-│   │       └── state.checkpoint
-│   ├── upload/                 Drag-and-drop staging
-│   └── config/                 e.g. recent.json
+│   │       ├── state.checkpoint
+│   │       └── <id>.delta / <id>.journal   Writable image state
+│   └── upload/                 Drag-and-drop staging
 └── tmp/                        Memory mount (volatile)
 ```
 
@@ -374,69 +639,98 @@ worker thread. `/tmp/` uses a memory backend; its subdirectories are
 pre-created in C because `FS.mkdir` from the JS main thread fails
 cross-thread under WasmFS pthreads.
 
-When `fd insert` or `scsi.attach_hd` receives a volatile path
-(`/tmp/…`), the C-side `image_persist_volatile()` copies the file to
-`/opfs/images/<hash>.img` (content-addressed, FNV-1a hash) before the
-storage engine opens it. This ensures delta and journal files are also
-on OPFS. The persistent path is stored in checkpoints for restore.
+The core opens media at whatever path it is given and never copies it
+elsewhere. Persistence is the web app's job: an upload, and a URL-parameter
+download, is copied into `/opfs/images/<category>/` before it is attached
+(`bus/upload.ts::persist`), so the base image lives on OPFS and the path
+recorded in checkpoints still resolves after a reload. A volatile path
+(`/tmp/…`) attached from the shell stays volatile: the image, its delta and
+any checkpoint's reference to it do not survive a reload. Copy it under
+`/opfs/` first (`storage.import <src> <dst>`) to keep it.
 
 ## URL Parameters
 
-Handled in [`bus/urlMedia.ts`](../app/web2/src/bus/urlMedia.ts) and
+Handled in [`bus/urlMedia.ts`](../../app/web2/src/bus/urlMedia.ts) and
 invoked from `main.ts` after `whenModuleReady()` resolves:
 
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
   auto-boots.
 - `fdN=<url>` (`fd0`, `fd1`) — downloaded into `/opfs/images/fd/`,
-  inserted into `floppy.drives[N]`.
-- `hdN=<url>` — downloaded into `/opfs/images/hd/`, attached via
-  `scsi.attach_hd`.
+  inserted into floppy drive N, when the model has that drive.
+- `hdN=<url>` — downloaded into `/opfs/images/hd/`, attached to the
+  model's N-th hard-disk bay (`machine.attach_hd(path, N)`; `hd0` is the
+  boot bay, on whatever bus it is — SCSI, a Network Server's second
+  channel, the Lisa's ProFile).
+- `cd=<url>` — downloaded into `/opfs/images/cd/`, inserted into the
+  model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
   IIfx).
-- `speed=paced|turbo` — forwarded to the wasm module as `--speed=`
-  (legacy `max`/`realtime`/`hardware` still accepted as aliases).
+- `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
+  start: a boot pushes it to the core (`scheduler.mode`), and a resumed
+  machine is switched to it (legacy `max`/`realtime`/`hardware` are
+  accepted as aliases).  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 
-Each fetch supports transparent `.zip` unzipping plus auto-extraction
-of Mac archives via `archive.extract`.
+Downloads run one at a time and stream to `/opfs/upload/` through the
+same chunked writer as uploads (`bus/upload.ts::streamToOpfs`), so an
+image is never held whole in memory — except a `.zip`, which is read
+back whole to unzip.  Mac archives are auto-extracted via
+`archive.extract`.
 
 ## Startup Flow
 
-1. Boot WASM module (`createModule`), transfer canvas, wire callbacks.
-2. WebGL2 probe — abort to full-page error if unavailable.
-3. Resolve `js_bridge_t` base pointer, verify version.
-4. Run `machine.register(<machine-id>, <created>)` to set the per-
+The same sequence as Module Bootstrapping above, end to end:
+
+1. WebGL2 probe — abort to a full-page error if unavailable (Svelte is
+   never mounted).
+2. Mount Svelte; `ScreenView` calls `bootstrap(canvas)`: load the
+   module (`createModule`, no command line), wire the callbacks, resolve
+   the mailbox's control block and verify its MAGIC and VERSION.
+3. Run `machine.register(<machine-id>, <created>)` to set the per-
    machine checkpoint dir.
-5. `whenModuleReady()` resolves; `__gsReady = true`.
-6. `maybeOfferBackgroundCheckpoint()` — surfaces a resume modal if
-   a `state.checkpoint.tmp` exists.
-7. If URL has media params → `processUrlMedia()` downloads + auto-boots.
-8. Otherwise the Welcome view sits on top of the canvas. The user
-   either picks a Recent machine, drops a ROM on the Display, or opens
-   the New Machine dialog.
-9. New Machine dialog scans `/opfs/images/rom/`, identifies each via
+4. `whenModuleReady()` resolves; `__gsReady = true`.
+5. `maybeOfferBackgroundCheckpoint()` — surfaces a resume prompt if a
+   `state.checkpoint` exists.
+6. If the URL has any media parameter → `processUrlMedia()` downloads
+   and auto-boots.
+7. Otherwise the Welcome view sits on top of the canvas. The user drops
+   a ROM on the Display or opens the New Machine dialog.
+8. The New Machine dialog scans `/opfs/images/rom/`, identifies each via
    `rom.identify`, builds the Model dropdown from `compatible[]` model
-   ids, and fetches profiles via `machine.profile(id)` to drive RAM /
-   VROM / floppy-slot UI.
-10. `Start Machine` → `machine.boot`, `rom.load`, optional VROM /
-    floppy / HD / CD attach, `scheduler.run`. The Welcome layer fades
-    out; the canvas takes over.
+   ids, and reads profiles (`bus/profile.ts`) to drive the RAM, video,
+   floppy, hard-disk bay and CD rows.
+9. `Start Machine` → one `machine.boot` document (the ROM included),
+   the media into their bays (`bus/media.ts`), the post-boot
+   reconciliation, `scheduler.run`. The Welcome layer fades out; the
+   canvas takes over.
 
 ## Terminal Integration (xterm.js)
 
-[`TerminalPane.svelte`](../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
+[`TerminalPane.svelte`](../../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
 dynamically imports `@xterm/xterm` and `@xterm/addon-fit` on first
-mount so they're code-split out of the main bundle. The terminal's
+mount so they're code-split out of the main bundle, and it stays mounted
+(hidden) once opened, so scrollback survives a tab switch. The terminal's
 input state machine (`{buffer, cursor, history}`) lives in the component.
-On Enter it calls
-`gsEvalLine(line)`, which routes to the Shell class's `run` method;
-the next prompt is returned from `shell.run` and cached for the next
-`showPrompt()`. Stdout / stderr from `Module.print` lands in the same
-pane via [`bus/logSink.ts`](../app/web2/src/bus/logSink.ts).
+All input arrives through xterm's `onData` — keys, pastes, IME text —
+and [`lineDiscipline.ts`](../../app/web2/src/components/panel-views/terminal/lineDiscipline.ts)
+turns it into editing actions, which apply one at a time while the input
+line is live: whatever is typed while a command runs waits for the next
+prompt, and a multi-line paste runs line by line. On Enter the pane calls
+`gsEvalLine(line)`, which posts the line as a **script job** (`REQ_SCRIPT`,
+"Jobs" above) as the terminal's own client; the job's result is the
+shell's new prompt, cached for the next `showPrompt()`. What the line
+prints arrives as output records (`log:output` events) in order before
+that result and is written to the pane as it comes; text printed outside
+any request (boot messages, a breakpoint hit) still arrives through
+`Module.print`. Both land via [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts),
+which holds what is printed before the terminal first opens and replays it
+then.
 
 Tab completion uses the typed `shell.complete(line, cursor)` method.
-Ctrl-C calls `shell.interrupt`.
+Ctrl-C cancels the terminal's foreground job, else stops a run the
+terminal started, else prints a hint ("Ctrl-C, exactly" above), and drops
+the type-ahead; Cmd-C on macOS is the browser's copy.
 
 xterm's theme is fed from the design tokens `--gs-terminal-bg` /
 `--gs-terminal-fg` / `--gs-terminal-cursor`; an `$effect` watching
@@ -449,21 +743,48 @@ Browsers gate WebAudio behind a user gesture. The audio worklet init
 runs lazily after the first pointer/key/click/touch event; the
 emulator can run silently before that without errors.
 
+The worklet is
+[`audio/gsAudio.worklet.ts`](../../app/web2/src/audio/gsAudio.worklet.ts),
+bundled by Vite and handed to the core as `Module.gsAudioWorkletUrl`;
+its ring logic is the class in
+[`audio/audioRing.ts`](../../app/web2/src/audio/audioRing.ts), which the
+unit tests drive directly. It reads int16 frames straight from
+`em_audio.c`'s ring in the shared heap. Each index has one writer: the
+emulator advances `write`, the worklet advances `read`, both
+free-running. The producer overwrites a full ring and the consumer
+resyncs when it has been lapped; a new stream is a `reset_gen` bump the
+consumer carries out, and only the worklet whose id is in `owner`
+consumes, so a replaced node cannot race its successor.
+
+## Shared-heap transports
+
+Four paths move data through the wasm heap instead of the bridge: the
+camera, the microphone, audio out and the Voodoo2/printer command
+rings. Each starts with a control block whose first two words are a
+magic and a version, followed by the `(offset, size)` pairs of what it
+carries; the C side fills the block before it announces the pointer,
+and JS derives every offset from it and refuses, with a toast, a block
+it does not recognise. The word indices live in
+[`em_shm_layout.h`](../../src/platform/wasm/em_shm_layout.h) and are
+mirrored in [`bus/shmLayout.ts`](../../app/web2/src/bus/shmLayout.ts); a
+unit test compares every mirrored header with its TS twin.
+
 ## Camera (AV video input)
 
 The AV machines' video digitizer can take its frames from the host
-webcam. The transport is the audio ring inverted: `em_camera.c` owns a
-static double-buffered frame slot pair plus an atomic header in the
-shared heap (static storage, so the address survives
-`ALLOW_MEMORY_GROWTH`) and announces its address once via
-`Module.onVideoInReady`. The **main thread** decodes each camera frame
-onto a 640×480 canvas, writes it into the *non-active* slot through
-`Module.HEAPU8` and flips the active index; the **worker** copies out of
-the active slot at field cadence through the `gs_video_in_frame` seam.
-The writer never touches the active slot, so tearing is impossible and
-staleness is at most one frame — no locks cross the thread boundary. The
-bridge is deliberately not involved: it caps at ~4 KB per call, and a
-frame is 1.2 MB.
+webcam. `em_camera.c` owns a static double-buffered frame slot pair
+behind its control block in the shared heap (static storage, so the
+address survives `ALLOW_MEMORY_GROWTH`) and announces its address once
+via `Module.onVideoInReady`. The **main thread** decodes each camera
+frame onto a 640×480 canvas, writes it into the *non-active* slot
+through `Module.HEAPU8`, flips the active index and bumps `seq`; the
+**worker** copies out of the active slot at field cadence through the
+`gs_video_in_frame` seam. Writing only the non-active slot does not by
+itself rule out a tear — a reader still copying slot A can see the
+writer finish B, flip, and start on A — so the reader checks `seq`
+after its copy and retries. Staleness is at most one frame and no locks
+cross the thread boundary. The bridge is deliberately not involved: it
+caps at ~4 KB per call, and a frame is 1.2 MB.
 
 The camera button in the display toolbar is the master toggle (its click
 is also the user gesture `getUserMedia` needs) and is shown only on
@@ -476,7 +797,7 @@ engine are both on — see `Module.onVideoInState` above and
 
 `SharedArrayBuffer` (required for pthreads + Atomics) needs Cross-
 Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers. The dev
-server [`scripts/dev_server.py`](../scripts/dev_server.py) sends both
+server [`scripts/dev_server.py`](../../scripts/dev_server.py) sends both
 unconditionally; serving `index.html` directly (no redirect) keeps the
 headers intact through Codespaces' port-forwarding proxy.
 
@@ -484,20 +805,20 @@ headers intact through Codespaces' port-forwarding proxy.
 
 - Wire new features through the object model
   (`bus/emulator.ts::gsEval(path, args)`). The bridge contract is
-  documented in [object-model.md](object-model.md).
+  documented in [object-model.md](../core/shell/object-model.md).
 - New panel views drop into
-  [`app/web2/src/components/panel-views/`](../app/web2/src/components/panel-views/)
+  [`app/web2/src/components/panel-views/`](../../app/web2/src/components/panel-views/)
   and get registered in `PanelTab` / `PanelContent`.
 - New persistent UI state goes into a `state/<slice>.svelte.ts` file
   with `$state(...)`. Wire localStorage persistence in
-  [`state/persist.svelte.ts`](../app/web2/src/state/persist.svelte.ts).
-- Volatile media images are auto-persisted to `/opfs/images/` by
-  `image_persist_volatile()` when mounted.
+  [`state/persist.svelte.ts`](../../app/web2/src/state/persist.svelte.ts).
+- Media is persisted by the web app (`bus/upload.ts::persist`), not by
+  the core; the core opens the path it is given.
 - The core is path-agnostic — all directory-structure decisions belong
   to the web app.
 - Any new URL parameter is handled in
-  [`bus/urlMedia.ts::parseUrlMediaParams`](../app/web2/src/bus/urlMedia.ts).
+  [`bus/urlMedia.ts::parseUrlMediaParams`](../../app/web2/src/bus/urlMedia.ts).
 - The diagnostic harness at
-  [`scripts/ui2-diag.mjs`](../scripts/ui2-diag.mjs) drives Chromium
+  [`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs) drives Chromium
   via Playwright, captures console / pageerror / xterm contents, and
   prints a JSON report. Run with `make ui2-diag`.

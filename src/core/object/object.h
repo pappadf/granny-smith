@@ -4,7 +4,6 @@
 // object.h
 // Object-model substrate: classes, members, objects, nodes, path resolution.
 //
-// M1 lands the substrate only — no concrete classes are populated yet.
 // Tests construct toy classes directly to exercise the resolver.
 //
 // Indexed-child stability: indices are sparse and stable. New entries
@@ -17,6 +16,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "common.h"
 #include "value.h"
@@ -37,13 +37,22 @@ struct class_desc;
 #define OBJ_ARG_REST        0x0002u // slurp all remaining arguments into a V_LIST
 #define OBJ_ARG_NONEMPTY    0x0004u // V_STRING value must be non-NULL and non-empty
 #define OBJ_ARG_STRICT_KIND 0x0008u // disable int↔uint, int→float, string→enum coercion
-// OBJ_ARG_TEMPLATE — deferred-eval string slot (shell v2 §6.3): the
+// OBJ_ARG_TEMPLATE — deferred-eval string slot: the
 // command parser stores the raw, uninterpolated string body; the owning
 // subsystem evaluates it later (possibly repeatedly) with extra
 // bindings, e.g. logpoint messages with `$value`/`$addr`/`$size`.
 #define OBJ_ARG_TEMPLATE 0x0020u
+// OBJ_ARG_GROUPED — this optional argument is part of an all-or-nothing group
+// that the method body checks by argument count (screen.match's exclude
+// rectangles: one reference, or a reference plus all four edges, or plus all
+// eight).  Such a slot deliberately has no default: skipping it alone is not a
+// legal call, so the class validator's "an optional with no default that
+// precedes another optional is unreachable by name" rule does not apply.
+// Saying so in the declaration is the point — without it the grouping lives
+// only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
+#define OBJ_ARG_GROUPED 0x0040u
 
-// === Member visibility category (proposal-system-object-model.md §7.2) =======
+// === Member visibility category ==============================================
 //
 // A three-tier visibility classification, stored in the high bits of
 // member_t.flags (the low bits hold VAL_RO/VAL_HEX/… from value.h, which
@@ -58,17 +67,18 @@ struct class_desc;
 #define M_CAT_INTERNAL 0x0200u // never shown in UI; still scriptable
 #define M_CAT_MASK     0x0300u // mask to extract the category bits
 
-// === Method UI metadata (proposal-system-object-model.md §7.3) ===============
+// === Method UI metadata ======================================================
 //
 // Flags on a method member that steer context menus and the command
 // browser. They hang off the existing method descriptor; no new subsystem.
 #define MM_DESTRUCTIVE 0x0001u // confirm before invoking (eject, rm, …)
 #define MM_MUTATE      0x0002u // changes state (vs a pure query)
 #define MM_HIDDEN      0x0004u // not surfaced in UI menus / browser
+#define MM_IO          0x0008u // an I/O job: cost proportional to a file; answers later, reports progress, cancellable
 
-// One declared parameter on a method. Mirrors proposal §3.
+// One declared parameter on a method.
 //
-// Two flag fields (proposal §3.3):
+// Two flag fields:
 //   `validation_flags` change what the validator does (OBJ_ARG_*).
 //   `presentation_flags` steer formatters and inspectors (VAL_HEX,
 //      VAL_DEC, VAL_BIN, VAL_VOLATILE, VAL_SENSITIVE) — no effect at
@@ -103,7 +113,6 @@ typedef value_t (*attr_get_fn)(struct object *self, const struct member *m);
 typedef value_t (*attr_set_fn)(struct object *self, const struct member *m, value_t in);
 typedef value_t (*method_fn)(struct object *self, const struct member *m, int argc, const value_t *argv);
 typedef struct object *(*child_get_fn)(struct object *self, int index);
-typedef int (*child_count_fn)(struct object *self);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
 typedef struct object *(*child_lookup_fn)(struct object *self, const char *name);
 
@@ -124,11 +133,11 @@ typedef struct member {
     const char *name;
     const char *doc;
     uint16_t flags; // VAL_RO + M_CAT_* visibility (per-member, not per-slot)
-    // Optional display label (proposal §7.1). The path segment stays
+    // Optional display label. The path segment stays
     // `name`; the tree shows `label` when present, else `name`. NULL = use
     // the name.
     const char *label;
-    // Ordering weight for a faithful, deterministic tree (proposal §7.4).
+    // Ordering weight for a faithful, deterministic tree.
     // Lower sorts earlier; ties break on declaration order. Default 0.
     int16_t order;
     union {
@@ -155,29 +164,33 @@ typedef struct member {
             //            is always allowed, as the in-band error path).
             value_kind_t result;
             method_fn fn;
-            // UI metadata (proposal §7.3): MM_DESTRUCTIVE | MM_MUTATE | MM_HIDDEN.
+            // UI metadata: MM_DESTRUCTIVE | MM_MUTATE | MM_HIDDEN | MM_IO.
             uint16_t ui_flags;
             // Short verb shown in menus ("Save image…") when distinct from
             // the method name ("export"). NULL = use the method name.
             const char *verb_label;
             // By-task grouping for the command browser ("storage", "debugger",
-            // "mac", …); a different axis from the structural tree (§7.3/§8.6).
+            // "mac", …); a different axis from the structural tree.
             const char *task_category;
         } method;
         struct {
             const struct class_desc *cls;
             bool indexed;
-            // A non-owning reference edge (proposal §6.2/§6.3): the child is a
+            // A non-owning reference edge: the child is a
             // cross-reference the parent points at but does not own. It does
             // not cascade-delete and renders as a clickable link, not an
             // expandable child. Reference children are always callback-backed
             // (never in the attached/owning list) so cascade never frees them.
             bool reference;
-            // Indexed children: get(i)→object|NULL (NULL = hole), count→live,
-            //                   next(prev)→next live index or -1. Pass -1 to start.
+            // Indexed children: get(i)→object|NULL (NULL = hole) for i in
+            //                   [0, slots); the core walks them.  A collection
+            //                   whose ids are sparse past any fixed bound gives
+            //                   next(prev)→next live index or -1 (start at -1)
+            //                   instead.  A class whose one indexed child this
+            //                   is answers `count` with its live entries.
             // Named children:   lookup(name)→object|NULL.
             child_get_fn get;
-            child_count_fn count;
+            int slots;
             child_next_fn next;
             child_lookup_fn lookup; // for named children (when not statically attached)
         } child;
@@ -210,9 +223,9 @@ struct object *object_root(void);
 void object_root_reset(void);
 
 // Swap the root's class descriptor. Used by root_install to
-// register the top-level root methods (proposal §5.10) while keeping
+// register the top-level root methods while keeping
 // the substrate's lazy-creation contract for object_root() — the
-// initial namespace-only class lives in object.c so M1/M2 callers
+// initial namespace-only class lives in object.c so early callers
 // don't depend on root install order. After this call the
 // resolver finds members declared on `cls` directly on the root, in
 // addition to any runtime-attached children.
@@ -238,7 +251,7 @@ void object_delete(struct object *o);
 // Cascade-delete: free `o` and its entire owned subtree in post-order
 // (deepest children first, then `o`). "Owned" means the attached-child
 // (object_attach) edges, which form the spanning tree and the canonical
-// path (proposal §6.1). Reference edges (member_t.child.reference, always
+// path. Reference edges (member_t.child.reference, always
 // callback-backed and never attached) are not followed. Indexed-collection
 // item objects produced by member get/next callbacks are likewise not
 // attached, so they are not freed here — their owning module frees them in
@@ -270,7 +283,52 @@ const char *object_name(const struct object *o);
 void *object_data(struct object *o);
 struct object *object_parent(struct object *o);
 
-// === Display label & ordering (proposal §7.1 / §7.4) ========================
+// === Entry pools =============================================================
+//
+// A collection whose entries are made once, one per slot of the table they
+// stand for: entry i's data is its slot number, so its callbacks find their
+// record with object_pool_slot(self), and the collection's get() hands out
+// object_pool_at(pool, i).  OBJECT_POOL declares the storage; the network
+// modules each carried a data type, two arrays and a create and a delete loop
+// per collection -- eight of them.
+typedef struct {
+    struct object **objs;
+    int *slots;
+    int n;
+} object_pool_t;
+
+#define OBJECT_POOL(name, count)                                                                                       \
+    static struct object *name##_objs[count];                                                                          \
+    static int name##_slots[count];                                                                                    \
+    static object_pool_t name = {name##_objs, name##_slots, (count)}
+
+void object_pool_create(object_pool_t *pool, const class_desc_t *cls);
+void object_pool_delete(object_pool_t *pool);
+struct object *object_pool_at(const object_pool_t *pool, int slot); // NULL out of range or before create
+int object_pool_slot(struct object *entry); // -1 for no entry
+
+// === Counter blocks ==========================================================
+//
+// A stats object publishes a struct of uint64_t counters, one read-only
+// attribute per field, each member naming its field by offset.  One getter
+// serves every such block: OBJ_U64_FIELD reads the block the object's data
+// points to (object_new(cls, block, name)); OBJ_U64_FIELD_WITH takes a getter
+// of its own, for a block that moves -- which returns obj_u64_at(block, m).
+value_t obj_u64_at(const void *block, const member_t *m);
+value_t obj_u64_field_get(struct object *self, const member_t *m);
+
+#define OBJ_U64_FIELD_WITH(block_type, field, doc_text, getter)                                                        \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
+            .type = V_UINT,                                                                                            \
+            .width = 8,                                                                                                \
+            .get = getter,                                                                                             \
+            .user_data = (const void *)(uintptr_t)offsetof(block_type, field)                                          \
+        }                                                                                                              \
+    }
+#define OBJ_U64_FIELD(block_type, field, doc_text) OBJ_U64_FIELD_WITH(block_type, field, doc_text, obj_u64_field_get)
+
+// === Display label & ordering ================================================
 //
 // An object's `name` is its stable path segment (`machine`); its `label`
 // is the human-facing display string ("Macintosh IIcx"). Hardware nodes
@@ -286,7 +344,7 @@ const char *object_label(struct object *o); // label if set, else name
 void object_set_order(struct object *o, int order);
 int object_order(struct object *o);
 
-// Visibility category for an attached child object (proposal §7.2). Per-
+// Visibility category for an attached child object. Per-
 // member visibility lives in member_t.flags (M_CAT_*); attached hardware
 // nodes carry it per-object here instead, since they are not declared
 // members. Pass one of M_CAT_BASIC / M_CAT_ADVANCED / M_CAT_INTERNAL.
@@ -302,7 +360,7 @@ void object_each_attached(struct object *o, void (*fn)(struct object *parent, st
 
 // Like object_each_attached, but visits children in ascending object_order
 // (ties break on attach order), so the SYSTEM tab and meta.children render
-// in a stable, meaningful sequence (proposal §7.4).
+// in a stable, meaningful sequence.
 void object_each_attached_ordered(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
                                   void *ud);
 
@@ -327,7 +385,7 @@ static inline bool node_valid(node_t n) {
 
 // Resolve a dotted path string against `root`. The path may include
 // segments of the form `name`, `[index]`, or `.index`. Returns a node
-// with obj=NULL on failure. M1 supports paths only — no method calls
+// with obj=NULL on failure. Paths only — no method calls
 // (those are the shell's job to assemble); the resolver returns the
 // method's member in `member` so the caller can node_call it.
 node_t object_resolve(struct object *root, const char *path);
@@ -355,7 +413,7 @@ typedef struct {
 
 // Bind a (positional list, named list) pair against a method's declared
 // args[] table, producing the purely positional argv that node_call /
-// node_validate_args consume. Rules (proposal-named-args-boot-config §3.1):
+// node_validate_args consume. Rules:
 // positionals fill slots left to right; named args target declared fixed
 // slots by name in any order; duplicates and unknown names are errors;
 // OBJ_ARG_REST slots are positional-tail only. Unfilled interior slots are
@@ -369,6 +427,10 @@ typedef struct {
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
                        value_t *out_argv, int *out_argc);
 
+// The next live index of an indexed child member after `prev` (-1 to start),
+// or -1: the member's own next(), or a walk of get() over its slots.
+int object_child_next(struct object *self, const member_t *m, int prev);
+
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);
 
@@ -381,8 +443,8 @@ node_t node_child_key(node_t n, const char *key);
 // === Reserved-word check =====================================================
 
 // Reserved words may not be used as member names, alias names, or any
-// future user-bindable identifier. Members listed in §2.3 of the
-// proposal: boolean-literal spellings + script-grammar keywords.
+// future user-bindable identifier. Members: boolean-literal spellings +
+// script-grammar keywords.
 //
 // Returns true if `name` collides with a reserved word.
 bool object_is_reserved_word(const char *name);
@@ -393,7 +455,7 @@ bool object_validate_name(const char *name, char *err_buf, size_t err_size);
 
 // === Per-object invalidation hooks ==========================================
 //
-// Hot-path consumers that hold a pre-resolved node_t (proposal §9 — held
+// Hot-path consumers that hold a pre-resolved node_t (held
 // breakpoint conditions, watch paths, …) need to be told when "their"
 // node has gone away. The framework lets each object carry a small list
 // of weak-reference callbacks; the entry's owner fires them on remove
@@ -423,6 +485,16 @@ void object_fire_invalidators(struct object *o);
 // must be unique within the class. Returns true on success; on failure
 // writes a one-line message into err_buf (may be NULL).
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
+
+// Default value for an optional argument that has no real default.
+//
+// node_validate_args can only truncate argc at the tail, so an optional slot a
+// caller skipped must still be filled if any later optional was supplied. Give
+// such a slot `.default_value = &obj_arg_unset` and the body sees V_NONE,
+// meaning "not supplied". Declaring a real kind and defaulting to a sentinel of
+// some *other* kind (V_INT -1 for a V_UINT slot, say) is the thing this
+// replaces: it makes the body re-check a kind the declaration already fixed.
+extern const value_t obj_arg_unset;
 
 // === Meta-attribute slot ====================================================
 //

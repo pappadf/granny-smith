@@ -1,14 +1,17 @@
+export { initEmulator } from './boot';
 export {
-  initEmulator,
   shutdownEmulator,
   pauseEmulator,
   resumeEmulator,
   applySchedulerMode,
-  saveCheckpoint,
   bootstrap,
   isModuleReady,
   whenModuleReady,
   gsEval,
+  gsOk,
+  isGsError,
+  gsErrorText,
+  type GsError,
   gsEvalLine,
   getRuntimePrompt,
   seedPrompt,
@@ -26,29 +29,24 @@ export {
   type MethodInfo,
 } from './systemTree';
 export {
-  disasmAt,
-  readRegisters,
   writeRegister,
   peekL,
   peekBytes,
-  peekPhysBytes,
   listBreakpoints,
   addBreakpoint,
   removeBreakpoint,
+  removeBreakpointAt,
   continueExec,
   pauseExec,
   stepInto,
-  stepOver,
   stopMachine,
   restart,
-  type DisasmRow,
   type Registers,
   type Breakpoint,
 } from './debug';
 export {
   opfs,
   setOpfsBackend,
-  MockOpfs,
   BrowserOpfs,
   writeToOPFS,
   removeFromOPFS,
@@ -56,12 +54,11 @@ export {
 } from './opfs';
 export { acceptFiles, processDataTransfer } from './upload';
 export { processUrlMedia, parseUrlMediaParams } from './urlMedia';
-export { maybeOfferBackgroundCheckpoint, isResumePending, resolveResume } from './checkpoint';
-export type {
-  MachineConfig,
-  RomInfo,
-  OpfsEntry,
-  RecentEntry,
-  ImageCategory,
-  CheckpointEntry,
-} from './types';
+export {
+  maybeOfferBackgroundCheckpoint,
+  isResumePending,
+  resolveResume,
+  saveCheckpoint,
+  type SaveCheckpointResult,
+} from './checkpoint';
+export type { MachineConfig, RomInfo, OpfsEntry, ImageCategory, CheckpointEntry } from './types';

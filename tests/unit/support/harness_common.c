@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Common utilities shared by all harness implementations
 
 #include "harness.h"

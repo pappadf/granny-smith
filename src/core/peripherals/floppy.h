@@ -16,6 +16,11 @@
 
 #include <stdbool.h>
 
+// Drive slots on the controller: 0 = internal, 1 = external/second bay.
+// Public because callers outside the module validate a drive index against it
+// (system.c's `fd insert`); floppy_internal.h's NUM_DRIVES is defined from it.
+#define FLOPPY_NUM_DRIVES 2
+
 // === Controller Types ===
 #define FLOPPY_TYPE_IWM   0 // IWM-only (Mac Plus)
 #define FLOPPY_TYPE_SWIM  1 // SWIM dual-mode IWM+ISM (SE/30)
@@ -30,6 +35,10 @@ typedef struct floppy floppy_t;
 // Initializes a floppy controller of the given type and maps it to memory
 floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint);
 // Frees all resources associated with the floppy controller
+// Bus /RESET: controller registers, mode latches and motor enable back to
+// power-on.  Media, decoded tracks and head position are NOT disturbed.
+void floppy_reset(floppy_t *floppy);
+
 void floppy_delete(floppy_t *floppy);
 // Saves the floppy controller state to a checkpoint
 void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint);
@@ -39,12 +48,28 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint);
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk);
 // Returns whether a disk is currently inserted in the specified drive
 bool floppy_is_inserted(floppy_t *floppy, int drive);
+// How many drives the machine has (its profile's floppy_slots, at most
+// FLOPPY_NUM_DRIVES).  Drives past it are not in the object model and refuse
+// an insert.  Default: FLOPPY_NUM_DRIVES.
+void floppy_set_drive_count(floppy_t *floppy, int n);
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
+// The SWIM register file, addressed by INDEX (0-15).  Whoever owns the bus
+// window maps addresses onto the index -- the chip never sees an address.
+// Mirrors swim3_read / swim3_write.
+uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg);
+void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t value);
+
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
+// Frees and clears a drive's cached GCR track buffers.  Call after writing to
+// the drive's image behind the controller's back (the IIfx/Q900 IOP block
+// path), so the next read re-encodes from the image rather than serving stale
+// nibbles; also used by the eject paths, which must not leak the buffers.
+// Does NOT flush modified tracks — the caller decides whether they matter.
+void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive);
 
-// === M7e — object-model accessors ===========================================
+// === Object-model accessors =================================================
 //
 // Read-only views over the floppy controller and its two drive slots
 // used by `floppy` / `floppy.drives` object classes. Drive index is
@@ -55,6 +80,8 @@ int floppy_get_type(const floppy_t *floppy); // FLOPPY_TYPE_IWM | _SWIM | _SWIM3
 bool floppy_get_sel(const floppy_t *floppy); // VIA-driven head-select signal
 
 int floppy_drive_track(const floppy_t *floppy, unsigned drive);
+// The format the medium currently carries (floppy_format_t), or -1 if unknown.
+int floppy_drive_format(const floppy_t *floppy, unsigned drive);
 int floppy_drive_side(const floppy_t *floppy, unsigned drive);
 bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive);
 const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive);

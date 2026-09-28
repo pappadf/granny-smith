@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Accelerated scheduler button (proposal-scheduler-accelerated-
-// mode.md §9, last bullet) — the third toolbar mode switches the core to
-// `accelerated`, instruction throughput rises above Real-Time (the adaptive
-// governor climbing under the real RAF loop), and the *timebase* stays locked
-// to real wall-clock while it does.
+// web2 e2e: the Accelerated scheduler button — the third toolbar mode
+// switches the core to `accelerated`, instruction throughput rises above
+// Real-Time (the adaptive governor climbing under the real RAF loop), and the
+// *timebase* stays locked to real wall-clock while it does.
 //
 // The two rates that pin the mode's contract, both read through the shipped
 // Terminal panel (web2 has no window.gsEval):
@@ -25,22 +24,17 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 // SE/30: 15.6672 MHz, authentic CPI 4.
 const SE30_HZ = 15_667_200;
-
-// Type one shell line into the Terminal panel's xterm. A trailing settle
-// lets the async worker round-trip land before the next interaction.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
-}
 
 // Probe the cycle and instruction counters with a fresh key per probe so
 // stale terminal echoes can't satisfy the match (same pattern as
@@ -157,7 +151,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
     })
     .toBeGreaterThan(live.instrPerSec * 1.4);
 
-  // --- The §9 property, measured in one window -------------------------------
+  // --- The mode's property, measured in one window ---------------------------
   // CPU-bound throughput up, timebase unchanged: instructions per real second
   // beat Real-Time while cycles per real second stay at the machine's clock.
   const accel = await measureRates(page, 6);

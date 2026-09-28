@@ -6,7 +6,6 @@
 
 include "../lib/mac.script"
 
-machine.rtc.time = 3000000000
 
 # Seat both cards before the boot consumes the staging channels: the 24AC
 # in socket $D (where the single-card tests put their card) and the 8*24 GC
@@ -19,6 +18,7 @@ machine.nubus.slot[14].card_id = "824gc"
 # card default and the depth assert below fails.
 machine.nubus.slot[13].video_mode = "rgb_640x480_8bpp"
 machine.boot model="q700" ram=8192 rom="${$ROM}"
+machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
 scheduler.run 700000000
 wait_stable(1800000000)
@@ -42,7 +42,7 @@ assert machine.nubus.slot[14].card.gc.on == false "GC INIT unexpectedly started 
 
 # From both: the built-in DAFB stays the boot screen even with two cards in.
 assert (debug.mac.globals.read("ScrnBase") & 0xFF000000) == 0xF9000000 "ScrnBase not on the DAFB"
-# 7.6 selects 32-bit addressing itself (§3.4).
+# 7.6 selects 32-bit addressing itself (measured).
 assert_addr(true)
 assert machine.screen.width == 640 "screen width != 640"
 assert machine.screen.height == 480 "screen height != 480"

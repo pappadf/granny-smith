@@ -21,9 +21,9 @@
   // svelte-ignore state_referenced_locally
   const expanded = expandedState ?? localExpanded;
 
-  // The root instance generates the catalogue from the live model
-  // (proposal §8.6); recursive instances receive their slice via the `nodes`
-  // prop. Rebuild when a machine boots so the surface stays faithful.
+  // The root instance generates the catalogue from the live model; recursive
+  // instances receive their slice via the `nodes` prop. Rebuild when a machine
+  // boots so the surface stays faithful.
   let loaded = $state<CommandNode[]>([]);
   const renderNodes = $derived(nodes ?? loaded);
   $effect(() => {

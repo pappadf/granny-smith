@@ -1,52 +1,63 @@
 <script lang="ts">
-  import { mmuRegs } from '@/bus/mockMmu';
-  import { decodeTc, decodeCrpFromHex } from '@/lib/mmu';
+  import { readMmuState, type MmuRegister } from '@/bus/mmu';
+  import { decodeTc, decodeRootPointer } from '@/lib/mmu';
   import { fmtHex32 } from '@/lib/hex';
+  import { machine } from '@/state/machine.svelte';
+  import { debugFrame } from '@/state/debugFrame.svelte';
 
-  const tc = $derived(decodeTc(mmuRegs.tc));
-  const crp = $derived(decodeCrpFromHex(mmuRegs.crp));
-  const srp = $derived(decodeCrpFromHex(mmuRegs.srp));
-  const summary = $derived(
-    `MMU ${mmuRegs.enabled ? 'enabled' : 'disabled'} · ${mmuRegs.pageSize} B pages · ${mmuRegs.levels}-level walk · ` +
-      (tc.SRE === 1 ? 'split S/U roots (SRE=1)' : 'single root (SRE=0)'),
-  );
+  // The MMU's own registers, read from the core for whichever kind this
+  // machine has (bus/mmu.ts), re-read with each new debug frame.
+  let regs = $state<MmuRegister[]>([]);
+  $effect(() => {
+    void debugFrame.current;
+    const kind = machine.mmuKind;
+    void readMmuState(kind).then((r) => (regs = r));
+  });
+
+  const byName = $derived(Object.fromEntries(regs.map((r) => [r.name, r.value])));
+  // The 68030's TC / root pointers get their fields decoded as well.
+  const pmmu = $derived(machine.mmuKind === '68030_pmmu' && 'tc' in byName);
+  const tc = $derived(pmmu ? decodeTc(byName.tc) : null);
+  const crp = $derived(pmmu ? decodeRootPointer(byName.crp_hi, byName.crp_lo) : null);
+  const srp = $derived(pmmu ? decodeRootPointer(byName.srp_hi, byName.srp_lo) : null);
+
+  const KIND_LABEL: Record<string, string> = {
+    '68030_pmmu': '68030 PMMU',
+    '68040': '68040 MMU',
+    ppc_601: 'PowerPC 601 MMU',
+    ppc_604: 'PowerPC 604 MMU',
+    lisa_segment: 'Lisa segment MMU',
+  };
 </script>
 
 <div class="state-body">
-  <p class="summary">{summary}</p>
-  <div class="reg-block">
-    <div class="reg-line">
-      <span class="reg-name">TC</span>= $<span class="reg-hex">{fmtHex32(mmuRegs.tc)}</span>
+  <p class="summary">{KIND_LABEL[machine.mmuKind] ?? 'MMU'}</p>
+  {#if regs.length === 0}
+    <p class="summary">Reading the MMU…</p>
+  {/if}
+  {#each regs as r (r.name)}
+    <div class="reg-block">
+      <div class="reg-line">
+        <span class="reg-name">{r.name.toUpperCase()}</span>= $<span class="reg-hex"
+          >{fmtHex32(r.value)}</span
+        >
+      </div>
+      {#if tc && r.name === 'tc'}
+        <div class="reg-decoded">
+          E={tc.E} · SRE={tc.SRE} · FCL={tc.FCL} · PS={tc.PS} ({1 << tc.PS} B) · IS={tc.IS} · TIA={tc.TIA}
+          TIB={tc.TIB} TIC={tc.TIC} TID={tc.TID}
+        </div>
+      {:else if crp && r.name === 'crp_lo'}
+        <div class="reg-decoded">
+          CRP limit={crp.limit} · DT={crp.dt} · pointer=${fmtHex32(crp.pointer)}
+        </div>
+      {:else if srp && r.name === 'srp_lo'}
+        <div class="reg-decoded">
+          SRP limit={srp.limit} · DT={srp.dt} · pointer=${fmtHex32(srp.pointer)}
+        </div>
+      {/if}
     </div>
-    <div class="reg-decoded">
-      E={tc.E} · SRE={tc.SRE} · FCL={tc.FCL} · PS={tc.PS} ({1 << tc.PS} B) · IS={tc.IS} · TIA={tc.TIA}
-      TIB={tc.TIB} TIC={tc.TIC} TID={tc.TID}
-    </div>
-  </div>
-  <div class="reg-block">
-    <div class="reg-line"><span class="reg-name">CRP</span>= ${mmuRegs.crp}</div>
-    <div class="reg-decoded">
-      limit={crp.limit} · DT={crp.dt} · pointer=$<span class="reg-hex">{fmtHex32(crp.pointer)}</span
-      >
-    </div>
-  </div>
-  <div class="reg-block">
-    <div class="reg-line"><span class="reg-name">SRP</span>= ${mmuRegs.srp}</div>
-    <div class="reg-decoded">
-      limit={srp.limit} · DT={srp.dt} · pointer=$<span class="reg-hex">{fmtHex32(srp.pointer)}</span
-      >
-    </div>
-  </div>
-  <div class="reg-block">
-    <div class="reg-line">
-      <span class="reg-name">TT0</span>= $<span class="reg-hex">{fmtHex32(mmuRegs.tt0)}</span>
-    </div>
-  </div>
-  <div class="reg-block">
-    <div class="reg-line">
-      <span class="reg-name">TT1</span>= $<span class="reg-hex">{fmtHex32(mmuRegs.tt1)}</span>
-    </div>
-  </div>
+  {/each}
 </div>
 
 <style>

@@ -17,6 +17,8 @@
 
 #include "storage.h"
 
+#include "io/io_worker.h"
+
 #include "log.h"
 #include "system.h"
 
@@ -95,7 +97,38 @@ struct storage_t {
     size_t journal_capacity;
 
     bool bitmap_dirty; // True if bitmap changed since last flush
+
+    // The files, for an export view's own handles.
+    char *base_path;
+    char *delta_path;
+    int export_locks; // exports in flight: guest writes are refused
+    struct storage_t *live_next; // the registry of live storages (export_view_end)
 };
+
+// Every storage alive, so a view's end can tell whether the storage it
+// locked still exists.
+static storage_t *g_live_storages;
+
+static void live_add(storage_t *s) {
+    s->live_next = g_live_storages;
+    g_live_storages = s;
+}
+
+static void live_remove(storage_t *s) {
+    for (storage_t **pp = &g_live_storages; *pp; pp = &(*pp)->live_next) {
+        if (*pp == s) {
+            *pp = s->live_next;
+            return;
+        }
+    }
+}
+
+static bool live_has(const storage_t *s) {
+    for (storage_t *p = g_live_storages; p; p = p->live_next)
+        if (p == s)
+            return true;
+    return false;
+}
 
 // ============================================================================
 // Bitmap helpers
@@ -147,7 +180,22 @@ static int journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
     return journal_index_add(s, lba);
 }
 
-// Scan the journal file and rebuild the in-memory index.
+// Every seek in this file is fseeko with an off_t: a long is 32 bits on
+// wasm32, where an fseek offset past 2 GiB wrapped and reads and writes
+// landed at the wrong block with no error.
+_Static_assert(sizeof(off_t) >= 8, "storage requires 64-bit off_t (build with _FILE_OFFSET_BITS=64)");
+
+// Byte position of block `lba` in a file whose blocks start at `origin`,
+// with the product formed in 64 bits before any narrowing.
+static off_t block_pos(uint64_t origin, uint64_t lba, uint32_t block_size) {
+    return (off_t)(origin + lba * block_size);
+}
+
+// Scan the journal file and rebuild the in-memory index.  The index is the
+// longest valid prefix of the file: an entry that is cut short (a crash mid-
+// append) or names a block outside the device ends it,
+// and the file is truncated there so appends stay aligned and a replay
+// never writes outside the delta's data area.
 static int journal_load_index(storage_t *s) {
     s->journal_count = 0;
 
@@ -164,25 +212,36 @@ static int journal_load_index(storage_t *s) {
 
     if (fseeko(s->journal_fp, 0, SEEK_SET) != 0)
         return GS_ERROR;
-    size_t entries = (size_t)size / JOURNAL_ENTRY_SIZE(s);
+    uint64_t entries = (uint64_t)size / JOURNAL_ENTRY_SIZE(s);
 
-    for (size_t i = 0; i < entries; i++) {
+    uint64_t valid = 0;
+    for (; valid < entries; valid++) {
         uint32_t lba;
-        if (fread(&lba, sizeof(lba), 1, s->journal_fp) != 1) {
-            // Short read mid-iteration: the journal is truncated and the
-            // in-memory index is inconsistent with the on-disk file. Surface
-            // it so the caller can decide whether to discard and re-roll.
-            return GS_ERROR;
+        if (fread(&lba, sizeof(lba), 1, s->journal_fp) != 1)
+            break;
+        if (lba >= s->block_count) {
+            LOG(0,
+                "storage: journal entry %" PRIu64 " names block %" PRIu32 " of %" PRIu64 "; discarding it and the rest",
+                valid, lba, s->block_count);
+            break;
         }
         // Skip block data
-        if (fseek(s->journal_fp, (long)s->block_size, SEEK_CUR) != 0)
-            return GS_ERROR;
+        if (fseeko(s->journal_fp, (off_t)s->block_size, SEEK_CUR) != 0)
+            break;
         if (journal_index_add(s, lba) != GS_SUCCESS)
             return GS_ERROR; // OOM growing the index
     }
 
+    off_t keep = (off_t)valid * (off_t)JOURNAL_ENTRY_SIZE(s);
+    if (keep != size) {
+        if (valid == entries)
+            LOG(0, "storage: journal ends in a partial entry; discarding it");
+        if (ftruncate(fileno(s->journal_fp), keep) != 0)
+            return GS_ERROR;
+    }
     // Position at end for appending
-    fseeko(s->journal_fp, 0, SEEK_END);
+    if (fseeko(s->journal_fp, 0, SEEK_END) != 0)
+        return GS_ERROR;
     return GS_SUCCESS;
 }
 
@@ -192,7 +251,7 @@ static int journal_load_index(storage_t *s) {
 
 // Write the delta file header (called on creation).
 static int delta_write_header(storage_t *s) {
-    fseek(s->delta_fp, 0, SEEK_SET);
+    fseeko(s->delta_fp, 0, SEEK_SET);
 
     // Magic
     if (fwrite(DELTA_MAGIC, DELTA_MAGIC_SIZE, 1, s->delta_fp) != 1)
@@ -217,7 +276,7 @@ static int delta_write_header(storage_t *s) {
 
 // Read and validate the delta file header.
 static int delta_read_header(storage_t *s) {
-    fseek(s->delta_fp, 0, SEEK_SET);
+    fseeko(s->delta_fp, 0, SEEK_SET);
 
     char magic[DELTA_MAGIC_SIZE];
     if (fread(magic, DELTA_MAGIC_SIZE, 1, s->delta_fp) != 1)
@@ -244,14 +303,16 @@ static int delta_read_header(storage_t *s) {
         return GS_ERROR;
 
     // Skip reserved
-    fseek(s->delta_fp, 4, SEEK_CUR);
+    if (fseeko(s->delta_fp, 4, SEEK_CUR) != 0)
+        return GS_ERROR;
 
     return GS_SUCCESS;
 }
 
 // Flush both bitmaps to the delta file header.
 static int delta_flush_bitmaps(storage_t *s) {
-    fseek(s->delta_fp, (long)s->bitmap_offset, SEEK_SET);
+    if (fseeko(s->delta_fp, (off_t)s->bitmap_offset, SEEK_SET) != 0)
+        return GS_ERROR;
     if (fwrite(s->bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
         return GS_ERROR;
     if (fwrite(s->committed_bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
@@ -262,7 +323,8 @@ static int delta_flush_bitmaps(storage_t *s) {
 
 // Read both bitmaps from the delta file header.
 static int delta_read_bitmaps(storage_t *s) {
-    fseek(s->delta_fp, (long)s->bitmap_offset, SEEK_SET);
+    if (fseeko(s->delta_fp, (off_t)s->bitmap_offset, SEEK_SET) != 0)
+        return GS_ERROR;
     if (fread(s->bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
         return GS_ERROR;
     if (fread(s->committed_bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
@@ -314,6 +376,8 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
 
     s->block_count = config->block_count;
     s->block_size = config->block_size;
+    s->base_path = config->base_path ? strdup(config->base_path) : NULL;
+    s->delta_path = strdup(config->delta_path);
     s->bitmap_bytes = (size_t)((config->block_count + 7) / 8);
     s->bitmap_offset = DELTA_HEADER_SIZE;
     s->data_offset = DELTA_HEADER_SIZE + 2 * s->bitmap_bytes;
@@ -364,9 +428,13 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
     if (!s->journal_fp)
         goto fail;
 
-    // Load journal index (does not replay — caller decides)
-    journal_load_index(s);
+    // Load journal index (does not replay — caller decides).  It repairs a
+    // damaged tail itself; failing here means it could not (out of memory,
+    // or the file could not be truncated back into alignment).
+    if (journal_load_index(s) != GS_SUCCESS)
+        goto fail;
 
+    live_add(s);
     *out_storage = s;
     return GS_SUCCESS;
 
@@ -379,6 +447,9 @@ fail:
 int storage_delete(storage_t *storage) {
     if (!storage)
         return GS_SUCCESS;
+    live_remove(storage);
+    free(storage->base_path);
+    free(storage->delta_path);
     if (storage->base_fp)
         fclose(storage->base_fp);
     if (storage->delta_fp)
@@ -409,15 +480,15 @@ int storage_read_block(storage_t *storage, size_t offset, void *buffer) {
 
     if (bitmap_test(storage->bitmap, lba)) {
         // Modified block — read from delta
-        fseek(storage->delta_fp, (long)(storage->data_offset + (size_t)lba * storage->block_size), SEEK_SET);
-        if (fread(buffer, storage->block_size, 1, storage->delta_fp) != 1) {
+        if (fseeko(storage->delta_fp, block_pos(storage->data_offset, lba, storage->block_size), SEEK_SET) != 0 ||
+            fread(buffer, storage->block_size, 1, storage->delta_fp) != 1) {
             memset(buffer, 0, storage->block_size);
             return GS_ERROR;
         }
     } else if (storage->base_fp) {
         // Unmodified block — read from base image
-        fseek(storage->base_fp, (long)(storage->base_data_offset + (size_t)lba * storage->block_size), SEEK_SET);
-        if (fread(buffer, storage->block_size, 1, storage->base_fp) != 1) {
+        if (fseeko(storage->base_fp, block_pos(storage->base_data_offset, lba, storage->block_size), SEEK_SET) != 0 ||
+            fread(buffer, storage->block_size, 1, storage->base_fp) != 1) {
             memset(buffer, 0, storage->block_size);
         }
     } else {
@@ -439,11 +510,17 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
         return GS_ERROR;
     uint32_t lba = (uint32_t)lba64;
 
+    // An export in flight reads the delta through its own handle from a
+    // bitmap it copied: a write now would tear its copy.  Refused, as a
+    // drive being copied refuses.
+    if (storage->export_locks > 0)
+        return GS_ERROR;
+
     // Capture preimage if this block was committed and not yet journaled
     if (bitmap_test(storage->committed_bitmap, lba) && !journal_has_lba(storage, lba)) {
         uint8_t old[STORAGE_MAX_BLOCK_SIZE];
-        fseek(storage->delta_fp, (long)(storage->data_offset + (size_t)lba * storage->block_size), SEEK_SET);
-        if (fread(old, storage->block_size, 1, storage->delta_fp) != 1) {
+        if (fseeko(storage->delta_fp, block_pos(storage->data_offset, lba, storage->block_size), SEEK_SET) != 0 ||
+            fread(old, storage->block_size, 1, storage->delta_fp) != 1) {
             return GS_ERROR;
         }
         if (journal_append(storage, lba, old) != GS_SUCCESS)
@@ -451,8 +528,8 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
     }
 
     // Write new data to delta
-    fseek(storage->delta_fp, (long)(storage->data_offset + (size_t)lba * storage->block_size), SEEK_SET);
-    if (fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1)
+    if (fseeko(storage->delta_fp, block_pos(storage->data_offset, lba, storage->block_size), SEEK_SET) != 0 ||
+        fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1)
         return GS_ERROR;
 
     // Update bitmap in memory (flushed to disk at checkpoint time)
@@ -473,7 +550,8 @@ int storage_apply_rollback(storage_t *storage) {
         return GS_SUCCESS;
 
     // Replay journal: restore preimages to delta
-    fseek(storage->journal_fp, 0, SEEK_SET);
+    if (fseeko(storage->journal_fp, 0, SEEK_SET) != 0)
+        return GS_ERROR;
     for (size_t i = 0; i < storage->journal_count; i++) {
         uint32_t lba;
         uint8_t data[STORAGE_MAX_BLOCK_SIZE];
@@ -483,9 +561,13 @@ int storage_apply_rollback(storage_t *storage) {
         if (fread(data, storage->block_size, 1, storage->journal_fp) != 1)
             return GS_ERROR;
 
+        // journal_load_index admitted only in-range blocks, but this reads
+        // the file again: never write a block outside the device.
+        if (lba >= storage->block_count)
+            return GS_ERROR;
         // Write preimage back to delta
-        fseek(storage->delta_fp, (long)(storage->data_offset + (size_t)lba * storage->block_size), SEEK_SET);
-        if (fwrite(data, storage->block_size, 1, storage->delta_fp) != 1)
+        if (fseeko(storage->delta_fp, block_pos(storage->data_offset, lba, storage->block_size), SEEK_SET) != 0 ||
+            fwrite(data, storage->block_size, 1, storage->delta_fp) != 1)
             return GS_ERROR;
     }
 
@@ -506,7 +588,7 @@ int storage_apply_rollback(storage_t *storage) {
                 return GS_ERROR;
             }
         }
-        fseek(storage->journal_fp, 0, SEEK_SET);
+        fseeko(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;
 
@@ -526,11 +608,15 @@ int storage_clear_rollback(storage_t *storage) {
         delta_flush_bitmaps(storage);
         storage->bitmap_dirty = false;
 
+        // Same rule as storage_apply_rollback: a journal that cannot be truncated
+        // keeps its count, so the in-memory index matches what is on disk.
         if (storage->journal_count > 0 && storage->journal_fp) {
             int fd = fileno(storage->journal_fp);
-            if (fd >= 0)
-                ftruncate(fd, 0);
-            fseek(storage->journal_fp, 0, SEEK_SET);
+            if (fd >= 0 && ftruncate(fd, 0) != 0) {
+                LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+                return GS_ERROR;
+            }
+            fseeko(storage->journal_fp, 0, SEEK_SET);
             storage->journal_count = 0;
         }
     }
@@ -658,7 +744,7 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
                 return GS_ERROR;
             }
         }
-        fseek(storage->journal_fp, 0, SEEK_SET);
+        fseeko(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;
 
@@ -678,16 +764,27 @@ typedef enum {
     BLOCK_SRC_ZERO, // unmodified with no base file — reads as zeros
 } block_src_t;
 
-static block_src_t block_source(const storage_t *s, uint64_t block) {
+// The read side an export streams from: the live storage's own handles
+// (the checkpoint, on the emulator thread) or a view's copies (an export on
+// the I/O worker).
+typedef struct {
+    FILE *base_fp;
+    FILE *delta_fp;
+    const uint8_t *bitmap;
+    uint64_t block_count;
+    uint32_t block_size;
+    size_t base_data_offset;
+    size_t data_offset;
+} block_src_view_t;
+
+static block_src_t block_source(const block_src_view_t *s, uint64_t block) {
     if (bitmap_test(s->bitmap, (uint32_t)block))
         return BLOCK_SRC_DELTA;
     return s->base_fp ? BLOCK_SRC_BASE : BLOCK_SRC_ZERO;
 }
 
-int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb) {
-    if (!storage || !context || !write_cb)
-        return GS_ERROR;
-
+static int stream_blocks(const block_src_view_t *storage, void *context, storage_write_callback_t write_cb,
+                         bool cancellable) {
     // Chunk sized in whole blocks.  If the staging allocation fails, fall back
     // to a single block so a memory-starved host still exports, just slowly.
     uint64_t chunk_blocks = STORAGE_STREAM_CHUNK_BYTES / storage->block_size;
@@ -704,6 +801,10 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
     int rc = GS_SUCCESS;
     uint64_t block = 0;
     while (block < storage->block_count) {
+        if (cancellable && io_check_cancelled()) {
+            rc = -ECANCELED;
+            break;
+        }
         // Extend the run while the source stays the same, capped by the chunk.
         block_src_t src = block_source(storage, block);
         uint64_t max_run = storage->block_count - block;
@@ -719,9 +820,10 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
             memset(buffer, 0, run_bytes);
         } else {
             FILE *fp = (src == BLOCK_SRC_DELTA) ? storage->delta_fp : storage->base_fp;
-            size_t origin = (src == BLOCK_SRC_DELTA) ? storage->data_offset : storage->base_data_offset;
-            fseek(fp, (long)(origin + (size_t)block * storage->block_size), SEEK_SET);
-            size_t got = fread(buffer, 1, run_bytes, fp);
+            uint64_t origin = (src == BLOCK_SRC_DELTA) ? storage->data_offset : storage->base_data_offset;
+            size_t got = 0;
+            if (fseeko(fp, block_pos(origin, block, storage->block_size), SEEK_SET) == 0)
+                got = fread(buffer, 1, run_bytes, fp);
             if (got < run_bytes) {
                 // A short read on the base means the base file is shorter than
                 // the declared geometry; storage_read_block zero-fills and
@@ -752,10 +854,98 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
         if (rc != GS_SUCCESS)
             break;
         block += run;
+        if (cancellable)
+            io_report_progress(block * storage->block_size, storage->block_count * storage->block_size);
     }
 
     free(buffer);
     return rc;
+}
+
+int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb) {
+    if (!storage || !context || !write_cb)
+        return GS_ERROR;
+    block_src_view_t v = {
+        .base_fp = storage->base_fp,
+        .delta_fp = storage->delta_fp,
+        .bitmap = storage->bitmap,
+        .block_count = storage->block_count,
+        .block_size = storage->block_size,
+        .base_data_offset = storage->base_data_offset,
+        .data_offset = storage->data_offset,
+    };
+    return stream_blocks(&v, context, write_cb, false);
+}
+
+// === Export views ============================================================
+
+struct storage_export_view {
+    block_src_view_t src;
+    uint8_t *bitmap_copy;
+    storage_t *storage; // locked; checked against the live registry at end
+};
+
+bool storage_export_locked(const storage_t *storage) {
+    return storage && storage->export_locks > 0;
+}
+
+storage_export_view_t *storage_export_view_begin(storage_t *storage) {
+    if (!storage)
+        return NULL;
+    storage_export_view_t *v = calloc(1, sizeof *v);
+    if (!v)
+        return NULL;
+    // What the guest wrote so far is in the delta file once flushed; the
+    // bitmap copy names those blocks.
+    if (storage->delta_fp)
+        fflush(storage->delta_fp);
+    v->bitmap_copy = malloc(storage->bitmap_bytes);
+    if (!v->bitmap_copy) {
+        free(v);
+        return NULL;
+    }
+    memcpy(v->bitmap_copy, storage->bitmap, storage->bitmap_bytes);
+    v->src.bitmap = v->bitmap_copy;
+    v->src.block_count = storage->block_count;
+    v->src.block_size = storage->block_size;
+    v->src.base_data_offset = storage->base_data_offset;
+    v->src.data_offset = storage->data_offset;
+    v->src.base_fp = (storage->base_fp && storage->base_path) ? fopen(storage->base_path, "rb") : NULL;
+    if (storage->base_fp && !v->src.base_fp) {
+        free(v->bitmap_copy);
+        free(v);
+        return NULL;
+    }
+    v->src.delta_fp = storage->delta_path ? fopen(storage->delta_path, "rb") : NULL;
+    if (!v->src.delta_fp) {
+        if (v->src.base_fp)
+            fclose(v->src.base_fp);
+        free(v->bitmap_copy);
+        free(v);
+        return NULL;
+    }
+    v->storage = storage;
+    storage->export_locks++;
+    return v;
+}
+
+int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb) {
+    if (!v || !context || !write_cb)
+        return GS_ERROR;
+    return stream_blocks(&v->src, context, write_cb, true);
+}
+
+void storage_export_view_end(storage_export_view_t *v) {
+    if (!v)
+        return;
+    if (v->src.base_fp)
+        fclose(v->src.base_fp);
+    if (v->src.delta_fp)
+        fclose(v->src.delta_fp);
+    free(v->bitmap_copy);
+    if (v->storage && live_has(v->storage) && v->storage->export_locks > 0)
+        v->storage->export_locks--;
+    free(v);
 }
 
 static int read_exact(storage_read_callback_t read_cb, void *context, void *buf, size_t size) {
@@ -773,9 +963,8 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
             return GS_ERROR;
 
         // Write to delta
-        size_t off = storage->data_offset + (size_t)block * storage->block_size;
-        fseek(storage->delta_fp, (long)off, SEEK_SET);
-        if (fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1)
+        if (fseeko(storage->delta_fp, block_pos(storage->data_offset, block, storage->block_size), SEEK_SET) != 0 ||
+            fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1)
             return GS_ERROR;
 
         bitmap_set(storage->bitmap, (uint32_t)block);
@@ -787,9 +976,11 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
 
     if (storage->journal_fp) {
         int fd = fileno(storage->journal_fp);
-        if (fd >= 0)
-            ftruncate(fd, 0);
-        fseek(storage->journal_fp, 0, SEEK_SET);
+        if (fd >= 0 && ftruncate(fd, 0) != 0) {
+            LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+            return GS_ERROR;
+        }
+        fseeko(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;
 

@@ -20,7 +20,9 @@ static uint16_t disasm_fetch_16_without_inc(uint16_t *fetch_pos) {
 }
 
 static uint32_t disasm_fetch_32_without_inc(uint16_t *fetch_pos) {
-    uint32_t v = fetch_pos[1] << 16 | fetch_pos[2];
+    // Widen before the shift: a promoted int shifted past its sign bit is
+    // undefined for any word at or above $8000.
+    uint32_t v = (uint32_t)fetch_pos[1] << 16 | fetch_pos[2];
 
     return v;
 }
@@ -379,6 +381,18 @@ static int ea_words(int mode, int reg, int size, uint16_t first_ext) {
     return 0;
 }
 
+// Reverse a 16-bit MOVEM register mask.  MOVEM's predecrement form numbers its
+// mask the other way round (M68000PRM MOVEM, register list mask), and this is
+// the only caller in the tree -- it used to be defined five times over, once in
+// each target's platform.h, for this one use.
+static inline uint16_t reverse16(uint16_t x) {
+    x = (uint16_t)((x & 0x5555) << 1 | (x & 0xAAAA) >> 1);
+    x = (uint16_t)((x & 0x3333) << 2 | (x & 0xCCCC) >> 2);
+    x = (uint16_t)((x & 0x0F0F) << 4 | (x & 0xF0F0) >> 4);
+    x = (uint16_t)((x & 0x00FF) << 8 | (x & 0xFF00) >> 8);
+    return x;
+}
+
 static char *asm_movem(uint16_t opcode, uint16_t mask) {
 
     // for the predecrement mode, register mask is reversed
@@ -565,11 +579,6 @@ static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fet
         *fetch_src += 1;
         break;
     }
-}
-
-static const char *disasm_cache_scope(unsigned c) {
-    static const char *caches[4] = {"", "L", "P", "A"};
-    return caches[c & 3];
 }
 
 // FPU arithmetic opcode → mnemonic
@@ -1217,6 +1226,9 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define OP_PMMU_GENERAL      disasm_pmmu(opcode, ext_word, buf, &fetch_pos_src)
 #define OP_FTRAP             OP_UNDEFINED
 
+// The disassembler has the full instruction in a buffer, so it reads the
+// MOVES direction bit from there rather than through a live CPU.
+#define CPU_MOVES_DIR()         (ext_word & 0x0800)
 #define CPU_DECODER_NAME        cpu_disasm
 #define CPU_DECODER_RETURN_TYPE int
 #define CPU_DECODER_ARGS        uint16_t *instr, char *buf
@@ -1230,7 +1242,6 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
     if (0) {                                                                                                           \
     illegal:;                                                                                                          \
     }                                                                                                                  \
-    done:                                                                                                              \
     if (buf && (buf[0] == '\0' || strstr(buf, "<illegal>") != NULL)) {                                                 \
         sprintf(buf, "DC.W\t$%04X", (unsigned int)instr[0]);                                                           \
         return 1;                                                                                                      \

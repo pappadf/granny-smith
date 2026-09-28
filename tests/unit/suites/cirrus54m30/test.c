@@ -1,688 +1,782 @@
-// The Cirrus 54M30's BitBLT engine and its legacy-window mirror.
-//
-// Register truth: Cirrus Logic, "Alpine VGA Family CL-GD543X/4X Technical Reference Manual",
-// 4th ed. (Feb 1995) -- sections 9.13 and 9.39-9.42 for the registers, Appendix B20 for the
-// memory-mapped block, Appendix D8 for the engine.
-//
-// The card model is driven the way the machine drives it: through a real pci_bus_t window with
-// LANE REVERSAL ON, which is what a Bandit does for a little-endian PowerPC.  That matters more
-// here than anywhere else in this model, because the whole reason the BitBLT registers were not
-// decoded before is a question about which byte lane a driver's register writes arrive on --
-// so the first thing this suite pins is that a plain byte store lands where it was aimed, and
-// every later row writes registers exactly as a driver would.
-//
-// The centrepiece is `blt_captured`: the real register block a Windows NT display driver left
-// in display memory on 16 September 2026, when there was no engine to consume it.  Every field
-// in it is a measurement, not a guess, and an engine that executes it correctly is doing the
-// right thing.
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 
-#include "card.h"
+// The Apple Network Server's on-board Cirrus Logic 54M30
+// (src/core/peripherals/pci/cards/cirrus54m30.c).
+//
+// The card has no mode register: c54m30_update() derives the scanout from the
+// VGA CRTC, the sequencer and the Cirrus extension registers every time a
+// guest writes one.  These rows program those registers through the card's
+// own I/O windows, exactly as a guest's port writes arrive, and read the
+// result back through the card's display op -- the descriptor the renderer
+// and `machine.screen` see.  Config space is the real config_space.c, so the
+// BAR, expansion-ROM and interrupt rows read what Open Firmware's config
+// cycles read.
+//
+// Expected values come from two places, cited per row: the card's own
+// derivation (cirrus54m30.c, "Deriving the mode") and the VGA / Alpine
+// register semantics it implements (Cirrus Logic, "Alpine VGA Family
+// CL-GD543X/4X Technical Reference Manual", 4th ed., sections 4.14-4.20).
+
+#include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
+#include "display_class.h"
 #include "pci.h"
+#include "pci_card.h"
 #include "system_config.h"
 #include "test_assert.h"
 
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// The shared harness ships a decimal assertion; every value in this suite is a register or a
-// pixel, so it wants a hexadecimal one.
-#define ASSERT_EQ_HEX(a, b)                                                                                            \
-    do {                                                                                                               \
-        unsigned _a = (unsigned)(a), _b = (unsigned)(b);                                                               \
-        if (_a != _b) {                                                                                                \
-            fprintf(stderr, "[FAIL] %s:%d: %s != %s ($%02X != $%02X)\n", __FILE__, __LINE__, #a, #b, _a, _b);          \
-            exit(1);                                                                                                   \
-        }                                                                                                              \
-    } while (0)
-
-// --- Stubs for the environment pci.c reaches into ---------------------------
-//
-// pci.c's card registry names every registered driver by extern.  This suite links the real
-// cirrus54m30.c, so `cirrus_54m30_kind` is the one name NOT stubbed here.
-
-const pci_card_kind_t tnt_control_kind = {
-    .id = "tnt_control", .display_name = "Control / Chaos on-board video", .attach = PCI_ATTACH_BUILTIN};
-const pci_card_kind_t mach64_gx_kind = {
-    .id = "mach64_gx", .display_name = "ATI Mach64 GX", .attach = PCI_ATTACH_PCI, .requires_prom = true};
-const pci_card_kind_t sym53c825_ch0_kind = {
-    .id = "sym53c825_0", .display_name = "Symbios 53C825A (channel 0)", .attach = PCI_ATTACH_BUILTIN};
-const pci_card_kind_t sym53c825_ch1_kind = {
-    .id = "sym53c825_1", .display_name = "Symbios 53C825A (channel 1)", .attach = PCI_ATTACH_BUILTIN};
-const pci_card_kind_t voodoo2_kind = {.id = "voodoo2", .display_name = "3dfx Voodoo2", .attach = PCI_ATTACH_PCI};
-
-// The one card kind this suite does NOT stub: cirrus54m30.c is linked in and defines it.
 extern const pci_card_kind_t cirrus_54m30_kind;
 
-void memory_signal_bus_error(uint32_t addr, bool write) {
-    (void)addr;
-    (void)write;
+// --- Stubs for what the card touches outside itself -------------------------
+
+// The card declares three decodes at seating: BAR0 (display memory), BAR1
+// (the relocatable VGA I/O range) and the strapped legacy block at $3B0.
+// Each is captured so a row can drive it the way the bus would.
+static const memory_interface_t *s_fb_if, *s_io_if, *s_vga_if;
+static void *s_fb_ctx, *s_io_ctx, *s_vga_ctx;
+static uint32_t s_vga_base, s_vga_span;
+static pci_space_t s_vga_space;
+
+void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t *iface, void *ctx) {
+    (void)dev;
+    if (bar == 0) {
+        s_fb_if = iface;
+        s_fb_ctx = ctx;
+    } else if (bar == 1) {
+        s_io_if = iface;
+        s_io_ctx = ctx;
+    }
+}
+void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t base, uint32_t span,
+                                 uint32_t match_mask, uint32_t match_value, const memory_interface_t *iface,
+                                 void *ctx) {
+    (void)dev;
+    (void)match_mask;
+    (void)match_value;
+    s_vga_space = space;
+    s_vga_base = base;
+    s_vga_span = span;
+    s_vga_if = iface;
+    s_vga_ctx = ctx;
+}
+// config_space.c tells the bus when a BAR or the command register moved;
+// nothing here maps regions, so the notification is only counted.
+static int s_regions_changed;
+void pci_device_regions_changed(pci_device_t *dev) {
+    (void)dev;
+    s_regions_changed++;
+}
+void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *fb) {
+    (void)dev;
+    (void)fb;
 }
 
-void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
-                    void *device) {
-    (void)mem;
-    (void)addr;
-    (void)size;
-    (void)name;
-    (void)iface;
-    (void)device;
-}
-
-void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id) {
-    (void)bus_kind;
-    (void)slot;
-    (void)card_id;
-}
-
-void pci_objects_build(pci_root_t *root) {
-    (void)root;
-}
-void pci_objects_teardown(void) {}
-void pci_objects_teardown_owned(pci_root_t *root) {
-    (void)root;
-}
-
-// The card reads the scheduler only for Input Status 1, and only when cfg->scheduler is set;
-// this suite leaves it NULL, so this exists purely to satisfy the linker.
-uint64_t scheduler_cpu_cycles(scheduler_t *s) {
+// Input Status 1 is a function of the scheduler's cycle count.
+static uint64_t s_cycles;
+uint64_t scheduler_cpu_cycles(struct scheduler *s) {
     (void)s;
-    return 0;
+    return s_cycles;
 }
 
-// --- The rig ----------------------------------------------------------------
-
-#define WIN_MAP  0x80000000u // where the bridge's memory window lands on the physical map
-#define WIN_SIZE 0x10000000u
-#define FB_BASE  0x81000000u // where BAR0 is assigned: 16 MB, 16 MB-aligned
-
-#define VRAM_SIZE 0x00100000u
-#define WIN_BASE  0x00FE0000u // the mirror, at the top of the aperture
-#define WIN_MMIO  0x00018000u // $B8000 within the mirror
-
-static pci_root_t *g_root;
-static pci_bus_t *g_bus;
-static pci_device_t *g_dev;
-static const memory_interface_t *g_win;
-static void *g_wctx;
-
-static machine_substrate_t g_substrate;
-static hw_profile_t g_profile;
-static config_t g_cfg;
-
-// A little-endian PowerPC does not reorder bytes: it XORs the low three address bits of every
-// access with 8 - size, and the bridge's lane reversal undoes it.  These four helpers apply the
-// processor's half of that, so the addresses below are the ones a guest would compute.
-static void g_write8(uint32_t phys, uint8_t v) {
-    g_win->write_uint8(g_wctx, (phys - WIN_MAP) ^ 7u, v);
+// The object tree: object_new() hands back the card's display_fb_node_t, so
+// the framebuffer node's resolve/base hooks are reachable from a row.
+const class_desc_t display_fb_class = {0};
+static display_fb_node_t *s_fb_node;
+static char s_fake_object;
+struct object *object_new(const class_desc_t *cls, void *data, const char *name) {
+    (void)cls;
+    (void)name;
+    s_fb_node = (display_fb_node_t *)data;
+    return (struct object *)&s_fake_object;
 }
-static uint8_t g_read8(uint32_t phys) {
-    return g_win->read_uint8(g_wctx, (phys - WIN_MAP) ^ 7u);
+void object_attach(struct object *parent, struct object *child) {
+    (void)parent;
+    (void)child;
 }
-static void g_write16(uint32_t phys, uint16_t v) {
-    g_win->write_uint16(g_wctx, (phys - WIN_MAP) ^ 6u, v);
+void object_set_label(struct object *o, const char *l) {
+    (void)o;
+    (void)l;
 }
-static void g_write32(uint32_t phys, uint32_t v) {
-    g_win->write_uint32(g_wctx, (phys - WIN_MAP) ^ 4u, v);
-}
-static uint32_t g_read32(uint32_t phys) {
-    return g_win->read_uint32(g_wctx, (phys - WIN_MAP) ^ 4u);
+void object_set_order(struct object *o, int order) {
+    (void)o;
+    (void)order;
 }
 
-// Display memory, straight through the linear aperture.
-static void vram_write(uint32_t off, uint8_t v) {
-    g_write8(FB_BASE + off, v);
-}
-static uint8_t vram_read(uint32_t off) {
-    return g_read8(FB_BASE + off);
-}
+// The checkpoint stream: a flat byte buffer, written in order and read back
+// in the same order, which is all the card's save/restore pair relies on.
+#define CP_CAP (2u * 1024u * 1024u)
+static uint8_t *s_cp_buf;
+static size_t s_cp_len, s_cp_pos;
+static char s_cp_token;
+#define TEST_CP ((checkpoint_t *)&s_cp_token)
 
-// The VGA index/data pairs, as I/O would reach them -- but this rig has no I/O window, so the
-// suite drives the sequencer and graphics files through the same door a driver uses for setup:
-// a fixed legacy I/O region.  Simpler here to reach them through the card's own memory-mapped
-// block where possible, and through these two helpers where not.
-static const memory_interface_t *g_io;
-static void *g_ioctx;
-
-static void io_write(uint32_t port, uint8_t v) {
-    // This window's PCI base is zero, so its offset is the port number itself; the XOR is the
-    // processor's lane munge, which the bridge undoes exactly as it does for memory.
-    g_io->write_uint8(g_ioctx, port ^ 7u, v);
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)cp;
+    (void)tag;
+    (void)file;
+    (void)line;
+    ASSERT_TRUE(s_cp_len + size <= CP_CAP);
+    memcpy(s_cp_buf + s_cp_len, data, size);
+    s_cp_len += size;
 }
-
-static void crtc_write(uint8_t index, uint8_t value) {
-    io_write(0x3D4u, index);
-    io_write(0x3D5u, value);
-}
-
-static uint8_t io_read(uint32_t port) {
-    return g_io->read_uint8(g_ioctx, port ^ 7u);
-}
-
-static void seq_write(uint8_t index, uint8_t value) {
-    io_write(0x3C4u, index);
-    io_write(0x3C5u, value);
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)cp;
+    (void)tag;
+    (void)file;
+    (void)line;
+    ASSERT_TRUE(s_cp_pos + size <= s_cp_len);
+    memcpy(data, s_cp_buf + s_cp_pos, size);
+    s_cp_pos += size;
 }
 
-static void gr_write(uint8_t index, uint8_t value) {
-    io_write(0x3CEu, index);
-    io_write(0x3CFu, value);
+// --- Seating ----------------------------------------------------------------
+
+// The card keeps its config_t for Input Status 1, so it must outlive the
+// device.  The scheduler is never dereferenced (scheduler_cpu_cycles is the
+// stub above); the profile supplies the core clock.
+static config_t s_cfg;
+static hw_profile_t s_profile;
+static char s_sched_token;
+
+static pci_device_t *seat(void) {
+    memset(&s_cfg, 0, sizeof(s_cfg));
+    memset(&s_profile, 0, sizeof(s_profile));
+    s_fb_if = s_io_if = s_vga_if = NULL;
+    s_cycles = 0;
+    pci_device_t *dev = cirrus_54m30_kind.factory(1, &s_cfg, NULL);
+    ASSERT_TRUE(dev && s_fb_if && s_io_if && s_vga_if);
+    return dev;
 }
 
-static void cfg_write32(uint32_t reg, uint32_t value) {
-    for (uint32_t b = 0; b < 4u; b++)
-        pci_bus_cfg_write(g_bus, 15, 0, reg, b, (uint8_t)(value >> (8u * b)));
+static void unseat(pci_device_t *dev) {
+    dev->ops->teardown(dev, &s_cfg);
+    free(dev); // the bus owns the wrapper
 }
 
-static void rig_setup(void) {
-    g_profile.substrate = &g_substrate;
-    g_cfg.machine = &g_profile;
-    g_root = pci_root_create(&g_cfg);
-    g_bus = pci_bus_create(g_root, "bandit1", 1);
-    pci_bus_add_window(g_bus, PCI_SPACE_MEM, WIN_MAP, WIN_SIZE, WIN_MAP, 0xFFFFFFFFu, "pci-mem");
-    pci_bus_add_window(g_bus, PCI_SPACE_IO, WIN_MAP + WIN_SIZE, 0x10000u, 0, 0xFFFFu, "pci-io");
-    // Bandit reverses its eight byte lanes for a little-endian client.
-    pci_bus_set_lane_reverse(g_bus, true);
+// --- The legacy VGA ports, as the guest reaches them ------------------------
 
-    g_dev = cirrus_54m30_kind.factory(0, &g_cfg, NULL);
-    ASSERT_TRUE(g_dev != NULL);
-    pci_bus_add_device(g_bus, g_dev, 15);
+// Byte offsets into the strapped $3B0-$3DF block.
+#define P_STATUS1_MONO 0x0Au // $3BA
+#define P_ATTR         0x10u // $3C0
+#define P_ATTR_READ    0x11u // $3C1
+#define P_SEQ_INDEX    0x14u // $3C4
+#define P_SEQ_DATA     0x15u // $3C5
+#define P_DAC_RINDEX   0x17u // $3C7
+#define P_DAC_WINDEX   0x18u // $3C8
+#define P_DAC_DATA     0x19u // $3C9
+#define P_GR_INDEX     0x1Eu // $3CE
+#define P_GR_DATA      0x1Fu // $3CF
+#define P_CRTC_INDEX   0x24u // $3D4
+#define P_CRTC_DATA    0x25u // $3D5
+#define P_STATUS1      0x2Au // $3DA
 
-    cfg_write32(PCI_CFG_BAR0, FB_BASE);
-    // Where Open Firmware really puts the relocatable I/O BAR: above the sixteen bits a Bandit
-    // drives, so every actual access goes to the strapped legacy block instead.
-    cfg_write32(PCI_CFG_BAR0 + 4u, 0x00010000u);
-    cfg_write32(PCI_CFG_COMMAND, PCI_CMD_MEM_SPACE | PCI_CMD_IO_SPACE);
-
-    g_win = pci_bus_window_iface(g_bus, 0);
-    g_wctx = pci_bus_window_ctx(g_bus, 0);
-    g_io = pci_bus_window_iface(g_bus, 1);
-    g_ioctx = pci_bus_window_ctx(g_bus, 1);
-    ASSERT_TRUE(g_win != NULL && g_io != NULL);
-
-    // Unlock the Cirrus extensions the way every Alpine driver does, then put the register
-    // block in memory at $B8000 (SR17[2]) with the window mapped 64 KB at $A0000 (GR6[3:2]=01),
-    // which is the configuration Appendix B20 requires for memory-mapped I/O.
-    seq_write(0x06, 0x12);
-    gr_write(0x06, 0x04);
-    seq_write(0x17, 0x04);
+static void port_out(uint32_t port, uint8_t v) {
+    s_vga_if->write_uint8(s_vga_ctx, port, v);
+}
+static uint8_t port_in(uint32_t port) {
+    return s_vga_if->read_uint8(s_vga_ctx, port);
+}
+static void seq(uint8_t i, uint8_t v) {
+    port_out(P_SEQ_INDEX, i);
+    port_out(P_SEQ_DATA, v);
+}
+static void crtc(uint8_t i, uint8_t v) {
+    port_out(P_CRTC_INDEX, i);
+    port_out(P_CRTC_DATA, v);
+}
+static void gr(uint8_t i, uint8_t v) {
+    port_out(P_GR_INDEX, i);
+    port_out(P_GR_DATA, v);
 }
 
-static void rig_teardown(void) {
-    pci_root_delete(g_root);
-    g_root = NULL;
-    g_bus = NULL;
-    g_dev = NULL;
+// What Open Firmware 1.1.22 programs on a cold boot (cirrus54m30.c,
+// "Deriving the mode"; also docs/machines/tnt/tnt.md): 640x480, 8 bpp.
+static void program_of_640x480x8(void) {
+    seq(0x01, 0x01); // SR01 bit 0: 8 dots per character clock
+    seq(0x07, 0xF1); // SR07 bit 0 = extended mode, bits [3:1] = 000 = 8 bpp
+    crtc(0x01, 0x4F); // CR01 horizontal display end: (79 + 1) * 8 = 640
+    crtc(0x07, 0x02); // CR07 bit 1 = vertical display end bit 8
+    crtc(0x12, 0xDF); // CR12: VDE = $1DF = 479 -> 480 lines
+    crtc(0x13, 0x50); // CR13 offset 80, eight-byte units -> 640 bytes
+    crtc(0x0C, 0x00); // CR0C/CR0D start address 0
+    crtc(0x0D, 0x00);
+    gr(0x05, 0x40); // GR05 256-colour shift mode
 }
 
-// The memory-mapped register block, written the way a driver writes it: plain byte stores at
-// the offsets Table B20-1 gives, through the mirror.
-static void mmio_write(uint8_t off, uint8_t value) {
-    g_write8(FB_BASE + WIN_BASE + WIN_MMIO + off, value);
-}
-static uint8_t mmio_read(uint8_t off) {
-    return g_read8(FB_BASE + WIN_BASE + WIN_MMIO + off);
-}
-
-// Table B20-1 offsets, by name.
-#define MM_BG0    0x00u
-#define MM_BG1    0x01u
-#define MM_FG0    0x04u
-#define MM_FG1    0x05u
-#define MM_WIDTH  0x08u
-#define MM_HEIGHT 0x0Au
-#define MM_DPITCH 0x0Cu
-#define MM_SPITCH 0x0Eu
-#define MM_DST    0x10u
-#define MM_SRC    0x14u
-#define MM_MASK   0x17u
-#define MM_MODE   0x18u
-#define MM_ROP    0x1Au
-#define MM_START  0x40u
-
-static void blt_setup(uint32_t width, uint32_t height, uint32_t dpitch, uint32_t spitch, uint32_t dst, uint32_t src,
-                      uint8_t mode, uint8_t rop) {
-    mmio_write(MM_WIDTH, (uint8_t)(width - 1u));
-    mmio_write(MM_WIDTH + 1u, (uint8_t)((width - 1u) >> 8));
-    mmio_write(MM_HEIGHT, (uint8_t)(height - 1u));
-    mmio_write(MM_HEIGHT + 1u, (uint8_t)((height - 1u) >> 8));
-    mmio_write(MM_DPITCH, (uint8_t)dpitch);
-    mmio_write(MM_DPITCH + 1u, (uint8_t)(dpitch >> 8));
-    mmio_write(MM_SPITCH, (uint8_t)spitch);
-    mmio_write(MM_SPITCH + 1u, (uint8_t)(spitch >> 8));
-    mmio_write(MM_DST, (uint8_t)dst);
-    mmio_write(MM_DST + 1u, (uint8_t)(dst >> 8));
-    mmio_write(MM_DST + 2u, (uint8_t)(dst >> 16));
-    mmio_write(MM_SRC, (uint8_t)src);
-    mmio_write(MM_SRC + 1u, (uint8_t)(src >> 8));
-    mmio_write(MM_SRC + 2u, (uint8_t)(src >> 16));
-    mmio_write(MM_MODE, mode);
-    mmio_write(MM_ROP, rop);
+// 1024x768x8, the part's advertised big-endian maximum: CR01 = 127 ->
+// 128 * 8 = 1024; VDE 767 = $2FF, i.e. CR12 = $FF with bit 9 in CR07 bit 6
+// and bit 8 (CR07 bit 1) clear; offset 128 -> 1024 bytes.
+static void program_1024x768x8(void) {
+    seq(0x01, 0x01);
+    seq(0x07, 0xF1);
+    crtc(0x13, 0x80);
+    crtc(0x01, 0x7F);
+    crtc(0x07, 0x40);
+    crtc(0x12, 0xFF);
 }
 
-// ============================================================================
-TEST(lane_contract) {
-    // The premise everything else rests on, and the one this model's HAL already depends on:
-    // a plain byte store through a lane-reversed window lands at the offset it was aimed at.
-    // The HAL's console writes every pixel this way, with no compensation anywhere.
-    rig_setup();
-    vram_write(0x100u, 0xA5u);
-    ASSERT_EQ_HEX(vram_read(0x100u), 0xA5u);
-    ASSERT_EQ_HEX(vram_read(0x107u), 0x00u); // and nowhere near offset ^ 7
-
-    // A 32-bit store is little-endian in display memory: its least significant byte lands at
-    // the lowest address, which is what a packed-pixel framebuffer needs.
-    g_write32(FB_BASE + 0x200u, 0x44332211u);
-    ASSERT_EQ_HEX(vram_read(0x200u), 0x11u);
-    ASSERT_EQ_HEX(vram_read(0x201u), 0x22u);
-    ASSERT_EQ_HEX(vram_read(0x202u), 0x33u);
-    ASSERT_EQ_HEX(vram_read(0x203u), 0x44u);
-    ASSERT_EQ_HEX(g_read32(FB_BASE + 0x200u), 0x44332211u);
-
-    // A 16-bit store, likewise.
-    g_write16(FB_BASE + 0x300u, 0xBEEFu);
-    ASSERT_EQ_HEX(vram_read(0x300u), 0xEFu);
-    ASSERT_EQ_HEX(vram_read(0x301u), 0xBEu);
-    rig_teardown();
+static void fb_poke(uint32_t off, uint8_t v) {
+    s_fb_if->write_uint8(s_fb_ctx, off, v);
 }
 
-// ============================================================================
-TEST(mirror_and_register_block) {
-    rig_setup();
+// --- Mode derivation --------------------------------------------------------
 
-    // Below $B8000 the mirror is display memory.  With GR9 at zero the window's first byte is
-    // display memory's first byte.
-    vram_write(0x000u, 0x11u);
-    ASSERT_EQ_HEX(g_read8(FB_BASE + WIN_BASE + 0x000u), 0x11u);
-    g_write8(FB_BASE + WIN_BASE + 0x004u, 0x22u);
-    ASSERT_EQ_HEX(vram_read(0x004u), 0x22u);
-
-    // At $B8000 the register block answers instead, and GR31 is the one offset that reads back
-    // (Appendix B20 section 1).  Every write goes to the graphics register Table B20-1 names.
-    mmio_write(MM_MODE, 0x40u);
-    mmio_write(MM_ROP, 0x59u);
-    mmio_write(MM_FG0, 0x7Eu);
-    ASSERT_EQ_HEX(mmio_read(MM_MODE), 0x40u);
-    ASSERT_EQ_HEX(mmio_read(MM_ROP), 0x59u);
-    ASSERT_EQ_HEX(mmio_read(MM_FG0), 0x7Eu);
-    // ...and none of it reached display memory.
-    ASSERT_EQ_HEX(vram_read(WIN_MMIO + MM_MODE), 0x00u);
-
-    // "Address bits 14:8 are 'don't care', so the block is actually aliased at every 256
-    // boundary from B800:0-BFF0:0."
-    g_write8(FB_BASE + WIN_BASE + WIN_MMIO + 0x700u + MM_ROP, 0x0Du);
-    ASSERT_EQ_HEX(mmio_read(MM_ROP), 0x0Du);
-    g_write8(FB_BASE + WIN_BASE + 0x1FF00u + MM_ROP, 0x05u);
-    ASSERT_EQ_HEX(mmio_read(MM_ROP), 0x05u);
-
-    // "GR6[3:2] must be programmed to '0,1'" for memory-mapped I/O, which is what keeps $B8000
-    // out of the display-memory window in the first place: at that setting the window is the
-    // 64 KB at $A0000 and nothing above it decodes at all.
-    ASSERT_EQ_HEX(g_read8(FB_BASE + WIN_BASE + 0x14000u), 0x00u);
-
-    // With SR17[2] clear and the window opened to its full 128 KB, those same addresses are
-    // display memory -- which is exactly how the driver's register block came to be found
-    // sitting in VRAM as pixels on 16 September, with nothing decoding it as registers.
-    seq_write(0x17, 0x00);
-    gr_write(0x06, 0x00);
-    g_write8(FB_BASE + WIN_BASE + WIN_MMIO + MM_MODE, 0x5Au);
-    ASSERT_EQ_HEX(vram_read(WIN_MMIO + MM_MODE), 0x5Au);
-    ASSERT_EQ_HEX(mmio_read(MM_MODE), 0x5Au); // the read is display memory too, now
-
-    // SR17[6] moves the block to the last 256 bytes of the linear address space instead -- but
-    // ONLY once linear addressing is enabled, which on this part means SR7[7:4] non-zero (TRM
-    // 9.13: "if linear addressing is not enabled, this bit is ignored").  With SR7[7:4] = 0 the
-    // bit is a don't-care and the block stays at $B8000.
-    //
-    // This is what wall E28 was.  Open Firmware's own Cirrus driver runs before NT with the
-    // console on the screen and leaves SR17 = $62; cirrus.sys then ORs in bit 2 and gets $66 --
-    // and this model, which took bit 6 as unconditional, moved the registers out from under a
-    // driver that was still writing them at $B8000.  A 17 September browser log shows the
-    // whole thing: "SR17 = $66", then every register write logged as a plain "window write"
-    // into display memory, START read back as $0, and not one "BLT start" in 750 lines.
-    gr_write(0x06, 0x04);
-    seq_write(0x07, 0x01); // packed pixel, SR7[7:4] = 0: linear addressing OFF
-    seq_write(0x17, 0x66); // the value the browser saw
-    g_write8(FB_BASE + WIN_BASE + WIN_MMIO + MM_ROP, 0x6Du);
-    ASSERT_EQ_HEX(mmio_read(MM_ROP), 0x6Du); // decoded at $B8000
-    ASSERT_EQ_HEX(vram_read(WIN_MMIO + MM_ROP), 0x00u); // and not as a pixel
-    ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP), 0x00u); // nor at the top
-
-    // Linear addressing on (cirrus.sys programs SR07 = $F1): now bit 6 means what it says.
-    seq_write(0x07, 0xF1);
-    g_write8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP, 0x5Du);
-    ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP), 0x5Du);
-    ASSERT_EQ_HEX(g_read8(FB_BASE + WIN_BASE + WIN_MMIO + MM_ROP), 0x00u); // and not at $B8000
-    rig_teardown();
+// Before a guest programs anything the card advertises no display, so
+// pci_primary_display falls through to whatever else the machine has
+// (c54m30_display's contract).
+TEST(no_display_before_a_mode_is_programmed) {
+    pci_device_t *dev = seat();
+    ASSERT_TRUE(dev->ops->display(dev) == NULL);
+    unseat(dev);
 }
 
-// ============================================================================
-TEST(rop_truth_table) {
-    // Every one of the sixteen two-operand raster operations in TRM Table D8-3, run as a
-    // one-byte screen-to-screen BLT over the four (source, destination) bit combinations at
-    // once: source $CC, destination $AA gives each operation's truth table in the result.
-    static const struct {
-        uint8_t code;
-        uint8_t want;
-    } rows[] = {
-        {0x00u, 0x00u}, // 0
-        {0x90u, 0x11u}, // ~S & ~D
-        {0x50u, 0x22u}, // ~S & D
-        {0xD0u, 0x33u}, // ~S
-        {0x09u, 0x44u}, // S & ~D
-        {0x0Bu, 0x55u}, // ~D
-        {0x59u, 0x66u}, // S ^ D
-        {0xDAu, 0x77u}, // ~S | ~D
-        {0x05u, 0x88u}, // S & D
-        {0x95u, 0x99u}, // ~(S ^ D)
-        {0x06u, 0xAAu}, // D
-        {0xD6u, 0xBBu}, // ~S | D
-        {0x0Du, 0xCCu}, // S
-        {0xADu, 0xDDu}, // S | ~D
-        {0x6Du, 0xEEu}, // S | D
-        {0x0Eu, 0xFFu}, // 1
-    };
-    rig_setup();
-    for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
-        vram_write(0x1000u, 0xCCu); // source
-        vram_write(0x2000u, 0xAAu); // destination
-        blt_setup(1u, 1u, 1u, 1u, 0x2000u, 0x1000u, 0x00u, rows[i].code);
-        mmio_write(MM_START, 0x02u);
-        ASSERT_EQ_HEX(vram_read(0x2000u), rows[i].want);
-    }
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(start_bit_clears) {
-    // The acceptance criterion the whole route exists for: the driver writes the start bit,
-    // polls, and sees a finished engine.  "This bit will be cleared to '0' when the BLT is
-    // completed" is said of the START bit (TRM 9.40) as well as of the status bit, so both go,
-    // and so does the progress bit.
-    rig_setup();
-    blt_setup(4u, 4u, 640u, 640u, 0x3000u, 0x1000u, 0x00u, 0x0Du);
-    mmio_write(MM_START, 0x02u);
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x0Bu, 0x00u);
-
-    // A reset clears the status and progress bits too (Appendix D8 section 14.2).
-    mmio_write(MM_START, 0x04u);
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x09u, 0x00u);
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(blt_captured) {
-    // THE MEASUREMENT.  This is the register block a Windows NT display driver left in display
-    // memory at the legacy window's $B8000 on 16 September 2026, when the emulated part had no
-    // engine to consume it: a one-byte-wide, thirteen-line vertical strip, XOR-drawn from an
-    // 8 x 8 pattern held just past the end of the visible frame buffer.  A focus rectangle or a
-    // caret, in the button's neighbourhood at the bottom of a 640x480 screen.
-    //
-    //   width  - 1 = 0        -> 1 byte
-    //   height - 1 = 12       -> 13 lines
-    //   dest pitch = 640, source pitch = 16
-    //   dest       = $03C94A  -> pixel (458, 387) at pitch 640
-    //   source     = $04B040  -> 64 bytes past $4B000, the end of 640 x 480
-    //   mask       = 0        -> no left-edge clipping
-    //   mode       = $40      -> 8 x 8 pattern copy
-    //   rop        = $59      -> S ^ D, SRCINVERT / PATINVERT
-    rig_setup();
-
-    // An 8 x 8 colour pattern is 64 bytes on a 64-byte boundary (Table D8-10).  Give each of
-    // its 64 bytes a distinct value so a wrong row or column cannot pass.
-    for (uint32_t i = 0; i < 64u; i++)
-        vram_write(0x4B040u + i, (uint8_t)(0x10u + i));
-    // A known destination: the thirteen bytes the strip will touch, and the byte beside each.
-    for (uint32_t y = 0; y < 13u; y++) {
-        vram_write(0x3C94Au + y * 640u, (uint8_t)(0x80u + y));
-        vram_write(0x3C94Au + y * 640u + 1u, 0x5Au);
-    }
-
-    blt_setup(1u, 13u, 640u, 16u, 0x03C94Au, 0x04B040u, 0x40u, 0x59u);
-    mmio_write(MM_MASK, 0x00u);
-    mmio_write(MM_START, 0x02u);
-
-    // Column 0 of the pattern, one row further down for each scan line, XORed into what was
-    // there.  The pattern's vertical preset is the source address's low three bits, which are
-    // zero here, so row 0 is where it starts.
-    for (uint32_t y = 0; y < 13u; y++) {
-        uint8_t pat = (uint8_t)(0x10u + ((y & 7u) * 8u)); // row y mod 8, column 0
-        ASSERT_EQ_HEX(vram_read(0x3C94Au + y * 640u), (uint8_t)((0x80u + y) ^ pat));
-        ASSERT_EQ_HEX(vram_read(0x3C94Au + y * 640u + 1u), 0x5Au); // one byte wide, and no more
-    }
-    // Nothing above or below the strip.
-    ASSERT_EQ_HEX(vram_read(0x3C94Au - 640u), 0x00u);
-    ASSERT_EQ_HEX(vram_read(0x3C94Au + 13u * 640u), 0x00u);
-    // And the engine let go of the start bit.
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x0Bu, 0x00u);
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(pattern_vertical_preset) {
-    // "The low-order three bits of the Source Start Address (GR2C[2:0]) select the scan line to
-    // be used for the first, or only, scan line" (Appendix D8 section 9).  Same pattern, source
-    // address offset by three: the fill starts on the pattern's fourth row.
-    rig_setup();
-    for (uint32_t i = 0; i < 64u; i++)
-        vram_write(0x8000u + i, (uint8_t)(0x10u + i));
-    blt_setup(8u, 8u, 8u, 8u, 0x9000u, 0x8000u + 3u, 0x40u, 0x0Du);
-    mmio_write(MM_START, 0x02u);
-    for (uint32_t y = 0; y < 8u; y++)
-        for (uint32_t x = 0; x < 8u; x++)
-            ASSERT_EQ_HEX(vram_read(0x9000u + y * 8u + x), (uint8_t)(0x10u + ((3u + y) & 7u) * 8u + x));
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(colour_expand) {
-    // One bit of monochrome source becomes one 8 bpp pixel, most significant bit of the first
-    // byte first, foreground from GR1 and background from GR0 (Tables D8-5 and D8-6).
-    rig_setup();
-    vram_write(0x5000u, 0xA5u); // 1010 0101
-    mmio_write(MM_FG0, 0xF0u);
-    mmio_write(MM_BG0, 0x0Fu);
-    blt_setup(8u, 1u, 8u, 8u, 0x6000u, 0x5000u, 0x80u, 0x0Du); // expand, SRCCOPY
-    mmio_write(MM_START, 0x02u);
-    for (unsigned b = 0; b < 8u; b++)
-        ASSERT_EQ_HEX(vram_read(0x6000u + b), ((0xA5u >> (7u - b)) & 1u) ? 0xF0u : 0x0Fu);
-
-    // With transparency the zeroes are not written at all, and the background registers are
-    // ignored outright on this part (Table D8-7).
-    for (unsigned b = 0; b < 8u; b++)
-        vram_write(0x7000u + b, 0x33u);
-    blt_setup(8u, 1u, 8u, 8u, 0x7000u, 0x5000u, 0x88u, 0x0Du); // expand + transparency
-    mmio_write(MM_START, 0x02u);
-    for (unsigned b = 0; b < 8u; b++)
-        ASSERT_EQ_HEX(vram_read(0x7000u + b), ((0xA5u >> (7u - b)) & 1u) ? 0xF0u : 0x33u);
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(left_edge_clip) {
-    // "if GR2F[2:0] are programmed to any value other than zero, the first n pixels of each
-    // scan line of the destination will not be written" (Appendix D8 section 7).
-    rig_setup();
-    for (uint32_t i = 0; i < 8u; i++) {
-        vram_write(0xA000u + i, (uint8_t)(0xC0u + i)); // source
-        vram_write(0xB000u + i, 0x77u); // destination
-    }
-    blt_setup(8u, 1u, 8u, 8u, 0xB000u, 0xA000u, 0x00u, 0x0Du);
-    mmio_write(MM_MASK, 0x03u);
-    mmio_write(MM_START, 0x02u);
-    for (uint32_t i = 0; i < 3u; i++)
-        ASSERT_EQ_HEX(vram_read(0xB000u + i), 0x77u); // skipped
-    for (uint32_t i = 3u; i < 8u; i++)
-        ASSERT_EQ_HEX(vram_read(0xB000u + i), (uint8_t)(0xC0u + i));
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(backwards_copy) {
-    // "If GR30[0] is programmed to '1', the source and destination addresses will be decremented
-    // ... the starting address will be the highest addressed byte in each area."  The case it
-    // exists for is an overlapping copy that would otherwise eat its own source.
-    rig_setup();
-    for (uint32_t i = 0; i < 16u; i++)
-        vram_write(0xC000u + i, (uint8_t)(0x40u + i));
-    // Shift the sixteen bytes up by four, which overlaps: forwards this smears, backwards it
-    // copies cleanly.  Both start addresses are the highest byte of their area.
-    blt_setup(16u, 1u, 16u, 16u, 0xC000u + 19u, 0xC000u + 15u, 0x01u /* GR30[0]: decrement */, 0x0Du);
-    mmio_write(MM_START, 0x02u);
-    for (uint32_t i = 0; i < 16u; i++)
-        ASSERT_EQ_HEX(vram_read(0xC004u + i), (uint8_t)(0x40u + i));
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(system_to_screen) {
-    // "If GR30[2] is programmed to '1', the BLT source will be system memory.  The CPU will
-    // perform the bus transfers; the CL-GD543X/4X will ignore the address provided with such
-    // transfers" -- so the engine stays busy after the start bit and every write into display
-    // memory is its source.  The CPU must transfer DWORDs, and up to three bytes of the last
-    // transfer for each scan line are discarded.
-    rig_setup();
-    // Three bytes per scan line, two scan lines, pitch 8: each line takes one DWORD and throws
-    // its fourth byte away.
-    blt_setup(3u, 2u, 8u, 0u, 0xD000u, 0u, 0x04u, 0x0Du);
-    mmio_write(MM_START, 0x02u);
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x01u, 0x01u); // busy: the source has not arrived yet
-
-    g_write32(FB_BASE + 0x0u, 0x99332211u); // $99 is the discarded fourth byte
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x01u, 0x01u); // one scan line to go
-    g_write32(FB_BASE + 0x0u, 0x99665544u);
-
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x0Bu, 0x00u); // and now it is done
-    ASSERT_EQ_HEX(vram_read(0xD000u), 0x11u);
-    ASSERT_EQ_HEX(vram_read(0xD001u), 0x22u);
-    ASSERT_EQ_HEX(vram_read(0xD002u), 0x33u);
-    ASSERT_EQ_HEX(vram_read(0xD003u), 0x00u); // the discarded byte went nowhere
-    ASSERT_EQ_HEX(vram_read(0xD008u), 0x44u);
-    ASSERT_EQ_HEX(vram_read(0xD009u), 0x55u);
-    ASSERT_EQ_HEX(vram_read(0xD00Au), 0x66u);
-    // ...and the writes that fed it did not land in display memory at the address they used.
-    ASSERT_EQ_HEX(vram_read(0x0u), 0x00u);
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(blit_stays_inside_vram) {
-    // The aperture promises that writes above the fitted DRAM vanish, and the engine has to
-    // keep that promise too: a 21-bit destination address reaches twice the memory this board
-    // fits.  Nothing to assert but the absence of a crash and an untouched buffer.
-    rig_setup();
-    vram_write(0x0u, 0x5Au);
-    blt_setup(256u, 16u, 1024u, 1024u, 0x1F0000u, 0x1F8000u, 0x00u, 0x0Du);
-    mmio_write(MM_START, 0x02u);
-    ASSERT_EQ_HEX(vram_read(0x0u), 0x5Au);
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x0Bu, 0x00u);
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(unknown_rop_is_refused) {
-    // GR32 has sixteen legal values and this is not one of them.  An engine that guessed would
-    // scribble; this one logs and leaves the destination alone.
-    rig_setup();
-    vram_write(0xE000u, 0x11u);
-    vram_write(0xE100u, 0x22u);
-    blt_setup(1u, 1u, 1u, 1u, 0xE100u, 0xE000u, 0x00u, 0x37u);
-    mmio_write(MM_START, 0x02u);
-    ASSERT_EQ_HEX(vram_read(0xE100u), 0x22u);
-    ASSERT_EQ_HEX(mmio_read(MM_START) & 0x0Bu, 0x00u); // but the driver is not left spinning
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(window_banking) {
-    // GR9 offsets the window into display memory in 4 KB pages, and GRB[5] makes those pages
-    // 16 KB (TRM 9.19 and 9.21).  MODELLED FROM THE MANUAL: nothing on this machine drives the
-    // window through a bank register, so this row is the only thing that exercises it.
-    rig_setup();
-    seq_write(0x17, 0x00); // no register block in the way
-    vram_write(0x0B000u, 0x61u);
-    vram_write(0x23000u, 0x62u);
-
-    gr_write(0x09, 0x0Bu); // offset 11 pages of 4 KB
-    ASSERT_EQ_HEX(g_read8(FB_BASE + WIN_BASE + 0x000u), 0x61u);
-
-    gr_write(0x0B, 0x20u); // GRB[5]: the same offset now counts 16 KB pages
-    gr_write(0x09, 0x08u); // 8 x 16 KB = $20000, plus SA[14:12] = 3 -> $23000
-    ASSERT_EQ_HEX(g_read8(FB_BASE + WIN_BASE + 0x3000u), 0x62u);
-    rig_teardown();
-}
-
-// ============================================================================
-TEST(reset_restores_six_bit_dac) {
-    // The hidden DAC register sits in the register file that PCI RST# clears, so a warm reset
-    // has to leave the palette back in its six-bit VGA reading.  This row exists because the
-    // model used to keep the eight-bit flag across a reset: a guest that rebooted out of a
-    // session where the Cirrus driver had selected eight-bit palette data then had every
-    // subsequent VGA palette write taken raw, and the whole screen came up four times too dark.
-    rig_setup();
-    // The descriptor only exists once a packed-pixel mode is programmed, so put the card in
-    // 640x480 at 8 bpp the way a driver does: SR07[0] selects packed pixels with SR07[3:1] = 0
-    // for eight of them, and the CRTC carries the geometry.
-    seq_write(0x07, 0x01);
-    seq_write(0x01, 0x01); // eight dots per character clock
-    crtc_write(0x01, 79); // (79 + 1) * 8 = 640
-    crtc_write(0x12, 0xDF);
-    crtc_write(0x07, 0x02); // VDE bit 8: 479 + 1 = 480
-    crtc_write(0x13, 80); // 80 * 8 = 640 bytes per line
-    display_t *d = g_dev->ops->display(g_dev);
+// The Open Firmware sequence yields 640x480x8 at a 640-byte stride, scanned
+// from the bottom of display memory.
+TEST(open_firmware_sequence_gives_640x480x8) {
+    pci_device_t *dev = seat();
+    fb_poke(0, 0xA5); // a marker at VRAM offset 0 = the start address
+    program_of_640x480x8();
+    display_t *d = dev->ops->display(dev);
     ASSERT_TRUE(d != NULL);
-
-    // The hidden register is reached the way a driver reaches it: four reads of $3C6 arm the
-    // door and the fifth access lands on the register (TRM 9.13).  Bit 1 selects eight bits.
-    for (int i = 0; i < 4; i++)
-        (void)io_read(0x3C6u);
-    io_write(0x3C6u, 0x02u);
-
-    // In eight-bit mode the written value is the intensity itself.
-    io_write(0x3C8u, 0x01u);
-    for (int ch = 0; ch < 3; ch++)
-        io_write(0x3C9u, 0x3Fu);
-    ASSERT_EQ_HEX(d->clut[1].r, 0x3Fu);
-
-    g_dev->ops->reset(g_dev, &g_cfg); // RST#, as a machine reset delivers it
-
-    // The same three bytes are a six-bit VGA value again, and $3F is full white.
-    io_write(0x3C8u, 0x01u);
-    for (int ch = 0; ch < 3; ch++)
-        io_write(0x3C9u, 0x3Fu);
-    ASSERT_EQ_HEX(d->clut[1].r, 0xFFu);
-    ASSERT_EQ_HEX(d->clut[1].g, 0xFFu);
-    ASSERT_EQ_HEX(d->clut[1].b, 0xFFu);
-
-    // And the door itself is shut again: a bare write to $3C6 after the reset is a pel mask
-    // write, not a hidden-register write, so it must not put the DAC back into eight-bit mode.
-    io_write(0x3C6u, 0x02u);
-    io_write(0x3C8u, 0x02u);
-    for (int ch = 0; ch < 3; ch++)
-        io_write(0x3C9u, 0x3Fu);
-    ASSERT_EQ_HEX(d->clut[2].r, 0xFFu);
-    rig_teardown();
+    ASSERT_EQ_INT((int)d->width, 640);
+    ASSERT_EQ_INT((int)d->height, 480);
+    ASSERT_EQ_INT((int)d->stride, 640);
+    ASSERT_EQ_INT((int)d->format, (int)PIXEL_8BPP);
+    ASSERT_TRUE(d->bits != NULL);
+    ASSERT_EQ_INT(d->bits[0], 0xA5);
+    ASSERT_TRUE(d->shape_dirty);
+    unseat(dev);
 }
 
-// ============================================================================
+// 1024x768x8 -- VDE bit 9 from CR07 bit 6, not bit 8 -- fits the 1 MB store
+// (786,432 bytes) and is taken as programmed.
+TEST(mode_1024x768x8_uses_vde_bit_9) {
+    pci_device_t *dev = seat();
+    program_1024x768x8();
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->width, 1024);
+    ASSERT_EQ_INT((int)d->height, 768);
+    ASSERT_EQ_INT((int)d->stride, 1024);
+    unseat(dev);
+}
+
+// SR01 bit 0 clear selects nine-dot character clocks (VGA clocking mode
+// register): CR01 = 79 then gives 80 * 9 = 720 pixels.  Offset 90 -> 720
+// bytes; VDE $18F = 399 -> 400 lines.
+TEST(nine_dot_clocks_give_720_pixels) {
+    pci_device_t *dev = seat();
+    seq(0x01, 0x00);
+    seq(0x07, 0xF1);
+    crtc(0x13, 0x5A);
+    crtc(0x01, 0x4F);
+    crtc(0x07, 0x02);
+    crtc(0x12, 0x8F);
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->width, 720);
+    ASSERT_EQ_INT((int)d->height, 400);
+    ASSERT_EQ_INT((int)d->stride, 720);
+    unseat(dev);
+}
+
+// Start address: CR0C/CR0D in doubleword units, extended by CR1B bit 0
+// (address bit 16) and CR1B bits 3:2 (bits 18:17).  $0100 -> byte 1024;
+// CR1B = $01 -> $10000 * 4 = byte $40000.
+TEST(start_address_and_its_cirrus_extension) {
+    pci_device_t *dev = seat();
+    fb_poke(1024, 0x11);
+    fb_poke(0x40000, 0x22);
+    fb_poke(0x80000, 0x33);
+    program_of_640x480x8();
+    crtc(0x0C, 0x01);
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT(d->bits[0], 0x11);
+    crtc(0x0C, 0x00);
+    crtc(0x1B, 0x01);
+    ASSERT_EQ_INT(d->bits[0], 0x22);
+    // CR1B bit 2 is address bit 17: $20000 * 4 = byte $80000.
+    crtc(0x1B, 0x04);
+    ASSERT_EQ_INT(d->bits[0], 0x33);
+    unseat(dev);
+}
+
+// A start address that pushes the raster off the end of the 1 MB store is
+// the base being wrong, not the mode: the card scans from 0 instead.  CR1B =
+// $0D sets address bits 16-18: $70000 * 4 = byte $1C0000, past 1 MB.
+TEST(start_past_the_store_falls_back_to_zero) {
+    pci_device_t *dev = seat();
+    fb_poke(0, 0x5A);
+    program_of_640x480x8();
+    crtc(0x1B, 0x0D);
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->width, 640);
+    ASSERT_EQ_INT((int)d->height, 480);
+    ASSERT_EQ_INT(d->bits[0], 0x5A);
+    unseat(dev);
+}
+
+// Not a packed-pixel mode: SR07 bit 0 clear is plain VGA text/planar, which
+// c54m30_bpp() reports as depth 0.  Nothing is presented, however complete
+// the CRTC geometry.
+TEST(standard_vga_mode_presents_nothing) {
+    pci_device_t *dev = seat();
+    seq(0x01, 0x01);
+    seq(0x07, 0xF0); // extended-mode enable clear
+    crtc(0x01, 0x4F);
+    crtc(0x07, 0x02);
+    crtc(0x12, 0xDF);
+    crtc(0x13, 0x50);
+    ASSERT_TRUE(dev->ops->display(dev) == NULL);
+    unseat(dev);
+}
+
+// Deeper colour needs a little-endian framebuffer window the display layer
+// does not have (Apple: big-endian hosts are limited to 8 bpp on this part),
+// so a 16/24/32 bpp selection is refused and the last good mode is kept.
+// SR07 bits [3:1] = 001 is 16 bpp 5-5-5, 011 is 32 bpp.
+TEST(deeper_colour_keeps_the_last_good_mode) {
+    pci_device_t *dev = seat();
+    program_of_640x480x8();
+    seq(0x07, 0xF3); // 16 bpp
+    crtc(0x13, 0xA0); // offset 160 -> a 1280-byte 16 bpp stride
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->stride, 640);
+    ASSERT_EQ_INT((int)d->format, (int)PIXEL_8BPP);
+    seq(0x07, 0xF7); // 32 bpp
+    ASSERT_EQ_INT((int)dev->ops->display(dev)->stride, 640);
+    unseat(dev);
+
+    // ...and from reset, with no good mode to keep, nothing at all.
+    dev = seat();
+    seq(0x01, 0x01);
+    seq(0x07, 0xF3);
+    crtc(0x01, 0x4F);
+    crtc(0x07, 0x02);
+    crtc(0x12, 0xDF);
+    crtc(0x13, 0xA0);
+    ASSERT_TRUE(dev->ops->display(dev) == NULL);
+    unseat(dev);
+}
+
+// A half-programmed CRTC -- a stride shorter than a line -- is waited out,
+// not presented: the last good mode stays.
+TEST(stride_shorter_than_a_line_is_ignored) {
+    pci_device_t *dev = seat();
+    program_of_640x480x8();
+    crtc(0x13, 0x40); // 512 bytes for a 640-pixel line
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->width, 640);
+    ASSERT_EQ_INT((int)d->stride, 640);
+    unseat(dev);
+}
+
+// A raster the 1 MB store cannot back scans nothing: offset 255 (a 2040-byte
+// stride) at 768 lines is 1,566,720 bytes.  The card has no blank buffer, so
+// display_set_scanout zeroes the height and the display op returns NULL.
+TEST(raster_larger_than_vram_presents_nothing) {
+    pci_device_t *dev = seat();
+    program_1024x768x8();
+    ASSERT_TRUE(dev->ops->display(dev) != NULL);
+    crtc(0x13, 0xFF);
+    ASSERT_TRUE(dev->ops->display(dev) == NULL);
+    // Bringing the offset back restores the picture.
+    crtc(0x13, 0x80);
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->height, 768);
+    ASSERT_EQ_INT((int)d->stride, 1024);
+    unseat(dev);
+}
+
+// --- Config space -----------------------------------------------------------
+
+static uint32_t cfg_read(pci_device_t *dev, uint32_t reg) {
+    return pci_cfg_read(dev, reg);
+}
+static void cfg_write32(pci_device_t *dev, uint32_t reg, uint32_t v) {
+    for (uint32_t b = 0; b < 4; b++)
+        pci_cfg_write(dev, reg, b, (uint8_t)(v >> (8u * b)));
+}
+
+// Identity: vendor $1013 (Cirrus Logic), device $00A0 (the Alpine TRM's PCI
+// ID reset value), class $030000 (VGA-compatible display), revision 0.
+TEST(config_identity) {
+    pci_device_t *dev = seat();
+    ASSERT_TRUE(cfg_read(dev, PCI_CFG_ID) == 0x00A01013u);
+    ASSERT_TRUE(cfg_read(dev, PCI_CFG_CLASS) == 0x03000000u);
+    ASSERT_EQ_INT((int)((cfg_read(dev, PCI_CFG_MISC) >> 16) & 0xFFu), 0x00); // type-0 header
+    unseat(dev);
+}
+
+// BAR sizing, the universal all-ones probe (PCI 2.0 section 6.2.5.1), against
+// c54m30_decl: BAR0 is a 16 MB prefetchable memory aperture (base in bits
+// 31:24, type bits 1000b); BAR1 a 512-byte I/O range (size mask $FFFFFE00,
+// bit 0 set for I/O space); BARs 2-5 are unimplemented and read zero.
+TEST(bar_sizing_matches_the_declaration) {
+    pci_device_t *dev = seat();
+    for (uint32_t reg = PCI_CFG_BAR0; reg <= PCI_CFG_BAR5; reg += 4)
+        cfg_write32(dev, reg, 0xFFFFFFFFu);
+    ASSERT_TRUE(cfg_read(dev, PCI_CFG_BAR0) == 0xFF000008u);
+    ASSERT_TRUE(cfg_read(dev, PCI_CFG_BAR0 + 4) == 0xFFFFFE01u);
+    for (uint32_t reg = PCI_CFG_BAR0 + 8; reg <= PCI_CFG_BAR5; reg += 4)
+        ASSERT_TRUE(cfg_read(dev, reg) == 0u);
+    ASSERT_TRUE(pci_cfg_bar_size(dev, 0) == 0x01000000u);
+    ASSERT_TRUE(pci_cfg_bar_size(dev, 1) == 0x200u);
+    // An assigned base reads back masked to the BAR's alignment: Open
+    // Firmware's I/O assignment of $00010000 (docs/machines/tnt/tnt.md).
+    cfg_write32(dev, PCI_CFG_BAR0 + 4, 0x00010000u);
+    ASSERT_TRUE(cfg_read(dev, PCI_CFG_BAR0 + 4) == 0x00010001u);
+    unseat(dev);
+}
+
+// The strapped legacy decode is the VGA block $3B0-$3DF in I/O space, not a
+// BAR (cirrus54m30.c, "The VGA I/O ranges").
+TEST(legacy_vga_block_is_a_fixed_io_region) {
+    pci_device_t *dev = seat();
+    ASSERT_EQ_INT((int)s_vga_space, (int)PCI_SPACE_IO);
+    ASSERT_TRUE(s_vga_base == 0x3B0u);
+    ASSERT_TRUE(s_vga_span == 0x30u);
+    unseat(dev);
+}
+
+// No expansion ROM: Open Firmware builds the node from the main ROM's
+// `54m30-config`, so the ROM BAR is unimplemented -- a sizing probe reads
+// zero and the declared size is zero.
+TEST(no_expansion_rom) {
+    pci_device_t *dev = seat();
+    cfg_write32(dev, PCI_CFG_ROM_BAR, 0xFFFFFFFFu);
+    ASSERT_TRUE(cfg_read(dev, PCI_CFG_ROM_BAR) == 0u);
+    ASSERT_TRUE(pci_cfg_bar_size(dev, PCI_ROM_BAR_INDEX) == 0u);
+    ASSERT_TRUE(!pci_cfg_bar_enabled(dev, PCI_ROM_BAR_INDEX));
+    unseat(dev);
+}
+
+// No interrupt: the pin byte ($3D) reads 0, "uses no interrupt pin" in the
+// PCI 2.0 header, and stays 0 through a write -- it is strapped.
+TEST(no_interrupt_pin) {
+    pci_device_t *dev = seat();
+    ASSERT_EQ_INT((int)((cfg_read(dev, PCI_CFG_INTERRUPT) >> 8) & 0xFFu), 0);
+    cfg_write32(dev, PCI_CFG_INTERRUPT, 0xFFFFFFFFu);
+    ASSERT_EQ_INT((int)((cfg_read(dev, PCI_CFG_INTERRUPT) >> 8) & 0xFFu), 0);
+    unseat(dev);
+}
+
+// The command register keeps only what the part implements: I/O space,
+// memory space and bus master (c54m30_decl.command_writable).
+TEST(command_register_writable_bits) {
+    pci_device_t *dev = seat();
+    ASSERT_EQ_INT((int)(cfg_read(dev, PCI_CFG_COMMAND) & 0xFFFFu), 0);
+    cfg_write32(dev, PCI_CFG_COMMAND, 0x0000FFFFu);
+    ASSERT_EQ_INT((int)(cfg_read(dev, PCI_CFG_COMMAND) & 0xFFFFu),
+                  (int)(PCI_CMD_IO_SPACE | PCI_CMD_MEM_SPACE | PCI_CMD_MASTER));
+    unseat(dev);
+}
+
+// --- The register file ------------------------------------------------------
+
+// The indexed blocks round-trip, and both windows -- the strapped legacy
+// block and the relocatable BAR1 range, indexed there by the port's low
+// byte -- reach one register file.
+TEST(indexed_registers_round_trip_through_both_windows) {
+    pci_device_t *dev = seat();
+    seq(0x07, 0xF1);
+    gr(0x05, 0x40);
+    crtc(0x13, 0x50);
+    port_out(P_SEQ_INDEX, 0x07);
+    ASSERT_EQ_INT(port_in(P_SEQ_DATA), 0xF1);
+    port_out(P_GR_INDEX, 0x05);
+    ASSERT_EQ_INT(port_in(P_GR_DATA), 0x40);
+    port_out(P_CRTC_INDEX, 0x13);
+    ASSERT_EQ_INT(port_in(P_CRTC_DATA), 0x50);
+    // BAR1: $3C4/$3C5 at +$C4/+$C5.
+    s_io_if->write_uint8(s_io_ctx, 0xC4, 0x07);
+    ASSERT_EQ_INT(s_io_if->read_uint8(s_io_ctx, 0xC5), 0xF1);
+    s_io_if->write_uint8(s_io_ctx, 0xC5, 0xE1);
+    ASSERT_EQ_INT(port_in(P_SEQ_DATA), 0xE1);
+    unseat(dev);
+}
+
+// A halfword store to the index port loads the index and the data in one
+// cycle, the byte at the lower address first -- the order the card's 16-bit
+// handlers split a big-endian halfword in.
+TEST(halfword_store_sets_index_then_data) {
+    pci_device_t *dev = seat();
+    s_vga_if->write_uint16(s_vga_ctx, P_SEQ_INDEX, 0x07F1u);
+    ASSERT_EQ_INT(port_in(P_SEQ_INDEX), 0x07);
+    ASSERT_EQ_INT(port_in(P_SEQ_DATA), 0xF1); // SR07, without a second index write
+    unseat(dev);
+}
+
+// The attribute controller shares one port for index and data, alternating;
+// a read of Input Status 1 resets the flip-flop to "index" (VGA attribute
+// controller semantics).
+TEST(attribute_flip_flop_resets_on_status_read) {
+    pci_device_t *dev = seat();
+    port_out(P_ATTR, 0x10); // index $10 (mode control)
+    port_out(P_ATTR, 0x41); // data
+    port_out(P_ATTR, 0x12); // the flip-flop is back at "index": select $12
+    port_in(P_STATUS1); // ...and a status read forces "index" again
+    port_out(P_ATTR, 0x10);
+    ASSERT_EQ_INT(port_in(P_ATTR_READ), 0x41);
+    port_out(P_ATTR, 0x55); // data for $10
+    ASSERT_EQ_INT(port_in(P_ATTR_READ), 0x55);
+    port_out(P_ATTR, 0x11); // index $11; the flip-flop now expects data
+    port_in(P_STATUS1_MONO); // the mono address resets it too...
+    port_out(P_ATTR, 0x10); // ...so this is an index, not $11's data
+    ASSERT_EQ_INT(port_in(P_ATTR_READ), 0x55);
+    unseat(dev);
+}
+
+// The DAC: one write index, then R, G, B per entry with auto-advance.
+// Values are six bits (the high two are dropped) and the renderer's palette
+// expands them by replicating the top two bits into the bottom, so $3F is
+// $FF and $20 is $82.  The read port walks the same way.
+TEST(dac_palette_load_and_expansion) {
+    pci_device_t *dev = seat();
+    program_of_640x480x8();
+    port_out(P_DAC_WINDEX, 5);
+    port_out(P_DAC_DATA, 0xFF); // -> $3F
+    port_out(P_DAC_DATA, 0x20);
+    port_out(P_DAC_DATA, 0x00);
+    port_out(P_DAC_DATA, 0x01); // entry 6 follows without a new index
+    port_out(P_DAC_DATA, 0x02);
+    port_out(P_DAC_DATA, 0x03);
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL && d->clut != NULL);
+    ASSERT_EQ_INT(d->clut_len, 256);
+    ASSERT_EQ_INT(d->clut[5].r, 0xFF);
+    ASSERT_EQ_INT(d->clut[5].g, 0x82);
+    ASSERT_EQ_INT(d->clut[5].b, 0x00);
+    ASSERT_EQ_INT(d->clut[5].a, 0xFF);
+    ASSERT_EQ_INT(d->clut[6].r, 0x04); // $01 -> 0000 0100
+    ASSERT_EQ_INT(d->clut[6].b, 0x0C); // $03 -> 0000 1100
+    ASSERT_TRUE(d->clut_dirty);
+    port_out(P_DAC_RINDEX, 5);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x3F);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x20);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x00);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x01); // entry 6's red
+    unseat(dev);
+}
+
+// Input Status 1 toggles vertical retrace (bit 3) with display-enable
+// inactive (bit 0) over the last 1/14 of each 1/60 s frame of emulated
+// time, so a wait-for-retrace loop terminates.  A 840 kHz clock makes a
+// 14,000-cycle frame with retrace from cycle 13,000.
+TEST(input_status_1_follows_emulated_time) {
+    pci_device_t *dev = seat();
+    ASSERT_EQ_INT(port_in(P_STATUS1), 0); // no scheduler: never in retrace
+    s_profile.freq = 60u * 14000u;
+    s_cfg.machine = &s_profile;
+    s_cfg.scheduler = (scheduler_t *)&s_sched_token;
+    s_cycles = 12999;
+    ASSERT_EQ_INT(port_in(P_STATUS1), 0x00);
+    s_cycles = 13000;
+    ASSERT_EQ_INT(port_in(P_STATUS1), 0x09);
+    ASSERT_EQ_INT(port_in(P_STATUS1_MONO), 0x09);
+    s_cycles = 14000 + 5; // next frame, active display again
+    ASSERT_EQ_INT(port_in(P_STATUS1), 0x00);
+    unseat(dev);
+}
+
+// The display-memory aperture: the fitted 1 MB answers, the rest of the
+// 16 MB decode reads zero and swallows writes; wider accesses are
+// big-endian over the byte lanes.
+TEST(aperture_beyond_the_fitted_megabyte_is_empty) {
+    pci_device_t *dev = seat();
+    s_fb_if->write_uint32(s_fb_ctx, 0x100, 0x11223344u);
+    ASSERT_EQ_INT(s_fb_if->read_uint8(s_fb_ctx, 0x100), 0x11);
+    ASSERT_EQ_INT(s_fb_if->read_uint16(s_fb_ctx, 0x102), 0x3344);
+    ASSERT_TRUE(s_fb_if->read_uint32(s_fb_ctx, 0x100) == 0x11223344u);
+    s_fb_if->write_uint8(s_fb_ctx, 0x100000, 0x77);
+    ASSERT_EQ_INT(s_fb_if->read_uint8(s_fb_ctx, 0x100000), 0);
+    ASSERT_EQ_INT(s_fb_if->read_uint8(s_fb_ctx, 0xFFFFFF), 0);
+    unseat(dev);
+}
+
+// PCI RST# clears the register file and the palette (to opaque black);
+// display memory is DRAM and survives.
+TEST(reset_clears_registers_not_vram) {
+    pci_device_t *dev = seat();
+    program_of_640x480x8();
+    port_out(P_DAC_WINDEX, 0);
+    port_out(P_DAC_DATA, 0x3F);
+    port_out(P_DAC_DATA, 0x3F);
+    port_out(P_DAC_DATA, 0x3F);
+    fb_poke(0x10, 0x99);
+    dev->ops->reset(dev, &s_cfg);
+    port_out(P_SEQ_INDEX, 0x07);
+    ASSERT_EQ_INT(port_in(P_SEQ_DATA), 0);
+    port_out(P_CRTC_INDEX, 0x01);
+    ASSERT_EQ_INT(port_in(P_CRTC_DATA), 0);
+    port_out(P_DAC_RINDEX, 0);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0);
+    ASSERT_EQ_INT(s_fb_if->read_uint8(s_fb_ctx, 0x10), 0x99);
+    unseat(dev);
+}
+
+// PCI reset clears the registers the mode is derived from, so the card has
+// no mode until the firmware programs one.  It used to keep presenting the
+// old geometry over stale memory: "keep the last good mode" swallowed the
+// reset state too.
+TEST(reset_withdraws_the_mode) {
+    pci_device_t *dev = seat();
+    program_of_640x480x8();
+    ASSERT_TRUE(dev->ops->display(dev) != NULL);
+    dev->ops->reset(dev, &s_cfg);
+    ASSERT_TRUE(dev->ops->display(dev) == NULL);
+    program_of_640x480x8(); // and the firmware's next mode set brings it back
+    display_t *d = dev->ops->display(dev);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->width, 640);
+    unseat(dev);
+}
+
+// --- Checkpoints and the framebuffer node -----------------------------------
+
+// The mode is DERIVED state: restore rebuilds it from the saved registers
+// into the restoring card's own display memory, together with the palette
+// view and the VRAM contents.
+TEST(checkpoint_round_trips_the_mode) {
+    s_cp_buf = (uint8_t *)malloc(CP_CAP);
+    ASSERT_TRUE(s_cp_buf != NULL);
+    s_cp_len = s_cp_pos = 0;
+
+    pci_device_t *a = seat();
+    program_1024x768x8();
+    port_out(P_DAC_WINDEX, 7);
+    port_out(P_DAC_DATA, 0x3F);
+    port_out(P_DAC_DATA, 0x00);
+    port_out(P_DAC_DATA, 0x20);
+    fb_poke(0, 0xC3);
+    fb_poke(0xFFFFF, 0x3C);
+    a->ops->checkpoint_save(a, TEST_CP);
+    unseat(a);
+
+    pci_device_t *b = seat();
+    ASSERT_TRUE(b->ops->display(b) == NULL);
+    b->ops->checkpoint_restore(b, TEST_CP);
+    ASSERT_TRUE(s_cp_pos == s_cp_len); // read exactly what was written
+    display_t *d = b->ops->display(b);
+    ASSERT_TRUE(d != NULL);
+    ASSERT_EQ_INT((int)d->width, 1024);
+    ASSERT_EQ_INT((int)d->height, 768);
+    ASSERT_EQ_INT((int)d->stride, 1024);
+    ASSERT_EQ_INT(d->bits[0], 0xC3); // the restoring card's VRAM, restored
+    ASSERT_EQ_INT(s_fb_if->read_uint8(s_fb_ctx, 0xFFFFF), 0x3C);
+    ASSERT_EQ_INT(d->clut[7].r, 0xFF);
+    ASSERT_EQ_INT(d->clut[7].g, 0x00);
+    ASSERT_EQ_INT(d->clut[7].b, 0x82);
+    ASSERT_TRUE(d->shape_dirty && d->clut_dirty && d->fb_dirty);
+    unseat(b);
+    free(s_cp_buf);
+    s_cp_buf = NULL;
+}
+
+// A checkpoint taken between an index write and its data write, or partway
+// through a palette entry, resumes there: the index latches, the attribute
+// flip-flop and the DAC position are part of the state.  They were not
+// saved, so after a restore $3C5 answered SR00 instead of the selected SR07,
+// and the rest of an interrupted palette load landed in entry 0.
+TEST(checkpoint_keeps_the_port_latches) {
+    s_cp_buf = (uint8_t *)malloc(CP_CAP);
+    ASSERT_TRUE(s_cp_buf != NULL);
+    s_cp_len = s_cp_pos = 0;
+
+    pci_device_t *a = seat();
+    seq(0x07, 0xF1); // leaves the sequencer index at 7
+    port_out(P_DAC_WINDEX, 9);
+    port_out(P_DAC_DATA, 0x3F); // entry 9, red written: green is next
+    a->ops->checkpoint_save(a, TEST_CP);
+    unseat(a);
+
+    pci_device_t *b = seat();
+    b->ops->checkpoint_restore(b, TEST_CP);
+    ASSERT_TRUE(s_cp_pos == s_cp_len);
+    ASSERT_EQ_INT(port_in(P_SEQ_DATA), 0xF1);
+    port_out(P_DAC_DATA, 0x3F);
+    port_out(P_DAC_DATA, 0x3F);
+    port_out(P_DAC_RINDEX, 9);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x3F);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x3F);
+    ASSERT_EQ_INT(port_in(P_DAC_DATA), 0x3F);
+    unseat(b);
+    free(s_cp_buf);
+    s_cp_buf = NULL;
+}
+
+// The shared framebuffer node resolves to the live descriptor and reports
+// the CR0C/CR0D start address as a byte offset into display memory.
+TEST(framebuffer_node_resolves_the_descriptor) {
+    pci_device_t *dev = seat();
+    s_fb_node = NULL;
+    cirrus_54m30_kind.attach_objects(dev, (struct object *)&s_fake_object);
+    ASSERT_TRUE(s_fb_node && s_fb_node->resolve && s_fb_node->base);
+    program_of_640x480x8();
+    crtc(0x0D, 0x40); // $0040 doublewords = byte $100
+    ASSERT_TRUE(s_fb_node->resolve(s_fb_node->owner) == dev->ops->display(dev));
+    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0x100u);
+    unseat(dev);
+}
+
+// The node's base is where the scanout starts, not the CR0C/CR0D pair alone:
+// it includes the CR1B extension, and follows the fall-back to 0 when the
+// start would run the raster off the end of display memory.
+TEST(framebuffer_node_base_is_the_scanout_start) {
+    pci_device_t *dev = seat();
+    s_fb_node = NULL;
+    cirrus_54m30_kind.attach_objects(dev, (struct object *)&s_fake_object);
+    program_of_640x480x8();
+    fb_poke(0x40000, 0x22);
+    crtc(0x1B, 0x01); // start bit 16: doubleword $10000 = byte $40000
+    display_t *d = dev->ops->display(dev);
+    ASSERT_EQ_INT(d->bits[0], 0x22);
+    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0x40000u);
+    crtc(0x1B, 0x0C); // bits 18:17 set: byte $C0000, and 640x480 does not fit
+    ASSERT_TRUE(s_fb_node->base(s_fb_node->owner) == 0u);
+    unseat(dev);
+}
+
 int main(void) {
-    RUN(lane_contract);
-    RUN(mirror_and_register_block);
-    RUN(rop_truth_table);
-    RUN(start_bit_clears);
-    RUN(blt_captured);
-    RUN(pattern_vertical_preset);
-    RUN(colour_expand);
-    RUN(left_edge_clip);
-    RUN(backwards_copy);
-    RUN(system_to_screen);
-    RUN(blit_stays_inside_vram);
-    RUN(unknown_rop_is_refused);
-    RUN(window_banking);
-    RUN(reset_restores_six_bit_dac);
-    fprintf(stderr, "[ OK ] cirrus54m30\n");
+    RUN(no_display_before_a_mode_is_programmed);
+    RUN(open_firmware_sequence_gives_640x480x8);
+    RUN(mode_1024x768x8_uses_vde_bit_9);
+    RUN(nine_dot_clocks_give_720_pixels);
+    RUN(start_address_and_its_cirrus_extension);
+    RUN(start_past_the_store_falls_back_to_zero);
+    RUN(standard_vga_mode_presents_nothing);
+    RUN(deeper_colour_keeps_the_last_good_mode);
+    RUN(stride_shorter_than_a_line_is_ignored);
+    RUN(raster_larger_than_vram_presents_nothing);
+    RUN(config_identity);
+    RUN(bar_sizing_matches_the_declaration);
+    RUN(legacy_vga_block_is_a_fixed_io_region);
+    RUN(no_expansion_rom);
+    RUN(no_interrupt_pin);
+    RUN(command_register_writable_bits);
+    RUN(indexed_registers_round_trip_through_both_windows);
+    RUN(halfword_store_sets_index_then_data);
+    RUN(attribute_flip_flop_resets_on_status_read);
+    RUN(dac_palette_load_and_expansion);
+    RUN(input_status_1_follows_emulated_time);
+    RUN(aperture_beyond_the_fitted_megabyte_is_empty);
+    RUN(reset_clears_registers_not_vram);
+    RUN(reset_withdraws_the_mode);
+    RUN(checkpoint_round_trips_the_mode);
+    RUN(checkpoint_keeps_the_port_latches);
+    RUN(framebuffer_node_resolves_the_descriptor);
+    RUN(framebuffer_node_base_is_the_scanout_start);
     return 0;
 }

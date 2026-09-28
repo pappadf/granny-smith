@@ -356,7 +356,7 @@ int vfs_open(const char *path, vfs_file_t **out, const vfs_backend_t **be_out) {
     const vfs_backend_t *be = NULL;
     void *ctx = NULL;
     const char *tail = NULL;
-    // cat/read keep strict semantics (§2.9): bare image paths read the raw
+    // cat/read keep strict semantics: bare image paths read the raw
     // blob, they do not descend.
     int rc = vfs_resolve(path, resolved, sizeof(resolved), &be, &ctx, &tail);
     if (rc)

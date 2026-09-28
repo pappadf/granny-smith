@@ -78,6 +78,8 @@ prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *
 // expected.  Offers persist across machine.boot.
 
 void prom_offer(const char *path);
+// Offer every file in `dir` ending in `ext` (NULL: any), skipping dotfiles.
+void prom_offer_dir(const char *dir, const char *ext);
 void prom_offer_clear(void);
 
 // Enumerate the offered candidates providing `card_id`, in pick order: the
@@ -99,6 +101,9 @@ bool prom_card_resolvable(const char *card_id);
 // an empty path.
 int prom_set_path(const char *path);
 
+// Drop the explicit pick (the file stays offered); see vrom_clear_explicit.
+void prom_clear_explicit(void);
+
 // Load the resolved image for `card_id` into a malloc'd buffer the caller
 // (a card factory) hands to pci_device_t.rom / .rom_size.  *out_path (if
 // non-NULL) receives a malloc'd copy of the resolved path for the
@@ -106,8 +111,6 @@ int prom_set_path(const char *path);
 bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, char **out_path);
 
 // === Lifecycle =============================================================
-
-extern const struct class_desc prom_class;
 
 void prom_init(void);
 void prom_delete(void);

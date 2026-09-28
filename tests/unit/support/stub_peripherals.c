@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Peripheral stubs for unit tests
 // Provides no-op implementations for floppy and network functions.
 
@@ -33,12 +35,6 @@ bool floppy_is_inserted(floppy_t *floppy, int drive) {
 void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
     (void)floppy;
     (void)sel;
-}
-
-// Network packet processing stub
-void process_packet(uint8_t *buf, size_t size) {
-    (void)buf;
-    (void)size;
 }
 
 // RTC stub for cmd_set_time (debug_mac.c) — no-op since system_rtc() returns NULL

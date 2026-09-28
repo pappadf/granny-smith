@@ -1,5 +1,5 @@
-# STAYS ON THE IIcx. §7 moved this with the 24AC suite, but that suite
-# stayed here (the IIci keeps its built-in video as the boot screen, so the
+# STAYS ON THE IIcx. The IIci re-host would have moved this with the 24AC
+# suite, but that suite stayed here (the IIci keeps its built-in video as the boot screen, so the
 # card's own raster would stop being observable), and on the IIci this
 # flow additionally raised a system error inserting Utilities Disk 2 —
 # unexplained, and not worth chasing for a re-host with no remaining
@@ -31,5 +31,5 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # card selected (video_card can't be passed as an arg) and attaches the SCSI HD.
 TEST_ARGS := model=iicx ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

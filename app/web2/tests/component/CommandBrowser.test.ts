@@ -3,31 +3,37 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CommandBrowser from '@/components/panel-views/terminal/CommandBrowser.svelte';
 import { registerTerminalInsert } from '@/components/panel-views/terminal/terminalBridge';
 
-// The browser is now generated from the model (proposal §8.6), so mock the
+// The browser is generated from the model, so mock the
 // bus to feed buildCommandsTree a tiny tree: one subsystem (`cpu`) with a
 // `step` method. Categories are model-derived (subsystem bucket + the static
 // Language keywords group), not a hand-listed catalogue.
 vi.mock('@/bus/emulator', () => {
-  const methodInfo = (name: string, doc = '') => ({
+  const method = (name: string, doc = '') => ({
     name,
-    verb: name,
+    kind: 'method',
     category: 'basic',
-    task: '',
+    label: name,
     doc,
+    verb: name,
+    task: '',
     destructive: false,
     mutate: false,
     hidden: false,
     nargs: 0,
   });
+  const child = (name: string) => ({
+    name,
+    kind: 'child',
+    category: 'basic',
+    label: name,
+    doc: '',
+  });
   return {
     isModuleReady: () => true,
-    gsEval: async (path: string, args?: unknown[]) => {
-      if (path === 'meta.methods') return []; // no root verbs in this fixture
-      if (path === 'objects') return ['cpu'];
-      if (path === 'cpu.meta.methods') return ['step'];
-      if (path === 'cpu.meta.method_info')
-        return methodInfo(String(args?.[0]), 'run N instructions');
-      if (path === 'cpu.meta.children') return [];
+    gsEval: async (path: string) => {
+      // No root verbs in this fixture; one child, cpu, with a `step` method.
+      if (path === 'meta.members') return [child('cpu')];
+      if (path === 'cpu.meta.members') return [method('step', 'run N instructions')];
       if (path === 'shell.aliases') return [];
       return null;
     },

@@ -30,23 +30,25 @@
 //     +$30.  Misc register $20 carries the depth (bits 3:2: 0/1/2 =
 //     8/16/32 bpp), $21 the VRAM bank select.
 //   * VBL is Grand Central interrupt 26 (TNT_INT_VBL), IPL 2 through the
-//     NanoKernel mapping.  The dossier's interrupt map guessed 30; the
+//     NanoKernel mapping.  An earlier interrupt map guessed 30; the
 //     shipping System's video driver settles it by toggling GC mask bit
 //     26 as it writes INTR_ENA (see tnt.h).  Line 30 is the 9500's
 //     second-CPU doorbell in Apple's own external-interrupt table, and
 //     26 is Bandit 2's error line on a two-Bandit board — free on TNT,
 //     which is why Control could have it.
 //
-// The pixel clock is programmed over Cuda I2C (device $50) and is not
-// visible here — geometry derives from the timing registers and pitch
-// (width = pitch/bytes-per-pixel, height = (vsblank-veblank)/2), which is
-// behaviorally sufficient (control-chaos-video.md §7).
+// The pixel clock is programmed over Cuda I2C (device $50, three RdWrIIC
+// packets per mode-set) and never shows in Control's own register space;
+// Cuda hands those writes here (tnt_control_i2c_write), and the retrace
+// period is pixel_clock / (htotal x vtotal) from them plus the period
+// registers.  Geometry derives from the blank-pair registers and pitch.
 //
 // Register truth: linux/drivers/video/fbdev/controlfb.{c,h} [GPL-src],
 // mklinux POWERMAC/video_control.c [GPL-src], the shipping ROM's OpenFW
 // control node (FCode at image ~$16400) and its mode tables [ROM-RE],
 // Apple "Power Macintosh 7500 and 8500 Computers" Developer Note [Apple-doc].
 
+#include "display_timing.h"
 #include "tnt.h"
 
 #include "log.h"
@@ -58,13 +60,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("control");
+LOG_USE_CATEGORY_NAME("video");
 
 // Register indices (offset / $10) — controlfb's struct control_regs.
 #define CR_VCOUNT     0 // vertical counter (read)
 #define CR_VSBLANK    2 // vertical start blank (end of active, half-lines)
 #define CR_VEBLANK    3 // vertical end blank (display start, half-lines)
 #define CR_VPERIOD    7 // vertical period (half-lines)
+#define CR_HPERIOD    9 // horizontal period - 2 (2-px units)
 #define CR_HSBLANK    10 // horizontal start blank (end of active, 2-px units)
 #define CR_HEBLANK    11 // horizontal end blank (display start, 2-px units)
 #define CR_CTRL       18 // display control ($400 blanks; $03/$30 gate syncs)
@@ -96,11 +99,91 @@ LOG_USE_CATEGORY_NAME("control");
 // Pixel 0 sits 16 bytes into the framebuffer (controlfb's CTRLFB_OFF).
 #define CONTROL_FB_OFF 16u
 
-// The monitor on the sense lines: an AppleColor Hi-Res 13"/14" strap —
-// line C tied to ground, A/B floating.  Raw sense 6, extended walk $2B,
-// which selects the 640x480 timing set in the ROM's own mode table (the
-// $2B literal sits at the head of the OpenFW timing-table list).
-#define CONTROL_MONITOR_GROUNDED 0x1u // bit mask, lines {A,B,C} = bits {2,1,0}... C = bit 0
+// The pixel-clock synthesiser: Cuda I2C device $50, subaddresses 1..3
+// carrying {p0, p1, p2}, dot clock = 3.9064 MHz x p1 x 2^p2 / p0 (the
+// Apple RAMDAC-family M/N/P scheme; Valkyrie and Platinum use the same
+// reference).  The retrace rate is then dot_clock / (htotal x vtotal),
+// where htotal = (hperiod + 2) x 2 pixels and vtotal = vperiod / 2 lines.
+// Until the chip is programmed — power-on, the blanked window of a
+// mode-set, zero totals, a half-written mode line — the event keeps the
+// nominal 60 Hz it always ran at, so boot behaviour is unchanged.
+//
+// What the shipping ROM's own driver programs, captured live [ROM-RE]:
+//   * 640x480 (the 13"/14" strap, extended sense $2B): {14, 27, 2} =
+//     30.135 MHz over hperiod 430 / vperiod 1050 = 864 x 525 -> 66.43 Hz.
+//     That is Apple's 640x480 @ 66.67 Hz raster (30.24 MHz nominal), NOT
+//     the VGA 60 Hz one -- so the old constant was 10% slow on the boot
+//     mode, and the synthesiser's nearest ratio lands 0.35% under nominal.
+//   * 1152x870 (the 21" strap, sense 0): {11, 35, 3} = 99.44 MHz over
+//     hperiod 726 / vperiod 1830 = 1456 x 915 -> 74.63 Hz (100 MHz and
+//     75.06 Hz nominal).  The 2-pixel horizontal unit holds above 1024
+//     wide, at least for the ROM's own mode table.
+#define CONTROL_I2C_CLOCK       0x50u
+#define CONTROL_PIXCLOCK_BASE   3906400u // Hz
+#define CONTROL_VBL_FALLBACK_NS (1000000000ull / 60u)
+#define CONTROL_VBL_MIN_NS      4000000ull // 250 Hz: faster is a mode line half-written
+#define CONTROL_VBL_MAX_NS      40000000ull // 25 Hz: slower likewise
+
+// The default monitor on the sense lines: an AppleColor Hi-Res 13"/14"
+// strap — line C tied to ground, A/B floating.  Raw sense 6, extended walk
+// $2B, which selects the 640x480 timing set in the ROM's own mode table (the
+// $2B literal sits at the head of the OpenFW timing-table list).  The pick
+// lives in tnt_control_t.mon_grounded (bit mask, lines {A,B,C} = bits
+// {2,1,0}); this was a compile-time constant, pinning every TNT machine to
+// 640x480 whatever the guest asked for (#146).
+#define CONTROL_MONITOR_SENSE_DEFAULT 0x6u
+
+// The monitors the built-in port can present, by the 3-bit passive sense
+// code (display_timing.h): the ROM's extended walk reads the grounded lines
+// and picks the timing set.  Restricted to the eight passive codes, as the
+// PDM's list is: monitors Apple told apart by per-line strapping are not
+// modelled.  Grounding all three (sense 0) is what makes Open Firmware
+// program 1152x870.
+typedef struct control_monitor_kind {
+    const char *id; // config token ("hires", "twopage", ...)
+    const char *name; // human-readable, for the object model
+    uint8_t sense; // the 3-bit strap this monitor presents
+} control_monitor_kind_t;
+
+static const control_monitor_kind_t control_monitors[] = {
+    {"hires",    "AppleColor Hi-Res RGB 13\"/14\" (640x480)",  0x6u},
+    {"twopage",  "21\" RGB Workstation / Two-Page (1152x870)", 0x0u},
+    {"portrait", "Macintosh Portrait Display (640x870)",       0x1u},
+    {"rubik",    "Macintosh 12\" RGB (512x384)",               0x2u},
+    {"none",     "No monitor connected",                       0x7u},
+    {NULL,       NULL,                                         0   },
+};
+
+// hw_profile_t.builtin_video (machine_profile.h): two thin adapters over
+// control_monitors so the machine registry can publish and validate this
+// port without reaching into the family.
+static bool control_builtin_monitor_at(size_t i, const char **id, const char **name) {
+    size_t n = 0;
+    for (const control_monitor_kind_t *m = control_monitors; m->id; m++, n++) {
+        if (n == i) {
+            *id = m->id;
+            *name = m->name;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool control_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
+    for (const control_monitor_kind_t *m = control_monitors; m->id; m++) {
+        if (strcmp(m->id, id) == 0) {
+            *out_sense = m->sense;
+            return true;
+        }
+    }
+    return false;
+}
+
+const builtin_video_desc_t tnt_builtin_video = {
+    .display_name = "Built-in video (Control)",
+    .monitor_at = control_builtin_monitor_at,
+    .monitor_sense = control_builtin_monitor_sense,
+};
 
 static tnt_control_t *ctl(config_t *cfg) {
     return &tnt_st(cfg)->control;
@@ -134,13 +217,30 @@ static pixel_format_t depth_format(const tnt_control_t *c) {
     }
 }
 
-// Materialize the CLUT for the renderer (8 bpp indexes it directly; the
-// direct formats bypass it).
+// Materialize the RaDACal table for the consumers.  At 8 bpp it is the CLUT
+// the pixel indexes; in the direct-colour modes it stays in the DAC path as
+// one lookup per channel (display_t.dac_lut) -- MkLinux's console draws
+// palette indexes into 32 bpp pixels and relies on that expansion, and
+// dropping the table there rendered it near-black (#147).
 static void control_refresh_clut(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_control_t *c = &st->control;
-    if (depth_bpp(c) > 8)
+    if (depth_bpp(c) > 8) {
+        for (uint32_t i = 0; i < 256; i++) {
+            st->dac_view[0][i] = c->clut[i][0];
+            st->dac_view[1][i] = c->clut[i][1];
+            st->dac_view[2][i] = c->clut[i][2];
+        }
+        st->display.clut = NULL;
+        st->display.clut_len = 0;
+        st->display.dac_lut = st->dac_view;
+        st->display.response_dirty = true;
         return;
+    }
+    if (st->display.dac_lut) {
+        st->display.dac_lut = NULL;
+        st->display.response_dirty = true;
+    }
     for (uint32_t i = 0; i < 256; i++) {
         st->clut_view[i].r = c->clut[i][0];
         st->clut_view[i].g = c->clut[i][1];
@@ -150,6 +250,16 @@ static void control_refresh_clut(config_t *cfg) {
     st->display.clut = st->clut_view;
     st->display.clut_len = 256;
     st->display.clut_dirty = true;
+}
+
+// Scan base inside the 4 MB store: the bank the attribute selects (the 2 MB
+// modes; the $40 bit marks the 4 MB interleaved layout at 0), plus the
+// programmed start address and the 16-byte pixel-0 offset.  update() and
+// compose() must agree on this or the cursor composites over the wrong page.
+static uint32_t control_scan_base(const tnt_control_t *c) {
+    uint32_t attr = c->reg[CR_VRAM_ATTR];
+    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
+    return base + c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
 }
 
 // Re-derive the whole descriptor from the register file.  Called on init,
@@ -176,49 +286,37 @@ void tnt_control_update(config_t *cfg) {
     if (height == 0 || height > 1536u)
         height = 480u;
 
-    st->display.width = width;
-    st->display.height = height;
     st->display.format = depth_format(c);
-    st->display.stride = (pitch != 0) ? pitch : width * (bpp / 8u);
     st->display.par_w = 0;
     st->display.par_h = 0;
     st->display.crt_response = NULL;
+    uint32_t stride = (pitch != 0) ? pitch : width * (bpp / 8u);
+    uint32_t base = control_scan_base(c);
 
-    // Scan base inside the 4 MB store: the bank the attribute selects (the
-    // 2 MB modes; the $40 bit marks the 4 MB interleaved layout at 0),
-    // plus the programmed start address and the 16-byte pixel-0 offset.
-    uint32_t attr = c->reg[CR_VRAM_ATTR];
-    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
-    base += c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
-
-    // The $400 control bit blanks the raster; an unprogrammed pitch or an
-    // out-of-store scan does too (nothing sane is being scanned).
+    // The $400 control bit blanks the raster, and so does an unprogrammed
+    // pitch -- nothing sane is being scanned.  Either way the descriptor is
+    // settled in one place: display_set_scanout decides `bits` and the
+    // geometry together, so a scan the 4 MB store cannot back (CR_PITCH is
+    // 12 bits wide, which reaches 12 MB at 32 bpp) falls to the blank buffer
+    // with a height the blank buffer can actually serve, instead of keeping
+    // the large geometry over a clamped fill.
     bool blanked = (c->reg[CR_CTRL] & 0x400u) || pitch == 0;
-    uint64_t span = (uint64_t)st->display.stride * height;
-    if (base + span > TNT_VRAM_SIZE)
-        blanked = true;
-    if (blanked) {
-        size_t n = (size_t)st->display.stride * height;
-        if (n > TNT_VRAM_SIZE)
-            n = TNT_VRAM_SIZE;
-        memset(st->blank, display_black_fill(st->display.format), n);
-        st->display.bits = st->blank;
-    } else {
-        st->display.bits = st->vram + base;
-    }
+    display_set_scanout(&st->display, blanked ? NULL : st->vram, TNT_VRAM_SIZE, base, stride, width, height, st->blank,
+                        TNT_VRAM_SIZE);
+    blanked = st->display.bits == st->blank;
 
-    if (bpp > 8) {
-        st->display.clut = NULL;
-        st->display.clut_len = 0;
-    } else {
-        control_refresh_clut(cfg);
-    }
+    control_refresh_clut(cfg);
     control_compose(cfg);
     st->display.shape_dirty = true;
     st->display.fb_dirty = true;
     st->display.clut_dirty = true;
-    LOG(2, "mode: %ux%u %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height, bpp, st->display.stride,
-        c->reg[CR_MODE], c->rad_ctrl, st->display.clut ? "yes" : "no", blanked ? " BLANKED" : "");
+    // Control derives its raster from the CRTC, which is right for a
+    // programmable timing generator -- but naming the standard timing it
+    // landed on makes a misprogrammed mode line obvious in the log.
+    const char *timing = display_timing_name(width, height);
+    LOG(2, "Control: mode: %ux%u%s%s %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height,
+        timing ? " " : "", timing ? timing : "", bpp, st->display.stride, c->reg[CR_MODE], c->rad_ctrl,
+        st->display.clut ? "yes" : "no", blanked ? " BLANKED" : "");
 }
 
 // The RaDACal hardware cursor (misc $20 bit 1).  Decoded live from the
@@ -263,10 +361,7 @@ static void control_compose(config_t *cfg) {
     uint32_t bpx = depth_bpp(c) / 8u;
     uint32_t stride = st->display.stride;
     uint32_t w = st->display.width, h = st->display.height;
-    // Recompute the scan base exactly as update() does.
-    uint32_t attr = c->reg[CR_VRAM_ATTR];
-    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
-    base += c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
+    uint32_t base = control_scan_base(c);
     uint64_t span = (uint64_t)stride * h;
     if (base + span > TNT_VRAM_SIZE)
         return;
@@ -347,6 +442,59 @@ static void control_vbl_sync(config_t *cfg) {
     tnt_gc_set_source(cfg, TNT_INT_VBL, c->vbl_pending && (c->reg[CR_INTR_ENA] & CONTROL_INT_VBL));
 }
 
+// Control's own vertical retrace, and NOT the Macintosh 60.15 Hz tick.
+//
+// Worth saying explicitly because the two look like the same number badly
+// typed.  tnt_trigger_vbl() feeds VIA1 CA1 once per scheduler frame-unit --
+// that is MAC_VBL_PERIOD, 60.15 Hz, and it is what paces Ticks, the Time
+// Manager and cursor blink (tnt.md "the 60.15 Hz reference into VIA1 CA1").
+// This event is a different wire: Grand Central interrupt 26, the retrace the
+// ndrv spin-polls during a mode-set.  Changing this 60 to 60.15 would conflate
+// the monitor with the machine clock.
+//
+// The faithful model is neither constant: on the real chip the rate is
+// pixel_clock / (htotal x vtotal), which control_frame_ns derives from the
+// period registers and the synthesiser parameters the driver wrote over Cuda
+// I2C.  The nominal 60 Hz survives only as the fallback for an unprogrammed
+// chip; it is not a drifted copy of MAC_VBL_PERIOD, the two are not measuring
+// the same thing.
+
+// The programmed dot clock in Hz, 0 while the synthesiser is unprogrammed.
+static uint64_t control_dot_clock_hz(const tnt_control_t *c) {
+    uint32_t p0 = c->clk[0], p1 = c->clk[1], p2 = c->clk[2];
+    if (p0 == 0 || p1 == 0 || p2 > 7u)
+        return 0;
+    return ((uint64_t)CONTROL_PIXCLOCK_BASE * p1 << p2) / p0;
+}
+
+// The retrace period in ns: the programmed raster against the programmed
+// dot clock, or the nominal fallback until both are in place.
+static uint64_t control_frame_ns(config_t *cfg) {
+    tnt_control_t *c = ctl(cfg);
+    uint64_t dot_hz = control_dot_clock_hz(c);
+    uint64_t htotal = ((uint64_t)c->reg[CR_HPERIOD] + 2u) * 2u; // pixels per line
+    uint64_t vtotal = c->reg[CR_VPERIOD] / 2u; // lines per frame
+    if (dot_hz == 0 || c->reg[CR_HPERIOD] == 0 || vtotal == 0 || (c->reg[CR_CTRL] & 0x400u))
+        return CONTROL_VBL_FALLBACK_NS; // unprogrammed or blanked
+    uint64_t ns = htotal * vtotal * 1000000000ull / dot_hz;
+    if (ns < CONTROL_VBL_MIN_NS || ns > CONTROL_VBL_MAX_NS)
+        return CONTROL_VBL_FALLBACK_NS; // a mode line caught half-written
+    return ns;
+}
+
+// Log the retrace the registers currently give, whenever a write could
+// have moved it (mode-line, control and clock writes — all rare).
+static void control_log_frame(config_t *cfg) {
+    tnt_control_t *c = ctl(cfg);
+    uint64_t ns = control_frame_ns(cfg);
+    uint64_t dot_hz = control_dot_clock_hz(c);
+    LOG(2, "Control: retrace %llu ns (%llu.%02llu Hz)%s: dot %llu Hz (p0=%u p1=%u p2=%u) htotal=%u vtotal=%u",
+        (unsigned long long)ns, (unsigned long long)(1000000000ull / ns),
+        (unsigned long long)((100000000000ull / ns) % 100u),
+        (ns == CONTROL_VBL_FALLBACK_NS && dot_hz == 0) ? " [fallback]" : "", (unsigned long long)dot_hz, c->clk[0],
+        c->clk[1], c->clk[2], (c->reg[CR_HPERIOD] + 2u) * 2u, c->reg[CR_VPERIOD] / 2u);
+}
+
 static void control_vbl_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
@@ -357,7 +505,7 @@ static void control_vbl_event(void *source, uint64_t data) {
     c->vbl_pending = 1;
     control_vbl_sync(cfg);
     c->vbl_armed = 1;
-    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, 1000000000ull / 60u);
+    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, control_frame_ns(cfg));
 }
 
 static void control_vbl_arm(config_t *cfg) {
@@ -365,22 +513,42 @@ static void control_vbl_arm(config_t *cfg) {
     if (c->vbl_armed || !(c->reg[CR_INTR_ENA] & CONTROL_INT_VBL))
         return;
     c->vbl_armed = 1;
-    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, 1000000000ull / 60u);
+    scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, control_frame_ns(cfg));
+}
+
+// The pixel-clock synthesiser on Cuda's I2C bus: subaddress i (1..3) takes
+// clock parameter i-1.  Anything else on the bus is not ours.
+bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len) {
+    config_t *cfg = (config_t *)ctx;
+    tnt_control_t *c = ctl(cfg);
+    if (slave != CONTROL_I2C_CLOCK)
+        return false;
+    if (len < 2 || data[0] < 1u || data[0] > 3u) {
+        LOG(1, "Control: clock synthesiser write ignored (sub=$%02X len=%d)", (len >= 1) ? data[0] : 0u, len);
+        return true;
+    }
+    c->clk[data[0] - 1u] = data[1];
+    LOG(2, "Control: clock synthesiser p%u = %u", data[0] - 1u, data[1]);
+    if (data[0] == 3u)
+        control_log_frame(cfg); // the third write completes the triple
+    return true;
 }
 
 // ============================================================
 // The register block (BAR $14): 32 x 32-bit LE on $10 centres
 // ============================================================
 
-// Live vertical counter: the frame phase off the CPU clock against a
-// nominal 60 Hz frame, scaled to the programmed vertical period.  Guests
+// Live vertical counter: the frame phase off the CPU clock against the
+// derived retrace period, scaled to the programmed vertical period.  Guests
 // poll it for vertical-blank waits; only monotonic-within-frame matters.
 static uint32_t control_vcount(config_t *cfg) {
     tnt_control_t *c = ctl(cfg);
     uint32_t vtotal = c->reg[CR_VPERIOD] / 2u;
     if (vtotal == 0 || vtotal > 4096u)
         vtotal = 525u;
-    uint64_t frame = cfg->machine->freq / 60u;
+    uint64_t frame = cfg->machine->freq * control_frame_ns(cfg) / 1000000000ull; // cycles per frame
+    if (!frame)
+        return 0; // a machine with no clock yet -- % 0 is undefined
     uint64_t pos = scheduler_cpu_cycles(cfg->scheduler) % frame;
     return (uint32_t)(pos * vtotal / frame);
 }
@@ -396,7 +564,7 @@ static uint32_t control_sense_read(config_t *cfg) {
         uint32_t drive_off = (v >> (5 - i)) & 1u;
         uint32_t level = (v >> (2 - i)) & 1u;
         uint32_t line = drive_off ? 1u : level;
-        if ((CONTROL_MONITOR_GROUNDED >> (2 - i)) & 1u)
+        if ((c->mon_grounded >> (2 - i)) & 1u)
             line = 0; // the monitor straps this line to ground
         lines |= line << (8 - i);
     }
@@ -407,7 +575,7 @@ static uint32_t control_reg_read(config_t *cfg, uint32_t offset) {
     tnt_control_t *c = ctl(cfg);
     uint32_t idx = offset >> 4;
     if ((offset & 0xFu) != 0 || idx >= TNT_CONTROL_REGS) {
-        LOG(1, "register read off-centre +$%03X", offset);
+        LOG(1, "Control: register read off-centre +$%03X", offset);
         return 0;
     }
     switch (idx) {
@@ -426,13 +594,12 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
     tnt_control_t *c = ctl(cfg);
     uint32_t idx = offset >> 4;
     if ((offset & 0xFu) != 0 || idx >= TNT_CONTROL_REGS) {
-        LOG(1, "register write off-centre +$%03X = $%08X", offset, value);
+        LOG(1, "Control: register write off-centre +$%03X = $%08X", offset, value);
         return;
     }
-    LOG(2, "reg[%u] = $%08X", idx, value);
+    LOG(2, "Control: reg[%u] = $%08X", idx, value);
     c->reg[idx] = value;
     switch (idx) {
-    case CR_CTRL:
     case CR_START_ADDR:
     case CR_PITCH:
     case CR_VRAM_ATTR:
@@ -442,6 +609,14 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
     case CR_HSBLANK:
     case CR_HEBLANK:
         tnt_control_update(cfg);
+        break;
+    case CR_VPERIOD:
+    case CR_HPERIOD:
+        control_log_frame(cfg); // the raster totals: the retrace period moved
+        break;
+    case CR_CTRL:
+        tnt_control_update(cfg);
+        control_log_frame(cfg); // blank/unblank switches the fallback in or out
         break;
     case CR_INTR_ENA:
         if (!(value & CONTROL_INT_VBL) || !(value & CONTROL_INT_GATE))
@@ -505,7 +680,7 @@ static void vram_write8(void *ctx, uint32_t offset, uint8_t value) {
 // memory space it claims.  The generic type-0 header (config_space.c)
 // does all of that: the sizing mask, the latches and the decode.
 //
-// DOCUMENTED FIDELITY DEVIATION (proposal-pci-architecture §6.2 / §14 Q6):
+// DOCUMENTED FIDELITY DEVIATION:
 // Control's real vendor/device ids are unrecorded anywhere we have.  What
 // the shipping ROM actually reads out of $00-$0C through Chaos is CHAOS's
 // own header, because Chaos's restricted config space is all this model
@@ -642,7 +817,8 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         c->crsr_phase = 0;
         break;
     case 0x10:
-        LOG(4, "cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value, ppc_get_pc(cfg->ppc));
+        LOG(4, "Control: cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value,
+            ppc_get_pc(cfg->ppc));
         c->crsr[c->rad_addr & 7u][c->crsr_phase] = value;
         if (++c->crsr_phase == 3) {
             c->crsr_phase = 0;
@@ -650,7 +826,7 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         }
         break;
     case 0x20:
-        LOG(2, "RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
+        LOG(2, "Control: RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
         switch (c->rad_addr) {
         case 0x20:
             c->rad_ctrl = value; // depth control — geometry follows
@@ -670,8 +846,8 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     default: // +$30: CLUT data
         c->clut[c->rad_addr][c->rad_phase] = value;
         if (++c->rad_phase == 3) {
-            LOG(3, "CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0], c->clut[c->rad_addr][1],
-                c->clut[c->rad_addr][2]);
+            LOG(3, "Control: CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0],
+                c->clut[c->rad_addr][1], c->clut[c->rad_addr][2]);
             c->rad_phase = 0;
             c->rad_addr++;
             control_refresh_clut(cfg);
@@ -769,17 +945,38 @@ void tnt_control_reset(config_t *cfg) {
     memset(c->rad_misc, 0, sizeof(c->rad_misc));
     memset(c->clut, 0, sizeof(c->clut));
     memset(c->crsr, 0, sizeof(c->crsr));
+    memset(c->clk, 0, sizeof(c->clk)); // synthesiser unprogrammed: nominal retrace
     tnt_gc_set_source(cfg, TNT_INT_VBL, false);
     tnt_control_update(cfg);
 }
 
+static display_t *control_fb_resolve(void *owner) {
+    return tnt_control_display((config_t *)owner);
+}
+static uint64_t control_fb_base(void *owner) {
+    // A byte offset into the 4 MB store, which is what CR_START_ADDR and the
+    // bank-select attribute add up to.
+    config_t *cfg = (config_t *)owner;
+    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
+    if (!st || !st->display.bits || st->display.bits == st->blank || !st->vram)
+        return 0;
+    return (uint64_t)(st->display.bits - st->vram);
+}
+
 int tnt_control_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
+    // The built-in port's monitor, from the boot document's `monitor=` (the
+    // registry resolved it to a sense code); a restore overwrites the whole
+    // chip afterwards, so the saved strap wins there.
+    int want = cfg->build_opts.video_sense;
+    uint8_t sense = (want >= 0 && want <= 7) ? (uint8_t)want : CONTROL_MONITOR_SENSE_DEFAULT;
+    st->control.mon_grounded = (uint8_t)(~sense & 7u);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);
     st->compose = calloc(1, TNT_VRAM_SIZE);
     if (!st->vram || !st->blank || !st->compose) {
-        LOG(0, "Error: out of memory allocating Control's three %u-byte framebuffers", (unsigned)TNT_VRAM_SIZE);
+        LOG(0, "Control: Error: out of memory allocating Control's three %u-byte framebuffers",
+            (unsigned)TNT_VRAM_SIZE);
         free(st->vram);
         free(st->blank);
         free(st->compose);
@@ -810,11 +1007,15 @@ int tnt_control_init(config_t *cfg) {
 
     tnt_control_update(cfg);
     st->display.response_dirty = true;
+    st->control_fb_node = (display_fb_node_t){.owner = cfg, .resolve = control_fb_resolve, .base = control_fb_base};
+    st->control_video_node = display_attach_video_node(&st->control_fb_node, "Video (Control)");
     return 0;
 }
 
 void tnt_control_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
+    display_detach_video_node(st->control_video_node);
+    st->control_video_node = NULL;
     free(st->vram);
     st->vram = NULL;
     free(st->blank);

@@ -16,7 +16,7 @@ Supporting both checkpoint types balances performance and reliability, enabling 
 
 ## Background Checkpoints
 
-Background checkpoints (quick checkpoints saved automatically) are written directly to OPFS-backed storage. With OPFS + pthreads, every `fclose()` is immediately durable — no async sync step or marker protocol is needed. Each machine owns a directory under `/opfs/checkpoints/`; the quick-checkpoint slot, the writable image deltas, and the manifest all live together under that directory and are treated as one atomic unit.
+Background checkpoints (quick checkpoints saved automatically) are serialised into a buffer on the emulator thread and written to OPFS-backed storage by the I/O worker (the save flow below). With OPFS + pthreads, every `fclose()` is immediately durable — no async sync step or marker protocol is needed. Each machine owns a directory under `/opfs/checkpoints/`; the quick-checkpoint slot, the writable image deltas, and the manifest all live together under that directory and are treated as one atomic unit.
 
 ### Per-Machine Directory
 
@@ -39,8 +39,9 @@ The C side is told about the active machine via `machine.register(<id>, <created
 
 ### Checkpoint Save Flow
 
-1. **Write** the new checkpoint to `<machine_dir>/state.checkpoint.tmp` (synchronous; OPFS auto-persists on `fclose`).
-2. **Atomic rename** to `<machine_dir>/state.checkpoint`. The rename is the swap; readers always see a complete file.
+1. **Serialise** on the emulator thread into the quick buffer (one contiguous copy of RAM, the VRAM blocks, the device state, the disk bitmaps), with the v3 header laid down at the front at `checkpoint_close`.
+2. **Publish** on the I/O worker (`src/core/io/io_worker.h`): write the buffer to `<machine_dir>/state.checkpoint.tmp` in 1 MB chunks (yielding between them so the guest's own disk reads are not queued behind one long write on the filesystem's proxy thread), `fclose` (OPFS auto-persists), then **atomic rename** to `<machine_dir>/state.checkpoint`. The rename is the swap; readers always see a complete file. The emulator thread never waits for it: the tick that serialised goes on with the next frame, and the completion arrives at a later drain as the `checkpoint_saved` event.
+3. **One buffer.** While a publish is in flight the buffer is the worker's; an auto-save that comes due meanwhile is skipped and counted (the 750 ms rate limit already says "not yet"). `checkpoint.snapshot` waits for a publish in flight, saves, and waits for its own — a snapshot promises a complete file when it returns. `checkpoint.load`, `checkpoint.clear`, `storage.rm` and `storage.mv` wait for a publish in flight before touching the directory, so the rename never lands under them. A build without the worker (`--io=sync`, the unit suites) runs the same write inline.
 
 There is no sequence-numbered file scheme any more. A monotonic `generation` counter inside the checkpoint header replaces it for diagnostics; on disk there is only one file.
 
@@ -77,42 +78,30 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
   - `checkpoint --load <file>`: Constructs a new `config_t` via the active machine profile, restoring each subsystem from the stream.
   - `checkpoint --validate <path>`: Checks if the file contains a valid checkpoint (magic bytes).
   - `checkpoint --probe`: Returns 0 if a valid `state.checkpoint` exists in the current machine directory.
-  - `checkpoint clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory; the directory itself is left in place.
+  - `checkpoint load`: Rebuilds the machine from the stream (the new machine is constructed before the old one is destroyed). The debug object is part of the machine, so the previous machine's breakpoints and logpoints do not survive a load; add them again afterwards. Memory logpoints added after a load fire as they did before it (#172).
+  - `checkpoint clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory, together with the image deltas and journals there that no open image holds — the discarded state's deltas can never be reached again, and would otherwise accumulate one per session; the directory itself is left in place.
 
 - **File format & signature:**
   - Two on-disk formats are used:
     - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually.
-    - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer, then the entire buffer is RLE-compressed in a single pass and written to disk in one `fwrite` call. No per-block metadata (filenames, line numbers) is stored.
-  - The v3 format structure: `GSCHKPT3` (8 bytes) + uncompressed_size (8 bytes) + compressed_size (8 bytes) + RLE-compressed payload.
+    - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer behind a header-sized gap; at close the header is filled in and the whole buffer is one file the I/O worker writes and publishes. No RLE (the payload is mostly uncompressible RAM: `compressed_size == uncompressed_size` marks it raw) and no per-block metadata (filenames, line numbers).
+  - The v3 format structure: `GSCHKPT3` (8 bytes) + build id + model id + ram_size_kb + uncompressed_size (8 bytes) + compressed_size (8 bytes) + raw payload.
   - The reader auto-detects the format by inspecting the 8-byte magic signature.
 
 
 ## Image Persistence for Quick Checkpoints
 
-Quick checkpoints assume that disk image base files and their delta/journal pairs exist in persistent storage at restore time. In the browser, images uploaded via drag-and-drop initially land in volatile `/tmp/` (memory-backed), which is wiped on page reload. The C-side `image_persist_volatile()` function fixes this by copying volatile images to the OPFS-backed `/opfs/images/` directory before any image opener runs.
+Quick checkpoints assume that disk image base files and their delta/journal pairs exist in persistent storage at restore time. In the browser that is arranged by the web app, not the core: an uploaded or URL-fetched image is copied into `/opfs/images/<category>/` (`app/web2/src/bus/upload.ts::persist`) *before* it is attached, so the path the machine opens — and a checkpoint records — is already on OPFS. The core opens the path it is given and does not copy media anywhere.
 
 `/opfs/images/` is **strictly read-only base content**. The writable side — delta and journal — is rooted under the per-machine checkpoint directory (`/opfs/checkpoints/<machine_id>-<created>/<id>.delta` and `<id>.journal`), not next to the base. This is the key bug fix from the storage-isolation rewrite: reusing the same base image for an unrelated machine no longer replays stale deltas, because every `image_create` mints a fresh random instance id (see `docs/core/storage/image.md`).
 
 ### How It Works
 
-When an `fd insert` or `hd attach` command targets a volatile path (`/tmp/`), `image_persist_volatile()` (called from the worker thread where OPFS is accessible):
+`fd insert` / `hd attach` open the image at the given path via `image_create(base, pick_delta_dir(base))`. `pick_delta_dir` returns `checkpoint_machine_dir()` for OPFS-backed bases, so the delta and journal are created under `/opfs/checkpoints/<machine_id>-<created>/`. Quick checkpoints record the per-image `instance_path` so a future restore can reopen the same files via `image_open(base, instance_path)`.
 
-1. Reads the image file from volatile storage.
-2. Computes a content hash (FNV-1a over first 64 KB + total file size) -> 8-char hex.
-3. Copies the file to `/opfs/images/<hash>.img` (skipped if the hash file already exists).
-4. Returns the persistent path.
+A volatile path (`/tmp/…`) attached from the shell or API stays volatile: the image, its delta and the checkpoint's reference to it are gone after a reload. Copy it under `/opfs/` first to keep it.
 
-The command then opens the image at its persistent location via `image_create(base, pick_delta_dir(base))`. `pick_delta_dir` returns `checkpoint_machine_dir()` for OPFS-backed bases, so the delta and journal are created under `/opfs/checkpoints/<machine_id>-<created>/`. Quick checkpoints record the per-image `instance_path` so a future restore can reopen the same files via `image_open(base, instance_path)`.
-
-### Content-Addressed Naming
-
-Base images under `/opfs/images/` are named by their content hash (`<hash>.img`). This provides:
-
-- **Deduplication:** The same image mounted multiple times is stored only once.
-- **Skip-if-present:** If the hash file exists, the copy is skipped entirely — no wasted I/O.
-- **No name collisions:** Different images with the same original filename get unique hashes.
-
-Images loaded via URL parameters (`url-media.js`) land in `/opfs/images/` subdirectories and use the same persistence mechanism.
+Until 2026-09 the core copied every non-OPFS image to a flat, hash-named `/opfs/images/<8-hex>.img` before opening it (`image_persist_volatile`). That code is gone. Files it wrote are left in place: a checkpoint manifest records its base by path, so an old checkpoint still reopens its image.
 
 ### Filesystem Layout
 
@@ -120,13 +109,11 @@ Images loaded via URL parameters (`url-media.js`) land in `/opfs/images/` subdir
 /                              Memory (default WasmFS root)
 ├── opfs/                                       Single OPFS mount (persistent)
 │   ├── images/                                 Read-only base images
-│   │   ├── rom/                                ROM images (named by checksum)
+│   │   ├── rom/                                ROM images (named by content id)
 │   │   ├── vrom/                               Video ROM images
-│   │   ├── fd/                                 400K/800K floppy images
-│   │   ├── fdhd/                               1.4MB HD floppy images
+│   │   ├── fd/                                 Floppy images (400K / 800K / 1.4MB)
 │   │   ├── hd/                                 SCSI hard disk images
-│   │   ├── cd/                                 CD-ROM images
-│   │   └── <hash>.img                          Content-addressed disk images
+│   │   └── cd/                                 CD-ROM images
 │   ├── checkpoints/                            Per-machine state lives here
 │   │   └── <machine_id>-<created>/             One directory per machine
 │   │       ├── state.checkpoint                Quick checkpoint (atomic via tmp+rename)
@@ -159,6 +146,8 @@ Read-only image opens (`image_open_readonly`) park their throwaway delta and jou
 
 - **Struct layout guideline:**
   - Place POD (plain old data) fields first, pointers and non-POD fields last. This allows a single block I/O for the contiguous POD region, then serializes any pointed-to buffers separately. Use `offsetof(struct <type>, first_pointer_field)` to bound the POD region when helpful.
+  - Restated for device authors, alongside the scheduler-lifetime and assert rules, in [`../../guide/STYLE_GUIDE.md`](../../guide/STYLE_GUIDE.md) § "Device module conventions".
+  - **Layout changes are free.** The stream is positional with no version field and a build-ID mismatch is rejected outright (`checkpoint.c`; the ID is `__DATE__ " " __TIME__`, force-recompiled every build), so a checkpoint can only ever be restored by the exact binary that wrote it. There is no old format to support. The one real constraint is that a save and its restore must change **together, in the same commit** — a swapped pair does not fail at the swap, it cross-loads and dies later at whichever block first disagrees on size.
 
 - **Orchestration and ordering:**
   - `setup_plus_checkpoint(file, kind)` opens a write handle and invokes each subsystem's `<subsystem>_checkpoint` in a well-defined order (RAM, CPU, scheduler, RTC, SCC, sound, VIA, mouse, SCSI, keyboard, floppy, etc.).

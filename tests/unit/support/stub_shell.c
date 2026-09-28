@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Shell stubs for unit tests.
 //
 // Provides no-op implementations of the shell entry points so objects

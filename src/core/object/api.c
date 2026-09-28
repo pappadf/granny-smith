@@ -5,10 +5,11 @@
 // Public entry point: gs_eval. The former gs_inspect and gs_complete
 // entry points were folded into the object model itself — schema is now
 // reached via `<path>.meta.*` and tab-completion via
-// `gs_eval("meta.complete", [...])`. See
-// proposal-introspection-via-meta-attribute.md.
+// `gs_eval("meta.complete", [...])`.
 
 #include "api.h"
+
+#include "value_format.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -25,7 +26,7 @@
 // Tiny JSON emitter — values become a single JSON-encodable shape:
 //   numeric / bool      → bare number / true / false
 //   strings, errors     → quoted string with the standard escapes
-//   bytes               → "0x..." hex string (proposal default formatter)
+//   bytes               → "0x..." hex string (the default formatter)
 //   enum                → {"enum": "<name>", "index": <idx>}
 //   list                → JSON array, recurse
 //   object              → {"object": "<class>", "name": "<name>"}
@@ -91,84 +92,26 @@ static void buf_append_jstring(char *buf, size_t size, size_t *pos, const char *
     buf_append(buf, size, pos, "\"", 1);
 }
 
+// The JS bridge's encoder, now a bridge onto the one renderer.
+//
+// VFMT_JSON_TAGGED reproduces the shapes this function used to build by hand
+// -- {"enum":…,"index":N}, {"object":…,"name":…}, {"error":…} -- because a
+// caller reading gsEval output has to discriminate those kinds.  It differs
+// from the VFMT_JSON that script text uses, and that difference is now
+// declared rather than, as expr.c's comment used to claim, an agreement that
+// happened not to hold.
+//
+// It also gains two cases this function never had: V_REF and V_RANGE fell
+// through the switch with no default, emitting NOTHING and producing a
+// malformed document rather than a wrong one.  Latent -- gs_eval resolves a
+// path, and those kinds come only from expression evaluation and shell
+// bindings -- but it is the shape that makes an eighth kind break the bridge
+// in silence.
 static void format_value_json(const value_t *v, char *buf, size_t size, size_t *pos) {
-    if (!v) {
-        buf_append(buf, size, pos, "null", 4);
-        return;
-    }
-    switch (v->kind) {
-    case V_NONE:
-        buf_append(buf, size, pos, "null", 4);
-        break;
-    case V_BOOL:
-        buf_append(buf, size, pos, v->b ? "true" : "false", v->b ? 4 : 5);
-        break;
-    case V_INT:
-        buf_appendf(buf, size, pos, "%" PRId64, v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            buf_appendf(buf, size, pos, "\"0x%" PRIx64 "\"", v->u);
-        else
-            buf_appendf(buf, size, pos, "%" PRIu64, v->u);
-        break;
-    case V_FLOAT:
-        buf_appendf(buf, size, pos, "%g", v->f);
-        break;
-    case V_STRING:
-        buf_append_jstring(buf, size, pos, v->s);
-        break;
-    case V_BYTES:
-        buf_append(buf, size, pos, "\"0x", 3);
-        for (size_t i = 0; i < v->bytes.n; i++)
-            buf_appendf(buf, size, pos, "%02x", v->bytes.p[i]);
-        buf_append(buf, size, pos, "\"", 1);
-        break;
-    case V_ENUM:
-        buf_append(buf, size, pos, "{\"enum\":", 8);
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            buf_append_jstring(buf, size, pos, v->enm.table[v->enm.idx]);
-        else
-            buf_append(buf, size, pos, "null", 4);
-        buf_appendf(buf, size, pos, ",\"index\":%d}", v->enm.idx);
-        break;
-    case V_LIST:
-        buf_append(buf, size, pos, "[", 1);
-        for (size_t i = 0; i < v->list.len; i++) {
-            if (i)
-                buf_append(buf, size, pos, ",", 1);
-            format_value_json(&v->list.items[i], buf, size, pos);
-        }
-        buf_append(buf, size, pos, "]", 1);
-        break;
-    case V_MAP:
-        buf_append(buf, size, pos, "{", 1);
-        for (size_t i = 0; i < v->map.len; i++) {
-            if (i)
-                buf_append(buf, size, pos, ",", 1);
-            buf_append_jstring(buf, size, pos, v->map.entries[i].key);
-            buf_append(buf, size, pos, ":", 1);
-            format_value_json(&v->map.entries[i].val, buf, size, pos);
-        }
-        buf_append(buf, size, pos, "}", 1);
-        break;
-    case V_OBJECT: {
-        const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
-        const char *cls_name = (cls && cls->name) ? cls->name : "object";
-        const char *o_name = v->obj ? object_name(v->obj) : NULL;
-        buf_append(buf, size, pos, "{\"object\":", 10);
-        buf_append_jstring(buf, size, pos, cls_name);
-        buf_append(buf, size, pos, ",\"name\":", 8);
-        buf_append_jstring(buf, size, pos, o_name ? o_name : "");
-        buf_append(buf, size, pos, "}", 1);
-        break;
-    }
-    case V_ERROR:
-        buf_append(buf, size, pos, "{\"error\":", 9);
-        buf_append_jstring(buf, size, pos, v->err ? v->err : "unknown");
-        buf_append(buf, size, pos, "}", 1);
-        break;
-    }
+    vbuf_t b = {0};
+    value_format(v, VFMT_JSON_TAGGED, &b);
+    buf_append(buf, size, pos, b.p ? b.p : "null", b.p ? b.len : 4);
+    vbuf_free(&b);
 }
 
 // === Minimal JSON-array parser for `args_json` ==============================
@@ -357,6 +300,11 @@ static int json_parse_value(const char **pp, value_t *out) {
     return -1;
 }
 
+// True when only whitespace remains from `p` to the end of the document.
+static bool json_at_end(const char *p) {
+    return *json_skip_ws(p) == '\0';
+}
+
 // Free a parallel names array produced by the object form.
 static void free_arg_names(char **names, int argc) {
     if (!names)
@@ -371,9 +319,9 @@ static void free_arg_names(char **names, int argc) {
 // rejected. Writes parallel names/argv arrays.
 static int json_parse_object_args(const char *p, value_t **out_argv, int *out_argc, char ***out_names) {
     p = json_skip_ws(p + 1);
-    if (*p == '}') {
-        return 0;
-    }
+    if (*p == '}')
+        return json_at_end(p + 1) ? 0 : -1;
+    bool closed = false; // saw the closing '}'
     int cap = 4, n = 0;
     value_t *argv = (value_t *)calloc(cap, sizeof(value_t));
     char **names = (char **)calloc(cap, sizeof(char *));
@@ -422,8 +370,18 @@ static int json_parse_object_args(const char *p, value_t **out_argv, int *out_ar
             continue;
         }
         if (*p == '}') {
+            p++;
+            closed = true;
             break;
         }
+        free_args(argv, n);
+        free_arg_names(names, n);
+        return -1;
+    }
+    // A document that ends before its '}' was cut short (a request truncated
+    // in transit ends right after a ','): refuse it rather than run the call
+    // with its trailing arguments silently dropped.  Nothing may follow '}'.
+    if (!closed || !json_at_end(p)) {
         free_args(argv, n);
         free_arg_names(names, n);
         return -1;
@@ -447,7 +405,8 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
         return -1;
     p = json_skip_ws(p + 1);
     if (*p == ']')
-        return 0;
+        return json_at_end(p + 1) ? 0 : -1;
+    bool closed = false; // saw the closing ']'
     int cap = 4, n = 0;
     value_t *argv = (value_t *)calloc(cap, sizeof(value_t));
     if (!argv)
@@ -474,8 +433,15 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
         }
         if (*p == ']') {
             p++;
+            closed = true;
             break;
         }
+        free_args(argv, n);
+        return -1;
+    }
+    // Same rule as the object form: unterminated, or anything after ']',
+    // is not a document this parser accepts.
+    if (!closed || !json_at_end(p)) {
         free_args(argv, n);
         return -1;
     }
@@ -485,6 +451,34 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
 }
 
 // === Public entry points ====================================================
+
+static gs_eval_spill_fn g_spill;
+
+void gs_eval_set_spill_hook(gs_eval_spill_fn fn) {
+    g_spill = fn;
+}
+
+size_t gs_format_value_json_alloc(const value_t *v, char **out, size_t max) {
+    *out = NULL;
+    for (size_t cap = 1u << 20; cap <= max; cap *= 4) {
+        char *buf = (char *)malloc(cap);
+        if (!buf)
+            return 0;
+        size_t pos = 0;
+        buf[0] = '\0';
+        format_value_json(v, buf, cap, &pos);
+        if (pos < cap - 1) {
+            *out = buf;
+            return pos;
+        }
+        free(buf);
+        if (cap == max)
+            break;
+        if (cap * 4 > max && cap < max)
+            cap = max / 4; // one last try at exactly max
+    }
+    return 0;
+}
 
 int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
@@ -496,7 +490,14 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     size_t pos = 0;
 
     if (!path || !*path) {
+        // `{"error": ...}`, like every sibling branch.  This one emitted the
+        // bare document `"empty path"`, so a JS caller doing
+        // `if (result.error)` got undefined and treated the failure as a
+        // successful string result -- while object-model.md promises JS
+        // callers see error SHAPES, never raw values.
+        buf_append(out_buf, out_size, &pos, "{\"error\":", 9);
         buf_append_jstring(out_buf, out_size, &pos, "empty path");
+        buf_append(out_buf, out_size, &pos, "}", 1);
         return -1;
     }
 
@@ -553,7 +554,7 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     } else if (n.member && n.member->kind == M_ATTR && argc == 1) {
         // node_set takes ownership of its value; pass a copy so the
         // outer free_args() can still walk argv.
-        v = node_set(n, value_copy(&argv[0]));
+        v = node_set(n, value_dup(&argv[0]));
     } else if (argc > 0) {
         v = val_err("path '%s' does not accept %d arg(s)", path, argc);
     } else {
@@ -562,7 +563,10 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
 
     format_value_json(&v, out_buf, out_size, &pos);
     int rc = val_is_error(&v) ? -1 : 0;
-    if (pos >= out_size - 1) {
+    if (pos >= out_size - 1 && rc == 0 && g_spill && g_spill(&v, out_buf, out_size)) {
+        // Spilled to a staged buffer: out_buf names it (mailbox.h).
+        pos = strlen(out_buf);
+    } else if (pos >= out_size - 1) {
         // The formatted result hit the buffer cap. A silently truncated
         // payload is worse than a failure — the consumer would parse garbage
         // (or, for a string result, a shorter valid-looking document) —

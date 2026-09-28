@@ -1,4 +1,4 @@
-# RE-HOSTED SE/30 -> IIx (§7's A/UX redistribution, cheap class): both run
+# RE-HOSTED SE/30 -> IIx (A/UX redistribution, cheap class): both run
 # the Universal ROM and are GLUE siblings, and A/UX 3.0.1's kernel
 # autoconfigures across them, so this costs a boot probe and a golden
 # recapture. It gives the IIx its first A/UX presence; se30-aux-3 (the
@@ -25,5 +25,5 @@ TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/hd160-with-aux-301.img" "$(TEST_TMP
 # src/machines/glue/iix.c) and the reference PNGs were recaptured against it.
 TEST_ARGS := model=iix ram=16384 hd=$(TEST_TMPDIR)/hd.img
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

@@ -1,11 +1,11 @@
 # Integration test: image HFS traversal + auto-mount + EBUSY + EROFS
-# Exercises Phase 2 of proposal-image-vfs.md: implicit descent into an HFS
-# disk image, recursive cp out of the image, and the hd-attach conflict rule.
+# Exercises the image VFS: implicit descent into an HFS disk image,
+# recursive cp out of the image, and the hd-attach conflict rule.
 
 TEST_NAME := Image HFS traverse
 TEST_DESC := Traverse a System 6 HFS floppy via VFS descent; verify cp, EROFS, EBUSY
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -3,11 +3,11 @@
 
 // builtin_rbv_video.c
 // Macintosh IIci built-in video pseudo-card.  See builtin_rbv_video.h for
-// the contract and proposal-machine-iici-iisi.md §3.4 for the RBV/video
+// the contract and docs/machines/mdu/rbv.md for the RBV/video
 // split.  Modelled on jmfb.c (CLUT + depth-switch video) but much smaller:
 // the depth/monitor-sense register lives on the RBV chip, there is no slot
-// register window, and the framebuffer is registered by the machine at the
-// $FBB00000 aperture rather than at nubus_slot_base(slot).
+// register window, and the framebuffer is main RAM (the bottom of Bank A,
+// handed over by the machine) rather than a buffer at nubus_slot_base(slot).
 
 #include "builtin_rbv_video.h"
 
@@ -18,24 +18,28 @@
 #include "nubus.h"
 #include "rbv.h"
 
+#include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("rbvvid");
+LOG_USE_CATEGORY_NAME("video");
 
 // Built-in 13" RGB panel: 640×480, depths 1/2/4/8 bpp.
 #define RBV_VIDEO_WIDTH  640
 #define RBV_VIDEO_HEIGHT 480
+// The black stub presented while RvVIDOff is set: the largest raster this card
+// can scan (8 bpp is the deepest entry in builtin_rbv_depths).
+#define RBV_BLANK_BYTES ((size_t)RBV_VIDEO_WIDTH * RBV_VIDEO_HEIGHT)
 
 // === Per-card private state =================================================
 
+// Field order IS the checkpoint format (the via_t / adb_t / asc_t idiom): the
+// scalars go as ONE range ending at `display`.  A scalar added above that line
+// is checkpointed automatically; a POINTER added above it restores a stale
+// address, so the pointers and construction facts sit below the marker.
 typedef struct {
-    rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
-    uint8_t *fb; // framebuffer buffer (registered by the machine at $FBB00000)
-    bool fb_external; // true if fb points at machine-owned memory (don't free)
     rgba8_t clut[256]; // 256-entry palette fed by the VDAC
-    display_t display;
 
     // VDAC (Bt450) write state: an address write resets the R/G/B counter;
     // three data writes load one entry, then the index auto-increments.
@@ -43,7 +47,27 @@ typedef struct {
     uint8_t vdac_phase; // 0 = R, 1 = G, 2 = B
     uint8_t vdac_rgb[3]; // accumulated R/G/B for the in-progress entry
     uint8_t vdac_pix_mask; // pixel read mask (accept-and-log)
+    bool video_off; // RvMonP RvVIDOff: the raster is blanked
+
+    // --- Pointers and construction facts last; NOT in the range above ---
+    // `display` leads them because it embeds `bits`/`clut` pointers of its own;
+    // its scalar head is checkpointed separately as a display_head_t.
+    display_t display;
+    rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
+    uint8_t *fb; // framebuffer: private until the machine hands over Bank A
+    bool fb_external; // true if fb points at machine-owned memory (don't free)
+    // RvMonP's RvVIDOff bit, and the black raster presented while it is set.
+    // A separate buffer because the framebuffer is LIVE GUEST MEMORY on the
+    // IIsi (the V8 DMAs main DRAM): blanking the screen must not write it.
+    // Same reasoning as ariel.c's `blank`.
+    uint8_t *blank;
+    uint32_t screen_offset; // where the visible raster starts within `fb`
 } rbv_video_priv_t;
+
+// The layout above is load-bearing.  If this fires, a member moved across the
+// boundary: re-check what the checkpoint range now covers before updating it.
+_Static_assert(offsetof(rbv_video_priv_t, display) < offsetof(rbv_video_priv_t, rbv),
+               "RBV-video checkpoint range must end before the pointer block");
 
 // VDAC register offsets (RBV's Bt450) — see HardwarePrivateEqu.a:927-931.
 #define VDAC_WADDR 0x0 // vDACwAddReg — set CLUT index
@@ -66,6 +90,18 @@ static pixel_format_t depth_to_format(int depth_code) {
     }
 }
 
+// Re-derive the scanout from the current depth and the video-off bit.  One
+// checked transition, the same helper every other producer uses: geometry and
+// buffer are decided together, so a blanked screen cannot advertise a raster
+// the stub cannot serve, and the framebuffer window is bounds-checked against
+// the aperture rather than assumed to fit.
+static void rbv_video_apply_scanout(rbv_video_priv_t *p) {
+    uint32_t bpp = display_bpp(p->display.format);
+    uint32_t stride = RBV_VIDEO_WIDTH * bpp / 8u;
+    display_set_scanout(&p->display, p->video_off ? NULL : p->fb, BUILTIN_RBV_VRAM_SIZE, p->screen_offset, stride,
+                        RBV_VIDEO_WIDTH, RBV_VIDEO_HEIGHT, p->blank, RBV_BLANK_BYTES);
+}
+
 // Point display.clut at the slice of the 256-entry hardware CLUT the current
 // depth actually addresses.
 //
@@ -85,7 +121,7 @@ static pixel_format_t depth_to_format(int depth_code) {
 // renderer read the untouched low entries, which after the boot ROM's
 // gray-out all hold the same 50% gray — so a 2 or 4 bpp desktop scanned out
 // as a uniform gray field even though the framebuffer and ScreenRow were
-// correct (ledger §5).
+// correct.
 static void rbv_video_apply_clut_window(rbv_video_priv_t *p) {
     uint32_t bpp = display_bpp(p->display.format);
     uint32_t len = 1u << bpp; // 2, 4, 16 or 256
@@ -105,7 +141,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     if (!p)
         return -1;
     p->fb = calloc(1, BUILTIN_RBV_VRAM_SIZE);
-    if (!p->fb) {
+    p->blank = calloc(1, RBV_BLANK_BYTES);
+    if (!p->fb || !p->blank) {
+        free(p->fb);
+        free(p->blank);
         free(p);
         return -1;
     }
@@ -116,7 +155,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->display.height = RBV_VIDEO_HEIGHT;
     p->display.format = PIXEL_1BPP_MSB;
     p->display.stride = RBV_VIDEO_WIDTH / 8; // 80 bytes/row at 1 bpp
-    p->display.bits = p->fb + BUILTIN_RBV_SCREEN_OFFSET;
+    p->screen_offset = BUILTIN_RBV_SCREEN_OFFSET;
+    p->display.bits = p->fb + p->screen_offset;
     // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
     display_blank_raster(&p->display);
     p->display.clut = p->clut; // narrowed to the active window below
@@ -149,6 +189,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
         return;
     if (!p->fb_external)
         free(p->fb); // machine-owned (IIsi main-RAM) framebuffers are not ours to free
+    free(p->blank);
     free(p);
     card->priv = NULL;
 }
@@ -185,7 +226,7 @@ static const char *card_name(const nubus_card_t *card) {
 // the card: VRAM contents, the active depth/format and stride, and the CLUT
 // the VDAC has been fed.  Without them a restore re-ran card_init and came up
 // on a freshly zeroed framebuffer at the 1 bpp power-up default, i.e. a blank
-// white screen that never repainted (ledger §2).
+// white screen that never repainted.
 //
 // The dirty flags are forced on restore rather than saved: the frontend has
 // just been handed a different buffer and must re-upload everything once.
@@ -197,15 +238,14 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     // already covered by the RAM image; only a card-owned buffer needs saving.
     if (!p->fb_external)
         system_write_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p->clut, sizeof(p->clut));
-    system_write_checkpoint_data(cp, &p->display.format, sizeof(p->display.format));
-    system_write_checkpoint_data(cp, &p->display.width, sizeof(p->display.width));
-    system_write_checkpoint_data(cp, &p->display.height, sizeof(p->display.height));
-    system_write_checkpoint_data(cp, &p->display.stride, sizeof(p->display.stride));
-    system_write_checkpoint_data(cp, &p->vdac_idx, sizeof(p->vdac_idx));
-    system_write_checkpoint_data(cp, &p->vdac_phase, sizeof(p->vdac_phase));
-    system_write_checkpoint_data(cp, p->vdac_rgb, sizeof(p->vdac_rgb));
-    system_write_checkpoint_data(cp, &p->vdac_pix_mask, sizeof(p->vdac_pix_mask));
+    system_write_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
+    {
+        // Fixed widths, not a raw struct prefix: the prefix carried a bare
+        // pixel_format_t, whose size is implementation-defined (see
+        // display.h).
+        display_head_t head = display_head_of(&p->display);
+        system_write_checkpoint_data(cp, &head, sizeof head);
+    }
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -214,15 +254,12 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         return;
     if (!p->fb_external)
         system_read_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p->clut, sizeof(p->clut));
-    system_read_checkpoint_data(cp, &p->display.format, sizeof(p->display.format));
-    system_read_checkpoint_data(cp, &p->display.width, sizeof(p->display.width));
-    system_read_checkpoint_data(cp, &p->display.height, sizeof(p->display.height));
-    system_read_checkpoint_data(cp, &p->display.stride, sizeof(p->display.stride));
-    system_read_checkpoint_data(cp, &p->vdac_idx, sizeof(p->vdac_idx));
-    system_read_checkpoint_data(cp, &p->vdac_phase, sizeof(p->vdac_phase));
-    system_read_checkpoint_data(cp, p->vdac_rgb, sizeof(p->vdac_rgb));
-    system_read_checkpoint_data(cp, &p->vdac_pix_mask, sizeof(p->vdac_pix_mask));
+    system_read_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
+    {
+        display_head_t head;
+        system_read_checkpoint_data(cp, &head, sizeof head);
+        display_head_apply(&p->display, &head);
+    }
 
     // The CLUT window depends on the restored depth, so recompute it.
     rbv_video_apply_clut_window(p);
@@ -248,17 +285,12 @@ static const nubus_card_ops_t builtin_rbv_video_ops = {
 
 // === Machine-facing hooks ===================================================
 
-uint8_t *builtin_rbv_video_framebuffer(nubus_card_t *card) {
-    rbv_video_priv_t *p = card ? card->priv : NULL;
-    return p ? p->fb : NULL;
-}
-
-void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset) {
+void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset, bool blank) {
     rbv_video_priv_t *p = card ? card->priv : NULL;
     if (!p || !aperture)
         return;
-    // The IIsi reads its framebuffer directly out of main DRAM (the V8 DMAs
-    // Bank A starting at physical 0).  Point the card's framebuffer at the
+    // The IIci and IIsi read their framebuffer directly out of main DRAM (the
+    // RBV / V8 DMA Bank A starting at physical 0).  Point the card's framebuffer at the
     // machine-supplied aperture (a window into main RAM) instead of the private
     // buffer, so the renderer and the guest's screen writes share the same
     // storage.  `screen_offset` locates the active screen within the aperture.
@@ -266,15 +298,37 @@ void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, ui
         free(p->fb);
     p->fb = aperture;
     p->fb_external = true;
-    p->display.bits = p->fb + screen_offset;
+    p->screen_offset = screen_offset;
+    rbv_video_apply_scanout(p);
     // The private buffer card_init blanked has just been thrown away, so blank
     // the visible window of the aperture too — otherwise the IIsi cold-boots to
     // a white screen (zeroed DRAM is white at 1 bpp) while every other machine
     // comes up black.  Only the screen the renderer scans out is touched, and
     // only before the guest has run; the ROM's RAM test writes and reads back
-    // its own patterns over this either way.
-    display_blank_raster(&p->display);
+    // its own patterns over this either way.  A checkpoint restore skips it:
+    // the RAM image it has loaded (or is about to) holds the live screen.
+    if (blank)
+        display_blank_raster(&p->display);
     p->display.fb_dirty = true;
+}
+
+// RvMonP bit 6 (RvVIDOff).  The RBV decoded this bit, logged it and threw it
+// away, so the descriptor kept scanning out the framebuffer while the guest
+// believed video was off -- every sibling chip honours its blanking bit
+// (ariel.c `vid_mode & 0x80`, control.c `CR_CTRL & 0x400`, mach64gx.c
+// `CRTC_EN`/`CRTC_DISPLAY_DIS`, civic.c `SLOT_ENABLE`) and RBV was the only
+// one that did not.  The visible effect is the mode-change
+// flicker a real IIci shows during a depth switch: guest code that
+// blanks-then-reprograms was visible mid-transition.
+void builtin_rbv_video_set_blank(nubus_card_t *card, bool video_off) {
+    rbv_video_priv_t *p = card ? card->priv : NULL;
+    if (!p || p->video_off == video_off)
+        return;
+    p->video_off = video_off;
+    rbv_video_apply_scanout(p);
+    p->display.shape_dirty = true;
+    p->display.fb_dirty = true;
+    LOG(2, "RBV video: video %s", video_off ? "off (blanked)" : "on");
 }
 
 void builtin_rbv_video_set_rbv(nubus_card_t *card, rbv_t *rbv) {
@@ -294,13 +348,13 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
     // during machine init) would leave the power-on blank showing as white.
     bool pristine = display_raster_is_pristine(&p->display);
     p->display.format = f;
-    p->display.stride = RBV_VIDEO_WIDTH * display_bpp(f) / 8u;
-    if (pristine)
+    rbv_video_apply_scanout(p); // stride follows the depth; re-fills the stub if blanked
+    if (pristine && !p->video_off)
         display_blank_raster(&p->display);
     rbv_video_apply_clut_window(p);
     p->display.shape_dirty = true;
     p->display.fb_dirty = true;
-    LOG(2, "depth -> %u bpp (stride %u)", display_bpp(f), p->display.stride);
+    LOG(2, "RBV video: depth -> %u bpp (stride %u)", display_bpp(f), p->display.stride);
 }
 
 void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val) {
@@ -339,7 +393,7 @@ void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val)
         p->vdac_phase = 0;
         return;
     default:
-        LOG(2, "VDAC write at +%X = $%02X (unmodeled)", off, val);
+        LOG(2, "RBV video: VDAC write at +%X = $%02X (unmodeled)", off, val);
         return;
     }
 }
@@ -367,19 +421,6 @@ uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off) {
 
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
-    nubus_card_t *card = calloc(1, sizeof(*card));
-    if (!card)
-        return NULL;
-    card->ops = &builtin_rbv_video_ops;
-    card->slot = slot;
-    if (card->ops->init(card, cfg, cp) != 0) {
-        free(card);
-        return NULL;
-    }
-    return card;
-}
-
 // Built-in monitor: 13" RGB, sense 6, depths 1/2/4/8 — for machine.profile.
 static const int builtin_rbv_depths[] = {1, 2, 4, 8, 0};
 
@@ -401,5 +442,5 @@ const nubus_card_kind_t builtin_rbv_video_kind = {
     .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     .requires_vrom = false,
     .monitors = builtin_rbv_monitors,
-    .factory = factory,
+    .ops = &builtin_rbv_video_ops,
 };

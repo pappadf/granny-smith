@@ -39,7 +39,7 @@
   .gs-workbench.panel-right {
     flex-direction: row;
   }
-  /* Panel ordering — see prototype styles.css:216-226. */
+  /* Panel ordering. */
   .gs-workbench.panel-left > :global(.gs-panel) {
     order: 0;
   }

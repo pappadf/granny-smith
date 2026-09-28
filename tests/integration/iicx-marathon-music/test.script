@@ -11,15 +11,15 @@
 # (256 colors is Marathon 1.2's supported depth at 640×480.  Selecting
 # "Thousands" instead drives the 8•24 GC into its double-wide 16-bpp mode, which
 # Marathon — spec'd only for 8-bit 640×480 — mishandles into a heap-corruption
-# bomb; that is faithful hardware behaviour, see tmp/marathon-16bpp-bomb-
-# findings.md, and is deliberately NOT exercised here.)
+# bomb; that is faithful hardware behaviour, and is deliberately NOT exercised
+# here.)
 
 # Pin the RTC so the boot is deterministic run-to-run.
 include "../lib/mac.script"
 
-machine.rtc.time = 3000000000
 
 machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 
 machine.scsi.attach_hd "../../data/apps/marathon_8_24gc.img" 0
 scheduler.run 200000000
@@ -123,7 +123,7 @@ scheduler.run 5000000
 
 # All settings applied: High Resolution / 100% / 256 colors / Normal, and
 # Background Music now ON. Folded in from iicx-marathon, which was deleted
-# as fully subsumed by this test (§8) — this was its one assertion that
+# as fully subsumed by this test — this was its one assertion that
 # had no counterpart here, so it moves rather than disappearing. The
 # golden differs from iicx-marathon's by the Background Music checkbox.
 check("marathon-prefs-set-8bpp-640x480.png")
@@ -164,7 +164,10 @@ check("marathon-arrival-8bpp-640x480.png")
 machine.sound.capture.start
 scheduler.run 90000000
 machine.sound.capture.stop
-assert machine.sound.mode == 1 "ASC not in FIFO mode during hand-off"
+# The ASC's chip registers moved to machine.sound.asc when the five sound
+# engines were put behind one machine.sound contract: mode and the FIFO
+# counters are ASC internals, not something a Plus or an AWACS machine has.
+assert machine.sound.asc.mode == 1 "ASC not in FIFO mode during hand-off"
 assert machine.sound.capture.peak > 4000 "no in-game background music (capture.peak at silence floor)"
 
 # --- Gameplay: instrument loading pushes the HUD to ~+215M after Begin --------

@@ -3,27 +3,28 @@
 
 // pdm.h
 // The PDM family (Power Macintosh 6100/7100/8100) — the first machines whose
-// main CPU is the PowerPC 601 (proposal-powerpc-601-pdm.md Phase C).
+// main CPU is the PowerPC 601.
 //
 // Board model: HMC (memory controller: serial config, RAM bank windows,
 // machine ID) + AMIC (everything I/O: decode, pseudo-VIA1/2, interrupt
 // control, DMA register file, sound engine, video control) around silicon
-// the repo already models (Cuda, 6522, 53C96, SCC).  Register truth comes
-// from the shipping-ROM-verified dossier; source citations in the .c files
-// use the underlying primary documents (Apple Developer Notes, schematics,
-// MPC601 UM).
+// the repo already models (Cuda, 6522, 53C96, SCC).  Register truth is
+// verified against the shipping ROM; source citations in the .c files use
+// the primary documents (Apple Developer Notes, schematics, MPC601 UM).
 //
-// Phase C scope: the machine skeleton and the HWInit boot ladder (rungs
-// L1-L12) — memory map with all ROM alias windows, HMC with both boot-time
-// measurement mechanisms, the AMIC register file (datapaths stubbed), and
-// Cuda on the pseudo-VIA1 transport.
+// The core of the substrate is the machine skeleton that carries the HWInit
+// boot ladder (pdm-rom-ladder rungs L1-L12): the memory map with all ROM
+// alias windows, the HMC with both boot-time measurement mechanisms, the
+// AMIC register file, and Cuda on the pseudo-VIA1 transport.
 
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
 
 #include "display.h"
+#include "display_class.h"
 #include "machine.h"
 #include "memory.h"
+#include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
 #include "swim3.h"
 #include "system_config.h"
 
@@ -51,7 +52,7 @@ typedef struct pdm_board_desc {
     int bank_count; // SIMM bank windows this board decodes
     // Extra bus cycles charged per load while the HMC wait-state config bit
     // is set — sized so HWInit's bus-ratio measurement lands on the real
-    // machine's CPU:bus ratio (proposal §5.2; pinned at rung L7).
+    // machine's CPU:bus ratio (pinned at pdm-rom-ladder rung L7).
     uint32_t wait_state_penalty;
     // 8100 only: the discrete 53CF96 on the fast internal bus (SCSI bus 0,
     // register file at island +$11000, AMIC DMA channel B).
@@ -89,7 +90,7 @@ typedef struct pdm_via2 {
 } pdm_via2_t;
 
 // One AMIC DMA channel's software-visible register set (control byte plus
-// the address/count bytes the drivers program; datapaths are later phases).
+// the address/count bytes the drivers program).
 typedef struct pdm_dma_ch {
     uint32_t addr;
     uint16_t count;
@@ -149,6 +150,7 @@ typedef struct pdm_amic {
     double snd_half_start_ns; // when the in-flight output half began playing
     uint32_t snd_halves; // output half-buffers rendered since power-on
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
+    uint64_t snd_underruns; // half-buffers the guest never consumed (machine.sound.overruns)
 } pdm_amic_t;
 
 // === Monitor sense strap (ariel.c) ==========================================
@@ -178,12 +180,16 @@ typedef struct pdm_monitor_kind {
 extern const pdm_monitor_kind_t pdm_monitors[];
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
 // Stage the strap for the NEXT machine built (machine.boot `monitor=`).
-void pdm_pending_monitor_set(uint8_t sense);
 
 // hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
 // table above and stages a pick through this, so it needs no pdm_ symbol and
 // no knowledge of the sense strap.
 extern const builtin_video_desc_t pdm_builtin_video;
+
+// The three NuBus connectors behind BART ($C/$D/$E), shared by the 7100
+// and the 8100 (pdm.c).  The 6100 declares NULL and no BART instead --
+// its single slot needs the optional PDS adapter, which carries the bridge.
+extern const struct nubus_slot_decl pdm_nubus_slots_cde[];
 
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
@@ -193,6 +199,13 @@ typedef struct pdm_video {
     rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
     uint8_t *blank; // black raster presented while the blank bit is set
     uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
+    // Set when the substrate restored `sense` from a checkpoint, so
+    // pdm_video_init leaves it alone instead of taking the staged default.
+    bool sense_restored;
+    // machine.video -- the framebuffer node every display source exposes
+    // (display_class.h).
+    display_fb_node_t fb_node;
+    struct object *video_node;
 } pdm_video_t;
 
 // === BART state (bart.c) ====================================================
@@ -246,13 +259,14 @@ typedef struct pdm_state {
     // Memory interfaces registered with the map
     memory_interface_t io_interface; // $50F00000..$50F4FFFF island
     memory_interface_t id_interface; // $5FFFF000 machine-ID page
-    memory_interface_t wait_interface; // page-0 wait-state forwarder (§5.2)
+    memory_interface_t wait_interface; // page-0 wait-state forwarder
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
 
     // Derived presentation state, never checkpointed
     pdm_video_t video; // scanout descriptor (ariel.c)
     int16_t *snd_stage; // one half-buffer of staged stereo samples (awacs.c)
     struct object *snd_object; // the machine.sound node (awacs.c)
+    struct object *amic_object; // the machine.amic node (amic.c)
 } pdm_state_t;
 
 static inline pdm_state_t *pdm_st(config_t *cfg) {
@@ -295,9 +309,9 @@ void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-
-// sensitive; called after every flag/enable write — proposal §4.6).
+// sensitive; called after every flag/enable write).
 void pdm_amic_recompute(config_t *cfg);
-// External source lines into the ICR (bit numbers per the dossier)
+// External source lines into the ICR
 #define PDM_ICR_VIA1 0
 #define PDM_ICR_VIA2 1
 #define PDM_ICR_SCC  2
@@ -305,6 +319,12 @@ void pdm_amic_recompute(config_t *cfg);
 #define PDM_ICR_DMA  4
 #define PDM_ICR_NMI  5
 void pdm_amic_set_source(config_t *cfg, int bit, bool level);
+
+// machine.amic — the interrupt-controller node.
+// Attached from machine construction, not from pdm_amic_init: that memsets
+// the whole AMIC and also runs on a reset.
+void pdm_amic_attach_object(config_t *cfg);
+void pdm_amic_detach_object(config_t *cfg);
 // 53C9x INT pin levels into the pseudo-VIA2 device bank (chip 0 = Curio →
 // bit 3, chip 1 = 53CF96 → bit 6; the DRQ bits 0/2 are read live from the
 // chips' DREQ outputs, never latched).

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
+- **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
+
 ## [v0.8.0] — 2026-08-11
 
 ### Added

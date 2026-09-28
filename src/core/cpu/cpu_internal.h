@@ -314,7 +314,7 @@ static __attribute__((noinline)) uint32_t calculate_ea_slow(cpu_t *restrict cpu,
 // Force-inlined hot switch covering the frequent register-indirect modes
 // (An)/(An)+/-(An)/(d16,An); everything else takes the out-of-line cold tail
 // above.  Out-of-line entirely, these helpers measured ~11% of gameplay
-// runtime in call overhead (perf proposal §5.2).
+// runtime in call overhead.
 static inline __attribute__((always_inline)) uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int reg,
                                                                    bool increment) {
     switch (mode) {
@@ -477,7 +477,7 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint8_t d_set = 0, a_set = 0;
     for (i = 0; i < 8; i++)
         if (register_mask & (1 << i)) {
-            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
             if (g_bus_error_pending)
                 return;
@@ -486,7 +486,7 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         }
     for (i = 0; i < 8; i++)
         if (register_mask & (0x100 << i)) {
-            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
             if (g_bus_error_pending)
                 return;
@@ -501,7 +501,21 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (a_set & (1 << i))
             cpu->a[i] = new_a[i];
 
-    if ((opcode & 0x38) == 0x18) // post-increment mode updates address register after MOVEM
+    // Postincrement mode writes the incremented address back, and it does so
+    // even when the base register is ALSO in the transfer list -- the loaded
+    // value is discarded.  M68000PRM MOVEM: "When the instruction has completed,
+    // the incremented address register contains the address of the last operand
+    // loaded plus the operand length.  If the addressing register is also
+    // loaded from memory, the memory value is ignored and the register is
+    // written with the postincremented effective address."
+    //
+    // That paragraph is on the family-wide page, so unlike the predecrement
+    // store side -- where movem_from_register gates the base-in-list case on
+    // cpu_model >= CPU_MODEL_68030, because the 68000 and 68020+ genuinely
+    // differ there -- this side needs NO model gate.  The asymmetry with the
+    // neighbouring function is correct, not an oversight; it was simply
+    // undocumented, which is what made it read as one.
+    if ((opcode & 0x38) == 0x18)
         cpu->a[opcode & 7] = ea;
 }
 
@@ -574,7 +588,7 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
 // ABCD: add decimal with extend (based on research at https://gendev.spritesmind.net/forum/viewtopic.php?t=1964)
 static inline uint8_t abcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t ss = xx + yy + !!cpu->extend;
-    uint8_t dc = (ss + 0x66 ^ ss) >> 1;
+    uint8_t dc = ((ss + 0x66) ^ ss) >> 1;
     uint8_t bc = (xx & yy) | ((xx | yy) & ~ss);
     uint8_t corr = (bc | dc) & 0x88;
     uint8_t rr = ss + corr - (corr >> 2);
@@ -1086,7 +1100,12 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
             cpu->ssp = cpu->a[7];
             cpu->a[7] = cpu->usp;
         }
-        cpu->trace = (sr >> 15) & 1; // only T1
+        // T1 in bit 1, matching the 030 encoding above.  M68000PRM 1.3.2: below
+        // the 68030 "only one trace mode [is] supported, where T0 is always
+        // zero", so the single bit these models have IS T1.  Storing it in bit 0
+        // made cpu->trace mean two different things by model, and left every
+        // `cpu->trace & 2` test silently false on the 68000.
+        cpu->trace = ((sr >> 15) & 1) << 1;
         // Repoint the SoA active tables on a supervisor-bit change (e.g. RTE back
         // to user, or MOVE/ANDI to SR).  The Lisa segment MMU keys the active
         // translation context off whether g_active_read is the supervisor table
@@ -1106,6 +1125,23 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     cpu->supervisor = new_s;
     cpu->interrupt_mask = (sr >> 8) & 7;
     write_ccr(cpu, sr);
+    // Arm tracing at the right instruction.  The decoders sample _saved_trace
+    // once per SPRINT, so an instruction that SETS T1 mid-sprint would not
+    // start tracing until the next sprint -- potentially thousands of
+    // instructions later.  Ending the sprint here makes the next one sample T1
+    // at its top and trace exactly the instruction that follows, which is what
+    // MC68030UM 8.1.7 requires: "the state of these bits when an instruction
+    // begins execution determines whether the instruction generates a trace
+    // exception after the instruction completes".  The SR writer itself began
+    // with T1 clear and is therefore correctly NOT traced.
+    //
+    // write_sr is the single seam for every SR write (TO_SR, MOVE to SR, STOP,
+    // both RTE forms), so this one test covers them all -- and it costs
+    // nothing per instruction, unlike re-sampling cpu->trace inside the decoder
+    // loop, which measured +2 instructions in the 68030 loop header and +2.17%
+    // on the SE/30 row.  OP_STOP_DATA already uses the same idiom.
+    if (__builtin_expect((cpu->trace & 2) != 0, 0) && g_bus_error_instr_ptr)
+        *g_bus_error_instr_ptr = 0;
     cpu_check_interrupt(cpu);
 }
 
@@ -1120,13 +1156,15 @@ static inline void trapv(cpu_t *restrict cpu) {
     exception(cpu, 0x1c, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void privilege_violation(cpu_t *restrict cpu) {
-    exception(cpu, 0x020, cpu->pc - 2, cpu_get_sr(cpu));
+    // MC68030UM 8.1.6: the saved PC is the first word of the violating instruction.
+    exception(cpu, 0x020, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 static inline void trap(cpu_t *restrict cpu, int trap_num) {
     exception(cpu, 0x080 + trap_num * 4, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void a_trap(cpu_t *restrict cpu) {
-    exception(cpu, 0x28, cpu->pc - 2, cpu_get_sr(cpu));
+    // MC68030UM 8.1.5: the saved PC is the address of the unimplemented instruction.
+    exception(cpu, 0x28, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 // MC68000 code-fetch bus error: the prefetch that faulted left the PC advanced
 // past the start of the control-transfer instruction that branched into the
@@ -1217,14 +1255,15 @@ static inline void f_trap(cpu_t *restrict cpu) {
         return;
     }
     uint32_t fetch_page = cpu->instruction_pc >> PAGE_SHIFT;
-    if (__builtin_expect(g_active_read && (int)fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
+    if (__builtin_expect(g_active_read && fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
         // Instruction page has no SoA entry — fetch returned $FF from unmapped
         // physical memory.  Treat as bus error (matching real hardware behavior).
         cpu->pc = cpu->instruction_pc;
         exception_bus_error(cpu, cpu->instruction_pc, 1);
         return;
     }
-    exception(cpu, 0x2C, cpu->pc - 2, cpu_get_sr(cpu));
+    // MC68030UM 8.1.5: the saved PC is the address of the F-line instruction.
+    exception(cpu, 0x2C, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 
 // Advance cpu->pc past EA extension words (68030 exception path only).
@@ -1277,8 +1316,7 @@ static inline void skip_ea_extension_words(cpu_t *restrict cpu, int mode, int re
 // Raise illegal instruction exception (vector 4).
 // Stacked PC points to the first word of the illegal instruction (per M68000 PRM).
 static inline void illegal_instruction(cpu_t *restrict cpu) {
-    uint32_t pc = (cpu->cpu_model >= CPU_MODEL_68030) ? cpu->instruction_pc : (cpu->pc - 2);
-    exception(cpu, 0x010, pc, cpu_get_sr(cpu));
+    exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 
 #endif // CPU_INTERNAL_H

@@ -1,75 +1,19 @@
-# The Cirrus 54M30's BitBLT engine and its legacy-window mirror.
-#
-# Links the real card model against the real pci.c/config_space.c and a stub bus environment,
-# so the engine is driven the way the machine drives it: through a bridge window with lane
-# reversal on, at the offsets Appendix B20 documents.
-#
-# -Wno-unused-parameter: the unit harness replaces LOG() with a macro that discards its
-# arguments, so parameters a function uses only in a log line look unused in THIS build alone.
+# The Apple Network Server's on-board Cirrus Logic 54M30 PCI framebuffer
+# (src/core/peripherals/pci/cards/cirrus54m30.c).  Links the real card and
+# the real PCI config-space header (config_space.c), so the BAR-sizing,
+# expansion-ROM and interrupt-pin rows read what a guest's config cycles
+# read; test.c stubs the rest of the PCI bus, the object tree, the scheduler
+# and the checkpoint stream.  Pins the mode the card derives from its
+# CRTC/sequencer/extension registers, the register file's VGA port
+# behaviour, and a checkpoint round-trip of the mode.  Under ASan + UBSan,
+# since every row drives guest-programmed geometry into a scanout over a
+# fixed 1 MB store.
 
-TEST_NAME := cirrus54m30
-
-UNIT_ROOT      := $(abspath ../../)
-WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
-EMU_ROOT       := $(WORKSPACE_ROOT)/src
-
-BUILD_DIR := $(UNIT_ROOT)/build
-OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
-TARGET    := $(BUILD_DIR)/$(TEST_NAME)
-
-CC ?= gcc
-BASE_CFLAGS := -O0 -g -Wall -Wextra -Wno-unused-parameter
-INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
-                 -I$(EMU_ROOT)/core \
-                 -I$(EMU_ROOT)/core/cpu \
-                 -I$(EMU_ROOT)/core/cpu/ppc \
-                 -I$(EMU_ROOT)/core/memory \
-                 -I$(EMU_ROOT)/core/peripherals \
-                 -I$(EMU_ROOT)/core/peripherals/nubus \
-                 -I$(EMU_ROOT)/core/peripherals/pci \
-                 -I$(EMU_ROOT)/core/peripherals/pci/cards \
-                 -I$(EMU_ROOT)/core/scheduler \
-                 -I$(EMU_ROOT)/core/debug \
-                 -I$(EMU_ROOT)/core/storage \
-                 -I$(EMU_ROOT)/core/network \
-                 -I$(EMU_ROOT)/core/shell \
-                 -I$(EMU_ROOT)/core/object \
-                 -I$(EMU_ROOT)/core/vfs \
-                 -I$(EMU_ROOT)/machines \
-                 -DUNIT_TEST_PLATFORM_OVERRIDE \
-                 -include $(UNIT_ROOT)/support/platform.h \
-                 -include $(UNIT_ROOT)/support/log.h
-
-CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
-LDFLAGS ?=
-
-SRCS := $(CURDIR)/test.c \
-        $(EMU_ROOT)/core/peripherals/pci/pci.c \
-        $(EMU_ROOT)/core/peripherals/pci/config_space.c \
-        $(EMU_ROOT)/core/peripherals/pci/cards/cirrus54m30.c \
-        $(UNIT_ROOT)/support/stub_checkpoint.c
-
-ALL_SRCS := $(abspath $(SRCS))
-
-OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))
-DEP := $(OBJ:.o=.d)
-
-.PHONY: all run clean
-
-all: $(TARGET)
-
-$(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-$(TARGET): $(OBJ)
-	@mkdir -p $(dir $@)
-	$(CC) $(OBJ) $(LDFLAGS) -o $@
-
-run: $(TARGET)
-	@$(TARGET)
-
-clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
-
--include $(DEP)
+TEST_NAME     := cirrus54m30
+TEST_SRCS     := test.c
+TEST_HARNESS  := none
+EXTRA_SRCS    := ../../../../src/core/peripherals/pci/cards/cirrus54m30.c \
+                 ../../../../src/core/peripherals/pci/config_space.c
+SANITIZE      := $(if $(filter emcc%,$(notdir $(firstword $(CC)))),,-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+RUN_ENV       := ASAN_OPTIONS=detect_leaks=1
+include ../../common.mk

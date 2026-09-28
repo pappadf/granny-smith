@@ -28,8 +28,7 @@
 # needs no media — see tests/unit/suites/scsi_cdrom.
 #
 # Discs that are NOT usable, recorded so nobody re-tests them.  Note that in
-# every case the fault is the CAPTURE, not the original disc — see
-# the CD-ROM boot investigation notes §6.3:
+# every case the fault is the CAPTURE, not the original disc:
 #   * tests/data/cdroms/Misc_Mac_Drivers.toast and the A/UX retail ISO have an
 #     Apple Partition Map but no driver partition;
 #   * the Quadra 660AV/840AV "Install Me First" CD likewise — and it carries a
@@ -67,7 +66,7 @@ def row_cd_device() {
     assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)"
     # No other storage: the boot below can only come from the disc.  An empty
     # SCSI slot does not resolve as an object at all, so probe it with try()
-    # rather than reading a type (shell v2 §7 — errors are not truth values).
+    # rather than reading a type (errors are not truth values).
     assert try(machine.scsi.device[0].type, none) == none "cd-device: something is attached at SCSI 0"
     assert !machine.floppy.drive[0].present "cd-device: a floppy is inserted"
 }
