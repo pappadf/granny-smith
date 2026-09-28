@@ -191,14 +191,13 @@ frozen once written.
 ## Placeholder stubs
 
 Pages in the coverage map that are planned but not yet written are checked
-in as stubs so the tree — and the wiki it publishes to — show the full
-coverage map, and every promotion has a pre-agreed landing spot. A stub
+in as stubs so the tree shows the full coverage map, and every promotion has
+a pre-agreed landing spot. A stub
 carries:
 
 - the banner `> 🚧 **Placeholder** — this page is planned but not yet
   written.` as the first body line, plus the machine-readable marker
-  `<!-- gs-doc-status: stub -->` that the lint, the sidebar generator and
-  the publish manifest key off;
+  `<!-- gs-doc-status: stub -->` that the lint keys off;
 - the R5 skeleton of the applicable template above, with a
   `> **TODO**` marker under each heading;
 - a one-to-two-sentence factual scope statement of what the part or
