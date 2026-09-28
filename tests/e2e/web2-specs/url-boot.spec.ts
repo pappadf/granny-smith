@@ -62,6 +62,41 @@ test('?rom= boots the identified machine without going through Welcome', async (
     .toBe(512);
 });
 
+// A page opened to boot from its URL asks nothing and shows the download in
+// Welcome's place: the headline, one progress bar per file, and no "preview
+// build" notice (a fresh browser context would otherwise get it).  The ROM's
+// response is held until the view has been seen, so this does not race the
+// download.
+test('a URL boot shows download progress and no start-up dialogs', async ({ page }) => {
+  test.setTimeout(90_000);
+  const body = fs.readFileSync(PLUS_ROM);
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route('**/url-held-plus.rom', async (route) => {
+    await held;
+    await route.fulfill({ status: 200, contentType: 'application/octet-stream', body });
+  });
+
+  await page.goto('/index.html?rom=url-held-plus.rom&model=plus');
+  const view = page.getByTestId('url-boot-view');
+  await expect(view).toBeVisible({ timeout: 60_000 });
+  await expect(view.locator('.title')).toHaveText('Granny Smith');
+  await expect(view.locator('.headline')).toContainText('Downloading');
+  await expect(view.locator('[data-slot="rom"]')).toContainText('url-held-plus.rom');
+  await expect(view.getByRole('progressbar')).toHaveCount(1);
+  await expect(page.locator('.welcome-view')).toHaveCount(0);
+  await expect(page.getByText('Granny Smith — preview build')).toHaveCount(0);
+
+  release();
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running', {
+    timeout: 15_000,
+  });
+  await expect(view).toHaveCount(0);
+  await expect(page.getByText('Granny Smith — preview build')).toHaveCount(0);
+});
+
 // Type one line into the Terminal panel (web2 has no window.gsEval) and wait
 // for its output to match.
 async function terminalExpect(page: Page, line: string, pattern: RegExp): Promise<void> {

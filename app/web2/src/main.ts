@@ -15,6 +15,7 @@ import {
 } from '@/bus/urlMedia';
 import { whenModuleReady, onEmulatorCrash, applySchedulerMode } from '@/bus/emulator';
 import { setSchedulerMode } from '@/state/machine.svelte';
+import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { installEvalHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
@@ -87,6 +88,11 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   // switched to it below.
   const urlMode = urlSchedulerMode(mediaParams.speed);
   if (urlMode) setSchedulerMode(urlMode);
+  // A ROM in the URL means the page boots a machine by itself: it shows the
+  // download progress instead of Welcome and asks nothing (no preview notice,
+  // no resume prompt).  Media without a ROM only goes into a running machine.
+  const urlBoots = !!mediaParams.rom;
+  if (urlBoots) beginUrlBoot(mediaParams.model);
 
   void (async () => {
     try {
@@ -115,7 +121,9 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     // the terminal (bus/testHook.ts).
     installEvalHookForAutomation();
 
-    const resumed = await maybeOfferBackgroundCheckpoint();
+    // The machine the URL names wins over the one this browser saved: the
+    // saved checkpoint is left as it is, unoffered.
+    const resumed = urlBoots ? false : await maybeOfferBackgroundCheckpoint();
     if (resumed) {
       if (urlMode) await applySchedulerMode(urlMode);
       return;

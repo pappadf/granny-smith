@@ -1,5 +1,6 @@
 <script lang="ts">
   import Modal from '../common/Modal.svelte';
+  import { urlBoot } from '@/state/urlBoot.svelte';
 
   // Bump the version suffix to re-prompt users after a significant
   // update (e.g. moving from preview to GA).
@@ -9,6 +10,9 @@
   let open = $state(false);
 
   $effect(() => {
+    // A page opened to boot a machine from its URL asks nothing: the
+    // notice waits for a visit to the start screen.
+    if (urlBoot.requested) return;
     try {
       if (localStorage.getItem(DISMISS_KEY) !== '1') open = true;
     } catch {
