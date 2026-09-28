@@ -32,8 +32,11 @@
 #include "object.h"
 #include "scheduler.h"
 
+#include "log.h"
 #include <stdlib.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("memory");
 
 // Lisa video timing (docs/reference/machines/lisa/lisa.md §8): the state machine scans 379 lines of 720
 // pixels at the 5.09375 MHz CPU clock, ~60 Hz vertical.  The Status Register
@@ -398,8 +401,9 @@ static uint32_t lisa_io_read(lisa_mmu_t *m, uint32_t phys, unsigned size) {
             return d->iface->read_uint32(d->dev, off);
         }
     }
-    // Unmapped I/O: floating bus reads all-ones (a real Lisa eventually bus-
-    // errors on absent I/O; that refinement waits until devices are wired).
+    // Unmapped I/O outside the slot decodes (empty slots fault in
+    // lisa_resolve): the on-board range floats and reads all-ones.
+    LOG(3, "unclaimed I/O read $%04X size=%u", (unsigned)phys, size);
     return 0xFFFFFFFFu >> ((4 - size) * 8);
 }
 
@@ -438,6 +442,7 @@ static void lisa_io_write(lisa_mmu_t *m, uint32_t phys, unsigned size, uint32_t 
         }
     }
     // Unmapped I/O write: dropped.
+    LOG(3, "unclaimed I/O write $%04X size=%u value=$%X", (unsigned)phys, size, (unsigned)value);
 }
 
 // === Serial-number PROM ($00FE8000, map-land reads) =========================
@@ -478,6 +483,18 @@ static bool lisa_is_serial(const lisa_mmu_t *m, uint32_t addr) {
 }
 
 // === Translation ===========================================================
+
+// End of the expansion-slot decodes in I/O space: slots 1-3 each own a low
+// and a high 8 KB decode in $0000-$BFFF (lisa.md, the I/O space map).
+#define LISA_SLOT_IO_END 0xC000u
+
+// True when a registered device answers physical I/O address `phys`.
+static bool lisa_io_claimed(const lisa_mmu_t *m, uint32_t phys) {
+    for (int i = 0; i < m->io_count; i++)
+        if (phys >= m->io[i].base && phys < m->io[i].base + m->io[i].size)
+            return true;
+    return false;
+}
 
 // Resolve a CPU logical access to a route + physical/descriptor coordinates.
 static lisa_resolved_t lisa_resolve(lisa_mmu_t *m, uint32_t addr, bool supervisor, bool is_write) {
@@ -549,7 +566,12 @@ static lisa_resolved_t lisa_resolve(lisa_mmu_t *m, uint32_t addr, bool superviso
         r.route = L_RAM;
         r.phys = phys;
     } else if (is_io) {
-        r.route = L_IO;
+        // An expansion slot with no card never answers: the CPU times out
+        // after 30-300 us and takes a bus error (Lisa Hardware Manual 1983,
+        // bus handshaking).  The boot ROM's RDSLOTS and the OS's EXISTS_CARD
+        // both detect an empty slot by that bus error; a floating read of
+        // $FF instead made the OS see a card with ID $FFF in every slot.
+        r.route = (phys < LISA_SLOT_IO_END && !lisa_io_claimed(m, phys)) ? L_FAULT : L_IO;
         r.phys = phys;
     } else if (is_special) {
         // Segment 127 (SOR=0) → boot ROM; offset is the low translated address.

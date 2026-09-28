@@ -1065,12 +1065,25 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_register_profile_object(cfg);
     lisa_register_power_object(cfg); // soft power-off switch (COPS) → `power.off`
 
-    // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
-    // $00D240 via the standard A1/A2 convention (docs/reference/machines/lisa/lisa.md §15).  PCLK 4 MHz
-    // (chan A) / 3.6864 MHz (chan B).  Autovectored at IPL 6.
+    // Z8530 SCC (reused as-is).  Its chip select is the whole Serial Ports
+    // Control block, physical $00D000-$00D3FF (Lisa Hardware Manual 1983,
+    // Fig. 2-5), and only A1 (A/B) and A2 (D/C) reach the chip, so every
+    // 8-byte mirror is the same four registers: the boot ROM uses
+    // $00D241/43/45/47, the OS's RS-232 driver $00D201/03/05/07
+    // (docs/reference/machines/lisa/lisa.md §15).  PCLK 4 MHz (chan A) / 3.6864 MHz
+    // (chan B).  Autovectored at IPL 6.
     cfg->scc = scc_init(NULL, cfg->scheduler, lisa_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 4000000, 3686400);
-    lisa_mmu_map_io(ls->mmu, 0xD240, 8, (memory_interface_t *)scc_get_memory_interface(cfg->scc), cfg->scc);
+    lisa_mmu_map_io(ls->mmu, 0xD000, 0x400, (memory_interface_t *)scc_get_memory_interface(cfg->scc), cfg->scc);
+
+    // Serial A's handshake: the OS's RS-232 driver holds port A output
+    // until DSR, which the Lisa wires to the SCC's /SYNC input and reads as
+    // RR0 bit 4 set (source-rs232: xmtrr0 := $10 for channel 0).  A device
+    // on the cable -- `machine.scc.a.output` set to a host file -- raises
+    // it; with nothing attached the driver reports the printer not ready.
+    // Port B (AppleBus, and the boot ROM's loopback self-test) is left as
+    // it was.
+    scc_set_port_ready_line(cfg->scc, 0, SCC_PIN_SYNC, true);
 
     lisa_display_init(cfg);
     scheduler_new_event_type(cfg->scheduler, "lisa", cfg, "vbl_off", &lisa_vbl_off);

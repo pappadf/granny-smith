@@ -290,6 +290,12 @@ arrived from.
   in `machine.cpu.pc = 0x100000000` style writes.
 - **Non-empty strings.** Slots flagged `OBJ_ARG_NONEMPTY` require a
   non-NULL, non-empty `V_STRING`.
+- **`none` as "unset".** A slot flagged `OBJ_ARG_NONE_OK` also takes
+  `none`, which the setter reads as "clear it", and its getter may answer
+  `none` while unset; every other kind still has to match. It is for an
+  attribute that is either a value or nothing, such as
+  `machine.scc.a.output` (a file path, or `none` when no output is
+  attached).
 - **Enum membership.** `V_ENUM` slots validate the index is in
   `enum_values`; `V_STRING` input is looked up against the same
   table and rewritten to `V_ENUM` so the body always sees the

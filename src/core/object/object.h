@@ -51,6 +51,11 @@ struct class_desc;
 // Saying so in the declaration is the point — without it the grouping lives
 // only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
 #define OBJ_ARG_GROUPED 0x0040u
+// OBJ_ARG_NONE_OK — the slot also takes `none`, meaning "unset": an
+// attribute such as machine.scc.a.output is a path while it is set and
+// `none` while it is not, so its setter accepts `none` to clear it and its
+// getter may answer `none`.  Any other kind still has to match the slot.
+#define OBJ_ARG_NONE_OK 0x0080u
 
 // === Member visibility category ==============================================
 //
@@ -144,7 +149,7 @@ typedef struct member {
         struct {
             value_kind_t type;
             uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
-            uint16_t validation_flags; // OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
+            uint16_t validation_flags; // OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND | OBJ_ARG_NONE_OK
             uint16_t presentation_flags; // VAL_HEX | VAL_DEC | VAL_BIN | VAL_VOLATILE | VAL_SENSITIVE
             const char *const *enum_values; // NULL-terminated table for V_ENUM
             attr_get_fn get;

@@ -127,6 +127,16 @@ struct ch {
     // this; the classic 68k .MPP polls and never needs it).
     bool rx_special;
 
+    // The transmit buffer has become empty since the last Reset Tx Int
+    // Pending (WR0 command 5): what a Tx interrupt reports.  The command
+    // clears it and it stays clear until another character is written and
+    // leaves the buffer, so a driver that resets the pending Tx interrupt
+    // and later re-enables Tx interrupts with nothing to send gets none
+    // (the Lisa OS RS-232 driver does exactly this in its interrupt path).
+    // Set at reset: enabling Tx interrupts on a freshly reset, empty channel
+    // interrupts once, which the Mac drivers use to prime their output.
+    bool tx_ip_armed;
+
     scc_t *scc;
 };
 
@@ -153,6 +163,23 @@ struct scc {
     // External loopback: port A TX → port B RX, port B TX → port A RX
     bool external_loopback;
 
+    // The far end of each port's cable: the host file its transmitted bytes
+    // go to (scc_set_output), the input pins a device drives
+    // (scc_set_input_pin), and how the machine wires a ready device's
+    // handshake (scc_set_port_ready_line).  Outside ch_t so a channel reset
+    // keeps them -- they are the cable's, not the chip's -- and not
+    // checkpointed: a host file is not machine state.  `pins_driven` is a
+    // mask of (1 << scc_pin_t); `pins_level` the asserted ones.
+    struct {
+        FILE *out;
+        char *out_path;
+        uint8_t pins_driven;
+        uint8_t pins_level;
+        bool ready_wired;
+        scc_pin_t ready_pin;
+        bool ready_level;
+    } port[2];
+
     // Host-side transmit capture, one per channel: every byte the guest hands
     // to WR8, kept until a driving script drains it with `scc.<ch>.sent()`.
     // Not part of the chip and not checkpointed — it is a wire tap, so a guest
@@ -170,9 +197,11 @@ struct scc {
 };
 
 #define SDLC_MODE(ch) ((ch->wr[4] >> 4 & 3) == 2)
-#define TX_EMPTY(ch)  (ch->tx.len == 0)
-#define RX_EMPTY(ch)  (ch->rx.head == ch->rx.tail)
-#define RX_LEN(ch)    (ch->rx.head - ch->rx.tail)
+// WR4 bits 3:2 (stop bits) non-zero select asynchronous mode
+#define ASYNC_MODE(ch) (((ch)->wr[4] >> 2 & 3) != 0)
+#define TX_EMPTY(ch)   (ch->tx.len == 0)
+#define RX_EMPTY(ch)   (ch->rx.head == ch->rx.tail)
+#define RX_LEN(ch)     (ch->rx.head - ch->rx.tail)
 // A delivered SDLC frame occupies data + this many CRC trailer bytes in the FIFO.
 #define SCC_RX_TRAILER_BYTES 2
 #define RX_ENABLED(ch)       (ch->wr[3] & 1)
@@ -216,6 +245,7 @@ struct scc {
 #define WR9_STATUS_HIGH 0x10
 
 #define WR15_DCD           0x08
+#define WR15_SYNC_HUNT     0x10
 #define WR15_CTS           0x20
 #define WR15_ZERO_COUNT_IE 0x02
 #define WR15_TX_UNDERRUN   0x40
@@ -223,6 +253,7 @@ struct scc {
 // forward declarations
 static void reset_ch(scc_t *restrict scc, int ch);
 static void update_irqs(scc_t *scc);
+static void apply_input_pins(scc_t *restrict scc, int ch);
 static void update_loopback_signals(scc_t *scc, int ch);
 static void brg_start(ch_t *ch);
 static void brg_stop(ch_t *ch);
@@ -312,11 +343,31 @@ static void brg_stop(ch_t *ch) {
     remove_event_by_data(ch->scc->scheduler, brg_zero_count_callback, ch->scc, (uint64_t)ch->index);
 }
 
+// The RR3 pending bits of channel `ch` that its WR1 enables let through to
+// the INT pin: External/Status (WR1 bit 0), Transmit (bit 1), Receive
+// (bits 4:3 non-zero).  A pending bit whose enable is off stays pending in
+// RR3 but requests nothing -- the Lisa OS RS-232 driver writes WR1 = 0
+// ("no more ints this port") and lowers the CPU's mask with a pending
+// External/Status bit still latched, and re-entered its own handler until
+// the stack overflowed when the latch alone drove INT.
+static uint8_t rr3_enabled(const scc_t *scc, int ch) {
+    uint8_t wr1 = scc->ch[ch].wr[1];
+    uint8_t mask = 0;
+    if (wr1 & WR1_EXT_INT)
+        mask |= ch ? RR3_CHANNEL_B_EXT : RR3_CHANNEL_A_EXT;
+    if (wr1 & 0x02)
+        mask |= ch ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX;
+    if (wr1 & 0x18)
+        mask |= ch ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX;
+    return (uint8_t)(scc->ch[0].rr[3] & mask);
+}
+
 // Update the interrupt request lines based on pending SCC interrupts
 static void update_irqs(scc_t *scc) {
-    bool should_fire = scc->ch[0].rr[3] && (scc->ch[0].wr[9] & WR9_MIE);
-    LOG(4, "update_irqs: rr3=0x%02X wr9=0x%02X MIE=%d -> %s", scc->ch[0].rr[3], scc->ch[0].wr[9],
-        !!(scc->ch[0].wr[9] & WR9_MIE), should_fire ? "FIRE" : "clear");
+    uint8_t requesting = (uint8_t)(rr3_enabled(scc, 0) | rr3_enabled(scc, 1));
+    bool should_fire = requesting && (scc->ch[0].wr[9] & WR9_MIE);
+    LOG(4, "update_irqs: rr3=0x%02X enabled=0x%02X wr9=0x%02X MIE=%d -> %s", scc->ch[0].rr[3], requesting,
+        scc->ch[0].wr[9], !!(scc->ch[0].wr[9] & WR9_MIE), should_fire ? "FIRE" : "clear");
     scc->irq_cb(scc->cb_context, should_fire);
 }
 
@@ -686,6 +737,7 @@ static void wr0(ch_t *ch, uint8_t value) {
 
     case 5: // reset tx int pending
         ch->scc->ch[0].rr[3] &= ch->index ? ~RR3_CHANNEL_B_TX : ~RR3_CHANNEL_A_TX;
+        ch->tx_ip_armed = false; // until another character leaves the buffer
         update_irqs(ch->scc);
         break;
 
@@ -827,6 +879,8 @@ static void wr8(ch_t *c, uint8_t value) {
         }
     }
 
+    // The character leaves the buffer at once: it has become empty again
+    c->tx_ip_armed = true;
     // if tx interrupts are enabled (wr1 bit 1) and buffer is empty, raise the interrupt
     if (c->wr[1] & 0x02) {
         c->scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
@@ -841,6 +895,13 @@ static void wr8(ch_t *c, uint8_t value) {
         scc->sent[c->index].buf[scc->sent[c->index].len++] = value;
     else
         scc->sent[c->index].dropped++;
+    // An asynchronous byte also goes down the cable to the port's output
+    // file, flushed at once so a reader of the file sees it (serial rates
+    // are low; a byte per flush is cheap)
+    if (scc->port[c->index].out && ASYNC_MODE(c)) {
+        fputc(value, scc->port[c->index].out);
+        fflush(scc->port[c->index].out);
+    }
 
     int prev_len = c->tx.len;
     // Drop on overflow rather than asserting — a guest that streams output
@@ -987,12 +1048,14 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
             if (now_ext != prev_ext && scc->ch[ch].brg.enabled)
                 now_ext ? brg_start(&scc->ch[ch]) : brg_stop(&scc->ch[ch]);
         }
-        // if tx int enabled (bit 1) and buffer empty, fire interrupt immediately
-        if ((value & 0x02) && (scc->ch[ch].rr[0] & RR0_TX_BUFFER_EMPTY)) {
+        // if tx int enabled (bit 1) and the buffer has emptied since the last
+        // Reset Tx Int Pending, the pending Tx interrupt is raised now
+        if ((value & 0x02) && (scc->ch[ch].rr[0] & RR0_TX_BUFFER_EMPTY) && scc->ch[ch].tx_ip_armed) {
             scc->ch[0].rr[3] |= (ch ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
             LOG(4, "wr1: TX int enabled and buffer empty, setting rr3=0x%02X", scc->ch[0].rr[3]);
-            update_irqs(scc);
         }
+        // The enables gate the INT pin: a pending interrupt appears or goes away
+        update_irqs(scc);
         break;
 
     case 0x02:
@@ -1082,6 +1145,7 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
     default: {
         // Special handling for WR15: start/stop BRG events on ZC_IE change
         bool was_zc = (reg == 0x0F) && (scc->ch[ch].wr[15] & WR15_ZERO_COUNT_IE);
+        bool was_async = (reg == 0x04) && ASYNC_MODE(&scc->ch[ch]);
         scc->ch[ch].wr[reg] = value;
         if (reg == 0x0F) {
             bool now_zc = !!(value & WR15_ZERO_COUNT_IE);
@@ -1091,6 +1155,13 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
         // WR5: update loopback signal lines when DTR/RTS change
         if (reg == 0x05)
             update_loopback_signals(scc, ch);
+        // WR4 picks the mode, which decides what RR0 bit 4 reports: leaving
+        // asynchronous mode hands it back to the receiver's hunt logic
+        if (reg == 0x04) {
+            if (was_async && !ASYNC_MODE(&scc->ch[ch]) && (scc->port[ch].pins_driven & (1u << SCC_PIN_SYNC)))
+                scc->ch[ch].rr[0] &= ~RR0_SYNC_HUNT;
+            apply_input_pins(scc, ch);
+        }
     } break;
     }
 }
@@ -1122,6 +1193,65 @@ void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context) {
         return;
     scc->frame_sink = fn;
     scc->frame_ctx = fn ? context : NULL;
+}
+
+bool scc_set_output(scc_t *scc, unsigned int ch, const char *path) {
+    if (!scc || ch > 1)
+        return false;
+    FILE *f = NULL;
+    char *copy = NULL;
+    if (path) {
+        f = fopen(path, "wb");
+        if (!f) {
+            LOG(1, "scc: cannot open output %s for channel %c", path, ch ? 'B' : 'A');
+            return false;
+        }
+        copy = strdup(path);
+        if (!copy) {
+            fclose(f);
+            return false;
+        }
+    }
+    if (scc->port[ch].out)
+        fclose(scc->port[ch].out);
+    free(scc->port[ch].out_path);
+    scc->port[ch].out = f;
+    scc->port[ch].out_path = copy;
+    LOG(2, "scc: channel %c output %s", ch ? 'B' : 'A', path ? path : "closed");
+    // An output is a device on the cable: the wired ready line follows it
+    if (scc->port[ch].ready_wired) {
+        bool ready = f != NULL;
+        scc_set_input_pin(scc, ch, scc->port[ch].ready_pin,
+                          ready ? scc->port[ch].ready_level : !scc->port[ch].ready_level);
+    }
+    return true;
+}
+
+const char *scc_get_output(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return NULL;
+    return scc->port[ch].out_path;
+}
+
+void scc_set_port_ready_line(scc_t *scc, unsigned int ch, scc_pin_t pin, bool ready_level) {
+    if (!scc || ch > 1 || pin > SCC_PIN_CTS)
+        return;
+    scc->port[ch].ready_wired = true;
+    scc->port[ch].ready_pin = pin;
+    scc->port[ch].ready_level = ready_level;
+    bool ready = scc->port[ch].out != NULL;
+    scc_set_input_pin(scc, ch, pin, ready ? ready_level : !ready_level);
+}
+
+void scc_set_input_pin(scc_t *scc, unsigned int ch, scc_pin_t pin, bool asserted) {
+    if (!scc || ch > 1 || pin > SCC_PIN_CTS)
+        return;
+    scc->port[ch].pins_driven |= (uint8_t)(1u << pin);
+    if (asserted)
+        scc->port[ch].pins_level |= (uint8_t)(1u << pin);
+    else
+        scc->port[ch].pins_level &= (uint8_t) ~(1u << pin);
+    apply_input_pins(scc, (int)ch);
 }
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {
@@ -1244,6 +1374,38 @@ void scc_dcd(scc_t *restrict scc, unsigned int ch, unsigned int dcd) {
     }
 }
 
+// Reflects the input pins a device drives on channel `ch` into RR0 (SYNC
+// only in asynchronous mode, where RR0 bit 4 is the /SYNC pin) and raises
+// the external/status interrupt for a change the guest enabled in WR15.
+static void apply_input_pins(scc_t *restrict scc, int ch) {
+    static const uint8_t rr0_bit[3] = {
+        [SCC_PIN_DCD] = RR0_DCD, [SCC_PIN_SYNC] = RR0_SYNC_HUNT, [SCC_PIN_CTS] = RR0_CTS};
+    static const uint8_t ie_bit[3] = {
+        [SCC_PIN_DCD] = WR15_DCD, [SCC_PIN_SYNC] = WR15_SYNC_HUNT, [SCC_PIN_CTS] = WR15_CTS};
+    ch_t *c = &scc->ch[ch];
+    uint8_t driven = scc->port[ch].pins_driven;
+    if (!driven)
+        return;
+    uint8_t rr0 = c->rr[0];
+    bool fire = false;
+    for (int pin = SCC_PIN_DCD; pin <= SCC_PIN_CTS; pin++) {
+        if (!(driven & (1u << pin)))
+            continue;
+        if (pin == SCC_PIN_SYNC && !ASYNC_MODE(c))
+            continue; // in the synchronous modes bit 4 is the receiver's hunt state
+        bool asserted = (scc->port[ch].pins_level >> pin) & 1;
+        uint8_t now = asserted ? (uint8_t)(rr0 | rr0_bit[pin]) : (uint8_t)(rr0 & ~rr0_bit[pin]);
+        if (now != rr0 && (c->wr[15] & ie_bit[pin]))
+            fire = true;
+        rr0 = now;
+    }
+    c->rr[0] = rr0;
+    if (fire && (c->wr[1] & WR1_EXT_INT)) {
+        scc->ch[0].rr[3] |= ch ? RR3_CHANNEL_B_EXT : RR3_CHANNEL_A_EXT;
+        update_irqs(scc);
+    }
+}
+
 static void reset_ch(scc_t *restrict scc, int ch) {
     // save registers that must survive a channel reset
     // wr9: master interrupt enable (global)
@@ -1272,9 +1434,13 @@ static void reset_ch(scc_t *restrict scc, int ch) {
 
     // the transmit buffer is empty upon reset
     scc->ch[ch].rr[0] |= RR0_TX_BUFFER_EMPTY;
+    scc->ch[ch].tx_ip_armed = true;
 
     // shift register empty on reset — All Sent = 1 (Z8530 spec)
     scc->ch[ch].rr[1] = 0x01;
+
+    // A device's input pins are the cable's: the reset does not move them
+    apply_input_pins(scc, ch);
 }
 
 // reset both channels then apply loopback signals
@@ -1480,6 +1646,12 @@ void scc_delete(scc_t *scc) {
         object_delete(scc->object);
         scc->object = NULL;
     }
+    // Close the ports' output files
+    for (int ch = 0; ch < 2; ch++) {
+        if (scc->port[ch].out)
+            fclose(scc->port[ch].out);
+        free(scc->port[ch].out_path);
+    }
     free(scc);
 }
 
@@ -1649,6 +1821,35 @@ static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
     return val_uint(4, scc_channel_rx_pending(c->scc, (unsigned)c->index));
 }
 
+// `output`: the host file this channel's transmitted bytes go to, or none.
+static value_t scc_ch_attr_output(struct object *self, const member_t *m) {
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    const char *path = scc_get_output(c->scc, (unsigned)c->index);
+    return path ? val_str(path) : val_none();
+}
+
+// `output = "path"` opens (creating or truncating) the file and streams
+// every asynchronous byte the guest transmits into it; `output = none`
+// closes it.  Either way the port's wired ready line follows.
+static value_t scc_ch_attr_output_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    if (in.kind == V_NONE) {
+        scc_set_output(c->scc, (unsigned)c->index, NULL);
+        return val_none();
+    }
+    if (!in.s || !*in.s)
+        return val_err("output: expected a file path or none");
+    if (!scc_set_output(c->scc, (unsigned)c->index, in.s))
+        return val_err("output: cannot open '%s' for writing", in.s);
+    return val_none();
+}
+
 // Feed bytes into a channel's receive FIFO as though they had arrived on the
 // wire.  Delivery mirrors the loopback path in wr8: buffer the byte, latch
 // RR0's Rx Character Available, and raise the receive interrupt when the
@@ -1794,6 +1995,13 @@ static const member_t scc_ch_members[] = {
      .flags = VAL_RO,
      .doc = "Transmitted bytes lost because the capture buffer overflowed; nonzero means a script drained too "
             "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}},
+    {.kind = M_ATTR,
+     .name = "output",
+     .doc = "Host file the channel's transmitted bytes stream into (asynchronous mode), or none; setting it "
+            "stands for a ready device on the cable", .attr = {.type = V_STRING,
+              .validation_flags = OBJ_ARG_NONE_OK,
+              .get = scc_ch_attr_output,
+              .set = scc_ch_attr_output_set}},
     {.kind = M_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
