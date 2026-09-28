@@ -657,14 +657,22 @@ and invoked from `main.ts` after `whenModuleReady()` resolves.  A URL with a
 configuration dialog.
 
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
-  auto-boots.
+  auto-boots.  **Given twice** (`rom=<chip>&rom=<chip>`) it names the two
+  byte-wide chips of a ROM dumped as halves — the Lisa's `341-0175`/`341-0176`,
+  the Macintosh XL's `341-0346`/`341-0347`: the page interleaves them, trying
+  both orders and keeping the one whose own checksum verifies
+  (`machine.rom.identify`), so the order in the URL does not matter.
 - `fdN=<url>` (`fd0`, `fd1`) — downloaded into `/opfs/images/fd/`,
   inserted into floppy drive N, when the model has that drive.
 - `hdN=<url>` — downloaded into `/opfs/images/hd/`, attached to the
   model's N-th hard-disk bay (`machine.attach_hd(path, N)`; `hd0` is the
   boot bay, on whatever bus it is — SCSI, a Network Server's second
-  channel, the Lisa's ProFile).  `hd0` on SCSI is also written to PRAM as
-  the startup device, as the New Machine dialog does.  A bare HFS volume
+  channel, the Lisa's ProFile).  `hd0` is also named the startup device, as
+  the New Machine dialog and Restart do (`bus/boot.ts::setStartupDisk`): on
+  SCSI, PRAM's default device; on a Lisa's ProFile, `BootVol = 2` with the
+  parameter-memory checksum left invalid (`machine.hd.pram_init(2, false)`),
+  so the boot ROM goes to the ProFile instead of its startup-device screen and
+  the OS restores its device table from the disk's own snapshot.  A bare HFS volume
   (no partition map — the Mini vMac / archive.org shape) is attached
   through the bare-volume wrapper and boots
   ([bare-volume-wrapper.md](../core/storage/bare-volume-wrapper.md)).
@@ -737,7 +745,25 @@ https://pappadf.github.io/gs-pages/staging/
   &HD0=https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img
 ```
 
-(one line, no spaces).  `AppleMacintoshSystem701/System7_0_1.img` is a
+(one line, no spaces).  A **Lisa 2** booting the Office System 3.1, all from
+archive.org — the Rev H boot ROM as its two chip dumps from the `lisa-software`
+item, and an IDLE ProFile image out of a zip:
+
+```
+https://pappadf.github.io/gs-pages/staging/
+  ?ROM=https://archive.org/download/lisa-software/Lisa%20Software.zip/Lisa%20Software/firmware/341-0175-H.BIN
+  &ROM=https://archive.org/download/lisa-software/Lisa%20Software.zip/Lisa%20Software/firmware/341-0176-H.BIN
+  &HD0=https://archive.org/download/apple-lisa-profile-hd-disk-images-for-lisaem-and-idle-lisa-office-system-3.1-lis/IDLE_LOS3.1-after1stBoot.zip/profile.raw
+```
+
+The IDLE images in that item are raw 532-byte-block ProFile disks; the
+Office System 3.1, Workshop 3.0 and Xenix ones boot (verified 2026-09-28);
+`IDLE_MacWorksXL30` stops with boot-ROM error 23, and the `LisaEM_*` ones
+(DiskCopy 4.2 files with tags) have not been tried as ProFile disks.  The
+`apple-lisa-h-1983` item's chip dumps do not verify (scattered single-bit
+differences from the known Rev H ROM) and are refused.
+
+`AppleMacintoshSystem701/System7_0_1.img` is a
 Plus-only minimal install: pair it with
 `4D1F8172%20-%20MacPlus%20v3.ROM`.  The e2e spec
 `tests/e2e/web2-specs/url-archive-boot.spec.ts` replays this URL with

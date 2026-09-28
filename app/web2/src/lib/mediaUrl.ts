@@ -212,3 +212,14 @@ export function findMember(names: string[], member: string): string | null {
   const byBase = names.filter((n) => (n.split('/').pop() ?? '').toLowerCase() === base);
   return byBase.length === 1 ? byBase[0] : null;
 }
+
+// Interleave two byte-wide ROM chips into one 16-bit image: `even` supplies
+// bytes 0, 2, 4, … and `odd` bytes 1, 3, 5, … (equal lengths).
+export function interleaveHalves(even: Uint8Array, odd: Uint8Array): Uint8Array {
+  const out = new Uint8Array(even.length * 2);
+  for (let i = 0; i < even.length; i++) {
+    out[2 * i] = even[i];
+    out[2 * i + 1] = odd[i];
+  }
+  return out;
+}

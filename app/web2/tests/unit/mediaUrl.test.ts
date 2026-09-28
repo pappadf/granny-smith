@@ -5,6 +5,7 @@ import {
   findMember,
   splitContainer,
   MediaUrlError,
+  interleaveHalves,
 } from '@/lib/mediaUrl';
 
 const PAGE = 'https://pappadf.github.io/gs-pages/staging/';
@@ -182,4 +183,14 @@ describe('findMember', () => {
   it('an ambiguous base name without an exact hit', () =>
     expect(findMember(names, 'Elsewhere/README.TXT')).toBeNull());
   it('absent', () => expect(findMember(names, 'nope.rom')).toBeNull());
+});
+
+describe('interleaveHalves', () => {
+  it('takes even bytes from the first chip and odd bytes from the second', () => {
+    const out = interleaveHalves(
+      new Uint8Array([0x00, 0x02, 0x04]),
+      new Uint8Array([0x01, 0x03, 0x05]),
+    );
+    expect(Array.from(out)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
 });
