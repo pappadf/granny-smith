@@ -17,6 +17,7 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 	- `ghost_instance`: true when delta+journal live in a process-local scratch dir (read-only mounts); they are deleted on `image_close`.
 	- `type`: detected category (`image_fd_ds`, `image_hd`, ...).
 	- `from_diskcopy`: marks DiskCopy 4.2 sources so their headers can be skipped.
+	- `wrap_prefix` / `wrap_blocks`: the bare-volume wrapper's synthesised partition map + driver, served in front of the storage when a bare HFS volume is attached as a SCSI hard disk ([bare-volume-wrapper.md](bare-volume-wrapper.md)). `raw_size` then includes it; `storage` holds only the volume.
 
 **Module lifecycle**
 - **`image_init(checkpoint_t *checkpoint)`** and **`image_delete(void)`** remain no-ops (no global resources).

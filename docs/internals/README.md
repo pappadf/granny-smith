@@ -41,6 +41,7 @@ treatment (`platform/`, `peeler/` here) — their docs currently live in
 | `core/peripherals/nubus/cards/display_card_8_24.md` | `src/core/peripherals/nubus/cards/jmfb.c` — the source keeps Apple's ASIC codename `jmfb` |
 | `core/scheduler/timing.md` | the timing model inside `src/core/scheduler/scheduler.c` |
 | `core/storage/target-filesystems.md` | the APM/HFS/UFS readers `src/core/storage/image_apm.c`, `image_hfs.c`, `image_ufs.c` |
+| `core/storage/bare-volume-wrapper.md` | the bare-volume wrapper `src/core/storage/image_wrap.c` plus its `gsdisk/` driver (added by #204, placed here by the mirror rule) |
 | `machines/lisa/fdc.md` | `src/machines/lisa/lisa_fdc.c` — the doc drops the `lisa_` prefix |
 | `machines/lisa/mmu.md` | `src/machines/lisa/lisa_mmu.c` — the doc drops the `lisa_` prefix |
 | `machines/lisa/profile.md` | `src/machines/lisa/lisa_profile.c` — the doc drops the `lisa_` prefix |

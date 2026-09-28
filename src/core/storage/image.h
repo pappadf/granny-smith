@@ -79,6 +79,13 @@ struct image {
     uint8_t *tags; // tag_count * tag_bytes bytes, or NULL
     uint32_t tag_bytes; // tag bytes per sector (12 on a Lisa 400 KB disk)
     uint32_t tag_count; // number of tagged sectors
+
+    // Bare-volume wrapper (image_wrap.h): a synthesised partition-map +
+    // driver prefix served in front of the volume.  wrap_blocks blocks of
+    // wrap_prefix precede block 0 of `storage`; raw_size includes them.
+    // NULL / 0 for every other image.
+    uint8_t *wrap_prefix;
+    uint32_t wrap_blocks;
 };
 
 struct image;
@@ -139,6 +146,10 @@ void image_close(image_t *image);
 // base.  The key is the path the caller named, canonicalised with realpath()
 // (or taken as given when that fails), not a decoded scratch copy.
 bool image_path_is_open_writable(const char *canonical_path);
+
+// Bits of the per-image flags byte image_checkpoint writes.
+#define IMAGE_CKPT_WRITABLE 0x01
+#define IMAGE_CKPT_WRAPPED  0x02 // re-wrap on restore (image_wrap.h)
 
 // Write image metadata to checkpoint
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);

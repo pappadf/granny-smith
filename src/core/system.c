@@ -19,6 +19,7 @@
 #include "gs_out.h"
 #include "host_input.h"
 #include "image.h"
+#include "image_wrap.h"
 #include "jmfb.h" // restored-record sense seeding on checkpoint load
 #include "keyboard.h"
 #include "log.h"
@@ -1359,6 +1360,18 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         gs_outf("Failed to open image: %s\n", path);
         return false;
     }
+    // A bare HFS volume (no partition map, no driver) is invisible to the
+    // ROM's SCSI boot code; present it behind a synthesised map and the
+    // GSDisk driver instead.  The file itself is untouched.
+    int wrapped = image_wrap_bare_volume(slot->img);
+    if (wrapped < 0) {
+        gs_outf("Failed to wrap bare volume: %s\n", path);
+        image_close(slot->img);
+        slot->img = NULL;
+        return false;
+    }
+    if (wrapped)
+        gs_outf("%s: bare HFS volume — wrapped with a partition map and the GSDisk driver\n", path);
     size_t sz = disk_size(slot->img);
     // Find the closest drive model from the catalog
     const struct drive_model *best = drive_catalog_find_closest(sz);

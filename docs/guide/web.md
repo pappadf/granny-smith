@@ -650,17 +650,33 @@ any checkpoint's reference to it do not survive a reload. Copy it under
 
 ## URL Parameters
 
-Handled in [`bus/urlMedia.ts`](../../app/web2/src/bus/urlMedia.ts) and
-invoked from `main.ts` after `whenModuleReady()` resolves:
+Handled in [`bus/urlMedia.ts`](../../app/web2/src/bus/urlMedia.ts) (the
+addressing rules are in [`lib/mediaUrl.ts`](../../app/web2/src/lib/mediaUrl.ts))
+and invoked from `main.ts` after `whenModuleReady()` resolves.  A URL with a
+`rom=` boots straight into a running machine: no Welcome view, no
+configuration dialog.
 
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
-  auto-boots.
+  auto-boots.  **Given twice** (`rom=<chip>&rom=<chip>`) it names the two
+  byte-wide chips of a ROM dumped as halves — the Lisa's `341-0175`/`341-0176`,
+  the Macintosh XL's `341-0346`/`341-0347`: the page interleaves them, trying
+  both orders and keeping the one whose own checksum verifies
+  (`machine.rom.identify`), so the order in the URL does not matter.
 - `fdN=<url>` (`fd0`, `fd1`) — downloaded into `/opfs/images/fd/`,
   inserted into floppy drive N, when the model has that drive.
 - `hdN=<url>` — downloaded into `/opfs/images/hd/`, attached to the
   model's N-th hard-disk bay (`machine.attach_hd(path, N)`; `hd0` is the
   boot bay, on whatever bus it is — SCSI, a Network Server's second
-  channel, the Lisa's ProFile).
+  channel, the Lisa's ProFile).  `hd0` is also named the startup device, as
+  the New Machine dialog and Restart do (`bus/boot.ts::setStartupDisk`): on
+  SCSI, PRAM's default device; on a Lisa's ProFile, `BootVol = 2` with the
+  parameter-memory checksum left invalid (`machine.hd.pram_init(2, false)`),
+  so the boot ROM goes to the ProFile instead of its startup-device screen and
+  the OS restores its device table from the disk's own snapshot.  A bare HFS volume
+  (no partition map — the shape of most of the archive.org Macintosh
+  library) is attached
+  through the bare-volume wrapper and boots
+  ([bare-volume-wrapper.md](../internals/core/storage/bare-volume-wrapper.md)).
 - `cd=<url>` — downloaded into `/opfs/images/cd/`, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
@@ -672,11 +688,92 @@ invoked from `main.ts` after `whenModuleReady()` resolves:
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 
+**Names are case-insensitive**: `ROM=`, `Rom=` and `rom=` are one
+parameter, `HD0=` is `hd0=`, and a bare `HD=` / `FD=` means `hd0` / `fd0`.
+The first occurrence of a name wins; a second spelling of it is ignored
+with a console warning.
+
+**A value may continue through a container.**  The first path segment
+with a container extension (`.zip`, `.sit`, `.sea`, `.cpt`, `.hqx`,
+`.bin`) that has more path after it ends the container's URL; the rest,
+percent-decoded, is the member to take out of it:
+
+```
+ROM=https://host/path/roms.zip/Mac%20IIci/iici.rom
+FD1=https://host/disks/Games.sit/Dark%20Castle.img
+```
+
+The container is fetched whole; a zip member is found by exact path, then
+ignoring case, then by a unique base name; a Mac archive is unpacked by
+`archive.extract` and searched the same way.  A container named with no
+member keeps the old behaviour (a zip's first file, a Mac archive's
+`storage.find_media` pick).  A missing member is reported with the first
+few names the container does hold.
+
+**Encoding.**  Write a value `encodeURIComponent`-encoded.  Browsers let
+`:` and `/` through unencoded, so a hand-typed URL works — *unless* it
+contains `&` (splits the query), `#` (ends it), `+` (becomes a space) or
+`%` (starts an escape).  Member names in the archive.org ROM archive
+contain `&` (`9630C68B - Power Mac 7200&7500&8500&9500 v2.ROM`): write it
+`%26`.  Spaces may be typed or written `%20`.
+
+**archive.org.**  Its file servers send no CORS headers, so a page on
+another origin cannot read `archive.org/download/<item>/<file>` at all.
+The page rewrites archive.org URLs to the endpoints that do allow it
+(verified 2026-09-28 with `Origin: https://pappadf.github.io`):
+
+| The value names | Fetched from | Notes |
+|---|---|---|
+| `/download/<item>/<file>` | `/cors/<item>/<file>` | whole file; `/cors/` ignores `Range` |
+| `/download/<item>/<x.zip>/<member>` | unchanged | archive.org extracts the member server-side (`view_archive.php`); whole member |
+| `/details/<item>/<file>` | as `/download/…` | |
+| `/details/<item>` | the item's one original media file | found through `archive.org/metadata/<item>`; an item with several asks you to name one |
+
+Neither endpoint serves partial content, so remote media is always
+downloaded whole (then kept in OPFS like any upload).
+
+**Mixed content.**  An `http://` value on an `https://` page is refused
+before fetching (the browser would block it), with a message saying so;
+network, CORS, 404 and member-not-found failures are each reported as
+such.
+
+**Worked example** — a Macintosh IIci booting System 7.5.3 off a bare
+archive.org volume, with the ROM taken out of archive.org's ROM archive:
+
+```
+https://pappadf.github.io/gs-pages/staging/
+  ?ROM=https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/368CADFE%20-%20Mac%20IIci.ROM
+  &HD0=https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img
+```
+
+(one line, no spaces).  A **Lisa 2** booting the Office System 3.1, all from
+archive.org — the Rev H boot ROM as its two chip dumps from the `lisa-software`
+item, and an IDLE ProFile image out of a zip:
+
+```
+https://pappadf.github.io/gs-pages/staging/
+  ?ROM=https://archive.org/download/lisa-software/Lisa%20Software.zip/Lisa%20Software/firmware/341-0175-H.BIN
+  &ROM=https://archive.org/download/lisa-software/Lisa%20Software.zip/Lisa%20Software/firmware/341-0176-H.BIN
+  &HD0=https://archive.org/download/apple-lisa-profile-hd-disk-images-for-lisaem-and-idle-lisa-office-system-3.1-lis/IDLE_LOS3.1-after1stBoot.zip/profile.raw
+```
+
+The IDLE images in that item are raw 532-byte-block ProFile disks; the
+Office System 3.1, Workshop 3.0 and Xenix ones boot (verified 2026-09-28);
+`IDLE_MacWorksXL30` stops with boot-ROM error 23, and the `LisaEM_*` ones <!-- lint-allow: LisaEm -->
+(DiskCopy 4.2 files with tags) have not been tried as ProFile disks.  The
+`apple-lisa-h-1983` item's chip dumps do not verify (scattered single-bit
+differences from the known Rev H ROM) and are refused.
+
+`AppleMacintoshSystem701/System7_0_1.img` is a
+Plus-only minimal install: pair it with
+`4D1F8172%20-%20MacPlus%20v3.ROM`.  The e2e spec
+`tests/e2e/web2-specs/url-archive-boot.spec.ts` replays this URL with
+archive.org's endpoints routed to the gs-test-data copies.
+
 Downloads run one at a time and stream to `/opfs/upload/` through the
 same chunked writer as uploads (`bus/upload.ts::streamToOpfs`), so an
-image is never held whole in memory — except a `.zip`, which is read
-back whole to unzip.  Mac archives are auto-extracted via
-`archive.extract`.
+image is never held whole in memory — except a zip, which is read back
+whole to unzip.
 
 ## Startup Flow
 
@@ -817,7 +914,9 @@ headers intact through Codespaces' port-forwarding proxy.
 - The core is path-agnostic — all directory-structure decisions belong
   to the web app.
 - Any new URL parameter is handled in
-  [`bus/urlMedia.ts::parseUrlMediaParams`](../../app/web2/src/bus/urlMedia.ts).
+  [`bus/urlMedia.ts::parseUrlMediaParams`](../../app/web2/src/bus/urlMedia.ts),
+  and its name added to `canonicalParamName` in
+  [`lib/mediaUrl.ts`](../../app/web2/src/lib/mediaUrl.ts).
 - The diagnostic harness at
   [`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs) drives Chromium
   via Playwright, captures console / pageerror / xterm contents, and

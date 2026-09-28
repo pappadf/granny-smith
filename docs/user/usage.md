@@ -12,15 +12,15 @@ The Granny Smith emulator offers flexible configuration options for specifying R
 ### Configuration Methods
 
 #### 1. URL Parameters (Recommended for Immediate Setup)
-You can specify images directly in the page URL as query arguments (e.g., `rom=...`, `fd0=...`, `hd0=...`). This method takes precedence over other configuration sources. When provided, the main page's JavaScript will:
-- Download the specified image from the given URL.
-- Store it in the Emscripten virtual filesystem under `/persist/boot/` (where persistent storage is mounted via IDBFS).
+You can specify images directly in the page URL as query arguments (`rom=`, `fd0=`, `hd0=`, `cd=`, `model=`, `speed=`; names are case-insensitive, and `HD=` means `hd0=`). A URL with a ROM boots straight into a running machine, without the configuration dialog. Each image is downloaded, kept in the browser's storage under `/opfs/images/<kind>/`, and attached.
 
-**Example:**
+A value may point *into* a zip or Mac archive (`…/roms.zip/iici.rom`), and archive.org URLs work as copied from the site. A bare HFS volume image (the archive.org shape, with no partition map) boots as a SCSI hard disk.
+
+**Example** (one line):
 ```
-https://your-emulator-page?rom=https://example.com/plus-v3-4d1f8172.rom&fd0=https://example.com/System_6_0_8.dsk
+https://pappadf.github.io/gs-pages/staging/?ROM=https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/368CADFE%20-%20Mac%20IIci.ROM&HD0=https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img
 ```
-This will download the ROM and floppy disk images and place them under `/persist/boot/rom` and `/persist/boot/fd0` respectively.
+Encode `&`, `#`, `+` and `%` inside a value (`&` is `%26`). The full rules — container paths, archive.org routing, errors — are in [`docs/guide/web.md`](../guide/web.md#url-parameters).
 
 #### 2. Persistent Filesystem (IDBFS)
 If you have previously used the emulator, images may already exist in the persistent storage (`/persist/boot/`).
