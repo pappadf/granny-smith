@@ -145,6 +145,15 @@ void pci_deassert_irq(struct pci_device *dev) {
     s_irq_deasserts++;
 }
 
+// The engine consults its bridge's byte-lane mode before every host access;
+// the mock bus here is a plain big-endian one, so lanes are never reversed.
+struct pci_bus;
+bool pci_bus_lane_reverse(const struct pci_bus *bus);
+bool pci_bus_lane_reverse(const struct pci_bus *bus) {
+    (void)bus;
+    return false;
+}
+
 // sym53c825.c is linked for its register file (the engine and the host share
 // one set of accessors), which drags in the two PCI entry points it uses to
 // publish its BAR windows and reset its config header.  Neither is on any path

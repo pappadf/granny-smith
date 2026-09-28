@@ -92,6 +92,32 @@ static const struct {
     {"ArrowRight",     0x3C},
     {"ArrowDown",      0x3D},
     {"ArrowUp",        0x3E},
+    // The Apple Extended Keyboard block: Page Up/Down, Home, End, forward
+    // Delete, Help and the function keys.  A Mac Plus keyboard has none of
+    // them, but every ADB machine's guest can use them and some REQUIRE them:
+    // Windows NT's text-mode Setup pages its licence agreement with Page Down
+    // and accepts it with F8 (ans-nt-install), and without these the web UI
+    // is stuck on that screen.  Raw register-0 codes like the arrows; none is
+    // one of the right-hand modifiers at raw $7B-$7D ($7A, F1, is the
+    // closest).  $79 and $64 are confirmed end to end through NT Setup.
+    {"PageUp",         0x74},
+    {"PageDown",       0x79},
+    {"Home",           0x73},
+    {"End",            0x77},
+    {"Delete",         0x75}, // forward delete; Backspace is $33
+    {"Insert",         0x72}, // Help on an Apple keyboard
+    {"F1",             0x7A},
+    {"F2",             0x78},
+    {"F3",             0x63},
+    {"F4",             0x76},
+    {"F5",             0x60},
+    {"F6",             0x61},
+    {"F7",             0x62},
+    {"F8",             0x64},
+    {"F9",             0x65},
+    {"F10",            0x6D},
+    {"F11",            0x67},
+    {"F12",            0x6F},
     {"NumpadDecimal",  0x41}, // Keypad .
     {"NumpadMultiply", 0x43}, // Keypad *
     {"NumpadAdd",      0x45}, // Keypad +

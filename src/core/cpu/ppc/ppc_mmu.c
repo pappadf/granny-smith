@@ -682,6 +682,12 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     uint32_t page = pc & ~(uint32_t)PAGE_MASK;
     bool user = (p->msr & PPC_MSR_PR) != 0;
     uint32_t pa = pc;
+    // LE-mode fetch munge (PEM §3.2.2): the instruction word is read from
+    // pc ^ 4.  Cached in the window for the inline fast path; every MSR
+    // write flushes the window, so a stale value cannot survive a mode
+    // change.  Translation is unaffected (the munge stays inside the page).
+    const uint32_t le_xor = (p->msr & PPC_MSR_LE) ? 4u : 0u;
+    g_ppc_fetch.le_xor = le_xor;
 
     if (p->msr & PPC_MSR_IT) {
         uint32_t tag = page | (user ? 2u : 0u) | 1u;
@@ -690,7 +696,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = fe->host_adjust;
-            *iw = LOAD_BE32((uint8_t *)(fe->host_adjust + pc));
+            *iw = LOAD_BE32((uint8_t *)(fe->host_adjust + (pc ^ le_xor)));
             return true;
         }
         xl_out_t out;
@@ -734,7 +740,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = adj;
-            *iw = LOAD_BE32((uint8_t *)(adj + pc));
+            *iw = LOAD_BE32((uint8_t *)(adj + (pc ^ le_xor)));
             return true;
         }
     } else {
@@ -746,7 +752,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = (uintptr_t)host - page;
-            *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + pc));
+            *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ le_xor)));
             return true;
         }
     }
@@ -755,7 +761,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     // fetch through the physical slow path so logpoints and device
     // semantics stay honest.  No window: every fetch here re-resolves.
     g_ppc_fetch.span = 0;
-    *iw = memory_read_uint32_slow(pa & g_address_mask);
+    *iw = memory_read_uint32_slow((pa ^ le_xor) & g_address_mask);
     return true;
 }
 

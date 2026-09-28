@@ -51,6 +51,28 @@ TEST(dom_codes_map_to_adb_raw_codes) {
     ASSERT_EQ_INT(host_keymap_dom_to_adb(NULL), -1);
 }
 
+// The Apple Extended Keyboard block.  Windows NT's text-mode Setup pages its
+// licence with Page Down and accepts it with F8; without these the web UI
+// cannot get past that screen (ans-nt-install drives the same codes).
+TEST(the_extended_keyboard_block_is_mapped) {
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("PageDown"), 0x79);
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("PageUp"), 0x74);
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("F8"), 0x64);
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("F1"), 0x7A);
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("F12"), 0x6F);
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("Home"), 0x73);
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("End"), 0x77);
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("Delete"), 0x75); // forward delete
+    ASSERT_EQ_INT(host_keymap_dom_to_adb("Backspace"), 0x33); // unchanged
+    // None of them is a right-hand modifier (raw $7B-$7D).
+    const char *block[] = {"PageUp", "PageDown", "Home", "End", "Delete", "Insert", "F1",  "F2",  "F3",
+                           "F4",     "F5",       "F6",   "F7",  "F8",     "F9",     "F10", "F11", "F12"};
+    for (size_t i = 0; i < sizeof(block) / sizeof(block[0]); i++) {
+        int adb = host_keymap_dom_to_adb(block[i]);
+        ASSERT_TRUE(adb >= 0 && (adb < 0x7B || adb > 0x7D));
+    }
+}
+
 // Every key the old DOM -> COPS table sent a Lisa reaches the same COPS key
 // through DOM -> ADB -> lisa_keycode_for_adb (Control through the retry).
 // Two of its entries were not Lisa keys and are pinned separately below:
@@ -204,6 +226,7 @@ TEST(release_all_lets_go_of_everything_but_caps_lock) {
 
 int main(void) {
     RUN(dom_codes_map_to_adb_raw_codes);
+    RUN(the_extended_keyboard_block_is_mapped);
     RUN(every_key_a_lisa_has_survives);
     RUN(option_comes_from_alt_and_the_lisa_has_no_backquote_or_backslash);
     RUN(control_is_retried_as_command_where_refused);
