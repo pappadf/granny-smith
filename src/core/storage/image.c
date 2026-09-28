@@ -1013,8 +1013,8 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     return storage_read_range(disk, offset - pre, buf, size);
 }
 
-// Read whole blocks at `offset` of the image's storage (past any wrapper
-// prefix).  Returns `size`, or the bytes read before a backing failure.
+// Read whole blocks at `offset` of the image's volume (past any wrapper
+// prefix; wrap_base bytes into the storage).  Returns `size`, or the bytes read before a backing failure.
 static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     size_t vol_size = disk->raw_size - wrap_bytes(disk);
     // An undersized / truncated image (a host file shorter than the media it
@@ -1035,7 +1035,7 @@ static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, siz
     }
     size_t transferred = 0;
     while (transferred < backed) {
-        int rc = storage_read_block(disk->storage, offset + transferred, buf + transferred);
+        int rc = storage_read_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
         GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
             return transferred; // genuine in-bounds backing-store failure
@@ -1066,8 +1066,8 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) 
     return storage_write_range(disk, offset - pre, buf, size);
 }
 
-// Write whole blocks at `offset` of the image's storage (past any wrapper
-// prefix).  Returns `size`, or the bytes written before a backing failure.
+// Write whole blocks at `offset` of the image's volume (past any wrapper
+// prefix; wrap_base bytes into the storage).  Returns `size`, or the bytes written before a backing failure.
 static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     size_t vol_size = disk->raw_size - wrap_bytes(disk);
     // Symmetric with disk_read_data: a write past the end of an undersized
@@ -1084,7 +1084,7 @@ static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, si
             size, offset, disk->raw_size, size - backed);
     size_t transferred = 0;
     while (transferred < backed) {
-        int rc = storage_write_block(disk->storage, offset + transferred, buf + transferred);
+        int rc = storage_write_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
         GS_ASSERTF(rc == GS_SUCCESS, "storage_write_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
             return transferred; // genuine in-bounds backing-store failure
@@ -1336,7 +1336,7 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     char flags = (char)((image->writable ? IMAGE_CKPT_WRITABLE : 0) | (image->wrap_prefix ? IMAGE_CKPT_WRAPPED : 0));
     system_write_checkpoint_data(checkpoint, &flags, sizeof(flags));
 
-    uint64_t raw_size = (uint64_t)(image->raw_size - wrap_bytes(image));
+    uint64_t raw_size = (uint64_t)(image->wrap_prefix ? image->wrap_storage_size : image->raw_size);
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
 
     // Persist the instance path so a future restore can reopen the same delta

@@ -673,8 +673,9 @@ configuration dialog.
   parameter-memory checksum left invalid (`machine.hd.pram_init(2, false)`),
   so the boot ROM goes to the ProFile instead of its startup-device screen and
   the OS restores its device table from the disk's own snapshot.  A bare HFS volume
-  (no partition map — the Mini vMac / archive.org shape) is attached
-  through the bare-volume wrapper and boots
+  (no partition map — the Mini vMac / archive.org shape), or a partitioned
+  disk with no driver (the Disk Copy / SheepShaver shape), is attached
+  through the volume wrapper and boots
   ([bare-volume-wrapper.md](../core/storage/bare-volume-wrapper.md)).
 - `cd=<url>` — downloaded into `/opfs/images/cd/`, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.

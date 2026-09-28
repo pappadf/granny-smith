@@ -89,10 +89,10 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             checkpoint_set_error(cp);
         }
     }
-    // A bare volume that was attached through the wrapper is re-wrapped, so
-    // the SCSI device that re-binds to it by name sees the same disk.
-    if (img && (flags & IMAGE_CKPT_WRAPPED) && image_wrap_bare_volume(img) < 0) {
-        gs_outf("Error: cannot re-wrap bare volume %s while restoring checkpoint\n", name);
+    // A volume that was attached through the wrapper is re-wrapped, so the
+    // SCSI device that re-binds to it by name sees the same disk.
+    if (img && (flags & IMAGE_CKPT_WRAPPED) && image_wrap_volume(img) < 0) {
+        gs_outf("Error: cannot re-wrap volume %s while restoring checkpoint\n", name);
         checkpoint_set_error(cp);
     }
     if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {

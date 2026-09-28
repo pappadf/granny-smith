@@ -14,7 +14,7 @@ The Granny Smith emulator offers flexible configuration options for specifying R
 #### 1. URL Parameters (Recommended for Immediate Setup)
 You can specify images directly in the page URL as query arguments (`rom=`, `fd0=`, `hd0=`, `cd=`, `model=`, `speed=`; names are case-insensitive, and `HD=` means `hd0=`). A URL with a ROM boots straight into a running machine, without the configuration dialog. Each image is downloaded, kept in the browser's storage under `/opfs/images/<kind>/`, and attached.
 
-A value may point *into* a zip or Mac archive (`…/roms.zip/iici.rom`), and archive.org URLs work as copied from the site. A bare HFS volume image (the Mini vMac / archive.org shape, with no partition map) boots as a SCSI hard disk.
+A value may point *into* a zip or Mac archive (`…/roms.zip/iici.rom`), and archive.org URLs work as copied from the site. A bare HFS volume image (the Mini vMac / archive.org shape, with no partition map), or a partitioned disk image without a driver (the Disk Copy / SheepShaver shape), boots as a SCSI hard disk.
 
 **Example** (one line):
 ```
