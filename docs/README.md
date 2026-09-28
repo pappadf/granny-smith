@@ -125,7 +125,14 @@ omitted when there is nothing to cite); R6 does not apply.
   the quirks real guest software depends on. No technical detail is left out
   as "too low-level" or "an implementation detail". Completeness is
   collective — applied to family + machine + device docs in combination.
-  Three corollaries: every reference doc carries an **"Open questions"**
+  Four corollaries: **evidence direction** — a reference doc is built from
+  primary material (manuals, datasheets, dossiers, disassemblies, observed
+  guest behaviour), never from the emulator's source: the code is a
+  *checklist of claims*, each of which is re-established from primary
+  evidence, marked *observed*/*inferred*, or moved to Open questions, and
+  because the tree is independent of the implementation, audits run
+  code-against-docs, never the reverse; every reference doc carries an
+  **"Open questions"**
   section listing what is *not* known (completeness must be falsifiable);
   the duty is about the hardware, not how the emulator copes; and when
   development establishes a new hardware fact, the reference doc is updated
@@ -232,9 +239,13 @@ partial stub and says so.
    inference are never blended in one sentence.
 6. Sourcing rules: no other emulators (R1), no leaked source (R2), formal <!-- lint-allow: other emulator, leaked -->
    titles only (R3).
-7. Reference docs carry the R6 duty: sweep what the repo already knows —
-   the owning `src/` files' comments, the C-side model doc, test
-   expectations — and merge it, recast to primary evidence. Ask before
+7. Reference docs carry the R6 duty: build from the primary material
+   first — manuals, datasheets, RE dossiers, disassemblies, observed guest
+   behaviour — then sweep the owning `src/` files' comments, the C-side
+   model doc and test expectations *as a claim checklist*: each hardware
+   fact found there is re-established from primary evidence, marked
+   *observed*/*inferred*, or moved to Open questions; the code is never the
+   authority. Ask before
    calling the page done: *what would still be missing for someone
    re-implementing this from the page alone?* The answer goes in the body
    or in Open questions.
