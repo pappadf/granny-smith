@@ -26,13 +26,20 @@
 // through the worker (storage.mv/storage.rm).
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
-import { xferChunkBytes, xferWrite } from './xfer';
+import { xferChunkBytes, xferWrite, xferRead, xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
-import { sanitizeName, isZipFile, isMacArchive } from '@/lib/archive';
+import {
+  sanitizeName,
+  isZipFile,
+  isMacArchive,
+  isZipMagic,
+  unzipAll,
+  type UnzippedFile,
+} from '@/lib/archive';
 import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, identifyRom, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
 import { attachCdrom, insertFloppy } from './media';
@@ -275,6 +282,56 @@ export async function processDataTransfer(dt: DataTransfer): Promise<void> {
   await acceptFiles(files);
 }
 
+// Probe order.  The strict signature/size matchers come first; `hd` is the
+// permissive fallback (it accepts anything that opens and isn't floppy-sized,
+// so it would happily classify a 32 KB VROM — or a .zip — as a tiny "hard
+// disk"), so it runs last, after archives have had their turn.
+//   rom    — machine.rom.identify: content id against the core's ROM table
+//   vrom   — machine.vrom.identify: Format-Block CRC against the catalog
+//   prom   — $55AA + a reachable PCIR + Open Firmware code type
+//   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
+//   cdrom  — ISO 9660 / HFS / APM signature inside the file
+//   hd     — permissive fallback
+//
+// vrom and prom cannot claim each other's files even though both are
+// commonly 32 KB: a vROM is identified by a NuBus Format-Block CRC in
+// its trailing bytes, a PROM by a PCI Data Structure near its head, so
+// whichever runs first the other still fails. They sit adjacent anyway.
+const STRICT_ORDER: MediaTypeId[] = ['rom', 'vrom', 'prom', 'fd', 'cdrom'];
+const ALL_ORDER: MediaTypeId[] = [...STRICT_ORDER, 'hd'];
+
+// What probing one file came to: stored, refused (said why), or no match.
+type ProbeOutcome = 'persisted' | 'rejected' | 'none';
+
+// Try `order`'s media types on the file at `path` (named `name` for the
+// store and the messages) and persist it as the first that validates.
+async function probeAs(
+  path: string,
+  name: string,
+  order: MediaTypeId[],
+  opts: { autoBootOnRom: boolean },
+): Promise<ProbeOutcome> {
+  for (const id of order) {
+    const descriptor = MEDIA_TYPES[id];
+    const result = await descriptor.validate(path, gsEval);
+    if (result.reject) {
+      // This IS that kind of file, refused: say why and stop, rather than
+      // letting the permissive hd probe store it as a disk image.
+      showNotification(`'${name}' ${result.reject}`, 'error');
+      return 'rejected';
+    }
+    if (!result.valid) continue;
+    const persisted = await persist(path, name, descriptor, result.info);
+    if (persisted) {
+      if (id === 'rom') {
+        if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
+      } else await autoMountIfEmpty(persisted, id);
+    }
+    return 'persisted';
+  }
+  return 'none';
+}
+
 // Probe a freshly-staged upload to figure out what kind of media it is,
 // then persist it appropriately. If it looks like a ROM and no machine is
 // running, auto-boot from it (same heuristic the legacy drop.js used)
@@ -286,93 +343,78 @@ async function probeAndPersist(
   file: File,
   opts: { autoBootOnRom: boolean },
 ): Promise<void> {
-  // Try each media type until one validates. Order matters: probe the
-  // strict-size / signature matchers first, fall through to HD last
-  // (the HD probe accepts anything that just opens and isn't floppy-
-  // sized, so it will happily classify a 32 KB VROM as a tiny "hard
-  // disk" if VROM hasn't already claimed the file).
-  //   rom    — machine.rom.identify: content id against the core's ROM table
-  //   vrom   — machine.vrom.identify: Format-Block CRC against the catalog
-  //   prom   — $55AA + a reachable PCIR + Open Firmware code type
-  //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
-  //   cdrom  — ISO 9660 / HFS / APM signature inside the file
-  //   hd     — permissive fallback
-  //
-  // vrom and prom cannot claim each other's files even though both are
-  // commonly 32 KB: a vROM is identified by a NuBus Format-Block CRC in
-  // its trailing bytes, a PROM by a PCI Data Structure near its head, so
-  // whichever runs first the other still fails. They sit adjacent anyway,
-  // ahead of the permissive hd fallback that would otherwise swallow both.
-  const ORDER: MediaTypeId[] = ['rom', 'vrom', 'prom', 'fd', 'cdrom', 'hd'];
-  for (const id of ORDER) {
-    const descriptor = MEDIA_TYPES[id];
-    const result = await descriptor.validate(stagingPath, gsEval);
-    if (result.reject) {
-      // This IS that kind of file, refused: say why and stop, rather than
-      // letting the permissive hd probe store it as a disk image.
-      showNotification(`'${file.name}' ${result.reject}`, 'error');
-      await discardStaging(stagingPath);
-      return;
-    }
-    if (!result.valid) continue;
-    const persisted = await persist(stagingPath, file.name, descriptor, result.info);
-    if (persisted) {
-      if (id === 'rom') {
-        if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
-      } else await autoMountIfEmpty(persisted, id);
-    }
+  // The strict types first: a ROM dump named .bin is a ROM, not MacBinary.
+  if ((await probeAs(stagingPath, file.name, STRICT_ORDER, opts)) !== 'none') {
+    await discardStaging(stagingPath);
     return;
   }
 
-  // No raw type matched. If it's an archive extension, ask the C side to
-  // extract; the result lands under /opfs/upload/<name>_unpacked/ and a
-  // single probe pass classifies the first image we find inside.
-  if (isZipFile(file.name) || isMacArchive(file.name)) {
+  // Then archives, before the permissive hd probe can claim them: a .zip is
+  // unpacked here (the C-side archive module has no zip format), a Mac
+  // archive by archive.extract; the first image inside that validates is
+  // stored under the archive's name.
+  if (isZipFile(file.name) || (await stagedIsZip(stagingPath)) || isMacArchive(file.name)) {
     showNotification(`Extracting ${file.name}...`, 'info');
     const extractDir = `${UPLOAD_DIR}/${sanitizeName(file.name)}_unpacked`;
-    const ok = (await gsEval('archive.extract', [stagingPath, extractDir])) === true;
-    if (!ok) {
-      showNotification(`Failed to extract ${file.name}`, 'error');
-      await discardStaging(stagingPath);
-      return;
-    }
-    const innerPath = `${extractDir}/_found_media.img`;
-    const found = (await gsEval('storage.find_media', [extractDir, innerPath])) === true;
-    if (!found) {
-      showNotification(`No mountable media inside ${file.name}`, 'warning');
-      await discardStaging(stagingPath);
-      await discardStaging(extractDir);
-      return;
-    }
-    // Retry the descriptor probe on the extracted image.
-    for (const id of ORDER) {
-      const descriptor = MEDIA_TYPES[id];
-      const result = await descriptor.validate(innerPath, gsEval);
-      if (result.reject) {
-        showNotification(`'${file.name}' ${result.reject}`, 'error');
-        await discardStaging(stagingPath);
-        await discardStaging(extractDir);
-        return;
-      }
-      if (!result.valid) continue;
-      const persisted = await persist(innerPath, file.name, descriptor, result.info);
-      if (persisted) {
-        if (id === 'rom') {
-          if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
-        } else await autoMountIfEmpty(persisted, id);
-      }
-      await discardStaging(stagingPath);
-      await discardStaging(extractDir);
-      return;
-    }
-    showNotification(`Extracted ${file.name} but no recognised image inside`, 'warning');
+    const outcome = await probeArchive(stagingPath, file, extractDir, opts);
     await discardStaging(stagingPath);
     await discardStaging(extractDir);
+    if (outcome === 'none') showNotification(`No mountable media inside ${file.name}`, 'warning');
     return;
   }
 
-  showNotification(`${file.name} doesn't look like a ROM, floppy, HD, CD, or archive`, 'warning');
+  if ((await probeAs(stagingPath, file.name, ['hd'], opts)) === 'none')
+    showNotification(`${file.name} doesn't look like a ROM, floppy, HD, CD, or archive`, 'warning');
   await discardStaging(stagingPath);
+}
+
+// Unpack the archive staged at `stagingPath` into `extractDir` and probe
+// what is inside.  Zip members are tried in archive order; a Mac archive's
+// contents are narrowed to one image by storage.find_media.
+async function probeArchive(
+  stagingPath: string,
+  file: File,
+  extractDir: string,
+  opts: { autoBootOnRom: boolean },
+): Promise<ProbeOutcome> {
+  if (isZipFile(file.name) || (await stagedIsZip(stagingPath))) {
+    let members: UnzippedFile[];
+    try {
+      members = await unzipAll(await xferReadAll(stagingPath));
+    } catch (e) {
+      console.error('[upload] unzip failed', e);
+      showNotification(`Failed to extract ${file.name}`, 'error');
+      return 'rejected';
+    }
+    for (const m of members) {
+      const base = m.name.split('/').pop() ?? '';
+      // Finder metadata a Mac-made zip carries, never media.
+      if (!base || base.startsWith('.') || m.name.startsWith('__MACOSX/')) continue;
+      const inner = `${extractDir}/${sanitizeName(base)}`;
+      if (!(await streamToOpfs(inner, m.data))) continue;
+      const outcome = await probeAs(inner, base, ALL_ORDER, opts);
+      if (outcome !== 'none') return outcome;
+    }
+    return 'none';
+  }
+  const ok = (await gsEval('archive.extract', [stagingPath, extractDir])) === true;
+  if (!ok) {
+    showNotification(`Failed to extract ${file.name}`, 'error');
+    return 'rejected';
+  }
+  const innerPath = `${extractDir}/_found_media.img`;
+  if ((await gsEval('storage.find_media', [extractDir, innerPath])) !== true) return 'none';
+  return probeAs(innerPath, file.name, ALL_ORDER, opts);
+}
+
+// Whether the file at `path` starts with the ZIP signature.  Read through
+// the core (bus/xfer.ts), never with Module.FS on this thread.
+export async function stagedIsZip(path: string): Promise<boolean> {
+  try {
+    return isZipMagic(await xferRead(path, 0, 4));
+  } catch {
+    return false;
+  }
 }
 
 async function persist(

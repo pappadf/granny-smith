@@ -166,7 +166,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
 // the core writes the PRAM bytes (machine.rtc.pram.boot_device), the page
 // only names the SCSI id.  A fresh machine's PRAM is otherwise valid from
 // construction -- the RTC's own defaults, not a page-side seed.
-async function setBootDevice(scsiId: number): Promise<void> {
+export async function setBootDevice(scsiId: number): Promise<void> {
   const r = await gsEval('machine.rtc.pram.boot_device', [scsiId]);
   if (isGsError(r)) console.warn(`[boot] startup device not recorded: ${gsErrorText(r)}`);
 }

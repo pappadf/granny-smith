@@ -2,10 +2,15 @@
 //
 // Usage: visit `?rom=/path/to/Plus.rom&fd0=/path/to/system.dsk&model=plus`
 // and the page boots into a running machine without going through Welcome.
+// Parameter names are case-insensitive (`ROM=`, `HD0=`); `hd` / `fd` mean the
+// first bay / drive.  A value may continue through a container
+// (`…/roms.zip/Mac%20IIci.ROM`) and archive.org URLs are routed to endpoints
+// a page may read — see lib/mediaUrl.ts for the addressing rules.
 //
 // Each parameter value is fetched, one at a time (relative paths resolve
-// against the page origin), streamed to /opfs/upload/url_<slot>, optionally
-// archive-extracted via the C-side `archive.extract`, then persisted into
+// against the page origin), streamed to /opfs/upload/url_<slot>, the named
+// member (or, for a bare archive, the first file / the found medium) taken
+// out of a container, then persisted into
 // /opfs/images/<category>/ the way an upload of that kind is (upload.ts
 // persistAs) and mounted from there; the staging copy is then removed.  The
 // frontend owns where media lives; the core no longer copies volatile paths
@@ -14,14 +19,21 @@
 // warning.
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
-import { xferRead, xferReadAll } from './xfer';
-import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
+import { xferReadAll } from './xfer';
+import { reconcileUiWithMachine, prepareFreshMachine, setBootDevice } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
 import { setMounted } from '@/state/images.svelte';
-import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
+import { sanitizeName, unzipAll, isMacArchive } from '@/lib/archive';
+import {
+  canonicalParamName,
+  planMediaFetch,
+  findMember,
+  MediaUrlError,
+  type MediaFetchPlan,
+} from '@/lib/mediaUrl';
 import { identifyRom, type MediaTypeId } from '@/lib/media';
-import { persistAs, streamToOpfs, discardStaging } from './upload';
+import { persistAs, streamToOpfs, discardStaging, stagedIsZip } from './upload';
 import { UPLOAD_DIR } from '@/lib/opfsPaths';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
@@ -36,20 +48,33 @@ export interface UrlMediaParams {
   cd: string | null;
 }
 
-// Parse a URLSearchParams (or compatible) into structured params.
+// Parse a URLSearchParams (or compatible) into structured params.  Names
+// match case-insensitively (`ROM`, `Rom`, `rom` are one parameter; `HD` is
+// `hd0`); the first occurrence of a name wins, a later spelling of it is
+// ignored with a console warning.
 export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
+  const seen = new Map<string, string>();
+  for (const [k, v] of params.entries()) {
+    const name = canonicalParamName(k);
+    if (!name) continue;
+    if (seen.has(name)) {
+      console.warn(`[urlMedia] ignoring ${k}=: ${name} is already set`);
+      continue;
+    }
+    seen.set(name, v);
+  }
   const out: UrlMediaParams = {
-    rom: params.get('rom'),
-    vrom: params.get('vrom'),
-    model: params.get('model'),
-    speed: params.get('speed'),
+    rom: seen.get('rom') ?? null,
+    vrom: seen.get('vrom') ?? null,
+    model: seen.get('model') ?? null,
+    speed: seen.get('speed') ?? null,
     floppies: [],
     hardDisks: [],
-    cd: params.get('cd'),
+    cd: seen.get('cd') ?? null,
   };
-  for (const [k, v] of params.entries()) {
-    if (/^fd\d+$/.test(k)) out.floppies.push({ slot: k, url: v });
-    if (/^hd\d+$/.test(k)) out.hardDisks.push({ slot: k, url: v });
+  for (const [name, v] of seen) {
+    if (/^fd\d+$/.test(name)) out.floppies.push({ slot: name, url: v });
+    if (/^hd\d+$/.test(name)) out.hardDisks.push({ slot: name, url: v });
   }
   return out;
 }
@@ -149,7 +174,11 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     const p = paths.get(hd.slot);
     if (!p) continue;
     const n = parseInt(hd.slot.replace('hd', ''), 10);
-    report(hd.slot, p, await attachHardDisk(p, n));
+    const r = await attachHardDisk(p, n);
+    report(hd.slot, p, r);
+    // The boot bay's disk is the startup device, as the Configuration
+    // dialog's boot names it.
+    if (r.ok && n === 0 && r.mount.bus === 'scsi') await setBootDevice(r.mount.drive);
   }
   const cdPath = paths.get('cd');
   if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
@@ -210,64 +239,163 @@ async function fetchAndPersist(
   return staged.path;
 }
 
-// Whether the file at `path` starts with the ZIP signature.  Read through
-// the core (bus/xfer.ts), never with Module.FS on this thread.
-async function stagedIsZip(path: string): Promise<boolean> {
-  try {
-    return isZipMagic(await xferRead(path, 0, 4));
-  } catch {
-    return false;
-  }
+// GET `url` for JSON (the archive.org metadata API).
+async function fetchJson(url: string): Promise<unknown> {
+  const res = await fetch(url);
+  if (!res.ok) throw new MediaUrlError(`${url}: ${res.status} ${res.statusText}`);
+  return res.json();
 }
 
-// Fetch a URL and stage its bytes at /opfs/upload/url_<slot>, streamed
-// through the one chunked writer (upload.ts streamToOpfs) — it was read whole
-// into memory and written to the memory-backed /tmp.  A ZIP is the one
-// exception: unzipping needs the whole archive in memory, so a response that
-// turns out to be one is read back, unzipped, and its first file staged in
-// its place.  For Mac-archive extensions (sit/hqx/cpt/bin/sea) the C side
-// does the extraction.  Returns the staged path and the name to store it
-// under, or null.
+// Human size for messages ("512 KB", "25.0 MB").
+function sizeText(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// A failed fetch() of `url`: a TypeError is the browser refusing to hand the
+// page the response (no network, or no CORS header on it).
+function fetchFailureText(e: unknown, url: string): string {
+  if (e instanceof MediaUrlError) return e.message;
+  if (e instanceof TypeError)
+    return `could not read ${new URL(url).host}: network error, or the server does not allow this page to download it (CORS)`;
+  return e instanceof Error ? e.message : String(e);
+}
+
+// Fetch a URL-media value and stage its bytes at /opfs/upload/url_<slot>,
+// streamed through the one chunked writer (upload.ts streamToOpfs).  When
+// the value names a member of a container, the container is fetched whole
+// and the member taken out of it (a zip in JS — unzipping needs the whole
+// archive in memory — a Mac archive by the C side); archive.org extracts zip
+// members itself.  A container fetched without a member path keeps the old
+// behaviour: a zip's first file, a Mac archive's found medium.  Returns the
+// staged path and the name to store it under, or null.
 async function fetchAndStage(
   slot: string,
   url: string,
 ): Promise<{ path: string; name: string } | null> {
+  const label = slot.toUpperCase();
+  let plan: MediaFetchPlan;
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    const fileName = (url.split('/').pop() ?? '').split('?')[0] || slot;
-    const staged = `${UPLOAD_DIR}/url_${slot}`;
+    plan = await planMediaFetch(url, window.location.href, fetchJson);
+  } catch (e) {
+    showNotification(`${label}: ${fetchFailureText(e, url)}`, 'error');
+    return null;
+  }
+  const staged = `${UPLOAD_DIR}/url_${slot}`;
+  try {
+    let res: Response;
+    try {
+      res = await fetch(plan.fetchUrl);
+    } catch (e) {
+      throw new MediaUrlError(fetchFailureText(e, plan.fetchUrl));
+    }
+    if (!res.ok) {
+      const what = res.status === 404 ? 'not found' : `${res.status} ${res.statusText}`;
+      throw new MediaUrlError(`${plan.containerName ?? plan.fileName}: ${what}`);
+    }
     const body = res.body ?? (await res.blob());
     if (!(await streamToOpfs(staged, body))) return null;
 
     const ct = res.headers.get('Content-Type') ?? '';
-    const looksLikeZip =
-      /\.zip($|[?#])/i.test(url) || /zip/i.test(ct) || (await stagedIsZip(staged));
-    if (looksLikeZip) {
-      const first = await unzipFirstFile(await xferReadAll(staged));
-      if (!first) {
-        showNotification(`${slot}: zip is empty`, 'error');
-        await discardStaging(staged);
-        return null;
-      }
+    let name = plan.fileName;
+    if (plan.member !== null) {
+      // The value named a member: take exactly that one out.
+      if (!(await extractMember(slot, staged, plan))) return null;
+    } else if (/\.zip$/i.test(plan.fileName) || /zip/i.test(ct) || (await stagedIsZip(staged))) {
+      // A bare zip: its first file, as before member paths existed.
+      const first = (await unzipAll(await xferReadAll(staged)))[0];
+      if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
       if (!(await streamToOpfs(staged, first.data))) return null;
+      name = first.name.split('/').pop() || name;
+    } else if (isMacArchive(plan.fileName)) {
+      await unpackMacArchive(slot, staged, null);
     }
 
-    if (isMacArchive(fileName)) {
-      const fmt = await gsEval('archive.identify', [staged]);
-      if (typeof fmt === 'string' && fmt.length > 0) {
-        const extractDir = `${UPLOAD_DIR}/url_${slot}_unpacked`;
-        const extracted = (await gsEval('archive.extract', [staged, extractDir])) === true;
-        if (extracted) await gsEval('storage.find_media', [extractDir, staged]);
-        await discardStaging(extractDir);
-      }
-    }
-
-    showNotification(`${slot} downloaded${looksLikeZip ? ' (zip)' : ''}`, 'info');
-    return { path: staged, name: sanitizeName(fileName) || slot };
+    const size = await gsEval('storage.path_size', [staged]);
+    const from = plan.containerName ? ` from ${plan.containerName}` : '';
+    const sz = typeof size === 'number' ? ` (${sizeText(size)})` : '';
+    showNotification(`${label}: ${name}${from}${sz}`, 'info');
+    return { path: staged, name: sanitizeName(name) || slot };
   } catch (e) {
     console.error(`[urlMedia] fetch ${slot} failed`, e);
-    showNotification(`${slot} download failed`, 'error');
+    showNotification(`${label}: ${fetchFailureText(e, plan.fetchUrl)}`, 'error');
+    await discardStaging(staged);
     return null;
   }
+}
+
+// Replace the container staged at `staged` with its member `plan.member`.
+// Throws MediaUrlError (listing what is there) when the member is absent.
+async function extractMember(slot: string, staged: string, plan: MediaFetchPlan): Promise<boolean> {
+  const member = plan.member ?? '';
+  if (plan.container === 'zip') {
+    const entries = (await unzipAll(await xferReadAll(staged))).filter((f) => f.name);
+    const hit = findMember(
+      entries.map((f) => f.name),
+      member,
+    );
+    if (!hit)
+      throw memberNotFound(
+        plan,
+        entries.map((f) => f.name),
+      );
+    const data = entries.find((f) => f.name === hit)?.data;
+    return !!data && (await streamToOpfs(staged, data));
+  }
+  return unpackMacArchive(slot, staged, member, plan);
+}
+
+// Unpack the Mac archive staged at `staged` (StuffIt, BinHex, Compact Pro,
+// MacBinary) and put `member` — or, with none, the medium storage.find_media
+// picks — in its place.
+async function unpackMacArchive(
+  slot: string,
+  staged: string,
+  member: string | null,
+  plan?: MediaFetchPlan,
+): Promise<boolean> {
+  const fmt = await gsEval('archive.identify', [staged]);
+  if (typeof fmt !== 'string' || fmt.length === 0) {
+    if (member !== null && plan) throw new MediaUrlError(`${plan.containerName}: not an archive`);
+    return true;
+  }
+  const extractDir = `${UPLOAD_DIR}/url_${slot}_unpacked`;
+  try {
+    if ((await gsEval('archive.extract', [staged, extractDir])) !== true)
+      throw new MediaUrlError(`could not unpack ${plan?.containerName ?? 'the archive'}`);
+    if (member === null) {
+      await gsEval('storage.find_media', [extractDir, staged]);
+      return true;
+    }
+    const names = await listTree(extractDir);
+    const hit = findMember(names, member);
+    if (!hit) throw memberNotFound(plan as MediaFetchPlan, names);
+    return (await gsEval('storage.cp', [`${extractDir}/${hit}`, staged])) === true;
+  } finally {
+    await discardStaging(extractDir);
+  }
+}
+
+// Every file under `dir`, as paths relative to it.
+async function listTree(dir: string, prefix = ''): Promise<string[]> {
+  const entries = await gsEval('storage.list_dir', [prefix ? `${dir}/${prefix}` : dir]);
+  if (!Array.isArray(entries)) return [];
+  const out: string[] = [];
+  for (const e of entries) {
+    if (typeof e !== 'string' || e === '.' || e === '..') continue;
+    const rel = prefix ? `${prefix}/${e}` : e;
+    const sub = await gsEval('storage.list_dir', [`${dir}/${rel}`]);
+    if (Array.isArray(sub)) out.push(...(await listTree(dir, rel)));
+    else out.push(rel);
+  }
+  return out;
+}
+
+// The error for a member path that is not in its container.
+function memberNotFound(plan: MediaFetchPlan, names: string[]): MediaUrlError {
+  const shown = names.slice(0, 5).join(', ');
+  return new MediaUrlError(
+    `"${plan.member}" is not in ${plan.containerName}` +
+      (names.length ? ` (it has ${shown}${names.length > 5 ? ', ...' : ''})` : ''),
+  );
 }
