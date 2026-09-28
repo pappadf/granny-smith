@@ -82,3 +82,16 @@ describe('parseUrlMediaParams — names', () => {
     expect(p.hardDisks).toEqual([{ slot: 'hd0', url: '/a' }]);
   });
 });
+
+describe('parseUrlMediaParams — two-chip ROM', () => {
+  it('a second ROM= is the other chip', () => {
+    const p = parseUrlMediaParams(make('ROM=/even.bin&rom=/odd.bin'));
+    expect(p.rom).toBe('/even.bin');
+    expect(p.romPair).toBe('/odd.bin');
+  });
+  it('one ROM= has no pair, and a third is ignored', () => {
+    expect(parseUrlMediaParams(make('rom=/r')).romPair).toBeNull();
+    const p = parseUrlMediaParams(make('rom=/a&rom=/b&rom=/c'));
+    expect([p.rom, p.romPair]).toEqual(['/a', '/b']);
+  });
+});

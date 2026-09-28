@@ -20,7 +20,7 @@
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
-import { reconcileUiWithMachine, prepareFreshMachine, setBootDevice } from './boot';
+import { reconcileUiWithMachine, prepareFreshMachine, setStartupDisk } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
 import { setMounted } from '@/state/images.svelte';
@@ -30,6 +30,7 @@ import {
   planMediaFetch,
   findMember,
   MediaUrlError,
+  interleaveHalves,
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
 import { identifyRom, type MediaTypeId } from '@/lib/media';
@@ -40,6 +41,9 @@ import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './m
 
 export interface UrlMediaParams {
   rom: string | null;
+  // A second ROM= value: the other chip of a ROM dumped as two byte-wide
+  // halves (the Lisa's 341-0175/341-0176).  The page interleaves the pair.
+  romPair: string | null;
   vrom: string | null;
   model: string | null;
   speed: string | null;
@@ -51,12 +55,18 @@ export interface UrlMediaParams {
 // Parse a URLSearchParams (or compatible) into structured params.  Names
 // match case-insensitively (`ROM`, `Rom`, `rom` are one parameter; `HD` is
 // `hd0`); the first occurrence of a name wins, a later spelling of it is
-// ignored with a console warning.
+// ignored with a console warning.  The one exception is a second `rom=`:
+// the other half of a two-chip ROM.
 export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
   const seen = new Map<string, string>();
+  let romPair: string | null = null;
   for (const [k, v] of params.entries()) {
     const name = canonicalParamName(k);
     if (!name) continue;
+    if (name === 'rom' && seen.has('rom') && romPair === null) {
+      romPair = v;
+      continue;
+    }
     if (seen.has(name)) {
       console.warn(`[urlMedia] ignoring ${k}=: ${name} is already set`);
       continue;
@@ -65,6 +75,7 @@ export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
   }
   const out: UrlMediaParams = {
     rom: seen.get('rom') ?? null,
+    romPair,
     vrom: seen.get('vrom') ?? null,
     model: seen.get('model') ?? null,
     speed: seen.get('speed') ?? null,
@@ -125,7 +136,9 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // was in flight at once.
   const paths = new Map<string, string | undefined>();
   const wanted: Array<[string, string, MediaTypeId]> = [];
-  if (params.rom) wanted.push(['rom', params.rom, 'rom']);
+  if (params.rom && params.romPair)
+    paths.set('rom', await fetchRomPair(params.rom, params.romPair));
+  else if (params.rom) wanted.push(['rom', params.rom, 'rom']);
   if (params.vrom) wanted.push(['vrom', params.vrom, 'vrom']);
   for (const fd of params.floppies) wanted.push([fd.slot, fd.url, 'fd']);
   for (const hd of params.hardDisks) wanted.push([hd.slot, hd.url, 'hd']);
@@ -176,9 +189,9 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     const n = parseInt(hd.slot.replace('hd', ''), 10);
     const r = await attachHardDisk(p, n);
     report(hd.slot, p, r);
-    // The boot bay's disk is the startup device, as the Configuration
-    // dialog's boot names it.
-    if (r.ok && n === 0 && r.mount.bus === 'scsi') await setBootDevice(r.mount.drive);
+    // The boot bay's disk is the startup device (a SCSI Mac's PRAM default,
+    // a Lisa's BootVol), as the Configuration dialog's boot names it.
+    if (r.ok && n === 0) await setStartupDisk(r.mount);
   }
   const cdPath = paths.get('cd');
   if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
@@ -237,6 +250,46 @@ async function fetchAndPersist(
     'warning',
   );
   return staged.path;
+}
+
+// Fetch the two chips of a ROM dumped as byte-wide halves, interleave them
+// into one image, and persist it as a ROM.  Which chip holds the even bytes
+// is not for the URL to say: both orders are tried and the one whose own
+// checksum verifies (machine.rom.identify) is kept.  Returns the persisted
+// path, or undefined (with a message) when the pair is not a ROM.
+async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefined> {
+  const a = await fetchAndStage('rom', urlA);
+  if (!a) return undefined;
+  const b = await fetchAndStage('rom2', urlB);
+  if (!b) return undefined;
+  const bytesA = await xferReadAll(a.path);
+  const bytesB = await xferReadAll(b.path);
+  await discardStaging(b.path);
+  if (bytesA.length !== bytesB.length) {
+    showNotification(
+      `ROM: the two halves differ in size (${bytesA.length} and ${bytesB.length} bytes)`,
+      'error',
+    );
+    return undefined;
+  }
+  for (const [even, odd] of [
+    [bytesA, bytesB],
+    [bytesB, bytesA],
+  ]) {
+    if (!(await streamToOpfs(a.path, interleaveHalves(even, odd)))) return undefined;
+    const id = (await gsEval('machine.rom.identify', [a.path])) as { intact?: boolean } | null;
+    if (id?.intact) {
+      const persisted = await persistAs(a.path, `${a.name}+${b.name}`, 'rom');
+      if (persisted) await discardStaging(a.path);
+      return persisted ?? a.path;
+    }
+  }
+  await discardStaging(a.path);
+  showNotification(
+    `ROM: ${a.name} and ${b.name} do not interleave into a ROM whose checksum verifies`,
+    'error',
+  );
+  return undefined;
 }
 
 // GET `url` for JSON (the archive.org metadata API).
