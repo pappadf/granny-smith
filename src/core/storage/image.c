@@ -157,6 +157,7 @@ void image_close(image_t *image) {
     if (image->storage)
         storage_delete(image->storage);
     free(image->tags);
+    free(image->wrap_prefix);
     // Ghost (read-only) instances were placed in a scratch dir; remove their
     // delta+journal so we don't leave clutter behind.
     if (image->ghost_instance) {
@@ -984,19 +985,45 @@ const char *image_path(const image_t *image) {
 // Image I/O
 // ============================================================================
 
+// Bytes of synthesised wrapper prefix in front of the storage (0 unless
+// the image was wrapped — image_wrap.h).
+static size_t wrap_bytes(const image_t *disk) {
+    return (size_t)disk->wrap_blocks * disk->block_size;
+}
+
+static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+
 size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
     disk->reads++; // the activity light's only cost on this path
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
+    size_t pre = wrap_bytes(disk);
+    if (offset < pre) {
+        // The wrapper's prefix is served from memory; the rest of the
+        // request continues on the volume's storage.
+        size_t n = pre - offset < size ? pre - offset : size;
+        memcpy(buf, disk->wrap_prefix + offset, n);
+        if (n == size)
+            return size;
+        return n + storage_read_range(disk, 0, buf + n, size - n);
+    }
+    return storage_read_range(disk, offset - pre, buf, size);
+}
+
+// Read whole blocks at `offset` of the image's storage (past any wrapper
+// prefix).  Returns `size`, or the bytes read before a backing failure.
+static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+    size_t vol_size = disk->raw_size - wrap_bytes(disk);
     // An undersized / truncated image (a host file shorter than the media it
     // backs) can be read past its end — e.g. the Finder reading high tracks
     // while ejecting a 400K/800K-geometry floppy backed by a too-small file.
     // Serve the unbacked tail as blank media (zeroes) rather than asserting,
     // so the guest sees readable-but-empty sectors and the operation can
     // finish.  `backed` is the in-bounds, whole-block byte count.
-    size_t backed = (offset < disk->raw_size) ? (disk->raw_size - offset) : 0;
+    size_t backed = (offset < vol_size) ? (vol_size - offset) : 0;
     if (backed > size)
         backed = size;
     backed -= backed % disk->block_size;
@@ -1024,11 +1051,30 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) 
     disk->writes++;
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
+    size_t pre = wrap_bytes(disk);
+    if (offset < pre) {
+        // A write into the wrapper's prefix (a partitioning tool rewriting
+        // the map) lands in the in-memory prefix only: the volume file is
+        // never given a partition map, and the prefix is rebuilt on reopen.
+        size_t n = pre - offset < size ? pre - offset : size;
+        memcpy(disk->wrap_prefix + offset, buf, n);
+        LOG(1, "disk_write_data: %zu-byte write into the wrapper prefix at %zu kept in memory only", n, offset);
+        if (n == size)
+            return size;
+        return n + storage_write_range(disk, 0, buf + n, size - n);
+    }
+    return storage_write_range(disk, offset - pre, buf, size);
+}
+
+// Write whole blocks at `offset` of the image's storage (past any wrapper
+// prefix).  Returns `size`, or the bytes written before a backing failure.
+static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+    size_t vol_size = disk->raw_size - wrap_bytes(disk);
     // Symmetric with disk_read_data: a write past the end of an undersized
     // image targets sectors with no backing store.  Drop the unbacked tail
     // (it cannot be stored) rather than asserting, so the guest's volume
     // flush during eject completes; warn so the dropped write is visible.
-    size_t backed = (offset < disk->raw_size) ? (disk->raw_size - offset) : 0;
+    size_t backed = (offset < vol_size) ? (vol_size - offset) : 0;
     if (backed > size)
         backed = size;
     backed -= backed % disk->block_size;
@@ -1283,10 +1329,14 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     if (len)
         system_write_checkpoint_data(checkpoint, name, len);
 
-    char writable_flag = (char)(image->writable ? 1 : 0);
-    system_write_checkpoint_data(checkpoint, &writable_flag, sizeof(writable_flag));
+    // Bit 0: writable.  Bit 1: wrapped by the bare-volume wrapper — the
+    // restore re-wraps rather than trusting the file to say so (the prefix
+    // is never in the file).  raw_size is the storage's own size, which is
+    // what the restore's geometry check and base materialisation expect.
+    char flags = (char)((image->writable ? IMAGE_CKPT_WRITABLE : 0) | (image->wrap_prefix ? IMAGE_CKPT_WRAPPED : 0));
+    system_write_checkpoint_data(checkpoint, &flags, sizeof(flags));
 
-    uint64_t raw_size = (uint64_t)image->raw_size;
+    uint64_t raw_size = (uint64_t)(image->raw_size - wrap_bytes(image));
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
 
     // Persist the instance path so a future restore can reopen the same delta

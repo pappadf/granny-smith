@@ -85,6 +85,12 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
+# -- GSDisk SCSI disk driver (bare-volume wrapper) --
+# Assembled into build/gsdisk/ like the vrom68k fragments; defines
+# GSDISK_HEADER, which image_wrap.c includes.
+
+include src/core/storage/gsdisk/gsdisk.mk
+
 # -- EfterScript platen (PLATEN=1) and the embedded LaserWriter prelude --
 # Defines PLATEN, PLATEN_CFLAGS, PLATEN_LIB_WASM, PLATEN_WASM_LDFLAGS,
 # PLATEN_VERSION, LASERWRITER_OUT and the rule for LASERWRITER_PRELUDE_HEADER.
@@ -120,6 +126,7 @@ INCLUDES := $(CORE_INCLUDES) \
             -Isrc/platform \
             -I$(PLATFORM_DIR) \
             -I$(VROM68K_OUT) \
+            -I$(GSDISK_OUT) \
             -I$(LASERWRITER_OUT)
 
 # -- Compile flags (source -> object) --
@@ -260,6 +267,9 @@ $(OBJ_DIR)/$(CORE_DIR)/build_id.o: FORCE
 
 # gsvrom_data.c embeds the generated fragments header.
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
+
+# image_wrap.c embeds the generated GSDisk driver header.
+$(OBJ_DIR)/$(CORE_DIR)/storage/image_wrap.o: $(GSDISK_HEADER)
 
 # laserwriter_job.c embeds the generated prelude header.
 $(OBJ_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)

@@ -151,7 +151,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   if (config.hd && config.hd !== '(none)') {
     const r = await attachHardDisk(config.hd, config.hdBay ?? 0);
     reportMount(config.hd, r, 'Hard disk');
-    if (r.ok && r.mount.bus === 'scsi') await setBootDevice(r.mount.drive);
+    if (r.ok) await setStartupDisk(r.mount);
   }
   if (config.cd && config.cd !== '(none)') {
     reportMount(config.cd, await attachCdrom(config.cd), 'CD-ROM');
@@ -162,12 +162,21 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   showNotification('Machine started', 'info');
 }
 
-// The Start Manager's default startup device is the disk the page attached:
-// the core writes the PRAM bytes (machine.rtc.pram.boot_device), the page
-// only names the SCSI id.  A fresh machine's PRAM is otherwise valid from
-// construction -- the RTC's own defaults, not a page-side seed.
-async function setBootDevice(scsiId: number): Promise<void> {
-  const r = await gsEval('machine.rtc.pram.boot_device', [scsiId]);
+// The machine's default startup device is the hard disk the page attached;
+// the core writes the parameter-memory bytes, the page only names the disk.
+//   - SCSI: the Start Manager's default device (machine.rtc.pram.boot_device,
+//     the SCSI id).  A fresh machine's PRAM is otherwise valid from
+//     construction -- the RTC's own defaults, not a page-side seed.
+//   - ProFile (Lisa / Macintosh XL): BootVol = 2, the parallel-port ProFile,
+//     with the checksum left NOT verifying (machine.hd.pram_init(2, false)) --
+//     a Lisa whose battery was just replaced.  The boot ROM then goes to the
+//     ProFile instead of stopping at its startup-device screen, and the OS
+//     restores its device table from the boot volume's own on-disk snapshot.
+// Other buses (a Network Server's second channel) are left as they are.
+export async function setStartupDisk(mount: { bus?: string; drive: number }): Promise<void> {
+  let r: unknown = null;
+  if (mount.bus === 'scsi') r = await gsEval('machine.rtc.pram.boot_device', [mount.drive]);
+  else if (mount.bus === 'profile') r = await gsEval('machine.hd.pram_init', [2, false]);
   if (isGsError(r)) console.warn(`[boot] startup device not recorded: ${gsErrorText(r)}`);
 }
 
@@ -264,8 +273,10 @@ export async function restartEmulator(): Promise<void> {
   }
   // The rebuilt machine's PRAM is its construction default again: name the
   // hard disk it kept as the startup device, as the boot did.
-  const hd = Object.values(images.mounted).find((m) => m.kind === 'hd' && m.bus === 'scsi');
-  if (hd) await setBootDevice(hd.drive);
+  const hd = Object.values(images.mounted).find(
+    (m) => m.kind === 'hd' && (m.bus === 'scsi' || m.bus === 'profile'),
+  );
+  if (hd) await setStartupDisk(hd);
   await reconcileUiWithMachine('restart');
   // Re-asserts the Caps Lock latch too (the core also carries it across
   // machine.restart; a re-latch of an already-down key is a no-op).
