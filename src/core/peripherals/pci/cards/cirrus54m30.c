@@ -567,8 +567,14 @@ static bool c54m30_linear_enabled(const c54m30_t *c) {
 // Where SR17 has put the register block, if anywhere.  SR17[2] enables it at $B8000 inside the
 // legacy window, aliased at every 256-byte boundary up to $BFF00 because "Address bits 14:8 are
 // 'don't care'" (Appendix B20 section 1).  With SR17[6] also set AND linear addressing enabled,
-// the '30/'36/'40 move it instead to the last 256 bytes of the linear address space, which for
-// this 1 MB board is the last 256 bytes of the fitted DRAM.  Otherwise SR17[6] is ignored:
+// the '30/'36/'40 move it instead to the last 256 bytes of the linear address space: the top of
+// the 16 MB aperture the chip decodes, NOT the top of the 1 MB of fitted DRAM.  The manuals at
+// hand say only that SR17[6] "selects the address space"; the placement is fixed by Apple's
+// Network Server Diagnostic Utility 1.1, which leaves SR17 = $66 with linear addressing on
+// (SR07 = $11) and then passes its VGA RAM test over the whole megabyte on real hardware.  A
+// block over the last 256 bytes of DRAM fails that test at $FFF19 (suite-ans,
+// ans500-diag-floppy).  It lands where the legacy-window mirror already aliases $BFF00, so
+// either placement reaches the same registers.  Otherwise SR17[6] is ignored:
 // "If Memory-mapped I/O is not enabled, or if linear addressing is not enabled, this bit is
 // ignored" (TRM 9.13).
 //
@@ -585,7 +591,7 @@ static bool c54m30_mmio_hit(const c54m30_t *c, uint32_t offset, uint8_t *reg) {
     if (!(sr17 & 0x04u))
         return false;
     if ((sr17 & 0x40u) && c54m30_linear_enabled(c)) {
-        if (offset < C54M30_VRAM - 0x100u || offset >= C54M30_VRAM)
+        if (offset < C54M30_FB_SPAN - 0x100u || offset >= C54M30_FB_SPAN)
             return false;
     } else {
         if (offset < C54M30_WIN_BASE + C54M30_WIN_MMIO || offset >= C54M30_WIN_BASE + C54M30_WIN_SPAN)

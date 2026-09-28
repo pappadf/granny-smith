@@ -124,6 +124,7 @@ uint64_t scheduler_cpu_cycles(scheduler_t *s) {
 #define FB_BASE  0x81000000u // where BAR0 is assigned: 16 MB, 16 MB-aligned
 
 #define VRAM_SIZE 0x00100000u
+#define FB_SPAN   0x01000000u // BAR0: the 16 MB aperture the chip decodes
 #define WIN_BASE  0x00FE0000u // the mirror, at the top of the aperture
 #define WIN_MMIO  0x00018000u // $B8000 within the mirror
 
@@ -375,11 +376,17 @@ TEST(mirror_and_register_block) {
     ASSERT_EQ_HEX(vram_read(WIN_MMIO + MM_ROP), 0x00u); // and not as a pixel
     ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP), 0x00u); // nor at the top
 
-    // Linear addressing on (cirrus.sys programs SR07 = $F1): now bit 6 means what it says.
+    // Linear addressing on (cirrus.sys programs SR07 = $F1): now bit 6 means what it says, and
+    // the block is at the top of the 16 MB aperture -- NOT over the last 256 bytes of the fitted
+    // DRAM, which stay display memory.  Apple's diagnostic utility leaves SR17 = $66 with linear
+    // addressing on and then tests every byte of that megabyte (suite-ans, ans500-diag-floppy).
     seq_write(0x07, 0xF1);
-    g_write8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP, 0x5Du);
-    ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP), 0x5Du);
+    g_write8(FB_BASE + FB_SPAN - 0x100u + MM_ROP, 0x5Du);
+    ASSERT_EQ_HEX(g_read8(FB_BASE + FB_SPAN - 0x100u + MM_ROP), 0x5Du);
     ASSERT_EQ_HEX(g_read8(FB_BASE + WIN_BASE + WIN_MMIO + MM_ROP), 0x00u); // and not at $B8000
+    g_write8(FB_BASE + VRAM_SIZE - 0x100u + 0x19u, 0x55u); // the byte the diagnostic failed on
+    ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + 0x19u), 0x55u);
+    ASSERT_EQ_HEX(vram_read(VRAM_SIZE - 0x100u + 0x19u), 0x55u); // it is a pixel
     rig_teardown();
 }
 
