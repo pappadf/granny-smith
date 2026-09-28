@@ -3,7 +3,7 @@
 
 // gsvrom.h
 // The GS generic declaration ROM, generated at runtime (see
-// docs/core/peripherals/nubus_generic_vrom.md): the declarative records come
+// docs/internals/core/peripherals/nubus_generic_vrom.md): the declarative records come
 // from the declrom builder fed by the card kind's monitor table, and the 68K
 // code blocks are fragments assembled by the core build
 // (src/core/peripherals/nubus/vrom68k/, embedded via

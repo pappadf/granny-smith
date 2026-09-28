@@ -4,7 +4,7 @@
 // appletalk_aevt_codec.c
 // The Apple event codec: AETF byte stream ⇄ V_MAP ⇄ text form.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md §5.2 (stream
+// Coding reference: docs/internals/core/network/ppc_appleevents.md §5.2 (stream
 // layout), §5.4 (lists, records and factoring), §5.6 (descriptor types),
 // §6.1 (the map form) and §6.2 (the text grammar).  Section numbers in the
 // comments below refer to that document.

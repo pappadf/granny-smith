@@ -1255,7 +1255,7 @@ static const uint32_t lisa_ram_options_kb[] = {512, 1024, 2048, 0};
 // serves and readers derive the rest (machine_profile.h), and this one serves
 // both.  lisa_fdc_insert sizes the media itself -- num_sides = 2 above
 // 500000 bytes -- and reports the geometry the boot loader reads from the
-// controller's disk-type byte, which has an encoding for each: docs/machines/
+// controller's disk-type byte, which has an encoding for each: docs/internals/machines/
 // lisa/lisa.md 13.2 records $FCC015 as "bit 0 set = Sony 400 KB single-sided
 // (800 blocks); bit 0 clear = Sony 800 KB double-sided (1600 blocks)".  So
 // 800 KB media is something the machine's own firmware protocol contemplates,

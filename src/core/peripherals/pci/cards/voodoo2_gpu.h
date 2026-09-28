@@ -3,7 +3,7 @@
 
 // voodoo2_gpu.h
 // The WebGPU takeover's translator
-// (docs/core/peripherals/pci/cards/voodoo2.md, "The WebGPU takeover"):
+// (docs/internals/core/peripherals/pci/cards/voodoo2.md, "The WebGPU takeover"):
 // the raster pthread's GPU mode.  Private to voodoo2_raster.c, which
 // owns the thread and hands every command here under the "webgpu"
 // backend; this unit decides whether the GPU (engaged) or the normative

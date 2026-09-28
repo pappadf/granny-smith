@@ -5,7 +5,7 @@
 // "Apple Macintosh Display Card 8•24 GC" ("Dolphin") — a NuBus display card
 // whose display half is the JMFB family and whose Am29000 "GC" accelerator is
 // *simulated, not emulated* (HLE).  The display half is the plain 8•24's,
-// documented in docs/core/peripherals/nubus/cards/display_card_8_24.md.
+// documented in docs/internals/core/peripherals/nubus/cards/display_card_8_24.md.
 //
 // Two halves:
 //   * Display — the genuine v1.1 declaration ROM (`341-0266`, BoardId $2C) and
@@ -243,7 +243,7 @@
 extern const nubus_card_kind_t display_card_824gc_kind;
 // Generic sibling ("8_24gc") with the built-in GS declaration ROM — same
 // HLE model, no vROM file needed (see
-// docs/core/peripherals/nubus_generic_vrom.md).
+// docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t display_card_824gc_generic_kind;
 
 // === Video-mode selection (machine.nubus.video_mode) ========================

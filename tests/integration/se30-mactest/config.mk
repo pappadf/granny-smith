@@ -16,7 +16,7 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # across the screenshots.
 # Pinned to the REAL onboard-video vROM kind: this suite's reference PNGs
 # were captured against it, and the SE/30 profile now defaults to the
-# generic GS-vROM sibling (docs/core/peripherals/nubus_generic_vrom.md).
+# generic GS-vROM sibling (docs/internals/core/peripherals/nubus_generic_vrom.md).
 TEST_ARGS := video_card=builtin_se30_video ram=4096 fd0=$(TEST_DATA)/apps/MacTest-SE30.image
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

@@ -964,7 +964,7 @@ const nubus_card_kind_t mdc_8_24_kind = {
 
 // Generic sibling kind: always-available twin of mdc_8_24 with a built-in
 // declaration ROM — zero-configuration by construction (see
-// docs/core/peripherals/nubus_generic_vrom.md).  The short id is what users
+// docs/internals/core/peripherals/nubus_generic_vrom.md).  The short id is what users
 // type in boot documents.
 const nubus_card_kind_t jmfb_generic_kind = {
     .id = "8_24",

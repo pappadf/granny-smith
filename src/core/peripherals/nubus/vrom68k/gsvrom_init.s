@@ -44,7 +44,7 @@ GSPrimaryInit:
 	| on the 32-bit sister once it loads).  The set of top-level spIDs is
 	| the one private convention the fragment still carries ("the sister
 	| ids the emulator seeds into PRAM" -- see
-	| docs/core/peripherals/nubus_generic_vrom.md); it is NOT mode geometry
+	| docs/internals/core/peripherals/nubus_generic_vrom.md); it is NOT mode geometry
 	| (that now lives only in the generated records) — so the personality's
 	| SpidTab lists ids alone, no width/height.
 	lea	PISpidTab(pc),a3

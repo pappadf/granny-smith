@@ -296,7 +296,7 @@ A vROM that is not an Apple dump can still be recognised structurally: an
 image produced by one of the emulator's own generic cards is identified by
 its `granny-smith` VendorId and BoardId (`vrom.c:158-191`). The generic
 kinds generate their declaration ROM when the card is built, and they never
-consult the registry ([nubus_generic_vrom.md](../../core/peripherals/nubus_generic_vrom.md)).
+consult the registry ([nubus_generic_vrom.md](../../internals/core/peripherals/nubus_generic_vrom.md)).
 
 The identify surfaces answer from content alone. Each returns `V_ERROR` for
 an unreadable path and `recognised: false` for a file that does not
@@ -370,7 +370,7 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
   empty slot, and the SE/30's onboard video synthesises a fallback ROM
   (`machine.c:737-798`;
   `src/machines/glue/builtin_se30_video.c:163`). See
-  [object-model.md, Boot arguments](../../core/shell/object-model.md#boot-arguments).
+  [object-model.md, Boot arguments](../../internals/core/object/object-model.md#boot-arguments).
 - **Lifetime.** The registries are process-global. Offers survive
   `machine.boot`, `machine.restart` and `checkpoint.load`, and are dropped
   only by `vrom_delete`/`prom_delete`. The card ROMs themselves are not

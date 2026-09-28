@@ -6,7 +6,7 @@
 // NBP, guest-mode sessions in both directions over ADSP, and the port browse
 // that finds what a guest has to offer.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md §2 (record layouts),
+// Coding reference: docs/internals/core/network/ppc_appleevents.md §2 (record layouts),
 // §3 (discovery), §4 (the session layer).  Its only client is the Apple event
 // layer in appletalk_aevt.c.
 

@@ -685,7 +685,7 @@ static value_t build_profile(const hw_profile_t *p) {
     val_map_put(b, "capabilities", build_capabilities(p));
     val_map_put(b, "video_slots", build_video_slots(p));
     // PCI expansion topology: one row per declared socket / builtin, with
-    // the fitting cards computed per socket (docs/core/peripherals/pci.md).
+    // the fitting cards computed per socket (docs/internals/core/peripherals/pci.md).
     val_map_put(b, "pci_slots", build_pci_slots(p));
     // Substrate built-in video, when the machine has one that is NOT a
     // BUILTIN slot pseudo-card (the PDM family's Ariel scanout).  The
@@ -1283,7 +1283,7 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
     };
     // Replay the user's per-slot picks: the document's wildcard covers only
     // the first socket, so without these a multi-card machine would come
-    // back with empty slots (docs/core/peripherals/pci.md).
+    // back with empty slots (docs/internals/core/peripherals/pci.md).
     //
     // ONLY the explicit ones.  A slot that resolved its own default must be
     // left to resolve it again: re-staging a default turns it into an
@@ -1588,7 +1588,7 @@ static const class_desc_t machine_class = {
 
 static struct object *s_machine_object = NULL;
 
-// The single `machine` container node (docs/core/shell/object-model.md).
+// The single `machine` container node (docs/internals/core/object/object-model.md).
 // All emulated hardware nests under it; the emulator's own service objects
 // (scheduler/debug/storage/…) and the simulated network (appletalk) stay at
 // the root as its siblings. Created lazily on first use because some

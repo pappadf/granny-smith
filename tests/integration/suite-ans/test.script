@@ -170,7 +170,7 @@ def row_ans500_proto20_macos() {
 # (sense on Handshake bit 3, head select without a sense read, whole-track
 # continuous transfers), so this is the row that pins the shared SWIM3
 # model's behaviour under a second driver — see
-# docs/core/peripherals/swim3.md and docs/machines/tnt/tnt.md.
+# docs/internals/core/peripherals/swim3.md and docs/internals/machines/tnt/tnt.md.
 def row_ans500_diag_floppy() {
     # Two cold boots, like the AIX rows' two: POST caches the DIMM sizes it
     # found in NVRAM ($1048 + 8k), but Open Firmware wipes that area when it
@@ -232,7 +232,7 @@ def row_ans500_diag_floppy() {
     # (PIO and DBDMA loopbacks) and the 54M30 -- and "4" lists what failed.
     # The one line it lists is the SDLC DMA loopback, whose last byte the
     # real chip delivers as $28 where the model delivers the data byte
-    # (docs/machines/tnt/tnt.md, "The diagnostic utility"); everything else
+    # (docs/internals/machines/tnt/tnt.md, "The diagnostic utility"); everything else
     # passes.
     machine.adb.keyboard.type("3\n")
     scheduler.run 6000000000

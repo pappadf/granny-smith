@@ -92,7 +92,7 @@ does with the PostScript it receives depends on the build:
 * **`PLATEN=1`.** EfterScript's `platen` library — a per-job PostScript
   interpreter that produces a PDF — is linked in. Every PAP job becomes one
   interpreter job (`src/core/network/laserwriter_job.c`,
-  [`laserwriter_job.md`](../../core/network/laserwriter_job.md)): the driver's bytes are fed
+  [`laserwriter_job.md`](../../internals/core/network/laserwriter_job.md)): the driver's bytes are fed
   in as they arrive, a query is answered by the program's own output, and
   the finished document goes to the platform (headless writes a `.pdf`,
   the browser downloads one — §5.5). The placeholder query answers are gone
@@ -155,7 +155,7 @@ make -f Makefile.headless PLATEN=1 PLATEN_VERSION=0.0.3   # another release
 ```
 
 The two builds reach the library differently
-([`laserwriter_job.md`](../../core/network/laserwriter_job.md)): headless links the host
+([`laserwriter_job.md`](../../internals/core/network/laserwriter_job.md)): headless links the host
 archive into the emulator and calls it directly; the browser build is a
 threaded module and the archive's Rust standard library is not, so there
 the interpreter runs in its own Web Worker with its own module, and the
@@ -202,7 +202,7 @@ compiled either way.
 The interpreter is seeded with the product/version/revision identity and a
 host prelude that makes `statusdict` look like a LaserWriter. The prelude
 lives in the repository as `src/core/network/laserwriter_prelude.ps`,
-embedded at build time; see [`laserwriter_job.md`](../../core/network/laserwriter_job.md).
+embedded at build time; see [`laserwriter_job.md`](../../internals/core/network/laserwriter_job.md).
 
 ## 5.4 Acceptance and a known fidelity gap
 

@@ -20,7 +20,7 @@
 # siProcess oscillator, the initEnable revision gate, the SGRAM fill,
 # the TSU's 16-bit float→12.4 truncation (the +786432 snap bias), and
 # packet-5 byte addressing — every one found by THIS software, none by
-# the hand-written tests (docs/core/peripherals/pci/cards/voodoo2.md
+# the hand-written tests (docs/internals/core/peripherals/pci/cards/voodoo2.md
 # tells the story).
 
 include "../lib/mac.script"

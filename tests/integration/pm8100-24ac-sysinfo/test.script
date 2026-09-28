@@ -22,7 +22,7 @@
 # WHAT THE 24AC DOES NOT DO HERE, so nobody reads more into the goldens
 # than they say: the PDM family always has a monitor strapped to its
 # HDI-45, so the built-in Ariel video is the main screen and the card comes
-# up as screen two (docs/machines/pdm/bart.md, "which screen the guest
+# up as screen two (docs/internals/machines/pdm/bart.md, "which screen the guest
 # picks" — a consequence of the strapped monitor, not of slot priority,
 # and not configurable yet).  `machine.screen` follows the machine's built-in
 # display (system_display() prefers the substrate's own), so every golden

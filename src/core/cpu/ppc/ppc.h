@@ -48,7 +48,7 @@ typedef struct ppc ppc_t;
 // If `checkpoint` is non-NULL, state (including the model) is restored from
 // the stream instead and `cpu_model` is ignored.
 // Registers the `machine.cpu` object node and `$` register aliases (the
-// main-CPU privilege per docs/core/cpu/cores.md).
+// main-CPU privilege per docs/internals/core/cpu/cores.md).
 ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model);
 
 void ppc_delete(ppc_t *p);

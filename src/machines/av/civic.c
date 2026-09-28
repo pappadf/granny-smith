@@ -169,7 +169,7 @@ static void civic_update_disp_clut(av_civic_t *cv) {
 // The model composes both planes into a 32-bpp XRGB buffer once per frame
 // and points the display at it while the overlay is on.
 //
-// Approximations, documented in docs/machines/av/vdc.md: the window wins
+// Approximations, documented in docs/internals/machines/av/vdc.md: the window wins
 // unconditionally inside its rect (the vdTypeKey key-colour gating that
 // clips video against overlapping windows is untraced), and VInDoubleLine's
 // capture-side line doubling is not modelled (the shipping driver's geometry

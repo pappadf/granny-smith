@@ -47,7 +47,7 @@ while IFS= read -r -d '' f; do
     esac
     printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
     # ${...} interpolation is only recognised inside a double-quoted string
-    # (docs/core/shell/shell.md), so the call has to be quoted -- bare `echo ${...}`
+    # (docs/internals/core/shell/shell.md), so the call has to be quoted -- bare `echo ${...}`
     # fails to parse with "expected binding name after '$'".  The path uses
     # the raw single-quoted form because a nested double quote would close
     # the interpolating string.

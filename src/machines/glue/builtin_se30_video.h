@@ -22,7 +22,7 @@
 // driver.  The bus controller calls .factory once per BUILTIN slot.
 extern const nubus_card_kind_t builtin_se30_video_kind;
 // Generic sibling ("se30") with the built-in GS declaration ROM — the
-// SE/30 profile default (docs/core/peripherals/nubus_generic_vrom.md).
+// SE/30 profile default (docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t builtin_se30_video_generic_kind;
 
 // === SE/30-specific hooks the machine calls into ============================

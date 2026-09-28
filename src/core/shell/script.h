@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // script.h
-// Shell statement parser + interpreter (see docs/core/shell/shell.md).
+// Shell statement parser + interpreter (see docs/internals/core/shell/shell.md).
 // A script is parsed into a statement tree (blocks resolved by the
 // line-position rule), then interpreted.
 // Expressions are stored as text and evaluated where they appear, at

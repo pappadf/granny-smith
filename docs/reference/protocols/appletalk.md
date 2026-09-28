@@ -3,8 +3,8 @@
 **Scope: LocalTalk only.** The stack is entered from the SCC: LLAP frames
 arrive on the serial port's channel B in SDLC mode and leave the same way
 (`scc_set_frame_sink`). The Ethernet controllers the emulator models --
-SONIC ([`sonic.md`](../../core/peripherals/sonic.md)) and the AV machines' MACE
-([`av.md`](../../machines/av/av.md)) -- carry no AppleTalk: they have no
+SONIC ([`sonic.md`](../../internals/core/peripherals/sonic.md)) and the AV machines' MACE
+([`av.md`](../machines/av/av.md)) -- carry no AppleTalk: they have no
 datapath into this stack, so EtherTalk is not available. It would be an
 ELAP shim under `ddp_in`, AARP included, beside the LLAP one.
 
@@ -885,7 +885,7 @@ Notes:
 *Source: Inside AppleTalk, 2nd ed., ch. 12 (page references below are that
 chapter's own, `12-nn`). This section is the coding reference for
 `src/core/network/appletalk_adsp.c`; the PPC Toolbox endpoint described in
-[ppc_appleevents.md](../../core/network/ppc_appleevents.md) is its only in-tree client.*
+[ppc_appleevents.md](../../internals/core/network/ppc_appleevents.md) is its only in-tree client.*
 
 > **Errata (corrected 2026-08-12).** Earlier revisions of this section gave
 > the ADSP DDP type as 10 and an invented six-field packet header. Both were

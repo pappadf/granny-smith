@@ -51,3 +51,9 @@ jobs:
       # plus the structural checks on placeholder stubs.
       - name: Docs content rules
         run: python3 scripts/check-doc-rules.py
+
+      # docs/internals/ mirrors src/: an internals doc lives at the path
+      # mirrored from its owning source, or is registered as an exception
+      # in docs/internals/README.md.
+      - name: Docs mirror src/
+        run: python3 scripts/check-doc-mirror.py

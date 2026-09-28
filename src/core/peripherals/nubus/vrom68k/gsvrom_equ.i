@@ -3,7 +3,7 @@
 |
 | gsvrom_equ.i
 | Clean-room equates for the GS generic declaration ROM.  Every value
-| here is sourced from our own documentation — docs/core/peripherals/
+| here is sourced from our own documentation — docs/internals/core/peripherals/
 | declaration-rom.md, the three annotated whole-ROM disassemblies under
 | the published *Designing Cards and Drivers for the
 | Macintosh Family* text — NOT from Apple's AIncludes.

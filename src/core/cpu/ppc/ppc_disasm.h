@@ -3,7 +3,7 @@
 
 // ppc_disasm.h
 // Dependency-free disassembler for the PPC (MPC601/MPC604) core, per the
-// core-module contract (docs/core/cpu/cores.md): raw word + pc in, text
+// core-module contract (docs/internals/core/cpu/cores.md): raw word + pc in, text
 // out; linkable standalone (tools/disasm --arch ppc / ppc604).  Covers
 // the union of both models' instruction sets — the 601's POWER holdovers
 // and MQ/RTC SPR moves flagged `is_power`, the 604-only encodings (mftb,

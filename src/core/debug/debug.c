@@ -3167,7 +3167,7 @@ static const class_desc_t wp_collection_class = {
 // framework validated nothing (it had been told nothing to validate),
 // completion could offer neither the keys nor their values, and the method
 // carried its own boolean vocabulary and its own error wording.
-// docs/core/shell/object-model.md ("Library conventions") says in as many
+// docs/internals/core/object/object-model.md ("Library conventions") says in as many
 // words that named arguments exist to retire exactly this: "no flag
 // grammars inside strings".
 //

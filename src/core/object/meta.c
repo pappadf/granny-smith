@@ -4,7 +4,7 @@
 // meta.c
 // The `Meta` class. Every node implicitly carries a `meta` attribute
 // whose value is a synthetic Meta node bound to the inspected object.
-// See docs/core/shell/object-model.md.
+// See docs/internals/core/object/object-model.md.
 //
 // Lifetime: meta nodes are allocated lazily on first access and cached
 // on the inspected object's private `meta_node` slot. object_delete

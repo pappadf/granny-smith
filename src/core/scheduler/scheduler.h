@@ -37,8 +37,8 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 #define MAC_VBL_PERIOD    (1.0 / MAC_VBL_FREQUENCY) // seconds
 #define MAC_VBL_PERIOD_NS 16625103ULL // = 1e9 / 60.15, truncated
 
-// Three pacing modes (see docs/core/scheduler/scheduler.md §10,
-// docs/core/scheduler/scheduler.md):
+// Three pacing modes (see docs/internals/core/scheduler/scheduler.md §10,
+// docs/internals/core/scheduler/scheduler.md):
 //   schedule_paced       — wall-clock accumulator; the guest tracks real time
 //                          (web2 default)
 //   schedule_unthrottled — as many frame-units as the host allows ("turbo")

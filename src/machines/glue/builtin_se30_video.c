@@ -187,7 +187,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         // Generic sibling kind ("se30"): generate the GS declaration ROM —
         // a full declaration ROM with a real display driver, records from
         // builtin_se30_monitors[], code fragments spliced, CRC stamped in C
-        // (docs/core/peripherals/nubus_generic_vrom.md).  The offer registry
+        // (docs/internals/core/peripherals/nubus_generic_vrom.md).  The offer registry
         // is never consulted.
         declrom_builder_t *bld = gsvrom_generate(GSVROM_SE30, builtin_se30_video_generic_kind.monitors);
         size_t img_size = 0;
@@ -377,7 +377,7 @@ const nubus_card_kind_t builtin_se30_video_kind = {
 
 // Generic sibling kind ("se30") with the built-in GS declaration ROM —
 // the SE/30 profile's default, so every SE/30 boots with working video
-// and no uploaded vROM (docs/core/peripherals/nubus_generic_vrom.md).  The
+// and no uploaded vROM (docs/internals/core/peripherals/nubus_generic_vrom.md).  The
 // real kind stays selectable via video_card= when a dump is offered.
 const nubus_card_kind_t builtin_se30_video_generic_kind = {
     .id = "se30",

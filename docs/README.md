@@ -5,15 +5,15 @@ This directory holds four classes of content, split by two questions.
 exist?** If yes, it is *reference* material and lives under
 [`reference/`](reference/). If no, it is about Granny Smith — and a second
 question applies: **is it about the implementation, or about using the
-product?** Implementation lives under [`guide/`](guide/), [`core/`](core/)
-and [`machines/`](machines/); using the product lives under
-[`user/`](user/).
+product?** Implementation lives under [`guide/`](guide) and
+[`internals/`](internals) — the latter a mirror of `src/`; using the product
+lives under [`user/`](user/).
 
 | tree | class | holds |
 |---|---|---|
 | `guide/` | internals (C) | how to build, test and contribute |
-| `core/` | internals (C) | Granny Smith design, mirrors `src/core/` |
-| `machines/` | internals (C) | machine and chip models, mirrors `src/machines/` |
+| `internals/core/` | internals (C) | Granny Smith design, mirrors `src/core/` |
+| `internals/machines/` | internals (C) | machine and chip models, mirrors `src/machines/` |
 | `user/` | end-user (D) | how to use the emulator; no source checkout needed |
 | `reference/hardware/` | reference (A) | cross-machine chips and buses |
 | `reference/machines/` | reference (A/B) | one subtree per machine family: family doc, machine docs, device docs |
@@ -27,11 +27,19 @@ and [`machines/`](machines/); using the product lives under
 A reference doc describes **the hardware** — what the real chip, card or
 machine does — never what Granny Smith does with it. No `src/` paths, no
 object-model or shell surface, no checkpointing, no "we model this as…".
-All of that belongs in `core/` or `machines/`, or in the optional
+All of that belongs in `internals/core/` or `internals/machines/`, or in the
+optional
 "Granny Smith implementation notes" appendix most reference docs carry.
 Conversely, internals docs cite reference docs instead of restating
 hardware. Interleaved model docs (a hardware fact paired with the modelling
 decision it forced) stay internals — that pairing is the value.
+
+**`internals/` mirrors `src/`** — the full rule, with its exceptions
+registry, lives in [internals/README.md](internals/README.md) and is
+enforced by `scripts/check-doc-mirror.py`. In short: no `src/` file needs an
+internals doc, but a doc that exists lives at the path mirrored from its
+owning source — its directory is the `src/` directory that owns the
+subject, its basename follows the owning source file.
 
 ## Machine documentation set: family, machine, device
 
@@ -56,7 +64,7 @@ Rules that make the three levels add up:
 2. **Together they are complete.** Family + machines + devices are one
    specification, measured by the re-implementation test below as a set.
 3. **Hardware only.** How the family is modelled stays in
-   `docs/machines/<family>/`, which cites these pages.
+   `docs/internals/machines/<family>/`, which cites these pages.
 4. **Every device gets its own page**, even where a system doc's section
    currently covers it.
 5. **A family of one** (e.g. `iifx/`) may carry the family role on its
@@ -162,19 +170,19 @@ machines · 4. Worked captures/examples · 5. Open questions · Appendix A
 3. Algorithms (checksums, with runnable pseudocode) · 4. Worked decode of a
 real specimen · 5. Open questions · Appendix A (optional) · References.
 
-**Subsystem design doc** (`core/`): first paragraph names the owning
+**Subsystem design doc** (`internals/core/`): first paragraph names the owning
 `src/` files; then 1. Responsibilities & design · 2. Key types & files ·
 3. Behaviour/algorithms · 4. Object-model / shell surface ·
 5. Checkpointing · 6. Testing · 7. Known debts · 8. See also. Hardware
 facts are cited from `reference/`, not restated.
 
-**Machine-family docs** (`machines/`) come in three shapes — family
+**Machine-family docs** (`internals/machines/`) come in three shapes — family
 substrate, machine leaf, chip model — see the existing pages under
-[machines/](machines/) for the pattern.
+[internals/machines/](internals/machines) for the pattern.
 
 **User guide** (`user/`): task-oriented, numbered steps over prose,
 imperative mood; must stay true with no source checkout present — the
-moment a page explains implementation, that part moves to `core/` or
+moment a page explains implementation, that part moves to `internals/` or
 `guide/`.
 
 **Articles** (`articles/`) are freeform long-form; **notes** are dated,
@@ -215,7 +223,7 @@ partial stub and says so.
    a new directory without flagging it.
 3. Write about the hardware, never about Granny Smith: the emulator's
    source layout, object model, shell commands and modelling shortcuts
-   belong in `core/` or `machines/`, or in the optional implementation-notes
+   belong in `internals/`, or in the optional implementation-notes
    appendix — never in the body.
 4. **Do not guess. Ever.** Anything not evidenced goes in "Open
    questions", not in the body as fact. Inventing plausible register

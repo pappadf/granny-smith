@@ -125,7 +125,7 @@ transports, installed at module construction:
 - **`Module.onAudioInState(active)`** / **`Module.onAudioInInjected(path)`**
   — the Singer's capture gate, and the file `machine.audioin.inject` just
   fed the guest (the page plays it aloud too); see
-  [../machines/av/singer.md](../machines/av/singer.md).
+  [../machines/av/singer.md](../internals/machines/av/singer.md).
 - **`Module.onVoodooGpuOverlay(visible)`** — whether the Voodoo2
   takeover's overlay canvas should show.
 
@@ -528,7 +528,7 @@ in [`state/toasts.svelte.ts`](../../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
 
-Highlights — see [object-model.md](../core/shell/object-model.md) for the
+Highlights — see [object-model.md](../internals/core/object/object-model.md) for the
 typed-dispatch and introspection surface.
 
 - **`machine.rom.identify(path)`** → `{recognised, checksum, name,
@@ -545,7 +545,7 @@ typed-dispatch and introspection surface.
   Filesystem-tab "Unpack" action.
 - **`vfs.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
   image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
-  browse inside images; see [`target-filesystems.md`](../core/storage/target-filesystems.md).
+  browse inside images; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`storage.cp([-r], src, dst)`** — copy, including *out of* an image into
   OPFS (backs copy-out and Download). **`storage.rm(path)`** /
   **`storage.mv(src, dst)`** — recursive remove / move, run worker-side so
@@ -567,7 +567,7 @@ typed-dispatch and introspection surface.
   read-only `connected` / `fields` — the AV video digitizer's host source.
   The camera toolbar button sets `host`; the button itself is gated on
   `capabilities.video_in` from `machine.profile`. See
-  [../machines/av/vdc.md](../machines/av/vdc.md).
+  [../machines/av/vdc.md](../internals/machines/av/vdc.md).
 - **`machine.boot(model=..., rom=..., ...)`** — destroys any current
   machine and creates a fresh one from a complete configuration document
   (model and rom required; nothing is inherited from the previous
@@ -791,7 +791,7 @@ is also the user gesture `getUserMedia` needs) and is shown only on
 machines whose profile reports `capabilities.video_in`. The physical
 device is attached only while that toggle *and* the guest's capture
 engine are both on — see `Module.onVideoInState` above and
-[../machines/av/vdc.md](../machines/av/vdc.md).
+[../machines/av/vdc.md](../internals/machines/av/vdc.md).
 
 ## COOP/COEP Headers
 
@@ -805,7 +805,7 @@ headers intact through Codespaces' port-forwarding proxy.
 
 - Wire new features through the object model
   (`bus/emulator.ts::gsEval(path, args)`). The bridge contract is
-  documented in [object-model.md](../core/shell/object-model.md).
+  documented in [object-model.md](../internals/core/object/object-model.md).
 - New panel views drop into
   [`app/web2/src/components/panel-views/`](../../app/web2/src/components/panel-views/)
   and get registered in `PanelTab` / `PanelContent`.

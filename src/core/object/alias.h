@@ -3,7 +3,7 @@
 
 // alias.h
 // Two-tier alias table for `$name` substitution. See
-// docs/core/shell/shell.md ("Bindings").
+// docs/internals/core/shell/shell.md ("Bindings").
 //
 // - **Built-in aliases** are registered by classes / the framework at
 //   init time (alias_register_builtin). Re-registration of the same

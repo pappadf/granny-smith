@@ -58,14 +58,14 @@ DENY = [(label, re.compile(r"(?<![A-Za-z0-9-])" + pat + r"(?![A-Za-z0-9-])", re.
 # what makes the lint fail on NEW violations without failing on the old
 # ones.  None of these may grow.
 BASELINE = {
-    ("docs/core/peripherals/mouse_control.md", "MAME"): 2,
-    ("docs/core/peripherals/mouse_control.md", "Basilisk"): 5,
-    ("docs/core/peripherals/mouse_control.md", "SheepShaver"): 2,
-    ("docs/core/peripherals/mouse_control.md", "Mini vMac"): 3,
-    ("docs/core/peripherals/mouse_control.md", "QEMU"): 1,
-    ("docs/core/peripherals/mouse_control.md", "PCE"): 1,
-    ("docs/core/peripherals/mouse_control.md", "other emulator"): 2,
-    ("docs/core/peripherals/pci/cards/voodoo2.md", "other emulator"): 1,
+    ("docs/internals/core/peripherals/mouse_control.md", "MAME"): 2,
+    ("docs/internals/core/peripherals/mouse_control.md", "Basilisk"): 5,
+    ("docs/internals/core/peripherals/mouse_control.md", "SheepShaver"): 2,
+    ("docs/internals/core/peripherals/mouse_control.md", "Mini vMac"): 3,
+    ("docs/internals/core/peripherals/mouse_control.md", "QEMU"): 1,
+    ("docs/internals/core/peripherals/mouse_control.md", "PCE"): 1,
+    ("docs/internals/core/peripherals/mouse_control.md", "other emulator"): 2,
+    ("docs/internals/core/peripherals/pci/cards/voodoo2.md", "other emulator"): 1,
     ("docs/reference/hardware/iwm-floppy.md", "MAME"): 1,
     ("docs/reference/hardware/rtc.md", "MAME"): 1,
     ("docs/reference/hardware/rtc.md", "Mini vMac"): 1,

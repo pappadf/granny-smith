@@ -450,7 +450,7 @@ static struct object *find_attached_child(struct object *parent, const char *nam
 //
 // One closed list. Match string equality (case-sensitive) — identifiers
 // are case-sensitive everywhere else in the codebase. This is the set
-// docs/core/shell/object-model.md ("Reserved words") documents.
+// docs/internals/core/object/object-model.md ("Reserved words") documents.
 
 static const char *const RESERVED_WORDS[] = {
     // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
@@ -1095,7 +1095,7 @@ node_t object_resolve(struct object *root, const char *path) {
 // Single engine drives both: arg_decl_t (one per method param) and
 // member.attr (one per attribute) project onto the same `typed_slot_t`
 // view, then validate_slot() enforces kind / width / non-empty / enum
-// rules with limited coercion. See docs/core/shell/object-model.md
+// rules with limited coercion. See docs/internals/core/object/object-model.md
 // ("Typed dispatch validation").
 
 #define OBJ_VALIDATE_MAX_ARGS 16

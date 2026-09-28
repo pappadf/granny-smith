@@ -18,7 +18,7 @@
 // Contract references: Apple, SWIM3 Engineering Requirements
 // Specification v1.2 (3/24/93); Apple, "Guide to the Macintosh Family
 // Hardware", 2nd ed.; Apple, "Power Macintosh Computers" Developer Note
-// (1994), Table 3-7.  See docs/core/peripherals/swim3.md.
+// (1994), Table 3-7.  See docs/internals/core/peripherals/swim3.md.
 
 #ifndef GS_CORE_PERIPHERALS_SWIM3_H
 #define GS_CORE_PERIPHERALS_SWIM3_H

@@ -8,7 +8,7 @@
 // functionally (not as an HC05 core) against BOTH sides of the wire:
 //   * host side — OS/CudaMgr.a (SendCudaCmd / CudaShiftRegIRQ / CudaInit)
 //   * Cuda side — the firmware disassembly distilled in
-//     docs/machines/av/cuda.md (handshake pin map,
+//     docs/internals/machines/av/cuda.md (handshake pin map,
 //     the 37-entry pseudo-command dispatch with its 12 REJECTED commands,
 //     PRAM = 256 bytes at $0100-$01FF, the RTC counter)
 //

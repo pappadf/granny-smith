@@ -5,7 +5,7 @@
 // "Apple Macintosh Display Card 24AC" — a 24-bit colour NuBus display card
 // (part 630-0908) with a hardware QuickDraw fill/raster accelerator.  Uses
 // the genuine Apple declaration ROM and cdev.  See
-// docs/core/peripherals/nubus/cards/display_card_24ac.md.
+// docs/internals/core/peripherals/nubus/cards/display_card_24ac.md.
 //
 // The model splits into two halves:
 //   * Display — a plain framebuffer + CLUT + VBL display card driven by
@@ -140,7 +140,7 @@
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t display_card_24ac_kind;
 // Generic sibling ("24ac") with the built-in GS declaration ROM — same HLE
-// model, no vROM file needed (see docs/core/peripherals/nubus_generic_vrom.md).
+// model, no vROM file needed (see docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t display_card_24ac_generic_kind;
 
 // === Video-mode selection (machine.nubus.video_mode) ========================

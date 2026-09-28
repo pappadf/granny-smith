@@ -101,7 +101,7 @@ void scsi_bus_reset(scsi_t *bus);
 // the period or it does not -- while the period itself and what gets reported
 // are per-chip.  So the wait lives here and the chip supplies both ends.
 //
-// Why it must be a wait at all, from docs/core/peripherals/scripts53c8xx.md:
+// Why it must be a wait at all, from docs/internals/core/peripherals/scripts53c8xx.md:
 // "Report it the moment nobody answers and the whole select-fail-report-retry
 // cycle completes inside the driver's own doorbell write; the interrupt storm
 // that follows never lets the clock tick, so the driver's own timers never

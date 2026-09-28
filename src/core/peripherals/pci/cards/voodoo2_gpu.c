@@ -3,7 +3,7 @@
 
 // voodoo2_gpu.c
 // The WebGPU takeover's translator
-// (docs/core/peripherals/pci/cards/voodoo2.md, "The WebGPU takeover"):
+// (docs/internals/core/peripherals/pci/cards/voodoo2.md, "The WebGPU takeover"):
 // the raster pthread's GPU mode.  It consumes the SAME v2_cmd_t stream
 // every backend consumes, and while ENGAGED turns it into records for
 // the browser's GPU worker (voodoo2_gpu_protocol.h) instead of pixels:

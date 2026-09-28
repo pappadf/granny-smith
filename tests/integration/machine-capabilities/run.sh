@@ -216,7 +216,7 @@ for m in pm7100 pm8100; do
     # (the cursor task, when the card is the main screen) never run.  A
     # booted 8100 enables slot-interrupt bits $38 = bits 3/4/5 = $C/$D/$E,
     # always those three, whichever connector holds a card.  See
-    # docs/machines/pdm/bart.md and pm8100.c.
+    # docs/internals/machines/pdm/bart.md and pm8100.c.
     assert_contains "$m" '"slot":"C"' "$m declares socket \$C"
     assert_contains "$m" '"slot":"D"' "$m declares socket \$D"
     assert_contains "$m" '"slot":"E"' "$m declares socket \$E"

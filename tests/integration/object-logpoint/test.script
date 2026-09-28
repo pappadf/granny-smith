@@ -6,7 +6,7 @@
 #   ${$value:08x}          — per-fire bound name, format spec
 #   ${$addr:08x}           — per-fire bound name
 #   ${$size}               — default formatter
-# `message=` is a template slot (OBJ_ARG_TEMPLATE; docs/core/shell/shell.md):
+# `message=` is a template slot (OBJ_ARG_TEMPLATE; docs/internals/core/shell/shell.md):
 # the string body is stored raw and evaluated per fire with $value/$addr/$size
 # bound.
 # After running long enough for at least one VBL, the harness

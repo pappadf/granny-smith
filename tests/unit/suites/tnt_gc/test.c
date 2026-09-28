@@ -5,7 +5,7 @@
 //
 // Links the real tnt/grand_central.c against recording stubs and pins
 // the interrupt-fabric semantics the boot debugging established
-// (docs/machines/tnt/tnt.md "The interrupt fabric"), now as directed
+// (docs/internals/machines/tnt/tnt.md "The interrupt fabric"), now as directed
 // sequences:
 //
 //  1. The MkLinux initialisation sequence (mask 0 / clear-all / mask 0)

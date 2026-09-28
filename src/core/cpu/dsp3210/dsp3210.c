@@ -8,7 +8,7 @@
  * the standalone DSP3210 reference emulator (exact integer DAU); see dsp3210.h
  * for provenance and scope.  Section references below ([IM §x.y],
  * instruction page names) are to the AT&T DSP3210 Information Manual; the
- * AV board wiring is in docs/machines/av/dsp.md.
+ * AV board wiring is in docs/internals/machines/av/dsp.md.
  *
  * The interpreter is deliberately the simplest possible shape: one big
  * switch on the 6-bit top-level opcode, mirroring the reference
@@ -16,7 +16,7 @@
  * on-chip timer and BIO port decode inside the core (with a BIO output
  * callback for the AV board's DSP→host doorbell), PS.IR0/IR1 mirror the
  * latched external requests, and dsp3210_run() provides the burn-down
- * sprint ABI of the core-module contract (docs/core/cpu/cores.md).
+ * sprint ABI of the core-module contract (docs/internals/core/cpu/cores.md).
  */
 
 #include "dsp3210.h"

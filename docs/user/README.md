@@ -14,4 +14,4 @@ browser UI and save state — written for a reader with no source checkout.
 
 Every page here must stay true with no source checkout present. Anything
 that explains how the emulator is built or wired belongs in
-[../guide/](../guide/) or [../core/](../core/), not here.
+[../guide/](../guide) or [../core/](../internals/core), not here.

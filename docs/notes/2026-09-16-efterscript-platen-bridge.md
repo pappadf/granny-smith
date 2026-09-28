@@ -1,7 +1,7 @@
 # EfterScript platen bridge — the emulated LaserWriter's PostScript path
 
 *Dated investigation log; not reference. The reference is
-`docs/core/network/laserwriter_job.md` and `laserwriter-session.md` §5.*
+`docs/internals/core/network/laserwriter_job.md` and `laserwriter-session.md` §5.*
 
 2026-09-16. Part 1 of wiring EfterScript's `platen` library (a per-job
 PostScript-to-PDF interpreter with a C ABI) behind the emulated

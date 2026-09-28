@@ -3,7 +3,7 @@
 
 // script.c
 // Shell statement parser + interpreter. See script.h and
-// docs/core/shell/shell.md.
+// docs/internals/core/shell/shell.md.
 //
 // Pipeline: source text → lines → statement tree (blocks resolved by
 // the line-position rule; inline blocks allowed for one statement) →

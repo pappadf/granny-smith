@@ -4,7 +4,7 @@
 # appletalk.aevt.  No screenshots: where the older guest-driven suites pin
 # pixels to prove what a user would see, this one asks the Finder questions
 # and checks its answers, which is the whole point of the feature
-# (docs/core/network/ppc_appleevents.md).
+# (docs/internals/core/network/ppc_appleevents.md).
 #
 # Sequence:
 #   1. Boot System 7.5 on the IIci.

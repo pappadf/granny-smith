@@ -6,7 +6,7 @@
 // `appletalk.aevt` surface that sends events to guest applications and
 // collects the ones they send us.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md — §5.2 for the
+// Coding reference: docs/internals/core/network/ppc_appleevents.md — §5.2 for the
 // flattened stream, §5.4 for lists and records, §6.1 for the V_MAP form and
 // §6.2 for the text grammar.  Nothing here reaches for an outside source.
 //

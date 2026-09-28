@@ -9,7 +9,7 @@
 # there is not a screenshot in the file.
 #
 # What is worth knowing before editing this (all established by experiment,
-# see docs/core/network/ppc_appleevents.md §7.4):
+# see docs/internals/core/network/ppc_appleevents.md §7.4):
 #
 #   * The Finder answers the **core suite** (`core/getd`, `core/cnte`) even
 #     though its own terminology resource only advertises the old `FNDR`

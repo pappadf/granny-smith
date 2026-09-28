@@ -36,8 +36,8 @@ Apple shipped two NuBus video card families itself. Both follow the same model: 
 > card *modelled* in this emulator also has a per-card implementation doc (register
 > map, what's modelled vs accept-and-logged, accelerator/errata) under
 > [`nubus/cards/`](nubus/cards/), named by product to be user-legible:
-> - [Macintosh Display Card 8•24](../../core/peripherals/nubus/cards/display_card_8_24.md) — §2.2 (source `jmfb.c`)
-> - [Macintosh Display Card 24AC](../../core/peripherals/nubus/cards/display_card_24ac.md) — §2.3 (source `display_card_24ac.c`)
+> - [Macintosh Display Card 8•24](../../internals/core/peripherals/nubus/cards/display_card_8_24.md) — §2.2 (source `jmfb.c`)
+> - [Macintosh Display Card 24AC](../../internals/core/peripherals/nubus/cards/display_card_24ac.md) — §2.3 (source `display_card_24ac.c`)
 
 ### 2.1 TFB — *Toby Frame Buffer* — Macintosh II Video Card (1987)
 
@@ -69,9 +69,9 @@ For completeness, Apple's full Apple-branded NuBus video card line included:
 |---|---|---|---|
 | Macintosh II Video Card | 1987 | TFB / Toby | Driver per §2.1 |
 | Macintosh Display Card 4•8 | 1990 | Jackson / JMFB | Driver per §2.2 |
-| Macintosh Display Card 8•24 | 1990 | Jackson / JMFB | Driver per §2.2 — **[emulated](../../core/peripherals/nubus/cards/display_card_8_24.md)** (`mdc_8_24`) |
+| Macintosh Display Card 8•24 | 1990 | Jackson / JMFB | Driver per §2.2 — **[emulated](../../internals/core/peripherals/nubus/cards/display_card_8_24.md)** (`mdc_8_24`) |
 | Macintosh Display Card 8•24 GC | 1990 | Jackson + AMD Am29000 RISC | Separate driver lineage (RISC-accelerated QuickDraw) |
-| Macintosh 24AC Video Card | 1992 | (third-party OEM, Apple-branded) | Card carries its own declaration ROM — **[emulated](../../core/peripherals/nubus/cards/display_card_24ac.md)** (`display_card_24ac`, has a QuickDraw accelerator) |
+| Macintosh 24AC Video Card | 1992 | (third-party OEM, Apple-branded) | Card carries its own declaration ROM — **[emulated](../../internals/core/peripherals/nubus/cards/display_card_24ac.md)** (`display_card_24ac`, has a QuickDraw accelerator) |
 
 Third-party NuBus cards (RasterOps, Radius, SuperMac, E-Machines, …) all carried their own driver in their card's declaration ROM; Apple's job was only to standardize the Slot Manager interface so any sufficiently conformant card would be recognized at boot and presented to the Window Manager as a screen.
 

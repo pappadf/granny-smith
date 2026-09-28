@@ -176,7 +176,7 @@ static uint64_t mesh_select_timeout_ns(const mesh_t *m) {
 // twelve time-outs per boot on suite-tnt's pm7500-76-hd, all of them for targets that are
 // simply not fitted -- so this is the ordinary path, not the error path, and
 // completing the whole select-fail-report-retry cycle inside the driver's own
-// doorbell write is what docs/machines/tnt/tnt.md warns about: "the interrupt
+// doorbell write is what docs/internals/machines/tnt/tnt.md warns about: "the interrupt
 // storm that follows never lets the clock tick, so the driver's timers never
 // expire and nothing gives up".
 static void mesh_select_timed_out(void *ctx) {

@@ -1,5 +1,5 @@
 # TNT PCI slot topology and the config-cycle contract
-# (docs/core/peripherals/pci.md).
+# (docs/internals/core/peripherals/pci.md).
 #
 # Three things are pinned here, all of which the hand-rolled Bandit model
 # either could not express or was never tested for:
@@ -235,7 +235,7 @@ assert machine.pci.slot[7].card.name == "Control" "restart must re-seat the reco
 # "display controller" but it must never be the machine's only video, so
 # its card_class is "3d" — and the BUILTIN_FALLBACK test is by class.
 # With one seated, the Control stand-in must remain, or a 9500 with only
-# a Voodoo2 would boot with no screen at all (docs/core/peripherals/pci.md).
+# a Voodoo2 would boot with no screen at all (docs/internals/core/peripherals/pci.md).
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
 assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the ROM-less card seats with no PROM staged"
 assert machine.pci.slot[7].card.name == "Control" "a 3d-class card must NOT retire the display fallback"

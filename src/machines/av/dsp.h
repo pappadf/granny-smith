@@ -7,7 +7,7 @@
 // PSC dspOverRun reset latch, burst execution on the scheduler
 // (heterogeneous multi-CPU design: the 68040 owns time, the DSP rides it
 // in quantum bursts), the BIO0→PSC-L5 doorbell, and the `machine.dsp`
-// object node.  Contract: docs/machines/av/dsp.md.
+// object node.  Contract: docs/internals/machines/av/dsp.md.
 
 #ifndef GS_MACHINES_AV_DSP_H
 #define GS_MACHINES_AV_DSP_H

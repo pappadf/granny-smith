@@ -167,7 +167,7 @@ slow host or heavy logging cannot end a session by itself):
 The read-driven model below describes the transport, which is unchanged by
 the interpreter. What differs is *what answers a read*, and *when the
 printer reads*. With `PLATEN=1` (`src/core/network/laserwriter_job.c`,
-[`laserwriter_job.md`](../../core/network/laserwriter_job.md), `laserwriter-session.md` §5) every
+[`laserwriter_job.md`](../../internals/core/network/laserwriter_job.md), `laserwriter-session.md` §5) every
 EOF-delimited PAP job is a `platen` interpreter job: incoming Data payloads
 are fed to it verbatim, and its own output (query replies, error reports)
 is what the workstation's status-channel reads return — the placeholder

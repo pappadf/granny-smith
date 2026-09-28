@@ -165,7 +165,7 @@ that every file there is recognised.
 
 ## See also
 
-- `docs/core/peripherals/pci.md` — the bus, the config header, region backing
+- `docs/internals/core/peripherals/pci.md` — the bus, the config header, region backing
 - `docs/reference/hardware/nubus/declaration-rom.md` — the declaration-ROM sibling
 - `scripts/fcode/detok.py` — detokenizes an FCode image, so what a card's ROM
   *does* can be read before its device model is written

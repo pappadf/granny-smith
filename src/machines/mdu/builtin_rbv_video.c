@@ -3,7 +3,7 @@
 
 // builtin_rbv_video.c
 // Macintosh IIci built-in video pseudo-card.  See builtin_rbv_video.h for
-// the contract and docs/machines/mdu/rbv.md for the RBV/video
+// the contract and docs/internals/machines/mdu/rbv.md for the RBV/video
 // split.  Modelled on jmfb.c (CLUT + depth-switch video) but much smaller:
 // the depth/monitor-sense register lives on the RBV chip, there is no slot
 // register window, and the framebuffer is main RAM (the bottom of Bank A,
