@@ -118,8 +118,9 @@ drive's first 1024 bytes through its driver looking for `LK` boot blocks, and
 `gsdisk_drvr.s`: a fresh implementation against the published Device Manager
 contract (*Inside Macintosh: Devices*) and the ROM behaviour above — no Apple
 driver code is shipped, harvested from user disks or synthesised into images.
-68000 instructions only, so one binary serves the Plus, SE/30, IIci and
-Quadra; ~1.4 KB (3 blocks).
+68000 instructions only, so one binary serves every family — the PowerPC
+ROMs (PDM, TNT) run it under their 68k emulator exactly as they run Apple's
+pre-native drivers; ~1.4 KB (3 blocks).
 
 - **Install** (the first byte, entered from `SCSILoad`): allocate private
   storage (`_NewPtr ,Sys,Clear`); `_DrvrInstall` a DCE at unit `32 + id`
@@ -175,18 +176,26 @@ fallback when the assembler is missing.
 - `tests/unit/suites/image_wrap` — the DDM, the three map entries (parsed by
   `image_apm_parse_buffer`), the ROM's driver-partition checks and checksum,
   the build stamp, and the bare-volume sniff.
-- `tests/integration/scsi-bare-volume` — the archive.org System 7.5.3 volume
-  booted to the Finder on the IIci, SE/30 and Quadra 700 ROMs, the Plus-only
-  System 7.0.1 volume on the Plus ROM, two wrapped disks on one bus, and a
-  checkpoint round trip. Media: `tests/data/systems/system_7_5_3_25mb_bare.img`
+- `tests/integration/scsi-bare-volume` — one machine of every family that
+  boots Mac OS from SCSI, each to the Finder off a wrapped volume: the
+  archive.org System 7.5.3 volume on the SE/30 (glue), IIci (MDU), Quadra 700
+  (MCU), IIfx (OSS), Power Mac 6100 (PDM) and 7500 (TNT); the Plus-only System
+  7.0.1 volume on the Plus (compact); and on the Quadra 840AV (AV, the SCSI
+  Manager 4.3 ROM) a bare copy of the AV suite's System 7.1 volume, cut out of
+  its Apple-partitioned image at setup by `scripts/apm-extract-hfs.py`
+  (System 7.5.3 stops with "illegal instruction" on the emulated 840AV behind
+  Apple's own driver too). Plus two wrapped disks on one bus and a checkpoint
+  round trip. The Lisa/MacXL (ProFile, no SCSI) and the Network Servers (no
+  Mac OS) are out of scope. Media: `tests/data/systems/system_7_5_3_25mb_bare.img`
   and `system_7_0_1_10mb_bare_plus.img`.
 - `tests/e2e/web2-specs/url-archive-boot.spec.ts` — the web UI's archive.org
   URL booting the same volume.
 
 ### Limits
 
-- 68k machines only. The PowerPC machines' ROMs are not exercised against
-  it.
+- The PDM ROM needs a default startup device in PRAM before it boots from
+  any SCSI disk (Apple-formatted ones too); the web UI and the test rows set
+  it (`machine.rtc.pram.boot_device`).
 - The volume must be < 4 GB (the driver computes byte positions in 32 bits,
   as the Device Manager does).
 - Up to 4 `Apple_HFS` partitions per disk (the wrapper makes one).

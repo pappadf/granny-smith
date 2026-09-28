@@ -13,6 +13,17 @@
 #   q700-753        ... and the Quadra 700 ROM
 #   plus-701        the Plus ROM (no partition-map check, 68000 CPU) with the
 #                   Plus-only minimal System 7.0.1 volume
+#   iifx-753        the IIfx (OSS family; SCSI through its DMA controller)
+#   q840av-71       the Quadra 840AV (AV family; the SCSI Manager 4.3 ROM) with
+#                   a bare copy of the AV suite's System 7.1 volume
+#   pm6100-753      the Power Mac 6100 (PDM family): the ROM runs the 68k
+#                   driver under its emulator, as it does Apple's
+#   pm7500-753      the Power Mac 7500 (TNT family)
+#
+# One machine from every family that boots Mac OS from SCSI.  The Lisa/MacXL
+# (ProFile, no SCSI) and the Network Servers (no Mac OS) are out of scope.
+# System 7.5.3 on the 840AV stops with "illegal instruction" behind Apple's
+# own driver as well, so that row boots 7.1 instead.
 #   two-volumes     two wrapped disks on one bus: two driver copies, two drives
 #   checkpoint      a checkpoint of a machine running off a wrapped disk
 #                   restores to the same running desktop
@@ -24,6 +35,13 @@ let vol701 = "../../data/systems/system_7_0_1_10mb_bare_plus.img"
 let ROM_SE30 = "${$TEST_DATA}/roms/iix-iicx-se30-97221136.rom"
 let ROM_Q700 = "${$TEST_DATA}/roms/q700-q900-420dbff3.rom"
 let ROM_PLUS = "${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"
+let ROM_IIFX = "${$TEST_DATA}/roms/iifx-4147dd77.rom"
+let ROM_AV = "${$TEST_DATA}/roms/q840av-q660av-5bf10fd1.rom"
+let ROM_PDM = "${$TEST_DATA}/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
+let ROM_TNT = "${$TEST_DATA}/roms/pm7500-pm8500-pm9500-96cd923d.rom"
+# The AV suite's Apple-partitioned System 7.1 disk, its HFS partition cut out
+# as a bare volume by config.mk's TEST_SETUP (scripts/apm-extract-hfs.py).
+let volav71 = "${$WORK_DIR}/av71_bare.img"
 
 # Bytes the wrapper puts in front of a volume: DDM + 63-block map + 32-block
 # driver partition (IMAGE_WRAP_PREFIX_BLOCKS).
@@ -77,12 +95,15 @@ def check_desktop(golden) {
 }
 
 # Boot `vol` at SCSI 0 on (model, rom, ram) and match the Finder desktop.
-# The menu-bar clock is excluded (System 7.5 shows one); the RTC is pinned
-# so everything else is stable.
-def boot_desktop(label, model, rom, ram, vol, golden) {
+# SCSI 0 is named the startup device in PRAM, as the web UI does (the PDM
+# ROM waits for a default device otherwise).  `warm` instructions run before
+# the settle wait, so a long quiet stretch mid-boot (a PowerPC ROM, the
+# extensions parade) cannot pass for the desktop.
+def boot_desktop(label, model, rom, ram, vol, golden, warm) {
     machine.boot model="${$model}" ram=$ram rom="${$rom}"
     assert machine.scsi.attach_hd("${$vol}", 0) "${$label}: attach_hd failed"
-    scheduler.run 150000000
+    machine.rtc.pram.boot_device = 0
+    scheduler.run $warm
     wait_stable(1600000000)
     assert_desktop($label)
     let i = image_index($vol)
@@ -95,19 +116,36 @@ def boot_desktop(label, model, rom, ram, vol, golden) {
 }
 
 def row_iici_753() {
-    boot_desktop("iici-753", "iici", $ROM, 8192, $vol753, "goldens/iici-7.5.3-640x480x1-bare-finder.png")
+    boot_desktop("iici-753", "iici", $ROM, 8192, $vol753, "goldens/iici-7.5.3-640x480x1-bare-finder.png", 150000000)
 }
 
 def row_se30_753() {
-    boot_desktop("se30-753", "se30", $ROM_SE30, 8192, $vol753, "goldens/se30-7.5.3-512x342x1-bare-finder.png")
+    boot_desktop("se30-753", "se30", $ROM_SE30, 8192, $vol753, "goldens/se30-7.5.3-512x342x1-bare-finder.png", 150000000)
 }
 
+# golden-collision-ok: goldens/iici-7.5.3-640x480x1-bare-finder.png goldens/q700-7.5.3-640x480x1-bare-finder.png - the same System on the same 640x480x1 screen draws the same desktop; each row boots its own model from its own ROM, and assert_desktop proves that machine reached the Finder
 def row_q700_753() {
-    boot_desktop("q700-753", "q700", $ROM_Q700, 8192, $vol753, "goldens/q700-7.5.3-640x480x1-bare-finder.png")
+    boot_desktop("q700-753", "q700", $ROM_Q700, 8192, $vol753, "goldens/q700-7.5.3-640x480x1-bare-finder.png", 150000000)
 }
 
 def row_plus_701() {
-    boot_desktop("plus-701", "plus", $ROM_PLUS, 4096, $vol701, "goldens/plus-7.0.1-512x342x1-bare-finder.png")
+    boot_desktop("plus-701", "plus", $ROM_PLUS, 4096, $vol701, "goldens/plus-7.0.1-512x342x1-bare-finder.png", 150000000)
+}
+
+def row_iifx_753() {
+    boot_desktop("iifx-753", "iifx", $ROM_IIFX, 8192, $vol753, "goldens/iifx-7.5.3-640x480x1-bare-finder.png", 400000000)
+}
+
+def row_q840av_71() {
+    boot_desktop("q840av-71", "q840av", $ROM_AV, 16384, $volav71, "goldens/q840av-7.1-640x480x8-bare-finder.png", 600000000)
+}
+
+def row_pm6100_753() {
+    boot_desktop("pm6100-753", "pm6100", $ROM_PDM, 24576, $vol753, "goldens/pm6100-7.5.3-640x480x8-bare-finder.png", 1500000000)
+}
+
+def row_pm7500_753() {
+    boot_desktop("pm7500-753", "pm7500", $ROM_TNT, 16384, $vol753, "goldens/pm7500-7.5.3-640x480x8-bare-finder.png", 1500000000)
 }
 
 # ---- two-volumes ------------------------------------------------------------------
@@ -154,6 +192,16 @@ if have_media($vol753) && have_media($vol701) {
     if row_on("se30-753") { row_end("se30-753", try(row_se30_753(), "FAILED")) }
     if row_on("q700-753") { row_end("q700-753", try(row_q700_753(), "FAILED")) }
     if row_on("plus-701") { row_end("plus-701", try(row_plus_701(), "FAILED")) }
+    if row_on("iifx-753") { row_end("iifx-753", try(row_iifx_753(), "FAILED")) }
+    if row_on("q840av-71") {
+        if have_media($volav71) {
+            row_end("q840av-71", try(row_q840av_71(), "FAILED"))
+        } else {
+            echo "skip: q840av-71 (no bare AV volume at ${$volav71})"
+        }
+    }
+    if row_on("pm6100-753") { row_end("pm6100-753", try(row_pm6100_753(), "FAILED")) }
+    if row_on("pm7500-753") { row_end("pm7500-753", try(row_pm7500_753(), "FAILED")) }
     if row_on("two-volumes") { row_end("two-volumes", try(row_two_volumes(), "FAILED")) }
     if row_on("checkpoint") { row_end("checkpoint", try(row_checkpoint(), "FAILED")) }
 } else {
