@@ -2,7 +2,8 @@
 // Copyright (c) pappadf
 
 // rom.c
-// ROM identification, file I/O, and the rom.* object-model surface.
+// ROM content identity, file I/O, and the rom.* object-model surface.  The
+// table of known ROMs lives in rom_table.c.
 //
 // New machine model: the user picks a machine via machine.boot(model[, ram_kb])
 // before loading a ROM. rom.load(path) only writes bytes into the active
@@ -29,178 +30,189 @@
 #include <sys/stat.h>
 
 // ============================================================================
-// Compatible-model lists
+// Content identity
 // ============================================================================
 
-static const char *const PLUS_COMPATIBLE[] = {"plus", NULL};
-// Universal ROM: same bytes for IIx, IIcx, SE/30. Listed in machine_register
-// order so the *first* entry serves as a UI default (for tests that don't pick
-// explicitly), but the API never auto-selects.
-static const char *const UNIVERSAL_COMPATIBLE[] = {"se30", "iicx", "iix", NULL};
-static const char *const IIFX_COMPATIBLE[] = {"iifx", NULL};
-// Dedicated 512 KB Macintosh IIci ("Aurora") ROM — not the universal ROM.
-static const char *const IICI_COMPATIBLE[] = {"iici", NULL};
-// Apple Lisa 2 (rev H) and Macintosh XL ("3A") interleaved boot ROMs
-// (docs/machines/lisa/lisa.md §16). Each is two 8 KB byte-slice chips interleaved
-// into a 16 KB image; see rom_load_lisa_pair / rom_identify_lisa below.
-static const char *const LISA_COMPATIBLE[] = {"lisa", NULL};
-static const char *const MACXL_COMPATIBLE[] = {"macxl", NULL};
-// Dedicated 512 KB Macintosh IIsi ("Erickson") ROM — not the universal ROM.
-static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
-// Quadra 700/900 shared 1 MB ROM (also shipped in the PowerBook 140/170 —
-// portables are out of scope and not listed as targets).
-static const char *const Q700_Q900_COMPATIBLE[] = {"q700", "q900", NULL};
-// Dedicated Quadra 950 ("Zydeco") 1 MB ROM.
-static const char *const Q950_COMPATIBLE[] = {"q950", NULL};
-// Quadra 840AV / Centris 660AV shared 2 MB "Cyclone/Tempest" ROM.
-static const char *const AV_COMPATIBLE[] = {"q840av", "q660av", NULL};
-// Power Macintosh 6100/7100/8100 shared 4 MB "Boot PDM 601 1.0" ROM.
-static const char *const PDM_COMPATIBLE[] = {"pm6100", "pm7100", "pm8100", NULL};
-// Power Macintosh 7500/8500/9500 shared 4 MB "Boot TNT 0.1" ROM (the same
-// image also serves the unemulated 7200).  Two revisions exist, differing
-// only in the HWInit and Mac68KROM components.
-static const char *const TNT_COMPATIBLE[] = {"pm7500", "pm8500", "pm9500", NULL};
-// Apple Network Server 500/700 shared 4 MB ROM.  TRAP: the production ANS
-// ROM carries the SAME version string as the Power Macintosh 9500 v2 ROM
-// above it — family word $077D4EFA at offset 8, revision $28F2 at offset
-// 18, byte for byte.  ONLY the checksum at offset 0 tells them apart, which
-// is also direct evidence that the ANS ROM is built from the 9500 v2
-// codebase.  Never identify an ANS ROM by version.
-static const char *const ANS_COMPATIBLE[] = {"ans500", "ans700", NULL};
+#define LISA_ROM_SIZE      (16 * 1024) // interleaved image size
+#define LISA_RESET_SSP     0x00000480u // first longword of every Lisa ROM
+#define LISA_CHECK_WORD    0x3FFE // ROMTST's LAST: the word that zeroes the sum
+#define PPC_ROM_SIZE       (4u * 1024 * 1024) // Old World image size
+#define PPC_68K_HALF       0x300000u // end of the span the header sum covers
+#define PPC_CONFIGINFO_PTR 0x300080u // BE32 offset of ConfigInfo from 0x300000
+#define PPC_CONFIGINFO_LEN 0x28u // eight lane sums + the 64-bit sum
+#define PPC_SUM64_OFFSET   0x20u // ROMCheckSum64 within ConfigInfo
 
-// Master ROM signature table.  Content facts only — the canonical fixture
-// filenames live in tooling (scripts/rom_naming.py), not here.
-static const rom_info_t ROM_TABLE[] = {
-    {"Macintosh Plus (Rev 1, Lonely Hearts)",                    PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024,  0          },
-    {"Macintosh Plus (Rev 2, Lonely Heifers)",                   PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024,  0          },
-    {"Macintosh Plus (Rev 3, Loud Harmonicas)",                  PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024,  0          },
-    {"Universal IIx/IIcx/SE/30 ROM",                             UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024,  0          },
-    {"Macintosh IIfx ROM",                                       IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024,  0          },
-    {"Macintosh IIci ROM",                                       IICI_COMPATIBLE,      0x368CADFE, 512 * 1024,  0          },
-    {"Macintosh IIsi ROM",                                       IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024,  0          },
-    {"Quadra 700/900 ROM",                                       Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024, 0          },
-    {"Quadra 950 ROM",                                           Q950_COMPATIBLE,      0x3DC27823, 1024 * 1024, 0          },
-    {"Quadra 840AV/660AV ROM",                                   AV_COMPATIBLE,        0x5BF10FD1, 2048 * 1024, 0          },
-    // The stored checksum covers the 3 MB 68k half only (checksum_span).
-    {"Power Macintosh 6100/7100/8100 ROM",                       PDM_COMPATIBLE,       0x9FEB69B3, 4096 * 1024, 3072 * 1024},
-    {"Power Macintosh 7500/8500/9500 ROM (v1)",                  TNT_COMPATIBLE,       0x96CD923D, 4096 * 1024, 3072 * 1024},
-    {"Power Macintosh 7500/8500/9500 ROM (v2)",                  TNT_COMPATIBLE,       0x9630C68B, 4096 * 1024, 3072 * 1024},
-    // The Network Server ROMs.  The production image runs Open Firmware
-    // 1.1.22 and boots AIX; it carries NO Mac OS Toolbox.  The 2.0
-    // prototype is the mirror image — Mac OS only, no AIX — and exercises
-    // the same hardware model through an entirely different software stack.
-    // Both span 3 MB of a 4 MB image, the family convention.
-    {"Apple Network Server 500/700 ROM (Open Firmware 1.1.22)",  ANS_COMPATIBLE,       0x962F6C13, 4096 * 1024, 3072 * 1024},
-    {"Apple Network Server 500/700 ROM (2.0 prototype, Mac OS)", ANS_COMPATIBLE,       0x49B2BE8F, 4096 * 1024, 3072 * 1024},
-};
-
-#define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))
-
-// === Lisa 2 / Macintosh XL boot-ROM signatures ============================
-//
-// The Lisa boot ROM does NOT follow the Mac checksum convention: its first
-// longword is the reset SSP ($00000480), identical across revisions, so it
-// cannot be told apart by rom_stored_checksum(). Identify the interleaved
-// 16 KB image instead by (size == 16 KB) + the version word at offset $3FFC
-// (docs/machines/lisa/lisa.md §16). The `info.checksum` field carries the
-// Mac-style *computed* checksum of the combined image so the rom.* object
-// surface (rom.checksum, OPFS naming) still has a unique content identifier.
-#define LISA_ROM_SIZE           (16 * 1024) // interleaved image size
-#define LISA_ROM_VERSION_OFFSET 0x3FFC // version word location
-#define LISA_RESET_SSP          0x00000480u // first longword of every Lisa ROM
-
-typedef struct lisa_rom_sig {
-    rom_info_t info; // family_name / compatible / computed checksum / size
-    uint16_t version_word; // value at LISA_ROM_VERSION_OFFSET
-} lisa_rom_sig_t;
-
-static const lisa_rom_sig_t LISA_ROM_TABLE[] = {
-    {{"Apple Lisa 2 Boot ROM (rev H)", LISA_COMPATIBLE, 0x098917B2, LISA_ROM_SIZE, 0},   0x0248},
-    {{"Macintosh XL Boot ROM (\"3A\")", MACXL_COMPATIBLE, 0x094C82F0, LISA_ROM_SIZE, 0}, 0x0341},
-};
-
-#define LISA_ROM_TABLE_COUNT (sizeof(LISA_ROM_TABLE) / sizeof(LISA_ROM_TABLE[0]))
-
-// ============================================================================
-// ID helpers
-// ============================================================================
-
-const rom_info_t *rom_identify(uint32_t checksum) {
-    for (size_t i = 0; i < ROM_TABLE_COUNT; i++) {
-        if (ROM_TABLE[i].checksum == checksum)
-            return &ROM_TABLE[i];
-    }
-    return NULL;
+// Big-endian 16-bit read.
+static uint16_t rd_be16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
 }
 
-const rom_info_t *rom_identify_lisa(const uint8_t *data, size_t size) {
-    // Lisa/XL ROMs are exactly 16 KB and start with the reset SSP $00000480;
-    // require both before trusting the version word (cheap false-positive guard
-    // against an unrelated 16 KB blob).
-    if (!data || size != LISA_ROM_SIZE)
-        return NULL;
-    if (rom_stored_checksum(data) != LISA_RESET_SSP)
-        return NULL;
-    uint16_t version = ((uint16_t)data[LISA_ROM_VERSION_OFFSET] << 8) | data[LISA_ROM_VERSION_OFFSET + 1];
-    for (size_t i = 0; i < LISA_ROM_TABLE_COUNT; i++) {
-        if (LISA_ROM_TABLE[i].version_word == version)
-            return &LISA_ROM_TABLE[i].info;
-    }
-    return NULL;
+// Big-endian 32-bit read.
+static uint32_t rd_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
 
-uint32_t rom_compute_checksum(const uint8_t *data, size_t size) {
-    // Real Macintosh ROMs are word-aligned (even size). An odd-sized buffer
-    // silently drops the trailing byte; the stored-vs-computed mismatch will
-    // flag it, but assert in debug builds so the cause is obvious.
-    GS_ASSERTF((size % 2) == 0, "rom_compute_checksum: odd ROM size %zu", size);
+// Big-endian 64-bit read.
+static uint64_t rd_be64(const uint8_t *p) {
+    return ((uint64_t)rd_be32(p) << 32) | rd_be32(p + 4);
+}
+
+// The classic Mac ROM sum: big-endian 16-bit words over [from, to), mod 2^32.
+static uint32_t word_sum(const uint8_t *data, size_t from, size_t to) {
     uint32_t sum = 0;
-    for (size_t i = 4; i + 1 < size; i += 2) {
-        uint16_t word = ((uint16_t)data[i] << 8) | data[i + 1];
-        sum += word;
+    for (size_t i = from; i + 1 < to; i += 2)
+        sum += rd_be16(data + i); // one word into the running sum
+    return sum;
+}
+
+// Absolute offset of a 4 MiB image's ConfigInfo block, or 0 when the pointer
+// at 0x300080 does not land on a doubleword inside the PowerPC megabyte.
+static size_t ppc_configinfo(const uint8_t *data) {
+    uint32_t off = rd_be32(data + PPC_CONFIGINFO_PTR);
+    if (off % 8 != 0 || (uint64_t)off + PPC_CONFIGINFO_LEN > PPC_ROM_SIZE - PPC_68K_HALF)
+        return 0;
+    return PPC_68K_HALF + off;
+}
+
+// Apple's 64-bit sum: big-endian doublewords over the whole image except the
+// 40-byte ConfigInfo record that stores it.
+static uint64_t ppc_sum64(const uint8_t *data, size_t ci) {
+    uint64_t sum = 0;
+    for (size_t i = 0; i < PPC_ROM_SIZE; i += 8) {
+        if (i >= ci && i < ci + PPC_CONFIGINFO_LEN)
+            continue; // the record itself is not summed
+        sum += rd_be64(data + i);
     }
     return sum;
 }
 
-uint32_t rom_stored_checksum(const uint8_t *data) {
-    return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
+// Byte-lane sums over the same range, for naming the chip of a bad dump.
+static void ppc_lane_sums(const uint8_t *data, size_t ci, uint32_t lanes[8]) {
+    memset(lanes, 0, 8 * sizeof(uint32_t));
+    for (size_t i = 0; i < PPC_ROM_SIZE; i++) {
+        if (i >= ci && i < ci + PPC_CONFIGINFO_LEN)
+            continue;
+        lanes[i & 7] += data[i]; // lane = byte position within the doubleword
+    }
 }
 
-bool rom_validate(const uint8_t *data, size_t size) {
-    if (size < 8)
-        return false;
-    return rom_compute_checksum(data, size) == rom_stored_checksum(data);
+// The Lisa boot ROM's own test (ROMTST): add each word and rotate left one
+// bit, then add the check word; an intact ROM leaves zero.
+static uint16_t lisa_rotating_sum(const uint8_t *data) {
+    uint16_t sum = 0;
+    for (size_t i = 0; i < LISA_CHECK_WORD; i += 2) {
+        sum = (uint16_t)(sum + rd_be16(data + i)); // ADD (A0)+,D0
+        sum = (uint16_t)((sum << 1) | (sum >> 15)); // ROL #1,D0
+    }
+    return (uint16_t)(sum + rd_be16(data + LISA_CHECK_WORD));
 }
 
-const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *out_checksum) {
-    if (!data || size < 8)
-        return NULL;
-
-    uint32_t stored = rom_stored_checksum(data);
-    if (out_checksum)
-        *out_checksum = stored;
-
-    const rom_info_t *info = rom_identify(stored);
-    if (info) {
-        // Verify over the span the stored checksum actually covers (the PDM
-        // ROM's header sums only its 68k half).
-        size_t span = info->checksum_span && info->checksum_span <= size ? info->checksum_span : size;
-        uint32_t computed = rom_compute_checksum(data, span);
-        if (computed != stored)
-            gs_outf("Warning: ROM checksum mismatch (stored=%08X, computed=%08X)\n", stored, computed);
-        return info;
+// Identity of `data` under the per-kind rule, honouring a matched row's
+// exceptions when `row` is given.
+static void identity_eval(const uint8_t *data, size_t size, const rom_info_t *row, rom_identity_t *out) {
+    memset(out, 0, sizeof(*out));
+    if (!data || size < 8 || size % 2 != 0) {
+        out->kind = ROM_KIND_NONE;
+        snprintf(out->reason, sizeof(out->reason), "not a ROM image");
+        return;
     }
 
-    // Not a Mac ROM — try the Lisa/XL signature path. Lisa ROMs are matched by
-    // size + version word, so report the Mac-style *computed* checksum (a
-    // stable, unique content id) rather than the meaningless reset-SSP word.
-    const rom_info_t *lisa = rom_identify_lisa(data, size);
-    if (lisa) {
-        if (out_checksum)
-            *out_checksum = rom_compute_checksum(data, size);
-        return lisa;
+    // Lisa / Macintosh XL: 16 KB starting with the reset SSP.
+    if (size == LISA_ROM_SIZE && rd_be32(data) == LISA_RESET_SSP) {
+        out->kind = ROM_KIND_LISA;
+        snprintf(out->id, sizeof(out->id), "%04x", rd_be16(data + LISA_CHECK_WORD));
+        out->intact = lisa_rotating_sum(data) == 0;
+        if (!out->intact)
+            snprintf(out->reason, sizeof(out->reason), "checksum does not verify (check the chip pair)");
+        return;
+    }
+
+    uint32_t stored = rd_be32(data); // the header sum every Mac ROM starts with
+
+    // Old World PowerPC: 4 MiB with a ConfigInfo record in the last megabyte.
+    if (size == PPC_ROM_SIZE) {
+        out->kind = ROM_KIND_PPC;
+        size_t ci = ppc_configinfo(data);
+        if (!ci) {
+            snprintf(out->id, sizeof(out->id), "%08x", stored);
+            snprintf(out->reason, sizeof(out->reason), "no ConfigInfo");
+            return;
+        }
+        uint64_t stored64 = rd_be64(data + ci + PPC_SUM64_OFFSET);
+        snprintf(out->id, sizeof(out->id), "%08x-%016llx", stored, (unsigned long long)stored64);
+        bool ok32 = word_sum(data, 4, PPC_68K_HALF) == stored; // the 68k half
+        bool ok64 = (row && (row->flags & ROM_F_NO_SUM64)) || ppc_sum64(data, ci) == stored64;
+        out->intact = ok32 && ok64;
+        if (!ok32) {
+            snprintf(out->reason, sizeof(out->reason), "68k section does not verify");
+        } else if (!ok64) {
+            // Name the byte lanes (chips) whose recomputed sum differs.
+            uint32_t lanes[8];
+            ppc_lane_sums(data, ci, lanes);
+            char list[24] = "";
+            size_t n = 0;
+            for (int i = 0; i < 8; i++) {
+                if (lanes[i] != rd_be32(data + ci + 4 * i))
+                    n += (size_t)snprintf(list + n, sizeof(list) - n, "%s%d", n ? ", " : "", i);
+            }
+            if (n)
+                snprintf(out->reason, sizeof(out->reason), "PowerPC section does not verify (byte lanes %s)", list);
+            else
+                snprintf(out->reason, sizeof(out->reason), "PowerPC section does not verify");
+        }
+        return;
+    }
+
+    // Mac 68k: the header sum over the whole image, or a row's shorter span.
+    out->kind = ROM_KIND_MAC68K;
+    snprintf(out->id, sizeof(out->id), "%08x", stored);
+    size_t span = (row && row->checksum_span && row->checksum_span < size) ? row->checksum_span : size;
+    out->intact = word_sum(data, 4, span) == stored;
+    if (!out->intact)
+        snprintf(out->reason, sizeof(out->reason), "checksum does not verify");
+}
+
+void rom_identity_compute(const uint8_t *data, size_t size, rom_identity_t *out) {
+    identity_eval(data, size, NULL, out);
+}
+
+const rom_info_t *rom_lookup(const char *id, size_t size) {
+    if (!id || !*id)
+        return NULL;
+    for (size_t i = 0; i < rom_table_count; i++) {
+        if (rom_table[i].rom_size == size && strcmp(rom_table[i].id, id) == 0)
+            return &rom_table[i];
     }
     return NULL;
+}
+
+const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, rom_identity_t *out) {
+    rom_identity_t local;
+    rom_identity_t *id = out ? out : &local;
+    identity_eval(data, size, NULL, id);
+    const rom_info_t *info = rom_lookup(id->id, size);
+    // A known ROM whose own checksum covers less than the plain rule assumes
+    // is re-verified under its row's exception.
+    if (info && (info->checksum_span || info->flags))
+        identity_eval(data, size, info, id);
+    return info;
+}
+
+bool rom_is_supported(const rom_info_t *info) {
+    return info && info->compatible && info->compatible[0];
+}
+
+const char *rom_kind_name(rom_kind_t kind) {
+    switch (kind) {
+    case ROM_KIND_MAC68K:
+        return "mac68k";
+    case ROM_KIND_PPC:
+        return "ppc";
+    case ROM_KIND_LISA:
+        return "lisa";
+    default:
+        return "";
+    }
 }
 
 int rom_info_compatible_count(const rom_info_t *info) {
@@ -257,20 +269,15 @@ static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet
 int rom_probe_file(const char *path, rom_file_info_t *out) {
     if (!out)
         return -1;
-    out->info = NULL;
-    out->checksum = 0;
-    out->size = 0;
+    memset(out, 0, sizeof(*out));
     if (!path || !*path)
         return -1;
     size_t file_size = 0;
     uint8_t *data = read_rom_file(path, &file_size, true);
     if (!data)
         return -1;
-    uint32_t checksum = 0;
-    const rom_info_t *info = rom_identify_data(data, file_size, &checksum);
+    out->info = rom_identify_data(data, file_size, &out->identity);
     free(data);
-    out->info = info;
-    out->checksum = checksum;
     out->size = file_size;
     return 0;
 }
@@ -315,11 +322,19 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
     if (a_size == LISA_ROM_SIZE / 2 && b_size == LISA_ROM_SIZE / 2) {
         combined = malloc(LISA_ROM_SIZE);
         if (combined) {
-            // Try a=HI/b=LO; if that orientation doesn't identify as a Lisa
-            // ROM, reinterleave with the chips swapped.
+            // Try a=HI/b=LO; if that orientation fails the boot ROM's own
+            // self-check, reinterleave with the chips swapped (the check
+            // covers both chips, so a swapped pair never passes it).
+            rom_identity_t id;
             rom_interleave_pair(a, a_size, b, b_size, combined);
-            if (!rom_identify_lisa(combined, LISA_ROM_SIZE))
+            rom_identity_compute(combined, LISA_ROM_SIZE, &id);
+            if (id.kind != ROM_KIND_LISA || !id.intact) {
                 rom_interleave_pair(b, b_size, a, a_size, combined);
+                rom_identity_compute(combined, LISA_ROM_SIZE, &id);
+                // Neither orientation verifies: keep the order as given.
+                if (id.kind != ROM_KIND_LISA || !id.intact)
+                    rom_interleave_pair(a, a_size, b, b_size, combined);
+            }
         }
     } else {
         gs_outf("rom.load_lisa: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
@@ -329,8 +344,10 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
     free(b);
     if (!combined)
         return NULL;
-    if (!rom_identify_lisa(combined, LISA_ROM_SIZE))
-        gs_outf("Warning: interleaved image is not a recognised Lisa/XL ROM\n");
+    rom_identity_t id;
+    rom_identity_compute(combined, LISA_ROM_SIZE, &id);
+    if (id.kind != ROM_KIND_LISA || !id.intact)
+        gs_outf("Warning: interleaved image does not pass the Lisa/XL boot ROM self-check\n");
     *out_size = LISA_ROM_SIZE;
     return combined;
 }
@@ -351,12 +368,16 @@ static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, c
         return -1;
     }
 
-    uint32_t checksum = 0;
-    const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
+    rom_identity_t id;
+    const rom_info_t *info = rom_identify_data(rom_data, file_size, &id);
     if (info)
-        gs_outf("ROM: %s (checksum %08X)\n", info->family_name, checksum);
+        gs_outf("ROM: %s (id %s)\n", info->family_name, id.id);
     else
-        gs_outf("ROM: unknown (checksum %08X, size %zu bytes)\n", checksum, file_size);
+        gs_outf("ROM: unknown (id %s, size %zu bytes)\n", id.id[0] ? id.id : "none", file_size);
+    // A damaged dump still loads — research on damaged or hand-edited images
+    // is a legitimate use — but says which part does not verify.
+    if (id.kind != ROM_KIND_NONE && !id.intact)
+        gs_outf("Warning: ROM %s — the dump is probably damaged\n", id.reason);
 
     // Compatibility check against the active machine. Allow load with a
     // warning if the ROM is recognised but the active machine isn't in the
@@ -381,7 +402,7 @@ static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, c
 
     // Write the built-from record back so machine.config keeps answering
     // "how do I recreate what I'm looking at" after a live ROM swap.
-    machine_config_note_rom(path, checksum);
+    machine_config_note_rom(path, id.id);
 
     memory_install_rom(mem, rom_data, file_size, path);
 
@@ -465,19 +486,31 @@ static value_t rom_attr_loaded(struct object *self, const member_t *m) {
     return val_bool(memory_rom_filename(system_memory()) != NULL);
 }
 
-// rom.checksum → 8 uppercase hex chars of the loaded ROM's stored checksum,
-// or empty string when no ROM is loaded.  Surfaced as a string (not a number)
-// because checksums are identifiers — never arithmetic — and the OPFS layout
-// uses the canonical 8-hex form as the filename.
-static value_t rom_attr_checksum(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+// Identity of the loaded ROM's bytes; false when no ROM is loaded.
+static bool loaded_rom_identity(rom_identity_t *id) {
     memory_map_t *mem = system_memory();
     if (!mem || !memory_rom_filename(mem))
-        return val_str("");
-    char hex[16];
-    snprintf(hex, sizeof(hex), "%08X", memory_rom_checksum(mem));
-    return val_str(hex);
+        return false;
+    rom_identify_data(memory_rom_bytes(mem), memory_rom_size(mem), id);
+    return true;
+}
+
+// rom.id → the loaded ROM's content id (rom.h), or "" when none is loaded.
+// Answered from the same identification pass as rom.identify, so it always
+// equals the id the ROM file identified as.
+static value_t rom_attr_id(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    rom_identity_t id;
+    return val_str(loaded_rom_identity(&id) ? id.id : "");
+}
+
+// rom.intact → the loaded ROM's own checksum verifies.
+static value_t rom_attr_intact(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    rom_identity_t id;
+    return val_bool(loaded_rom_identity(&id) && id.intact);
 }
 
 static value_t rom_attr_size(struct object *self, const member_t *m) {
@@ -487,16 +520,14 @@ static value_t rom_attr_size(struct object *self, const member_t *m) {
 }
 
 // rom.name → family name of the loaded ROM (e.g. "Universal IIx/IIcx/SE/30 ROM"),
-// or empty string when no ROM is loaded or the checksum is unrecognised.
+// or empty string when no ROM is loaded or the ROM is not known.
 static value_t rom_attr_name(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     memory_map_t *mem = system_memory();
     if (!mem || !memory_rom_filename(mem))
         return val_str("");
-    // Identify from ROM content rather than the computed checksum: Lisa/XL
-    // ROMs aren't keyed by checksum (rom_identify_lisa uses size + version
-    // word), and content-based ID gives the same answer for Mac ROMs.
+    // Identify from ROM content, the same pass rom.identify runs on a file.
     const rom_info_t *info = rom_identify_data(memory_rom_bytes(mem), memory_rom_size(mem), NULL);
     return val_str(info ? info->family_name : "");
 }
@@ -524,12 +555,13 @@ static value_t rom_method_load_lisa(struct object *self, const member_t *m, int 
 }
 
 // rom.identify(path) → typed info map describing the ROM file:
-//   { recognised, compatible, checksum, name, size }
-// recognised==false implies compatible==[], name=="" but the checksum and
-// size are still populated from the file.  Content facts only — canonical
-// fixture naming is a tooling concern (scripts/rom_naming.py).  Returns
-// V_ERROR if the path can not be opened (caller treats that as "no info,
-// skip this entry").
+//   { recognised, supported, compatible, name, variant, size, kind, id, intact,
+//     reason }
+// recognised: the id is in the ROM table; supported: its row names at least
+// one emulated model (compatible).  An unrecognised file still reports its
+// kind, id, intact and reason.  id is the only field anything names a file by,
+// and only when intact.  Returns V_ERROR if the path can not be opened (caller
+// treats that as "no info, skip this entry").
 static value_t rom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -540,6 +572,7 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
 
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "recognised", val_bool(fi.info != NULL));
+    val_map_put(b, "supported", val_bool(rom_is_supported(fi.info)));
     value_t *compat = NULL;
     size_t n_compat = 0, cap_compat = 0;
     if (fi.info && fi.info->compatible) {
@@ -547,13 +580,15 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
             val_list_push(&compat, &n_compat, &cap_compat, val_str(*p));
     }
     val_map_put(b, "compatible", val_list(compat, n_compat));
-    // Checksum keeps its historical 8-uppercase-hex text form — web2
-    // stores ROMs under this exact string.
-    char hex[16];
-    snprintf(hex, sizeof(hex), "%08X", fi.checksum);
-    val_map_put(b, "checksum", val_str(hex));
     val_map_put(b, "name", val_str(fi.info ? fi.info->family_name : ""));
+    // What tells this ROM apart from the other ROMs of its models; "" when
+    // no other known ROM boots any of them.
+    val_map_put(b, "variant", val_str(fi.info && fi.info->variant ? fi.info->variant : ""));
     val_map_put(b, "size", val_int((int64_t)fi.size));
+    val_map_put(b, "kind", val_str(rom_kind_name(fi.identity.kind)));
+    val_map_put(b, "id", val_str(fi.identity.id));
+    val_map_put(b, "intact", val_bool(fi.identity.intact));
+    val_map_put(b, "reason", val_str(fi.identity.reason));
     return val_map_finish(b);
 }
 
@@ -578,10 +613,15 @@ static const member_t rom_members[] = {
      .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = rom_attr_loaded, .set = NULL}},
     {.kind = M_ATTR,
-     .name = "checksum",
-     .doc = "Computed checksum of the loaded ROM (8 uppercase hex chars, no prefix)",
+     .name = "id",
+     .doc = "Content id of the loaded ROM (its own stored checksum fields, lowercase hex)",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = rom_attr_checksum, .set = NULL}},
+     .attr = {.type = V_STRING, .get = rom_attr_id, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "intact",
+     .doc = "True if the loaded ROM's own checksum verifies",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = rom_attr_intact, .set = NULL}},
     {.kind = M_ATTR,
      .name = "size",
      .doc = "ROM region size in bytes",
@@ -602,8 +642,8 @@ static const member_t rom_members[] = {
      .method = {.args = rom_lisa_pair_args, .nargs = 2, .result = V_BOOL, .fn = rom_method_load_lisa}},
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "Return a typed info map for a ROM file (compatible/checksum/name/size/recognised)",
-     .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
+     .doc = "Return a typed info map for a ROM file "
+            "(recognised/supported/compatible/name/variant/size/kind/id/intact/reason)", .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
 };
 
 static const class_desc_t rom_class = {

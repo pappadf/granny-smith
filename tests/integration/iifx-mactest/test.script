@@ -32,7 +32,7 @@ machine.floppy.drive[0].insert "../../data/apps/MacTest-IIfx.image" true
 scheduler.run 360000000
 
 assert machine.id == "iifx" "machine.id != iifx"
-assert machine.rom.checksum == "4147DD77" "rom.checksum != 4147DD77"
+assert machine.rom.id == "4147dd77" "rom.id != 4147dd77"
 
 # JMFB seated for 13" RGB 8 bpp: 640x480, savedMode $83, and the slot-9 JMFB
 # CLUTPBCR / RowWords registers match the iicx-video-modes 8 bpp baseline.

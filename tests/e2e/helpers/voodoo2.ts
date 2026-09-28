@@ -26,7 +26,9 @@ export const terminalRun = (page: Page, line: string) =>
 
 const DATA = path.resolve(__dirname, "../../data");
 const TNT_ROM = path.join(DATA, "roms", "pm7500-pm8500-pm9500-96cd923d.rom");
-const STORED_ROM = "/opfs/images/rom/96CD923D";
+// Uploads are stored under the ROM's content id (rom.identify): its header
+// sum plus the ConfigInfo 64-bit sum.
+const STORED_ROM = "/opfs/images/rom/96cd923d-c241cd82bf90797a";
 const ROW = path.resolve(__dirname, "../../integration/tnt-pci-voodoo2");
 
 // The base launch args of playwright.web2.config.ts (software WebGL for

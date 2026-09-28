@@ -56,7 +56,7 @@ def row_iisi_701_fd() {
     scheduler.run 200000000
     let spent = wait_match("goldens/iisi-7.0.1-640x480x1-finder.png", 800000000, 20000000)
     assert machine.id == "iisi" "iisi-701-fd: machine.id != iisi"
-    assert machine.rom.checksum == "36B7FB6C" "iisi-701-fd: rom.checksum != 36B7FB6C"
+    assert machine.rom.id == "36b7fb6c" "iisi-701-fd: rom.id != 36b7fb6c"
     assert machine.ram == 17408 "iisi-701-fd: machine.ram != 17408"
     assert machine.screen.width == 640 "iisi-701-fd: screen.width != 640"
     assert machine.screen.height == 480 "iisi-701-fd: screen.height != 480"

@@ -16,19 +16,26 @@ that actually boots them.  Heuristic by design: once suites self-report
 coverage rows at runtime, that JSONL replaces the script-side guesswork
 here; the pivots and rendering stay.
 
-The machine roster and each fixture ROM's default model are read from the
-source (builtin_machines[] and the profiles' .id; rom.c's compatible lists),
-so a new model or ROM needs no edit here.
+The machine roster is read from the source (builtin_machines[] and the
+profiles' .id).  Each fixture ROM's default model is asked of the core: one
+gs-headless rom.identify pass over the ROMs the configs name (HEADLESS_BIN,
+TEST_DATA), whose compatible[0] is what a boot picks.  Fixture filenames are
+never parsed.  Without a built headless or the test data, rows fall back to
+their explicit model= only.
 
 Usage:  scripts/test-matrix.py [--tests] [--video] [--pivot] [tests/integration]
 """
 
 import json
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parent.parent / "src"
+ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src"
 
 
 def machine_roster():
@@ -51,19 +58,44 @@ def machine_roster():
     return set(ids.values())
 
 
-def rom_defaults():
-    """ROM checksum -> the model a boot picks when none is named: the first
-    entry of that ROM's compatible list in src/core/memory/rom.c."""
-    text = (SRC / "core/memory/rom.c").read_text(errors="replace")
-    lists = {name: re.findall(r'"([^"]+)"', items)
-             for name, items in re.findall(r"static const char \*const (\w+)\[\]\s*=\s*\{([^}]*)\}", text)}
-    return {int(ck, 16): lists[name][0]
-            for name, ck in re.findall(r'\{+\s*"(?:[^"\\]|\\.)*",\s*(\w+),\s*(0x[0-9A-Fa-f]{8})', text)
-            if lists.get(name)}
+def rom_defaults(roms):
+    """TEST_ROM path -> the model a boot picks when none is named: the first
+    entry of the compatible list the core reports for that file."""
+    headless = Path(os.environ.get("HEADLESS_BIN", ROOT / "build/headless/gs-headless"))
+    data = Path(os.environ.get("TEST_DATA", ROOT / "tests/data"))
+    files = {r: data / r for r in sorted(roms) if (data / r).is_file()}
+    if not headless.is_file() or not files:
+        print("test-matrix: no gs-headless or test data; ROM default models unknown "
+              "(rows fall back to their model=)", file=sys.stderr)
+        return {}
+    with tempfile.TemporaryDirectory() as work:
+        script = Path(work) / "identify.script"
+        lines = []
+        for rel, path in files.items():
+            lines.append(f"echo GSROM {rel}")
+            lines.append(f'echo "${{machine.rom.identify(\'{path}\')}}"')
+        lines.append("quit")
+        script.write_text("\n".join(lines) + "\n")
+        boot = next(iter(files.values()))  # headless needs a ROM to start with
+        env = dict(os.environ, GS_STORAGE_CACHE=str(Path(work) / "cache"))
+        out = subprocess.run([str(headless), f"rom={boot}", "--no-prompt", "--speed=max",
+                              f"script={script}"], capture_output=True, text=True,
+                             errors="replace", env=env).stdout
+    defaults, pending = {}, None
+    for ln in out.splitlines():
+        m = re.search(r"GSROM (\S+)", ln)
+        if m:
+            pending = m.group(1)
+        elif pending and '{"recognised"' in ln:
+            info = json.loads(ln[ln.index('{"recognised"'):])
+            if info.get("compatible"):
+                defaults[pending] = info["compatible"][0]
+            pending = None
+    return defaults
 
 
 MACHINES = machine_roster()
-ROM_DEFAULT = rom_defaults()
+ROM_DEFAULT = {}  # TEST_ROM -> default model, filled by main() (rom_defaults)
 
 # media path fragment -> system-software label
 MEDIA_SYSTEM = [
@@ -209,9 +241,8 @@ def parse_test(d):
             fields[m.group(1)] = m.group(2)
             if m.group(1) == "ROM":
                 rom = m.group(2).strip()
-    # Fixture ROMs are named <models>-<checksum>.rom (scripts/rom_naming.py).
-    ck = re.search(r"([0-9a-fA-F]{8})\.rom\b", rom)
-    default = ROM_DEFAULT.get(int(ck.group(1), 16)) if ck else None
+    # What the ROM boots by default is the core's answer, not its filename.
+    default = ROM_DEFAULT.get(rom)
     # model= in TEST_ARGS overrides the ROM-derived default
     args_model = re.search(r'model=(\S+)', fields.get("ARGS", ""))
     if args_model and unquote(args_model.group(1)) in MACHINES:
@@ -472,6 +503,12 @@ def main():
         return 0
 
     root = Path(paths[0]) if paths else Path("tests/integration")
+    roms = set()
+    for cfg in root.glob("*/config.mk"):
+        m = re.search(r"^\s*TEST_ROM\s*:?=\s*(\S+)", cfg.read_text(errors="replace"), re.M)
+        if m:
+            roms.add(m.group(1))
+    ROM_DEFAULT.update(rom_defaults(roms))
     tests = [parse_test(d) for d in sorted(root.iterdir())
              if (d / "config.mk").exists() and (d / "test.script").exists()]
     if "--tests" in flags:

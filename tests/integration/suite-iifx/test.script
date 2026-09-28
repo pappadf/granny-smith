@@ -99,7 +99,7 @@ def row_iifx_701_fd() {
     scheduler.run 200000000
     wait_stable(900000000)
     assert machine.id == "iifx" "iifx-701-fd: machine.id != iifx"
-    assert machine.rom.checksum == "4147DD77" "iifx-701-fd: rom.checksum != 4147DD77"
+    assert machine.rom.id == "4147dd77" "iifx-701-fd: rom.id != 4147dd77"
     assert machine.ram == 16384 "iifx-701-fd: machine.ram != 16384"
     assert machine.screen.width == 640 "iifx-701-fd: screen.width != 640"
     assert machine.screen.height == 480 "iifx-701-fd: screen.height != 480"
@@ -212,7 +212,7 @@ def row_iifx_aux3_login() {
     machine.scsi.attach_hd "${$hd_aux}" 0
     scheduler.run 1500000000
     assert machine.id == "iifx" "iifx-aux3-login: machine.id != iifx"
-    assert machine.rom.checksum == "4147DD77" "iifx-aux3-login: rom.checksum != 4147DD77"
+    assert machine.rom.id == "4147dd77" "iifx-aux3-login: rom.id != 4147dd77"
     assert machine.screen.width == 640 "iifx-aux3-login: screen.width != 640"
     assert machine.screen.height == 480 "iifx-aux3-login: screen.height != 480"
     check_ex("goldens/iifx-aux3-640x480x1-login.png", 240, 318, 258, 323)

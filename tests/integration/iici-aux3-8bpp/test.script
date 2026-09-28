@@ -28,7 +28,7 @@ def row_iici_aux3_8bpp() {
     machine.rtc.time = "2026-04-26T21:30:36"
     scheduler.run 764754600
     assert machine.id == "iici" "machine.id != iici"
-    assert machine.rom.checksum == "368CADFE" "rom.checksum != 368CADFE"
+    assert machine.rom.id == "368cadfe" "rom.id != 368cadfe"
     assert machine.screen.width == 640 "screen.width != 640"
     assert machine.screen.height == 480 "screen.height != 480"
     assert machine.rtc.pram.peek(0x58) == 0x83 "iici-aux3-8bpp: savedMode rewritten by the ROM"

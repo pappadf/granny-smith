@@ -65,23 +65,46 @@
   let allProms = $state<PromEntry[]>([]);
   // model id -> profile, populated lazily via gsEval('machine.profile').
   let profiles = $state<Record<string, MachineProfile>>({});
-  // model id -> ROMs that boot this model.
+  // model id -> the distinct ROMs (by content id) that boot this model.  Two
+  // files of one ROM are one choice: the first file found stands for it.
   let romsByModel = $derived.by(() => {
     const out: Record<string, RomEntry[]> = {};
     for (const r of allRoms) {
-      // A repeated id in `compatible` would list the same ROM twice under one
-      // model — the ROM picker keys its options by path, so keep it unique.
+      // A repeated id in `compatible` would list the same ROM twice.
       for (const id of new Set(r.compatible)) {
-        (out[id] ??= []).push(r);
+        const list = (out[id] ??= []);
+        if (!list.some((e) => e.id === r.id)) list.push(r);
       }
     }
     return out;
   });
+  // One Machine Model entry per model/ROM pair, so every ROM a model can run
+  // is directly choosable.  When other known ROMs boot the same model, stored
+  // or not, the entry reads "<model> (<variant>)" with the short label the
+  // core supplies (rom.identify); a ROM without a label reads as the model
+  // alone, and two stored ROMs without labels fall back to their ids.  The
+  // option value is the bare model id when one stored ROM boots the model,
+  // `model/romId` otherwise.
   let modelOptions = $derived(
-    Object.keys(romsByModel).map((id) => ({ id, label: profiles[id]?.name ?? id })),
+    Object.entries(romsByModel).flatMap(([id, roms]) =>
+      roms.map((r) => {
+        const model = profiles[id]?.name ?? id;
+        return {
+          key: roms.length > 1 ? `${id}/${r.id}` : id,
+          model: id,
+          rom: r,
+          label: r.variant
+            ? `${model} (${r.variant})`
+            : roms.length > 1
+              ? `${model} (${r.id})`
+              : model,
+        };
+      }),
+    ),
   );
   let romsForCurrentModel = $derived(modelId ? (romsByModel[modelId] ?? []) : []);
-  let needsRomPicker = $derived(romsForCurrentModel.length > 1);
+  // The id of the ROM the current choice boots.
+  let currentRomId = $derived(romsForCurrentModel.find((r) => r.path === romPath)?.id ?? '');
   let currentProfile = $derived(modelId ? profiles[modelId] : undefined);
   // --- Video card selection (card-driven; the vROM is auto-resolved). ------
   // The dialog speaks in *cards* (Apple Macintosh Display Card 24AC), not vROM
@@ -735,22 +758,26 @@
     {:else}
       <div class="form-row">
         <label for="cfg-model">Machine Model</label>
-        <select id="cfg-model" bind:value={modelId}>
-          {#each modelOptions as opt (opt.id)}
-            <option value={opt.id}>{opt.label}</option>
+        <!-- A choice is a model AND the ROM it boots: selecting one sets both. -->
+        <select
+          id="cfg-model"
+          bind:value={
+            () =>
+              modelOptions.find((o) => o.model === modelId && o.rom.id === currentRomId)?.key ?? '',
+            (key) => {
+              const opt = modelOptions.find((o) => o.key === key);
+              if (opt) {
+                modelId = opt.model;
+                romPath = opt.rom.path;
+              }
+            }
+          }
+        >
+          {#each modelOptions as opt (opt.key)}
+            <option value={opt.key} data-model={opt.model}>{opt.label}</option>
           {/each}
         </select>
       </div>
-      {#if needsRomPicker}
-        <div class="form-row">
-          <label for="cfg-rom">ROM Image</label>
-          <select id="cfg-rom" bind:value={romPath}>
-            {#each romsForCurrentModel as r (r.path)}
-              <option value={r.path}>{r.name}</option>
-            {/each}
-          </select>
-        </div>
-      {/if}
       {#if needsCardPicker}
         <div class="form-row">
           <label for="cfg-card">{hasBuiltinVideo ? 'Display' : 'Display Card'}</label>

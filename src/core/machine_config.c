@@ -66,10 +66,10 @@ void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id, 
     e->explicit_pick = explicit_pick;
 }
 
-void machine_config_note_rom(const char *path, uint32_t crc) {
+void machine_config_note_rom(const char *path, const char *rom_id) {
     if (path && *path)
         snprintf(s_record.rom, sizeof(s_record.rom), "%s", path);
-    s_record.rom_crc = crc;
+    snprintf(s_record.rom_id, sizeof(s_record.rom_id), "%s", rom_id ? rom_id : "");
 }
 
 // === machine.config object ==================================================
@@ -93,12 +93,10 @@ static value_t cfg_attr_rom(struct object *self, const member_t *m) {
     (void)m;
     return cfg_str(s_record.rom);
 }
-static value_t cfg_attr_rom_crc(struct object *self, const member_t *m) {
+static value_t cfg_attr_rom_id(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    value_t v = val_uint(4, s_record.rom_crc);
-    v.flags |= VAL_HEX;
-    return v;
+    return cfg_str(s_record.rom_id);
 }
 static value_t cfg_attr_rom2(struct object *self, const member_t *m) {
     (void)self;
@@ -233,10 +231,10 @@ static const member_t config_members[] = {
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_rom, .set = NULL}        },
     {.kind = M_ATTR,
-     .name = "rom_crc",
-     .doc = "Content checksum of the installed ROM",
+     .name = "rom_id",
+     .doc = "Content id of the installed ROM (rom.id)",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = cfg_attr_rom_crc, .set = NULL}      },
+     .attr = {.type = V_STRING, .get = cfg_attr_rom_id, .set = NULL}     },
     {.kind = M_ATTR,
      .name = "rom2",
      .doc = "Lisa second ROM chip path (empty = single-file ROM)",

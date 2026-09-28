@@ -26,6 +26,7 @@ tests/e2e/
 ├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
+│   ├── ans-bitblt-repro.spec.ts         # Reproduction (REPRO_E28=1): NT GUI Setup on the ANS 500 drawn in the browser
 │   ├── av-boot-no-slots.spec.ts         # A slotless model (q660av) boots after a carded one in the same session
 │   ├── av-camera.spec.ts                # AV video-in against Chromium's fake camera
 │   ├── av-microphone.spec.ts            # Browser mic → shared-heap ring → guest RAM (no OS)
@@ -48,6 +49,8 @@ tests/e2e/
 │   ├── pci-prom-ingest.spec.ts          # A 9500 configured on an uploaded PCI display card; the .prom survives a reload
 │   ├── pdm-double-boot.spec.ts          # pm6100 + Mac OS 8.1 boots exactly once (PRAM seeding), also on a reused image
 │   ├── perf-bench.spec.ts               # Accelerated + turbo throughput (tracked numbers)
+│   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
+│   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
 │   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase
 │   ├── shell-prompt.spec.ts             # Terminal: prompt state, Tab completion, history across reloads, scrollback, paste
 │   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics

@@ -54,10 +54,22 @@ static const uint32_t ans500_ram_options_kb[] = {16384, 32768, 49152, 65536, 131
 // labelled 5-7, one off from channel 0's Bays 1-3.  Bay 0 is Apple's expected
 // CD-ROM position and is deliberately NOT declared here: it is the CD bay,
 // hw_profile_t.cdrom_id, which profile_cdrom_bay derives.
+//
+// The LAST entry is NOT a backplane bay.  Id 0 on the SECOND controller is a
+// free SCSI address on the 500 (the 700 has a rear bay there), declared
+// because it is where a Windows NT installation lives: powermac-nt-hal's
+// `bootdisk.of` hands Open Firmware `/bandit/53c825@12/sd@0,0` as the boot
+// path, and the CD the install reads from holds id 0 on the FIRST
+// controller, so the two cannot share.  A disk anywhere else is one
+// `bootdisk.of` cannot name, so the configuration dialog has to be able to
+// put one there.  It is NOT flagged `boot` and it comes last: the model's
+// default disk bay stays Bay 2, Open Firmware's own `disk2:aix` (media-bays),
+// and the real bays keep their indices.
 static const struct scsi_slot ans500_scsi_slots_fw1[] = {
     {.label = "Bay 4 (fast/wide 1)", .id = 4},
     {.label = "Bay 5 (fast/wide 1)", .id = 5},
     {.label = "Bay 6 (fast/wide 1)", .id = 6},
+    {.label = "Windows NT boot disk (fast/wide 1, id 0)", .id = 0},
     {0},
 };
 
@@ -106,7 +118,7 @@ static const tnt_board_desc_t ans500_board = {
 };
 
 const hw_profile_t machine_ans500 = {
-    .name = "Apple Network Server 500/132",
+    .name = "Apple Network Server 500",
     .id = "ans500",
 
     .cpu_model = CPU_MODEL_PPC604,

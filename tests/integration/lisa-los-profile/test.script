@@ -33,7 +33,7 @@ machine.hd.attach
 scheduler.run 50000000
 
 assert machine.id == "lisa" "machine.id != lisa"
-assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.rom.id == "3f7b" "rom.id != 3f7b (rev-H)"
 assert machine.hd.present == true "ProFile should be attached"
 
 # (0) The install floppy's own first screen. Folded in from lisa-los-boot,

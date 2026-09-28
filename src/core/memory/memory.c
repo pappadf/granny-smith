@@ -221,8 +221,6 @@ typedef struct memory {
     // Path to the ROM file loaded via cmd_rom (if any)
     char *rom_filename;
 
-    uint32_t checksum;
-
     // Object-tree binding — lifetime tied to memory_map_init / delete.
     struct object *memory_object;
     struct object *peek_object;
@@ -1346,24 +1344,8 @@ const char *memory_rom_filename(memory_map_t *mem) {
     return mem ? mem->rom_filename : NULL;
 }
 
-// Recompute the ROM checksum field. Reads the ROM region byte-by-byte so it
-// works regardless of host alignment / endianness.
-static void calculate_checksum(memory_map_t *rom) {
-    if (!rom || !rom->image || rom->rom_size < 8)
-        return;
-    const uint8_t *p = rom->image + rom->ram_size;
-    uint32_t sum = 0;
-    // Skip the first 4 bytes (the stored checksum word) and iterate the rest
-    // as big-endian 16-bit words. Matches the layout the Mac ROM's own
-    // self-check uses.
-    for (uint32_t i = 4; i + 1 < rom->rom_size; i += 2) {
-        sum += ((uint32_t)p[i] << 8) | p[i + 1];
-    }
-    rom->checksum = sum;
-}
-
-// Copy ROM bytes into the rom region (immediately after RAM) and refresh the
-// internal checksum. Truncates if size > mem->rom_size, drops nothing if
+// Copy ROM bytes into the rom region (immediately after RAM) and remember
+// the file name. Truncates if size > mem->rom_size, drops nothing if
 // size < mem->rom_size (the trailing bytes keep whatever they had — for
 // freshly-allocated memory that's zero).
 size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename) {
@@ -1371,7 +1353,6 @@ size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, c
         return 0;
     size_t copy_size = size < mem->rom_size ? size : mem->rom_size;
     memcpy(mem->image + mem->ram_size, data, copy_size);
-    calculate_checksum(mem);
     if (mem->rom_filename) {
         free(mem->rom_filename);
         mem->rom_filename = NULL;
@@ -1389,10 +1370,6 @@ const uint8_t *memory_rom_bytes(memory_map_t *mem) {
 
 uint32_t memory_rom_size(memory_map_t *mem) {
     return mem ? mem->rom_size : 0;
-}
-
-uint32_t memory_rom_checksum(memory_map_t *mem) {
-    return mem ? mem->checksum : 0;
 }
 
 // ============================================================================
@@ -1630,14 +1607,11 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
         system_read_checkpoint_data(checkpoint, mem->image, ram_size);
         // Restore ROM (content or reference)
         char *restored_path = NULL;
-        size_t got = checkpoint_read_file(checkpoint, mem->image + ram_size, rom_size, &restored_path);
+        checkpoint_read_file(checkpoint, mem->image + ram_size, rom_size, &restored_path);
         if (restored_path) {
             if (mem->rom_filename)
                 free(mem->rom_filename);
             mem->rom_filename = restored_path;
-        }
-        if (got > 0) {
-            calculate_checksum(mem);
         }
     }
 

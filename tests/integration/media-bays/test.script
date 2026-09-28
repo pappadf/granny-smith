@@ -21,7 +21,10 @@ assert machine.scsi2.device[4].type == "hd" "the disk is on machine.scsi2"
 
 # An occupied bay, a bay that does not exist, a second CD: refused, not overwritten.
 assert try(machine.attach_hd("${$WORK_DIR}/hd2.img"), "refused") == "refused" "occupied boot bay refused"
-assert try(machine.attach_hd("${$WORK_DIR}/hd2.img", 6), "refused") == "refused" "bay 6 does not exist"
+# Index 6 on the ANS 500 is its seventh entry, the Windows NT boot-disk
+# position (fast/wide 1, id 0, declared after the six real bays: ans500.c);
+# 7 is the first index past the end.
+assert try(machine.attach_hd("${$WORK_DIR}/hd2.img", 7), "refused") == "refused" "bay 7 does not exist"
 assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "refused") == "refused" "occupied CD bay refused"
 
 # eject_media takes back what attach answered.
