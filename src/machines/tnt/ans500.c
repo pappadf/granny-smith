@@ -55,20 +55,21 @@ static const uint32_t ans500_ram_options_kb[] = {16384, 32768, 49152, 65536, 131
 // CD-ROM position and is deliberately NOT declared here: it is the CD bay,
 // hw_profile_t.cdrom_id, which profile_cdrom_bay derives.
 //
-// The first entry is NOT a backplane bay.  Id 0 on the SECOND controller is a
+// The LAST entry is NOT a backplane bay.  Id 0 on the SECOND controller is a
 // free SCSI address on the 500 (the 700 has a rear bay there), declared
 // because it is where a Windows NT installation lives: powermac-nt-hal's
 // `bootdisk.of` hands Open Firmware `/bandit/53c825@12/sd@0,0` as the boot
 // path, and the CD the install reads from holds id 0 on the FIRST
-// controller, so the two cannot share.  Flagged `boot`, and declared after
-// Bay 2's flag on channel 0, so it is the model's default hard-disk bay
-// (profile_hd_bays keeps the last flagged slot): a disk anywhere else is one
-// `bootdisk.of` cannot name.  The firmware's own default is still `disk2:aix`.
+// controller, so the two cannot share.  A disk anywhere else is one
+// `bootdisk.of` cannot name, so the configuration dialog has to be able to
+// put one there.  It is NOT flagged `boot` and it comes last: the model's
+// default disk bay stays Bay 2, Open Firmware's own `disk2:aix` (media-bays),
+// and the real bays keep their indices.
 static const struct scsi_slot ans500_scsi_slots_fw1[] = {
-    {.label = "Windows NT boot disk (fast/wide 1, id 0)", .id = 0, .boot = true},
     {.label = "Bay 4 (fast/wide 1)", .id = 4},
     {.label = "Bay 5 (fast/wide 1)", .id = 5},
     {.label = "Bay 6 (fast/wide 1)", .id = 6},
+    {.label = "Windows NT boot disk (fast/wide 1, id 0)", .id = 0},
     {0},
 };
 

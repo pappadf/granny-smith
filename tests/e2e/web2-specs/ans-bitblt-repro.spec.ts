@@ -30,9 +30,11 @@ import * as fs from 'node:fs';
 import { gotoWeb2 } from '../helpers/web2-fs';
 
 const REPO = path.resolve(__dirname, '../../..');
-const ANS = path.join(REPO, 'local/gs-docs/projects/windows-nt-ppc-ans');
-const ROM = path.join(ANS, 'roms/ans-2.26NT-ad405e01.rom');
-const FLOPPY = path.join(REPO, 'tmp/boot-floppy.img');
+// The 2.26NT ROM and the powermac-nt-hal boot floppy are in the test data;
+// REPRO_FLOPPY points at a locally built floppy instead.
+const DATA = path.join(REPO, 'tests/data');
+const ROM = path.join(DATA, 'roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom');
+const FLOPPY = process.env.REPRO_FLOPPY ?? path.join(DATA, 'systems/ans_nt_boot_floppy_daea7d6.img');
 const DISK = process.env.REPRO_DISK ?? path.join(REPO, 'tmp/nt-textmode-installed.img');
 const OUT = path.join(REPO, 'tmp/repro-web');
 

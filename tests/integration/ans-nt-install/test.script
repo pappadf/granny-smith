@@ -44,19 +44,25 @@
 #   N12 (with a Product ID) NT's restart, bootdisk.of again, and the logon
 #       screen of the installed system
 #
-# MEDIA, none of which can be committed; the row SKIPS where any of the
-# first four is absent.  Under local/gs-docs/projects/windows-nt-ppc-ans/:
+# MEDIA.  From the test data (gs-test-data):
 #
-#   roms/ans-2.26NT-ad405e01.rom   the Network Server's Windows NT
-#                                  Open Firmware 2.26NT, MD5 ad405e01...
-#   images/nt4-ppc.iso             Windows NT 4.0 Workstation for PowerPC,
+#   roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom
+#                                  the Network Server's Windows NT
+#                                  Open Firmware 2.26NT
+#   systems/ans_nt_boot_floppy_daea7d6.img
+#                                  `make floppy` in powermac-nt-hal
+#
+# and, not redistributable, from $GS_EXTRA_MEDIA_DIR/windows-nt-ppc-ans/
+# (the runner hands it to the script as $EXTRA_MEDIA):
+#
+#   nt4-ppc.iso                    Windows NT 4.0 Workstation for PowerPC,
 #                                  OEM 000-48303, MD5 ab37556d72818ed0...
-#   images/boot-floppy.img         `make floppy ISO=<that iso>` in
-#                                  powermac-nt-hal
-#   images/nt-disk-blank.img       `make disk` in powermac-nt-hal: 512 MB,
+#   nt-disk-blank.img              `make disk` in powermac-nt-hal: 512 MB,
 #                                  an ARC system partition and a FAT volume
 #   product-id.txt                 optional: the CD's Product ID, as printed
 #                                  on its Certificate of Authenticity
+#
+# The row SKIPS where any of the first four is absent.
 #
 # The disk image is attached, not copied: the guest's writes land in the
 # row's private delta under WORK_DIR, and the image on disk stays blank.
@@ -78,11 +84,11 @@ include "../lib/mac.script"
 include "../lib/ans.script"
 include "../lib/nt.script"
 
-let nt_root = "../../../local/gs-docs/projects/windows-nt-ppc-ans"
-let nt_rom = "${$nt_root}/roms/ans-2.26NT-ad405e01.rom"
-let nt_cd = "${$nt_root}/images/nt4-ppc.iso"
-let nt_floppy = "${$nt_root}/images/boot-floppy.img"
-let nt_disk = "${$nt_root}/images/nt-disk-blank.img"
+let nt_rom = "../../data/roms/ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom"
+let nt_floppy = "../../data/systems/ans_nt_boot_floppy_daea7d6.img"
+let nt_root = "${$EXTRA_MEDIA}/windows-nt-ppc-ans"
+let nt_cd = "${$nt_root}/nt4-ppc.iso"
+let nt_disk = "${$nt_root}/nt-disk-blank.img"
 let nt_export = try($NT_EXPORT, "")
 
 # --- The installation ---------------------------------------------------------
@@ -269,7 +275,7 @@ if have_media($nt_rom) && have_media($nt_cd) && have_media($nt_floppy) && have_m
         echo "ans-nt-install: text-mode Setup complete and GUI Setup at Registration (rung N10; add product-id.txt for the rest)"
     }
 } else {
-    echo "skip: ans-nt-install (the 2.26NT ROM, the NT 4.0 PowerPC CD, the boot floppy or the blank disk is not present -- see this row's header)"
+    echo "skip: ans-nt-install (the 2.26NT ROM, the boot floppy, or the NT 4.0 PowerPC CD / blank disk under GS_EXTRA_MEDIA_DIR is not present -- see this row's header)"
 }
 
 quit

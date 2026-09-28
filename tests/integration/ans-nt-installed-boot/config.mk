@@ -22,5 +22,9 @@ TEST_ROM := roms/ans500-ans700-962f6c13.rom
 
 TEST_ARGS := model=ans500 ram=65536
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# A cold boot to the desktop is a few minutes on a fast host; room for a
+# slower CI runner.
+TEST_TIMEOUT := 1800
+
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended
