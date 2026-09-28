@@ -773,7 +773,7 @@ The output is not checkpointed and does not survive `machine.boot` or a
 checkpoint load, both of which build a new SCC: set it again afterwards.
 
 The Lisa wires port A's ready line to `/SYNC`, asserted
-([lisa.md](../../machines/lisa/lisa.md) §15), so the Office System prints
+([lisa.md](../machines/lisa/lisa.md) §15), so the Office System prints
 through Serial A only while `machine.scc.a.output` is set; with none, its
 driver reports the printer not ready. The Macintosh drivers use no
 hardware handshake by default and send whether or not an output is set.

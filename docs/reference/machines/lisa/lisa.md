@@ -1183,7 +1183,7 @@ serial driver made.)
   LOS 3.1 install default), File/Print then writes the document's
   ImageWriter command stream into the file; with no output set, the driver
   reports "difficulty printing" and sends nothing. Port B (AppleBus) has no
-  wired handshake. See [scc.md](../../core/peripherals/scc.md), "The far end
+  wired handshake. See [scc.md](../hardware/scc.md), "The far end
   of a port", and the `lisa-serial-output` integration row.
 
 ---
