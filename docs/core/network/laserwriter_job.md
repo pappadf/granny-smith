@@ -9,7 +9,7 @@ bytes between the two, asynchronously, through a *transport*
 calls in here; `laserwriter_job.h` is the interface.
 
 Built only with `PLATEN=1` (`-DGS_PLATEN=1`, see
-[`laserwriter.md`](laserwriter.md)). Without it every entry is a stub and
+[`laserwriter-session.md`](../../reference/protocols/laserwriter-session.md)). Without it every entry is a stub and
 `laserwriter_job_available()` returns false, so the printer keeps its
 spool-only behaviour and the placeholder query answers.
 
@@ -40,7 +40,7 @@ One implementation is linked per build:
   `Module.onPrinterAttach`, the second `emscripten_futex_wake`). The FINISH
   record carries the bridge's `%%Title:` name so the worker can name the
   download; the browser side is
-  [`laserwriter.md`](laserwriter.md) §5.5.
+  [`laserwriter-session.md`](../../reference/protocols/laserwriter-session.md) §5.5.
 
 So the headless acceptance row exercises the same asynchronous bridge the
 browser runs: the shape of the conversation is identical, only the
@@ -93,12 +93,12 @@ five states: idle, opening, ready, feeding, finishing.
   layer keeps the job (`laserwriter_job_finishing()` says the FINISH is
   out) and lets it finish detached, dropping its output with
   `laserwriter_job_discard_output()` (see
-  [`appletalk_printer.md`](appletalk_printer.md) §6.3a).
+  [`pap.md`](../../reference/protocols/pap.md) §6.3a).
 
 One request is outstanding at a time. The PAP layer asks
 `laserwriter_job_ready()` before reading more data and
 `laserwriter_job_feed_pending()` before answering a read credit with a
-status line (see [`appletalk_printer.md`](appletalk_printer.md) §6.3a for
+status line (see [`pap.md`](../../reference/protocols/pap.md) §6.3a for
 the two PAP rules this gives).
 
 ## Status and observability
@@ -124,7 +124,7 @@ spool file), `documents`, `last_pages`, and `last_outcome` (`ok`, `error:
   under `--print-dir` / `$GS_PRINT_DIR` and logs pages and any error.
 - **wasm** has no override: the ring transport never produces bytes here —
   the interpreter worker posts the PDF to the page, which downloads it
-  ([`laserwriter.md`](laserwriter.md) §5.5). The document count still moves.
+  ([`laserwriter-session.md`](../../reference/protocols/laserwriter-session.md) §5.5). The document count still moves.
 - the default (no platform override) logs and drops the document.
 
 ## The prelude and identity

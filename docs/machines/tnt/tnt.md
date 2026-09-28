@@ -325,7 +325,7 @@ I2C triple; **Open Firmware** probes Hammerhead/Bandit/Grand Central,
 sizes memory, writes its environment into a blank NVRAM (`boot`, `ttya`,
 `/AAPL,ROM` — observed, settling the seeded-vs-self-initialised
 question), and hands off; POST logs to NVRAM; the 68k emulator dispatches
-the SuperMario ROM through low-memory init, timer calibration and the
+the SuperMario ROM through low-memory init, timer calibration and the <!-- lint-allow: SuperMario -->
 live tick chain.
 
 `tests/integration/tnt-rom-ladder` asserts the ladder markers up to
@@ -746,7 +746,7 @@ until it accepted the machine.  What it tests, and what each test cost:
 | Serial: DBDMA loopbacks A and B | pass | the ESCC's four DBDMA channels (4/5 A tx/rx, 6/7 B tx/rx) were not wired; grand_central.c gives them ports on the SCC's data registers |
 | Serial: SDLC DBDMA loopback | **fails** | the utility expects the 80th received byte of its 80-byte SDLC frame to be `$28` -- not the data byte, not any CRC-CCITT variant of the frame -- and the model delivers the data byte.  What the real ESCC does at the end of a DMA-fed SDLC frame in local loopback is not understood; left as the one open item |
 | Serial with the loopback connector | needs the cable | the model has the cable (`scc_set_external_loopback`); the row does not plug it in |
-| Keyboard input | pass | `*` left Shift down for good: `keyboard.type()` queued Shift-down and the key in one report and the utility takes one transition per report -- now paced in guest time (docs/core/peripherals/keyboard.md) |
+| Keyboard input | pass | `*` left Shift down for good: `keyboard.type()` queued Shift-down and the key in one report and the utility takes one transition per report -- now paced in guest time (docs/reference/hardware/keyboard.md) |
 
 Two things it said that were not defects.  "Raid Card installed in
 server -- test skipped" came only after the memory-test exception: the

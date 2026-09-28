@@ -3,8 +3,8 @@
 Third-party OEM NuBus display card (Apple-branded, 1992) with a hardware
 QuickDraw fill/raster **acceleration engine**. Modelled in
 [`src/core/peripherals/nubus/cards/display_card_24ac.c`](../../../../../src/core/peripherals/nubus/cards/display_card_24ac.c).
-Catalogued in [`video.md`](../../video.md) §2.3; vROM byte-layout reference in
-[`nubus_vrom.md`](../../nubus_vrom.md).
+Catalogued in [`video.md`](../../../../reference/hardware/video-overview.md) §2.3; vROM byte-layout reference in
+[`declaration-rom.md`](../../../../reference/hardware/nubus/declaration-rom.md).
 
 | | |
 |---|---|
@@ -150,7 +150,7 @@ Format-Block CRC** (`chip[size-12..size-9]`, big-endian; TestPattern
 `$5A932BC7` at `chip[size-6..size-3]`), the analog of `rom.identify`'s checksum.
 It returns `card_id = "display_card_24ac"` and `compatible = [...]`. The
 human-readable card name is owned by the card kind (`machine.profile`), not the
-identify result. See [`nubus_vrom.md`](../../nubus_vrom.md) and
+identify result. See [`declaration-rom.md`](../../../../reference/hardware/nubus/declaration-rom.md) and
 [`src/core/memory/vrom.c`](../../../../../src/core/memory/vrom.c).
 
 ## 5. Tests

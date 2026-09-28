@@ -165,7 +165,7 @@ transports, installed at module construction:
   `<job>-<title>.pdf`.  The protocol is
   [`laserwriter_ring_protocol.h`](../../src/core/network/laserwriter_ring_protocol.h)
   / `printer/platenProtocol.ts`; the whole path is
-  [`docs/core/network/laserwriter.md`](../core/network/laserwriter.md) §5.5.
+  [`docs/reference/protocols/laserwriter-session.md`](../reference/protocols/laserwriter-session.md) §5.5.
 
 One input rides the module config the other way: **`gsAudioWorkletUrl`**,
 the bundled audio-out worklet, which `em_audio.c` loads when sound

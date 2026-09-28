@@ -2,7 +2,7 @@
 
 A NuBus video card is invisible to Mac OS without its declaration ROM (the
 on-card firmware the Slot Manager reads at startup; see
-[nubus_vrom.md](nubus_vrom.md) for the byte layout and the data structures
+[declaration-rom.md](../../reference/hardware/nubus/declaration-rom.md) for the byte layout and the data structures
 it contains). On real hardware that ROM is soldered onto the card, so every
 card model our NuBus code emulates historically needed a *dumped* copy of
 the corresponding Apple ROM to be supplied before the card would work — with
@@ -219,7 +219,7 @@ regeneration determinism.
 
 ## See also
 
-- [nubus_vrom.md](nubus_vrom.md) — the declaration-ROM byte layout and Slot
+- [declaration-rom.md](../../reference/hardware/nubus/declaration-rom.md) — the declaration-ROM byte layout and Slot
   Manager contract this firmware implements.
 - `src/core/peripherals/nubus/vrom68k/` — the 68K fragment sources and
   `vrom68k.mk` (assembled by the core build; no separate toolchain).

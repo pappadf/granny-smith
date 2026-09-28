@@ -9,7 +9,7 @@ recorded once, in [Appendix A](#appendix-a--provenance), per the provenance
 rule described in §2 of this document.*
 
 *The transport below this document is ADSP, specified in
-[appletalk.md §3](appletalk.md#3-adsp--appletalk-data-stream-protocol).*
+[appletalk.md §3](../../reference/protocols/appletalk.md#3-adsp--appletalk-data-stream-protocol).*
 
 ---
 

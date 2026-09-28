@@ -3,7 +3,7 @@
 
 // builtin_se30_video.h
 // SE/30 built-in video as a NuBus card living in slot $E.  See
-// docs/machines/glue/se30.md.  The card
+// docs/reference/machines/glue/se30.md.  The card
 // owns 64 KB VRAM at $FEE00000, a 32 KB declaration ROM at $FEFF8000
 // (real `builtin-se30-video-4f71ff1a.vrom` if available, synthesised fallback otherwise),
 // drives the slot-$E VBL pseudo-IRQ, and exposes a 512×342×1bpp

@@ -288,7 +288,7 @@ int rom_probe_file(const char *path, rom_file_info_t *out) {
 
 // Interleave two 8 KB byte-slice chips into a 16-bit-wide ROM image:
 // even bytes ← high-byte chip (D8–D15), odd bytes ← low-byte chip (D0–D7).
-// `out` must hold 2 * min(hi_size, lo_size) bytes. (docs/machines/lisa/lisa.md §16)
+// `out` must hold 2 * min(hi_size, lo_size) bytes. (docs/reference/machines/lisa/lisa.md §16)
 void rom_interleave_pair(const uint8_t *hi, size_t hi_size, const uint8_t *lo, size_t lo_size, uint8_t *out) {
     size_t n = hi_size < lo_size ? hi_size : lo_size;
     for (size_t i = 0; i < n; i++) {

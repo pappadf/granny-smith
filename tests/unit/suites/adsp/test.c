@@ -12,7 +12,7 @@
 // Wire expectations are transcribed from Inside AppleTalk, 2nd ed., ch. 12
 // (packet format 12-12, control codes 12-14, data-flow examples 12-15,
 // attention 12-19, open dialog 12-22 ff., closing 12-38), distilled in
-// docs/core/network/appletalk.md §III.3.
+// docs/reference/protocols/appletalk.md §III.3.
 
 #include "appletalk_adsp.h"
 #include "test_assert.h"

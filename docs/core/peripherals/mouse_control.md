@@ -5,7 +5,7 @@ controlling the mouse cursor and simulating clicks in the Granny Smith
 emulator.  It covers **all ADB-era machines** (SE, SE/30, Mac II family)
 and the **Mac Plus** (pre-ADB, quadrature mouse).  For Mac Plus hardware
 details (SCC quadrature encoding, VIA signals, connector pinout), see
-[mouse.md](mouse.md).
+[mouse.md](../../reference/hardware/mouse.md).
 
 ---
 
@@ -878,7 +878,7 @@ On ADB-era Macs, this hack is technically unnecessary but harmless.
 On the Mac Plus (non-ADB), the mouse uses SCC DCD interrupts with quadrature
 encoding through VIA port B.  The `set-mouse` default mode on the Plus writes
 low-memory globals directly (identical to `--global`), since there is no ADB
-subsystem to inject deltas through.  See [mouse.md](mouse.md) for full
+subsystem to inject deltas through.  See [mouse.md](../../reference/hardware/mouse.md) for full
 hardware details.
 
 ---

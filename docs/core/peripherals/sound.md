@@ -10,7 +10,7 @@ deterministic capture sink for golden-WAV tests (§4a). The Plus PWM path
 described here and the ASC producer (`asc.c`'s sample-rate drain
 event renders FIFO/wavetable frames, batches them, and pushes with the
 board's speaker mix — SE/30 sums both channels, IIx/IIcx/IIci/IIsi take
-channel A) share that stream; see [asc.md](asc.md) for the chip model.
+channel A) share that stream; see [asc.md](../../reference/hardware/asc.md) for the chip model.
 The ASC's interrupt output is chipset-agnostic (`asc_set_irq_handler`):
 GLUE machines adapt it to VIA2 CB1, the IIci/IIsi wire it to the RBV's
 RvSndIRQ flag (bit 4), and the IIfx routes it to OSS interrupt

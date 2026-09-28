@@ -4,7 +4,7 @@
 | gsvrom_equ.i
 | Clean-room equates for the GS generic declaration ROM.  Every value
 | here is sourced from our own documentation — docs/core/peripherals/
-| nubus_vrom.md, the three annotated whole-ROM disassemblies under
+| declaration-rom.md, the three annotated whole-ROM disassemblies under
 | the published *Designing Cards and Drivers for the
 | Macintosh Family* text — NOT from Apple's AIncludes.
 
@@ -82,7 +82,7 @@
 .equ directType,      2               | direct RGB
 
 | VPBlock (mVidParams sBlock body) field offsets — after the long size
-| field; see nubus_vrom.md sec. 6.2.
+| field; see declaration-rom.md sec. 6.2.
 .equ vpBaseOffset,    0               | long: page-0 offset from FB base
 .equ vpRowBytes,      4               | word
 .equ vpBounds,        6               | 4 words: t/l/b/r

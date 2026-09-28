@@ -5,7 +5,7 @@
 // Macintosh IIx machine implementation.  Sister of iicx.c — shares the
 // GLUE-driven I/O map, dual-VIA / 68030 / Universal-ROM family, and the
 // page table / ROM overlay helpers via iicx_internal.h.  See
-// docs/machines/glue/iicx.md, which covers the IIx differences.
+// docs/reference/machines/glue/iicx.md, which covers the IIx differences.
 //
 // Diff vs iicx.c at a glance:
 //   * Slot table: six NuBus slots ($9..$E) — slot $9 is VIDEO with

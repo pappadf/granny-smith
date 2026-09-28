@@ -2,14 +2,14 @@
 // Copyright (c) pappadf
 
 // lisa_fdc.c
-// Apple Lisa intelligent floppy controller. See lisa_fdc.h and docs/machines/lisa/lisa.md §13.
+// Apple Lisa intelligent floppy controller. See lisa_fdc.h and docs/reference/machines/lisa/lisa.md §13.
 //
 // Behavioural model: the 6504A coprocessor is represented by its 1 KB shared
 // RAM plus a synchronous command engine.  When the 68000 writes the command-
 // issue register (byte 0), the engine reads the command block, services it with
 // disk_read_data / disk_write_data against the image_t, fills the data buffer,
 // sets the status byte, and raises FDIR.  No GCR cell modelling — the
-// controller returns logical 512-byte sectors (docs/machines/lisa/lisa.md §13).
+// controller returns logical 512-byte sectors (docs/reference/machines/lisa/lisa.md §13).
 
 #include "lisa_fdc.h"
 
@@ -28,7 +28,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 
 #define FDC_RAM_BYTES 1024 // controller RAM addressable by the 68000 (odd bytes)
 
-// Command-block byte indices within the shared RAM (docs/machines/lisa/lisa.md §13.2; offsets
+// Command-block byte indices within the shared RAM (docs/reference/machines/lisa/lisa.md §13.2; offsets
 // in the source are address-space, halved here to RAM byte indices).
 #define FDC_CMDREG   0 // command-issue register
 #define FDC_RWTS     1 // RWTS sub-command (CMD)
@@ -57,7 +57,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define FDC_HDR            500 // 12-byte sector tag/header (DSKBUFF)
 #define FDC_DATA           512 // 512-byte data sector (DSKDATA)
 
-// Command-issue values (docs/machines/lisa/lisa.md §13.1).
+// Command-issue values (docs/reference/machines/lisa/lisa.md §13.1).
 #define CMD_EXEC     0x81 // execute the RWTS command
 #define CMD_SEEK     0x83 // seek
 #define CMD_JSR      0x84 // JSR to a host-downloaded routine in controller RAM ($00C003)
@@ -67,7 +67,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define CMD_COLDWAIT 0x88 // wait in ROM for cold start
 #define CMD_LOOP     0x89 // loop in ROM
 
-// RWTS sub-commands (docs/machines/lisa/lisa.md §13.2): 0/7 read, 1 write, 2 unclamp, …
+// RWTS sub-commands (docs/reference/machines/lisa/lisa.md §13.2): 0/7 read, 1 write, 2 unclamp, …
 #define RWTS_READ     0x00
 #define RWTS_WRITE    0x01
 #define RWTS_UNCLAMP  0x02
@@ -78,7 +78,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 // interrupt/drain handler reads them, and CLRSTAT ($85) clears them.  (The disk
 // stays physically attached via fdc->image regardless — reads don't depend on
 // these bits.)  MacWorks' startup drains events until ($C05F & $77) == 0, so a
-// persistently-set "present" bit here would loop forever (docs/machines/lisa/lisa.md §13.3).
+// persistently-set "present" bit here would loop forever (docs/reference/machines/lisa/lisa.md §13.3).
 #define DRVSTAT_DISKIN1   0x01 // drive 1 (lower) disk-inserted event
 #define DRVSTAT_COMPLETE1 0x04 // drive 1 (lower) RWTS complete
 #define DRVSTAT_OR1       0x08 // OR of bits 0-2 (lower-drive summary)
@@ -444,7 +444,7 @@ image_t *lisa_fdc_disk_image(const lisa_fdc_t *fdc) {
 //
 // The Lisa's parameter memory (boot volume + device-configuration table + UI
 // settings, 64 bytes = 32 words) lives at $FCC181 in the controller's shared
-// RAM and is battery/standby-backed on real hardware (docs/machines/lisa/lisa.md §13.4).  Our
+// RAM and is battery/standby-backed on real hardware (docs/reference/machines/lisa/lisa.md §13.4).  Our
 // fdc->ram is volatile, so the OS's installed configuration (e.g. a ProFile
 // added to the device table at clean shutdown) is lost across launches.  These
 // save/load the 64-byte PM region to a host file, modelling the battery backup
@@ -467,7 +467,7 @@ bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path) {
 //
 // The Lisa's 64 bytes of battery-backed parameter memory live inside this
 // controller's RAM at FDC_PM_IDX.  Layout and checksum are documented in
-// docs/machines/lisa/pram_format.md, reverse-engineered from LisaOS and
+// docs/reference/machines/lisa/pram.md, reverse-engineered from LisaOS and
 // boot-ROM source and verified byte-for-byte against two captured images.
 //
 // This store is synthesised HERE, in code, by the device model that owns it:
@@ -478,7 +478,7 @@ bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path) {
 // and delivered through a path-taking pram_load, which made it the only
 // file-backed non-volatile store in the tree.
 
-// VFYCHKSM / prom_cksum ($FE00BC), pram_format.md §5: a 16-bit add-then-
+// VFYCHKSM / prom_cksum ($FE00BC), pram.md §5: a 16-bit add-then-
 // rotate-left-1 sum over all 32 big-endian words.  PRAM is valid iff the sum
 // over the whole 64 bytes comes out zero, so the stored word (word 31) is the
 // two's-complement negate of the sum over words 0..30.
@@ -493,7 +493,7 @@ static uint16_t lisa_pram_checksum(const uint8_t *pm) {
     return (uint16_t)(-acc);
 }
 
-// Pack one DevConfig entry (pram_format.md §3), returning its length.
+// Pack one DevConfig entry (pram.md §3), returning its length.
 //
 //   byte 0: slot<<4 | chan<<1 | IDsize
 //   byte 1: dev<<3  | nExtWords<<1 | idHi
@@ -564,7 +564,7 @@ void lisa_fdc_pram_init(lisa_fdc_t *fdc, uint8_t boot_vol, bool valid, bool inst
     //
     // The driver ids come from that system's SYSTEM.CDD and are matched by
     // FIND_PM_IDS, so they are specific to LOS 3.1 rather than to the
-    // hardware.  Packing follows pram_format.md §3.
+    // hardware.  Packing follows pram.md §3.
     if (installed) {
         static const uint16_t scc_ext[1] = {0xC020};
         int n = 0;
@@ -622,7 +622,7 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     // Power-up parameter-memory default.  The COPS clock/PM region is battery-backed
     // on real hardware; with no persisted PRAM the boot ROM still needs a boot-device
     // selection.  A factory-fresh parameter memory with BootVol = 1 (built-in
-    // Sony floppy, pram_format.md §4) and a COMPUTED checksum, so the ROM
+    // Sony floppy, pram.md §4) and a COMPUTED checksum, so the ROM
     // auto-boots the floppy.  This used to be three hand-poked bytes with a
     // precomputed checksum word, which only stayed correct because nothing
     // else in the region was ever set.

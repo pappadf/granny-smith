@@ -256,7 +256,7 @@ Control as a registered BUILTIN card kind, Grand Central's config presence
 at device 16), slot topology for all three TNT models, the object model,
 staged configuration and the profile surface — and now the PCI I/O window
 on both Bandits, non-BAR region decode, expansion-ROM provisioning
-(`docs/core/peripherals/pci_prom.md`), and the first pluggable card kind,
+(`docs/reference/hardware/pci/expansion-rom.md`), and the first pluggable card kind,
 the Apple Accelerated PCI Graphics Card
 (`src/core/peripherals/pci/cards/mach64gx.c`), which boots System 7.6 to a
 desktop on a Power Macintosh 9500.
@@ -310,8 +310,8 @@ broken by which bus actually seated something.  See the TNT doc for the
   `cards/` convention, adopted for PCI with the Voodoo2)
 - `docs/machines/tnt/tnt.md` — the bridge adapter, slot tables and the
   interrupt map
-- `docs/core/peripherals/pci_prom.md` — expansion-ROM identity and
+- `docs/reference/hardware/pci/expansion-rom.md` — expansion-ROM identity and
   provisioning, the FCode path's half of the story
-- `docs/core/peripherals/nubus_vrom.md` — the declaration-ROM sibling the
+- `docs/reference/hardware/nubus/declaration-rom.md` — the declaration-ROM sibling the
   PROM path mirrors
 - `tests/unit/suites/pci/` — the config-cycle contract, pinned

@@ -24,7 +24,7 @@
 LOG_USE_CATEGORY_NAME("nubus");
 
 // sResource / list-entry ids used by the serialiser (the byte contract
-// in docs/core/peripherals/nubus_vrom.md; clean-room values, mirroring
+// in docs/reference/hardware/nubus/declaration-rom.md; clean-room values, mirroring
 // tools/vrom/gsvrom_equ.i).
 enum {
     ID_SRSRC_TYPE = 1,
@@ -194,7 +194,7 @@ static void put_end_of_list(declrom_builder_t *b) {
 }
 
 // The rotate-left-1-add checksum over the whole image with the 4 CRC
-// bytes (at image end - 12) read as zero (nubus_vrom.md §2.6) — the
+// bytes (at image end - 12) read as zero (declaration-rom.md §2.6) — the
 // same computation crc.py performed at build time.
 static uint32_t declrom_crc(const uint8_t *img, size_t size) {
     size_t crc_at = size - 12;

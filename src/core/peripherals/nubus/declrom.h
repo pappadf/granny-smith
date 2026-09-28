@@ -52,7 +52,7 @@ const uint8_t *declrom_builder_bytes(const declrom_builder_t *b, size_t *out_siz
 
 // One video mode (pixel depth) of a functional video sResource: the
 // VPBlock fields that vary per depth plus its mode-list data entries
-// (nubus_vrom.md §6.1/§6.2).
+// (declaration-rom.md §6.1/§6.2).
 typedef struct declrom_vidmode {
     uint32_t base_offset; // vpBaseOffset: page-0 offset from the FB base
     uint16_t row_bytes; // vpRowBytes
@@ -93,7 +93,7 @@ bool declrom_set_board(declrom_builder_t *b, const char *name, uint16_t board_id
 void declrom_set_vendor(declrom_builder_t *b, const char *vendor_id, const char *rev_level, const char *part_num);
 
 // Stage the PRAMInitData sBlock: default values for the slot's 6
-// modifiable PRAM bytes (b1..b6; nubus_vrom.md §5.2).
+// modifiable PRAM bytes (b1..b6; declaration-rom.md §5.2).
 void declrom_set_pram_init(declrom_builder_t *b, const uint8_t bytes[6]);
 
 // Stage one functional video sResource under directory id `spid`

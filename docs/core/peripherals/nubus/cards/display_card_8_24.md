@@ -4,8 +4,8 @@ Apple's 1990 NuBus display card built on the **Jackson / JMFB / Elmer** ASIC.
 Implemented in
 [`src/core/peripherals/nubus/cards/jmfb.c`](../../../../../src/core/peripherals/nubus/cards/jmfb.c)
 (the source and its whole register set keep the ASIC codename `JMFB`, per Apple's
-own engineering naming). Catalogued in [`video.md`](../../video.md) §2.2; vROM
-byte-layout reference in [`nubus_vrom.md`](../../nubus_vrom.md).
+own engineering naming). Catalogued in [`video.md`](../../../../reference/hardware/video-overview.md) §2.2; vROM
+byte-layout reference in [`declaration-rom.md`](../../../../reference/hardware/nubus/declaration-rom.md).
 
 > **Naming:** this file is named by the *product* (8•24) to sit parallel with
 > [`display_card_24ac.md`](display_card_24ac.md); the implementation unit is
@@ -88,7 +88,7 @@ this tree is the [24AC](display_card_24ac.md).
 
 `machine.vrom.identify` keys off the declaration ROM's NuBus Format-Block CRC and
 returns `card_id = "mdc_8_24"` with `compatible = [...]`. See
-[`nubus_vrom.md`](../../nubus_vrom.md) and
+[`declaration-rom.md`](../../../../reference/hardware/nubus/declaration-rom.md) and
 [`src/core/memory/vrom.c`](../../../../../src/core/memory/vrom.c).
 
 ## 5. Tests
@@ -102,4 +102,4 @@ returns `card_id = "mdc_8_24"` with `compatible = [...]`. See
 ## 6. Provenance
 
 Design contract: `jmfb.h`. Historical
-survey and the Toby→JMFB→DAFB lineage: [`video.md`](../../video.md) §2.
+survey and the Toby→JMFB→DAFB lineage: [`video.md`](../../../../reference/hardware/video-overview.md) §2.

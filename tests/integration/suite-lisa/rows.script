@@ -11,7 +11,7 @@
 def row_lisa_los31_profile() {
     machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
     # Cold-boot LOS from the installed ProFile hard disk (no floppy), relying on the
-    # image's OWN on-disk PRAM snapshot.  See config.mk + docs/machines/lisa/pram_format.md.
+    # image's OWN on-disk PRAM snapshot.  See config.mk + docs/reference/machines/lisa/pram.md.
     #
     # The ProFile image is the one the lisa-los-profile install test produces (copied
     # to a writable scratch path by TEST_SETUP).  The PRAM (also from TEST_SETUP, via

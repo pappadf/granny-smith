@@ -4,7 +4,7 @@
 // builtin_se30_video.c
 // SE/30 built-in video as a NuBus card living in slot $E.  Implements the
 // nubus_card_ops_t vtable plus the SE/30-specific hooks declared in
-// builtin_se30_video.h.  See docs/machines/glue/se30.md.
+// builtin_se30_video.h.  See docs/reference/machines/glue/se30.md.
 //
 // What the card owns:
 //   * 64 KB VRAM at $FEE00000

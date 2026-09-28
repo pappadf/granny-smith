@@ -10,7 +10,7 @@
 | Slot Manager copies the whole sExecBlock to RAM before running it, so
 | everything referenced here must be inside the block.
 |
-| Entry (per docs/core/peripherals/nubus_vrom.md sec. 8): A0 -> seBlock;
+| Entry (per docs/reference/hardware/nubus/declaration-rom.md sec. 8): A0 -> seBlock;
 | only _SlotManager and _SwapMMUMode are guaranteed callable; return
 | status in seStatus (0 = success).
 

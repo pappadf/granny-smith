@@ -62,7 +62,7 @@ void platform_print_host_callstack(void);
 // A ROM at `rom_path` is about to boot (machine_boot_apply, after the
 // document validated): the host's chance to offer the card ROMs it keeps
 // beside it (vrom_offer_dir / prom_offer_dir).  Core builds no search path
-// of its own (docs/core/memory/rom.md).  Headless walks the ROM's directory
+// of its own (docs/reference/formats/mac-rom.md).  Headless walks the ROM's directory
 // for *.vrom / *.prom, as it does for the CLI's rom= at startup; the browser
 // has nothing to do, its card ROMs live in OPFS and are offered on upload.
 void platform_offer_sibling_card_roms(const char *rom_path);

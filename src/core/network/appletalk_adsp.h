@@ -8,7 +8,7 @@
 // Coded from Inside AppleTalk, 2nd ed., chapter 12 — the complete wire
 // specification (packet format 12-12, control packets 12-14, attention
 // messages 12-19, connection opening 12-22, closing 12-38).  The in-house
-// reference distilled from it is docs/core/network/appletalk.md §III.3;
+// reference distilled from it is docs/reference/protocols/appletalk.md §III.3;
 // implementation code should cite that section.
 //
 // The engine is instance-based and transport-agnostic: it never touches DDP
