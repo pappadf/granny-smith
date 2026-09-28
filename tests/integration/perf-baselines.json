@@ -56,6 +56,38 @@
       "instr": 772706113,
       "tolerance": 0.2
     },
+    "scsi-bare-volume/iici-753": {
+      "instr": 222068484,
+      "tolerance": 0.2
+    },
+    "scsi-bare-volume/iifx-753": {
+      "instr": 466420739,
+      "tolerance": 0.2
+    },
+    "scsi-bare-volume/plus-701": {
+      "instr": 230000000,
+      "tolerance": 0.2
+    },
+    "scsi-bare-volume/pm6100-753": {
+      "instr": 1579983598,
+      "tolerance": 0.2
+    },
+    "scsi-bare-volume/pm7500-753": {
+      "instr": 1580000000,
+      "tolerance": 0.2
+    },
+    "scsi-bare-volume/q700-753": {
+      "instr": 224118467,
+      "tolerance": 0.2
+    },
+    "scsi-bare-volume/q840av-71": {
+      "instr": 664545646,
+      "tolerance": 0.2
+    },
+    "scsi-bare-volume/se30-753": {
+      "instr": 224466534,
+      "tolerance": 0.2
+    },
     "suite-ans/ans500-diag-floppy": {
       "instr": 11560000000,
       "tolerance": 0.2
@@ -472,6 +504,10 @@
       "instr": 270578364,
       "tolerance": 0.2
     },
+    "suite-tnt/pm7500-76-8bpp-restart": {
+      "instr": 2500000000,
+      "tolerance": 0.2
+    },
     "suite-tnt/pm7500-76-hd": {
       "instr": 2500000000,
       "tolerance": 0.2
@@ -486,10 +522,6 @@
     },
     "suite-tnt/tnt-voodoo2-display": {
       "instr": 2540000000,
-      "tolerance": 0.2
-    },
-    "suite-tnt/pm7500-76-8bpp-restart": {
-      "instr": 2500000000,
       "tolerance": 0.2
     },
     "tnt-pci-voodoo2": {
