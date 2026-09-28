@@ -76,6 +76,7 @@
 
 include "../lib/mac.script"
 include "../lib/ans.script"
+include "../lib/nt.script"
 
 let nt_root = "../../../local/gs-docs/projects/windows-nt-ppc-ans"
 let nt_rom = "${$nt_root}/roms/ans-2.26NT-ad405e01.rom"
@@ -84,190 +85,14 @@ let nt_floppy = "${$nt_root}/images/boot-floppy.img"
 let nt_disk = "${$nt_root}/images/nt-disk-blank.img"
 let nt_export = try($NT_EXPORT, "")
 
-# --- Keys ---------------------------------------------------------------------
-
-# One ADB key, down and up in separate auto-polls.  Not keyboard.press()
-# (both transitions in one Talk R0 packet) and not keyboard.type() (4 ms
-# spacing, inside one 11 ms poll): NT's ADB path acts on the first
-# transition of a packet and drops the rest.  Codes are the Apple Extended
-# Keyboard's on the wire — the arrows in particular are 0x3B-0x3E, not the
-# 0x7B-0x7E virtual codes the Mac OS uses, which NT does not map.
-def nt_key(code) {
-    machine.adb.keyboard.down("${$code}")
-    scheduler.run 3000000
-    machine.adb.keyboard.up("${$code}")
-    scheduler.run 3000000
-}
-
-# `n` presses of one key, with the guest given time to act on each.
-def nt_keys(code, n) {
-    let k = 0
-    while $k < $n {
-        nt_key($code)
-        scheduler.run 60000000
-        $k = $k + 1
-    }
-}
-
-let K_RETURN = "0x24"
-let K_ESCAPE = "0x35"
-let K_PGDN = "0x79"
-let K_F8 = "0x64"
-let K_UP = "0x3E"
-let K_DOWN = "0x3D"
-
-# --- Open Firmware on ttya ---------------------------------------------------
-
-# Run until the prompt comes back, returning everything printed on the way.
-# Drain first: a stale "0 > " from the previous command would end the wait
-# before the command had even run.
-def nt_prompt(ceiling) {
-    let out = ""
-    let spent = 0
-    while !contains($out, "0 > ") {
-        assert $spent < $ceiling "Open Firmware never came back to its prompt: ${$out}"
-        scheduler.run 20000000
-        $spent = $spent + 20000000
-        $out = "${$out}${machine.scc.a.sent()}"
-    }
-    return $out
-}
-
-# Type `load fd:,\<file>` and then `load-base loadsize eval`, a few
-# characters at a time (the firmware's console drops a long burst).  Returns
-# what the eval printed within `run` instructions; the caller waits for
-# whatever the script starts.
-def nt_load_eval(chunk1, chunk2, run) {
-    let junk = machine.scc.a.sent()
-    ans_send("load fd:")
-    ans_send(",\\${$chunk1}")
-    ans_send("${$chunk2}")
-    machine.scc.a.receive("\r")
-    let loaded = nt_prompt(600000000)
-    assert contains($loaded, " ok") "load fd:,\\${$chunk1}${$chunk2} failed: ${$loaded}"
-    ans_send("load-bas")
-    ans_send("e loadsi")
-    ans_send("ze eval")
-    machine.scc.a.receive("\r")
-    let out = ""
-    let spent = 0
-    while $spent < $run {
-        scheduler.run 20000000
-        $spent = $spent + 20000000
-        $out = "${$out}${machine.scc.a.sent()}"
-    }
-    return $out
-}
-
-# --- SETUPLDR, which draws on ttya ------------------------------------------
-#
-# machine.scc.a.sent() returns the bytes ESCAPED (ESC as \x1B, a backslash
-# doubled), so the markers below avoid backslashes rather than guess at
-# how many to write.
-
-# Send one key over the serial console and run until the next screen says
-# `want`.  A little more time after the text appears lets the screen finish
-# drawing and SETUPLDR get back to its keyboard poll.
-def nt_ldr(key, want, ceiling, rung) {
-    let junk = machine.scc.a.sent()
-    if $key != "" {
-        machine.scc.a.receive("${$key}")
-    }
-    let out = ""
-    let spent = 0
-    while !contains($out, $want) {
-        assert $spent < $ceiling "${$rung}: SETUPLDR never showed '${$want}'"
-        scheduler.run 20000000
-        $spent = $spent + 20000000
-        $out = "${$out}${machine.scc.a.sent()}"
-    }
-    scheduler.run 100000000
-    return "${$out}${machine.scc.a.sent()}"
-}
-
-# --- NT, which draws only on the 54M30 ----------------------------------------
-
-# Run until the screen is `golden`, in 20 M quanta, up to `ceiling`.
-#
-# Verify mode polls screen.matches() and fails with the usual diff
-# artifacts at the ceiling.  REGEN mode waits for the picture to hold still
-# and captures it.  Two things about NT's screens make mac.script's
-# wait_match unsuitable for that: its checksum covers the whole
-# framebuffer, whose off-screen stride padding NT's display driver uses as
-# scratch (so it churns under a still picture), and a focused edit control
-# blinks its caret, so a page waiting for input alternates between two
-# pictures for ever.  This one checksums the visible region and counts
-# either of the last two pictures as still.
-def nt_screen(golden, ceiling) {
-    if $REGEN_MODE == "1" {
-        let seen = 0
-        let seen2 = 0
-        let still = 0
-        let spent = 0
-        while $still < 15 {
-            assert $spent < $ceiling "nt_screen(REGEN): ${$golden}: the screen never settled"
-            scheduler.run 20000000
-            $spent = $spent + 20000000
-            let now = machine.screen.checksum(0, 0, machine.screen.height, machine.screen.width)
-            if $now == $seen || $now == $seen2 {
-                $still = $still + 1
-            } else {
-                $seen2 = $seen
-                $seen = $now
-                $still = 0
-            }
-        }
-        machine.screen.save "${$golden}"
-        return $spent
-    }
-    let spent = 0
-    while $spent < $ceiling {
-        scheduler.run 20000000
-        $spent = $spent + 20000000
-        if machine.screen.matches("${$golden}") { return $spent }
-    }
-    machine.screen.match "${$golden}"
-    return $spent
-}
-
 # --- The installation ---------------------------------------------------------
 
 # nt_have_pid and nt_type_pid(), generated from product-id.txt by nt-pid.sh.
 include "${$WORK_DIR}/nt-pid.script"
 
 def nt_install() {
-    # N1 — a machine that has never been booted, with 64 MB: setup.of puts
-    # load-base at 62 MB and boot.of stages the veneer and the OEM disk
-    # between 58 and 63 MB, so the 32 MB default cannot work.
-    let cleared = try(machine.board.clear_nvram(), none)
-    machine.boot model="ans500" ram=65536 rom="${$nt_rom}"
-    let fw = ""
-    let spins = 0
-    while !contains($fw, "0 > ") && !contains($fw, "install-console>") && $spins < 24 {
-        scheduler.run 250000000
-        $fw = "${$fw}${machine.scc.a.sent()}"
-        $spins = $spins + 1
-    }
-    let settle = 0
-    while !contains($fw, "0 > ") && $settle < 5 {
-        scheduler.run 250000000
-        $fw = "${$fw}${machine.scc.a.sent()}"
-        $settle = $settle + 1
-    }
-    # The console on ttya.  2.26NT already defaults to it; a store that says
-    # otherwise gets Apple's documented terminal setup, as ans_boot_serial
-    # does for the production ROM, and a power cycle.
-    if !contains($fw, "0 > ") {
-        machine.adb.keyboard.type("setenv output-device ttya\n")
-        scheduler.run 400000000
-        machine.adb.keyboard.type("setenv input-device ttya\n")
-        scheduler.run 400000000
-        let ignored = machine.scc.a.sent()
-        machine.restart
-        $fw = "${$fw}${nt_prompt(3000000000)}"
-    }
-    assert contains($fw, "OpenFirmware2.26") "N1: this is not the 2.26NT firmware"
-    assert contains($fw, "0 > ") "N1: the firmware never reached its prompt"
+    # N1 — a virgin machine on the 2.26NT ROM, 64 MB, console on ttya.
+    let fw = nt_power_on($nt_rom)
 
     # The media where the scripts expect them: the CD at id 0 on the first
     # fast/wide controller (boot.of's /bandit/53c825@11/sd@0,0), the disk at
@@ -282,11 +107,7 @@ def nt_install() {
 
     # N2 — setup.of: little-endian? true, real-mode? false, real-base and
     # load-base, reset-all.  It resets the machine itself.
-    let le = nt_load_eval("setup", ".of", 200000000)
-    assert contains($le, "setting little-endian mode") "N2: setup.of did not run: ${$le}"
-    let back = nt_prompt(6000000000)
-    assert contains($back, "OpenFirmware2.26") "N2: the machine did not come back from setup.of's reset"
-    echo "N2: little-endian configuration set; the firmware is back"
+    nt_setup_of()
 
     # N3 — boot.of: the veneer off the floppy by read-blocks, all 2880
     # blocks of the floppy into RAM behind it (NT has no SWIM3 driver, so
