@@ -4,7 +4,7 @@
 // meta.c
 // The `Meta` class. Every node implicitly carries a `meta` attribute
 // whose value is a synthetic Meta node bound to the inspected object.
-// See proposal-introspection-via-meta-attribute.md.
+// See docs/core/shell/object-model.md.
 //
 // Lifetime: meta nodes are allocated lazily on first access and cached
 // on the inspected object's private `meta_node` slot. object_delete
@@ -91,27 +91,24 @@ typedef struct {
     value_t *items;
     size_t len;
     size_t cap;
+    bool oom; // set when a push failed; the list must not be returned short
 } name_list_t;
 
+// The shared accumulator, val_list_push.  This was the second of five
+// near-identical copies, and like the others it discarded the failure -- so
+// meta.children and meta.indices returned a SILENTLY TRUNCATED list under
+// memory pressure, which the inspector renders as the complete set.
 static bool name_list_push(name_list_t *acc, const char *name) {
     if (!name)
         return true;
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 16;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(name);
-    return true;
+    return val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name));
 }
 
 static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
     (void)parent;
     name_list_t *acc = (name_list_t *)ud;
-    name_list_push(acc, object_name(child));
+    if (!name_list_push(acc, object_name(child)))
+        acc->oom = true;
 }
 
 // === Attribute getters ====================================================
@@ -133,8 +130,8 @@ static value_t meta_get_doc(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     // Class descriptors do not carry a doc string today. Reserved for a
-    // future class_desc_t.doc field; the proposal lists this surface as
-    // part of v1 but Record/doc encoding is the §7 open question.
+    // future class_desc_t.doc field; how a class doc would be encoded is
+    // still an open question.
     return val_str("");
 }
 
@@ -156,11 +153,18 @@ static value_t meta_get_children(struct object *self, const member_t *m) {
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_CHILD)
-                name_list_push(&acc, cls->members[i].name);
+                if (!name_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
     }
     // Attached (runtime) children in deterministic (order, attach_seq)
-    // sequence so the SYSTEM tab renders stably (proposal §7.4).
+    // sequence so the SYSTEM tab renders stably.
     object_each_attached_ordered(insp, each_attached_collect, &acc);
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
     return val_list(acc.items, acc.len);
 }
 
@@ -174,7 +178,14 @@ static value_t meta_get_attributes(struct object *self, const member_t *m) {
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_ATTR)
-                name_list_push(&acc, cls->members[i].name);
+                if (!name_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }
@@ -189,13 +200,20 @@ static value_t meta_get_methods(struct object *self, const member_t *m) {
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_METHOD)
-                name_list_push(&acc, cls->members[i].name);
+                if (!name_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }
 
 // Map a visibility-category bitfield (M_CAT_*) to its string name. Used by
-// the SYSTEM tab / command browser to honour the §7.2 three-tier model.
+// the SYSTEM tab / command browser to honour the three-tier model.
 static const char *category_name(uint16_t flags) {
     switch (flags & M_CAT_MASK) {
     case M_CAT_ADVANCED:
@@ -207,7 +225,7 @@ static const char *category_name(uint16_t flags) {
     }
 }
 
-// `label` — the inspected node's display label (proposal §7.1). Falls back
+// `label` — the inspected node's display label. Falls back
 // to its path-segment name when no explicit label was set.
 static value_t meta_get_label(struct object *self, const member_t *m) {
     (void)m;
@@ -218,7 +236,7 @@ static value_t meta_get_label(struct object *self, const member_t *m) {
 
 // `category` — the inspected node's own visibility tier (basic / advanced /
 // internal). Lets the SYSTEM tab decide whether to show a child object
-// without a separate allowlist (proposal §7.2 / §8.2).
+// without a separate allowlist.
 static value_t meta_get_category(struct object *self, const member_t *m) {
     (void)m;
     struct object *insp = meta_inspected(self);
@@ -234,14 +252,12 @@ static value_t meta_get_category(struct object *self, const member_t *m) {
 static value_t meta_method_complete(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const char *line = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s) ? argv[0].s : "";
-    int cursor = (int)strlen(line);
-    if (argc >= 2) {
-        if (argv[1].kind == V_INT)
-            cursor = (int)argv[1].i;
-        else if (argv[1].kind == V_UINT)
-            cursor = (int)argv[1].u;
-    }
+    // `line` is a required V_STRING and `cursor` a V_INT, so node_validate_args
+    // has already rejected a call that does not supply them that way.  Only
+    // `cursor` being absent is still a live case -- it is optional with no
+    // default, so a one-argument call truncates argc to 1.
+    const char *line = argv[0].s;
+    int cursor = (argc >= 2 && argv[1].kind == V_INT) ? (int)argv[1].i : (int)strlen(line);
     if (!g_complete_provider)
         return val_list(NULL, 0);
     return g_complete_provider(line, cursor);
@@ -252,8 +268,7 @@ static value_t meta_method_complete(struct object *self, const member_t *m, int 
 // already knows which member it wants.
 static value_t meta_method_member(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("member: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const class_desc_t *cls = insp ? object_class(insp) : NULL;
     const member_t *mb = class_find_member(cls, argv[0].s);
@@ -282,24 +297,22 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
 }
 
 // `member_category(name)` — visibility tier of a named member on the
-// inspected class: "basic" / "advanced" / "internal" (proposal §7.2). The
+// inspected class: "basic" / "advanced" / "internal". The
 // SYSTEM tab reads this to decide whether to show an attribute/method row.
-// Unknown names default to "basic" (faithful-by-default, §P6).
+// Unknown names default to "basic" (faithful-by-default).
 static value_t meta_method_member_category(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("member_category: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     return val_str(category_name(mb ? mb->flags : 0));
 }
 
 // `member_label(name)` — display label of a named member, falling back to the
-// name itself (proposal §7.1).
+// name itself.
 static value_t meta_method_member_label(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("member_label: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     const char *label = (mb && mb->label) ? mb->label : argv[0].s;
@@ -307,14 +320,13 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
 }
 
 // `method_info(name)` — UI metadata for a method member, a typed map so the
-// context menu and command browser render it without a static catalogue
-// (proposal §7.3/§8.3/§8.6): verb label, task category, destructive/mutate/
-// hidden flags, declared arg count, and doc. Returns a V_ERROR if the member
+// context menu and command browser render it without a static catalogue:
+// verb label, task category, destructive/mutate/hidden/io flags, declared arg
+// count, and doc. Returns a V_ERROR if the member
 // is not a method.
 static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("method_info: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!mb || mb->kind != M_METHOD)
@@ -328,42 +340,136 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
     val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
     val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
     val_map_put(b, "hidden", val_bool((mb->method.ui_flags & MM_HIDDEN) != 0));
+    val_map_put(b, "io", val_bool((mb->method.ui_flags & MM_IO) != 0));
     val_map_put(b, "nargs", val_int((int64_t)mb->method.nargs));
     return val_map_finish(b);
 }
 
-// `indices(name)` — the live indices of an indexed-child member (proposal
-// §5.3). Lets a tree walker enumerate a sparse collection's occupants
+// `indices(name)` — the live indices of an indexed-child member. Lets a
+// tree walker enumerate a sparse collection's occupants
 // (machine.scsi.device[0], [3], …) instead of stopping at the bare collection
 // member. Returns a V_LIST<V_INT> for an indexed member (possibly empty), or
 // a V_ERROR for a non-indexed / unknown member — so a caller can use the
 // error/list distinction to tell "indexed collection" from "named child".
+static value_t indices_of(struct object *insp, const member_t *mb);
+
 static value_t meta_method_indices(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("indices: expected (name)");
+    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!mb || mb->kind != M_CHILD || !mb->child.indexed)
         return val_err("indices: '%s' is not an indexed child", argv[0].s);
-    // Walk the member's sparse-index iterator (start at -1). next() returns the
-    // next live index or -1 when exhausted; holes are skipped by the callback.
+    return indices_of(insp, mb);
+}
+
+// `members(values?)` — every member of the inspected node in one call, one
+// map each: {name, kind: attr|child|method, category, label, doc}, plus
+// `readonly` (and, with values=true, `value`) for an attribute, `indexed`
+// (and `indices`) for a child, and the method_info fields for a method.
+// Runtime-attached children are listed after the class members with their
+// own label and category.  A tree view used to spend two or three round
+// trips per member on member_category / member_label / indices.
+// Values are opt-in: some attributes are volatile or costly to read.
+
+// The live indices of an indexed-child member, as a V_LIST<V_INT>.
+static value_t indices_of(struct object *insp, const member_t *mb) {
     value_t *items = NULL;
     size_t len = 0, cap = 0;
-    if (mb->child.next) {
-        for (int i = mb->child.next(insp, -1); i >= 0; i = mb->child.next(insp, i)) {
-            if (len + 1 > cap) {
-                size_t ncap = cap ? cap * 2 : 8;
-                value_t *t = (value_t *)realloc(items, ncap * sizeof(value_t));
-                if (!t)
-                    break;
-                items = t;
-                cap = ncap;
-            }
-            items[len++] = val_int(i);
+    for (int i = object_child_next(insp, mb, -1); i >= 0; i = object_child_next(insp, mb, i)) {
+        if (!val_list_push(&items, &len, &cap, val_int(i))) {
+            for (size_t k = 0; k < len; k++)
+                value_free(&items[k]);
+            free(items);
+            return val_err("out of memory");
         }
     }
     return val_list(items, len);
+}
+
+static value_t describe_member(struct object *insp, const member_t *mb, bool values) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
+    const char *kind = mb->kind == M_ATTR ? "attr" : mb->kind == M_CHILD ? "child" : "method";
+    val_map_put(b, "kind", val_str(kind));
+    val_map_put(b, "category", val_str(category_name(mb->flags)));
+    val_map_put(b, "label", val_str(mb->label ? mb->label : (mb->name ? mb->name : "")));
+    val_map_put(b, "doc", val_str(mb->doc ? mb->doc : ""));
+    switch (mb->kind) {
+    case M_ATTR:
+        val_map_put(b, "readonly", val_bool((mb->flags & VAL_RO) != 0 || !mb->attr.set));
+        if (values)
+            val_map_put(b, "value", node_get((node_t){.obj = insp, .member = mb, .index = -1}));
+        break;
+    case M_CHILD:
+        val_map_put(b, "indexed", val_bool(mb->child.indexed));
+        if (mb->child.indexed)
+            val_map_put(b, "indices", indices_of(insp, mb));
+        break;
+    case M_METHOD:
+        val_map_put(b, "verb", val_str(mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : "")));
+        val_map_put(b, "task", val_str(mb->method.task_category ? mb->method.task_category : ""));
+        val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
+        val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
+        val_map_put(b, "hidden", val_bool((mb->method.ui_flags & MM_HIDDEN) != 0));
+        val_map_put(b, "io", val_bool((mb->method.ui_flags & MM_IO) != 0));
+        val_map_put(b, "nargs", val_int((int64_t)mb->method.nargs));
+        break;
+    }
+    return val_map_finish(b);
+}
+
+typedef struct {
+    value_t *items;
+    size_t len, cap;
+    bool oom;
+} member_list_t;
+
+static void member_list_push(member_list_t *acc, value_t v) {
+    if (v.kind == V_ERROR) {
+        value_free(&v);
+        acc->oom = true;
+        return;
+    }
+    if (!val_list_push(&acc->items, &acc->len, &acc->cap, v))
+        acc->oom = true;
+}
+
+static void each_attached_describe(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    const char *name = object_name(child);
+    if (!name)
+        return;
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "name", val_str(name));
+    val_map_put(b, "kind", val_str("child"));
+    val_map_put(b, "category", val_str(category_name(object_category(child))));
+    const char *label = object_label(child);
+    val_map_put(b, "label", val_str(label ? label : name));
+    val_map_put(b, "doc", val_str(""));
+    val_map_put(b, "indexed", val_bool(false));
+    member_list_push((member_list_t *)ud, val_map_finish(b));
+}
+
+static value_t meta_method_members(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    bool values = argc >= 1 && argv[0].kind == V_BOOL && argv[0].b;
+    struct object *insp = meta_inspected(self);
+    if (!insp)
+        return val_list(NULL, 0);
+    member_list_t acc = {0};
+    const class_desc_t *cls = object_class(insp);
+    for (size_t i = 0; cls && i < cls->n_members && !acc.oom; i++)
+        member_list_push(&acc, describe_member(insp, &cls->members[i], values));
+    if (!acc.oom)
+        object_each_attached_ordered(insp, each_attached_describe, &acc);
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
+    return val_list(acc.items, acc.len);
 }
 
 // === Class table =========================================================
@@ -377,11 +483,21 @@ static const arg_decl_t meta_complete_args[] = {
 };
 
 static const arg_decl_t meta_member_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Member name on the inspected class"},
+    {.name = "name",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Member name on the inspected class"},
 };
 
 static const arg_decl_t meta_named_member_args[] = {
     {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Member name"},
+};
+
+static const arg_decl_t meta_members_args[] = {
+    {.name = "values",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Also read each attribute's current value (default false)"},
 };
 
 static const member_t meta_members[] = {
@@ -445,6 +561,10 @@ static const member_t meta_members[] = {
      .name = "method_info",
      .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}},
+    {.kind = M_METHOD,
+     .name = "members",
+     .doc = "Every member in one call: name, kind, category, label, doc, and per kind readonly/value, "
+            "indexed/indices or the method_info fields", .method = {.args = meta_members_args, .nargs = 1, .result = V_LIST, .fn = meta_method_members}},
     {.kind = M_METHOD,
      .name = "indices",
      .doc = "Live indices of an indexed-child member (errors if not indexed)",

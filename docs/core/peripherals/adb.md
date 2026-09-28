@@ -382,6 +382,38 @@ mouse, read back handler `$FE`, concluded "not a mouse", and dropped the
 device (its verbose boot console prints `ADB device @ 0 = 3-FE` when this
 model gets it wrong).
 
+#### Bit 13 is taken from the `$00` form only
+
+`adb_device_t` carries `srq_enabled` as real per-device state, set at reset
+and written by **Listen R3 with handler `$00`** — the form Guide 2e
+`:7810-7812` names: *"To disable a device's ability to send a Service
+Request signal, set bit 13 in register 3 to 0 by using a Listen Register 3
+command with a Device Handler ID of `$00`… To enable the Service Request
+ability, set this bit to 1."*
+
+The `$FE` form moves the address and leaves bit 13 alone. Nothing ties bit
+13 to `$FE`, and the two readings are not symmetric in cost: a host that
+moves a device with `$FE` and a bare address in bits 11–8 would, on the
+other reading, silently switch that device's Service Request off and stop
+receiving its input unasked.
+
+The state is real, not readback: a device with bit 13 clear still answers
+when it is polled, but it no longer raises the SRQ path — neither the VIA
+transceiver's `adb_autopoll_deferred` nor the shared `adb_autopoll_next`
+counts it as "another device is asking". If it did not change behaviour the
+bit would be decoration.
+
+#### What a Talk R3 answers
+
+Byte 0 is **not** the bare address. Per the table above it is bit 14 set
+("exceptional event … always 1 if unused"), bit 13 = `srq_enabled`, bits
+11–8 the address — so an ordinary idle device answers `$6X`. That value is
+*derived* from the bit table, not quoted: the Guide has register-0 and
+register-2 content tables per device (8-4, 8-7, 8-8, 8-10, 8-11) and no
+register-3 one. The model once answered `$0X` — bits 14 and
+13 both clear, which reads as "an exceptional event is in progress and I
+cannot service-request".
+
 #### Caps Lock is a locking switch, and that has consequences
 
 Caps Lock is the only key here that is a mechanically *locking* switch rather than a
@@ -554,8 +586,30 @@ The emulator sets bit 3 via `set_adb_int()`:
 The third interrupt delivers a dummy byte that is not consumed; bit 3 = 0 signals
 end of data.
 
-**No-reply scenario**: bit 3 = 0 on the first interrupt → sets `fDBNoReply`,
-`fDBCnt` zeroed at `@fetchDone`.
+**No-reply scenario**: bit 3 = 0 on the first EVEN byte → sets fDBFlag bit 1
+("no reply", `$408070DA`). The byte is still read into the buffer and the ROM
+goes on to the ODD byte, whose bit 3 it reads as the **Service Request** line
+(`$40807124`: low → fDBFlag bit 2 + `$15D` bit 3 → rescan every device from
+`$408071F2`). The completion routine is *not* called on this path — the
+no-reply exits through `$4080719C` (next device of an SRQ scan) or `$40807184`
+(resume the auto-poll, `$4080724C`) — so the byte count is never seen by a
+service routine. In init mode (`$15D` bit 5, the boot enumeration) the ROM
+jumps to the completion routine straight from the no-reply EVEN byte with the
+count still 0, and the enumerator tests fDBFlag bit 1.
+
+The line therefore means something different in each phase, and the model
+delivers it accordingly (`adb_deliver_next_byte`):
+
+| Phase | bit 3 low means | Emulator |
+|-------|-----------------|----------|
+| CMD completion | SRQ at command time: re-queue this command, run the poll (`$40807046`) | always high |
+| first EVEN byte | device did not answer | low for `reply_len == 0` |
+| first ODD byte | some device is service-requesting | low only if a device with data has R3 bit 13 set |
+| later EVEN byte | end of data → completion routine | low (the end-of-transfer dummy) |
+
+Pulling the ODD byte low after every idle poll used to make the ROM set its
+SRQ-pending bit each time and never leave the scan loop: two explicit Talk R0s
+every ~12 ms for the life of the machine, and no transceiver auto-poll at all.
 
 ### Data Replay Phase (Phase 2)
 
@@ -732,14 +786,22 @@ respecting the ROM's transaction state machine. This was incorrect:
 
 The ADB controller is driven primarily by the port B output callback:
 
-1. **`adb_shift_byte` (shift_cb)**: Intentionally a **no-op**. On the SE/30,
-   VIA1 SR operates in mode 7 (shift out under external clock). The ROM
-   sometimes writes SR during interrupt handling while ACR is still mode 7,
-   triggering spurious `sr_shift_complete` callbacks. The ADB module reads SR
-   directly at each port B state transition instead.
+1. **No `shift_cb` at all.** On the SE/30, VIA1 SR operates in mode 7 (shift
+   out under external clock). The ROM sometimes writes SR during interrupt
+   handling while ACR is still mode 7, triggering spurious
+   `sr_shift_complete` callbacks, so the ADB module reads SR directly at each
+   port B state transition instead. The machines that used to register a
+   callback forwarding to a no-op `adb_shift_byte` now register `NULL`;
+   `via.c` tolerates that.
 
 2. **`adb_port_b_output` (output_cb)**: The main entry point. Called by the
-   machine layer when the OS changes ST0/ST1 on port B. Handles all four states:
+   machine layer on **every** VIA1 port B write — not only on an ST change.
+   The ST-transition filter is here, in `adb.c`, not in the machine glue:
+   PB0–PB2 are the RTC's bit-banged serial lines and the ROM drives them
+   constantly, so a write whose PB5:PB4 do not change is not an ADB event
+   (BUG-004). The shadow it compares against, `last_port_b`, is part of the
+   checkpointed ADB state and starts at `$30` (ST idle). Handles all four
+   states:
 
    - **State 0 (CMD)**: Read the command byte directly from `via_read_sr()`.
      Decode the command, prepare the reply buffer, and schedule a deferred
@@ -748,8 +810,9 @@ The ADB controller is driven primarily by the port B output callback:
 
    - **State 1/2 (EVEN/ODD)**: If a Listen command is active, read the data
      byte from SR. Otherwise, schedule deferred delivery of the next reply byte
-     (or dummy) via `adb_deliver_next_byte_deferred`. A `dummy_sent` guard
-     suppresses scheduling during the ROM's data replay phase (see below).
+     (or dummy) via `adb_deliver_next_byte_deferred`; a delivery past the
+     end of the reply is the end-of-transfer dummy (or, for a no-reply
+     Talk's ODD byte, the SRQ status — see "No-reply scenario" above).
 
    - **State 3 (IDLE)**: Cancel stale `adb_shift_complete_deferred` and
      `adb_deliver_next_byte_deferred` events from the previous transaction.
@@ -784,13 +847,33 @@ may enter a **data replay phase** (Phase 2) where it writes processed data back
 to VIA SR and toggles EVEN/ODD on port B. These port B transitions trigger the
 EVEN/ODD handler, which would normally schedule another `deliver_next_byte`.
 
-The `dummy_sent` flag prevents this:
+The `dummy_sent` flag records this:
 - Set to `true` when the dummy byte is delivered in `adb_deliver_next_byte()`
 - Cleared when a new command is decoded in `adb_decode_command()`
-- The EVEN/ODD handler checks `if (!dummy_sent)` before scheduling delivery
+- The IDLE handler uses it to tell an aborted Talk (reply prepared, nothing
+  fetched, no dummy sent) from a completed one
 
-Without this guard, the emulator delivers spurious dummy bytes during replay,
-overwriting the ROM's SR writes and corrupting the data stream.
+### The command byte must not complete itself (issue #122)
+
+The ROM writes the command to SR (`$40807406`, ACR already in mode 7) about
+120 CPU cycles *before* it writes ST1:ST0 = CMD to port B (`$408073DC`), with
+interrupts masked in between. `via.c` used to schedule its generic 8-VIA-cycle
+shift-out completion (~160 CPU cycles) at that SR write and rely on
+`adb_port_b_output`'s `via_cancel_pending_shift()` to cancel it at the port-B
+write. On the wrong E-clock phase the timer won first: IFR_SR was set before
+the command was even started, the ROM took the interrupt as the command
+completion, stepped to EVEN, and read the SR — still holding the command byte
+— as the reply's first data byte. `adb_shift_complete_deferred` then fired in
+state 1 and supplied the second byte, the end-of-transfer dummy completed a
+two-byte "reply" of `3C FF`, and the mouse service routine posted `$3C` (bit 7
+clear) as a button-down: `MBState` flipped to `$00` with no report behind it.
+The log signature is `adb_shift_complete_deferred: state=1`.
+
+A 6522 in mode 7 has no clock of its own — CB1 belongs to the transceiver —
+so `via.c` now schedules no completion timer for a mode-7 SR write on a VIA
+with no shift-out device registered (the SE/30, IIx, IIcx, IIci and Q700 pass
+`via1_shift_out = NULL`). The Plus keyboard, Egret and Cuda machines register
+one, and for them the timer remains the modelled external clock.
 
 ### Null Responses
 
@@ -841,10 +924,13 @@ caused the ROM to read uninitialised `ShiftIntResume` pointers. Fix: use deferre
 events with realistic ADB bus delays.
 
 **BUG-004** (fixed): The ROM sometimes writes SR while ACR is still in mode 7,
-triggering spurious `sr_shift_complete` callbacks. Fix: the `adb_shift_byte`
-callback is a no-op; command bytes are read directly from `via_read_sr()` in the
+triggering spurious `sr_shift_complete` callbacks. Fix: no `shift_cb` is
+registered at all; command bytes are read directly from `via_read_sr()` in the
 CMD handler. Additionally, `set_adb_int(true)` at CMD start deasserts vADBInt
-as real hardware would on seeing an attention pulse.
+as real hardware would on seeing an attention pulse. The same bug is why
+`adb_port_b_output` filters on ST: the ROM bit-bangs the RTC on PB0-PB2 of the
+same port, and real hardware ignores a write whose ST lines do not change
+electrically.
 
 **BUG-006d** (fixed): The ROM's data replay phase (Phase 2) toggles EVEN/ODD on
 port B, causing the emulator to schedule spurious dummy byte deliveries. Fix:
@@ -855,8 +941,7 @@ was not issuing Talk R0 commands because the emulator had no transceiver-level
 auto-poll. The real ADB transceiver IC repeats the last Talk R0 every ~11 ms in
 idle state; this fires IFR_SR to restart the ROM's ADB state machine. Fix:
 implemented `adb_autopoll_deferred`, a scheduler callback that prepares a Talk R0
-reply and fires IFR_SR when a device has pending data. See
-`docs/adb-debug-handover.md` for the full investigation history.
+reply and fires IFR_SR when a device has pending data.
 
 **BUG-009** (fixed): Mouse button release (`mouse-button up`) was lost on
 SE/30 when delivered through the ADB hardware path. Two sub-issues:

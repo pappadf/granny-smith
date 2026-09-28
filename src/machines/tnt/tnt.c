@@ -32,6 +32,7 @@
 #include "dbdma.h"
 
 #include "adb.h"
+#include "appletalk.h"
 #include "checkpoint_images.h"
 #include "debug.h"
 #include "debug_mac.h"
@@ -39,7 +40,9 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_checkpoint.h"
 #include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "pci.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -47,10 +50,13 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "slot_tables.h"
+#include "swim3.h"
 #include "sym53c8xx.h" // the fast/wide controllers the ANS slot table seats
 #include "via.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -299,6 +305,9 @@ static void tnt_memory_layout(config_t *cfg) {
 // bus's slow path byte by byte.  The CPU MMU is deliberately not in the
 // path (the sonic/psc memory-hook precedent).
 
+// The DBDMA port: RAM by memcpy, everything else through the bus.  NOT
+// dma_mem_port_physical, which resolves host memory only and reads device
+// space as zero (dma_mem.h).
 //
 // The engine is a bus master behind Bandit 1, so its traffic crosses the
 // same reversed lanes as the CPU's when the bridge is in little-endian
@@ -306,7 +315,6 @@ static void tnt_memory_layout(config_t *cfg) {
 // stays a memcpy in the straight case; the reversed case walks bytes (the
 // XOR never leaves the aligned 8-byte group, so a block inside RAM stays
 // inside RAM).
-
 static void tnt_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     bool rev = gc_lanes_reversed(cfg);
@@ -340,29 +348,36 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
 }
 
 // Channel completion -> Grand Central interrupt n (== channel n), an
-// edge event into the fabric (interrupt-map §2.1).
+// edge event into the fabric.
+// A DBDMA channel interrupt is a LEVEL, not a pulse: the channel holds
+// its request asserted — visible in Grand Central's Levels register —
+// until the host acknowledges it through the interrupt-clear register.
+// That is the only way Mac OS can see one at all: the NanoKernel's
+// ExtIntHandlerTNT classifies from Levels & Mask and never reads Events,
+// so a completion raised as a one-shot event reached the 68k side never.
+// The shipping sound driver shows the contract from the other end: it
+// acknowledges channel 8 (clear $100) before it starts a program, and
+// its completion handler acknowledges again — with a pulse model those
+// acknowledges cleared nothing, the handler never ran after the first
+// program parked, and every sound after the firmware beep was silence.
 static void tnt_dbdma_irq(void *ctx, int chan) {
-    tnt_gc_pulse_event((config_t *)ctx, chan);
+    tnt_gc_set_source((config_t *)ctx, chan, true);
 }
 
 // ============================================================
 // VIA1 callbacks — Cuda transport (the PDM/AV pattern, third instance)
 // ============================================================
 
+// Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out, PB5 TIP
+// out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void tnt_via1_output(void *context, uint8_t port, uint8_t value) {
-    config_t *cfg = (config_t *)context;
-    tnt_state_t *st = tnt_st(cfg);
-    // Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out,
-    // PB5 TIP out — the classic Cuda bit positions).
-    if (port == 1 && st && st->cuda)
-        av_cuda_via1_pb_input(st->cuda, value);
+    tnt_state_t *st = tnt_st((config_t *)context);
+    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void tnt_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    tnt_state_t *st = tnt_st(cfg);
-    if (st && st->cuda)
-        av_cuda_via1_shift_input(st->cuda, byte);
+    tnt_state_t *st = tnt_st((config_t *)context);
+    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ -> Grand Central interrupt 18 (level-sensitive; the
@@ -385,6 +400,17 @@ static void tnt_scc_irq(void *context, bool active) {
 }
 
 // 53C94 /IRQ -> Grand Central interrupt 12 (level; 68k IPL 2).
+// MESH's interrupt line goes to Grand Central's MESH source; its DBDMA data
+// phases go to channel 10.  Both used to be reached from inside the model.
+static void tnt_mesh_irq(void *ctx, bool level) {
+    tnt_gc_set_source((config_t *)ctx, TNT_INT_MESH, level);
+}
+
+static void tnt_mesh_dbdma_kick(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    tnt_dbdma_kick(tnt_st(cfg)->dbdma, 10);
+}
+
 static void tnt_scsi96_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     if (tnt_st(cfg))
@@ -463,13 +489,13 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 //
 // The carry follows the power switch, i.e. machine.restart, and stops
 // at machine.boot: that builds a NEW machine, which inherits nothing it
-// was not given (proposal-boot-vs-reset §2).  The distinction is not
+// was not given.  The distinction is not
 // bookkeeping.  A run stopped part-way through Open Firmware's format of
 // a virgin store — a bounded `scheduler.run`, a client that walked away
 // mid-run — leaves the store torn, and a machine built on a torn store
 // stops in the ROM's serial-console read loop with a black screen and
 // no way back short of restarting the process.  Rows that DO want the
-// same chip across two cold boots (ans-diag-floppy's DIMM table) say so
+// same chip across two cold boots (suite-ans's ans500-diag-floppy: its DIMM table) say so
 // with machine.restart.
 static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
 static bool tnt_nvram_carry_valid;
@@ -533,16 +559,26 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     uint32_t tick_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
 
     // The ESCC cell behind the Grand Central decode, reachable through two
     // apertures (legacy +$12000 for the 68k Serial Driver, ESCC +$13000
     // for Open Firmware/native drivers — grand_central.c).  Clocks follow
     // the PDM values pending a TNT-specific measurement.  The chip's one
     // INT line fans to Grand Central interrupts 15/16 (ch A/B) — per-
-    // channel splitting arrives with the Phase F serial datapath.
+    // channel splitting belongs to the serial datapath.
     cfg->scc = scc_init(NULL, cfg->scheduler, tnt_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
+
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists -- and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    // LocalTalk is the only AppleTalk path these machines have here: the
+    // Grand Central MACE window is a #define and nothing else, so there is no
+    // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
+    // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
+    // the family up rather than proving it.
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
 
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the
@@ -572,6 +608,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
     }
+    // Control's pixel-clock synthesiser hangs off Cuda's I2C bus (device
+    // $50): the video driver programs it with three RdWrIIC packets per
+    // mode-set, and the retrace period derives from what it wrote.
+    av_cuda_attach_i2c_write(st->cuda, tnt_control_i2c_write, cfg);
 
     // The DBDMA engine behind the island's +$8000 channel windows.  No
     // device ports are attached yet — each datapath phase (AWACS ch 8,
@@ -588,7 +628,13 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
-    tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
+    static const dma_mem_port_t dbdma_port = {
+        .read_block = tnt_dbdma_mem_read,
+        .write_block = tnt_dbdma_mem_write,
+    };
+    dma_mem_port_t port = dbdma_port;
+    port.ctx = cfg;
+    tnt_dbdma_set_memory_port(st->dbdma, &port);
     tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
 
     // The AWACS sound face on channel 8 (Open Firmware's beep is the
@@ -601,6 +647,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_gc_attach_object(cfg); // machine.gc; construction only, not on reset
     // The Network Server's GBUS island — built before the memory layout so
     // the LCD is answering from the very first POST write.  That ordering is
     // the whole point of it: POST establishes its LCD path before it sizes
@@ -650,17 +697,17 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             tnt_control_update(cfg); // rebuild the descriptor from restored regs
     }
 
-    // SCSI (Phase E; appended at the end of the positional stream).  The
+    // SCSI (appended at the end of the positional stream).  The
     // image list restores before the devices that resolve media out of
     // it, then the shared bus, then the chips.  hd= media land on
     // cfg->scsi = the MESH internal bus (boot disks are internal on the
     // real machines); the external 53C94 is instantiated with NO bus
     // attached — every select times out, the empty-chain presentation
-    // (the PDM 8100 fast-chip precedent).  CD-ROM joins the 53C94 chain
-    // in a later phase.
+    // (the PDM 8100 fast-chip precedent).  No CD-ROM sits on the 53C94
+    // chain yet (see pm7500.c's has_cdrom).
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
     // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
     // aliases), so `hd=` / `cd=` and every existing consumer of
@@ -668,14 +715,42 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
     // it as `machine.scsi2`.
     if (tnt_board(cfg)->kind == TNT_BOARD_SHINER)
-        st->scsi2 = scsi_init_named(NULL, cp, "scsi2");
+        st->scsi2 = scsi_init_named(cp, "scsi2");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
+    // Built HERE, before the reads below, because mesh_init() consumes its own
+    // block from the stream and tnt_checkpoint writes that block before gbus.
+    // Construction order is stream order; getting them out of step misaligns
+    // everything that follows and the machine restores with a corrupted GBus.
+    if (tnt_board(cfg)->has_mesh) {
+        // MESH is a controller like any other: the machine builds it, tells it
+        // where its interrupt goes and which bus it drives, and registers its
+        // DBDMA channel-10 port.  It used to reach all three back through
+        // config_t from inside its own model.
+        st->mesh = mesh_init(cfg->scheduler, cp);
+        mesh_attach_bus(st->mesh, cfg->scsi);
+        mesh_set_irq_callback(st->mesh, tnt_mesh_irq, cfg);
+        mesh_set_dbdma_kick(st->mesh, tnt_mesh_dbdma_kick, cfg);
+        tnt_dbdma_port_t mesh_port = {
+            .out = mesh_port_out,
+            .in = mesh_port_in,
+            .s_bits = NULL,
+            // MESH pops straight off the SCSI bus, so it never returns
+            // short and the channel would run a whole transfer inside one
+            // register store; the burst makes it yield and MESH's own pump
+            // kicks it back on the bus's cadence.
+            .burst = MESH_DMA_BURST,
+            .ctx = st->mesh,
+        };
+        tnt_dbdma_set_port(st->dbdma, 10, &mesh_port);
+    }
+
     if (cp) {
-        system_read_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
         system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        // Mirrors the save: the prefix only, then *_swim3_bind re-attaches
+        // the pointer tail.
+        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
         tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
@@ -686,8 +761,6 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // (grand_central.c) and DBDMA channel 10, which simply goes unused
     // there along with TNT_INT_MESH.  The checkpoint stream still carries
     // the (untouched) struct so it stays positional across both boards.
-    if (tnt_board(cfg)->has_mesh)
-        tnt_mesh_init(cfg); // DBDMA ch-10 port
     tnt_scsi0_port_init(cfg); // DBDMA ch-0 port (53C94 pdma)
     // Hand each 53C825A its bus.  The controllers are PCI cards seated by
     // the slot walk, so this runs after it — and after the buses exist,
@@ -700,20 +773,25 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void tnt_reset(config_t *cfg) {
+static void tnt_bus_reset(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
-    // Power-on reset: the CPU back to $FFF00100, chipset registers to
-    // their power-on state.  NVRAM survives — it is non-volatile, and
-    // POST's log plus the Open Firmware environment must persist across
-    // restarts (warm-restart semantics proper are observed at the ladder).
-    ppc_reset(cfg->ppc);
+    // Chipset registers to their power-on state.  The CPU going back to
+    // $FFF00100 is the CPU half and belongs to level 2
+    // (system_machine_reset); see the PDM twin.  NVRAM survives — it is
+    // non-volatile, and POST's log plus the Open Firmware environment must
+    // persist across restarts (warm-restart semantics proper are observed at
+    // the ladder).
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
     tnt_dbdma_reset(st->dbdma);
+    // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
+    // drive and its media) is reset by the shared chain; the SWIM3 was the
+    // one controller in the tree that survived a reset.
+    swim3_reset(&st->swim3);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
     if (tnt_board(cfg)->has_mesh)
-        tnt_mesh_reset(cfg);
+        mesh_reset(st->mesh);
     if (tnt_board(cfg)->has_gbus) {
         tnt_gbus_reset(cfg);
         tnt_lcd_reset(cfg);
@@ -721,10 +799,17 @@ static void tnt_reset(config_t *cfg) {
     if (st->scsi96)
         scsi_53c96_reset(st->scsi96);
     scc_reset(cfg->scc);
+    // The bridges first, and not by zeroing mode_select: BANDIT_BIG_ENDIAN
+    // SET is big-endian, so a zeroed register is one with its byte lanes
+    // REVERSED (little-endian, for Windows NT), and every reset would leave
+    // the Mac OS half of the machine talking to its PCI devices backwards.
+    // tnt_bandit_reset puts each bridge back to big-endian and re-applies the
+    // lane mapping to its bus.
     tnt_bandit_reset(cfg);
-    // PCI RST#: every seated device's header back to power-on, which drops
-    // the assigned BARs and with them the decode.
-    pci_reset(cfg->pci);
+    // PCI RST# (every seated device's header back to power-on, dropping the
+    // assigned BARs and with them the decode), NuBus and SCSI -- the shared
+    // fan-out, since they are all on the one net.
+    system_reset_common_devices(cfg);
     tnt_gc_recompute(cfg);
 }
 
@@ -736,6 +821,13 @@ static void tnt_teardown(config_t *cfg) {
         // Power-cycle (machine.restart): the soldered part comes back with
         // the machine.  New machine (machine.boot): it gets a virgin store,
         // and the previous machine's goes with the previous machine.
+        //
+        // This must read st->gc.nvram before anything tears Grand Central
+        // down.  GC is itself a pci_device_t (tnt_gc_pci_attach), and
+        // system_destroy now deletes the PCI root before calling us --
+        // harmless today because gc_pci_ops declares no .teardown and the
+        // store lives in st, not in a PCI allocation, but the coupling is
+        // real the moment that op appears.
         if (machine_boot_is_restart()) {
             memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
             tnt_nvram_carry_valid = true;
@@ -744,28 +836,42 @@ static void tnt_teardown(config_t *cfg) {
         }
     }
     if (st) {
+        tnt_gc_detach_object(cfg);
         tnt_awacs_teardown(cfg);
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);
     }
-    // Deleting the PCI root tears down every seated device, which is what
-    // frees Control's VRAM and display buffers (its ops->teardown).
-    if (cfg->pci) {
-        pci_root_delete(cfg->pci);
-        cfg->pci = NULL;
-    }
+    // The PCI root is NOT deleted here: system_destroy owns both expansion
+    // buses and tears them down before calling this, which is what frees
+    // Control's VRAM and display buffers (its ops->teardown) and what puts
+    // the 53C825As in their graves before the buses they borrow below.
     if (st && st->scsi96) {
         scsi_53c96_delete(st->scsi96);
         st->scsi96 = NULL;
+    }
+    // MESH is a controller the machine owns now, so the machine frees it --
+    // before the bus it borrows, like the 53C96 above.
+    if (st && st->mesh) {
+        mesh_delete(st->mesh);
+        st->mesh = NULL;
     }
     if (cfg->floppy) {
         floppy_delete(cfg->floppy);
         cfg->floppy = NULL;
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
+    // The four devices that used to sit between cfg->scsi and cfg->via1 in
+    // this family's own copy of the chain, kept in the same relative order and
+    // simply hoisted above the shared one (machine_teardown.h).  Only PDM and
+    // TNT have them, so they stay here rather than joining the shared chain.
+    //
+    // The single ordering change is that cfg->scsi is now freed after these
+    // four instead of before the first of them.  Safe on both counts that
+    // matter: none of scsi_delete(scsi2), tnt_dbdma_delete, av_cuda_delete or
+    // adb_delete reads cfg->scsi, and the controllers that DO hold the two
+    // buses are already gone -- MESH/53C96 just above, and the 53C825As with
+    // the PCI root, which system_destroy frees before this runs.  DBDMA still
+    // goes after the floppy and before the SCC whose channels it serves, and
+    // Cuda still goes before the via1, rtc and adb it was handed at init.
     if (st && st->scsi2) {
         scsi_delete(st->scsi2);
         st->scsi2 = NULL;
@@ -782,34 +888,7 @@ static void tnt_teardown(config_t *cfg) {
         adb_delete(cfg->adb);
         cfg->adb = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->ppc) {
-        ppc_delete(cfg->ppc);
-        cfg->ppc = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -820,12 +899,10 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
     // Same relative order as the tnt_init construction sequence (the
     // checkpoint stream is positional).
-    memory_map_checkpoint(cfg->mem_map, cp);
-    ppc_checkpoint(cfg->ppc, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    via_checkpoint(cfg->via1, cp);
+    // The shared core prefix, byte-identical to the
+    // seven lines it replaces -- see pdm.c for why the PowerPC families come
+    // out the same as the 68k ones through it.
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     tnt_dbdma_checkpoint(st->dbdma, cp);
@@ -844,13 +921,14 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
     if (st->vram)
         system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
-    // Phase-E SCSI block (mirrors the tnt_init append order exactly).
+    // SCSI block (mirrors the tnt_init append order exactly).
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     if (st->scsi2)
         scsi_checkpoint(st->scsi2, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
-    system_write_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
+    if (st->mesh)
+        mesh_checkpoint(st->mesh, cp);
     // The GBUS island (Network Servers only; zeroed and unread elsewhere).
     // Both blobs are plain data: the LCD's DDRAM and the board's keyswitch
     // positions and injected environmental faults.
@@ -858,7 +936,14 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
     // The floppy controller and its DBDMA byte ring (swim3.c); the drive
     // itself is in the images block above.
-    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
+    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
+    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
+    // in a user-shareable save file, and made two saves of the same guest
+    // state differ -- which defeats any diff-based checkpoint testing.  The
+    // restore re-binds through *_swim3_bind either way, so the values were
+    // harmless; the leak and the non-reproducibility were not.
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
 }
 
@@ -868,7 +953,8 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // init waits for a CA1 edge right after its SecMode exchange (it polls
 // IFR bit 1, then enables the CA1 interrupt) and the whole boot — ADB
 // enumeration, DrawBeepScreen, the video driver — hangs forever without
-// it (the Phase-D "video wall" turned out to park HERE, inside InitADB).
+// it (a boot that seemed to stall at video init was parked HERE, inside
+// InitADB).
 // Also: media insertion polling and the display's re-upload mark (guest
 // CPU writes into VRAM bypass the renderer).
 static void tnt_trigger_vbl(config_t *cfg) {
@@ -915,6 +1001,23 @@ static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
     return system_media_attach_std(cfg, slot);
 }
 
+// The runtime attach/eject verbs' view of the same second bus.
+static bool tnt_media_present(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_present_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_present_std(cfg, bus, unit);
+}
+
+static int tnt_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    if (bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_eject_scsi_bus(st ? st->scsi2 : NULL, unit);
+    }
+    return system_media_eject_std(cfg, bus, unit);
+}
+
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand
 // Central external it reaches (23-25 on Bandit 1, 27-29 on Bandit 2 — the
 // 9500's own published external-interrupt assignment); the lines are
@@ -929,22 +1032,163 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
     tnt_gc_set_source(cfg, d->int_line, active);
 }
 
-// Chipset IRQ spine.  Nothing routes through it: every on-board source is
-// a Grand Central interrupt number (tnt_gc_set_source).
-static void tnt_update_ipl(config_t *cfg, int source, bool active) {
-    (void)cfg;
-    LOG(1, "update_ipl source=%d active=%d (TNT sources drive Grand Central directly)", source, active);
-}
-
 // Floppy: the one internal SuperDrive behind SWIM3 (swim3.c).  Drive 1 is
 // the only bay the family has — no external port — so slot 1 refuses
 // whatever the caller asks.
 //
-// The slot table is declared once here rather than copied into each of the
-// five profiles: it is a fact about the TNT board, and tnt_fd_insert below
-// is what makes one slot the right count.
-const struct floppy_slot tnt_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
+// The board's one internal SuperDrive is the same shape the Quadras and the
+// PDM Power Macs present, so the five profiles reference the shared
+// mac_floppy_slots_1hd (slot_tables.h) rather than the TNT keeping a seventh
+// identical copy.  tnt_fd_insert below is what makes one slot the right count.
+
+// The internal bus's two bays, shared by the three Power Macintosh profiles
+// (the Network Servers declare backplane bays instead).  Labelled "Internal"
+// rather than the generic "SCSI HD0/HD1" because this family has a second,
+// fast/wide bus a user can also attach to.
+const struct scsi_slot tnt_scsi_slots_internal[] = {
+    {.label = "Internal HD0", .id = 0},
+    {.label = "Internal HD1", .id = 1},
+    {0},
+};
+
+// The Network Servers' front backplane on the FIRST fast/wide controller,
+// shared by both models -- same backplane, same IDs, and Open Firmware's
+// default boot device (disk2:aix) is bay 2 on both.
+//
+// The backplane is "seven slots with hot swap.  It is expected (but not
+// required) that slot 0 will be a CD ROM."  Bay numbering runs top to bottom
+// with 0 uppermost, and the production ROM's own device aliases settle which
+// controller owns which bay -- `disk0`..`disk3` resolve through
+// `/bandit/53c825@11`, `disk4` onward through `@12`.  Bay 0 is Apple's
+// expected CD-ROM position and is deliberately NOT declared here: it is what
+// hw_profile_t.cdrom_id addresses.
+//
+// Their SECOND controller is deliberately NOT shared: the 700 hangs two rear
+// bays off it and the 500 does not, and that is the "More drive Bays" half of
+// Apple's own four-way split between the models (Network Server Hardware
+// Developer Notes, 1996, S1.1.2).  Merging those two tables would delete a
+// modelled hardware difference -- see ans700.c.
+const struct scsi_slot ans_scsi_slots_fw0[] = {
+    {.label = "Bay 1 (fast/wide 0)", .id = 1},
+    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
+    {.label = "Bay 3 (fast/wide 0)", .id = 3},
+    {0},
+};
+
+// The Shiner backplane -- the PCI topology of BOTH Network Servers, which
+// share one board ("Shiner LE" = 500/132, "Shiner HE" = 700/150).  The two
+// models differ only in clock, L2 size, supply count and drive bays; not one
+// of those is visible here, which is why this is one table and not two.
+//
+// It is NOT the 9500's, despite the ANS being a 9500 derivative everywhere
+// else (same Hammerhead, same two Bandits, same Grand Central).  Before
+// merging this with pm9500_pci_slots, note that all five of these differ:
+//
+//   * the split is 2/4 across the Bandits, not 3/3
+//   * bus 2 carries a FOURTH IDSEL (16) that no Power Macintosh uses
+//   * bus 1 IDSEL 15 is a soldered VIDEO device here, a socket ("C1") there
+//   * three builtins (VIDEO + two 53C825As) against the Power Macs' one VCI,
+//     because MESH is gone and video moved onto the bus
+//   * the labels are Open Firmware's own slot-names, not Mac OS's A1..F2
+//
+// PCI topology (Apple, ibid., §4.6.2 and §7.1.1; independently confirmed by
+// the six per-slot Open Firmware boot commands printed in "Using the PCI
+// RAID Card").  Two facts here are boot-critical and are pure data:
+//
+//   * The split is 2/4, not the 9500's 3/3: "The Network Server uses two
+//     separate PCI buses for on-board I/O (and two slots) and card
+//     expansion (four slots)" — "For PCI Bus 2, PCI Slot 3 is moved to the
+//     second Bandit."  Bandit 1 therefore carries SIX devices with no
+//     PCI-to-PCI bridge: two sockets plus the 54M30, Grand Central and both
+//     53C825As.
+//   * A slot's interrupt does NOT follow its bridge.  Slot 3 sits on Bandit
+//     2 but keeps EXT5 (ANS_INT_SLOT3) — the line a 9500 gives Bandit 1's
+//     third slot.  Deriving the line from the bus is wrong for exactly one
+//     slot, which is the worst possible failure shape, so the map is data.
+//
+// Apple gives IDSELs in DECIMAL in §4.6.2/§7.1.1 and the matching unit
+// addresses in HEX in Listing 6-1 and the RAID boot commands; `device`
+// below is the decimal IDSEL AD line, which is what the config-cycle
+// encoding wants.
+//
+// The LABELS are the ROM's own, read out of each bridge node's
+// `slot-names` property under Open Firmware: Bandit 1 publishes
+// `00006000 "SLOT1_PCI0" "SLOT2_PCI0"` and Bandit 2 publishes
+// `0001E000 "SLOT3_PCI1" "SLOT4_PCI1" "SLOT5_PCI1" "SLOT6_PCI1"`.  Note
+// the bus number in the string is ZERO-based while Apple's own prose and
+// its `pci1`/`pci2` device aliases are one-based — which is why the
+// worked example in the Software Developer Notes shows a slot-SIX card as
+// `SLOT6_PCI1` and not `SLOT6_PCI2`.  The bitmask halves also confirm the
+// 2/4 split and the IDSELs: bits 13-14 on the first bridge, 13-16 on the
+// second.
+const pci_slot_decl_t ans_pci_slots[] = {
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT1_PCI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = ANS_INT_SLOT1},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT2_PCI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = ANS_INT_SLOT2},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT3_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 13,
+     .int_line = ANS_INT_SLOT3},
+    {.slot = 4,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT4_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 14,
+     .int_line = ANS_INT_SLOT4},
+    {.slot = 5,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT5_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 15,
+     .int_line = ANS_INT_SLOT5},
+    {.slot = 6,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT6_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 16,
+     .int_line = ANS_INT_SLOT6},
+    // The three soldered-down PCI devices, all on Bandit 1 (Apple, ibid.,
+    // §4.6.2 — the six-device bus).  Grand Central's own config presence at
+    // IDSEL 16 is attached by grand_central.c, not from this table, exactly
+    // as on the Macintosh boards.
+    //
+    // The 54M30 takes NO interrupt line: "the 54M30 does not have an
+    // interrupt" (ibid., §4.2), and allocating it a Grand Central external
+    // would corrupt the map.  The two 53C825As take EXT2 and EXT6, the two
+    // positions the Network Server freed by ganging both Bandits' error
+    // interrupts onto EXT1.
+    {.slot = 7,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "VIDEO",
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 0,
+     .builtin_card_id = "cirrus_54m30"},
+    {.slot = 8,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 17,
+     .int_line = ANS_INT_FW0,
+     .builtin_card_id = "sym53c825_0"},
+    {.slot = 9,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI1",
+     .bus = TNT_PCI_BUS_1,
+     .device = 18,
+     .int_line = ANS_INT_FW1,
+     .builtin_card_id = "sym53c825_1"},
     {0},
 };
 
@@ -954,18 +1198,19 @@ static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
     return floppy_insert(cfg->floppy, drive, disk);
 }
 
+// A drive the board does not have holds no disk (see pdm_fd_present: the
+// auto-select no longer needs a phantom "occupied" to stay off drive 1).
 static bool tnt_fd_present(config_t *cfg, int drive) {
     if (!cfg->floppy || drive != 0)
-        return true; // no such bay: report it occupied so nothing targets it
+        return false;
     return floppy_is_inserted(cfg->floppy, drive);
 }
 
 const machine_substrate_t tnt_substrate = {
     .init = tnt_init,
-    .reset = tnt_reset,
+    .bus_reset = tnt_bus_reset,
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
-    .update_ipl = tnt_update_ipl,
     .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
     .fd_insert = tnt_fd_insert,
@@ -976,4 +1221,6 @@ const machine_substrate_t tnt_substrate = {
     .display = tnt_display,
     .media_detach = tnt_media_detach,
     .media_attach = tnt_media_attach,
+    .media_present = tnt_media_present,
+    .media_eject = tnt_media_eject,
 };

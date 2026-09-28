@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Extension-word fetch fault: the instruction must abort before its data
 // cycle.
 //

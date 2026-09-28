@@ -1,4 +1,6 @@
-// Generic PCI core unit tests (proposal-pci-architecture §13).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Generic PCI core unit tests.
 //
 // Links the real config_space.c + pci.c against a stub bus environment and
 // pins the contract every guest on these machines depends on: absent
@@ -64,6 +66,13 @@ const pci_card_kind_t voodoo2_kind = {.id = "voodoo2",
                                       .attach = PCI_ATTACH_PCI,
                                       .requires_prom = false,
                                       .card_class = "3d"};
+// ...and its WebGPU variant: the same card, registered everywhere (a boot
+// document or a checkpoint may name it) and offered only with a device.
+const pci_card_kind_t voodoo2_webgpu_kind = {.id = "voodoo2_webgpu",
+                                             .display_name = "3dfx Voodoo2 (WebGPU)",
+                                             .attach = PCI_ATTACH_PCI,
+                                             .requires_prom = false,
+                                             .card_class = "3d"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;

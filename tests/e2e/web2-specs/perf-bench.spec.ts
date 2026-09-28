@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 in-browser throughput benchmark (perf proposal P5 validation / P12
-// tracked number).  Boots an SE/30 with no media — the ROM free-runs at the
-// flashing-? insert prompt, a busy-wait that retires instructions at full
-// rate without any test data — then measures two numbers:
+// web2 in-browser throughput benchmark.  Boots an SE/30 with no media — the
+// ROM free-runs at the flashing-? insert prompt, a busy-wait that retires
+// instructions at full rate without any test data — then measures two
+// numbers:
 //
 //   1. PRIMARY — Accelerated mode, engaged through the web2 toolbar exactly
 //      as a user would: wait for the adaptive governor to plateau, then
 //      measure effective instructions/second and the multiplier in force.
-//      This is the user-facing deliverable (and what P11's knob re-tune
-//      moves).
+//      This is the user-facing deliverable (and what a re-tune of the
+//      governor's knobs moves).
 //   2. SECONDARY — turbo mode (via the shell): raw engine throughput within
 //      the fixed TURBO_HOST_HEADROOM RAF budget.  Finer-grained for build-
 //      flag A/Bs, and still meaningful when every variant saturates the
@@ -28,6 +28,11 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
@@ -35,16 +40,6 @@ const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 const LABEL = process.env.PERF_LABEL ?? 'unlabeled';
 const WINDOWS = Number(process.env.PERF_WINDOWS ?? 3);
 const WINDOW_SECS = Number(process.env.PERF_WINDOW_SECS ?? 8);
-
-// Type one shell line into the Terminal panel's xterm (same pattern as
-// scheduler-accelerated.spec.ts).
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
-}
 
 // Atomically sample {instr_count, host_wall_ns} inside the worker via a
 // single echo expansion, keyed so stale terminal echoes can't match.
@@ -166,7 +161,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   await page.waitForTimeout(3_000);
   const turbo = await measureWindows(page, 'turbo', WINDOWS);
 
-  // P12 observability: the status bar's live MIPS readout (pushed from the
+  // Observability: the status bar's live MIPS readout (pushed from the
   // core ~1 Hz) must be visible while running and read a plausible number.
   const mipsChip = page.locator('.gs-statusbar .sb-mips .label');
   await expect(mipsChip).toBeVisible({ timeout: 15_000 });

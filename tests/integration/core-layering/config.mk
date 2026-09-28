@@ -1,4 +1,4 @@
-# Integration test: core layering check (proposal §4.3)
+# Integration test: core layering check
 # Asserts the platform-agnostic core never includes a machine-implementation
 # header — only the public core/machine_profile.h.  Pure static check; the
 # ROM is required by the harness but unused.
@@ -7,5 +7,5 @@ TEST_DESC := src/core/ must not #include any src/machines/ implementation header
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -9,7 +9,7 @@
 // docs/machines/av/vdc.md (ROM-verified register maps,
 // probes and the golden open sequence).
 //
-// Model shape (proposal-av-video-in.md §2):
+// Model shape:
 //   * the two register files are write-sinks plus two synthesized status
 //     bytes — the guest's 'i2c ' component serves subaddressed reads from
 //     its own RAM shadow, so only $8B/$B9 status reads are load-bearing on

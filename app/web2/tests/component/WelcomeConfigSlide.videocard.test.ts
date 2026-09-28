@@ -13,25 +13,31 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
-import { initEmulator } from '@/bus/emulator';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
+import { initEmulator } from '@/bus/boot';
+import { modelValue, selectedModel } from '../helpers/modelSelect';
+
+// The boot itself is not under test: record the config it was handed.
+vi.mock('@/bus/boot', () => ({ initEmulator: vi.fn(async () => {}) }));
 
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
   return {
     ...actual,
     whenModuleReady: () => Promise.resolve(),
-    initEmulator: vi.fn(async () => {}),
     gsEval: async (path: string, args?: unknown[]) => {
       if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
         if (p.endsWith('iix-iicx-se30-97221136.rom')) {
           return {
             recognised: true,
-            checksum: 'se30-checksum',
+            supported: true,
+            intact: true,
+            id: 'se30-checksum',
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,
@@ -40,7 +46,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (p.endsWith('q840av-q660av-5bf10fd1.rom')) {
           return {
             recognised: true,
-            checksum: 'av-checksum',
+            supported: true,
+            intact: true,
+            id: 'av-checksum',
             name: 'Quadra 840AV / Centris 660AV ROM',
             compatible: ['q660av'],
             size: 2 * 1024 * 1024,
@@ -115,16 +123,15 @@ beforeEach(async () => {
   machine.model = null;
   machine.ram = null;
   setWelcomeSlide('configuration');
-  stopDriveActivityMock();
   vi.mocked(initEmulator).mockClear();
 });
 
 async function selectModel(container: HTMLElement, id: string): Promise<void> {
   const sel = container.querySelector('#cfg-model') as HTMLSelectElement;
-  sel.value = id;
+  sel.value = modelValue(sel, id);
   await fireEvent.change(sel);
   await waitFor(() => {
-    if (sel.value !== id) throw new Error('model not applied');
+    if (selectedModel(sel) !== id) throw new Error('model not applied');
   });
 }
 

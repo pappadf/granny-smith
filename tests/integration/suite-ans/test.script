@@ -1,0 +1,270 @@
+# Apple Network Server suite — what the machine puts on its monitor.
+#
+# Row map:
+#
+#   ans500-of-console    the machine booted as it SHIPPED — console on the
+#                        monitor — with the 640x480x8 mode derived from the
+#                        54M30's registers and a golden of what Open
+#                        Firmware draws.
+#   ans500-proto20-macos the 2.0 prototype ROM (loaded by path) booting Mac
+#                        OS to its desktop on the same hardware model — two
+#                        unrelated software stacks, one model.
+#   ans500-diag-floppy   the Network Server Diagnostic Utility 1.1 booted
+#                        from the internal floppy with the keyswitch in
+#                        Service, driven from the ADB keyboard through its
+#                        complete system test.  Skips when the floppy image
+#                        has not been fetched.
+#
+# Every row starts from a virgin NVRAM store (machine.board.clear_nvram):
+# the rows share one process, and a store one row wrote must not decide how
+# the next one boots.
+
+include "../lib/mac.script"
+
+# The Mac OS row needs its own ROM, so it cannot come through TEST_ROM/$ROM.
+# 4 MB Apple Network Server 2.0 prototype ROM (stored checksum 0x49B2BE8F),
+# reassembled from four per-lane chip dumps; the reassembly self-verifies the
+# Apple checksum over the image's first 3 MiB.
+let proto20_rom = "../../data/roms/ans500-ans700-proto20-49b2be8f.rom"
+
+# The Diagnostic Utility floppy is Apple software and cannot live in this
+# repository; it is in the private gs-test-data
+# (systems/ans_diagnostic_utility_1_1.img.7z, 110 KB, extracted in place by
+# fetch-test-data.sh), like the AIX disk.
+let diag_fd = "../../data/systems/ans_diagnostic_utility_1_1.img"
+
+# ---- ans500-of-console ------------------------------------------------------
+# The 54M30 framebuffer, as Open Firmware's console.
+#
+# The Apple Network Server's on-board video is the repository's first REAL
+# PCI framebuffer for an Old World Power Macintosh — a discrete SVGA part on
+# Bandit 1, not a Control/Valkyrie framebuffer hung off the memory controller
+# — and it is what the machine actually uses as its console: a Network Server
+# ships with `output-device screen`, and Open Firmware's `(install-console)`
+# falls back to `ttya` only when the screen fails to open.  So this row boots
+# the machine as it shipped, with no `setenv`, and looks at what a monitor
+# would show.
+#
+# THE MODE IS DERIVED, NOT CONFIGURED.  Nothing tells the emulator what
+# resolution to present; Open Firmware programs the CRTC, the sequencer and
+# the Cirrus extension registers, and the model reads a mode out of them —
+# 640x480 at 8 bits per pixel, 640 bytes per scan line.  A wrong bit in that
+# derivation is a wrong-shaped or garbled screen, which is exactly what a
+# golden catches and nothing else does.
+#
+# 8 bpp is not a shortcut: Apple states the part "implements only a
+# little-endian window into the packed-pixel frame buffer, hence Big Endian
+# operating systems are limited to 8 bits per pixel", and at one byte per
+# pixel byte order does not matter — so the existing PIXEL_8BPP path is
+# correct rather than merely convenient.
+def row_ans500_of_console() {
+    # A shipping machine, with a blank store and nothing told to it: the
+    # console is the monitor, which is what a Network Server does out of the
+    # box.
+    machine.board.clear_nvram()
+    machine.boot model="ans500" ram=32768 rom="${$ROM}"
+
+    # POST, then Open Firmware's bring-up, then its own console install.
+    # The firmware's progress narration goes to ttya whatever the console
+    # is, so it is still the bounded marker for "the interpreter is up" —
+    # and here the fact that the row can watch it while the PICTURE comes up
+    # on the screen is the point: the two narrators are independent.
+    let chatter = ""
+    let spins = 0
+    while !contains($chatter, "install-console>") && $spins < 24 {
+        scheduler.run 250000000
+        $chatter = "${$chatter}${machine.scc.a.sent()}"
+        $spins = $spins + 1
+    }
+    assert contains($chatter, "install-console>") "Open Firmware never installed its console"
+    # Let it draw its banner and settle at the prompt.
+    scheduler.run 1000000000
+
+    # --- The mode, derived from the CRTC and the sequencer ----------------
+    # CR01 = $4F -> (79 + 1) * 8 = 640; CR12 = $DF with CR07 bit 1 as VDE
+    # bit 8 -> 479 + 1 = 480; SR07 = $F1 -> Cirrus extended mode, 8 bpp.
+    assert machine.screen.width == 640 "the 54M30 mode is ${machine.screen.width} pixels wide"
+    assert machine.screen.height == 480 "the 54M30 mode is ${machine.screen.height} lines tall"
+    assert machine.screen.depth == 8 "Big-endian hosts are limited to 8 bpp on this part"
+
+    # --- What a monitor would show ----------------------------------------
+    # The firmware's banner, its boot attempt against the NVRAM default
+    # (`disk2:aix`, with no disk attached) and its prompt — drawn by the
+    # ROM's own VGA console driver into the framebuffer this model derives.
+    check("goldens/ans500-of-640x480x8-console.png")
+    report_row_foreign("OF 1.1.22", "cirrus_54m30", "of-console derived-mode")
+    report_perf("suite-ans/ans500-of-console", scheduler.instr_count)
+}
+
+# ---- ans500-proto20-macos ---------------------------------------------------
+# The Network Server's 2.0 prototype ROM, running Mac OS on the same hardware
+# model that runs AIX.
+#
+# THE CROSS-EXAMINATION.  The Apple Network Servers shipped a ROM with no Mac
+# OS Toolbox at all: the production image ($962F6C13) boots AIX and refuses
+# Mac OS, and there is no image that does both.  What survives is a 2.0
+# PROTOTYPE ($49B2BE8F) that is the mirror image — Mac OS only, no AIX — and
+# it drives the same 54M30 and the same two 53C825As.
+#
+# That pairing is unusually good evidence, and it is the whole reason this
+# row exists.  Two entirely unrelated software stacks exercise one hardware
+# model: anything the model gets wrong that both stacks tolerate is genuinely
+# invisible, and anything only one of them tolerates shows up here rather
+# than in a bug report.  It is also the fallback when AIX misbehaves and
+# there is no source to disassemble: a device can be cross-examined through a
+# stack we do understand.
+#
+# The prototype ROM misconfigures the L2 cache and was never shipped; it is a
+# research artifact, not a supported configuration.
+def row_ans500_proto20_macos() {
+    # A virgin machine: the store the production ROM writes is not this
+    # ROM's, and POST caches its memory configuration in there.
+    machine.board.clear_nvram()
+    machine.boot model="ans500" ram=32768 rom="${$proto20_rom}"
+
+    # The same reset vector, a different image.
+    assert machine.cpu.pc == 0xFFF00100 "reset vector != $FFF00100"
+
+    # The Mac OS bring-up: no front-panel POST at all — this ROM never
+    # touches the LCD — then the Start Manager, the video driver, and
+    # QuickDraw.
+    scheduler.run 1500000000
+
+    # The same 640x480 8 bpp mode the AIX firmware programs, reached by a
+    # completely different driver: this ROM's own native video code rather
+    # than Open Firmware's console.  A mode derivation that only worked for
+    # one of them would show up right here.
+    assert machine.screen.width == 640 "mode is ${machine.screen.width} pixels wide"
+    assert machine.screen.height == 480 "mode is ${machine.screen.height} lines tall"
+    assert machine.screen.depth == 8 "mode is ${machine.screen.depth} bpp"
+
+    # The gray desktop with the boot arrow cursor — QuickDraw painting
+    # through the framebuffer this model derives from the VGA registers.
+    check("goldens/ans500-rom-640x480x8-proto20-desktop.png")
+
+    # This ROM does NOT drive the front panel.  Asserted rather than
+    # assumed: the LCD is the production firmware's instrument, and a Mac OS
+    # ROM having quietly written to it would mean the panel's decode was
+    # answering something it should not.
+    assert machine.lcd.writes == 0 "the Mac OS ROM must not write the front-panel LCD"
+    report_row("rom", "cirrus_54m30", "rom-stage proto20-rom macos-desktop")
+    report_perf("suite-ans/ans500-proto20-macos", scheduler.instr_count)
+}
+
+# ---- ans500-diag-floppy -----------------------------------------------------
+# The Network Server Diagnostic Utility, booted from the internal floppy (the
+# floppy datapath).
+#
+# The Apple Network Server has one boot path that is neither SCSI nor the
+# network: the front keyswitch in its Service position makes Open Firmware
+# boot its `diag-device` — `cd disk6 fd:diags`, the internal floppy — which
+# is how a technician runs the *Network Server Diagnostic Utility* (a
+# bootable 1440 KB HFS floppy carrying an XCOFF `diags`, version 1.1 of
+# 08/28/96).  This row is that path end to end: the firmware's own `swim3`
+# package opens the chip, senses the drive and the media, seeks, and reads
+# whole tracks through DBDMA channel 1 into the XCOFF loader; the utility
+# then paints its Level One menu on the 54M30 and takes its commands from the
+# ADB keyboard.
+#
+# The firmware package drives the SWIM3 unlike the Mac OS `.Sony` driver
+# (sense on Handshake bit 3, head select without a sense read, whole-track
+# continuous transfers), so this is the row that pins the shared SWIM3
+# model's behaviour under a second driver — see
+# docs/core/peripherals/swim3.md and docs/machines/tnt/tnt.md.
+def row_ans500_diag_floppy() {
+    # Two cold boots, like the AIX rows' two: POST caches the DIMM sizes it
+    # found in NVRAM ($1048 + 8k), but Open Firmware wipes that area when it
+    # initialises a virgin store -- so a machine booting for the first time
+    # after a battery change reports 0 MB in every slot to the utility (as
+    # the real one would), and the second boot is the one whose hardware
+    # configuration means something.
+    machine.board.clear_nvram()
+    machine.boot model="ans500" ram=65536 rom="${$ROM}"
+    machine.board.keyswitch = "service"
+    scheduler.run 2000000000
+    # The SECOND boot is the same machine coming up again, not a new one, so
+    # it is a power-cycle: machine.restart carries the soldered NVRAM part
+    # (and with it POST's DIMM table) across the rebuild, where machine.boot
+    # hands the new machine a virgin store.
+    machine.restart
+
+    # Service: Open Firmware boots `diag-device` (`cd disk6 fd:diags`)
+    # instead of `boot-device`, no typed command.
+    machine.board.keyswitch = "service"
+    assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
+
+    # The diagnostic floppy in the internal drive, write-locked: the golden
+    # image is never written.
+    machine.floppy.drive[0].insert "${$diag_fd}" true
+
+    # POST, Open Firmware's bring-up, the firmware's swim3 package reading
+    # `diags` off the floppy a track at a time, the XCOFF load, and the
+    # utility's own start-up: its banner, the hardware configuration it found
+    # (a 66 MHz 604, 512 K L2, no parity), and the Level One menu at its
+    # prompt.  ~12 G instructions on the 500.  (Polled with try(): there is
+    # no framebuffer to compare against until the firmware has programmed
+    # the 54M30's mode.)
+    let spent = 0
+    let seen = false
+    if $REGEN_MODE == "1" {
+        # No golden to wait for yet: give the utility its time and settle.
+        scheduler.run 4000000000
+        $spent = 4000000000
+        $seen = true
+    }
+    while !$seen && $spent < 40000000000 {
+        scheduler.run 500000000
+        $spent = $spent + 500000000
+        $seen = try(machine.screen.matches("goldens/ans500-diags1.1-640x480x8-level-one-menu.png"), false)
+    }
+    let settled = wait_stable(3000000000)
+    check("goldens/ans500-diags1.1-640x480x8-level-one-menu.png")
+
+    # The utility takes its commands from the ADB keyboard: "2" is "Show the
+    # Power-On Self Test results".
+    machine.adb.keyboard.type("2\n")
+    scheduler.run 800000000
+    check("goldens/ans500-diags1.1-640x480x8-post-results.png")
+
+    # "3" runs the complete system test -- the PCI bridges (Bandit and Grand
+    # Central's config identities), the 53C825s' register and DMA FIFO tests,
+    # the LCD, the full memory test over what POST sized, the serial ports
+    # (PIO and DBDMA loopbacks) and the 54M30 -- and "4" lists what failed.
+    # The one line it lists is the SDLC DMA loopback, whose last byte the
+    # real chip delivers as $28 where the model delivers the data byte
+    # (docs/machines/tnt/tnt.md, "The diagnostic utility"); everything else
+    # passes.
+    machine.adb.keyboard.type("3\n")
+    scheduler.run 6000000000
+    let settled2 = wait_stable(2000000000)
+    machine.adb.keyboard.type("4\n")
+    scheduler.run 600000000
+    check("goldens/ans500-diags1.1-640x480x8-error-summary.png")
+
+    echo "ans500-diag-floppy: the Diagnostic Utility 1.1 boots from the internal floppy in Service position (${$spent} instructions to the Level One menu), answers the ADB keyboard, and its complete system test passes everything but the SDLC DMA loopback"
+    report_row_foreign("diags 1.1", "cirrus_54m30", "fd-boot swim3 service-keyswitch adb-keyboard")
+    report_perf("suite-ans/ans500-diag-floppy", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("ans500-of-console") {
+    row_end("ans500-of-console", try(row_ans500_of_console(), "FAILED"))
+}
+if row_on("ans500-proto20-macos") {
+    if have_media($proto20_rom) {
+        row_end("ans500-proto20-macos", try(row_ans500_proto20_macos(), "FAILED"))
+    } else {
+        echo "skip: ans500-proto20-macos (the 2.0 prototype ROM is not present)"
+    }
+}
+if row_on("ans500-diag-floppy") {
+    if have_media($diag_fd) {
+        row_end("ans500-diag-floppy", try(row_ans500_diag_floppy(), "FAILED"))
+    } else {
+        echo "skip: ans500-diag-floppy (the Network Server Diagnostic Utility floppy image is not present — run scripts/fetch-test-data.sh)"
+    }
+}
+
+suite_done()
+quit

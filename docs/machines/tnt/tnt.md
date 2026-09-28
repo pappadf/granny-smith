@@ -25,8 +25,7 @@ exact machines (Linux powermac, NetBSD macppc, OSF/Apple MkLinux DR3).
 
 ## Board model
 
-Phases B-C (the current high-water) model the chipset skeleton plus the
-DMA architecture:
+The board model is the chipset skeleton plus the DMA architecture:
 
 - **Hammerhead** (`hammerhead.c`) — the north bridge (system bus / DRAM /
   ROM / L2 controller) as a logged store-and-readback register file of
@@ -34,7 +33,7 @@ DMA architecture:
   one non-LE block).  Attested specials: the `$3001xxxx` part identifier
   POST gates on, the uniprocessor ArbConfig/WhoAmI/IntReg values, and the
   no-L2 presentation that makes POST skip its cache test.  The DRAM bank
-  registers are unattested (proposal risk R1); every access is logged so
+  registers are unattested; every access is logged so
   the model can be fitted to what Open Firmware actually does.
 - **Bandit x2 + Chaos** (`bandit.c`) — the AR-to-PCI host bridges
   (`$F2000000`, `$F4000000` on two-bridge boards) and the display-bus
@@ -110,17 +109,17 @@ DMA architecture:
   claims it" with no other change.
 - **Grand Central** (`grand_central.c`) — the I/O controller: a 128 KB
   little-endian island at `$F3000000` (Bandit 1's pass-through MEMORY
-  window — *not* its I/O window, which is at the bridge base).  Phase B populates the interrupt block (`+$20..$2C`), the
+  window — *not* its I/O window, which is at the bridge base).  The model populates the interrupt block (`+$20..$2C`), the
   VIA1/Cuda window (`+$16000`, 16 byte-wide registers on `$200` centres),
   both ESCC apertures (`+$12000` legacy / `+$13000` native, one shared
   Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
-  DBDMA channel windows (`+$8000+n*$100`).  Phase D adds AWACS
+  DBDMA channel windows (`+$8000+n*$100`).  It also carries AWACS
   (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); the SWIM3
   aperture (`+$15000`, swim3.c) is the shared floppy controller on DBDMA
-  channel 1; SCSI and MACE apertures log and read open bus until their
-  phases land.
-- **DBDMA** (`dbdma.c`) — the descriptor-based DMA engine, Phase C: one
+  channel 1; SCSI and MACE apertures log and read open bus until they are
+  modelled.
+- **DBDMA** (`dbdma.c`) — the descriptor-based DMA engine: one
   implementation, eleven channels (channel *n* raises Grand Central
   interrupt *n*), each a little-endian register file (`channelControl`
   mask/value writes, `channelStatus`, `commandPtrLo`, plus the three
@@ -140,23 +139,24 @@ DMA architecture:
   and `resCount`/`xferStatus` write-back is guest-visible *before* the
   channel interrupt.  A channel whose device port is not attached yet
   stalls its data commands honestly — except audio-out (channel 8),
-  which carries an interim instant-consume sink until the Phase D AWACS
+  which carries an interim instant-consume sink until the AWACS
   datapath: Open Firmware plays its boot beep through channel 8 and
   polls for completion, so a stalling channel would hang the boot in
-  firmware.
+  firmware.  A channel's interrupt command asserts a LEVEL on Grand
+  Central source n that the host's Clear write acknowledges (see "The
+  interrupt fabric").
 - **Cuda / VIA1** — the third instantiation of the shared behavioral Cuda
   (machines/av/cuda.c, firmware 2.37) on one real 6522 behind the island
   decode.  TNT-driven additions to the shared model: the polled no-TIP
   response termination the ROM's early-boot driver uses, the sync-cycle
   abort of an unread response (the OF-to-68k handoff leaves its last ADB
-  response untaken), the response-abandonment watchdog, and (Phase D
-  part 2) the re-presentation of a sync-aborted SOLICITED response once
+  response untaken), the response-abandonment watchdog, and the re-presentation of a sync-aborted SOLICITED response once
   the sync completes — the abort resets the transport, not the firmware's
   output queue, and the TNT ROM's InitADB sends its ADB SendReset through
   the early polled driver then installs the interrupt driver with the
   reply still in flight.  The machine also feeds the 60.15 Hz reference
   into VIA1 CA1 each frame (the AMIC/AV line, third instance).
-- **Control video** (`control.c`, Phase D part 2) — Control (343S1154) as
+- **Control video** (`control.c`) — Control (343S1154) as
   PCI device 11 on the Chaos bus — a registered card kind
   (`tnt_control`, BUILTIN attach) that the machine's slot table names, so
   the runtime device and the configuration view come from one
@@ -170,12 +170,30 @@ DMA architecture:
   (bank 2 shows through at `+$600000`; the framebuffer lives in the
   `+$800000` half with pixel 0 at +16), the RaDACal byte cells at GC
   `+$1B000` (index/cursor/misc/CLUT on `$10` centres; misc `$20` bits 3:2
-  = 8/16/32 bpp), monitor sense modeled as a 13"/14" strap (line C
-  grounded — extended sense `$2B`, the head of the ROM's own mode table),
-  and VBL as Grand Central interrupt **26** at 60 Hz while `intr_ena` is
-  set (the dossier's map guessed 30; the shipping video driver toggles
+  = 8/16/32 bpp; in the direct-colour modes the table stays in the DAC
+  path, published as `display_t.dac_lut` and applied by the renderer and
+  by capture alike — MkLinux's console draws palette indexes into 32 bpp
+  pixels and relies on it, #147), monitor sense strapped from the boot
+  document's `monitor=` (`hires`, the default: line C grounded — extended
+  sense `$2B`, the head of the ROM's own mode table; `twopage` grounds all
+  three and Open Firmware programs 1152x870; `portrait`, `rubik`, `none`;
+  the pick survives `machine.restart` and a checkpoint, #146),
+  and VBL as Grand Central interrupt **26** while `intr_ena` is
+  set (an earlier map guessed 30; the shipping video driver toggles
   mask bit 26 as it writes `INTR_ENA`, and Apple's own 9500
-  external-interrupt table gives 30 to the second-CPU doorbell).
+  external-interrupt table gives 30 to the second-CPU doorbell).  The
+  retrace period is the chip's own: pixel clock / (htotal × vtotal),
+  with htotal = (hperiod + 2) × 2 and vtotal = vperiod / 2 from the
+  timing registers and the pixel clock from the synthesiser the driver
+  programs over Cuda I2C (device `$50`, three RdWrIIC packets per
+  mode-set carrying {p0, p1, p2}; dot clock = 3.9064 MHz × p1 × 2^p2 /
+  p0).  The ROM's 640x480 boot mode is {14, 27, 2} = 30.135 MHz over
+  864 × 525 — Apple's 66.67 Hz 13"/14" raster, 66.43 Hz here — and its
+  1152x870 mode {11, 35, 3} = 99.44 MHz over 1456 × 915 = 74.63 Hz.
+  Until the synthesiser and both period registers are programmed (power
+  on, the blanked window of a mode-set) the event runs at a nominal
+  60 Hz.  This is Control's retrace and not the 60.15 Hz machine tick:
+  `tnt_trigger_vbl()` still feeds VIA1 CA1 once per scheduler frame-unit.
   Scanout presents through the shared `display_t`; geometry derives from
   the blank-pair timing registers (width = (hsblank − heblank) × 2,
   height = (vsblank − veblank) / 2) with the pitch as the scan-line
@@ -183,7 +201,7 @@ DMA architecture:
   640×4 + a 32-byte pan margin, so pitch-derived width paints junk.
   The VBL is bit 2 of INTR_ENA/INTR_STAT (the ROM's ndrv enables `$4`
   then `$C` and spin-polls status bit 2 for the retrace during its
-  mode-set).  Exercised end-to-end since rung T11: the ROM's own `mtej`
+  mode-set).  Exercised end-to-end by the boot to the gray desktop: the ROM's own `mtej`
   control driver mode-sets the chip and QuickDraw paints the gray
   desktop into the BAR-assigned VRAM aperture (`ScrnBase $90800210`).
 
@@ -210,11 +228,31 @@ selected by Clear-write bit 31 (`ifMode1Clear`):
   (the TNT handler stores the value without the `$8000` reprioritize
   flag), so without deassert changes the emulator redelivers the stale
   level forever and the 68k base context starves at its first unmask —
-  which was exactly the Phase-D2 boot wall.
+  which was exactly an earlier boot wall.
 
 The mode-1 latch semantics are emulator-derived (pinned by the boot
 reaching a correct 60.15 Hz tick rate, and by the T11 desktop requiring
 the deassert-change law); revisit if a later rung contradicts them.
+
+**DBDMA channel completions are LEVELS, not pulses.**  A channel that
+executes an interrupt command holds its request asserted — visible in
+Levels — until the host acknowledges that bit through the Clear
+register (`tnt_dbdma_irq` → `tnt_gc_set_source`; the Clear write
+deasserts sources 0–10).  This is the only way Mac OS can see one:
+`ExtIntHandlerTNT` classifies from Levels & Mask and never reads
+Events, so a completion raised as a one-shot event (the model until
+the sound fix) reached the 68k side never.  The shipping sound driver
+states the contract from its end — it acknowledges channel 8
+(`Clear = $100`) before starting a program, and its completion handler
+acknowledges again.  With the pulse model the Sound Manager's first
+two-buffer program parked on its STOP and its handler never ran: the
+firmware beep played (Open Firmware polls), the 68k startup chime and
+every later sound — alert beeps, the Sound control panel, Quake — were
+silence.  With levels, all of them play (`tests/unit/suites/tnt_gc`
+`test_mode1_dbdma_level_ack`; `suite-tnt`'s disk-boot rows assert the
+chime on all three models).  For mode 0 (MkLinux/Linux) nothing changes:
+their handlers acknowledge by writing the event bits, which deasserts the
+level too.
 
 ### PCI slot topology
 
@@ -290,7 +328,7 @@ question), and hands off; POST logs to NVRAM; the 68k emulator dispatches
 the SuperMario ROM through low-memory init, timer calibration and the
 live tick chain.
 
-`tests/integration/tnt-rom-ladder` asserts the §7.1 ladder markers up to
+`tests/integration/tnt-rom-ladder` asserts the ladder markers up to
 the committed high-water rung (currently **T11**: 68k dispatching as an
 identified Power Macintosh 7500, low memory live, the 60.15 Hz tick at
 rate, the DBDMA engine playing Open Firmware's beep — its descriptors
@@ -298,8 +336,8 @@ live in ROM at `$FFE00090` — through the AWACS datapath against a
 sample-exact golden WAV, the interrupt fabric's mode-1 discipline
 visible in the registers, and the ROM's native control driver painting
 the 640x480 gray desktop into the Control VRAM aperture against a
-screen golden).  The run parks hunting for boot media (Phase E's
-frontier; no SCSI data path yet — the floppy path came later, see "The floppy" below).  The interrupt-fabric and engine semantics
+screen golden).  The run parks hunting for boot media (no SCSI data
+path yet — the floppy path came later, see "The floppy" below).  The interrupt-fabric and engine semantics
 are additionally unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux
 initialisation sequence and events-driven acknowledge, the NanoKernel's
 `$80000000` mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA
@@ -312,32 +350,54 @@ community's "BoxID bits 11-12" reading:
 
 - **The 68k routine** (`$FFC14844`): Hammerhead `+$00` first byte `$39`
   selects the TNT path (a `$3001xxxx` identifier is the 7200/Catalyst —
-  the earlier reading that made every Phase-B boot a 7200), Hammerhead
+  the earlier reading that made every early boot a 7200), Hammerhead
   `+$20` bit 30 marks the 9500, and BoxID little-endian bit 11 marks
   the 8500.  All three profiles identify: `BoxFlag` `$3E`/`$3F`/`$3D` =
   gestalt 68/69/67.
-- **Open Firmware's decode** (OpenFW image `$104db+`, solved in Phase D
-  part 2 by resolving the image's own token dictionary): the model
+- **Open Firmware's decode** (OpenFW image `$104db+`, solved by resolving the image's own token dictionary): the model
   selector is `m = (HH+$20 byte0 >> 5) | ((HH+$20 byte0 >> 1) & 8)` —
   `$80` (bit 31) reads as the 7500/8500 class, `$40` (bit 30) as the
   9500 — and the 7500-vs-8500 split is BoxID LE **bit 13** (set =
   7500).  An unrecognised box gets `compatible "AAPL,????"` and a
   device tree with **no `chaos`/`control` display nodes** — which was
   the entire "OF never probes the display" wall.  With the identity
-  right (rung T6), OF instantiates both nodes, probes the VCI bus and
+  right, OF instantiates both nodes, probes the VCI bus and
   assigns Control's BARs; the 9500 correctly gets neither node (no
   onboard video on the real machine).
 
-Known open items at this phase:
+**BoxID bit 8 — the factory-test strap — idles HIGH, and POST tests it
+on every boot but the first.** POST (`HWInit`, `$FFF20428`) keeps a log in
+Grand Central's NVRAM at `$1040`–`$125F`: a `'RobG'` signature at `$117C`,
+a boot counter at `$1180` it increments each boot, its saved return address
+at `$1254`. On a boot that finds the signature already there — every boot
+after the first on a formatted store, since nothing but Open Firmware's
+virgin-store format ever clears the region — it reads BoxID (`lwbrx
+$F301A000`, `andi. r6,r6,$100`, `$FFF201FC`) and a CLEAR bit 8 calls
+`$FFF21650`: the ROM's **Serial Test Manager** (`*   Serial Test Manager
+*` on ttya, `T0`..`T7`/`A`/`Q`/`X) Exit STM` menu, a `>` prompt, a `getc`
+with no timeout). Open Firmware never runs, no device tree is built,
+Control's BARs are never assigned, the screen stays black. The Macintosh
+profiles kept the bit clear on an earlier reading of the strap as "set =
+test monitor", which the ladder rows never contradicted because they boot
+a virgin store, where POST takes the fresh-log path and never tests the
+bit; the Network Server board found the law first (`ans500.c`). The
+symptom was #115 — "256 colours leaves Control uninitialised" — which was
+really "the second `machine.restart` on any store never boots"; the colour
+depth was the innocent bystander that made the reporter restart.
+`suite-tnt`'s `pm7500-76-8bpp-restart` holds it: a formatted store, the
+depth pinned through `machine.nvram`, a power-cycle, the Finder at 8 bpp.
 
-- The 68k startup chime STILL does not play by the T11 desktop (the OF
-  beep is rung T10's instrument); the boot reaches its media hunt
-  chime-less — an open question for Phase E.
+Known open items:
+
+- ~~The 68k startup chime STILL does not play by the T11 desktop~~ —
+  solved: DBDMA completions were modelled as pulses the NanoKernel's
+  Levels-classifying handler could not see ("The interrupt fabric"
+  above).  The chime, alert beeps and Quake's audio all play now.
 - The 7500's 601 RTC tick source keeps the PDM 7,833,600 Hz assumption
-  until a ladder rung measures it (proposal §4.4).
+  until a ladder rung measures it.
 - The `interruptableDeviceTable` / per-channel SCC interrupt split: the
   shared Z8530's single INT line currently fans to Grand Central
-  interrupts 15 and 16 together (both 68k IPL 4); split with Phase F.
+  interrupts 15 and 16 together (both 68k IPL 4); not yet split.
 
 ---
 
@@ -535,16 +595,30 @@ setting sticks for the same reason it does on the real machine.
 **Which rebuild the store survives.** The carry follows the power switch:
 `machine.restart` rebuilds *this* machine, so the soldered part comes back
 with it, while `machine.boot` builds a *new* machine and hands it a virgin
-store (proposal-boot-vs-reset §2 — a machine inherits nothing it was not
-given). That is not bookkeeping. A run stopped part-way through Open
+store (a machine inherits nothing it was not given). That is not bookkeeping. A run stopped part-way through Open
 Firmware's format of a virgin store — a bounded `scheduler.run`, a client
 that walked away mid-run — leaves the store torn, and a machine built on a
 torn store never reaches a boot: it sits in the ROM's serial-console read
 loop behind a black screen. Carrying such a store into the next
 `machine.boot` made that look like a broken model or an unbootable disk.
 A row that wants the same chip across two cold boots says so with
-`machine.restart` (ans-diag-floppy's DIMM table, `ans_boot_serial`'s
-console setting); `machine.board.clear_nvram()` is still the battery pull.
+`machine.restart` (the DIMM table in `suite-ans`'s `ans500-diag-floppy`,
+`ans_boot_serial`'s console setting); `machine.board.clear_nvram()` is
+still the battery pull.
+
+**The store is a test lever: `machine.nvram`.** Every TNT board exposes
+the 8 KB store flat — `peek(addr)`, `poke(addr, bytes)`, `dump(addr, n)`,
+`snapshot()`, `restore(bytes)`, `clear()` — the shape `machine.rtc.pram`
+has on the 68k machines, so a row can pin what lives there instead of
+driving a control panel: the Mac OS XPRAM image at `$1300` + PRAM address
+(`$1377` = Default OS, `$1310` = the `$A8` signature), the Name Registry's
+persistent properties above it (the Control driver's `gprf` record at
+`$1409`, whose byte at `$1410` is the Monitors depth: 0 = 256 colours,
+2 = millions), POST's log at `$1040`–`$125F` ("Machine identity" above),
+and Open Firmware's environment in the top bank. The store the object
+edits is the live chip, so a poke followed by `machine.restart` is what
+the machine boots on; a poke followed by `machine.boot` is lost with the
+rest of the old machine.
 
 The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
 than its relocatable BAR, because this board installs no pull-down on MD51
@@ -610,6 +684,10 @@ display-enable bit before touching the CRTC or the palette — so it is
 derived from the scheduler's clock, which keeps a run deterministic and
 keeps a waiting loop from becoming a hang.
 
+The card's register decode, what it does with a mode it cannot present, and
+its unit tests are on the card's own page,
+[`cirrus54m30.md`](../../core/peripherals/pci/cards/cirrus54m30.md).
+
 ## The floppy
 
 The SWIM3 at Grand Central `+$15000` is the same chip the 6100/7100/8100
@@ -645,15 +723,15 @@ model had to learn, each a defect until it did:
 
 Mac OS on the 7500/8500/9500 sees the change too: with the chip present
 the `.Sony` driver owns drive numbers 1–2 and the SCSI startup volume
-lands at `$23` rather than `$03` — the `tnt-hd-boot*` rows assert the
-new number.
+lands at `$23` rather than `$03` — `suite-tnt`'s disk-boot rows assert
+the new number.
 
 ## The diagnostic utility -- what it accepted, and what it found
 
-Apple's *Network Server Diagnostic Utility 1.1* (the floppy the
-`ans-diag-floppy` row boots) is a hardware test suite written against
-the real board by people with its schematics, and it exercises paths no
-operating system touches.  Its "complete system test" is the closest
+Apple's *Network Server Diagnostic Utility 1.1* (the floppy
+`suite-ans`'s `ans500-diag-floppy` row boots) is a hardware test suite
+written against the real board by people with its schematics, and it
+exercises paths no operating system touches.  Its "complete system test" is the closest
 thing this machine has to a conformance suite, so the model was fitted
 until it accepted the machine.  What it tests, and what each test cost:
 
@@ -689,9 +767,12 @@ boots twice.
 | `ans-pci-slots` | unit | six sockets and three builtins, IDSELs, the rewired interrupt map, the raw config-cycle identities including the `$14` Revision ID that gates machine identity |
 | `ans-device-tree` | matrix | `dev / ls`, node properties and device aliases against Apple's published Listing 6-1, driven over the serial console |
 | `ans-scsi` | matrix | the SCRIPTS engine, through Open Firmware's own `probe-scsi1` and `probe-scsi2`, on both fast/wide channels |
-| `ans-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
-| `ans-macos-2rom` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
+| `suite-ans` `ans500-of-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
+| `suite-ans` `ans500-proto20-macos` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
+| `suite-ans` `ans500-diag-floppy` | matrix, fixture-gated | the Diagnostic Utility booted from the internal floppy in Service position, driven from the ADB keyboard through its complete system test |
 | `ans-aix-boot` | extended, fixture-gated | the documented Service-keyswitch install path, up to `bootapple` launching off the AIX 4.1.5 Install CD |
+| `ans-nt-install` | extended, fixture-gated | Windows NT 4.0 PowerPC installed end to end on the 2.26NT ROM from the [powermac-nt-hal](https://github.com/pappadf/powermac-nt-hal) boot floppy — `setup.of`, `boot.of`, text-mode Setup, NT's restart through Cuda, `bootdisk.of`, GUI Setup — to the installed system's logon screen (rungs N1-N12; without a `product-id.txt` fixture it stops at GUI Setup's Registration page, N10). `NT_EXPORT=<path>` keeps the installed disk |
+| `ans-nt-installed-boot` | extended, gs-test-data | the disk `ans-nt-install` produces (gs-test-data `systems/winnt_4_0_ppc_ans_512mb.img`), cold-booted on the 2.26NT ROM through the boot floppy's `setup.of` and `bootdisk.of` to the logon screen, then Ctrl+Alt+Del and a logon as Administrator from the ADB keyboard to the desktop (rungs B1-B5). Needs gs-test-data 9b20396 or later and skips before it |
 
 Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
 `probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not
@@ -730,7 +811,7 @@ chosen off the disc. `bootapple` then reads about 2.7 MB off the disc —
 ### The LCD is the narrator, and it counts
 
 From here the machine stops printing and starts *displaying*. The
-front-panel LCD — built in Phase B because POST needs it — is the only
+front-panel LCD — built early because POST needs it — is the only
 narrator AIX uses, and sampled as a sequence rather than a snapshot it is
 a trace of the boot:
 
@@ -778,8 +859,7 @@ seconds per absent target, which is why the `890` phase dominates the
 boot's wall clock. (For two sessions this looked like an unsolvable ring
 stall ending in an `888`/`102`/`300` panic; the model was merging the two
 causes into one 16-bit SIST read, through a mechanism no real bus access
-has, and every measured ordering was an artefact of that merge — the
-dossier's findings 45 to 48 carry the full account.)
+has, and every measured ordering was an artefact of that merge.)
 
 After the second configuration pass the async adapter and tty come up
 (`831`, `874`, `727`), and then the BOS install takes the LCD over with
@@ -790,35 +870,32 @@ System Console"** on the 54M30 framebuffer and waits for a key.
 graphics console had no keyboard under AIX at first: the kernel's Cuda
 transport is not the Macintosh ROM's, and four places where the model had
 encoded the Mac's tolerance rather than the part's behaviour kept it from
-ever enabling the VIA's shift-register interrupt (finding 56); and even
+ever enabling the VIA's shift-register interrupt; and even
 with keys arriving, `cfgcuda` never defined a keyboard adapter because it
 defines them from Cuda's device list — pseudo-command `$1A`, RdDevList,
-which the Macintosh never sends and the model did not answer (finding
-57). So the install is driven on serial port B, where the same "define the
+which the Macintosh never sends and the model did not answer. So the install is driven on serial port B, where the same "define the
 console" prompt appears; the BOS menus are driven there. A disk that AIX
 will install to needs three more things from the device model: IBM's
 SCSD INQUIRY page `$C7` (the size comes from it, not from READ CAPACITY),
-RESERVE/RELEASE, SEND DIAGNOSTIC, and WRITE AND VERIFY (finding 50–52),
+RESERVE/RELEASE, SEND DIAGNOSTIC, and WRITE AND VERIFY,
 and the SCRIPTS engine must yield to the CPU while the script polls its
-completion mailbox (finding 51). With those, "Restoring base operating
+completion mailbox. With those, "Restoring base operating
 system" runs to "Base Operating System installation is complete" in
 about eleven guest minutes (`c54`…`c58`). The reboot needs Board
-Register 1 bit 8 high (finding 53) and the disk at SCSI id 2 — Open
+Register 1 bit 8 high and the disk at SCSI id 2 — Open
 Firmware's default boot device is `disk2:aix` — and then comes up
 multi-user: `890 591 868`, "Multi-user initialization completed", the
 Installation Assistant, and **`AIX Version 4 … Console login:`**.
-**Rung S13.**
 
 With RdDevList answered, cfgmgr brings up `cudaka0`, `kbd0`, `cudama0`
 and `mouse0`, the LFT attaches the keyboard, and the installed system
 runs with its console on the 54M30: the Installation Assistant, the login
 prompt and a root shell are all on the monitor, driven from the emulated
-ADB keyboard (finding 58 — note that AIX, like MkLinux, reads the cursor
+ADB keyboard (note that AIX, like MkLinux, reads the cursor
 keys at their raw ADB codes `$3B`–`$3E`; `keyboard.md` has the
 convention). That is what the `ans-aix-installed-boot` row asserts: the
 login screen and the logged-in screen as pixel goldens, with `root` typed
-in between. The bring-up dossier's findings 32 to 58 carry the full
-account.
+in between.
 
 ### What getting here cost, and what it says
 
@@ -906,5 +983,5 @@ still has to get right. Its C side has `bsc_ioctl_sleep` and
 `e_sleep_thread`: the configuration method issues an ioctl and **sleeps**,
 so a command that never completes shows up as a completely idle machine
 rather than as anything resembling a crash. The fourth lever remains
-`ans-macos-2rom`: any device can be cross-examined through a stack we do
-understand.
+`suite-ans`'s `ans500-proto20-macos` row: any device can be
+cross-examined through a stack we do understand.

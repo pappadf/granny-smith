@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// Apple Sound Chip unit test (proposal-sound-support-all-models §5/§8).
+// Apple Sound Chip unit test.
 //
 // Links the real asc.c against recording stubs and pins three layers:
 //
@@ -21,6 +21,7 @@
 #include "asc.h"
 #include "audio_out.h"
 #include "object.h"
+#include "sound_surface.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -49,8 +50,9 @@ static void *s_cb_src;
 static uint64_t s_period_ns;
 static int s_cancels;
 
-event_t *scheduler_new_cpu_event(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)sch;
     (void)data;
     (void)cycles;
@@ -66,6 +68,10 @@ void remove_event(scheduler_t *sch, event_callback_t callback, void *source) {
     (void)source;
     s_cb = NULL;
     s_cancels++;
+}
+void scheduler_forget_source(scheduler_t *sch, void *source) {
+    (void)sch;
+    (void)source;
 }
 
 void scheduler_new_event_type(scheduler_t *sch, const char *source_name, void *source, const char *event_name,
@@ -135,6 +141,20 @@ value_t audio_out_match_value(const char *golden_wav) {
     value_t v;
     memset(&v, 0, sizeof(v));
     return v;
+}
+
+// --- machine.sound surface: inert ------------------------------------------
+// asc.c presents machine.sound through the shared surface (sound_surface.h)
+// rather than its own class.  This suite links only asc.c, so the surface is
+// stubbed the same way audio_out is: sound_object_new returns NULL, which
+// asc_init already treats as "no object tree", and the ASC register model --
+// the only thing under test here -- is unaffected.
+struct object *sound_object_new(const sound_surface_t *s) {
+    (void)s;
+    return NULL;
+}
+void sound_object_delete(struct object *o) {
+    (void)o;
 }
 
 // --- object model / values: inert (object_new returns NULL → no attach) ---

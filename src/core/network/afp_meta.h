@@ -9,8 +9,7 @@
 // dates, the locked/inhibit attribute bits and the Finder comment — beside
 // the data file in an AppleDouble header (RFC 1740).  The sidecar moves and
 // copies with the file, interoperates with `cp`, macOS and Netatalk, and
-// survives an OPFS page reload with no extra machinery
-// (proposal-afp-server-completeness.md §4.3).
+// survives an OPFS page reload with no extra machinery.
 //
 // This module owns the mapping between AFP wire values and AppleDouble entry
 // payloads.  It is I/O-complete (it opens the sidecar itself) but knows
@@ -90,10 +89,6 @@ bool afp_meta_sidecar_path(const char *host_path, char *out, size_t cap);
 // a sidecar was parsed, false when none exists.
 bool afp_meta_load(const char *host_path, afp_meta_t *out);
 
-// Load the resource fork from the sidecar (malloc'd; caller frees).  Yields
-// NULL/0 when the file has no sidecar or no entry 2.
-void afp_meta_load_rsrc(const char *host_path, uint8_t **rsrc, size_t *rsrc_len);
-
 // Resource-fork length recorded in the sidecar (0 if none).  Reads only the
 // entry table, so it does not pay for the fork bytes.
 uint32_t afp_meta_rsrc_len(const char *host_path);
@@ -108,7 +103,7 @@ int afp_meta_store(const char *host_path, const afp_meta_t *meta, const uint8_t 
 int afp_meta_update(const char *host_path, const afp_meta_t *meta);
 
 // Streaming variants, so a multi-megabyte resource fork never has to exist in
-// memory as a whole (proposal §5 WP-7).  `rsrc_src` is read from its current
+// memory as a whole.  `rsrc_src` is read from its current
 // position for exactly `rsrc_len` bytes; pass NULL/0 for no fork.
 int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *rsrc_src, size_t rsrc_len);
 
@@ -122,8 +117,12 @@ size_t afp_meta_copy_rsrc(const char *host_path, FILE *dst);
 bool afp_meta_is_hidden(const char *name);
 
 // Name of the per-volume control directory holding the CNID catalog and the
-// desktop database (proposal §4.1).
+// desktop database.
 #define AFP_CONTROL_DIR ".gs-afp"
+
+// "<root>/.gs-afp/<leaf>", creating the control directory when it is missing:
+// where the catalog, the desktop stores and the volume record live.
+bool afp_meta_control_path(const char *root, const char *leaf, char *out, size_t cap);
 
 // AFP <-> host time conversions, shared by every caller that touches dates.
 uint32_t afp_meta_time_from_unix(int64_t unix_secs);

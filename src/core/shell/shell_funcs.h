@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // shell_funcs.h
-// User-defined script functions (`def`, shell v2 §3.10). The registry
+// User-defined script functions (`def`). The registry
 // owns each function's parsed body; functions are callable from command
 // form (script.c), call form in any expression (via the expr function
 // hook), and are surfaced for introspection/removal as attached entry
@@ -27,7 +27,11 @@ int shell_func_define(const char *name, char **params, int n_params, script_bloc
                       size_t err_size);
 
 // Look up a function by flat name. NULL if absent.
+// Finds a function and takes a reference on it (its body stays valid
+// through a redefinition or removal from another client); the caller
+// releases it after the call.
 script_func_t *shell_func_find(const char *name);
+void shell_func_release(script_func_t *f);
 
 // Call: bind positional + named arguments to the declared parameters,
 // push a scope (16-frame recursion cap), run the body, pop, and return

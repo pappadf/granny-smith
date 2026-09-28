@@ -37,6 +37,7 @@ import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gotoWeb2, stageOpfsFileStreaming } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const PDM_ROM = path.resolve(__dirname, '../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom');
 const MACOS81_HD = path.resolve(__dirname, '../../../tmp/macos81.img');
@@ -58,13 +59,6 @@ function burstStarts(samples: RmsSample[], threshold = 0.01, gapMs = 1500): numb
     }
   }
   return starts;
-}
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
 }
 
 // Echo an expression through the terminal under a unique key and return the

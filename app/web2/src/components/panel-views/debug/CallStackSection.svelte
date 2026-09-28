@@ -1,9 +1,10 @@
 <script lang="ts">
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import { readRegisters, peekL } from '@/bus/debug';
+  import { peekLogicalL } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
+  import { debugFrame } from '@/state/debugFrame.svelte';
+  import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32 } from '@/lib/hex';
 
   interface Frame {
@@ -16,46 +17,65 @@
 
   const MAX_DEPTH = 16;
 
-  async function refresh() {
-    loading = true;
-    try {
-      const regs = await readRegisters();
-      if (!regs) {
-        frames = [];
-        return;
-      }
-      const result: Frame[] = [];
-      let frame = regs.a[6] >>> 0;
-      // Plain object as a visited-marker — avoids the prefer-svelte-reactivity
-      // lint for plain JS Set; this is local-only, never reactive.
-      const seen: Record<number, true> = {};
-      while (frame && result.length < MAX_DEPTH && !seen[frame]) {
-        seen[frame] = true;
-        const ret = await peekL(frame + 4);
+  // Walk the stack from the shared frame's registers — no second register
+  // read (this pane used to issue 20 separate ones).  Per architecture:
+  //   68K: the A6 link chain — [fp] is the caller's fp, [fp+4] the return.
+  //   PPC: the r1 back-chain — [sp] is the caller's sp, and the saved LR
+  //        sits at 8 bytes into the caller's frame; LR itself is frame #0.
+  // Reads are of LOGICAL addresses on both (peekLogicalL).
+  async function walk(): Promise<Frame[]> {
+    const f = debugFrame.current;
+    if (!f) return [];
+    const out: Frame[] = [];
+    const seen: Record<number, true> = {}; // loop guard (local, never reactive)
+    if (f.arch === 'ppc') {
+      out.push({ ret: f.rawRegs.lr ?? 0, frame: f.rawRegs.r1 ?? 0 });
+      let sp = (f.rawRegs.r1 ?? 0) >>> 0;
+      while (sp && out.length < MAX_DEPTH && !seen[sp]) {
+        seen[sp] = true;
+        const caller = await peekLogicalL(sp, 'ppc');
+        if (!caller) break;
+        const ret = await peekLogicalL(caller + 8, 'ppc');
         if (ret === null) break;
-        const next = await peekL(frame);
-        result.push({ ret: ret >>> 0, frame });
-        if (next === null) break;
-        frame = next >>> 0;
+        out.push({ ret: ret >>> 0, frame: caller >>> 0 });
+        sp = caller >>> 0;
       }
-      frames = result;
-    } finally {
-      loading = false;
+      return out;
     }
+    let fp = (f.rawRegs.a6 ?? 0) >>> 0;
+    while (fp && out.length < MAX_DEPTH && !seen[fp]) {
+      seen[fp] = true;
+      const ret = await peekLogicalL(fp + 4, f.arch);
+      if (ret === null) break;
+      const next = await peekLogicalL(fp, f.arch);
+      out.push({ ret: ret >>> 0, frame: fp });
+      if (next === null) break;
+      fp = next >>> 0;
+    }
+    return out;
   }
 
+  // Re-walk when a new frame arrives and the section is open.
   $effect(() => {
-    void machine.status;
-    void debug.refreshGen;
-    if (debug.sections.callstack) void refresh();
+    void debugFrame.current;
+    if (!debug.sections.callstack) return;
+    loading = true;
+    void walk()
+      .then((r) => (frames = r))
+      .finally(() => (loading = false));
+  });
+
+  // Real translations for the return-address labels (bus/mmu.ts).
+  let xl = $state<Record<number, Translation>>({});
+  $effect(() => {
+    const addrs = frames.map((f) => f.ret);
+    if (!machine.mmuEnabled || addrs.length === 0) return;
+    void translateMany(addrs).then((m) => (xl = m));
   });
 
   function labelFor(addr: number): string {
     if (!machine.mmuEnabled) return `$${fmtHex32(addr)}`;
-    const r = mmuLookup(addr);
-    const phys = r.valid && r.phys !== undefined ? fmtHex32(r.phys) : '!';
-    const tag = r.valid ? (r.kind ?? 'PT') : 'INVALID';
-    return `L:$${fmtHex32(addr)}  P:$${phys}  ${tag}`;
+    return addrLabel(addr, xl[addr >>> 0]);
   }
 </script>
 

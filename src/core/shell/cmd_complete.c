@@ -3,10 +3,10 @@
 
 // cmd_complete.c
 // Tab completion engine that walks the object tree at the cursor's
-// path position. See proposal-module-object-model.md §4.6 — line-start
-// suggests root children and pragmas, mid-path suggests members of the
-// resolved-so-far object, method-arg position dispatches by arg_decl[i],
-// and any cursor inside `$(...)`, `${...}`, or `"..."` returns nothing.
+// path position. Line-start suggests root children and pragmas, mid-path
+// suggests members of the resolved-so-far object, method-arg position
+// dispatches by arg_decl[i], and any cursor inside `$(...)`, `${...}`, or
+// `"..."` returns nothing.
 
 #include "cmd_complete.h"
 #include "shell_var.h"
@@ -23,8 +23,8 @@
 #include "../object/value.h"
 #include "../vfs/vfs.h"
 
-// Phase 5c — legacy command registry deleted; no more `cmd_head`. The
-// completion code below skips the legacy branch entirely.
+// The legacy command registry is gone; there is no `cmd_head`. The
+// completion code below has no legacy branch.
 
 // === Tiny per-call string pool ==============================================
 //
@@ -56,10 +56,24 @@ static const char *pool_strdup(const char *s) {
 // === Completion accumulator ==================================================
 
 static void push_match(struct completion *out, const char *cand, const char *prefix) {
-    if (!cand || out->count >= CMD_MAX_COMPLETIONS)
+    if (!cand) {
+        // pool_strdup returned NULL: a composed candidate was dropped because
+        // the pool filled.  Say so rather than returning a quietly short set.
+        out->truncated = true;
         return;
+    }
+    if (out->count >= CMD_MAX_COMPLETIONS) {
+        out->truncated = true;
+        return;
+    }
+    // strncmp, not strncasecmp: the completer is a VIEW of the resolver, and
+    // the resolver matches case-sensitively (class_find_member uses strcmp,
+    // and alias.c's comment records that member names are case-sensitive).
+    // Typing `MACH<Tab>` used to offer `machine`, which then failed to
+    // resolve -- and this function's own dedup below was already
+    // case-sensitive, so it disagreed with itself.
     size_t plen = prefix ? strlen(prefix) : 0;
-    if (plen && strncasecmp(cand, prefix, plen) != 0)
+    if (plen && strncmp(cand, prefix, plen) != 0)
         return;
     // Dedup against earlier matches in this completion set.
     for (int i = 0; i < out->count; i++) {
@@ -96,8 +110,8 @@ static void complete_paths(const char *prefix, struct completion *out) {
     }
 
     // Route through the VFS so completion works uniformly on host paths,
-    // image-vfs HFS directories, and the synthetic /rsrc/<TYPE> trees added
-    // by the resource-fork-as-VFS-tree proposal. Skip dotfiles unless the
+    // image-vfs HFS directories, and the synthetic /rsrc/<TYPE> resource-fork
+    // trees. Skip dotfiles unless the
     // user has typed at least one '.' (same UX as the old host-only path).
     vfs_dir_t *vd = NULL;
     const vfs_backend_t *be = NULL;
@@ -154,7 +168,7 @@ static void complete_bool(const char *partial, struct completion *out) {
 
 // === Depth-tracking state machine ===========================================
 //
-// Mirrors the §4.1.2 "balanced tokens" rule. `paren` counts `$(`/`(`/`)`
+// Mirrors the "balanced tokens" rule. `paren` counts `$(`/`(`/`)`
 // inside expressions, `brace` counts `${...}` interpolation regions.
 // `bracket` counts `[...]` subscripts at top level — the contents are
 // numeric or another `$(...)`, neither of which is a tree path.
@@ -318,9 +332,9 @@ static void complete_attached(struct object *o, const char *tail, struct complet
 // Indexed-child completion: `floppy.drives.<TAB>` should suggest live
 // indices as bare integers ("0", "1"). Pool-allocates the name strings.
 static void complete_indexed_children(struct object *o, const member_t *m, const char *tail, struct completion *out) {
-    if (!o || !m || m->kind != M_CHILD || !m->child.indexed || !m->child.next)
+    if (!o || !m || m->kind != M_CHILD || !m->child.indexed)
         return;
-    int idx = m->child.next(o, -1);
+    int idx = object_child_next(o, m, -1);
     while (idx >= 0 && out->count < CMD_MAX_COMPLETIONS) {
         // Indexed children resolve to objects: complete to "N.".
         char tmp[16];
@@ -329,7 +343,7 @@ static void complete_indexed_children(struct object *o, const member_t *m, const
         if (!copy)
             break;
         push_match(out, copy, tail);
-        idx = m->child.next(o, idx);
+        idx = object_child_next(o, m, idx);
     }
 }
 
@@ -515,8 +529,7 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
     }
 
     // After the positional candidates, offer `name=` for the declared
-    // arguments this position (or a later one) could still fill by name —
-    // proposal-named-args-boot-config §3.5.
+    // arguments this position (or a later one) could still fill by name.
     for (int i = arg_idx; i < fixed_n; i++) {
         if (!args[i].name)
             continue;
@@ -656,7 +669,7 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     out->start = info.word_start;
     out->end = cursor_pos;
     if (info.inside_special)
-        return; // §4.6: empty inside $(...), ${...}, "..."
+        return; // empty inside $(...), ${...}, "..."
 
     // Extract the partial being completed.
     char partial[512];
@@ -682,7 +695,7 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
         if (dotted) {
             complete_path(partial, out);
         } else {
-            // Statement keywords (shell v2 §3.11).
+            // Statement keywords.
             static const char *const kws[] = {"let", "alias", "if",       "elif",   "else", "while",
                                               "for", "break", "continue", "return", "def",  "assert"};
             for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++)

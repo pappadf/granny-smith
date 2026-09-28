@@ -1,0 +1,16 @@
+# The floppy is attached but nothing has read it yet.
+assert storage.images[0].type == "fd_ds" "fd0 is the System 6.0.8 disk"
+assert storage.images[0].reads == 0 "no I/O before the machine runs"
+assert storage.images[0].writes == 0
+
+# The Plus boots from the floppy: its reads are counted.
+scheduler.run 30000000
+assert storage.images[0].reads > 0 "the boot read the floppy"
+
+# Ejected, the image does no more I/O: its light cannot come on.
+echo "${machine.floppy.drive[0].eject()}"
+let seen = storage.images[0].reads
+scheduler.run 5000000
+assert storage.images[0].reads == $seen "an ejected disk is not read"
+
+quit

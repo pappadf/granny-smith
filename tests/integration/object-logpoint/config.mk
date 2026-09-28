@@ -1,4 +1,4 @@
-# Integration test: ${...} interpolation in logpoint messages (M5)
+# Integration test: ${...} interpolation in logpoint messages
 # Boots Plus, sets a memory logpoint on Ticks ($16A), runs long enough
 # for the VBL handler to bump it, and verifies the formatted output.
 
@@ -7,5 +7,5 @@ TEST_DESC := ${...} interpolation drives logpoint message formatting
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

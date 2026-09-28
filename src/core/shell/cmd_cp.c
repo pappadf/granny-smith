@@ -5,9 +5,8 @@
 // Recursive `cp` command built on the VFS.  Copying between any two
 // backends works because both source reads and destination writes go
 // through vfs_* — copying out of an auto-mounted image into OPFS or the
-// host filesystem is the primary Phase 2 user story.  Destination is
-// always the host backend in v1 (image writes return -EROFS
-// structurally; see §2.9 in proposal-image-vfs.md).
+// host filesystem is the primary use.  Destination is always the host
+// backend in v1 (image writes return -EROFS structurally).
 //
 // Fork handling: a file copied OUT of an image that carries a resource fork
 // and/or non-trivial Finder Info is materialised as an AppleDouble pair — the
@@ -15,13 +14,16 @@
 // the resource fork (entry 2) + Finder Info (entry 9).  This is lossless (an
 // NDIF `.img`, whose block map lives in the resource fork, survives a
 // round-trip) and interoperates with macOS/Netatalk/tar.  Data-only files stay
-// single clean streams.  See proposal-appledouble-support.md §4.3.
+// single clean streams.
 
 #include "appledouble.h"
+#include "gs_out.h"
 #include "shell.h"
 #include "vfs.h"
+#include "io/io_worker.h"
 
 #include <errno.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -34,6 +36,7 @@ struct cp_stats {
     uint64_t files_copied;
     uint64_t bytes_copied;
     uint64_t dirs_created;
+    uint64_t bytes_total; // the size known up front (one file), for progress; 0 otherwise
     // Precise failure detail (which side failed, path, offset) set on the
     // first error so callers can distinguish a source read from a dest write.
     char detail[320];
@@ -208,11 +211,33 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
         return e ? -e : -EIO;
     }
 
-    uint8_t buf[64 * 1024];
+    // One chunk per read and write call (GS_IO_CHUNK_KB: one proxied
+    // filesystem operation each on WasmFS), progress reported and the
+    // cancel flag checked between chunks.  A small stack buffer when the
+    // chunk cannot be allocated.
+    size_t chunk = (size_t)GS_IO_CHUNK_KB * 1024u;
+    uint8_t *buf = (uint8_t *)malloc(chunk);
+    uint8_t small[64 * 1024];
+    if (!buf) {
+        buf = small;
+        chunk = sizeof small;
+    }
+    vfs_stat_t st = {0};
+    uint64_t total = vfs_stat(src, &st) == 0 ? st.size : 0;
     uint64_t off = 0;
     for (;;) {
+        if (io_check_cancelled()) {
+            // A cancelled copy leaves no partial destination behind.
+            fclose(out);
+            in_be->close(in);
+            remove(dst);
+            if (buf != small)
+                free(buf);
+            snprintf(s->detail, sizeof(s->detail), "cancelled");
+            return -ECANCELED;
+        }
         size_t got = 0;
-        rc = in_be->read(in, off, buf, sizeof(buf), &got);
+        rc = in_be->read(in, off, buf, chunk, &got);
         if (rc < 0) {
             // Distinguish a source-read failure from a destination-write one so
             // browser/OPFS issues can be told apart from image-read issues.
@@ -220,6 +245,8 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
                      (unsigned long long)off, strerror(-rc));
             fclose(out);
             in_be->close(in);
+            if (buf != small)
+                free(buf);
             return rc;
         }
         if (got == 0)
@@ -230,10 +257,19 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
                      (unsigned long long)off, strerror(e));
             fclose(out);
             in_be->close(in);
+            if (buf != small)
+                free(buf);
             return e ? -e : -EIO;
         }
         off += got;
+        io_report_progress(s->bytes_copied + off, s->files_copied == 0 ? total : 0);
+        if (got < chunk)
+            break;
+        // Let the filesystem's proxy serve the guest between chunks.
+        sched_yield();
     }
+    if (buf != small)
+        free(buf);
     fclose(out);
     in_be->close(in);
     s->files_copied++;
@@ -361,10 +397,10 @@ int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, si
         return rc;
     }
     if (s.dirs_created > 0)
-        printf("copied %llu file(s), %llu byte(s), %llu dir(s) created\n", (unsigned long long)s.files_copied,
-               (unsigned long long)s.bytes_copied, (unsigned long long)s.dirs_created);
+        gs_outf("copied %llu file(s), %llu byte(s), %llu dir(s) created\n", (unsigned long long)s.files_copied,
+                (unsigned long long)s.bytes_copied, (unsigned long long)s.dirs_created);
     else
-        printf("copied %llu file(s), %llu byte(s)\n", (unsigned long long)s.files_copied,
-               (unsigned long long)s.bytes_copied);
+        gs_outf("copied %llu file(s), %llu byte(s)\n", (unsigned long long)s.files_copied,
+                (unsigned long long)s.bytes_copied);
     return 0;
 }

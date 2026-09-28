@@ -15,6 +15,11 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
@@ -28,16 +33,6 @@ async function lastTermLine(page: Page): Promise<string> {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
   return lines.length ? lines[lines.length - 1] : '';
-}
-
-// Type one shell line into the Terminal panel's xterm. A trailing settle
-// lets the async worker round-trip land before the next interaction.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
 }
 
 test('terminal Tab completion replaces the right span', async ({ page }) => {
@@ -177,4 +172,69 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
   await expect
     .poll(() => lastTermLine(page), { timeout: 15_000 })
     .toMatch(/^gs se30>$/);
+
+  // --- The core's own events -------------------------------------------
+  // Each stop above ended a mode, reported on the event ring with its
+  // reason; the last run opened one that is still running.  A bounded
+  // step ends by budget, before its own result lands.
+  type Ev = { kind: string; event: string; data: Record<string, unknown> };
+  const events = () =>
+    page.evaluate(
+      () => (window as unknown as { __gsCoreEvents?: Ev[] }).__gsCoreEvents ?? [],
+    );
+  // Only the mode events: perf samples and speed changes interleave.
+  const modes = (evs: Ev[]) => evs.filter((e) => e.event.startsWith('mode_'));
+  const before = modes(await events());
+  const stops = before.filter((e) => e.event === 'mode_ended');
+  expect(stops.length).toBeGreaterThanOrEqual(2);
+  expect(stops.every((e) => e.data.reason === 'stop_request')).toBe(true);
+  expect(before[before.length - 1]?.event).toBe('mode_started');
+  await terminalRun(page, 'scheduler.stop');
+  await terminalRun(page, 'debug.step 100');
+  await expect
+    .poll(
+      async () => (await events()).filter((e) => e.event === 'mode_ended').length,
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(stops.length + 2);
+  const after = modes(await events());
+  const last = after[after.length - 1];
+  expect(last.event).toBe('mode_ended');
+  expect(last.data.reason).toBe('budget');
+  expect(typeof last.data.pc).toBe('number');
+});
+
+// The terminal stays mounted while another tab shows: its scrollback
+// survives a tab switch, and output printed meanwhile is there on return.
+// Typed input goes through xterm's onData, so a pasted line runs too.
+test('terminal keeps its scrollback across tab switches, and paste runs', async ({ page }) => {
+  test.setTimeout(3 * 60 * 1000);
+  await gotoWeb2(page);
+  await page.locator('button.ptab[data-tab="terminal"]').click();
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 15_000 })
+    .toMatch(/^gs>$/);
+
+  await terminalRun(page, 'echo "before-switch-marker"');
+  await expect(page.locator('.xterm-rows')).toContainText('before-switch-marker', {
+    timeout: 10_000,
+  });
+
+  await page.locator('button.ptab[data-tab="machine"]').click();
+  await page.locator('button.ptab[data-tab="terminal"]').click();
+  await expect(page.locator('.xterm-rows')).toContainText('before-switch-marker', {
+    timeout: 10_000,
+  });
+
+  // A paste: xterm delivers it to onData as one multi-character chunk.
+  const ta = page.locator('.xterm textarea.xterm-helper-textarea');
+  await ta.focus();
+  await ta.evaluate((el) => {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', 'echo "pasted-marker"\n');
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
+  });
+  await expect
+    .poll(() => page.locator('.xterm-rows').innerText(), { timeout: 10_000 })
+    .toMatch(/^\s*pasted-marker\s*$/m);
 });

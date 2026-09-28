@@ -1,6 +1,6 @@
-# machine.restart — power-cycle the running machine (proposal-boot-vs-reset).
+# machine.restart — power-cycle the running machine.
 #
-# The contract under test (§3.2/§3.3):
+# The contract under test:
 #   * restart takes no arguments and rebuilds the machine the built-from
 #     record describes — model, RAM, card — without restamping `created`;
 #   * the mounted media stay attached across the teardown, as the SAME open
@@ -61,7 +61,7 @@ scheduler.run 200000000
 assert debug.mac.globals.read("BootDrive") != 0 "post-restart boot: nothing booted"
 assert debug.mac.globals.read("SysMap") != 0 "post-restart boot: no System file opened"
 
-# --- Checkpoint interaction (§6.5): machine.restart after checkpoint.load
+# --- Checkpoint interaction: machine.restart after checkpoint.load
 # rebuilds the restored configuration cold, media included.  (A bare
 # machine.boot after a restore is an error under the non-inheriting boot —
 # boot-config pins that half.)

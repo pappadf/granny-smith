@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // ppc_mmu.c
-// The 601/604 MMU front end (proposal-powerpc-601-pdm.md §3.5; TNT
-// proposal §4.3): T=1 I/O-controller segments, BAT match, and the hashed
-// page table search, with three software caches in front of the full walk:
+// The 601/604 MMU front end: T=1 I/O-controller segments, BAT match, and the
+// hashed page table search, with three software caches in front of the full
+// walk:
 //
 //   1. the user SoA fast path — with MSR[PR]=1 and MSR[DT]=1 the active
 //      maps are g_user_read/write, which hold LOGICAL page fills made
@@ -314,6 +314,13 @@ static inline uint8_t *phys_host(uint32_t pa) {
     return host ? host + (pa & PAGE_MASK) : NULL;
 }
 
+// True when the physical page holding a PTE group is host-writable.  Mirrors
+// the check mmu_write_physical_uint8 makes on the 68K side.
+static inline bool ppc_pte_page_writable(uint32_t pa) {
+    uint32_t pg = pa >> PAGE_SHIFT;
+    return pg < g_page_count && g_page_table[pg].host_base && g_page_table[pg].writable;
+}
+
 // Hashed page table search (601UM §6.9): SDR1 = HTABORG[0:15] |
 // HTABMASK[23:31]; hash1 = low 19 VSID bits XOR page index; PTEG PA =
 // ORG[0:6] || (ORG[7:15] | (hash[0:8] & MASK)) || hash[9:18] || 000000.
@@ -346,7 +353,17 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
             // R set even when protection denies (601UM §6.8.4); C only
             // when the store is permitted.  Suppressed for the
             // side-effect-free debug translate.
-            if (!nosideffect) {
+            // The R/C write-back goes straight through the host pointer, which
+            // phys_host resolves without consulting page_entry_t.writable.  A
+            // page table placed in ROM -- a guest bug, but a reachable one --
+            // therefore wrote into the ROM buffer, and that buffer is mirrored
+            // across the whole ROM window, so one stray byte poisons every
+            // later ROM read for the session, machine.rom.identify included.
+            // Update the in-memory PTE only when the page it lives on is
+            // actually writable; the translation itself still proceeds, since
+            // R/C are a hint to the OS, not a precondition.  (The 68K side has
+            // had the equivalent guard all along, in mmu_write_physical_uint8.)
+            if (!nosideffect && ppc_pte_page_writable(pteg)) {
                 uint32_t nlo = lo | 0x100u | ((store && allowed) ? 0x80u : 0u);
                 if (nlo != lo)
                     STORE_BE32(pte + 4, nlo);
@@ -500,6 +517,30 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
 
     // Translation TLB (serves supervisor accesses and user pages that
     // could not be SoA-filled).
+    // The tag keys on EA and privilege only -- deliberately NOT on MSR[DT] --
+    // and ppc_update_active_maps flushes just the FETCH cache on mtmsr/rfi, so
+    // entries here survive a DT toggle.  That would be architecturally
+    // observable in general (MPCFPE32B Table 2-23 requires only a
+    // context-synchronizing instruction AFTER mtmsr(DR)), but it is unreachable
+    // in this model, and the reason is itself architectural:
+    //
+    //   - DT=0, non-T segment: ppc_dxlate returns before consulting the xtlb at
+    //     all, using EA as PA.
+    //   - DT=0, T=1 segment (601 only): 601UM 6.5.2.2 -- "the determination of
+    //     whether the address maps to an I/O controller interface segment
+    //     occurs PRIOR TO the checking of MSR[DT].  Therefore, I/O controller
+    //     interface address translation occurs INDEPENDENTLY OF MSR[DT] for
+    //     data accesses."  xlate() implements exactly that ordering (the T-bit
+    //     test precedes the translation-enabled test), so DT=0 and DT=1 yield
+    //     the same PA and a cross-DT hit is not a stale answer.
+    //   - 604, DT=0: ppc_recompute_sr_t_mask forces sr_t_mask = 0 (PEM 7.2 --
+    //     the 604 in real addressing mode never consults a segment), so every
+    //     DT=0 access short-circuits above.
+    //
+    // Everything else that would invalidate the key already flushes: mtsr, the
+    // BAT writes and SDR1 all call ppc_mmu_invalidate_all.  Adding DT to the
+    // tag would cost tag space and buy nothing.  The invariant lives in two
+    // other files, which is why it is written down here.
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
@@ -732,12 +773,37 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
 // disassembler view): no R/C updates, no fills, no exceptions.
 // data=true follows the data-access rules (MSR[DT]), else fetch rules.
 uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok) {
+    return ppc_mmu_translate_debug_ex(p, ea, data, (p->msr & PPC_MSR_PR) != 0, ok, NULL);
+}
+
+// ppc_mmu_translate_debug with the privilege given explicitly and, in *via,
+// how the address resolved -- "identity", "bat", "segment" (a T=1
+// direct-store segment) or "page" -- following xlate's decision order.
+uint32_t ppc_mmu_translate_debug_ex(ppc_t *p, uint32_t ea, bool data, bool user, bool *ok, const char **via) {
     if (ok)
         *ok = true;
     bool on = data ? (p->msr & PPC_MSR_DT) != 0 : (p->msr & PPC_MSR_IT) != 0;
+    if (via) {
+        const uint32_t *bu = data ? (ppc_is_604(p) ? p->dbatu : p->batu) : p->ibatu_cs;
+        const uint32_t *bl = data ? (ppc_is_604(p) ? p->dbatl : p->batl) : p->ibatl_cs;
+        bool tseg = (p->sr[ea >> 28] & 0x80000000u) != 0;
+        xl_out_t probe;
+        xl_result_t pres;
+        if (!data && !on)
+            *via = "identity";
+        else if (ppc_is_604(p))
+            *via = !on                                                    ? "identity"
+                   : bat604_xlate(bu, bl, ea, user, false, &probe, &pres) ? "bat"
+                   : tseg                                                 ? "segment"
+                                                                          : "page";
+        else
+            *via = tseg                                                ? "segment"
+                   : !on                                               ? "identity"
+                   : bat_xlate(bu, bl, ea, user, false, &probe, &pres) ? "bat"
+                                                                       : "page";
+    }
     if (!data && !on)
         return ea; // fetch with IT off is always direct
-    bool user = (p->msr & PPC_MSR_PR) != 0;
     xl_out_t out;
     xl_result_t res = xlate(p, ea, user, false, !data, on, true, &out);
     if (res == XL_OK)
@@ -755,7 +821,7 @@ uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok) {
 // independent of where the sprint stopped (the nanokernel relocates
 // logical low memory once the framebuffer claims physical 0, so a
 // supervisor-context read of a 68k global lands in the frame buffer —
-// debug.mac must always resolve against the user mapping; §3.9e).
+// debug.mac must always resolve against the user mapping).
 uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok) {
     xl_out_t out;
     if (ok)

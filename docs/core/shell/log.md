@@ -8,20 +8,25 @@ This document describes the implemented, lightweight logging framework for Grann
 - Goals
   - Let modules (e.g., `cpu`, `floppy`, `appletalk`) register a named logging category and emit messages tagged with that category and an integer level.
   - Allow users/tests to list categories and set a level per category at runtime via shell commands.
-  - Level 0 means “no output at all” for that category.
+  - Setting a category to level 0 suppresses every `LOG(n, …)` site with
+    `n >= 1`. It does **not** silence `LOG(0, …)` — see “Level 0 is the
+    always-on level” below, which is a deliberate convention with ~200 sites,
+    not an accident.
   - Make disabled log sites extremely cheap (no string formatting, minimal branches).
   - Keep dependencies small; portable C; compatible with Emscripten.
 
 - Non‑goals (for now)
   - Persistent configuration (e.g., storing levels in localStorage). See “future extensions”.
   - Rich sinks (JSON, structured fields). Current implementation writes formatted text lines to per‑category sinks.
-  - Asynchronous or multi-threaded logging. Environment is effectively single-threaded in the browser; we’ll keep the design thread-safe friendly but not add complexity.
+  - Asynchronous logging. `LOG(...)` is called from the emulator thread (the tick, every leaf) and from the job thread (the interpreter); the sink is a synchronous write in the caller's thread. A line from a leaf serving a request travels to that client through the output sink (`gs_out.h`) like any other printed text; the per-line `log` event (`gs_event_emit`) is the structured stream the browser's Logs view reads.
 
 
 ## Terminology
 
 - Category: a named source of log messages (e.g., "cpu"). Modules hold a pointer to their category for fast checks.
-- Level: an integer where higher typically means more verbose. Level 0 disables all output for that category.
+- Level: an integer where higher typically means more verbose. Setting a
+  category to 0 is the “off” position for ordinary sites (level 1 and up);
+  level-0 SITES still emit, by design — see below.
 - Site: a specific `LOG(...)` call in code. Sites pass both the category and the level.
 
 
@@ -91,6 +96,41 @@ If `LOG(level, ...)` is used without setting an implicit category in the file, i
 - Levels are plain integers; smaller means more important or less verbose in this design (so that `level <= category_level` is “emit”).
 - The shell never enforces ranges; it accepts any non‑negative integer. Modules may choose their own fine‑grained levels if desired.
 
+### Conventional bands (guidance, not a rule)
+
+Because ranges are not enforced, `debug.log scc 4` and `debug.log adb 4` mean
+different things — `scc.c` uses levels up to 11, `adb.c` stops at 3. That is
+deliberate, but it means a user cannot transfer intuition between two modules
+without reading them. New code should follow these bands so that intuition
+starts to hold:
+
+| level | meaning | rough frequency |
+|---|---|---|
+| 1 | warning, error, or an unmodelled request we had to refuse | rare |
+| 2 | state change — mode set, device attached, reset | occasional |
+| 3 | one line per transaction, command or host event | per interaction |
+| 4+ | per byte, per sample, per scanline | firehose |
+
+Modules with genuinely more structure may go further — `scc.c`'s 6 and 11 and
+`llap`'s 8 and 11 (in `appletalk.c`) are deliberately paired for LocalTalk tracing, so a
+single level selects a matched view across both. Exceeding the bands is fine;
+doing it *by accident* is what the table is here to prevent.
+
+### Level 0 is the always-on level
+
+A category's level starts at 0 and 0 means "off", so a `LOG(0, ...)` site
+emits whenever the category has not been turned up — that is, always, in the
+default configuration. This falls out of the `level <= category_level` rule
+rather than being a separate mechanism, and it is **used deliberately**: there
+are ~200 such sites in `src/`, and the ones sampled are all unrecoverable or
+degraded conditions where silence is the wrong default — out of memory during
+machine construction, a window table overflowing, an address decode falling
+back to a linear walk.
+
+Use level 0 only for those. If a message should be suppressible, it is a
+level-1 warning, not a level-0 one. The only way to silence a level-0 site is
+the compile-time `LOG_COMPILE_MIN_LEVEL`.
+
 
 ## Internal design (log.c)
 
@@ -98,7 +138,7 @@ If `LOG(level, ...)` is used without setting an implicit category in the file, i
   - Use a singly‑linked list of categories (`log_category` nodes) because the expected number of categories is small (dozens). Simpler, no dynamic map needed.
   - Each node contains:
     - `char* name;` (owned, NUL‑terminated)
-    - `int level;` (current threshold; 0 means off)
+    - `int level;` (current threshold; 0 is the off position for level-1-and-up sites)
     - `struct log_category* next;`
     - Optional `uint16_t id;` if we later want stable IDs.
 
@@ -242,7 +282,9 @@ The shell exposes a single, unified `log` command (category: "Logging") with arg
 
 ## Level guidelines and recommendations
 
-Levels are plain integers; higher values are more verbose. Level 0 disables all output for a category. To keep logs consistent and useful across modules/devices, use these guidelines:
+Levels are plain integers; higher values are more verbose. Setting a category
+to 0 is the off position for level-1-and-up sites; `LOG(0, …)` sites still
+emit, deliberately (see “Level 0 is the always-on level”). To keep logs consistent and useful across modules/devices, use these guidelines:
 
 - 0 — Off. No output.
 - 1 — High‑level, user‑visible events and major state transitions.

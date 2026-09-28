@@ -4,7 +4,7 @@
 # appletalk.aevt.  No screenshots: where the older guest-driven suites pin
 # pixels to prove what a user would see, this one asks the Finder questions
 # and checks its answers, which is the whole point of the feature
-# (docs/core/network/ppc_appleevents.md, and §1.2 of the proposal).
+# (docs/core/network/ppc_appleevents.md).
 #
 # Sequence:
 #   1. Boot System 7.5 on the IIci.
@@ -174,15 +174,15 @@ echo "Finder version reply: ${appletalk.aevt.events["version"].reply}"
 
 # The flagship: the name of the startup disk, resolved by the Finder from a
 # nested object specifier and returned as text.  This is the assertion the
-# proposal was written to make possible.
+# feature exists to make possible.
 let name = appletalk.aevt.send("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam), from:obj{form:enum(prop), want:type(prop), seld:type(sdsk), from:null()}}}", timeout=60000000, tag="diskname")
 scheduler.run 60000000
 assert $name.state == "replied" "no reply to the disk-name query (state ${$name.state})"
 assert $name.errn == 0 "the Finder refused the disk-name query: ${$name.errn}"
 assert appletalk.aevt.events["diskname"].reply["----"]["data"] == "Macintosh HD" "the guest names its startup disk '${appletalk.aevt.events["diskname"].reply["----"]["data"]}'"
 
-# Every event got its own session and gave it back (§7.2): reusing one is the
-# trap that made replies vanish.
+# Every event got its own session and gave it back (ppc_appleevents.md §7.2):
+# reusing one is the trap that made replies vanish.
 assert appletalk.ppc.stats.sessions_opened >= 3 "events did not each take a session"
 assert appletalk.ppc.stats.sessions_rejected == 0 "the guest rejected a session"
 assert appletalk.aevt.stats.replied >= 3 "not every event was answered"

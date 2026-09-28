@@ -1,7 +1,6 @@
 # Integration test configuration: Apple-branded 230 MB drive acceptance
 #
-# Guards the two things Copland's installer depends on (see
-# local/gs-docs/projects/copland/bring-up-plan.md §4.2):
+# Guards the two things Copland's installer depends on:
 #   1. the drive catalog offers an Apple-shipped mechanism above the
 #      installer's 230 MB floor, and
 #   2. Apple's own formatter accepts it — i.e. our MODE SENSE page 0x30
@@ -26,5 +25,5 @@ TEST_SETUP := rm -f $(TEST_DATA)/systems/System_7_0_1.image.delta $(TEST_DATA)/s
 # Boot from floppy with 8 MB RAM; the HD is created and attached in test.script
 TEST_ARGS := fd=$(TEST_DATA)/systems/System_7_0_1.image ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

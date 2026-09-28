@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 #include "cpu.h"
 
 void cpu_set_an(cpu_t *restrict cpu, int n, uint32_t value) {

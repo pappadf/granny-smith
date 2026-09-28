@@ -10,42 +10,37 @@
 #   integration-test-valgrind  Run integration tests under Valgrind
 #   e2e-test                   Run Playwright end-to-end tests
 #   test                       Run unit + integration tests
+#   platen-module              Build the LaserWriter interpreter worker's module
 #   run                        Build and serve the UI on :8080 (or the next free port)
 #   clean                      Remove all build artifacts (wasm, headless,
 #                              unit, integration, e2e)
 #   help                       Show available targets
 
-# -- Emscripten compiler + version guard --
+# -- Emscripten compiler + version check --
 
-CC ?= emcc
-ifneq ($(notdir $(CC)),emcc)
-	ifneq (,$(shell command -v emcc 2>/dev/null))
-		override CC := emcc
-	endif
+# make's built-in CC=cc outranks `CC ?= emcc`, and an environment CC (often
+# gcc) would too, so the WASM compiler is set outright unless given on the
+# command line.
+ifneq ($(origin CC),command line)
+CC := emcc
 endif
-EMSDK_REQUIRED_VERSION := 4.0.10
+EMSDK_REQUIRED_VERSION := 6.0.7
 
-# Targets that do not require the Emscripten toolchain
-NON_EMCC_TARGETS := clean help headless unit-test \
-                    integration-test integration-test-valgrind e2e-test test
+.DEFAULT_GOAL := all
 
-# Only validate emcc when a WASM build target is requested
-ifeq (,$(filter $(NON_EMCC_TARGETS),$(MAKECMDGOALS)))
-ifeq (,$(shell command -v $(CC) 2>/dev/null))
-$(error emcc not found. Run scripts/setup_emsdk.sh $(EMSDK_REQUIRED_VERSION))
-endif
-EMCC_VERSION_LINE := $(shell $(CC) --version 2>/dev/null | head -n1)
-EMCC_VERSION := $(shell echo "$(EMCC_VERSION_LINE)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
-ifeq ($(strip $(EMCC_VERSION_LINE)),)
-$(error Unable to execute $(CC); ensure Emscripten environment is loaded)
-endif
-ifeq ($(findstring emcc,$(EMCC_VERSION_LINE)),)
-$(error Compiler is '$(EMCC_VERSION_LINE)'. Expected emcc.)
-endif
-ifneq ($(EMCC_VERSION),$(EMSDK_REQUIRED_VERSION))
-$(warning emcc version $(EMCC_VERSION) != required $(EMSDK_REQUIRED_VERSION))
-endif
-endif
+# Checked when something is actually compiled or linked with it -- an
+# order-only prerequisite of the WASM objects, the module and the platen
+# module -- not at parse time, so goals that never run emcc (headless, the
+# test targets, integration-test-<name>, ui2*) need no exemption list.
+.PHONY: check-emcc
+check-emcc:
+	@command -v $(CC) >/dev/null 2>&1 || { \
+		echo "emcc not found. Run scripts/setup_emsdk.sh $(EMSDK_REQUIRED_VERSION)"; exit 1; }
+	@line=$$($(CC) --version 2>/dev/null | head -n1); \
+	case "$$line" in *emcc*) ;; *) echo "Compiler is '$$line'. Expected emcc."; exit 1;; esac; \
+	ver=$$(echo "$$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1); \
+	[ "$$ver" = "$(EMSDK_REQUIRED_VERSION)" ] || \
+		echo "warning: emcc version $$ver != required $(EMSDK_REQUIRED_VERSION)"
 
 # -- Directories --
 
@@ -58,43 +53,21 @@ MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/wasm
 PEELER_DIR    := src/peeler
 
-# -- Source discovery --
-# Wildcard patterns auto-discover new .c files in each subdirectory.
+# -- Sources --
+# CORE_SRC, PEELER_SRC, CORE_INCLUDES and PEELER_INCLUDES are shared with
+# Makefile.headless.
 
-# Core emulator sources (platform-agnostic)
-CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/dsp3210/*.c) \
-            $(wildcard $(CORE_DIR)/cpu/ppc/*.c) \
-            $(wildcard $(CORE_DIR)/memory/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/nubus/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/nubus/cards/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/pci/*.c) \
-            $(wildcard $(CORE_DIR)/peripherals/pci/cards/*.c) \
-            $(wildcard $(CORE_DIR)/scheduler/*.c) \
-            $(wildcard $(CORE_DIR)/debug/*.c) \
-            $(wildcard $(CORE_DIR)/storage/*.c) \
-            $(wildcard $(CORE_DIR)/network/*.c) \
-            $(wildcard $(CORE_DIR)/shell/*.c) \
-            $(wildcard $(CORE_DIR)/object/*.c) \
-            $(wildcard $(CORE_DIR)/vfs/*.c) \
-            $(shell find $(MACHINES_DIR) -name '*.c')
+include src/sources.mk
 
 # Platform-specific sources (WASM/Emscripten)
 PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
 
-# Peeler library sources
-PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
-              $(PEELER_DIR)/lib/err.c \
-              $(PEELER_DIR)/lib/util.c \
-              $(PEELER_DIR)/lib/formats/bin.c \
-              $(PEELER_DIR)/lib/formats/cpt.c \
-              $(PEELER_DIR)/lib/formats/hqx.c \
-              $(PEELER_DIR)/lib/formats/sit.c \
-              $(PEELER_DIR)/lib/formats/sit3.c \
-              $(PEELER_DIR)/lib/formats/sit13.c \
-              $(PEELER_DIR)/lib/formats/sit15.c
+# The LaserWriter bridge reaches its interpreter through one transport per
+# build (laserwriter_transport.h): in the browser the interpreter runs in
+# its own worker behind a shared-memory ring, so the main module compiles
+# the ring transport and links no platen archive; the direct transport is
+# headless-only (Makefile.headless).
+CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_direct.c,$(CORE_SRC))
 
 SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
 
@@ -111,6 +84,16 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 # the generated header.
 
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
+
+# -- EfterScript platen (PLATEN=1) and the embedded LaserWriter prelude --
+# Defines PLATEN, PLATEN_CFLAGS, PLATEN_LIB_WASM, PLATEN_WASM_LDFLAGS,
+# PLATEN_VERSION, LASERWRITER_OUT and the rule for LASERWRITER_PRELUDE_HEADER.
+# The browser always has the printer: PLATEN defaults to 1 here (headless
+# keeps laserwriter.mk's 0 until EfterScript publishes an arm64 host
+# archive).  `make PLATEN=0` still builds a spool-only printer.
+
+PLATEN ?= 1
+include src/core/network/laserwriter.mk
 
 # -- Build mode (release | debug | sanitize) --
 
@@ -133,51 +116,90 @@ endif
 
 # -- Include paths --
 
-PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
-
-INCLUDES := -I$(CORE_DIR) \
-            -I$(CORE_DIR)/cpu \
-            -I$(CORE_DIR)/cpu/dsp3210 \
-            -I$(CORE_DIR)/cpu/ppc \
-            -I$(CORE_DIR)/memory \
-            -I$(CORE_DIR)/peripherals \
-            -I$(CORE_DIR)/peripherals/nubus \
-            -I$(CORE_DIR)/peripherals/nubus/cards \
-            -I$(CORE_DIR)/peripherals/pci \
-            -I$(CORE_DIR)/peripherals/pci/cards \
-            -I$(CORE_DIR)/scheduler \
-            -I$(CORE_DIR)/debug \
-            -I$(CORE_DIR)/storage \
-            -I$(CORE_DIR)/network \
-            -I$(CORE_DIR)/shell \
-            -I$(CORE_DIR)/object \
-            -I$(CORE_DIR)/vfs \
-            -I$(MACHINES_DIR) \
-            -I$(MACHINES_DIR)/runtime \
-            -I$(MACHINES_DIR)/mac030 \
-            -I$(MACHINES_DIR)/glue \
-            -I$(MACHINES_DIR)/mdu \
-            -I$(MACHINES_DIR)/mcu \
-            -I$(MACHINES_DIR)/av \
-            -I$(MACHINES_DIR)/pdm \
-            -I$(MACHINES_DIR)/tnt \
-            -I$(MACHINES_DIR)/oss \
-            -I$(MACHINES_DIR)/compact \
-            -I$(MACHINES_DIR)/lisa \
+INCLUDES := $(CORE_INCLUDES) \
+            -Isrc/platform \
             -I$(PLATFORM_DIR) \
-            -I$(VROM68K_OUT)
+            -I$(VROM68K_OUT) \
+            -I$(LASERWRITER_OUT)
 
 # -- Compile flags (source -> object) --
 # -MMD -MP generates .d dependency files alongside each .o so that
 # header changes trigger the correct recompilations.
 
-CFLAGS := -MMD -MP $(MODE_CFLAGS) \
+# -Wall -Wextra on every C build, minus one: -Wmissing-field-initializers
+# objects to positional initializers that stop before a struct's last
+# fields, and the I/O range and display timing tables are written that way
+# on purpose (mac030_io_range_t keeps its optional fields last "so
+# positional initializers stay valid").  WERROR=1 (set in CI) makes every
+# warning an error; it applies to compilation only, never to the link.
+WARN_CFLAGS := -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers
+WERROR ?= 0
+ifeq ($(WERROR),1)
+WARN_CFLAGS += -Werror
+endif
+
+# gnu11, not c11: EM_ASM does not compile in a strict ISO mode.
+CFLAGS := -MMD -MP $(MODE_CFLAGS) $(WARN_CFLAGS) \
           -pthread \
-          $(PEELER_INCLUDES) $(INCLUDES) $(EXTRA_CFLAGS)
+          -DGS_PLATEN_VERSION=\"$(PLATEN_VERSION)\" \
+          $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
+
+# With PLATEN=1 the main module compiles the printer bridge with its ring
+# transport (laserwriter_transport_ring.c) and links NO platen archive: the
+# emulator is a threaded build and Rust's prebuilt standard library for the
+# Emscripten target has no atomics, so the interpreter runs in its own
+# worker with its own non-threaded module — `platen-module` below, built
+# from the release archive (PLATEN_LIB_WASM + PLATEN_WASM_LDFLAGS,
+# laserwriter.mk).  The main link depends on neither the archive nor the
+# header; only the module target fetches the archive.
+PLATEN_LDLIBS :=
+PLATEN_PREREQS :=
+
+# -- The interpreter worker's module (platen-module) --
+# A standalone, NON-threaded Emscripten module the page's platen worker
+# imports on the first print job (app/web2/src/printer/platen.worker.ts):
+# the released archive linked with the flags EfterScript's embedding guide
+# gives, every platen_* entry of platen.h exported, an ES6 module for a Web
+# Worker (and Node, so the app's vitest can drive it).  Named after the
+# library version so a deploy never serves a stale module to a new page;
+# the wasm Makefile passes the same version to em_main.c (GS_PLATEN_VERSION)
+# and the page builds the URL from it.  Served beside main.mjs: the Vite dev
+# middleware reads build/, `ui2` copies it into dist/.
+PLATEN_MODULE_JS   := $(BUILD_DIR)/platen-$(PLATEN_VERSION).js
+PLATEN_MODULE_WASM := $(BUILD_DIR)/platen-$(PLATEN_VERSION).wasm
+PLATEN_MODULE_EXPORTS := _platen_job_new,_platen_job_feed,_platen_job_read_replies,_platen_job_read_errors,_platen_job_finish,_platen_job_pdf,_platen_job_error_name,_platen_job_offending,_platen_job_pages,_platen_job_free,_platen_last_error,_malloc,_free
+PLATEN_MODULE_LDFLAGS := -O2 \
+           $(PLATEN_WASM_LDFLAGS) \
+           --no-entry \
+           -sMODULARIZE=1 \
+           -sEXPORT_ES6=1 \
+           -sEXPORT_NAME=createPlatenModule \
+           -sENVIRONMENT=worker,node \
+           -sALLOW_MEMORY_GROWTH=1 \
+           -sSTACK_SIZE=1MB \
+           -sEXPORTED_FUNCTIONS=$(PLATEN_MODULE_EXPORTS) \
+           -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,UTF8ToString \
+           -sINCOMING_MODULE_JS_API=locateFile,print,printErr
+
+# Objects depend on the flags they were compiled with, not only on their
+# sources: a stamp named after a hash of CFLAGS (MODE, EXTRA_CFLAGS, PLATEN,
+# the include list) is a prerequisite of every object, so `make debug` after
+# `make` recompiles instead of linking release objects with the asserts
+# compiled out, and toggling PLATEN rebuilds the tree instead of mixing
+# objects compiled either way.
+FLAGS_HASH  := $(shell printf '%s' '$(subst ','\'',$(CFLAGS) PLATEN=$(PLATEN))' | md5sum | cut -c1-12)
+FLAGS_STAMP := $(OBJ_DIR)/flags-$(FLAGS_HASH).stamp
 
 # -- Link flags (objects -> final binary) --
 
-LDFLAGS := $(MODE_CFLAGS) \
+# ALLOW_MEMORY_GROWTH has no MAXIMUM_MEMORY, so the heap stays at wasm32's
+# 2 GB default.  Keep it there: every JS shared-heap transport (camera, mic,
+# audio out, Voodoo2, printer) turns a pointer into a word index with a signed
+# `ptr >> 2`, which goes negative above 2 GB.  Raising the cap means switching
+# those to `>>> 2` first.
+# -pthread with ALLOW_MEMORY_GROWTH is deliberate (see the heap note below);
+# emcc's warning about it says nothing new.
+LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
            -s MODULARIZE=1 \
            -s EXPORT_NAME="createModule" \
            -sWASMFS \
@@ -188,8 +210,9 @@ LDFLAGS := $(MODE_CFLAGS) \
            -sOFFSCREENCANVAS_SUPPORT \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
-           -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8'] \
-           -s EXPORTED_FUNCTIONS="['_main','_get_js_bridge']" \
+           -s EXPORTED_RUNTIME_METHODS=['FS','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8','wasmMemory'] \
+           -s EXPORTED_FUNCTIONS="['_main','_get_gs_mailbox']" \
+           -sINCOMING_MODULE_JS_API=canvas,locateFile,mainScriptUrlOrBlob,onAbort,print,printErr \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
            -s USE_WEBGL2=1 \
@@ -205,6 +228,17 @@ LDFLAGS := $(MODE_CFLAGS) \
 # -- WASM build --
 
 all: $(OUTPUT)
+ifeq ($(PLATEN),1)
+all: platen-module
+endif
+
+# The interpreter worker's module, from the fetched release archive.
+platen-module: $(PLATEN_MODULE_JS)
+
+$(PLATEN_MODULE_JS): $(PLATEN_LIB_WASM) | check-emcc
+	@mkdir -p $(dir $@)
+	@echo "Linking the platen module ($(PLATEN_VERSION)) with $(CC)"
+	$(CC) $(PLATEN_MODULE_LDFLAGS) $< -o $@
 
 release:
 	$(MAKE) MODE=release all
@@ -227,11 +261,21 @@ $(OBJ_DIR)/$(CORE_DIR)/build_id.o: FORCE
 # gsvrom_data.c embeds the generated fragments header.
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 
+# laserwriter_job.c embeds the generated prelude header.
+$(OBJ_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
+
+# The flags stamp: creating it (any flag change) outdates every object.
+$(FLAGS_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(OBJ_DIR)/flags-*.stamp $(OBJ_DIR)/platen-*.stamp
+	@touch $@
+$(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS) | check-emcc
+
 # Link all objects into the final WASM module
-$(OUTPUT): $(OBJ)
+$(OUTPUT): $(OBJ) | check-emcc
 	@mkdir -p $(dir $@)
 	@echo "Linking ($(MODE)) with $(CC)"
-	$(CC) $(LDFLAGS) $(OBJ) -o $@
+	$(CC) $(LDFLAGS) $(OBJ) $(PLATEN_LDLIBS) -o $@
 
 # Include auto-generated header dependency files
 -include $(DEP)
@@ -344,16 +388,18 @@ test: unit-test integration-test
 
 ui2:
 	cd $(WEB2_DIR) && npm ci --silent && npm run build
-	@# Phase 3: copy WASM build artifacts into the served dist directory.
-	@# Skipped silently if the WASM build hasn't run yet — `make` produces them.
+	@# Copy the WASM build's runtime artifacts into the served dist directory:
+	@# the module, the service worker and the LaserWriter interpreter.  Never
+	@# the object tree ($(BUILD_DIR)/wasm): nothing loads it, and dist/ is what
+	@# gets deployed.  Skipped if the WASM build hasn't run yet.
 	@if [ -f $(BUILD_DIR)/main.mjs ]; then \
 		cp $(BUILD_DIR)/main.mjs $(BUILD_DIR)/main.wasm $(WEB2_DIST)/ ; \
 		if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
 			cp $(BUILD_DIR)/coi-serviceworker.js $(WEB2_DIST)/ ; \
 		fi ; \
-		if [ -d $(BUILD_DIR)/wasm ]; then \
-			cp -R $(BUILD_DIR)/wasm $(WEB2_DIST)/wasm ; \
-		fi ; \
+		for f in $(BUILD_DIR)/platen-*.js $(BUILD_DIR)/platen-*.wasm; do \
+			[ -f "$$f" ] && cp "$$f" $(WEB2_DIST)/ ; \
+		done ; \
 	else \
 		echo "Note: $(BUILD_DIR)/main.mjs not found; run 'make' first to produce WASM artifacts" ; \
 	fi
@@ -409,19 +455,18 @@ ui2-e2e:
 ui2-diag: ui2
 	@/usr/bin/env node scripts/ui2-diag.mjs
 
-# run2 is an alias for `run` for muscle-memory continuity. The Phase 7
-# retire pass made `run` itself serve the new UI; this alias can be
-# dropped in a future cleanup.
+# run2 is an alias for `run` for muscle-memory continuity. `run` itself
+# now serves the new UI; this alias can be dropped in a future cleanup.
 run2: run
 
 # -- Clean (everything) --
 # Removes all build artifacts: wasm, headless, unit, integration, e2e
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(WEB2_DIST)
 	$(MAKE) -C tests/unit clean
 	rm -rf tests/integration/test-results
-	rm -rf tests/e2e/test-results
+	rm -rf tests/e2e/test-results tests/e2e/playwright-report
 
 # -- Help --
 
@@ -429,9 +474,10 @@ help:
 	@echo "Granny Smith Build System"
 	@echo ""
 	@echo "Build targets:"
-	@echo "  all (default)              Build WASM emulator (release)"
+	@echo "  all (default)              Build WASM emulator (release) and the platen module"
 	@echo "  debug                      Build WASM emulator (debug)"
 	@echo "  sanitize                   Build WASM emulator (sanitizers)"
+	@echo "  platen-module              Build the LaserWriter interpreter worker's module"
 	@echo "  headless                   Build native headless CLI"
 	@echo "  run                        Build the UI and serve on :8080 (next free port if taken; RUN_PORT=n)"
 	@echo ""
@@ -458,6 +504,10 @@ help:
 	@echo "Options:"
 	@echo "  MODE=release|debug|sanitize  Build mode (default: release)"
 	@echo "  EXTRA_CFLAGS=...             Additional compiler flags"
+	@echo "  PLATEN=0                     Leave out EfterScript's platen (PostScript to PDF"
+	@echo "                               for the emulated LaserWriter; default on: the"
+	@echo "                               bridge in the core, the interpreter in a worker)"
+	@echo "  PLATEN_DIR=path              Take the platen archive from an EfterScript checkout"
 	@echo ""
 	@echo "Boot media (for 'run' target):"
 	@echo "  ROM=path/to/rom.bin          ROM image"

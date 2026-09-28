@@ -6,8 +6,7 @@
 //
 // Vector sources:
 //   1. Real words from the PDM boot ROM's HWInit/nanokernel region
-//      (addresses in the $FFFxxxxx rows), spot-checked against the PDM
-//      dossier's published fragments — e.g. the reset vector's
+//      (addresses in the $FFFxxxxx rows) — e.g. the reset vector's
 //      `b $FFF03000` into HWInit.
 //   2. Directed encodings across the integer/POWER/branch/SPR/FP surface.
 //   3. Encodings that must NOT decode on a 601: mftb, fsel (603+),

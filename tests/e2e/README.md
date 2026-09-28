@@ -19,35 +19,49 @@ focused on the C/WebAssembly sources.
 tests/e2e/
 ├── playwright.web2.config.ts        # Main functional config (testDir → web2-specs/)
 ├── playwright.prod-smoke.config.ts  # Production-bundle boot smoke (ui-prod-smoke/)
-├── playwright.webkit-local.config.ts# Local WebKit upload/OPFS checks (webkit-local/)
+├── playwright.webkit-local.config.ts# web2-specs/upload.spec.ts on WebKit (macOS)
 ├── package.json                     # Node dependencies (Playwright)
 ├── tsconfig.json
 ├── test_server.py                   # COOP/COEP-enabled static server (web2 + webkit configs)
 ├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
-│   ├── av-camera.spec.ts            # AV video-in against Chromium's fake camera
-│   ├── av-microphone.spec.ts        # Browser mic → shared-heap ring → guest RAM (no OS)
-│   ├── av-sound-record.spec.ts      # Browser mic → the guest's own Sound cdev, record + play
-│   ├── av-speech-recognition.spec.ts# PlainTalk recognition from the browser mic
-│   ├── checkpoint-resume.spec.ts    # Checkpoint save → reload → resume (+ SE/30 profile restore)
-│   ├── display-card-config.spec.ts  # New Machine dialog: card-by-name video config
-│   ├── display-drop.spec.ts         # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
-│   ├── fd-duplicate-name.spec.ts    # Duplicate floppy names in the image library
-│   ├── filesystem-tab.spec.ts       # Filesystem tab: descend image, copy/move/rename/unpack
-│   ├── iicx-video-modes.spec.ts     # Post-shader WebGL canvas baselines (per monitor × depth)
-│   ├── iifx-aux3-realtime.spec.ts   # A/UX 3.0.1 boot to login under the real RAF scheduler
-│   ├── lisa-xenix-profile.spec.ts   # Lisa/XL ProFile-vs-SCSI config + boot
-│   ├── perf-bench.spec.ts           # Accelerated + turbo throughput (tracked numbers)
-│   ├── scheduler-accelerated.spec.ts# Accelerated mode: faster CPU, real-time timebase
-│   ├── url-boot.spec.ts             # ?rom=… URL-parameter boot
-│   └── vrom-offer-ingest.spec.ts    # Mid-session vROM upload is offered to "(auto)"
+│   ├── av-boot-no-slots.spec.ts         # A slotless model (q660av) boots after a carded one in the same session
+│   ├── av-camera.spec.ts                # AV video-in against Chromium's fake camera
+│   ├── av-microphone.spec.ts            # Browser mic → shared-heap ring → guest RAM (no OS)
+│   ├── av-sound-record.spec.ts          # Browser mic → the guest's own Sound cdev, record + play
+│   ├── av-speech-recognition.spec.ts    # PlainTalk recognition from the browser mic
+│   ├── checkpoint-resume.spec.ts        # Checkpoint save → reload → resume (+ SE/30 profile restore)
+│   ├── checkpoint-stall.spec.ts         # Measurement: request round trip across the background checkpoint (VITE_GS_MEASURE=1)
+│   ├── debug-panel.spec.ts              # Debug view on a live machine: register edit, breakpoints, repaint while paused
+│   ├── display-card-config.spec.ts      # New Machine dialog: card-by-name video config
+│   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB storage.cp runs (VITE_GS_MEASURE=1)
+│   ├── display-drop.spec.ts             # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
+│   ├── fd-duplicate-name.spec.ts        # Duplicate floppy names in the image library
+│   ├── filesystem-tab.spec.ts           # Filesystem tab: descend image, copy/move/rename/unpack
+│   ├── download-staged.spec.ts          # A core download reaches the page in staged chunks, acked one by one
+│   ├── iicx-video-modes.spec.ts         # Post-shader WebGL canvas baselines (per monitor × depth)
+│   ├── iifx-aux3-realtime.spec.ts       # A/UX 3.0.1 boot to login under the real RAF scheduler
+│   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
+│   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
+│   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance
+│   ├── pci-prom-ingest.spec.ts          # A 9500 configured on an uploaded PCI display card; the .prom survives a reload
+│   ├── pdm-double-boot.spec.ts          # pm6100 + Mac OS 8.1 boots exactly once (PRAM seeding), also on a reused image
+│   ├── perf-bench.spec.ts               # Accelerated + turbo throughput (tracked numbers)
+│   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
+│   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
+│   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase
+│   ├── shell-prompt.spec.ts             # Terminal: prompt state, Tab completion, history across reloads, scrollback, paste
+│   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics
+│   ├── upload.spec.ts                   # Upload picker: streamed staging through the core (Safari regression)
+│   ├── url-boot.spec.ts                 # ?rom=… URL-parameter boot
+│   ├── voodoo2-thread.spec.ts           # Voodoo2 raster on a second Web Worker; LFB/counter fences
+│   ├── voodoo2-webgpu-fallback.spec.ts  # voodoo2_webgpu without WebGPU falls back to the thread backend, and says so
+│   ├── voodoo2-webgpu.spec.ts           # Voodoo2 WebGPU takeover: engagement, exact coverage, fallback
+│   └── vrom-offer-ingest.spec.ts        # Mid-session vROM upload is offered to "(auto)"
 │
 ├── ui-prod-smoke/                   # Production-bundle smoke (playwright.prod-smoke.config.ts)
 │   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
-│
-├── webkit-local/                    # Local WebKit only (playwright.webkit-local.config.ts)
-│   └── upload.spec.ts               # OPFS streaming upload (Safari createWritable regression)
 │
 ├── helpers/
 │   └── web2-fs.ts                   # gotoWeb2, OPFS staging, tree/file drag helpers

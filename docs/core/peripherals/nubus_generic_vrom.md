@@ -61,7 +61,7 @@ personality's leaf routines rather than sharing one copy in ROM data space.
 ## Where the bytes come from: generated records, spliced code
 
 The declaration ROM is **not** a committed image. It is built at machine
-construction, in two halves (proposal-nubus-runtime-vrom):
+construction, in two halves:
 
 - The **declarative records** — the sResource directory, the board
   sResource (BoardId, vendor strings, PRAM defaults), and one functional

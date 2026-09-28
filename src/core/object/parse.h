@@ -2,8 +2,7 @@
 // Copyright (c) pappadf
 
 // parse.h
-// Unified literal parser. See proposal-module-object-model.md §4.2 and
-// §2.4 for the literal grammar.
+// Unified literal parser.
 //
 // Accepted forms:
 //   integers:  42, 0x1234, 0b1010, 0o17, 0d100, $1234, with optional

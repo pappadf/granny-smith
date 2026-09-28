@@ -3,7 +3,7 @@
 
 // mmu040.h
 // MC68040 MMU interface.  A sibling of, not a patch to, the 68030 PMMU in
-// mmu.c (proposal-machine-quadra-700-900-950.md §6.5): URP/SRP roots, a
+// mmu.c: URP/SRP roots, a
 // fixed three-level table walk, four transparent-translation registers,
 // and the 040 forms of PTEST/PFLUSH.  Registers are reached via MOVEC
 // (the 040 has no PMOVE); the CPU decoder in cpu_68040.c calls in here.

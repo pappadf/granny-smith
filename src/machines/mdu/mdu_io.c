@@ -55,10 +55,9 @@ const mac030_io_range_t mdu_io_ranges_tbl[] = {
     {0x04000, 0x06000, MAC030_DEV_SCC, MDU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x06000, 0x08000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
     {0x10000, 0x12000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
-    {0x12000, 0x14000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201 | SCSI_BLIND_SEL, NULL, NULL,
-     "scsi_blind"},
+    {0x12000, 0x14000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
     {0x14000, 0x16000, MAC030_DEV_ASC, MDU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, MAC030_DEV_FLOPPY, MDU_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim"},
+    {0x16000, 0x18000, MAC030_DEV_FLOPPY, MDU_SWIM_IO_PENALTY, MAC030_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
     {0x24000, 0x26000, MAC030_DEV_VDAC, MDU_VDAC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "vdac"},
     {0x26000, 0x28000, MAC030_DEV_RBV, MDU_RBV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "rbv"},
     {0}, // sentinel: end == 0
@@ -70,28 +69,12 @@ const mac030_io_range_t *mdu_io_ranges(void) {
 
 void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc, void *floppy, void *rbv,
                  struct nubus_card *video_card) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
-    io->handle[MAC030_DEV_VIA1] = cfg->via1;
-    io->handle[MAC030_DEV_SCC] = cfg->scc;
-    io->handle[MAC030_DEV_SCSI] = cfg->scsi;
-    io->handle[MAC030_DEV_ASC] = asc;
-    io->handle[MAC030_DEV_FLOPPY] = floppy;
-    io->handle[MAC030_DEV_RBV] = rbv;
-    io->handle[MAC030_DEV_VDAC] = video_card;
-
-    io->iface[MAC030_DEV_VIA1] = via_get_memory_interface(cfg->via1);
-    io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
-    io->iface[MAC030_DEV_SCSI] = scsi_get_memory_interface(cfg->scsi);
-    io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
-    io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
-    io->iface[MAC030_DEV_RBV] = rbv_get_memory_interface((rbv_t *)rbv);
-    io->iface[MAC030_DEV_VDAC] = &mdu_vdac_iface;
-
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
+    mac030_io_install(io, cfg, desc);
+    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    mac030_io_bind_dev(io, MAC030_DEV_SCSI, cfg->scsi, scsi_get_memory_interface(cfg->scsi));
+    mac030_io_bind_dev(io, MAC030_DEV_ASC, asc, asc_get_memory_interface((asc_t *)asc));
+    mac030_io_bind_dev(io, MAC030_DEV_FLOPPY, floppy, floppy_get_memory_interface((floppy_t *)floppy));
+    mac030_io_bind_dev(io, MAC030_DEV_RBV, rbv, rbv_get_memory_interface((rbv_t *)rbv));
+    mac030_io_bind_dev(io, MAC030_DEV_VDAC, video_card, &mdu_vdac_iface);
 }

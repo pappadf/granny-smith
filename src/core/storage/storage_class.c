@@ -7,13 +7,20 @@
 // storage.c so the storage block-I/O unit test can link only the core
 // delta-storage API without pulling in image / vfs / shell dependencies.
 
+#include "checkpoint.h"
+#include "gs_out.h"
+#include "io_leaf.h"
 #include "storage.h"
+#include "io/io_worker.h"
+#include "mailbox/mailbox.h"
 
 #include "image.h"
 #include "image_apm.h"
+#include "image_part.h"
 #include "image_vfs.h"
 #include "object.h"
 #include "shell.h"
+#include "storage_util.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -29,7 +36,7 @@
 
 // === Object-model class descriptors =========================================
 //
-// Replaces the M2 `storage` stub with a real class. `storage.images`
+// A real class in place of the old `storage` stub. `storage.images`
 // enumerates the cfg->images[] entries. Slot index in the indexed
 // child matches the slot in cfg->images[]; n_images is dense from
 // 0..n_images-1, so the collection's count() returns cfg->n_images
@@ -80,10 +87,21 @@ static value_t storage_image_attr_writable(struct object *self, const member_t *
     return val_bool(img ? img->writable : false);
 }
 
+static value_t storage_image_attr_reads(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_uint(8, img ? img->reads : 0);
+}
+static value_t storage_image_attr_writes(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_uint(8, img ? img->writes : 0);
+}
+
 // Designated-initialiser table keyed by `image_type` so a future enum
 // reorder (or a value inserted out of order) keeps the labels aligned.
 static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
-    [image_other] = "other", [image_fd_ss] = "fd_ss", [image_fd_ds] = "fd_ds",
+    [image_other] = "other", [image_fd_ss] = "fd_ss", [image_fd_ds] = "fd_ds", [image_fd_dd_mfm] = "fd_720k_mfm",
     [image_fd_hd] = "fd_hd", [image_hd] = "hd",       [image_cdrom] = "cdrom",
 };
 
@@ -101,30 +119,46 @@ static const member_t storage_image_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = storage_image_attr_index, .set = NULL}      },
+     .doc = "Position in storage.images; stable only while no image is added or removed",
+     .attr = {.type = V_INT, .get = storage_image_attr_index, .set = NULL}                                      },
     {.kind = M_ATTR,
      .name = "filename",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = storage_image_attr_filename, .set = NULL}},
+     .doc = "Last path component, for display",
+     .attr = {.type = V_STRING, .get = storage_image_attr_filename, .set = NULL}                                },
     {.kind = M_ATTR,
      .name = "path",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = storage_image_attr_path, .set = NULL}    },
+     .doc = "Full host path or storage URI the image was opened from",
+     .attr = {.type = V_STRING, .get = storage_image_attr_path, .set = NULL}                                    },
     {.kind = M_ATTR,
      .name = "raw_size",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = storage_image_attr_raw_size, .set = NULL}  },
+     .doc = "Logical size of the image in bytes, before any container or compression layer",
+     .attr = {.type = V_UINT, .get = storage_image_attr_raw_size, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "writable",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = storage_image_attr_writable, .set = NULL}  },
+     .doc = "True when guest writes reach the image (directly or through a checkpoint delta)",
+     .attr = {.type = V_BOOL, .get = storage_image_attr_writable, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "type",
      .flags = VAL_RO,
-     .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}      },
+     .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
+     .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}                                      },
+    {.kind = M_ATTR,
+     .name = "reads",
+     .flags = VAL_RO,
+     .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
+     .attr = {.type = V_UINT, .get = storage_image_attr_reads, .set = NULL, .presentation_flags = VAL_VOLATILE} },
+    {.kind = M_ATTR,
+     .name = "writes",
+     .flags = VAL_RO,
+     .doc = "Drive writes to the image since it was opened",
+     .attr = {.type = V_UINT, .get = storage_image_attr_writes, .set = NULL, .presentation_flags = VAL_VOLATILE}},
 };
 
-const class_desc_t storage_image_class = {
+static const class_desc_t storage_image_class = {
     .name = "image",
     .members = storage_image_members,
     .n_members = sizeof(storage_image_members) / sizeof(storage_image_members[0]),
@@ -138,65 +172,87 @@ static struct object *storage_images_get(struct object *self, int index) {
         return NULL;
     return g_storage_image_objs[index];
 }
-static int storage_images_count(struct object *self) {
-    config_t *cfg = (config_t *)object_data(self);
-    if (!cfg)
-        return 0;
-    int n = 0;
-    for (int i = 0; i < cfg->n_images; i++)
-        if (cfg->images[i])
-            n++;
-    return n;
-}
-static int storage_images_next(struct object *self, int prev_index) {
-    config_t *cfg = (config_t *)object_data(self);
-    if (!cfg)
-        return -1;
-    for (int i = prev_index + 1; i < cfg->n_images; i++)
-        if (cfg->images[i])
-            return i;
-    return -1;
+
+// `storage.import(host_path, dst_path)` — copy `host_path` to `dst_path`
+// through the VFS, e.g. into "/opfs/images/hd/foo.img".  The destination is
+// the caller's to choose: the core does not pick where media lives
+// (it used to fall back to /opfs/images/<hash>.img).
+//
+// === Work whose cost is the size of a file: I/O jobs ==========================
+//
+// A copy, an export or a blank image is proportional to a file, not to
+// the machine, so it runs on the I/O worker as an I/O leaf (io_leaf.h):
+// the answer comes when the work ends, progress along the way, and a
+// cancel stops it at its next chunk.
+
+// A destination under a device is never written over (E_BUSY): the guest
+// is using it.
+static bool destination_attached(const char *dst) {
+    return io_leaf_destination_attached(dst);
 }
 
-// `storage.import(host_path, dst_path?)` — copy `host_path` into the
-// emulator's persistent storage. When `dst_path` is empty (or absent
-// — second arg is optional), falls back to the content-hash path
-// produced by image_persist_volatile (/opfs/images/<hash>.img). When
-// `dst_path` is non-empty, the source is copied verbatim through the
-// VFS so paths like "/opfs/images/foo.img" can be picked explicitly.
-//
-// Returns the resolved destination path as a V_STRING.
+static int work_cp(io_leaf_t *j) {
+    return shell_cp(j->a, j->b, j->flag, j->err, sizeof j->err);
+}
+
+static value_t answer_import(io_leaf_t *j) {
+    return val_str(j->b);
+}
+
+static int work_export_raw(io_leaf_t *j) {
+    return vfs_export_raw_image(j->a, j->b, j->err, sizeof j->err);
+}
+
+static int work_hd_create(io_leaf_t *j) {
+    int rc = system_hd_create(j->a, j->size_str);
+    if (rc != 0)
+        snprintf(j->err, sizeof j->err, "could not create '%s' (%s)", j->a, j->size_str);
+    return rc == 0 ? 0 : -EIO;
+}
+
+static int work_fd_create(io_leaf_t *j) {
+    int rc = image_create_blank_floppy(j->a, false, j->flag);
+    if (rc == -2)
+        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
+    else if (rc != 0)
+        snprintf(j->err, sizeof j->err, "failed to create blank floppy '%s'", j->a);
+    return rc == 0 ? 0 : -EIO;
+}
+
+static int work_profile_create(io_leaf_t *j) {
+    int rc = image_create_blank_profile(j->a, j->blocks);
+    if (rc == -2)
+        snprintf(j->err, sizeof j->err, "file already exists: %s", j->a);
+    else if (rc != 0)
+        snprintf(j->err, sizeof j->err, "failed to create blank ProFile image '%s'", j->a);
+    return rc == 0 ? 0 : -EIO;
+}
+
+// Returns the destination path as a V_STRING.
 static value_t storage_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
+    (void)argc;
     const char *host_path = argv[0].s;
-    const char *dst_path = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    const char *dst_path = argv[1].s;
+    if (!dst_path || !*dst_path)
+        return val_err("storage.import: a destination path is required");
 
-    if (!dst_path) {
-        // Hash-named persistence — handles the drag-drop / volatile-
-        // path case and is idempotent on repeat imports.
-        char *resolved = image_persist_volatile(host_path);
-        if (!resolved)
-            return val_err("storage.import: failed to persist '%s'", host_path);
-        value_t v = val_str(resolved);
-        free(resolved);
-        return v;
-    }
-
-    // Explicit destination — call shell_cp directly so VFS handling
-    // stays in one place (no shell_dispatch).
-    char err[256] = {0};
-    if (shell_cp(host_path, dst_path, false, err, sizeof(err)) < 0)
-        return val_err("storage.import: cp '%s' -> '%s' failed: %s", host_path, dst_path, err[0] ? err : "unknown");
-    return val_str(dst_path);
+    if (destination_attached(dst_path))
+        return val_err("storage.import: '%s' is attached to a device (E_BUSY)", dst_path);
+    // The copy is an I/O job; its answer, the destination path, comes when
+    // it ends.
+    io_leaf_t *j = io_leaf_new(host_path, dst_path);
+    if (!j)
+        return val_err("storage.import: out of memory");
+    j->work = work_cp;
+    j->answer = answer_import;
+    return io_leaf_dispatch(j, "storage.import");
 }
 
 static const arg_decl_t storage_import_args[] = {
-    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"},
-    {.name = "dst_path",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Destination path; empty → /opfs/images/<hash>.img"},
+    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"                                     },
+    {.name = "dst_path",  .kind = V_STRING, .doc = "Destination path (e.g. under /opfs/images/<category>/)"},
 };
 
 static const member_t storage_images_collection_members[] = {
@@ -205,8 +261,7 @@ static const member_t storage_images_collection_members[] = {
      .child = {.cls = &storage_image_class,
                .indexed = true,
                .get = storage_images_get,
-               .count = storage_images_count,
-               .next = storage_images_next,
+               .slots = MAX_IMAGES,
                .lookup = NULL}},
 };
 
@@ -288,11 +343,14 @@ static value_t storage_method_cp(struct object *self, const member_t *m, int arg
     }
     if (!src || !dst)
         return val_err("storage.cp: expected ([-r], src, dst)");
-    char err[256] = {0};
-    int rc = shell_cp(src, dst, recursive, err, sizeof(err));
-    if (rc < 0)
-        return val_err("%s", err[0] ? err : "storage.cp: failed");
-    return val_bool(true);
+    if (destination_attached(dst))
+        return val_err("storage.cp: '%s' is attached to a device (E_BUSY)", dst);
+    io_leaf_t *j = io_leaf_new(src, dst);
+    if (!j)
+        return val_err("storage.cp: out of memory");
+    j->flag = recursive;
+    j->work = work_cp;
+    return io_leaf_dispatch(j, "storage.cp");
 }
 
 // `storage.export_raw(src, dst)` — write a disk image referenced by a VFS
@@ -307,11 +365,13 @@ static value_t storage_method_export_raw(struct object *self, const member_t *m,
     (void)argc;
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
-    char err[256] = {0};
-    int rc = vfs_export_raw_image(src, dst, err, sizeof(err));
-    if (rc < 0)
-        return val_err("%s", err[0] ? err : "storage.export_raw: failed");
-    return val_bool(true);
+    if (destination_attached(dst))
+        return val_err("storage.export_raw: '%s' is attached to a device (E_BUSY)", dst);
+    io_leaf_t *j = io_leaf_new(src, dst);
+    if (!j)
+        return val_err("storage.export_raw: out of memory");
+    j->work = work_export_raw;
+    return io_leaf_dispatch(j, "storage.export_raw");
 }
 
 // `storage.find_media(dir, [dst])` — search a directory for a recognised
@@ -348,34 +408,14 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
     } else {
         return val_err("storage.hd_create: size must be string or integer");
     }
-    return val_bool(system_hd_create(argv[0].s, size_str) == 0);
-}
-
-// Recursively remove a file or directory tree (best-effort). Returns 0 when
-// the path is gone afterwards, or a negative errno.
-static int storage_rm_tree(const char *path) {
-    DIR *dir = opendir(path);
-    if (!dir) {
-        if (unlink(path) == 0 || errno == ENOENT)
-            return 0;
-        return -errno;
-    }
-    struct dirent *e;
-    while ((e = readdir(dir)) != NULL) {
-        const char *name = e->d_name;
-        if (!name || strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-            continue;
-        char child[VFS_PATH_MAX];
-        if (snprintf(child, sizeof(child), "%s/%s", path, name) >= (int)sizeof(child))
-            continue;
-        struct stat st;
-        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
-            storage_rm_tree(child);
-        else
-            unlink(child);
-    }
-    closedir(dir);
-    return rmdir(path) == 0 || errno == ENOENT ? 0 : -errno;
+    if (destination_attached(argv[0].s))
+        return val_err("storage.hd_create: '%s' is attached to a device (E_BUSY)", argv[0].s);
+    io_leaf_t *j = io_leaf_new(argv[0].s, NULL);
+    if (!j)
+        return val_err("storage.hd_create: out of memory");
+    snprintf(j->size_str, sizeof j->size_str, "%s", size_str);
+    j->work = work_hd_create;
+    return io_leaf_dispatch(j, "storage.hd_create");
 }
 
 // Paths storage.rm / storage.mv must never destroy: the filesystem root and
@@ -397,13 +437,14 @@ static bool storage_path_is_protected(const char *p) {
 // later worker-side create at the same path (e.g. re-copying a file out of an
 // image after deleting it) doesn't hit a dangling inode.
 static value_t storage_method_rm(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
     (void)argc;
     const char *path = argv[0].s;
     if (storage_path_is_protected(path))
         return val_err("storage.rm: refusing to remove '%s'", path ? path : "(null)");
-    int rc = storage_rm_tree(path);
+    int rc = gs_rm_tree(path);
     if (rc < 0)
         return val_err("storage.rm: cannot remove '%s': %s", path, strerror(-rc));
     return val_bool(true);
@@ -414,6 +455,7 @@ static value_t storage_method_rm(struct object *self, const member_t *m, int arg
 // browser's main-thread OPFS API) keeps WasmFS coherent. Tries rename() first
 // (fast / atomic on the same volume); falls back to a recursive copy + remove.
 static value_t storage_method_mv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
     (void)argc;
@@ -442,7 +484,7 @@ static value_t storage_method_mv(struct object *self, const member_t *m, int arg
         return val_err("storage.mv: %s", err[0] ? err : "move failed");
     // The copy succeeded; if the source can't be fully removed the operation
     // is a copy, not a move — report that instead of pretending success.
-    int rc = storage_rm_tree(src);
+    int rc = gs_rm_tree(src);
     if (rc < 0)
         return val_err("storage.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
     return val_bool(true);
@@ -459,12 +501,12 @@ static value_t storage_method_fd_create(struct object *self, const member_t *m, 
     if (!path || !*path)
         return val_err("storage.fd_create: empty path");
     bool high_density = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : false;
-    int rc = image_create_blank_floppy(path, false, high_density);
-    if (rc == -2)
-        return val_err("storage.fd_create: file already exists: %s", path);
-    if (rc != 0)
-        return val_err("storage.fd_create: failed to create blank floppy '%s'", path);
-    return val_bool(true);
+    io_leaf_t *j = io_leaf_new(path, NULL);
+    if (!j)
+        return val_err("storage.fd_create: out of memory");
+    j->flag = high_density;
+    j->work = work_fd_create;
+    return io_leaf_dispatch(j, "storage.fd_create");
 }
 
 // `storage.profile_create(path, blocks)` — create a blank Lisa/XL ParaPort
@@ -494,12 +536,12 @@ static value_t storage_method_profile_create(struct object *self, const member_t
     }
     if (blocks == 0)
         return val_err("storage.profile_create: block count must be positive");
-    int rc = image_create_blank_profile(path, (uint32_t)blocks);
-    if (rc == -2)
-        return val_err("storage.profile_create: file already exists: %s", path);
-    if (rc != 0)
-        return val_err("storage.profile_create: failed to create blank ProFile '%s'", path);
-    return val_bool(true);
+    io_leaf_t *j = io_leaf_new(path, NULL);
+    if (!j)
+        return val_err("storage.profile_create: out of memory");
+    j->blocks = (uint32_t)blocks;
+    j->work = work_profile_create;
+    return io_leaf_dispatch(j, "storage.profile_create");
 }
 
 static const char *apm_fs_kind_label(enum apm_fs_kind k) {
@@ -536,13 +578,13 @@ static value_t storage_method_partmap(struct object *self, const member_t *m, in
         image_close(img);
         return val_err("storage.partmap: not an APM image: %s", errmsg ? errmsg : "unknown error");
     }
-    printf("format: APM (512B blocks, %zu total)\n", disk_size(img) / 512);
-    printf("  #  Name                             Type                        Start        Size  FS\n");
+    gs_outf("format: APM (512B blocks, %zu total)\n", disk_size(img) / 512);
+    gs_outf("  #  Name                             Type                        Start        Size  FS\n");
     for (uint32_t i = 0; i < table->n_partitions; i++) {
         const apm_partition_t *p = &table->partitions[i];
-        printf("  %-2u %-32s %-24s %10llu  %10llu  %s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
-               p->type[0] ? p->type : "(unknown)", (unsigned long long)p->start_block,
-               (unsigned long long)p->size_blocks, apm_fs_kind_label(p->fs_kind));
+        gs_outf("  %-2u %-32s %-24s %10llu  %10llu  %s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
+                p->type[0] ? p->type : "(unknown)", (unsigned long long)p->start_block,
+                (unsigned long long)p->size_blocks, apm_fs_kind_label(p->fs_kind));
     }
     image_apm_free(table);
     image_close(img);
@@ -557,42 +599,42 @@ static value_t storage_method_probe(struct object *self, const member_t *m, int 
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
-        printf("cannot open image '%s'\n", path);
+        gs_outf("cannot open image '%s'\n", path);
         return val_bool(false);
     }
     size_t size = disk_size(img);
     uint8_t block[512];
     bool apm = false;
-    if (size >= 1024 && disk_read_data(img, 512, block, sizeof(block)) == sizeof(block))
+    if (size >= 1024 && image_read_bytes(img, 512, block, sizeof(block)) == 0)
         apm = image_apm_probe_magic(block);
     bool iso = false;
-    if (size >= 33280 && disk_read_data(img, 32768, block, sizeof(block)) == sizeof(block))
+    if (size >= 33280 && image_read_bytes(img, 32768, block, sizeof(block)) == 0)
         iso = (memcmp(block + 1, "CD001", 5) == 0);
     bool hfs = false;
-    if (!apm && size >= 1024 + 512 && disk_read_data(img, 1024, block, sizeof(block)) == sizeof(block))
+    if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0)
         hfs = (block[0] == 0x42 && block[1] == 0x44);
     if (apm && iso)
-        printf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
+        gs_outf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
     else if (apm)
-        printf("format: APM (%zu bytes)\n", size);
+        gs_outf("format: APM (%zu bytes)\n", size);
     else if (iso)
-        printf("format: ISO 9660 (%zu bytes)\n", size);
+        gs_outf("format: ISO 9660 (%zu bytes)\n", size);
     else if (hfs)
-        printf("format: HFS (bare, %zu bytes)\n", size);
+        gs_outf("format: HFS (bare, %zu bytes)\n", size);
     else
-        printf("format: unrecognised / raw (%zu bytes)\n", size);
+        gs_outf("format: unrecognised / raw (%zu bytes)\n", size);
     image_close(img);
     return val_bool(true);
 }
 
-static void storage_list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool conflicted,
+static void storage_list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool busy,
                                    void *user) {
     bool *header_printed = (bool *)user;
     if (!*header_printed) {
-        printf("PATH                                        FMT  PARTS  REFS  STATUS\n");
+        gs_outf("PATH                                        FMT  PARTS  REFS  STATUS\n");
         *header_printed = true;
     }
-    printf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, conflicted ? "busy" : "ok");
+    gs_outf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, busy ? "busy" : "ok");
 }
 
 // `storage.list_partitions()` — print the cached image-VFS mount table.
@@ -604,7 +646,7 @@ static value_t storage_method_list_partitions(struct object *self, const member_
     bool header_printed = false;
     image_vfs_list(storage_list_row_print, &header_printed);
     if (!header_printed)
-        printf("(no cached image mounts)\n");
+        gs_outf("(no cached image mounts)\n");
     return val_bool(true);
 }
 
@@ -627,15 +669,15 @@ static value_t storage_method_unmount(struct object *self, const member_t *m, in
         path = resolved;
     int rc = image_vfs_unmount(path);
     if (rc == 0) {
-        printf("unmounted %s\n", path);
+        gs_outf("unmounted %s\n", path);
         return val_bool(true);
     }
     if (rc == -ENOENT)
-        printf("image unmount: not currently mounted: %s\n", path);
+        gs_outf("image unmount: not currently mounted: %s\n", path);
     else if (rc == -EBUSY)
-        printf("image unmount: %s has live handles; marked conflicted\n", path);
+        gs_outf("image unmount: %s has live handles; refusing new access until they close\n", path);
     else
-        printf("image unmount: %s: %s\n", path, strerror(-rc));
+        gs_outf("image unmount: %s: %s\n", path, strerror(-rc));
     return val_bool(false);
 }
 
@@ -657,7 +699,7 @@ static value_t storage_method_path_size(struct object *self, const member_t *m, 
     vfs_stat_t st = {0};
     int rc = vfs_stat(path, &st);
     if (rc < 0) {
-        printf("size: cannot stat '%s': %s\n", path, strerror(-rc));
+        gs_outf("size: cannot stat '%s': %s\n", path, strerror(-rc));
         return val_uint(8, 0);
     }
     return val_uint(8, st.size);
@@ -728,6 +770,131 @@ static const arg_decl_t storage_cp_args[] = {
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
     {.name = "flag", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional -r / -R for recursive"},
 };
+// === The file-transfer window =================================================
+//
+// How the web page moves file bytes in and out without touching the file
+// system from its own thread.  Under WasmFS a Module.FS call from the page runs
+// ON the page's thread, which then busy-waits for the OPFS backend -- and in
+// WebKit a worker's OPFS request is itself served through the page's thread, so
+// Safari deadlocked on every upload.  Instead the page copies a chunk into
+// this buffer (it is ordinary wasm memory: a plain store, no waiting) and asks
+// for it to be written -- or asks for a chunk to be read into it -- through the
+// request bridge, so every file access runs here, on the emulator thread, as
+// all others do.  One chunk in flight at a time; the page serialises them.
+#define STORAGE_XFER_BYTES (2u << 20)
+static uint8_t g_xfer[STORAGE_XFER_BYTES];
+
+static value_t storage_attr_xfer_buffer(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(4, (uint32_t)(uintptr_t)g_xfer);
+}
+
+static value_t storage_attr_xfer_size(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(4, STORAGE_XFER_BYTES);
+}
+
+// The window's transfers are I/O jobs too (io_leaf.h): the file write or
+// read runs on the I/O worker and the page's promise settles when it is
+// done.  The page fills or empties the window only between requests (one
+// chunk in flight), so the worker owns the window while a job runs.
+typedef struct {
+    uint64_t offset;
+    uint64_t len;
+    size_t got;
+} xfer_job_t;
+
+static void xfer_cleanup(io_leaf_t *j) {
+    free(j->ud);
+}
+
+static int work_xfer_write(io_leaf_t *j) {
+    xfer_job_t *x = (xfer_job_t *)j->ud;
+    FILE *f = fopen(j->a, x->offset == 0 ? "wb" : "r+b");
+    if (!f) {
+        int e = errno ? errno : EIO;
+        snprintf(j->err, sizeof j->err, "cannot open '%s': %s", j->a, strerror(e));
+        return -e;
+    }
+    bool ok = fseeko(f, (off_t)x->offset, SEEK_SET) == 0 && fwrite(g_xfer, 1, (size_t)x->len, f) == (size_t)x->len;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok) {
+        snprintf(j->err, sizeof j->err, "write to '%s' at %llu failed", j->a, (unsigned long long)x->offset);
+        return -EIO;
+    }
+    return 0;
+}
+
+static int work_xfer_read(io_leaf_t *j) {
+    xfer_job_t *x = (xfer_job_t *)j->ud;
+    FILE *f = fopen(j->a, "rb");
+    if (!f) {
+        int e = errno ? errno : EIO;
+        snprintf(j->err, sizeof j->err, "cannot open '%s': %s", j->a, strerror(e));
+        return -e;
+    }
+    x->got = 0;
+    if (fseeko(f, (off_t)x->offset, SEEK_SET) == 0)
+        x->got = fread(g_xfer, 1, (size_t)x->len, f);
+    fclose(f);
+    return 0;
+}
+
+static value_t answer_xfer_read(io_leaf_t *j) {
+    return val_uint(4, (uint32_t)((xfer_job_t *)j->ud)->got);
+}
+
+static value_t xfer_dispatch(const char *path, uint64_t offset, uint64_t len, bool write, const char *what) {
+    io_leaf_t *j = io_leaf_new(path, NULL);
+    xfer_job_t *x = (xfer_job_t *)calloc(1, sizeof *x);
+    if (!j || !x) {
+        free(x);
+        if (j)
+            free(j->a), free(j);
+        return val_err("%s: out of memory", what);
+    }
+    x->offset = offset;
+    x->len = len;
+    j->ud = x;
+    j->cleanup = xfer_cleanup;
+    j->work = write ? work_xfer_write : work_xfer_read;
+    j->answer = write ? NULL : answer_xfer_read;
+    return io_leaf_dispatch(j, what);
+}
+
+// `storage.xfer_write(path, offset, len)` — write the window's first `len`
+// bytes to `path` at `offset`; offset 0 creates (or truncates) the file.
+static value_t storage_method_xfer_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    uint64_t offset = argv[1].u, len = argv[2].u;
+    if (len > STORAGE_XFER_BYTES)
+        return val_err("storage.xfer_write: %llu bytes is more than the %u-byte window", (unsigned long long)len,
+                       STORAGE_XFER_BYTES);
+    return xfer_dispatch(argv[0].s, offset, len, true, "storage.xfer_write");
+}
+
+// `storage.xfer_read(path, offset, len)` — read up to `len` bytes of `path`
+// from `offset` into the window; answers how many (0 at the end).
+static value_t storage_method_xfer_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    uint64_t offset = argv[1].u, len = argv[2].u;
+    if (len > STORAGE_XFER_BYTES)
+        len = STORAGE_XFER_BYTES;
+    return xfer_dispatch(argv[0].s, offset, len, false, "storage.xfer_read");
+}
+
+static const arg_decl_t storage_xfer_args[] = {
+    {.name = "path",   .kind = V_STRING, .doc = "File path"                             },
+    {.name = "offset", .kind = V_UINT,   .doc = "Byte offset in the file"               },
+    {.name = "len",    .kind = V_UINT,   .doc = "Byte count (at most storage.xfer_size)"},
+};
+
 static const arg_decl_t storage_export_raw_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Source image path (host, or nested inside a mounted image)"},
     {.name = "dst", .kind = V_STRING, .doc = "Destination host path for the decoded raw image"           },
@@ -769,34 +936,69 @@ static const arg_decl_t storage_partmap_args[] = {
 };
 
 static const member_t storage_members[] = {
+    {.kind = M_ATTR,
+     .name = "xfer_buffer",
+     .flags = VAL_RO | M_CAT_INTERNAL,
+     .doc = "Address of the file-transfer window in wasm memory (the web page's upload path)",
+     .attr = {.type = V_UINT, .get = storage_attr_xfer_buffer, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "xfer_size",
+     .flags = VAL_RO | M_CAT_INTERNAL,
+     .doc = "Size of the file-transfer window in bytes",
+     .attr = {.type = V_UINT, .get = storage_attr_xfer_size, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "xfer_write",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Write the transfer window's first len bytes to path at offset (offset 0 creates the file)",
+     .method =
+         {.ui_flags = MM_IO, .args = storage_xfer_args, .nargs = 3, .result = V_BOOL, .fn = storage_method_xfer_write}},
+    {.kind = M_METHOD,
+     .name = "xfer_read",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Read up to len bytes of path at offset into the transfer window; answers the count",
+     .method =
+         {.ui_flags = MM_IO, .args = storage_xfer_args, .nargs = 3, .result = V_UINT, .fn = storage_method_xfer_read}},
     {.kind = M_METHOD,
      .name = "import",
-     .doc = "Persist a host file under /images/ (implementation in progress)",
-     .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}        },
+     .doc = "Copy a host file to a destination path",
+     .method =
+         {.ui_flags = MM_IO, .args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}},
     {.kind = M_METHOD,
      .name = "list_dir",
      .doc = "List directory entries (V_LIST of V_STRING names)",
-     .method = {.args = storage_list_dir_args, .nargs = 1, .result = V_LIST, .fn = storage_method_list_dir}      },
+     .method = {.args = storage_list_dir_args, .nargs = 1, .result = V_LIST, .fn = storage_method_list_dir}},
     {.kind = M_METHOD,
      .name = "cp",
      .doc = "Copy a host or VFS path to another VFS path",
-     .method = {.args = storage_cp_args, .nargs = 3, .result = V_BOOL, .fn = storage_method_cp}                  },
+     .method = {.ui_flags = MM_IO, .args = storage_cp_args, .nargs = 3, .result = V_BOOL, .fn = storage_method_cp}},
     {.kind = M_METHOD,
      .name = "export_raw",
      .doc = "Decode a disk image (incl. NDIF nested in a mounted image) to a flat raw image on the host",
-     .method = {.args = storage_export_raw_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_export_raw}  },
+     .method = {.ui_flags = MM_IO,
+                .args = storage_export_raw_args,
+                .nargs = 2,
+                .result = V_BOOL,
+                .fn = storage_method_export_raw}},
     {.kind = M_METHOD,
      .name = "find_media",
      .doc = "Find a recognised floppy/disk image in a directory",
-     .method = {.args = storage_find_media_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_find_media}  },
+     .method = {.args = storage_find_media_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_find_media}},
     {.kind = M_METHOD,
      .name = "hd_create",
      .doc = "Create a blank SCSI HD image",
-     .method = {.args = storage_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_hd_create}    },
+     .method = {.ui_flags = MM_IO,
+                .args = storage_hd_create_args,
+                .nargs = 2,
+                .result = V_BOOL,
+                .fn = storage_method_hd_create}},
     {.kind = M_METHOD,
      .name = "fd_create",
      .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
-     .method = {.args = storage_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_fd_create}    },
+     .method = {.ui_flags = MM_IO,
+                .args = storage_fd_create_args,
+                .nargs = 2,
+                .result = V_BOOL,
+                .fn = storage_method_fd_create}},
     {.kind = M_METHOD,
      .name = "profile_create",
      .doc = "Create a blank Lisa/XL ProFile image (raw 532-byte/block zero file)",
@@ -805,43 +1007,43 @@ static const member_t storage_members[] = {
     {.kind = M_METHOD,
      .name = "rm",
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
-     .method = {.args = storage_rm_args, .nargs = 1, .result = V_BOOL, .fn = storage_method_rm}                  },
+     .method = {.ui_flags = MM_IO, .args = storage_rm_args, .nargs = 1, .result = V_BOOL, .fn = storage_method_rm}},
     {.kind = M_METHOD,
      .name = "mv",
      .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
-     .method = {.args = storage_mv_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_mv}                  },
+     .method = {.args = storage_mv_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_mv}},
     {.kind = M_METHOD,
      .name = "partmap",
      .doc = "Print the Apple Partition Map of an image",
-     .method = {.args = storage_partmap_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_partmap}        },
+     .method = {.args = storage_partmap_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_partmap}},
     {.kind = M_METHOD,
      .name = "probe",
      .doc = "Identify the format of a disk image",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_probe}              },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_probe}},
     {.kind = M_METHOD,
      .name = "list_partitions",
      .doc = "Print the cached image-VFS mount table",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_list_partitions}                },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_list_partitions}},
     {.kind = M_METHOD,
      .name = "mounts",
      .doc = "Alias for list_partitions; prints the mount table",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_mounts}                         },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = storage_method_mounts}},
     {.kind = M_METHOD,
      .name = "unmount",
      .doc = "Drop a cached image-VFS mount",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_unmount}            },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_unmount}},
     {.kind = M_METHOD,
      .name = "path_exists",
      .doc = "True if the path resolves in the shell VFS",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_path_exists}        },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_path_exists}},
     {.kind = M_METHOD,
      .name = "path_size",
      .doc = "File size in bytes (0 on stat failure)",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_UINT, .fn = storage_method_path_size}          },
+     .method = {.args = storage_path_arg, .nargs = 1, .result = V_UINT, .fn = storage_method_path_size}},
     {.kind = M_METHOD,
      .name = "path_compare",
      .doc = "Byte-compare two files: -1 if identical, else the first differing offset",
-     .method = {.args = storage_compare_args, .nargs = 2, .result = V_INT, .fn = storage_method_path_compare}    },
+     .method = {.args = storage_compare_args, .nargs = 2, .result = V_INT, .fn = storage_method_path_compare}},
 };
 
 const class_desc_t storage_class_real = {

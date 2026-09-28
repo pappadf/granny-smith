@@ -56,7 +56,7 @@ typedef struct swim3 {
     // value, `timer_start_ns` the scheduler time of the load; the running
     // count reads back live and TIMER_DONE fires at zero (swim3.c).  The
     // 7.5 .Sony driver never touches it; Copland's floppy plugin is built
-    // on it (SwimIIISmallWait polls it — gs-docs/projects/copland).
+    // on it (SwimIIISmallWait polls it).
     uint8_t timer;
     uint8_t timer_running;
     uint64_t timer_start_ns;
@@ -93,6 +93,11 @@ typedef struct swim3 {
 // board init and again after a checkpoint restore has overwritten the
 // plain-data part.  Does not touch the register state.
 void swim3_bind(swim3_t *sw, struct floppy *fd, struct scheduler *sched, const swim3_backend_t *be);
+
+// Power-on state (ERS v1.2 §3.10).  Driven by the guest's self-clearing
+// Setup SoftReset bit and by the board's /RESET net; the bound fd/sched/
+// backend pointers survive, being wiring rather than state.  See swim3.c.
+void swim3_reset(swim3_t *sw);
 
 // Register the chip's scheduler event types — before scheduler_start
 // (the timer in swim3.c, the transfer engine in swim3_xfer.c).
@@ -133,6 +138,12 @@ void swim3_raise(swim3_t *sw, uint8_t bits);
 #define SWIM3_S_GCR        0x04u
 #define SWIM3_S_DISGCRCONV 0x10u
 #define SWIM3_S_IBMDRIVE   0x20u
+#define SWIM3_S_CLOCKDIV2  0x08u // Setup: internal clock / 2
+#define SWIM3_S_GCRWRITES  0x40u // Setup: GCR write framing
+#define SWIM3_S_SOFTRESET  0x80u // Setup: self-clearing soft reset
+// Phase register: the same lines the IWM names CA0..CA2 / LSTRB.
+#define SWIM3_PH_CA_MASK 0x07u
+#define SWIM3_PH_LSTRB   0x08u
 
 // Error register bits (§7.3)
 #define SWIM3_E_UNDERRUN 0x01u

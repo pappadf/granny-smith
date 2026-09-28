@@ -114,20 +114,12 @@ scheduler.run 60000000
 
 # --- Continue with the normal MacTest flow ---------------------------------
 # Click Start (button center ~(188, 153)) — same coords as iicx-mactest.
-# The System's ADB mouse driver can re-post a stale button-down after a
-# no-data Talk (issue #122), leaving MBState at $00 so the next press is
-# not a transition.  Force it back to $80 (button up) before the click —
-# the same guard se30-mactest uses.
-machine.adb.mouse.click false "global"
 machine.adb.mouse.move 188 153 "global"
 scheduler.run 5000000
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 scheduler.run 35000000
-# The driver's stale re-post (issue #122) lands ~35 M after the release
-# and leaves TrackControl waiting for an up that never comes; clear it.
-machine.adb.mouse.click false "global"
 
 # VIA -> ASC -> clock/PRAM -> SCSI tests run, then MacTest asks for the
 # first blank 800K diskette (a modal wait, so overshooting is harmless).
@@ -144,7 +136,6 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 scheduler.run 35000000
-machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
 
 scheduler.run 265000000
 machine.screen.match insert-1.4mb-internal.png
@@ -164,7 +155,6 @@ scheduler.run 5000000
 machine.adb.mouse.click false
 
 scheduler.run 35000000
-machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
 scheduler.run 265000000
 # Second OK-click for the 1.44 MB INTERNAL disk.  Under the unified frame-VBL
 # cadence the HD disk's read/verify keeps MacTest out of its modal click-poll
@@ -177,18 +167,7 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 scheduler.run 35000000
-machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
-scheduler.run 115000000
-# The stale re-post (issue #122) can land after this prompt opens and leave
-# its OK button tracking a phantom press.  Release it with the cursor OFF
-# the button (so TrackControl returns no-hit and the dialog stays), then
-# park the cursor back on OK for the golden.
-machine.adb.mouse.move 200 150 "global"
-scheduler.run 5000000
-machine.adb.mouse.click false "global"
-scheduler.run 10000000
-machine.adb.mouse.move 454 245 "global"
-scheduler.run 10000000
+scheduler.run 140000000
 machine.screen.match insert-800k-external.png
 
 machine.adb.mouse.click false "global"
@@ -217,7 +196,6 @@ scheduler.run 5000000
 machine.adb.mouse.click false
 
 scheduler.run 35000000
-machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
 scheduler.run 265000000
 # Redundant mouse-up: guarantees the button is released before the match even
 # if the click-false above landed in a read window and was dropped.
@@ -240,7 +218,6 @@ scheduler.run 5000000
 machine.adb.mouse.click false
 
 scheduler.run 35000000
-machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
 scheduler.run 265000000
 # Second OK-click for the 1.44 MB EXTERNAL disk — same HD read-window timing as
 # the internal 1.44 MB step above; the first click lands too early under the
@@ -251,7 +228,6 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 scheduler.run 35000000
-machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
 scheduler.run 115000000
 machine.screen.match floppy-test-success.png
 
@@ -290,7 +266,6 @@ machine.adb.mouse.move 0 0
 # RAM1..." status display.
 scheduler.run 600000000
 machine.screen.save "$WORK_DIR/post-floppy-state.png"
-machine.screen.save "post-floppy-state.png"
 
 # Let the RAM test run.  On real IIcx hardware MacTest's RAM test
 # fills + verifies all 4 MB with several patterns (~4 min @ 16 MHz),
@@ -302,18 +277,23 @@ machine.screen.save "post-floppy-state.png"
 # SE/30 version of this floppy through the full sequence with
 # scheduler.run 7B.
 #
-# IIcx finding (2026-05-13): the CPU stays in the ROM RAM-test +
-# exception code at $40802EE0-$40803304 indefinitely.  Instr_count
-# grows steadily (CPU is executing, not halted) but the screen
-# never updates past "Testing RAM1...".  16 B cycles is more than
-# 4× the real-hardware 4-minute budget — the auto-reboot path that
-# leads to the success screen does not fire on IIcx in this build,
-# even though the analogous SE/30 path does.  Likely IIcx is
-# missing the IIcx-side equivalent of the SE/30 hardware-reset
-# wiring exercised by MacTest.  Filed as future work — for now the
-# test stops at the RAM-running display.
+# IIcx note (resolved 2026-05-14): an earlier session believed the
+# auto-reboot path "did not fire on IIcx" — the CPU sat in the ROM's
+# SCC error-dispatch loop at $40802EC0-$40803304, never updating
+# past "Testing RAM1...".  That was never a reset-path problem; it
+# was this script running the 600 M post-floppy window with the
+# mouse guard still firing, and its 1 kHz writes to
+# MTemp/RawMouse/Mouse overwrote the RAM-test verify patterns,
+# tripping ROM POST's pattern-mismatch error path — hence the
+# mouse.move 0 0 before that run above.  A second, independent bug
+# had the ASC IRQ line wired to VIA2 CB1 without initialising CB1's
+# stored level, so its zero-init LOW meant the first ASC assertion
+# (active-low) produced no edge and MacTest reported a logic-board
+# failure; asc.c now drives CB1 to its idle HIGH in asc_set_via.
+# With both fixes the destructive phase completes, GLU resets the
+# machine, and MacTest re-boots to the "All selected tests have
+# passed" success screen.
 scheduler.run 4000000000
 machine.screen.save "$WORK_DIR/ram-running.png"
-machine.screen.save "ram-running.png"
 
 quit

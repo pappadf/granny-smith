@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // cmd_find.c
-// `find.*` memory search (shell v2 §6.1): find.str / find.bytes /
+// `find.*` memory search: find.str / find.bytes /
 // find.word / find.long return the complete V_LIST of match addresses
 // (empty list = not found); optional start/end arguments bound the
 // scan, defaulting to the whole address space (g_address_mask).
@@ -43,7 +43,7 @@ static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
 
 // === Object-model class descriptor =========================================
 //
-// Shell v2 §6.1: the `find.*` methods return data — a V_LIST of match
+// The `find.*` methods return data — a V_LIST of match
 // addresses (empty list = not found) — and the REPL formats it. The
 // printed match report and the `all` hit cap are gone: the list is
 // always complete (bounded by FIND_MAX_HITS as a runaway guard).
@@ -207,12 +207,17 @@ static value_t find_method_long(struct object *self, const member_t *m, int argc
     return find_int_common("find.long", 4, argc, argv);
 }
 
+// `start` documents a default of 0, so declare it: without one, naming `end`
+// alone failed with "missing argument 'start'".
+static const value_t find_def_start = {.kind = V_UINT, .u = 0};
+
 static const arg_decl_t find_str_args[] = {
     {.name = "text", .kind = V_STRING, .doc = "Search text"},
     {.name = "start",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
+     .default_value = &find_def_start,
      .doc = "Scan start address (default 0)"},
     {.name = "end",
      .kind = V_UINT,
@@ -226,6 +231,7 @@ static const arg_decl_t find_bytes_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
+     .default_value = &find_def_start,
      .doc = "Scan start address (default 0)"},
     {.name = "end",
      .kind = V_UINT,
@@ -239,6 +245,7 @@ static const arg_decl_t find_int_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
+     .default_value = &find_def_start,
      .doc = "Scan start address (default 0)"},
     {.name = "end",
      .kind = V_UINT,
@@ -266,7 +273,7 @@ static const member_t find_members[] = {
      .method = {.args = find_int_args, .nargs = 3, .result = V_LIST, .fn = find_method_word}   },
 };
 
-const class_desc_t find_class = {
+static const class_desc_t find_class = {
     .name = "find",
     .members = find_members,
     .n_members = sizeof(find_members) / sizeof(find_members[0]),
@@ -285,12 +292,4 @@ void find_class_register(void) {
     s_find_object = object_new(&find_class, NULL, "find");
     if (s_find_object)
         object_attach(object_root(), s_find_object);
-}
-
-void find_class_unregister(void) {
-    if (s_find_object) {
-        object_detach(s_find_object);
-        object_delete(s_find_object);
-        s_find_object = NULL;
-    }
 }

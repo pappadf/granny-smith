@@ -160,7 +160,7 @@ static uint8_t bart_reg_read8(void *ctx, uint32_t offset) {
     if (offset >= BART_REG_LIMIT) {
         // Beyond the register file the chip answers nothing (decode
         // granularity above $87 is unknown; keep the window minimal and
-        // fault outside it — bart-nubus.md §12).
+        // fault outside it).
         LOG(4, "bart: read above the register file: $%08X", PDM_BART_BASE + offset);
         memory_signal_bus_error(PDM_BART_BASE + offset, false);
         return 0xFF;
@@ -177,18 +177,25 @@ static uint8_t bart_reg_read8(void *ctx, uint32_t offset) {
         return b->slow;
     case BART_REG_SLOT_E:
         return b->slot_e_off;
+    case BART_REG_ID:
+    case BART_REG_ID + 1u:
+    case BART_REG_ID + 2u:
+    case BART_REG_ID + 3u:
+        // Anything but the first-rev value: the only reader is the
+        // prototype-era interrupt-swap hack, which must never fire.  (Its
+        // constants are absent from the shipping ROM entirely.)  This used to
+        // live in bart_reg_read32 alone, so a byte or word read of the ID
+        // returned 0 while a long read returned $BCE7BFFF -- an access-width
+        // inconsistency inside one register, and the byte path is the one a
+        // memory.peek uses.  Answering per lane lets the wide paths compose,
+        // the way hammerhead.c does for its 32-bit register file.
+        return (uint8_t)((~BART_ID_PROTOTYPE) >> ((3u - (offset - BART_REG_ID)) * 8u));
     default:
         return 0x00;
     }
 }
 
 static uint32_t bart_reg_read32(void *ctx, uint32_t offset) {
-    if (offset == BART_REG_ID) {
-        // Anything but the first-rev value: the only reader is the
-        // prototype-era interrupt-swap hack, which must never fire.  (Its
-        // constants are absent from the shipping ROM entirely.)
-        return ~BART_ID_PROTOTYPE;
-    }
     return ((uint32_t)bart_reg_read8(ctx, offset) << 24) | ((uint32_t)bart_reg_read8(ctx, offset + 1) << 16) |
            ((uint32_t)bart_reg_read8(ctx, offset + 2) << 8) | bart_reg_read8(ctx, offset + 3);
 }
@@ -209,7 +216,7 @@ static void bart_reg_write8(void *ctx, uint32_t offset, uint8_t value) {
     if (slot) {
         // Block-transfer enable for one slot.  Bursts and single beats are
         // indistinguishable to software here, so the bit is a latch the
-        // Slot Manager can read back (bart-nubus.md §7).
+        // Slot Manager can read back.
         b->burst[slot - 1] = value;
         LOG(2, "bart: slot $%X burst transfers %s", slot, (value & 1u) ? "enabled" : "disabled");
         return;

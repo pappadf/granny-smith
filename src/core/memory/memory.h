@@ -15,18 +15,42 @@
 #include <stdint.h>
 
 // === Macros ===
-// Aligned big-endian access: these cast the pointer, so `p` must be
-// naturally aligned for its width.  Right for register windows and RAM
-// reached through the memory map.  For on-disk and on-wire buffers read
-// at arbitrary offsets, use common.h's RD_BE*/WR_BE* instead, which are
-// byte-wise and carry no alignment requirement.
+// Big-endian access through a host pointer.  The guest may address any of
+// these at an odd byte, and the 68020+ and PowerPC cores both permit
+// misaligned data operands, so the access is expressed as a memcpy rather
+// than a pointer cast: casting is undefined for both alignment and strict
+// aliasing, and it is the C abstract machine imposing that requirement, not
+// the emulated hardware.  The compiler folds the memcpy away -- the emitted
+// code is byte-identical on aarch64 (gcc), x86-64 (clang) and wasm32 (emcc),
+// for every width, loads and stores; on wasm the only delta is that the
+// alignment hint becomes honest (p2align=0) instead of a false claim of
+// natural alignment.  For on-disk and on-wire buffers, common.h's
+// RD_BE*/WR_BE* remain the byte-wise spelling.
 #define LOAD_BE8(p)  (*(const uint8_t *)(p))
-#define LOAD_BE16(p) (__builtin_bswap16(*(const uint16_t *)(p)))
-#define LOAD_BE32(p) (__builtin_bswap32(*(const uint32_t *)(p)))
+#define LOAD_BE16(p) (__builtin_bswap16(memory_load_host16(p)))
+#define LOAD_BE32(p) (__builtin_bswap32(memory_load_host32(p)))
 
 #define STORE_BE8(p, v)  (*(uint8_t *)(p) = (uint8_t)(v))
-#define STORE_BE16(p, v) (*(uint16_t *)(p) = __builtin_bswap16((uint16_t)(v)))
-#define STORE_BE32(p, v) (*(uint32_t *)(p) = __builtin_bswap32((uint32_t)(v)))
+#define STORE_BE16(p, v) memory_store_host16((p), __builtin_bswap16((uint16_t)(v)))
+#define STORE_BE32(p, v) memory_store_host32((p), __builtin_bswap32((uint32_t)(v)))
+
+// Alignment-agnostic host-memory primitives behind the macros above.
+static inline uint16_t memory_load_host16(const void *p) {
+    uint16_t v;
+    __builtin_memcpy(&v, p, sizeof v);
+    return v;
+}
+static inline uint32_t memory_load_host32(const void *p) {
+    uint32_t v;
+    __builtin_memcpy(&v, p, sizeof v);
+    return v;
+}
+static inline void memory_store_host16(void *p, uint16_t v) {
+    __builtin_memcpy(p, &v, sizeof v);
+}
+static inline void memory_store_host32(void *p, uint32_t v) {
+    __builtin_memcpy(p, &v, sizeof v);
+}
 
 // === Type Definitions ===
 typedef struct memory_interface {
@@ -62,10 +86,10 @@ extern void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, cons
 // Register a host-backed region on the physical bus map.  `writable`
 // distinguishes RAM-shaped (VRAM, framebuffer) from ROM-shaped (declrom)
 // regions.  The NuBus bus controller calls this once per card region
-// during nubus_init().  See proposal-machine-iicx-iix.md §3.2.3 for the
-// rename rationale: the storage still lives in mmu_state_t (4-slot fixed
-// layout in v1) but the call-site lie ("the MMU manages mappings") is
-// fixed by exposing the API on the memory map.  No fast-path change.
+// during nubus_init().  The name is deliberate: the storage still lives in
+// mmu_state_t (4-slot fixed layout in v1) but the call-site lie ("the MMU
+// manages mappings") is fixed by exposing the API on the memory map.  No
+// fast-path change.
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
                             bool writable);
 
@@ -75,11 +99,35 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base);
 
 // Latch a deferred bus error for a DEVICE-decoded access the hardware
-// terminates with a transfer error — the PDM's BART slot windows, where an
-// empty slot answers a probe with a recoverable fault instead of data.  The
-// CPU seam delivers it at the sprint boundary (68k bus error / 601 machine
-// check).  No-op while an inspection access is in flight, so `memory.peek`
-// of an empty slot never perturbs the guest.
+// terminates with a transfer error.  The CPU seam delivers it at the sprint
+// boundary (68k bus error / 601 machine check).  No-op while an inspection
+// access is in flight, so `memory.peek` of such a window never perturbs the
+// guest.
+//
+// What this models is a BUS TIMEOUT, not a decode failure: on real hardware
+// no chip "returns" a bus error.  A cycle completes only if some responder
+// asserts acknowledge (/DSACK on 68020/030, /TA on 68040); if none does, the
+// glue's watchdog fires and asserts the error instead.  Hence the two
+// distinct behaviours a machine must choose between for an address with no
+// chip behind it, per the address-map legend in Guide to the Macintosh Family
+// Hardware 2e p.121:
+//
+//   * DECODED but unpopulated ("light-shaded: decoded but might not be
+//     used") — the decoder acknowledges anyway, the cycle completes, and the
+//     data bus floats to the pull-ups.  Reads return $FF; NO fault.  This is
+//     what mac030_board_desc_t.io_unmapped_read models.
+//   * NOT DECODED ("unshaded") — nothing acknowledges, the watchdog times
+//     out, bus error.  This is what bus_err_lo/bus_err_hi model for whole
+//     regions, and what THIS function models for an individual device window
+//     whose responder is absent on a particular model.
+//
+// Documented watchdogs: IIfx OSS "bus time-out logic" (DSACK asserted only
+// for the shaded I/O spaces); Q900/950 Relayer 15.5 us @ 33 MHz, 20.5 us
+// @ 25 MHz; AV MCA 16 us, 32 us in NuBus space; PDM AMIC 40 us; NuBus
+// 25.6 us.  Callers today: the PDM's BART slot windows (empty slot), the
+// IIfx FMC/RPU probe windows, and the 660AV's absent MUNI — the AV devnote
+// states it outright ("if the CPU, PSC, or MUNI does not respond to a cycle
+// start signal within a critical time, the MCA ... issues a bus error").
 void memory_signal_bus_error(uint32_t addr, bool write);
 
 // Physical page-fill hook for machines whose page table is not owned by a
@@ -96,6 +144,11 @@ extern bool g_mem_debug_access;
 // range, unmapped reads return 0 silently (matches GLUE behaviour for
 // non-NuBus slots).
 void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end);
+
+// True when an unanswered access at `addr` should raise a bus error rather
+// than float to $FF.  The window is a BUS property, so it applies with the
+// MMU on or off -- see memory.c.
+bool memory_addr_faults_when_unmapped(uint32_t addr);
 
 extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name,
                               memory_interface_t *iface, void *device);
@@ -114,9 +167,8 @@ const char *memory_rom_filename(memory_map_t *mem);
 // the memory map and remains valid until the next memory_install_rom() call.
 const uint8_t *memory_rom_bytes(memory_map_t *mem);
 uint32_t memory_rom_size(memory_map_t *mem);
-uint32_t memory_rom_checksum(memory_map_t *mem);
 
-// Copy ROM bytes into the ROM region, refresh internal checksum, and store
+// Copy ROM bytes into the ROM region and store
 // the filename for checkpointing. Truncates if size > rom_size. Returns the
 // number of bytes actually written.
 size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename);
@@ -196,7 +248,7 @@ extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this
 extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
 extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
 
-// --- VIA E-clock synchronization (proposal-via-eclock-sync) -----------------
+// --- VIA E-clock synchronization --------------------------------------------
 //
 // 6522 VIA accesses are synchronized to the 783.360 kHz E clock on real
 // hardware: an access completes at the next E boundary, so back-to-back
@@ -275,6 +327,11 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 uint8_t memory_debug_read_uint8(uint32_t addr);
 uint16_t memory_debug_read_uint16(uint32_t addr);
 uint32_t memory_debug_read_uint32(uint32_t addr);
+// Side-effect-free read of `size` (1, 2 or 4) bytes at a PHYSICAL address,
+// straight from the physical page table (host RAM/ROM or a device read).
+// *ok is false for unmapped addresses, and on the Lisa, whose three physical
+// spaces (RAM, I/O, boot ROM) are not in the page table.  Big-endian.
+uint32_t memory_debug_read_phys(uint32_t phys, unsigned size, bool *ok);
 // Bulk equivalent of len consecutive memory_debug_read_uint8 calls, but copies
 // contiguous host-backed spans with memcpy.  Same result, far cheaper for RAM.
 void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len);
@@ -296,13 +353,13 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value);
 // Per-page memory-logpoint reference count.  Non-zero entries indicate pages
 // whose SoA fast-path must stay at 0 (force slow path). Allocated alongside the
 // page tables in memory_map_init.
-extern uint8_t *g_mem_logpoint_page_count;
+extern uint16_t *g_mem_logpoint_page_count;
 
 // Per-physical-page memory-logpoint reference count.  Non-zero entries mean
 // "any logical alias mapping to this physical page must stay on the slow
 // path so the logpoint fires regardless of which alias the CPU uses."
 // Indexed by physical page number.  mmu_fill_soa_entry consults both arrays.
-extern uint8_t *g_mem_logpoint_phys_page_count;
+extern uint16_t *g_mem_logpoint_phys_page_count;
 
 // Hook invoked by the slow path on logpoint pages.  is_write=true on writes.
 // Installed by debug.c.  NULL means no hook (skip check).
@@ -321,7 +378,14 @@ extern bool g_user_soa_reserved;
 // owning CPU's control (memory logpoint install/uninstall): CPU-side
 // translation caches (fetch windows, TLBs) must drop entries that could
 // bypass the slow path.  NULL when no CPU registered one.
-extern void (*g_mem_fastpath_changed)(void);
+// Fired whenever the PHYSICAL MAP changes shape: a device window claimed or
+// released, a host region registered, or a logpoint installed or removed.
+// CPU-side fetch caches (g_ftlb, g_ppc_fetch) hold raw HOST POINTERS that
+// bypass the SoA arrays, so zeroing an SoA entry is not enough to evict them.
+// It used to be named g_mem_fastpath_changed and was fired only from the four
+// logpoint sites, which left those caches holding pointers into a window that
+// had since been remapped.
+extern void (*g_mem_map_changed)(void);
 
 // Current-context logical→physical translation for machines whose data
 // translation lives outside g_mmu (the PPC 601 front end).  Used by the
@@ -392,6 +456,39 @@ static inline uint32_t memory_read_uint32(uint32_t addr) {
         return LOAD_BE32((uint8_t *)(base + masked));
     }
     return memory_read_uint32_slow(masked);
+}
+
+// Instruction prefetch: the opcode word, plus the following word when it is
+// free to take.
+//
+// The decoders fetch 32 bits at the PC so the opcode and its first extension
+// word arrive together.  A plain memory_read_uint32 at the last word of a page
+// reads FORWARD into the next page, which can fault or perform a phantom
+// device read on a page the instruction never touches -- and real hardware
+// does the opposite: MC68030UM 7.2 says the processor "always prefetches
+// instructions by reading a long word from a long-word address (A1:A0 = 00),
+// regardless of port size or alignment", i.e. it aligns DOWN and stays inside
+// the page.  A fault on a prefetched word that is never used must also not be
+// delivered (MC68030UM 8.2; MC68040UM: "the processor does not take the
+// exception until it attempts to use the instruction").
+//
+// So: keep the 32-bit read whenever it is in-page -- byte-for-byte the fast
+// path above, which is why this costs nothing in the decoder loop -- and when
+// it is not, return just the opcode word in the high half.  Consumers of the
+// low half (only the MOVES direction bit, cpu_decode.h) re-read it from the PC
+// when they need it, by which point the access is deliberate rather than
+// speculative.  Narrowing the fast path itself to a 16-bit read instead was
+// measured at +6.7% on the SE/30 row: the ldrh/rev16 pair is a wash in the
+// loop header, but losing the 32-bit load perturbs register allocation across
+// the whole decoder body.
+static inline uint32_t memory_read_prefetch32(uint32_t addr) {
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+        return LOAD_BE32((uint8_t *)(base + masked));
+    }
+    // Out of page (or no SoA entry): take the opcode word only.
+    return (uint32_t)memory_read_uint16_slow(masked) << 16;
 }
 
 static inline void memory_write_uint8(uint32_t addr, uint8_t value) {

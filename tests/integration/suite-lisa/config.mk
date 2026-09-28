@@ -1,4 +1,4 @@
-# Integration suite: Lisa 2 and Macintosh XL (proposal-integration-test-rework §7)
+# Integration suite: Lisa 2 and Macintosh XL
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs lisa-profile-boot,
@@ -29,7 +29,7 @@ TEST_DESC := LOS 3.1 ProFile boot, Xenix 3.0 hdinit + boot + no-floppy, MacWorks
 TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_ARGS := model=lisa ram=2048
 
-TEST_SETUP := cp "$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-ProFile.image" "$(WORK_DIR)/profile.image" && cp "$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-ProFile.image" "$(WORK_DIR)/xenix-profile.image" && python3 suite-lisa/seed_pram.py "$(WORK_DIR)/profile.pram" --coldboot
+TEST_SETUP := cp "$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-ProFile.image" "$(WORK_DIR)/profile.image" && cp "$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-ProFile.image" "$(WORK_DIR)/xenix-profile.image"
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

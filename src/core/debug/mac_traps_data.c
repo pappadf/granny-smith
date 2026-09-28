@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 struct {
     const char *name;
@@ -2809,3 +2810,53 @@ struct {
 };
 
 const size_t macos_atraps_count = sizeof(macos_atraps) / sizeof(macos_atraps[0]);
+
+// Look up a trap by its raw 16-bit value.
+static const char *lookup_atrap(uint16_t trap) {
+    for (size_t i = 0; i < macos_atraps_count; i++)
+        if (macos_atraps[i].trap == trap)
+            return macos_atraps[i].name;
+    return NULL;
+}
+
+// Resolve an A-trap opcode to its name, falling back to `_XXXX` hex.
+//
+// This lives beside its table because it had THREE copies -- debug_mac.c,
+// tools/disasm/trap_lookup.c and tools/dump/stubs.c -- each re-declaring
+// `macos_atraps` as `extern struct { const char *name; uint32_t trap; }` while
+// the definition above uses `uint16_t`.  Incompatible types for the same
+// external object is C11 6.2.7 undefined behaviour, invisible to the compiler
+// because the declarations are in different translation units, and benign only
+// by accident: the member happens to land at the same offset and the
+// initializer zeroes the padding, so it reads correctly on a little-endian
+// LP64 host and would not on a big-endian one.  Both tools already link this
+// file, so one definition here serves all three callers and the extern
+// declarations disappear with them.
+//
+// The two tool copies also carried a SIMPLER algorithm than the emulator's
+// (toolbox: mask $0400 then look up; OS: exact lookup only).  Verified
+// equivalent to the version below over all 65,536 inputs against this table's
+// 2,794 entries -- zero disagreements -- so consolidating on the emulator's
+// changes no rendered name.
+const char *macos_atrap_name(uint16_t trap) {
+    static char buffer[32];
+
+    // Most flag-bit combinations are pre-expanded in the table (_BlockMove
+    // appears at $A02E/$A12E/$A42E/...), so try the exact form first.
+    const char *name = lookup_atrap(trap);
+    if (name)
+        return name;
+
+    // Strip the flag bits that are not part of the selector and retry.
+    //   Toolbox traps (bit 11 set):  bit 10 ($0400, auto-pop)
+    //   OS traps      (bit 11 clear): bit 9 ($0200, immediate) + bit 10 ($0400, async)
+    uint16_t masked = (trap & 0x0800) ? (trap & ~0x0400) : (trap & ~0x0600);
+    if (masked != trap) {
+        name = lookup_atrap(masked);
+        if (name)
+            return name;
+    }
+
+    snprintf(buffer, sizeof(buffer), "_%04X", trap);
+    return buffer;
+}

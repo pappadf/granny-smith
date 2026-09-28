@@ -4,7 +4,7 @@
    VS Code workbench/platform color definitions:
        src/vs/workbench/common/theme.ts
        src/vs/platform/theme/common/colors/*
-   See plan-doc §15 - tokens are kept verbatim, prototype is source of truth. */
+   The tokens are kept verbatim. */
 
 /* Dark theme (default) */
 :root,

@@ -1,0 +1,31 @@
+# Every Open Firmware Apple Network Server ROM boots to its prompt.
+#
+# Each row cold-boots one ROM with the serial port as the firmware console
+# (lib/ans.script, which boots whatever $ROM names) and asserts three things:
+# the core identified the file as that ROM (its content id), the ROM's own
+# checksum verifies, and Open Firmware reached `0 > ` announcing its version.
+# Before content ids, three of these ROMs identified as 1.1.22 and 2.26B6 as
+# the 9500 v2 ROM, which machine.boot then refused on an ANS model.
+
+include "../lib/ans.script"
+
+# Boot `rom` on `model` to the prompt and check what the firmware says it is.
+def catalog_row(model, ram_kb, rom, id, of_banner) {
+    $ROM = "${$TEST_DATA}/roms/${$rom}"
+    assert machine.rom.identify("${$ROM}").id == "${$id}" "${$rom}: content id"
+    let banner = ans_boot_serial($model, $ram_kb)
+    assert machine.rom.id == "${$id}" "${$model} ${$rom}: loaded rom.id"
+    assert machine.rom.intact "${$model} ${$rom}: the ROM's own checksum must verify"
+    assert contains($banner, "${$of_banner}") "${$model} ${$rom}: Open Firmware did not announce ${$of_banner}"
+    assert contains($banner, "0 > ") "${$model} ${$rom}: no Open Firmware prompt"
+}
+
+catalog_row("ans500", 32768, "ans500-ans700-962f6c13.rom", "962f6c13-d540b3dd5bcf9caa", "OpenFirmware1.1.22")
+catalog_row("ans500", 32768, "ans500-ans700-of1.1.20.1-962f6c13-c60da96de537f08a.rom", "962f6c13-c60da96de537f08a", "OpenFirmware1.1.20")
+catalog_row("ans500", 32768, "ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom", "962f6c13-50348b3d0126096b", "OpenFirmware2.26")
+catalog_row("ans500", 32768, "ans500-ans700-2.26b6-9630c68b-a71fb907dd180b8a.rom", "9630c68b-a71fb907dd180b8a", "OpenFirmware2.26")
+catalog_row("ans700", 49152, "ans500-ans700-of1.1.20.1-962f6c13-c60da96de537f08a.rom", "962f6c13-c60da96de537f08a", "OpenFirmware1.1.20")
+catalog_row("ans700", 49152, "ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom", "962f6c13-50348b3d0126096b", "OpenFirmware2.26")
+catalog_row("ans700", 49152, "ans500-ans700-2.26b6-9630c68b-a71fb907dd180b8a.rom", "9630c68b-a71fb907dd180b8a", "OpenFirmware2.26")
+
+quit

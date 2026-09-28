@@ -13,27 +13,33 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import { setWelcomeSlide } from '@/state/layout.svelte';
 import { _resetForTests } from '@/state/toasts.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
-import { initEmulator } from '@/bus/emulator';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
+import { initEmulator } from '@/bus/boot';
+import { modelValue, hasModel, selectedModel } from '../helpers/modelSelect';
 
 const PDM_ROM = '/opfs/images/rom/pm6100-pm7100-pm8100-9feb69b3.rom';
+
+// The boot itself is not under test: record the config it was handed.
+vi.mock('@/bus/boot', () => ({ initEmulator: vi.fn(async () => {}) }));
 
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
   return {
     ...actual,
     whenModuleReady: () => Promise.resolve(),
-    initEmulator: vi.fn(async () => {}),
     gsEval: async (path: string, args?: unknown[]) => {
       if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
         if (p.endsWith('pm6100-pm7100-pm8100-9feb69b3.rom')) {
           return {
             recognised: true,
-            checksum: 'pdm-checksum',
+            supported: true,
+            intact: true,
+            id: 'pdm-checksum',
             name: 'Power Macintosh 6100/7100/8100 ROM',
             compatible: ['pm8100'],
             size: 4 * 1024 * 1024,
@@ -95,16 +101,15 @@ beforeEach(async () => {
   machine.model = null;
   machine.ram = null;
   setWelcomeSlide('configuration');
-  stopDriveActivityMock();
   vi.mocked(initEmulator).mockClear();
 });
 
 async function selectModel(container: HTMLElement, id: string): Promise<void> {
   const sel = container.querySelector('#cfg-model') as HTMLSelectElement;
-  sel.value = id;
+  sel.value = modelValue(sel, id);
   await fireEvent.change(sel);
   await waitFor(() => {
-    if (sel.value !== id) throw new Error('model not applied');
+    if (selectedModel(sel) !== id) throw new Error('model not applied');
   });
 }
 
@@ -114,7 +119,7 @@ async function readyWithPdm(): Promise<HTMLElement> {
   // option rather than for a populated list.
   await waitFor(() => {
     const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
-    const has = sel && Array.from(sel.options).some((o) => o.value === 'pm8100');
+    const has = hasModel(sel, 'pm8100');
     if (!has) throw new Error('pm8100 not scanned yet');
   });
   await selectModel(container, 'pm8100');

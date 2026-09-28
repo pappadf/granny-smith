@@ -18,22 +18,26 @@ Two callers reach the emulator through the shell layer:
   (`script=...`), stdin, or its TCP daemon socket.
 
 Both go through the same statement parser and interpreter
-(`script.c`). JavaScript callers reach the shell through the `Shell`
-class on the object root: typed object-model calls
-(`gs_eval('machine.cpu.pc')`) stay on their typed paths; free-form
-lines route through `gs_eval('shell.run', [line])`; multi-line sources
-go through `shell.eval(text)`.
+(`script.c`). Every client reaches it the same way: a free-form line or a
+whole source is posted to the mailbox as a **script job** (`REQ_SCRIPT`,
+see "Scripts" below) and runs on the job thread; typed
+object-model calls (`gs_eval('machine.cpu.pc')`) stay on their typed
+paths. The `Shell` class on the object root keeps `shell.run` and
+`shell.eval(text)` as leaves for a caller that wants a line run inline on
+the emulator thread (the unit suites, a script running another script),
+plus `shell.complete`, `shell.expand`, the alias leaves and
+`shell.interrupt`.
 
 ## Source Files
 
 | File | Purpose |
 |------|---------|
-| [script.c](../src/core/shell/script.c) | Statement parser + interpreter: blocks, control flow, assignments, command dispatch |
-| [shell.c](../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
-| [shell_var.c](../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
-| [shell_funcs.c](../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
-| [cmd_complete.c](../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
-| [cmd_cp.c](../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `storage.cp` / `storage.import` |
+| [script.c](../../../src/core/shell/script.c) | Statement parser + interpreter: blocks, control flow, assignments, command dispatch |
+| [shell.c](../../../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
+| [shell_var.c](../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
+| [shell_funcs.c](../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
+| [cmd_complete.c](../../../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
+| [cmd_cp.c](../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `storage.cp` / `storage.import` |
 | `src/core/object/expr.c` | Expression grammar and evaluator; string interpolation; `try`/`error`/`range`/`len` |
 
 ## Statements
@@ -194,12 +198,46 @@ The headless REPL shows a `... ` continuation prompt while a multi-line
 
 ## Scripts
 
-`gs-headless script=<file>` parses the whole file (multi-line blocks
-need the full source) and interprets it; the platform pump hook drives
-the scheduler between statements, so `scheduler.run N` completes before
-the next statement. The first error aborts the script and exits
-non-zero. `shell.script_run(path)` and `shell.eval(text)` are the
-platform-neutral equivalents.
+`gs-headless script=<file>` runs the file as one job (`include "<file>"`)
+on the job thread, the way every statement runs on every platform
+(`src/core/job/job.h`): the interpreter never touches guest state itself,
+each object-tree access is served by the emulator thread at a frame
+boundary, and a `scheduler.run N` (or `debug.step N`) waits inside its
+call until those N instructions have run, so the next statement sees the
+machine stopped. A bare `scheduler.run` in a script (a file, stdin, a
+daemon statement) holds the script until the machine stops — a
+breakpoint, an assertion, a stop from a control connection — which is how
+the suites are written; only the browser's terminal lets a bare
+`scheduler.run` return at once and run on (Ctrl-C stops it). The first
+error aborts the script and exits non-zero. `shell.script_run(path)` and `shell.eval(text)` are the
+platform-neutral equivalents (run inline, on the emulator thread, as a
+leaf).
+
+Headless's own loop is the browser's tick minus the frame pacing: one
+frame-unit while the machine runs, then the mailbox drain that serves the
+job's calls and the daemon's or stdin's statements. What a statement
+prints reaches the client through the same drain: every stdout site in the
+core goes through the output sink (`gs_out.h`), a job's text is delivered
+as output records in order before the statement's result, and the driver
+writes it to stdout (or the daemon's socket) as it arrives. `--framed`
+adds `@event <kind> <json>` lines for every core event (`mode_started`,
+`mode_ended` with its reason), `@out <json>` for each output record
+(`{"event":"output","id":..,"client":..,"text":..}`), `@progress <json>`
+for an I/O job's progress (`{"id":..,"done":..,"total":..}`), and
+`@end ok|error` after each statement, for a client that wants to parse
+where a statement ended rather than time out on silence. Ctrl-C cancels
+the statement in flight, else stops a run stdin started, else stops the
+machine; the daemon's control connection does the same for the daemon's
+client.
+
+Two bisecting aids fold a thread back in: `--io=sync` runs every I/O job
+(a copy, an export, a checkpoint's write) on the emulator thread, and
+`--jobs=inline` runs scripts there too — the interpreter executes inside
+the drain, and a `scheduler.run N` waits by driving frames itself instead
+of holding a call. Output is then printed directly rather than captured.
+Both modes are meant to produce the same stdout as the threaded run
+(`scripts/compare-jobs-inline.sh` runs the integration corpus both ways and
+diffs it); a difference is a bug in the threading, not in the script.
 
 `include "path"` pulls another script file into the run at the point of
 the statement: its `def`s land in the shared function registry, its
@@ -234,7 +272,7 @@ layered over the shell store.
 - [object-model.md](object-model.md) — the substrate the shell
   dispatches against, the library conventions (§6), and the reserved
   words.
-- [web.md](web.md) — how the browser frontend reaches the same tree
+- [web.md](../../guide/web.md) — how the browser frontend reaches the same tree
   through the JS / WASM bridge instead of the shell layer.
 - `src/core/object/expr.h` — expression grammar, interpolation, and the
   binding-callback contract.

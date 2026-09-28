@@ -20,6 +20,7 @@
 // deliberately separate — it changes what probe-pci walks on a
 // boot-critical path.
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // Twelve DIMM slots, interleaved in pairs; 1.5 GB architectural max.
@@ -27,18 +28,13 @@ static const uint32_t pm9500_ram_options_kb[] = {16384, 32768, 65536, 131072, 26
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-static const struct scsi_slot pm9500_scsi_slots[] = {
-    {.label = "Internal HD0", .id = 0},
-    {.label = "Internal HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm9500_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm9500_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = tnt_scsi_slots_internal},
     {0},
 };
 
-// PCI topology (proposal-pci-architecture §6.1).  Six sockets — three on
+// PCI topology.  Six sockets — three on
 // each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
 // FCode instantiates twice) — with their strapped INTA-D lines on Grand
 // Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
@@ -48,9 +44,9 @@ static const scsi_bus_decl_t pm9500_scsi_buses[] = {
 // The slot LABELS come from each bridge's own `slot-names` property, dumped
 // live from a real 9500 under Open Firmware (Apple Technote 1062):
 // Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
-// `0000E000 "D2" "E2" "F2"`.  Phase 1 declared the second bank D1/E1/F1,
-// having judged the strings "not decidable from the token stream"; the
-// ROM's own property decides them.
+// `0000E000 "D2" "E2" "F2"`.  An earlier model declared the second bank
+// D1/E1/F1, having judged the strings "not decidable from the token
+// stream"; the ROM's own property decides them.
 static const pci_slot_decl_t pm9500_pci_slots[] = {
     {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
     {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
@@ -71,8 +67,11 @@ static const pci_slot_decl_t pm9500_pci_slots[] = {
 static const tnt_board_desc_t pm9500_board = {
     // BoxID: bit 11 clear (the 9500 is flagged by Hammerhead +$20 bit 30
     // instead — the shipping ROM's identification routine at $FFC14844),
-    // MESH present, idle-high straps.
-    .boxid = 0x8000u | 0x4000u,
+    // MESH present, idle-high straps, and bit 8 — the factory-test strap
+    // — HIGH: POST tests it on every boot after the first on a formatted
+    // store and a clear bit is the Serial Test Manager instead of a boot
+    // (pm7500.c).
+    .boxid = 0x8000u | 0x4000u | 0x0100u,
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
     // +$20 bit 30 SET = 9500 (the 68k routine tests it directly; Open
     // Firmware's selector m = (b>>5)|((b>>1)&8) over the top byte reads
@@ -86,7 +85,7 @@ static const tnt_board_desc_t pm9500_board = {
 };
 
 const hw_profile_t machine_pm9500 = {
-    .name = "Power Macintosh 9500/132",
+    .name = "Power Macintosh 9500",
     .id = "pm9500",
 
     .cpu_model = CPU_MODEL_PPC604,
@@ -100,7 +99,9 @@ const hw_profile_t machine_pm9500 = {
 
     .ram_options = pm9500_ram_options_kb,
     .scsi_buses = pm9500_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    .has_cdrom = false, // no 53C94 chain to hang it on -- see pm7500.c
+    .cdrom_id = 3, // the factory answer, ready for when there is one
+    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm9500_pci_slots,
 

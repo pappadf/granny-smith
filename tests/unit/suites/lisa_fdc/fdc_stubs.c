@@ -12,7 +12,7 @@
 // without pulling in the CPU or the IWM.
 
 #include "cpu.h"
-#include "floppy_internal.h"
+#include "floppy_geometry.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -22,12 +22,12 @@ uint32_t cpu_get_pc(cpu_t *restrict cpu) {
     return 0;
 }
 
-int iwm_sectors_per_track(int track) {
+int floppy_zone_sectors_per_track(int track) {
     (void)track;
     return 0;
 }
 
-size_t iwm_disk_image_offset(int track, int side, int num_sides) {
+size_t floppy_zone_image_offset(int track, int side, int num_sides) {
     (void)track;
     (void)side;
     (void)num_sides;

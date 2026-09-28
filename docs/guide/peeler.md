@@ -67,7 +67,7 @@ list of files, each with:
 ### Wrapper
 
 The emulator-side wrapper lives at
-[`src/core/storage/archive.c`](../src/core/storage/archive.c). It:
+[`src/core/storage/archive.c`](../../src/core/storage/archive.c). It:
 
 - Owns the `archive` class descriptor and registers the object as a
   process-singleton from `archive_init` (called by `shell_init`).
@@ -91,7 +91,7 @@ The emulator-side wrapper lives at
 The top-level `Makefile` adds the peeler sources directly:
 
 ```makefile
-PEELER_DIR := third-party/peeler
+PEELER_DIR := src/peeler
 
 PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/err.c \
@@ -100,6 +100,7 @@ PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/formats/cpt.c \
               $(PEELER_DIR)/lib/formats/hqx.c \
               $(PEELER_DIR)/lib/formats/sit.c \
+              $(PEELER_DIR)/lib/formats/sit3.c \
               $(PEELER_DIR)/lib/formats/sit13.c \
               $(PEELER_DIR)/lib/formats/sit15.c
 ```
@@ -141,9 +142,9 @@ peeler recognises (`.sit` / `.hqx` / `.cpt` / `.bin` / `.sea`) adds an
 the file and a sibling `<name>_unpacked/` output directory, then
 refreshes the tree to reveal the extracted contents. The gate is the
 `isMacArchive` extension check in
-[`app/web2/src/lib/archive.ts`](../app/web2/src/lib/archive.ts); the
+[`app/web2/src/lib/archive.ts`](../../app/web2/src/lib/archive.ts); the
 menu wiring lives in
-[`FilesystemView.svelte`](../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte).
+[`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte).
 
 ## Implementation details
 
@@ -212,5 +213,5 @@ the library itself ships unit tests in `src/peeler/test/`.
 
 - peeler upstream repository: <https://github.com/pappadf/peeler>
 - peeler documentation: `src/peeler/docs/`
-- [`docs/core/shell/object-model.md`](object-model.md) — the surface
+- [`docs/core/shell/object-model.md`](../core/shell/object-model.md) — the surface
   `archive.*` participates in.

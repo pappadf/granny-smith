@@ -14,7 +14,7 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe('loadPersistedState — Phase 7 keys', () => {
+describe('loadPersistedState — view-state keys', () => {
   it('restores Debug section expansion from gs-debug-sections', () => {
     localStorage.setItem('gs-debug-sections', V1({ registers: false, memory: true, mmu: true }));
     loadPersistedState();
@@ -84,7 +84,7 @@ describe('loadPersistedState — Phase 7 keys', () => {
     expect(debug.mmuSubtab).toBe('translate');
   });
 
-  it('still restores the Phase 3 keys (theme + panelPos + panelSize)', () => {
+  it('still restores the original keys (theme + panelPos + panelSize)', () => {
     localStorage.setItem('gs-theme', 'light');
     localStorage.setItem('gs-panel-pos', 'left');
     localStorage.setItem('gs-panel-size', JSON.stringify({ left: 320 }));

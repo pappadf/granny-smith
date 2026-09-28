@@ -2,13 +2,14 @@
 // Copyright (c) pappadf
 
 // machine_config.c
-// Storage and object-model surface for the built-from record
-// (proposal-named-args-boot-config §4.2).
+// Storage and object-model surface for the built-from record.
 
 #include "machine_config.h"
 
 #include "object.h"
+#include "prom.h"
 #include "value.h"
+#include "vrom.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,15 @@ machine_config_record_t *machine_config_record_mut(void) {
 void machine_config_reset_vroms(void) {
     memset(s_record.vroms, 0, sizeof(s_record.vroms));
     s_record.n_vroms = 0;
+}
+
+void machine_config_set_explicit_picks(const char *vrom, const char *prom) {
+    vrom_clear_explicit();
+    prom_clear_explicit();
+    if (vrom && *vrom)
+        vrom_set_path(vrom);
+    if (prom && *prom)
+        prom_set_path(prom);
 }
 
 void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick) {
@@ -56,10 +66,10 @@ void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id, 
     e->explicit_pick = explicit_pick;
 }
 
-void machine_config_note_rom(const char *path, uint32_t crc) {
+void machine_config_note_rom(const char *path, const char *rom_id) {
     if (path && *path)
         snprintf(s_record.rom, sizeof(s_record.rom), "%s", path);
-    s_record.rom_crc = crc;
+    snprintf(s_record.rom_id, sizeof(s_record.rom_id), "%s", rom_id ? rom_id : "");
 }
 
 // === machine.config object ==================================================
@@ -83,12 +93,10 @@ static value_t cfg_attr_rom(struct object *self, const member_t *m) {
     (void)m;
     return cfg_str(s_record.rom);
 }
-static value_t cfg_attr_rom_crc(struct object *self, const member_t *m) {
+static value_t cfg_attr_rom_id(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    value_t v = val_uint(4, s_record.rom_crc);
-    v.flags |= VAL_HEX;
-    return v;
+    return cfg_str(s_record.rom_id);
 }
 static value_t cfg_attr_rom2(struct object *self, const member_t *m) {
     (void)self;
@@ -119,6 +127,26 @@ static value_t cfg_attr_custom_mode(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     return cfg_str(s_record.custom_mode);
+}
+static value_t cfg_attr_monitor(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.monitor);
+}
+static value_t cfg_attr_pci_card(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.pci_card);
+}
+static value_t cfg_attr_prom(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.prom);
+}
+static value_t cfg_attr_pci_option(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return cfg_str(s_record.pci_option);
 }
 static value_t cfg_attr_created(struct object *self, const member_t *m) {
     (void)self;
@@ -203,10 +231,10 @@ static const member_t config_members[] = {
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_rom, .set = NULL}        },
     {.kind = M_ATTR,
-     .name = "rom_crc",
-     .doc = "Content checksum of the installed ROM",
+     .name = "rom_id",
+     .doc = "Content id of the installed ROM (rom.id)",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = cfg_attr_rom_crc, .set = NULL}      },
+     .attr = {.type = V_STRING, .get = cfg_attr_rom_id, .set = NULL}     },
     {.kind = M_ATTR,
      .name = "rom2",
      .doc = "Lisa second ROM chip path (empty = single-file ROM)",
@@ -247,6 +275,26 @@ static const member_t config_members[] = {
      .doc = "Custom resolution WxHxD from the boot document (empty = none)",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_custom_mode, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "monitor",
+     .doc = "Built-in video monitor strap from the boot document (empty = machine default)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_monitor, .set = NULL}    },
+    {.kind = M_ATTR,
+     .name = "pci_card",
+     .doc = "First-PCI-socket card id from the boot document (empty = slot default)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_pci_card, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "prom",
+     .doc = "Explicit prom= pick (empty = auto-resolved from offers)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_prom, .set = NULL}       },
+    {.kind = M_ATTR,
+     .name = "pci_option",
+     .doc = "key=value options for the pci_card socket (empty = none)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = cfg_attr_pci_option, .set = NULL} },
     {.kind = M_ATTR,
      .name = "created",
      .doc = "Boot timestamp (ISO8601 UTC), stamped by the emulator",

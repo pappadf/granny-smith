@@ -7,6 +7,7 @@
 // MESH + 53C94 SCSI, Control/Chaos onboard video, 50 MHz processor bus
 // (Apple, "Power Macintosh 7500 and 8500 Computers" Developer Note, 1995).
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
@@ -14,18 +15,13 @@ static const uint32_t pm7500_ram_options_kb[] = {16384, 32768, 65536, 131072, 26
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-static const struct scsi_slot pm7500_scsi_slots[] = {
-    {.label = "Internal HD0", .id = 0},
-    {.label = "Internal HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm7500_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm7500_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = tnt_scsi_slots_internal},
     {0},
 };
 
-// PCI topology (proposal-pci-architecture §6.1).  Three sockets on Bandit
+// PCI topology.  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
 // the bandit node, corroborated by Apple's Network Server developer note
 // IDSEL table — with their strapped INTA-D lines on Grand Central
@@ -48,21 +44,30 @@ static const pci_slot_decl_t pm7500_pci_slots[] = {
 
 static const tnt_board_desc_t pm7500_board = {
     // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
-    // present, bit 8 factory-test strap CLEAR (set sends the ROM into its
-    // serial test monitor), bit 11 CLEAR (set = 8500 — the shipping ROM's
-    // identification routine at $FFC14844, decoded during Phase D), and
-    // bit 13 SET — Open Firmware's model decode (OpenFW image $10592,
-    // decoded during Phase D part 2) reads BoxID as xw@>>11 into its
-    // machine word and picks "AAPL,7500" over "AAPL,8500" on bit 13.
-    .boxid = 0x8000u | 0x4000u | 0x2000u,
+    // present, bit 8 the factory-test strap idling HIGH, bit 11 CLEAR (set
+    // = 8500 — the shipping ROM's identification routine at $FFC14844),
+    // and bit 13 SET — Open Firmware's model decode (OpenFW image $10592)
+    // reads BoxID as xw@>>11 into its machine word and picks "AAPL,7500"
+    // over "AAPL,8500" on bit 13.
+    //
+    // Bit 8 is read by POST ($FFF201FC, `lwbrx` + `andi. r6,r6,0x100`) on
+    // every boot whose NVRAM already carries POST's "RobG" log signature —
+    // i.e. every boot but the first on a formatted store — and CLEAR sends
+    // the machine into the ROM's Serial Test Manager (`>` on ttya, no
+    // timeout) before Open Firmware ever runs: no device tree, no BAR
+    // assignment, a black screen (#115).  The earlier reading of the strap
+    // as "set = test monitor" was made on ladder rows that always booted a
+    // virgin store, where POST takes the fresh-log path and never tests
+    // the bit.  The Network Server board (ans500.c) found the same law.
+    .boxid = 0x8000u | 0x4000u | 0x2000u | 0x0100u,
     // Hammerhead identity: first byte $39 selects the ROM's TNT path
     // (a $3001xxxx identifier is the 7200/Catalyst); +$20 bit 31 SET =
     // the 7500/8500 class in Open Firmware's selector (m = (b>>5) |
     // ((b>>1)&8) over the +$20 top byte: $80 -> 4 -> 7500/8500,
     // $40 -> 2 -> 9500), bit 30 clear = not a 9500 for the 68k routine.
     // Without bit 31 OF emits compatible "AAPL,????" and never
-    // instantiates the chaos/control display nodes (the Phase-D video
-    // wall's root cause).
+    // instantiates the chaos/control display nodes (and the boot never
+    // reaches video).
     .hh_id = 0x39000000u,
     .hh_r20 = 0x80000000u,
     .bus_hz = 50000000u, // 2:1 bus (100 MHz 601 card)
@@ -72,7 +77,7 @@ static const tnt_board_desc_t pm7500_board = {
 };
 
 const hw_profile_t machine_pm7500 = {
-    .name = "Power Macintosh 7500/100",
+    .name = "Power Macintosh 7500",
     .id = "pm7500",
 
     .cpu_model = CPU_MODEL_PPC601,
@@ -86,9 +91,32 @@ const hw_profile_t machine_pm7500 = {
 
     .ram_options = pm7500_ram_options_kb,
     .scsi_buses = pm7500_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    // Factory configuration: internal CD-ROM on SCSI ID 3, the era's Apple
+    // convention (internal hard disk 0, CD-ROM 3, controller 7).  "Most
+    // configurations also include a built-in CD-ROM drive" (Power Macintosh
+    // 7500/8500 Developer Note, S1).
+    //
+    // has_cdrom stays FALSE, and that is not an oversight -- it is the reason
+    // the CD bay cannot be offered yet.  On the real machine the CD sits on the
+    // SLOW 5 MB/s Curio 53C94 bus, the one also brought out to the external
+    // DB-25, not on the 10 MB/s MESH bus that carries the internal hard disk
+    // ("a SCSI bus for external SCSI devices and for the internal CD-ROM
+    // drive", ibid. S3).  We build the 53C94 with NO bus attached (tnt.c), so
+    // there is nowhere correct to put it -- and system.c:779 registers an empty
+    // bay on cfg->scsi the moment has_cdrom is true, which on these machines is
+    // MESH.  Measured: doing that seats a SONY CD-ROM at id 3 on the boot bus
+    // and breaks tnt-voodoo2-glide's Mac OS 8.1 startup.
+    //
+    // cdrom_id carries the factory answer so it is right the day the 53C94
+    // gets a chain: ID 3, the era's Apple convention (internal hard disk 0,
+    // CD-ROM 3, controller 7).
+    .has_cdrom = false,
+    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm7500_pci_slots,
+
+    .builtin_video = &tnt_builtin_video,
 
     .substrate = &tnt_substrate,
     .board = &pm7500_board,

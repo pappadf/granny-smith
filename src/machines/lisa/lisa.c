@@ -8,12 +8,9 @@
 // (lisa_mmu.c), the COPS keyboard/mouse/clock microcontroller, an intelligent
 // 6504A floppy controller, and a parallel-port hard disk — none of which are
 // Mac architecture.  See docs/machines/lisa/lisa.md for the hardware reference.
-//
-// This first cut (Step 2) is intentionally minimal: 68000 + RAM + 16 KB boot
-// ROM + the segment MMU, enough to run the power-on self-tests headlessly.
-// Video, COPS, floppy, and the parallel disk arrive in later steps.
 
 #include "machine.h"
+#include "machine_teardown.h"
 #include "system_config.h"
 
 #include "checkpoint_images.h"
@@ -23,7 +20,9 @@
 #include "debug_mac.h"
 #include "display.h"
 #include "image.h"
+#include "io_leaf.h"
 #include "lisa_fdc.h"
+#include "lisa_keymap.h"
 #include "lisa_mmu.h"
 #include "lisa_profile.h"
 #include "log.h"
@@ -36,10 +35,12 @@
 #include "via.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 LOG_USE_CATEGORY_NAME("board");
 
@@ -71,6 +72,11 @@ typedef struct lisa_state {
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
     struct object *hd_obj; // `profile` object (parallel hard disk)
     struct object *power_obj; // `power` object (soft power-off switch)
+    // Which keys the host holds down, by ADB raw code.  A repeated down (a
+    // host's auto-repeat) or an up with no down is not a key transition, and
+    // the COPS must not report one -- the ADB and Plus keyboards suppress the
+    // same.  Host-side state, so not checkpointed.
+    bool key_held[128];
 } lisa_state_t;
 
 // Video geometry, 1 bpp MSB-first (docs/machines/lisa/lisa.md §8).  The unmodified Lisa 2 has
@@ -151,13 +157,21 @@ static inline lisa_state_t *lisa_state(config_t *cfg) {
 // framebuffer dirty only when the base actually moves.
 static void lisa_refresh_framebuffer(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
+    const lisa_board_desc_t *board = lisa_board_of(cfg);
+    const uint8_t *prev = ls->display.bits;
     uint32_t base = lisa_mmu_video_base(ls->mmu);
-    const uint8_t *bits = ram_native_pointer(cfg->mem_map, base);
+    // The latch can point the raster anywhere in RAM, so the base is checked
+    // against installed RAM here rather than resting on lisa_mmu_video_base's
+    // `base & (ram_size - 1)` fallback, which is only a bound because every
+    // Lisa RAM size happens to be a power of two and the raster happens to be
+    // smaller than the alignment.  A base the RAM cannot back
+    // scans nothing -- lisa_display() then reports no display for that frame,
+    // and the next latch write that lands in range brings it back.
+    display_set_scanout(&ls->display, ram_native_pointer(cfg->mem_map, 0), memory_ram_size(cfg->mem_map), base,
+                        board->screen_w / 8u, board->screen_w, board->screen_h, NULL, 0);
     ls->display.fb_dirty = true; // contents change every frame
-    if (ls->display.bits != bits) {
-        ls->display.bits = bits;
+    if (ls->display.bits != prev)
         ls->display.shape_dirty = true;
-    }
 }
 
 static void lisa_display_init(config_t *cfg) {
@@ -351,33 +365,38 @@ static void lisa_profile_update_lines(config_t *cfg) {
         via_input(cfg->via2, 1, 0, !connected); // PB0 = OCD/ (0 = connected)
     lisa_profile_bsy(cfg, false); // idle: not busy
 }
-
-// ============================================================
-// Host input → COPS (keyboard scancodes, mouse deltas + button)
-// ============================================================
+// keyboard.press / down / up -> the Lisa COPS, by ADB keycode.
 //
-// hw_profile_t.input_* hooks: the `keyboard`/`mouse` object methods route here
-// (instead of the Mac ADB/Toolbox path) because the Lisa's input device is the
-// COPS, which uses its own keycodes and a relative-delta mouse (§11.4).
-
-// keyboard.press → a raw COPS scancode.  Accepts a "0xNN" keycode string (the
-// boot-menu keys, e.g. $EB = 'H'/ProFile, $F2 = '3').  The COPS reports a key on
-// its press edge, so we inject on `down` and treat the release as a no-op.
-static int lisa_input_key(config_t *cfg, const char *key, bool down) {
+// lisa.md §11.3 documents the COPS byte as `d rrr nnnn` with d=1 down / d=0
+// up, and the boot ROM's ReadKey does `TST.B D0 / BPL.S ReadKey` to SKIP up
+// transitions -- which only makes sense because they arrive.  Until
+// 2026-09-21 the up leg was a no-op and only a raw wire byte was accepted, so
+// `keyboard.press("return")` failed with "unknown key" and no chord could
+// hold a modifier.
+static int lisa_input_key(config_t *cfg, int adb_code, bool down) {
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->cops)
         return -1;
-    if (!down)
-        return 0; // release: nothing to send (press edge already reported)
-    if (key && key[0] == '0' && (key[1] == 'x' || key[1] == 'X')) {
-        char *end = NULL;
-        long v = strtol(key, &end, 16);
-        if (end && *end == '\0' && v >= 0 && v <= 0xFF) {
-            cops_inject_key(ls->cops, (uint8_t)v);
-            return 0;
-        }
-    }
-    return -1; // unknown key (no Mac fallback on the Lisa)
+    uint8_t code = lisa_keycode_for_adb(adb_code);
+    if (code == LISA_NO_KEY)
+        return -1; // a key this keyboard does not have
+    if (ls->key_held[adb_code] == down)
+        return 0; // no transition: a repeat, or an up without its down
+    ls->key_held[adb_code] = down;
+    cops_inject_key(ls->cops, (uint8_t)(down ? (code | 0x80) : (code & 0x7F)));
+    return 0;
+}
+
+// A raw COPS byte, direction bit included -- `raw 0xC8` sends $C8 and nothing
+// else.  The boot-menu and Xenix-install rows drive the wire this way because
+// that is what they are testing; it is not a portable key press, and the
+// substrate hook is NULL on every other machine.
+static int lisa_input_key_raw(config_t *cfg, uint8_t byte) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->cops)
+        return -1;
+    cops_inject_key(ls->cops, byte);
+    return 0;
 }
 
 // mouse.move → COPS mouse deltas (default/relative), or absolute screen-pixel
@@ -470,12 +489,12 @@ static int lisa_fd_insert(config_t *cfg, int drive, struct image *disk) {
 static bool lisa_fd_present(config_t *cfg, int drive) {
     lisa_state_t *ls = lisa_state(cfg);
     if (drive != 0)
-        return true; // only drive 0 exists; report others "occupied"
+        return false; // only drive 0 exists; the others hold nothing
     return ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
 }
 
-// hw_profile_t.media_detach / media_attach — machine.restart handle transfer
-// (proposal-boot-vs-reset §3.3).  The Lisa has no cfg->floppy/cfg->scsi, so
+// hw_profile_t.media_detach / media_attach — machine.restart handle
+// transfer.  The Lisa has no cfg->floppy/cfg->scsi, so
 // the std core implementation covers nothing here: the Sony disk lives in
 // the 6504A FDC (owned by cfg->images) and the hard disk is the parallel
 // ProFile (which owns its image itself, hence take/attach_image).
@@ -512,6 +531,32 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     default:
         return -1; // no SCSI bus on a Lisa
     }
+}
+
+// The runtime attach/eject verbs' view: the one Sony drive and the ProFile.
+static bool lisa_media_present(config_t *cfg, media_bus_t bus, int unit) {
+    lisa_state_t *ls = lisa_state(cfg);
+    switch (bus) {
+    case MEDIA_BUS_FLOPPY:
+        return unit == 0 && ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
+    case MEDIA_BUS_PROFILE:
+        return ls && ls->profile && lisa_profile_attached(ls->profile);
+    default:
+        return false;
+    }
+}
+
+static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!lisa_media_present(cfg, bus, unit))
+        return -1;
+    if (bus == MEDIA_BUS_FLOPPY) {
+        lisa_fdc_eject(ls->fdc);
+        return 0;
+    }
+    lisa_profile_detach(ls->profile);
+    lisa_profile_update_lines(cfg);
+    return 0;
 }
 
 // ============================================================
@@ -565,16 +610,24 @@ static const arg_decl_t lisa_fd_insert_args[] = {
 };
 
 static const member_t lisa_fd_drive_members[] = {
-    {.kind = M_ATTR,   .name = "index",   .flags = VAL_RO, .attr = {.type = V_INT, .get = lisa_fd_drive_index}   },
-    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO, .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}},
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .doc = "Drive number on the Sony floppy controller (0 = upper, 1 = lower on a Lisa 2/10)",
+     .attr = {.type = V_INT, .get = lisa_fd_drive_index}},
+    {.kind = M_ATTR,
+     .name = "present",
+     .flags = VAL_RO,
+     .doc = "True when a disk is clamped in this drive",
+     .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the disk (unclamp)",
-     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}                                                     },
+     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}},
     {.kind = M_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into the Sony drive",
-     .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}           },
+     .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}},
 };
 static const class_desc_t lisa_fd_drive_class = {
     .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 4};
@@ -583,22 +636,10 @@ static struct object *lisa_fd_drives_get(struct object *self, int index) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return (ls && index == 0) ? ls->fd_drive_obj : NULL;
 }
-static int lisa_fd_drives_count(struct object *self) {
-    (void)self;
-    return 1; // one Sony drive
-}
-static int lisa_fd_drives_next(struct object *self, int prev) {
-    (void)self;
-    return prev + 1 < 1 ? prev + 1 : -1;
-}
 static const member_t lisa_fd_drives_members[] = {
     {.kind = M_CHILD,
      .name = "entries",
-     .child = {.cls = &lisa_fd_drive_class,
-               .indexed = true,
-               .get = lisa_fd_drives_get,
-               .count = lisa_fd_drives_count,
-               .next = lisa_fd_drives_next}},
+     .child = {.cls = &lisa_fd_drive_class, .indexed = true, .get = lisa_fd_drives_get, .slots = 1}},
 };
 static const class_desc_t lisa_fd_drives_class = {
     .name = "floppy_drives", .members = lisa_fd_drives_members, .n_members = 1};
@@ -617,7 +658,7 @@ static void lisa_register_floppy_object(config_t *cfg) {
     object_set_order(ls->fd_obj, 80);
     object_attach(machine_object(), ls->fd_obj);
     // Named "drive" (singular) to match the standard floppy collection
-    // (machine.floppy.drive[N]) after the proposal-system-object-model rename.
+    // (machine.floppy.drive[N]).
     ls->fd_drives_obj = object_new(&lisa_fd_drives_class, cfg, "drive");
     if (ls->fd_drives_obj)
         object_attach(ls->fd_obj, ls->fd_drives_obj);
@@ -636,8 +677,11 @@ static value_t lisa_hd_attach(struct object *self, const member_t *m, int argc, 
     (void)m;
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
-    const char *path = (argc >= 1) ? argv[0].s : NULL; // NULL = blank in-memory disk
-    bool writable = (argc >= 2) ? argv[1].b : true;
+    // Read by kind: `path` now has a V_NONE default so that
+    // `profile.attach(writable=false)` -- a blank in-memory disk, mounted
+    // read-only -- is expressible at all.
+    const char *path = (argc >= 1 && argv[0].kind == V_STRING) ? argv[0].s : NULL; // NULL = blank in-memory disk
+    bool writable = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : true;
     if (!ls || !ls->profile)
         return val_err("profile: no controller");
     if (!lisa_profile_attach(ls->profile, path, writable))
@@ -674,9 +718,10 @@ static value_t lisa_hd_save(struct object *self, const member_t *m, int argc, co
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!path || !*path)
         return val_err("profile.save: a destination path is required");
-    if (!lisa_profile_save_as(ls->profile, path))
-        return val_err("profile.save: cannot write '%s'", path);
-    return val_bool(true);
+    // An I/O job (io_leaf.h): the consolidated 532-bytes/block disk = base
+    // merged with the delta, streamed on the I/O worker from a snapshot
+    // taken here; image_export refuses to overwrite an existing file.
+    return io_leaf_export_image(lisa_profile_image(ls->profile), path, "profile.save");
 }
 
 static const arg_decl_t lisa_hd_save_args[] = {
@@ -688,6 +733,32 @@ static const arg_decl_t lisa_hd_save_args[] = {
 // the ProFile to that table at clean shutdown ("Finished" -> turn off / start
 // up); persisting it lets an installed system boot from the ProFile on a later
 // (cold) launch.  Load before booting (the ROM reads PRAM during startup).
+// Re-seed the parameter memory in the model, the way the owning device does
+// at construction: factory defaults, an EMPTY device table, and a checksum
+// computed by lisa_pram_checksum().  `boot_vol` is the BootVol nibble
+// (pram_format.md §4): 1 = built-in Sony floppy, 2 = the parallel-port
+// ProFile.
+//
+// This replaces loading a 64-byte image synthesised outside the emulator.
+// The device table stays empty deliberately: the OS's INIT_CONFIG restores it
+// from the boot volume's own MDDF snapshot, which is what real hardware does
+// and which makes the boot depend on the disk image actually carrying a good
+// clean-shutdown snapshot rather than on a pre-seeded hardware entry masking
+// a broken one.
+static value_t lisa_hd_pram_init(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    if (!ls || !ls->fdc)
+        return val_err("pram: no controller");
+    uint64_t boot_vol = (argc >= 1) ? argv[0].u : 1;
+    if (boot_vol > 15)
+        return val_err("pram_init: boot_vol must be 0..15 (see pram_format.md §4)");
+    bool valid = (argc >= 2) ? (argv[1].b != 0) : true;
+    bool installed = (argc >= 3) ? (argv[2].b != 0) : false;
+    lisa_fdc_pram_init(ls->fdc, (uint8_t)boot_vol, valid, installed);
+    return val_bool(true);
+}
+
 static value_t lisa_hd_pram_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
@@ -714,6 +785,31 @@ static value_t lisa_hd_pram_load(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
+// The documented defaults, declared rather than only written in the doc string
+// and re-applied in the body -- without them, naming `valid` or `installed`
+// failed with "missing argument 'boot_vol'".
+static const value_t pram_def_boot_vol = {.kind = V_UINT, .u = 1};
+static const value_t pram_def_valid = {.kind = V_BOOL, .width = 1, .b = true};
+
+static const arg_decl_t lisa_hd_pram_init_args[] = {
+    {.name = "boot_vol",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &pram_def_boot_vol,
+     .doc = "BootVol nibble: 1 = built-in Sony floppy, 2 = parallel-port ProFile (pram_format.md §4)"},
+    {.name = "valid",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &pram_def_valid,
+     .doc = "true (default) = a verifying checksum; false = a fresh battery, so the OS rebuilds the device table "
+            "from the boot volume's MDDF snapshot"},
+    {.name = "installed",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "true = also pack the LOS 3.1 installer's device table (ProFile as cd_paraport); needed only for a "
+            "volume installed onto but not yet cleanly shut down"},
+};
+
 static const arg_decl_t lisa_hd_pram_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Parameter-memory (PRAM) file path"},
 };
@@ -722,32 +818,41 @@ static const arg_decl_t lisa_hd_attach_args[] = {
     {.name = "path",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"             },
+     .default_value = &obj_arg_unset,
+     .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"},
     {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default true)"},
 };
 
 static const member_t lisa_hd_members[] = {
-    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO,                                             .attr = {.type = V_BOOL, .get = lisa_hd_present}                                       },
+    {.kind = M_ATTR,
+     .name = "present",
+     .flags = VAL_RO,
+     .doc = "True when a ProFile image is attached to the parallel port",
+     .attr = {.type = V_BOOL, .get = lisa_hd_present}},
     {.kind = M_METHOD,
      .name = "detach",
      .doc = "Flush and disconnect the ProFile",
-     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                                                       },
+     .method = {.result = V_NONE, .fn = lisa_hd_detach}},
     {.kind = M_METHOD,
      .name = "attach",
      .doc = "Attach a ProFile image (created blank if missing; omit path for a blank in-memory disk)",
-     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                                                              },
+     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}},
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
-            "base+delta pair)",                                                                        .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
+            "base+delta pair)", .method = {.ui_flags = MM_IO, .args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
+    {.kind = M_METHOD,
+     .name = "pram_init",
+     .doc = "Seed the parameter memory in the model: BootVol nibble, checksum validity, and optionally the LOS "
+            "installer's device table", .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = V_BOOL, .fn = lisa_hd_pram_init}},
     {.kind = M_METHOD,
      .name = "pram_save",
      .doc = "Save the machine parameter memory (battery-backed NVRAM at $FCC181) to a file",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}                                                                                             },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}},
     {.kind = M_METHOD,
      .name = "pram_load",
      .doc = "Load the machine parameter memory from a file (call before booting)",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}                                                                                             },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}},
 };
 static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 6};
 
@@ -756,7 +861,7 @@ static void lisa_register_profile_object(config_t *cfg) {
     // Named "hd" (not "profile") under the machine node: a child named
     // "profile" would be shadowed by the machine class's `profile` *method*
     // (the resolver finds members before attached children). The ProFile is
-    // the Lisa's hard disk, so machine.hd reads correctly (proposal §2.2).
+    // the Lisa's hard disk, so machine.hd reads correctly.
     ls->hd_obj = object_new(&lisa_hd_class, cfg, "hd");
     if (ls->hd_obj) {
         object_set_label(ls->hd_obj, "ProFile");
@@ -855,12 +960,19 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
+    lisa_mmu_attach_object(ls->mmu, cfg->cpu); // machine.cpu.mmu, like every MMU kind
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
     lisa_mmu_set_clock(ls->mmu, cfg->scheduler); // cycle source for the retrace status bit
     lisa_mmu_set_vbl_ack(ls->mmu, lisa_vbl_ack, cfg); // Status-Register read acks the latched VBL
 
     // Two 6522 VIAs (reused unchanged).  map=NULL: the machine registers the
     // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/machines/lisa/lisa.md §10).
+    //
+    // Deliberately NOT via_freq_factor_for_clock(): that helper divides by the
+    // 783.36 kHz φ2 every Macintosh 6522 runs at, and would return 7 here.  The
+    // Lisa's VIAs are clocked from the CPU at /4, a different quantity, so this
+    // is the one family where a literal is the correct answer rather than a
+    // stale one.
     cfg->via1 =
         via_init(NULL, cfg->scheduler, 4, "via1", lisa_via1_output, lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
     cfg->via2 =
@@ -1020,39 +1132,19 @@ static void lisa_teardown(config_t *cfg) {
         cops_delete(ls0->cops);
         ls0->cops = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->via2) {
-        via_delete(cfg->via2);
-        cfg->via2 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
     lisa_state_t *ls = lisa_state(cfg);
     if (ls && ls->mmu) {
         lisa_mmu_delete(ls->mmu);
         ls->mmu = NULL;
     }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+
+    // via1, via2, scc, the scheduler, the CPU, the memory map and the
+    // debugger, in the one order documented once.
+    // The Lisa builds no scsi and no rtc; the chain NULL-checks its way past
+    // both.  Note it also deletes the scheduler LAST of those, which is what
+    // keeps the device destructors' scheduler_forget_source calls valid.
+    machine_teardown_config_devices(cfg);
+
     if (ls) {
         free(ls);
         cfg->machine_context = NULL;
@@ -1063,6 +1155,14 @@ static void lisa_teardown(config_t *cfg) {
 // Checkpoint
 // ============================================================
 
+// The Lisa is the one family NOT on machine_checkpoint_save_core, and not by
+// omission: its construction order genuinely differs.  It has no RTC -- the
+// COPS keeps the time -- no AppleTalk at this point, and it builds the SCC
+// last, after both VIAs, the COPS, the image list, the FDC and the ProFile.
+// Since save order IS construction order (the stream is positional and each
+// *_init consumes its own block as it builds), adopting the shared prefix would
+// mean reordering lisa_init for no gain.  The first four lines below are the
+// shared ones and are deliberately kept in step with it.
 static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     memory_map_checkpoint(cfg->mem_map, cp);
     cpu_checkpoint(cfg->cpu, cp);
@@ -1087,8 +1187,7 @@ static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // ============================================================
 
 // Pulse the Status Register vertical-retrace bit each frame so the ROM video
-// test and (later) the OS VBL handler observe a retrace.  Video interrupt
-// delivery is wired in Step 3 along with the display.
+// test and the OS VBL handler observe a retrace.
 // End of the vertical-retrace window: clear the Status Register VBL bit.
 static void lisa_vbl_off(void *source, uint64_t data) {
     (void)data;
@@ -1170,19 +1269,11 @@ static const struct floppy_slot lisa_floppy_slots[] = {
     {0},
 };
 
-// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so this SCSI
-// table stays empty: the parallel disk is its own device (lisa_profile.c), and
-// the profile advertises it via `.hd_bus = HD_BUS_PROFILE`.  The config UI reads
-// hd_bus to label the HD row "ProFile" and attach through profile.attach rather
-// than scsi.attach_hd.
-static const struct scsi_slot lisa_scsi_slots[] = {
-    {0},
-};
-
-static const scsi_bus_decl_t lisa_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = lisa_scsi_slots},
-    {0},
-};
+// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so the
+// profile declares no SCSI bus at all (it used to declare an empty
+// "machine.scsi" that did not resolve): the parallel disk is its own
+// device (lisa_profile.c), advertised via `.hd_bus = HD_BUS_PROFILE`, and its
+// bay is derived from that (profile_hd_bays -> "profile").
 
 // Apple Lisa 2 hardware profile.
 static const machine_substrate_t lisa_substrate = {
@@ -1194,10 +1285,17 @@ static const machine_substrate_t lisa_substrate = {
     .fd_insert = lisa_fd_insert,
     .fd_present = lisa_fd_present,
     .input_key = lisa_input_key,
+    .input_key_raw = lisa_input_key_raw,
+    // The COPS response FIFO is 32 bytes (cops.c COPS_FIFO) and carries mouse
+    // reports as well as keys, so keyboard.type gets a quarter of the ADB
+    // budget and leaves the rest as headroom.
+    .key_queue_bytes = 24,
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
     .media_detach = lisa_media_detach,
     .media_attach = lisa_media_attach,
+    .media_present = lisa_media_present,
+    .media_eject = lisa_media_eject,
 };
 
 const hw_profile_t machine_lisa = {
@@ -1216,7 +1314,7 @@ const hw_profile_t machine_lisa = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = lisa_scsi_buses,
+    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,
@@ -1230,7 +1328,7 @@ const hw_profile_t machine_lisa = {
 // the Lisa 2 profile with a different ROM-compatibility id and name — the chip
 // models, callbacks, and 720×364 framebuffer are identical (the square-pixel
 // kit only changes the dot clock, which a frame-accurate model ignores).
-// docs/machines/lisa/lisa.md §1.1 / proposal-machine-lisa-xl.md §3.2.
+// See docs/machines/lisa/lisa.md §1.1.
 const hw_profile_t machine_macxl = {
     .name = "Macintosh XL",
     .id = "macxl",
@@ -1246,7 +1344,7 @@ const hw_profile_t machine_macxl = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = lisa_scsi_buses,
+    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,

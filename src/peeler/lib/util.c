@@ -85,12 +85,47 @@ static void grow_ensure(grow_buf_t *g, size_t extra, decode_ctx_t *ctx) {
     if (new_cap < needed) {
         new_cap = needed;
     }
-    uint8_t *new_data = realloc(g->data, new_cap);
-    if (!new_data) {
-        decode_abort(ctx, "out of memory (grow_buf realloc to %zu bytes)", new_cap);
-    }
-    g->data = new_data;
+    g->data = dctx_realloc(ctx, g->data, new_cap);
     g->cap = new_cap;
+}
+
+// ============================================================================
+// Entry names (see internal.h / peeler.h)
+// ============================================================================
+
+void peel_append_segment(char *dst, size_t cap, size_t *pos, const uint8_t *name, size_t n) {
+    if (cap == 0)
+        return;
+    size_t p = *pos < cap ? *pos : cap - 1;
+    if (p > 0 && p < cap - 1)
+        dst[p++] = '/';
+    bool dots_only = n > 0;
+    for (size_t i = 0; i < n; i++)
+        if (name[i] != '.')
+            dots_only = false;
+    if (n == 0 || dots_only) {
+        if (p < cap - 1)
+            dst[p++] = '_';
+    }
+    for (size_t i = 0; i < n && p < cap - 1; i++)
+        dst[p++] = (name[i] == '/' || name[i] == '\0') ? ':' : (char)name[i];
+    dst[p] = '\0';
+    *pos = p;
+}
+
+bool peel_path_is_confined(const char *path) {
+    if (!path || !path[0] || path[0] == '/')
+        return false;
+    const char *c = path;
+    for (;;) {
+        const char *slash = strchr(c, '/');
+        size_t len = slash ? (size_t)(slash - c) : strlen(c);
+        if (len == 0 || (len == 1 && c[0] == '.') || (len == 2 && c[0] == '.' && c[1] == '.'))
+            return false;
+        if (!slash)
+            return true;
+        c = slash + 1;
+    }
 }
 
 // Initialise a growable buffer with the given initial capacity.
@@ -98,10 +133,8 @@ void grow_init(grow_buf_t *g, size_t initial_cap, decode_ctx_t *ctx) {
     if (initial_cap == 0) {
         initial_cap = GROW_DEFAULT_CAP;
     }
-    g->data = malloc(initial_cap);
-    if (!g->data) {
-        decode_abort(ctx, "out of memory (grow_buf init %zu bytes)", initial_cap);
-    }
+    g->ctx = ctx;
+    g->data = dctx_malloc(ctx, initial_cap);
     g->len = 0;
     g->cap = initial_cap;
 }
@@ -122,15 +155,17 @@ void grow_push(grow_buf_t *g, uint8_t byte, decode_ctx_t *ctx) {
     g->data[g->len++] = byte;
 }
 
-// Hand ownership of the buffer data to an owned peel_buf_t, then zero g.
+// Turn the buffer into a peel_buf_t, then zero g.  The data stays registered
+// with the decode context until the decoder releases it on success.
 peel_buf_t grow_finish(grow_buf_t *g) {
-    // Shrink to exact size to avoid wasting memory
+    // Shrink to exact size to avoid wasting memory.  A plain realloc: a shrink
+    // that fails keeps the oversized, still-valid buffer, and must not abort.
     if (g->len < g->cap && g->len > 0) {
         uint8_t *shrunk = realloc(g->data, g->len);
         if (shrunk) {
+            dctx_rebind(g->ctx, g->data, shrunk); // the block may have moved
             g->data = shrunk;
         }
-        // If realloc fails, keep the oversized buffer — still valid
     }
     peel_buf_t result = {
         .data = g->data,
@@ -144,6 +179,66 @@ peel_buf_t grow_finish(grow_buf_t *g) {
 
 // Release a growable buffer without producing a result (error cleanup).
 void grow_free(grow_buf_t *g) {
-    free(g->data);
+    if (g->ctx)
+        dctx_free(g->ctx, g->data);
+    else
+        free(g->data);
     memset(g, 0, sizeof(*g));
+}
+
+// ============================================================================
+// Canonical Huffman trees
+// ============================================================================
+
+void peel_hpool_reset(peel_hpool_t *p) {
+    p->used = 0;
+}
+
+int peel_huff_root(peel_hpool_t *p) {
+    if (p->used >= PEEL_HUFF_POOL_CAP)
+        return -1;
+    int idx = p->used++;
+    p->node[idx].ch[0] = -1;
+    p->node[idx].ch[1] = -1;
+    p->node[idx].sym = PEEL_HUFF_NOSYM;
+    return idx;
+}
+
+int peel_huff_insert(peel_hpool_t *p, int root, uint32_t code, int len, int sym) {
+    if (len < 1 || len > 31)
+        return -1;
+    int cur = root;
+    for (int bit = len - 1; bit >= 0; bit--) {
+        int b = (int)((code >> bit) & 1);
+        if (p->node[cur].ch[b] < 0) {
+            int n = peel_huff_root(p);
+            if (n < 0)
+                return -1;
+            p->node[cur].ch[b] = (int16_t)n;
+        }
+        cur = p->node[cur].ch[b];
+    }
+    p->node[cur].sym = (int16_t)sym;
+    return 0;
+}
+
+int peel_huff_build(peel_hpool_t *p, const int8_t *lengths, int nsym, int min_len, int max_len) {
+    // 0 is "absent" in every format; anything else must be in range.
+    for (int s = 0; s < nsym; s++)
+        if (lengths[s] != 0 && (lengths[s] < min_len || lengths[s] > max_len))
+            return -1;
+    int root = peel_huff_root(p);
+    if (root < 0)
+        return -1;
+    uint32_t code = 0;
+    for (int len = min_len; len <= max_len; len++, code <<= 1) {
+        for (int s = 0; s < nsym; s++) {
+            if (lengths[s] != len)
+                continue;
+            if (len > 0 && peel_huff_insert(p, root, code, len, s) < 0)
+                return -1;
+            code++;
+        }
+    }
+    return root;
 }

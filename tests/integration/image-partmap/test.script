@@ -11,7 +11,8 @@ storage.probe ../../data/aux/hd-with-aux-partition.img
 # JSON output path (catches formatter regressions).
 storage.partmap ../../data/aux/hd-with-aux-partition.img --json
 
-# Phase 2 stubs — must return an error but not crash.
+# Mount-table commands on an image never mounted — must return an error but
+# not crash.
 storage.mounts
 storage.unmount ../../data/aux/hd-with-aux-partition.img
 

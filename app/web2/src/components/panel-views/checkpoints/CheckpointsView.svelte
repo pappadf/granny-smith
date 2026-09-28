@@ -4,6 +4,7 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { opfs } from '@/bus/opfs';
   import { gsEval } from '@/bus/emulator';
+  import { reconcileUiWithMachine } from '@/bus/boot';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     checkpoints,
@@ -75,6 +76,7 @@
     try {
       const ok = await gsEval('checkpoint.load', [`${row.path}/state.checkpoint`]);
       if (ok === true) {
+        await reconcileUiWithMachine('restore');
         showNotification(`Loaded checkpoint '${row.label}'`, 'info');
       } else {
         showNotification('Checkpoint load failed', 'error');

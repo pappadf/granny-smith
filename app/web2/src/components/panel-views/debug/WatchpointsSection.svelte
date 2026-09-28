@@ -1,75 +1,94 @@
 <script lang="ts">
+  // The Watchpoints section: debug.watchpoints, a memory logpoint that stops
+  // the machine after the accessing instruction (#180).  Same shape as the
+  // Breakpoints section; a row is an address range, its access mode and hits.
+  import { onMount } from 'svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
-  import {
-    watchpoints,
-    addWatchpoint,
-    removeWatchpoint,
-    toggleWatchpoint,
-    type Watchpoint,
-  } from '@/bus/mockWatchpoints.svelte';
-  import { showNotification } from '@/state/toasts.svelte';
+  import { listWatchpoints, addWatchpoint, removeWatchpoint, type Watchpoint } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
+  import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
 
+  let rows = $state<Watchpoint[]>([]);
   let showAdd = $state(false);
-  let addLo = $state('');
-  let addHi = $state('');
-  let addMode = $state<'r' | 'w' | 'rw'>('rw');
+  let addAddr = $state('');
+  let addMode = $state<'write' | 'read' | 'rw'>('write');
+  let addWidth = $state<'' | 'b' | 'w' | 'l'>('l');
 
-  function commitAdd() {
-    const lo = parseHex(addLo);
-    const hi = parseHex(addHi);
-    if (lo === null || hi === null || hi < lo) {
-      showNotification('Invalid watchpoint range', 'error');
-      return;
-    }
-    addWatchpoint(lo, hi, addMode);
-    showNotification(
-      `Watchpoint set on $${fmtHex32(lo)} – $${fmtHex32(hi)} (${addMode.toUpperCase()})`,
-      'info',
-    );
-    addLo = '';
-    addHi = '';
-    addMode = 'rw';
-    showAdd = false;
+  // Only the latest listing is shown (see BreakpointsSection).
+  let listGen = 0;
+  async function refresh() {
+    const gen = ++listGen;
+    const list = await listWatchpoints();
+    if (gen === listGen) rows = list;
   }
 
-  function cancelAdd() {
-    addLo = '';
-    addHi = '';
-    addMode = 'rw';
-    showAdd = false;
-  }
+  onMount(() => {
+    void refresh();
+  });
 
-  function onKey(ev: KeyboardEvent) {
+  $effect(() => {
+    void machine.status;
+    if (debug.sections.watchpoints) void refresh();
+  });
+
+  function onAddrKey(ev: KeyboardEvent) {
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      commitAdd();
+      void commitAdd();
     } else if (ev.key === 'Escape') {
       cancelAdd();
     }
   }
 
-  function onRowContext(w: Watchpoint, ev: MouseEvent) {
+  async function commitAdd() {
+    const v = parseHex(addAddr);
+    if (v === null) {
+      showNotification('Invalid watchpoint address', 'error');
+      return;
+    }
+    const ok = await addWatchpoint(v, addMode, addWidth);
+    if (!ok) {
+      showNotification('Failed to add watchpoint', 'error');
+      return;
+    }
+    showNotification(`Watchpoint set at $${fmtHex32(v)}`, 'info');
+    addAddr = '';
+    showAdd = false;
+    await refresh();
+  }
+
+  function cancelAdd() {
+    addAddr = '';
+    showAdd = false;
+  }
+
+  function onRowContext(row: Watchpoint, ev: MouseEvent) {
     ev.preventDefault();
     const items: ContextMenuItem[] = [
-      { label: w.enabled ? 'Disable' : 'Enable', action: () => toggleWatchpoint(w.id) },
-      { sep: true },
-      { label: 'Remove', danger: true, action: () => removeWatchpoint(w.id) },
+      {
+        label: 'Remove',
+        danger: true,
+        action: () => void doRemove(row),
+      },
     ];
     openContextMenu(items, ev.clientX, ev.clientY);
   }
 
-  function rangeLabel(w: Watchpoint): string {
-    if (!machine.mmuEnabled) return `$${fmtHex32(w.lo)} – $${fmtHex32(w.hi)}`;
-    const lr = mmuLookup(w.lo);
-    const phyLo = lr.valid && lr.phys !== undefined ? fmtHex32(lr.phys) : '!';
-    const phyHi = lr.valid && lr.phys !== undefined ? fmtHex32(lr.phys + (w.hi - w.lo)) : '!';
-    const tag = lr.valid ? (lr.kind ?? 'PT') : 'INVALID';
-    return `L:$${fmtHex32(w.lo)} – $${fmtHex32(w.hi)}  P:$${phyLo} – $${phyHi}  ${tag}`;
+  async function doRemove(row: Watchpoint) {
+    const ok = await removeWatchpoint(row.id);
+    if (!ok) {
+      showNotification('Failed to remove watchpoint', 'error');
+      return;
+    }
+    await refresh();
+  }
+
+  // "$0000016A" for one address, "$0000016A-$0000016D" for a range.
+  function rangeLabel(r: Watchpoint): string {
+    return r.end !== r.addr ? `$${fmtHex32(r.addr)}-$${fmtHex32(r.end)}` : `$${fmtHex32(r.addr)}`;
   }
 </script>
 
@@ -79,16 +98,12 @@
   onToggle={() => toggleSection('watchpoints')}
 >
   {#snippet actions()}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <span
-      role="button"
-      tabindex="-1"
+    <button
+      type="button"
       class="add-btn"
       title="Add watchpoint"
-      onclick={(ev: MouseEvent) => {
-        ev.stopPropagation();
-        showAdd = true;
-      }}>+</span
+      aria-label="Add watchpoint"
+      onclick={() => (showAdd = true)}>+</button
     >
   {/snippet}
   {#if showAdd}
@@ -96,44 +111,37 @@
       <input
         type="text"
         class="add-addr"
-        placeholder="lo ($hex)"
-        bind:value={addLo}
-        onkeydown={onKey}
-        aria-label="Low address"
+        placeholder="address ($hex)"
+        bind:value={addAddr}
+        onkeydown={onAddrKey}
+        aria-label="Watchpoint address"
       />
-      <input
-        type="text"
-        class="add-addr"
-        placeholder="hi ($hex)"
-        bind:value={addHi}
-        onkeydown={onKey}
-        aria-label="High address"
-      />
-      <div class="mode-toggle" role="group" aria-label="Watch mode">
-        {#each ['r', 'w', 'rw'] as m (m)}
-          <button
-            type="button"
-            class="mode-btn"
-            class:active={addMode === m}
-            onclick={() => (addMode = m as 'r' | 'w' | 'rw')}
-          >
-            {m.toUpperCase()}
-          </button>
-        {/each}
-      </div>
+      <select class="add-mode" bind:value={addMode} aria-label="Watchpoint access">
+        <option value="write">write</option>
+        <option value="read">read</option>
+        <option value="rw">read/write</option>
+      </select>
+      <select class="add-mode" bind:value={addWidth} aria-label="Watchpoint width">
+        <option value="b">byte</option>
+        <option value="w">word</option>
+        <option value="l">long</option>
+      </select>
       <button type="button" class="btn" onclick={commitAdd}>Add</button>
       <button type="button" class="btn" onclick={cancelAdd}>Cancel</button>
     </div>
   {/if}
-  {#if watchpoints.entries.length === 0 && !showAdd}
-    <p class="hint">No watchpoints. Click + to add one. (Mock — Phase 7 wires firing on access.)</p>
+  {#if rows.length === 0 && !showAdd}
+    <p class="hint">No watchpoints. Click + to add one.</p>
   {:else}
-    {#each watchpoints.entries as w (w.id)}
+    {#each rows as r (r.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="wp-row" oncontextmenu={(ev) => onRowContext(w, ev)}>
-        <span class="enable">{w.enabled ? '●' : '○'}</span>
-        <span class="range">{rangeLabel(w)}</span>
-        <span class="mode">{w.mode.toUpperCase()}</span>
+      <div class="wp-row" oncontextmenu={(ev) => onRowContext(r, ev)}>
+        <span class="enable">{r.enabled ? '●' : '○'}</span>
+        <span class="addr">{rangeLabel(r)}</span>
+        <span class="mode">{r.mode}</span>
+        {#if r.hits > 0}
+          <span class="hits">{r.hits}×</span>
+        {/if}
       </div>
     {/each}
   {/if}
@@ -146,23 +154,31 @@
     justify-content: center;
     width: 18px;
     height: 18px;
+    padding: 0;
+    border: none;
+    background: transparent;
     color: var(--gs-fg-muted);
     cursor: pointer;
     font-size: 14px;
     line-height: 1;
   }
-  .add-btn:hover {
+  .add-btn:hover,
+  .add-btn:focus-visible {
     color: var(--gs-fg-bright);
   }
   .add-row {
     display: flex;
-    flex-wrap: wrap;
     gap: 6px;
     padding: 6px 12px;
-    align-items: center;
   }
   .add-addr {
     width: 12ch;
+  }
+  .add-mode {
+    flex: 1 1 auto;
+  }
+  .add-addr,
+  .add-mode {
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
     border: 1px solid var(--gs-input-border);
@@ -173,27 +189,9 @@
     font-size: 11px;
     outline: none;
   }
-  .add-addr:focus {
+  .add-addr:focus,
+  .add-mode:focus {
     border-color: var(--gs-focus);
-  }
-  .mode-toggle {
-    display: inline-flex;
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    overflow: hidden;
-    height: 22px;
-  }
-  .mode-btn {
-    background: transparent;
-    color: var(--gs-fg-muted);
-    border: none;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .mode-btn.active {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright);
   }
   .btn {
     background: transparent;
@@ -227,9 +225,13 @@
   }
   .enable {
     color: var(--gs-fg-muted);
+    width: 1ch;
   }
   .mode {
     color: var(--gs-fg-muted);
-    font-weight: 600;
+    font-style: italic;
+  }
+  .hits {
+    color: var(--gs-fg-muted);
   }
 </style>

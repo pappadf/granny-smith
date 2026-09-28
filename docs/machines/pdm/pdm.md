@@ -56,7 +56,7 @@ Reused models: the AV family's behavioral **Cuda** (`av/cuda.c`, the same
 the Tier-1 **6522** core; the shared **NuBus** bus controller and card
 drivers (`core/peripherals/nubus/`) behind BART; the shared **floppy**
 module (`core/peripherals/floppy.c`) for the drive and its media.  MACE
-arrives in a later phase (proposal-powerpc-601-pdm.md §6).
+is a stub in `amic.c` until a real model lands.
 
 ## Memory map
 
@@ -90,14 +90,14 @@ guest-measured timer rates are exactly φ2-equivalent.
 
 ## Boot ladder
 
-The family is developed ladder-first against the shipping ROM
-(proposal-powerpc-601-pdm.md §6.1).  `tests/integration/pdm-rom-ladder`
+The family is developed ladder-first against the shipping ROM.
+`tests/integration/pdm-rom-ladder`
 boots the ROM headless and asserts every marker up to the committed
 high-water rung — currently **L20**: HWInit end-to-end, kernel entry, the
 nanokernel's HTAB/translation bring-up, the 68k emulator dispatching the
 Start Manager through Cuda/PRAM init and video init, the boot chime
 matched sample-exactly against a golden WAV, and the gray desktop matched
-as a screen golden — parking at the Phase-G SCSI-scan wall.
+as a screen golden — parking at the SCSI-scan wall.
 
 Past that wall, `tests/integration/suite-pdm` boots System 7.5 from SCSI to
 the Finder desktop on all three models, and covers the NuBus bridge: a

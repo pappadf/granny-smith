@@ -52,6 +52,26 @@ typedef struct {
 
 // Callback signatures for streaming block data.
 typedef int (*storage_write_callback_t)(void *context, const void *data, size_t size);
+
+// === Exporting off the emulator thread ===
+//
+// An export view is a snapshot of the storage's READ side taken on the
+// emulator thread -- its own handles on the base and delta files and a copy
+// of the modification bitmap -- that another thread streams from with
+// storage_export_view_write while the guest keeps reading the disk.  The
+// storage is write-locked meanwhile: a guest write to it fails (what a
+// drive being copied does), and storage_export_view_end lifts the lock
+// (a storage deleted in between is recognised and skipped).
+typedef struct storage_export_view storage_export_view_t;
+storage_export_view_t *storage_export_view_begin(storage_t *storage);
+// Any thread: streams every block (one callback per block, the checkpoint
+// record shape), reporting progress and stopping on cancel (io_worker.h).
+// GS_SUCCESS, GS_ERROR, or -ECANCELED.
+int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb);
+// Emulator thread: closes the view's handles and lifts the lock.
+void storage_export_view_end(storage_export_view_t *v);
+// True while an export of this storage is in flight.
+bool storage_export_locked(const storage_t *storage);
 typedef int (*storage_read_callback_t)(void *context, void *data, size_t size);
 
 // === Lifecycle ===

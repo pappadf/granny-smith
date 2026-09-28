@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """Voodoo2 (CVG) memory-mapped register table, built as data.
 
 Transcribed from 3dfx's own *Voodoo2 Graphics Specification*, rev 1.16
@@ -15,9 +17,9 @@ logged by NAME rather than by offset, and importable from other scripts:
 
 THE POSITIVE CONTROL (run `voodoo2_regs.py --check`).  A hand-built
 register table fails by transposition, and a transposed entry produces
-confident, wrong trace output (Phase 2's proposal §1.7 records what that
-cost: a "CONFIG_CNTL never appears" raised as blocking before it was
-found to be an instrument error).  The spec itself provides the
+confident, wrong trace output (it has happened: a "CONFIG_CNTL never
+appears" was raised as blocking before it was found to be an instrument
+error).  The spec itself provides the
 cross-check: pp.27-29 list the same triangle-parameter registers at
 different offsets, and that layout is DERIVABLE by rule — each
 parameter's start/dX/dY made adjacent, parameters in the order

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the AV camera control and the browser webcam → video-in path
-// (proposal-av-video-in.md §4 Phase 4).
+// web2 e2e: the AV camera control and the browser webcam → video-in path.
 //
 // Runs against Chromium's fake camera (--use-fake-device-for-media-stream
 // generates a moving synthetic pattern; --use-fake-ui-for-media-stream
@@ -29,6 +28,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const AV_ROM = path.join(DATA, 'roms', 'q840av-q660av-5bf10fd1.rom');
@@ -48,14 +48,6 @@ test.use({
     ],
   },
 });
-
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
 
 // Scan the xterm buffer for a probe key's answer.
 //

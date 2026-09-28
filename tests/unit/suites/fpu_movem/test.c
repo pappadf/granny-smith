@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // FMOVEM.X (FPU data register list) direction and ordering tests.
 //
 // Validates fpu_movem_data() (src/core/cpu/fpu.c) by executing single

@@ -1,0 +1,9 @@
+assert machine.hd.present "hd= attached the ProFile"
+assert try(machine.attach_cdrom("${$WORK_DIR}/pro.img"), "none") == "none" "no CD bay on a Lisa"
+machine.eject_media "profile"
+assert !machine.hd.present "eject_media took the ProFile out"
+let b = machine.attach_hd("${$WORK_DIR}/pro.img")
+assert $b.bus == "profile" "attach_hd on a Lisa uses the ProFile"
+assert machine.hd.present "and it is attached"
+echo "media-bays-lisa-ok"
+quit

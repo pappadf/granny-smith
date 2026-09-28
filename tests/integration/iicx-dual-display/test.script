@@ -1,8 +1,8 @@
 # Integration test: IIcx dual display — JMFB in $9 (default) + 8•24 GC in $A.
 #
-# Stage 2 of the computed-card-compatibility proposal: every socket resolves
-# its configuration independently, so a machine boots as many cards as its
-# sockets carry.  This pins the multi-card contract end-to-end:
+# Every socket resolves its configuration independently, so a machine boots
+# as many cards as its sockets carry.  This pins the multi-card contract
+# end-to-end:
 #   * the per-slot staged pick populates socket $A while $9 keeps its
 #     declared default;
 #   * both cards run their full init (declaration ROMs mapped);

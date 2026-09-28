@@ -16,7 +16,9 @@
 #include "script.h"
 #include "shell_var.h"
 #include "value.h"
+#include "job/job.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +30,11 @@ struct script_func {
     script_block_t *body;
     struct object *entry_obj; // attached under shell.functions
     struct script_func *next;
+    // A body is freed only when nothing executes it: shell_func_find takes
+    // a reference, shell_func_release drops it; a function removed while
+    // referenced is unlinked at once and freed by the last release.
+    int refs;
+    bool removed;
 };
 
 static script_func_t *g_funcs = NULL;
@@ -123,23 +130,53 @@ static void func_free(script_func_t *f) {
 }
 
 script_func_t *shell_func_find(const char *name) {
-    for (script_func_t *f = g_funcs; f; f = f->next)
-        if (strcmp(f->name, name) == 0)
+    job_tables_lock();
+    for (script_func_t *f = g_funcs; f; f = f->next) {
+        if (strcmp(f->name, name) == 0) {
+            f->refs++;
+            job_tables_unlock();
             return f;
+        }
+    }
+    job_tables_unlock();
     return NULL;
 }
 
+void shell_func_release(script_func_t *f) {
+    if (!f)
+        return;
+    job_tables_lock();
+    bool last = --f->refs == 0 && f->removed;
+    job_tables_unlock();
+    if (last)
+        func_free(f);
+}
+
 int shell_func_remove(const char *name) {
+    job_tables_lock();
     script_func_t **pp = &g_funcs;
     while (*pp) {
         if (strcmp((*pp)->name, name) == 0) {
             script_func_t *f = *pp;
             *pp = f->next;
-            func_free(f);
+            f->next = NULL;
+            f->removed = true;
+            // The entry object goes now (the tree is this thread's); the
+            // body waits for the last activation.
+            if (f->entry_obj) {
+                object_detach(f->entry_obj);
+                object_delete(f->entry_obj);
+                f->entry_obj = NULL;
+            }
+            bool free_now = f->refs == 0;
+            job_tables_unlock();
+            if (free_now)
+                func_free(f);
             return 0;
         }
         pp = &(*pp)->next;
     }
+    job_tables_unlock();
     return -1;
 }
 
@@ -180,14 +217,34 @@ int shell_func_define(const char *name, char **params, int n_params, script_bloc
         script_block_free(body);
         return -1;
     }
+    // Checked, and the partial entry unwound on failure.  These were stored
+    // unchecked and then strcmp'd at call time (shell_funcs.c's named-argument
+    // binding), so an OOM here turned into a NULL dereference at a distance --
+    // and on the 32-bit wasm heap OOM is not hypothetical.
     f->name = strdup(name);
     f->n_params = n_params;
     f->params = n_params > 0 ? (char **)calloc((size_t)n_params, sizeof(char *)) : NULL;
-    for (int i = 0; i < n_params; i++)
+    bool alloc_ok = (f->name != NULL) && (n_params == 0 || f->params != NULL);
+    for (int i = 0; alloc_ok && i < n_params; i++) {
         f->params[i] = strdup(params[i]);
+        if (!f->params[i])
+            alloc_ok = false;
+    }
+    if (!alloc_ok) {
+        for (int i = 0; i < n_params && f->params; i++)
+            free(f->params[i]);
+        free(f->params);
+        free(f->name);
+        free(f);
+        script_block_free(body);
+        snprintf(err_buf, err_size, "out of memory");
+        return -1;
+    }
     f->body = body;
+    job_tables_lock();
     f->next = g_funcs;
     g_funcs = f;
+    job_tables_unlock();
 
     if (g_functions_obj) {
         f->entry_obj = object_new(&func_entry_class, f, f->name);
@@ -255,7 +312,9 @@ static value_t func_expr_hook(void *ud, const char *name, int argc, const value_
     script_func_t *f = shell_func_find(name);
     if (!f)
         return val_err("no such function '%s'", name);
-    return shell_func_call(f, argc, argv, named_n, named);
+    value_t r = shell_func_call(f, argc, argv, named_n, named);
+    shell_func_release(f);
+    return r;
 }
 
 // === Install / uninstall ====================================================

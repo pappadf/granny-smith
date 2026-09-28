@@ -1,10 +1,11 @@
 import { render, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WelcomeConfigSlide from '@/components/display/WelcomeConfigSlide.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import { _resetForTests } from '@/state/toasts.svelte';
 import { layout } from '@/state/layout.svelte';
-import { machine, stopDriveActivityMock } from '@/state/machine.svelte';
+import { machine } from '@/state/machine.svelte';
 import type { OpfsBackend } from '@/bus/opfs';
 import type { OpfsEntry, ImageCategory, RomInfo } from '@/bus/types';
 
@@ -25,8 +26,11 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (/Plus/i.test(p)) {
           return {
             recognised: true,
-            checksum: `cs-${p}`,
+            supported: true,
+            intact: true,
+            id: `cs-${p}`,
             name: 'Macintosh Plus ROM',
+            variant: /v1/i.test(p) ? 'Rev 1' : 'Rev 3',
             compatible: ['plus'],
             size: 128 * 1024,
           };
@@ -34,7 +38,9 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         if (/SE30|SE_30|SE\/30/i.test(p)) {
           return {
             recognised: true,
-            checksum: `cs-${p}`,
+            supported: true,
+            intact: true,
+            id: `cs-${p}`,
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,
@@ -110,7 +116,6 @@ beforeEach(() => {
   _resetForTests();
   layout.welcomeSlide = 'configuration';
   machine.status = 'no-machine';
-  stopDriveActivityMock();
 });
 
 describe('WelcomeConfigSlide OPFS scan', () => {
@@ -124,8 +129,9 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     expect(submit.disabled).toBe(true);
   });
 
-  it('shows the ROM picker only when more than one ROM matches the chosen model', async () => {
-    // Two ROMs, both compatible with 'plus' → the ROM picker should appear.
+  it('lists each ROM that boots a model as its own model entry, named by the core', async () => {
+    // Two ROMs, both compatible with 'plus' → two Macintosh Plus entries,
+    // told apart by the variant rom.identify reports; no separate ROM picker.
     setOpfsBackend(
       new StubOpfs({
         rom: [
@@ -140,15 +146,17 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     );
     const { container } = render(WelcomeConfigSlide);
     await waitFor(() => {
-      const sel = container.querySelector('#cfg-rom') as HTMLSelectElement | null;
-      if (!sel) throw new Error('rom select not rendered yet');
+      const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
+      if (!sel) throw new Error('model select not rendered yet');
       expect(sel.options.length).toBe(2);
     });
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
-    expect(modelSel.options.length).toBe(1);
+    const labels = Array.from(modelSel.options).map((o) => o.textContent);
+    expect(labels.sort()).toEqual(['Macintosh Plus (Rev 1)', 'Macintosh Plus (Rev 3)']);
+    expect(container.querySelector('#cfg-rom')).toBeNull();
   });
 
-  it('hides the ROM picker when each model has a single matching ROM', async () => {
+  it('names the ROM whenever the core labels it, even when it is the only one stored', async () => {
     setOpfsBackend(
       new StubOpfs({
         rom: [
@@ -173,7 +181,9 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     expect(container.querySelector('#cfg-rom')).toBeNull();
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
     const labels = Array.from(modelSel.options).map((o) => o.textContent);
-    expect(labels).toEqual(expect.arrayContaining(['Macintosh Plus', 'Macintosh SE/30']));
+    // Plus has other known ROMs (the mock labels it), so its one stored ROM is
+    // still named; the SE/30 ROM carries no label and reads as the model.
+    expect(labels).toEqual(expect.arrayContaining(['Macintosh Plus (Rev 3)', 'Macintosh SE/30']));
   });
 
   // Regression: scanImages('fd') folds the legacy /opfs/images/fdhd/ listing

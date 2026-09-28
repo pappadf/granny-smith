@@ -34,6 +34,7 @@ FMT_DIR   = $(BUILD)/lib/formats
 # ============================================================================
 
 LIB_SRCS  = lib/err.c      \
+            lib/appledouble.c \
             lib/util.c     \
             lib/peeler.c
 

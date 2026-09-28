@@ -14,9 +14,18 @@ import * as fs from 'node:fs';
 // live at module-ready, independent of any emulated machine.
 export async function gotoWeb2(page: Page): Promise<void> {
   await page.goto('/index.html');
-  await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
-    timeout: 60_000,
-  });
+  // A boot that cannot start sets __gsBootError: fail with its reason at
+  // once rather than time out without one.
+  await page.waitForFunction(
+    () => {
+      const w = window as { __gsReady?: boolean; __gsBootError?: string };
+      return w.__gsReady === true || typeof w.__gsBootError === 'string';
+    },
+    undefined,
+    { timeout: 60_000 },
+  );
+  const bootError = await page.evaluate(() => (window as { __gsBootError?: string }).__gsBootError);
+  if (bootError) throw new Error(`emulator did not start: ${bootError}`);
   // First visit shows a non-dismissible "preview build" modal whose backdrop
   // intercepts clicks. Dismiss it via its Continue button before doing anything.
   const cont = page.getByRole('button', { name: 'Continue' });

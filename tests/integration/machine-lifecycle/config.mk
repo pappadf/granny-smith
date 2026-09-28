@@ -1,7 +1,7 @@
-# Integration test configuration: Machine Abstraction Wiring (M1)
+# Integration test configuration: Machine Abstraction Wiring
 # Exercises system_create → boot → checkpoint → system_destroy → system_create restore cycle
 
-TEST_NAME := Machine Lifecycle (M1)
+TEST_NAME := Machine Lifecycle
 TEST_DESC := Validates system_create/system_destroy lifecycle and checkpoint round-trip via machine_plus callbacks
 
 # Required ROM image (path relative to tests/data/)
@@ -10,5 +10,5 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 # No extra disk images required; uses TEST_RUNNER for multi-step execution
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

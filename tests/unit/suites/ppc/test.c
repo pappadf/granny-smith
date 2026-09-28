@@ -2,10 +2,10 @@
 // Copyright (c) pappadf
 
 // test.c — directed unit tests for the PPC (MPC601) core
-// (src/core/cpu/ppc/), proposal-powerpc-601-pdm.md §7 layer 2.
+// (src/core/cpu/ppc/).
 //
 // Written when no public 601 instruction-level test corpus existed (the
-// proposal's largest stated correctness risk).  One does now — see
+// core's largest correctness risk).  One does now — see
 // suites/ppc_vectors — and these stay the place where a manual-cited rule
 // is pinned in our own words.  They are directed semantics tests
 // written from the 601UM chapter-10 RTL and chapter-5 exception tables:
@@ -117,7 +117,7 @@ static void fresh(void) {
 
 // Give every segment a T=1 memory-forced identity mapping (the HWInit
 // state, $87F0000n) so MSR[DT] tests translate EA=PA — with zeroed SRs a
-// DT=1 access would take the loud Phase-D T=0 DSI instead.
+// DT=1 access would take the loud T=0 DSI instead.
 static void identity_segments(void) {
     for (uint32_t i = 0; i < 16; i++)
         P->sr[i] = 0x87F00000u | i;
@@ -338,6 +338,31 @@ static void test_mul_div(void) {
     CHECK_EQ(P->gpr[3], 3);
 }
 
+// Two branches that fold to each other must not spin the sprint forever.
+//
+// ppc_record_fold excludes only a branch to its OWN address, so `A: b B` and
+// `B: b A` both classify as folded, and the fold path consumed no budget slot.
+// The sprint then never terminated: 100% host CPU, no timer, no interrupt and
+// no debugger break, because ext_irq/dec_pending are only raised between
+// sprints and emulated time stops at a sprint boundary.  Reachable from
+// ordinary guest memory corruption -- two mutually-returning blrs after a
+// smashed LR fold the same way.  ppc_run now allows a bounded number of folds
+// per sprint (4x the initial budget, far above any real branch density, so
+// ordinary code still folds at CPI 1.0).
+//
+// Without the bound this does not fail, it HANGS -- the honest shape for a
+// liveness bug.
+static void test_mutual_branch_fold_terminates(void) {
+    fresh();
+    memory_write_uint32(0x2000, e_bc(20, 0, 4, 0, 0)); // bc always, +4 -> $2004
+    memory_write_uint32(0x2004, e_bc(20, 0, -4, 0, 0)); // bc always, -4 -> $2000
+    uint32_t budget = 1000;
+    P->pc = 0x2000;
+    ppc_run(P, &budget);
+    CHECK_EQ(budget, 0u); // ppc_run zeroes the budget on exit
+    CHECK(P->pc == 0x2000u || P->pc == 0x2004u); // still inside the pair
+}
+
 // POWER holdovers against their 601UM RTL
 static void test_power_arith(void) {
     fresh();
@@ -390,6 +415,21 @@ static void test_power_arith(void) {
     step1_valid(e_xo(3, 4, 5, 0, 331, 0));
     CHECK_EQ(P->gpr[3], (uint32_t)-14);
     CHECK_EQ(P->mq, (uint32_t)-2); // remainder sign follows dividend
+    // div of INT64_MIN by -1: the quotient is unrepresentable, so the overflow
+    // has to be recognised BEFORE the divide -- the shipping emcc/wasm build's
+    // i64.div_s traps on this pair by specification rather than returning a
+    // wrong answer.  The dividend is also assembled through unsigned, because
+    // (int64_t)rA << 32 shifts into the sign bit for every rA >= $80000000,
+    // which the -100 case just above already exercises.  Both show up under
+    // MODE=sanitize; on native they are silent.
+    fresh();
+    P->gpr[4] = 0x80000000u; // rA||MQ = $8000000000000000
+    P->mq = 0;
+    P->gpr[5] = 0xFFFFFFFFu; // -1
+    step1_valid(e_xo(3, 4, 5, 1, 331, 0)); // divo
+    CHECK_EQ(P->gpr[3], 0x80000000u);
+    CHECK_EQ(P->mq, 0u);
+    CHECK(P->xer & PPC_XER_OV);
     // divs
     fresh();
     P->gpr[4] = (uint32_t)-100;
@@ -760,7 +800,7 @@ static void test_sprs(void) {
     CHECK_EQ(P->batu[3], 0xAA55AA55u);
     // segment registers
     fresh();
-    P->gpr[4] = 0x87F00005u; // the HWInit T=1 SR value (§3.4)
+    P->gpr[4] = 0x87F00005u; // the HWInit T=1 SR value
     step1_valid((31u << 26) | (4u << 21) | (5u << 16) | (210u << 1)); // mtsr 5,r4
     CHECK_EQ(P->sr[5], 0x87F00005u);
     step1_valid((31u << 26) | (3u << 21) | (5u << 16) | (595u << 1)); // mfsr r3,5
@@ -808,7 +848,7 @@ static void test_exceptions(void) {
     // privileged from user mode + SoA switch.  The user maps hold the
     // MMU's logical fills, so they are active only for TRANSLATED user
     // data (PR=1 AND DT=1); user mode with translation off runs on the
-    // identity view like everything else (proposal §3.5 as amended).
+    // identity view like everything else.
     fresh();
     identity_segments();
     P->msr |= PPC_MSR_PR;
@@ -1101,7 +1141,7 @@ static void test_fp_surface(void) {
     memory_write_uint32(0x1000, (63u << 26) | (0u << 23) | (3u << 16) | (4u << 11));
     run_at(0x1000, 1);
     CHECK_EQ(P->cr >> 28, 2u); // EQ
-    // FP arithmetic is live since Phase E (the deep coverage lives in
+    // FP arithmetic is live (the deep coverage lives in
     // tests/unit/suites/ppc_fpu; this is the integration smoke check)
     fresh();
     P->fpr[3] = 0x3FF0000000000000ull; // 1.0
@@ -1113,9 +1153,8 @@ static void test_fp_surface(void) {
     CHECK_EQ((P->fpscr >> 12) & 0x1Fu, 0x04u); // FPRF: +normal
 }
 
-// Phase-C translation subset: T=1 memory-forced segments (incl. the HWInit
-// SR-toggle aliasing trick), the 601-format BATs, and the loud unimplemented
-// T=0 path (proposal §3.5).
+// Translation subset: T=1 memory-forced segments (incl. the HWInit SR-toggle
+// aliasing trick), the 601-format BATs, and the loud unimplemented T=0 path.
 static void test_translation(void) {
     // T=1 memory-forced: SR low nibble selects the physical segment.  The
     // flash-probe pattern: sr[5] → segment 4 makes EA $50800000 read the
@@ -1144,7 +1183,7 @@ static void test_translation(void) {
     P->gpr[4] = 0x4000;
     step1(e_d(32, 3, 4, 0));
     CHECK_EQ(P->pc, 0x00000A00u);
-    // T=0 is the Phase-D hashed walk: loud DSI with DSISR "not found"
+    // T=0 is the hashed walk: loud DSI with DSISR "not found"
     fresh();
     P->msr |= PPC_MSR_DT; // SRs all zero → T=0
     P->gpr[4] = 0x5000;
@@ -1220,7 +1259,7 @@ static void test_mq_spr(void) {
     CHECK_EQ(P->gpr[3], 0x13579BDFu);
 }
 
-// === The 604 model (TNT proposal §4; 604UM/PEM citations inline) ============
+// === The 604 model (604UM/PEM citations inline) ============================
 
 // Reset into the 604 model with EP cleared (vectors at $000xxxxx) and FP
 // on — the 604-side counterpart of fresh().  cpu_model survives ppc_reset.
@@ -1254,7 +1293,7 @@ static void test_604_reset_state(void) {
 }
 
 // Every POWER holdover and 601-only SPR encoding takes the program
-// exception on the 604 (604UM §4.5.7; TNT proposal §4.2).
+// exception on the 604 (604UM §4.5.7).
 static void test_604_holdover_rejection(void) {
     // One representative per holdover family plus every MQ/RTC SPR move,
     // built from the encoders.
@@ -1603,7 +1642,7 @@ static void test_604_machine_check(void) {
 }
 
 // The optional-FP group: fsel/fres/frsqrte/stfiwx execute on the 604 and
-// trap on the 601 (PEM instruction pages; TNT proposal §4.2).
+// trap on the 601 (PEM instruction pages).
 static void test_604_optional_fp(void) {
     // fsel: frA >= 0 (incl. -0) picks frC; negative and NaN pick frB
     fresh604();
@@ -1722,6 +1761,7 @@ int main(void) {
     test_shifts();
     test_rotates();
     test_mul_div();
+    test_mutual_branch_fold_terminates();
     test_power_arith();
     test_power_masks_shifts();
     test_branches();
@@ -1738,7 +1778,7 @@ int main(void) {
     test_mq_spr();
     test_conformance_regressions();
 
-    // The 604 model matrix (TNT proposal §4.5) — these flip P's cpu_model
+    // The 604 model matrix — these flip P's cpu_model
     // and run last so every 601 test above sees an untouched 601.
     test_604_reset_state();
     test_604_holdover_rejection();

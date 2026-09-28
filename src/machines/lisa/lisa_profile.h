@@ -55,7 +55,7 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable);
 void lisa_profile_detach(lisa_profile_t *pf); // close the image (no base writeback)
 bool lisa_profile_attached(const lisa_profile_t *pf);
 
-// machine.restart handle transfer (proposal-boot-vs-reset §3.3): take the
+// machine.restart handle transfer: take the
 // attached image OUT of the device without closing it (ownership moves to
 // the caller; returns NULL when nothing is attached), and attach an
 // already-open 532-bytes/block image handle to a fresh device (geometry is
@@ -68,6 +68,8 @@ bool lisa_profile_attach_image(lisa_profile_t *pf, image_t *img);
 // self-contained single-file 532-bytes/block image at `path`.  Refuses to
 // overwrite an existing file.  Returns false on I/O error.
 bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path);
+// The attached image (NULL when none), for an export off the emulator thread.
+image_t *lisa_profile_image(const lisa_profile_t *pf);
 
 // True when a disk is attached (the machine drives OCD/ low → "connected").
 bool lisa_profile_connected(const lisa_profile_t *pf);

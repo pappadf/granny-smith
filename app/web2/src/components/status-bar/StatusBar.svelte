@@ -1,11 +1,12 @@
 <script lang="ts">
   import { machine, type MachineStatus } from '@/state/machine.svelte';
-  import { activity } from '@/state/activity.svelte';
+  import { activity, bridgeBusy } from '@/state/activity.svelte';
   import { setCapsLock } from '@/bus/emulator';
+  import { shortModel } from '@/lib/machine';
   import DriveActivity from './DriveActivity.svelte';
   import Icon from '../common/Icon.svelte';
 
-  // Spec §11: hidden before first machine start. Also surfaces during
+  // Hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
   // status bar.
   const visible = $derived(machine.status !== 'no-machine' || activity.current !== null);
@@ -15,15 +16,12 @@
     running: 'Running',
     paused: 'Paused',
     stopped: 'Stopped',
+    crashed: 'Crashed',
   };
 
   const desc = $derived(
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
   );
-
-  function shortModel(model: string): string {
-    return model.replace(/^Macintosh\s+/i, '');
-  }
 
   // Accelerated-mode CPU speed readout. The core pushes the applied multiplier
   // (1x in every other mode), so gate on the mode too. The governor's ladder
@@ -79,14 +77,24 @@
           class="sb-item sb-mips"
           title="Emulated CPU throughput: {machine.mips.toFixed(
             1,
-          )} million instructions/second ({machine.ticksPerSecond.toFixed(0)} ticks/s)"
+          )} million instructions/second ({machine.ticksPerSecond.toFixed(
+            0,
+          )} ticks/s); tick {machine.tickP50Ms.toFixed(1)} ms typical, {machine.tickMaxMs.toFixed(
+            1,
+          )} ms worst; bridge request {machine.pollMaxMs.toFixed(1)} ms worst"
         >
           <span class="label">{machine.mips.toFixed(1)} MIPS</span>
         </div>
       {/if}
-      <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
-      <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
-      <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      {#if machine.drives.hd}
+        <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
+      {/if}
+      {#if machine.drives.fd}
+        <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
+      {/if}
+      {#if machine.drives.cd}
+        <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      {/if}
       <DriveActivity label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
       <button
         class="sb-item sb-caps"
@@ -99,6 +107,11 @@
       </button>
     </div>
     <div class="statusbar-right">
+      {#if bridgeBusy.path}
+        <div class="sb-item sb-busy" title="The emulator is still working on a request">
+          <span class="label">Busy: {bridgeBusy.path} ({bridgeBusy.seconds} s)</span>
+        </div>
+      {/if}
       {#if activity.current}
         <div class="sb-item sb-upload" title="{activity.verb} in progress">
           <span class="upload-spinner"></span>

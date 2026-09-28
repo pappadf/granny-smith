@@ -43,7 +43,7 @@ Current values: the Plus uses 12 (the authentic average for its 7.8336 MHz
 The sprint arithmetic actually runs on an **effective CPI** in x256 fixed point
 (`cpi_eff_x256`). In paced/unthrottled it is exactly `cpi << 8` and every
 computation below is bit-identical to the plain integer form. The `accelerated`
-mode (proposal-scheduler-accelerated-mode.md) lowers it — never raises it — by
+mode lowers it — never raises it — by
 the `scheduler.speed` multiplier (a pinned 1x..8x, or by default the adaptive
 governor's pick on a quantized ladder up to `scheduler.max_speed` — see
 docs/core/scheduler/scheduler.md §2.3), so a frame-unit's fixed cycle budget

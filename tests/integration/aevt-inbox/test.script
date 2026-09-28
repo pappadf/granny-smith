@@ -1,6 +1,5 @@
 # Apple events, inbound — a guest application links to our host port and
-# sends us an event, which we decode and answer (WP-7, and the second half of
-# WP-3's acceptance).
+# sends us an event, which we decode and answer.
 #
 # Every other test in this suite drives the guest.  This one is the other
 # direction: System 7.5's Script Editor is pointed at the port we advertise,
@@ -367,7 +366,7 @@ assert appletalk.ppc.stats.sessions_refused == 0 "we turned the guest away"
 # The guest acted on our answer: having asked for a dictionary and been
 # given a reply without one, AppleScript reports it cannot get the
 # terminology.  That dialog is the observable result of our reply — the
-# half of WP-7 that cannot be seen from this side of the wire.
+# half of the exchange that cannot be seen from this side of the wire.
 machine.screen.save "${$WORK_DIR}/guest-after-reply.png"
 
 echo "inbox: ${appletalk.aevt.inbox[0].text} from ${appletalk.aevt.inbox[0].sender}"

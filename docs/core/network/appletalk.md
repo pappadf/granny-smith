@@ -1,5 +1,13 @@
 # AppleTalk Phase 2 over LocalTalk
 
+**Scope: LocalTalk only.** The stack is entered from the SCC: LLAP frames
+arrive on the serial port's channel B in SDLC mode and leave the same way
+(`scc_set_frame_sink`). The Ethernet controllers the emulator models --
+SONIC ([`sonic.md`](../peripherals/sonic.md)) and the AV machines' MACE
+([`av.md`](../../machines/av/av.md)) -- carry no AppleTalk: they have no
+datapath into this stack, so EtherTalk is not available. It would be an
+ELAP shim under `ddp_in`, AARP included, beside the LLAP one.
+
 # Part I — Physical and Link Layers
 
 ---
@@ -153,7 +161,16 @@ If A receives no CTS, it backs off randomly before retrying.
 ## 5. Implementation Notes (for emulation)
 
 * Simulate per-node transmit queues and random back-off.
-* Enforce single-talker rule: only one active transmission at a time.
+* Enforce single-talker rule: only one active transmission at a time. The
+  emulator keeps one "wire busy until" time on the scheduler and holds its
+  own lapRTS until then. It is advanced by the emulator's data frames
+  (wire time + IFG) and, since the SCC completes the guest's transmission
+  the instant the driver finishes writing, by every frame received from
+  the guest as well; answering the guest's lapRTS with lapCTS reserves
+  the wire until its data frame arrives (ceiling: one maximal frame).
+  Without the guest's side the emulator opened dialogs while the guest,
+  on a real line, was still sending, and the guest's driver never saw
+  those frames.
 * Maintain NodeID map (1–254) → MAC instance.
 * Treat broadcast (**255**) as multi-cast to all nodes.
 * CRC-CCITT calculated over Dest..Data fields; initial value = 0xFFFF.
@@ -605,33 +622,43 @@ Encapsulated as ASP over ATP within DDP packets (DDP Type = 0x03).
 
 ### 2.2 Session Identification
 
-Each ASP session is identified by a **Session Reference Number** (SRN), a 16-bit integer assigned by the server in the OpenSessReply.
-Subsequent ASP commands include the SRN in the header.
+The server gives each session a **one-byte session ID** in the OpenSessReply
+(Inside AppleTalk 11-24: "a unique (per SLS) 1-byte session ID"). Every later
+packet on the session carries it in ATP UserBytes[1]. This server allocates it
+unique among live sessions and also requires a packet to come from the node
+that opened the session. Internally each session also has a 16-bit reference
+the AFP layer and the object model (`appletalk.afp.sessions[i].session_ref`)
+use; it never goes on the wire.
 
 ---
 
 ### 2.3 ASP Packet Structure
 
-#### Common ASP Header (in ATP Data — excludes SPFunction)
+ASP puts **no header of its own in the ATP data** (Inside AppleTalk
+Fig. 11-10). Everything ASP needs travels in the four ATP user bytes:
 
-| Field         | Size     | Description                                  |
-| :------------ | :------- | :------------------------------------------- |
-| SessionRefNum | 2        | Session reference (0 for OpenSess)           |
-| ReqRefNum     | 2        | Request reference number (client-assigned)   |
-| CmdResult     | 2        | Result or error code (see note below)        |
-| Data          | variable | Command-specific content (e.g., AFP payload) |
+| Packet            | UserBytes (request)                    | ATP data (request) | UserBytes (reply)               | ATP data (reply)      |
+| :---------------- | :------------------------------------- | :----------------- | :------------------------------ | :-------------------- |
+| OpenSess          | 4, WSS, version (0x0100)               | none               | SSS, SessionID, error (16-bit)  | none                  |
+| CloseSess         | 1, SessionID, 0, 0                     | none               | 0, 0, 0, 0                      | none                  |
+| Command           | 2, SessionID, sequence (16-bit)        | the AFP command    | CmdResult (32-bit)              | the AFP reply         |
+| Write             | 6, SessionID, sequence (16-bit)        | the AFP command    | CmdResult (32-bit)              | the AFP reply         |
+| WriteContinue     | 7, SessionID, sequence (16-bit)        | buffer size        | (from the workstation)          | the write data        |
+| GetStatus         | 3, 0, 0, 0                             | none               | 0, 0, 0, 0                      | the status block      |
+| Tickle            | 5, SessionID, 0, 0                     | none               | (no reply)                      |                       |
+| Attention         | 8, SessionID, code (16-bit)            | none               | (from the workstation)          |                       |
 
-Important: In this stack, the ASP operation selector (SPFunction) is carried in ATP UserBytes[0], not inside the ASP data. The table above describes only the ASP bytes present in ATP Data after the SPFunction has been indicated via the ATP header.
+OpenSess errors are ASP codes: `aspBadVersNum` (0xFBD6, −1066) for a version
+other than 1.0, `aspServerBusy` (0xFBD1, −1071) when the session table is full
+or the AFP server is disabled. A Command or Write for a session that is not
+open is answered with CmdResult `afpSessClosed` (0xFFFFEC62) and is not run; a
+GetStatus returns the status block whatever it carries.
 
-Special case — ASP Command replies: For SPCommand, the ASP command reply data begins with a **4‑byte CmdResult** (big‑endian), followed by the command‑specific reply bytes (see Inside AppleTalk Figure 11‑12). CmdResult is not carried in ATP UserBytes.
-
-Exceptions (authoritative, no ASP data bytes):
-- SLS GetStatus: Encoded entirely in ATP UserBytes; response data carries the status block (see 2.10).
-- OpenSess: Encoded entirely in ATP UserBytes; both request and reply have zero ATP data. See 2.5 and 2.6.
+(An earlier version of this section described a six-byte SessionRefNum /
+ReqRefNum / CmdResult header in the ATP data. No such header exists; the
+server's CloseSess read its session from it, and so never closed one.)
 
 ---
-
-Note — Exception (authoritative): The out-of-band ASP GetStatus at the Server Listening Socket (SLS) does not use this header. Instead, the request is encoded entirely in ATP UserBytes with no ATP Data, and the response data contains the status block bytes. See section 2.10.
 
 ### 2.4 Functions (SPFunction values)
 
@@ -647,8 +674,6 @@ Note — Exception (authoritative): The out-of-band ASP GetStatus at the Server 
 | 8    | Attention     | Server→Client | Async notification              |
 
 ---
-
-Location of SPFunction: For all ASP operations (OpenSess, Command, Write, etc.), this stack encodes the SPFunction in ATP UserBytes[0]. The ASP bytes placed in ATP Data begin with SessionRefNum (or 0 for OpenSess), followed by ReqRefNum, CmdResult, and any command-specific data. Do not prepend an ASP Function byte inside the ATP data.
 
 ### 2.5 Session Establishment Workflow
 

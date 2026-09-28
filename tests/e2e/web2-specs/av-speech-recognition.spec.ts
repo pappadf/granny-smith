@@ -42,6 +42,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
 import { buildFakeCaptureWav } from "../helpers/fake-audio";
+import { terminalRun as typeLine } from "../helpers/terminal";
+
+// A per-key delay: this machine keeps the main thread busy (a live
+// AudioWorklet), and a burst typed into it can lose characters.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { delay: 10 });
 
 const DATA = path.resolve(__dirname, "../../data");
 const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
@@ -83,28 +89,6 @@ test.use({
 });
 
 // --- terminal plumbing (identical to av-sound-record.spec.ts) ---------------
-
-async function focusTerminal(page: Page): Promise<void> {
-  const ta = page.locator(".xterm textarea.xterm-helper-textarea");
-  if ((await ta.count()) > 0) {
-    await ta.focus();
-    await page.waitForFunction(
-      () =>
-        document.activeElement instanceof HTMLTextAreaElement &&
-        document.activeElement.classList.contains("xterm-helper-textarea"),
-      undefined,
-      { timeout: 15_000 },
-    );
-    return;
-  }
-  await page.locator(".xterm").click();
-}
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  await focusTerminal(page);
-  await page.keyboard.type(line, { delay: 10 });
-  await page.keyboard.press("Enter");
-}
 
 async function readKey(page: Page, key: string): Promise<string | null> {
   const text = await page.locator(".xterm-rows").innerText();
@@ -189,6 +173,11 @@ interface MicStats {
   overruns: number;
   underruns: number;
   rate: number;
+  // Session-cumulative frames, unaffected by graph rebuilds. `produced` is the
+  // ring's own `wr`, which resetRing() zeroes on every rebuild — so a small
+  // `produced` beside a large `captured` means the graph was torn down, and a
+  // small `captured` means the browser never delivered audio at all.
+  captured: number;
 }
 
 async function micStats(page: Page): Promise<MicStats> {
@@ -357,9 +346,15 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   }
 
   // --- 5. Listen. The file loops, so the utterance repeats every ~4.3 s;
-  // rung 7's own reliability is about one take in two, which is why the row
-  // in suite-av says it twice. Poll for the Trash window while recording
-  // what the transport is doing underneath.
+  // The recognizer needs a WARM-UP utterance: Casper's AGC settles on the
+  // first and recognises the second. That is deterministic, not odds -- the
+  // headless row av-sr-command fails every time with one sr_say and passes
+  // every time (bit-exact, instr=1506469288) with two, which is why it says
+  // it twice. An earlier comment here called it "about one take in two",
+  // which sent a flake investigation after a coin flip that does not exist.
+  // Here the fixture loops every ~4.5 s, so the warm-up take arrives on its
+  // own. Poll for the Trash window while recording what the transport is
+  // doing underneath.
   let opened = false;
   let last: MicStats | null = null;
   const deadline = Date.now() + 180_000;
@@ -383,13 +378,29 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // machine.audioin and recognises it. Its peak there is the file's own
   // 5318 counts times the codec's 2.37x A/D gain — about 12,600. A browser
   // figure far above that is the level error that makes Casper's AGC wind
-  // the codec gain down and reject the utterance (sr-test-audio-assets §2).
+  // the codec gain down and reject the utterance.
   console.log(`  codec saw a peak of ${peak} counts (headless av-sr-command sees ~12600 for this asset)`);
   console.log(`  final micStats: ${JSON.stringify(last)}`);
   console.log(`  audioin.level=${await probe(page, "machine.audioin.level")}`);
   console.log(`  scheduler.mode=${await probe(page, "scheduler.mode")}`);
 
   expect(await probe(page, "machine.dsp.emr"), "the DSP kernel died while listening").toBe("0x8000");
+
+  // Transport before outcome. Until this existed, a browser that delivered no
+  // audio failed as "the recognizer did not act on the utterance", which sent
+  // two separate investigations at the recognizer and the emulator's speed
+  // before anyone read the frame counter. One utterance is ~4.5 s; require at
+  // least one utterance's worth over the whole listening window before the
+  // recognition result is allowed to mean anything.
+  const minFrames = Math.round((last?.rate || 44100) * 4);
+  expect(
+    last?.captured ?? 0,
+    `the browser never delivered audio: ${last?.captured ?? 0} frames captured in ${
+      (180_000 / 1000) | 0
+    }s at ${last?.rate}Hz (want >= ${minFrames}). This is a capture-path failure, NOT a ` +
+      `recognition failure — check the AudioContext state and the MediaStream track, not the DSP. ` +
+      `transport ${JSON.stringify(last)}`,
+  ).toBeGreaterThanOrEqual(minFrames);
 
   // The outcome is the gate; the transport counters are the explanation.
   //

@@ -1,4 +1,6 @@
-// Unit tests for the Meta class — proposal-introspection-via-meta-attribute.md.
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Unit tests for the Meta class (`<path>.meta` introspection).
 //
 // Covers:
 //   - `<path>.meta` resolves to a synthetic Meta node bound to the path
@@ -188,7 +190,11 @@ TEST(test_meta_node_cached) {
 
 TEST(test_class_with_meta_member_rejected) {
     static const member_t bad_members[] = {
-        {.kind = M_ATTR, .name = "meta", .flags = VAL_RO, .attr = {.type = V_UINT, .get = toy_get_pc, .set = NULL}},
+        {.kind = M_ATTR,
+         .name = "meta",
+         .flags = VAL_RO,
+         .doc = "reserved name",
+         .attr = {.type = V_UINT, .get = toy_get_pc, .set = NULL}},
     };
     static const class_desc_t bad_class = {
         .name = "Bad",

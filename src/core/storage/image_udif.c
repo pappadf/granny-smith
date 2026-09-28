@@ -64,27 +64,6 @@ static uint64_t rd64(const uint8_t *p) {
     return ((uint64_t)RD_BE32(p) << 32) | (uint64_t)RD_BE32(p + 4);
 }
 
-// CRC-32 (reflected, polynomial 0xEDB88320) — the same one zlib and PNG use,
-// which is what UDIF stores for checksum type 2.  Kept local because the
-// other two copies in the tree are private to their own subsystems.
-uint32_t udif_crc32(uint32_t crc, const uint8_t *data, size_t len) {
-    static uint32_t table[256];
-    static int table_ready = 0;
-    if (!table_ready) {
-        for (uint32_t n = 0; n < 256; n++) {
-            uint32_t c = n;
-            for (int k = 0; k < 8; k++)
-                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-            table[n] = c;
-        }
-        table_ready = 1;
-    }
-    crc = ~crc;
-    for (size_t i = 0; i < len; i++)
-        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-    return ~crc;
-}
-
 bool udif_detect(const uint8_t *trailer, size_t len) {
     if (!trailer || len < UDIF_TRAILER_SIZE)
         return false;
@@ -119,6 +98,12 @@ int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out) 
     // The block map is mandatory; without it there is nothing to decode.
     if (out->xml_length == 0 || out->xml_length > UDIF_XML_MAX || out->sectors == 0)
         return -EINVAL;
+    // The decoded image is pre-extended to sectors * 512 before anything is
+    // decoded, so an unbounded count asks for an arbitrarily large scratch
+    // file.  Bound it by what the storage layer can open
+    // at all: 2^32 blocks.
+    if (out->sectors > UINT32_MAX)
+        return -EFBIG;
     return 0;
 }
 
@@ -243,8 +228,9 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
         chunks[nc].count = rd64(e + 16);
         chunks[nc].offset = rd64(e + 24);
         chunks[nc].length = rd64(e + 32);
-        // A chunk must stay inside the sector run its own table declares.
-        if (chunks[nc].sector + chunks[nc].count > t->sectors) {
+        // A chunk must stay inside the sector run its own table declares --
+        // checked without an addition that 64-bit values could wrap.
+        if (chunks[nc].count > t->sectors || chunks[nc].sector > t->sectors - chunks[nc].count) {
             free(chunks);
             return -EINVAL;
         }

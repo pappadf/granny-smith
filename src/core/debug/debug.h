@@ -10,6 +10,8 @@
 // === Includes ===
 #include "addr_format.h"
 #include "common.h"
+#include "object.h"
+#include "value.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -18,22 +20,30 @@
 // === Forward Declarations ===
 struct cpu;
 struct object;
+struct value_map_builder;
 
-// === Main-CPU debug interface (PPC proposal §3.9b) ===
+// === Main-CPU debug interface ===
 // The handful of debugger paths that reach into the main CPU (PC reads for
 // breakpoints/trace, disassembly, logical→physical translation) go through
 // this vtable so they work unchanged whichever architecture owns the machine.
 // Populated by system_create from the active core's adapter (the 68K one is
 // cpu_debug_if() in cpu.c); fetched via system_cpu_debug_if().
 typedef struct cpu_debug_if {
-    void *ctx; // the core instance (cpu_t / ppc_t)
+    void *ctx; // the core instance (cpu_t / ppc_t / dsp3210_t)
     uint32_t (*get_pc)(void *ctx);
-    void (*set_pc)(void *ctx, uint32_t pc);
+    void (*set_pc)(void *ctx, uint32_t pc); // NULL on a core the debugger cannot redirect
     // Disassemble one instruction at pc using the core's own memory view into
-    // buf (mnemonic + '\t' + operands, empty string for illegal encodings;
-    // buf must hold >= 100 bytes).  Returns bytes consumed (68K: 2..20;
-    // PPC: always 4).
-    int (*disasm)(void *ctx, uint32_t pc, char *buf);
+    // buf (mnemonic + '\t' + operands, or the whole text with no tab for an
+    // algebraic syntax like the DSP3210's; empty string for illegal
+    // encodings; buf holds `buflen` >= 100 bytes).  Returns bytes consumed
+    // (68K: 2..20; PPC and DSP3210: always 4).
+    // The length is passed explicitly because the 68K adapter's backend is 39
+    // unbounded sprintf calls into whatever the caller supplied.  An exhaustive
+    // sweep (every MOVEM mask x every full-format extension word x six MOVEM
+    // opcodes, plus an all-opcode pass) puts the true worst case at 76 bytes
+    // against the caller's 100, so there is no live overflow -- this is the
+    // contract being written down rather than left to coincide.
+    int (*disasm)(void *ctx, uint32_t pc, char *buf, size_t buflen);
     // Translate a logical address in the core's current context; *ok reports
     // whether a valid translation exists (identity when translation is off).
     uint32_t (*translate)(void *ctx, uint32_t logical, bool *ok);
@@ -42,9 +52,43 @@ typedef struct cpu_debug_if {
     // sprint stopped.  NULL means the mac world is the core's own space
     // (every 68K machine); the PPC core supplies the user-data view here,
     // because on PDM the nanokernel relocates logical page 0 away from
-    // physical 0 once the framebuffer claims it (§3.9e).
+    // physical 0 once the framebuffer claims it.
     uint32_t (*translate_mac)(void *ctx, uint32_t logical, bool *ok);
+    // --- for debug.frame, so it needs no architecture-specific code ---
+    // Short architecture tag: "m68k", "ppc" or "dsp3210".
+    const char *arch;
+    // Put the core's register file into `regs` (name -> integer).
+    void (*regs)(void *ctx, struct value_map_builder *regs);
+    // Put the FPU register file into `fpu` and return true; return false,
+    // writing nothing, when the core has no FPU.
+    bool (*fpu)(void *ctx, struct value_map_builder *fpu);
+    // Instruction-side logical→physical, for disassembly rows.  NULL means
+    // the same as `translate` (68K); PPC's instruction and data BATs differ.
+    // Both NULL: the core addresses physical memory directly (the DSP3210).
+    uint32_t (*translate_code)(void *ctx, uint32_t logical, bool *ok);
+    // True in supervisor state: which MMU context a debugger read uses.
+    bool (*is_supervisor)(void *ctx);
 } cpu_debug_if_t;
+
+// The frame contract every CPU-like object shares: `debug.frame`,
+// `machine.cpu.frame` and an auxiliary core's `frame` (machine.dsp) take
+// these arguments -- (addr, count, before), all optional -- and answer
+// debug_frame_build's map, {arch, pc, regs, rows, fpu?}, built from the
+// core's cpu_debug_if_t.  debug.c documents the shape.
+#define DEBUG_FRAME_NARGS 3
+extern const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS];
+value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, const value_t *argv);
+
+// The result of a typed `machine.cpu.mmu.translate`, the same shape on every
+// MMU kind: {phys, valid, via}.  `phys` is absent when the translation is
+// invalid; `via` says how it resolved: "identity" (translation off), "tt"
+// (68K transparent translation), "bat" (PPC block translation), "page"
+// (a table walk), "segment" (PPC direct-store segment, or the Lisa's MMU).
+value_t debug_translation_result(uint32_t phys, bool valid, const char *via);
+
+// Read the optional `space` argument at argv[idx]: "logical" (the default,
+// also when omitted) or "physical".  Returns false for anything else.
+bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);
 
 // Resolve a 68k low-memory address through the mac-world translation
 // (identity on 68K machines and when no machine is live).  Shared by
@@ -92,7 +136,11 @@ struct debug {
     breakpoint_t *breakpoints;
     uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
     logpoint_t *logpoints;
-    // Sparse stable id counters (proposal §2.1). Incremented on every
+    // A watchpoint (a stopping memory logpoint, in the list above) fired
+    // inside the instruction in flight; debug_break_and_trace stops the
+    // machine after that instruction and clears it.
+    bool watch_hit;
+    // Sparse stable id counters. Incremented on every
     // add; never reset, never recycled. The first allocated id is 0.
     int next_breakpoint_id;
     int next_logpoint_id;
@@ -112,12 +160,11 @@ struct debug {
     uint32_t trace_entries_size;
     uint32_t trace_entries_head;
     uint32_t trace_entries_tail;
-    // Platform-specific assertion callback (e.g., for test integration)
-    void (*assertion_callback)(const char *expr, const char *file, int line, const char *func);
     // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
     struct object *object; // root `debug` node
     struct object *bp_collection_object;
     struct object *lp_collection_object;
+    struct object *wp_collection_object;
     struct object *mac_object; // debug.mac
     struct object *mac_globals_object; // debug.mac.globals
 };
@@ -127,6 +174,15 @@ typedef struct debug debug_t;
 // === Lifecycle (Constructor / Destructor) ===
 
 debug_t *debug_init(void);
+
+// Called after every GS_ASSERT failure and every GS_UNIMPLEMENTED report, once
+// the diagnostics are printed and the machine is stopped.  `kind` is
+// "assertion" or "unimplemented function"; `expr` is the failed condition,
+// or NULL.  One hook per process, set by the platform at startup -- not per
+// machine, so a failure while a machine is being built (a checkpoint restore)
+// reaches it too.  NULL for none.
+typedef void (*debug_failure_hook_fn)(const char *kind, const char *expr, const char *file, int line, const char *func);
+void debug_set_failure_hook(debug_failure_hook_fn fn);
 void debug_cleanup(debug_t *debug);
 
 // === Operations ===
@@ -145,9 +201,8 @@ int delete_all_logpoints(debug_t *debug);
 
 // Framebuffer utilities — used by typed `screen.*` wrappers and the
 // legacy `screenshot` command.  Each takes a const display_t * so the
-// helper can read `bits`, `width`, `height`, `stride`, `format`, and (in
-// later steps) `clut`.  v1 supports PIXEL_1BPP_MSB only — paths for the
-// other pixel formats land alongside the JMFB driver in step 6.
+// helper can read `bits`, `width`, `height`, `stride`, `format`, and, for
+// the indexed formats, `clut`.
 struct display;
 typedef struct display display_t;
 uint32_t framebuffer_checksum(const display_t *d);
@@ -157,13 +212,13 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
 // that region are masked out of the comparison in both images (used to ignore
 // blinking carets and other incidental, phase-dependent pixels).  Pass NULL to
 // compare the whole screen.
-int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rect);
+int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rects, int n_rects);
 int save_framebuffer_as_png(const display_t *d, const char *filename);
 // Decode a width x height PNG into a caller-owned RGBA8888 buffer
 // (width*height*4 bytes).  Returns 0 / -1 (the machine.videoin.load path).
 int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *out_rgba);
 
-// === M6: object-model accessors ============================================
+// === Object-model accessors ================================================
 //
 // debug.{breakpoints,logpoints}.add(...) / .N.remove() and the
 // per-entry attribute getters live in src/core/object/debug_classes.c.
@@ -172,7 +227,7 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
 // definitions live in debug.c).
 //
 // Identity: every breakpoint and logpoint carries a sparse stable id
-// (proposal §2.1 — never recycled, max-id-ever + 1 on add). The id is
+// (never recycled, max-id-ever + 1 on add). The id is
 // what the indexed-child callbacks expose as the "index" segment.
 
 // Allocate a fresh sparse id. Caller assigns it to its entry struct
@@ -193,6 +248,11 @@ int debug_breakpoint_count(debug_t *debug);
 int debug_breakpoint_next_id(debug_t *debug, int prev_id);
 int debug_logpoint_count(debug_t *debug);
 int debug_logpoint_next_id(debug_t *debug, int prev_id);
+// The watchpoints: the stopping entries of the same list, which the two
+// collections split between them (`debug.logpoints` never lists one).
+int debug_watchpoint_count(debug_t *debug);
+int debug_watchpoint_next_id(debug_t *debug, int prev_id);
+int delete_all_watchpoints(debug_t *debug);
 
 // Remove by sparse id. Returns true if an entry was removed. Frees the
 // entry's attached object_t (which fires invalidators) before freeing
@@ -252,8 +312,8 @@ void debug_set_prompt_default(bool enabled);
 // streaming with `log exceptions 1`, dump the ring with `info exceptions`.
 
 // Which architecture recorded a ring entry.  One shared ring for all main-CPU
-// architectures — the fields below are reused by role per arch (PPC proposal
-// §3.9c): on PPC, `vbr` carries MSR, `format_frame` carries the vector
+// architectures — the fields below are reused by role per arch: on PPC,
+// `vbr` carries MSR, `format_frame` carries the vector
 // offset, and `fault_addr` carries DAR.  The dump prints per-arch.
 enum exc_trace_arch {
     EXC_ARCH_M68K = 0,

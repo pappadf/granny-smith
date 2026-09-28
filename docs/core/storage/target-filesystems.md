@@ -375,10 +375,12 @@ Two resolver variants:
   (`get_partition_hfs` / `get_partition_ufs`, which compute `start_block*512`).
 - **Read-only**: the image backend's `mkdir`/`unlink`/`rename` slots are static
   `-EROFS` rejecters — never conditionally writable.
-- **SCSI-attach conflict**: if the same file is attached to the guest via
-  `hd`/`cdrom`, `image_vfs_notify_attached` marks the mount *conflicted* and
-  backend calls return `-EBUSY`; `image_vfs_notify_detached` clears it. This
-  prevents reading an image the guest is mutating.
+- **Writable-attach conflict**: while the emulator holds the same file open
+  writable — an attached hard disk or floppy — the mount and every backend
+  call return `-EBUSY`, because the guest's writes land in a delta this
+  read-only mount cannot see. image_vfs asks `image_path_is_open_writable()`
+  at each call, so access resumes as soon as the image is detached. Read-only
+  attaches (CD-ROM) do not conflict.
 - A reference count tracks live dir/file handles so a mount is not torn down
   underneath them.
 

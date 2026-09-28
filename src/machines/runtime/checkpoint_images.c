@@ -5,19 +5,18 @@
 // Image-list checkpoint serialisation — see checkpoint_images.h.
 
 #include "checkpoint_images.h"
+#include "gs_out.h"
 
 #include "checkpoint_machine.h"
 #include "image.h"
-#include "log.h"
 #include "storage.h"
+#include "system.h" // MAX_IMAGES -- the real bound on the restored list
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-LOG_USE_CATEGORY_NAME("setup");
 
 // Save the image list into a checkpoint stream.  Layout:
 //   uint32_t count
@@ -39,36 +38,16 @@ void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
 // checkpoint_set_error on partial reads / failed image opens so the
 // caller's restore loop sees a marked-error checkpoint.
 image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
-    uint32_t len = 0;
-    system_read_checkpoint_data(cp, &len, sizeof(len));
-    char *name = NULL;
-    if (len > 0) {
-        name = (char *)malloc(len);
-        if (!name) {
-            char tmp;
-            for (uint32_t k = 0; k < len; ++k)
-                system_read_checkpoint_data(cp, &tmp, 1);
-        } else {
-            system_read_checkpoint_data(cp, name, len);
-        }
-    }
+    // Bounded and terminated by the reader rather than by the writer's
+    // promise: `name` goes on to access(), image_open_with_geometry() and
+    // gs_outf("%s"), so a file that omits the NUL used to read off the end of
+    // the allocation, and an unbounded length drove the malloc.
+    char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
     char writable = 0;
     system_read_checkpoint_data(cp, &writable, sizeof(writable));
     uint64_t raw_size = 0;
     system_read_checkpoint_data(cp, &raw_size, sizeof(raw_size));
-    uint32_t instance_len = 0;
-    system_read_checkpoint_data(cp, &instance_len, sizeof(instance_len));
-    char *instance_path = NULL;
-    if (instance_len > 0) {
-        instance_path = (char *)malloc(instance_len);
-        if (instance_path) {
-            system_read_checkpoint_data(cp, instance_path, instance_len);
-        } else {
-            char tmp;
-            for (uint32_t k = 0; k < instance_len; ++k)
-                system_read_checkpoint_data(cp, &tmp, 1);
-        }
-    }
+    char *instance_path = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image instance path");
 
     image_t *img = NULL;
     if (name) {
@@ -104,12 +83,12 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             img = image_open_readonly_with_geometry(name, geom);
         }
         if (!img) {
-            printf("Error: image_open failed for %s while restoring checkpoint\n", name);
+            gs_outf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
         }
     }
     if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
-        printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
+        gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }
     free(name);
@@ -118,9 +97,18 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
 }
 
 void mac_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp) {
+    // The count comes off disk and used to be the loop bound directly: a
+    // corrupt 0xFFFFFFFF ran four billion iterations, each one re-entering the
+    // restore, calling storage_restore_from_checkpoint and logging a line --
+    // an effective hang plus a log flood rather than an error.
     uint32_t count = 0;
-    system_read_checkpoint_data(cp, &count, sizeof(count));
+    if (!checkpoint_read_count(cp, &count, MAX_IMAGES, "images"))
+        return;
     for (uint32_t i = 0; i < count; ++i) {
+        // Stop at the first damaged entry rather than grinding through the
+        // remainder against an already-failed stream.
+        if (checkpoint_has_error(cp))
+            return;
         // Generic image list is all flat 512-byte disks (block_size 0 ⇒ 512).
         image_t *img = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
         if (img)

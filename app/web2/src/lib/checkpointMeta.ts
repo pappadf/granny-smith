@@ -42,7 +42,7 @@ export function checkpointCreatedToDate(created: string): Date | null {
   );
 }
 
-// Compact human size — same vibe as the prototype's "20 MB" suffixes.
+// Compact human size, e.g. "20 MB".
 export function formatBytes(n: number): string {
   if (n <= 0 || !Number.isFinite(n)) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];

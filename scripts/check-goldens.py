@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 """check-goldens.py — every screen assertion in a test must guard a DISTINCT frame.
 
 A `check("a.png")` and a `check("b.png")` in the same script are two separate
@@ -7,7 +9,7 @@ byte-identical, they are one claim written twice: any frame satisfying one
 satisfies the other, so a regression that breaks only the state b.png describes
 still passes. The test stays green while its coverage silently halves.
 
-That is not hypothetical. The §7 re-host of iicx-mactest to the IIci landed with
+That is not hypothetical. The re-host of iicx-mactest to the IIci landed with
 all seven of its checkpoints recaptured to the same frame — and that frame was
 MacTest's "SUSPECTED PROBLEM: Logic board" dialog, so a golden named
 floppy-test-success.png asserted a hardware failure. It passed CI. The
@@ -21,13 +23,27 @@ on screen into the expected result. A collision after a recapture nearly always
 means the choreography stopped advancing and every later checkpoint settled on
 one stuck frame.
 
+It also fails on a literal reference that names no file (a check that can
+only ever fail, or a golden never captured), and on a tracked golden that no
+script names (an orphan, which asserts nothing).
+
+"Identical" means identical PIXELS as the emulator reads them, not identical
+files: two encodings of one frame are one claim.  And every tracked golden
+must be a PNG the emulator's reader (load_png_to_rgba, src/core/debug/debug.c)
+decodes as intended: 8-bit grey, RGB or RGBA, and every row's filter type 0,
+because that reader skips the filter byte rather than applying it.  It must
+also be deflated: stored (uncompressed) blocks cost a hundred times the space.
+
 Usage:  scripts/check-goldens.py [tests/integration]
-Exit:   0 clean, 1 collisions found.
+Exit:   0 clean, 1 collisions, unresolved references or orphans found.
 """
 
 import hashlib
 import re
+import struct
+import subprocess
 import sys
+import zlib
 from collections import defaultdict
 from pathlib import Path
 
@@ -65,10 +81,71 @@ PATTERNS = [
 # is the mactest failure mode wearing a comment.
 WAIVER = re.compile(r"#\s*golden-collision-ok:\s*(.+)$")
 
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+CHANNELS = {0: 1, 2: 3, 6: 4}  # colour type -> bytes per pixel, at bit depth 8
+
+
+def decode(path: Path):
+    """The frame the emulator reads from a golden: (digest, problem).
+
+    The digest covers the dimensions and the pixels expanded to RGBA exactly
+    as load_png_to_rgba expands them, so it is independent of the encoding.
+    `problem` is None, or why the emulator would misread the file."""
+    data = path.read_bytes()
+    if not data.startswith(PNG_SIG):
+        return None, "not a PNG"
+    pos, ihdr, idat = 8, None, b""
+    while pos + 8 <= len(data):
+        length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if ctype == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", body)
+        elif ctype == b"IDAT":
+            idat += body
+    if not ihdr or not idat:
+        return None, "no IHDR or IDAT"
+    # Stored (uncompressed) deflate: the emulator reads it, but a 640x480
+    # frame is 1.2 MB of it against ~12 KB deflated, and every checkout
+    # carries it.  The emulator's own writer deflates (save_framebuffer_as_png).
+    if len(idat) > 2 and (idat[2] >> 1) & 3 == 0:
+        return None, "stored (uncompressed) deflate blocks; re-encode it deflated"
+    width, height, depth, colour, _, _, interlace = ihdr
+    if depth != 8 or colour not in CHANNELS or interlace:
+        return None, f"bit depth {depth}, colour type {colour}, interlace {interlace}: " \
+                     "the reader takes 8-bit grey, RGB or RGBA, not interlaced"
+    try:
+        raw = zlib.decompress(idat)
+    except zlib.error as e:
+        return None, f"IDAT does not inflate ({e})"
+    bpp = CHANNELS[colour]
+    stride = 1 + width * bpp
+    if len(raw) != stride * height:
+        return None, f"IDAT holds {len(raw)} bytes, {stride * height} expected"
+    rgba = bytearray()
+    for y in range(height):
+        row = raw[y * stride:(y + 1) * stride]
+        if row[0] != 0:
+            return None, f"row {y} has filter type {row[0]}; the reader ignores filters, so only 0 decodes"
+        px = row[1:]
+        if colour == 6:
+            rgba += px
+        elif colour == 2:
+            for x in range(0, len(px), 3):
+                rgba += px[x:x + 3] + b"\xff"
+        else:
+            for v in px:
+                rgba += bytes((v, v, v, 255))
+    digest = hashlib.md5(struct.pack(">II", width, height) + bytes(rgba)).hexdigest()
+    return digest, None
+
 
 def scan(script: Path):
     """Return (resolvable targets, waived basename-sets, dynamic refs)."""
     text = script.read_text(encoding="utf-8", errors="replace")
+    # The runner defines $TEST_DIR (the script's own directory), so a path
+    # built on it resolves; $WORK_DIR is per-run scratch, never a golden.
+    text = text.replace("${$TEST_DIR}/", "")
     out, waivers, dynamic = [], [], []
     for line in text.splitlines():
         waiver = WAIVER.search(line)
@@ -89,6 +166,8 @@ def scan(script: Path):
             for ref in pat.findall(line):
                 if not ref.endswith(".png") and "${" not in ref:
                     continue  # a check() arg that is not a golden reference
+                if "${$WORK_DIR}" in ref:
+                    continue  # a runtime artifact the row wrote itself
                 # A reference built from a variable — check("goldens/${$g}") in
                 # a parameterised sweep helper — cannot be resolved by reading
                 # the script, so those goldens are NOT covered by this gate.
@@ -111,20 +190,38 @@ def main() -> int:
     checked = 0
     waived_count = 0
     unresolved = []
+    missing = []
+    undecodable = []
+    named = set()  # every golden path a script names, resolved
+    dynamic_patterns = []  # regexes for names built from a variable
     for script in sorted(root.glob("*/*.script")):
         if script.parent.name == "lib":
             continue
         refs, waivers, dynamic = scan(script)
         for ref in dynamic:
             unresolved.append(f"{script.relative_to(root)}: {ref}")
+            # A name built partly from a variable (insert-disk${$n:d}.png)
+            # accounts for the goldens in its own directory that fit it.  A
+            # bare variable (a helper's ${$golden}) accounts for nothing: its
+            # call sites name the real files.
+            base = Path(ref).name
+            rx = re.sub(r"\\\$\\\{[^}]*\\\}", ".*", re.escape(base))
+            if rx.replace(".*", ""):
+                dynamic_patterns.append((script.parent.resolve(), re.compile("^" + rx + "$")))
         by_digest = defaultdict(set)
         for ref in refs:
             golden = (script.parent / ref).resolve()
             if not golden.is_file():
-                # Missing goldens are the runner's problem, not this lint's:
-                # a REGEN run creates them and a verify run fails loudly.
+                # A literal that names no file is a check that can only fail,
+                # or a golden never captured (a row that runs only on request
+                # hides it).  Report it: silence would read as "checked".
+                missing.append(f"{script.relative_to(root)}: {ref}")
                 continue
-            digest = hashlib.md5(golden.read_bytes()).hexdigest()
+            named.add(golden)
+            digest, problem = decode(golden)
+            if problem:
+                undecodable.append(f"{script.relative_to(root)}: {ref}: {problem}")
+                continue
             by_digest[digest].add(ref)
             checked += 1
 
@@ -144,6 +241,13 @@ def main() -> int:
             for ref in sorted(group):
                 print(f"    {ref}")
 
+    if undecodable:
+        for u in undecodable:
+            print(f"UNREADABLE {u}")
+        print("Each is misread by the emulator or stored uncompressed; re-encode it "
+              "as 8-bit RGBA, filter 0, deflated (what the emulator's writer emits).")
+        return 1
+
     if collisions:
         print()
         print(f"{collisions} golden collision(s). Each is one frame doing the work "
@@ -154,6 +258,33 @@ def main() -> int:
               "the states differ,")
         print("waive it explicitly:  # golden-collision-ok: a.png b.png - "
               "<why, and what proves it>")
+        return 1
+
+    # Orphans: tracked goldens no script names, literally or through a name
+    # built from a variable.
+    tracked = subprocess.run(["git", "ls-files", "--", f"{root}/*.png"], capture_output=True,
+                             text=True).stdout.split()
+    def named_elsewhere(t):
+        # A TEST_RUNNER test names its goldens in run.sh / config.mk.
+        d, name = Path(t).parent, Path(t).name
+        while d != root and d.parent != d and not (d / "config.mk").exists():
+            d = d.parent
+        return any(name in f.read_text(errors="replace")
+                   for f in list(d.glob("*.sh")) + list(d.glob("*.mk")))
+
+    orphans = [t for t in tracked
+               if Path(t).resolve() not in named
+               and not named_elsewhere(t)
+               and not any(Path(t).resolve().is_relative_to(d) and p.match(Path(t).name)
+                           for d, p in dynamic_patterns)]
+
+    if missing or orphans:
+        for m in missing:
+            print(f"UNRESOLVED {m}: no such file")
+        for o in orphans:
+            print(f"ORPHAN {o}: no script names it")
+        print("Capture the missing golden (and prove it by a normal run), fix the path, "
+              "or delete the orphan.")
         return 1
 
     if unresolved:

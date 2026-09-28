@@ -25,8 +25,11 @@
 
 #include "lisa_mmu.h"
 
+#include "checkpoint.h" // system_{read,write}_checkpoint_data are macros
 #include "cpu.h"
+#include "debug.h"
 #include "memory.h"
+#include "object.h"
 #include "scheduler.h"
 
 #include <stdlib.h>
@@ -149,7 +152,7 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
     m->bad_par_gran = 0xFFFFFFFFu; // no bad-parity location
     g_lisa_mmu = m;
     if (cp)
-        lisa_mmu_checkpoint(m, cp); // restore (same field order as save)
+        lisa_mmu_checkpoint_restore(m, cp); // same field order as the save
     return m;
 }
 
@@ -161,12 +164,54 @@ void lisa_mmu_delete(lisa_mmu_t *m) {
     free(m);
 }
 
+// Serialise the Lisa segment MMU's guest state, in one canonical order shared
+// by save and restore.
+//
+// This was a symmetric NO-OP -- `(void)m; (void)cp;` on both sides -- which is
+// why nothing ever noticed: a save wrote zero bytes and a restore read zero
+// bytes, so the stream stayed consistent and only the MACHINE came back wrong.
+// Lost were sor[4][128] and slr[4][128], i.e. 4 KiB of descriptor RAM covering
+// the entire address space, plus every latch below.  lisa_mmu_init hard-sets
+// start = true and zeroes the descriptors, so a restored machine resumed a
+// mid-boot CPU against a POWER-ON MMU: `start` re-routes every low access to
+// ROM/descriptor RAM and every mapped segment reads slr = 0, which is below
+// ACC_MEM_RO_STK, so it faults.
+//
+// Field-by-field rather than a POD blob because the struct interleaves host
+// pointers (rom, sched, the NMI and VBL-ack callbacks, the io[] table) with
+// guest state, so there is no single prefix to take.  Both directions walk the
+// same list; the stream is build-ID gated, so widening it later is free as long
+// as both halves move together.
+#define LISA_MMU_CP_FIELDS(OP, m, cp)                                                                                  \
+    OP(cp, &(m)->sor, sizeof((m)->sor)); /* descriptor RAM: origin per context */                                      \
+    OP(cp, &(m)->slr, sizeof((m)->slr)); /* descriptor RAM: limit/access */                                            \
+    OP(cp, &(m)->start, sizeof((m)->start)); /* START/SETUP latch */                                                   \
+    OP(cp, &(m)->seg1, sizeof((m)->seg1)); /* context selector bits */                                                 \
+    OP(cp, &(m)->seg2, sizeof((m)->seg2));                                                                             \
+    OP(cp, &(m)->vidlatch, sizeof((m)->vidlatch)); /* framebuffer base A15-A20 */                                      \
+    OP(cp, &(m)->vtir_enabled, sizeof((m)->vtir_enabled));                                                             \
+    OP(cp, &(m)->sfmsk, sizeof((m)->sfmsk));                                                                           \
+    OP(cp, &(m)->hdmsk, sizeof((m)->hdmsk));                                                                           \
+    OP(cp, &(m)->vbl_active, sizeof((m)->vbl_active));                                                                 \
+    OP(cp, &(m)->status_toggle, sizeof((m)->status_toggle));                                                           \
+    OP(cp, &(m)->vertical, sizeof((m)->vertical)); /* retrace latch */                                                 \
+    OP(cp, &(m)->last_retrace_frame, sizeof((m)->last_retrace_frame));                                                 \
+    OP(cp, &(m)->serial_ctr, sizeof((m)->serial_ctr)); /* RDSERN bit-stream cursor */                                  \
+    OP(cp, &(m)->wwp_on, sizeof((m)->wwp_on)); /* parity-test state */                                                 \
+    OP(cp, &(m)->parity_detect, sizeof((m)->parity_detect));                                                           \
+    OP(cp, &(m)->bad_par_gran, sizeof((m)->bad_par_gran));                                                             \
+    OP(cp, &(m)->mealtch, sizeof((m)->mealtch))
+
 void lisa_mmu_checkpoint(lisa_mmu_t *m, checkpoint_t *cp) {
-    // Symmetric no-op for now: save and restore both contribute zero bytes, so
-    // the surrounding subsystems' fixed checkpoint ordering is preserved.
-    // Full descriptor-RAM + latch save/restore lands in Step 9 (R7).
-    (void)m;
-    (void)cp;
+    if (!m || !cp)
+        return;
+    LISA_MMU_CP_FIELDS(system_write_checkpoint_data, m, cp);
+}
+
+void lisa_mmu_checkpoint_restore(lisa_mmu_t *m, checkpoint_t *cp) {
+    if (!m || !cp)
+        return;
+    LISA_MMU_CP_FIELDS(system_read_checkpoint_data, m, cp);
 }
 
 void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, memory_interface_t *iface, void *dev) {
@@ -278,8 +323,8 @@ void lisa_mmu_set_nmi(lisa_mmu_t *m, void (*cb)(void *, bool), void *ctx) {
 }
 
 // Read the Status Register byte.  Bit 2 is the vertical-retrace signal.  We
-// model only the *frame-accurate* VBL (docs/machines/lisa/lisa.md §8.1, §6.2 in the proposal:
-// cycle-exact video dot timing is a non-goal), so rather than reproduce the
+// model only the *frame-accurate* VBL (cycle-exact video dot timing is a
+// non-goal), so rather than reproduce the
 // exact dot-clock phase the ROM's video-logic self-test (VIDTST) samples, we
 // present a retrace bit that simply *changes* over time — alternating on each
 // Status Register read.  VIDTST waits for the bit low then expects it high, so
@@ -518,6 +563,20 @@ static lisa_resolved_t lisa_resolve(lisa_mmu_t *m, uint32_t addr, bool superviso
     return r;
 }
 
+bool lisa_mmu_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, uint32_t *phys, const char **space) {
+    if (!m)
+        return false;
+    lisa_resolved_t r = lisa_resolve(m, addr, supervisor, false);
+    static const char *const names[] = {[L_RAM] = "ram", [L_IO] = "io", [L_ROM] = "rom", [L_MMUREG] = "mmureg"};
+    if (r.route == L_FAULT)
+        return false;
+    if (phys)
+        *phys = r.route == L_MMUREG ? addr : r.phys;
+    if (space)
+        *space = names[r.route];
+    return true;
+}
+
 // Latch a 68000 bus error for the faulting access (group-0 exception; not a
 // PMMU descriptor retry, so the decoder skips the faulting instruction).
 static void lisa_raise_bus_error(uint32_t addr, bool is_read, bool supervisor) {
@@ -738,4 +797,133 @@ bool lisa_mmu_debug_write(uint32_t addr, unsigned size, bool supervisor, uint32_
         return false; // only RAM is poke-able without side effects
     lisa_ram_write(m, r.phys, size, value);
     return true;
+}
+
+// === Object model: machine.cpu.mmu on the Lisa ==============================
+//
+// The segment MMU is real hardware with its own translation; before this node
+// it had no object at all and the debugger showed every address as mapped to
+// itself.  translate/peek have the same signatures and result shapes as every
+// other MMU kind's.
+
+// Instance data: the lisa_mmu_t.
+static lisa_mmu_t *lisa_mmu_from(struct object *self) {
+    return (lisa_mmu_t *)object_data(self);
+}
+
+// Read `start`: the power-on START/SETUP latch (translation bypassed).
+static value_t lisa_attr_start(struct object *self, const member_t *mb) {
+    (void)mb;
+    lisa_mmu_t *m = lisa_mmu_from(self);
+    return m ? val_bool(m->start) : val_err("mmu not present");
+}
+
+// Read `context`: the user context the SEG1/SEG2 latches select (0-3).
+static value_t lisa_attr_context(struct object *self, const member_t *mb) {
+    (void)mb;
+    lisa_mmu_t *m = lisa_mmu_from(self);
+    return m ? val_int((m->seg2 << 1) | m->seg1) : val_err("mmu not present");
+}
+
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via: "segment",
+// space}.  `fetch` is accepted for the uniform signature; the segment MMU
+// makes no instruction/data distinction.
+static value_t lisa_method_translate(struct object *self, const member_t *mb, int argc, const value_t *argv) {
+    (void)mb;
+    lisa_mmu_t *m = lisa_mmu_from(self);
+    if (!m)
+        return val_err("mmu not present");
+    uint32_t addr = (uint32_t)argv[0].u;
+    bool sup = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : debug_cpu_is_supervisor();
+    uint32_t phys = addr;
+    const char *space = NULL;
+    bool ok = lisa_mmu_translate(m, addr, sup, &phys, &space);
+    value_map_builder_t *b = val_map_new();
+    if (ok) {
+        value_t p = val_uint(4, phys);
+        p.flags |= VAL_HEX;
+        val_map_put(b, "phys", p);
+        val_map_put(b, "space", val_str(space));
+    }
+    val_map_put(b, "valid", val_bool(ok));
+    val_map_put(b, "via", val_str(m->start && ok ? "identity" : "segment"));
+    return val_map_finish(b);
+}
+
+// peek(addr, [size], [space]) -> the value, big-endian, logical only: the
+// Lisa has three physical spaces, and a bare physical address names none.
+static value_t lisa_method_peek(struct object *self, const member_t *mb, int argc, const value_t *argv) {
+    (void)mb;
+    if (!lisa_mmu_from(self))
+        return val_err("mmu not present");
+    unsigned size = (argc >= 2 && argv[1].kind == V_UINT) ? (unsigned)argv[1].u : 4;
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("peek: space must be \"logical\" or \"physical\"");
+    if (physical)
+        return val_err("peek: the Lisa has three physical spaces (RAM, I/O, ROM); read a logical address");
+    if (size != 1 && size != 2 && size != 4)
+        return val_err("peek: size must be 1, 2 or 4");
+    return val_uint((uint8_t)size, lisa_mmu_debug_read((uint32_t)argv[0].u, size, debug_cpu_is_supervisor()));
+}
+
+// peek's default size: a named `space` must be reachable past it.
+static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+
+static const arg_decl_t lisa_translate_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical address"},
+    {.name = "supervisor",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "translate for supervisor (context 0) or user; default: the CPU's current state"},
+    {.name = "fetch",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "accepted for the uniform signature; the segment MMU does not distinguish"},
+};
+static const arg_decl_t lisa_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical address"},
+    {.name = "size",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_peek_size4,
+     .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "\"logical\" (default); \"physical\" is refused on the Lisa"},
+};
+
+static const member_t lisa_mmu_members[] = {
+    {.kind = M_ATTR,
+     .name = "start",
+     .flags = VAL_RO,
+     .doc = "START/SETUP latch: set at power-on, translation bypassed while set",
+     .attr = {.type = V_BOOL, .get = lisa_attr_start}},
+    {.kind = M_ATTR,
+     .name = "context",
+     .flags = VAL_RO,
+     .doc = "User context selected by the SEG1/SEG2 latches (0-3); supervisor mode always uses 0",
+     .attr = {.type = V_INT, .get = lisa_attr_context}},
+    {.kind = M_METHOD,
+     .name = "translate",
+     .doc = "Translate an address: {phys, valid, via, space}, side-effect-free (same shape on every MMU kind)",
+     .method = {.args = lisa_translate_args, .nargs = 3, .result = V_MAP, .fn = lisa_method_translate}},
+    {.kind = M_METHOD,
+     .name = "peek",
+     .doc = "Read memory through the segment MMU; side-effect-free",
+     .method = {.args = lisa_peek_args, .nargs = 3, .result = V_UINT, .fn = lisa_method_peek}},
+};
+
+static const class_desc_t lisa_mmu_class = {
+    .name = "lisa_mmu",
+    .members = lisa_mmu_members,
+    .n_members = sizeof(lisa_mmu_members) / sizeof(lisa_mmu_members[0]),
+};
+
+void lisa_mmu_attach_object(lisa_mmu_t *m, struct cpu *cpu) {
+    cpu_attach_mmu_node(cpu, &lisa_mmu_class, m);
 }

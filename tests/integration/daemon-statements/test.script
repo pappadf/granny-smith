@@ -1,0 +1,3 @@
+# The probes are sockets and stdin, driven by probe.py (run.sh); this row
+# has no script of its own.
+quit

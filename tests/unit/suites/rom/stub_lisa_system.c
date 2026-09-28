@@ -1,9 +1,11 @@
-// Minimal system accessor stubs for the Lisa ROM unit test.
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Minimal system accessor stubs for the ROM identity unit test.
 //
 // We cannot link the shared support/stub_system.c here because it also stubs
 // rom_identify_data(), which collides with the real rom.c under test. These
 // tests never create a machine, so NULL returns are sufficient — the ROM
-// interleave / identification paths exercised here don't touch the machine.
+// identity / interleave paths exercised here don't touch the machine.
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -88,4 +90,24 @@ const char *system_machine_model_id(void) {
 
 rtc_t *system_rtc(void) {
     return NULL;
+}
+
+// memory.translate asks the CPU's debug interface when there is no 68K MMU;
+// this harness has no CPU.
+struct cpu_debug_if;
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    return NULL;
+}
+
+// machine_config.c's explicit-pick helper drives the vROM/PROM offer
+// registries, which this harness does not link.
+void vrom_clear_explicit(void) {}
+void prom_clear_explicit(void) {}
+int vrom_set_path(const char *path) {
+    (void)path;
+    return 0;
+}
+int prom_set_path(const char *path) {
+    (void)path;
+    return 0;
 }

@@ -1,6 +1,6 @@
 # Integration test: IIcx + Display Card 24AC — floppy insert + launch System Info
 #
-# A variant of iicx-24ac.  Same boot: the genuine "Step B" artifact
+# A variant of iicx-24ac.  Same boot: the genuine pre-installed disk image
 # (systems/system_7_1_20mb_24ac_cd_32bit_gc.img — a 20 MB System 7.1 SCSI HD with
 # the 24AC cdev pre-installed and 32-bit addressing on) boots the IIcx + Display
 # Card 24AC to an 8-bpp COLOUR Finder desktop (640x480).  But rather than

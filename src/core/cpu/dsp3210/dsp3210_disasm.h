@@ -7,8 +7,7 @@
  * Sources of truth:
  *   - AT&T "DSP3210 Information Manual", chapters 4 (instruction set) and
  *     10 (instruction and register encodings), Table 10-1..10-3.
- *   - Cross-checked against the ROM-verified encoding notes in the
- *     840av_660av dossier (docs/dsp3210.md §1.5).
+ *   - Cross-checked against the encodings the AV ROM uses.
  *
  * Every DSP3210 instruction is exactly one 32-bit word on a 4-byte
  * boundary.  The disassembler is a pure function of (word, address); the

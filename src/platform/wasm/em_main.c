@@ -9,6 +9,8 @@
 // ============================================================================
 
 #include "em.h"
+#include "io/io_worker.h"
+#include "job/job.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -17,10 +19,10 @@
 #include <emscripten/atomic.h>
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
+#include <emscripten/threading.h>
 #include <emscripten/version.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <getopt.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
@@ -34,21 +36,18 @@
 #include <termios.h>
 #include <unistd.h>
 
-#ifdef __EMSCRIPTEN__
 #include <emscripten/stack.h>
 #include <emscripten/wasmfs.h>
-#else
-#if defined(__linux__) || defined(__APPLE__)
-#include <execinfo.h>
-#endif
-#endif
 
 #include "api.h"
 #include "appletalk.h"
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
+#include "host_keys.h"
 #include "keyboard.h"
+#include "laserwriter_job.h"
+#include "laserwriter_transport.h"
 #include "log.h"
 #include "machine.h"
 #include "mouse.h"
@@ -63,12 +62,14 @@
 // Forward Declarations
 // ============================================================================
 
-static void em_assertion_callback(const char *expr, const char *file, int line, const char *func);
+static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func);
 
-// Deferred speed mode: saved at parse time, applied in system_post_create()
-// when the machine (and scheduler) are created later via rom load.
-static enum schedule_mode g_deferred_speed = schedule_paced;
-static bool g_deferred_speed_set = false;
+// The always-present AppleShare volume.  The path literal lives here, in the
+// platform layer, because core never fabricates or interprets a path (PR #69);
+// core publishes it after every machine build (system_set_default_share).
+// Under OPFS the directory — and the AppleDouble sidecars the AFP server
+// writes beside each file — persist across page reloads for free.
+#define GS_DEFAULT_SHARE_PATH "/opfs/shared"
 
 // ============================================================================
 // Pointer-lock and Input Handling
@@ -77,41 +78,24 @@ static bool g_deferred_speed_set = false;
 static volatile int pointer_locked = 0;
 static bool mouse_button_down = false;
 
-// True when the active machine is a Lisa-family box (Lisa 2 / Macintosh XL),
-// whose keyboard/mouse live on the COPS rather than the Mac ADB/quadrature
-// devices.  Host input is then routed through the machine substrate's COPS path
-// (system_input_*) instead of the Mac-direct system_keyboard_update/
-// system_mouse_update, which have no device to talk to on the Lisa.
-static bool host_machine_is_lisa(void) {
-    const char *id = system_machine_model_id();
-    return id && (strcmp(id, "lisa") == 0 || strcmp(id, "macxl") == 0);
+// The host keys held down, and the keys they were delivered as (host_keys.c:
+// one path for every machine, by ADB raw keycode).
+static host_keys_t g_host_keys;
+
+// Where host key transitions go: the machine's own keyboard, through its
+// substrate (a Mac's ADB or M0110A, a Lisa's COPS).  0 = taken, <0 = refused.
+static int host_key_sink(int adb_code, bool down) {
+    return system_input_key(adb_code, down) < 0 ? -1 : 0;
 }
 
-// Inject a raw Lisa COPS key byte through the substrate (system_input_key parses
-// the "0xNN" form and queues it on the COPS).  A down code is 0xC0-0xFF; the
-// matching up code is the same byte with bit 7 cleared (code & 0x7F).
-static void host_lisa_key(uint8_t code) {
-    char buf[8];
-    snprintf(buf, sizeof(buf), "0x%02X", code);
-    system_input_key(buf, true);
-}
-
-// Track which Lisa COPS keys we've sent a down for but not yet an up, indexed by
-// the down code (0xC0-0xFF; bit 7 set).  Used to (a) deliver a key-up even if the
-// browser swallowed the keyup event — e.g. a Ctrl/Cmd chord the browser claimed
-// as an accelerator, which steals focus and the key-up, leaving the guest's
-// keyboard driver typematic-repeating a stuck key forever — and (b) release
-// everything when the page loses input focus.
-static bool lisa_key_held[256];
-
-// Send key-ups for every still-held Lisa key (down & 0x7F clears bit 7).  Called
-// on focus/pointer-lock loss so a lost keyup can't strand a key down.
-static void lisa_release_all_keys(void) {
-    for (int i = 0xC0; i <= 0xFF; i++) {
-        if (lisa_key_held[i]) {
-            lisa_key_held[i] = false;
-            host_lisa_key((uint8_t)i & 0x7F);
-        }
+// Focus or pointer lock lost: the key-ups (and the button-up) will land
+// elsewhere, so let go of everything now -- except Caps Lock, which the web
+// frontend owns (app/web2 lib/capslock.ts).
+static void host_release_all(void) {
+    host_keys_release_all(&g_host_keys, host_key_sink);
+    if (mouse_button_down) {
+        mouse_button_down = false;
+        system_input_mouse_button(false, "relative");
     }
 }
 
@@ -124,35 +108,27 @@ static EM_BOOL mouse_move_cb(int, const EmscriptenMouseEvent *, void *);
 static EM_BOOL key_down_cb(int, const EmscriptenKeyboardEvent *, void *);
 static EM_BOOL key_up_cb(int, const EmscriptenKeyboardEvent *, void *);
 
-// Mouse movement handler
-static void emulator_mouse_move(bool button, int dx, int dy) {
-    if (!pointer_locked)
-        return; // Ignore mouse movement if pointer is not locked
-
-    // Lisa/Mac XL: the mouse hangs off the COPS, which the Mac-direct
-    // system_mouse_update (ADB / quadrature) can't reach.  Feed the signed
-    // pointer-lock deltas to the COPS report path; the button is injected
-    // separately on its edges (below), matching the COPS keycode model.
-    if (host_machine_is_lisa()) {
-        if (dx || dy)
-            system_input_mouse_move(dx, dy, NULL);
+// Pointer-lock deltas, on every machine through the substrate's relative
+// operation (the Mac's hardware deltas, the Lisa's COPS reports).  This used
+// to call the Mac-only system_mouse_update and special-case the Lisa by model
+// id.
+static void emulator_mouse_move(int dx, int dy) {
+    if (!pointer_locked || (!dx && !dy))
         return;
-    }
-
-    // Call the actual mouse update routine
-    system_mouse_update(button, dx, dy);
+    system_input_mouse_move(dx, dy, "relative");
 }
 
 // Mouse button down callback
 static EM_BOOL mouse_down_cb(int type, const EmscriptenMouseEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    if (!pointer_locked)
+    if (!pointer_locked) {
         emscripten_request_pointerlock("#screen", EM_FALSE);
+        return EM_TRUE;
+    }
     mouse_button_down = true;
-    if (pointer_locked && host_machine_is_lisa())
-        system_input_mouse_button(true, NULL); // COPS mouse-button keycode
-    emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
+    system_input_mouse_button(true, "relative");
+    emulator_mouse_move(e->movementX, e->movementY);
     return EM_TRUE;
 }
 
@@ -160,10 +136,11 @@ static EM_BOOL mouse_down_cb(int type, const EmscriptenMouseEvent *e, void *ud) 
 static EM_BOOL mouse_up_cb(int type, const EmscriptenMouseEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    mouse_button_down = false;
-    if (pointer_locked && host_machine_is_lisa())
-        system_input_mouse_button(false, NULL);
-    emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
+    if (mouse_button_down) {
+        mouse_button_down = false;
+        system_input_mouse_button(false, "relative");
+    }
+    emulator_mouse_move(e->movementX, e->movementY);
     return EM_TRUE;
 }
 
@@ -173,7 +150,7 @@ static EM_BOOL plock_change_cb(int type, const EmscriptenPointerlockChangeEvent 
     (void)ud;
     pointer_locked = e->isActive;
     if (!e->isActive)
-        lisa_release_all_keys(); // lock lost (Esc, a browser dialog stealing focus) → don't strand keys
+        host_release_all(); // lock lost (Esc, a browser dialog stealing focus) → strand nothing
     return EM_TRUE;
 }
 
@@ -183,7 +160,7 @@ static EM_BOOL blur_cb(int type, const EmscriptenFocusEvent *e, void *ud) {
     (void)type;
     (void)e;
     (void)ud;
-    lisa_release_all_keys();
+    host_release_all();
     return EM_FALSE; // observe only; don't consume the blur
 }
 
@@ -193,485 +170,58 @@ static EM_BOOL mouse_move_cb(int type, const EmscriptenMouseEvent *e, void *ud) 
     (void)ud;
     if (!pointer_locked)
         return EM_FALSE;
-    emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
+    emulator_mouse_move(e->movementX, e->movementY);
     return EM_TRUE;
 }
 
 // ============================================================================
-// Keyboard Mapping (DOM to Macintosh ADB)
+// Keyboard: one path for every machine
 // ============================================================================
-
-// Map DOM keyboard codes to Macintosh ADB virtual key codes.
-// ADB virtual codes are the standard key identifiers from Inside Macintosh Vol V.
-// The keyboard.c module translates these to Mac Plus raw codes for the VIA protocol.
-static int map_dom_code_to_mac(const char *code, const char *key) {
-    (void)key; // key parameter kept for potential future use
-    if (!code)
-        return -1;
-
-    // ── Letters (A-Z) ───────────────────────────────────────────────────────
-    if (!strcmp(code, "KeyA"))
-        return 0x00;
-    if (!strcmp(code, "KeyS"))
-        return 0x01;
-    if (!strcmp(code, "KeyD"))
-        return 0x02;
-    if (!strcmp(code, "KeyF"))
-        return 0x03;
-    if (!strcmp(code, "KeyH"))
-        return 0x04;
-    if (!strcmp(code, "KeyG"))
-        return 0x05;
-    if (!strcmp(code, "KeyZ"))
-        return 0x06;
-    if (!strcmp(code, "KeyX"))
-        return 0x07;
-    if (!strcmp(code, "KeyC"))
-        return 0x08;
-    if (!strcmp(code, "KeyV"))
-        return 0x09;
-    if (!strcmp(code, "KeyB"))
-        return 0x0B;
-    if (!strcmp(code, "KeyQ"))
-        return 0x0C;
-    if (!strcmp(code, "KeyW"))
-        return 0x0D;
-    if (!strcmp(code, "KeyE"))
-        return 0x0E;
-    if (!strcmp(code, "KeyR"))
-        return 0x0F;
-    if (!strcmp(code, "KeyY"))
-        return 0x10;
-    if (!strcmp(code, "KeyT"))
-        return 0x11;
-    if (!strcmp(code, "KeyU"))
-        return 0x20;
-    if (!strcmp(code, "KeyI"))
-        return 0x22;
-    if (!strcmp(code, "KeyO"))
-        return 0x1F;
-    if (!strcmp(code, "KeyP"))
-        return 0x23;
-    if (!strcmp(code, "KeyL"))
-        return 0x25;
-    if (!strcmp(code, "KeyJ"))
-        return 0x26;
-    if (!strcmp(code, "KeyK"))
-        return 0x28;
-    if (!strcmp(code, "KeyN"))
-        return 0x2D;
-    if (!strcmp(code, "KeyM"))
-        return 0x2E;
-
-    // ── Number row (0-9 and symbols) ────────────────────────────────────────
-    if (!strcmp(code, "Digit1"))
-        return 0x12;
-    if (!strcmp(code, "Digit2"))
-        return 0x13;
-    if (!strcmp(code, "Digit3"))
-        return 0x14;
-    if (!strcmp(code, "Digit4"))
-        return 0x15;
-    if (!strcmp(code, "Digit5"))
-        return 0x17;
-    if (!strcmp(code, "Digit6"))
-        return 0x16;
-    if (!strcmp(code, "Digit7"))
-        return 0x1A;
-    if (!strcmp(code, "Digit8"))
-        return 0x1C;
-    if (!strcmp(code, "Digit9"))
-        return 0x19;
-    if (!strcmp(code, "Digit0"))
-        return 0x1D;
-    if (!strcmp(code, "Minus"))
-        return 0x1B; // - / _
-    if (!strcmp(code, "Equal"))
-        return 0x18; // = / +
-
-    // ── Punctuation and brackets ────────────────────────────────────────────
-    if (!strcmp(code, "BracketLeft"))
-        return 0x21; // [ / {
-    if (!strcmp(code, "BracketRight"))
-        return 0x1E; // ] / }
-    if (!strcmp(code, "Backslash"))
-        return 0x2A; // \ / |
-    if (!strcmp(code, "Semicolon"))
-        return 0x29; // ; / :
-    if (!strcmp(code, "Quote"))
-        return 0x27; // ' / "
-    if (!strcmp(code, "Comma"))
-        return 0x2B; // , / <
-    if (!strcmp(code, "Period"))
-        return 0x2F; // . / >
-    if (!strcmp(code, "Slash"))
-        return 0x2C; // / / ?
-    if (!strcmp(code, "Backquote"))
-        return 0x32; // ` / ~
-    if (!strcmp(code, "IntlBackslash"))
-        return 0x0A; // § / ± (non-US ISO layout)
-
-    // ── Control keys ────────────────────────────────────────────────────────
-    if (!strcmp(code, "Tab"))
-        return 0x30;
-    if (!strcmp(code, "Space"))
-        return 0x31;
-    if (!strcmp(code, "Backspace"))
-        return 0x33; // Delete key on Mac
-    if (!strcmp(code, "Enter"))
-        return 0x24; // Return
-    if (!strcmp(code, "Escape"))
-        return 0x35;
-
-    // ── Modifier keys ───────────────────────────────────────────────────────
-    // Mac Plus has single Shift/Option/Command keys but we map both left/right
-    if (!strcmp(code, "ControlLeft"))
-        return 0x36;
-    if (!strcmp(code, "ControlRight"))
-        return 0x36;
-    if (!strcmp(code, "ShiftLeft"))
-        return 0x38;
-    if (!strcmp(code, "ShiftRight"))
-        return 0x38;
-    if (!strcmp(code, "CapsLock"))
-        return 0x39;
-    if (!strcmp(code, "AltLeft"))
-        return 0x3A; // Option (left)
-    if (!strcmp(code, "AltRight"))
-        return 0x3A; // Option (right)
-    if (!strcmp(code, "MetaLeft"))
-        return 0x37; // Command (left)
-    if (!strcmp(code, "MetaRight"))
-        return 0x37; // Command (right)
-    if (!strcmp(code, "OSLeft"))
-        return 0x37; // Command (Windows key)
-    if (!strcmp(code, "OSRight"))
-        return 0x37; // Command (Windows key)
-
-    // ── Arrow keys ──────────────────────────────────────────────────────────
-    // RAW scan codes 0x3B-0x3E, not the Extended-layout VIRTUAL codes
-    // 0x7B-0x7E: the ADB keyboard forwards register-0 scan codes to the
-    // guest untranslated, and raw 0x7B-0x7D on a real ADB keyboard are
-    // the RIGHT SHIFT/OPTION/CONTROL modifiers — sending those made
-    // arrows press phantom modifiers on every ADB machine (found by
-    // Quake ignoring the web UI's arrows while scripted 0x3D worked).
-    // keyboard.c (Mac Plus VIA path) accepts both sets.
-    if (!strcmp(code, "ArrowLeft"))
-        return 0x3B;
-    if (!strcmp(code, "ArrowRight"))
-        return 0x3C;
-    if (!strcmp(code, "ArrowDown"))
-        return 0x3D;
-    if (!strcmp(code, "ArrowUp"))
-        return 0x3E;
-
-    // ── The Apple Extended Keyboard block ───────────────────────────────────
-    // Page Up/Down, Home, End, forward Delete, Help and the function keys.  A
-    // Mac Plus keyboard has none of these, which is presumably why they were
-    // never mapped -- but every ADB machine's guest can use them, and some
-    // REQUIRE them: Windows NT's text-mode Setup pages its licence agreement
-    // with Page Down and accepts it with F8, so without these the web UI gets
-    // stuck on the licence screen with no way forward.
-    //
-    // These are raw register-0 scan codes, like the arrows above.  They do not
-    // collide with the right-hand modifiers at raw 0x7B-0x7D that made the
-    // arrows send phantom Shift/Option/Control; 0x7A (F1) is the closest and is
-    // clear of them.  0x79 and 0x64 are the two confirmed end to end, driving
-    // NT Setup's licence agreement through to the hardware list.
-    if (!strcmp(code, "PageUp"))
-        return 0x74;
-    if (!strcmp(code, "PageDown"))
-        return 0x79;
-    if (!strcmp(code, "Home"))
-        return 0x73;
-    if (!strcmp(code, "End"))
-        return 0x77;
-    if (!strcmp(code, "Delete"))
-        return 0x75; // forward delete; Backspace is 0x33 above
-    if (!strcmp(code, "Insert"))
-        return 0x72; // Help on an Apple keyboard
-    if (!strcmp(code, "F1"))
-        return 0x7A;
-    if (!strcmp(code, "F2"))
-        return 0x78;
-    if (!strcmp(code, "F3"))
-        return 0x63;
-    if (!strcmp(code, "F4"))
-        return 0x76;
-    if (!strcmp(code, "F5"))
-        return 0x60;
-    if (!strcmp(code, "F6"))
-        return 0x61;
-    if (!strcmp(code, "F7"))
-        return 0x62;
-    if (!strcmp(code, "F8"))
-        return 0x64;
-    if (!strcmp(code, "F9"))
-        return 0x65;
-    if (!strcmp(code, "F10"))
-        return 0x6D;
-    if (!strcmp(code, "F11"))
-        return 0x67;
-    if (!strcmp(code, "F12"))
-        return 0x6F;
-
-    // ── Numeric keypad ──────────────────────────────────────────────────────
-    if (!strcmp(code, "NumpadDecimal"))
-        return 0x41; // Keypad .
-    if (!strcmp(code, "NumpadMultiply"))
-        return 0x43; // Keypad *
-    if (!strcmp(code, "NumpadAdd"))
-        return 0x45; // Keypad +
-    if (!strcmp(code, "NumLock"))
-        return 0x47; // Keypad Clear
-    if (!strcmp(code, "NumpadDivide"))
-        return 0x4B; // Keypad /
-    if (!strcmp(code, "NumpadEnter"))
-        return 0x4C; // Keypad Enter
-    if (!strcmp(code, "NumpadSubtract"))
-        return 0x4E; // Keypad -
-    if (!strcmp(code, "NumpadEqual"))
-        return 0x51; // Keypad =
-    if (!strcmp(code, "Numpad0"))
-        return 0x52;
-    if (!strcmp(code, "Numpad1"))
-        return 0x53;
-    if (!strcmp(code, "Numpad2"))
-        return 0x54;
-    if (!strcmp(code, "Numpad3"))
-        return 0x55;
-    if (!strcmp(code, "Numpad4"))
-        return 0x56;
-    if (!strcmp(code, "Numpad5"))
-        return 0x57;
-    if (!strcmp(code, "Numpad6"))
-        return 0x58;
-    if (!strcmp(code, "Numpad7"))
-        return 0x59;
-    if (!strcmp(code, "Numpad8"))
-        return 0x5B;
-    if (!strcmp(code, "Numpad9"))
-        return 0x5C;
-
-    return -1; // unmapped key
-}
-
-// ============================================================================
-// Keyboard Mapping (DOM to Lisa COPS)
-// ============================================================================
-
-// Map a DOM physical-key code to the Lisa COPS key-DOWN scancode (final-US
-// layout, id $3F — see lisa.md §11.3).  Returns the down byte (0xC0-0xFF) or -1
-// if unmapped; the matching up byte is (down & 0x7F).  Codes are from LisaEm's
-// keytable.h cross-checked against the boot ROM (KEY1=$F4 '1', KEY2=$F1 '2',
-// KEY3=$F2 '3', Command=$FF), which the boot menu compares directly.
-static int map_dom_code_to_lisa(const char *code) {
-    if (!code)
-        return -1;
-
-    // ── Letters ─────────────────────────────────────────────────────────────
-    if (!strcmp(code, "KeyA"))
-        return 0xF0;
-    if (!strcmp(code, "KeyB"))
-        return 0xEE;
-    if (!strcmp(code, "KeyC"))
-        return 0xED;
-    if (!strcmp(code, "KeyD"))
-        return 0xFB;
-    if (!strcmp(code, "KeyE"))
-        return 0xE0;
-    if (!strcmp(code, "KeyF"))
-        return 0xE9;
-    if (!strcmp(code, "KeyG"))
-        return 0xEA;
-    if (!strcmp(code, "KeyH"))
-        return 0xEB;
-    if (!strcmp(code, "KeyI"))
-        return 0xD3;
-    if (!strcmp(code, "KeyJ"))
-        return 0xD4;
-    if (!strcmp(code, "KeyK"))
-        return 0xD5;
-    if (!strcmp(code, "KeyL"))
-        return 0xD9;
-    if (!strcmp(code, "KeyM"))
-        return 0xD8;
-    if (!strcmp(code, "KeyN"))
-        return 0xEF;
-    if (!strcmp(code, "KeyO"))
-        return 0xDF;
-    if (!strcmp(code, "KeyP"))
-        return 0xC4;
-    if (!strcmp(code, "KeyQ"))
-        return 0xF5;
-    if (!strcmp(code, "KeyR"))
-        return 0xE5;
-    if (!strcmp(code, "KeyS"))
-        return 0xF6;
-    if (!strcmp(code, "KeyT"))
-        return 0xE6;
-    if (!strcmp(code, "KeyU"))
-        return 0xD2;
-    if (!strcmp(code, "KeyV"))
-        return 0xEC;
-    if (!strcmp(code, "KeyW"))
-        return 0xF7;
-    if (!strcmp(code, "KeyX"))
-        return 0xFA;
-    if (!strcmp(code, "KeyY"))
-        return 0xE7;
-    if (!strcmp(code, "KeyZ"))
-        return 0xF9;
-
-    // ── Number row ──────────────────────────────────────────────────────────
-    if (!strcmp(code, "Digit1"))
-        return 0xF4;
-    if (!strcmp(code, "Digit2"))
-        return 0xF1;
-    if (!strcmp(code, "Digit3"))
-        return 0xF2;
-    if (!strcmp(code, "Digit4"))
-        return 0xF3;
-    if (!strcmp(code, "Digit5"))
-        return 0xE4;
-    if (!strcmp(code, "Digit6"))
-        return 0xE1;
-    if (!strcmp(code, "Digit7"))
-        return 0xE2;
-    if (!strcmp(code, "Digit8"))
-        return 0xE3;
-    if (!strcmp(code, "Digit9"))
-        return 0xD0;
-    if (!strcmp(code, "Digit0"))
-        return 0xD1;
-    if (!strcmp(code, "Minus"))
-        return 0xC0; // - / _
-    if (!strcmp(code, "Equal"))
-        return 0xC1; // = / +
-
-    // ── Punctuation ─────────────────────────────────────────────────────────
-    if (!strcmp(code, "BracketLeft"))
-        return 0xD6; // [ / {
-    if (!strcmp(code, "BracketRight"))
-        return 0xD7; // ] / }
-    if (!strcmp(code, "Backslash"))
-        return 0xC2; // \ / |
-    if (!strcmp(code, "Semicolon"))
-        return 0xDA; // ; / :
-    if (!strcmp(code, "Quote"))
-        return 0xDB; // ' / "
-    if (!strcmp(code, "Comma"))
-        return 0xDD; // , / <
-    if (!strcmp(code, "Period"))
-        return 0xDE; // . / >
-    if (!strcmp(code, "Slash"))
-        return 0xCC; // / / ?
-    if (!strcmp(code, "Backquote"))
-        return 0xE8; // ` / ~
-
-    // ── Control keys ────────────────────────────────────────────────────────
-    if (!strcmp(code, "Space"))
-        return 0xDC;
-    if (!strcmp(code, "Enter"))
-        return 0xC8; // Return
-    if (!strcmp(code, "Tab"))
-        return 0xF8;
-    if (!strcmp(code, "Backspace"))
-        return 0xC5; // Backspace / Delete
-
-    // ── Modifiers ───────────────────────────────────────────────────────────
-    if (!strcmp(code, "ShiftLeft"))
-        return 0xFE;
-    if (!strcmp(code, "ShiftRight"))
-        return 0xFE;
-    if (!strcmp(code, "CapsLock"))
-        return 0xFD; // Caps Lock (Alpha Lock)
-    if (!strcmp(code, "MetaLeft"))
-        return 0xFF; // Command (Apple) key
-    if (!strcmp(code, "MetaRight"))
-        return 0xFF;
-    if (!strcmp(code, "OSLeft"))
-        return 0xFF; // Command (Windows key)
-    if (!strcmp(code, "OSRight"))
-        return 0xFF;
-    // The Lisa keyboard has no Control key — software that needs Control uses the
-    // Apple/Command key (e.g. SCO Xenix: Apple-D = Ctrl-D).  Map the host Control
-    // key to it so the natural browser Ctrl chord works, and so the keydown is
-    // preventDefault'd (we return EM_TRUE for mapped keys) — otherwise the
-    // browser eats Ctrl-D as a bookmark and steals the key-up, sticking the key.
-    if (!strcmp(code, "ControlLeft"))
-        return 0xFF; // Control → Apple/Command
-    if (!strcmp(code, "ControlRight"))
-        return 0xFF;
-
-    return -1; // unmapped key
-}
+//
+// DOM code -> ADB raw keycode (host_keys.c) -> the machine's substrate.  There
+// used to be a second table, DOM -> Lisa COPS bytes, chosen by model id, and
+// only that path kept a held-key set, so a Mac whose key-up the browser kept
+// (an accelerator, a focus change) was left with the key down.
 
 // Key down callback
 static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    if (host_machine_is_lisa()) {
-        // Keyboard goes to the emulated Lisa only while the screen has grabbed
-        // input (pointer lock) — otherwise keys belong to the web2 UI (config
-        // dialog, debug fields, the gs terminal).  Gate on the C-side
-        // pointer_locked flag, NOT on document.activeElement: these html5 input
-        // callbacks run on the emscripten worker thread (PROXY_TO_PTHREAD), where
-        // `document` is undefined — querying it throws "document is not defined"
-        // and drops every key.
-        if (!pointer_locked)
-            return EM_FALSE;
-        int code = map_dom_code_to_lisa(e->code);
-        if (code < 0)
-            return EM_FALSE;
-        lisa_key_held[code & 0xFF] = true; // remember it so the up is guaranteed
-        host_lisa_key((uint8_t)code); // COPS down byte (bit 7 set)
-        return EM_TRUE;
-    }
-    // Mac (ADB): keep the pointer-lock focus gate.
+    // Keyboard goes to the machine only while the screen has grabbed input
+    // (pointer lock) -- otherwise keys belong to the web2 UI (config dialog,
+    // debug fields, the gs terminal).  Gate on the C-side pointer_locked flag,
+    // NOT on document.activeElement: these html5 input callbacks run on the
+    // emscripten worker thread (PROXY_TO_PTHREAD), where `document` is
+    // undefined.
     if (!pointer_locked)
         return EM_FALSE;
-    int k = map_dom_code_to_mac(e->code, e->key);
-    if (k < 0)
+    int k = host_keymap_dom_to_adb(e->code);
+    // Caps Lock (0x39) is a mechanically LOCKING key, and only the DOM layer
+    // can see the host's true caps state (getModifierState) -- the emscripten
+    // C callback cannot.  So the C side never touches it: the event is left
+    // unconsumed for the web2 frontend, which mirrors the host caps state into
+    // the guest latch and the ⇪ indicator, and re-asserts it across
+    // boot/restart (app/web2 lib/capslock.ts).
+    if (k < 0 || k == 0x39)
         return EM_FALSE;
-    // Caps Lock (0x39) is a mechanically LOCKING key, and only the DOM
-    // layer can see the host's true caps state (getModifierState) — the
-    // emscripten C callback cannot.  So the C side never touches it: the
-    // event is left unconsumed for the web2 frontend, which mirrors the
-    // host caps state into the guest latch and the ⇪ indicator, and
-    // re-asserts it across boot/restart (app/web2 lib/capslock.ts).
-    if (k == 0x39)
-        return EM_FALSE;
-    system_keyboard_update(key_down, k);
-    return EM_TRUE;
+    // A key the machine refuses is left to the browser -- except Control,
+    // which host_keys retries as Command where the keyboard has no Control
+    // (the Lisa: SCO Xenix reads Apple-D as Control-D), so Control-D is not
+    // left for the browser to take as "bookmark".
+    return host_keys_down(&g_host_keys, k, host_key_sink) ? EM_TRUE : EM_FALSE;
 }
 
 // Key up callback
 static EM_BOOL key_up_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    // Always deliver the up for a key we sent down — even if focus moved to a
-    // web2 field meanwhile, or a browser accelerator stole the keyup — otherwise
-    // the key sticks down and the guest typematic-repeats it forever.
-    if (host_machine_is_lisa()) {
-        int code = map_dom_code_to_lisa(e->code);
-        if (code < 0)
-            return EM_FALSE;
-        if (!lisa_key_held[code & 0xFF])
-            return EM_TRUE; // we never delivered this down — nothing to release
-        lisa_key_held[code & 0xFF] = false;
-        host_lisa_key((uint8_t)code & 0x7F); // COPS up byte (bit 7 clear)
-        return EM_TRUE;
-    }
-    if (!pointer_locked)
+    // Always deliver the up for a key we sent down -- even if focus moved to a
+    // web2 field meanwhile, or pointer lock was lost -- otherwise the key sticks
+    // down and the guest typematic-repeats it forever.
+    int k = host_keymap_dom_to_adb(e->code);
+    if (k < 0 || k == 0x39)
         return EM_FALSE;
-    int k = map_dom_code_to_mac(e->code, e->key);
-    if (k < 0)
-        return EM_FALSE;
-    if (k == 0x39)
-        return EM_FALSE; // Caps Lock belongs to the web2 frontend (see key_down_cb)
-    system_keyboard_update(key_up, k);
-    return EM_TRUE;
+    return host_keys_up(&g_host_keys, k, host_key_sink) ? EM_TRUE : EM_FALSE;
 }
 
 // Setup pointer lock callbacks
@@ -695,7 +245,6 @@ static void setup_pointer_lock(void) {
 #define CHECKPOINT_INTERVAL  900 // Background checkpoint every 900 ticks (~15 seconds at 60 ticks/sec)
 
 // Forward declaration
-static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_limit);
 
 // Global state variables
 static int tick_counter = 0;
@@ -704,13 +253,38 @@ static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
 static double ticks_per_second = 0;
 
-// Emscripten-specific shell stubs. Prompt composition lives in
-// src/core/shell/shell.c::shell_build_prompt now (callable from JS via
-// `shell.prompt` on the Shell class).
-void print_prompt(void) {}
+// Per-tick wall-clock samples for the last PERF_UPDATE_INTERVAL ticks: the
+// whole em_main_tick, and the part of it spent inside shell_poll serving a
+// bridge request.  The MIPS/ticks-per-second figures above are rates
+// averaged over the window and cannot show a single long tick -- a 300 ms
+// checkpoint or a slow bridge request inside an otherwise 60 Hz window --
+// which is exactly what a frame stutter is.  Pushed with the perf update as
+// the window's max and median (microseconds) so the status bar can show
+// them and a spec can assert on them.
+static double tick_wall_ms[PERF_UPDATE_INTERVAL];
+static double tick_poll_ms[PERF_UPDATE_INTERVAL];
+static double tick_poll_ms_current; // set by em_main_tick, read by tick()
+
+// max and median of `n` samples, without disturbing the ring
+static void perf_window_stats(const double *samples, int n, double *max_out, double *p50_out) {
+    double sorted[PERF_UPDATE_INTERVAL];
+    memcpy(sorted, samples, sizeof(double) * n);
+    // insertion sort: n is 60
+    for (int i = 1; i < n; i++) {
+        double v = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > v) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = v;
+    }
+    *max_out = sorted[n - 1];
+    *p50_out = sorted[n / 2];
+}
 
 // ============================================================================
-// Shared-heap Command Queue (and gs_eval queue)
+// The mailbox (every JS -> C request)
 // ============================================================================
 //
 // THREADING MODEL — read this before changing anything in this section.
@@ -737,7 +311,7 @@ void print_prompt(void) {}
 //     guaranteed to behave correctly from another thread
 //   - Mutexes inside the runtime can deadlock or stall for many seconds
 //
-// Real-world fallout from violating this rule (M10c regression, 2026-05-02):
+// Real-world fallout from violating this rule (a regression, 2026-05-02):
 // `Module.ccall('em_gs_eval', ...)` was used for the typed object-model
 // bridge (`gsEval` / `gsInspect`) and ran shell_dispatch() on the main
 // thread.  E2E tests using checkpoint --save / --load via gsEval saw
@@ -747,59 +321,107 @@ void print_prompt(void) {}
 //
 // THE RULE
 // --------
-// JS → C must always go through the SAB queue below. JS writes the
-// request into shared globals, sets a pending flag, and polls a done
-// flag. The worker's `shell_poll()` (called from `em_main_tick`)
-// drains the queue and writes the result. ccall on `_em_*` exports is
-// forbidden.
+// JS -> C must always go through the mailbox below: the page writes a
+// request record into the request ring and wakes the worker; the worker's
+// `shell_poll()` (called from `em_main_tick`, and from the idle wait on a
+// stopped machine) drains the ring and writes each result into the event
+// ring.  ccall on `_em_*` exports is forbidden -- and no longer possible:
+// the Makefile stopped exporting ccall/cwrap, so only the mailbox remains.
 //
-// The single shared-memory region. Layout in em.h, mirrored in
-// emulator.js. Buffer sizes (path, args, output) are tuned for current
-// peak usage: longest paths are checkpoint paths under /opfs, args
-// carry JSON arrays of primitive values, output carries `meta.*`
-// introspection dumps which dominate.
-static js_bridge_t g_bridge = {.version = JS_BRIDGE_VERSION};
+// The region is static so its address is fixed for the process lifetime
+// (shared memory grows in place, em_audio.c).  It is laid out by a
+// constructor, before main() and before the page can see it, so the MAGIC
+// and VERSION words are valid from the first read.  READY stays 0 until
+// main() has run shell_init/setup_init.
+static gs_mailbox_t g_mailbox;
+static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
-EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
-    return &g_bridge;
+__attribute__((constructor)) static void mailbox_construct(void) {
+    if (!gs_mailbox_init(&g_mailbox, g_mailbox_region, GS_MBX_REQ_BYTES, GS_MBX_EVT_BYTES, gs_eval))
+        abort();
+    // Answers to the page carry what the leaf printed (gs_out.h); the
+    // terminal shows it with the result.
+    gs_mailbox_set_capture_output(&g_mailbox, true);
 }
+
+EMSCRIPTEN_KEEPALIVE uint32_t *get_gs_mailbox(void) {
+    return (uint32_t *)g_mailbox.ctrl;
+}
+
+// Core events (gs_event.h) go out as records on the event ring.
+void gs_event_emit(gs_event_kind_t kind, const char *json) {
+    uint32_t k = kind == GS_EVENT_STATE ? GS_MBX_EVT_STATE : kind == GS_EVENT_LOG ? GS_MBX_EVT_LOG : GS_MBX_EVT_NOTIFY;
+    gs_mailbox_emit(&g_mailbox, k, json);
+}
+
+uint32_t gs_current_client(void) {
+    return gs_mailbox_current_client(&g_mailbox);
+}
+
+// A bare `scheduler.run` typed in the browser's terminal returns at once
+// and the machine runs on (Ctrl-C stops it); only a budgeted run holds
+// the line.  The script suites' "run until stopped" is headless's.
+bool job_glue_unbounded_waits(uint32_t client) {
+    (void)client;
+    return false;
+}
+
+// The page parks in Atomics.waitAsync on READY and EVT_HEAD.
+void gs_mailbox_notify(volatile uint32_t *word) {
+    emscripten_atomic_notify((void *)word, INT_MAX);
+}
+
+static double mailbox_now_us(void) {
+    return emscripten_get_now() * 1000.0;
+}
+
+// Host microseconds one drain may spend serving a burst of requests before
+// giving the tick back; a leaf that is running when it expires still
+// completes (leaves are bounded by their data, not by this).  Set from
+// the tick instrumentation once it has been measured.
+#define GS_MAILBOX_DRAIN_US 2000.0
+
+// On a stopped machine the tick parks here between frames so a request is
+// served at once instead of at the next RAF.  Bounded, in slices, with the
+// pthread's proxied tasks (keyboard, mouse, pointer lock: all delivered as
+// tasks to this thread) drained between slices -- a plain futex wait would
+// hold them until the next request arrived.  Returns to the event loop
+// after GS_MAILBOX_IDLE_MS whatever happened.
+#define GS_MAILBOX_IDLE_SLICE_MS 4.0
+#define GS_MAILBOX_IDLE_MS       12.0
 
 int shell_poll(void) {
-    // Drain the bridge slot. After folding the shell into the object
-    // model (proposal-shell-as-object-model-citizen.md), exactly one
-    // request kind remains:
-    //   1 = gs_eval(path, args)  — typed object-model call. Includes
-    //                              free-form shell lines via
-    //                              `shell.run`, schema queries via
-    //                              `<path>.meta.*`, and tab completion
-    //                              via `shell.complete` / `meta.complete`.
-    if (!g_bridge.pending)
-        return 0;
-
-    const char *args = (g_bridge.args[0] != '\0') ? g_bridge.args : NULL;
-    int rc = gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
-    g_bridge.result = rc;
-    g_bridge.pending = 0;
-    // Atomic store + wake any JS thread parked in Atomics.waitAsync on
-    // `done`. Sequentially consistent so the result/output writes above
-    // are visible before JS observes done == 1.
-    __atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
-    emscripten_atomic_notify((void *)&g_bridge.done, 1);
-    return 1;
+    int n = gs_mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
+    if (n > 0)
+        gs_mailbox_notify(&g_mailbox.ctrl[GS_MBX_C_EVT_HEAD]);
+    return n;
 }
 
-// Tab-complete and shell-line dispatch used to live here behind separate
-// `pending` kinds. Both have been folded into gs_eval after the
-// proposal-shell-as-object-model-citizen refactor: tab completion goes
-// through `meta.complete`, free-form lines through `shell.run`. Nothing
-// in this file needs to know about them anymore.
+// The idle wait of a stopped machine: serve requests as they arrive for up
+// to GS_MAILBOX_IDLE_MS, then return to the event loop.  Returns the
+// number of results written.
+static int mailbox_idle_wait(void) {
+    double t0 = emscripten_get_now();
+    int served = 0;
+    while (emscripten_get_now() - t0 < GS_MAILBOX_IDLE_MS) {
+        if (gs_mailbox_has_requests(&g_mailbox)) {
+            served += shell_poll();
+            continue;
+        }
+        uint32_t seen = mbx_load(g_mailbox.ctrl, GS_MBX_C_REQ_HEAD);
+        emscripten_futex_wait(&g_mailbox.ctrl[GS_MBX_C_REQ_HEAD], seen, GS_MAILBOX_IDLE_SLICE_MS);
+        emscripten_current_thread_process_queued_calls();
+        gs_mailbox_heartbeat(&g_mailbox);
+    }
+    return served;
+}
 
 // Main tick function called by the Emscripten main loop
 void em_main_tick(void) {
     tick_counter++;
 
     // Calculate performance metrics every PERF_UPDATE_INTERVAL ticks and
-    // push them to the UI (perf proposal P12: MIPS from instr_count deltas —
+    // push them to the UI (MIPS from instr_count deltas —
     // without this, nothing in web2 would reveal a throughput regression).
     if (tick_counter % PERF_UPDATE_INTERVAL == 0) {
         double current_time = emscripten_get_now();
@@ -810,11 +432,13 @@ void em_main_tick(void) {
             double elapsed_ms = current_time - last_time;
             ticks_per_second = (PERF_UPDATE_INTERVAL * 1000.0) / elapsed_ms;
             double mips = (double)(instr_now - last_instr) / (elapsed_ms * 1000.0);
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onPerfUpdate === 'function') Module.onPerfUpdate($0, $1); },
-                (int)(mips * 100.0), (int)(ticks_per_second * 10.0));
-            // clang-format on
+            double tick_max, tick_p50, poll_max, poll_p50;
+            perf_window_stats(tick_wall_ms, PERF_UPDATE_INTERVAL, &tick_max, &tick_p50);
+            perf_window_stats(tick_poll_ms, PERF_UPDATE_INTERVAL, &poll_max, &poll_p50);
+            gs_event_emitf(GS_EVENT_STATE,
+                           "{\"event\":\"perf\",\"mips\":%.2f,\"tps\":%.1f,\"tick_max_ms\":%.3f,\"tick_p50_ms\":%.3f,"
+                           "\"poll_max_ms\":%.3f}",
+                           mips, ticks_per_second, tick_max, tick_p50, poll_max);
         }
 
         last_time = current_time;
@@ -831,7 +455,7 @@ void em_main_tick(void) {
             checkpoint_tick_counter++;
             if (checkpoint_tick_counter >= CHECKPOINT_INTERVAL) {
                 checkpoint_tick_counter = 0;
-                save_quick_checkpoint("tick-auto", false, true);
+                system_quick_checkpoint("tick-auto", false, true);
             }
         }
 
@@ -844,87 +468,71 @@ void em_main_tick(void) {
     // Poll for pending shell commands every tick.  This must run regardless
     // of running state so that drag-and-drop media inserts, checkpoint
     // commands, etc. execute while the emulator is running.
-    shell_poll();
-
-    // Push a run-state notification to JS on every transition
-    // (including the first tick). The callback is installed via
-    // Module.onRunStateChange at module construction; ASYNC variant so
-    // the worker doesn't block during emulation.
-    int running = (sched && scheduler_is_running(sched)) ? 1 : 0;
-    static int last_reported_running = -1;
-    if (running != last_reported_running) {
-        last_reported_running = running;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onRunStateChange === 'function') Module.onRunStateChange(!!$0); },
-            running);
-        // clang-format on
+    //
+    // While paused nothing above repaints, yet a served request can change
+    // what is on screen: a debug.step, a memory.poke into the framebuffer, a
+    // CLUT write, a media change.  So repaint after a served request -- and
+    // only then: an idle paused tick costs nothing, and em_video_update
+    // compares before uploading, so a request that changed nothing uploads
+    // nothing.
+    // Re-fetch the scheduler: the request may have booted or restarted the
+    // machine, freeing the one fetched above.
+    gs_mailbox_heartbeat(&g_mailbox);
+    double poll_t0 = emscripten_get_now();
+    int served = shell_poll();
+    // A stopped machine has nothing to do until the next request: wait for
+    // one here (bounded) instead of at the next RAF.
+    if (!(sched && scheduler_is_running(sched)))
+        served += mailbox_idle_wait();
+    tick_poll_ms_current = emscripten_get_now() - poll_t0;
+    if (served) {
+        scheduler_t *after = system_scheduler();
+        if (!(after && scheduler_is_running(after)))
+            em_video_update();
     }
 
-    // Push floppy drive present-state transitions to JS (Module.onFloppyChange),
-    // same diff-and-async-invoke pattern as the run-state push above. This lets
-    // the Images view clear an "Inserted" badge the instant the guest ejects a
-    // disk on its own (e.g. the MacWorks loader eject) — no JS-side polling. Two
-    // drives is the platform's fixed floppy maximum (see system.c do_insert_fd).
-    static int last_fd_present[2] = {-1, -1};
-    for (int d = 0; d < 2; d++) {
-        int present = system_fd_present(d) ? 1 : 0;
-        if (present != last_fd_present[d]) {
-            last_fd_present[d] = present;
-            // clang-format off
-            MAIN_THREAD_ASYNC_EM_ASM(
-                { if (typeof Module.onFloppyChange === 'function') Module.onFloppyChange($0, !!$1); },
-                d, present);
-            // clang-format on
+    // The run state and the floppy drives are the core's to announce now
+    // (mode_started / mode_ended from the scheduler, floppy from the
+    // controller): nothing is diffed here any more.
+
+    // The HD / FD / CD activity lights (a drive_activity event) on a
+    // state edge only: the counters are sampled here, once per tick, and
+    // drive_activity_update holds a light on for its minimum visible time.
+    {
+        static drive_activity_t lights;
+        uint64_t reads[DRIVE_KIND_COUNT], writes[DRIVE_KIND_COUNT];
+        system_drive_io_counts(reads, writes);
+        unsigned changed = drive_activity_update(&lights, reads, writes, emscripten_get_now());
+        for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
+            if (!(changed & (1u << k)))
+                continue;
+            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                           (int)lights.light[k]);
         }
     }
-
-    // Push the accelerated-mode effective CPU speed (x256; 256 = 1x) to JS on
-    // change, same diff-and-async pattern as the run-state push. The value is
-    // 1x outside accelerated mode and the governor steps it only on a ≥2 s
-    // dwell, so this fires rarely — the status bar reads it edge-driven rather
-    // than polling. JS divides by 256 for the multiplier.
-    int speed_x256 = sched ? (int)scheduler_effective_speed_x256(sched) : 256;
-    static int last_reported_speed = -1;
-    if (speed_x256 != last_reported_speed) {
-        last_reported_speed = speed_x256;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onSchedulerSpeed === 'function') Module.onSchedulerSpeed($0); },
-            speed_x256);
-        // clang-format on
-    }
 }
 
-// Exposed tick wrapper for Emscripten main loop
+// Exposed tick wrapper for Emscripten main loop.  Times the whole tick and
+// records it, with the shell_poll share em_main_tick measured, into the
+// perf window (see tick_wall_ms).
 void tick(void) {
+    double t0 = emscripten_get_now();
+    tick_poll_ms_current = 0;
     em_main_tick();
+    int slot = tick_counter % PERF_UPDATE_INTERVAL;
+    tick_wall_ms[slot] = emscripten_get_now() - t0;
+    tick_poll_ms[slot] = tick_poll_ms_current;
 }
 
-// Forward formatted log lines to the JS-side Module.onLogEmit callback.
+// Forward formatted log lines to the page as log events.
 // Installed once at boot via log_set_sink so the new-UI Logs view can
 // fan emissions out to a per-category mirror without inferring them
 // from Module.print (which captures everything, not just LOG sites).
-// Same MAIN_THREAD_ASYNC_EM_ASM pattern as the onRunStateChange push
-// above so the worker thread never blocks on the main-thread invoke.
 static void js_log_sink(const char *line, void *user) {
     (void)user;
     if (!line)
         return;
-    // clang-format off
-    MAIN_THREAD_ASYNC_EM_ASM(
-        { if (typeof Module.onLogEmit === 'function') Module.onLogEmit(UTF8ToString($0)); },
-        line);
-    // clang-format on
-}
-
-// Print usage
-static void print_usage(const char *program_name) {
-    printf("Usage: %s [options]\n", program_name);
-    printf("Options:\n");
-    printf("  --model=MODEL    Specify the model type (e.g., plus)\n");
-    printf("  --speed=MODE     Scheduler mode (paced|accelerated|turbo; legacy max|realtime|hardware)\n");
-    printf("  --help           Display this help message\n");
+    gs_event_emit_text(GS_EVENT_LOG, "log", "line", line);
 }
 
 // SIGINT handler — stops the scheduler so a real Ctrl-C in the headless
@@ -942,274 +550,263 @@ void sigint_handler(int sig) {
 // Filesystem Commands
 // ============================================================================
 
-// Find a mountable media file in a directory.
-// Scans the directory for files that pass floppy image validation (fd probe).
-// Prints the path of the first match and returns 0, or returns 1 if none found.
-// Used by JS after peeler extraction (FS.readdir from main thread is broken
-// with WasmFS pthreads, so this runs on the worker).
-// Platform impl of gs_find_media (weak default in system.c stubs out
-// for headless).  Walks `dir_path`, picks the first regular file
-// recognised as a floppy image, optionally copies it to `dest`, and
-// prints the path on success.  Returns 0 on success, non-zero on
-// "no media found" / IO error.
-int gs_find_media(const char *dir_path, const char *dest) {
-    DIR *dir = opendir(dir_path);
-    if (!dir) {
-        printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
-        return 1;
-    }
+// ============================================================================
+// LaserWriter interpreter worker (the ring transport's platform hooks)
+// ============================================================================
+// The printer bridge runs its PostScript interpreter in the page's platen
+// worker (app/web2/src/printer/), reached through a shared-memory ring
+// (laserwriter_ring_protocol.h).  The finished PDF never enters the core
+// here: the worker posts it to the page, which downloads it — so there is
+// no laserwriter_sink_document override on this platform (the weak default
+// in laserwriter_job.c is never reached: the ring result carries no bytes).
 
-    struct dirent *entry;
-    char found_path[1024] = {0};
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.')
-            continue;
-        char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", dir_path, entry->d_name);
+// The bridge allocated its control block at `ctrl_addr` (emulation
+// pthread): ask the page to start the worker and attach it, the way
+// em_gpu.c reaches Module.onVoodooGpuAttach.  The library version names
+// the module file the page fetches (platen-<version>.js, laserwriter.mk).
+void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
+    static const char version[] = GS_PLATEN_VERSION;
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM(
+        { if (typeof Module.onPrinterAttach === 'function') Module.onPrinterAttach($0, UTF8ToString($1)); },
+        (uint32_t)ctrl_addr, version);
+    // clang-format on
+}
+
+// Wakes the worker parked in Atomics.waitAsync on a control word.
+void laserwriter_ring_notify(volatile uint32_t *addr) {
+    emscripten_futex_wake(addr, INT_MAX);
+}
+
+// ============================================================================
+// Downloads: a file (or a buffer) to the page, in staged chunks
+// ============================================================================
+// An I/O job (io/io_worker.h) reads the file GS_DL_CHUNK bytes at a time
+// into a buffer the page can see; each chunk is announced to the page as
+// EVT_NOTIFY {"event":"download_chunk","id":req,"handle":h,"ptr":p,
+// "len":n,"last":0|1,"name":...} (a note the emulator thread turns into the
+// event: mailbox.h, staged buffers), the page copies the bytes into a Blob
+// part and answers REQ_ACK_BUF {handle}, and the worker refills.  Neither
+// the emulator thread nor the page ever waits on the other; a page that
+// never acks times the JOB out (GS_DL_ACK_MS), not the machine.  This
+// replaced a whole-file malloc + fread and a MAIN_THREAD_EM_ASM that
+// blocked the reading thread until the page had copied everything.
+#define GS_DL_CHUNK  (4u << 20)
+#define GS_DL_ACK_MS 30000u
+
+typedef struct {
+    char *path; // the file to read, or NULL for `bytes`
+    uint8_t *bytes; // an in-memory source (copied), or NULL
+    size_t bytes_len;
+    char name[256]; // the download's file name
+    uint32_t token; // the deferral (0: answering now)
+    uint32_t io_id; // the worker job
+    uint32_t handle; // the staged buffer (published on the first chunk)
+    uint8_t *buf; // GS_DL_CHUNK bytes
+    uint32_t req_id; // the request, named in the events
+    uint64_t total;
+} download_job_t;
+
+// The worker: fill the buffer, announce, wait for the page, repeat.
+static int download_work(void *ud, char *err, size_t err_cap) {
+    download_job_t *d = (download_job_t *)ud;
+    FILE *f = NULL;
+    if (d->path) {
         struct stat st;
-        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
-            continue;
-        // Try as floppy image
-        image_t *img = image_open_readonly(full);
-        if (img) {
-            bool is_floppy = (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd);
-            image_close(img);
-            if (is_floppy) {
-                snprintf(found_path, sizeof(found_path), "%s", full);
-                break;
-            }
+        if (stat(d->path, &st) != 0) {
+            snprintf(err, err_cap, "cannot access '%s': %s", d->path, strerror(errno));
+            return -errno;
         }
+        if (!S_ISREG(st.st_mode)) {
+            snprintf(err, err_cap, "'%s' is not a regular file", d->path);
+            return -EINVAL;
+        }
+        f = fopen(d->path, "rb");
+        if (!f) {
+            snprintf(err, err_cap, "cannot open '%s': %s", d->path, strerror(errno));
+            return -errno;
+        }
+        d->total = (uint64_t)st.st_size;
+    } else {
+        d->total = d->bytes_len;
     }
-    closedir(dir);
-
-    if (!found_path[0])
-        return 1;
-
-    // Optionally copy to dest
-    if (dest) {
-        FILE *fin = fopen(found_path, "rb");
-        if (!fin)
-            return 1;
-        FILE *fout = fopen(dest, "wb");
-        if (!fout) {
-            fclose(fin);
-            return 1;
+    uint64_t sent = 0;
+    for (;;) {
+        if (io_check_cancelled()) {
+            if (f)
+                fclose(f);
+            snprintf(err, err_cap, "cancelled");
+            return -ECANCELED;
         }
-        char buf[65536];
         size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
-            if (fwrite(buf, 1, n, fout) != n) {
-                fclose(fin);
-                fclose(fout);
-                return 1;
+        if (f) {
+            n = fread(d->buf, 1, GS_DL_CHUNK, f);
+            if (n < GS_DL_CHUNK && ferror(f)) {
+                fclose(f);
+                snprintf(err, err_cap, "read error on '%s'", d->path);
+                return -EIO;
             }
+        } else {
+            n = d->bytes_len - (size_t)sent;
+            if (n > GS_DL_CHUNK)
+                n = GS_DL_CHUNK;
+            memcpy(d->buf, d->bytes + sent, n);
         }
-        fclose(fin);
-        fclose(fout);
+        sent += n;
+        bool last = sent >= d->total;
+        char note[IO_NOTE_MAX];
+        snprintf(note, sizeof note, "{\"chunk\":%u,\"last\":%d}", (unsigned)n, last ? 1 : 0);
+        io_note(note);
+        int rc = io_wait_ack(0, GS_DL_ACK_MS);
+        if (rc != 0) {
+            if (f)
+                fclose(f);
+            snprintf(err, err_cap, rc == -ECANCELED ? "cancelled" : "the page did not take the download");
+            return rc;
+        }
+        io_report_progress(sent, d->total);
+        if (last)
+            break;
     }
-
-    printf("%s\n", found_path);
+    if (f)
+        fclose(f);
     return 0;
 }
 
-// Download command - save file to browser
+// The emulator thread, per chunk: publish the buffer once, tell the page.
+static void download_note(const char *json, void *ud) {
+    download_job_t *d = (download_job_t *)ud;
+    unsigned n = 0;
+    int last = 0;
+    sscanf(json, "{\"chunk\":%u,\"last\":%d}", &n, &last);
+    if (!d->handle)
+        d->handle = gs_staged_publish(d->buf, GS_DL_CHUNK, d->io_id);
+    if (!d->handle) {
+        // No room in the staged table: the job times out on its ack.
+        printf("download: no staged buffer for '%s'\n", d->name);
+        return;
+    }
+    gs_event_emitf(GS_EVENT_NOTIFY,
+                   "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
+                   "\"name\":\"%s\"}",
+                   (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name);
+}
+
+static void download_progress(uint64_t done, uint64_t total, void *ud) {
+    download_job_t *d = (download_job_t *)ud;
+    if (d->token)
+        gs_result_progress(d->token, done, total);
+}
+
+static void download_free(download_job_t *d) {
+    if (d->handle)
+        gs_staged_release(d->handle);
+    free(d->buf);
+    free(d->bytes);
+    free(d->path);
+    free(d);
+}
+
+static void download_done(bool ok, double ms, const char *error, void *ud) {
+    (void)ms;
+    download_job_t *d = (download_job_t *)ud;
+    if (ok) {
+        printf("download: requested '%s'\n", d->name);
+        if (d->token)
+            gs_result_complete_ok(d->token);
+    } else {
+        printf("download: %s\n", error ? error : "failed");
+        if (d->token)
+            gs_result_complete_error(d->token, error ? error : "download failed");
+    }
+    download_free(d);
+}
+
+// Starts the download job; consumes `d`.  0 when the job runs (the
+// deferral answers), else -1 (no worker: a chunk can never be acked while
+// this thread holds the buffer).
+static int download_start(download_job_t *d) {
+    d->buf = (uint8_t *)malloc(GS_DL_CHUNK);
+    if (!d->buf) {
+        printf("download: out of memory\n");
+        download_free(d);
+        return -1;
+    }
+    d->token = gs_result_defer();
+    d->req_id = gs_result_request_id(d->token);
+    io_job_desc_t desc = {
+        .work = download_work,
+        .work_ud = d,
+        .done = download_done,
+        .done_ud = d,
+        .progress = download_progress,
+        .note = download_note,
+        .observer_ud = d,
+    };
+    d->io_id = io_submit_job(&desc);
+    if (d->io_id) {
+        if (d->token)
+            gs_result_bind_io(d->token, d->io_id);
+        return 0;
+    }
+    printf("download: the I/O worker is not running; cannot hand '%s' to the page\n", d->name);
+    if (d->token)
+        gs_result_complete_error(d->token, "the I/O worker is not running");
+    download_free(d);
+    return -1;
+}
+
+// Platform sink for a job's captured PostScript (appletalk.printer.capture):
+// downloaded as <job>.ps, the way the page downloads the job's PDF.
+void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return;
+    snprintf(d->name, sizeof d->name, "%05u.ps", (unsigned)cap->job_id);
+    d->bytes = (uint8_t *)malloc(cap->ps_len ? cap->ps_len : 1);
+    if (!d->bytes) {
+        free(d);
+        return;
+    }
+    memcpy(d->bytes, cap->ps, cap->ps_len);
+    d->bytes_len = cap->ps_len;
+    download_start(d);
+}
+
 // Platform impl of gs_download (weak default in system.c stubs out).
-// Returns 0 on success, non-zero on any failure (so the typed
-// `download` attribute reports the real outcome rather than always-true).
+// Returns 0 when the download was started (the answer is deferred: it
+// completes when the page has taken the last chunk), non-zero otherwise.
 int gs_download(const char *path) {
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        printf("download: cannot access '%s': %s\n", path, strerror(errno));
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return -1;
+    d->path = strdup(path);
+    if (!d->path) {
+        free(d);
         return -1;
     }
-    if (!S_ISREG(st.st_mode)) {
-        printf("download: '%s' is not a regular file\n", path);
-        return -1;
-    }
-
-    // Read file on the worker thread (OPFS accessible here)
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        printf("download: cannot open '%s': %s\n", path, strerror(errno));
-        return -1;
-    }
-    size_t file_size = (size_t)st.st_size;
-    uint8_t *buf = (uint8_t *)malloc(file_size);
-    if (!buf) {
-        fclose(f);
-        printf("download: out of memory (%zu bytes)\n", file_size);
-        return -1;
-    }
-    size_t nread = fread(buf, 1, file_size, f);
-    fclose(f);
-    if (nread != file_size) {
-        // Short read silently truncating the download would corrupt the
-        // user's saved file.  Fail loudly instead. (F-1891)
-        printf("download: short read on '%s' (%zu of %zu bytes)\n", path, nread, file_size);
-        free(buf);
-        return -1;
-    }
-
-    // Extract filename from path
     const char *name = strrchr(path, '/');
-    name = name ? name + 1 : path;
-
-    // Trigger browser download on the main thread (DOM access required).
-    // The worker is blocked in MAIN_THREAD_EM_ASM, so buf is valid.
-    // clang-format off
-    MAIN_THREAD_EM_ASM(
-        {
-            try {
-                var ptr = $0;
-                var len = $1;
-                var namePtr = $2;
-                var name = UTF8ToString(namePtr) || 'download.bin';
-                // Access the shared heap — try both global and Module-scoped accessors
-                var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
-                var data = new Uint8Array(heap.buffer, ptr, len);
-                var copy = new Uint8Array(data);  // copy out of shared buffer
-                var blob = new Blob([copy], {type: 'application/octet-stream'});
-                var a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = name;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                setTimeout(function() {
-                    try { URL.revokeObjectURL(a.href); } catch (e) {}
-                }, 0);
-            } catch (e) {
-                console.error('[download] MAIN_THREAD_EM_ASM failed:', e);
-            }
-        },
-        buf, (int)nread, name);
-    // clang-format on
-
-    free(buf);
-    printf("download: requested '%s'\n", path);
-    return 0;
+    snprintf(d->name, sizeof d->name, "%s", name ? name + 1 : path);
+    return download_start(d);
 }
 
 // ============================================================================
 // Background Checkpoint System
 // ============================================================================
-// Per-machine layout (proposal-checkpoint-storage-isolation.md):
+// Per-machine layout (docs/guide/ARCHITECTURE.md):
 //   /opfs/checkpoints/<machine_id>-<created>/state.checkpoint      (current)
 //   /opfs/checkpoints/<machine_id>-<created>/state.checkpoint.tmp  (in-flight)
 // One file per machine; tmp+rename is the atomic swap.
 
-#define BACKGROUND_CHECKPOINT_PATH_MAX        512
-#define BACKGROUND_CHECKPOINT_MIN_INTERVAL_MS 750.0
-
-static double g_last_background_checkpoint_ms = 0.0;
 static bool g_background_handlers_installed = false;
 
-// Build "<machine_dir>/state.checkpoint" into out_path.  Returns GS_SUCCESS
-// when the machine dir is set and the path fits.
-static int build_state_checkpoint_path(char *out_path, size_t out_len) {
-    const char *dir = checkpoint_machine_dir();
-    if (!dir)
-        return GS_ERROR;
-    int written = snprintf(out_path, out_len, "%s/state.checkpoint", dir);
-    return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
-}
-
-// Find the path to the current valid background checkpoint.
-// Overrides the weak default in system.c for the WASM platform.
-// Returns a static buffer with the path, or NULL if none found.
-const char *find_valid_checkpoint_path(void) {
-    static char path_buf[BACKGROUND_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != GS_SUCCESS)
-        return NULL;
-    struct stat st;
-    if (stat(path_buf, &st) != 0)
-        return NULL;
-    // Reject checkpoints from a different build (incompatible state layout)
-    if (!checkpoint_validate_build_id(path_buf))
-        return NULL;
-    return path_buf;
-}
-
-// Save a quick checkpoint via tmp+rename inside the per-machine directory.
-static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
-    scheduler_t *sched = system_scheduler();
-    if (!sched)
-        return GS_ERROR;
-
-    // Skip checkpointing when the emulator is idle — nothing meaningful to save
-    if (!scheduler_is_running(sched) && cpu_instr_count() == 0)
-        return GS_SUCCESS;
-
-    // No machine identity yet → nothing to save under.
-    if (!checkpoint_machine_dir()) {
-        if (verbose)
-            printf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
-        return GS_SUCCESS;
-    }
-
-    double now = emscripten_get_now();
-
-    if (rate_limit && g_last_background_checkpoint_ms > 0.0) {
-        double delta = now - g_last_background_checkpoint_ms;
-        if (delta >= 0.0 && delta < BACKGROUND_CHECKPOINT_MIN_INTERVAL_MS)
-            return GS_SUCCESS;
-    }
-
-    char final_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    char tmp_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(final_path, sizeof(final_path)) != GS_SUCCESS)
-        return GS_ERROR;
-    int wn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
-    if (wn <= 0 || (size_t)wn >= sizeof(tmp_path))
-        return GS_ERROR;
-
-    // Record running state before stopping - this will be saved in the checkpoint
-    bool was_running = scheduler_is_running(sched);
-    if (was_running)
-        scheduler_stop(sched);
-
-    // Temporarily restore running flag so checkpoint captures the pre-stop state
-    if (was_running && sched)
-        scheduler_set_running(sched, true);
-
-    double checkpoint_start_time = emscripten_get_now();
-
-    // Drop any stale tmp from a crashed prior run.
-    unlink(tmp_path);
-    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
-    if (rc == GS_SUCCESS) {
-        if (rename(tmp_path, final_path) != 0) {
-            printf("[checkpoint] rename %s -> %s failed: %s\n", tmp_path, final_path, strerror(errno));
-            unlink(tmp_path);
-            rc = GS_ERROR;
-        }
-    } else {
-        unlink(tmp_path);
-    }
-
-    double checkpoint_elapsed_ms = emscripten_get_now() - checkpoint_start_time;
-
-    if (rc == GS_SUCCESS) {
-        g_last_background_checkpoint_ms = now;
-        // Status-bar heartbeat: push the save duration so the CP glyph
-        // flashes and its tooltip updates. x100 fixed-point since
-        // MAIN_THREAD_ASYNC_EM_ASM carries ints.
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onCheckpointSaved === 'function') Module.onCheckpointSaved($0); },
-            (int)(checkpoint_elapsed_ms * 100.0));
-        // clang-format on
-        if (verbose)
-            printf("Checkpoint saved to %s (%.2f ms)\n", final_path, checkpoint_elapsed_ms);
-    } else if (verbose) {
-        printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
-    }
-    return rc;
-}
-
-// Request background checkpoint (with rate limiting)
+// Request background checkpoint (with rate limiting).  Honours checkpoint.auto
+// like the tick loop does: with automatic saving off, hiding the tab must not
+// write a checkpoint either (#148).  Explicit checkpoint.save is unaffected.
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
-    int rc = save_quick_checkpoint(reason, false, rate_limit);
+    if (!checkpoint_auto_enabled)
+        return;
+    int rc = system_quick_checkpoint(reason, false, rate_limit);
     if (rc != GS_SUCCESS) {
         printf("[checkpoint] background checkpoint failed (%s)\n", reason ? reason : "background");
     }
@@ -1225,88 +822,21 @@ static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVis
     return EM_FALSE;
 }
 
-// Beforeunload callback
-static const char *background_beforeunload_callback(int eventType, const void *reserved, void *userData) {
-    (void)eventType;
-    (void)reserved;
-    maybe_request_background_checkpoint((const char *)userData, true);
-    return NULL;
-}
-
-// Install background checkpoint handlers
+// Install background checkpoint handlers.  Only visibilitychange: it is
+// delivered to this (the emulator) thread, and browsers fire it -> hidden when
+// a tab is closed or navigated away.  That save is asynchronous, so on an
+// unload it may not finish before the page goes: a reload does not reliably
+// find a checkpoint from it.  There is deliberately no beforeunload handler:
+// Emscripten runs that callback on the browser main thread (it must return
+// synchronously), which put a whole checkpoint -- system_checkpoint and
+// WasmFS fopen/fwrite/rename -- on the main thread while the worker could be
+// mid-tick.  Blocking the main thread instead, waiting for the worker, could
+// stall the save itself: the worker's tick is driven by requestAnimationFrame.
 static void install_background_checkpoint_handlers(void) {
     if (g_background_handlers_installed)
         return;
     emscripten_set_visibilitychange_callback((void *)"visibilitychange", EM_FALSE, background_visibility_callback);
-    emscripten_set_beforeunload_callback((void *)"beforeunload", background_beforeunload_callback);
     g_background_handlers_installed = true;
-}
-
-// Background checkpoint command
-// Platform impl of gs_background_checkpoint (weak default in system.c
-// stubs out for headless).
-int gs_background_checkpoint(const char *reason) {
-    int rc = save_quick_checkpoint(reason ? reason : "manual", true, false);
-    return (rc == GS_SUCCESS) ? 0 : -1;
-}
-
-// Forward declaration — definition is below.
-static int clear_checkpoint_files(void);
-
-// Platform impl of gs_checkpoint_clear / gs_register_machine.  Both
-// only mean something on WASM (where OPFS hosts per-machine
-// checkpoint directories); headless gets the weak no-op stubs.
-int gs_checkpoint_clear(void) {
-    int removed = clear_checkpoint_files();
-    printf("Cleared %d checkpoint file(s)\n", removed);
-    return 0;
-}
-
-int gs_register_machine(const char *machine_id, const char *created) {
-    if (!machine_id || !created)
-        return -1;
-    int rc = checkpoint_machine_set(machine_id, created);
-    if (rc != 0)
-        printf("register_machine: failed to set %s-%s\n", machine_id, created);
-    return rc == 0 ? 0 : -1;
-}
-
-// Clear checkpoint files inside the current machine directory.  Drops
-// state.checkpoint, any leftover *.tmp, and (defensive) any legacy
-// sequence-numbered *.checkpoint / *.pending / *.complete files.  The
-// machine directory itself is left in place.
-static int clear_checkpoint_files(void) {
-    const char *dir_path = checkpoint_machine_dir();
-    if (!dir_path)
-        return 0;
-    DIR *dir = opendir(dir_path);
-    if (!dir)
-        return 0;
-    struct dirent *entry;
-    int removed = 0;
-    char path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    while ((entry = readdir(dir)) != NULL) {
-        const char *name = entry->d_name;
-        if (!name || name[0] == '.')
-            continue;
-        size_t len = strlen(name);
-        bool match = false;
-        if (strcmp(name, "state.checkpoint") == 0)
-            match = true;
-        else if (len >= 4 && strcmp(name + len - 4, ".tmp") == 0)
-            match = true;
-        else if (len >= 11 && strcmp(name + len - 11, ".checkpoint") == 0)
-            match = true; // legacy
-        else if (strstr(name, ".complete") || strstr(name, ".pending"))
-            match = true; // legacy
-        if (match) {
-            snprintf(path, sizeof(path), "%s/%s", dir_path, name);
-            if (unlink(path) == 0)
-                removed++;
-        }
-    }
-    closedir(dir);
-    return removed;
 }
 
 // ============================================================================
@@ -1317,12 +847,13 @@ static int clear_checkpoint_files(void) {
 // Main Entry Point
 // ============================================================================
 
-int main(int argc, char *argv[]) {
+int main(void) {
     signal(SIGINT, sigint_handler);
+    debug_set_failure_hook(em_assertion_callback);
 
     // Single OPFS mount at /opfs — everything under it persists.
     // The root stays memory-backed (wasmfs_create_opfs_backend() cannot run
-    // during global constructors on the main thread; see wasmfs-opfs-root-limitation.md).
+    // during global constructors on the main thread).
     // The web app creates its directory structure under /opfs; users can also
     // create arbitrary paths under /opfs for their own persistent storage.
     backend_t opfs = wasmfs_create_opfs_backend();
@@ -1342,41 +873,16 @@ int main(int argc, char *argv[]) {
 
     // Offer every file in the persistent vROM store to the core's content-
     // addressed registry (names are irrelevant — each offer is identified by
-    // content).  The platform owns the filesystem; core never enumerates a
-    // directory or builds a path.  Mid-session uploads are offered by the
+    // content).  The platform names the directory; core walks it and never
+    // builds a path of its own.  Mid-session uploads are offered by the
     // web app's ingest path (machine.vrom.offer), so this startup pass only
     // needs to cover what already persisted.
-    DIR *vrom_dir = opendir("/opfs/images/vrom");
-    if (vrom_dir) {
-        struct dirent *entry;
-        char vrom_path[512];
-        while ((entry = readdir(vrom_dir)) != NULL) {
-            if (entry->d_name[0] == '.')
-                continue;
-            if (snprintf(vrom_path, sizeof(vrom_path), "/opfs/images/vrom/%s", entry->d_name) >= (int)sizeof(vrom_path))
-                continue;
-            vrom_offer(vrom_path);
-        }
-        closedir(vrom_dir);
-    }
-
+    vrom_offer_dir("/opfs/images/vrom", NULL);
     // ...and the same pass over the persistent PCI expansion-ROM store, for
     // the same reason: without it a .prom that persisted in an earlier
     // session is invisible after a reload, and the card it drives looks
     // uninstallable until the user uploads the file again.
-    DIR *prom_dir = opendir("/opfs/images/prom");
-    if (prom_dir) {
-        struct dirent *entry;
-        char prom_path[512];
-        while ((entry = readdir(prom_dir)) != NULL) {
-            if (entry->d_name[0] == '.')
-                continue;
-            if (snprintf(prom_path, sizeof(prom_path), "/opfs/images/prom/%s", entry->d_name) >= (int)sizeof(prom_path))
-                continue;
-            prom_offer(prom_path);
-        }
-        closedir(prom_dir);
-    }
+    prom_offer_dir("/opfs/images/prom", NULL);
 
     // Volatile scratch space on memory backend (visible from all threads).
     backend_t membk = wasmfs_create_memory_backend();
@@ -1384,101 +890,37 @@ int main(int argc, char *argv[]) {
     mkdir("/tmp/upload", 0777);
     mkdir("/tmp/extract", 0777);
 
-    // Define the supported options
-    static struct option long_options[] = {
-        {"model", required_argument, 0, 'm'},
-        {"help",  no_argument,       0, 'h'},
-        {"speed", required_argument, 0, 's'},
-        {0,       0,                 0, 0  }
-    };
-
-    // Variables to store parsed options
-    int option_index = 0;
-    int c;
-    char *model = NULL;
-    char *speed_mode = NULL;
-
-    // Parse command-line options
-    while ((c = getopt_long(argc, argv, "m:hs:", long_options, &option_index)) != -1) {
-        switch (c) {
-        case 'm':
-            model = optarg;
-            break;
-        case 'h':
-            print_usage(argv[0]);
-            return 0;
-        case 's':
-            speed_mode = optarg;
-            break;
-        case '?':
-            print_usage(argv[0]);
-            return 1;
-        default:
-            break;
-        }
-    }
-
+    // The page passes no command line: a machine is made by machine.boot and
+    // the pacing is scheduler.mode, both over the bridge like everything
+    // else.  (--model and --speed used to be parsed here; nothing passed
+    // them, and ?speed= documented as reaching --speed never did.)
     shell_init();
     setup_init();
+    system_set_default_share(GS_DEFAULT_SHARE_PATH);
 
-    // Route every log_emit through Module.onLogEmit so the new-UI Logs
+    // Route every log_emit onto the event ring so the new-UI Logs
     // view gets a structured stream parallel to stdout. shell_init has
     // already called log_init; setting the sink here also forwards any
     // categories registered later (setup_init, machine boot, …).
     log_set_sink(js_log_sink, NULL);
 
-    // Bridge is open for business. JS gates its first gsEval on this
-    // flag so requests issued during the boot window don't dispatch
+    // The mailbox is open for business. JS gates its first gsEval on
+    // READY so requests issued during the boot window don't dispatch
     // against the empty default root class. The notify wakes any JS
-    // thread parked in Atomics.waitAsync on this field.
-    __atomic_store_n(&g_bridge.ready, 1, __ATOMIC_SEQ_CST);
-    emscripten_atomic_notify((void *)&g_bridge.ready, INT_MAX);
+    // thread parked in Atomics.waitAsync on that word.
+    gs_mailbox_set_ready(&g_mailbox);
 
-    // Deferred machine instantiation: global_emulator stays NULL until a ROM
-    // is loaded via the `rom load` command, which identifies the machine type
-    // and creates it automatically.  If --model was provided, create it now
-    // for backward compatibility.
-    if (model) {
-        const hw_profile_t *profile = machine_find(model);
-        if (profile) {
-            // system_create assigns global_emulator internally on success.
-            // Don't shadow that here — a NULL return would clobber it.
-            if (system_create(profile, NULL))
-                printf("%s (%u KB RAM)\n", profile->name, profile->ram_default / 1024);
-            else
-                printf("Failed to create machine: %s\n", profile->name);
-        } else {
-            printf("Unknown model: %s\n", model);
-        }
-    }
-
-    // Parse and save speed mode for deferred application.
-    // When the machine already exists (--model was given), apply immediately.
-    // Otherwise, system_post_create() will apply it when rom load creates the machine.
-    if (speed_mode) {
-        // Legacy three-mode names map onto the pacing modes:
-        // realtime/hardware were wall-clock modes → paced; max → turbo.
-        if (strcmp(speed_mode, "turbo") == 0 || strcmp(speed_mode, "max") == 0) {
-            g_deferred_speed = schedule_unthrottled;
-            g_deferred_speed_set = true;
-        } else if (strcmp(speed_mode, "accelerated") == 0 || strcmp(speed_mode, "accel") == 0) {
-            g_deferred_speed = schedule_accelerated;
-            g_deferred_speed_set = true;
-        } else if (strcmp(speed_mode, "paced") == 0 || strcmp(speed_mode, "realtime") == 0 ||
-                   strcmp(speed_mode, "real") == 0 || strcmp(speed_mode, "hardware") == 0 ||
-                   strcmp(speed_mode, "hw") == 0 || strcmp(speed_mode, "accuracy") == 0) {
-            g_deferred_speed = schedule_paced;
-            g_deferred_speed_set = true;
-        } else {
-            printf("[C] Unknown --speed mode '%s' (valid: paced|accelerated|turbo)\n", speed_mode);
-        }
-
-        scheduler_t *sched = system_scheduler();
-        if (sched && g_deferred_speed_set) {
-            scheduler_set_mode(sched, g_deferred_speed);
-            printf("[C] Scheduler mode set via --speed=%s\n", speed_mode);
-        }
-    }
+    // The job thread: scripts run there, not here (job/job.h).  Created
+    // now, not at the first script -- pthread_create from this pthread is
+    // proxied to the browser's main thread, and the Worker takes tens of
+    // milliseconds to come up.  512 KB of stack covers the interpreter's
+    // recursion (16 frames of functions, the expression parser).
+    if (!job_thread_start(512u << 10))
+        fprintf(stderr, "job thread could not be started; scripts run inline\n");
+    // The I/O worker: the checkpoint's write and rename run there, not in
+    // the tick (io/io_worker.h).  Same reason to create it now.
+    if (!io_worker_start(256u << 10))
+        fprintf(stderr, "I/O worker could not be started; writes run inline\n");
 
     // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();
@@ -1489,9 +931,6 @@ int main(int argc, char *argv[]) {
 
     install_background_checkpoint_handlers();
 
-    // Assertion callback is installed automatically by system_post_create()
-    // whenever a machine is created (either here via --model or later via rom load).
-
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
 }
@@ -1500,30 +939,16 @@ int main(int argc, char *argv[]) {
 // Assertion Notification for JavaScript
 // ============================================================================
 
-// Platform-specific assertion callback implementation.
-// Notifies the browser (Playwright tests) that an assertion has failed.
-// Must run on main thread (accesses window.__gsAssertionHandler).
-static void em_assertion_callback(const char *expr, const char *file, int line, const char *func) {
-    // clang-format off
-    MAIN_THREAD_EM_ASM(
-        {
-            var exprStr = $0 ? UTF8ToString($0) : "";
-            var fileStr = $1 ? UTF8ToString($1) : "<unknown>";
-            var lineNum = $2;
-            var funcStr = $3 ? UTF8ToString($3) : "<unknown>";
-
-            // Call global handler if registered
-            if (typeof window !== 'undefined' && typeof window.__gsAssertionHandler === 'function') {
-                try {
-                    window.__gsAssertionHandler(
-                        {expr: exprStr, file: fileStr, line: lineNum, func: funcStr, timestamp: Date.now()});
-                } catch (e) {
-                    // Handler may throw to stop execution - this is expected
-                }
-            }
-        },
-        expr, file, line, func);
-    // clang-format on
+// Platform-specific assertion callback implementation: the failure goes
+// out as an event (assert_failed) the page and its tests read off the
+// event ring; nothing here blocks on the browser's main thread.
+static void em_assertion_callback(const char *kind, const char *expr, const char *file, int line, const char *func) {
+    if (!expr)
+        expr = kind;
+    char where[512];
+    snprintf(where, sizeof where, "%s:%d %s", file ? file : "<unknown>", line, func ? func : "<unknown>");
+    gs_event_emit_text(GS_EVENT_STATE, "assert_failed", "where", where);
+    gs_event_emit_text(GS_EVENT_STATE, "assert_expr", "expr", expr);
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in
@@ -1532,57 +957,11 @@ bool gs_checkpoint_auto_get(void) {
     return checkpoint_auto_enabled;
 }
 
-void gs_checkpoint_auto_set(bool enabled) {
+int gs_checkpoint_auto_set(bool enabled) {
     checkpoint_auto_enabled = enabled;
     if (!enabled)
         checkpoint_tick_counter = 0;
-}
-
-// The always-present AppleShare volume.  The path literal lives here, in the
-// platform layer, because core never fabricates or interprets a path (PR #69);
-// `appletalk_server.c` only ever executes the tree operation it is handed.
-// Under OPFS the directory — and the AppleDouble sidecars the AFP server
-// writes beside each file — persist across page reloads for free.
-#define GS_DEFAULT_SHARE_NAME "Shared"
-#define GS_DEFAULT_SHARE_PATH "/opfs/shared"
-
-// Publish the default share.  Idempotent: a machine teardown drops the volume
-// table, so this runs again on every system_create.  Failure is a logged
-// warning, never a boot error — a user who removed the directory should still
-// get a running machine.
-static void provision_default_share(void) {
-    if (atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
-        return;
-    if (mkdir(GS_DEFAULT_SHARE_PATH, 0777) != 0 && errno != EEXIST) {
-        printf("[C] default share: cannot create %s (%s)\n", GS_DEFAULT_SHARE_PATH, strerror(errno));
-        return;
-    }
-    char err[192];
-    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, GS_DEFAULT_SHARE_PATH, err, sizeof(err)) < 0)
-        printf("[C] default share: %s\n", err);
-}
-
-// Platform hook: install assertion callback and apply deferred speed mode
-// after each system_create (including deferred creation via rom load).
-void system_post_create(config_t *cfg) {
-    debug_t *debug = system_debug();
-    if (debug) {
-        debug->assertion_callback = em_assertion_callback;
-    }
-
-    provision_default_share();
-
-    // Apply deferred speed mode from --speed flag parsed at startup
-    if (g_deferred_speed_set) {
-        scheduler_t *sched = system_scheduler();
-        if (sched) {
-            scheduler_set_mode(sched, g_deferred_speed);
-            printf("[C] Deferred scheduler mode applied: --speed=%s\n",
-                   g_deferred_speed == schedule_unthrottled   ? "turbo"
-                   : g_deferred_speed == schedule_accelerated ? "accelerated"
-                                                              : "paced");
-        }
-    }
+    return 0;
 }
 
 // ============================================================================
@@ -1592,7 +971,6 @@ void system_post_create(config_t *cfg) {
 // Print the host (Emscripten/WASM or native) callstack for debugging
 void em_print_host_callstack(void) {
     printf("\n=== Host callstack ===\n");
-#ifdef __EMSCRIPTEN__
     // Print both C and JS stacks
     char stackbuf[8192];
     int n =
@@ -1601,23 +979,12 @@ void em_print_host_callstack(void) {
         printf("%s\n", stackbuf);
     else
         printf("(unavailable)\n");
-#else
-// Attempt to use glibc backtrace on native builds
-#if defined(__linux__) || defined(__APPLE__)
-    void *buffer[64];
-    int n = backtrace(buffer, 64);
-    char **syms = backtrace_symbols(buffer, n);
-    if (syms) {
-        for (int i = 0; i < n; i++)
-            printf("%s\n", syms[i]);
-        free(syms);
-    } else {
-        printf("(unavailable)\n");
-    }
-#else
-    printf("(unavailable)\n");
-#endif
-#endif
+}
+
+// Nothing to walk: the browser's card ROMs live under /opfs/images/vrom and
+// /opfs/images/prom, offered at startup and on every upload (persistAs).
+void platform_offer_sibling_card_roms(const char *rom_path) {
+    (void)rom_path;
 }
 
 // Platform-specific callstack function (exposed to core via platform.h)

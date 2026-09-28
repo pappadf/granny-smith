@@ -57,8 +57,9 @@ void via_cancel_pending_shift(via_t *via) {
     (void)via;
 }
 
-event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t cb, void *source, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)s;
     (void)cb;
     (void)source;
@@ -80,13 +81,12 @@ void remove_event(struct scheduler *restrict s, event_callback_t cb, void *sourc
     (void)cb;
     (void)source;
 }
+void scheduler_forget_source(struct scheduler *s, void *source) {
+    (void)s, (void)source;
+}
 double scheduler_time_ns(struct scheduler *restrict s) {
     (void)s;
     return 0.0;
-}
-
-struct object *machine_object(void) {
-    return NULL;
 }
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
     (void)cls;

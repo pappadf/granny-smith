@@ -36,6 +36,6 @@
 
 ## Checklist
 
-- [ ] Code follows the project [style guide](docs/STYLE_GUIDE.md)
+- [ ] Code follows the project [style guide](../docs/guide/STYLE_GUIDE.md)
 - [ ] New source files include SPDX license header
 - [ ] Documentation updated (if applicable)

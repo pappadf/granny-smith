@@ -9,18 +9,21 @@
 // ============================================================================
 
 #include "debug.h"
+#include "gs_out.h"
 
 #include "addr_format.h"
 #include "alias.h"
 #include "common.h"
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "crc32.h"
 #include "debug_mac.h"
 #include "display.h"
 #include "expr.h"
 #include "fpu.h"
 #include "inflate.h"
 #include "log.h"
+#include "log_categories.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
@@ -33,14 +36,16 @@
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "event/gs_event.h"
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // debug_init / debug_cleanup reference them.
-extern const class_desc_t debug_class;
-extern const class_desc_t bp_collection_class;
-extern const class_desc_t lp_collection_class;
-extern const class_desc_t debug_mac_class;
-extern const class_desc_t debug_mac_globals_class;
+static const class_desc_t debug_class;
+static const class_desc_t bp_collection_class;
+static const class_desc_t lp_collection_class;
+static const class_desc_t wp_collection_class;
+static const class_desc_t debug_mac_class;
+static const class_desc_t debug_mac_globals_class;
 
 // Mac low-memory globals table (defined in mac_globals_data.c). Used by
 // debug.mac.globals.{read,write,address,list}.
@@ -73,6 +78,10 @@ struct breakpoint {
 
     // Hit counter — exposed via debug.breakpoints[N].hit_count.
     uint32_t hit_count;
+
+    // A disabled breakpoint stays in the list but never stops (or counts).
+    // Stored inverted so calloc's zero is "enabled".
+    bool disabled;
 
     // Sparse stable id and the per-entry object_t that backs
     // `debug.breakpoints[id]`. The object is owned by this breakpoint;
@@ -123,6 +132,13 @@ struct logpoint {
     // 0x4244E607 to this page") where most accesses on a hot page are noise.
     bool value_filter_active;
     uint32_t value_filter;
+
+    // A watchpoint: a memory logpoint that stops the machine after the
+    // accessing instruction instead of logging (debug.watchpoints, #180).
+    // Listed by its own collection, never by debug.logpoints.
+    bool stops;
+    // A disabled watchpoint is kept but ignored (the entry's `enabled`).
+    bool disabled;
 
     // Sparse stable id and the per-entry object_t. Same shape as the
     // breakpoint struct above.
@@ -303,11 +319,25 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 // are watched, so an access via an alias of the same physical page still
 // fires the hook.  When space == ADDR_PHYSICAL only the physical watch is
 // installed (no logical-page watch) — the caller observes every alias.
-logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
-                                log_category_t *category, int level) {
-    logpoint_t *lp = malloc(sizeof(logpoint_t));
+static struct object *make_watchpoint_object(logpoint_t *lp);
+
+// The installer behind set_memory_logpoint and the watchpoint add: `stops`
+// makes the entry a watchpoint (its own entry class, the stopping hook path).
+static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space,
+                                           int kind, log_category_t *category, int level, bool stops) {
+    // calloc, and the no-range sentinel set explicitly below, matching
+    // set_logpoint.  This used to malloc and then assign 14 of the 16 fields
+    // by hand, leaving start_phys/end_phys as heap garbage.  Inert today only
+    // because the single reader is guarded by `lp->kind == LP_KIND_PC` -- a
+    // coincidence of the current control flow, not an invariant anyone stated,
+    // and any future pass that iterates all logpoints (a unified hit test, an
+    // entries column, a checkpoint of the list) reads uninitialised memory.
+    // MSan and valgrind flag it now.
+    logpoint_t *lp = calloc(1, sizeof(logpoint_t));
     if (!lp)
         return NULL;
+    lp->start_phys = 1; // start > end == "no physical range", as set_logpoint
+    lp->end_phys = 0;
     lp->addr = addr;
     lp->end_addr = end_addr;
     lp->space = space;
@@ -321,8 +351,9 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     lp->end_phys_page = 0;
     lp->value_filter_active = false;
     lp->value_filter = 0;
+    lp->stops = stops;
     lp->id = debug->next_logpoint_id++;
-    lp->entry_object = gs_classes_make_logpoint_object(lp);
+    lp->entry_object = stops ? make_watchpoint_object(lp) : gs_classes_make_logpoint_object(lp);
     lp->next = debug->logpoints;
     debug->logpoints = lp;
     debug->active = true;
@@ -338,8 +369,7 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
         // so that under TC.SRE=1 (separate user/supervisor roots) a logpoint
         // installed while user code is running watches the user mapping.
         if (g_mmu && g_mmu->enabled) {
-            cpu_t *cpu = system_cpu();
-            bool supervisor = cpu ? (cpu->supervisor != 0) : true;
+            bool supervisor = debug_cpu_is_supervisor();
             uint32_t phys_start = mmu_translate_debug(g_mmu, addr, supervisor) >> PAGE_SHIFT;
             uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, supervisor) >> PAGE_SHIFT;
             if (phys_end < phys_start) {
@@ -382,7 +412,12 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     return lp;
 }
 
-// Expand a logpoint message template at fire time (shell v2 §6.3).
+logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
+                                log_category_t *category, int level) {
+    return install_memory_logpoint(debug, addr, end_addr, space, kind, category, level, false);
+}
+
+// Expand a logpoint message template at fire time.
 // The message is a stored (raw) interpolating-string body: `${expr}`
 // splices any expression, `$name` splices a binding. The three
 // event-intrinsic values (`$value`, `$addr`, `$size`) live nowhere
@@ -418,6 +453,30 @@ static value_t lp_binding(void *ud, const char *name) {
     return shell_binding_get(name);
 }
 
+// Render a logpoint's `message=` template.
+//
+// The template is stored raw and re-interpolated on every fire, so each hit
+// runs interp_walk -> expr_eval -> object_resolve with a malloc per `${...}`
+// body.  That looks like a performance defect, bad enough to make a write
+// logpoint on a hot page "effectively unusable".
+//
+// MEASURED before restructuring.
+// A Plus, a write logpoint over 0x0000-0xFFFF, 20M cycles, 71,650 fires in
+// every run, output discarded, best of three:
+//
+//     no message=            455 ms
+//     plain message=         468 ms   (+13 ms; no ${} so it short-circuits)
+//     two-expression ${}=    529 ms   (+61 ms over plain)
+//
+// So the re-parse costs about 0.85 us per fire, roughly 13% -- on top of a
+// path that already costs 6.4 us per fire for the slow-path routing the
+// logpoint itself forces.  The defect is real; the severity is not.  The
+// template is not what makes a hot-page logpoint expensive, and pre-splitting
+// it into a {literal, expr-body} chunk list would add cached state and its
+// invalidation to recover a small fraction of an already-slow debugging path.
+//
+// Deliberately not restructured.  If that changes, the number to beat is
+// above.
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
@@ -442,7 +501,7 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
 }
 
 // ============================================================================
-// Exception trace ring (IMP from notes/09 diagnostic patch)
+// Exception trace ring
 // ============================================================================
 
 #define EXC_TRACE_RING_SIZE 256
@@ -502,10 +561,10 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
 void debug_exc_trace_dump(int filter) {
     uint32_t total = (uint32_t)s_exc_trace_count;
     uint32_t count = total < EXC_TRACE_RING_SIZE ? total : EXC_TRACE_RING_SIZE;
-    printf("=== Exception trace ring (%u total events, showing %u%s) ===\n", total, count,
-           filter ? ", routine traps/IRQs filtered" : "");
+    gs_outf("=== Exception trace ring (%u total events, showing %u%s) ===\n", total, count,
+            filter ? ", routine traps/IRQs filtered" : "");
     if (count == 0) {
-        printf("(empty)\n");
+        gs_outf("(empty)\n");
         return;
     }
     // Walk from oldest to newest. With s_exc_trace_count <= ring size, oldest is at idx 0.
@@ -521,20 +580,24 @@ void debug_exc_trace_dump(int filter) {
                 e->vector == 0x024 || (e->vector >= 0x060 && e->vector <= 0x07C))
                 continue;
         }
-        // Per-arch line format (§3.9c): the 68K entry prints as always; a PPC
+        // Per-arch line format: the 68K entry prints as always; a PPC
         // entry carries MSR in the vbr slot, the vector offset in
         // format_frame, and DAR in fault_addr.
         if (e->arch == EXC_ARCH_PPC) {
-            printf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
-                   e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
-                   e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+            gs_outf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
+                    e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
+                    e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
         } else {
-            printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
-                   (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
-                   e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+            gs_outf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
+                    (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
+                    e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
         }
     }
 }
+
+// The debug_t whose construction installed g_mem_logpoint_hook; only its
+// teardown clears the hook (debug_init / debug_delete).
+static debug_t *g_mem_hook_owner = NULL;
 
 // Hook invoked from the memory slow path for every access on a logpoint page.
 // Walks the logpoint list and emits a log line for each memory logpoint that
@@ -547,7 +610,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
     uint32_t phys_addr = addr;
     bool phys_computed = false;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        if (lp->kind == LP_KIND_PC)
+        if (lp->kind == LP_KIND_PC || lp->disabled)
             continue;
         bool match_kind = (lp->kind == LP_KIND_RW) || (is_write && lp->kind == LP_KIND_WRITE) ||
                           (!is_write && lp->kind == LP_KIND_READ);
@@ -592,6 +655,23 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                 continue;
         }
         lp->hit_count++;
+        if (lp->stops) {
+            // A watchpoint: report the access and stop the machine once the
+            // instruction completes (debug_break_and_trace).  The first hit
+            // inside one instruction is the one reported.
+            if (!debug->watch_hit) {
+                const cpu_debug_if_t *dif = system_cpu_debug_if();
+                uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
+                gs_outf("watchpoint #%d hit: %s $%08X.%c value=$%0*X pc=$%08X\n", lp->id, is_write ? "WRITE" : "READ",
+                        addr,
+                        (size == 1)   ? 'b'
+                        : (size == 2) ? 'w'
+                                      : 'l',
+                        (int)(size * 2), value, pc);
+                debug->watch_hit = true;
+            }
+            continue;
+        }
         char formatted[256];
         if (lp->message) {
             format_logpoint_message(formatted, sizeof(formatted), lp->message, addr, value, size);
@@ -621,7 +701,13 @@ int delete_all_logpoints(debug_t *debug);
 // splitting the core's "mnemonic\toperands" text.  Returns bytes consumed
 // (so callers advance the address arch-neutrally); 2 as a safe fallback
 // when no machine/core is up.
-static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
+// The split text's buffers: the longest mnemonic the 68K decoder produces is
+// a 32-character trap name (_CaseAndMarkSensitiveEqualString, measured over
+// every opcode), which a 31-character cap used to truncate.
+#define DISASM_MNEMONIC_MAX 48
+#define DISASM_OPERANDS_MAX 80
+
+static int disasm_at(uint32_t pc, char mnemonic[DISASM_MNEMONIC_MAX], char operands[DISASM_OPERANDS_MAX]) {
     char buf[100];
     int i, n;
 
@@ -630,20 +716,20 @@ static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
         buf[0] = '\0';
         n = 2;
     } else {
-        n = dif->disasm(dif->ctx, pc, buf);
+        n = dif->disasm(dif->ctx, pc, buf, sizeof(buf));
     }
 
     if (strlen(buf) == 0) {
-        sprintf(mnemonic, "ILLEGAL");
+        snprintf(mnemonic, DISASM_MNEMONIC_MAX, "ILLEGAL");
         operands[0] = '\0';
     } else {
-        // Cap at 31 so we always have room for the trailing NUL even if
-        // the core's disasm ever returns an opcode without a tab separator.
-        for (i = 0; i < 31 && buf[i] != '\0' && buf[i] != '\t'; i++)
+        // Bounded so there is always room for the NUL even if the core's
+        // disasm ever returns an opcode without a tab separator.
+        for (i = 0; i < DISASM_MNEMONIC_MAX - 1 && buf[i] != '\0' && buf[i] != '\t'; i++)
             mnemonic[i] = buf[i];
         mnemonic[i] = '\0';
         if (buf[i] == '\t')
-            snprintf(operands, 80, "%s", buf + i + 1);
+            snprintf(operands, DISASM_OPERANDS_MAX, "%s", buf + i + 1);
         else
             operands[0] = '\0';
     }
@@ -653,12 +739,12 @@ static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
 
 // Disassemble instruction at addr, write to buf, return instruction length in bytes
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
-    char mnemonic[32], operands[80];
+    char mnemonic[DISASM_MNEMONIC_MAX], operands[DISASM_OPERANDS_MAX];
 
     int n = disasm_at(addr, mnemonic, operands);
 
     // Format with address prefix.  Use snprintf to bound output: addr_str is
-    // up to 39 chars, mnemonic up to 31, operands up to 79 — worst case
+    // up to 39 chars, mnemonic up to 47, operands up to 79 — worst case
     // ~160 bytes, larger than the 100-byte caller buffers historically used.
     // dc19792 enlarged the inner operands buffer but missed callers; this
     // bounds the final write so a complex full-extension-word instruction
@@ -692,6 +778,13 @@ int debug_break_and_trace(void) {
     bool stop = false;
     uint32_t current_pc = dif->get_pc(dif->ctx);
 
+    // A watchpoint fired inside the instruction that just executed: stop
+    // here, on the instruction after the access (#180).
+    if (debug->watch_hit) {
+        debug->watch_hit = false;
+        stop = true;
+    }
+
     // If we have a last_breakpoint_pc set, this means we need to skip checking
     // for breakpoints at that specific PC address one time (to allow resuming execution)
     if (debug->last_breakpoint_pc != 0 && current_pc == debug->last_breakpoint_pc) {
@@ -701,6 +794,11 @@ int debug_break_and_trace(void) {
         // Check for breakpoints at current PC
         breakpoint_t *bp = debug->breakpoints;
         while (bp != NULL) {
+            // A disabled breakpoint is kept but ignored.
+            if (bp->disabled) {
+                bp = bp->next;
+                continue;
+            }
             bool hit = false;
             if (bp->space == ADDR_LOGICAL) {
                 // Logical breakpoint: compare directly with PC
@@ -719,10 +817,12 @@ int debug_break_and_trace(void) {
                 }
                 bp->hit_count++;
                 if (bp->space == ADDR_PHYSICAL) {
-                    printf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
+                    gs_outf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
                 } else {
-                    printf("breakpoint hit at $%08X\n", bp->addr);
+                    gs_outf("breakpoint hit at $%08X\n", bp->addr);
                 }
+                gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"breakpoint_hit\",\"pc\":%u,\"addr\":%u}", current_pc,
+                               bp->addr);
                 // Remember this PC to skip it next time we check
                 debug->last_breakpoint_pc = current_pc;
                 stop = true;
@@ -826,7 +926,7 @@ bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
     return false;
 }
 
-// Delete breakpoint by sparse stable id (proposal §2.1). Walks the list
+// Delete breakpoint by sparse stable id. Walks the list
 // matching `bp->id` rather than the position-in-list — positions shift
 // when other entries are removed, ids do not.
 static bool delete_breakpoint_by_id(debug_t *debug, int id) {
@@ -865,19 +965,21 @@ void list_breakpoints(debug_t *debug) {
     int count = 0;
 
     if (bp == NULL) {
-        printf("No breakpoints set.\n");
+        gs_outf("No breakpoints set.\n");
         return;
     }
 
-    printf("Breakpoints:\n");
+    gs_outf("Breakpoints:\n");
     while (bp != NULL) {
         if (bp->space == ADDR_PHYSICAL)
-            printf("  #%d: P:$%08X", count, (unsigned int)bp->addr);
+            gs_outf("  #%d: P:$%08X", count, (unsigned int)bp->addr);
         else
-            printf("  #%d: $%08X", count, (unsigned int)bp->addr);
+            gs_outf("  #%d: $%08X", count, (unsigned int)bp->addr);
         if (bp->condition)
-            printf("  if %s", bp->condition);
-        printf("\n");
+            gs_outf("  if %s", bp->condition);
+        if (bp->disabled)
+            gs_outf("  (disabled)");
+        gs_outf("\n");
         bp = bp->next;
         count++;
     }
@@ -973,31 +1075,8 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
 // Screenshot command - save emulated screen as PNG
 // ────────────────────────────────────────────────────────────────────────────
 //
-// Pixel-format support, v1: PIXEL_1BPP_MSB only — every machine that ships
-// today (Plus, SE/30 built-in video) drives a 1bpp framebuffer.  The wider
-// indexed/direct paths land alongside the JMFB driver in step 6 of the
-// IIcx/IIx proposal; for now an unsupported format is a hard error.
-
-// CRC32 table for PNG chunk checksums
-static uint32_t crc32_table[256];
-static int crc32_table_init = 0;
-
-// Initialize CRC32 lookup table
-static void init_crc32_table(void) {
-    if (crc32_table_init)
-        return;
-    for (uint32_t n = 0; n < 256; n++) {
-        uint32_t c = n;
-        for (int k = 0; k < 8; k++) {
-            if (c & 1)
-                c = 0xedb88320 ^ (c >> 1);
-            else
-                c = c >> 1;
-        }
-        crc32_table[n] = c;
-    }
-    crc32_table_init = 1;
-}
+// Pixel-format support: 1/2/4/8 bpp indexed (through the display's CLUT),
+// 16-bit 555/565 and 32-bit XRGB; any other format is a hard error.
 
 // Write 32-bit big-endian value to buffer
 // Write a PNG chunk to file
@@ -1016,15 +1095,8 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
             return -1;
     }
 
-    // Compute CRC over type + data
-    uint32_t crc = 0xffffffff;
-    for (int i = 0; i < 4; i++) {
-        crc = crc32_table[(crc ^ header[4 + i]) & 0xff] ^ (crc >> 8);
-    }
-    for (uint32_t i = 0; i < len; i++) {
-        crc = crc32_table[(crc ^ data[i]) & 0xff] ^ (crc >> 8);
-    }
-    crc ^= 0xffffffff;
+    // CRC over type + data
+    uint32_t crc = gs_crc32(gs_crc32(0, header + 4, 4), data, len > 0 && data ? len : 0);
 
     // Write CRC (big-endian)
     uint8_t crc_buf[4];
@@ -1225,28 +1297,7 @@ uint32_t framebuffer_checksum(const display_t *d) {
 }
 
 // Calculate checksum for a region of the framebuffer (top, left, bottom, right)
-// Region is specified in pixels; v1 supports 1bpp only.
-// Bits per pixel for a display format, or 0 if it is not a packed encoding
-// this file knows how to walk.
-static unsigned framebuffer_format_bits(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-        return 8;
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-        return 16;
-    case PIXEL_32BPP_XRGB:
-        return 32;
-    default:
-        return 0;
-    }
-}
+// Region is specified in pixels.
 
 uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right) {
     if (!d || !d->bits)
@@ -1259,9 +1310,11 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
     // tell.  1 bpp keeps its exact bit-packing walk below so existing
     // baselines are unchanged.
     if (d->format != PIXEL_1BPP_MSB) {
-        unsigned bpp = framebuffer_format_bits(d->format);
-        if (!bpp)
-            return 0;
+        // display.h owns bits-per-pixel.  This was a third
+        // copy of that switch, with a 0 return meaning "not a format I can
+        // walk"; display_bpp answers for every format in the enum and faults
+        // on anything else, so the sentinel had nothing left to signal.
+        unsigned bpp = display_bpp(d->format);
         // Byte span of the row segment, rounded outwards for sub-byte
         // formats (a partial byte still changes when the region does).
         size_t first = ((size_t)left * bpp) / 8;
@@ -1282,7 +1335,7 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
     // each row boundary (independent of `left % 8`), so we initialise it
     // here rather than relying on byte_bit==7 inside the loop — that path
     // fires only when `left` is byte-aligned and would leak bits across
-    // rows otherwise. (F-1288)
+    // rows otherwise.
     for (int y = top; y < bottom; y++) {
         uint8_t accum_byte = 0;
         // Process each pixel in the row, packing into bytes
@@ -1318,76 +1371,10 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
 //
 // `out_rgba` must point to at least `width * 4` bytes.
 static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba) {
-    const uint8_t *src_row = d->bits + (size_t)y * d->stride;
-    const rgba8_t *clut = d->clut;
-    const uint32_t clut_len = d->clut_len;
-    for (uint32_t x = 0; x < d->width; x++) {
-        uint8_t *pixel = out_rgba + x * 4;
-        uint8_t r = 0, g = 0, b = 0;
-        switch (d->format) {
-        case PIXEL_1BPP_MSB: {
-            int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
-            // 1 = black, 0 = white (Mac convention)
-            r = g = b = bit ? 0 : 255;
-            break;
-        }
-        case PIXEL_2BPP_MSB: {
-            int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
-            rgba8_t c = clut[idx % clut_len];
-            r = c.r;
-            g = c.g;
-            b = c.b;
-            break;
-        }
-        case PIXEL_4BPP_MSB: {
-            int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
-            rgba8_t c = clut[idx % clut_len];
-            r = c.r;
-            g = c.g;
-            b = c.b;
-            break;
-        }
-        case PIXEL_8BPP: {
-            uint8_t idx = src_row[x];
-            rgba8_t c = clut[idx % clut_len];
-            r = c.r;
-            g = c.g;
-            b = c.b;
-            break;
-        }
-        case PIXEL_16BPP_555: {
-            uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-            uint8_t r5 = (v >> 10) & 0x1F;
-            uint8_t g5 = (v >> 5) & 0x1F;
-            uint8_t b5 = v & 0x1F;
-            r = (uint8_t)((r5 << 3) | (r5 >> 2));
-            g = (uint8_t)((g5 << 3) | (g5 >> 2));
-            b = (uint8_t)((b5 << 3) | (b5 >> 2));
-            break;
-        }
-        case PIXEL_16BPP_565: {
-            // big-endian 5-6-5: the 6-bit green replicates its top 2 bits
-            uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-            uint8_t r5 = (v >> 11) & 0x1F;
-            uint8_t g6 = (v >> 5) & 0x3F;
-            uint8_t b5 = v & 0x1F;
-            r = (uint8_t)((r5 << 3) | (r5 >> 2));
-            g = (uint8_t)((g6 << 2) | (g6 >> 4));
-            b = (uint8_t)((b5 << 3) | (b5 >> 2));
-            break;
-        }
-        case PIXEL_32BPP_XRGB: {
-            r = src_row[x * 4 + 1];
-            g = src_row[x * 4 + 2];
-            b = src_row[x * 4 + 3];
-            break;
-        }
-        }
-        pixel[0] = r;
-        pixel[1] = g;
-        pixel[2] = b;
-        pixel[3] = 255;
-    }
+    // The conversion itself is display.h's (display_row_to_rgba): it was
+    // written twice in this file, byte for byte, and the PNG writer below is
+    // the other copy.
+    display_row_to_rgba(d, (uint32_t)y, out_rgba);
 }
 
 // Load a PNG file and decode it to packed RGBA (8 bits per channel, 4
@@ -1399,7 +1386,7 @@ static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba
 static int load_png_to_rgba(const char *filename, int expected_width, int expected_height, uint8_t *out_rgba) {
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
-        printf("Error: Cannot open '%s' for reading.\n", filename);
+        gs_outf("Error: Cannot open '%s' for reading.\n", filename);
         return -1;
     }
     fseek(fp, 0, SEEK_END);
@@ -1408,13 +1395,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     uint8_t *file_data = malloc(file_size);
     if (!file_data) {
         fclose(fp);
-        printf("Error: Out of memory.\n");
+        gs_outf("Error: Out of memory.\n");
         return -1;
     }
     if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
         free(file_data);
         fclose(fp);
-        printf("Error: Failed to read file.\n");
+        gs_outf("Error: Failed to read file.\n");
         return -1;
     }
     fclose(fp);
@@ -1422,7 +1409,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
     if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {
         free(file_data);
-        printf("Error: Not a valid PNG file.\n");
+        gs_outf("Error: Not a valid PNG file.\n");
         return -1;
     }
 
@@ -1448,7 +1435,7 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
                 if (!new_idat) {
                     free(idat_data);
                     free(file_data);
-                    printf("Error: Out of memory.\n");
+                    gs_outf("Error: Out of memory.\n");
                     return -1;
                 }
                 idat_data = new_idat;
@@ -1464,26 +1451,29 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
 
     if (width != expected_width || height != expected_height) {
         free(idat_data);
-        printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
-               expected_height);
+        gs_outf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
+                expected_height);
         return -1;
     }
     if (!idat_data || idat_len == 0) {
         free(idat_data);
-        printf("Error: No image data in PNG.\n");
+        gs_outf("Error: No image data in PNG.\n");
         return -1;
     }
     if (bit_depth != 8) {
         free(idat_data);
-        printf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
+        gs_outf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
         return -1;
     }
 
     size_t raw_size = 0;
-    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, &raw_size);
+    // At most 8-bit RGBA plus a filter byte per row, at dimensions already
+    // checked against the screen.
+    size_t raw_max = (size_t)height * (1 + (size_t)width * 4);
+    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, raw_max, &raw_size);
     free(idat_data);
     if (!raw_data) {
-        printf("Error: Failed to decompress PNG..\n");
+        gs_outf("Error: Failed to decompress PNG..\n");
         return -1;
     }
 
@@ -1496,13 +1486,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
         bpp_in = 1; // Grayscale
     else {
         free(raw_data);
-        printf("Error: Unsupported PNG color type %d.\n", color_type);
+        gs_outf("Error: Unsupported PNG color type %d.\n", color_type);
         return -1;
     }
     size_t row_size = 1 + (size_t)width * bpp_in;
     if (raw_size != row_size * (size_t)height) {
         free(raw_data);
-        printf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
+        gs_outf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
         return -1;
     }
 
@@ -1541,168 +1531,6 @@ int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *ou
     return load_png_to_rgba(filename, width, height, out_rgba);
 }
 
-// Load a PNG file and extract framebuffer (1-bit packed, same format as emulator).
-// `expected_width`, `expected_height`, and `expected_stride` are the active
-// display's dimensions; the helper validates the PNG matches before
-// converting and writing into `fb_out` (which must be at least
-// expected_stride * expected_height bytes).  Returns 0 on success, -1 on error.
-// Supports both stored-block PNGs (our format) and standard deflate PNGs.
-static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int expected_width, int expected_height,
-                                   size_t expected_stride) {
-    FILE *fp = fopen(filename, "rb");
-    if (!fp) {
-        printf("Error: Cannot open '%s' for reading.\n", filename);
-        return -1;
-    }
-
-    // Read entire file
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    uint8_t *file_data = malloc(file_size);
-    if (!file_data) {
-        fclose(fp);
-        printf("Error: Out of memory.\n");
-        return -1;
-    }
-
-    if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
-        free(file_data);
-        fclose(fp);
-        printf("Error: Failed to read file.\n");
-        return -1;
-    }
-    fclose(fp);
-
-    // Check PNG signature
-    static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
-    if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {
-        free(file_data);
-        printf("Error: Not a valid PNG file.\n");
-        return -1;
-    }
-
-    // Parse chunks to find IHDR and IDAT
-    size_t pos = 8;
-    int width = 0, height = 0, bit_depth = 0, color_type = 0;
-    uint8_t *idat_data = NULL;
-    size_t idat_len = 0;
-    size_t idat_capacity = 0;
-
-    while (pos + 12 <= (size_t)file_size) {
-        uint32_t chunk_len = RD_BE32(file_data + pos);
-        char chunk_type[5];
-        memcpy(chunk_type, file_data + pos + 4, 4);
-        chunk_type[4] = '\0';
-
-        if (strcmp(chunk_type, "IHDR") == 0 && chunk_len >= 13) {
-            width = RD_BE32(file_data + pos + 8);
-            height = RD_BE32(file_data + pos + 12);
-            bit_depth = file_data[pos + 16];
-            color_type = file_data[pos + 17];
-        } else if (strcmp(chunk_type, "IDAT") == 0) {
-            // Append IDAT data
-            if (idat_len + chunk_len > idat_capacity) {
-                idat_capacity = (idat_len + chunk_len) * 2;
-                uint8_t *new_idat = realloc(idat_data, idat_capacity);
-                if (!new_idat) {
-                    free(idat_data);
-                    free(file_data);
-                    printf("Error: Out of memory.\n");
-                    return -1;
-                }
-                idat_data = new_idat;
-            }
-            memcpy(idat_data + idat_len, file_data + pos + 8, chunk_len);
-            idat_len += chunk_len;
-        } else if (strcmp(chunk_type, "IEND") == 0) {
-            break;
-        }
-
-        pos += 12 + chunk_len; // length + type + data + crc
-    }
-
-    free(file_data);
-
-    // Validate dimensions
-    if (width != expected_width || height != expected_height) {
-        free(idat_data);
-        printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
-               expected_height);
-        return -1;
-    }
-
-    if (!idat_data || idat_len == 0) {
-        free(idat_data);
-        printf("Error: No image data in PNG.\n");
-        return -1;
-    }
-
-    // Decompress IDAT data (stored blocks only)
-    size_t raw_size = 0;
-    uint8_t *raw_data = inflate_zlib_alloc(idat_data, idat_len, &raw_size);
-    free(idat_data);
-
-    if (!raw_data) {
-        printf("Error: Failed to decompress PNG..\n");
-        return -1;
-    }
-
-    // Calculate expected size based on color type
-    size_t bytes_per_pixel;
-    if (color_type == 6) {
-        bytes_per_pixel = 4; // RGBA
-    } else if (color_type == 2) {
-        bytes_per_pixel = 3; // RGB
-    } else if (color_type == 0) {
-        bytes_per_pixel = 1; // Grayscale
-    } else {
-        free(raw_data);
-        printf("Error: Unsupported PNG color type %d.\n", color_type);
-        return -1;
-    }
-
-    size_t row_size = 1 + width * bytes_per_pixel; // 1 filter byte + pixel data
-    size_t expected_size = row_size * height;
-
-    if (raw_size != expected_size) {
-        free(raw_data);
-        printf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, expected_size);
-        return -1;
-    }
-
-    // Convert RGBA/RGB/Grayscale back to 1-bit packed framebuffer
-    memset(fb_out, 0, expected_stride * (size_t)expected_height);
-    for (int y = 0; y < height; y++) {
-        uint8_t *row = raw_data + y * row_size + 1; // Skip filter byte
-        for (int x = 0; x < width; x++) {
-            // Get pixel brightness
-            uint8_t v;
-            if (color_type == 6) {
-                v = row[x * 4]; // Use R channel from RGBA
-            } else if (color_type == 2) {
-                v = row[x * 3]; // Use R channel from RGB
-            } else {
-                v = row[x]; // Grayscale
-            }
-
-            // Convert to 1-bit: bright = white (0), dark = black (1)
-            int bit = (v < 128) ? 1 : 0;
-
-            // Pack into framebuffer
-            int byte_idx = y * (int)expected_stride + (x / 8);
-            int bit_idx = 7 - (x % 8); // MSB first
-            if (bit) {
-                fb_out[byte_idx] |= (1 << bit_idx);
-            }
-        }
-    }
-
-    free(raw_data);
-    return 0;
-}
-
 // Compare current framebuffer with a reference PNG file.
 // Returns 0 if match, 1 if mismatch, -1 on error.
 //
@@ -1715,14 +1543,21 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int ex
 // the colour bytes will be zero, which won't match a real reference
 // — that's intentional, the test should screenshot post-CLUT-load.
 //
-// `exclude_rect`, when non-NULL, points to {top, left, bottom, right}
-// (half-open).  Those pixels are zeroed in BOTH the live and reference
-// buffers before the compare, so any phase-dependent content there (a
-// blinking text caret, a ticking clock digit) is ignored.  Callers must
-// validate the bounds; out-of-range values are clamped defensively here.
-int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rect) {
+// `exclude_rects` points to `n_rects` consecutive {top, left, bottom,
+// right} quads (half-open).  Those pixels are zeroed in BOTH the live and
+// reference buffers before the compare, so any phase-dependent content
+// there is ignored.  Callers must validate the bounds; out-of-range values
+// are clamped defensively here.
+//
+// More than one region because a single frame can carry more than one
+// phase-dependent field, and a bounding box over both would blank whatever
+// sits between them.  The About This Macintosh rows are the case that
+// forced it: the menu-bar clock in the top right AND the Finder's "Largest
+// Unused Block" figure lower down, with "Total Memory" -- an assertion the
+// row exists to make -- sitting between the two.
+int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rects, int n_rects) {
     if (!d || !d->bits) {
-        printf("Error: No active display.\n");
+        gs_outf("Error: No active display.\n");
         return -1;
     }
     switch (d->format) {
@@ -1735,12 +1570,12 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     case PIXEL_32BPP_XRGB:
         break;
     default:
-        printf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
+        gs_outf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
         return -1;
     }
     if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
         (!d->clut || d->clut_len == 0)) {
-        printf("Error: PNG match: indexed format with no CLUT.\n");
+        gs_outf("Error: PNG match: indexed format with no CLUT.\n");
         return -1;
     }
 
@@ -1750,7 +1585,7 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     if (!fb_rgba || !ref_rgba) {
         free(fb_rgba);
         free(ref_rgba);
-        printf("Error: Out of memory.\n");
+        gs_outf("Error: Out of memory.\n");
         return -1;
     }
     for (uint32_t y = 0; y < d->height; y++)
@@ -1762,9 +1597,9 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     }
     // Mask the excluded region (if any) in both buffers so phase-dependent
     // pixels there don't affect the compare.  Clamp to the framebuffer.
-    if (exclude_rect) {
-        int top = exclude_rect[0], left = exclude_rect[1];
-        int bottom = exclude_rect[2], right = exclude_rect[3];
+    for (int r = 0; exclude_rects && r < n_rects; r++) {
+        const int *q = exclude_rects + r * 4;
+        int top = q[0], left = q[1], bottom = q[2], right = q[3];
         if (top < 0)
             top = 0;
         if (left < 0)
@@ -1787,12 +1622,11 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
 }
 
 // Save framebuffer as PNG to the given file path.
-// v1 emits an 8-bit RGBA truecolour PNG; the 1bpp encoder is the only path
-// implemented (every shipping machine drives 1bpp).  Indexed/direct format
-// support lands with step 6's JMFB driver.
+// Emits an 8-bit RGBA truecolour PNG whatever the display's pixel format;
+// indexed formats are decoded through the display's CLUT.
 int save_framebuffer_as_png(const display_t *d, const char *filename) {
     if (!d || !d->bits) {
-        printf("Error: No active display.\n");
+        gs_outf("Error: No active display.\n");
         return -1;
     }
     switch (d->format) {
@@ -1805,26 +1639,21 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     case PIXEL_32BPP_XRGB:
         break;
     default:
-        printf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
+        gs_outf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
         return -1;
     }
     if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
         (!d->clut || d->clut_len == 0)) {
-        printf("Error: PNG save: indexed format with no CLUT.\n");
+        gs_outf("Error: PNG save: indexed format with no CLUT.\n");
         return -1;
     }
     const int width = (int)d->width;
     const int height = (int)d->height;
-    const uint32_t stride = d->stride;
-    const uint8_t *fb = d->bits;
-
-    // Initialize CRC table
-    init_crc32_table();
 
     // Open output file
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
-        printf("Error: Cannot open file '%s' for writing.\n", filename);
+        gs_outf("Error: Cannot open file '%s' for writing.\n", filename);
         return -1;
     }
 
@@ -1852,90 +1681,19 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     size_t raw_size = row_size * (size_t)height;
     uint8_t *raw_data = malloc(raw_size);
     if (!raw_data) {
-        printf("Error: Out of memory.\n");
+        gs_outf("Error: Out of memory.\n");
         fclose(fp);
         return -1;
     }
 
-    // Convert framebuffer to 8-bit RGBA, one row at a time.
-    const rgba8_t *clut = d->clut;
-    const uint32_t clut_len = d->clut_len;
+    // Convert framebuffer to 8-bit RGBA, one row at a time.  The per-pixel
+    // decode is display.h's, shared with framebuffer_row_to_rgba above and
+    // with the object model -- this was a second, byte-identical copy of that
+    // switch.  `row + 1` steps past the PNG filter byte.
     for (int y = 0; y < height; y++) {
         uint8_t *row = raw_data + y * row_size;
-        const uint8_t *src_row = fb + (size_t)y * stride;
         row[0] = 0; // filter byte: none
-        for (int x = 0; x < width; x++) {
-            uint8_t *pixel = row + 1 + x * 4;
-            uint8_t r = 0, g = 0, b = 0, a = 255;
-            switch (d->format) {
-            case PIXEL_1BPP_MSB: {
-                int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
-                // 1 = black, 0 = white (Mac convention)
-                r = g = b = bit ? 0 : 255;
-                break;
-            }
-            case PIXEL_2BPP_MSB: {
-                int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
-                rgba8_t c = clut[idx % clut_len];
-                r = c.r;
-                g = c.g;
-                b = c.b;
-                break;
-            }
-            case PIXEL_4BPP_MSB: {
-                int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
-                rgba8_t c = clut[idx % clut_len];
-                r = c.r;
-                g = c.g;
-                b = c.b;
-                break;
-            }
-            case PIXEL_8BPP: {
-                uint8_t idx = src_row[x];
-                rgba8_t c = clut[idx % clut_len];
-                r = c.r;
-                g = c.g;
-                b = c.b;
-                break;
-            }
-            case PIXEL_16BPP_555: {
-                // big-endian 1-5-5-5
-                uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-                uint8_t r5 = (v >> 10) & 0x1F;
-                uint8_t g5 = (v >> 5) & 0x1F;
-                uint8_t b5 = v & 0x1F;
-                r = (uint8_t)((r5 << 3) | (r5 >> 2));
-                g = (uint8_t)((g5 << 3) | (g5 >> 2));
-                b = (uint8_t)((b5 << 3) | (b5 >> 2));
-                break;
-            }
-            case PIXEL_16BPP_565: {
-                // big-endian 5-6-5: green is 6 bits, replicate its top 2
-                uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-                uint8_t r5 = (v >> 11) & 0x1F;
-                uint8_t g6 = (v >> 5) & 0x3F;
-                uint8_t b5 = v & 0x1F;
-                r = (uint8_t)((r5 << 3) | (r5 >> 2));
-                g = (uint8_t)((g6 << 2) | (g6 >> 4));
-                b = (uint8_t)((b5 << 3) | (b5 >> 2));
-                break;
-            }
-            case PIXEL_32BPP_XRGB: {
-                // [X][R][G][B] big-endian, 4 bytes per pixel.  Mac OS
-                // at SetDepth(32) sets PixMap.pixelSize=32 and writes
-                // XRGB pixels; the JMFB's RAMDAC-bypass mode reads 3
-                // of those 4 bytes per pixel for scan and discards X.
-                r = src_row[x * 4 + 1];
-                g = src_row[x * 4 + 2];
-                b = src_row[x * 4 + 3];
-                break;
-            }
-            }
-            pixel[0] = r;
-            pixel[1] = g;
-            pixel[2] = b;
-            pixel[3] = a;
-        }
+        display_row_to_rgba(d, (uint32_t)y, row + 1);
     }
 
     // Deflate the filtered scanlines into a zlib stream.  A 640x480 screen is
@@ -1945,7 +1703,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     uint8_t *zlib_data = zlib_compress(raw_data, raw_size, &zpos);
     free(raw_data);
     if (!zlib_data) {
-        printf("Error: Out of memory.\n");
+        gs_outf("Error: Out of memory.\n");
         fclose(fp);
         return -1;
     }
@@ -1962,11 +1720,11 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
         goto write_error;
 
     fclose(fp);
-    printf("Screenshot saved to '%s' (%dx%d).\n", filename, width, height);
+    gs_outf("Screenshot saved to '%s' (%dx%d).\n", filename, width, height);
     return 0;
 
 write_error:
-    printf("Error: Failed to write to file '%s'.\n", filename);
+    gs_outf("Error: Failed to write to file '%s'.\n", filename);
     fclose(fp);
     return -1;
 }
@@ -2013,23 +1771,23 @@ static const char *lp_kind_label(int kind) {
 // List all logpoints
 void list_logpoints(debug_t *debug) {
     if (!debug || !debug->logpoints) {
-        printf("No logpoints set\n");
+        gs_outf("No logpoints set\n");
         return;
     }
     int count = 0;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        printf("  #%d  %-5s", count, lp_kind_label(lp->kind));
+        gs_outf("  #%d  %-5s", count, lp_kind_label(lp->kind));
         if (lp->end_addr != lp->addr) {
-            printf("  $%08X-$%08X", lp->addr, lp->end_addr);
+            gs_outf("  $%08X-$%08X", lp->addr, lp->end_addr);
         } else {
-            printf("  $%08X          ", lp->addr);
+            gs_outf("  $%08X          ", lp->addr);
         }
         if (lp->message)
-            printf("  \"%s\"", lp->message);
-        printf("  (hits: %u)\n", lp->hit_count);
+            gs_outf("  \"%s\"", lp->message);
+        gs_outf("  (hits: %u)\n", lp->hit_count);
         count++;
     }
-    printf("%d logpoint(s)\n", count);
+    gs_outf("%d logpoint(s)\n", count);
 }
 
 // Helper: free one logpoint node, releasing memory-logpoint page refcounts too
@@ -2056,7 +1814,7 @@ static void free_logpoint(logpoint_t *lp) {
     free(lp);
 }
 
-// Delete logpoint by sparse stable id (proposal §2.1). Same shape as
+// Delete logpoint by sparse stable id. Same shape as
 // delete_breakpoint_by_id — match `lp->id`, not list position.
 static int delete_logpoint_by_id(debug_t *debug, int id) {
     logpoint_t **pp = &debug->logpoints;
@@ -2074,18 +1832,32 @@ static int delete_logpoint_by_id(debug_t *debug, int id) {
 
 // Delete all logpoints; returns the number deleted (matches the
 // breakpoint counterpart so typed wrappers can report the count).
-int delete_all_logpoints(debug_t *debug) {
+// Remove every entry of one collection -- the logpoints (stops == false) or
+// the watchpoints (stops == true) -- and keep the other's.
+static int delete_all_where(debug_t *debug, bool stops) {
     int count = 0;
-    logpoint_t *lp = debug ? debug->logpoints : NULL;
-    while (lp) {
-        logpoint_t *next = lp->next;
+    if (!debug)
+        return 0;
+    logpoint_t **pp = &debug->logpoints;
+    while (*pp) {
+        logpoint_t *lp = *pp;
+        if (lp->stops != stops) {
+            pp = &lp->next;
+            continue;
+        }
+        *pp = lp->next;
         free_logpoint(lp);
-        lp = next;
         count++;
     }
-    if (debug)
-        debug->logpoints = NULL;
     return count;
+}
+
+int delete_all_logpoints(debug_t *debug) {
+    return delete_all_where(debug, false);
+}
+
+int delete_all_watchpoints(debug_t *debug) {
+    return delete_all_where(debug, true);
 }
 
 // ============================================================================
@@ -2130,13 +1902,24 @@ int debug_breakpoint_count(debug_t *debug) {
     return n;
 }
 
-int debug_logpoint_count(debug_t *debug) {
+// The two collections split one list: the logpoints are the entries that do
+// not stop, the watchpoints the ones that do.
+static int logpoint_count_where(debug_t *debug, bool stops) {
     int n = 0;
     if (!debug)
         return 0;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
-        n++;
+        if (lp->stops == stops)
+            n++;
     return n;
+}
+
+int debug_logpoint_count(debug_t *debug) {
+    return logpoint_count_where(debug, false);
+}
+
+int debug_watchpoint_count(debug_t *debug) {
+    return logpoint_count_where(debug, true);
 }
 
 // next(prev) — return the smallest live id strictly greater than `prev`
@@ -2156,17 +1939,25 @@ int debug_breakpoint_next_id(debug_t *debug, int prev_id) {
     return best;
 }
 
-int debug_logpoint_next_id(debug_t *debug, int prev_id) {
+static int logpoint_next_id_where(debug_t *debug, int prev_id, bool stops) {
     if (!debug)
         return -1;
     int best = -1;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
-        if (lp->id <= prev_id)
+        if (lp->stops != stops || lp->id <= prev_id)
             continue;
         if (best < 0 || lp->id < best)
             best = lp->id;
     }
     return best;
+}
+
+int debug_logpoint_next_id(debug_t *debug, int prev_id) {
+    return logpoint_next_id_where(debug, prev_id, false);
+}
+
+int debug_watchpoint_next_id(debug_t *debug, int prev_id) {
+    return logpoint_next_id_where(debug, prev_id, true);
 }
 
 bool debug_remove_breakpoint(debug_t *debug, int id) {
@@ -2250,8 +2041,11 @@ debug_t *debug_init(void) {
 
     debug_mac_init();
 
-    // Install memory-logpoint hook so the memory slow path can emit logs
+    // Install memory-logpoint hook so the memory slow path can emit logs.
+    // The hook is process-global; this instance owns it until another is
+    // constructed (see debug_delete).
     g_mem_logpoint_hook = debug_memory_logpoint_hook;
+    g_mem_hook_owner = debug;
 
     // Object-tree binding — instance_data on the debug node and its
     // collection / mac children is the debug_t* itself.
@@ -2264,6 +2058,9 @@ debug_t *debug_init(void) {
         debug->lp_collection_object = object_new(&lp_collection_class, debug, "logpoints");
         if (debug->lp_collection_object)
             object_attach(debug->object, debug->lp_collection_object);
+        debug->wp_collection_object = object_new(&wp_collection_class, debug, "watchpoints");
+        if (debug->wp_collection_object)
+            object_attach(debug->object, debug->wp_collection_object);
         debug->mac_object = object_new(&debug_mac_class, debug, "mac");
         if (debug->mac_object) {
             object_attach(debug->object, debug->mac_object);
@@ -2303,6 +2100,11 @@ void debug_cleanup(debug_t *debug) {
         object_delete(debug->lp_collection_object);
         debug->lp_collection_object = NULL;
     }
+    if (debug->wp_collection_object) {
+        object_detach(debug->wp_collection_object);
+        object_delete(debug->wp_collection_object);
+        debug->wp_collection_object = NULL;
+    }
     if (debug->bp_collection_object) {
         object_detach(debug->bp_collection_object);
         object_delete(debug->bp_collection_object);
@@ -2333,7 +2135,22 @@ void debug_cleanup(debug_t *debug) {
         lp = next;
     }
     debug->logpoints = NULL;
-    g_mem_logpoint_hook = NULL;
+    // The hook is process-global but installed and cleared by cfg-scoped
+    // construction and teardown, and the documented reload order is
+    // system_create(new) THEN system_destroy(old).  Clearing unconditionally
+    // therefore removed the hook the NEW machine had just installed: its
+    // logpoints stayed registered -- pages forced onto the slow path, the
+    // fast-path cost paid -- with nothing to call, so none of them ever fired
+    // and nothing reported it.  root.c guards exactly this shape with
+    // g_installed_cfg (root.c:295-309); this is the same guard, keyed on the
+    // owning instance.  It used to compare the handler instead, which every
+    // instance installs, so the guard was always true and a checkpoint.load
+    // still cleared the new machine's hook: memory logpoints never fired
+    // after a load, even ones added afterwards (#172).
+    if (g_mem_hook_owner == debug) {
+        g_mem_logpoint_hook = NULL;
+        g_mem_hook_owner = NULL;
+    }
 
     // Free trace log buffer entries
     if (debug->trace_log_buffer) {
@@ -2375,10 +2192,10 @@ void debug_print_target_trace(void) {
         return;
     }
 
-    printf("\n=== Target 68K instruction trace (most recent last) ===\n");
+    gs_outf("\n=== Target 68K instruction trace (most recent last) ===\n");
 
     if (dbg->trace_head == dbg->trace_tail) {
-        printf("(empty)\n");
+        gs_outf("(empty)\n");
         return;
     }
 
@@ -2386,7 +2203,7 @@ void debug_print_target_trace(void) {
     for (i = dbg->trace_tail; i != dbg->trace_head; i = (i + 1) % dbg->trace_buffer_size) {
         char buf[160];
         debugger_disasm(buf, sizeof(buf), dbg->trace_buffer[i]);
-        printf("%s\n", buf);
+        gs_outf("%s\n", buf);
     }
 }
 
@@ -2394,55 +2211,91 @@ void debug_print_target_trace(void) {
 // Assertion failure handler (coordinates all diagnostic output)
 // ────────────────────────────────────────────────────────────────────────────
 
-// Main assertion failure handler - prints diagnostics and pauses execution
-void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
-    // Header
-    printf("\n\n==================== ASSERT ====================\n");
-    if (expr && *expr)
-        printf("Assertion failed: (%s)\n", expr);
-    else
-        printf("Assertion failed\n");
-    printf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+static debug_failure_hook_fn g_failure_hook;
 
-    // Optional message
-    if (fmt) {
-        printf("Message: ");
-        va_list ap;
-        va_start(ap, fmt);
-        vprintf(fmt, ap);
-        va_end(ap);
-        printf("\n");
-    }
+void debug_set_failure_hook(debug_failure_hook_fn fn) {
+    g_failure_hook = fn;
+}
 
-    // Diagnostics - call each module's diagnostic function
+// Shared tail of gs_assert_fail and gs_unimplemented_fail: dump what the host
+// and the guest were doing, stop the machine, and hand the shell back.  Neither
+// aborts -- a stopped machine with a message on it is worth more than a dead
+// process, and in the browser it is the difference between a diagnosable page
+// and a blank one.
+static void diagnose_and_halt(const char *kind, const char *expr, const char *file, int line, const char *func) {
     platform_print_host_callstack();
     debug_mac_print_target_backtrace();
     debug_mac_print_process_info_header();
     debug_print_target_trace();
 
-    printf("================================================\n\n");
+    gs_outf("================================================\n\n");
 
     bool paused = false;
     scheduler_t *sched = system_scheduler();
-    if (sched) {
-        if (scheduler_is_running(sched)) {
-            scheduler_stop(sched);
-            paused = true;
-        }
+    if (sched && scheduler_is_running(sched)) {
+        scheduler_stop_reason(sched, SCHED_STOP_ASSERT);
+        paused = true;
     }
 
-    if (paused) {
-        printf("Emulation paused due to assertion; returning control to shell.\n");
-    } else {
-        printf("Assertion handled while scheduler idle; shell remains available.\n");
-    }
+    if (paused)
+        gs_outf("Emulation paused (%s); returning control to shell.\n", kind);
+    else
+        gs_outf("Handled %s while scheduler idle; shell remains available.\n", kind);
     fflush(stdout);
 
-    // Notify platform layer about assertion failure (e.g., for test integration)
-    debug_t *debug = system_debug();
-    if (debug && debug->assertion_callback) {
-        debug->assertion_callback(expr, file, line, func);
+    // Notify the platform layer (the browser tells its test harness; headless
+    // fails the run).
+    if (g_failure_hook)
+        g_failure_hook(kind, expr, file, line, func);
+}
+
+// Main assertion failure handler - prints diagnostics and pauses execution
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
+    // Header
+    gs_outf("\n\n==================== ASSERT ====================\n");
+    if (expr && *expr)
+        gs_outf("Assertion failed: (%s)\n", expr);
+    else
+        gs_outf("Assertion failed\n");
+    gs_outf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+
+    // Optional message
+    if (fmt) {
+        gs_outf("Message: ");
+        va_list ap;
+        va_start(ap, fmt);
+        gs_voutf(fmt, ap);
+        va_end(ap);
+        gs_outf("\n");
     }
+
+    diagnose_and_halt("assertion", expr, file, line, func);
+}
+
+// The unimplemented-function handler.  Same diagnostics and the same halt --
+// what differs is the claim being made, so the banner says so and nothing here
+// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in common.h for why a
+// release build is exactly where this one matters).
+//
+// The banner goes to stderr, unbuffered: if a platform's failure hook
+// aborts -- the unit harness does -- a buffered stdout banner is lost at the
+// moment it was written for.
+void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
+    fprintf(stderr, "\n\n============= UNIMPLEMENTED =============\n");
+    if (fmt) {
+        fprintf(stderr, "  ");
+        va_list ap;
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "  at %s:%d in %s()\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+    fprintf(stderr, "\n  The guest's request is legal for the hardware being emulated.\n");
+    fprintf(stderr, "  This is a gap in Granny Smith, not a fault in the guest.\n");
+    fflush(stderr);
+
+    diagnose_and_halt("unimplemented function", NULL, file, line, func);
 }
 
 // === Object-model class descriptors =========================================
@@ -2459,6 +2312,17 @@ static breakpoint_t *bp_from(struct object *self) {
     return (breakpoint_t *)object_data(self);
 }
 
+// The address-space enumeration, declared ONCE.
+//
+// It was a V_ENUM on the read side (bp.space, and lpe.kind's sibling) and a
+// V_STRING plus a hand-rolled strcmp on the two method ARGUMENTS, in this same
+// file.  So reads were typed and writes were not: an unrecognised string
+// silently meant "logical", nothing could complete the values, and
+// object-model.md explicitly lists enum membership as something bodies must
+// not re-check.
+static const char *const debug_space_values[] = {"logical", "physical", NULL};
+#define DEBUG_SPACE_COUNT 2
+
 static value_t bp_attr_addr(struct object *self, const member_t *m) {
     (void)m;
     breakpoint_t *bp = bp_from(self);
@@ -2474,9 +2338,8 @@ static value_t bp_attr_space(struct object *self, const member_t *m) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    static const char *const names[] = {"logical", "physical"};
     int idx = breakpoint_get_space(bp);
-    return val_enum(idx, names, 2);
+    return val_enum(idx, debug_space_values, DEBUG_SPACE_COUNT);
 }
 
 static value_t bp_attr_condition(struct object *self, const member_t *m) {
@@ -2497,6 +2360,28 @@ static value_t bp_attr_condition_set(struct object *self, const member_t *m, val
     }
     // Empty string clears the condition.
     breakpoint_set_condition(bp, (in.s && *in.s) ? in.s : NULL);
+    value_free(&in);
+    return val_none();
+}
+
+// Read `enabled`.
+static value_t bp_attr_enabled(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    return val_bool(!bp->disabled);
+}
+
+// Write `enabled`: false keeps the breakpoint but stops it firing.
+static value_t bp_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp) {
+        value_free(&in);
+        return val_err("breakpoint detached");
+    }
+    bp->disabled = !val_as_bool(&in);
     value_free(&in);
     return val_none();
 }
@@ -2537,25 +2422,41 @@ static const member_t bp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
      .flags = VAL_RO,
+     .doc = "Address this breakpoint watches, in the space named by `space`",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bp_attr_addr, .set = NULL}},
-    {.kind = M_ATTR, .name = "space", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "space",
+     .flags = VAL_RO,
+     .doc = "\"logical\" or \"physical\" — which address `addr` is in (they coincide with the MMU off)",
+     .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}                              },
     {.kind = M_ATTR,
      .name = "condition",
      .flags = 0,
-     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
+     .doc = "Expression that must evaluate true for the breakpoint to stop; empty = always stop",
+     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}       },
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = 0,
+     .doc = "False keeps the breakpoint listed but stops it firing",
+     .attr = {.type = V_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}             },
     {.kind = M_ATTR,
      .name = "hit_count",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}},
+     .doc = "Times this breakpoint has fired since it was added",
+     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}                          },
+    {.kind = M_ATTR,
+     .name = "id",
+     .flags = VAL_RO,
+     .doc = "Stable identifier; survives the removal of other breakpoints (indices do not)",
+     .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}                                  },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this breakpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}           },
 };
 
-const class_desc_t breakpoint_entry_class = {
+static const class_desc_t breakpoint_entry_class = {
     .name = "breakpoint",
     .members = bp_entry_members,
     .n_members = sizeof(bp_entry_members) / sizeof(bp_entry_members[0]),
@@ -2659,34 +2560,51 @@ static const member_t lp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
+     .doc = "First address of the watched range",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}    },
     {.kind = M_ATTR,
      .name = "end_addr",
      .flags = VAL_RO,
+     .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
-    {.kind = M_ATTR, .name = "kind", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
-    {.kind = M_ATTR, .name = "level", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "kind",
+     .flags = VAL_RO,
+     .doc = "What triggers it: \"pc\" on execution, or \"read\"/\"write\"/\"rw\" on a data access",
+     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}                                   },
+    {.kind = M_ATTR,
+     .name = "level",
+     .flags = VAL_RO,
+     .doc = "Log level each fire is emitted at",
+     .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}                                   },
     {.kind = M_ATTR,
      .name = "category",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}},
+     .doc = "Log category each fire is emitted under",
+     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}                             },
     {.kind = M_ATTR,
      .name = "message",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}},
+     .doc = "Fire-time template; $value/$addr/$size bind per fire. Empty = the default one-line report",
+     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}                              },
     {.kind = M_ATTR,
      .name = "hit_count",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
-    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
+     .doc = "Times this logpoint has fired since it was added",
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}                              },
+    {.kind = M_ATTR,
+     .name = "id",
+     .flags = VAL_RO,
+     .doc = "Stable identifier; survives the removal of other logpoints (indices do not)",
+     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}                                      },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this logpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}               },
 };
 
-const class_desc_t logpoint_entry_class = {
+static const class_desc_t logpoint_entry_class = {
     .name = "logpoint",
     .members = lp_entry_members,
     .n_members = sizeof(lp_entry_members) / sizeof(lp_entry_members[0]),
@@ -2696,6 +2614,94 @@ struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
     if (!lp)
         return NULL;
     return object_new(&logpoint_entry_class, lp, NULL);
+}
+
+// --- watchpoint entries -------------------------------------------------------
+//
+// A watchpoint is a stopping memory logpoint (struct logpoint, `stops`), so
+// the entry shares the logpoint accessors; what differs is the surface: a
+// `mode`, no message/level/category, and `enabled`.
+
+static value_t wpe_attr_space(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("watchpoint detached");
+    return val_enum(lp->space == ADDR_PHYSICAL ? 1 : 0, debug_space_values, DEBUG_SPACE_COUNT);
+}
+static value_t wpe_attr_enabled(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("watchpoint detached");
+    return val_bool(!lp->disabled);
+}
+// Write `enabled`: false keeps the watchpoint but stops it firing.
+static value_t wpe_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp) {
+        value_free(&in);
+        return val_err("watchpoint detached");
+    }
+    lp->disabled = !val_as_bool(&in);
+    value_free(&in);
+    return val_none();
+}
+
+static const member_t wp_entry_members[] = {
+    {.kind = M_ATTR,
+     .name = "addr",
+     .flags = VAL_RO,
+     .doc = "First address of the watched range",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}    },
+    {.kind = M_ATTR,
+     .name = "end_addr",
+     .flags = VAL_RO,
+     .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "mode",
+     .flags = VAL_RO,
+     .doc = "The access that stops the machine: \"read\", \"write\" or \"rw\"",
+     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}                                   },
+    {.kind = M_ATTR,
+     .name = "space",
+     .flags = VAL_RO,
+     .doc = "\"logical\" or \"physical\" -- which address `addr` is in",
+     .attr = {.type = V_ENUM, .get = wpe_attr_space, .set = NULL}                                  },
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = 0,
+     .doc = "False keeps the watchpoint listed but stops it firing",
+     .attr = {.type = V_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}                },
+    {.kind = M_ATTR,
+     .name = "hit_count",
+     .flags = VAL_RO,
+     .doc = "Times this watchpoint has fired since it was added",
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}                              },
+    {.kind = M_ATTR,
+     .name = "id",
+     .flags = VAL_RO,
+     .doc = "Stable identifier; survives the removal of other watchpoints (indices do not)",
+     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}                                      },
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this watchpoint",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}               },
+};
+
+static const class_desc_t watchpoint_entry_class = {
+    .name = "watchpoint",
+    .members = wp_entry_members,
+    .n_members = sizeof(wp_entry_members) / sizeof(wp_entry_members[0]),
+};
+
+static struct object *make_watchpoint_object(logpoint_t *lp) {
+    if (!lp)
+        return NULL;
+    return object_new(&watchpoint_entry_class, lp, NULL);
 }
 
 // --- collection objects -----------------------------------------------------
@@ -2716,18 +2722,13 @@ static debug_t *debug_from(struct object *self) {
 // Forward-declared because the indexed-child member descriptors below
 // need it but the entry classes are already defined above.
 static struct object *bp_entries_get(struct object *self, int index);
-static int bp_entries_count(struct object *self);
 static int bp_entries_next(struct object *self, int prev_index);
 static struct object *lp_entries_get(struct object *self, int index);
-static int lp_entries_count(struct object *self);
 static int lp_entries_next(struct object *self, int prev_index);
 
 static struct object *bp_entries_get(struct object *self, int index) {
     breakpoint_t *bp = debug_breakpoint_by_id(debug_from(self), index);
     return bp ? breakpoint_get_entry_object(bp) : NULL;
-}
-static int bp_entries_count(struct object *self) {
-    return debug_breakpoint_count(debug_from(self));
 }
 static int bp_entries_next(struct object *self, int prev_index) {
     return debug_breakpoint_next_id(debug_from(self), prev_index);
@@ -2736,9 +2737,6 @@ static int bp_entries_next(struct object *self, int prev_index) {
 static struct object *lp_entries_get(struct object *self, int index) {
     logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
     return lp ? logpoint_get_entry_object(lp) : NULL;
-}
-static int lp_entries_count(struct object *self) {
-    return debug_logpoint_count(debug_from(self));
 }
 static int lp_entries_next(struct object *self, int prev_index) {
     return debug_logpoint_next_id(debug_from(self), prev_index);
@@ -2753,17 +2751,23 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     // Optional `space` (3rd arg): "logical" (default) or "physical".
     // Physical-space breakpoints are only meaningful on the 68030 with
     // the MMU active; on the Plus the two address spaces coincide.
-    addr_space_t space = ADDR_LOGICAL;
-    if (argc >= 3 && argv[2].s && *argv[2].s) {
-        if (strcmp(argv[2].s, "physical") == 0)
-            space = ADDR_PHYSICAL;
-        else if (strcmp(argv[2].s, "logical") != 0)
-            return val_err("breakpoints.add: space must be \"logical\" or \"physical\"");
-    }
-    breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, space);
+    //
+    // Read the enum index, not `.s`: on a V_ENUM the string pointer shares
+    // storage with `enm`, so the old `argv[2].s && *argv[2].s` test
+    // dereferenced an index as a pointer.  It never fired only because the
+    // slot had no default and so was unreachable by name at all.
+    addr_space_t space = (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+    // One breakpoint per (address, space): a second add returns the existing
+    // entry (a new condition, if given, replaces its old one) instead of
+    // stacking a duplicate that would fire twice and need removing twice.
+    breakpoint_t *bp = debug->breakpoints;
+    while (bp && !(bp->addr == (uint32_t)addr && bp->space == space))
+        bp = bp->next;
+    if (!bp)
+        bp = set_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
-    if (argc >= 2 && argv[1].s && *argv[1].s)
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
         breakpoint_set_condition(bp, argv[1].s);
     return val_obj(breakpoint_get_entry_object(bp));
 }
@@ -2790,10 +2794,10 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-// `debug.logpoints.add` — typed named-argument surface (shell v2 §6.2):
+// `debug.logpoints.add` — typed named-argument surface:
 //   debug.logpoints.add addr=0x16A width=l mode=write level=5
 //       message="Ticks pc=${machine.cpu.pc:08x} val=${$value:08x}"
-// `message` is a template slot (§6.3): stored raw, evaluated per fire
+// `message` is a template slot: stored raw, evaluated per fire
 // with `$value`/`$addr`/`$size` bindings in scope. Returns the created
 // entry object, like breakpoints.add.
 static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2832,15 +2836,11 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
             return val_err("logpoints.add: width must be b, w, or l");
     }
 
+    // The slot is V_UINT, so validate_slot has already coerced anything the
+    // caller passed; V_NONE means it passed nothing (obj_arg_unset).
     uint32_t end_addr = addr;
-    if (argc > 3 && (argv[3].kind == V_UINT || argv[3].kind == V_INT)) {
-        bool ok = false;
-        uint64_t e = val_as_u64(&argv[3], &ok);
-        if (ok && argv[3].kind == V_UINT)
-            end_addr = (uint32_t)e;
-        else if (ok && argv[3].kind == V_INT && argv[3].i >= 0)
-            end_addr = (uint32_t)argv[3].i;
-    }
+    if (argc > 3 && argv[3].kind == V_UINT)
+        end_addr = (uint32_t)argv[3].u;
     // Memory logpoints with a width and no explicit range widen to
     // cover every access overlapping the address.
     if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
@@ -2864,24 +2864,16 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
 
     bool have_value_filter = false;
     uint32_t value_filter = 0;
-    if (argc > 7 && (argv[7].kind == V_UINT || argv[7].kind == V_INT)) {
-        bool ok = false;
-        uint64_t v = val_as_u64(&argv[7], &ok);
-        if (ok && !(argv[7].kind == V_INT && argv[7].i < 0)) {
-            have_value_filter = true;
-            value_filter = (uint32_t)v;
-        }
+    if (argc > 7 && argv[7].kind == V_UINT) {
+        have_value_filter = true;
+        value_filter = (uint32_t)argv[7].u;
     }
     if (have_value_filter && kind == LP_KIND_PC)
         return val_err("logpoints.add: value filter is only supported on memory logpoints");
 
-    addr_space_t space = ADDR_LOGICAL;
-    if (argc > 8 && argv[8].kind == V_STRING && argv[8].s && argv[8].s[0]) {
-        if (strcmp(argv[8].s, "physical") == 0)
-            space = ADDR_PHYSICAL;
-        else if (strcmp(argv[8].s, "logical") != 0)
-            return val_err("logpoints.add: space must be \"logical\" or \"physical\"");
-    }
+    // The slot is V_ENUM against debug_space_values, so the index is the
+    // answer -- validate_slot rejected anything that is not in the table.
+    addr_space_t space = (argc > 8 && argv[8].kind == V_ENUM && argv[8].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
 
     log_category_t *category = log_get_category(category_name);
     if (!category)
@@ -2905,25 +2897,33 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
     return val_obj(logpoint_get_entry_object(lp));
 }
 
+// "logical" — the default for every space= argument below.
+static const value_t def_space_logical = {
+    .kind = V_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
+};
+
 static const arg_decl_t bp_add_args[] = {
-    {.name = "addr",      .kind = V_UINT,   .presentation_flags = VAL_HEX,        .doc = "address"                  },
-    {.name = "condition", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"},
-    {.name = "space",
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address"},
+    {.name = "condition",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\" (default) or \"physical\""                                                                 },
+     .default_value = &obj_arg_unset,
+     .doc = "optional condition string"},
+    {.name = "space",
+     .kind = V_ENUM,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .enum_values = debug_space_values,
+     .default_value = &def_space_logical,
+     .doc = "\"logical\" (default) or \"physical\""},
 };
 
 // Interior optional slots need defaults so the named-argument binder's
 // V_NONE holes fill instead of erroring (see node_validate_args).
 static const value_t lp_def_mode = {.kind = V_STRING, .s = (char *)"pc"};
 static const value_t lp_def_width = {.kind = V_STRING, .s = (char *)""};
-static const value_t lp_def_end = {.kind = V_INT, .i = -1};
 static const value_t lp_def_message = {.kind = V_STRING, .s = (char *)""};
 static const value_t lp_def_level = {.kind = V_INT, .i = 0};
 static const value_t lp_def_category = {.kind = V_STRING, .s = (char *)""};
-static const value_t lp_def_value = {.kind = V_INT, .i = -1};
-static const value_t lp_def_space = {.kind = V_STRING, .s = (char *)"logical"};
 
 static const arg_decl_t lp_add_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
@@ -2941,7 +2941,7 @@ static const arg_decl_t lp_add_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .default_value = &lp_def_end,
+     .default_value = &obj_arg_unset,
      .doc = "range end address, inclusive"},
     {.name = "message",
      .kind = V_STRING,
@@ -2962,37 +2962,37 @@ static const arg_decl_t lp_add_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .default_value = &lp_def_value,
+     .default_value = &obj_arg_unset,
      .doc = "only fire when the accessed value matches (memory modes)"},
     {.name = "space",
-     .kind = V_STRING,
+     .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &lp_def_space,
+     .enum_values = debug_space_values,
+     .default_value = &def_space_logical,
      .doc = "\"logical\" (default) or \"physical\""},
 };
 
 static const member_t bp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .doc = "Add a breakpoint (logical-space by default; pass space=\"physical\" for the 68030 PMMU path)",
-     .method = {.args = bp_add_args, .nargs = 3, .result = V_OBJECT, .fn = bp_method_add}},
+     .doc = "Add a breakpoint (logical-space by default; pass space=\"physical\" for the 68030 PMMU path); "
+            "adding an address that already has one returns that entry", .method = {.args = bp_add_args, .nargs = 3, .result = V_OBJECT, .fn = bp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
      .doc = "Remove every breakpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
-    // `list` retired (shell v2 §6.1): read `entries` — the REPL renders
+    // `list` retired: read `entries` — the REPL renders
     // an object list as a table.
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &breakpoint_entry_class,
                .indexed = true,
                .get = bp_entries_get,
-               .count = bp_entries_count,
                .next = bp_entries_next,
                .lookup = NULL}},
 };
 
-const class_desc_t bp_collection_class = {
+static const class_desc_t bp_collection_class = {
     .name = "breakpoints",
     .members = bp_collection_members,
     .n_members = sizeof(bp_collection_members) / sizeof(bp_collection_members[0]),
@@ -3007,43 +3007,212 @@ static const member_t lp_collection_members[] = {
      .name = "clear",
      .doc = "Remove every logpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
-    // `list` retired (shell v2 §6.1): read `entries`.
+    // `list` retired: read `entries`.
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &logpoint_entry_class,
                .indexed = true,
                .get = lp_entries_get,
-               .count = lp_entries_count,
                .next = lp_entries_next,
                .lookup = NULL}},
 };
 
-const class_desc_t lp_collection_class = {
+static const class_desc_t lp_collection_class = {
     .name = "logpoints",
     .members = lp_collection_members,
     .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
 };
 
-// `debug.log(category, level_or_spec)` — adjust per-subsystem log level.
-// The second arg accepts either an integer level or a full option spec
-// string (e.g. `"level=5 file=tmp/foo.txt stdout=off ts=on"`); both are
-// handed to log_configure directly (no line round-trip).
+// --- debug.watchpoints ---------------------------------------------------------
+//
+// A watchpoint is a memory logpoint that stops the machine (#180): the same
+// access hook and page refcounts, the same list, its own collection.  Only
+// the stopping entries answer here, and debug.logpoints never lists them.
+
+static struct object *wp_entries_get(struct object *self, int index) {
+    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
+    return (lp && lp->stops) ? logpoint_get_entry_object(lp) : NULL;
+}
+static int wp_entries_next(struct object *self, int prev_index) {
+    return debug_watchpoint_next_id(debug_from(self), prev_index);
+}
+
+// `debug.watchpoints.add addr=0x16A mode=write width=l` -- stops the machine
+// after the instruction that makes a matching access.  Returns the entry.
+static value_t wp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+
+    // argv: 0 addr, 1 mode, 2 width, 3 end, 4 space
+    uint32_t addr = (uint32_t)argv[0].u;
+
+    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s && argv[1].s[0]) ? argv[1].s : "write";
+    int kind;
+    if (strcmp(mode, "read") == 0)
+        kind = LP_KIND_READ;
+    else if (strcmp(mode, "write") == 0)
+        kind = LP_KIND_WRITE;
+    else if (strcmp(mode, "rw") == 0)
+        kind = LP_KIND_RW;
+    else
+        return val_err("watchpoints.add: mode must be read, write, or rw");
+
+    unsigned size = 0;
+    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+        const char *w = argv[2].s;
+        if (strcmp(w, "b") == 0)
+            size = 1;
+        else if (strcmp(w, "w") == 0)
+            size = 2;
+        else if (strcmp(w, "l") == 0)
+            size = 4;
+        else
+            return val_err("watchpoints.add: width must be b, w, or l");
+    }
+
+    // A width and no explicit range widen to every access overlapping the
+    // address, as logpoints.add does.
+    uint32_t end_addr = addr;
+    if (argc > 3 && argv[3].kind == V_UINT)
+        end_addr = (uint32_t)argv[3].u;
+    if (size > 0 && end_addr == addr)
+        end_addr = addr + size - 1;
+    if (end_addr < addr)
+        return val_err("watchpoints.add: end must not precede addr");
+
+    addr_space_t space = (argc > 4 && argv[4].kind == V_ENUM && argv[4].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
+
+    // The hit is printed, not logged, so the category only labels the entry.
+    log_category_t *category = log_get_category("memory");
+    if (!category)
+        category = log_register_category("memory");
+    logpoint_t *lp = install_memory_logpoint(debug, addr, end_addr, space, kind, category, 0, true);
+    if (!lp)
+        return val_err("watchpoints.add: allocation failed");
+    return val_obj(logpoint_get_entry_object(lp));
+}
+
+static value_t wp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    delete_all_watchpoints(debug);
+    return val_none();
+}
+
+static const value_t wp_def_mode = {.kind = V_STRING, .s = (char *)"write"};
+static const value_t wp_def_width = {.kind = V_STRING, .s = (char *)""};
+
+static const arg_decl_t wp_add_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "mode",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &wp_def_mode,
+     .doc = "write (default), read, or rw"},
+    {.name = "width",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &wp_def_width,
+     .doc = "b, w, or l: widen to every access overlapping addr"},
+    {.name = "end",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .default_value = &obj_arg_unset,
+     .doc = "range end, inclusive"},
+    {.name = "space",
+     .kind = V_ENUM,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .enum_values = debug_space_values,
+     .default_value = &def_space_logical,
+     .doc = "\"logical\" (default) or \"physical\""},
+};
+
+static const member_t wp_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Install a watchpoint: stop the machine after an instruction that reads or writes the address (named args)",
+     .method = {.args = wp_add_args, .nargs = 5, .result = V_OBJECT, .fn = wp_method_add}},
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Remove every watchpoint",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = wp_method_clear}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &watchpoint_entry_class,
+               .indexed = true,
+               .get = wp_entries_get,
+               .next = wp_entries_next,
+               .lookup = NULL}},
+};
+
+static const class_desc_t wp_collection_class = {
+    .name = "watchpoints",
+    .members = wp_collection_members,
+    .n_members = sizeof(wp_collection_members) / sizeof(wp_collection_members[0]),
+};
+
+// `debug.log(category, level=, stdout=, file=, ts=, pc=)` — per-subsystem
+// logging, with real named arguments.
+//
+// The second slot used to be declared V_NONE -- no type at all -- and accept
+// either an integer or a spec string like "level=5 file=tmp/foo.txt
+// stdout=off ts=on", which the body then parsed itself with strtok_r.  So the
+// framework validated nothing (it had been told nothing to validate),
+// completion could offer neither the keys nor their values, and the method
+// carried its own boolean vocabulary and its own error wording.
+// docs/core/shell/object-model.md ("Library conventions") says in as many
+// words that named arguments exist to retire exactly this: "no flag
+// grammars inside strings".
+//
+// `debug.log(cat)` with nothing else prints the category's current settings,
+// which is what the bare form always did.
 static value_t debug_method_log(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    const char *category = (argv[0].kind == V_STRING) ? argv[0].s : NULL;
-    if (!category)
-        return val_err("debug.log: category must be a string");
-    if (argv[1].kind == V_STRING)
-        return val_bool(log_configure(category, argv[1].s) == 0);
-    bool ok = false;
-    int64_t level = val_as_i64(&argv[1], &ok);
-    if (!ok)
-        return val_err("debug.log: level must be integer or spec string");
-    char spec[32];
-    snprintf(spec, sizeof(spec), "%lld", (long long)level);
-    return val_bool(log_configure(category, spec) == 0);
+    if (argv[0].kind != V_ENUM || !argv[0].enm.table)
+        return val_err("debug.log: category is required");
+    const char *category = argv[0].enm.table[argv[0].enm.idx];
+
+    bool touched = false;
+
+    if (argv[1].kind != V_NONE) {
+        bool ok = false;
+        int64_t level = val_as_i64(&argv[1], &ok);
+        if (!ok || level < 0)
+            return val_err("debug.log: level must be a non-negative integer");
+        if (log_set_category_level(category, (int)level) != 0)
+            return val_err("debug.log: cannot set level on '%s'", category);
+        touched = true;
+    }
+    if (argv[2].kind == V_BOOL) {
+        log_set_category_stdout(category, argv[2].b);
+        touched = true;
+    }
+    if (argv[3].kind == V_STRING && argv[3].s) {
+        if (log_set_category_file(category, argv[3].s) != 0)
+            return val_err("debug.log: cannot open log file '%s'", argv[3].s);
+        touched = true;
+    }
+    if (argv[4].kind == V_BOOL) {
+        log_set_category_timestamp(category, argv[4].b);
+        touched = true;
+    }
+    if (argv[5].kind == V_BOOL) {
+        log_set_category_show_pc(category, argv[5].b);
+        touched = true;
+    }
+
+    log_print_category(category);
+    (void)touched;
+    return val_bool(true);
 }
 
 // log_foreach_category callback: put "<category>" → <level> into the map.
@@ -3066,9 +3235,50 @@ static value_t debug_method_log_levels(struct object *self, const member_t *m, i
     return val_map_finish(b);
 }
 
+// Every category the manifest declares, as an enum table, so the framework
+// rejects a typo and completion can offer all 62 names.
+static const char *const debug_log_category_values[] = {
+#define X(n, lvl, desc) n,
+    GS_LOG_CATEGORIES(X)
+#undef X
+        NULL};
+
+// "Not supplied", as a default.
+//
+// An optional slot with no default_value cannot be a HOLE before a later
+// given slot -- node_validate_args says so directly: "argc truncation only
+// works at the tail".  So `debug.log(cpu, level=3, ts=on)` would fail on
+// `file`, which sits between them.  A V_NONE default is filled in and skips
+// validation, which is precisely "the caller did not mention this one" and is
+// what the body below tests for.
+
 static const arg_decl_t debug_log_args[] = {
-    {.name = "category", .kind = V_STRING, .doc = "Subsystem name (memory, logpoint, ...)"            },
-    {.name = "level",    .kind = V_NONE,   .doc = "Integer level (0..5) or full named-arg spec string"},
+    {.name = "category", .kind = V_ENUM, .enum_values = debug_log_category_values, .doc = "Subsystem to configure"},
+    {.name = "level",
+     .default_value = &obj_arg_unset,
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Verbosity; 0 silences level-1-and-up sites"},
+    {.name = "stdout",
+     .default_value = &obj_arg_unset,
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Emit to stdout"},
+    {.name = "file",
+     .default_value = &obj_arg_unset,
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Append to this path; \"off\" closes it"},
+    {.name = "ts",
+     .default_value = &obj_arg_unset,
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Stamp each line with a timestamp"},
+    {.name = "pc",
+     .default_value = &obj_arg_unset,
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Stamp each line with the guest PC"},
 };
 
 // `debug.exceptions([filter])` — dump the always-on 256-entry exception ring.
@@ -3111,12 +3321,20 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
     if (!dif)
         return val_err("debug.disasm: CPU not initialised");
 
+    // Either slot may be absent (V_NONE), so read by kind rather than argc:
+    // `disasm(20)` is a count, `disasm(0x400000, 20)` is address + count, and
+    // `disasm(count=20)` -- which used to fail with "missing argument
+    // 'addr_or_count'" -- is a count from the PC.
     uint32_t addr = dif->get_pc(dif->ctx);
     int64_t count = 16;
-    if (argc == 1) {
-        count = argv[0].i;
-    } else if (argc >= 2) {
+    bool have_first = argc >= 1 && argv[0].kind == V_INT;
+    bool have_second = argc >= 2 && argv[1].kind == V_INT;
+    if (have_first && have_second) {
         addr = (uint32_t)argv[0].i;
+        count = argv[1].i;
+    } else if (have_first) {
+        count = argv[0].i;
+    } else if (have_second) {
         count = argv[1].i;
     }
     if (count <= 0)
@@ -3127,7 +3345,7 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
         int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
-        printf("%s\n", buf);
+        gs_outf("%s\n", buf);
         addr += (uint32_t)instr_len;
     }
     return val_bool(true);
@@ -3137,201 +3355,209 @@ static const arg_decl_t debug_disasm_args[] = {
     {.name = "addr_or_count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
      .doc = "With one arg: instruction count (from PC, default 16). With two args: start address."},
     {.name = "count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Number of instructions when addr is given as the first argument."                    },
+     .doc = "Number of instructions when addr is given as the first argument."},
 };
 
-// Side-effect-free conversion of an 80-bit extended-precision register
-// to a host double for display. The FPU's own fpu_to_double helper sets
-// inexact / SNaN bits in fpsr — we don't want that for an observer that
-// just reads register state. Precision loss in normal range is fine for
-// human-readable display; tests/tools that need bit-exact bytes can
-// consume the hex form instead.
-static double fp80_to_display_double(float80_reg_t f) {
-    int sign = FP80_SIGN(f);
-    uint16_t exp = FP80_EXP(f);
-    if (exp == 0 && f.mantissa == 0)
-        return sign ? -0.0 : 0.0;
-    if (exp == 0x7FFF) {
-        if (f.mantissa == 0 || (f.mantissa & ~(1ULL << 63)) == 0)
-            return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
-        return (double)0.0 / 0.0;
+// Choose where a disassembly window starts so that `before` rows precede
+// the PC and one row lands exactly on it.  68K instructions are 2-20 bytes,
+// so decoding forward from an arbitrary earlier address can step over the
+// PC; this tries even start offsets behind the PC and keeps the first that
+// re-synchronises on it after exactly `before` instructions (else the one
+// with the most rows that still lands on it, else the PC itself).  On PPC
+// every instruction is 4 bytes and the first aligned candidate wins.
+static uint32_t frame_anchor(const cpu_debug_if_t *dif, uint32_t pc, int before) {
+    char buf[128];
+    uint32_t best = pc;
+    int best_rows = 0;
+    for (uint32_t back = 2; back <= (uint32_t)before * 20; back += 2) {
+        uint32_t pos = pc - back;
+        int rows = 0;
+        while (pos < pc && rows <= before) {
+            int n = dif->disasm(dif->ctx, pos, buf, sizeof(buf));
+            pos += (uint32_t)(n > 0 ? n : 2);
+            rows++;
+        }
+        if (pos != pc || rows > before)
+            continue; // stepped over the PC, or too far back
+        if (rows == before)
+            return pc - back; // exactly `before` rows of context
+        if (rows > best_rows) {
+            best_rows = rows;
+            best = pc - back;
+        }
     }
-    int32_t true_exp = (int32_t)exp - 16383;
-    if (true_exp > 1023)
-        return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
-    if (true_exp < -1074)
-        return sign ? -0.0 : 0.0;
-    uint64_t mant52;
-    int double_exp;
-    if (true_exp >= -1022) {
-        mant52 = (f.mantissa >> 11) & 0x000FFFFFFFFFFFFFULL;
-        double_exp = true_exp + 1023;
-    } else {
-        // Subnormal in double precision.
-        int shift = -1022 - true_exp;
-        if (shift >= 53)
-            return sign ? -0.0 : 0.0;
-        mant52 = (f.mantissa >> (11 + shift)) & 0x000FFFFFFFFFFFFFULL;
-        double_exp = 0;
-    }
-    uint64_t bits = ((uint64_t)sign << 63) | ((uint64_t)double_exp << 52) | mant52;
-    double result;
-    memcpy(&result, &bits, sizeof(result));
-    return result;
+    return best;
 }
 
-// `debug.frame([addr], [count])` — one-shot bundled snapshot for the
-// debug UI. Bundles registers + a disassembly window + per-row MMU
-// translations into a single JSON payload so the JS-side panel can
-// render in one bridge round-trip instead of ~20 separate gsEval
-// calls (one per register + one per disasm + one per row translation).
-// Default: 32 rows starting at PC.
+value_t debug_translation_result(uint32_t phys, bool valid, const char *via) {
+    value_map_builder_t *b = val_map_new();
+    if (valid) {
+        value_t p = val_uint(4, phys);
+        p.flags |= VAL_HEX;
+        val_map_put(b, "phys", p);
+    }
+    val_map_put(b, "valid", val_bool(valid));
+    val_map_put(b, "via", val_str(via));
+    return val_map_finish(b);
+}
+
+bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
+    *physical = false;
+    if (argc <= idx || argv[idx].kind == V_NONE)
+        return true; // omitted: logical
+    if (argv[idx].kind != V_STRING || !argv[idx].s)
+        return false;
+    if (strcmp(argv[idx].s, "logical") == 0)
+        return true;
+    if (strcmp(argv[idx].s, "physical") == 0) {
+        *physical = true;
+        return true;
+    }
+    return false;
+}
+
+// Split one disassembled instruction (the cpu_debug_if_t `disasm` text) into
+// the row's mnemonic and operands: at the tab, or -- for an algebraic
+// syntax with no mnemonic column, like the DSP3210's -- all of it as the
+// mnemonic.  An empty text is an illegal encoding.
+static void frame_split_disasm(const char *buf, char *mnem, size_t mnem_len, char *ops, size_t ops_len) {
+    if (!buf[0]) {
+        snprintf(mnem, mnem_len, "ILLEGAL");
+        ops[0] = '\0';
+        return;
+    }
+    const char *tab = strchr(buf, '\t');
+    if (!tab) {
+        snprintf(mnem, mnem_len, "%s", buf);
+        ops[0] = '\0';
+        return;
+    }
+    snprintf(mnem, mnem_len, "%.*s", (int)(tab - buf), buf);
+    snprintf(ops, ops_len, "%s", tab + 1);
+}
+
+// The frame of one CPU-like core -- `debug.frame`, `machine.cpu.frame` and
+// an auxiliary core's `frame` (machine.dsp) all answer this, so the Debug
+// view renders any of them with one component.  Bundles the register file,
+// a disassembly window and per-row translation into one map, one bridge
+// round-trip.  Everything architecture-specific comes from the core's
+// cpu_debug_if_t (its register names, its FPU, its instruction-side
+// translation), so it works unchanged on a 68000, a 68030/040, a PowerPC
+// 601/604 and the DSP3210; before, debug.frame read the 68K cpu_t and failed
+// on every PowerPC machine, and the DSP had no frame at all.
 //
-// Output shape (V_STRING containing JSON):
+// Output (a V_MAP):
 //   {
-//     "regs": {
-//       "d0": 0, "d1": 0, ..., "a7": 0,
-//       "pc": <int>, "sr": <int>, "usp": <int>, "ssp": <int>
-//     },
-//     "rows": [
-//       { "addr": <int>, "phys": <int>|null, "valid": true|false,
-//         "mnem": "RTS", "ops": "" },
-//       ...
-//     ],
-//     "fpu": {                              // present only when cpu->fpu != NULL
-//       "fp": [
-//         { "hex": "0000_0000000000000000", "val": "0" },
-//         ...                                // 8 entries
-//       ],
-//       "fpcr": <int>, "fpsr": <int>, "fpiar": <int>
-//     }
+//     "arch": "m68k" | "ppc" | "dsp3210",
+//     "pc":   <int>,
+//     "regs": { name: <int>, ... },     // the core's own names: d0..a7/pc/sr/usp/ssp,
+//                                       // r0..r31/pc/lr/ctr/cr/xer/msr/srr0/srr1[/mq],
+//                                       // or the DSP's r1..r22/pc/ps/emr/pcw/dauc/ctr
+//     "rows": [ { "addr", "phys" (int|null), "valid", "mnem", "ops" }, ... ],
+//     "fpu":  { ... }                   // only when the core has one:
+//                                       // 68K {fp:[{hex,val}]x8, fpcr, fpsr, fpiar}
+//                                       // PPC {fpr:[{hex,val}]x32, fpscr}
+//                                       // DSP {a:[{hex,val}]x4} (the DAU accumulators)
 //   }
 //
-// Address values are emitted as plain integers (not hex strings) so the
-// JS side does direct property access — no string→number conversion per
-// field. The gsEval bridge serializes this map to JSON exactly once.
-static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    cpu_t *cpu = system_cpu();
-    if (!cpu)
-        return val_err("debug.frame: CPU not initialised");
+// With no `addr`, the window starts at the PC, or `before` instructions
+// ahead of it (re-synchronised so a row always lands on the PC).  Use named
+// arguments from JS: a single positional argument is `addr`, not `count`.
+// Address values are plain integers so the JS side needs no conversion.
+value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, const value_t *argv) {
+    if (!dif || !dif->get_pc || !dif->regs || !dif->disasm)
+        return val_err("%s: CPU not initialised", who);
 
-    uint32_t addr = cpu_get_pc(cpu);
-    int64_t count = 32;
-    if (argc == 1) {
-        count = argv[0].i;
-    } else if (argc >= 2) {
-        addr = (uint32_t)argv[0].i;
-        count = argv[1].i;
-    }
+    uint32_t pc = dif->get_pc(dif->ctx);
+    bool have_addr = argc >= 1 && argv[0].kind == V_INT;
+    int64_t count = (argc >= 2 && argv[1].kind == V_INT) ? argv[1].i : 32;
+    int64_t before = (argc >= 3 && argv[2].kind == V_INT) ? argv[2].i : 0;
     if (count <= 0)
         count = 32;
     if (count > 256)
         count = 256;
+    if (before < 0)
+        before = 0;
+    if (before >= count)
+        before = count - 1;
+    uint32_t addr = have_addr ? (uint32_t)argv[0].i : (before ? frame_anchor(dif, pc, (int)before) : pc);
 
     value_map_builder_t *b = val_map_new();
+    val_map_put(b, "arch", val_str(dif->arch ? dif->arch : "unknown"));
+    val_map_put(b, "pc", val_int((int64_t)pc));
 
-    // Registers — all 16 GPRs + control regs in one shot.
     value_map_builder_t *regs = val_map_new();
-    char rname[4];
-    for (int i = 0; i < 8; i++) {
-        snprintf(rname, sizeof(rname), "d%d", i);
-        val_map_put(regs, rname, val_int((int64_t)cpu_get_dn(cpu, i)));
-    }
-    for (int i = 0; i < 8; i++) {
-        snprintf(rname, sizeof(rname), "a%d", i);
-        val_map_put(regs, rname, val_int((int64_t)cpu_get_an(cpu, i)));
-    }
-    val_map_put(regs, "pc", val_int((int64_t)cpu_get_pc(cpu)));
-    val_map_put(regs, "sr", val_int((int64_t)cpu_get_sr(cpu)));
-    val_map_put(regs, "usp", val_int((int64_t)cpu_get_usp(cpu)));
-    val_map_put(regs, "ssp", val_int((int64_t)cpu_get_ssp(cpu)));
+    dif->regs(dif->ctx, regs);
     val_map_put(b, "regs", val_map_finish(regs));
 
-    // Disasm rows + per-row MMU translation. Each row carries logical
-    // addr, physical addr (or null when invalid), validity flag,
-    // mnemonic, and operands — everything the pane needs to render
-    // without further bridge round-trips.
+    // Disasm rows + per-row translation, instruction side (the IBATs on PPC);
+    // a core with no translation at all addresses physical memory directly.
+    uint32_t (*xlate)(void *, uint32_t, bool *) = dif->translate_code ? dif->translate_code : dif->translate;
     value_t *rows = NULL;
     size_t n_rows = 0, cap_rows = 0;
-    char mnem[32], ops[80];
+    char buf[128], mnem[100], ops[100];
     for (int i = 0; i < (int)count; i++) {
         value_map_builder_t *row = val_map_new();
         val_map_put(row, "addr", val_int((int64_t)addr));
-
         bool valid = true;
-        uint32_t phys = debug_translate_address(addr, NULL, NULL, &valid);
+        uint32_t phys = xlate ? xlate(dif->ctx, addr, &valid) : addr;
         val_map_put(row, "phys", valid ? val_int((int64_t)phys) : val_none());
         val_map_put(row, "valid", val_bool(valid));
-
-        int n = disasm_at(addr, mnem, ops); // bytes consumed
-
+        buf[0] = '\0';
+        int n = dif->disasm(dif->ctx, addr, buf, sizeof(buf)); // bytes consumed
+        frame_split_disasm(buf, mnem, sizeof(mnem), ops, sizeof(ops));
         val_map_put(row, "mnem", val_str(mnem));
         val_map_put(row, "ops", val_str(ops));
         val_list_push(&rows, &n_rows, &cap_rows, val_map_finish(row));
-
-        addr += (uint32_t)n;
+        addr += (uint32_t)(n > 0 ? n : 2);
     }
     val_map_put(b, "rows", val_list(rows, n_rows));
 
-    // FPU block — only emitted when the running CPU model has an FPU.
-    // Each fp[i] is the raw 80-bit register as a hex string plus a host
-    // double rendered as decimal, so the UI can show both side by side.
-    fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-    if (fpu) {
+    // FPU block — only when the core has one.
+    if (dif->fpu) {
         value_map_builder_t *fb = val_map_new();
-
-        value_t *fps = NULL;
-        size_t n_fps = 0, cap_fps = 0;
-        char hexbuf[24];
-        char valbuf[40];
-        for (int i = 0; i < 8; i++) {
-            value_map_builder_t *fpb = val_map_new();
-            // 4 hex digits of exponent (with sign bit) + underscore + 16
-            // hex digits of mantissa. Underscore makes scanning easier.
-            snprintf(hexbuf, sizeof(hexbuf), "%04X_%016llX", fpu->fp[i].exponent,
-                     (unsigned long long)fpu->fp[i].mantissa);
-            val_map_put(fpb, "hex", val_str(hexbuf));
-
-            // Decimal display — handle special values explicitly and keep
-            // the value a string (Inf/NaN aren't legal JSON numbers).
-            uint16_t e = FP80_EXP(fpu->fp[i]);
-            int sign = FP80_SIGN(fpu->fp[i]);
-            if (e == 0 && fpu->fp[i].mantissa == 0) {
-                snprintf(valbuf, sizeof(valbuf), sign ? "-0" : "0");
-            } else if (e == 0x7FFF) {
-                if (fpu->fp[i].mantissa == 0 || (fpu->fp[i].mantissa & ~(1ULL << 63)) == 0) {
-                    snprintf(valbuf, sizeof(valbuf), sign ? "-Inf" : "Inf");
-                } else {
-                    snprintf(valbuf, sizeof(valbuf), "NaN");
-                }
-            } else {
-                double d = fp80_to_display_double(fpu->fp[i]);
-                snprintf(valbuf, sizeof(valbuf), "%.17g", d);
-            }
-            val_map_put(fpb, "val", val_str(valbuf));
-            val_list_push(&fps, &n_fps, &cap_fps, val_map_finish(fpb));
+        if (dif->fpu(dif->ctx, fb))
+            val_map_put(b, "fpu", val_map_finish(fb));
+        else {
+            value_t unused = val_map_finish(fb);
+            value_free(&unused);
         }
-        val_map_put(fb, "fp", val_list(fps, n_fps));
-
-        val_map_put(fb, "fpcr", val_int((int64_t)fpu->fpcr));
-        val_map_put(fb, "fpsr", val_int((int64_t)fpu->fpsr));
-        val_map_put(fb, "fpiar", val_int((int64_t)fpu->fpiar));
-
-        val_map_put(b, "fpu", val_map_finish(fb));
     }
 
     return val_map_finish(b);
 }
 
-static const arg_decl_t debug_frame_args[] = {
-    {.name = "addr",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Start address (default PC)" },
-    {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Number of rows (default 32)"},
+// `debug.frame([addr], [count], [before])` — the main CPU's frame; the same
+// as `machine.cpu.frame`, kept under debug for the tools that call it.
+static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    return debug_frame_build(system_cpu_debug_if(), "debug.frame", argc, argv);
+}
+
+// The frame's default row count: a named `before` must be reachable past it.
+static const value_t k_frame_count32 = {.kind = V_INT, .i = 32};
+
+const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {
+    {.name = "addr",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &obj_arg_unset,
+     .doc = "Start address (default PC)"},
+    {.name = "count",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_frame_count32,
+     .doc = "Number of rows (default 32)"},
+    {.name = "before",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Rows to show ahead of the PC when addr is omitted (default 0)"},
 };
 
 // `debug.step([n])` — single-step n instructions (default 1) and stop.
@@ -3346,8 +3572,19 @@ static value_t debug_method_step(struct object *self, const member_t *m, int arg
     scheduler_t *s = system_scheduler();
     if (!s)
         return val_err("debug.step: scheduler not initialised");
-    scheduler_run_instructions(s, (int)count);
-    scheduler_stop(s);
+    // Arm the same instruction budget `scheduler.run N` does and drive it
+    // through scheduler_run_frame -- the loop the headless pump runs -- so
+    // stepped time pulses VBL and consumes frame_cycles_left exactly as
+    // running does.  It used to call scheduler_run_instructions, which
+    // advanced cpu_cycles with the VBL line dead: N stepped instructions did
+    // not match N run ones.  Still synchronous, so `while cond { debug.step 1 }`
+    // works in the browser terminal too, where nothing pumps between
+    // statements; returning at once would need an asynchronous step, which
+    // does not exist yet.
+    if (!scheduler_run_with_budget(s, (uint64_t)count))
+        return val_err("debug.step: instruction count too large");
+    while (scheduler_is_running(s))
+        scheduler_run_frame(s, global_emulator);
     return val_bool(true);
 }
 
@@ -3358,31 +3595,31 @@ static const arg_decl_t debug_step_args[] = {
 static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "log",
-     .doc = "Set per-subsystem log level (or pass a full spec string)",
-     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}                                                                                                                 },
+     .doc = "Configure a log category: debug.log(cat, level=, stdout=, file=, ts=, pc=)",
+     .method = {.args = debug_log_args, .nargs = 6, .result = V_BOOL, .fn = debug_method_log}                                                                                                                },
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                           },
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                          },
     {.kind = M_METHOD,
      .name = "frame",
-     .doc = "Bundled snapshot for the debug UI: registers + disasm window + per-row MMU translation, "
-            "returned as a typed map. Default: 32 rows starting at PC.",                                           .method = {.args = debug_frame_args, .nargs = 2, .result = V_MAP, .fn = debug_method_frame}},
+     .doc = "The CPU's debug frame: registers, disassembly, per-row translation (= machine.cpu.frame)",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = debug_method_frame}                                                                                             },
     {.kind = M_METHOD,
      .name = "step",
-     .doc = "Single-step N instructions and stop (default 1)",
-     .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}                                                                                                               },
+     .doc = "Run N instructions (default 1) and stop, through the frame loop exactly as scheduler.run N does "
+            "(VBL and timers keep running)",                                                                       .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}},
     {.kind = M_METHOD,
      .name = "exceptions",
      .doc = "Dump the 256-entry exception trace ring (always-on). Optional filter=1 hides routine traps/IRQs.",
-     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                   },
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                  },
     {.kind = M_METHOD,
      .name = "log_levels",
      .doc = "Every registered log category and its level as a map {<cat>: <level>}.",
-     .method = {.args = NULL, .nargs = 0, .result = V_MAP, .fn = debug_method_log_levels}                                                                                                                     },
+     .method = {.args = NULL, .nargs = 0, .result = V_MAP, .fn = debug_method_log_levels}                                                                                                                    },
 };
 
-const class_desc_t debug_class = {
+static const class_desc_t debug_class = {
     .name = "debug",
     .members = debug_members,
     .n_members = sizeof(debug_members) / sizeof(debug_members[0]),
@@ -3568,7 +3805,7 @@ static const member_t debug_mac_globals_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = method_mac_globals_list}                   },
 };
 
-const class_desc_t debug_mac_globals_class = {
+static const class_desc_t debug_mac_globals_class = {
     .name = "globals",
     .members = debug_mac_globals_members,
     .n_members = sizeof(debug_mac_globals_members) / sizeof(debug_mac_globals_members[0]),
@@ -3598,7 +3835,7 @@ static const member_t debug_mac_members[] = {
      .method = {.args = mac_atrap_args, .nargs = 1, .result = V_STRING, .fn = method_mac_atrap}},
 };
 
-const class_desc_t debug_mac_class = {
+static const class_desc_t debug_mac_class = {
     .name = "mac",
     .members = debug_mac_members,
     .n_members = sizeof(debug_mac_members) / sizeof(debug_mac_members[0]),
@@ -3619,7 +3856,7 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
     size_t n = strlen(path);
     if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
         return val_err("screen.save: path must end in .png (got '%s')", path);
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.save: framebuffer not available");
     if (save_framebuffer_as_png(d, path) < 0)
@@ -3636,47 +3873,55 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
 // `screen.matches`: either just the reference (whole-screen compare) or the
 // reference plus all four region edges (top, left, bottom, right) — reject
 // anything in between.  Returns NULL through *err_out on a bad call.
-static const int *screen_parse_exclude_rect(const char *who, const display_t *d, int argc, const value_t *argv,
-                                            int rect[4], value_t *err_out) {
-    if (argc == 5) {
-        int top = (int)argv[1].i, left = (int)argv[2].i, bottom = (int)argv[3].i, right = (int)argv[4].i;
-        if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > (int)d->height || right > (int)d->width) {
-            *err_out = val_err("%s: invalid exclude region for (0,0)-(%u,%u)", who, d->width, d->height);
-            return NULL;
-        }
-        rect[0] = top;
-        rect[1] = left;
-        rect[2] = bottom;
-        rect[3] = right;
-        return rect;
+// Parse 0, 1 or 2 exclude rectangles from the optional arguments and write
+// them into `rect` (4 ints each).  Returns the count, or -1 on error.
+static int screen_parse_exclude_rects(const char *who, const display_t *d, int argc, const value_t *argv, int rect[8],
+                                      value_t *err_out) {
+    if (argc != 1 && argc != 5 && argc != 9) {
+        *err_out = val_err("%s: expected (reference), (reference, top, left, bottom, right) or the same with a "
+                           "second rectangle appended",
+                           who);
+        return -1;
     }
-    if (argc != 1)
-        *err_out = val_err("%s: expected (reference) or (reference, top, left, bottom, right)", who);
-    return NULL;
+    int n = (argc - 1) / 4;
+    for (int r = 0; r < n; r++) {
+        int base = 1 + r * 4;
+        int top = (int)argv[base].i, left = (int)argv[base + 1].i;
+        int bottom = (int)argv[base + 2].i, right = (int)argv[base + 3].i;
+        if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > (int)d->height || right > (int)d->width) {
+            *err_out = val_err("%s: invalid exclude region %d for (0,0)-(%u,%u)", who, r + 1, d->width, d->height);
+            return -1;
+        }
+        rect[r * 4] = top;
+        rect[r * 4 + 1] = left;
+        rect[r * 4 + 2] = bottom;
+        rect[r * 4 + 3] = right;
+    }
+    return n;
 }
 
 static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     const char *ref = argv[0].s;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.match: framebuffer not available");
-    int rect[4];
+    int rect[8];
     value_t err = val_none();
-    const int *exclude_rect = screen_parse_exclude_rect("screen.match", d, argc, argv, rect, &err);
-    if (!exclude_rect && argc != 1)
+    int n_rects = screen_parse_exclude_rects("screen.match", d, argc, argv, rect, &err);
+    if (n_rects < 0)
         return err;
-    int result = match_framebuffer_with_png(d, ref, exclude_rect);
+    int result = match_framebuffer_with_png(d, ref, n_rects ? rect : NULL, n_rects);
     if (result < 0) {
-        printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
+        gs_outf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
         return val_err("screen.match: cannot load reference '%s'", ref);
     }
     if (result == 0) {
-        printf("MATCH OK: Screen matches '%s'.\n", ref);
+        gs_outf("MATCH OK: Screen matches '%s'.\n", ref);
         return val_bool(true);
     }
-    printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+    gs_outf("MATCH FAILED: Screen does not match '%s'.\n", ref);
     return val_err("screen.match: screen does not match '%s'", ref);
 }
 
@@ -3691,15 +3936,15 @@ static value_t screen_method_matches(struct object *self, const member_t *m, int
     (void)self;
     (void)m;
     const char *ref = argv[0].s;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.matches: framebuffer not available");
-    int rect[4];
+    int rect[8];
     value_t err = val_none();
-    const int *exclude_rect = screen_parse_exclude_rect("screen.matches", d, argc, argv, rect, &err);
-    if (!exclude_rect && argc != 1)
+    int n_rects = screen_parse_exclude_rects("screen.matches", d, argc, argv, rect, &err);
+    if (n_rects < 0)
         return err;
-    int result = match_framebuffer_with_png(d, ref, exclude_rect);
+    int result = match_framebuffer_with_png(d, ref, n_rects ? rect : NULL, n_rects);
     if (result < 0)
         return val_err("screen.matches: cannot load reference '%s'", ref);
     return val_bool(result == 0);
@@ -3710,25 +3955,25 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
     (void)m;
     const char *ref = argv[0].s;
     const char *actual = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.match_or_save: framebuffer not available");
-    int result = match_framebuffer_with_png(d, ref, NULL);
+    int result = match_framebuffer_with_png(d, ref, NULL, 0);
     if (result < 0) {
-        printf("MATCH FAILED: Error loading reference image.\n");
+        gs_outf("MATCH FAILED: Error loading reference image.\n");
         if (actual)
             save_framebuffer_as_png(d, actual);
         return val_bool(false);
     }
     if (result == 0) {
-        printf("MATCH OK: Screen matches '%s'.\n", ref);
+        gs_outf("MATCH OK: Screen matches '%s'.\n", ref);
         return val_bool(true);
     }
     if (actual) {
         save_framebuffer_as_png(d, actual);
-        printf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
+        gs_outf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
     } else {
-        printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+        gs_outf("MATCH FAILED: Screen does not match '%s'.\n", ref);
     }
     return val_bool(false);
 }
@@ -3736,7 +3981,7 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
 static value_t screen_method_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.checksum: framebuffer not available");
     if (argc == 0)
@@ -3770,31 +4015,16 @@ static value_t screen_attr_height(struct object *self, const member_t *m) {
 // is driving it (built-in video or a NuBus card).  Per-card depth is
 // reachable as `nubus.slot[N].card.framebuffer.depth`, but the coverage
 // records the integration suites emit need the depth of the screen that
-// is actually live, without first knowing which device owns it
-// (proposal-integration-test-rework §5.6).
+// is actually live, without first knowing which device owns it.
 static value_t screen_attr_depth(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     const display_t *d = system_display();
-    if (!d)
-        return val_int(0);
-    switch (d->format) {
-    case PIXEL_1BPP_MSB:
-        return val_int(1);
-    case PIXEL_2BPP_MSB:
-        return val_int(2);
-    case PIXEL_4BPP_MSB:
-        return val_int(4);
-    case PIXEL_8BPP:
-        return val_int(8);
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-        return val_int(16);
-    case PIXEL_32BPP_XRGB:
-        return val_int(32);
-    default:
-        return val_int(0);
-    }
+    // A fourth copy of the bits-per-pixel switch lived here -- and this is the
+    // one every integration row asserts on (`machine.screen.depth`), so it is
+    // the copy that had to stay right while the others drifted.  display.h
+    // owns it now.
+    return val_int(d ? (int)display_bpp(d->format) : 0);
 }
 
 // `screen.par_w` / `screen.par_h` — the active display's pixel aspect ratio
@@ -3816,12 +4046,13 @@ static value_t screen_attr_par_h(struct object *self, const member_t *m) {
 }
 
 // `screen.source` — a non-owning reference edge to the active NuBus card's
-// framebuffer node (proposal §3.8: machine.screen.source → reference →
+// framebuffer node (machine.screen.source → reference →
 // machine.nubus.slot[N].card.framebuffer).  Re-resolved on each access via
 // nubus_active_framebuffer_object(), so a card swap or machine teardown can
-// never leave it dangling (the proposal's pointer+invalidator hot-path concern
-// applies to per-frame rendering, which uses nubus_primary_display() directly —
-// not this navigational link).  NULL (no source) on builtin-video machines.
+// never leave it dangling (a held pointer plus an invalidator is the hot-path
+// pattern, and it applies to per-frame rendering, which uses
+// nubus_primary_display() directly — not this navigational link).  NULL (no
+// source) on builtin-video machines.
 // `machine.screen.source` — a reference edge to whichever framebuffer node
 // is currently driving the display.  A seated PCI display card wins over a
 // NuBus one: on the machines that have both, the PCI card is the primary
@@ -3840,17 +4071,73 @@ static const arg_decl_t screen_save_args[] = {
 };
 static const arg_decl_t screen_match_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
-    {.name = "top", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region top edge"},
-    {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
-    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
-    {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
+    {.name = "top",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region top edge"},
+    {.name = "left",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region left edge"},
+    {.name = "bottom",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region bottom edge"},
+    {.name = "right",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region right edge"},
+    {.name = "top2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region top edge"},
+    {.name = "left2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region left edge"},
+    {.name = "bottom2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region bottom edge"},
+    {.name = "right2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region right edge"},
 };
 static const arg_decl_t screen_matches_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
-    {.name = "top", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region top edge"},
-    {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
-    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
-    {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
+    {.name = "top",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region top edge"},
+    {.name = "left",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region left edge"},
+    {.name = "bottom",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region bottom edge"},
+    {.name = "right",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Exclude-region right edge"},
+    {.name = "top2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region top edge"},
+    {.name = "left2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region left edge"},
+    {.name = "bottom2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region bottom edge"},
+    {.name = "right2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Second exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -3860,11 +4147,33 @@ static const arg_decl_t screen_match_or_save_args[] = {
      .doc = "Path to write current screen on miss"},
 };
 static const arg_decl_t screen_checksum_args[] = {
-    {.name = "top",    .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region top edge"   },
-    {.name = "left",   .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region left edge"  },
-    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
-    {.name = "right",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
+    {.name = "top",    .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region top edge" },
+    {.name = "left",   .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "Region left edge"},
+    {.name = "bottom",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Region bottom edge"                                                                                       },
+    {.name = "right",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Region right edge"                                                                                        },
 };
+// Stride and format: every per-card framebuffer node has had these, and the
+// generic `screen` node -- the one node that exists on EVERY machine,
+// including the ones with built-in video and no card node at all -- did not.
+static value_t screen_attr_stride(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_uint(4, d ? d->stride : 0);
+}
+static value_t screen_attr_format(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_str(d ? display_format_name(d->format) : "");
+}
+
 static const member_t screen_members[] = {
     {.kind = M_ATTR,
      .name = "width",
@@ -3882,6 +4191,16 @@ static const member_t screen_members[] = {
      .doc = "Bits per pixel of the active display (1/2/4/8/16/32; 0 if unknown)",
      .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
     {.kind = M_ATTR,
+     .name = "stride",
+     .flags = VAL_RO,
+     .doc = "Row stride in bytes (rowBytes) of the active display",
+     .attr = {.type = V_UINT, .get = screen_attr_stride, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "format",
+     .flags = VAL_RO,
+     .doc = "Pixel encoding of the active display",
+     .attr = {.type = V_STRING, .get = screen_attr_format, .set = NULL}},
+    {.kind = M_ATTR,
      .name = "par_w",
      .flags = VAL_RO,
      .doc = "Pixel aspect ratio numerator (display pixel width; 1 = square)",
@@ -3898,11 +4217,11 @@ static const member_t screen_members[] = {
     {.kind = M_METHOD,
      .name = "match",
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_match}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_match}},
     {.kind = M_METHOD,
      .name = "matches",
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_matches}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_matches}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
@@ -3918,7 +4237,7 @@ static const member_t screen_members[] = {
      .child = {.cls = NULL, .reference = true, .lookup = screen_source_lookup}},
 };
 
-const class_desc_t screen_class = {
+static const class_desc_t screen_class = {
     .name = "screen",
     .members = screen_members,
     .n_members = sizeof(screen_members) / sizeof(screen_members[0]),
@@ -3940,13 +4259,5 @@ void screen_class_register(void) {
         object_set_label(s_screen_object, "Screen");
         object_set_order(s_screen_object, 120);
         object_attach(machine_object(), s_screen_object);
-    }
-}
-
-void screen_class_unregister(void) {
-    if (s_screen_object) {
-        object_detach(s_screen_object);
-        object_delete(s_screen_object);
-        s_screen_object = NULL;
     }
 }
