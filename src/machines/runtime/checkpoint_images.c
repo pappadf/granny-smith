@@ -9,6 +9,7 @@
 
 #include "checkpoint_machine.h"
 #include "image.h"
+#include "image_wrap.h"
 #include "storage.h"
 #include "system.h" // MAX_IMAGES -- the real bound on the restored list
 
@@ -22,8 +23,8 @@
 //   uint32_t count
 //   for each image i:
 //     uint32_t name_len, name_bytes...
-//     int8_t   writable
-//     uint64_t raw_size
+//     int8_t   flags (IMAGE_CKPT_WRITABLE | IMAGE_CKPT_WRAPPED)
+//     uint64_t raw_size (the storage's, without any wrapper prefix)
 //     uint32_t instance_len, instance_bytes...
 //     <storage-specific blob via image_checkpoint>
 void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
@@ -43,8 +44,9 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     // gs_outf("%s"), so a file that omits the NUL used to read off the end of
     // the allocation, and an unbounded length drove the malloc.
     char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
-    char writable = 0;
-    system_read_checkpoint_data(cp, &writable, sizeof(writable));
+    char flags = 0;
+    system_read_checkpoint_data(cp, &flags, sizeof(flags));
+    bool writable = (flags & IMAGE_CKPT_WRITABLE) != 0;
     uint64_t raw_size = 0;
     system_read_checkpoint_data(cp, &raw_size, sizeof(raw_size));
     char *instance_path = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image instance path");
@@ -86,6 +88,12 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             gs_outf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
         }
+    }
+    // A bare volume that was attached through the wrapper is re-wrapped, so
+    // the SCSI device that re-binds to it by name sees the same disk.
+    if (img && (flags & IMAGE_CKPT_WRAPPED) && image_wrap_bare_volume(img) < 0) {
+        gs_outf("Error: cannot re-wrap bare volume %s while restoring checkpoint\n", name);
+        checkpoint_set_error(cp);
     }
     if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
         gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");

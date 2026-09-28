@@ -1,0 +1,164 @@
+# SCSI bare-volume wrapper
+#
+# A bare HFS volume attached with scsi.attach_hd is presented behind a
+# synthesised Driver Descriptor Map, a three-entry Apple Partition Map and
+# the GSDisk driver (docs/core/storage/bare-volume-wrapper.md).  Nothing is
+# written into the file: the prefix lives in memory, guest writes land in the
+# image's delta as for any disk.
+#
+# Rows:
+#   wrap-layout     the device the guest sees, before anything boots
+#   iici-753        IIci boots System 7.5.3 off the bare volume to the Finder
+#   se30-753        the same volume on the SE/30 ROM
+#   q700-753        ... and the Quadra 700 ROM
+#   plus-701        the Plus ROM (no partition-map check, 68000 CPU) with the
+#                   Plus-only minimal System 7.0.1 volume
+#   two-volumes     two wrapped disks on one bus: two driver copies, two drives
+#   checkpoint      a checkpoint of a machine running off a wrapped disk
+#                   restores to the same running desktop
+
+include "../lib/mac.script"
+
+let vol753 = "../../data/systems/system_7_5_3_25mb_bare.img"
+let vol701 = "../../data/systems/system_7_0_1_10mb_bare_plus.img"
+let ROM_SE30 = "${$TEST_DATA}/roms/iix-iicx-se30-97221136.rom"
+let ROM_Q700 = "${$TEST_DATA}/roms/q700-q900-420dbff3.rom"
+let ROM_PLUS = "${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"
+
+# Bytes the wrapper puts in front of a volume: DDM + 63-block map + 32-block
+# driver partition (IMAGE_WRAP_PREFIX_BLOCKS).
+let PREFIX_BYTES = 96 * 512
+
+# The storage.images entry whose file is `path` (by its base name).
+def image_index(path) {
+    let i = 0
+    while $i < storage.images.count {
+        if storage.images[$i].filename == $path { return $i }
+        $i = $i + 1
+    }
+    error("no attached image ${$path}")
+}
+
+# The facts every boot row asserts once the Finder is up: the Start
+# Manager booted a drive, a System file is open, and the Finder launched.
+def assert_desktop(label) {
+    assert debug.mac.globals.read("BootDrive") != 0 "${$label}: BootDrive is 0 — nothing booted"
+    assert debug.mac.globals.read("SysMap") != 0 "${$label}: SysMap unset — no System file opened"
+    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "${$label}: the Finder never launched"
+}
+
+# ---- wrap-layout -------------------------------------------------------------
+# What the guest is offered: a hard disk the size of the volume plus the
+# prefix, while the file on the host stays exactly as it was.  The same file
+# attached as a CD-ROM is NOT wrapped (the CD driver reads bare HFS itself).
+def row_wrap_layout() {
+    machine.boot model="iici" ram=8192 rom="${$ROM}"
+    let file_size = storage.path_size("${$vol753}")
+    assert scsi_identify_ok() "wrap-layout: identify_hd refused the bare volume"
+    assert machine.scsi.attach_hd("${$vol753}", 0) "wrap-layout: attach_hd failed"
+    assert machine.scsi.device[0].type == "hd" "wrap-layout: SCSI 0 is not a hard disk"
+    let i = image_index($vol753)
+    assert storage.images[$i].raw_size == $file_size + $PREFIX_BYTES "wrap-layout: disk is ${storage.images[$i].raw_size} bytes, want ${$file_size} + ${$PREFIX_BYTES}"
+    assert storage.path_size("${$vol753}") == $file_size "wrap-layout: the volume file changed size"
+    assert machine.scsi.attach_cdrom("${$vol753}", 3) "wrap-layout: attach_cdrom failed"
+    assert machine.scsi.device[3].type == "cdrom" "wrap-layout: SCSI 3 is not a CD-ROM"
+}
+
+def scsi_identify_ok() {
+    return machine.scsi.identify_hd("${$vol753}")
+}
+
+# ---- boot rows ------------------------------------------------------------------
+# Match the Finder desktop in `golden`, excluding the right-hand end of the
+# menu bar (System 7.5's clock) on whatever width the screen has.
+def check_desktop(golden) {
+    let w = machine.screen.width
+    check_ex($golden, 0, $w - 240, 20, $w)
+}
+
+# Boot `vol` at SCSI 0 on (model, rom, ram) and match the Finder desktop.
+# The menu-bar clock is excluded (System 7.5 shows one); the RTC is pinned
+# so everything else is stable.
+def boot_desktop(label, model, rom, ram, vol, golden) {
+    machine.boot model="${$model}" ram=$ram rom="${$rom}"
+    assert machine.scsi.attach_hd("${$vol}", 0) "${$label}: attach_hd failed"
+    scheduler.run 150000000
+    wait_stable(1600000000)
+    assert_desktop($label)
+    let i = image_index($vol)
+    # The volume was read through the driver; the Finder also writes to it
+    # (desktop database, volume info) — through the driver into the delta.
+    assert storage.images[$i].reads > 0 "${$label}: nothing read from the disk"
+    assert storage.images[$i].writes > 0 "${$label}: nothing written to the disk"
+    check_desktop($golden)
+    report_perf("scsi-bare-volume/${$label}", scheduler.instr_count)
+}
+
+def row_iici_753() {
+    boot_desktop("iici-753", "iici", $ROM, 8192, $vol753, "goldens/iici-7.5.3-640x480x1-bare-finder.png")
+}
+
+def row_se30_753() {
+    boot_desktop("se30-753", "se30", $ROM_SE30, 8192, $vol753, "goldens/se30-7.5.3-512x342x1-bare-finder.png")
+}
+
+def row_q700_753() {
+    boot_desktop("q700-753", "q700", $ROM_Q700, 8192, $vol753, "goldens/q700-7.5.3-640x480x1-bare-finder.png")
+}
+
+def row_plus_701() {
+    boot_desktop("plus-701", "plus", $ROM_PLUS, 4096, $vol701, "goldens/plus-7.0.1-512x342x1-bare-finder.png")
+}
+
+# ---- two-volumes ------------------------------------------------------------------
+# Two wrapped disks: the ROM loads a driver copy from each (one per SCSI ID),
+# each copy installs its own DCE and drive.  One boots; the other is mounted
+# by the disk-inserted event its driver posts from accRun once the system is
+# up (an event posted during SCSILoad would not survive startup) — the golden
+# shows both volume icons.
+def row_two_volumes() {
+    machine.boot model="iici" ram=8192 rom="${$ROM}"
+    assert machine.scsi.attach_hd("${$vol753}", 0) "two-volumes: attach_hd 0 failed"
+    assert machine.scsi.attach_hd("${$vol701}", 1) "two-volumes: attach_hd 1 failed"
+    scheduler.run 150000000
+    wait_stable(1600000000)
+    assert_desktop("two-volumes")
+    assert storage.images[image_index($vol701)].reads > 0 "two-volumes: the second volume was never read"
+    check_desktop("goldens/iici-7.5.3-640x480x1-bare-two-volumes.png")
+}
+
+# ---- checkpoint -------------------------------------------------------------------
+# The prefix is not in the file, so a restore has to re-wrap the image
+# (IMAGE_CKPT_WRAPPED); a restored machine that lost it would read the bare
+# volume at the wrong offset and crash.
+def row_checkpoint() {
+    machine.boot model="iici" ram=8192 rom="${$ROM}"
+    assert machine.scsi.attach_hd("${$vol753}", 0) "checkpoint: attach_hd failed"
+    scheduler.run 150000000
+    wait_stable(1600000000)
+    assert checkpoint.save("${$WORK_DIR}/bare-volume.checkpoint") "checkpoint: save failed"
+    assert checkpoint.load("${$WORK_DIR}/bare-volume.checkpoint") "checkpoint: load failed"
+    let i = image_index($vol753)
+    assert storage.images[$i].raw_size == storage.path_size("${$vol753}") + $PREFIX_BYTES "checkpoint: restored disk is not wrapped"
+    # Keep running off the restored disk: the Finder must still be there.
+    scheduler.run 200000000
+    assert_desktop("checkpoint")
+    check_desktop("goldens/iici-7.5.3-640x480x1-bare-finder.png")
+}
+
+# ---- row dispatch ------------------------------------------------------------------
+
+if have_media($vol753) && have_media($vol701) {
+    if row_on("wrap-layout") { row_end("wrap-layout", try(row_wrap_layout(), "FAILED")) }
+    if row_on("iici-753") { row_end("iici-753", try(row_iici_753(), "FAILED")) }
+    if row_on("se30-753") { row_end("se30-753", try(row_se30_753(), "FAILED")) }
+    if row_on("q700-753") { row_end("q700-753", try(row_q700_753(), "FAILED")) }
+    if row_on("plus-701") { row_end("plus-701", try(row_plus_701(), "FAILED")) }
+    if row_on("two-volumes") { row_end("two-volumes", try(row_two_volumes(), "FAILED")) }
+    if row_on("checkpoint") { row_end("checkpoint", try(row_checkpoint(), "FAILED")) }
+} else {
+    echo "skip: scsi-bare-volume (no bare volumes at ${$vol753} / ${$vol701})"
+}
+
+suite_done()
+quit
