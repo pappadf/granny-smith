@@ -148,6 +148,15 @@ vi.mock('@/bus/emulator', () => {
           { id: 'storage', label: 'Storage', doc: '' },
           { id: 'debug', label: 'Debug', doc: '' },
         ];
+      if (path === 'shell.highlight' && args?.[0] === 'machine.cpu.insert <path> [writable]')
+        return [
+          { start: 0, end: 7, class: 'object' },
+          { start: 8, end: 11, class: 'object' },
+          { start: 12, end: 18, class: 'method' },
+        ];
+      if (path === 'shell.highlight' && args?.[0] === 'machine.cpu.insert a.img')
+        return [{ start: 12, end: 18, class: 'method' }];
+      if (path === 'shell.highlight') return [];
       if (path === 'shell.usage' && args?.[0] === 'machine.cpu.insert')
         return {
           signature: 'machine.cpu.insert <path> [writable]',
@@ -155,7 +164,7 @@ vi.mock('@/bus/emulator', () => {
             [19, 25],
             [26, 36],
           ],
-          text: 'machine.cpu.insert <path> [writable]\n\nMount an image',
+          text: 'machine.cpu.insert <path> [writable]\ne.g.  machine.cpu.insert a.img\n\nMount an image',
         };
       if (path === 'shell.usage')
         return { signature: '', arg_spans: [], text: `USAGE OF ${String(args?.[0])}` };
@@ -400,5 +409,20 @@ describe('CommandBrowser ↔ console', () => {
     );
     await waitFor(() => expect(pc.classList.contains('match')).toBe(true));
     expect(pc.classList.contains('selected')).toBe(true);
+  });
+
+  it('colours the usage block: the signature and the example lines', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const ins = await row(container, 'insert');
+    await fireEvent.click(ins.querySelector('.cmd-line')!);
+    await waitFor(() => expect(ins.querySelectorAll('.usage .hl-method').length).toBe(2));
+    const methods = Array.from(ins.querySelectorAll('.usage .hl-method')).map((e) => e.textContent);
+    expect(methods).toEqual(['insert', 'insert']);
+    expect(ins.querySelector('.usage')?.textContent).toBe(
+      'machine.cpu.insert <path> [writable]\ne.g.  machine.cpu.insert a.img\n\nMount an image',
+    );
   });
 });

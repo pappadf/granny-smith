@@ -51,6 +51,7 @@
   import { onConsoleJobDone } from '@/state/console.svelte';
   import { completionFocus } from '@/lib/pathToken';
   import { utf8ToUtf16 } from '@/lib/utf8';
+  import { highlightParts, loadHighlight, type HlSpan } from '@/lib/highlight';
   import Icon from '@/components/common/Icon.svelte';
   import { machine } from '@/state/machine.svelte';
 
@@ -228,11 +229,48 @@
     if (doWrite) write(row);
     if (!changed && usage) return;
     usage = null;
+    usageHl = {};
     if (row.kind === 'method' || row.kind === 'attr') {
       const key = row.key;
       const u = await loadUsageInfo(row.path);
-      if (selectedKey === key) usage = u;
+      if (selectedKey !== key) return;
+      usage = u;
+      if (u) void highlightUsage(u, key);
     }
+  }
+
+  // The usage block's code lines -- the signature and the examples --
+  // coloured by shell.highlight (line index → spans).
+  let usageHl = $state<Record<number, HlSpan[]>>({});
+  const EXAMPLE_LEAD = /^(e\.g\. {2}| {6})/;
+  const NEWLINE = '\n';
+
+  function codeLines(u: UsageInfo): Array<{ index: number; lead: number; text: string }> {
+    const lines = u.text.split('\n');
+    const out: Array<{ index: number; lead: number; text: string }> = [];
+    if (u.signature && lines[0] === u.signature) out.push({ index: 0, lead: 0, text: lines[0] });
+    let inExamples = false;
+    for (let i = 1; i < lines.length; i++) {
+      const m = EXAMPLE_LEAD.exec(lines[i]);
+      if (m && (m[1].startsWith('e.g.') || inExamples)) {
+        inExamples = true;
+        out.push({ index: i, lead: m[1].length, text: lines[i].slice(m[1].length) });
+      } else inExamples = false;
+    }
+    return out;
+  }
+
+  let usageSeq = 0;
+  async function highlightUsage(u: UsageInfo, key: string): Promise<void> {
+    const seq = ++usageSeq;
+    const lines = codeLines(u);
+    const spans = await Promise.all(lines.map((l) => loadHighlight(l.text)));
+    if (selectedKey !== key || seq !== usageSeq) return;
+    const next: Record<number, HlSpan[]> = {};
+    lines.forEach((l, k) => {
+      next[l.index] = spans[k].map((s) => ({ ...s, from: s.from + l.lead, to: s.to + l.lead }));
+    });
+    usageHl = next;
   }
 
   function scrollToSelected(): void {
@@ -457,20 +495,42 @@
   registerBrowserReveal((path) => void reveal(path));
   onDestroy(() => registerBrowserReveal(null));
 
-  // The usage text, its signature split around the marked argument.
-  const usageParts = $derived.by(() => {
+  // The usage text as lines of runs: code lines coloured, the marked
+  // argument (the console's cursor is in it) underlined on the signature.
+  interface UsageRun {
+    text: string;
+    cls: string | null;
+    mark: boolean;
+  }
+  const usageLines = $derived.by((): UsageRun[][] | null => {
     if (!usage) return null;
     const span = markArg !== null ? usage.argSpans[markArg] : null;
     const sig = usage.signature;
-    if (!span || !sig || !usage.text.startsWith(sig))
-      return { before: usage.text, arg: '', after: '' };
-    const a = utf8ToUtf16(sig, span[0]);
-    const b = utf8ToUtf16(sig, span[1]);
-    return {
-      before: usage.text.slice(0, a),
-      arg: usage.text.slice(a, b),
-      after: usage.text.slice(b),
-    };
+    const mark =
+      span && sig && usage.text.startsWith(sig)
+        ? [utf8ToUtf16(sig, span[0]), utf8ToUtf16(sig, span[1])]
+        : null;
+    return usage.text.split('\n').map((line, i) => {
+      const runs: UsageRun[] = highlightParts(line, usageHl[i] ?? []).map((p) => ({
+        text: p.text,
+        cls: p.cls,
+        mark: false,
+      }));
+      if (i !== 0 || !mark) return runs;
+      // Cut the runs at the mark's edges.
+      const out: UsageRun[] = [];
+      let at = 0;
+      for (const r of runs) {
+        const a = at;
+        const b = at + r.text.length;
+        at = b;
+        const cuts = [a, Math.max(a, Math.min(b, mark[0])), Math.max(a, Math.min(b, mark[1])), b];
+        for (let k = 0; k < 3; k++)
+          if (cuts[k + 1] > cuts[k])
+            out.push({ text: line.slice(cuts[k], cuts[k + 1]), cls: r.cls, mark: k === 1 });
+      }
+      return out;
+    });
   });
 
   function tooltip(row: BrowserRow): string {
@@ -548,9 +608,12 @@
             {/if}
             <span class="doc">{row.expandable ? row.doc : firstSentence(row.doc)}</span>
           </div>
-          {#if selected && usageParts}
-            <pre class="usage">{usageParts.before}<mark class="usage-arg">{usageParts.arg}</mark
-              >{usageParts.after}</pre>
+          {#if selected && usageLines}
+            <pre
+              class="usage">{#each usageLines as runs, li (li)}{#if li > 0}{NEWLINE}{/if}{#each runs as r, ri (ri)}{#if r.mark}<mark
+                      class="usage-arg {r.cls ? `hl-${r.cls}` : ''}">{r.text}</mark
+                    >{:else if r.cls}<span class="hl-{r.cls}">{r.text}</span
+                    >{:else}{r.text}{/if}{/each}{/each}</pre>
           {/if}
         </li>
       {/if}
@@ -624,6 +687,40 @@
     text-decoration: underline;
     text-decoration-color: var(--gs-focus, #0969da);
     text-underline-offset: 3px;
+  }
+  .usage :global(.hl-keyword) {
+    color: var(--gs-syntax-keyword);
+  }
+  .usage :global(.hl-decl),
+  .usage :global(.hl-interp) {
+    color: var(--gs-syntax-decl);
+  }
+  .usage :global(.hl-variable) {
+    color: var(--gs-syntax-variable);
+  }
+  .usage :global(.hl-alias) {
+    color: var(--gs-syntax-alias);
+  }
+  .usage :global(.hl-number) {
+    color: var(--gs-syntax-number);
+  }
+  .usage :global(.hl-string) {
+    color: var(--gs-syntax-string);
+  }
+  .usage :global(.hl-comment) {
+    color: var(--gs-syntax-comment);
+  }
+  .usage :global(.hl-method) {
+    color: var(--gs-syntax-method);
+  }
+  .usage :global(.hl-attribute) {
+    color: var(--gs-syntax-attribute);
+  }
+  .usage :global(.hl-enum) {
+    color: var(--gs-syntax-enum);
+  }
+  .usage :global(.hl-unknown) {
+    color: var(--gs-syntax-unknown);
   }
   .usage-arg {
     background: none;

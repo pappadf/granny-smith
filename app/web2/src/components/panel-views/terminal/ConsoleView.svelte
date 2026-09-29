@@ -90,6 +90,7 @@
   import { publishCompletion } from '@/state/terminalSync.svelte';
   import { loadUsageInfo, type UsageInfo } from '@/lib/commandsTree';
   import { utf8ToUtf16 } from '@/lib/utf8';
+  import { loadHighlight, highlightParts, type HlSpan } from '@/lib/highlight';
   import type { CompletionResult } from '@/bus/emulator';
   import { revealInSystem } from '@/state/system.svelte';
   import { normalisePaste } from '@/lib/consoleModel';
@@ -330,7 +331,31 @@
   let syncSeq = 0;
   let lastResult: CompletionResult | null = null;
 
+  // --- highlighting -----------------------------------------------------------------
+  // shell.highlight for the input, 30 ms after the last change; an answer
+  // for an older text is dropped (setHighlight checks the text).  The last
+  // answer is kept for the command entry the text becomes.
+  const HIGHLIGHT_DELAY_MS = 30;
+  let hlTimer: ReturnType<typeof setTimeout> | null = null;
+  let hlText = '';
+  let lastHl: { text: string; spans: readonly HlSpan[] } = { text: '', spans: [] };
+
+  function requestHighlight(text: string): void {
+    if (text === hlText) return;
+    hlText = text;
+    if (hlTimer) clearTimeout(hlTimer);
+    hlTimer = setTimeout(() => {
+      hlTimer = null;
+      void loadHighlight(text).then((spans) => {
+        if (destroyed || text !== hlText) return;
+        lastHl = { text, spans };
+        input?.setHighlight(text, spans);
+      });
+    }, HIGHLIGHT_DELAY_MS);
+  }
+
   function onInputChange(text: string, cursor: number): void {
+    requestHighlight(text);
     // A burst counts as the browser's only if every change in it was.
     syncFromBrowser = syncFromBrowser && isBrowserWriting();
     if (syncTimer) clearTimeout(syncTimer);
@@ -409,7 +434,7 @@
       const { createConsoleInput } = await import('./ConsoleInput');
       if (destroyed || !inputHost) return;
       input = createConsoleInput(inputHost, {
-        submit: (text) => consoleSubmit(text),
+        submit: (text) => consoleSubmit(text, lastHl.text === text ? lastHl.spans : undefined),
         needsContinuation: (text) => needsContinuation(text),
         complete: (line, cursor) => tabComplete(line, cursor),
         interrupt: () => {
@@ -445,6 +470,7 @@
     if (timer) clearInterval(timer);
     registerConsoleInput(null);
     if (syncTimer) clearTimeout(syncTimer);
+    if (hlTimer) clearTimeout(hlTimer);
     input?.destroy();
     input = null;
   });
@@ -551,6 +577,10 @@
           {:else}
             {@render textWithMarks(e.text)}
           {/if}
+        {:else if e.kind === 'command' && e.spans && !(findOpen && findQuery)}
+          {#each highlightParts(e.text, e.spans) as p, i (i)}{#if p.cls}<span class="hl-{p.cls}"
+                >{p.text}</span
+              >{:else}{p.text}{/if}{/each}
         {:else}
           {@render textWithMarks(e.text)}
         {/if}
@@ -610,6 +640,43 @@
   .entry.command::before {
     content: '› ';
     color: var(--gs-syntax-dim);
+  }
+  /* Syntax classes (shell.highlight) on command entries. */
+  .entry :global(.hl-keyword) {
+    color: var(--gs-syntax-keyword);
+  }
+  .entry :global(.hl-decl),
+  .entry :global(.hl-interp) {
+    color: var(--gs-syntax-decl);
+  }
+  .entry :global(.hl-variable) {
+    color: var(--gs-syntax-variable);
+  }
+  .entry :global(.hl-alias) {
+    color: var(--gs-syntax-alias);
+  }
+  .entry :global(.hl-number) {
+    color: var(--gs-syntax-number);
+  }
+  .entry :global(.hl-string) {
+    color: var(--gs-syntax-string);
+  }
+  .entry :global(.hl-comment) {
+    color: var(--gs-syntax-comment);
+  }
+  .entry :global(.hl-method) {
+    color: var(--gs-syntax-method);
+  }
+  .entry :global(.hl-attribute) {
+    color: var(--gs-syntax-attribute);
+  }
+  .entry :global(.hl-enum) {
+    color: var(--gs-syntax-enum);
+  }
+  .entry :global(.hl-unknown) {
+    color: var(--gs-syntax-unknown);
+    text-decoration: underline wavy var(--gs-syntax-unknown);
+    text-underline-offset: 3px;
   }
   .entry.stderr {
     color: var(--gs-syntax-error);

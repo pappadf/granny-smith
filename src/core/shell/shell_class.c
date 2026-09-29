@@ -20,6 +20,7 @@
 
 #include "cmd_complete.h"
 #include "expr.h"
+#include "highlight.h"
 #include "lint.h"
 #include "object.h"
 #include "scheduler.h"
@@ -283,6 +284,15 @@ static value_t shell_method_usage(struct object *self, const member_t *m, int ar
     return object_usage(argv[0].s);
 }
 
+// `shell.highlight(text)` — syntax classes for a line or block (highlight.c):
+// what the console colours as the user types.
+static value_t shell_method_highlight(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    return shell_highlight(argv[0].s ? argv[0].s : "");
+}
+
 // `shell.needs_continuation(text)` — true while `text` is an incomplete
 // statement or block, so a console knows whether Enter submits or breaks
 // the line.
@@ -432,6 +442,11 @@ static const member_t shell_members[] = {
                 .nargs = 1,
                 .result = V_BOOL,
                 .fn = shell_method_needs_continuation}},
+    {.kind = M_METHOD,
+     .name = "highlight",
+     .doc = "Syntax classes of a line or block: a list of {start, end, class} spans (UTF-8 byte offsets)",
+     .method =
+         {.ui_flags = MM_HIDDEN, .args = shell_text_args, .nargs = 1, .result = V_LIST, .fn = shell_method_highlight}},
     {.kind = M_METHOD,
      .name = "run",
      .doc = "Run a free-form shell line; returns the new prompt or V_ERROR",

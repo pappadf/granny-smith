@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Esc undoes the browser's writes; Enter / Tab hand focus back.
   - Typing opens the browser at the token, marks and selects the match, and dims the rest.
   - In a method's arguments, a signature hint underlines the current argument, which is also marked in the method's usage.
+- **Syntax highlighting** — `shell.highlight(text)` classifies a line or block the way the parser reads it, resolving path segments against the live tree:
+  - Unknown segments are marked, as are enum values, bindings versus aliases, strings with `${…}` interpolation, and comments.
+  - The console colours its input and command entries with it, and the command browser colours usage signatures and examples.
+  - Round trip about 17 ms at p95 with the machine in turbo.
 
 ### Changed
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.

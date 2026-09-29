@@ -946,6 +946,17 @@ follows only while the view is at the bottom. While a job runs longer than
 Completion offsets are converted between UTF-16 and the core's UTF-8 bytes
 ([`lib/utf8.ts`](../../app/web2/src/lib/utf8.ts)).
 
+**Highlighting.** 30 ms after the input's text last changed, the console
+asks `shell.highlight(text)` and colours the input with the answer
+([`lib/highlight.ts`](../../app/web2/src/lib/highlight.ts)); an answer for
+an older text is dropped. A `command` entry keeps the colours its text had
+when it was submitted. The command browser colours the signature and
+example lines of a usage block the same way. Unresolved path segments get
+the `unknown` colour with a wavy underline. With the machine running in
+turbo, the round trip's 95th percentile over 200 requests is about 17 ms
+(one frame of the mailbox's polling), within the 30 ms budget, which
+`highlight.spec.ts` checks.
+
 **Running input.**
 - Submitted text is queued; the queue runs one script job at a time via
   `gsEvalLine` (`REQ_SCRIPT`, "Jobs" above), so type-ahead runs in order.

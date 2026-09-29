@@ -237,6 +237,22 @@ describe('ConsoleInput for the command browser', () => {
   });
 });
 
+describe('ConsoleInput highlighting', () => {
+  it('colours the input from spans, and drops spans for an older text', () => {
+    type('machine.flopy');
+    input.setHighlight('machine.flopy', [
+      { from: 0, to: 7, cls: 'object' },
+      { from: 8, to: 13, cls: 'unknown' },
+    ]);
+    const unknown = host.querySelector('.gs-hl-unknown');
+    expect(unknown?.textContent).toBe('flopy');
+    expect(host.querySelector('.gs-hl-object')?.textContent).toBe('machine');
+    // An answer for text the input no longer holds changes nothing.
+    input.setHighlight('something else', [{ from: 0, to: 4, cls: 'keyword' }]);
+    expect(host.querySelector('.gs-hl-keyword')).toBeNull();
+  });
+});
+
 describe('completion helpers', () => {
   it('commonPrefix is case-insensitive', () => {
     expect(commonPrefix(['Apple', 'apricot'])).toBe('Ap');

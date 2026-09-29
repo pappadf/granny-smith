@@ -7,10 +7,12 @@
 // normalisation.  What those keys *do* to the console is the caller's
 // (ConsoleView.svelte), through `ConsoleInputHandlers`.
 
-import { EditorState, Prec } from '@codemirror/state';
+import { EditorState, Prec, StateEffect, StateField, type Range } from '@codemirror/state';
 import {
+  Decoration,
   EditorView,
   keymap,
+  type DecorationSet,
   placeholder as cmPlaceholder,
   drawSelection,
   type Command,
@@ -28,6 +30,7 @@ import {
 import type { CompletionResult } from '@/bus/emulator';
 import { normalisePaste } from '@/lib/consoleModel';
 import { replaceTokenAt } from '@/lib/pathToken';
+import type { HlSpan } from '@/lib/highlight';
 import { copyText, type ConsoleHistory } from '@/lib/consoleHistory';
 
 export interface ConsoleInputHandlers {
@@ -64,6 +67,9 @@ export interface ConsoleInput {
   restore(s: { text: string; cursor: number }): void;
   // Focus with the cursor at the end.
   focusEnd(): void;
+  // Colour the input with `spans` (shell.highlight) if it still holds
+  // `text`; an answer for an older text is dropped.
+  setHighlight(text: string, spans: readonly HlSpan[]): void;
   focus(): void;
   destroy(): void;
 }
@@ -109,6 +115,29 @@ export function applyCandidate(
   if (lone && !after && !/[./=[]$/.test(text)) insert += ' ';
   return { doc: before + insert + after, cursor: before.length + insert.length };
 }
+
+// --- Highlighting ------------------------------------------------------------
+
+// The input's syntax colours: set whole by setHighlight, mapped through
+// edits until the next answer replaces them.
+const setSpans = StateEffect.define<readonly HlSpan[]>();
+const highlightField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setSpans)) continue;
+      const len = tr.state.doc.length;
+      const marks: Range<Decoration>[] = [];
+      for (const sp of e.value)
+        if (sp.to <= len && sp.from < sp.to)
+          marks.push(Decoration.mark({ class: `gs-hl-${sp.cls}` }).range(sp.from, sp.to));
+      next = Decoration.set(marks, true);
+    }
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
 
 // --- Setup -----------------------------------------------------------------
 
@@ -298,6 +327,7 @@ export function createConsoleInput(
         }),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         paste,
+        highlightField,
         // Editing a recalled entry makes it the new draft.
         EditorView.updateListener.of((u) => {
           if (u.transactions.some((t) => t.isUserEvent('input') || t.isUserEvent('delete')))
@@ -326,6 +356,10 @@ export function createConsoleInput(
     focusEnd: () => {
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();
+    },
+    setHighlight: (text, spans) => {
+      if (view.state.doc.toString() !== text) return;
+      view.dispatch({ effects: setSpans.of(spans) });
     },
     focus: () => view.focus(),
     destroy: () => view.destroy(),
@@ -368,6 +402,22 @@ const inputTheme = EditorView.theme({
     fontStyle: 'normal',
     marginLeft: '1.5em',
     fontFamily: 'var(--gs-font-ui)',
+  },
+  // Syntax classes (shell.highlight) -- the palette, as in the output.
+  '.gs-hl-keyword': { color: 'var(--gs-syntax-keyword)' },
+  '.gs-hl-decl, .gs-hl-interp': { color: 'var(--gs-syntax-decl)' },
+  '.gs-hl-variable': { color: 'var(--gs-syntax-variable)' },
+  '.gs-hl-alias': { color: 'var(--gs-syntax-alias)' },
+  '.gs-hl-number': { color: 'var(--gs-syntax-number)' },
+  '.gs-hl-string': { color: 'var(--gs-syntax-string)' },
+  '.gs-hl-comment': { color: 'var(--gs-syntax-comment)' },
+  '.gs-hl-method': { color: 'var(--gs-syntax-method)' },
+  '.gs-hl-attribute': { color: 'var(--gs-syntax-attribute)' },
+  '.gs-hl-enum': { color: 'var(--gs-syntax-enum)' },
+  '.gs-hl-unknown': {
+    color: 'var(--gs-syntax-unknown)',
+    textDecoration: 'underline wavy var(--gs-syntax-unknown)',
+    textUnderlineOffset: '3px',
   },
   '.gs-cand-method .cm-completionLabel': { color: 'var(--gs-syntax-method)' },
   '.gs-cand-attribute .cm-completionLabel': { color: 'var(--gs-syntax-attribute)' },

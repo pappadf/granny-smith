@@ -13,6 +13,7 @@
 #include "shell_funcs.h"
 
 #include "expr.h"
+#include "highlight.h"
 #include "script.h"
 #include "shell_var.h"
 #include "value.h"
@@ -319,7 +320,18 @@ static value_t func_expr_hook(void *ud, const char *name, int argc, const value_
 
 // === Install / uninstall ====================================================
 
+// For shell.highlight: a def'd function's name heads a call, not an
+// unknown path.
+static bool function_exists(const char *name) {
+    script_func_t *f = shell_func_find(name);
+    if (!f)
+        return false;
+    shell_func_release(f);
+    return true;
+}
+
 void shell_funcs_install(struct object *shell_obj) {
+    highlight_set_function_probe(function_exists);
     if (!shell_obj || g_functions_obj)
         return;
     g_functions_obj = object_new(&functions_class, NULL, "functions");

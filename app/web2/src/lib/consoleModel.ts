@@ -27,6 +27,8 @@
 // New entries are buffered and handed to `onFlush` once per frame; at most
 // `cap` entries are kept (the oldest dropped).
 
+import type { HlSpan } from '@/lib/highlight';
+
 export type EntryKind = 'command' | 'text' | 'stderr' | 'value' | 'error' | 'echo';
 
 export interface ConsoleEntry {
@@ -40,6 +42,9 @@ export interface ConsoleEntry {
   readonly json?: unknown;
   // `command`: the prompt the command was typed at.
   readonly prompt?: string;
+  // `command`: its syntax colours when it was submitted (shell.highlight,
+  // UTF-16 offsets into `text`).
+  readonly spans?: readonly HlSpan[];
 }
 
 export type ConsoleRecord =
@@ -101,8 +106,8 @@ export class ConsoleModel {
     return this.entries;
   }
 
-  command(text: string, prompt = ''): void {
-    this.add('command', text, null, undefined, prompt);
+  command(text: string, prompt = '', spans?: readonly HlSpan[]): void {
+    this.add('command', text, null, undefined, prompt, spans);
   }
 
   echo(text: string): void {
@@ -276,10 +281,18 @@ export class ConsoleModel {
     }
   }
 
-  private add(kind: EntryKind, text: string, job: number | null, json?: unknown, prompt?: string) {
+  private add(
+    kind: EntryKind,
+    text: string,
+    job: number | null,
+    json?: unknown,
+    prompt?: string,
+    spans?: readonly HlSpan[],
+  ) {
     const e: ConsoleEntry = { id: this.nextId++, kind, text, job };
     if (json !== undefined) (e as { json?: unknown }).json = json;
     if (prompt !== undefined) (e as { prompt?: string }).prompt = prompt;
+    if (spans?.length) (e as { spans?: readonly HlSpan[] }).spans = spans;
     this.pending.push(e);
     if (!this.scheduled) {
       this.scheduled = true;

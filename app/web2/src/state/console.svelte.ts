@@ -9,6 +9,7 @@
 // command's output follows it.
 
 import { ConsoleModel, type ConsoleEntry } from '@/lib/consoleModel';
+import type { HlSpan } from '@/lib/highlight';
 import { setConsoleSink } from '@/bus/logSink';
 import {
   gsEvalLine,
@@ -89,7 +90,7 @@ export function consoleNotice(text: string): void {
   consoleModel().push({ kind: 'print', line: text });
 }
 
-const queue: string[] = [];
+const queue: Array<{ text: string; spans?: readonly HlSpan[] }> = [];
 let pumping = false;
 
 // Called after every console job (SYSTEM re-reads what it shows).
@@ -101,9 +102,10 @@ export function onConsoleJobDone(cb: () => void): () => void {
   };
 }
 
-export function consoleSubmit(text: string): void {
+// `spans`: the input's syntax colours for `text`, kept on its command entry.
+export function consoleSubmit(text: string, spans?: readonly HlSpan[]): void {
   if (!text.trim()) return;
-  queue.push(text);
+  queue.push({ text, spans });
   consoleState.queued = queue.length;
   void pump();
 }
@@ -114,10 +116,10 @@ async function pump(): Promise<void> {
   try {
     while (queue.length) {
       if (!isModuleReady()) await whenModuleReady();
-      const text = queue.shift()!;
+      const { text, spans } = queue.shift()!;
       consoleState.queued = queue.length;
       const m = consoleModel();
-      m.command(text, consoleState.prompt);
+      m.command(text, consoleState.prompt, spans);
       // `clear` is the console's own: no round trip.
       if (text.trim() === 'clear') {
         m.clear();

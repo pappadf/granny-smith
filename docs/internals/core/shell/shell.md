@@ -37,6 +37,7 @@ plus `shell.complete`, `shell.expand`, the alias leaves and
 | [shell_var.c](../../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
 | [cmd_complete.c](../../../../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
+| [highlight.c](../../../../src/core/shell/highlight.c) | `shell.highlight`: syntax classes of a line or block, paths resolved against the live tree |
 | [cmd_cp.c](../../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `files.cp` / `files.import` |
 | `src/core/object/expr.c` | Expression grammar and evaluator; string interpolation; `try`/`error`/`range`/`len` |
 
@@ -290,6 +291,33 @@ cursor is: `{method, arg_index, arg_name}`, where `arg_index` is the
 *declared* slot (a `name=` word names its own slot; earlier `name=` words do
 not count as positionals), all `none` outside an argument position.
 `cursor` and the returned span are UTF-8 byte offsets.
+
+## Highlighting
+
+`shell.highlight(text)` returns the syntax classes of a line or block as a
+list of `{start, end, class}` spans. Offsets are UTF-8 bytes; spans are
+half-open, ordered and non-overlapping. The text is read the way the
+parser reads it: keyword forms, assignments, call forms, and commands whose
+arguments are in argument mode. Path segments resolve against the live tree
+as they are read.
+
+| Class | For |
+|---|---|
+| `keyword` | reserved words (`if`, `for`, `in`, `return`, `true`, …) |
+| `decl` | `let`, `alias`, `def` |
+| `variable` / `alias` | `$name`, by whether an alias of that name exists |
+| `number`, `string` | literals (`0x…`, `0b…`, decimal, floats; `"…"`, `'…'`) |
+| `interp` | `${`, a `:FMT` suffix and `}` inside a double-quoted string |
+| `operator`, `comment` | operators and brackets; `#` to the end of the line |
+| `object`, `attribute`, `method` | a resolved path segment, by what it names |
+| `enum` | an argument word matching its declared values, or the value of an enum attribute's assignment |
+| `unknown` | the first path segment that does not resolve, and every segment after it |
+
+A bare word in argument mode is a string and gets no class. A word before
+`(` that does not resolve is a function call (`method`); so is the name of
+a `def` function at the head of a statement. Partial input still gets spans
+for what lexes (an unterminated string runs to the end); the call never
+fails.
 
 ## Help and usage
 

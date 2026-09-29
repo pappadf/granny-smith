@@ -15,16 +15,22 @@ vi.mock('@/bus/emulator', () => ({
   getRuntimePrompt: () => 'gs>',
   tabComplete: async () => completion,
   gsEval: async (path: string, args: unknown[] = []) =>
-    path === 'shell.usage' && args[0] === 'machine.floppy.drive[0].insert'
-      ? {
-          signature: 'machine.floppy.drive[0].insert <path> [writable]',
-          arg_spans: [
-            [31, 37],
-            [38, 48],
-          ],
-          text: 'machine.floppy.drive[0].insert <path> [writable]',
-        }
-      : null,
+    path === 'shell.highlight' && args[0] === 'util.echo 42'
+      ? [
+          { start: 0, end: 4, class: 'object' },
+          { start: 5, end: 9, class: 'method' },
+          { start: 10, end: 12, class: 'number' },
+        ]
+      : path === 'shell.usage' && args[0] === 'machine.floppy.drive[0].insert'
+        ? {
+            signature: 'machine.floppy.drive[0].insert <path> [writable]',
+            arg_spans: [
+              [31, 37],
+              [38, 48],
+            ],
+            text: 'machine.floppy.drive[0].insert <path> [writable]',
+          }
+        : null,
   needsContinuation: async () => false,
   whenModuleReady: async () => {},
   isModuleReady: () => true,
@@ -281,6 +287,31 @@ describe('ConsoleView signature hint', () => {
     };
     writeToConsole('x');
     await waitFor(() => expect(container.querySelector('.sig-hint')).toBeNull());
+  });
+});
+
+describe('ConsoleView highlighting', () => {
+  it('colours the input and keeps the colours on the command entry', async () => {
+    const { container } = render(ConsoleView);
+    const cm = await waitFor(() => {
+      const el = container.querySelector('.cm-content');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    await waitFor(() => expect(writeToConsole('')).toBe(true));
+    writeToConsole('util.echo 42');
+    await waitFor(() =>
+      expect(container.querySelector('.console-input .gs-hl-method')?.textContent).toBe('echo'),
+    );
+    await fireEvent.keyDown(cm, { key: 'Enter' });
+    const entry = await waitFor(() => {
+      const e = container.querySelector('.entry.command');
+      expect(e).toBeTruthy();
+      return e as HTMLElement;
+    });
+    expect(entry.querySelector('.hl-method')?.textContent).toBe('echo');
+    expect(entry.querySelector('.hl-number')?.textContent).toBe('42');
+    expect(entry.textContent).toBe('util.echo 42');
   });
 });
 

@@ -113,6 +113,20 @@ let q = shell.complete("debug.breakpoints.add 0x10 space=physical 1", 43, true)
 assert $q.context.arg_index == 1 "name= words do not count as positionals"
 assert shell.complete("fi", 2).candidates == "[files.]" "without detail the result is unchanged"
 
+# === shell.highlight on the live tree ======================================
+# `flopy` does not resolve: it and everything after it are unknown.
+let h = shell.highlight("machine.flopy.drive")
+assert len($h) == 3 "three segment spans"
+assert $h[0].class == "object" "machine resolves"
+assert $h[1].class == "unknown" "flopy is unknown"
+assert $h[1].start == 8 "flopy starts at byte 8"
+assert $h[2].class == "unknown" "drive after it is unknown too"
+let h2 = shell.highlight("machine.floppy.drive[0].insert /tmp/x.img writable=true")
+assert $h2[6].class == "method" "insert resolves to a method"
+assert $h2[7].class == "attribute" "a name= argument"
+let h3 = shell.highlight("scheduler.mode = turbo")
+assert $h3[len($h3) - 1].class == "enum" "an enum attribute's value"
+
 # === shell.usage: signature spans, and the golden texts =====================
 let u = shell.usage("debug.breakpoints.add")
 assert $u.signature == "debug.breakpoints.add <addr> [condition] [space: logical | physical]" "signature"
