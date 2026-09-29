@@ -15,7 +15,7 @@ runs on a dedicated worker thread; the browser main thread handles DOM,
 input, and compositing.
 
 **Threading model**
-- **Main (browser) thread:** DOM events, xterm.js terminal, UI chrome,
+- **Main (browser) thread:** DOM events, the Terminal console, UI chrome,
   OPFS reads via the browser API, file uploads staged to `/opfs/upload/`.
 - **Emulator worker thread:** CPU emulation, OPFS file I/O via WasmFS
   (delta/journal/checkpoint), shell command execution, all object-model
@@ -108,7 +108,7 @@ transports, installed at module construction:
   ratio (the Lisa's 720×364 raster is 2:3), so the renderer can show
   non-square pixels.
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
-  pipes. `logSink` writes these to the xterm pane.
+  pipes. `logSink` routes these to the Terminal console.
 - **`Module.onAbort(what)`** — the glue's `abort()`: the worker trapped.
   The bridge is marked dead and every request fails at once.
 - **`Module.onVideoInReady(ptr)`** / **`Module.onAudioInReady(ptr)`** —
@@ -826,37 +826,90 @@ The same sequence as Module Bootstrapping above, end to end:
    reconciliation, `scheduler.run`. The Welcome layer fades out; the
    canvas takes over.
 
-## Terminal Integration (xterm.js)
+## Terminal console
 
-[`TerminalPane.svelte`](../../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
-dynamically imports `@xterm/xterm` and `@xterm/addon-fit` on first
-mount so they're code-split out of the main bundle, and it stays mounted
-(hidden) once opened, so scrollback survives a tab switch. The terminal's
-input state machine (`{buffer, cursor, history}`) lives in the component.
-All input arrives through xterm's `onData` — keys, pastes, IME text —
-and [`lineDiscipline.ts`](../../app/web2/src/components/panel-views/terminal/lineDiscipline.ts)
-turns it into editing actions, which apply one at a time while the input
-line is live: whatever is typed while a command runs waits for the next
-prompt, and a multi-line paste runs line by line. On Enter the pane calls
-`gsEvalLine(line)`, which posts the line as a **script job** (`REQ_SCRIPT`,
-"Jobs" above) as the terminal's own client; the job's result is the
-shell's new prompt, cached for the next `showPrompt()`. What the line
-prints arrives as output records (`log:output` events) in order before
-that result and is written to the pane as it comes; text printed outside
-any request (boot messages, a breakpoint hit) still arrives through
-`Module.print`. Both land via [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts),
-which holds what is printed before the terminal first opens and replays it
-then.
+The Terminal tab's left pane is a console: DOM-rendered output entries and
+a CodeMirror 6 input, in
+[`ConsoleView.svelte`](../../app/web2/src/components/panel-views/terminal/ConsoleView.svelte)
+and [`ConsoleInput.ts`](../../app/web2/src/components/panel-views/terminal/ConsoleInput.ts).
+CodeMirror is code-split (dynamically imported when the console first
+mounts). The entry list lives in
+[`state/console.svelte.ts`](../../app/web2/src/state/console.svelte.ts), so
+scrollback survives the pane being remounted.
 
-Tab completion uses the typed `shell.complete(line, cursor)` method.
-Ctrl-C cancels the terminal's foreground job, else stops a run the
-terminal started, else prints a hint ("Ctrl-C, exactly" above), and drops
-the type-ahead; Cmd-C on macOS is the browser's copy.
+**Output.** [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts) turns what
+the core sends into console records: `Module.print` / `Module.printErr`
+lines, a job's output pieces (`log:output`), its annotation records
+(`log:value_begin`, `log:value`, `log:error`), and the start and end of
+the console's own job. It holds what arrives before the console first
+opens and replays it then.
+[`lib/consoleModel.ts`](../../app/web2/src/lib/consoleModel.ts) makes
+entries from those records:
 
-xterm's theme is fed from the design tokens `--gs-terminal-bg` /
-`--gs-terminal-fg` / `--gs-terminal-cursor`; an `$effect` watching
-`theme.mode` pushes the resolved palette into `xterm.options.theme`
-on toggle so light/dark switches re-skin live.
+| Entry | From |
+|---|---|
+| `command` | the submitted input (shown after a `›` glyph) |
+| `text` | a job's printed lines, or a `Module.print` line outside a job |
+| `stderr` | a `printErr` line no `error` annotation claimed |
+| `value` | the text between `value_begin` and `value`; with the value's tagged JSON, an object renders as a link to its node in the command browser and a list or map expands |
+| `error` | an `error` annotation with the stderr lines it claimed |
+| `echo` | a statement another surface ran for the user (dimmed) |
+
+While the console's job runs, its stderr lines are held. An `error`
+annotation claims the earliest run of held lines equal to its `lines`. The
+job's later output waits behind an unresolved annotation, so nothing is
+re-rendered. At the job's end, or 2 s after a held line arrived, the rest
+settles: unclaimed lines become `stderr` entries.
+
+New entries are appended once per animation frame. At most 5 000 are kept.
+Off-screen entries skip layout (`content-visibility: auto`). Auto-scroll
+follows only while the view is at the bottom. While a job runs longer than
+1 s, a "running… N s" line shows below the output.
+
+**Input.**
+
+| Key | Action |
+|---|---|
+| Enter | submit, unless `shell.needs_continuation(text)` says the block continues (then a newline) |
+| Shift+Enter | newline |
+| ↑ / ↓ | history, on the first / last line |
+| Tab | completion: a lone candidate or a longer common prefix at once, else a popup of `shell.complete(line, cursor, true)` candidates coloured by kind, with their doc |
+| Ctrl+C | copy a selection (input or output); otherwise interrupt |
+| Ctrl+L | clear the output |
+| Mod+F | find in the output |
+
+Completion offsets are converted between UTF-16 and the core's UTF-8 bytes
+([`lib/utf8.ts`](../../app/web2/src/lib/utf8.ts)).
+
+**Running input.**
+- Submitted text is queued; the queue runs one script job at a time via
+  `gsEvalLine` (`REQ_SCRIPT`, "Jobs" above), so type-ahead runs in order.
+- A pasted block (CRLF → LF, trailing blanks and a leading `› ` / `> ` per
+  line removed) is reviewed in the input and runs as **one** job on Enter.
+- The job's result is the shell's new prompt, shown beside the input.
+- History is the last 500 submissions, in `localStorage`
+  (`gs.console.history`).
+
+**Interrupting.** Ctrl+C without a selection:
+- drops the queue;
+- cancels the console's job, else stops a run the console started ("Ctrl-C,
+  exactly" above);
+- if there is neither, says there is nothing to interrupt.
+
+Cmd+C on macOS is the browser's copy.
+
+**Menus and find.**
+- The output's context menu offers **Copy**, **Copy as commands** (the
+  statements of the command entries in the selection), **Copy output**
+  (the clicked entry's job), **Copy value as JSON**, **Paste**, **Select
+  all** and **Clear**.
+- Mod+F opens a find bar (next / previous, match case).
+
+Colours come from the `--gs-syntax-*` palette in
+[`styles/tokens.css`](../../app/web2/src/styles/tokens.css) (VS Code
+Dark+ / Light+), shared with the command browser, and from
+`--gs-terminal-*`. They are CSS variables, so a theme switch restyles
+everything already shown.
 
 ## Audio
 
@@ -943,5 +996,5 @@ headers intact through Codespaces' port-forwarding proxy.
   [`lib/mediaUrl.ts`](../../app/web2/src/lib/mediaUrl.ts).
 - The diagnostic harness at
   [`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs) drives Chromium
-  via Playwright, captures console / pageerror / xterm contents, and
+  via Playwright, captures console / pageerror / Terminal console contents, and
   prints a JSON report. Run with `make ui2-diag`.

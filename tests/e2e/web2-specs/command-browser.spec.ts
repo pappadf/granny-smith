@@ -31,5 +31,5 @@ test('the command browser walks the model and shows usage', async ({ page }) => 
   await expect(ls).toBeVisible({ timeout: 10_000 });
   await ls.locator('.cmd-line').click();
   await expect(ls.locator('.usage')).toContainText('files.ls [path]', { timeout: 10_000 });
-  await expect(page.locator('.xterm-rows')).toContainText('files.ls', { timeout: 10_000 });
+  await expect(page.locator('.console .cm-content')).toContainText('files.ls', { timeout: 10_000 });
 });

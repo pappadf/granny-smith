@@ -28,7 +28,7 @@ async function typeLine(
   page: import("@playwright/test").Page,
   line: string,
 ): Promise<void> {
-  await page.locator(".xterm").click();
+  await page.locator(".console").click();
   await page.keyboard.type(line);
   await page.keyboard.press("Enter");
 }
@@ -50,7 +50,7 @@ for (const ramKb of [32768, 131072]) {
     );
     await stageOpfsFile(page, "/opfs/images/rom/97221136", ROM);
     await page.locator('button.ptab[data-tab="terminal"]').click();
-    await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
     await typeLine(
       page,
       `machine.boot model="iicx" ram=${ramKb} rom="/opfs/images/rom/97221136"`,

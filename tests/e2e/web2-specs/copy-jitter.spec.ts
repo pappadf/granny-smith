@@ -20,7 +20,7 @@ async function typeLine(
   page: import("@playwright/test").Page,
   line: string,
 ): Promise<void> {
-  await page.locator(".xterm").click();
+  await page.locator(".console").click();
   await page.keyboard.type(line);
   await page.keyboard.press("Enter");
 }
@@ -38,7 +38,7 @@ test("request round trips while a 192 MB copy runs", async ({ page }) => {
   test.skip(!probeExposed, "needs a VITE_GS_MEASURE=1 build (window.__gsEval)");
   await stageOpfsFile(page, "/opfs/images/rom/97221136", ROM);
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await typeLine(
     page,
     'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"',
@@ -50,7 +50,7 @@ test("request round trips while a 192 MB copy runs", async ({ page }) => {
   // The source: a sparse blank image is fast to make; the copy reads and
   // writes every byte.
   await typeLine(page, 'files.hd_create("/opfs/images/hd/src.img", "192mb")');
-  await expect(page.locator(".xterm-rows")).toContainText(
+  await expect(page.locator(".console-output")).toContainText(
     "hd create: created",
     {
       timeout: 60_000,
@@ -91,7 +91,7 @@ test("request round trips while a 192 MB copy runs", async ({ page }) => {
     'files.cp("/opfs/images/hd/src.img", "/opfs/images/hd/dst.img")',
   );
   const during = await probe(20_000);
-  await expect(page.locator(".xterm-rows")).toContainText("copied 1 file(s)", {
+  await expect(page.locator(".console-output")).toContainText("copied 1 file(s)", {
     timeout: 240_000,
   });
   const copyMs = Date.now() - t0;

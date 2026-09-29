@@ -71,7 +71,7 @@ async function readInstr(page: Page): Promise<number | null> {
   const key = `di${++probeSeq}`;
   await terminalRun(page, `echo "${key}=\${machine.cpu.instr_count}"`);
   await page.waitForTimeout(400);
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   const m = text.match(new RegExp(`${key}=(\\d+)`));
   return m ? Number(m[1]) : null;
 }
@@ -113,7 +113,7 @@ async function captureCheckpoint(page: Page): Promise<{ bytes: Uint8Array; saved
   await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await terminalRun(page, 'scheduler.stop');
   await page.waitForTimeout(500);
   const savedInstr = await readInstr(page);

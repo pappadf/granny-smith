@@ -50,7 +50,7 @@ async function probeCounters(
       `echo "${key}=\${scheduler.cycles},\${machine.cpu.instr_count}"`,
     );
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
     if (m) return { cycles: Number(m[1]), instr: Number(m[2]) };
   }
@@ -66,7 +66,7 @@ async function probeString(page: Page, expr: string): Promise<string> {
     const key = `str${++probeSeq}`;
     await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
     if (m) return m[1];
   }
@@ -123,7 +123,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
 
   // Terminal up (the typed path to the object model).
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // --- Real-Time baseline ---------------------------------------------------
   // Default mode is live/paced; the cycle rate must sit at the SE/30's clock

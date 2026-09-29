@@ -50,7 +50,7 @@ export default [
     // keep all `no-restricted-syntax` selectors in this single block
     // and route them to the right files via the source-pattern.
     //
-    //   - `shell.run`: only TerminalPane.svelte may construct
+    //   - `shell.run`: only the console (state/console.svelte.ts) may construct
     //     shell-line strings; bus/* uses typed object-model paths.
     //     gsEvalLine in bus/emulator.ts is the one legitimate exception
     //     and carries a local eslint-disable-next-line.
@@ -80,7 +80,7 @@ export default [
         {
           selector: "CallExpression[callee.name='gsEval'][arguments.0.value='shell.run']",
           message:
-            "bus/* must not call gsEval('shell.run', ...). Use a typed object-model path instead. Only TerminalPane.svelte may construct shell-line strings.",
+            "bus/* must not call gsEval('shell.run', ...). Use a typed object-model path instead. Only the console (state/console.svelte.ts) may construct shell-line strings.",
         },
         {
           // The shell-line escape hatch is the terminal's; the bus speaks

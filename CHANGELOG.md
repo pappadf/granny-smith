@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
 - **Self-describing object model** — every node and member carries a doc, a domain, a task and a type descriptor in `meta.members`; `help` / `shell.usage` render usage text from it, `shell.complete` reports per-candidate kinds and docs, and value/error annotation records ride the job stream.
 - **Structural command browser** — the Terminal's browser now walks the live model (domain dividers, collections with their entries, aliases, language keywords), filters by task chips from `shell.tasks`, and shows the core's usage text for the selected member.
+- **Terminal console replaces xterm.js** — DOM-rendered output entries (commands, text, values, errors) and a CodeMirror 6 input:
+  - a printed value is one entry (objects link to the command browser; lists and maps expand);
+  - a failing statement is one error entry;
+  - multi-line input, with Enter continuing an open block;
+  - a completion popup with each candidate's kind and doc;
+  - a pasted block runs as one job;
+  - Ctrl+C copies a selection, else interrupts;
+  - an output context menu (Copy as commands, Copy output, Copy value as JSON) and find (Ctrl/Cmd+F).
+  - History moves to `localStorage` (`gs.console.history`).
 
 ### Changed
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.

@@ -27,13 +27,13 @@ test('a download arrives in staged chunks and lands as one file', async ({ page 
   await stageOpfsFile(page, '/opfs/images/rom/97221136', ROM);
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
   await page.waitForTimeout(2_000);
 
   // A 9 MB blank image (an I/O job itself), then its download.
   await terminalRun(page, 'files.hd_create("/tmp/dl.img", "9m")');
-  await expect(page.locator('.xterm-rows')).toContainText('hd create: created', {
+  await expect(page.locator('.console-output')).toContainText('hd create: created', {
     timeout: 60_000,
   });
   const download = page.waitForEvent('download', { timeout: 60_000 });
@@ -46,7 +46,7 @@ test('a download arrives in staged chunks and lands as one file', async ({ page 
   const size = fs.statSync(saved!).size;
   expect(size).toBeGreaterThan(8 * 1024 * 1024);
   // The terminal saw the leaf's own confirmation, via the job's output.
-  await expect(page.locator('.xterm-rows')).toContainText("download: requested 'dl.img'", {
+  await expect(page.locator('.console-output')).toContainText("download: requested 'dl.img'", {
     timeout: 30_000,
   });
   // Three chunks announced, the last one flagged, and every one acknowledged

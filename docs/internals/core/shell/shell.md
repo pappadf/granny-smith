@@ -12,7 +12,7 @@ the line-input and scripting surface that walks it.
 
 Two callers reach the emulator through the shell layer:
 
-- The **xterm.js terminal** in the browser, where users type commands
+- The **Terminal console** in the browser, where users type commands
   interactively.
 - The **headless CLI** (`gs-headless`), which reads a script file
   (`script=...`), stdin, or its TCP daemon socket.

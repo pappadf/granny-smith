@@ -22,7 +22,7 @@
   } from '@/lib/commandsTree';
   import { onCoreEvent, whenModuleReady } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
-  import { insertIntoTerminal } from './terminalBridge';
+  import { insertIntoTerminal, pathPrefixes, registerBrowserReveal } from './terminalBridge';
   import Icon from '@/components/common/Icon.svelte';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
   import { machine } from '@/state/machine.svelte';
@@ -204,6 +204,25 @@
     void select(rows[next].row, false);
   }
 
+  // Select the node at `path` (a console object link), opening the levels
+  // above it.  Stops at the deepest level that is shown.
+  async function reveal(path: string): Promise<void> {
+    let found: BrowserRow | undefined;
+    for (const prefix of pathPrefixes(path)) {
+      const row = flat.find((f) => f.row.path === prefix)?.row;
+      if (!row) break;
+      found = row;
+      if (row.expandable && !expanded[row.key] && prefix !== path) await toggle(row);
+    }
+    if (!found) return;
+    await select(found, false);
+    listEl?.querySelector('.cmd-row.selected')?.scrollIntoView({ block: 'nearest' });
+  }
+  registerBrowserReveal((path) => void reveal(path));
+  onDestroy(() => registerBrowserReveal(null));
+
+  let listEl = $state<HTMLUListElement | null>(null);
+
   function tooltip(row: BrowserRow): string {
     return row.path ? `${row.doc}${row.doc ? '\n' : ''}${row.path}` : row.doc;
   }
@@ -230,7 +249,7 @@
     >
   </div>
 
-  <ul class="cmd-tree" role="tree" tabindex="0" onkeydown={onKey}>
+  <ul class="cmd-tree" role="tree" tabindex="0" onkeydown={onKey} bind:this={listEl}>
     {#each flat as { row, depth } (row.key)}
       {#if row.kind === 'divider'}
         <li class="divider" role="presentation">{row.name}</li>

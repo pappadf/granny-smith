@@ -32,7 +32,7 @@ async function terminalEval(page: Page, expr: string): Promise<string | null> {
     await terminalRun(page, `echo "${key}=\${${expr}}"`);
     for (let i = 0; i < 12; i++) {
       await page.waitForTimeout(400);
-      const text = await page.locator('.xterm-rows').innerText();
+      const text = await page.locator('.console-output').innerText();
       const values = [...text.matchAll(new RegExp(`${key}=(\\S+)`, 'g'))]
         .map((m) => m[1])
         .filter((v) => !v.startsWith('$'));
@@ -60,7 +60,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
 
   // Boot from the Terminal panel and attach a scratch HD.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
   await page.waitForTimeout(3_000); // let the boot's terminal output settle
   expect(await terminalEval(page, 'machine.id')).toBe('iicx');
@@ -84,7 +84,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
 
   // The HD survived the power-cycle as the SAME open instance.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   expect(await terminalEval(page, 'machine.created')).toBe('true');
   expect(await terminalEval(page, 'machine.scsi.device[0].image.present')).toBe('true');
   expect(await terminalEval(page, 'machine.scsi.device[0].image.filename')).toBe(file0);

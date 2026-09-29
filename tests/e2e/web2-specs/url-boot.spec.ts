@@ -101,12 +101,12 @@ test('a URL boot shows download progress and no start-up dialogs', async ({ page
 // for its output to match.
 async function terminalExpect(page: Page, line: string, pattern: RegExp): Promise<void> {
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  const term = page.locator('.xterm');
+  const term = page.locator('.console');
   await expect(term).toBeVisible({ timeout: 15_000 });
   await term.click();
   await page.keyboard.type(line);
   await page.keyboard.press('Enter');
-  await expect(page.locator('.xterm-rows')).toContainText(pattern, { timeout: 15_000 });
+  await expect(page.locator('.console-output')).toContainText(pattern, { timeout: 15_000 });
 }
 
 // URL media is kept the way an upload is: the fetched floppy is stored in

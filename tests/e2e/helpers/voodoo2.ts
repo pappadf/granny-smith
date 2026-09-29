@@ -55,7 +55,7 @@ export async function probe(page: Page, expr: string): Promise<string> {
     const key = `v2g${++probeSeq}`;
     await terminalRun(page, `echo "${key}=[${"$"}{${expr}}]"`);
     await page.waitForTimeout(400);
-    const text = await page.locator(".xterm-rows").innerText();
+    const text = await page.locator(".console-output").innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
     if (m) return m[1];
   }
@@ -90,7 +90,7 @@ export async function bootWithCard(page: Page, cardId: string): Promise<void> {
     timeout: 60_000,
   });
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await terminalRun(
     page,
     `machine.boot model="pm7500" ram=32768 rom="${STORED_ROM}" pci_card="${cardId}"`,

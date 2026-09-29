@@ -91,7 +91,7 @@ test.use({
 // --- terminal plumbing (identical to av-sound-record.spec.ts) ---------------
 
 async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator(".xterm-rows").innerText();
+  const text = await page.locator(".console-output").innerText();
   const re = new RegExp(`${key}=([^=${"${}"}\\s]+)=${key}`);
   for (const line of text.split("\n")) {
     const m = line.trim().match(re);
@@ -135,7 +135,7 @@ async function click(page: Page, x: number, y: number): Promise<void> {
 // Open the selected Finder item with Command-O, NOT a double-click.
 //
 // suite-av double-clicks, and in emulated time its run_ticks(4)/(6) really
-// are 4 and 6 ticks. Here every shell command is typed into xterm one
+// are 4 and 6 ticks. Here every shell command is typed into the console one
 // keystroke at a time (typing a burst gets characters dropped — see
 // av-microphone.spec.ts), so a double-click spans ~900 ms of wall clock and
 // the Finder sees two separate selections. Widening DoubleTime does not
@@ -242,7 +242,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   });
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await expect.poll(async () => probe(page, "machine.id"), { timeout: 30_000 }).toBe("q840av");
 
   // --- 2. Boot to the Finder, accelerated; then back to real time. ---------

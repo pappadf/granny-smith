@@ -33,7 +33,8 @@ import { onDownloadChunk } from './download';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { getOrCreateMachine } from '@/lib/machineId';
-import { routePrintLine, routeLogEmit } from './logSink';
+import { routePrintLine, routeErrorLine, routeConsole, routeLogEmit } from './logSink';
+import { utf16ToUtf8, utf8ToUtf16 } from '@/lib/utf8';
 import { bridgeBusy } from '@/state/activity.svelte';
 import {
   Mailbox,
@@ -276,7 +277,7 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   const id = getOrCreateMachine();
   await gsEval('machine.register', [id.id, id.created]);
 
-  // Resolve the public ready signal — TerminalPane (and anyone else
+  // Resolve the public ready signal — the console (and anyone else
   // who needs the bridge live) is awaiting this.
   bootState = { phase: 'ready' };
   resolveReady?.();
@@ -467,7 +468,7 @@ export function isWorkerCrashLine(line: string): boolean {
 }
 function routeErrLine(line: string): void {
   if (isWorkerCrashLine(line)) markBridgeDead(line);
-  routePrintLine(line);
+  routeErrorLine(line);
 }
 
 // True for any failure shape — the core's V_ERROR or a transport failure.
@@ -494,7 +495,7 @@ export function gsErrorText(res: unknown): string {
 //
 // The Terminal view is the single caller of `shell.run` — every other
 // component reaches the core through typed object-model paths via
-// gsEval. An ESLint rule (eslint.config.js) pins this; only TerminalPane.svelte may construct shell-line
+// gsEval. An ESLint rule (eslint.config.js) pins this; only the console (state/console.svelte.ts) may construct shell-line
 // strings.
 
 let cachedPrompt: string | null = null;
@@ -504,7 +505,7 @@ let cachedPrompt: string | null = null;
 // cached for getRuntimePrompt(). This is the *only* call to `shell.run`
 // allowed in src/bus/** — the no-restricted-syntax rule pins that, and
 // the disable below is the single sanctioned exception (forwarded from
-// TerminalPane.svelte, the only legitimate caller).
+// state/console.svelte.ts, the only legitimate caller).
 // The terminal is its own client: a run it starts (`scheduler.run`) is
 // its mode, and its Ctrl-C stops that and nothing else.
 export const CLIENT_TERMINAL = 2;
@@ -525,10 +526,12 @@ export async function gsEvalLine(line: string): Promise<number> {
   try {
     const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
       foregroundJob = id;
+      routeConsole({ kind: 'job_start', job: id });
     });
     // The job's output records precede its result on the ring, so what it
-    // printed is in by now; a last line without a newline is shown too.
-    flushOutputText();
+    // printed is in by now: the console settles the job (a last line
+    // without a newline, held values and errors).
+    if (foregroundJob !== null) routeConsole({ kind: 'job_end', job: foregroundJob });
     if (r.ok) {
       const prompt: unknown = JSON.parse(r.json);
       if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
@@ -553,7 +556,7 @@ export function getRuntimePrompt(): string | null {
 }
 
 // Seed the cached prompt from the C-side `shell.prompt` attribute.
-// Called once by TerminalPane on mount so the first prompt is visible
+// Called by the console on mount so the first prompt is visible
 // before any user input. After this, gsEvalLine keeps cachedPrompt in
 // sync via the return value of `shell.run`.
 export async function seedPrompt(): Promise<void> {
@@ -576,27 +579,65 @@ export async function shellInterrupt(): Promise<'cancelled' | 'stopped' | 'nothi
   return (await mailbox.modeStop(CLIENT_TERMINAL, CLIENT_TERMINAL)) ? 'stopped' : 'nothing';
 }
 
-export interface CompletionResult {
-  candidates: string[];
-  span: { start: number; end: number };
+// One completion candidate, as `shell.complete(…, true)` reports it.
+export interface CompletionCandidate {
+  text: string;
+  kind: string; // object, collection, attr, method, alias, keyword, value, …
+  doc: string;
+  task: string | null;
 }
 
+export interface CompletionResult {
+  candidates: CompletionCandidate[];
+  // UTF-16 offsets into the line (the core's are UTF-8 bytes).
+  span: { start: number; end: number };
+  // Set when the cursor is in an argument of a resolved method.
+  context: { method: string | null; argIndex: number | null; argName: string | null };
+}
+
+// Tab completion with detail.  `cursor` is a UTF-16 offset.
 export async function tabComplete(line: string, cursor: number): Promise<CompletionResult | null> {
   if (!moduleReady) return null;
-  const r = await gsEval('shell.complete', [line, cursor]);
-  if (r && typeof r === 'object') {
-    const obj = r as { candidates?: unknown; span?: unknown };
-    if (Array.isArray(obj.candidates) && obj.span && typeof obj.span === 'object') {
-      const span = obj.span as { start?: unknown; end?: unknown };
-      if (typeof span.start === 'number' && typeof span.end === 'number') {
-        return {
-          candidates: obj.candidates.filter((s): s is string => typeof s === 'string'),
-          span: { start: span.start, end: span.end },
-        };
-      }
+  const r = await gsEval('shell.complete', [line, utf16ToUtf8(line, cursor), true]);
+  if (!r || typeof r !== 'object') return null;
+  const obj = r as { candidates?: unknown; span?: unknown; context?: unknown };
+  if (!Array.isArray(obj.candidates) || !obj.span || typeof obj.span !== 'object') return null;
+  const span = obj.span as { start?: unknown; end?: unknown };
+  if (typeof span.start !== 'number' || typeof span.end !== 'number') return null;
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  const candidates: CompletionCandidate[] = [];
+  for (const c of obj.candidates) {
+    if (typeof c === 'string') candidates.push({ text: c, kind: '', doc: '', task: null });
+    else if (c && typeof c === 'object' && typeof (c as { text?: unknown }).text === 'string') {
+      const o = c as Record<string, unknown>;
+      candidates.push({
+        text: o.text as string,
+        kind: str(o.kind) ?? '',
+        doc: str(o.doc) ?? '',
+        task: str(o.task),
+      });
     }
   }
-  return null;
+  const ctx = (obj.context && typeof obj.context === 'object' ? obj.context : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    candidates,
+    span: { start: utf8ToUtf16(line, span.start), end: utf8ToUtf16(line, span.end) },
+    context: {
+      method: str(ctx.method),
+      argIndex: typeof ctx.arg_index === 'number' ? ctx.arg_index : null,
+      argName: str(ctx.arg_name),
+    },
+  };
+}
+
+// Whether Enter should continue the input on a new line (an open block,
+// bracket or string) rather than submit it.
+export async function needsContinuation(text: string): Promise<boolean> {
+  if (!moduleReady) return false;
+  return (await gsEval('shell.needs_continuation', [text])) === true;
 }
 
 // One request through the mailbox: post, await the answer by id, decode.
@@ -614,7 +655,7 @@ async function executeMailboxRequest(
     const r = await mailbox.request(path, argsJson, deadline, { onProgress });
     // What the leaf printed goes to the terminal, as it did when stdout
     // reached it directly.
-    if (r.output) routeOutputText(r.output, true);
+    if (r.output) routeConsole({ kind: 'output', text: r.output, job: null });
     if (!r.json) return null;
     try {
       return JSON.parse(r.json);
@@ -695,6 +736,7 @@ const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
 // "Events from the core").
 function routeCoreEvent(ev: CoreEvent): void {
   const d = ev.data;
+  const job = jobOf(d);
   switch (`${ev.kind}:${ev.event}`) {
     case 'state:mode_started':
       handleRunStateChange(true);
@@ -725,45 +767,37 @@ function routeCoreEvent(ev: CoreEvent): void {
       if (typeof d.line === 'string') routeLogEmit(d.line);
       break;
     case 'log:output':
-      // A job's printed text, in order: the terminal shows it.
-      if (typeof d.text === 'string') routeOutputText(d.text, false);
+      // A job's printed text, in order: the console shows it.
+      if (typeof d.text === 'string') routeConsole({ kind: 'output', text: d.text, job });
       break;
     case 'notify:download_chunk':
       onDownloadChunk(d);
       break;
+    // Annotation records in a job's stream, at the positions they describe:
+    // the console turns the text around them into value / error entries.
     case 'log:value_begin':
+      if (job !== null) routeConsole({ kind: 'value_begin', job });
+      break;
     case 'log:value':
+      if (job !== null)
+        routeConsole({ kind: 'value', job, json: d.truncated ? undefined : d.json });
+      break;
     case 'log:error':
-      // Annotation records in a job's stream: the terminal already shows
-      // their text (output / stderr); the console that renders them as
-      // structured entries is still to come.
+      if (job !== null && Array.isArray(d.lines))
+        routeConsole({
+          kind: 'error',
+          job,
+          lines: (d.lines as unknown[]).map((l) => String(l)),
+        });
       break;
     default:
       break;
   }
 }
 
-// Output text arrives in pieces (a record per drain, a result's capture),
-// not in lines; the terminal takes lines.  Complete lines go out at once,
-// a trailing partial line waits for its end -- or is flushed when the
-// piece is known to be the last (`flush`), and when the terminal's line
-// finishes (flushOutputText).
-let outputTail = '';
-function routeOutputText(text: string, flush: boolean): void {
-  const all = outputTail + text;
-  const lines = all.split('\n');
-  outputTail = lines.pop() ?? '';
-  for (const line of lines) routePrintLine(line);
-  if (flush && outputTail) {
-    routePrintLine(outputTail);
-    outputTail = '';
-  }
-}
-export function flushOutputText(): void {
-  if (outputTail) {
-    routePrintLine(outputTail);
-    outputTail = '';
-  }
+// The job id of a job-stream record, when it carries one.
+function jobOf(d: Record<string, unknown>): number | null {
+  return typeof d.id === 'number' ? d.id : null;
 }
 
 // --- C→JS push callbacks -----------------------------------------------

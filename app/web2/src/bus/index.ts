@@ -17,10 +17,12 @@ export {
   seedPrompt,
   shellInterrupt,
   tabComplete,
+  needsContinuation,
   getModule,
   type CompletionResult,
+  type CompletionCandidate,
 } from './emulator';
-export { setTerminalSink, routePrintLine, routeLogEmit } from './logSink';
+export { setConsoleSink, routeConsole, routePrintLine, routeLogEmit } from './logSink';
 export {
   loadSystemRoots,
   loadSystemChildren,

@@ -51,7 +51,7 @@ async function probe(page: Page, expr: string): Promise<string> {
     const key = `v2p${++probeSeq}`;
     await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
     if (m) return m[1];
   }
@@ -96,7 +96,7 @@ test('the Voodoo2 rasterises on a second Web Worker, and the shadow is authorita
     timeout: 60_000,
   });
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // Re-boot with the card seated (the typed document, no option: the
   // build's DEFAULT backend is what this spec pins).  The aperture is

@@ -30,6 +30,24 @@ if (typeof HTMLCanvasElement !== 'undefined') {
   } as unknown as HTMLCanvasElement['getContext'];
 }
 
+// jsdom has no layout: CodeMirror (the console input) measures text through
+// Range rects.  Empty rects are enough for it not to throw.
+if (typeof Range !== 'undefined') {
+  Object.assign(Range.prototype, {
+    getClientRects: () => ({ length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] }),
+    getBoundingClientRect: () => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      bottom: 0,
+      right: 0,
+      width: 0,
+      height: 0,
+    }),
+  });
+}
+
 // Every test starts on a fresh MockOpfs (the production default throws until
 // main.ts installs BrowserOpfs).  Imported inside the hook, not at the top:
 // by then the test file's own imports -- and its vi.mock()s -- are in place,

@@ -144,7 +144,7 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
 
   // Both files survived the reload, content-addressed.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   expect(await terminalEval(page, `files.path_size("${STORED_PROM}")`)).toBe('32768');
 
   // An "(auto)" boot — a document with pci_card= but NO prom= pick. Strict
@@ -171,11 +171,11 @@ async function terminalEval(page: Page, expr: string): Promise<string | null> {
   await terminalRun(page, `echo "${key}=\${${expr}}"`);
   for (let i = 0; i < 25; i++) {
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     // Capture to end of line, not the first whitespace-delimited token: card
     // names have spaces in them ("ATI Mach64 GX"), and a \S+ probe silently
     // truncates to "ATI" — which reads as a wrong value rather than a wrong
-    // probe. Trim, since xterm pads rows out to the terminal width.
+    // probe. Trim stray whitespace.
     const values = [...text.matchAll(new RegExp(`${key}=(.+)`, 'g'))]
       .map((m) => m[1].trim())
       .filter((v) => v.length > 0 && !v.startsWith('$'));

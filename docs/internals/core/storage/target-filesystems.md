@@ -447,8 +447,8 @@ MacTest cx:ci
 
 ### From the browser
 
-The web frontend runs these through the **terminal pane**
-(`app/web2/src/components/panel-views/terminal/TerminalPane.svelte`) via
+The web frontend runs these through the **Terminal console**
+(`app/web2/src/state/console.svelte.ts`) via
 `gsEvalLine`, and programmatically via `gsEval` (`app/web2/src/bus/emulator.ts`).
 
 > **The Filesystem panel descends into disk images.** The Filesystem tree
