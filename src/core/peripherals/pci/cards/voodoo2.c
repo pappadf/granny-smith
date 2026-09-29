@@ -3137,8 +3137,11 @@ static value_t regs_method_gamma(struct object *self, const member_t *m, int arg
 }
 
 static const arg_decl_t regs_tex_save_args[] = {
-    {.name = "tmu",  .kind = V_INT,    .doc = "Which Bruce (0 or 1)"                     },
-    {.name = "path", .kind = V_STRING, .doc = "Host file to write the raw texture RAM to"},
+    {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host file to write the raw texture RAM to"},
 };
 static value_t regs_method_tex_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;

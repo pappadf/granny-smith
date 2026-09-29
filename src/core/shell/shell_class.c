@@ -20,10 +20,12 @@
 
 #include "cmd_complete.h"
 #include "expr.h"
+#include "lint.h"
 #include "object.h"
 #include "scheduler.h"
 #include "script.h"
 #include "shell.h"
+#include "usage.h"
 #include "event/gs_event.h"
 #include "job/job.h"
 
@@ -159,6 +161,7 @@ static value_t shell_method_complete(struct object *self, const member_t *m, int
         else if (argv[1].kind == V_UINT)
             cursor = (int)argv[1].u;
     }
+    bool detail = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
     struct completion comp;
     memset(&comp, 0, sizeof(comp));
     shell_complete(line, cursor, &comp);
@@ -167,8 +170,20 @@ static value_t shell_method_complete(struct object *self, const member_t *m, int
         items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
         if (!items)
             return val_err("shell.complete: out of memory");
-        for (int i = 0; i < comp.count; i++)
-            items[i] = val_str(comp.items[i] ? comp.items[i] : "");
+        for (int i = 0; i < comp.count; i++) {
+            const char *text = comp.items[i] ? comp.items[i] : "";
+            if (!detail) {
+                items[i] = val_str(text);
+                continue;
+            }
+            // Detail: {text, kind, doc, task} per candidate.
+            value_map_builder_t *c = val_map_new();
+            val_map_put(c, "text", val_str(text));
+            val_map_put(c, "kind", val_str(comp_kind_name((comp_kind_t)comp.kinds[i])));
+            val_map_put(c, "doc", val_str(comp.docs[i] ? comp.docs[i] : ""));
+            val_map_put(c, "task", comp.tasks[i] ? val_str(comp.tasks[i]) : val_none());
+            items[i] = val_map_finish(c);
+        }
     }
     value_map_builder_t *span = val_map_new();
     val_map_put(span, "start", val_int(comp.start));
@@ -176,6 +191,16 @@ static value_t shell_method_complete(struct object *self, const member_t *m, int
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "candidates", val_list(items, comp.count > 0 ? (size_t)comp.count : 0));
     val_map_put(b, "span", val_map_finish(span));
+    if (detail) {
+        // Where the cursor sits: the method and the declared argument slot
+        // it fills, all none outside an argument position.
+        value_map_builder_t *ctx = val_map_new();
+        val_map_put(ctx, "method", comp.has_context ? val_str(comp.ctx_method) : val_none());
+        val_map_put(ctx, "arg_index",
+                    comp.has_context && comp.ctx_arg_index >= 0 ? val_int(comp.ctx_arg_index) : val_none());
+        val_map_put(ctx, "arg_name", comp.ctx_arg_name ? val_str(comp.ctx_arg_name) : val_none());
+        val_map_put(b, "context", val_map_finish(ctx));
+    }
     return val_map_finish(b);
 }
 
@@ -249,18 +274,107 @@ static value_t shell_method_interrupt(struct object *self, const member_t *m, in
     return val_none();
 }
 
+// `shell.usage(path)` — {signature, arg_spans, text} (usage.c); `help`
+// prints the text.
+static value_t shell_method_usage(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    return object_usage(argv[0].s);
+}
+
+// `shell.needs_continuation(text)` — true while `text` is an incomplete
+// statement or block, so a console knows whether Enter submits or breaks
+// the line.
+static value_t shell_method_needs_continuation(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    return val_bool(script_needs_continuation(argv[0].s ? argv[0].s : ""));
+}
+
+// The task ids, in chip order, with their chip label and a line of doc:
+// the command browser's chips come from here, not from a TS list.
+static const struct {
+    const char *id, *label, *doc;
+} k_tasks[] = {
+    {"run",     "Run",     "Run, stop, pace, save and restore"           },
+    {"storage", "Storage", "Files, disk images, drives and mounts"       },
+    {"io",      "I/O",     "Keyboard, mouse, screen and sound"           },
+    {"debug",   "Debug",   "Stepping, breakpoints, memory and search"    },
+    {"log",     "Logs",    "Log categories and levels"                   },
+    {"network", "Network", "AppleTalk file server, printer, Apple events"},
+    {"shell",   "Shell",   "Aliases, functions, scripts"                 },
+};
+
+// `shell.lint_members()` — the doc-completeness lint (lint.c).
+static value_t shell_method_lint_members(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return object_lint_members();
+}
+
+// `shell.tasks` — [{id, label, doc}] in chip order.
+static value_t shell_get_tasks(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (size_t i = 0; i < sizeof(k_tasks) / sizeof(k_tasks[0]); i++) {
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "id", val_str(k_tasks[i].id));
+        val_map_put(b, "label", val_str(k_tasks[i].label));
+        val_map_put(b, "doc", val_str(k_tasks[i].doc));
+        val_list_push(&items, &len, &cap, val_map_finish(b));
+    }
+    return val_list(items, len);
+}
+
+// `shell.keywords` — [{word, syntax}] for every reserved word.
+static value_t shell_get_keywords(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (size_t i = 0; i < object_reserved_word_count(); i++) {
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "word", val_str(object_reserved_word(i)));
+        val_map_put(b, "syntax", val_str(object_reserved_word_syntax(i)));
+        val_list_push(&items, &len, &cap, val_map_finish(b));
+    }
+    return val_list(items, len);
+}
+
 // === Class descriptor =====================================================
+
+static const arg_decl_t shell_usage_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Path of a method, attribute or node"},
+};
+
+static const arg_decl_t shell_text_args[] = {
+    {.name = "text", .kind = V_STRING, .doc = "Statement or block text"},
+};
 
 static const arg_decl_t shell_run_args[] = {
     {.name = "line", .kind = V_STRING, .doc = "Free-form shell line"},
 };
+
+static const value_t shell_false = {.kind = V_BOOL, .b = false};
 
 static const arg_decl_t shell_complete_args[] = {
     {.name = "line", .kind = V_STRING, .doc = "Input line to complete"},
     {.name = "cursor",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Cursor position in line; defaults to end-of-line"},
+     .default_value = &obj_arg_unset,
+     .doc = "Cursor position in line (a byte offset); defaults to end-of-line"},
+    {.name = "detail",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &shell_false,
+     .doc = "Return {text, kind, doc, task} candidates and the argument context"},
 };
 
 static const arg_decl_t shell_expand_args[] = {
@@ -268,7 +382,7 @@ static const arg_decl_t shell_expand_args[] = {
 };
 
 static const arg_decl_t shell_script_run_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Script file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Script file path"},
 };
 
 static const arg_decl_t shell_eval_args[] = {
@@ -291,14 +405,45 @@ static const member_t shell_members[] = {
      .doc = "List of 'name=value' shell-variable entries",
      .flags = VAL_RO,
      .attr = {.type = V_LIST, .get = shell_get_vars, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "keywords",
+     .doc = "Every reserved word with its one-line syntax: [{word, syntax}]",
+     .flags = VAL_RO,
+     .attr = {.type = V_LIST, .get = shell_get_keywords, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "tasks",
+     .doc = "The command browser's task chips, in order: [{id, label, doc}]",
+     .flags = VAL_RO | M_CAT_INTERNAL,
+     .attr = {.type = V_LIST, .get = shell_get_tasks, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "lint_members",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Documentation gaps in the live tree: '<task>\\t<path>: <rule>' lines",
+     .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = shell_method_lint_members}},
+    {.kind = M_METHOD,
+     .name = "usage",
+     .doc = "Usage of a path as {signature, arg_spans, text}; help prints the text",
+     .method = {.args = shell_usage_args, .nargs = 1, .result = V_MAP, .fn = shell_method_usage}},
+    {.kind = M_METHOD,
+     .name = "needs_continuation",
+     .doc = "True while text is an incomplete statement or block",
+     .method = {.ui_flags = MM_HIDDEN,
+                .args = shell_text_args,
+                .nargs = 1,
+                .result = V_BOOL,
+                .fn = shell_method_needs_continuation}},
     {.kind = M_METHOD,
      .name = "run",
      .doc = "Run a free-form shell line; returns the new prompt or V_ERROR",
-     .method = {.args = shell_run_args, .nargs = 1, .result = V_STRING, .fn = shell_method_run}},
+     .method = {.ui_flags = MM_HIDDEN, .args = shell_run_args, .nargs = 1, .result = V_STRING, .fn = shell_method_run}},
     {.kind = M_METHOD,
      .name = "complete",
-     .doc = "Tab completion: {candidates, span:{start,end}} for a partial line",
-     .method = {.args = shell_complete_args, .nargs = 2, .result = V_MAP, .fn = shell_method_complete}},
+     .doc = "Tab completion: {candidates, span:{start,end}} for a partial line; with detail, candidates are "
+            "{text, kind, doc, task} and a context says which method argument the cursor is in", .method = {.ui_flags = MM_HIDDEN,
+                .args = shell_complete_args,
+                .nargs = 3,
+                .result = V_MAP,
+                .fn = shell_method_complete}},
     {.kind = M_METHOD,
      .name = "expand",
      .doc = "Expand ${...} / $(...) references in text",
@@ -314,7 +459,7 @@ static const member_t shell_members[] = {
     {.kind = M_METHOD,
      .name = "interrupt",
      .doc = "Stop the running scheduler (Ctrl-C path)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = shell_method_interrupt}},
+     .method = {.ui_flags = MM_HIDDEN, .args = NULL, .nargs = 0, .result = V_NONE, .fn = shell_method_interrupt}},
     // The legacy `shell.alias.{add,remove,list}` sub-namespace stays
     // attached at runtime via root_install (root.c) — the resolver
     // finds it through find_attached_child without a class-level
@@ -326,4 +471,6 @@ const class_desc_t shell_class = {
     .name = "Shell",
     .members = shell_members,
     .n_members = sizeof(shell_members) / sizeof(shell_members[0]),
+    .doc = "The shell: bindings, functions, aliases and scripts",
+    .task = "shell",
 };

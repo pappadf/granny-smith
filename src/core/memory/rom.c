@@ -593,7 +593,7 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
 }
 
 static const arg_decl_t rom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "ROM file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "ROM file path"},
 };
 
 static const arg_decl_t rom_lisa_pair_args[] = {
@@ -634,10 +634,12 @@ static const member_t rom_members[] = {
      .attr = {.type = V_STRING, .get = rom_attr_name, .set = NULL}},
     {.kind = M_METHOD,
      .name = "load",
+     .flags = M_CAT_ADVANCED,
      .doc = "Load ROM bytes into the active machine and reset the CPU",
      .method = {.args = rom_path_arg, .nargs = 1, .result = V_BOOL, .fn = rom_method_load}},
     {.kind = M_METHOD,
      .name = "load_lisa",
+     .flags = M_CAT_ADVANCED,
      .doc = "Interleave two Lisa/XL ROM chip files into the 16 KB boot ROM and load it",
      .method = {.args = rom_lisa_pair_args, .nargs = 2, .result = V_BOOL, .fn = rom_method_load_lisa}},
     {.kind = M_METHOD,

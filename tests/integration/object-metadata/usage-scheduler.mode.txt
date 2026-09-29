@@ -1,0 +1,5 @@
+scheduler.mode : enum
+ = turbo
+
+Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo
+(flat out)

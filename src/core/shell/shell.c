@@ -282,8 +282,24 @@ static void format_value_print(const value_t *v) {
 // printing).
 // Printing reads attributes (an object renders as its attribute table),
 // so it runs on the emulator thread: a job hands it over (job/job.h).
+//
+// Inside a job the printed text is bracketed by annotation records: a
+// `value_begin` before it and a `value` after it carrying the value as
+// tagged JSON, so a console can render the text between them as one
+// structured entry.  The text itself does not change.
 static void print_value_here(void *p) {
-    format_value_print((const value_t *)p);
+    const value_t *v = (const value_t *)p;
+    bool annotate = v && v->kind != V_NONE && v->kind != V_ERROR;
+    if (annotate)
+        annotate = job_annotate("value_begin", "", NULL);
+    format_value_print(v);
+    if (!annotate)
+        return;
+    vbuf_t j = {0};
+    vbuf_append(&j, "\"json\":", 7);
+    value_format(v, VFMT_JSON_TAGGED, &j);
+    job_annotate("value", j.p ? j.p : "\"json\":null", "\"truncated\":true");
+    vbuf_free(&j);
 }
 
 void shell_print_value(const value_t *v) {

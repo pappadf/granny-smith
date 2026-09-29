@@ -3509,6 +3509,8 @@ static const class_desc_t debug_class = {
     .name = "debug",
     .members = debug_members,
     .n_members = sizeof(debug_members) / sizeof(debug_members[0]),
+    .doc = "Debugger: stepping, breakpoints, logpoints, watchpoints and memory search",
+    .task = "debug",
 };
 
 // === debug.mac.globals — Mac low-memory globals access ======================
@@ -3953,7 +3955,7 @@ static struct object *screen_source_lookup(struct object *self, const char *name
 }
 
 static const arg_decl_t screen_save_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Output PNG path (must end in .png)"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Output PNG path (must end in .png)"},
 };
 static const arg_decl_t screen_match_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -4078,22 +4080,22 @@ static const member_t screen_members[] = {
      .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
     {.kind = M_ATTR,
      .name = "stride",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Row stride in bytes (rowBytes) of the active display",
      .attr = {.type = V_UINT, .get = screen_attr_stride, .set = NULL}},
     {.kind = M_ATTR,
      .name = "format",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Pixel encoding of the active display",
      .attr = {.type = V_STRING, .get = screen_attr_format, .set = NULL}},
     {.kind = M_ATTR,
      .name = "par_w",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio numerator (display pixel width; 1 = square)",
      .attr = {.type = V_INT, .get = screen_attr_par_w, .set = NULL}},
     {.kind = M_ATTR,
      .name = "par_h",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio denominator (display pixel height; 1 = square)",
      .attr = {.type = V_INT, .get = screen_attr_par_h, .set = NULL}},
     {.kind = M_METHOD,
@@ -4102,22 +4104,27 @@ static const member_t screen_members[] = {
      .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}},
     {.kind = M_METHOD,
      .name = "match",
+     .flags = M_CAT_ADVANCED,
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
             "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_match}},
     {.kind = M_METHOD,
      .name = "matches",
+     .flags = M_CAT_ADVANCED,
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
             "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_matches}},
     {.kind = M_METHOD,
      .name = "match_or_save",
+     .flags = M_CAT_ADVANCED,
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
      .method = {.args = screen_match_or_save_args, .nargs = 2, .result = V_BOOL, .fn = screen_method_match_or_save}},
     {.kind = M_METHOD,
      .name = "checksum",
+     .flags = M_CAT_ADVANCED,
      .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
      .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}},
     {.kind = M_CHILD,
      .name = "source",
+     .flags = M_CAT_ADVANCED,
      .doc = "Reference to the active card's framebuffer node driving this screen",
      .label = "Source",
      .child = {.cls = NULL, .reference = true, .lookup = screen_source_lookup}},
@@ -4127,6 +4134,8 @@ static const class_desc_t screen_class = {
     .name = "screen",
     .members = screen_members,
     .n_members = sizeof(screen_members) / sizeof(screen_members[0]),
+    .doc = "The machine's display",
+    .task = "io",
 };
 
 // === Process-singleton lifecycle ============================================

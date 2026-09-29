@@ -1935,12 +1935,12 @@ static const member_t memory_members[] = {
      .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}},
     {.kind = M_ATTR,
      .name = "slowpath_count",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "CPU memory accesses taken through the slow path since process start (diagnostic)",
      .attr = {.type = V_UINT, .get = attr_mem_slowpath_count, .set = NULL}},
     {.kind = M_ATTR,
      .name = "slowpath_hist",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Slow-path accesses bucketed by MB of (masked) address (diagnostic)",
      .attr = {.type = V_STRING, .get = attr_mem_slowpath_hist, .set = NULL}},
     {.kind = M_ATTR,
@@ -1966,6 +1966,8 @@ static const class_desc_t memory_class = {
     .name = "memory",
     .members = memory_members,
     .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
+    .doc = "Guest memory: map, peek and poke",
+    .task = "debug",
 };
 
 // === memory.peek child class ================================================

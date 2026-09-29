@@ -123,7 +123,7 @@ static const member_t metmeta_members[] = {
                 .fn = meta_method_stub,
                 .ui_flags = MM_MUTATE,
                 .verb_label = "Save image…",
-                .task_category = "storage"}},
+                .task = "storage"}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "destructive method",
@@ -132,7 +132,7 @@ static const member_t metmeta_members[] = {
                 .result = V_NONE,
                 .fn = meta_method_stub,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task_category = "storage"}},
+                .task = "storage"}},
 };
 static const class_desc_t metmeta_class = {
     .name = "metmeta",
@@ -294,7 +294,7 @@ TEST(test_member_metadata) {
     ASSERT_TRUE((exp->method.ui_flags & MM_MUTATE) != 0);
     ASSERT_TRUE((exp->method.ui_flags & MM_DESTRUCTIVE) == 0);
     ASSERT_TRUE(exp->method.verb_label && strcmp(exp->method.verb_label, "Save image…") == 0);
-    ASSERT_TRUE(exp->method.task_category && strcmp(exp->method.task_category, "storage") == 0);
+    ASSERT_TRUE(exp->method.task && strcmp(exp->method.task, "storage") == 0);
     ASSERT_TRUE((ej->method.ui_flags & MM_DESTRUCTIVE) != 0);
 }
 

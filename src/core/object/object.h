@@ -56,6 +56,10 @@ struct class_desc;
 // `none` while it is not, so its setter accepts `none` to clear it and its
 // getter may answer `none`.  Any other kind still has to match the slot.
 #define OBJ_ARG_NONE_OK 0x0080u
+// OBJ_ARG_POLY — a V_ANY / V_NONE argument that is intentionally
+// polymorphic (a size given as a string or a count, say).  The doc lint
+// (shell.lint_members) flags an untyped argument without it.
+#define OBJ_ARG_POLY 0x0100u
 
 // === Member visibility category ==============================================
 //
@@ -148,6 +152,9 @@ typedef struct member {
     // Ordering weight for a faithful, deterministic tree.
     // Lower sorts earlier; ties break on declaration order. Default 0.
     int16_t order;
+    // Optional example statements (NULL-terminated), shown by help /
+    // shell.usage as `e.g.  …`.
+    const char *const *examples;
     union {
         struct {
             value_kind_t type;
@@ -177,9 +184,14 @@ typedef struct member {
             // Short verb shown in menus ("Save image…") when distinct from
             // the method name ("export"). NULL = use the method name.
             const char *verb_label;
-            // By-task grouping for the command browser ("storage", "debugger",
-            // "mac", …); a different axis from the structural tree.
-            const char *task_category;
+            // By-task grouping for the command browser: one of the ids
+            // shell.tasks lists ("run", "storage", "io", "debug", "log",
+            // "network", "shell").  NULL inherits the node's task
+            // (member_effective_task); a different axis from the tree.
+            const char *task;
+            // Optional one-line description of the result, for a method
+            // whose result kind alone says little (V_ANY, V_MAP, V_LIST).
+            const char *result_doc;
         } method;
         struct {
             const struct class_desc *cls;
@@ -217,6 +229,8 @@ typedef struct class_desc {
     const member_t *members;
     size_t n_members;
     void *(*instance_data)(struct object *o); // optional, for casts
+    const char *doc; // one sentence describing a node of this class; NULL = none
+    const char *task; // task id inherited by the class's members (see member_effective_task); NULL = none
 } class_desc_t;
 
 // === Root object =============================================================
@@ -389,6 +403,38 @@ int object_order(struct object *o);
 void object_set_category(struct object *o, uint16_t category);
 uint16_t object_category(struct object *o);
 
+// One-sentence description of this node.  object_doc answers the object's
+// own doc, else its class's, else "" -- never NULL.  The string is borrowed
+// and must outlive the object.
+void object_set_doc(struct object *o, const char *doc);
+const char *object_doc(struct object *o);
+
+// Domain of a root child: what the top-level node *is*.  Drives the dividers
+// in the SYSTEM tab and at the command browser's root.
+#define OBJ_DOMAIN_EMULATOR 0 // default
+#define OBJ_DOMAIN_MACHINE  1
+#define OBJ_DOMAIN_NETWORK  2
+void object_set_domain(struct object *o, uint8_t domain);
+uint8_t object_domain(struct object *o);
+const char *object_domain_name(uint8_t domain); // "emulator" | "machine" | "network"
+
+// Task of an object (overrides its class's task; NULL = the class's).  The
+// string is borrowed.
+void object_set_task(struct object *o, const char *task);
+const char *object_task(struct object *o); // object's own task, else its class's, else NULL
+
+// The node one step up for inheritance: the attached parent, else the
+// logical parent (object_set_logical_parent), else NULL.
+struct object *object_up(struct object *o);
+
+// A member's effective task: for a method, its own `task`; for a child,
+// the child object's (object, then class); then the owning node's object
+// task, its class task, and so on up the tree, stopping before the root
+// (the root's methods carry their task individually).  NULL when nothing
+// on the way names one.  `child` is the resolved child object for an
+// M_CHILD member (NULL otherwise).
+const char *member_effective_task(struct object *node, const member_t *m, struct object *child);
+
 // Iterate this object's statically-attached children (named children
 // added via object_attach). Calls fn for each. Indexed children declared
 // via member_t.child.get/next are not visited here.
@@ -485,6 +531,11 @@ node_t node_child_key(node_t n, const char *key);
 //
 // Returns true if `name` collides with a reserved word.
 bool object_is_reserved_word(const char *name);
+
+// The reserved words, in table order, each with a one-line syntax.
+size_t object_reserved_word_count(void);
+const char *object_reserved_word(size_t i);
+const char *object_reserved_word_syntax(size_t i);
 
 // Validate a candidate member/alias name. Returns true if acceptable.
 // Diagnostic messages are written to err_buf (may be NULL).

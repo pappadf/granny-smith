@@ -194,7 +194,20 @@ failing `assert` messages, and errors. A bare read in a script is
 silent; wrap it in `echo "path = ${path}"` when the log line matters.
 
 The headless REPL shows a `... ` continuation prompt while a multi-line
-`{` block is open (a quote-aware depth counter; `script_needs_continuation`).
+`{` block is open (a quote-aware depth counter; `script_needs_continuation`,
+exposed as the hidden `shell.needs_continuation(text)` so a console can
+tell whether Enter submits or breaks the line).
+
+**Structured results ride beside the text.** Inside a job, a value the REPL
+prints is bracketed by two annotation records in the job's record stream —
+`value_begin` before its text and `value` after it, carrying the value as
+tagged JSON (`"json"`, or `"truncated":true` when that would not fit a
+record) — and every statement error (`script_report_error`, the single
+reporter: the text still goes to stderr unchanged) adds an `error` record
+with `file`, `line`, `message` and the stderr `lines`.  The printed text is
+byte-identical either way; a consumer that wants only text ignores the
+annotations.  Every record, text included, is bounded by a quarter of the
+event ring (`gs_mailbox_record_max`), measured on the escaped text.
 
 ## Scripts
 
@@ -224,7 +237,10 @@ adds `@event <kind> <json>` lines for every core event (`mode_started`,
 `mode_ended` with its reason), `@out <json>` for each output record
 (`{"event":"output","id":..,"client":..,"text":..}`), `@progress <json>`
 for an I/O job's progress (`{"id":..,"done":..,"total":..}`), and
-`@end ok|error` after each statement, for a client that wants to parse
+`@value_begin <json>` / `@value <json>` / `@error <json>` for the
+annotation records, in stream order among the `@out` lines (an `@out` line
+may split where an annotation falls; the concatenated text is unchanged),
+and `@end ok|error` after each statement, for a client that wants to parse
 where a statement ended rather than time out on silence. Ctrl-C cancels
 the statement in flight, else stops a run stdin started, else stops the
 machine; the daemon's control connection does the same for the daemon's
@@ -266,6 +282,35 @@ layered over the shell store.
 - **Method-argument position** — dispatched by the resolved method's
   `arg_decl_t[i]`: enums offer their values, path arguments complete
   against the filesystem, and so on.
+
+With `shell.complete(line, cursor, true)` each candidate comes back as
+`{text, kind, doc, task}` (`kind` ∈ `object`, `collection`, `attr`,
+`method`, `alias`, `keyword`, `value`), and a `context` says where the
+cursor is: `{method, arg_index, arg_name}`, where `arg_index` is the
+*declared* slot (a `name=` word names its own slot; earlier `name=` words do
+not count as positionals), all `none` outside an argument position.
+`cursor` and the returned span are UTF-8 byte offsets.
+
+## Help and usage
+
+`help <path>` prints the usage text of any path, and `shell.usage(path)`
+returns it as `{signature, arg_spans, text}` — one renderer
+(`src/core/object/usage.c`), so help, the command browser and a signature
+hint cannot disagree:
+
+- **Method** — the signature `<full.path> <arg> [optional] [rest…]`, an enum
+  argument writing its values (`[space: logical | physical]`); one aligned
+  line per argument (name, type text, doc, `(default …)`); `Returns: …` and
+  `e.g.  …` lines when the member declares `result_doc` / `examples`; a
+  blank line and the doc wrapped at 72 columns.  `arg_spans[i]` is the byte
+  span of argument i's bracketed form in the signature.
+- **Attribute** — `<full.path> : <type text>` (plus ` (read-only)`), then
+  ` = <value>` unless sensitive or unreadable, a blank line and the doc.
+- **Node** — `<full.path> — <label>`, its doc, then `attributes:`,
+  `methods:` and `children:` lines (basic and advanced tiers).
+
+`shell.keywords` lists every reserved word with its one-line syntax;
+`shell.tasks` (internal) lists the command browser's task chips in order.
 
 ## See also
 

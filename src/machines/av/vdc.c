@@ -468,7 +468,10 @@ static value_t videoin_method_load(struct object *self, const member_t *m, int a
 }
 
 static const arg_decl_t videoin_load_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "640x480 PNG to use as the video source frame"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "640x480 PNG to use as the video source frame"},
 };
 
 static const member_t videoin_members[] = {

@@ -61,6 +61,13 @@ int script_run_file(const char *path);
 // more lines before submitting.
 bool script_needs_continuation(const char *buf);
 
+// Every statement-error report goes through here: `text` (exactly what is
+// written to stderr, newline-terminated, possibly several lines) goes to
+// stderr, and inside a job an `error` annotation records file (the include
+// path of the reporting site, or ""), line (0 when none), message and the
+// text's lines at this point of the job's record stream.
+void script_report_error(const char *file, int line, const char *msg, const char *text);
+
 // Ctrl-C for loops: the interpreter checks this once per iteration and
 // unwinds with an error. Wired to `shell.interrupt`.  It cancels the script
 // in flight only: script_exec clears it when the top-level script ends.

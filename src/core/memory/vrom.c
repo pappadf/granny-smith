@@ -371,7 +371,7 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t vrom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "VROM file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "VROM file path"},
 };
 
 static const member_t vrom_members[] = {
@@ -394,6 +394,7 @@ static const class_desc_t vrom_class = {
     .name = "vrom",
     .members = vrom_members,
     .n_members = sizeof(vrom_members) / sizeof(vrom_members[0]),
+    .doc = "Registry of video (NuBus declaration) ROM files",
 };
 
 // ============================================================================

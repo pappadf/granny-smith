@@ -25,6 +25,7 @@
 #include "storage.h"
 #include "system.h"
 #include "system_config.h"
+#include "usage.h"
 #include "value.h"
 
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
@@ -165,22 +166,19 @@ static value_t method_root_methods(struct object *self, const member_t *m, int a
     return val_list(acc.items, acc.len);
 }
 
-// `help(path?)` — return the doc string of the resolved member. For
-// object-typed nodes, returns the class name (no separate "class doc"
-// field exists in the substrate yet).
+// `help(path?)` — the usage text of any path (usage.c): a method's
+// signature, arguments and doc; an attribute's type, value and doc; a node's
+// doc and member lists.  The same text shell.usage returns.
 static value_t method_root_help(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     const char *path = (argc >= 1 && argv[0].s) ? argv[0].s : "";
-    node_t n = object_resolve(object_root(), path);
-    if (!node_valid(n))
+    value_t v = object_usage_text(path);
+    if (v.kind == V_ERROR) {
+        value_free(&v);
         return val_err("help: path did not resolve");
-    if (n.member && n.member->doc)
-        return val_str(n.member->doc);
-    if (n.member)
-        return val_str(n.member->name ? n.member->name : "");
-    const class_desc_t *cls = object_class(n.obj);
-    return val_str(cls && cls->name ? cls->name : "");
+    }
+    return v;
 }
 
 // `time()` — wall-clock seconds since the Unix epoch. Useful for
@@ -266,33 +264,33 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
+     .method = {.task = "shell", .args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
+     .method = {.task = "shell", .args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
+     .method = {.task = "shell", .args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
     {.kind = M_METHOD,
      .name = "help",
-     .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
+     .doc = "Usage text of a path: signature, arguments, type, value, doc",
+     .method = {.task = "shell", .args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
+     .method = {.task = "shell", .args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
+     .method = {.task = "shell", .args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
     // `assert` is a statement keyword in shell v2 (script.c); the former
     // root method is gone — its name is now a reserved word.
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
+     .method = {.task = "shell", .args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
 };
 
 static const class_desc_t emu_root_class_real = {

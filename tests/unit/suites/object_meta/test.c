@@ -380,6 +380,106 @@ TEST(test_valid_keys) {
     ASSERT_TRUE(!object_valid_key(long_key));
 }
 
+// === Effective task and meta.members keys ================================
+
+static const arg_decl_t tk_args[] = {
+    {.name = "mode", .kind = V_ENUM, .enum_values = (const char *const[]){"a", "b", NULL}, .doc = "Mode"},
+};
+
+static const member_t tk_members[] = {
+    {.kind = M_ATTR,
+     .name = "x",
+     .doc = "An x",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = toy_get_pc}               },
+    {.kind = M_METHOD,
+     .name = "go",
+     .doc = "Go",
+     .method = {.args = tk_args, .nargs = 1, .result = V_NONE, .fn = toy_step}                },
+    {.kind = M_METHOD,
+     .name = "save",
+     .doc = "Save",
+     .method = {.task = "storage", .args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+};
+static const class_desc_t tk_class = {
+    .name = "Tk", .members = tk_members, .n_members = 3, .doc = "A task node", .task = "debug"};
+
+TEST(test_member_effective_task) {
+    object_root_reset();
+    struct object *top = object_new(&tk_class, NULL, "top");
+    object_attach(object_root(), top);
+    struct object *inner = object_new(&empty_class, NULL, "inner");
+    object_attach(top, inner);
+    // An attribute inherits its node's class task; a method's own wins.
+    ASSERT_TRUE(strcmp(member_effective_task(top, &tk_members[0], NULL), "debug") == 0);
+    ASSERT_TRUE(strcmp(member_effective_task(top, &tk_members[2], NULL), "storage") == 0);
+    // A node without a task inherits from above; an object task overrides.
+    ASSERT_TRUE(strcmp(member_effective_task(inner, NULL, NULL), "debug") == 0);
+    object_set_task(inner, "io");
+    ASSERT_TRUE(strcmp(member_effective_task(inner, NULL, NULL), "io") == 0);
+    // A callback-backed entry walks to its logical parent.
+    struct object *entry = object_new(&empty_class, NULL, NULL);
+    object_set_logical_parent(entry, top, NULL, 0, NULL);
+    ASSERT_TRUE(strcmp(member_effective_task(entry, NULL, NULL), "debug") == 0);
+    // Nothing is inherited from the root.
+    ASSERT_TRUE(member_effective_task(object_root(), NULL, NULL) == NULL);
+    object_delete(entry);
+    object_detach(inner);
+    object_delete(inner);
+    object_detach(top);
+    object_delete(top);
+    object_root_reset();
+}
+
+// A value's map entry by key, or NULL.
+static const value_t *map_get(const value_t *m, const char *key) {
+    if (!m || m->kind != V_MAP)
+        return NULL;
+    for (size_t i = 0; i < m->map.len; i++)
+        if (strcmp(m->map.entries[i].key, key) == 0)
+            return &m->map.entries[i].val;
+    return NULL;
+}
+
+TEST(test_meta_members_keys) {
+    object_root_reset();
+    struct object *top = object_new(&tk_class, NULL, "top");
+    object_attach(object_root(), top);
+    node_t n = object_resolve(object_root(), "top.meta.members");
+    ASSERT_TRUE(node_valid(n));
+    value_t list = node_call(n, 0, NULL);
+    ASSERT_TRUE(list.kind == V_LIST && list.list.len == 3);
+    const value_t *x = &list.list.items[0];
+    const value_t *type = map_get(x, "type");
+    ASSERT_TRUE(type && type->kind == V_MAP);
+    ASSERT_TRUE(strcmp(map_get(type, "kind")->s, "uint") == 0);
+    ASSERT_TRUE(strcmp(map_get(type, "presentation")->s, "hex") == 0);
+    ASSERT_TRUE(map_get(type, "enum")->kind == V_NONE);
+    ASSERT_TRUE(strcmp(map_get(x, "task")->s, "debug") == 0);
+    const value_t *go = &list.list.items[1];
+    const value_t *args = map_get(go, "args");
+    ASSERT_TRUE(args && args->kind == V_LIST && args->list.len == 1);
+    const value_t *atype = map_get(&args->list.items[0], "type");
+    ASSERT_TRUE(strcmp(map_get(atype, "kind")->s, "enum") == 0);
+    ASSERT_TRUE(map_get(atype, "enum")->kind == V_LIST && map_get(atype, "enum")->list.len == 2);
+    ASSERT_TRUE(map_get(&args->list.items[0], "optional")->kind == V_BOOL);
+    ASSERT_TRUE(map_get(&args->list.items[0], "default")->kind == V_NONE);
+    ASSERT_TRUE(strcmp(map_get(map_get(go, "result"), "kind")->s, "none") == 0);
+    ASSERT_TRUE(strcmp(map_get(&list.list.items[2], "task")->s, "storage") == 0);
+    value_free(&list);
+
+    // The root's view of `top`: doc from the class, task, domain.
+    node_t r = object_resolve(object_root(), "meta.members");
+    value_t rl = node_call(r, 0, NULL);
+    ASSERT_TRUE(rl.kind == V_LIST && rl.list.len == 1);
+    ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "doc")->s, "A task node") == 0);
+    ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "domain")->s, "emulator") == 0);
+    ASSERT_TRUE(map_get(&rl.list.items[0], "collection")->kind == V_BOOL);
+    value_free(&rl);
+    object_detach(top);
+    object_delete(top);
+    object_root_reset();
+}
+
 int main(void) {
     RUN(test_meta_segment_resolves);
     RUN(test_root_meta_resolves);
@@ -394,5 +494,7 @@ int main(void) {
     RUN(test_logical_parent_paths);
     RUN(test_resolver_adopts_unregistered_entries);
     RUN(test_valid_keys);
+    RUN(test_member_effective_task);
+    RUN(test_meta_members_keys);
     return 0;
 }

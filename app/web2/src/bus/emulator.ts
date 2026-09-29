@@ -731,6 +731,13 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'notify:download_chunk':
       onDownloadChunk(d);
       break;
+    case 'log:value_begin':
+    case 'log:value':
+    case 'log:error':
+      // Annotation records in a job's stream: the terminal already shows
+      // their text (output / stderr); the console that renders them as
+      // structured entries is still to come.
+      break;
     default:
       break;
   }

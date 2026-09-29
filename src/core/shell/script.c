@@ -13,6 +13,7 @@
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
+#include "value_format.h"
 #include "job/job.h"
 
 #include "alias.h"
@@ -1052,6 +1053,71 @@ void script_expr_ctx(expr_ctx_t *out) {
 static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
 static _Thread_local int g_include_depth = 0;
 
+static void report_plain_error(const char *err);
+
+// Append `s` to `b` as a JSON string, truncated to `max` bytes (0: whole).
+static void json_str(vbuf_t *b, const char *s, size_t max) {
+    char *cut = NULL;
+    if (max && strlen(s) > max) {
+        cut = strndup(s, max);
+        s = cut ? cut : "";
+    }
+    value_t v = val_str(s);
+    value_format(&v, VFMT_JSON, b);
+    value_free(&v);
+    free(cut);
+}
+
+// The fields of an `error` annotation; `max` bounds each string (the
+// reduced form), 0 for the full one.
+static void error_fields(vbuf_t *b, const char *file, int line, const char *msg, const char *text, size_t max) {
+    vbuf_appendf(b, "\"file\":");
+    json_str(b, file, max ? 256 : 0);
+    vbuf_appendf(b, ",\"line\":%d,\"message\":", line);
+    json_str(b, msg, max);
+    vbuf_appendf(b, ",\"lines\":[");
+    // The stderr text split at newlines, the empty last element dropped.
+    const char *p = text;
+    bool first = true;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        char *ln = strndup(p, n);
+        if (!first)
+            vbuf_append(b, ",", 1);
+        json_str(b, ln ? ln : "", max);
+        free(ln);
+        first = false;
+        p += n;
+        if (*p == '\n')
+            p++;
+    }
+    vbuf_append(b, "]", 1);
+    if (max)
+        vbuf_appendf(b, ",\"truncated\":true");
+}
+
+void script_report_error(const char *file, int line, const char *msg, const char *text) {
+    // The text exactly as it has always been written: stderr.
+    fputs(text, stderr);
+    // Inside a job, also an `error` annotation at this point of the job's
+    // record stream, so a console can match the stderr lines to it.
+    vbuf_t full = {0}, reduced = {0};
+    error_fields(&full, file ? file : "", line, msg ? msg : "", text, 0);
+    error_fields(&reduced, file ? file : "", line, msg ? msg : "", text, 512);
+    job_annotate("error", full.p ? full.p : "", reduced.p ? reduced.p : "");
+    vbuf_free(&full);
+    vbuf_free(&reduced);
+}
+
+// An error with no line of its own (a parse error, a failed include):
+// reported with file "" and line 0, its text the message plus a newline.
+static void report_plain_error(const char *err) {
+    char text[1100];
+    snprintf(text, sizeof(text), "%s\n", err);
+    script_report_error("", 0, err, text);
+}
+
 static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     char buf[512];
     va_list ap;
@@ -1060,10 +1126,13 @@ static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     va_end(ap);
     // Prefix the innermost executing file so suite/library diagnostics
     // carry an accurate file:line even across `include`.
+    char text[1024];
+    const char *file = g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "";
     if (g_include_depth > 0)
-        fprintf(stderr, "%s: line %d: %s\n", g_include_stack[g_include_depth - 1], line, buf);
+        snprintf(text, sizeof(text), "%s: line %d: %s\n", file, line, buf);
     else
-        fprintf(stderr, "line %d: %s\n", line, buf);
+        snprintf(text, sizeof(text), "line %d: %s\n", line, buf);
+    script_report_error(file, line, buf, text);
     cx->sig = SIG_ERROR;
 }
 
@@ -1950,14 +2019,21 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
             snprintf(msg, sizeof(msg), "%s", m.s);
         value_free(&m);
     }
-    if (is_err)
-        fprintf(stderr, "line %d: %s\n", st->line, v.err ? v.err : "error in assert predicate");
     // stderr, with its predicate error.  These are one failure event and used
     // to go to two streams, so a test log could interleave them in either
     // order or split them across files -- and that output is exactly what a
     // failure investigation reads.  Results go to stdout,
     // diagnostics to stderr.
-    fprintf(stderr, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
+    char text[1400];
+    size_t o = 0;
+    if (is_err)
+        o += (size_t)snprintf(text, sizeof(text), "line %d: %s\n", st->line,
+                              v.err ? v.err : "error in assert predicate");
+    if (o < sizeof(text))
+        snprintf(text + o, sizeof(text) - o, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
+    char amsg[600];
+    snprintf(amsg, sizeof(amsg), "ASSERT FAILED: %s", msg[0] ? msg : st->text);
+    script_report_error(g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "", st->line, amsg, text);
     value_free(&v);
     cx->sig = SIG_ERROR;
 }
@@ -2146,7 +2222,7 @@ int script_run_line(const char *line) {
     char err[256];
     script_t *s = script_parse(line, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     int rc = script_exec(s, true);
@@ -2174,7 +2250,7 @@ int script_run_text(const char *src, bool interactive) {
     char err[256];
     script_t *s = script_parse(src, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     int rc = exec_isolated(s, interactive);
@@ -2186,7 +2262,7 @@ int script_run_source(const char *src) {
     char err[256];
     script_t *s = script_parse(src, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     int rc = exec_isolated(s, false);
@@ -2198,7 +2274,7 @@ int script_run_file(const char *path) {
     char err[512];
     exec_sig_t sig = include_exec_file(path, err, sizeof(err));
     if (sig == SIG_ERROR) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     return 0; // SIG_QUIT is a clean stop, not a failure

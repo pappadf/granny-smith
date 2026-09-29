@@ -59,6 +59,7 @@ typedef enum {
 #define VAL_SENSITIVE 0x0008u // do not print payload (passwords, etc.)
 #define VAL_RO        0x0010u // attribute is read-only
 #define VAL_BIN       0x0020u // prefer binary output
+#define VAL_PATH      0x0040u // a string naming a VFS path (argument forms offer a file picker)
 
 // Forward declaration; defined in object.h.
 struct object;

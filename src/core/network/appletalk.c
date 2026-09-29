@@ -881,6 +881,8 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     if (!g_atalk_object)
         return;
     object_set_order(g_atalk_object, 100);
+    object_set_domain(g_atalk_object, OBJ_DOMAIN_NETWORK);
+    object_set_task(g_atalk_object, "network");
     object_attach(object_root(), g_atalk_object);
 
     g_atalk_stats_object = object_new(&atalk_stats_class, (void *)atalk_get_stats(), "stats");
@@ -2957,8 +2959,12 @@ static const arg_decl_t atalk_volumes_add_args[] = {
     {.name = "name",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_NONEMPTY,
-     .doc = "Volume name as clients see it (max 32 chars)"                                                     },
-    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Host directory to publish"},
+     .doc = "Volume name as clients see it (max 32 chars)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Host directory to publish"},
 };
 static const arg_decl_t atalk_volumes_remove_args[] = {
     {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Volume name to withdraw"},
@@ -3391,4 +3397,5 @@ static const class_desc_t atalk_class = {
     .name = "appletalk",
     .members = atalk_members,
     .n_members = ARRAY_LEN(atalk_members),
+    .doc = "Simulated AppleTalk network: file server, printer, program linking",
 };

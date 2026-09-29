@@ -1537,6 +1537,7 @@ static value_t checkpoint_attr_auto_set(struct object *self, const member_t *m, 
 static const arg_decl_t checkpoint_load_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Checkpoint path; empty auto-loads the latest"},
 };
@@ -1544,7 +1545,7 @@ static const arg_decl_t checkpoint_load_args[] = {
 static const char *const checkpoint_mode_values[] = {"content", "refs", NULL};
 
 static const arg_decl_t checkpoint_save_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Checkpoint output path"},
     {.name = "mode",
      .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1588,6 +1589,8 @@ static const class_desc_t checkpoint_class = {
     .name = "checkpoint",
     .members = checkpoint_members,
     .n_members = sizeof(checkpoint_members) / sizeof(checkpoint_members[0]),
+    .doc = "Saves and restores the whole machine state",
+    .task = "run",
 };
 
 // ============================================================================

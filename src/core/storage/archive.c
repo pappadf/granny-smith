@@ -255,13 +255,14 @@ static value_t archive_method_extract(struct object *self, const member_t *m, in
 }
 
 static const arg_decl_t archive_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Archive file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Archive file path"},
 };
 
 static const arg_decl_t archive_extract_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Archive file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Archive file path"},
     {.name = "out_dir",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Output directory (default: cwd)"},
 };
@@ -282,6 +283,7 @@ static const class_desc_t archive_class = {
     .name = "archive",
     .members = archive_members,
     .n_members = sizeof(archive_members) / sizeof(archive_members[0]),
+    .doc = "Mac archive formats (StuffIt, BinHex, Compact Pro, MacBinary): identify and extract",
 };
 
 // ============================================================================

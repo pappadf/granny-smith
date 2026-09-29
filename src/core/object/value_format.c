@@ -6,6 +6,8 @@
 
 #include "value_format.h"
 
+#include "meta.h"
+
 #include "object.h"
 
 #include <inttypes.h>
@@ -299,6 +301,12 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
             append_json_string(out, cls);
             vbuf_append(out, ",\"name\":", 8);
             append_json_string(out, nm ? nm : "");
+            // Its path, so a client can link to the node (select it in the
+            // command browser, reveal it in SYSTEM).
+            char path[512];
+            object_compute_path(v->obj, path, sizeof(path));
+            vbuf_append(out, ",\"path\":", 8);
+            append_json_string(out, path);
             vbuf_append(out, "}", 1);
         } else if (mode == VFMT_JSON) {
             append_json_string(out, "<object>");

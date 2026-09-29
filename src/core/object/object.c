@@ -45,6 +45,9 @@ struct object {
     int order; // ordering weight for the SYSTEM tree; default 0
     int attach_seq; // monotonic attach sequence; the stable tiebreak for order
     uint16_t category; // M_CAT_* visibility for attached nodes
+    uint8_t domain; // OBJ_DOMAIN_* for root children
+    const char *doc; // optional one-sentence doc; NULL = the class's
+    const char *task; // optional task id; NULL = the class's
     object_dtor_fn dtor; // optional destructor for instance_data (default NULL)
     struct object *parent;
     struct object *first_child;
@@ -466,6 +469,80 @@ uint16_t object_category(struct object *o) {
     return o ? o->category : (uint16_t)M_CAT_BASIC;
 }
 
+void object_set_doc(struct object *o, const char *doc) {
+    if (o)
+        o->doc = doc;
+}
+
+const char *object_doc(struct object *o) {
+    if (!o)
+        return "";
+    if (o->doc)
+        return o->doc;
+    if (o->cls && o->cls->doc)
+        return o->cls->doc;
+    return "";
+}
+
+void object_set_domain(struct object *o, uint8_t domain) {
+    if (o)
+        o->domain = domain;
+}
+
+uint8_t object_domain(struct object *o) {
+    return o ? o->domain : (uint8_t)OBJ_DOMAIN_EMULATOR;
+}
+
+const char *object_domain_name(uint8_t domain) {
+    switch (domain) {
+    case OBJ_DOMAIN_MACHINE:
+        return "machine";
+    case OBJ_DOMAIN_NETWORK:
+        return "network";
+    default:
+        return "emulator";
+    }
+}
+
+void object_set_task(struct object *o, const char *task) {
+    if (o)
+        o->task = task;
+}
+
+const char *object_task(struct object *o) {
+    if (!o)
+        return NULL;
+    if (o->task)
+        return o->task;
+    return o->cls ? o->cls->task : NULL;
+}
+
+struct object *object_up(struct object *o) {
+    if (!o)
+        return NULL;
+    return o->parent ? o->parent : o->lparent;
+}
+
+const char *member_effective_task(struct object *node, const member_t *m, struct object *child) {
+    if (m && m->kind == M_METHOD && m->method.task)
+        return m->method.task;
+    // A child member answers first for the child object itself.
+    if (child) {
+        const char *t = object_task(child);
+        if (t)
+            return t;
+    }
+    // Then the owning node and each node above it, stopping before the root:
+    // the root's own methods carry their task individually, so nothing is
+    // inherited from it.
+    for (struct object *o = node; o && o != g_root; o = object_up(o)) {
+        const char *t = object_task(o);
+        if (t)
+            return t;
+    }
+    return NULL;
+}
+
 // Visit attached children in ascending (order, attach_seq). Fan-out is
 // small (≤ tens), so a gather-then-insertion-sort into a fixed scratch
 // array is fine; we fall back to raw order if the count exceeds the
@@ -535,36 +612,55 @@ static struct object *find_attached_child(struct object *parent, const char *nam
 // are case-sensitive everywhere else in the codebase. This is the set
 // docs/internals/core/object/object-model.md ("Reserved words") documents.
 
-static const char *const RESERVED_WORDS[] = {
+// Each reserved word with its one-line syntax (shell.keywords); the syntax
+// sits next to the word so the two cannot drift.
+static const struct {
+    const char *word;
+    const char *syntax;
+} RESERVED_WORDS[] = {
     // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
     // words to bool-slot input coercions (validate_slot) — they are
     // ordinary identifiers again.
-    "true",
-    "false",
-    "none",
+    {"true",     "true — the boolean literal"                           },
+    {"false",    "false — the boolean literal"                          },
+    {"none",     "none — no value (an unset optional, an absent result)"},
     // Statement keywords.
-    "let",
-    "alias",
-    "if",
-    "elif",
-    "else",
-    "while",
-    "for",
-    "in",
-    "break",
-    "continue",
-    "return",
-    "def",
-    "assert",
+    {"let",      "let <name> = <expr>"                                    },
+    {"alias",    "alias <name> = <path>"                                  },
+    {"if",       "if <expr> { … }"                                      },
+    {"elif",     "} elif <expr> { … }"                                  },
+    {"else",     "} else { … }"                                         },
+    {"while",    "while <expr> { … }"                                   },
+    {"for",      "for <name> in <expr> { … }"                           },
+    {"in",       "for <name> in <expr> { … }"                           },
+    {"break",    "break — leave the innermost loop"                     },
+    {"continue", "continue — next iteration of the innermost loop"      },
+    {"return",   "return [<expr>]"                                        },
+    {"def",      "def <name>(<param>, …) { … }"                       },
+    {"assert",   "assert <expr> [\"message\"]"                            },
     // Held for a possible future post-test loop.
-    "do",
+    {"do",       "do — reserved"                                        },
 };
+
+#define N_RESERVED_WORDS (sizeof(RESERVED_WORDS) / sizeof(RESERVED_WORDS[0]))
+
+size_t object_reserved_word_count(void) {
+    return N_RESERVED_WORDS;
+}
+
+const char *object_reserved_word(size_t i) {
+    return i < N_RESERVED_WORDS ? RESERVED_WORDS[i].word : NULL;
+}
+
+const char *object_reserved_word_syntax(size_t i) {
+    return i < N_RESERVED_WORDS ? RESERVED_WORDS[i].syntax : NULL;
+}
 
 bool object_is_reserved_word(const char *name) {
     if (!name)
         return false;
-    for (size_t i = 0; i < sizeof(RESERVED_WORDS) / sizeof(RESERVED_WORDS[0]); i++)
-        if (strcmp(name, RESERVED_WORDS[i]) == 0)
+    for (size_t i = 0; i < N_RESERVED_WORDS; i++)
+        if (strcmp(name, RESERVED_WORDS[i].word) == 0)
             return true;
     return false;
 }

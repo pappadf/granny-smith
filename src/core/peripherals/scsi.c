@@ -1235,8 +1235,10 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
         object_set_order(scsi->object, primary ? 90 : 91);
         object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
-        if (scsi->bus_object)
+        if (scsi->bus_object) {
+            object_set_category(scsi->bus_object, M_CAT_ADVANCED);
             object_attach(scsi->object, scsi->bus_object);
+        }
         scsi->devices_object = object_new(&scsi_devices_collection_class, scsi, "device");
         if (scsi->devices_object) {
             object_set_label(scsi->devices_object, "Devices");
@@ -1769,7 +1771,10 @@ static value_t scsi_dev_method_info(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t scsi_dev_insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host path or storage URI of the image to mount"},
 };
 
 // --- Medium (image) node: machine.scsi.device[N].image ---------------------
@@ -1848,6 +1853,7 @@ static value_t scsi_image_method_eject(struct object *self, const member_t *m, i
 static const arg_decl_t scsi_image_export_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Destination host path for the flattened image (must not exist)"},
 };
@@ -1887,7 +1893,7 @@ static const member_t scsi_image_members[] = {
                 .fn = scsi_image_method_export,
                 .ui_flags = MM_MUTATE | MM_IO,
                 .verb_label = "Save image…",
-                .task_category = "storage"}},
+                .task = "storage"}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the medium from the owning device",
@@ -1896,7 +1902,7 @@ static const member_t scsi_image_members[] = {
                 .result = V_BOOL,
                 .fn = scsi_image_method_eject,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task_category = "storage"}},
+                .task = "storage"}},
 };
 
 static const class_desc_t scsi_image_class = {
@@ -2204,12 +2210,12 @@ static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t scsi_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
 };
 
 static const arg_decl_t scsi_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image file path"    },
-    {.name = "id",   .kind = V_INT,    .doc = "SCSI bus index 0..6"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
+    {.name = "id", .kind = V_INT, .doc = "SCSI bus index 0..6"},
 };
 
 // Subset of `scsi_members` that doesn't depend on a live bus instance:
@@ -2222,14 +2228,16 @@ static const member_t scsi_static_members[] = {
     {.kind = M_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}                                },
     {.kind = M_METHOD,
      .name = "identify_hd",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}   },
     {.kind = M_METHOD,
      .name = "identify_cdrom",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
 };
@@ -2238,6 +2246,8 @@ static const class_desc_t scsi_static_class = {
     .name = "scsi",
     .members = scsi_static_members,
     .n_members = sizeof(scsi_static_members) / sizeof(scsi_static_members[0]),
+    .doc = "SCSI image identification (before a machine exists)",
+    .task = "storage",
 };
 
 // Pre-machine singleton holding the static subset. Replaced by the
@@ -2272,14 +2282,16 @@ static const member_t scsi_members[] = {
     {.kind = M_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
     {.kind = M_METHOD,
      .name = "identify_hd",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}},
     {.kind = M_METHOD,
      .name = "identify_cdrom",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
     {.kind = M_METHOD,
@@ -2296,4 +2308,6 @@ static const class_desc_t scsi_class = {
     .name = "scsi",
     .members = scsi_members,
     .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),
+    .doc = "SCSI bus controller and its devices",
+    .task = "storage",
 };

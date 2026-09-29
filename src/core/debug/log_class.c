@@ -130,6 +130,7 @@ static const arg_decl_t log_set_args[] = {
     {.name = "file",
      .default_value = &obj_arg_unset,
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Append to this path; \"off\" closes it"},
     {.name = "ts",
@@ -269,6 +270,7 @@ static struct object *category_entry(const char *name) {
     if (!o)
         return NULL;
     object_set_logical_parent(o, g_log_categories_object, NULL, -1, log_category_name(cat));
+    object_set_doc(o, log_category_description(log_category_name(cat)));
     g_cat_ptrs[g_cat_n] = cat;
     g_cat_objs[g_cat_n] = o;
     g_cat_n++;
@@ -316,6 +318,7 @@ static const class_desc_t log_categories_class = {
     .name = "log_categories",
     .members = log_categories_members,
     .n_members = sizeof(log_categories_members) / sizeof(log_categories_members[0]),
+    .doc = "Log categories, by name",
 };
 
 static const member_t log_members[] = {
@@ -334,6 +337,8 @@ static const class_desc_t log_class = {
     .name = "log",
     .members = log_members,
     .n_members = sizeof(log_members) / sizeof(log_members[0]),
+    .doc = "Logging configuration: per-category levels and sinks",
+    .task = "log",
 };
 
 void log_class_init(void) {

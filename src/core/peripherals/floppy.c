@@ -968,6 +968,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         object_attach(machine_object(), floppy->object);
         floppy->controller_object = object_new(&floppy_controller_class, floppy, "controller");
         if (floppy->controller_object) {
+            object_set_category(floppy->controller_object, M_CAT_ADVANCED);
             object_set_label(floppy->controller_object, "Controller");
             object_attach(floppy->object, floppy->controller_object);
         }
@@ -1247,15 +1248,15 @@ static value_t floppy_method_create(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t floppy_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Floppy image path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Floppy image path"},
 };
 
 static const arg_decl_t floppy_create_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Output path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Output path"},
     {.name = "hd",
      .kind = V_NONE,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"},
+     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                    },
 };
 
 static const member_t floppy_members[] = {
@@ -1271,6 +1272,7 @@ static const member_t floppy_members[] = {
      .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL}},
     {.kind = M_METHOD,
      .name = "identify",
+     .flags = M_CAT_ADVANCED,
      .doc = "Return floppy density (\"400K\" / \"800K\" / \"1.4MB\") or empty if not a floppy",
      .method = {.args = floppy_path_arg, .nargs = 1, .result = V_STRING, .fn = floppy_method_identify}},
     {.kind = M_METHOD,
@@ -1283,6 +1285,8 @@ static const class_desc_t floppy_class = {
     .name = "floppy",
     .members = floppy_members,
     .n_members = sizeof(floppy_members) / sizeof(floppy_members[0]),
+    .doc = "Floppy controller and drives",
+    .task = "storage",
 };
 
 // --- Controller node: the live register file, per variant -------------------
@@ -1544,7 +1548,7 @@ static const member_t floppy_disk_members[] = {
                 .result = V_NONE,
                 .fn = floppy_disk_method_eject,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task_category = "storage"}},
+                .task = "storage"}},
 };
 
 static const class_desc_t floppy_disk_class = {
@@ -1591,7 +1595,10 @@ static value_t floppy_drive_method_insert(struct object *self, const member_t *m
 }
 
 static const arg_decl_t floppy_drive_insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host path or storage URI of the image to mount"                                                          },
     {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
 };
 

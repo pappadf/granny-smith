@@ -1474,7 +1474,11 @@ static value_t machine_method_eject_media(struct object *self, const member_t *m
 static const value_t k_bay0 = {.kind = V_INT, .i = 0};
 
 static const arg_decl_t machine_attach_hd_args[] = {
-    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Hard-disk image path"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Hard-disk image path"                                         },
     {.name = "bay",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1483,7 +1487,11 @@ static const arg_decl_t machine_attach_hd_args[] = {
 };
 
 static const arg_decl_t machine_attach_cdrom_args[] = {
-    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "CD-ROM image path"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "CD-ROM image path"},
 };
 
 static const arg_decl_t machine_eject_media_args[] = {
@@ -1534,40 +1542,55 @@ static const member_t machine_members[] = {
     {.kind = M_METHOD,
      .name = "boot",
      .doc = "Boot a machine from a complete configuration document (model and rom required; other fields default "
-            "per model)", .method = {.args = machine_boot_args,
+            "per model)", .method = {.task = "run",
+                .args = machine_boot_args,
                 .nargs = sizeof(machine_boot_args) / sizeof(machine_boot_args[0]),
                 .result = V_BOOL,
                 .fn = machine_method_boot}},
     {.kind = M_METHOD,
      .name = "reset",
      .doc = "Warm-reset the running machine: the /RESET net plus the CPU, keeping RAM, PRAM and media",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_reset}},
+     .method = {.task = "run", .args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_reset}},
     {.kind = M_METHOD,
      .name = "restart",
      .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_restart}},
+     .method = {.task = "run", .args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_restart}},
     {.kind = M_METHOD,
      .name = "register",
+     .flags = M_CAT_ADVANCED,
      .doc = "Record the active machine identity for checkpointing",
      .method = {.args = machine_register_args, .nargs = 2, .result = V_BOOL, .fn = machine_method_register}},
     {.kind = M_METHOD,
      .name = "attach_hd",
      .doc = "Attach a hard-disk image to a bay (default: the boot bay) on whatever bus it is; answers {bus, id, label}",
-     .method = {.args = machine_attach_hd_args, .nargs = 2, .result = V_MAP, .fn = machine_method_attach_hd}},
+     .method = {.task = "storage",
+                .args = machine_attach_hd_args,
+                .nargs = 2,
+                .result = V_MAP,
+                .fn = machine_method_attach_hd}},
     {.kind = M_METHOD,
      .name = "attach_cdrom",
      .doc = "Insert a CD-ROM image into the machine's CD bay; answers {bus, id, label}",
-     .method = {.args = machine_attach_cdrom_args, .nargs = 1, .result = V_MAP, .fn = machine_method_attach_cdrom}},
+     .method = {.task = "storage",
+                .args = machine_attach_cdrom_args,
+                .nargs = 1,
+                .result = V_MAP,
+                .fn = machine_method_attach_cdrom}},
     {.kind = M_METHOD,
      .name = "eject_media",
      .doc = "Take the medium out of a bay, named as attach_hd/attach_cdrom answer it (bus, id)",
-     .method = {.args = machine_eject_media_args, .nargs = 2, .result = V_NONE, .fn = machine_method_eject_media}},
+     .method = {.task = "storage",
+                .args = machine_eject_media_args,
+                .nargs = 2,
+                .result = V_NONE,
+                .fn = machine_method_eject_media}},
 };
 
 static const class_desc_t machine_class = {
     .name = "machine",
     .members = machine_members,
     .n_members = sizeof(machine_members) / sizeof(machine_members[0]),
+    .doc = "The emulated computer",
 };
 
 // === Lifecycle ============================================================
@@ -1592,6 +1615,7 @@ struct object *machine_object(void) {
         s_machine_object = object_new(&machine_class, NULL, "machine");
         if (s_machine_object) {
             object_set_order(s_machine_object, 0); // machine sorts first under the root
+            object_set_domain(s_machine_object, OBJ_DOMAIN_MACHINE);
             object_attach(object_root(), s_machine_object);
             // The read-only built-from record rides along for the process
             // lifetime, like the machine container itself.
@@ -1647,6 +1671,7 @@ static const class_desc_t catalog_class = {
     .name = "catalog",
     .members = catalog_members,
     .n_members = sizeof(catalog_members) / sizeof(catalog_members[0]),
+    .doc = "What the emulator can build or fit: models, card drivers, option ROMs",
 };
 
 static struct object *s_catalog_object = NULL;

@@ -1,0 +1,8 @@
+debug.breakpoints.add <addr> [condition] [space: logical | physical]
+  addr       uint, hex  address
+  condition  string     optional condition string
+  space      enum       "logical" (default) or "physical" (default logical)
+
+Add a breakpoint (logical-space by default; pass space="physical" for
+the 68030 PMMU path); adding an address that already has one returns
+that entry

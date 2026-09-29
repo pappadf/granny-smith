@@ -933,7 +933,10 @@ static value_t ain_attr_peak(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t ain_load_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "PCM16 WAV prepared at the codec rate (mono or stereo)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "PCM16 WAV prepared at the codec rate (mono or stereo)"},
 };
 
 static const member_t av_audioin_members[] = {
@@ -1056,6 +1059,7 @@ static value_t ain_cap_method_stop(struct object *self, const member_t *m, int a
 static const arg_decl_t ain_cap_stop_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Write the capture here as a PCM16 WAV (replayable with audioin.load)"},
 };

@@ -427,7 +427,7 @@ static value_t prom_method_identify(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t prom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "PCI expansion-ROM file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "PCI expansion-ROM file path"},
 };
 
 static const member_t prom_members[] = {
@@ -445,6 +445,7 @@ static const class_desc_t prom_class = {
     .name = "prom",
     .members = prom_members,
     .n_members = sizeof(prom_members) / sizeof(prom_members[0]),
+    .doc = "Registry of PCI expansion ROM files",
 };
 
 // ============================================================================

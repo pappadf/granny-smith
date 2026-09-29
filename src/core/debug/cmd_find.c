@@ -282,4 +282,5 @@ const class_desc_t find_class = {
     .name = "find",
     .members = find_members,
     .n_members = sizeof(find_members) / sizeof(find_members[0]),
+    .doc = "Search guest memory for strings, bytes and integers",
 };

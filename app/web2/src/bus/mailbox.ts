@@ -75,7 +75,11 @@ export const EVT_LOG = 20;
 // {"$buf": handle, "ptr": p, "len": n}: the JSON lies in a STAGED BUFFER in
 // the core's heap, read here and released with REQ_ACK_BUF.
 // EVT_PROGRESS / EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json;
-// progress is {"id": request, "done": n, "total": n}.
+// progress is {"id": request, "done": n, "total": n}.  A job's EVT_LOG
+// records are "output" (its printed text) and, among them at the positions
+// they describe, the annotations "value_begin" / "value" (bracketing a value
+// the REPL printed; "json" is the value as tagged JSON) and "error" (a
+// statement error whose text went to stderr: file, line, message, lines).
 const EVAL_WORDS = 5;
 const RESULT_ID = 0;
 const RESULT_OK = 1;

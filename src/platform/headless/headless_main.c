@@ -421,6 +421,22 @@ static bool hl_pump_once(void) {
 // A job's printed output arrives as EVT_LOG output records (mailbox.h);
 // this prints the text -- or, framed, hands the record to the client as an
 // `@out` line.
+// A job's annotation records (value_begin / value / error, mailbox.h): to a
+// framed client as `@value_begin <json>`, `@value <json>`, `@error <json>`
+// lines among its `@out` lines; unframed output ignores them.
+static void hl_print_annotation(const char *json) {
+    static const char *const kinds[] = {"value_begin", "value", "error"};
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        char key[40];
+        snprintf(key, sizeof key, "{\"event\":\"%s\",", kinds[i]);
+        if (strncmp(json, key, strlen(key)) == 0) {
+            printf("@%s %s\n", kinds[i], json);
+            fflush(stdout);
+            return;
+        }
+    }
+}
+
 static void hl_print_output_record(const char *json) {
     if (g_framed) {
         printf("@out %s\n", json);
@@ -489,6 +505,8 @@ static bool hl_take_events(uint32_t id, int *rc) {
                 json[n] = '\0';
                 if (strstr(json, "\"event\":\"output\"") == json + 1)
                     hl_print_output_record(json);
+                else if (g_framed)
+                    hl_print_annotation(json);
             }
         }
     }

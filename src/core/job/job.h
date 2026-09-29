@@ -109,6 +109,15 @@ uint32_t job_call_request_id(uint32_t token);
 // before the job's result.
 bool job_output_append(const char *text, size_t len);
 
+// Places an annotation record in the calling job's record stream at the
+// current output position (same context test as job_output_append): after
+// the text printed so far, before whatever is printed next.  Written as
+// {"event":"<kind>","id":req,"client":c,<fields>}; `fields` and `reduced`
+// are JSON object bodies without braces.  When the full record would exceed
+// the ring's record bound the `reduced` body is used instead (callers keep it
+// ≤ 8 KiB).  False outside a job, or past the 1 MiB output cut.
+bool job_annotate(const char *kind, const char *fields, const char *reduced);
+
 // --- Inline mode --------------------------------------------------------------
 // Without a job thread a script runs on the emulator thread inside the
 // drain (mailbox.c serve_script), and a leaf that starts a mode cannot be

@@ -1987,12 +1987,12 @@ static const member_t scc_ch_members[] = {
      .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending}},
     {.kind = M_ATTR,
      .name = "sent_pending",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Bytes the guest has transmitted that are waiting in the host-side capture buffer",
      .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending}},
     {.kind = M_ATTR,
      .name = "sent_dropped",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Transmitted bytes lost because the capture buffer overflowed; nonzero means a script drained too "
             "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}},
     {.kind = M_ATTR,
@@ -2037,7 +2037,7 @@ static const member_t scc_members[] = {
     {.kind = M_METHOD,
      .name = "reset",
      .doc = "Reset the SCC (both channels)",
-     .flags = 0,
+     .flags = M_CAT_ADVANCED,
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}      },
 };
 

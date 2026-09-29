@@ -52,6 +52,15 @@ void object_compute_path(struct object *obj, char *buf, size_t buf_size);
 typedef value_t (*meta_complete_fn)(const char *line, int cursor);
 void meta_set_complete_provider(meta_complete_fn fn);
 
+// Type descriptor {kind, width, presentation, enum} for a slot: what
+// meta.members exports for attributes, arguments and results.
+value_t meta_type_descriptor(value_kind_t kind, uint8_t width, uint16_t presentation, const char *const *enum_values);
+const char *meta_kind_text(value_kind_t k); // "uint", "enum", …
+const char *meta_presentation_text(uint16_t flags); // "hex", "path", … or NULL
+
+// The `entries` member of a collection container's class, or NULL.
+const member_t *meta_collection_entries(const class_desc_t *cls);
+
 #ifdef __cplusplus
 }
 #endif

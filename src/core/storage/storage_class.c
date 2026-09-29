@@ -166,6 +166,7 @@ static const class_desc_t storage_image_class = {
     .name = "image",
     .members = storage_image_members,
     .n_members = sizeof(storage_image_members) / sizeof(storage_image_members[0]),
+    .doc = "One configured disk image",
 };
 
 static struct object *storage_images_get(struct object *self, int index) {
@@ -255,8 +256,11 @@ static value_t storage_method_import(struct object *self, const member_t *m, int
 }
 
 static const arg_decl_t storage_import_args[] = {
-    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"                                     },
-    {.name = "dst_path",  .kind = V_STRING, .doc = "Destination path (e.g. under /opfs/images/<category>/)"},
+    {.name = "host_path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Host path to read"},
+    {.name = "dst_path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Destination path (e.g. under /opfs/images/<category>/)"                                  },
 };
 
 static const member_t storage_images_collection_members[] = {
@@ -273,6 +277,7 @@ const class_desc_t storage_images_collection_class = {
     .name = "storage_images",
     .members = storage_images_collection_members,
     .n_members = sizeof(storage_images_collection_members) / sizeof(storage_images_collection_members[0]),
+    .doc = "The machine's configured disk images",
 };
 
 // `files.list_dir(path)` — list directory entries via the VFS as a
@@ -316,7 +321,7 @@ static value_t storage_method_list_dir(struct object *self, const member_t *m, i
 }
 
 static const arg_decl_t storage_list_dir_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Directory path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Directory path"},
 };
 
 // === Disk-image probe / mount surface =======================================
@@ -716,8 +721,8 @@ static const arg_decl_t storage_compare_args[] = {
 };
 
 static const arg_decl_t storage_cp_args[] = {
-    {.name = "src", .kind = V_STRING, .doc = "Source path (host or VFS)"},
-    {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
+    {.name = "src",  .kind = V_STRING, .presentation_flags = VAL_PATH,       .doc = "Source path (host or VFS)"     },
+    {.name = "dst",  .kind = V_STRING, .presentation_flags = VAL_PATH,       .doc = "Destination path"              },
     {.name = "flag", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional -r / -R for recursive"},
 };
 // === The file-transfer window =================================================
@@ -840,53 +845,67 @@ static value_t storage_method_xfer_read(struct object *self, const member_t *m, 
 }
 
 static const arg_decl_t storage_xfer_args[] = {
-    {.name = "path",   .kind = V_STRING, .doc = "File path"                           },
-    {.name = "offset", .kind = V_UINT,   .doc = "Byte offset in the file"             },
-    {.name = "len",    .kind = V_UINT,   .doc = "Byte count (at most files.xfer_size)"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "File path"},
+    {.name = "offset", .kind = V_UINT, .doc = "Byte offset in the file"},
+    {.name = "len", .kind = V_UINT, .doc = "Byte count (at most files.xfer_size)"},
 };
 
 static const arg_decl_t storage_export_raw_args[] = {
-    {.name = "src", .kind = V_STRING, .doc = "Source image path (host, or nested inside a mounted image)"},
-    {.name = "dst", .kind = V_STRING, .doc = "Destination host path for the decoded raw image"           },
+    {.name = "src",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Source image path (host, or nested inside a mounted image)"},
+    {.name = "dst",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Destination host path for the decoded raw image"           },
 };
 static const arg_decl_t storage_find_media_args[] = {
-    {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
-    {.name = "dst", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
+    {.name = "dir", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Directory to scan"},
+    {.name = "dst",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Optional path to copy match into"},
 };
 static const arg_decl_t storage_hd_create_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image output path"                                   },
-    {.name = "size", .kind = V_NONE,   .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image output path"},
+    {.name = "size", .kind = V_NONE, .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
 };
 static const arg_decl_t storage_rm_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Path to remove (recursive)"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Path to remove (recursive)"},
 };
 static const arg_decl_t storage_mv_args[] = {
-    {.name = "src", .kind = V_STRING, .doc = "Source path"     },
-    {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
+    {.name = "src", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Source path"     },
+    {.name = "dst", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Destination path"},
 };
 static const arg_decl_t storage_fd_create_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image output path"},
+    {.name = "path",         .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image output path"},
     {.name = "high_density",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "true = 1.4 MB, false (default) = 800 KB"},
+     .doc = "true = 1.4 MB, false (default) = 800 KB"                                                    },
 };
 static const arg_decl_t storage_profile_create_args[] = {
-    {.name = "path",   .kind = V_STRING, .doc = "Image output path"                                 },
-    {.name = "blocks", .kind = V_NONE,   .doc = "ProFile block count (532-byte blocks; 5 MB = 9728)"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image output path"},
+    {.name = "blocks", .kind = V_NONE, .doc = "ProFile block count (532-byte blocks; 5 MB = 9728)"},
 };
 static const arg_decl_t storage_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image path"},
 };
 // partmap accepts an optional trailing flag (e.g. --json) that the body
 // silently ignores today; declared so the framework's arity check matches.
 static const arg_decl_t storage_partmap_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH,       .doc = "Image path"                   },
     {.name = "flag", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional output flag (--json)"},
 };
 
 static const arg_decl_t files_path_arg_optional[] = {
-    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Directory path (default: cwd)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Directory path (default: cwd)"},
 };
 
 // `files.download(path)` — trigger a browser file download. Routes to the
@@ -997,6 +1016,7 @@ static const member_t storage_members[] = {
      .method = {.args = storage_path_arg, .nargs = 1, .result = V_UINT, .fn = storage_method_path_size}},
     {.kind = M_METHOD,
      .name = "path_compare",
+     .flags = M_CAT_ADVANCED,
      .doc = "Byte-compare two files: -1 if identical, else the first differing offset",
      .method = {.args = storage_compare_args, .nargs = 2, .result = V_INT, .fn = storage_method_path_compare}},
     {.kind = M_METHOD,
@@ -1026,6 +1046,8 @@ static const class_desc_t files_class = {
     .name = "files",
     .members = storage_members,
     .n_members = sizeof(storage_members) / sizeof(storage_members[0]),
+    .doc = "Host files, disk images, image mounts and archives",
+    .task = "storage",
 };
 
 // === files.mounts =============================================================
@@ -1157,6 +1179,7 @@ static const class_desc_t files_mount_class = {
     .name = "mount",
     .members = files_mount_members,
     .n_members = sizeof(files_mount_members) / sizeof(files_mount_members[0]),
+    .doc = "One cached disk-image mount",
 };
 
 // Free entry objects whose mount is gone.
@@ -1231,6 +1254,7 @@ static const class_desc_t files_mounts_class = {
     .name = "mounts",
     .members = files_mounts_members,
     .n_members = sizeof(files_mounts_members) / sizeof(files_mounts_members[0]),
+    .doc = "Cached disk-image mounts, by mount serial",
 };
 
 struct object *files_object(void) {

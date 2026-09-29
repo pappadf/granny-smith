@@ -882,27 +882,36 @@ CPU_CCR_BIT_RW(n, cpu_ccr_n)
 CPU_CCR_BIT_RW(x, cpu_ccr_x)
 // clang-format on
 
-#define ATTR_RW_HEX(name_, get_, set_, doc_)                                                                           \
+#define ATTR_RW_HEX_F(name_, get_, set_, doc_, flags_)                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .flags = flags_, .attr = {                                         \
             .type = V_UINT,                                                                                            \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = get_,                                                                                               \
             .set = set_                                                                                                \
         }                                                                                                              \
     }
-#define ATTR_RO(name_, get_, doc_)                                                                                     \
+#define ATTR_RW_HEX(name_, get_, set_, doc_) ATTR_RW_HEX_F(name_, get_, set_, doc_, 0)
+// The same, shown only under the Advanced toggle.
+#define ATTR_RW_HEX_ADV(name_, get_, set_, doc_) ATTR_RW_HEX_F(name_, get_, set_, doc_, M_CAT_ADVANCED)
+// A read-only counter, shown only under the Advanced toggle.
+#define ATTR_RO_ADV(name_, get_, doc_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .flags = VAL_RO, .doc = doc_, .attr = {                                         \
+        .kind = M_ATTR, .name = name_, .flags = VAL_RO | M_CAT_ADVANCED, .doc = doc_, .attr = {                        \
             .type = V_UINT,                                                                                            \
             .get = get_,                                                                                               \
             .set = NULL                                                                                                \
         }                                                                                                              \
     }
-// A condition-code bit: one of the five CCR flags, readable and writable as 0/1.
+// A condition-code bit: one of the five CCR flags, readable and writable as 0/1
+// (Advanced: SR and CCR already show them).
 #define ATTR_RW_BIT(name_, get_, set_, doc_)                                                                           \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {.type = V_UINT, .get = get_, .set = set_ }                \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .flags = M_CAT_ADVANCED, .attr = {                                 \
+            .type = V_UINT,                                                                                            \
+            .get = get_,                                                                                               \
+            .set = set_                                                                                                \
+        }                                                                                                              \
     }
 // D0..D7 and A0..A7 differ only by number, so generate their doc text too --
 // sixteen hand-written strings saying "data register 3" would be sixteen
@@ -914,11 +923,11 @@ CPU_CCR_BIT_RW(x, cpu_ccr_x)
 static const member_t cpu_members[] = {
     ATTR_RW_HEX("pc",  attr_cpu_pc,  set_cpu_pc,  "Program counter — address of the next instruction to execute"),
     ATTR_RW_HEX("sr",  attr_cpu_sr,  set_cpu_sr,  "Status register: the CCR in the low byte, plus the supervisor/trace bits and interrupt mask"),
-    ATTR_RW_HEX("ccr", attr_cpu_ccr, set_cpu_ccr, "Condition code register — the low byte of SR (X, N, Z, V, C)"),
-    ATTR_RW_HEX("ssp", attr_cpu_ssp, set_cpu_ssp, "Supervisor stack pointer, the A7 seen in supervisor mode"),
-    ATTR_RW_HEX("usp", attr_cpu_usp, set_cpu_usp, "User stack pointer, the A7 seen in user mode"),
-    ATTR_RW_HEX("msp", attr_cpu_msp, set_cpu_msp, "Master stack pointer (68020+); used instead of SSP when SR's M bit is set"),
-    ATTR_RW_HEX("vbr", attr_cpu_vbr, set_cpu_vbr, "Vector base register (68010+) — where the exception vector table starts"),
+    ATTR_RW_HEX_ADV("ccr", attr_cpu_ccr, set_cpu_ccr, "Condition code register — the low byte of SR (X, N, Z, V, C)"),
+    ATTR_RW_HEX_ADV("ssp", attr_cpu_ssp, set_cpu_ssp, "Supervisor stack pointer, the A7 seen in supervisor mode"),
+    ATTR_RW_HEX_ADV("usp", attr_cpu_usp, set_cpu_usp, "User stack pointer, the A7 seen in user mode"),
+    ATTR_RW_HEX_ADV("msp", attr_cpu_msp, set_cpu_msp, "Master stack pointer (68020+); used instead of SSP when SR's M bit is set"),
+    ATTR_RW_HEX_ADV("vbr", attr_cpu_vbr, set_cpu_vbr, "Vector base register (68010+) — where the exception vector table starts"),
     ATTR_RW_HEX("sp",  attr_cpu_sp,  set_cpu_sp,  "Whichever stack pointer A7 currently selects, following the SR's S and M bits"),
     CPU_DREG_MEMBER(0), CPU_DREG_MEMBER(1), CPU_DREG_MEMBER(2), CPU_DREG_MEMBER(3),
     CPU_DREG_MEMBER(4), CPU_DREG_MEMBER(5), CPU_DREG_MEMBER(6), CPU_DREG_MEMBER(7),
@@ -929,7 +938,7 @@ static const member_t cpu_members[] = {
     ATTR_RW_BIT("z", attr_cpu_cc_z, set_cpu_cc_z, "Zero flag"),
     ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
     ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
-    ATTR_RO("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
+    ATTR_RO_ADV("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
     {.kind = M_METHOD, .name = "frame",
      .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
      .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},
@@ -940,6 +949,8 @@ static const class_desc_t cpu_class = {
     .name = "cpu",
     .members = cpu_members,
     .n_members = sizeof(cpu_members) / sizeof(cpu_members[0]),
+    .doc = "The main CPU: registers and execution state",
+    .task = "debug",
 };
 
 // === CPU.fpu child class ====================================================

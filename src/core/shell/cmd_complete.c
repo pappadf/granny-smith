@@ -19,6 +19,7 @@
 #include <strings.h>
 
 #include "../object/alias.h"
+#include "../object/meta.h"
 #include "../object/object.h"
 #include "../object/value.h"
 #include "../vfs/vfs.h"
@@ -80,7 +81,36 @@ static void push_match(struct completion *out, const char *cand, const char *pre
         if (out->items[i] && strcmp(out->items[i], cand) == 0)
             return;
     }
+    out->kinds[out->count] = (uint8_t)out->cur_kind;
+    out->docs[out->count] = out->cur_doc;
+    out->tasks[out->count] = out->cur_task;
     out->items[out->count++] = cand;
+}
+
+const char *comp_kind_name(comp_kind_t k) {
+    switch (k) {
+    case COMP_KIND_OBJECT:
+        return "object";
+    case COMP_KIND_COLLECTION:
+        return "collection";
+    case COMP_KIND_ATTR:
+        return "attr";
+    case COMP_KIND_METHOD:
+        return "method";
+    case COMP_KIND_ALIAS:
+        return "alias";
+    case COMP_KIND_KEYWORD:
+        return "keyword";
+    default:
+        return "value";
+    }
+}
+
+// Set the detail the next candidates get.
+static void set_detail(struct completion *out, comp_kind_t kind, const char *doc, const char *task) {
+    out->cur_kind = kind;
+    out->cur_doc = doc;
+    out->cur_task = task;
 }
 
 // === Filesystem path completion =============================================
@@ -118,6 +148,7 @@ static void complete_paths(const char *prefix, struct completion *out) {
     if (vfs_opendir(dir, &vd, &be) < 0)
         return;
     vfs_dirent_t ent;
+    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
     while (out->count < CMD_MAX_COMPLETIONS) {
         int rc = be->readdir(vd, &ent);
         if (rc <= 0)
@@ -156,12 +187,14 @@ static void complete_paths(const char *prefix, struct completion *out) {
 static void complete_enum(const char *const *enum_values, const char *partial, struct completion *out) {
     if (!enum_values)
         return;
+    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
     for (const char *const *ev = enum_values; *ev; ev++)
         push_match(out, *ev, partial);
 }
 
 static void complete_bool(const char *partial, struct completion *out) {
     static const char *bool_values[] = {"on", "off", "true", "false", NULL};
+    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
     for (const char **v = bool_values; *v; v++)
         push_match(out, *v, partial);
 }
@@ -296,13 +329,24 @@ static void push_name_match(struct completion *out, const char *name, bool is_ob
     push_match(out, pool_strdup(buf), tail);
 }
 
-static void complete_class_members(const class_desc_t *cls, const char *tail, struct completion *out) {
+// Detail kind of a child object: a collection container or a plain object.
+static comp_kind_t object_kind(struct object *o) {
+    return (o && meta_collection_entries(object_class(o))) ? COMP_KIND_COLLECTION : COMP_KIND_OBJECT;
+}
+
+static void complete_class_members(struct object *target, const char *tail, struct completion *out) {
+    const class_desc_t *cls = object_class(target);
     if (!cls)
         return;
     for (size_t i = 0; i < cls->n_members; i++) {
         const member_t *m = &cls->members[i];
         if (!m->name)
             continue;
+        comp_kind_t kind = m->kind == M_ATTR     ? COMP_KIND_ATTR
+                           : m->kind == M_METHOD ? COMP_KIND_METHOD
+                           : m->child.indexed    ? COMP_KIND_COLLECTION
+                                                 : COMP_KIND_OBJECT;
+        set_detail(out, kind, m->doc, target ? member_effective_task(target, m, NULL) : NULL);
         push_name_match(out, m->name, m->kind == M_CHILD, tail);
     }
 }
@@ -319,6 +363,7 @@ static void each_attached_cb(struct object *parent, struct object *child, void *
     if (!name)
         return;
     // Attached children are objects: complete to "name.".
+    set_detail(acc->out, object_kind(child), object_doc(child), member_effective_task(parent, NULL, child));
     push_name_match(acc->out, name, true, acc->tail);
 }
 
@@ -334,6 +379,7 @@ static void complete_attached(struct object *o, const char *tail, struct complet
 static void complete_indexed_children(struct object *o, const member_t *m, const char *tail, struct completion *out) {
     if (!o || !m || m->kind != M_CHILD || !m->child.indexed)
         return;
+    set_detail(out, COMP_KIND_OBJECT, NULL, member_effective_task(o, m, NULL));
     int idx = object_child_next(o, m, -1);
     while (idx >= 0 && out->count < CMD_MAX_COMPLETIONS) {
         // Indexed children resolve to objects: complete to "N.".
@@ -422,7 +468,7 @@ static void complete_path(const char *partial, struct completion *out) {
                 target = n.member->child.lookup(n.obj, n.member->name);
         }
         if (target) {
-            complete_class_members(object_class(target), tail, &local);
+            complete_class_members(target, tail, &local);
             complete_attached(target, tail, &local);
         }
     }
@@ -442,8 +488,12 @@ static void complete_path(const char *partial, struct completion *out) {
             break;
         // Push as raw — push_match would re-filter against `partial` here,
         // but we already filtered against `tail`, so use a direct append.
-        if (out->count < CMD_MAX_COMPLETIONS)
+        if (out->count < CMD_MAX_COMPLETIONS) {
+            out->kinds[out->count] = local.kinds[i];
+            out->docs[out->count] = local.docs[i];
+            out->tasks[out->count] = local.tasks[i];
             out->items[out->count++] = copy;
+        }
     }
 }
 
@@ -479,6 +529,7 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
             if (!nm || strlen(nm) != name_len || strncmp(nm, partial, name_len) != 0)
                 continue;
             char buf[160];
+            set_detail(out, COMP_KIND_VALUE, args[i].doc, NULL);
             if (args[i].kind == V_ENUM && args[i].enum_values) {
                 for (const char *const *ev = args[i].enum_values; *ev; ev++) {
                     snprintf(buf, sizeof(buf), "%s=%s", nm, *ev);
@@ -535,6 +586,7 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
             continue;
         char nbuf[96];
         snprintf(nbuf, sizeof(nbuf), "%s=", args[i].name);
+        set_detail(out, COMP_KIND_ATTR, args[i].doc, NULL);
         push_match(out, pool_strdup(nbuf), partial);
     }
 }
@@ -545,7 +597,7 @@ static void complete_root_members(const char *tail, struct completion *out) {
     struct object *root = object_root();
     if (!root)
         return;
-    complete_class_members(object_class(root), tail, out);
+    complete_class_members(root, tail, out);
     complete_attached(root, tail, out);
 }
 
@@ -640,11 +692,75 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
 
 static void complete_bindings(const char *prefix, struct completion *out) {
     binding_complete_ctx_t cc = {.out = out, .prefix = prefix};
+    set_detail(out, COMP_KIND_ALIAS, NULL, NULL);
     // Scope bindings first (let / --var), then the alias table. The
     // alias walk is prefix-filtered in its callback so the ~500-entry
     // mac-global table doesn't flood a bare `$`.
     shell_var_each(binding_complete_var_cb, &cc);
     alias_each(binding_complete_alias_cb, &cc);
+}
+
+// True when `word` (length n) is a `name=value` argument: an identifier
+// followed by '='.
+static bool is_named_word(const char *word, int n) {
+    if (n <= 0 || !(isalpha((unsigned char)word[0]) || word[0] == '_'))
+        return false;
+    for (int i = 1; i < n; i++) {
+        if (word[i] == '=')
+            return true;
+        if (!(isalnum((unsigned char)word[i]) || word[i] == '_'))
+            return false;
+    }
+    return false;
+}
+
+// Record the argument context: the method's full path, and the declared
+// slot the cursor's word fills -- its positional slot (earlier `name=`
+// words do not count), or for a `name=` word the slot of that name; a rest
+// argument absorbs every slot past it.
+static void set_arg_context(struct completion *out, node_t cmd, const char *line, cursor_info_t info,
+                            const char *partial) {
+    const member_t *m = cmd.member;
+    char path[200];
+    object_compute_path(cmd.obj, path, sizeof(path));
+    snprintf(out->ctx_method, sizeof(out->ctx_method), "%s%s%s", path, path[0] ? "." : "", m->name);
+    int n = m->method.nargs;
+    const arg_decl_t *args = m->method.args;
+    int slot = -1;
+    int plen = (int)strlen(partial);
+    if (is_named_word(partial, plen)) {
+        const char *eq = strchr(partial, '=');
+        size_t nl = (size_t)(eq - partial);
+        for (int i = 0; i < n && args; i++)
+            if (args[i].name && strlen(args[i].name) == nl && strncmp(args[i].name, partial, nl) == 0)
+                slot = i;
+    } else {
+        // Count the positional words between the command and this word.
+        int positional = 0;
+        int i = info.first_word_end;
+        while (i >= 0 && i < info.word_start) {
+            while (i < info.word_start && isspace((unsigned char)line[i]))
+                i++;
+            if (i >= info.word_start)
+                break;
+            int ws = i;
+            parse_state_t st = {0};
+            while (i < info.word_start && (in_special_context(&st) || !isspace((unsigned char)line[i])))
+                i += advance(&st, line, i, info.word_start);
+            if (!is_named_word(line + ws, i - ws))
+                positional++;
+        }
+        slot = positional;
+        if (n > 0 && slot >= n) {
+            if (args && (args[n - 1].validation_flags & OBJ_ARG_REST))
+                slot = n - 1;
+            else
+                slot = -1;
+        }
+    }
+    out->has_context = true;
+    out->ctx_arg_index = slot;
+    out->ctx_arg_name = (slot >= 0 && slot < n && args) ? args[slot].name : NULL;
 }
 
 void shell_complete(const char *line, int cursor_pos, struct completion *out) {
@@ -656,6 +772,11 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     out->count = 0;
     out->start = 0;
     out->end = 0;
+    out->has_context = false;
+    out->ctx_method[0] = '\0';
+    out->ctx_arg_index = -1;
+    out->ctx_arg_name = NULL;
+    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
     pool_reset();
 
     int len = (int)strlen(line);
@@ -698,8 +819,10 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
             // Statement keywords.
             static const char *const kws[] = {"let", "alias", "if",       "elif",   "else", "while",
                                               "for", "break", "continue", "return", "def",  "assert"};
-            for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++)
+            for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++) {
+                set_detail(out, COMP_KIND_KEYWORD, NULL, "shell");
                 push_match(out, kws[i], partial);
+            }
             complete_root_members(partial, out);
         }
         return;
@@ -718,6 +841,8 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     // Resolve as a tree path — root methods and dotted method paths
     // (`floppy.drives[0].insert`) both land here.
     node_t cmd_node = object_resolve(object_root(), first);
-    if (node_valid(cmd_node) && cmd_node.member && cmd_node.member->kind == M_METHOD)
+    if (node_valid(cmd_node) && cmd_node.member && cmd_node.member->kind == M_METHOD) {
+        set_arg_context(out, cmd_node, line, info, partial);
         complete_method_arg(cmd_node.member, info.word_count - 1, partial, out);
+    }
 }

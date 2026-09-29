@@ -756,8 +756,10 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     asc->object = sound_object_new(&surface);
     if (asc->object) {
         struct object *detail = object_new(&asc_detail_class, asc, "asc");
-        if (detail)
+        if (detail) {
+            object_set_category(detail, M_CAT_ADVANCED);
             object_attach(asc->object, detail);
+        }
     }
 
     return asc;

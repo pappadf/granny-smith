@@ -605,7 +605,10 @@ static value_t lisa_fd_drive_index(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t lisa_fd_insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host path or storage URI of the image to mount"                                                          },
     {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
 };
 
@@ -645,7 +648,8 @@ static const class_desc_t lisa_fd_drives_class = {
     .name = "floppy_drives", .members = lisa_fd_drives_members, .n_members = 1};
 
 static const member_t lisa_fd_members[] = {0}; // container only; the drives collection is the child
-static const class_desc_t lisa_fd_class = {.name = "floppy", .members = NULL, .n_members = 0};
+static const class_desc_t lisa_fd_class = {
+    .name = "floppy", .members = NULL, .n_members = 0, .doc = "Floppy controller and drive", .task = "storage"};
 
 // Attach the `floppy` → `drives` → `drives[0]` object tree for this machine.
 static void lisa_register_floppy_object(config_t *cfg) {
@@ -725,7 +729,10 @@ static value_t lisa_hd_save(struct object *self, const member_t *m, int argc, co
 }
 
 static const arg_decl_t lisa_hd_save_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Destination path for the consolidated single-file ProFile image"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Destination path for the consolidated single-file ProFile image"},
 };
 
 // The Lisa's battery-backed parameter memory ($FCC181 in the FDC shared RAM)
@@ -811,12 +818,13 @@ static const arg_decl_t lisa_hd_pram_init_args[] = {
 };
 
 static const arg_decl_t lisa_hd_pram_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Parameter-memory (PRAM) file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Parameter-memory (PRAM) file path"},
 };
 
 static const arg_decl_t lisa_hd_attach_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
      .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"},

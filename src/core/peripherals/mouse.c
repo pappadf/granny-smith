@@ -306,15 +306,15 @@ static const member_t mouse_members[] = {
     {.kind = M_METHOD,
      .name = "move",
      .doc = "Set mouse position; optional mode chooses the routing path",
-     .method = {.args = mouse_move_args, .nargs = 3, .result = V_BOOL, .fn = mouse_method_move}  },
+     .method = {.args = mouse_move_args, .nargs = 3, .result = V_BOOL, .fn = mouse_method_move}                 },
     {.kind = M_METHOD,
      .name = "click",
      .doc = "Press or release the mouse button; optional mode chooses the routing path",
-     .method = {.args = mouse_click_args, .nargs = 2, .result = V_BOOL, .fn = mouse_method_click}},
+     .method = {.args = mouse_click_args, .nargs = 2, .result = V_BOOL, .fn = mouse_method_click}               },
     {.kind = M_METHOD,
      .name = "trace",
      .doc = "Toggle the 1 Hz mouse-position trace logger",
-     .method = {.args = mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_trace}},
+     .method = {.task = "log", .args = mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_trace}},
 };
 
 static const class_desc_t mouse_class = {
