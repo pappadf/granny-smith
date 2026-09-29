@@ -478,7 +478,7 @@ static void complete_path(const char *partial, struct completion *out) {
         const char *cand = local.items[i];
         if (!cand)
             continue;
-        char composed[256];
+        char composed[512];
         if (head[0])
             snprintf(composed, sizeof(composed), "%s.%s", head, cand);
         else
