@@ -18,7 +18,7 @@ family-specific hardware lives under
 | [mouse.md](mouse.md) | ADB mice | content |
 | [video-overview.md](video-overview.md) | 68k-era Mac video hardware | content |
 | [sonic.md](sonic.md) | National DP83932 SONIC Ethernet | stub |
-| [dsp3210.md](dsp3210.md) | AT&T DSP3210 DSP | stub |
+| [dsp3210.md](dsp3210.md) | AT&T DSP3210 DSP | content |
 | [laserwriter-iint.md](laserwriter-iint.md) | LaserWriter II NT board | content |
 
 ## scsi/
@@ -27,7 +27,7 @@ family-specific hardware lives under
 |---|---|---|
 | [scsi/ncr-5380.md](scsi/ncr-5380.md) | NCR 5380 | content |
 | [scsi/loopback-card.md](scsi/loopback-card.md) | Apple SCSI loopback card | content |
-| [scsi/ncr-53c96.md](scsi/ncr-53c96.md) | NCR 53C96 | stub |
+| [scsi/ncr-53c96.md](scsi/ncr-53c96.md) | NCR 53C96 | content |
 | [scsi/sym53c8xx.md](scsi/sym53c8xx.md) | Symbios 53C8xx SCRIPTS engine | stub |
 
 ## nubus/
