@@ -14,7 +14,7 @@ vi.mock('@/bus/emulator', () => {
       if (path === 'meta.members')
         return [
           { name: 'machine', kind: 'child', category: 'basic', label: 'Macintosh IIcx', doc: '' },
-          { name: 'storage', kind: 'child', category: 'basic', label: 'Storage', doc: '' },
+          { name: 'files', kind: 'child', category: 'basic', label: 'Files', doc: '' },
           { name: 'secret', kind: 'child', category: 'internal', label: 'Secret', doc: '' },
           { name: 'echo', kind: 'method', category: 'basic', label: 'echo', doc: '' },
         ];
@@ -30,7 +30,7 @@ describe('SystemView', () => {
       const labels = Array.from(container.querySelectorAll('.label')).map((e) => e.textContent);
       // The machine container leads (model-owned label), the meta object follows.
       expect(labels).toContain('Macintosh IIcx');
-      expect(labels).toContain('Storage');
+      expect(labels).toContain('Files');
       expect(labels).not.toContain('Secret'); // internal nodes are never shown
     });
     // Meta objects sit under the non-interactive "Emulator" divider.

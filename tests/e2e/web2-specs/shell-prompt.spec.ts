@@ -83,7 +83,7 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
   await page.keyboard.press('Tab');
   await expect
     .poll(() => lastTermLine(page), { timeout: 10_000 })
-    .toMatch(/^gs> vfs\.ls \/opfs\/$/);
+    .toMatch(/^gs> files\.ls \/opfs\/$/);
 });
 
 test('shell history persists across reloads via OPFS', async ({ page }) => {
