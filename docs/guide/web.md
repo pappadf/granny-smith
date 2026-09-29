@@ -402,7 +402,9 @@ Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
      true` for headless automation
      ([`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs)).
    - `maybeOfferBackgroundCheckpoint()` — surfaces a resume prompt if
-     this browser's machine has a saved checkpoint.
+     this browser's machine has a saved checkpoint.  Skipped when the URL
+     boots a machine (it has a `rom=`): the saved checkpoint is left
+     unoffered.
    - `processUrlMedia()` — handles the URL's media parameters (any of
      them starts it).
 
@@ -656,6 +658,24 @@ and invoked from `main.ts` after `whenModuleReady()` resolves.  A URL with a
 `rom=` boots straight into a running machine: no Welcome view, no
 configuration dialog.
 
+**Nothing is asked on such a load.** `main.ts` marks it before mount
+([`state/urlBoot.svelte.ts`](../../app/web2/src/state/urlBoot.svelte.ts)
+`beginUrlBoot`), which keeps the "preview build" notice closed (it waits for
+a visit to the start screen) and skips the resume-from-checkpoint prompt.
+In Welcome's place the display shows
+[`UrlBootView`](../../app/web2/src/components/display/UrlBootView.svelte):
+the Granny Smith headline, "Downloading the machine's ROM and disks…", and one
+row per file with its name and a progress bar.  The bar fills from the
+response's `Content-Length`; without one (a streamed zip member, a compressed
+response) it is indeterminate, with the bytes received so far.  Rows go
+Waiting → downloading → Unpacking… (a container member) → ✓ size, then
+"Starting the machine…" until the core reports it running, when the view
+goes (a later Shut Down shows the ordinary Welcome).  The ROM is fetched
+first; if it cannot be had, the disks are not fetched ("Not needed"), and the
+view says why and offers **Go to the start screen**.  A failed disk does not
+stop the boot.  Per-file "fetched" toasts are left to pages not showing the
+view; errors still toast.
+
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
   auto-boots.  **Given twice** (`rom=<chip>&rom=<chip>`) it names the two
   byte-wide chips of a ROM dumped as halves — the Lisa's `341-0175`/`341-0176`,
@@ -673,8 +693,9 @@ configuration dialog.
   parameter-memory checksum left invalid (`machine.hd.pram_init(2, false)`),
   so the boot ROM goes to the ProFile instead of its startup-device screen and
   the OS restores its device table from the disk's own snapshot.  A bare HFS volume
-  (no partition map — the Mini vMac / archive.org shape) is attached
-  through the bare-volume wrapper and boots
+  (no partition map — the Mini vMac / archive.org shape), or a partitioned
+  disk with no driver (the Disk Copy / SheepShaver shape), is attached
+  through the volume wrapper and boots
   ([bare-volume-wrapper.md](../core/storage/bare-volume-wrapper.md)).
 - `cd=<url>` — downloaded into `/opfs/images/cd/`, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
@@ -787,9 +808,10 @@ The same sequence as Module Bootstrapping above, end to end:
    machine checkpoint dir.
 4. `whenModuleReady()` resolves; `__gsReady = true`.
 5. `maybeOfferBackgroundCheckpoint()` — surfaces a resume prompt if a
-   `state.checkpoint` exists.
+   `state.checkpoint` exists (not when the URL has a `rom=`).
 6. If the URL has any media parameter → `processUrlMedia()` downloads
-   and auto-boots.
+   and auto-boots; with a `rom=`, the download progress view stands in for
+   Welcome meanwhile.
 7. Otherwise the Welcome view sits on top of the canvas. The user drops
    a ROM on the Display or opens the New Machine dialog.
 8. The New Machine dialog scans `/opfs/images/rom/`, identifies each via

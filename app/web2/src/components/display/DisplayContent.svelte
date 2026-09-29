@@ -1,6 +1,8 @@
 <script lang="ts">
   import { machine } from '@/state/machine.svelte';
   import WelcomeView from './WelcomeView.svelte';
+  import UrlBootView from './UrlBootView.svelte';
+  import { urlBoot, dismissUrlBoot } from '@/state/urlBoot.svelte';
   import ScreenView from './ScreenView.svelte';
   import DropOverlay from './DropOverlay.svelte';
 
@@ -11,7 +13,15 @@
   // Layering note: ScreenView is always mounted so bus.emulator.bootstrap()
   // can hand Emscripten a stable canvas reference at page load. Welcome
   // sits on top until a machine is running.
-  const showWelcome = $derived(machine.status === 'no-machine' || machine.status === 'stopped');
+  const idle = $derived(machine.status === 'no-machine' || machine.status === 'stopped');
+  // A page opened to boot from its URL shows the download progress in
+  // Welcome's place until the machine runs; after that (a later Shut Down)
+  // it is the ordinary Welcome again.
+  const showUrlBoot = $derived(idle && urlBoot.showProgress);
+  const showWelcome = $derived(idle && !urlBoot.showProgress);
+  $effect(() => {
+    if (!idle && urlBoot.showProgress) dismissUrlBoot();
+  });
 </script>
 
 <div class="gs-display-content">
@@ -19,6 +29,10 @@
   {#if showWelcome}
     <div class="welcome-layer">
       <WelcomeView />
+    </div>
+  {:else if showUrlBoot}
+    <div class="welcome-layer url-boot-layer">
+      <UrlBootView />
     </div>
   {/if}
   <DropOverlay />

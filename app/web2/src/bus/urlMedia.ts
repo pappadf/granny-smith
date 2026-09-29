@@ -17,12 +17,23 @@
 // into OPFS behind the caller's back.  A file that does not
 // validate as its slot's category is attached from its staging copy, with a
 // warning.
+//
+// While a ROM-led boot runs (state/urlBoot: the page was opened to boot),
+// every file is listed up front and its download progress reported for the
+// progress view that stands in for Welcome (components/display/UrlBootView).
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, setStartupDisk } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
+import {
+  urlBoot,
+  queueUrlFile,
+  updateUrlFile,
+  setUrlBootStage,
+  skipQueuedUrlFiles,
+} from '@/state/urlBoot.svelte';
 import { setMounted } from '@/state/images.svelte';
 import { sanitizeName, unzipAll, isMacArchive } from '@/lib/archive';
 import {
@@ -125,6 +136,7 @@ export function hasUrlMedia(params: UrlMediaParams): boolean {
 export async function processUrlMedia(rawParams: URLSearchParams): Promise<boolean> {
   if (!isModuleReady()) {
     showNotification('Emulator still starting; URL media skipped', 'warning');
+    setUrlBootStage('failed', 'The emulator was not ready to take the URL’s media.');
     return false;
   }
   const params = parseUrlMediaParams(rawParams);
@@ -135,10 +147,30 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // fetch failed.  One download at a time: in parallel, every large image
   // was in flight at once.
   const paths = new Map<string, string | undefined>();
-  const wanted: Array<[string, string, MediaTypeId]> = [];
+  if (params.rom) {
+    queueUrlFile('rom', params.rom);
+    if (params.romPair) queueUrlFile('rom2', params.romPair);
+  }
+  if (params.vrom) queueUrlFile('vrom', params.vrom);
+  for (const fd of params.floppies) queueUrlFile(fd.slot, fd.url);
+  for (const hd of params.hardDisks) queueUrlFile(hd.slot, hd.url);
+  if (params.cd) queueUrlFile('cd', params.cd);
+
+  // The ROM first: without it nothing boots, so the disks (which can be
+  // hundreds of megabytes) are not fetched for nothing.
   if (params.rom && params.romPair)
     paths.set('rom', await fetchRomPair(params.rom, params.romPair));
-  else if (params.rom) wanted.push(['rom', params.rom, 'rom']);
+  else if (params.rom) paths.set('rom', await fetchAndPersist('rom', params.rom, 'rom'));
+  if (params.rom && !paths.get('rom')) {
+    skipQueuedUrlFiles();
+    setUrlBootStage(
+      'failed',
+      'There is no ROM to boot: it could not be downloaded, or is not a ROM.',
+    );
+    return false;
+  }
+
+  const wanted: Array<[string, string, MediaTypeId]> = [];
   if (params.vrom) wanted.push(['vrom', params.vrom, 'vrom']);
   for (const fd of params.floppies) wanted.push([fd.slot, fd.url, 'fd']);
   for (const hd of params.hardDisks) wanted.push([hd.slot, hd.url, 'hd']);
@@ -158,11 +190,23 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // prefer the URL's `model=` if it's in the compatible list, else pick the
   // first compatible model.
   const romPath = paths.get('rom');
-  const info = romPath ? await identifyRom(gsEval, romPath) : null;
-  if (!info || !info.compatible.length) {
-    showNotification('Unrecognised ROM in URL params', 'error');
+  if (!romPath) {
+    setUrlBootStage(
+      'failed',
+      'There is no ROM to boot: it could not be downloaded, or is not a ROM.',
+    );
     return false;
   }
+  const info = await identifyRom(gsEval, romPath);
+  if (!info || !info.compatible.length) {
+    showNotification('Unrecognised ROM in URL params', 'error');
+    setUrlBootStage(
+      'failed',
+      'The ROM was downloaded, but it is not one of a machine Granny Smith emulates.',
+    );
+    return false;
+  }
+  setUrlBootStage('booting');
   const chosen =
     params.model && info.compatible.includes(params.model) ? params.model : info.compatible[0];
 
@@ -177,6 +221,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
       `Could not boot ${chosen} from URL parameters: ${gsErrorText(booted)}`,
       'error',
     );
+    setUrlBootStage('failed', `Could not boot ${chosen}: ${gsErrorText(booted)}`);
     return false;
   }
 
@@ -331,9 +376,12 @@ async function fetchAndStage(
   try {
     plan = await planMediaFetch(url, window.location.href, fetchJson);
   } catch (e) {
-    showNotification(`${label}: ${fetchFailureText(e, url)}`, 'error');
+    const msg = fetchFailureText(e, url);
+    showNotification(`${label}: ${msg}`, 'error');
+    updateUrlFile(slot, { status: 'failed', error: msg });
     return null;
   }
+  updateUrlFile(slot, { name: plan.member ?? plan.fileName, status: 'downloading' });
   const staged = `${UPLOAD_DIR}/url_${slot}`;
   try {
     let res: Response;
@@ -346,8 +394,16 @@ async function fetchAndStage(
       const what = res.status === 404 ? 'not found' : `${res.status} ${res.statusText}`;
       throw new MediaUrlError(`${plan.containerName ?? plan.fileName}: ${what}`);
     }
+    const length = Number(res.headers.get('Content-Length'));
+    const total = Number.isFinite(length) && length > 0 ? length : null;
+    updateUrlFile(slot, { total });
     const body = res.body ?? (await res.blob());
-    if (!(await streamToOpfs(staged, body))) return null;
+    if (!(await streamToOpfs(staged, body, progressReporter(slot)))) {
+      updateUrlFile(slot, { status: 'failed', error: 'could not store the download' });
+      return null;
+    }
+    if (plan.member !== null || isMacArchive(plan.fileName))
+      updateUrlFile(slot, { status: 'unpacking' });
 
     const ct = res.headers.get('Content-Type') ?? '';
     let name = plan.fileName;
@@ -356,6 +412,7 @@ async function fetchAndStage(
       if (!(await extractMember(slot, staged, plan))) return null;
     } else if (/\.zip$/i.test(plan.fileName) || /zip/i.test(ct) || (await stagedIsZip(staged))) {
       // A bare zip: its first file, as before member paths existed.
+      updateUrlFile(slot, { status: 'unpacking' });
       const first = (await unzipAll(await xferReadAll(staged)))[0];
       if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
       if (!(await streamToOpfs(staged, first.data))) return null;
@@ -367,14 +424,35 @@ async function fetchAndStage(
     const size = await gsEval('storage.path_size', [staged]);
     const from = plan.containerName ? ` from ${plan.containerName}` : '';
     const sz = typeof size === 'number' ? ` (${sizeText(size)})` : '';
-    showNotification(`${label}: ${name}${from}${sz}`, 'info');
+    // The progress view lists each file as it lands; a toast per file is
+    // for a page that is not showing it.
+    if (!urlBoot.requested) showNotification(`${label}: ${name}${from}${sz}`, 'info');
+    updateUrlFile(slot, {
+      name,
+      status: 'done',
+      ...(typeof size === 'number' ? { received: size, total: size } : {}),
+    });
     return { path: staged, name: sanitizeName(name) || slot };
   } catch (e) {
     console.error(`[urlMedia] fetch ${slot} failed`, e);
-    showNotification(`${label}: ${fetchFailureText(e, plan.fetchUrl)}`, 'error');
+    const msg = fetchFailureText(e, plan.fetchUrl);
+    showNotification(`${label}: ${msg}`, 'error');
+    updateUrlFile(slot, { status: 'failed', error: msg });
     await discardStaging(staged);
     return null;
   }
+}
+
+// A streamToOpfs progress callback for `slot`'s row in the progress view, at
+// most ten updates a second (a large download reports every network chunk).
+function progressReporter(slot: string): (bytes: number) => void {
+  let last = 0;
+  return (bytes) => {
+    const now = performance.now();
+    if (now - last < 100) return;
+    last = now;
+    updateUrlFile(slot, { received: bytes });
+  };
 }
 
 // Replace the container staged at `staged` with its member `plan.member`.

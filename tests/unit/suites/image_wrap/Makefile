@@ -1,7 +1,9 @@
 # The bare-volume wrapper's layout (src/core/storage/image_wrap.c): the
 # synthesised Driver Descriptor Map and partition map are checked with the
 # in-tree APM parser, the driver-partition checksum against the ROM's
-# algorithm, and the bare-volume sniff against partitioned and non-HFS heads.
+# algorithm, the bare-volume sniff against partitioned and non-HFS heads, and
+# the driverless-partitioned-disk sniff against disks with drivers, several or
+# no HFS partitions, and A/UX partitions.
 # No guest boot: tests/integration/scsi-bare-volume boots the result.
 
 TEST_NAME    := image_wrap
