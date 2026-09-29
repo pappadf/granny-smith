@@ -99,10 +99,10 @@ static const struct vrom_known VROM_CATALOG[] = {
 
 #define VROM_CATALOG_COUNT (sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]))
 
-// Content-identification core shared by vrom.identify, the offer registry,
+// Content-identification core shared by catalog.vroms.identify, the offer registry,
 // and the card factories' loader (declrom_load_vrom_card).  Reads the file's
 // trailing Format Block, gates on the $5A932BC7 TestPattern, and looks the
-// CRC up in the catalog.  Result codes let vrom.identify keep its
+// CRC up in the catalog.  Result codes let catalog.vroms.identify keep its
 // error/unrecognised distinction.
 enum vrom_id_result {
     VROM_ID_UNREADABLE, // stat/open/read failed
@@ -291,7 +291,7 @@ static value_t vrom_attr_size(struct object *self, const member_t *m) {
     return val_uint(4, VROM_EXPECTED_SIZE);
 }
 
-// vrom.offer(path) — platform/UI hook into the offer registry, e.g. web2's
+// catalog.vroms.offer(path) — platform/UI hook into the offer registry, e.g. web2's
 // upload ingest offering a freshly stored file so an "(auto)" boot sees it
 // without a page reload.  Returns true iff the file was recognised and
 // registered; false is "not a vROM", not an error.
@@ -306,7 +306,7 @@ static value_t vrom_method_offer(struct object *self, const member_t *m, int arg
     return val_bool(recognised);
 }
 
-// vrom.identify(path) — returns a JSON map of content facts describing the
+// catalog.vroms.identify(path) — returns a JSON map of content facts describing the
 // file, keyed off the declaration ROM's Format-Block CRC:
 //   {
 //     "recognised":     bool,
@@ -318,7 +318,7 @@ static value_t vrom_method_offer(struct object *self, const member_t *m, int arg
 // `compatible` mirrors rom.identify's `compatible:[model_ids]` shape (a list,
 // usually length 1).  JS callers use crc to persist the file under a stable
 // content-addressed name, and card_id / compatible to pick the card; the
-// human-readable name comes from machine.profile, not here.  (The card
+// human-readable name comes from catalog.profile, not here.  (The card
 // factories load by CONTENT — declrom_load_vrom_card — so the on-disk name
 // never matters.)
 static value_t vrom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -334,7 +334,7 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
         // Distinguish "can't read the file" from "present, but not a vROM",
         // mirroring rom.identify: a missing/unreadable path is a V_ERROR,
         // while a real file of the wrong size is simply unrecognised.
-        return val_err("vrom.identify: cannot read '%s'", path);
+        return val_err("catalog.vroms.identify: cannot read '%s'", path);
     case VROM_ID_WRONG_SIZE: {
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "recognised", val_bool(false));
@@ -402,14 +402,15 @@ static const class_desc_t vrom_class = {
 
 static struct object *s_vrom_object = NULL;
 
-void vrom_init(void) {
+void vrom_init(struct object *parent) {
     if (s_vrom_object)
         return;
-    s_vrom_object = object_new(&vrom_class, NULL, "vrom");
+    s_vrom_object = object_new(&vrom_class, NULL, "vroms");
     if (s_vrom_object) {
-        object_set_label(s_vrom_object, "Video ROM");
-        object_set_order(s_vrom_object, 95);
-        object_attach(machine_object(), s_vrom_object);
+        object_set_label(s_vrom_object, "Video ROMs");
+        object_set_order(s_vrom_object, 20);
+        object_set_category(s_vrom_object, M_CAT_ADVANCED);
+        object_attach(parent, s_vrom_object);
     }
 }
 

@@ -373,9 +373,9 @@ int shell_init(void) {
     root_install_class();
 
     // Register process-singleton namespace objects that exist
-    // independently of any machine instance: rom, vrom, and machine
-    // all carry pre-boot surfaces (rom.identify, vrom.identify,
-    // machine.boot, machine.profile) that callers reach for *before*
+    // independently of any machine instance: rom, machine and catalog
+    // all carry pre-boot surfaces (rom.identify, catalog.vroms.identify,
+    // machine.boot, catalog.profile) that callers reach for *before*
     // a machine has been created. The WASM URL-media boot path is the
     // canonical case — drag-drop a Plus ROM, ask rom.identify for the
     // compatible models, then call machine.boot with the answer.
@@ -384,23 +384,21 @@ int shell_init(void) {
     // fail to resolve until the legacy `rom load` had already booted
     // a machine.
     rom_init();
-    vrom_init();
-    prom_init();
     machine_init();
     checkpoint_init();
-    archive_init();
+    files_init();
+    log_class_init();
+    catalog_init();
     mouse_class_register();
     // `keyboard` is NOT registered here: it is per machine now, built by
     // system_create (host_input.h).  It needs a scheduler source that lives
     // and dies with the machine, which a process-lifetime facade cannot have.
     screen_class_register();
-    vfs_class_register();
-    find_class_register();
     scsi_class_register();
 
     // Install the cfg-scoped namespace stubs (storage, shell, mouse,
     // keyboard, screen, vfs, find) with a NULL cfg so their pre-boot
-    // surfaces resolve — particularly storage.cp and storage.find_media,
+    // surfaces resolve — particularly files.cp and files.find_media,
     // which the URL-media auto-boot path uses *before* machine.boot to
     // copy the downloaded ROM into OPFS and to scan extracted archives
     // for floppy images. system_create will later re-install with the

@@ -61,7 +61,7 @@ def probe(model, ram_kb) {
 
 # One disk, created fresh in the work directory so the row owns what it
 # writes to.
-assert storage.hd_create("${$WORK_DIR}/ansdisk.img", "500M") "could not create the test disk"
+assert files.hd_create("${$WORK_DIR}/ansdisk.img", "500M") "could not create the test disk"
 
 probe("ans500", 32768)
 probe("ans700", 49152)

@@ -31,6 +31,10 @@ extern config_t *global_emulator;
 // singleton before mounting the per-machine `scsi` object at root.
 static void scsi_static_detach(void);
 
+// Live per-machine primary (`machine.scsi`) instances; the static singleton
+// comes back only when the last one goes.
+static int s_primary_live = 0;
+
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
 static const class_desc_t scsi_class;
@@ -1221,8 +1225,10 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
     // the "scsi" name at root — detach it first so dispatch on the new
     // per-machine object isn't shadowed.
     bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
-    if (primary)
+    if (primary) {
         scsi_static_detach();
+        s_primary_live++;
+    }
     scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
         object_set_label(scsi->object, primary ? "SCSI" : name);
@@ -1244,6 +1250,10 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
             // fetch the live image_t lazily. Returned by the
             // device's `image` child lookup only when a medium is present.
             scsi->image_objects[i] = object_new(&scsi_image_class, &scsi->device_links[i], "image");
+            // Callback-backed children: device[i] under the collection,
+            // device[i].image under its device (paths and task inheritance).
+            object_set_logical_parent(scsi->device_objects[i], scsi->devices_object, NULL, i, NULL);
+            object_set_logical_parent(scsi->image_objects[i], scsi->device_objects[i], "image", -1, NULL);
         }
     }
 
@@ -1520,7 +1530,10 @@ void scsi_delete(scsi_t *scsi) {
     // Restore the pre-machine static singleton so the next round of
     // upload validation (e.g. the Welcome view after stopping a
     // machine) keeps resolving `scsi.identify_hd` / `identify_cdrom`.
-    if (primary)
+    // Only when no other primary bus is live: checkpoint.load builds the new
+    // machine before destroying the old one, and a singleton re-attached then
+    // would shadow the new machine's `machine.scsi` (head-push attach).
+    if (primary && --s_primary_live == 0)
         scsi_class_register();
 }
 

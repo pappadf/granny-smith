@@ -421,7 +421,7 @@ uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off) {
 
 // === Factory + kind descriptor ==============================================
 
-// Built-in monitor: 13" RGB, sense 6, depths 1/2/4/8 — for machine.profile.
+// Built-in monitor: 13" RGB, sense 6, depths 1/2/4/8 — for catalog.profile.
 static const int builtin_rbv_depths[] = {1, 2, 4, 8, 0};
 
 static const nubus_monitor_t builtin_rbv_monitors[] = {

@@ -34,7 +34,7 @@ vi.mock('@/bus/emulator', () => {
       // No root verbs in this fixture; one child, cpu, with a `step` method.
       if (path === 'meta.members') return [child('cpu')];
       if (path === 'cpu.meta.members') return [method('step', 'run N instructions')];
-      if (path === 'shell.aliases') return [];
+      if (path === 'shell.alias.list') return [];
       return null;
     },
   };

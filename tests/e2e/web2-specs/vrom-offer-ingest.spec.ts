@@ -5,7 +5,7 @@
 //
 // Pins offer-on-ingest: the wasm platform enumerates /opfs/images/vrom once at startup, so a vROM uploaded
 // MID-SESSION must be offered to the core's registry by the ingest path
-// itself (upload.ts persist → machine.vrom.offer) or an "(auto)" boot —
+// itself (upload.ts persist → catalog.vroms.offer) or an "(auto)" boot —
 // one with no explicit vrom= pick in the boot document — would not see the
 // file until the next page reload.  Also pins content naming: the stored
 // name is the content hash (the declaration ROM's Format-Block CRC), the
@@ -119,7 +119,7 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
   expect(
-    await terminalEval(page, 'storage.path_size("/opfs/images/vrom/d1629664")'),
+    await terminalEval(page, 'files.path_size("/opfs/images/vrom/d1629664")'),
   ).toBe("32768");
 
   // 4. "(auto)" boot: one boot document with NO vrom= pick. The slot-$9

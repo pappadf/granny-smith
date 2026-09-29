@@ -1,4 +1,4 @@
-// The one reader of `machine.profile(id)`.
+// The one reader of `catalog.profile(id)`.
 //
 // Five call sites used to fetch the profile each for itself — the config
 // dialog, capabilities, the URL path, the ROM-drop boot, the default HD bay —
@@ -112,7 +112,7 @@ export function getProfile(model: string): Promise<MachineProfile | null> {
   const hit = cache.get(model);
   if (hit) return hit;
   const p = (async () => {
-    const r = await gsEval('machine.profile', [model]);
+    const r = await gsEval('catalog.profile', [model]);
     if (!r || typeof r !== 'object' || isGsError(r)) return null;
     return normalise(r as Partial<MachineProfile>);
   })();

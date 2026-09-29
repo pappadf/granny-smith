@@ -3,7 +3,7 @@
 # name, '/' being an ordinary character on HFS -- must extract as
 # "..:escape" inside the output directory, not as "escape" beside it.
 TEST_NAME := Archive extraction is confined
-TEST_DESC := archive.extract of an entry named "../escape" lands inside the output directory
+TEST_DESC := files.archive.extract of an entry named "../escape" lands inside the output directory
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
 

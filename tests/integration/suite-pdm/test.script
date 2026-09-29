@@ -396,7 +396,7 @@ def row_pdm_floppy_write_eject() {
     wait_stable(900000000)
     let inst = machine.floppy.drive[0].disk.path
     let delta = "${$inst}.delta"
-    let before = storage.path_size($delta)
+    let before = files.path_size($delta)
 
     # Activate the disk's window, then File > New Folder (cmd-N).
     click(200, 140)
@@ -422,7 +422,7 @@ def row_pdm_floppy_write_eject() {
     # ...and only NOW look at the medium.  Checking before the unmount would
     # be checking the Finder's disk cache: how much of a volume it has
     # written back at any given moment is its business, not ours.
-    assert storage.path_size($delta) > $before "nothing reached the medium (delta still ${$before} bytes)"
+    assert files.path_size($delta) > $before "nothing reached the medium (delta still ${$before} bytes)"
     report_row("7.5", "swim3", "fd-write fd-eject")
     report_perf("suite-pdm/pdm-floppy-write-eject", scheduler.instr_count)
 }
@@ -442,7 +442,7 @@ def row_pdm_floppy_write_eject() {
 def row_pdm_floppy_format() {
     boot_pdm_75("pm7100", 24576, 0)
     let blank = "${$WORK_DIR}/pdm-blank-1440.img"
-    assert storage.fd_create($blank, true) "could not create a blank 1.44 MB image"
+    assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true
     scheduler.run 600000000
     wait_stable(900000000)

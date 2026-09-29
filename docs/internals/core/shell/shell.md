@@ -37,7 +37,7 @@ plus `shell.complete`, `shell.expand`, the alias leaves and
 | [shell_var.c](../../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
 | [cmd_complete.c](../../../../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
-| [cmd_cp.c](../../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `storage.cp` / `storage.import` |
+| [cmd_cp.c](../../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `files.cp` / `files.import` |
 | `src/core/object/expr.c` | Expression grammar and evaluator; string interpolation; `try`/`error`/`range`/`len` |
 
 ## Statements

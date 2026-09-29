@@ -86,7 +86,7 @@ this tree is the [24AC](display_card_24ac.md).
 
 ## 4. vROM identity
 
-`machine.vrom.identify` keys off the declaration ROM's NuBus Format-Block CRC and
+`catalog.vroms.identify` keys off the declaration ROM's NuBus Format-Block CRC and
 returns `card_id = "mdc_8_24"` with `compatible = [...]`. See
 [`declaration-rom.md`](../../../../../reference/hardware/nubus/declaration-rom.md) and
 [`src/core/memory/vrom.c`](../../../../../../src/core/memory/vrom.c).

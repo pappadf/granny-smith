@@ -31,7 +31,7 @@ bool vrom_probe_file(const char *path, size_t *out_size);
 // === Content-based identification (the declaration-ROM catalog) ============
 //
 // Identity is the NuBus Format-Block CRC of the chip image — the same key
-// vrom.identify exposes to the UI.  Filenames are never inspected; these
+// catalog.vroms.identify exposes to the UI.  Filenames are never inspected; these
 // helpers let the card factories load whatever file actually provides their
 // card, wherever the user put it (see declrom_load_vrom_card).
 
@@ -97,7 +97,9 @@ int vrom_set_path(const char *path);
 // the whole specification, so machine.boot clears the previous one first.
 void vrom_clear_explicit(void);
 
-void vrom_init(void);
+// Create the catalog.vroms registry node under `parent` (the catalog).
+struct object;
+void vrom_init(struct object *parent);
 void vrom_delete(void);
 
 #endif // VROM_H

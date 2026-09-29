@@ -33,7 +33,7 @@ vi.mock('@/bus/emulator', () => {
       if (path === 'meta.members') return [method('echo', 'print args'), child('machine')];
       if (path === 'machine.meta.members') return [child('cpu')];
       if (path === 'machine.cpu.meta.members') return [method('step', 'run N instructions')];
-      if (path === 'shell.aliases') return ['pc=machine.cpu.pc'];
+      if (path === 'shell.alias.list') return ['pc=machine.cpu.pc'];
       return null;
     },
   };

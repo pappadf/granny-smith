@@ -357,7 +357,7 @@ bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, ch
 // Object-model class descriptor
 // ============================================================================
 
-// prom.offer(path) — the platform/UI hook into the registry, so an upload
+// catalog.proms.offer(path) — the platform/UI hook into the registry, so an upload
 // ingest can offer a freshly stored file without a reload.  True iff the
 // file was recognised and registered; false is "not a PROM", not an error.
 static value_t prom_method_offer(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -371,8 +371,8 @@ static value_t prom_method_offer(struct object *self, const member_t *m, int arg
     return val_bool(recognised);
 }
 
-// prom.identify(path) — a typed map of content facts, mirroring
-// vrom.identify and rom.identify:
+// catalog.proms.identify(path) — a typed map of content facts, mirroring
+// catalog.vroms.identify and rom.identify:
 //   { "recognised": bool, "card_id"?, "compatible"?, "vendor_id"?,
 //     "device_id"?, "size", "crc", "reason"? }
 static value_t prom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -385,7 +385,7 @@ static value_t prom_method_identify(struct object *self, const member_t *m, int 
     uint32_t crc = 0;
     prom_id_result_t r = prom_identify_detail(path, &id, &size, &crc);
     if (r == PROM_ID_UNREADABLE)
-        return val_err("prom.identify: cannot read '%s'", path);
+        return val_err("catalog.proms.identify: cannot read '%s'", path);
 
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "recognised", val_bool(r == PROM_ID_KNOWN));
@@ -453,14 +453,15 @@ static const class_desc_t prom_class = {
 
 static struct object *s_prom_object = NULL;
 
-void prom_init(void) {
+void prom_init(struct object *parent) {
     if (s_prom_object)
         return;
-    s_prom_object = object_new(&prom_class, NULL, "prom");
+    s_prom_object = object_new(&prom_class, NULL, "proms");
     if (s_prom_object) {
-        object_set_label(s_prom_object, "PCI expansion ROM");
-        object_set_order(s_prom_object, 96); // beside vrom (95)
-        object_attach(machine_object(), s_prom_object);
+        object_set_label(s_prom_object, "PCI expansion ROMs");
+        object_set_order(s_prom_object, 21);
+        object_set_category(s_prom_object, M_CAT_ADVANCED);
+        object_attach(parent, s_prom_object);
     }
 }
 

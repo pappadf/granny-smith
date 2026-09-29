@@ -14,7 +14,7 @@
 //      component fixture omitted the fixed slot the real profile carries, so
 //      the mocked test passed while the UI was wrong.
 //   2. Uploading a .prom died with "Failed to save": /opfs/images/prom was
-//      missing from the startup mkdir list and storage.cp does not create
+//      missing from the startup mkdir list and files.cp does not create
 //      parent directories.  MockOpfs seeds every category directory, so no
 //      mocked test could see it.
 //   3. A stored .prom was not re-offered on reload — the startup enumeration
@@ -145,7 +145,7 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
   // Both files survived the reload, content-addressed.
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
-  expect(await terminalEval(page, `storage.path_size("${STORED_PROM}")`)).toBe('32768');
+  expect(await terminalEval(page, `files.path_size("${STORED_PROM}")`)).toBe('32768');
 
   // An "(auto)" boot — a document with pci_card= but NO prom= pick. Strict
   // resolution refuses it unless the stored file was offered at startup, so

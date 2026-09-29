@@ -64,7 +64,7 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
   await page.waitForTimeout(3_000); // let the boot's terminal output settle
   expect(await terminalEval(page, 'machine.id')).toBe('iicx');
-  await terminalRun(page, 'storage.hd_create("/tmp/restart-scratch.img", "20mb")');
+  await terminalRun(page, 'files.hd_create("/tmp/restart-scratch.img", "20mb")');
   await page.waitForTimeout(1_000);
   await terminalRun(page, 'machine.scsi.attach_hd "/tmp/restart-scratch.img" 0');
   await page.waitForTimeout(3_000); // the persist copy prints; let the render settle

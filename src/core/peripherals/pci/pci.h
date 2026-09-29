@@ -32,6 +32,7 @@
 
 #include "common.h"
 #include "pci_card.h"
+#include "value.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -85,7 +86,7 @@ typedef struct pci_slot_decl {
 } pci_slot_decl_t;
 
 // True iff card kind `kind` may be seated in slot `s`.  COMPUTED, and the
-// one predicate shared by the machine.profile encoder and boot validation.
+// one predicate shared by the catalog.profile encoder and boot validation.
 bool pci_card_fits_socket(const pci_slot_decl_t *s, const pci_card_kind_t *kind);
 
 // === Root + buses ===========================================================
@@ -249,6 +250,14 @@ void pci_deassert_irq(pci_device_t *dev);
 
 void pci_objects_build(pci_root_t *root);
 void pci_objects_teardown(void);
+// Register `slots` (the machine.pci.slot container) as the logical parent
+// of every slot node, now and for nodes built later.
+struct object;
+void pci_objects_adopt(struct object *slots);
+// The slot container's class, and every registered card-driver id
+// (catalog.pci_cards).
+extern const struct class_desc pci_slots_class;
+value_t pci_cards_list(void);
 // Teardown only if the trees describe `root` (checkpoint-restore ordering:
 // the new machine's tree is built before the old machine is destroyed).
 void pci_objects_teardown_owned(pci_root_t *root);

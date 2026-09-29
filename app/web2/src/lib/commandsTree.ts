@@ -5,7 +5,7 @@
 //
 // Contents are generated at runtime from:
 //   - object-node methods + global root verbs   (meta.members)
-//   - user/builtin aliases                       (shell.aliases)
+//   - user/builtin aliases                       (shell.alias.list)
 //   - shell-language keywords                    (static — they have no node)
 // grouped by the model-owned task category, falling back to the owning
 // top-level subsystem.
@@ -90,8 +90,8 @@ export async function buildCommandsTree(): Promise<CommandNode[]> {
     out.push({ name: cat, desc: `Commands grouped under "${cat}".`, children: cmds });
   }
 
-  // Aliases — the $name shortcuts (shell.aliases → "name=path" strings).
-  const aliases = await gsEval('shell.aliases');
+  // Aliases — the $name shortcuts (shell.alias.list → "name=path" strings).
+  const aliases = await gsEval('shell.alias.list');
   if (Array.isArray(aliases) && aliases.length) {
     out.push({
       name: 'Aliases',

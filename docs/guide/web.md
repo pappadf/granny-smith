@@ -45,7 +45,7 @@ it lazily *sees* a newly created file on first access, but a file the worker
 created and then has cached goes stale if the main thread deletes it — so a
 later worker-side create at that path fails (`I/O error`). To stay coherent,
 the Filesystem tab routes its **mutations through the worker**
-(`storage.rm` / `storage.mv` / `storage.cp`), reserving `navigator.storage`
+(`files.rm` / `files.mv` / `files.cp`), reserving `navigator.storage`
 for reads. (This is why `BrowserOpfs.delete` / `.move` in
 [`bus/opfs.ts`](../../app/web2/src/bus/opfs.ts) call `gsEval` rather than
 `removeEntry` directly.)
@@ -234,7 +234,7 @@ memory as it is at that moment (`Module.wasmMemory.buffer`, never a cached
 view: the heap grows) and releases it with `REQ_ACK_BUF {handle}`. The
 same mechanism carries a download to the page, chunk by chunk (below),
 and could carry an upload's chunks; today the transfer window
-(`storage.xfer_buffer`, 2 MB, static) already is a shared buffer the page
+(`files.xfer_buffer`, 2 MB, static) already is a shared buffer the page
 fills, and its `xfer_write` / `xfer_read` run as I/O jobs.
 
 ### Events from the core
@@ -272,7 +272,9 @@ callbacks is emitted at its source too; the page routes each in
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
 | `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `state:machine_booted` | the end of `system_create`: `machine.boot`, `machine.restart`, `checkpoint.load` | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
+| `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
 | `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
@@ -319,10 +321,10 @@ one is running, is stopped. `REQ_MODE_STOP {id, client, owner}` stops a
 running mode by owner (0: any); both answer `true` / `false`.
 
 **I/O jobs.** A leaf whose cost is the size of a file rather than of the
-machine — `storage.cp`, `storage.import`, `storage.export_raw`,
-`storage.hd_create` / `fd_create` / `profile_create`, `storage.xfer_write`
-/ `xfer_read`, `archive.extract`, a SCSI `image.export` and the Lisa
-`profile.save`, `download`, and the quick checkpoint's publish — runs on
+machine — `files.cp`, `files.import`, `files.export_raw`,
+`files.hd_create` / `fd_create` / `profile_create`, `files.xfer_write`
+/ `xfer_read`, `files.archive.extract`, a SCSI `image.export` and the Lisa
+`profile.save`, `files.download`, and the quick checkpoint's publish — runs on
 the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
 at boot. `meta.method_info` reports such a method with `io: true`
 (`MM_IO`). The leaf takes its request off the drain's answer path
@@ -342,7 +344,7 @@ emulator thread and write-locks the device until the file is written: a
 guest write to it fails meanwhile, as a drive being copied does. Without
 a worker (`--io=sync`) the same work runs inline, with the same hooks.
 
-**Downloads.** `download path` is an I/O job that reads the file 4 MB at
+**Downloads.** `files.download path` is an I/O job that reads the file 4 MB at
 a time into a staged buffer and announces each chunk as
 `notify:download_chunk`; the page copies the bytes into a Blob part,
 acknowledges the buffer (the worker refills it), and on the last chunk
@@ -375,7 +377,7 @@ it every second while visible: three seconds without a change while requests
 are pending marks the emulator dead (every pending request fails with a
 transport error, the crash banner shows). A wasm trap or `abort()` does the
 same through `Module.onAbort`. An ordinary request past 120 s fails for its
-own caller only; known-long requests (`checkpoint.*`, `storage.cp`, …) have
+own caller only; known-long requests (`checkpoint.*`, `files.cp`, …) have
 no deadline.
 
 ## Module Bootstrapping
@@ -457,7 +459,7 @@ The Svelte app is organised under
 - **Status bar** ([`status-bar/`](../../app/web2/src/components/status-bar/))
   — machine state, drive activity, in-flight upload progress. The HD /
   FD / CD lights are real: the core counts every drive read and write on
-  the image (`storage.images[i].reads` / `.writes`), the worker tick sums
+  the image (`files.images[i].reads` / `.writes`), the worker tick sums
   them per kind and emits a `drive_activity` event only when
   a light changes, holding each on at least 100 ms
   ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
@@ -478,8 +480,8 @@ Four deliberate ways to get a media image into OPFS, all routing
 through [`app/web2/src/bus/upload.ts`](../../app/web2/src/bus/upload.ts).
 Every byte goes through the core's **transfer window**
 ([`bus/xfer.ts`](../../app/web2/src/bus/xfer.ts)): the page copies a chunk
-into a fixed buffer in wasm memory and `storage.xfer_write` writes it on
-the emulator thread (`storage.xfer_read` is the reverse).  The page never
+into a fixed buffer in wasm memory and `files.xfer_write` writes it on
+the emulator thread (`files.xfer_read` is the reverse).  The page never
 calls `Module.FS`: under WasmFS that runs on the page's thread and
 busy-waits for the OPFS thread, and in Safari — where WebKit serves a
 worker's OPFS request through the page's thread — it deadlocked the page.
@@ -493,15 +495,15 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    previous pick. The floppy / HD
    slots also offer "Create blank image…", which opens
    [`CreateImageDialog.svelte`](../../app/web2/src/components/display/CreateImageDialog.svelte)
-   and creates a blank image directly in OPFS via `storage.fd_create`
-   (800 KB / 1.4 MB) or `storage.hd_create` (size from
+   and creates a blank image directly in OPFS via `files.fd_create`
+   (800 KB / 1.4 MB) or `files.hd_create` (size from
    `machine.scsi.hd_models`).
 2. **Drag-and-drop onto the Display** —
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
    `acceptFiles(files)`. Auto-detects type by probing each
    `MediaTypeDescriptor` in order; archives (`.zip`, `.sit`, `.hqx`,
-   `.cpt`, `.bin`, `.sea`) are extracted via `archive.extract` and the
+   `.cpt`, `.bin`, `.sea`) are extracted via `files.archive.extract` and the
    inner image re-probed. A floppy goes into the first empty drive the
    model has, a CD into the model's CD bay (`bus/media.ts`; an occupied
    bay is refused, not overwritten); ROMs trigger a full cold boot via
@@ -536,27 +538,27 @@ typed-dispatch and introspection surface.
 - **`machine.rom.identify(path)`** → `{recognised, checksum, name,
   compatible[], size}`. Drives the Model dropdown in the New Machine
   dialog.
-- **`machine.vrom.identify(path)`** / **`machine.prom.identify(path)`** →
+- **`catalog.vroms.identify(path)`** / **`catalog.proms.identify(path)`** →
   the card a video ROM / PCI expansion ROM belongs to, or `null`.
 - **`machine.floppy.identify(path)`** → density string (`400K` / `800K` /
   `1.4MB`); empty if not a floppy.
 - **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
   → bool.
-- **`archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
-  `.bin` / `.sea`. **`archive.extract(path, out_dir)`** → bool; powers the
+- **`files.archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
+  `.bin` / `.sea`. **`files.archive.extract(path, out_dir)`** → bool; powers the
   Filesystem-tab "Unpack" action.
-- **`vfs.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
+- **`files.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
   image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
   browse inside images; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
-- **`storage.cp([-r], src, dst)`** — copy, including *out of* an image into
-  OPFS (backs copy-out and Download). **`storage.rm(path)`** /
-  **`storage.mv(src, dst)`** — recursive remove / move, run worker-side so
+- **`files.cp([-r], src, dst)`** — copy, including *out of* an image into
+  OPFS (backs copy-out and Download). **`files.rm(path)`** /
+  **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
-- **`storage.hd_create(path, size)`** / **`storage.fd_create(path,
+- **`files.hd_create(path, size)`** / **`files.fd_create(path,
   high_density)`** — create a blank HD / floppy image; **`machine.scsi.hd_models`** →
   drive-size catalog. These drive the New Machine dialog's "Create blank
   image…" option.
-- **`machine.profile(id)`** → the model's profile: `name`,
+- **`catalog.profile(id)`** → the model's profile: `name`,
   `ram_options[]`, `ram_default`, `floppy_slots[]`, `hd_bays[]` (each
   `{bus, id, label}`, the firmware's boot bay first, on whatever bus it
   is), `cdrom` (the CD bay, or `null`), `video_slots[]`, `capabilities`
@@ -568,7 +570,7 @@ typed-dispatch and introspection surface.
 - **`machine.videoin.source`** (`none`/`pattern`/`file`/`host`) plus the
   read-only `connected` / `fields` — the AV video digitizer's host source.
   The camera toolbar button sets `host`; the button itself is gated on
-  `capabilities.video_in` from `machine.profile`. See
+  `capabilities.video_in` from `catalog.profile`. See
   [../machines/av/vdc.md](../internals/machines/av/vdc.md).
 - **`machine.boot(model=..., rom=..., ...)`** — destroys any current
   machine and creates a fresh one from a complete configuration document
@@ -602,12 +604,12 @@ typed-dispatch and introspection surface.
   call: `{name, kind, category, label, doc}` plus, per kind, `readonly`
   and `value`, `indexed` and `indices`, or the method's UI metadata. The
   Machine tree, its context menu and the command browser read it.
-- **`storage.images[i].reads` / `.writes`** — the drive I/O counters
+- **`files.images[i].reads` / `.writes`** — the drive I/O counters
   behind the activity lights.
 - **`machine.attach_hd(path, [bay])` / `machine.attach_cdrom(path)` /
   `machine.eject_media(bus, [id])`** — media by bay, on whatever bus the
   bay is (`machine.scsi`, `machine.scsi2`, the Lisa's ProFile).  `bay`
-  indexes `machine.profile(id).hd_bays` (0, the default, is the boot bay);
+  indexes `catalog.profile(id).hd_bays` (0, the default, is the boot bay);
   the CD goes to `profile.cdrom`.  Each attach answers the bay it used,
   `{bus, id, label}`, which is what `eject_media` takes; an occupied bay,
   a bay the model does not have, and a CD on a model with no CD bay are
@@ -648,7 +650,7 @@ download, is copied into `/opfs/images/<category>/` before it is attached
 recorded in checkpoints still resolves after a reload. A volatile path
 (`/tmp/…`) attached from the shell stays volatile: the image, its delta and
 any checkpoint's reference to it do not survive a reload. Copy it under
-`/opfs/` first (`storage.import <src> <dst>`) to keep it.
+`/opfs/` first (`files.import <src> <dst>`) to keep it.
 
 ## URL Parameters
 
@@ -726,9 +728,9 @@ FD1=https://host/disks/Games.sit/Dark%20Castle.img
 
 The container is fetched whole; a zip member is found by exact path, then
 ignoring case, then by a unique base name; a Mac archive is unpacked by
-`archive.extract` and searched the same way.  A container named with no
+`files.archive.extract` and searched the same way.  A container named with no
 member keeps the old behaviour (a zip's first file, a Mac archive's
-`storage.find_media` pick).  A missing member is reported with the first
+`files.find_media` pick).  A missing member is reported with the first
 few names the container does hold.
 
 **Encoding.**  Write a value `encodeURIComponent`-encoded.  Browsers let

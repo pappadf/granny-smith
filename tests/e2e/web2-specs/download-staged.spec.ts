@@ -32,12 +32,12 @@ test('a download arrives in staged chunks and lands as one file', async ({ page 
   await page.waitForTimeout(2_000);
 
   // A 9 MB blank image (an I/O job itself), then its download.
-  await terminalRun(page, 'storage.hd_create("/tmp/dl.img", "9m")');
+  await terminalRun(page, 'files.hd_create("/tmp/dl.img", "9m")');
   await expect(page.locator('.xterm-rows')).toContainText('hd create: created', {
     timeout: 60_000,
   });
   const download = page.waitForEvent('download', { timeout: 60_000 });
-  await terminalRun(page, 'download "/tmp/dl.img"');
+  await terminalRun(page, 'files.download "/tmp/dl.img"');
   const dl = await download;
   expect(dl.suggestedFilename()).toBe('dl.img');
   const saved = await dl.path();

@@ -59,8 +59,30 @@ void object_compute_path(struct object *obj, char *buf, size_t buf_size) {
         return;
     }
 
-    // Root (or detached): empty path.
+    // Callback-backed child (collection entry, lookup-backed named child):
+    // no attached parent, but a logical one -- `<parent>.<name>`,
+    // `<parent>[<index>]` or `<parent>["<key>"]`.
     struct object *parent = object_parent(obj);
+    struct object *lparent = parent ? NULL : object_logical_parent(obj);
+    if (lparent) {
+        object_compute_path(lparent, buf, buf_size);
+        size_t len = strlen(buf);
+        char seg[OBJ_KEY_MAX + 8];
+        const char *lname = object_logical_name(obj);
+        const char *lkey = object_logical_key(obj);
+        if (lname)
+            snprintf(seg, sizeof(seg), "%s%s", len > 0 ? "." : "", lname);
+        else if (lkey)
+            snprintf(seg, sizeof(seg), "[\"%s\"]", lkey);
+        else
+            snprintf(seg, sizeof(seg), "[%d]", object_logical_index(obj));
+        size_t slen = strlen(seg);
+        if (len + slen + 1 <= buf_size)
+            memcpy(buf + len, seg, slen + 1);
+        return;
+    }
+
+    // Root (or detached): empty path.
     if (!parent)
         return;
 

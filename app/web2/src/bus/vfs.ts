@@ -1,6 +1,6 @@
 // VFS bus — structured listing of paths that descend into a guest disk image
 // (partitions, then the HFS / UFS volume contents). Wraps the C-side
-// `vfs.list` object-model method (see docs/target-filesystems.md), which
+// `files.list` object-model method (see docs/target-filesystems.md), which
 // returns a JSON array [{name, kind, size}]. The Filesystem tree uses this
 // for image descent; plain OPFS paths keep going through opfs.ts.
 
@@ -23,9 +23,9 @@ interface VfsRawEntry {
 // distinguishable from a genuinely empty directory so the tree doesn't cache
 // them as permanent emptiness.
 export async function vfsList(dir: string): Promise<OpfsEntry[]> {
-  // vfs.list returns a native array of {name, kind, size} objects (V_LIST
+  // files.list returns a native array of {name, kind, size} objects (V_LIST
   // of V_MAP through the gsEval bridge) — no inner JSON.parse.
-  const parsed = await gsEval('vfs.list', [dir]);
+  const parsed = await gsEval('files.list', [dir]);
   if (!Array.isArray(parsed)) throw new Error(gsErrorText(parsed));
   return (parsed as VfsRawEntry[]).map((e) => ({
     name: e.name,

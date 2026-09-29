@@ -1447,6 +1447,7 @@ void atalk_adsp_install_objects(struct object *parent) {
     // Entry objects are handed out by the collection callbacks and never
     // attached, so the cascade delete does not free them (we do, below).
     object_pool_create(&g_adsp_conn_pool, &adsp_conn_class);
+    object_pool_set_parent(&g_adsp_conn_pool, g_adsp_conns_object);
 }
 
 void atalk_adsp_remove_objects(void) {

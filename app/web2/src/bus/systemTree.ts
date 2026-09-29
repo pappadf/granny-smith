@@ -44,8 +44,7 @@ function iconFor(name: string): IconName | undefined {
       return 'screen-full';
     case 'scheduler':
       return 'clock';
-    case 'storage':
-    case 'vfs':
+    case 'files':
       return 'folder';
     default:
       return undefined;

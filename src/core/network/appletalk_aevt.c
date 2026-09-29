@@ -1203,7 +1203,10 @@ void atalk_aevt_install_objects(struct object *parent) {
     }
 
     object_pool_create(&g_aevt_event_pool, &aevt_event_class);
+
+    object_pool_set_parent(&g_aevt_event_pool, g_aevt_events_object);
     object_pool_create(&g_aevt_inbox_pool, &aevt_inbox_entry_class);
+    object_pool_set_parent(&g_aevt_inbox_pool, g_aevt_inbox_object);
 }
 
 void atalk_aevt_remove_objects(void) {

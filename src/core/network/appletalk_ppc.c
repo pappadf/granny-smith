@@ -1303,7 +1303,10 @@ void atalk_ppc_install_objects(struct object *parent) {
     }
 
     object_pool_create(&g_ppc_port_pool, &ppc_port_class);
+
+    object_pool_set_parent(&g_ppc_port_pool, g_ppc_ports_object);
     object_pool_create(&g_ppc_session_pool, &ppc_session_class);
+    object_pool_set_parent(&g_ppc_session_pool, g_ppc_sessions_object);
 }
 
 void atalk_ppc_remove_objects(void) {

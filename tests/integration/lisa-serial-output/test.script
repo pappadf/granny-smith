@@ -70,7 +70,7 @@ menu_pick(100, 170, 113)
 # The driver streams the page at once; give it time to finish and settle
 scheduler.run 100000000
 
-let size = storage.path_size($out)
+let size = files.path_size($out)
 echo "serial A: ${$size} bytes in serial-a.bin, capture pending ${machine.scc.a.sent_pending}"
 assert $size > 3000 "the file is too short to be a printed page"
 assert $size == machine.scc.a.sent_pending "the file and the channel's capture disagree"
@@ -89,7 +89,7 @@ assert machine.scc.a.output == none "Serial A's output did not close"
 menu_pick(100, 170, 113)
 scheduler.run 100000000
 assert machine.scc.a.sent_pending == 0 "bytes went out with no device on Serial A"
-assert storage.path_size($out) == $size "the closed file grew"
+assert files.path_size($out) == $size "the closed file grew"
 
 # The machine is still alive after printing
 assert machine.cpu.sr < 0x2700 "the CPU is stuck with interrupts masked"

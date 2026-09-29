@@ -319,7 +319,7 @@ TEST(a_request_is_served_and_its_id_comes_back) {
 
 TEST(arguments_travel_and_failure_is_ok_zero) {
     fresh();
-    ASSERT_TRUE(post(1, "storage.list_dir", "[\"/opfs\"]"));
+    ASSERT_TRUE(post(1, "files.list_dir", "[\"/opfs\"]"));
     ASSERT_TRUE(post(2, "fail.this", "{\"k\":1}"));
     ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
     uint32_t id, ok;
@@ -327,7 +327,7 @@ TEST(arguments_travel_and_failure_is_ok_zero) {
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 1);
     ASSERT_EQ_INT(ok, 1);
-    ASSERT_TRUE(strcmp(json, "{\"path\":\"storage.list_dir\",\"args\":[\"/opfs\"]}") == 0);
+    ASSERT_TRUE(strcmp(json, "{\"path\":\"files.list_dir\",\"args\":[\"/opfs\"]}") == 0);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 2);
     ASSERT_EQ_INT(ok, 0);

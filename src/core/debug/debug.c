@@ -177,6 +177,7 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     // The entry object is created lazily by the root install path the first time
     // someone resolves debug.breakpoints[id]; we just hold the slot.
     bp->entry_object = gs_classes_make_breakpoint_object(bp);
+    object_set_logical_parent(bp->entry_object, debug->bp_collection_object, NULL, bp->id, NULL);
 
     // add bp to a linked list
     bp->next = debug->breakpoints;
@@ -302,6 +303,7 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     lp->value_filter = 0;
     lp->id = debug->next_logpoint_id++;
     lp->entry_object = gs_classes_make_logpoint_object(lp);
+    object_set_logical_parent(lp->entry_object, debug->lp_collection_object, NULL, lp->id, NULL);
 
     // add lp to a linked list
     lp->next = debug->logpoints;
@@ -354,6 +356,8 @@ static logpoint_t *install_memory_logpoint(debug_t *debug, uint32_t addr, uint32
     lp->stops = stops;
     lp->id = debug->next_logpoint_id++;
     lp->entry_object = stops ? make_watchpoint_object(lp) : gs_classes_make_logpoint_object(lp);
+    object_set_logical_parent(lp->entry_object, stops ? debug->wp_collection_object : debug->lp_collection_object, NULL,
+                              lp->id, NULL);
     lp->next = debug->logpoints;
     debug->logpoints = lp;
     debug->active = true;
@@ -2033,6 +2037,8 @@ struct object *logpoint_get_entry_object(const logpoint_t *lp) {
 // Lifecycle: Constructor
 // ============================================================================
 
+extern const class_desc_t find_class; // cmd_find.c: debug.find
+
 debug_t *debug_init(void) {
     debug_t *debug = (debug_t *)calloc(1, sizeof(debug_t));
     if (!debug) {
@@ -2051,6 +2057,7 @@ debug_t *debug_init(void) {
     // collection / mac children is the debug_t* itself.
     debug->object = object_new(&debug_class, debug, "debug");
     if (debug->object) {
+        object_set_order(debug->object, 40);
         object_attach(object_root(), debug->object);
         debug->bp_collection_object = object_new(&bp_collection_class, debug, "breakpoints");
         if (debug->bp_collection_object)
@@ -2061,6 +2068,11 @@ debug_t *debug_init(void) {
         debug->wp_collection_object = object_new(&wp_collection_class, debug, "watchpoints");
         if (debug->wp_collection_object)
             object_attach(debug->object, debug->wp_collection_object);
+        debug->find_object = object_new(&find_class, NULL, "find");
+        if (debug->find_object) {
+            object_set_label(debug->find_object, "Find");
+            object_attach(debug->object, debug->find_object);
+        }
         debug->mac_object = object_new(&debug_mac_class, debug, "mac");
         if (debug->mac_object) {
             object_attach(debug->object, debug->mac_object);
@@ -2089,6 +2101,11 @@ void debug_cleanup(debug_t *debug) {
         object_detach(debug->mac_globals_object);
         object_delete(debug->mac_globals_object);
         debug->mac_globals_object = NULL;
+    }
+    if (debug->find_object) {
+        object_detach(debug->find_object);
+        object_delete(debug->find_object);
+        debug->find_object = NULL;
     }
     if (debug->mac_object) {
         object_detach(debug->mac_object);
@@ -3158,129 +3175,6 @@ static const class_desc_t wp_collection_class = {
     .n_members = sizeof(wp_collection_members) / sizeof(wp_collection_members[0]),
 };
 
-// `debug.log(category, level=, stdout=, file=, ts=, pc=)` — per-subsystem
-// logging, with real named arguments.
-//
-// The second slot used to be declared V_NONE -- no type at all -- and accept
-// either an integer or a spec string like "level=5 file=tmp/foo.txt
-// stdout=off ts=on", which the body then parsed itself with strtok_r.  So the
-// framework validated nothing (it had been told nothing to validate),
-// completion could offer neither the keys nor their values, and the method
-// carried its own boolean vocabulary and its own error wording.
-// docs/internals/core/object/object-model.md ("Library conventions") says in as many
-// words that named arguments exist to retire exactly this: "no flag
-// grammars inside strings".
-//
-// `debug.log(cat)` with nothing else prints the category's current settings,
-// which is what the bare form always did.
-static value_t debug_method_log(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    if (argv[0].kind != V_ENUM || !argv[0].enm.table)
-        return val_err("debug.log: category is required");
-    const char *category = argv[0].enm.table[argv[0].enm.idx];
-
-    bool touched = false;
-
-    if (argv[1].kind != V_NONE) {
-        bool ok = false;
-        int64_t level = val_as_i64(&argv[1], &ok);
-        if (!ok || level < 0)
-            return val_err("debug.log: level must be a non-negative integer");
-        if (log_set_category_level(category, (int)level) != 0)
-            return val_err("debug.log: cannot set level on '%s'", category);
-        touched = true;
-    }
-    if (argv[2].kind == V_BOOL) {
-        log_set_category_stdout(category, argv[2].b);
-        touched = true;
-    }
-    if (argv[3].kind == V_STRING && argv[3].s) {
-        if (log_set_category_file(category, argv[3].s) != 0)
-            return val_err("debug.log: cannot open log file '%s'", argv[3].s);
-        touched = true;
-    }
-    if (argv[4].kind == V_BOOL) {
-        log_set_category_timestamp(category, argv[4].b);
-        touched = true;
-    }
-    if (argv[5].kind == V_BOOL) {
-        log_set_category_show_pc(category, argv[5].b);
-        touched = true;
-    }
-
-    log_print_category(category);
-    (void)touched;
-    return val_bool(true);
-}
-
-// log_foreach_category callback: put "<category>" → <level> into the map.
-static void debug_log_level_map_cb(const log_category_t *cat, void *ud) {
-    value_map_builder_t *b = (value_map_builder_t *)ud;
-    val_map_put(b, log_category_name(cat), val_int(log_get_level(cat)));
-}
-
-// `debug.log_levels()` — every registered category and its current level, as a
-// map {<category>: <level>, ...}.  The Logs view's level editor reads
-// this to populate its list (the categories register lazily, so the set grows
-// as subsystems first log; a freshly booted machine has registered its own).
-static value_t debug_method_log_levels(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    value_map_builder_t *b = val_map_new();
-    log_foreach_category(debug_log_level_map_cb, b);
-    return val_map_finish(b);
-}
-
-// Every category the manifest declares, as an enum table, so the framework
-// rejects a typo and completion can offer all 62 names.
-static const char *const debug_log_category_values[] = {
-#define X(n, lvl, desc) n,
-    GS_LOG_CATEGORIES(X)
-#undef X
-        NULL};
-
-// "Not supplied", as a default.
-//
-// An optional slot with no default_value cannot be a HOLE before a later
-// given slot -- node_validate_args says so directly: "argc truncation only
-// works at the tail".  So `debug.log(cpu, level=3, ts=on)` would fail on
-// `file`, which sits between them.  A V_NONE default is filled in and skips
-// validation, which is precisely "the caller did not mention this one" and is
-// what the body below tests for.
-
-static const arg_decl_t debug_log_args[] = {
-    {.name = "category", .kind = V_ENUM, .enum_values = debug_log_category_values, .doc = "Subsystem to configure"},
-    {.name = "level",
-     .default_value = &obj_arg_unset,
-     .kind = V_UINT,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Verbosity; 0 silences level-1-and-up sites"},
-    {.name = "stdout",
-     .default_value = &obj_arg_unset,
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Emit to stdout"},
-    {.name = "file",
-     .default_value = &obj_arg_unset,
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Append to this path; \"off\" closes it"},
-    {.name = "ts",
-     .default_value = &obj_arg_unset,
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Stamp each line with a timestamp"},
-    {.name = "pc",
-     .default_value = &obj_arg_unset,
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Stamp each line with the guest PC"},
-};
-
 // `debug.exceptions([filter])` — dump the always-on 256-entry exception ring.
 // filter=0 prints everything; filter=1 skips routine traps (A/F-line, TRAP #N,
 // IRQ autovectors, trace) so fatal exceptions (bus error/addr error/illegal/
@@ -3594,10 +3488,6 @@ static const arg_decl_t debug_step_args[] = {
 
 static const member_t debug_members[] = {
     {.kind = M_METHOD,
-     .name = "log",
-     .doc = "Configure a log category: debug.log(cat, level=, stdout=, file=, ts=, pc=)",
-     .method = {.args = debug_log_args, .nargs = 6, .result = V_BOOL, .fn = debug_method_log}                                                                                                                },
-    {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",
      .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                          },
@@ -3613,10 +3503,6 @@ static const member_t debug_members[] = {
      .name = "exceptions",
      .doc = "Dump the 256-entry exception trace ring (always-on). Optional filter=1 hides routine traps/IRQs.",
      .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                  },
-    {.kind = M_METHOD,
-     .name = "log_levels",
-     .doc = "Every registered log category and its level as a map {<cat>: <level>}.",
-     .method = {.args = NULL, .nargs = 0, .result = V_MAP, .fn = debug_method_log_levels}                                                                                                                    },
 };
 
 static const class_desc_t debug_class = {

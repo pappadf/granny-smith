@@ -93,11 +93,11 @@ export async function copyOutOfImage(
       if (!firstError) firstError = `'${safe}' already exists in destination`;
       continue;
     }
-    // storage.cp preserves forks: a file carrying a resource fork / Finder
+    // files.cp preserves forks: a file carrying a resource fork / Finder
     // Info (e.g. an NDIF disk image, whose block map lives in the resource
     // fork) is written as an AppleDouble pair — the data fork under `dst` plus
     // a sibling "._<name>" header — so the copy is lossless and re-mountable.
-    const res = await gsEval('storage.cp', sources[i].isDir ? ['-r', src, dst] : [src, dst]);
+    const res = await gsEval('files.cp', sources[i].isDir ? ['-r', src, dst] : [src, dst]);
     if (res !== true) {
       failures.push(name);
       if (!firstError) firstError = gsErrorText(res);
@@ -170,7 +170,7 @@ async function downloadOne(target: string): Promise<boolean> {
   try {
     if (isInImageSpace(target)) {
       const scratch = `${UPLOAD_DIR}/.dl-${downloadSeq++}-${sanitizeName(name)}`;
-      if ((await gsEval('storage.cp', [target, scratch])) !== true) return false;
+      if ((await gsEval('files.cp', [target, scratch])) !== true) return false;
       try {
         // readFile returns a lazy File backed by the OPFS entry; the browser
         // streams it AFTER the anchor click. Materialise the bytes before
@@ -209,7 +209,7 @@ export async function unpackArchive(path: string): Promise<{ ok: boolean; base: 
   const base = name.replace(/\.[^.]+$/, '') || name;
   let ok = false;
   try {
-    ok = (await gsEval('archive.extract', [path, `${parentDir}/${base}_unpacked`])) === true;
+    ok = (await gsEval('files.archive.extract', [path, `${parentDir}/${base}_unpacked`])) === true;
   } catch {
     ok = false;
   }

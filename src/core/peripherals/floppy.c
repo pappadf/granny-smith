@@ -982,6 +982,10 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
             floppy->drive_objects[i] = object_new(&floppy_drive_class, &floppy->drive_links[i], NULL);
             // Per-drive medium node, sharing the same drive link.
             floppy->disk_objects[i] = object_new(&floppy_disk_class, &floppy->drive_links[i], "disk");
+            // Callback-backed children: drive[i] under the collection,
+            // drive[i].disk under its drive (paths and task inheritance).
+            object_set_logical_parent(floppy->drive_objects[i], floppy->drives_object, NULL, i, NULL);
+            object_set_logical_parent(floppy->disk_objects[i], floppy->drive_objects[i], "disk", -1, NULL);
         }
     }
 

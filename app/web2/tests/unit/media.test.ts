@@ -10,7 +10,7 @@ import { VROMS_DIR } from '@/lib/opfsPaths';
 // gsEval stub returning a fixed vrom.identify payload (the current shape:
 // content facts only, no canonical_name).
 const vromIdentify: GsEval = async (evalPath: string, args?: unknown[]) => {
-  expect(evalPath).toBe('machine.vrom.identify');
+  expect(evalPath).toBe('catalog.vroms.identify');
   expect(args).toEqual(['/opfs/upload/my_weird.bin']);
   return {
     recognised: true,

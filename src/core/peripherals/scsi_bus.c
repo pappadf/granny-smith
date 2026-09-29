@@ -40,6 +40,7 @@
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "event/gs_event.h"
 
 LOG_USE_CATEGORY_NAME("scsi");
 
@@ -1605,6 +1606,13 @@ int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int
     return 2 + page_len;
 }
 
+// A device's medium came or went: the page refreshes the SCSI subtree on
+// this, as it does on notify:floppy for the floppy drives.
+static void scsi_notify_media(int id, bool present) {
+    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"media\",\"bus\":\"scsi\",\"id\":%d,\"present\":%s}", id,
+                   present ? "true" : "false");
+}
+
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,
                      image_t *image, enum scsi_device_type type, uint16_t block_size, bool read_only) {
     // scsi_id 7 is reserved for the Mac initiator; only targets 0..6 are valid.
@@ -1636,6 +1644,7 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
         scsi->devices[scsi_id].unit_attention = true;
         scsi_set_sense(scsi, scsi_id, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
     }
+    scsi_notify_media(scsi_id, image != NULL);
 }
 
 bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
@@ -1825,6 +1834,7 @@ int scsi_eject_device(scsi_t *scsi, int id) {
     // is the point: a UNIT ATTENTION is a one-shot cleared by the first CHECK
     // CONDITION, so a guest that ejected, took one error and retried used to
     // find the second command succeeding against an empty drive.
+    scsi_notify_media(id, false);
     return 1;
 }
 

@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "alias.h"
 #include "cmd_complete.h"
 #include "expr.h"
 #include "object.h"
@@ -56,9 +55,7 @@ static value_t shell_get_running(struct object *self, const member_t *m) {
     return val_bool(s ? scheduler_is_running(s) : false);
 }
 
-// `shell.aliases` — list of "name=path" strings. Same shape as the
-// existing `shell.alias.list` method; kept here so callers can read the
-// attribute without invoking a method.
+// Growable list of V_STRING items, for `shell.vars`.
 typedef struct {
     value_t *items;
     size_t len;
@@ -72,21 +69,6 @@ static bool str_list_push(str_list_t *acc, const char *s) {
     if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(s)))
         return false;
     return true;
-}
-
-static bool alias_collect_cb(const char *name, const char *path, alias_kind_t kind, void *ud) {
-    str_list_t *acc = (str_list_t *)ud;
-    char buf[256];
-    snprintf(buf, sizeof(buf), "%s=%s%s", name, path, kind == ALIAS_BUILTIN ? " (built-in)" : "");
-    return str_list_push(acc, buf);
-}
-
-static value_t shell_get_aliases(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    str_list_t acc = {0};
-    alias_each(alias_collect_cb, &acc);
-    return val_list(acc.items, acc.len);
 }
 
 // `shell.vars` — list of "name=value" strings. Iteration walks the
@@ -240,28 +222,6 @@ static value_t shell_method_eval(struct object *self, const member_t *m, int arg
     return val_none();
 }
 
-// `shell.alias_set(name, expansion)` — thin wrapper over alias_add_user.
-static value_t shell_method_alias_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char err[160];
-    if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
-        return val_err("%s", err);
-    return val_none();
-}
-
-// `shell.alias_unset(name)` — thin wrapper over alias_remove_user.
-static value_t shell_method_alias_unset(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char err[160];
-    if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
-        return val_err("%s", err);
-    return val_none();
-}
-
 // `shell.interrupt()` — stop the running scheduler and cancel any
 // running script loop at its next iteration check. Equivalent
 // to the terminal's Ctrl-C path, exposed as a method so JS callers
@@ -315,15 +275,6 @@ static const arg_decl_t shell_eval_args[] = {
     {.name = "text", .kind = V_STRING, .doc = "Script source (may span multiple lines)"},
 };
 
-static const arg_decl_t shell_alias_set_args[] = {
-    {.name = "name",      .kind = V_STRING, .doc = "Alias identifier (no $)"          },
-    {.name = "expansion", .kind = V_STRING, .doc = "Object path the alias substitutes"},
-};
-
-static const arg_decl_t shell_alias_unset_args[] = {
-    {.name = "name", .kind = V_STRING, .doc = "Alias identifier (no $)"},
-};
-
 static const member_t shell_members[] = {
     {.kind = M_ATTR,
      .name = "prompt",
@@ -335,11 +286,6 @@ static const member_t shell_members[] = {
      .doc = "True while the scheduler is running",
      .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = shell_get_running, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "aliases",
-     .doc = "List of 'name=path' alias entries (built-in + user)",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = shell_get_aliases, .set = NULL}},
     {.kind = M_ATTR,
      .name = "vars",
      .doc = "List of 'name=value' shell-variable entries",
@@ -365,14 +311,6 @@ static const member_t shell_members[] = {
      .name = "eval",
      .doc = "Run a (possibly multi-line) script source string",
      .method = {.args = shell_eval_args, .nargs = 1, .result = V_NONE, .fn = shell_method_eval}},
-    {.kind = M_METHOD,
-     .name = "alias_set",
-     .doc = "Register or replace a user alias",
-     .method = {.args = shell_alias_set_args, .nargs = 2, .result = V_NONE, .fn = shell_method_alias_set}},
-    {.kind = M_METHOD,
-     .name = "alias_unset",
-     .doc = "Remove a user alias",
-     .method = {.args = shell_alias_unset_args, .nargs = 1, .result = V_NONE, .fn = shell_method_alias_unset}},
     {.kind = M_METHOD,
      .name = "interrupt",
      .doc = "Stop the running scheduler (Ctrl-C path)",

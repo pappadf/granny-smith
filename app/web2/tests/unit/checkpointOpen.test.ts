@@ -46,14 +46,14 @@ beforeEach(() => {
   bridge.reset();
   _resetForTests();
   written.length = 0;
-  bridge.reply('storage.xfer_buffer', 1024);
-  bridge.reply('storage.xfer_size', 4096);
-  bridge.reply('storage.xfer_write', (args: unknown) => {
+  bridge.reply('files.xfer_buffer', 1024);
+  bridge.reply('files.xfer_size', 4096);
+  bridge.reply('files.xfer_write', (args: unknown) => {
     written.push((args as [string])[0]);
     return true;
   });
   bridge.reply('checkpoint.load', true);
-  bridge.reply('storage.rm', true);
+  bridge.reply('files.rm', true);
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -68,7 +68,7 @@ describe('Open Checkpoint...', () => {
     expect(staged).toMatch(/^\/opfs\/upload\/.*saved-state-1\.bin$/);
     const load = bridge.calls.find((c) => c.path === 'checkpoint.load');
     expect(load?.args).toEqual([staged]);
-    expect(bridge.calls.find((c) => c.path === 'storage.rm')?.args).toEqual([staged]);
+    expect(bridge.calls.find((c) => c.path === 'files.rm')?.args).toEqual([staged]);
     expect(reconcileUiWithMachine).toHaveBeenCalledWith('restore');
     expect(toasts.active.some((t) => /Checkpoint loaded/.test(t.msg))).toBe(true);
   });

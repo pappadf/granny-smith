@@ -102,22 +102,15 @@ export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
 }
 
 // ?speed= as the toolbar's pacing mode, or null when absent or unknown.
-// Accepts the core's names and their legacy aliases (max, realtime,
-// hardware).  It used to be documented as reaching the wasm module's
-// --speed flag, which nothing ever passed.
+// Accepts the core's three names only (paced, accelerated, turbo), as the
+// scheduler.mode attribute and the headless --speed flag do.
 export function urlSchedulerMode(speed: string | null): SchedulerMode | null {
   switch ((speed ?? '').toLowerCase()) {
     case 'paced':
-    case 'realtime':
-    case 'real':
-    case 'hardware':
-    case 'hw':
       return 'live';
     case 'accelerated':
-    case 'accel':
       return 'accel';
     case 'turbo':
-    case 'max':
       return 'turbo';
     default:
       return null;
@@ -421,7 +414,7 @@ async function fetchAndStage(
       await unpackMacArchive(slot, staged, null);
     }
 
-    const size = await gsEval('storage.path_size', [staged]);
+    const size = await gsEval('files.path_size', [staged]);
     const from = plan.containerName ? ` from ${plan.containerName}` : '';
     const sz = typeof size === 'number' ? ` (${sizeText(size)})` : '';
     // The progress view lists each file as it lands; a toast per file is
@@ -477,7 +470,7 @@ async function extractMember(slot: string, staged: string, plan: MediaFetchPlan)
 }
 
 // Unpack the Mac archive staged at `staged` (StuffIt, BinHex, Compact Pro,
-// MacBinary) and put `member` — or, with none, the medium storage.find_media
+// MacBinary) and put `member` — or, with none, the medium files.find_media
 // picks — in its place.
 async function unpackMacArchive(
   slot: string,
@@ -485,23 +478,23 @@ async function unpackMacArchive(
   member: string | null,
   plan?: MediaFetchPlan,
 ): Promise<boolean> {
-  const fmt = await gsEval('archive.identify', [staged]);
+  const fmt = await gsEval('files.archive.identify', [staged]);
   if (typeof fmt !== 'string' || fmt.length === 0) {
     if (member !== null && plan) throw new MediaUrlError(`${plan.containerName}: not an archive`);
     return true;
   }
   const extractDir = `${UPLOAD_DIR}/url_${slot}_unpacked`;
   try {
-    if ((await gsEval('archive.extract', [staged, extractDir])) !== true)
+    if ((await gsEval('files.archive.extract', [staged, extractDir])) !== true)
       throw new MediaUrlError(`could not unpack ${plan?.containerName ?? 'the archive'}`);
     if (member === null) {
-      await gsEval('storage.find_media', [extractDir, staged]);
+      await gsEval('files.find_media', [extractDir, staged]);
       return true;
     }
     const names = await listTree(extractDir);
     const hit = findMember(names, member);
     if (!hit) throw memberNotFound(plan as MediaFetchPlan, names);
-    return (await gsEval('storage.cp', [`${extractDir}/${hit}`, staged])) === true;
+    return (await gsEval('files.cp', [`${extractDir}/${hit}`, staged])) === true;
   } finally {
     await discardStaging(extractDir);
   }
@@ -509,13 +502,13 @@ async function unpackMacArchive(
 
 // Every file under `dir`, as paths relative to it.
 async function listTree(dir: string, prefix = ''): Promise<string[]> {
-  const entries = await gsEval('storage.list_dir', [prefix ? `${dir}/${prefix}` : dir]);
+  const entries = await gsEval('files.list_dir', [prefix ? `${dir}/${prefix}` : dir]);
   if (!Array.isArray(entries)) return [];
   const out: string[] = [];
   for (const e of entries) {
     if (typeof e !== 'string' || e === '.' || e === '..') continue;
     const rel = prefix ? `${prefix}/${e}` : e;
-    const sub = await gsEval('storage.list_dir', [`${dir}/${rel}`]);
+    const sub = await gsEval('files.list_dir', [`${dir}/${rel}`]);
     if (Array.isArray(sub)) out.push(...(await listTree(dir, rel)));
     else out.push(rel);
   }

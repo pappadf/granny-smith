@@ -31,17 +31,15 @@ void root_install(struct config *cfg);
 
 // Subsystem singletons, each attaching its own node at shell_init time.
 void rom_init(void);
-void vrom_init(void);
-void prom_init(void);
 void machine_init(void);
 void checkpoint_init(void);
-void archive_init(void);
+void files_init(void);
+void log_class_init(void);
+void catalog_init(void);
 
 // Class registrations for singletons whose node is attached from elsewhere.
 void mouse_class_register(void);
 void screen_class_register(void);
-void vfs_class_register(void);
-void find_class_register(void);
 void scsi_class_register(void);
 
 #ifdef __cplusplus

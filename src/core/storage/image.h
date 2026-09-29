@@ -69,7 +69,7 @@ struct image {
     bool from_diskcopy; // True if the source file was DiskCopy 4.2
 
     // disk_read_data / disk_write_data calls since open: the drive-activity
-    // lights (drive_activity.h) and storage.images[i].reads / .writes.
+    // lights (drive_activity.h) and files.images[i].reads / .writes.
     uint64_t reads;
     uint64_t writes;
 

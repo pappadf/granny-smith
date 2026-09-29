@@ -120,6 +120,9 @@ typedef value_t (*method_fn)(struct object *self, const struct member *m, int ar
 typedef struct object *(*child_get_fn)(struct object *self, int index);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
 typedef struct object *(*child_lookup_fn)(struct object *self, const char *name);
+// Keyed-collection enumeration: fills *out_names with the live keys and returns
+// their count.  The names are borrowed and valid until the next call.
+typedef int (*child_keys_fn)(struct object *self, const char ***out_names);
 
 // === Member descriptor =======================================================
 
@@ -198,6 +201,10 @@ typedef struct member {
             int slots;
             child_next_fn next;
             child_lookup_fn lookup; // for named children (when not statically attached)
+            // Keyed collections (`log.category["scsi"]`): the live key set.
+            // A keyed collection's `entries` member is indexed with
+            // get = next = NULL and sets lookup + keys.
+            child_keys_fn keys;
         } child;
     };
 } member_t;
@@ -288,6 +295,28 @@ const char *object_name(const struct object *o);
 void *object_data(struct object *o);
 struct object *object_parent(struct object *o);
 
+// === Logical parents =========================================================
+//
+// Objects handed out by a child callback -- collection entries (get/lookup)
+// and lookup-backed named children such as drive[n].disk -- are never
+// attached, so they have no parent and, without this, no path.  Their
+// creator registers the node whose member produces them: a non-owning
+// back-link (not added to the parent's child list, not cascade-deleted),
+// cleared automatically if the parent is freed first.  Exactly one of
+// `name` (a named lookup child), `index >= 0` (an indexed entry) or `key` (a
+// keyed entry) is given; `name` and `key` are copied.  The path is then
+// `<parent>.<name>`, `<parent>[<index>]` or `<parent>["<key>"]`.  Passing a
+// NULL parent clears the link.
+void object_set_logical_parent(struct object *obj, struct object *parent, const char *name, int index, const char *key);
+struct object *object_logical_parent(struct object *o); // NULL when none
+const char *object_logical_name(struct object *o); // named-child segment, or NULL
+int object_logical_index(struct object *o); // entry index, or -1
+const char *object_logical_key(struct object *o); // entry key, or NULL
+
+// Keys of keyed collections are short identifiers: [A-Za-z0-9_.-]{1,63}.
+#define OBJ_KEY_MAX 63
+bool object_valid_key(const char *key);
+
 // === Entry pools =============================================================
 //
 // A collection whose entries are made once, one per slot of the table they
@@ -308,6 +337,9 @@ typedef struct {
     static object_pool_t name = {name##_objs, name##_slots, (count)}
 
 void object_pool_create(object_pool_t *pool, const class_desc_t *cls);
+// Register `parent` (the collection container) as every entry's logical
+// parent, entry i at index i.
+void object_pool_set_parent(object_pool_t *pool, struct object *parent);
 void object_pool_delete(object_pool_t *pool);
 struct object *object_pool_at(const object_pool_t *pool, int slot); // NULL out of range or before create
 int object_pool_slot(struct object *entry); // -1 for no entry

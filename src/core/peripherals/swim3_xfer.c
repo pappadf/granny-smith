@@ -48,10 +48,10 @@
 #include <string.h>
 
 // One log category for the whole subsystem -- drive mechanics AND every
-// controller.  `debug.log swim 10` on an SE/30 used to turn on the ISM register
+// controller.  `log.set swim 10` on an SE/30 used to turn on the ISM register
 // trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush or eject,
 // because those live in floppy.c under a different name; the same split hid the
-// DBDMA ring from `debug.log swim3 10` on a 7500.  Level convention: 1-2 state
+// DBDMA ring from `log.set swim3 10` on a 7500.  Level convention: 1-2 state
 // changes, 3-5 per-operation, 6+ per-register/per-byte.
 LOG_USE_CATEGORY_NAME("floppy");
 
@@ -306,7 +306,7 @@ typedef struct swim3_parse {
     int sector; // for a sector write: the matched header's sector
     bool format; // whole-track parse: take sectors from the stream
     int sectors_written;
-    // Diagnostics, printed under `debug.log swim3 6` when the parse ends.
+    // Diagnostics, printed under `log.set swim3 6` when the parse ends.
     // The marks the driver feeds the converter are the one part of these
     // streams no document pins byte-exactly, so make them readable rather
     // than something to guess at from a silent failure.

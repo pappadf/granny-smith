@@ -234,17 +234,17 @@ static value_t attr_machine_id(struct object *self, const member_t *m) {
     return val_str(p->id ? p->id : "");
 }
 
-// `machine.models` — every registered model id, in registry order.  Answers
+// `catalog.models` — every registered model id, in registry order.  Answers
 // without a running machine, so a script can iterate the roster instead of
 // keeping its own copy of it.
-static value_t attr_machine_models(struct object *self, const member_t *m) {
+static value_t attr_catalog_models(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     size_t n = 0;
     const hw_profile_t *const *list = machine_list(&n);
     value_t *items = n ? (value_t *)calloc(n, sizeof(value_t)) : NULL;
     if (n && !items)
-        return val_err("machine.models: out of memory");
+        return val_err("catalog.models: out of memory");
     for (size_t i = 0; i < n; i++)
         items[i] = val_str(list[i]->id);
     return val_list(items, n);
@@ -697,19 +697,19 @@ static value_t build_profile(const hw_profile_t *p) {
     return val_map_finish(b);
 }
 
-// machine.profile(id) — static lookup, returns the model's full configuration
+// catalog.profile(id) — static lookup, returns the model's full configuration
 // shape as a typed map.  Errors when id is empty
 // or doesn't match a registered profile.
-static value_t machine_method_profile(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static value_t catalog_method_profile(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     const char *id = argv[0].s;
     if (!id || !*id)
-        return val_err("machine.profile: id must be non-empty");
+        return val_err("catalog.profile: id must be non-empty");
     const hw_profile_t *p = machine_find(id);
     if (!p)
-        return val_err("machine.profile: unknown model '%s'", id);
+        return val_err("catalog.profile: unknown model '%s'", id);
     return build_profile(p);
 }
 
@@ -962,13 +962,13 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         if (!nubus_card_find(doc.video_card)) {
             const char *near = nubus_card_suggest(doc.video_card);
             if (near)
-                return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see nubus.cards())",
+                return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see catalog.nubus_cards)",
                                doc.video_card, near);
-            return val_err("machine.boot: unknown card id '%s' (see nubus.cards())", doc.video_card);
+            return val_err("machine.boot: unknown card id '%s' (see catalog.nubus_cards)", doc.video_card);
         }
         if (!video_card_pick_fits(profile, nubus_card_find(doc.video_card)))
             return val_err(
-                "machine.boot: card '%s' fits no slot on model '%s' (see machine.profile(\"%s\").video_slots)",
+                "machine.boot: card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").video_slots)",
                 doc.video_card, profile->id, profile->id);
     }
     if (doc.pci_card && *doc.pci_card) {
@@ -977,12 +977,12 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         if (!pci_card_find(doc.pci_card)) {
             const char *near = pci_card_suggest(doc.pci_card);
             if (near)
-                return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see machine.pci.cards())",
+                return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see catalog.pci_cards)",
                                doc.pci_card, near);
-            return val_err("machine.boot: unknown card id '%s' (see machine.pci.cards())", doc.pci_card);
+            return val_err("machine.boot: unknown card id '%s' (see catalog.pci_cards)", doc.pci_card);
         }
         if (!pci_card_pick_fits(profile, pci_card_find(doc.pci_card)))
-            return val_err("machine.boot: card '%s' fits no slot on model '%s' (see machine.profile(\"%s\").pci_slots)",
+            return val_err("machine.boot: card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)",
                            doc.pci_card, profile->id, profile->id);
     }
     // 0..7 is the passive sense code; 8..14 is Apple's own indexed numbering
@@ -1016,7 +1016,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             }
         }
         if (!known)
-            return val_err("machine.boot: unknown monitor id '%s' (see machine.profile)", doc.monitor);
+            return val_err("machine.boot: unknown monitor id '%s' (see catalog.profile)", doc.monitor);
     }
     if (doc.custom_mode && *doc.custom_mode) {
         const char *why = NULL;
@@ -1074,7 +1074,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // so it survives the rebuild: without this the daemon's --speed= setting
     // (and any scheduler.mode a script set) is silently discarded by the
     // first machine.boot, and scheduler.mode then reads back 'paced' on a
-    // daemon launched --speed=max.
+    // daemon launched --speed=turbo.
     enum schedule_mode pacing = schedule_paced;
     bool pacing_known = false;
     if (global_emulator && global_emulator->scheduler) {
@@ -1366,7 +1366,7 @@ static const arg_decl_t machine_boot_args[] = {
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Video-mode id (see machine.profile); default: card default"            },
+     .doc = "Video-mode id (see catalog.profile); default: card default"            },
     {.name = "rom2",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1405,7 +1405,7 @@ static const arg_decl_t machine_register_args[] = {
     {.name = "created", .kind = V_STRING, .doc = "Creation timestamp"          },
 };
 
-static const arg_decl_t machine_profile_args[] = {
+static const arg_decl_t catalog_profile_args[] = {
     {.name = "id", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30)"},
 };
 
@@ -1497,11 +1497,6 @@ static const arg_decl_t machine_eject_media_args[] = {
 
 static const member_t machine_members[] = {
     {.kind = M_ATTR,
-     .name = "models",
-     .doc = "Every registered model id, in registry order (no machine needed)",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = attr_machine_models, .set = NULL}},
-    {.kind = M_ATTR,
      .name = "id",
      .doc = "Active machine's model id (\"plus\" / \"se30\" / …)",
      .flags = VAL_RO,
@@ -1536,10 +1531,6 @@ static const member_t machine_members[] = {
      .doc = "True if a machine has been booted",
      .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = attr_machine_created, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "profile",
-     .doc = "Look up a registered model's full configuration map",
-     .method = {.args = machine_profile_args, .nargs = 1, .result = V_MAP, .fn = machine_method_profile}},
     {.kind = M_METHOD,
      .name = "boot",
      .doc = "Boot a machine from a complete configuration document (model and rom required; other fields default "
@@ -1600,7 +1591,7 @@ struct object *machine_object(void) {
     if (!s_machine_object) {
         s_machine_object = object_new(&machine_class, NULL, "machine");
         if (s_machine_object) {
-            object_set_order(s_machine_object, -100); // machine sorts first under the root
+            object_set_order(s_machine_object, 0); // machine sorts first under the root
             object_attach(object_root(), s_machine_object);
             // The read-only built-from record rides along for the process
             // lifetime, like the machine container itself.
@@ -1608,6 +1599,69 @@ struct object *machine_object(void) {
         }
     }
     return s_machine_object;
+}
+
+// === catalog =================================================================
+//
+// What the emulator can build or fit, as opposed to `machine`, the computer
+// that exists now: the model roster and each model's configuration shape,
+// the card drivers, and the registries of option-ROM files a card can be
+// given.  A process singleton created at shell init; every member answers
+// without a machine.
+
+static value_t attr_catalog_nubus_cards(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return nubus_cards_list();
+}
+
+static value_t attr_catalog_pci_cards(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return pci_cards_list();
+}
+
+static const member_t catalog_members[] = {
+    {.kind = M_ATTR,
+     .name = "models",
+     .doc = "Every registered model id, in registry order (no machine needed)",
+     .flags = VAL_RO,
+     .attr = {.type = V_LIST, .get = attr_catalog_models, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "profile",
+     .doc = "A model's full configuration shape (typed map, static)",
+     .method = {.args = catalog_profile_args, .nargs = 1, .result = V_MAP, .fn = catalog_method_profile}},
+    {.kind = M_ATTR,
+     .name = "nubus_cards",
+     .doc = "The ids of all registered NuBus card drivers",
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = attr_catalog_nubus_cards, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "pci_cards",
+     .doc = "The ids of all registered PCI card drivers",
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = attr_catalog_pci_cards, .set = NULL}},
+};
+
+static const class_desc_t catalog_class = {
+    .name = "catalog",
+    .members = catalog_members,
+    .n_members = sizeof(catalog_members) / sizeof(catalog_members[0]),
+};
+
+static struct object *s_catalog_object = NULL;
+
+void catalog_init(void) {
+    if (s_catalog_object)
+        return;
+    s_catalog_object = object_new(&catalog_class, NULL, "catalog");
+    if (!s_catalog_object)
+        return;
+    object_set_label(s_catalog_object, "Catalog");
+    object_set_order(s_catalog_object, 70);
+    object_attach(object_root(), s_catalog_object);
+    vrom_init(s_catalog_object); // catalog.vroms
+    prom_init(s_catalog_object); // catalog.proms
 }
 
 // Update the machine node's display label to the active model name

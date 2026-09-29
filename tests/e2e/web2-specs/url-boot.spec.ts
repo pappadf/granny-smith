@@ -130,5 +130,5 @@ test('?fd0= media is persisted to /opfs/images/fd and inserted from there', asyn
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
   await terminalExpect(page, 'machine.floppy.drive[0].disk.filename', /\/opfs\/images\/fd\/url-system\.dsk/);
-  await terminalExpect(page, 'storage.path_exists "/opfs/images/fd/url-system.dsk"', /true/);
+  await terminalExpect(page, 'files.path_exists "/opfs/images/fd/url-system.dsk"', /true/);
 });

@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // Measurement, not a gate: what a large host copy does to the emulator
-// thread while the machine runs.  The copy (`storage.cp` of a 192 MB blank
+// thread while the machine runs.  The copy (`files.cp` of a 192 MB blank
 // image) is an I/O job on the worker in the "after" build and runs inside
 // the leaf on the emulator thread in the "before" build; the probe is the
 // page's request round trip, as in checkpoint-stall.spec.ts.  Numbers land
@@ -49,7 +49,7 @@ test("request round trips while a 192 MB copy runs", async ({ page }) => {
   await page.waitForTimeout(2_000);
   // The source: a sparse blank image is fast to make; the copy reads and
   // writes every byte.
-  await typeLine(page, 'storage.hd_create("/opfs/images/hd/src.img", "192mb")');
+  await typeLine(page, 'files.hd_create("/opfs/images/hd/src.img", "192mb")');
   await expect(page.locator(".xterm-rows")).toContainText(
     "hd create: created",
     {
@@ -88,7 +88,7 @@ test("request round trips while a 192 MB copy runs", async ({ page }) => {
   const t0 = Date.now();
   await typeLine(
     page,
-    'storage.cp("/opfs/images/hd/src.img", "/opfs/images/hd/dst.img")',
+    'files.cp("/opfs/images/hd/src.img", "/opfs/images/hd/dst.img")',
   );
   const during = await probe(20_000);
   await expect(page.locator(".xterm-rows")).toContainText("copied 1 file(s)", {

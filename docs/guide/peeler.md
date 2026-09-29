@@ -22,16 +22,16 @@ emulator just knows how to identify and extract Mac archives.
 
 | Path | Result | Description |
 |------|--------|-------------|
-| `archive.identify(path)` | `V_STRING` — `"sit"` / `"hqx"` / `"cpt"` / `"bin"` / `"sea"`, or empty string when the file isn't a recognised archive | Format probe; doesn't extract |
-| `archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Extract every file in the archive to `out_dir` (defaults to the current working directory) |
+| `files.archive.identify(path)` | `V_STRING` — `"sit"` / `"hqx"` / `"cpt"` / `"bin"` / `"sea"`, or empty string when the file isn't a recognised archive | Format probe; doesn't extract |
+| `files.archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Extract every file in the archive to `out_dir` (defaults to the current working directory) |
 
 Empty / missing return values follow the predicate-truthy rule: an
 unrecognised file produces an empty string, which scripts can test as
 a falsy `${...}`.
 
-`archive.identify` and `archive.extract` are reachable everywhere the
+`files.archive.identify` and `files.archive.extract` are reachable everywhere the
 object model is reachable: the interactive shell, headless scripts,
-the JavaScript bridge (`gsEval('archive.identify', [path])`), and the
+the JavaScript bridge (`gsEval('files.archive.identify', [path])`), and the
 inspector UI.
 
 ## Architecture
@@ -113,23 +113,23 @@ Include paths are added via `PEELER_INCLUDES = -I$(PEELER_DIR)/include
 ### Interactive shell
 
 ```
-> archive.identify /tmp/myarchive.sit.hqx
+> files.archive.identify /tmp/myarchive.sit.hqx
 hqx
-> archive.extract /tmp/myarchive.sit.hqx /tmp/out
+> files.archive.extract /tmp/myarchive.sit.hqx /tmp/out
 true
 ```
 
 ### Script form
 
 ```
-${archive.identify("/tmp/myarchive.sit")}
-assert ${archive.extract("/tmp/myarchive.sit", "/tmp/out")}
+${files.archive.identify("/tmp/myarchive.sit")}
+assert ${files.archive.extract("/tmp/myarchive.sit", "/tmp/out")}
 ```
 
 ### Web drag-and-drop
 
 The browser frontend probes dropped files in this order: ZIP via
-JSZip, Mac archive via `archive.identify`, then media-format probes.
+JSZip, Mac archive via `files.archive.identify`, then media-format probes.
 Recognised archives are extracted to a staging directory and their
 contents are re-probed for media. See [`web.md`](web.md) for the full
 upload pipeline.
@@ -138,7 +138,7 @@ upload pipeline.
 
 In the web2 Filesystem panel, right-clicking a file whose extension
 peeler recognises (`.sit` / `.hqx` / `.cpt` / `.bin` / `.sea`) adds an
-**Unpack** entry to the context menu. It calls `archive.extract` with
+**Unpack** entry to the context menu. It calls `files.archive.extract` with
 the file and a sibling `<name>_unpacked/` output directory, then
 refreshes the tree to reveal the extracted contents. The gate is the
 `isMacArchive` extension check in
@@ -181,7 +181,7 @@ peeler uses explicit error objects:
 - `peel_err_free(err)` — free the error object.
 
 The wrapper translates these into method-call failures (`V_BOOL false`
-for `archive.extract`, empty string for `archive.identify`). Detailed
+for `files.archive.extract`, empty string for `files.archive.identify`). Detailed
 messages still print to stderr via `fprintf` so scripts get a useful
 trace when a recognised archive fails to unpack.
 

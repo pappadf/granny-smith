@@ -36,7 +36,7 @@ tests/e2e/
 │   ├── checkpoint-stall.spec.ts         # Measurement: request round trip across the background checkpoint (VITE_GS_MEASURE=1)
 │   ├── debug-panel.spec.ts              # Debug view on a live machine: register edit, breakpoints, repaint while paused
 │   ├── display-card-config.spec.ts      # New Machine dialog: card-by-name video config
-│   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB storage.cp runs (VITE_GS_MEASURE=1)
+│   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB files.cp runs (VITE_GS_MEASURE=1)
 │   ├── display-drop.spec.ts             # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
 │   ├── fd-duplicate-name.spec.ts        # Duplicate floppy names in the image library
 │   ├── filesystem-tab.spec.ts           # Filesystem tab: descend image, copy/move/rename/unpack

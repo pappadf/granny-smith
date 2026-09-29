@@ -2,49 +2,50 @@
 # Runner cd's into this directory; paths are relative.
 
 # Probe the image: expected to surface as a bare HFS volume.
-storage.probe ../../data/systems/System_6_0_8.dsk
+files.probe ../../data/systems/System_6_0_8.dsk
 
 # Root of the synthesised partition layer (one entry since no APM).
-vfs.ls ../../data/systems/System_6_0_8.dsk
+files.ls ../../data/systems/System_6_0_8.dsk
 
 # HFS root directory.  Expected entries (System 6.0.8 floppy) include
 # "System Folder" and "TeachText".
-vfs.ls ../../data/systems/System_6_0_8.dsk/partition1
+files.ls ../../data/systems/System_6_0_8.dsk/partition1
 
 # Descend one level inside a folder with a space in its name.
-vfs.ls ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder
+files.ls ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder
 
-# Structured JSON listing (vfs.list) backs the web Filesystem tree's image
+# Structured JSON listing (files.list) backs the web Filesystem tree's image
 # descent. Must return a non-empty array for the synthesised partition root
-# and the HFS volume root — same opendir/readdir path as vfs.ls above.
-assert vfs.list("../../data/systems/System_6_0_8.dsk") "vfs.list: empty partition listing"
-assert vfs.list("../../data/systems/System_6_0_8.dsk/partition1") "vfs.list: empty HFS root listing"
+# and the HFS volume root — same opendir/readdir path as files.ls above.
+assert files.list("../../data/systems/System_6_0_8.dsk") "files.list: empty partition listing"
+assert files.list("../../data/systems/System_6_0_8.dsk/partition1") "files.list: empty HFS root listing"
 
 # Reserved /finf fork sub-path.  Confirm it exists as a virtual file.
 # (size returns the file size as exit code, which would flag the test
 # runner as failed — use exists for the presence check instead.)
-storage.path_exists ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/finf
-storage.path_exists ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/rsrc
+files.path_exists ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/finf
+files.path_exists ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/rsrc
 
 # Writes into an image path must be structurally refused (EROFS).
 # mkdir (unlike rm) returns OK even on error — it prints the message and
 # yields exit code 0, so the test runner doesn't abort on this line.
-vfs.mkdir ../../data/systems/System_6_0_8.dsk/partition1/newdir
+files.mkdir ../../data/systems/System_6_0_8.dsk/partition1/newdir
 
 # Recursive cp out of the image into WORK_DIR (host path provided by runner).
-storage.cp -r ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder "$WORK_DIR/dump"
-vfs.ls "$WORK_DIR/dump"
+files.cp -r ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder "$WORK_DIR/dump"
+files.ls "$WORK_DIR/dump"
 
 # Auto-mount cache visible to the user.
-storage.mounts
+echo "cached mounts: ${files.mounts.count}"
 
 # Attached writable to SCSI, the file is refused by the VFS (EBUSY); the
 # image-attach-busy test covers the cases.
 machine.scsi.attach_hd ../../data/systems/System_6_0_8.dsk 2
-assert !vfs.list("../../data/systems/System_6_0_8.dsk/partition1") "attached disk still served"
+assert !files.list("../../data/systems/System_6_0_8.dsk/partition1") "attached disk still served"
 
 # Force-unmount releases the cache entry.
-storage.unmount ../../data/systems/System_6_0_8.dsk
-storage.mounts
+let n = files.mounts.find("../../data/systems/System_6_0_8.dsk")
+files.mounts[$n].unmount
+echo "cached mounts: ${files.mounts.count}"
 
 quit

@@ -34,7 +34,7 @@ export async function gotoWeb2(page: Page): Promise<void> {
 
 // Stage a real host file into OPFS as a test *precondition* (the fixture
 // input). This is exactly what the shipped upload path does — writeToOPFS()
-// writes through the page's navigator.storage — so the worker's vfs.list
+// writes through the page's navigator.storage — so the worker's files.list
 // reads it back fine. No machine / boot involved.
 export async function stageOpfsFile(page: Page, opfsPath: string, hostFile: string): Promise<void> {
   const data = fs.readFileSync(hostFile).toString('base64');

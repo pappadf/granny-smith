@@ -79,7 +79,7 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
   // entry names (span narrows to the basename after the last '/'), and
   // a directory completes to "name/" — the browser VFS root always
   // contains /opfs.
-  await page.keyboard.type('vfs.ls /op');
+  await page.keyboard.type('files.ls /op');
   await page.keyboard.press('Tab');
   await expect
     .poll(() => lastTermLine(page), { timeout: 10_000 })

@@ -74,7 +74,7 @@
 # blinking caret).  Nothing is timed by guesswork, and a wrong screen fails
 # the row with a diff instead of typing into it.
 #
-# TIME.  Deterministic, and about ten minutes at --speed=max on one core
+# TIME.  Deterministic, and about ten minutes at --speed=turbo on one core
 # of a 2026 container, the whole install included: most of it the
 # firmware reading the floppy a block at a time, NT's two file copies, and
 # GUI Setup's configuration pass.  The ceilings below are generous on

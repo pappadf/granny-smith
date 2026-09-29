@@ -56,8 +56,8 @@ def phase1_host_desktop() {
     # catalog entry above the installer's 230 MB floor.  The label form (not a
     # raw byte count) makes the image exactly the mechanism's capacity, so
     # READ CAPACITY and the INQUIRY product ID agree.
-    assert storage.hd_create($target, "HD230SC") "hd_create HD230SC failed"
-    assert storage.path_size($target) == 245427200 "HD230SC wrong image size"
+    assert files.hd_create($target, "HD230SC") "hd_create HD230SC failed"
+    assert files.path_size($target) == 245427200 "HD230SC wrong image size"
 
     # Clock set AFTER boot (machine.boot reseeds the RTC from the host wall
     # clock, discarding a pre-boot value).  The three install phases use
@@ -109,7 +109,7 @@ def phase1_host_desktop() {
 
     # The target drive is untouched: no partition map at all, so Apple's
     # formatter has not run on it and the Finder cannot have mounted it.
-    assert try(storage.partmap($target), none) == none "the target drive already carries a partition map"
+    assert try(files.partmap($target), none) == none "the target drive already carries a partition map"
 
     # Still 2048 after the mount: Apple's CD driver works the drive at the
     # Mode 1 sector and leaves it there.  This no longer PROVES the disc was
@@ -252,24 +252,24 @@ def phase2_format_target() {
 # Secondary Ldr Partn") looks for, and its absence is what makes a plain HFS
 # image unusable.  Seven entries is the
 # signature of a 2.0d5c2 format: System 7.5's own HD SC Setup produces four
-# (iifx-install-76 asserts exactly that count on its HD160SC).  storage.partmap
+# (iifx-install-76 asserts exactly that count on its HD160SC).  files.partmap
 # prints the table into the test log, so a change of layout is readable as a
 # diff rather than only as a count going wrong.
 def phase2_export_formatted() {
     machine.scsi.device[1].image.export "${$WORK_DIR}/formatted.img"
-    storage.partmap "${$WORK_DIR}/formatted.img"
-    assert len(vfs.list("${$WORK_DIR}/formatted.img")) == 7 "formatted drive has ${len(vfs.list("${$WORK_DIR}/formatted.img"))} partitions, want 7 (a Drive Setup 2.0d5c2 map)"
+    files.partmap "${$WORK_DIR}/formatted.img"
+    assert len(files.list("${$WORK_DIR}/formatted.img")) == 7 "formatted drive has ${len(files.list("${$WORK_DIR}/formatted.img"))} partitions, want 7 (a Drive Setup 2.0d5c2 map)"
     # The HFS volume is real and readable: a freshly initialized one, so its
     # root is empty apart from whatever the mount wrote back.
-    let root = vfs.list("${$WORK_DIR}/formatted.img/partition6")
+    let root = files.list("${$WORK_DIR}/formatted.img/partition6")
     echo "formatted volume root: ${$root}"
     assert len($root) < 5 "the formatted volume is not a fresh empty HFS root"
 
     # Hand-off: the next test installs System 7.5 and Copland onto this
     # volume, and cannot read another test's WORK_DIR — the harness wipes it.  The format is slow, deterministic and rarely changes, so it is
     # published once, here, next to the rest of the Copland media.
-    storage.cp "${$WORK_DIR}/formatted.img" "${$copland_root}/media/copland_target_formatted_230mb.img"
-    assert storage.path_exists("${$copland_root}/media/copland_target_formatted_230mb.img") "the formatted volume was not published to media/"
+    files.cp "${$WORK_DIR}/formatted.img" "${$copland_root}/media/copland_target_formatted_230mb.img"
+    assert files.path_exists("${$copland_root}/media/copland_target_formatted_230mb.img") "the formatted volume was not published to media/"
 }
 
 # Skip cleanly where the Copland media is absent: it is not redistributable

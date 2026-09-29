@@ -880,6 +880,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     g_atalk_object = object_new(&atalk_class, NULL, "appletalk");
     if (!g_atalk_object)
         return;
+    object_set_order(g_atalk_object, 100);
     object_attach(object_root(), g_atalk_object);
 
     g_atalk_stats_object = object_new(&atalk_stats_class, (void *)atalk_get_stats(), "stats");
@@ -930,8 +931,11 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     // get()/next() callbacks; they are never attached, so the cascade delete
     // does not free them (this module does, in appletalk_delete).
     object_pool_create(&g_atalk_volume_pool, &atalk_volume_class);
+    object_pool_set_parent(&g_atalk_volume_pool, g_atalk_volumes_object);
     object_pool_create(&g_atalk_nbp_pool, &atalk_nbp_entry_class);
+    object_pool_set_parent(&g_atalk_nbp_pool, g_atalk_nbp_object);
     object_pool_create(&g_atalk_session_pool, &atalk_session_class);
+    object_pool_set_parent(&g_atalk_session_pool, g_atalk_sessions_object);
 }
 
 // ============================================================================

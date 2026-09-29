@@ -37,7 +37,7 @@ sed -i "s|CHECKPOINT_PLACEHOLDER|$CHECKPOINT_FILE|g" "$TEST_TMPDIR/step1.script"
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     script="$TEST_TMPDIR/step1.script" \
-    --speed=max
+    --speed=turbo
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
     echo "ERROR: Checkpoint not created at $CHECKPOINT_FILE"
@@ -63,7 +63,7 @@ sed -i "s|CHECKPOINT_PLACEHOLDER|$CHECKPOINT_FILE|g" "$TEST_TMPDIR/step2.script"
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     script="$TEST_TMPDIR/step2.script" \
-    --speed=max
+    --speed=turbo
 
 echo ""
 echo "Machine lifecycle test PASSED"

@@ -224,7 +224,7 @@ const char *val_as_str(const value_t *v);
 //
 // One vocabulary, because there were two that disagreed: validate_slot's was
 // case-sensitive and log.c's parse_onoff was case-INsensitive and accepted a
-// narrower set, so `debug.log cpu stdout=ON` worked while
+// narrower set, so `log.set cpu stdout=ON` worked while
 // `machine.floppy.drive[0].insert path ON` did not, for no reason a user
 // could infer.  Note this does NOT subsume the
 // true/false/none LITERAL grammars in parse.c and script.c: those are

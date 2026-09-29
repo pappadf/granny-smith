@@ -56,7 +56,7 @@ TEST(test_mkdir_p_and_parents) {
 }
 
 // rm -r removes a whole tree, and a symlink -- at the top or inside the tree
-// -- is removed, never followed: storage.rm of a link to a directory used to
+// -- is removed, never followed: files.rm of a link to a directory used to
 // open the link and empty the directory it pointed at.
 TEST(test_rm_tree_does_not_follow_symlinks) {
     fresh_root();

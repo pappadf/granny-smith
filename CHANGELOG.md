@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
 - **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
 
+### Changed
+- **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.
+  - `storage.*`, `vfs.ls/list/mkdir/cat`, `archive.*` and the root `download` merge into **`files`** (`files.cp`, `files.ls`, `files.archive.extract`, `files.download`, …; `storage.images` → `files.images`).
+  - The image-VFS mount cache is the collection `files.mounts[n]`, indexed by a never-reused mount serial; `storage.mounts` / `storage.list_partitions` are gone and `storage.unmount(path)` is `files.mounts[files.mounts.find(path)].unmount()`.
+  - `find.*` → `debug.find.*`; `debug.log(…)` → `log.set(…)`; `debug.log_levels()` → `log.levels`; each category is also an object, `log.category["scsi"].level = 5`.
+  - `machine.models` / `machine.profile(m)` / `machine.nubus.cards()` / `machine.pci.cards()` / `machine.vrom` / `machine.prom` → `catalog.models` / `catalog.profile(m)` / `catalog.nubus_cards` / `catalog.pci_cards` / `catalog.vroms` / `catalog.proms`; `machine.nubus` and `machine.pci` exist only on a machine with that bus.
+  - `shell.aliases`, `shell.alias_set`, `shell.alias_unset` are removed (use `shell.alias.list/add/remove`).
+  - `scheduler.mode` is an enum of `paced`, `accelerated`, `turbo`; the aliases `real`, `realtime`, `hw`, `hardware`, `accel`, `max` are no longer accepted there, by `--speed=`, or by `?speed=`.
+  - Collection entries and lookup-backed children report their path (`machine.scsi.device[3].image`, `log.category["scsi"]`); new core events `state:machine_booted` and `notify:media`.
+
 ## [v0.8.0] — 2026-08-11
 
 ### Added

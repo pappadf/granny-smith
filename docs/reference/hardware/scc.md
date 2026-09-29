@@ -814,6 +814,6 @@ late and an assertion against the text is missing bytes rather than merely
 failing. Assert it is zero alongside whatever you assert about the text.
 
 Before this pair, serial output could only be read by turning on the `scc` log
-category (`debug.log scc 5`) and reassembling `wr8 ch=0 value=0x..` lines by
+category (`log.set scc 5`) and reassembling `wr8 ch=0 value=0x..` lines by
 eye.  That still works and remains useful for watching a boot live; `sent()` is
 what turns the same text into a script assertion.

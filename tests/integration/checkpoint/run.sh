@@ -39,7 +39,7 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     --var TEST_DIR="$SCRIPT_DIR" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     $TEST_VAR_ARGS \
-    --speed=max
+    --speed=turbo
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
     echo "ERROR: Checkpoint file not created: $CHECKPOINT_FILE"
@@ -59,7 +59,7 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     --var TEST_DIR="$SCRIPT_DIR" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     $TEST_VAR_ARGS \
-    --speed=max
+    --speed=turbo
 
 echo "Checkpoint test passed"
 echo "Results saved to: $TEST_RESULTS_DIR"

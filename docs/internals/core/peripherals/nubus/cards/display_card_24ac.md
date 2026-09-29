@@ -145,11 +145,11 @@ outnumber LATCH writes by exactly the number of boundary crossings.
 
 ## 4. vROM identity
 
-`machine.vrom.identify` keys the card off the declaration ROM's **NuBus
+`catalog.vroms.identify` keys the card off the declaration ROM's **NuBus
 Format-Block CRC** (`chip[size-12..size-9]`, big-endian; TestPattern
 `$5A932BC7` at `chip[size-6..size-3]`), the analog of `rom.identify`'s checksum.
 It returns `card_id = "display_card_24ac"` and `compatible = [...]`. The
-human-readable card name is owned by the card kind (`machine.profile`), not the
+human-readable card name is owned by the card kind (`catalog.profile`), not the
 identify result. See [`declaration-rom.md`](../../../../../reference/hardware/nubus/declaration-rom.md) and
 [`src/core/memory/vrom.c`](../../../../../../src/core/memory/vrom.c).
 

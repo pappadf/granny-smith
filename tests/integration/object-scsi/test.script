@@ -54,8 +54,8 @@ assert machine.scsi.loopback == false
 # HD: accepts anything that opens and isn't floppy-sized; a fresh
 # catalog-model image is the positive case, a blank 800K floppy the
 # negative one.
-assert storage.hd_create("${$WORK_DIR}/ident-hd.img", "HD20SC") "hd_create failed"
-assert storage.fd_create("${$WORK_DIR}/ident-fd.img") "fd_create failed"
+assert files.hd_create("${$WORK_DIR}/ident-hd.img", "HD20SC") "hd_create failed"
+assert files.fd_create("${$WORK_DIR}/ident-fd.img") "fd_create failed"
 assert machine.scsi.identify_hd("${$WORK_DIR}/ident-hd.img") == true "HD image not identified as HD"
 assert machine.scsi.identify_hd("${$WORK_DIR}/ident-fd.img") == false "floppy wrongly identified as HD"
 assert machine.scsi.identify_hd("${$WORK_DIR}/does-not-exist.img") == false "missing file identified as HD"

@@ -39,7 +39,7 @@ SRC = ROOT / "src"
 
 
 def machine_roster():
-    """The registered model ids, read from the source the way machine.models
+    """The registered model ids, read from the source the way catalog.models
     reports them: builtin_machines[] in src/machines/machine.c names each
     profile, and the profile's .id is the model id."""
     table = (SRC / "machines/machine.c").read_text(errors="replace")
@@ -78,7 +78,7 @@ def rom_defaults(roms):
         script.write_text("\n".join(lines) + "\n")
         boot = next(iter(files.values()))  # headless needs a ROM to start with
         env = dict(os.environ, GS_STORAGE_CACHE=str(Path(work) / "cache"))
-        out = subprocess.run([str(headless), f"rom={boot}", "--no-prompt", "--speed=max",
+        out = subprocess.run([str(headless), f"rom={boot}", "--no-prompt", "--speed=turbo",
                               f"script={script}"], capture_output=True, text=True,
                              errors="replace", env=env).stdout
     defaults, pending = {}, None

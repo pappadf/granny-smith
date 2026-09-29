@@ -925,8 +925,11 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
     // Object-tree binding — instance_data is the scheduler itself.
     s->object = object_new(&scheduler_class, s, "scheduler");
-    if (s->object)
+    if (s->object) {
+        object_set_order(s->object, 10); // root order: machine 0, scheduler 10, checkpoint 20, files 30, debug 40, log
+                                         // 50, shell 60, catalog 70, appletalk 100
         object_attach(object_root(), s->object);
+    }
 
     return s;
 }
@@ -1952,51 +1955,30 @@ static value_t sched_attr_events(struct object *self, const member_t *m) {
     return val_list(items, len);
 }
 
-static const char *mode_label(enum schedule_mode m) {
-    switch (m) {
-    case schedule_paced:
-        return "paced";
-    case schedule_unthrottled:
-        return "turbo";
-    case schedule_accelerated:
-        return "accelerated";
-    default:
-        return "?";
-    }
-}
-
 static value_t sched_attr_running(struct object *self, const member_t *m) {
     (void)m;
     return val_bool(scheduler_is_running(sched_self_from(self)));
 }
 
+// scheduler.mode values, in enum-index order.  The legacy aliases (real,
+// realtime, hw, hardware → paced; accel → accelerated; max → turbo) are gone
+// everywhere: the attribute, --speed= and ?speed= take these three only.
+static const char *const sched_mode_names[] = {"paced", "accelerated", "turbo", NULL};
+static const enum schedule_mode sched_mode_values[] = {schedule_paced, schedule_accelerated, schedule_unthrottled};
+
 static value_t sched_attr_mode_get(struct object *self, const member_t *m) {
     (void)m;
-    return val_str(mode_label(sched_self_from(self)->mode));
+    enum schedule_mode mode = sched_self_from(self)->mode;
+    for (size_t i = 0; i < 3; i++)
+        if (sched_mode_values[i] == mode)
+            return val_enum((int)i, sched_mode_names, 3);
+    return val_err("scheduler.mode: unknown internal mode %d", (int)mode);
 }
+
 bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
-    // Legacy three-mode names stay accepted as aliases so existing scripts
-    // keep working: real/realtime and hw/hardware were the wall-clock modes
-    // → paced; max was the run-flat-out mode → turbo.  (There were three
-    // copies of this table, and they disagreed: the setter took real/hw, the
-    // command lines realtime/hardware.)
-    static const struct {
-        const char *name;
-        enum schedule_mode mode;
-    } names[] = {
-        {"paced",       schedule_paced      },
-        {"real",        schedule_paced      },
-        {"realtime",    schedule_paced      },
-        {"hw",          schedule_paced      },
-        {"hardware",    schedule_paced      },
-        {"accelerated", schedule_accelerated},
-        {"accel",       schedule_accelerated},
-        {"turbo",       schedule_unthrottled},
-        {"max",         schedule_unthrottled},
-    };
-    for (size_t i = 0; name && i < sizeof(names) / sizeof(names[0]); i++) {
-        if (strcmp(name, names[i].name) == 0) {
-            *out = names[i].mode;
+    for (size_t i = 0; name && i < 3; i++) {
+        if (strcmp(name, sched_mode_names[i]) == 0) {
+            *out = sched_mode_values[i];
             return true;
         }
     }
@@ -2005,15 +1987,13 @@ bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
 
 static value_t sched_attr_mode_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
-    scheduler_t *s = sched_self_from(self);
-    enum schedule_mode mode;
-    if (!scheduler_mode_from_string(in.s, &mode)) {
-        value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: paced, accelerated, turbo)", in.s);
+    // node_set has already coerced a name to V_ENUM against the table.
+    if (in.kind != V_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
         value_free(&in);
-        return e;
+        return val_err("scheduler.mode: expected paced, accelerated or turbo");
     }
+    scheduler_set_mode(sched_self_from(self), sched_mode_values[in.enm.idx]);
     value_free(&in);
-    scheduler_set_mode(s, mode);
     return val_none();
 }
 
@@ -2152,9 +2132,9 @@ static const member_t scheduler_members[] = {
      .attr = {.type = V_BOOL, .get = sched_attr_running, .set = NULL}},
     {.kind = M_ATTR,
      .name = "mode",
-     .doc = "Pacing mode ('paced' | 'accelerated' | 'turbo'; legacy aliases real/hw → paced, max → turbo, "
-            "accel → accelerated)", .flags = 0,
-     .attr = {.type = V_STRING, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
+     .doc = "Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo (flat out)",
+     .flags = 0,
+     .attr = {.type = V_ENUM, .enum_values = sched_mode_names, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
     {.kind = M_ATTR,
      .name = "cpi",
      .doc = "Per-machine cycles per instruction (mode-independent; writable as a debug override, 1..255)",

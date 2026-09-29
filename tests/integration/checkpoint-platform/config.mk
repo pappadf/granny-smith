@@ -9,7 +9,7 @@
 # browser as a download -- now says "not supported on this platform".
 
 TEST_NAME := Checkpoint platform seam
-TEST_DESC := machine.register, checkpoint.snapshot/probe/clear and storage.find_media work headless; clear drops stale image deltas and keeps live ones; download says it is not supported
+TEST_DESC := machine.register, checkpoint.snapshot/probe/clear and files.find_media work headless; clear drops stale image deltas and keeps live ones; download says it is not supported
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

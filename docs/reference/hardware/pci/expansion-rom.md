@@ -156,7 +156,7 @@ that every file there is recognised.
 
 ## Object surface
 
-`machine.prom` (beside `machine.vrom`):
+`catalog.proms` (beside `catalog.vroms`):
 
 | Member | Meaning |
 |---|---|

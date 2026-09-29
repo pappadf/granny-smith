@@ -10,7 +10,7 @@ const { getProfile, clearProfileCache } = await import('@/bus/profile');
 // A one-drive machine (the Quadra 700's shape) with its bays.
 function q700(): void {
   bridge.reply('machine.id', 'q700');
-  bridge.reply('machine.profile', {
+  bridge.reply('catalog.profile', {
     id: 'q700',
     name: 'Macintosh Quadra 700',
     floppy_slots: [{ label: 'Internal FD0', kind: 'hd' }],
@@ -89,7 +89,7 @@ describe('bus/profile: one reader, memoised', () => {
     const a = await getProfile('q700');
     const b = await getProfile('q700');
     expect(a).toBe(b);
-    expect(bridge.paths().filter((p) => p === 'machine.profile')).toHaveLength(1);
+    expect(bridge.paths().filter((p) => p === 'catalog.profile')).toHaveLength(1);
     expect(a?.scsi_buses).toEqual([]);
     expect(a?.hd_default).toBeNull();
     expect(a?.cdrom?.id).toBe(3);

@@ -39,7 +39,7 @@ describe('copyOutOfImage collision guards', () => {
       '/opfs/upload',
     );
     expect(res.failures).toEqual([]);
-    expect(gsEvalMock).toHaveBeenCalledWith('storage.cp', [
+    expect(gsEvalMock).toHaveBeenCalledWith('files.cp', [
       '/opfs/images/fd/X.img/partition1/Read Me',
       '/opfs/upload/Read Me',
     ]);
@@ -69,19 +69,19 @@ describe('copyOutOfImage collision guards', () => {
     expect(gsEvalMock).not.toHaveBeenCalled();
   });
 
-  it('copies a disk image out via storage.cp (fork preservation is handled C-side)', async () => {
-    // storage.cp now writes an AppleDouble "._<name>" sidecar whenever the
+  it('copies a disk image out via files.cp (fork preservation is handled C-side)', async () => {
+    // files.cp now writes an AppleDouble "._<name>" sidecar whenever the
     // source carries a resource fork (e.g. an NDIF image, whose block map lives
     // there), so copy-out stays a single verb — no format sniffing here and no
     // implicit export_raw decode.
     const src = '/opfs/images/cd/Drivers.toast/partition2/GC for System 7.x.img';
     const res = await copyOutOfImage([{ path: src, isDir: false }], '/opfs/images/fd');
     expect(res.failures).toEqual([]);
-    expect(gsEvalMock).toHaveBeenCalledWith('storage.cp', [
+    expect(gsEvalMock).toHaveBeenCalledWith('files.cp', [
       src,
       '/opfs/images/fd/GC for System 7.x.img',
     ]);
-    expect(gsEvalMock).not.toHaveBeenCalledWith('storage.export_raw', expect.anything());
+    expect(gsEvalMock).not.toHaveBeenCalledWith('files.export_raw', expect.anything());
   });
 
   it('fails the second of two batch items whose names sanitise identically', async () => {

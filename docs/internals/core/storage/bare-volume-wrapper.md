@@ -95,7 +95,7 @@ starts `wrap_base` bytes into the image's storage (0 for a bare volume, the
 - `raw_size` / `disk_size()` are the prefix plus the volume (the SCSI
   layer's bounds and READ CAPACITY see the whole disk); `wrap_storage_size`
   keeps the storage's own size;
-- `storage.export_raw` and checkpoints' consolidated data carry the file's
+- `files.export_raw` and checkpoints' consolidated data carry the file's
   shape: the bare volume, or the whole partitioned disk;
 - a write into the prefix (a partitioning tool rewriting the map) changes the
   in-memory copy and is logged; it is not persisted, and the prefix is rebuilt

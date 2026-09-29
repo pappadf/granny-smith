@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // nubus_class.c
-// `nubus.*` object-model surface: the `nubus.cards()` method, which walks
-// nubus_card_registry() and returns the list of card-id strings, and the
-// per-slot `machine.nubus.slot[N].card.*` node trees.
+// `machine.nubus.*` object-model surface: the per-slot
+// `machine.nubus.slot[N].card.*` node trees, and nubus_cards_list() behind
+// catalog.nubus_cards, which walks nubus_card_registry().
 
 #include "card.h"
 #include "display.h"
@@ -17,14 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// `nubus.cards()` — list every registered card-driver id.  Returns
-// V_LIST<V_STRING>.  Used by the config dialog to populate the per-slot
-// card-type dropdown without baking the list into the JS.
-static value_t nubus_method_cards(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+// Every registered card-driver id, as V_LIST<V_STRING> (catalog.nubus_cards).
+// The config dialog populates the per-slot card-type dropdown from it
+// without baking the list into the JS.
+value_t nubus_cards_list(void) {
     const nubus_card_kind_t *const *reg = nubus_card_registry();
     size_t n = 0;
     for (const nubus_card_kind_t *const *p = reg; *p; p++)
@@ -33,7 +29,7 @@ static value_t nubus_method_cards(struct object *self, const member_t *m, int ar
         return val_list(NULL, 0);
     value_t *items = (value_t *)calloc(n, sizeof(value_t));
     if (!items)
-        return val_err("nubus.cards: out of memory");
+        return val_err("catalog.nubus_cards: out of memory");
     size_t i = 0;
     for (const nubus_card_kind_t *const *p = reg; *p; p++)
         items[i++] = val_str((*p)->id);
@@ -273,9 +269,10 @@ static value_t slot_attr_card_id_set(struct object *self, const member_t *m, val
     // "" clears; a non-empty id must name a registered card (typo guard).
     if (*id && !nubus_card_find(id)) {
         const char *near = nubus_card_suggest(id);
-        value_t err = near ? val_err("slot[%X].card_id: unknown card id '%s' — did you mean '%s'? (see nubus.cards())",
-                                     slot, id, near)
-                           : val_err("slot[%X].card_id: unknown card id '%s' (see nubus.cards())", slot, id);
+        value_t err =
+            near ? val_err("slot[%X].card_id: unknown card id '%s' — did you mean '%s'? (see catalog.nubus_cards)",
+                           slot, id, near)
+                 : val_err("slot[%X].card_id: unknown card id '%s' (see catalog.nubus_cards)", slot, id);
         value_free(&in);
         return err;
     }
@@ -348,24 +345,45 @@ static struct object *nubus_slot_get(struct object *self, int index) {
     return g_slot_nodes[index].slot;
 }
 
-static const member_t nubus_members[] = {
+// `machine.nubus.slot` -- the slot collection: a container (attached under
+// `machine.nubus` by root_install) whose entries are the declared slots.
+static const member_t nubus_slots_members[] = {
     {.kind = M_CHILD,
-     .name = "slot",
+     .name = "entries",
      .doc = "Populated NuBus slots ($9..$E); index by slot number, e.g. slot[9].card.framebuffer",
-     .label = "Slots",
-     .order = 10,
      .child = {.cls = &nubus_slot_class, .indexed = true, .get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1}},
-    {.kind = M_METHOD,
-     .name = "cards",
-     .doc = "List the ids of all registered NuBus card drivers",
-     .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = nubus_method_cards}},
 };
 
+const class_desc_t nubus_slots_class = {
+    .name = "nubus_slots",
+    .members = nubus_slots_members,
+    .n_members = sizeof(nubus_slots_members) / sizeof(nubus_slots_members[0]),
+};
+
+// `machine.nubus` itself carries no members of its own: its `slot` child is
+// the container above.
 const class_desc_t nubus_class = {
     .name = "nubus",
-    .members = nubus_members,
-    .n_members = sizeof(nubus_members) / sizeof(nubus_members[0]),
+    .members = NULL,
+    .n_members = 0,
 };
+
+static struct object *g_slots_container = NULL;
+
+// The container is freed by root_uninstall; forget it then.
+static void slots_container_dtor(struct object *o) {
+    if (g_slots_container == o)
+        g_slots_container = NULL;
+}
+
+void nubus_objects_adopt(struct object *slots) {
+    g_slots_container = slots;
+    if (slots)
+        object_set_destructor(slots, slots_container_dtor);
+    for (int i = 0; i < NUBUS_OBJ_SLOTS; i++)
+        if (g_slot_nodes[i].slot)
+            object_set_logical_parent(g_slot_nodes[i].slot, slots, NULL, i, NULL);
+}
 
 // === Object-tree build / teardown ===========================================
 
@@ -406,6 +424,8 @@ void nubus_objects_build(nubus_bus_t *bus) {
             continue;
         object_set_label(n->slot, "Slot");
         object_set_order(n->slot, i);
+        if (g_slots_container)
+            object_set_logical_parent(n->slot, g_slots_container, NULL, i, NULL);
 
         if (!card)
             continue; // empty socket: just the wrapper + staged attrs

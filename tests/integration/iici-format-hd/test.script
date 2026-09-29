@@ -25,7 +25,7 @@
 include "../lib/mac.script"
 
 # Create a blank HD20SC hard-disk image (21,307,392 bytes, zero-filled).
-storage.hd_create "$WORK_DIR/blank.img" HD20SC
+files.hd_create "$WORK_DIR/blank.img" HD20SC
 
 # Built-in RBV named explicitly: this row's declared cell is the RBV one, and an
 # unnamed machine.boot inherits whatever staging came before it.

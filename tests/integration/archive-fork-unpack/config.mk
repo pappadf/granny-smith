@@ -6,7 +6,7 @@
 # src/core/storage/archive.c.
 
 TEST_NAME := Archive fork-preserving unpack
-TEST_DESC := archive.extract a StuffIt fixture; verify AppleDouble "._<name>" sidecars carry the resource fork.
+TEST_DESC := files.archive.extract a StuffIt fixture; verify AppleDouble "._<name>" sidecars carry the resource fork.
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 

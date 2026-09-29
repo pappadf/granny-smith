@@ -98,7 +98,7 @@ If `LOG(level, ...)` is used without setting an implicit category in the file, i
 
 ### Conventional bands (guidance, not a rule)
 
-Because ranges are not enforced, `debug.log scc 4` and `debug.log adb 4` mean
+Because ranges are not enforced, `log.set scc 4` and `log.set adb 4` mean
 different things — `scc.c` uses levels up to 11, `adb.c` stops at 3. That is
 deliberate, but it means a user cannot transfer intuition between two modules
 without reading them. New code should follow these bands so that intuition

@@ -275,7 +275,7 @@ void value_format(const value_t *v, value_format_mode_t mode, vbuf_t *out) {
             return;
         }
         // DISPLAY renders a map as canonical compact JSON, because
-        // `${machine.profile(m)}` has to stay machine-parseable -- schema
+        // `${catalog.profile(m)}` has to stay machine-parseable -- schema
         // probes pipe it straight to a JSON parser.
         {
             value_format_mode_t m = mode_is_json(mode) ? mode : VFMT_JSON;

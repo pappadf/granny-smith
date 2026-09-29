@@ -209,6 +209,10 @@ void object_attach(struct object *parent, struct object *child) {
 void object_detach(struct object *o) {
     (void)o;
 }
+void object_set_order(struct object *o, int order) {
+    (void)o;
+    (void)order;
+}
 void object_delete(struct object *o) {
     (void)o;
 }
@@ -238,6 +242,12 @@ value_t val_str(const char *s) {
 }
 value_t val_float(double f) {
     (void)f;
+    return val_none();
+}
+value_t val_enum(int idx, const char *const *table, size_t n_table) {
+    (void)idx;
+    (void)table;
+    (void)n_table;
     return val_none();
 }
 value_t val_int(int64_t i) {

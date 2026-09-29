@@ -117,7 +117,7 @@ def prove_root_is_mounted(model) {
     machine.adb.keyboard.type "sync\n"
     scheduler.run 700000000
     machine.scsi.device[0].image.export "${$WORK_DIR}/${$model}-after-sync.img"
-    let moved = storage.path_compare("${$WORK_DIR}/${$model}-at-login.img", "${$WORK_DIR}/${$model}-after-sync.img")
+    let moved = files.path_compare("${$WORK_DIR}/${$model}-at-login.img", "${$WORK_DIR}/${$model}-after-sync.img")
     echo "${$model}: the disk moved at offset ${$moved} between the login prompt and sync"
     assert $moved != -1 "${$model}: logging in and syncing wrote nothing — no root filesystem is mounted"
 }

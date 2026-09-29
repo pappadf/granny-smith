@@ -22,7 +22,7 @@
 #include "platform.h"
 #include "rom.h"
 
-// The category memory logpoints already use (AGENTS.md); debug.log memory N.
+// The category memory logpoints already use (AGENTS.md); log.set memory N.
 LOG_USE_CATEGORY_NAME("memory");
 
 // === Bus-error window ======================================================

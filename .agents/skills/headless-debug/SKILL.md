@@ -32,7 +32,7 @@ this file and the daemon disagree, trust `objects` / `attributes` / `methods`
 ```bash
 # needs gcc, make, and binutils-m68k-linux-gnu (m68k-linux-gnu-as)
 make -f Makefile.headless                       # -> build/headless/gs-headless
-./build/headless/gs-headless --daemon --kill --speed=max --no-prompt \
+./build/headless/gs-headless --daemon --kill --speed=turbo --no-prompt \
     rom=tests/data/roms/plus-v3-4d1f8172.rom "fd=path/to/floppy.image" &
 # wait for the line READY on stdout; PID file: /tmp/gs-headless-<port>.pid
 ```
@@ -90,7 +90,7 @@ alias d = machine.floppy.drive[0]       # reference binding, re-resolved per use
 echo "pc=${machine.cpu.pc:08x}"         # ${expr[:fmt]} only inside "..."
 assert machine.cpu.pc != 0 "msg"
 if machine.cpu.d0 == 0 { echo "zero" }
-for a in find.str("Apple", 0x400000, 0x410000) { echo "${$a:08x}" }
+for a in debug.find.str("Apple", 0x400000, 0x410000) { echo "${$a:08x}" }
 def where() { return "pc=${machine.cpu.pc:08x}" }
 include "tests/integration/lib/mac.script"
 ```
@@ -101,7 +101,7 @@ include "tests/integration/lib/mac.script"
   An error reaching `if`/`while`/`for`, or any failed statement in a script, aborts.
 - A bare statement starting with `$` must be a binding name: `$hits[0]` fails,
   `($hits[0])` works.
-- Map results: `machine.profile("se30").capabilities.mmu.kind`. Methods need
+- Map results: `catalog.profile("se30").capabilities.mmu.kind`. Methods need
   the call form before a key: `debug.frame().regs.pc`, not `debug.frame.regs`.
 - Built-in aliases: `$pc $sr $ccr $sp $ssp $usp $msp $vbr $d0..$d7 $a0..$a7`, plus
   `$fp0..$fp7 $fpcr $fpsr $fpiar` when the CPU has an FPU. `shell.alias.list` shows all.
@@ -139,7 +139,7 @@ machine.boot model="iicx" rom="tests/data/roms/iix-iicx-se30-97221136.rom" ram=8
   sits in `STOP`; loop on `machine.cpu.instr_count` for an exact count.
 - `machine.boot` is a complete document: `model=` and `rom=` are required,
   and every other field defaults per model.
-- Runs are deterministic at `--speed=max`: the same command sequence gives
+- Runs are deterministic at `--speed=turbo`: the same command sequence gives
   the same instruction counts, registers and screen checksum.
 
 ## Breakpoints
@@ -177,7 +177,7 @@ debug.logpoints.clear
   `$size` are bound for memory modes.
 - **Level gating:** the default `level=0` always prints. A `level=N` logpoint
   prints only when its category (`logpoint` for pc, `memory` otherwise) is at N or
-  more: `debug.log memory 5`.
+  more: `log.set memory 5`.
 - Memory logpoints see CPU accesses only (including device registers), not DMA.
 
 ## Memory, disassembly, search
@@ -192,10 +192,10 @@ machine.memory.translate 0x400         # MMU translation of a logical address
 debug.disasm                           # 16 instructions from PC
 debug.disasm 5
 debug.disasm 0x408986 3
-find.str "Apple" 0x400000 0x410000     # [start, end) - end is exclusive
-find.long 0x4170706c 0x400000 0x410000
-find.word 0x4e75 0x408980 0x408990
-find.bytes "4e 75" 0x408980 0x408990   # space-separated 2-digit hex
+debug.find.str "Apple" 0x400000 0x410000     # [start, end) - end is exclusive
+debug.find.long 0x4170706c 0x400000 0x410000
+debug.find.word 0x4e75 0x408980 0x408990
+debug.find.bytes "4e 75" 0x408980 0x408990   # space-separated 2-digit hex
 ```
 
 - The inspection commands never fault the guest or crash the daemon.
@@ -246,10 +246,10 @@ machine.screen                              # width height depth format ...
 ## Logging
 
 ```
-debug.log cpu 5                                   # category, level
-debug.log cpu level=5 file=/tmp/cpu.log stdout=off ts=on
-debug.log cpu 0
-debug.log_levels                                  # every category and its level
+log.set cpu 5                                   # category, level
+log.set cpu level=5 file=/tmp/cpu.log stdout=off ts=on
+log.set cpu 0
+log.levels                                  # every category and its level
 ```
 
 ## Checkpoints
@@ -268,7 +268,7 @@ breakpoints do. For memory watches, boot fresh instead.
 ```
 machine.id                                  # plus, se30, iicx, ...
 machine.config                              # model ram rom vroms slot_cards video_card ...
-machine.profile "se30"                      # static model description
+catalog.profile "se30"                      # static model description
 machine.rom.identify "tests/data/roms/plus-v3-4d1f8172.rom"
 machine.floppy.create "/tmp/blank.dsk"      # 800K blank, into a free drive; won't overwrite
 machine.floppy.drive[1].eject
@@ -296,16 +296,16 @@ For guest-paced input, `include "tests/integration/lib/mac.script"` and use
 ## Disk images and files (VFS)
 
 ```
-storage.probe "tests/data/systems/System_6_0_8.dsk"
-vfs.ls "tests/data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/rsrc/"
-vfs.cat ".../Finder/rsrc/vers/1.info"      # {"name":"","attrs":["purgeable"],"size":50}
-storage.cp ".../Finder/rsrc/CODE/1" "/tmp/code1.bin"
-storage.cp -r ".../Finder/rsrc/" "/tmp/finder-rsrc/"
+files.probe "tests/data/systems/System_6_0_8.dsk"
+files.ls "tests/data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/rsrc/"
+files.cat ".../Finder/rsrc/vers/1.info"      # {"name":"","attrs":["purgeable"],"size":50}
+files.cp ".../Finder/rsrc/CODE/1" "/tmp/code1.bin"
+files.cp -r ".../Finder/rsrc/" "/tmp/finder-rsrc/"
 ```
 
 A file's resource fork appears as `<file>/rsrc/<TYPE>/<id>`, each with a
-`<id>.info` sidecar; the whole fork is at `<file>/rsrc/_raw`. Use `storage.cp`
-rather than `vfs.cat` for binary data.
+`<id>.info` sidecar; the whole fork is at `<file>/rsrc/_raw`. Use `files.cp`
+rather than `files.cat` for binary data.
 
 ## Pitfalls
 

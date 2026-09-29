@@ -527,7 +527,7 @@ include the public `core/machine_profile.h` but **not** any machine
 *implementation* header — a CI layering check enforces this
 (`tests/integration/core-layering/`).
 
-**Capability probe (no machine knowledge in the UI).** `machine.profile(id)`
+**Capability probe (no machine knowledge in the UI).** `catalog.profile(id)`
 returns a JSON map that includes a *derived* `capabilities` block
 (`cpu.{model,address_bits,fpu}`, a **typed** `mmu.{present,kind}` —
 `none`/`68030_pmmu`/`lisa_segment` — plus `nubus` and `pci`) with a
@@ -544,7 +544,7 @@ table declares *topology* only (which slots exist, which are user-populatable
 default); each card kind declares its *attachment* (`card_attach_t` — a
 genuine NuBus card vs. builtin motherboard circuitry). Which cards a socket
 offers is **computed** by matching the two (`nubus_card_fits_socket`), used
-identically by the `machine.profile` encoder and `nubus_init`'s boot-time
+identically by the `catalog.profile` encoder and `nubus_init`'s boot-time
 pick validation. Adding a NuBus card is one registry line plus one
 `VROM_CATALOG` row — it is then offered on every machine with a socket, with
 no per-machine edits (`nubus_card_fits_socket` in

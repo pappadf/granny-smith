@@ -846,7 +846,7 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     // 32-bit value appears; $020/$050/$070 are byte-wide registers.
     //
     // Gated on the `board` log category at level 9, not on GS_IIFX_SHIM_TRACE.
-    // `debug.log board 9` turns it on, `file=` can redirect it, and it is
+    // `log.set board 9` turns it on, `file=` can redirect it, and it is
     // visible in the object model -- none of which an env var offered.  Unlike
     // the other env-var overrides this replaced, this one only ever produced
     // output and never changed emulated behaviour.

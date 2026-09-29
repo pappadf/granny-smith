@@ -242,7 +242,7 @@ records what the SOURCE delivered, ahead of the codec's A/D gain, and writes
 a WAV that goes straight back in through `machine.audioin.load`.  That turns
 an unreproducible live session into a file, and the round trip is exact
 (capture → load → capture differs only by the ±1 LSB dither).  In a browser,
-`download /tmp/mic.wav` hands it to the user.
+`files.download /tmp/mic.wav` hands it to the user.
 
 ```
 machine.audioin.capture.start
@@ -251,7 +251,7 @@ machine.audioin.capture.stop "/tmp/mic.wav"
 ```
 
 `machine.audioin.advise` judges the incoming audio once a second against
-what PlainTalk needs (`debug.log singer "level=1"` to see it):
+what PlainTalk needs (`log.set singer level=1` to see it):
 
 ```
 audioin advice: level 1250 rms (+0.4 dB vs target, ok)  peak 5319 x2.37 = 12613 (ok)

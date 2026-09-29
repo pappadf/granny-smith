@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // cmd_find.c
-// `find.*` memory search: find.str / find.bytes /
-// find.word / find.long return the complete V_LIST of match addresses
+// `debug.find.*` memory search: debug.find.str / debug.find.bytes /
+// debug.find.word / debug.find.long return the complete V_LIST of match addresses
 // (empty list = not found); optional start/end arguments bound the
 // scan, defaulting to the whole address space (g_address_mask).
 
@@ -133,12 +133,12 @@ static value_t find_method_str(struct object *self, const member_t *m, int argc,
     const char *text = argv[0].s ? argv[0].s : "";
     size_t n = strlen(text);
     if (n == 0)
-        return val_err("find.str: empty pattern");
+        return val_err("debug.find.str: empty pattern");
     if (n > FIND_MAX_PATTERN_LEN)
-        return val_err("find.str: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
+        return val_err("debug.find.str: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
     uint32_t start, end;
     if (!find_range_args(argc, argv, 1, &start, &end))
-        return val_err("find.str: invalid range");
+        return val_err("debug.find.str: invalid range");
     return scan_memory_list(start, end, (const uint8_t *)text, n);
 }
 
@@ -156,24 +156,24 @@ static value_t find_method_bytes(struct object *self, const member_t *m, int arg
             break;
         char tok[3] = {0};
         if (!isxdigit((unsigned char)p[0]) || !isxdigit((unsigned char)p[1]))
-            return val_err("find.bytes: expected 2-digit hex tokens (e.g. \"4E B9\")");
+            return val_err("debug.find.bytes: expected 2-digit hex tokens (e.g. \"4E B9\")");
         tok[0] = p[0];
         tok[1] = p[1];
         p += 2;
         if (*p && *p != ' ' && *p != '\t')
-            return val_err("find.bytes: expected 2-digit hex tokens (e.g. \"4E B9\")");
+            return val_err("debug.find.bytes: expected 2-digit hex tokens (e.g. \"4E B9\")");
         uint8_t b;
         if (!parse_hex_byte(tok, &b))
-            return val_err("find.bytes: bad hex byte '%s'", tok);
+            return val_err("debug.find.bytes: bad hex byte '%s'", tok);
         if (plen >= FIND_MAX_PATTERN_LEN)
-            return val_err("find.bytes: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
+            return val_err("debug.find.bytes: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
         pattern[plen++] = b;
     }
     if (plen == 0)
-        return val_err("find.bytes: empty pattern");
+        return val_err("debug.find.bytes: empty pattern");
     uint32_t start, end;
     if (!find_range_args(argc, argv, 1, &start, &end))
-        return val_err("find.bytes: invalid range");
+        return val_err("debug.find.bytes: invalid range");
     return scan_memory_list(start, end, pattern, plen);
 }
 
@@ -198,13 +198,13 @@ static value_t find_int_common(const char *label, size_t width, int argc, const 
 static value_t find_method_word(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return find_int_common("find.word", 2, argc, argv);
+    return find_int_common("debug.find.word", 2, argc, argv);
 }
 
 static value_t find_method_long(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return find_int_common("find.long", 4, argc, argv);
+    return find_int_common("debug.find.long", 4, argc, argv);
 }
 
 // `start` documents a default of 0, so declare it: without one, naming `end`
@@ -273,23 +273,13 @@ static const member_t find_members[] = {
      .method = {.args = find_int_args, .nargs = 3, .result = V_LIST, .fn = find_method_word}   },
 };
 
-static const class_desc_t find_class = {
+// `debug.find` -- stateless: its methods scan whichever memory map is
+// currently active.  Each `debug` object creates its own `find` child
+// (debug_init) and frees it with itself, so a checkpoint restore, which
+// builds the new machine's `debug` before destroying the old one, never
+// needs one node in two places.
+const class_desc_t find_class = {
     .name = "find",
     .members = find_members,
     .n_members = sizeof(find_members) / sizeof(find_members[0]),
 };
-
-// === Process-singleton lifecycle ============================================
-//
-// `find` is a stateless facade — its methods scan whichever memory map
-// is currently active. Register once at shell_init.
-
-static struct object *s_find_object = NULL;
-
-void find_class_register(void) {
-    if (s_find_object)
-        return;
-    s_find_object = object_new(&find_class, NULL, "find");
-    if (s_find_object)
-        object_attach(object_root(), s_find_object);
-}

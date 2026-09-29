@@ -4,7 +4,7 @@ import RenameDialog from '@/components/panel-views/filesystem/RenameDialog.svelt
 
 // A rename target is a single path component. A '/' would silently turn the
 // rename into a move — worst case into the item's own subtree, which the
-// C-side storage.mv copy fallback would mangle.
+// C-side files.mv copy fallback would mangle.
 describe('RenameDialog validation', () => {
   function setup() {
     const onSubmit = vi.fn();

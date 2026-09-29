@@ -1188,7 +1188,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
             value_t r = call_node_with_args(L, ctx, node);
             // Trailing `.key` / `[...]` segments on a call result descend
             // into the returned map/list:
-            //   machine.profile("se30").capabilities.mmu.kind
+            //   catalog.profile("se30").capabilities.mmu.kind
             // A constructive method returns the object it made, so the same
             // segments descend into the tree instead:
             //   appletalk.afp.volumes.add("Shared", "/opfs/shared").vol_id

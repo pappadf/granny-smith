@@ -35,19 +35,19 @@ machine.rtc.time = "2026-04-26T21:30:36"
 #
 # `Key Layout` is a System 6 control-panel device whose content lives entirely
 # in its resource fork — exactly what has to survive the copy-out.
-storage.cp "../../data/systems/system_6_0_8_20mb_8_24gc.img/partition1/System Folder/Key Layout" "${$WORK_DIR}/share/Key Layout"
-assert storage.path_exists("${$WORK_DIR}/share/Key Layout") "cp did not produce the data fork"
-assert storage.path_exists("${$WORK_DIR}/share/._Key Layout") "cp did not produce the AppleDouble sidecar"
-assert storage.path_size("${$WORK_DIR}/share/._Key Layout") > 1000 "the sidecar carries no resource fork"
+files.cp "../../data/systems/system_6_0_8_20mb_8_24gc.img/partition1/System Folder/Key Layout" "${$WORK_DIR}/share/Key Layout"
+assert files.path_exists("${$WORK_DIR}/share/Key Layout") "cp did not produce the data fork"
+assert files.path_exists("${$WORK_DIR}/share/._Key Layout") "cp did not produce the AppleDouble sidecar"
+assert files.path_size("${$WORK_DIR}/share/._Key Layout") > 1000 "the sidecar carries no resource fork"
 
 # A second copy-out must be byte-identical: the sidecar is a pure function of
 # the source's forks, with nothing environment-dependent baked in.
-storage.cp "../../data/systems/system_6_0_8_20mb_8_24gc.img/partition1/System Folder/Key Layout" "${$WORK_DIR}/again/Key Layout"
-assert storage.path_compare("${$WORK_DIR}/share/._Key Layout", "${$WORK_DIR}/again/._Key Layout") == -1 "copy-out is not deterministic"
+files.cp "../../data/systems/system_6_0_8_20mb_8_24gc.img/partition1/System Folder/Key Layout" "${$WORK_DIR}/again/Key Layout"
+assert files.path_compare("${$WORK_DIR}/share/._Key Layout", "${$WORK_DIR}/again/._Key Layout") == -1 "copy-out is not deterministic"
 
 # The fixture app the setup step built is an AppleDouble pair too.
-assert storage.path_exists("${$WORK_DIR}/share/TestApp") "TestApp fixture missing"
-assert storage.path_exists("${$WORK_DIR}/share/._TestApp") "TestApp resource fork missing"
+assert files.path_exists("${$WORK_DIR}/share/TestApp") "TestApp fixture missing"
+assert files.path_exists("${$WORK_DIR}/share/._TestApp") "TestApp resource fork missing"
 
 # --- Stage 2: publish the share and mount it from the guest -----------------
 
@@ -164,12 +164,12 @@ scheduler.run 80000000
 check_ex("e2e-duplicated.png", 58, 140, 80, 420)
 
 # The copy is an AppleDouble pair of exactly the same shape as the original.
-assert storage.path_exists("${$WORK_DIR}/share/Copy of TestApp") "the duplicate has no data fork"
-assert storage.path_exists("${$WORK_DIR}/share/._Copy of TestApp") "the duplicate lost its resource fork"
+assert files.path_exists("${$WORK_DIR}/share/Copy of TestApp") "the duplicate has no data fork"
+assert files.path_exists("${$WORK_DIR}/share/._Copy of TestApp") "the duplicate lost its resource fork"
 # Compared against the original as it stands *now*: the guest's own Get Info
 # traffic has since given the original a dates entry, so the size to match is
 # the live one, not the one the fixture shipped with.
-assert storage.path_size("${$WORK_DIR}/share/._Copy of TestApp") == storage.path_size("${$WORK_DIR}/share/._TestApp") "the duplicate's sidecar is a different size"
+assert files.path_size("${$WORK_DIR}/share/._Copy of TestApp") == files.path_size("${$WORK_DIR}/share/._TestApp") "the duplicate's sidecar is a different size"
 
 # ...and it is a new catalog object with its own CNID.
 assert appletalk.afp.volumes["My Volume"].cnid_count == 4 "the duplicate was not catalogued"

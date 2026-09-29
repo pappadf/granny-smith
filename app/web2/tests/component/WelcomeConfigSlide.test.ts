@@ -9,7 +9,7 @@ import { MockOpfs } from '../helpers/mockOpfs';
 import { modelValue } from '../helpers/modelSelect';
 
 // The Configuration slide drives the model dropdown by calling
-// `machine.rom.identify` on every ROM in OPFS, then `machine.profile` to get the
+// `machine.rom.identify` on every ROM in OPFS, then `catalog.profile` to get the
 // human-readable name. Mock both so tests don't need a live WASM module.
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
@@ -43,7 +43,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         }
         return null;
       }
-      if (path === 'machine.profile') {
+      if (path === 'catalog.profile') {
         const id = (args?.[0] as string) ?? '';
         const byId: Record<string, object> = {
           plus: {
@@ -164,7 +164,7 @@ describe('WelcomeConfigSlide', () => {
     });
   });
 
-  it('RAM options follow machine.profile and reset to ram_default on model switch', async () => {
+  it('RAM options follow catalog.profile and reset to ram_default on model switch', async () => {
     const { container } = render(WelcomeConfigSlide);
     await waitFor(() => {
       const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;

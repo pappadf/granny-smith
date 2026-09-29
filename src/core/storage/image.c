@@ -411,7 +411,7 @@ static int materialize_ndif_host(const char *base_path, ndif_map_t *map, const c
 }
 
 // Resolve `path` through realpath() so every spelling of the same file — the
-// relative one a script passes to storage.probe, the absolute one the VFS
+// relative one a script passes to files.probe, the absolute one the VFS
 // resolves, a symlink — reduces to one string.  Falls back to the input when
 // realpath cannot resolve it (e.g. the file was just deleted), preserving the
 // old keying.  image_vfs.c canonicalises its mount table the same way.

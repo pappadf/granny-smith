@@ -253,8 +253,7 @@ static void print_usage(const char *program) {
     printf("\n");
     printf("Options:\n");
     printf("  --help, -h      Display this help message\n");
-    printf("  --speed=MODE    Pacing mode: paced, accelerated, turbo (default: paced; legacy\n");
-    printf("                  aliases realtime/hardware map to paced, max to turbo). Headless\n");
+    printf("  --speed=MODE    Pacing mode: paced, accelerated, turbo (default: paced). Headless\n");
     printf("                  runs are budget-driven; only 'accelerated' changes execution\n");
     printf("                  (more instructions per frame-unit, scheduler.speed multiplier).\n");
     printf("  --cycles=N      Run for N CPU cycles then exit (for testing)\n");

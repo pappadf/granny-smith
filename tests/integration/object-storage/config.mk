@@ -4,11 +4,11 @@
 # included), so every geometry/catalog assert holds unchanged — and this
 # removes the suite's last TEST_SETUP unzip.
 # Integration test: storage object class
-# Boots Plus with one SCSI HD and one floppy so storage.images has at
+# Boots Plus with one SCSI HD and one floppy so files.images has at
 # least two populated entries to walk.
 
 TEST_NAME := Object-model storage class
-TEST_DESC := storage.images indexed children — filename / path / type / writable
+TEST_DESC := files.images indexed children — filename / path / type / writable
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_SETUP := cp "$(TEST_DATA)/systems/system_6_0_8_20mb_8_24gc.img" "$(TEST_TMPDIR)/hd.img"

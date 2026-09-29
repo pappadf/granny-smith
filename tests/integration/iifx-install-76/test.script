@@ -88,7 +88,7 @@ def settle(limit) {
 # --- Part 1: format a blank HD160SC ------------------------------------------
 
 # Create a blank HD160SC hard-disk image (177,269,760 bytes, zero-filled).
-storage.hd_create "$WORK_DIR/blank.img" HD160SC
+files.hd_create "$WORK_DIR/blank.img" HD160SC
 
 # Pin the RTC so the boot is deterministic run-to-run.
 
@@ -168,8 +168,8 @@ check("done.png")
 # The formatted drive really carries an Apple Partition Map with a driver
 # partition and an HFS volume — flatten base + delta and read it back.
 machine.scsi.device[0].image.export "$WORK_DIR/formatted.img"
-storage.partmap "$WORK_DIR/formatted.img"
-assert len(vfs.list("$WORK_DIR/formatted.img")) == 4 "formatted HD partition map != 4 entries"
+files.partmap "$WORK_DIR/formatted.img"
+assert len(files.list("$WORK_DIR/formatted.img")) == 4 "formatted HD partition map != 4 entries"
 
 # --- Part 2: start a Custom Install of the minimum system --------------------
 # Fresh machine, same card/mode; the formatted HD is re-attached (empty, so
@@ -305,9 +305,9 @@ check("success.png")
 
 # The destination carries a real System Folder.
 machine.scsi.device[0].image.export "$WORK_DIR/installed.img"
-let root = vfs.list("$WORK_DIR/installed.img/partition1")
+let root = files.list("$WORK_DIR/installed.img/partition1")
 echo "destination root: ${$root}"
-let sysfolder = vfs.list("$WORK_DIR/installed.img/partition1/System Folder")
+let sysfolder = files.list("$WORK_DIR/installed.img/partition1/System Folder")
 echo "System Folder: ${$sysfolder}"
 assert len($sysfolder) >= 10 "System Folder has fewer than 10 items — the install did not land"
 

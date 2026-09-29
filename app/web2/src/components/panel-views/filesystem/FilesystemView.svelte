@@ -473,7 +473,7 @@
     const old = renameTarget;
     renameOpen = false;
     renameTarget = null;
-    // Unchanged name is a no-op, not an error (storage.mv would refuse it as
+    // Unchanged name is a no-op, not an error (files.mv would refuse it as
     // an existing destination).
     if (newName === (old.split('/').pop() ?? '')) return;
     try {

@@ -13,8 +13,8 @@ def restarts(model, ram_kb) {
 
     # One medium per channel, so a transfer that confused the two would
     # show up as the wrong device rather than as silence.
-    assert storage.hd_create("${$WORK_DIR}/${$model}-bay0.img", "80M") "could not create the channel 0 disk"
-    assert storage.hd_create("${$WORK_DIR}/${$model}-bay4.img", "80M") "could not create the channel 1 disk"
+    assert files.hd_create("${$WORK_DIR}/${$model}-bay0.img", "80M") "could not create the channel 0 disk"
+    assert files.hd_create("${$WORK_DIR}/${$model}-bay4.img", "80M") "could not create the channel 1 disk"
     machine.scsi.attach_hd("${$WORK_DIR}/${$model}-bay0.img", 0)
     machine.scsi2.attach_hd("${$WORK_DIR}/${$model}-bay4.img", 4)
     assert machine.scsi.device[0].type == "hd" "${$model}: channel 0 bay 0 not mounted"

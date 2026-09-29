@@ -1,9 +1,9 @@
 import { render, waitFor, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Mock the emulator bridge so vfs.list returns canned partition / volume
+// Mock the emulator bridge so files.list returns canned partition / volume
 // listings — exercises the Filesystem tree's descent into a disk image
-// without a running WASM module. vfs.list returns a native array of
+// without a running WASM module. files.list returns a native array of
 // {name,kind,size} objects (V_LIST of V_MAP through the gsEval bridge), so
 // the mock returns arrays directly rather than JSON strings. Declared via
 // vi.hoisted so the spy exists before the (hoisted) vi.mock factory runs.
@@ -76,8 +76,8 @@ beforeEach(() => {
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   gsEvalMock.mockReset();
   gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
-    if (path === 'storage.cp') return true;
-    if (path !== 'vfs.list') return null;
+    if (path === 'files.cp') return true;
+    if (path !== 'files.list') return null;
     const dir = (args?.[0] as string) ?? '';
     if (dir === '/opfs/disk.img') {
       return [
@@ -101,7 +101,7 @@ describe('FilesystemView — disk-image descent', () => {
   it('collapses a lone synthetic partition (floppy shows volume contents directly)', async () => {
     // A floppy has no partition map — the VFS reports a single partition1.
     gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
-      if (path !== 'vfs.list') return null;
+      if (path !== 'files.list') return null;
       const dir = (args?.[0] as string) ?? '';
       if (dir === '/opfs/disk.img') return [{ name: 'partition1', kind: 'directory', size: 0 }];
       if (dir === '/opfs/disk.img/partition1')
@@ -137,14 +137,14 @@ describe('FilesystemView — disk-image descent', () => {
       expect(labels(container)).toContain('partition1');
       expect(labels(container)).toContain('partition2');
     });
-    expect(gsEvalMock).toHaveBeenCalledWith('vfs.list', ['/opfs/disk.img']);
+    expect(gsEvalMock).toHaveBeenCalledWith('files.list', ['/opfs/disk.img']);
 
     await fireEvent.click(rowFor(container, 'partition1'));
     await waitFor(() => {
       expect(labels(container)).toContain('System Folder');
       expect(labels(container)).toContain('Read Me');
     });
-    expect(gsEvalMock).toHaveBeenCalledWith('vfs.list', ['/opfs/disk.img/partition1']);
+    expect(gsEvalMock).toHaveBeenCalledWith('files.list', ['/opfs/disk.img/partition1']);
   });
 
   it('shows no context menu for a read-only node inside an image', async () => {
@@ -175,7 +175,7 @@ describe('FilesystemView — disk-image descent', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
   });
 
-  it('downloads a file inside an image by extracting it via storage.cp', async () => {
+  it('downloads a file inside an image by extracting it via files.cp', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
     await waitFor(() => expect(labels(container)).toContain('disk.img'));
@@ -193,7 +193,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.click(download);
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       const [src, scratch] = cp![1] as [string, string];
       expect(src).toBe('/opfs/disk.img/partition1/Read Me');
@@ -204,7 +204,7 @@ describe('FilesystemView — disk-image descent', () => {
     });
   });
 
-  it('downloads a plain OPFS file by reading it directly (no storage.cp)', async () => {
+  it('downloads a plain OPFS file by reading it directly (no files.cp)', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
     await waitFor(() => expect(labels(container)).toContain('notes.txt'));
@@ -221,7 +221,7 @@ describe('FilesystemView — disk-image descent', () => {
       expect(backend.readFileCalls).toContain('/opfs/notes.txt');
       expect(createObjectURL).toHaveBeenCalled();
     });
-    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp')).toBeUndefined();
+    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp')).toBeUndefined();
   });
 
   it('copies a file OUT of an image when dragged to an OPFS folder', async () => {
@@ -240,7 +240,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       expect(cp![1]).toEqual(['/opfs/disk.img/partition1/Read Me', '/opfs/extracted/Read Me']);
     });
@@ -262,7 +262,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       expect(cp![1]).toEqual([
         '-r',
@@ -286,7 +286,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       // Source keeps its ':'; destination is sanitised so the OPFS write
       // succeeds instead of silently failing.
@@ -310,7 +310,7 @@ describe('FilesystemView — disk-image descent', () => {
     await waitFor(() => {
       expect(backend.moveCalls).toContainEqual(['/opfs/notes.txt', '/opfs/extracted/notes.txt']);
     });
-    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp')).toBeUndefined();
+    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp')).toBeUndefined();
   });
 
   // Regression: dragOver must set a dropEffect compatible with the dragStart
