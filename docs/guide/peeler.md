@@ -2,7 +2,7 @@
 
 This document describes how the emulator unpacks classic Macintosh
 archive formats. The underlying library is **peeler**; the
-emulator-facing surface is the `archive` namespace on the object tree.
+emulator-facing surface is the `files.archive` node on the object tree.
 
 ## Overview
 
@@ -14,7 +14,7 @@ detects nested formats so a `.sit.hqx` file unpacks in a single call.
 The library originated as a standalone project at
 <https://github.com/pappadf/peeler> and now lives in-tree under
 [`src/peeler/`](../../src/peeler/) (it was previously a git submodule).
-The emulator wraps it as `archive` on the object tree so users and
+The emulator wraps it as `files.archive` on the object tree so users and
 scripts never see the library name; from their point of view, the
 emulator just knows how to identify and extract Mac archives.
 
@@ -69,8 +69,9 @@ list of files, each with:
 The emulator-side wrapper lives at
 [`src/core/storage/archive.c`](../../src/core/storage/archive.c). It:
 
-- Owns the `archive` class descriptor and registers the object as a
-  process-singleton from `archive_init` (called by `shell_init`).
+- Owns the `archive` class descriptor and attaches the object under
+  `files` as a process singleton from `archive_init` (called by
+  `files_init` at `shell_init`).
 - Implements `archive_identify_file(path)` and
   `archive_extract_file(path, out_dir)` — small C wrappers over the
   peeler API that the typed methods bind to.

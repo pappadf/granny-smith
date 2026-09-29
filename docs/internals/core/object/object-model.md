@@ -305,8 +305,8 @@ bool-typed argument slots only.
   time with per-fire bindings (`$value`/`$addr`/`$size` for logpoint
   messages).
 - **Tree layout:** emulated hardware lives under `machine.*`; tooling
-  and session surfaces (`debug`, `find`, `scheduler`, `shell`,
-  `storage`) live at the root.
+  and session surfaces (`scheduler`, `checkpoint`, `files`, `debug`,
+  `log`, `shell`, `catalog`) live at the root.
 
 ## Typed dispatch validation
 

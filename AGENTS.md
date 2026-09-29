@@ -14,7 +14,7 @@ case there is nothing to do.
 ## Repository Directory Overview
 
 - `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/, object/, vfs/, plus the system and machine-configuration files at its root)
-- `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `archive` object. See `docs/guide/peeler.md`.
+- `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `files.archive` object. See `docs/guide/peeler.md`.
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)

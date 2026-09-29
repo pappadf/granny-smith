@@ -163,10 +163,11 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
 ### Object model and shell
 
 Every emulator subsystem is exposed through a single typed tree rooted
-at `emu`. Top-level paths are the subsystem names (`cpu`, `memory`,
-`scc`, `via1`/`via2`, `rtc`, `scsi`, `floppy`, `sound`, `storage`,
-`appletalk`, `mouse`, `keyboard`, `screen`, `debug`, `archive`,
-`rom`, `vrom`, `machine`, `checkpoint`, `scheduler`, …). Each
+at `emu`. Emulated hardware nests under `machine` (`machine.cpu`,
+`machine.memory`, `machine.scsi`, `machine.floppy`, `machine.screen`, …);
+the root's other children are, in a fixed order, `scheduler`,
+`checkpoint`, `files`, `debug`, `log`, `shell`, `catalog` and
+`appletalk` (docs/internals/core/object/object-model.md, "The root"). Each
 subsystem's class lives next to its other code and self-registers via
 `<module>_init`.
 
