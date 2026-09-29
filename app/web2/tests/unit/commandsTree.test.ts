@@ -1,73 +1,225 @@
-import { describe, it, expect, vi } from 'vitest';
-import { buildCommandsTree, type CommandNode } from '@/lib/commandsTree';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  rootRows,
+  expand,
+  firstSentence,
+  invalidate,
+  invalidationFor,
+  loadAliases,
+  typeText,
+  visible,
+  type BrowserRow,
+} from '@/lib/commandsTree';
 
-// The catalogue is generated from the model, not a static
-// constant. Mock the bus so buildCommandsTree walks a tiny synthetic tree:
-//   root → machine → cpu (with a `step` method) ; root verbs `echo`/`download`
-//   plus one alias. We assert the generated shape, not a hand-listed set.
+// The browser is a structural projection of the model: mock the bus with a
+// tiny tree and assert the rows it produces.
 vi.mock('@/bus/emulator', () => {
-  const method = (name: string, doc = '') => ({
-    name,
-    kind: 'method',
-    category: 'basic',
-    label: name,
-    doc,
-    verb: name,
-    task: '',
-    destructive: false,
-    mutate: false,
-    hidden: false,
-    nargs: 0,
+  const t = (kind: string, presentation: string | null = null) => ({
+    kind,
+    width: 0,
+    presentation,
+    enum: null,
   });
-  const child = (name: string) => ({
-    name,
-    kind: 'child',
-    category: 'basic',
-    label: name,
-    doc: '',
-  });
+  const members: Record<string, unknown[]> = {
+    'meta.members': [
+      {
+        name: 'help',
+        kind: 'method',
+        category: 'basic',
+        label: 'help',
+        doc: 'Usage text. More.',
+        task: 'shell',
+      },
+      {
+        name: 'machine',
+        kind: 'child',
+        category: 'basic',
+        label: 'M',
+        doc: 'The computer',
+        domain: 'machine',
+        collection: false,
+      },
+      {
+        name: 'debug',
+        kind: 'child',
+        category: 'basic',
+        label: 'debug',
+        doc: 'Debugger',
+        domain: 'emulator',
+        task: 'debug',
+        collection: false,
+      },
+    ],
+    'machine.meta.members': [
+      {
+        name: 'cpu',
+        kind: 'child',
+        category: 'basic',
+        label: 'cpu',
+        doc: 'CPU',
+        task: 'debug',
+        collection: false,
+      },
+      {
+        name: 'drive',
+        kind: 'child',
+        category: 'basic',
+        label: 'Drives',
+        doc: 'Drives',
+        task: 'storage',
+        collection: true,
+        indices: [0, 1],
+        keys: null,
+      },
+    ],
+    'machine.cpu.meta.members': [
+      {
+        name: 'pc',
+        kind: 'attr',
+        category: 'basic',
+        label: 'pc',
+        doc: 'Program counter',
+        task: 'debug',
+        readonly: false,
+        type: t('uint', 'hex'),
+      },
+      {
+        name: 'vbr',
+        kind: 'attr',
+        category: 'advanced',
+        label: 'vbr',
+        doc: 'Vector base',
+        task: 'debug',
+        readonly: false,
+        type: t('uint', 'hex'),
+      },
+      {
+        name: 'step',
+        kind: 'method',
+        category: 'basic',
+        label: 'step',
+        doc: 'Step',
+        task: 'debug',
+        hidden: false,
+      },
+      {
+        name: 'run',
+        kind: 'method',
+        category: 'basic',
+        label: 'run',
+        doc: 'Plumbing',
+        task: 'debug',
+        hidden: true,
+      },
+    ],
+    'machine.drive.meta.members': [
+      {
+        name: 'entries',
+        kind: 'child',
+        category: 'basic',
+        label: 'entries',
+        doc: '',
+        task: 'storage',
+        indexed: true,
+        indices: [0, 1],
+        keys: null,
+        collection: false,
+      },
+    ],
+  };
   return {
     isModuleReady: () => true,
-    // One meta.members call per node: its methods and its children.
     gsEval: async (path: string) => {
-      if (path === 'meta.members') return [method('echo', 'print args'), child('machine')];
-      if (path === 'machine.meta.members') return [child('cpu')];
-      if (path === 'machine.cpu.meta.members') return [method('step', 'run N instructions')];
-      if (path === 'shell.alias.list') return ['pc=machine.cpu.pc'];
+      if (path in members) return members[path];
+      if (path === 'shell.alias.list')
+        return [
+          'pc=machine.cpu.pc (built-in)',
+          'Ticks=debug.mac.globals.Ticks (built-in)',
+          'mine=machine.cpu',
+        ];
+      if (path === 'shell.keywords') return [{ word: 'while', syntax: 'while <expr> { … }' }];
       return null;
     },
   };
 });
 
-function flatten(nodes: CommandNode[]): CommandNode[] {
-  const out: CommandNode[] = [];
-  const walk = (ns: CommandNode[]) =>
-    ns.forEach((n) => {
-      out.push(n);
-      if (n.children) walk(n.children);
-    });
-  walk(nodes);
-  return out;
-}
+beforeEach(() => invalidate(''));
 
-describe('buildCommandsTree (model projection)', () => {
-  it('generates command rows from object-node methods + root verbs', async () => {
-    const tree = await buildCommandsTree();
-    const inserts = flatten(tree).map((n) => n.insert);
-    // A node method, reached by walking machine → cpu.
-    expect(inserts).toContain('machine.cpu.step');
-    // A global root verb.
-    expect(inserts).toContain('echo');
+const byName = (rows: BrowserRow[], name: string) => rows.find((r) => r.name === name)!;
+
+describe('command browser rows (model projection)', () => {
+  it('the root: its verbs, its children under domain dividers, then Aliases and Language', async () => {
+    const rows = await rootRows();
+    expect(rows.map((r) => `${r.kind}:${r.name}`)).toEqual([
+      'method:help',
+      'divider:Machine',
+      'object:machine',
+      'divider:Emulator',
+      'object:debug',
+      'group:Aliases',
+      'group:Language',
+    ]);
   });
 
-  it('includes an Aliases group and a Language (keywords) group', async () => {
-    const tree = await buildCommandsTree();
-    const groups = tree.map((n) => n.name);
-    expect(groups).toContain('Aliases');
-    expect(groups).toContain('Language');
-    const lang = tree.find((g) => g.name === 'Language')!;
-    expect(lang.children!.map((c) => c.insert)).toContain('while');
-    const aliases = tree.find((g) => g.name === 'Aliases')!;
-    expect(aliases.children!.map((c) => c.insert)).toContain('$pc');
+  it('levels are path segments; hidden methods never appear', async () => {
+    const machine = byName(await rootRows(), 'machine');
+    const cpu = byName(await expand(machine), 'cpu');
+    const rows = await expand(cpu);
+    expect(rows.map((r) => r.path)).toEqual([
+      'machine.cpu.pc',
+      'machine.cpu.vbr',
+      'machine.cpu.step',
+    ]);
+    const pc = byName(rows, 'pc');
+    expect(pc.kind).toBe('attr');
+    expect(typeText(pc.type)).toBe('uint, hex');
+  });
+
+  it('a collection expands to its live entries', async () => {
+    const machine = byName(await rootRows(), 'machine');
+    const drive = byName(await expand(machine), 'drive');
+    expect(drive.kind).toBe('collection');
+    const entries = await expand(drive);
+    expect(entries.map((r) => r.path)).toEqual(['machine.drive[0]', 'machine.drive[1]']);
+    expect(entries[0].kind).toBe('entry');
+  });
+
+  it('advanced members are visible only with the toggle', async () => {
+    const machine = byName(await rootRows(), 'machine');
+    const vbr = byName(await expand(byName(await expand(machine), 'cpu')), 'vbr');
+    expect(visible(vbr, false)).toBe(false);
+    expect(visible(vbr, true)).toBe(true);
+  });
+
+  it('aliases group into User, Built-in and Mac globals; keywords come from the model', async () => {
+    const aliases = byName(await rootRows(), 'Aliases');
+    const groups = await expand(aliases);
+    expect(groups.map((g) => g.name)).toEqual(['User', 'Built-in', 'Mac globals']);
+    expect((await expand(groups[0])).map((r) => r.name)).toEqual(['$mine']);
+    expect((await expand(groups[1])).map((r) => r.name)).toEqual(['$pc']);
+    expect((await expand(groups[2])).map((r) => r.name)).toEqual(['$Ticks']);
+    const lang = await expand(byName(await rootRows(), 'Language'));
+    expect(lang[0].name).toBe('while');
+    expect(lang[0].doc).toBe('while <expr> { … }');
+  });
+
+  it('alias entries parse the built-in marker', async () => {
+    expect(await loadAliases()).toContainEqual({
+      name: 'pc',
+      path: 'machine.cpu.pc',
+      builtin: true,
+    });
+  });
+
+  it('a row shows the first sentence of its doc', () => {
+    expect(firstSentence('Usage text. More.')).toBe('Usage text.');
+    expect(firstSentence('No period')).toBe('No period');
+  });
+
+  it('events map to the levels they change', () => {
+    expect(invalidationFor('state:machine_booted')).toBe('');
+    expect(invalidationFor('notify:media')).toBe('machine.scsi');
+    expect(invalidationFor('notify:floppy')).toBe('machine.floppy');
+    expect(invalidationFor('state:speed')).toBeNull();
   });
 });

@@ -73,14 +73,41 @@ export interface MemberInfo {
   readonly?: boolean; // attr
   value?: unknown; // attr, when values were asked for
   indexed?: boolean; // child
-  indices?: number[]; // indexed child: its live entries
+  indices?: number[] | null; // indexed child / collection container: its live entries
+  keys?: string[] | null; // keyed collection: its live keys
+  collection?: boolean; // child: a collection container (entries addressed [i] / ["k"])
+  domain?: 'machine' | 'emulator' | 'network'; // root children
+  type?: TypeDescriptor; // attr
+  // The member's effective task (inherited down the tree), or null.
+  task?: string | null;
   // method: the method_info fields
   verb?: string;
-  task?: string;
   destructive?: boolean;
   mutate?: boolean;
   hidden?: boolean;
   nargs?: number;
+  args?: ArgInfo[];
+  result?: TypeDescriptor;
+  result_doc?: string;
+  examples?: string[];
+}
+
+// What a value of a slot is (meta.members): kind, width, presentation, enum.
+export interface TypeDescriptor {
+  kind: string; // "uint", "enum", "string", …
+  width: number;
+  presentation: string | null; // "hex" | "path" | "bin" | "dec" | "sensitive" | null
+  enum: string[] | null;
+}
+
+// One declared method argument.
+export interface ArgInfo {
+  name: string;
+  doc: string;
+  type: TypeDescriptor;
+  optional: boolean;
+  rest: boolean;
+  default: unknown;
 }
 
 // `path`'s members ('' is the root), or [] when the call fails.

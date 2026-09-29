@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
 - **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
+- **Self-describing object model** — every node and member carries a doc, a domain, a task and a type descriptor in `meta.members`; `help` / `shell.usage` render usage text from it, `shell.complete` reports per-candidate kinds and docs, and value/error annotation records ride the job stream.
+- **Structural command browser** — the Terminal's browser now walks the live model (domain dividers, collections with their entries, aliases, language keywords), filters by task chips from `shell.tasks`, and shows the core's usage text for the selected member.
 
 ### Changed
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.
