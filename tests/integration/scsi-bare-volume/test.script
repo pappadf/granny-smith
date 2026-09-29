@@ -109,6 +109,10 @@ def check_desktop(golden) {
 # extensions parade) cannot pass for the desktop.
 def boot_desktop(label, model, rom, ram, vol, golden, warm) {
     machine.boot model="${$model}" ram=$ram rom="${$rom}"
+    # A fixed clock: the RTC otherwise starts at the host's wall time, and a
+    # menu-bar clock turning over during the settle wait costs a random
+    # extra 60M instructions (perf gate) on some runs and not others.
+    machine.rtc.time = "2026-04-26T21:30:00"
     assert machine.scsi.attach_hd("${$vol}", 0) "${$label}: attach_hd failed"
     machine.rtc.pram.boot_device = 0
     scheduler.run $warm
@@ -199,6 +203,7 @@ def row_checkpoint() {
 # read the map where the volume should be.
 def row_driverless() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
+    machine.rtc.time = "2026-04-26T21:30:00" # a fixed clock, as boot_desktop
     let file_size = files.path_size("${$voldl753}")
     assert machine.scsi.attach_hd("${$voldl753}", 0) "driverless: attach_hd failed"
     let i = image_index($voldl753)
