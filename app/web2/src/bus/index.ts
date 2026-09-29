@@ -23,13 +23,7 @@ export {
   type CompletionCandidate,
 } from './emulator';
 export { setConsoleSink, routeConsole, routePrintLine, routeLogEmit } from './logSink';
-export {
-  loadSystemRoots,
-  loadSystemChildren,
-  loadNodeMethods,
-  type SystemTreeNode,
-  type MethodInfo,
-} from './systemTree';
+export { loadMembers, type MemberInfo, type TypeDescriptor, type ArgInfo } from './systemTree';
 export {
   writeRegister,
   peekL,

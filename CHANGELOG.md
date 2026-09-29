@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Ctrl+C copies a selection, else interrupts;
   - an output context menu (Copy as commands, Copy output, Copy value as JSON) and find (Ctrl/Cmd+F).
   - History moves to `localStorage` (`gs.console.history`).
+- **SYSTEM tab edits the model** — values are shown as the REPL prints them.
+  - Editing: double-click, or Enter / F2. A bool toggles; an enum picks from a dropdown.
+  - A literal is written through the bridge and echoed to the console as its statement; an expression runs as a console statement.
+  - Node methods run from the context menu: destructive ones confirm, and methods with arguments get a generated form with a file browser for paths.
+  - Copy value / Copy path.
+  - Live refresh on state events, console jobs, and every 2 s while the machine runs.
+  - Ctrl/Cmd-click on a console object link reveals the node in SYSTEM.
 
 ### Changed
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.

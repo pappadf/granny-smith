@@ -92,6 +92,15 @@ export function consoleNotice(text: string): void {
 const queue: string[] = [];
 let pumping = false;
 
+// Called after every console job (SYSTEM re-reads what it shows).
+let jobDone: Array<() => void> = [];
+export function onConsoleJobDone(cb: () => void): () => void {
+  jobDone.push(cb);
+  return () => {
+    jobDone = jobDone.filter((f) => f !== cb);
+  };
+}
+
 export function consoleSubmit(text: string): void {
   if (!text.trim()) return;
   queue.push(text);
@@ -125,6 +134,7 @@ async function pump(): Promise<void> {
       }
       consoleState.runningSince = null;
       refreshPrompt();
+      for (const cb of jobDone) cb();
     }
   } finally {
     pumping = false;

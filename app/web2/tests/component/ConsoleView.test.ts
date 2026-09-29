@@ -33,6 +33,8 @@ import {
 } from '@/state/console.svelte';
 import { registerBrowserReveal } from '@/components/panel-views/terminal/terminalBridge';
 import { closeContextMenu } from '@/components/common/ContextMenu.svelte';
+import { layout } from '@/state/layout.svelte';
+import { systemView } from '@/state/system.svelte';
 
 let clip: string[];
 
@@ -109,6 +111,11 @@ describe('ConsoleView', () => {
     });
     await fireEvent.click(link);
     expect(reveal).toHaveBeenCalledWith('machine.cpu');
+    // Ctrl/Cmd-click reveals it in SYSTEM instead.
+    await fireEvent.click(link, { ctrlKey: true });
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(layout.activeTab).toBe('machine');
+    expect(systemView.reveal).toBe('machine.cpu');
   });
 
   it('a map value expands to its keys', async () => {

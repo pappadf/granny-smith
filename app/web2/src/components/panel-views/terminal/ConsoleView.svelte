@@ -87,6 +87,7 @@
   import { ConsoleHistory, copyText } from '@/lib/consoleHistory';
   import type { ConsoleInput } from './ConsoleInput';
   import { registerTerminalInsert, revealInBrowser } from './terminalBridge';
+  import { revealInSystem } from '@/state/system.svelte';
   import { normalisePaste } from '@/lib/consoleModel';
 
   let outputEl = $state<HTMLDivElement | null>(null);
@@ -300,9 +301,12 @@
     if (!outputSelection()) input?.focus();
   }
 
+  // Click: select the node in the command browser; Ctrl/Cmd-click: reveal
+  // it in SYSTEM.
   function onObjectLink(ev: MouseEvent, path: string): void {
     ev.preventDefault();
-    revealInBrowser(path);
+    if (ev.ctrlKey || ev.metaKey) revealInSystem(path);
+    else revealInBrowser(path);
   }
 
   function onRootKey(ev: KeyboardEvent): void {

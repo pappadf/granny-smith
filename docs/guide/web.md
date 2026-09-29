@@ -453,9 +453,9 @@ The Svelte app is organised under
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.
 - **Panel views** ([`panel-views/`](../../app/web2/src/components/panel-views/)):
-  Terminal, Logs, Machine tree, Filesystem tree, Images, Checkpoints,
-  Debug (Disassembly + Registers + FPU + Memory + MMU + Breakpoints +
-  Watchpoints + Call Stack).
+  Terminal (console + command browser), SYSTEM (see below), Logs,
+  Filesystem tree, Images, Checkpoints, Debug (Disassembly + Registers +
+  FPU + Memory + MMU + Breakpoints + Watchpoints + Call Stack).
 - **Status bar** ([`status-bar/`](../../app/web2/src/components/status-bar/))
   — machine state, drive activity, in-flight upload progress. The HD /
   FD / CD lights are real: the core counts every drive read and write on
@@ -465,7 +465,8 @@ The Svelte app is organised under
   ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
   shows only the lights its profile has drives for.
 - **Common** ([`common/`](../../app/web2/src/components/common/)) —
-  CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu, Icon
+  CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu,
+  ValueEditor (a value's editor by its type descriptor), PathField, Icon
   (codicon sprite at [`public/icons/sprite.svg`](../../app/web2/public/icons/sprite.svg)).
 
 State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
@@ -473,6 +474,68 @@ each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,
 `debug`, `theme`, `logs`, `images`, `uploads`, `toasts`, …). The bus
 layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
 `gsEval` call site.
+
+## SYSTEM tab
+
+[`SystemView.svelte`](../../app/web2/src/components/panel-views/machine/SystemView.svelte)
+shows the model's state and edits it. Its rows come from
+[`lib/systemRows.ts`](../../app/web2/src/lib/systemRows.ts), which builds
+them from `meta.members` with values.
+
+**Rows.**
+- The root's children sit under their domain dividers.
+- A node's attributes and children follow in model order.
+- A collection expands to its live entries (`path[i]` / `path["k"]`).
+- Internal members are never shown; advanced ones only with the Advanced
+  toggle.
+- A node that has only methods (no attributes, no children) is not a
+  folder: its methods are a submenu of its parent's context menu.
+
+**Values** are shown as the REPL prints them
+([`lib/typeDescriptor.ts`](../../app/web2/src/lib/typeDescriptor.ts)):
+
+| Value | Shown as |
+|---|---|
+| hex integer | `0x408986` |
+| other integer | decimal |
+| enum | its name |
+| bool | a toggle |
+| float | `%g` |
+| sensitive value | `••••` |
+| list, map | compact JSON, expandable |
+
+Read-only values are dimmed and show a lock on hover.
+
+**Editing.** Double-click a value, or press Enter / F2 on the selected row.
+A bool toggles with one click; an enum with values edits in a dropdown.
+Enter commits and Esc cancels. A commit takes one of two paths:
+- **Literal** (an integer in hex, decimal or binary, `true` / `false`, an
+  enum name, or any text for a string): written with `gsEval(path,
+  [value])`, then echoed to the console as the statement it equals (e.g.
+  `machine.cpu.d0 = 0x1234`). An error shows under the field and the value
+  reverts.
+- **Anything else**, and integers above 2^53: runs as the console statement
+  `<path> = <text>`.
+
+**Context menu.**
+- Runs the node's methods. A destructive one asks for confirmation first.
+- A method with arguments opens a form generated from the arguments' type
+  descriptors: `path` arguments get a file browser over `files.list`.
+- A call is echoed as its statement in argument mode.
+- Every row also has **Copy value** and **Copy path**.
+
+**Refresh.** Open levels re-read:
+- on the core's state events (`mode_started` / `mode_ended`,
+  `breakpoint_hit`, `speed`, `checkpoint_saved`, `floppy`,
+  `drive_activity`, `media`);
+- after every console job and SYSTEM action;
+- every 2 s while the machine runs and the page is in the foreground.
+
+On `state:machine_booted` the whole tree reloads, keeping the open levels
+by path.
+
+**Revealing a node.** Ctrl/Cmd-click on a console object link opens SYSTEM
+at that node (`revealInSystem`).
 
 ## Upload Pipeline
 

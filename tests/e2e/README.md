@@ -55,6 +55,7 @@ tests/e2e/
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
 │   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase
 │   ├── shell-prompt.spec.ts             # Terminal: prompt state, Tab completion, history across reloads, scrollback, paste
+│   ├── system-edit.spec.ts              # SYSTEM tab: edit machine.cpu.d0 (literal / expression / error), echo, Copy path
 │   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics
 │   ├── upload.spec.ts                   # Upload picker: streamed staging through the core (Safari regression)
 │   ├── url-archive-boot.spec.ts         # ?ROM=…zip/member, archive.org routing, bare-volume HD boot
