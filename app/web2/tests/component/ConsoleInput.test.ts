@@ -212,6 +212,31 @@ describe('ConsoleInput paste', () => {
   });
 });
 
+describe('ConsoleInput for the command browser', () => {
+  it('replaces the path token at the cursor and reports the change', async () => {
+    const seen: Array<[string, number]> = [];
+    input.destroy();
+    input = createConsoleInput(host, { ...h, onChange: (t, c) => void seen.push([t, c]) });
+    type('echo mac + 1');
+    input.view.dispatch({ selection: { anchor: 8 } });
+    input.replaceToken('machine.cpu.pc');
+    expect(input.text()).toBe('echo machine.cpu.pc + 1');
+    expect(input.getState()).toEqual({ text: 'echo machine.cpu.pc + 1', cursor: 19 });
+    expect(seen[seen.length - 1]).toEqual(['echo machine.cpu.pc + 1', 19]);
+  });
+
+  it('restores a snapshot and focuses at the end', () => {
+    type('abc');
+    const snap = input.getState();
+    input.replaceToken('machine.');
+    input.restore(snap);
+    expect(input.getState()).toEqual({ text: 'abc', cursor: 3 });
+    input.view.dispatch({ selection: { anchor: 0 } });
+    input.focusEnd();
+    expect(input.view.state.selection.main.head).toBe(3);
+  });
+});
+
 describe('completion helpers', () => {
   it('commonPrefix is case-insensitive', () => {
     expect(commonPrefix(['Apple', 'apricot'])).toBe('Ap');

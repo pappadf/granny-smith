@@ -30,7 +30,7 @@ export interface BrowserRow {
   doc: string;
   task: string | null; // effective task
   category: string; // basic | advanced | internal
-  insert: string; // what selecting the row writes (phase 3: leaves only)
+  insert: string; // what selecting the row writes over the path token at the cursor
   expandable: boolean;
   type?: TypeDescriptor; // attr
   readonly?: boolean; // attr
@@ -80,6 +80,20 @@ export function invalidate(prefix = ''): void {
       memberCache.delete(k);
 }
 
+// A console job may add or remove entries anywhere: drop every cached
+// level that lists a collection (the containers, and the parents of bare
+// indexed members).  Answers the dropped paths.
+export function invalidateCollections(): string[] {
+  const dropped: string[] = [];
+  for (const [path, ms] of [...memberCache.entries()]) {
+    if (ms.some((m) => m.kind === 'child' && (m.indexed || m.collection))) {
+      memberCache.delete(path);
+      dropped.push(path);
+    }
+  }
+  return dropped;
+}
+
 // The cache invalidation a core event implies (`kind:event`), or null when
 // it changes nothing the browser shows.
 export function invalidationFor(event: string): string | null {
@@ -110,7 +124,8 @@ function memberRow(path: string, m: MemberInfo): BrowserRow {
     task: m.task ?? null,
     category: m.category ?? 'basic',
   };
-  if (m.kind === 'method') return { ...base, kind: 'method', insert: full, expandable: false };
+  if (m.kind === 'method')
+    return { ...base, kind: 'method', insert: `${full} `, expandable: false };
   if (m.kind === 'attr')
     return {
       ...base,
@@ -123,12 +138,15 @@ function memberRow(path: string, m: MemberInfo): BrowserRow {
   // A child: a collection container (or a bare indexed member), or an object.
   const indexedMember = !!m.indexed;
   const isCollection = !!m.collection || indexedMember;
+  // Keyed only: a hybrid (indexed and keyed) collection is written with `[`.
+  const keyed =
+    isCollection && Array.isArray(m.keys) && !(Array.isArray(m.indices) && m.indices.length);
   return {
     ...base,
     kind: isCollection ? 'collection' : 'object',
-    insert: full,
+    insert: isCollection ? (keyed ? `${full}["` : `${full}[`) : `${full}.`,
     expandable: true,
-    keyed: isCollection && Array.isArray(m.keys) && !(Array.isArray(m.indices) && m.indices.length),
+    keyed,
   };
 }
 
@@ -194,7 +212,7 @@ function entryRow(name: string, path: string, task: string | null): BrowserRow {
     doc: '',
     task,
     category: 'basic',
-    insert: path,
+    insert: `${path}.`,
     expandable: true,
   };
 }
@@ -362,13 +380,38 @@ export async function loadTasks(): Promise<TaskChip[]> {
   );
 }
 
+// shell.usage: the usage text, and for a method its signature (the text's
+// first line) with each declared argument's [start, end) in it (UTF-8
+// bytes, as the core counts).
+export interface UsageInfo {
+  text: string;
+  signature: string;
+  argSpans: Array<[number, number] | null>;
+}
+
+export async function loadUsageInfo(path: string): Promise<UsageInfo | null> {
+  if (!path) return null;
+  const u = await gsEval('shell.usage', [path]);
+  if (!u || typeof u !== 'object' || typeof (u as { text?: unknown }).text !== 'string')
+    return null;
+  const o = u as { text: string; signature?: unknown; arg_spans?: unknown };
+  const spans = Array.isArray(o.arg_spans)
+    ? o.arg_spans.map((p) =>
+        Array.isArray(p) && typeof p[0] === 'number' && typeof p[1] === 'number'
+          ? ([p[0], p[1]] as [number, number])
+          : null,
+      )
+    : [];
+  return {
+    text: o.text,
+    signature: typeof o.signature === 'string' ? o.signature : '',
+    argSpans: spans,
+  };
+}
+
 // The usage text of a leaf (shell.usage), or '' when it has none.
 export async function loadUsage(path: string): Promise<string> {
-  if (!path) return '';
-  const u = await gsEval('shell.usage', [path]);
-  if (u && typeof u === 'object' && typeof (u as { text?: unknown }).text === 'string')
-    return (u as { text: string }).text;
-  return '';
+  return (await loadUsageInfo(path))?.text ?? '';
 }
 
 // Type text of an attribute row: kind plus hex / bin / path, as usage shows it.

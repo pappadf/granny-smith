@@ -86,7 +86,11 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { ConsoleHistory, copyText } from '@/lib/consoleHistory';
   import type { ConsoleInput } from './ConsoleInput';
-  import { registerTerminalInsert, revealInBrowser } from './terminalBridge';
+  import { registerConsoleInput, revealInBrowser, isBrowserWriting } from './terminalBridge';
+  import { publishCompletion } from '@/state/terminalSync.svelte';
+  import { loadUsageInfo, type UsageInfo } from '@/lib/commandsTree';
+  import { utf8ToUtf16 } from '@/lib/utf8';
+  import type { CompletionResult } from '@/bus/emulator';
   import { revealInSystem } from '@/state/system.svelte';
   import { normalisePaste } from '@/lib/consoleModel';
 
@@ -316,6 +320,86 @@
     }
   }
 
+  // --- following the input ---------------------------------------------------------
+  // Every change of the text or cursor asks shell.complete (detail) once
+  // the typing pauses; the answer goes to the command browser, and -- when
+  // the cursor is in a method's arguments -- becomes the signature hint.
+  const SYNC_DELAY_MS = 40;
+  let syncTimer: ReturnType<typeof setTimeout> | null = null;
+  let syncFromBrowser = true;
+  let syncSeq = 0;
+  let lastResult: CompletionResult | null = null;
+
+  function onInputChange(text: string, cursor: number): void {
+    // A burst counts as the browser's only if every change in it was.
+    syncFromBrowser = syncFromBrowser && isBrowserWriting();
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => {
+      syncTimer = null;
+      const fromBrowser = syncFromBrowser;
+      syncFromBrowser = true;
+      const seq = ++syncSeq;
+      void tabComplete(text, cursor).then((r) => {
+        if (destroyed || seq !== syncSeq) return; // a newer change won
+        lastResult = r;
+        publishCompletion(text, cursor, r, fromBrowser);
+        void updateHint(r);
+      });
+    }, SYNC_DELAY_MS);
+  }
+
+  // --- signature hint ------------------------------------------------------------------
+  // Under the input while the cursor is in a method's arguments: the
+  // method's signature with the current argument underlined.  Esc hides it
+  // for that method; Ctrl+Shift+Space brings it back.
+  let hint = $state<{ before: string; arg: string; after: string } | null>(null);
+  let hintDismissed = '';
+  // Not reactive: a cache of shell.usage answers by method path.
+  const usageCache: Record<string, UsageInfo | null> = {};
+
+  async function updateHint(r: CompletionResult | null): Promise<void> {
+    const method = r?.context.method ?? null;
+    if (!method || method === hintDismissed) {
+      hint = null;
+      if (!method) hintDismissed = '';
+      return;
+    }
+    let u = usageCache[method];
+    if (u === undefined) {
+      u = await loadUsageInfo(method);
+      usageCache[method] = u;
+    }
+    if (!u || !u.signature || lastResult !== r) {
+      if (!u?.signature) hint = null;
+      return;
+    }
+    const idx = r?.context.argIndex ?? null;
+    const span = idx !== null ? u.argSpans[idx] : null;
+    if (!span) {
+      hint = { before: u.signature, arg: '', after: '' };
+      return;
+    }
+    const a = utf8ToUtf16(u.signature, span[0]);
+    const b = utf8ToUtf16(u.signature, span[1]);
+    hint = {
+      before: u.signature.slice(0, a),
+      arg: u.signature.slice(a, b),
+      after: u.signature.slice(b),
+    };
+  }
+
+  function showHint(): void {
+    hintDismissed = '';
+    void updateHint(lastResult);
+  }
+
+  function escapeHint(): boolean {
+    if (!hint) return false;
+    hintDismissed = lastResult?.context.method ?? '';
+    hint = null;
+    return true;
+  }
+
   // --- input ------------------------------------------------------------------------
   const history = new ConsoleHistory();
 
@@ -336,8 +420,11 @@
         find: () => openFind(),
         outputSelection,
         history,
+        onChange: onInputChange,
+        showHint,
+        escape: escapeHint,
       });
-      registerTerminalInsert((text) => input?.replaceAll(`${text} `));
+      registerConsoleInput(input);
     })();
     void (async () => {
       try {
@@ -356,7 +443,8 @@
   onDestroy(() => {
     destroyed = true;
     if (timer) clearInterval(timer);
-    registerTerminalInsert(null);
+    registerConsoleInput(null);
+    if (syncTimer) clearTimeout(syncTimer);
     input?.destroy();
     input = null;
   });
@@ -476,6 +564,11 @@
     {/if}
   </div>
 
+  {#if hint}
+    <div class="sig-hint" role="tooltip">
+      {hint.before}<u class="sig-arg">{hint.arg}</u>{hint.after}
+    </div>
+  {/if}
   <div class="console-input-row">
     <span class="console-prompt">{consoleState.prompt}</span>
     <div class="console-input" bind:this={inputHost}></div>
@@ -572,6 +665,20 @@
   .kv-key::after {
     content: ':';
     color: var(--gs-syntax-dim);
+  }
+  .sig-hint {
+    flex: none;
+    margin: 0 6px;
+    padding: 2px 8px;
+    white-space: pre-wrap;
+    background: var(--gs-menu-bg);
+    color: var(--gs-menu-fg);
+    border: 1px solid var(--gs-border, #454545);
+    font-size: 12px;
+  }
+  .sig-arg {
+    text-decoration-thickness: 2px;
+    color: var(--gs-syntax-attribute);
   }
   .console-input-row {
     display: flex;

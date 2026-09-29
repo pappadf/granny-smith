@@ -940,6 +940,8 @@ follows only while the view is at the bottom. While a job runs longer than
 | Ctrl+C | copy a selection (input or output); otherwise interrupt |
 | Ctrl+L | clear the output |
 | Mod+F | find in the output |
+| Ctrl+Shift+Space | show the signature hint |
+| Esc | close the popup, else the signature hint |
 
 Completion offsets are converted between UTF-16 and the core's UTF-8 bytes
 ([`lib/utf8.ts`](../../app/web2/src/lib/utf8.ts)).
@@ -967,6 +969,53 @@ Cmd+C on macOS is the browser's copy.
   (the clicked entry's job), **Copy value as JSON**, **Paste**, **Select
   all** and **Clear**.
 - Mod+F opens a find bar (next / previous, match case).
+
+**Signature hint.** While the cursor is in a method's arguments
+(`shell.complete`'s `context.method`), a hint above the input shows the
+method's signature (`shell.usage`) with the current argument underlined
+(`arg_spans[context.arg_index]`, also for a `name=value` argument).
+
+### Command browser ↔ console
+
+The command browser
+([`CommandBrowser.svelte`](../../app/web2/src/components/panel-views/terminal/CommandBrowser.svelte),
+rows from [`lib/commandsTree.ts`](../../app/web2/src/lib/commandsTree.ts))
+and the console follow each other through
+[`terminalBridge.ts`](../../app/web2/src/components/panel-views/terminal/terminalBridge.ts)
+and [`state/terminalSync.svelte.ts`](../../app/web2/src/state/terminalSync.svelte.ts).
+
+**Browser → console.** Selecting a row (a click on its name, ↑/↓,
+type-to-find) replaces the path token at the console's cursor:
+
+| Row | Written |
+|---|---|
+| object | `path.` |
+| indexed (or hybrid) collection | `path[` |
+| keyed collection | `path["` |
+| collection entry | `path[i].` / `path["key"].` |
+| method | `path ` |
+| attribute | `path` |
+| alias / keyword | `$name` / `keyword ` |
+
+- Expanding or collapsing (twistie, ←/→) writes nothing.
+- The first write after the browser takes focus snapshots the input; Esc
+  puts it back and returns focus to the console.
+- Enter on a leaf, or Tab, hands focus to the console with the cursor at
+  the end.
+
+**Console → browser.** Each change of the input asks
+`shell.complete(line, cursor, true)` once typing pauses. The browser then
+([`lib/pathToken.ts`](../../app/web2/src/lib/pathToken.ts)):
+- opens the levels of the path token;
+- marks the children matching the partial segment and dims the rest of
+  that level, selecting the match (not when the change was the browser's
+  own write);
+- with the cursor in a method's arguments, selects that method and marks
+  the current argument in its usage;
+- for a `$…` token, selects the alias.
+
+Typing in the console never moves focus. A finished console job drops the
+cached levels that list collections, so their entries are re-read.
 
 Colours come from the `--gs-syntax-*` palette in
 [`styles/tokens.css`](../../app/web2/src/styles/tokens.css) (VS Code

@@ -7,11 +7,24 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const runs: string[] = [];
 let release: (() => void) | null = null;
 let blockRuns = false;
+// What shell.complete answers (the hint follows its context).
+let completion: unknown = null;
 
 vi.mock('@/bus/emulator', () => ({
   seedPrompt: async () => {},
   getRuntimePrompt: () => 'gs>',
-  tabComplete: async () => null,
+  tabComplete: async () => completion,
+  gsEval: async (path: string, args: unknown[] = []) =>
+    path === 'shell.usage' && args[0] === 'machine.floppy.drive[0].insert'
+      ? {
+          signature: 'machine.floppy.drive[0].insert <path> [writable]',
+          arg_spans: [
+            [31, 37],
+            [38, 48],
+          ],
+          text: 'machine.floppy.drive[0].insert <path> [writable]',
+        }
+      : null,
   needsContinuation: async () => false,
   whenModuleReady: async () => {},
   isModuleReady: () => true,
@@ -31,7 +44,10 @@ import {
   consoleState,
   resetConsole,
 } from '@/state/console.svelte';
-import { registerBrowserReveal } from '@/components/panel-views/terminal/terminalBridge';
+import {
+  registerBrowserReveal,
+  writeToConsole,
+} from '@/components/panel-views/terminal/terminalBridge';
 import { closeContextMenu } from '@/components/common/ContextMenu.svelte';
 import { layout } from '@/state/layout.svelte';
 import { systemView } from '@/state/system.svelte';
@@ -39,6 +55,7 @@ import { systemView } from '@/state/system.svelte';
 let clip: string[];
 
 beforeEach(() => {
+  completion = null;
   resetConsole();
   runs.length = 0;
   blockRuns = false;
@@ -225,6 +242,45 @@ describe('ConsoleView', () => {
     await waitFor(() =>
       expect(container.querySelector('.console-prompt')?.textContent).toBe('gs>'),
     );
+  });
+});
+
+describe('ConsoleView signature hint', () => {
+  it('shows the signature with the current argument underlined; Esc hides it, Ctrl+Shift+Space brings it back', async () => {
+    const { container } = render(ConsoleView);
+    const cm = await waitFor(() => {
+      const el = container.querySelector('.cm-content');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    await waitFor(() => expect(writeToConsole('')).toBe(true)); // the input is registered
+    completion = {
+      candidates: [],
+      span: { start: 42, end: 42 },
+      context: { method: 'machine.floppy.drive[0].insert', argIndex: 1, argName: 'writable' },
+    };
+    writeToConsole('machine.floppy.drive[0].insert /a.img writable=');
+    const hint = await waitFor(() => {
+      const h = container.querySelector('.sig-hint');
+      expect(h).toBeTruthy();
+      return h as HTMLElement;
+    });
+    expect(hint.textContent).toBe('machine.floppy.drive[0].insert <path> [writable]');
+    expect(hint.querySelector('.sig-arg')?.textContent).toBe('[writable]');
+
+    await fireEvent.keyDown(cm, { key: 'Escape' });
+    await waitFor(() => expect(container.querySelector('.sig-hint')).toBeNull());
+    await fireEvent.keyDown(cm, { key: ' ', code: 'Space', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(container.querySelector('.sig-hint')).toBeTruthy());
+
+    // Out of the arguments: no hint.
+    completion = {
+      candidates: [],
+      span: { start: 0, end: 0 },
+      context: { method: null, argIndex: null, argName: null },
+    };
+    writeToConsole('x');
+    await waitFor(() => expect(container.querySelector('.sig-hint')).toBeNull());
   });
 });
 

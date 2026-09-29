@@ -1,7 +1,11 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CommandBrowser from '@/components/panel-views/terminal/CommandBrowser.svelte';
-import { registerTerminalInsert } from '@/components/panel-views/terminal/terminalBridge';
+import {
+  registerConsoleInput,
+  type ConsoleInputApi,
+} from '@/components/panel-views/terminal/terminalBridge';
+import { publishCompletion } from '@/state/terminalSync.svelte';
 import { invalidate } from '@/lib/commandsTree';
 
 // The browser renders whatever the model says: mock the bus with a small
@@ -53,6 +57,17 @@ vi.mock('@/bus/emulator', () => {
         indices: [0, 1],
         keys: null,
       },
+      {
+        name: 'category',
+        kind: 'child',
+        category: 'basic',
+        label: 'category',
+        doc: 'Log categories',
+        task: 'logs',
+        collection: true,
+        indices: null,
+        keys: ['scsi'],
+      },
     ],
     'machine.cpu.meta.members': [
       {
@@ -84,6 +99,28 @@ vi.mock('@/bus/emulator', () => {
         task: 'debug',
         hidden: false,
       },
+      {
+        name: 'insert',
+        kind: 'method',
+        category: 'basic',
+        label: 'insert',
+        doc: 'Mount an image',
+        task: 'debug',
+        hidden: false,
+      },
+    ],
+    'machine.category.meta.members': [
+      {
+        name: 'entries',
+        kind: 'child',
+        category: 'basic',
+        label: 'entries',
+        doc: '',
+        task: 'logs',
+        indexed: true,
+        indices: null,
+        keys: ['scsi'],
+      },
     ],
     'machine.drive.meta.members': [
       {
@@ -111,6 +148,15 @@ vi.mock('@/bus/emulator', () => {
           { id: 'storage', label: 'Storage', doc: '' },
           { id: 'debug', label: 'Debug', doc: '' },
         ];
+      if (path === 'shell.usage' && args?.[0] === 'machine.cpu.insert')
+        return {
+          signature: 'machine.cpu.insert <path> [writable]',
+          arg_spans: [
+            [19, 25],
+            [26, 36],
+          ],
+          text: 'machine.cpu.insert <path> [writable]\n\nMount an image',
+        };
       if (path === 'shell.usage')
         return { signature: '', arg_spans: [], text: `USAGE OF ${String(args?.[0])}` };
       if (path === 'shell.alias.list') return [];
@@ -122,8 +168,22 @@ vi.mock('@/bus/emulator', () => {
 
 vi.mock('@/state/machine.svelte', () => ({ machine: { status: 'idle' } }));
 
+// A console input that records what the browser does to it.
+function fakeInput() {
+  const writes: string[] = [];
+  const api = {
+    writes,
+    replaceToken: vi.fn((t: string) => void writes.push(t)),
+    focusEnd: vi.fn(),
+    getState: vi.fn(() => ({ text: 'orig', cursor: 4 })),
+    restore: vi.fn(),
+  };
+  registerConsoleInput(api as ConsoleInputApi);
+  return api;
+}
+
 beforeEach(() => {
-  registerTerminalInsert(null);
+  registerConsoleInput(null);
   invalidate('');
 });
 
@@ -202,17 +262,143 @@ describe('CommandBrowser (structural, model-generated)', () => {
     );
   });
 
-  it('selecting a leaf inserts its path and shows its usage text', async () => {
-    const setter = vi.fn();
-    registerTerminalInsert(setter);
+  it('selecting a leaf writes its path and shows its usage text', async () => {
+    const input = fakeInput();
     const { container } = render(CommandBrowser);
     await open(container, 'machine');
     await open(container, 'cpu');
     const step = await row(container, 'step');
     await fireEvent.click(step.querySelector('.cmd-line')!);
-    expect(setter).toHaveBeenCalledWith('machine.cpu.step');
+    expect(input.writes).toEqual(['machine.cpu.step ']);
     await waitFor(() =>
       expect(step.querySelector('.usage')?.textContent).toBe('USAGE OF machine.cpu.step'),
     );
+  });
+});
+
+describe('CommandBrowser ↔ console', () => {
+  it('writes each kind of row as it is typed', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    const click = async (name: string) =>
+      fireEvent.click((await row(container, name)).querySelector('.cmd-line')!);
+    await click('machine'); // selecting an object also opens it
+    await click('cpu');
+    await click('pc');
+    await click('step');
+    await click('drive');
+    await click('[0]');
+    await click('category');
+    await click('["scsi"]');
+    expect(input.writes).toEqual([
+      'machine.',
+      'machine.cpu.',
+      'machine.cpu.pc',
+      'machine.cpu.step ',
+      'machine.drive[',
+      'machine.drive[0].',
+      'machine.category["',
+      'machine.category["scsi"].',
+    ]);
+  });
+
+  it('expanding writes nothing; ↑/↓ select and write', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await row(container, 'cpu');
+    expect(input.writes).toEqual([]);
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await waitFor(() => expect(input.writes.length).toBe(1));
+  });
+
+  it('Esc restores the input as it was when the browser took focus', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await fireEvent.focusIn(tree);
+    await fireEvent.click((await row(container, 'machine')).querySelector('.cmd-line')!);
+    await fireEvent.click((await row(container, 'cpu')).querySelector('.cmd-line')!);
+    expect(input.getState).toHaveBeenCalledTimes(1); // snapshot on the first write only
+    await fireEvent.keyDown(tree, { key: 'Escape' });
+    expect(input.restore).toHaveBeenCalledWith({ text: 'orig', cursor: 4 });
+    expect(input.focusEnd).toHaveBeenCalled();
+  });
+
+  it('Enter on a leaf, or Tab, hands focus to the console', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    await fireEvent.click((await row(container, 'pc')).querySelector('.cmd-line')!);
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await fireEvent.keyDown(tree, { key: 'Enter' });
+    expect(input.focusEnd).toHaveBeenCalledTimes(1);
+    await fireEvent.keyDown(tree, { key: 'Tab' });
+    expect(input.focusEnd).toHaveBeenCalledTimes(2);
+  });
+
+  it('follows the typed token: opens its levels, marks and selects the match, dims the rest', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    publishCompletion(
+      'machine.cpu.st',
+      14,
+      {
+        candidates: [{ text: 'step', kind: 'method', doc: '', task: 'debug' }],
+        span: { start: 12, end: 14 },
+        context: { method: null, argIndex: null, argName: null },
+      },
+      false,
+    );
+    const step = await row(container, 'step');
+    await waitFor(() => expect(step.classList.contains('selected')).toBe(true));
+    expect(step.classList.contains('match')).toBe(true);
+    expect((await row(container, 'pc')).classList.contains('dim')).toBe(true);
+    await waitFor(() =>
+      expect(step.querySelector('.usage')?.textContent).toBe('USAGE OF machine.cpu.step'),
+    );
+  });
+
+  it('in a method’s arguments: selects the method and marks the argument in its usage', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    publishCompletion(
+      'machine.cpu.insert /a.img writable=',
+      35,
+      {
+        candidates: [],
+        span: { start: 35, end: 35 },
+        context: { method: 'machine.cpu.insert', argIndex: 1, argName: 'writable' },
+      },
+      false,
+    );
+    const ins = await row(container, 'insert');
+    await waitFor(() => expect(ins.querySelector('.usage-arg')?.textContent).toBe('[writable]'));
+    expect(ins.classList.contains('selected')).toBe(true);
+  });
+
+  it("keeps its own selection when the input change was the browser's", async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const pc = await row(container, 'pc');
+    await fireEvent.click(pc.querySelector('.cmd-line')!);
+    publishCompletion(
+      'machine.cpu.pc',
+      14,
+      {
+        candidates: [{ text: 'pc', kind: 'attr', doc: '', task: 'debug' }],
+        span: { start: 12, end: 14 },
+        context: { method: null, argIndex: null, argName: null },
+      },
+      true,
+    );
+    await waitFor(() => expect(pc.classList.contains('match')).toBe(true));
+    expect(pc.classList.contains('selected')).toBe(true);
   });
 });

@@ -34,7 +34,7 @@ tests/e2e/
 │   ├── av-speech-recognition.spec.ts    # PlainTalk recognition from the browser mic
 │   ├── checkpoint-resume.spec.ts        # Checkpoint save → reload → resume (+ SE/30 profile restore)
 │   ├── checkpoint-stall.spec.ts         # Measurement: request round trip across the background checkpoint (VITE_GS_MEASURE=1)
-│   ├── command-browser.spec.ts          # Terminal command browser: domain dividers, task chips, expand + usage
+│   ├── command-browser.spec.ts          # Terminal command browser: dividers, chips, usage; follows the console and writes to it
 │   ├── console.spec.ts                  # Terminal console: value/error entries, Copy as commands → paste → one job
 │   ├── debug-panel.spec.ts              # Debug view on a live machine: register edit, breakpoints, repaint while paused
 │   ├── display-card-config.spec.ts      # New Machine dialog: card-by-name video config

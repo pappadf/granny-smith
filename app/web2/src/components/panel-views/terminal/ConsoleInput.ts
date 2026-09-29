@@ -27,6 +27,7 @@ import {
 } from '@codemirror/autocomplete';
 import type { CompletionResult } from '@/bus/emulator';
 import { normalisePaste } from '@/lib/consoleModel';
+import { replaceTokenAt } from '@/lib/pathToken';
 import { copyText, type ConsoleHistory } from '@/lib/consoleHistory';
 
 export interface ConsoleInputHandlers {
@@ -44,14 +45,25 @@ export interface ConsoleInputHandlers {
   // Text selected in the output, if any (Ctrl+C copies it).
   outputSelection(): string;
   history: ConsoleHistory;
+  // The text or the cursor changed (the browser follows the input).
+  onChange?(text: string, cursor: number): void;
+  // Ctrl+Shift+Space: show the signature hint.
+  showHint?(): void;
+  // Esc with no popup open: close the hint; answers whether it did.
+  escape?(): boolean;
 }
 
 export interface ConsoleInput {
   readonly view: EditorView;
   text(): string;
   setText(text: string): void;
-  // Replace the whole input with `text` (the command browser's insert).
-  replaceAll(text: string): void;
+  // Replace the path token at the cursor (the command browser's write).
+  replaceToken(text: string): void;
+  // The text and cursor, and putting them back (the browser's snapshot).
+  getState(): { text: string; cursor: number };
+  restore(s: { text: string; cursor: number }): void;
+  // Focus with the cursor at the end.
+  focusEnd(): void;
   focus(): void;
   destroy(): void;
 }
@@ -239,6 +251,17 @@ export function createConsoleInput(
         },
       },
       {
+        key: 'Ctrl-Shift-Space',
+        run: () => {
+          h.showHint?.();
+          return true;
+        },
+      },
+      {
+        key: 'Escape',
+        run: (v) => (completionStatus(v.state) === null ? (h.escape?.() ?? false) : false),
+      },
+      {
         key: 'Mod-f',
         run: () => {
           h.find();
@@ -279,6 +302,8 @@ export function createConsoleInput(
         EditorView.updateListener.of((u) => {
           if (u.transactions.some((t) => t.isUserEvent('input') || t.isUserEvent('delete')))
             h.history.reset();
+          if (u.docChanged || u.selectionSet)
+            h.onChange?.(u.state.doc.toString(), u.state.selection.main.head);
         }),
         EditorView.lineWrapping,
         EditorView.contentAttributes.of({ 'aria-label': 'Console input' }),
@@ -292,8 +317,14 @@ export function createConsoleInput(
     view,
     text: () => view.state.doc.toString(),
     setText: (t) => setDoc(t),
-    replaceAll: (t) => {
-      setDoc(t);
+    replaceToken: (t) => {
+      const r = replaceTokenAt(view.state.doc.toString(), view.state.selection.main.head, t);
+      setDoc(r.text, r.cursor);
+    },
+    getState: () => ({ text: view.state.doc.toString(), cursor: view.state.selection.main.head }),
+    restore: (st) => setDoc(st.text, Math.min(st.cursor, st.text.length)),
+    focusEnd: () => {
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();
     },
     focus: () => view.focus(),

@@ -6,25 +6,52 @@
   // selected leaf shows its usage text (shell.usage) underneath.  Task chips
   // (shell.tasks) filter by dimming; the Advanced toggle controls whether
   // advanced-tier members are shown at all.
+  //
+  // It follows the console and writes to it:
+  // - Selecting a row (a click on its name, ↑/↓, type-to-find) replaces
+  //   the path token at the console's cursor with the row's text (`path.`,
+  //   `path[`, `path["`, `path[i].`, `path ` for a method, `path` for an
+  //   attribute, `$name`, `keyword `).  Expanding (twistie, ←/→) writes
+  //   nothing.  The first write after the browser takes focus snapshots
+  //   the input; Esc restores it and returns focus to the console.  Enter
+  //   on a leaf, or Tab, hands focus to the console.
+  // - As the user types, the console's shell.complete answer
+  //   (state/terminalSync) opens the levels of the path token, marks the
+  //   children matching the partial segment and dims the rest; with the
+  //   cursor in a method's arguments, that method is selected with the
+  //   current argument marked in its usage.
   import { onDestroy, untrack } from 'svelte';
   import {
     expand,
     firstSentence,
     invalidate,
+    invalidateCollections,
     invalidationFor,
+    loadAliases,
     loadTasks,
-    loadUsage,
+    loadUsageInfo,
     rootRows,
     typeText,
     visible,
     type BrowserRow,
     type TaskChip,
+    type UsageInfo,
   } from '@/lib/commandsTree';
   import { onCoreEvent, whenModuleReady } from '@/bus/emulator';
-  import { showNotification } from '@/state/toasts.svelte';
-  import { insertIntoTerminal, pathPrefixes, registerBrowserReveal } from './terminalBridge';
+  import {
+    focusConsole,
+    pathPrefixes,
+    registerBrowserReveal,
+    restoreConsole,
+    snapshotConsole,
+    writeToConsole,
+    type InputState,
+  } from './terminalBridge';
+  import { terminalSync } from '@/state/terminalSync.svelte';
+  import { onConsoleJobDone } from '@/state/console.svelte';
+  import { completionFocus } from '@/lib/pathToken';
+  import { utf8ToUtf16 } from '@/lib/utf8';
   import Icon from '@/components/common/Icon.svelte';
-  import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
   import { machine } from '@/state/machine.svelte';
 
   let roots = $state<BrowserRow[]>([]);
@@ -35,7 +62,14 @@
   let task = $state<string | null>(null); // the selected task chip
   let showAdvanced = $state(false);
   let selectedKey = $state('');
-  let usage = $state('');
+  let usage = $state<UsageInfo | null>(null);
+  // The argument marked in the usage (the console's cursor is in it).
+  let markArg = $state<number | null>(null);
+  // Following the console: rows matching the partial segment, and the
+  // other rows of that level (dimmed).
+  let matchKeys = $state<Set<string>>(new Set());
+  let otherKeys = $state<Set<string>>(new Set());
+  let listEl = $state<HTMLUListElement | null>(null);
 
   // Rebuild the root when a machine boots or goes (its members change).
   $effect(() => {
@@ -58,15 +92,8 @@
     }
   }
 
-  // Events that change what a level holds drop its cache and re-read it.
-  const unsubscribe = onCoreEvent((ev) => {
-    const prefix = invalidationFor(`${ev.kind}:${ev.event}`);
-    if (prefix === null) return;
-    if (prefix === '') {
-      void reload();
-      return;
-    }
-    invalidate(prefix);
+  // Re-read the open levels at or under `prefix`.
+  function rereadUnder(prefix: string): void {
     for (const k of Object.keys(children)) {
       const row = findRow(k);
       if (
@@ -78,8 +105,32 @@
       )
         void expand(row).then((rows) => (children[k] = rows));
     }
+  }
+
+  // Events that change what a level holds drop its cache and re-read it.
+  const unsubscribe = onCoreEvent((ev) => {
+    const prefix = invalidationFor(`${ev.kind}:${ev.event}`);
+    if (prefix === null) return;
+    if (prefix === '') {
+      void reload();
+      return;
+    }
+    invalidate(prefix);
+    rereadUnder(prefix);
   });
-  onDestroy(unsubscribe);
+  // A console job may have added or removed collection entries.
+  const unsubscribeJobs = onConsoleJobDone(() => {
+    for (const p of invalidateCollections()) rereadUnder(p);
+    for (const k of Object.keys(children)) {
+      const row = findRow(k);
+      if (row?.kind === 'collection' && expanded[k])
+        void expand(row).then((rows) => (children[k] = rows));
+    }
+  });
+  onDestroy(() => {
+    unsubscribe();
+    unsubscribeJobs();
+  });
 
   function findRow(key: string): BrowserRow | undefined {
     const stack = [...roots];
@@ -128,41 +179,77 @@
     return out;
   });
 
-  async function toggle(row: BrowserRow): Promise<void> {
-    if (!row.expandable) return;
-    if (expanded[row.key]) {
-      expanded[row.key] = false;
-      return;
-    }
+  async function open(row: BrowserRow): Promise<void> {
+    if (!row.expandable || expanded[row.key]) return;
     // A collection is re-read on every expansion: entries come and go.
     if (!children[row.key] || row.kind === 'collection') children[row.key] = await expand(row);
     expanded[row.key] = true;
+  }
+
+  async function toggle(row: BrowserRow): Promise<void> {
+    if (!row.expandable) return;
+    if (expanded[row.key]) expanded[row.key] = false;
+    else await open(row);
   }
 
   function isLeaf(row: BrowserRow): boolean {
     return !row.expandable && row.kind !== 'divider';
   }
 
-  // Selecting a row: a leaf writes its text into the prompt and shows its
-  // usage; any other row just becomes the selection.
-  async function select(row: BrowserRow, insert: boolean): Promise<void> {
+  // --- writing to the console ------------------------------------------------
+
+  // The input as it was when the browser took focus (Esc puts it back).
+  let snapshotArmed = false;
+  let snapshot: InputState | null = null;
+
+  function onFocusIn(ev: FocusEvent): void {
+    if (listEl && ev.relatedTarget instanceof Node && listEl.contains(ev.relatedTarget)) return;
+    snapshotArmed = true;
+    snapshot = null;
+  }
+
+  function write(row: BrowserRow): void {
+    if (!row.insert) return;
+    if (snapshotArmed) {
+      snapshot = snapshotConsole();
+      snapshotArmed = false;
+    }
+    writeToConsole(row.insert);
+  }
+
+  // Selecting a row: it becomes the selection (a method or attribute shows
+  // its usage) and, when `doWrite`, its text replaces the path token at the
+  // console's cursor.
+  async function select(row: BrowserRow, doWrite: boolean, arg: number | null = null) {
     if (row.kind === 'divider') return;
+    const changed = selectedKey !== row.key;
     selectedKey = row.key;
-    usage = '';
+    markArg = arg;
+    if (doWrite) write(row);
+    if (!changed && usage) return;
+    usage = null;
     if (row.kind === 'method' || row.kind === 'attr') {
       const key = row.key;
-      const text = await loadUsage(row.path);
-      if (selectedKey === key) usage = text;
-    }
-    if (insert && isLeaf(row) && row.insert) {
-      if (!insertIntoTerminal(row.insert))
-        showNotification('Open the Terminal tab to insert a command', 'warning');
+      const u = await loadUsageInfo(row.path);
+      if (selectedKey === key) usage = u;
     }
   }
 
+  function scrollToSelected(): void {
+    requestAnimationFrame(() =>
+      listEl?.querySelector('.cmd-row.selected')?.scrollIntoView({ block: 'nearest' }),
+    );
+  }
+
+  // A click on a row's name selects it (and writes); a group opens.
   function onRowClick(row: BrowserRow): void {
+    if (row.kind === 'group') {
+      void toggle(row);
+      void select(row, false);
+      return;
+    }
     void select(row, true);
-    if (row.expandable) void toggle(row);
+    if (row.expandable) void open(row);
   }
 
   function onTwistieClick(ev: MouseEvent, row: BrowserRow): void {
@@ -174,12 +261,136 @@
     task = task === id ? null : id;
   }
 
-  // ---- keyboard ------------------------------------------------------------
+  // --- following the console ------------------------------------------------------
+
+  // Open the levels down to `path` (a node, or a collection / its entry);
+  // answers its row when it is shown.
+  async function openTo(path: string): Promise<BrowserRow | undefined> {
+    let found: BrowserRow | undefined;
+    for (const prefix of pathPrefixes(path)) {
+      const row = flat.find((f) => f.row.path === prefix && f.row.kind !== 'group')?.row;
+      if (!row) return undefined;
+      found = row;
+      await open(row);
+    }
+    return found;
+  }
+
+  // A row's name as a candidate spells it (`[0]` → `0`, `["scsi"]` → `scsi`).
+  function bare(name: string): string {
+    return name.replace(/^\["?/, '').replace(/"?\]$/, '').replace(/^\$/, '');
+  }
+
+  function mark(level: BrowserRow[], names: string[], partial: string): BrowserRow[] {
+    if (!partial) {
+      matchKeys = new Set();
+      otherKeys = new Set();
+      return [];
+    }
+    const want = new Set(names);
+    const hits = level.filter((r) => r.kind !== 'divider' && want.has(bare(r.name)));
+    matchKeys = new Set(hits.map((r) => r.key));
+    otherKeys = new Set(
+      level.filter((r) => r.kind !== 'divider' && !matchKeys.has(r.key)).map((r) => r.key),
+    );
+    return hits;
+  }
+
+  async function follow(): Promise<void> {
+    const r = terminalSync.result;
+    const fromBrowser = terminalSync.fromBrowser;
+    if (!r) {
+      matchKeys = new Set();
+      otherKeys = new Set();
+      return;
+    }
+    const f = completionFocus(
+      terminalSync.line,
+      r.span,
+      r.candidates.map((c) => c.text),
+    );
+
+    if (f.alias !== null) {
+      await followAlias(f.alias, f.names, fromBrowser);
+      return;
+    }
+
+    // Open the levels of the token; mark the children matching the partial.
+    const parentRow = f.parent ? await openTo(f.parent) : undefined;
+    if (f.parent && !parentRow) {
+      mark([], [], '');
+      return;
+    }
+    const level = parentRow ? (children[parentRow.key] ?? []) : roots;
+    const hits = mark(level, f.names, f.partial);
+
+    const method = r.context.method;
+    if (method) {
+      // In a method's arguments: that method, with the argument marked.
+      const row = await openTo(method);
+      if (row) {
+        await select(row, false, r.context.argIndex);
+        scrollToSelected();
+      }
+      return;
+    }
+    if (!fromBrowser && f.partial && hits.length) {
+      const exact = hits.find((h) => bare(h.name) === f.partial) ?? hits[0];
+      await select(exact, false);
+      scrollToSelected();
+    }
+  }
+
+  async function followAlias(name: string, names: string[], fromBrowser: boolean) {
+    const group = roots.find((r) => r.key === 'group:aliases');
+    if (!group) return;
+    await open(group);
+    const all = await loadAliases();
+    const pick =
+      all.find((a) => a.name === name) ??
+      (names.length === 1 ? all.find((a) => a.name === names[0]) : undefined);
+    if (!pick) return;
+    const sub = !pick.builtin
+      ? 'group:aliases:user'
+      : pick.path.startsWith('debug.mac.globals.')
+        ? 'group:aliases:globals'
+        : 'group:aliases:builtin';
+    const subRow = (children[group.key] ?? []).find((r) => r.key === sub);
+    if (!subRow) return;
+    await open(subRow);
+    const row = (children[subRow.key] ?? []).find((r) => r.key === `alias:${pick.name}`);
+    if (row && !fromBrowser) {
+      await select(row, false);
+      scrollToSelected();
+    }
+  }
+
+  $effect(() => {
+    void terminalSync.seq;
+    untrack(() => void follow());
+  });
+
+  // --- keyboard -------------------------------------------------------------------------
+  let findBuf = '';
+  let findAt = 0;
+
   function onKey(ev: KeyboardEvent): void {
     const rows = flat.filter((f) => f.row.kind !== 'divider');
     if (!rows.length) return;
     const idx = rows.findIndex((f) => f.row.key === selectedKey);
     const cur = idx >= 0 ? rows[idx].row : undefined;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      if (snapshot) restoreConsole(snapshot);
+      snapshot = null;
+      focusConsole();
+      return;
+    }
+    if (ev.key === 'Tab' && !ev.shiftKey) {
+      ev.preventDefault();
+      focusConsole();
+      return;
+    }
     if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
       if (!cur?.expandable) return;
       const want = ev.key === 'ArrowRight';
@@ -192,16 +403,41 @@
     if (ev.key === 'Enter') {
       if (!cur) return;
       ev.preventDefault();
-      if (isLeaf(cur)) void select(cur, true);
+      if (isLeaf(cur)) focusConsole();
       else void toggle(cur);
       return;
     }
-    const k = listKeyFromEvent(ev);
-    if (!k || k === 'ArrowLeft' || k === 'ArrowRight') return;
-    const next = cycleListSelection(rows.length, idx, k, { wrap: false });
-    if (next === idx || next < 0) return;
-    ev.preventDefault();
-    void select(rows[next].row, false);
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const next =
+        idx < 0
+          ? 0
+          : ev.key === 'ArrowDown'
+            ? Math.min(rows.length - 1, idx + 1)
+            : Math.max(0, idx - 1);
+      if (next === idx) return;
+      void select(rows[next].row, true);
+      scrollToSelected();
+      return;
+    }
+    // Type-to-find: the next row whose name starts with what was typed.
+    if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey && ev.key !== ' ') {
+      const now = Date.now();
+      findBuf = now - findAt > 700 ? ev.key : findBuf + ev.key;
+      findAt = now;
+      const q = findBuf.toLowerCase();
+      const n = rows.length;
+      const start = findBuf.length > 1 ? Math.max(idx, 0) : idx + 1;
+      for (let k = 0; k < n; k++) {
+        const r = rows[(start + k) % n].row;
+        if (bare(r.name).toLowerCase().startsWith(q)) {
+          ev.preventDefault();
+          void select(r, true);
+          scrollToSelected();
+          return;
+        }
+      }
+    }
   }
 
   // Select the node at `path` (a console object link), opening the levels
@@ -212,16 +448,30 @@
       const row = flat.find((f) => f.row.path === prefix)?.row;
       if (!row) break;
       found = row;
-      if (row.expandable && !expanded[row.key] && prefix !== path) await toggle(row);
+      if (prefix !== path) await open(row);
     }
     if (!found) return;
     await select(found, false);
-    listEl?.querySelector('.cmd-row.selected')?.scrollIntoView({ block: 'nearest' });
+    scrollToSelected();
   }
   registerBrowserReveal((path) => void reveal(path));
   onDestroy(() => registerBrowserReveal(null));
 
-  let listEl = $state<HTMLUListElement | null>(null);
+  // The usage text, its signature split around the marked argument.
+  const usageParts = $derived.by(() => {
+    if (!usage) return null;
+    const span = markArg !== null ? usage.argSpans[markArg] : null;
+    const sig = usage.signature;
+    if (!span || !sig || !usage.text.startsWith(sig))
+      return { before: usage.text, arg: '', after: '' };
+    const a = utf8ToUtf16(sig, span[0]);
+    const b = utf8ToUtf16(sig, span[1]);
+    return {
+      before: usage.text.slice(0, a),
+      arg: usage.text.slice(a, b),
+      after: usage.text.slice(b),
+    };
+  });
 
   function tooltip(row: BrowserRow): string {
     return row.path ? `${row.doc}${row.doc ? '\n' : ''}${row.path}` : row.doc;
@@ -249,7 +499,14 @@
     >
   </div>
 
-  <ul class="cmd-tree" role="tree" tabindex="0" onkeydown={onKey} bind:this={listEl}>
+  <ul
+    class="cmd-tree"
+    role="tree"
+    tabindex="0"
+    onkeydown={onKey}
+    onfocusin={onFocusIn}
+    bind:this={listEl}
+  >
     {#each flat as { row, depth } (row.key)}
       {#if row.kind === 'divider'}
         <li class="divider" role="presentation">{row.name}</li>
@@ -259,7 +516,8 @@
         <li
           class="cmd-row kind-{row.kind}"
           class:selected
-          class:dim={!matches(row)}
+          class:dim={!matches(row) || otherKeys.has(row.key)}
+          class:match={matchKeys.has(row.key)}
           role="treeitem"
           aria-selected={selected}
           aria-expanded={row.expandable ? open : undefined}
@@ -290,8 +548,9 @@
             {/if}
             <span class="doc">{row.expandable ? row.doc : firstSentence(row.doc)}</span>
           </div>
-          {#if selected && usage}
-            <pre class="usage">{usage}</pre>
+          {#if selected && usageParts}
+            <pre class="usage">{usageParts.before}<mark class="usage-arg">{usageParts.arg}</mark
+              >{usageParts.after}</pre>
           {/if}
         </li>
       {/if}
@@ -360,6 +619,20 @@
   }
   .cmd-row.dim > .cmd-line {
     opacity: 0.45;
+  }
+  .cmd-row.match > .cmd-line .name {
+    text-decoration: underline;
+    text-decoration-color: var(--gs-focus, #0969da);
+    text-underline-offset: 3px;
+  }
+  .usage-arg {
+    background: none;
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+  .usage-arg:empty {
+    display: none;
   }
   .cmd-line {
     display: flex;

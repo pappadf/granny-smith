@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Copy value / Copy path.
   - Live refresh on state events, console jobs, and every 2 s while the machine runs.
   - Ctrl/Cmd-click on a console object link reveals the node in SYSTEM.
+- **Command browser and console follow each other**:
+  - Selecting a row writes its path at the console's cursor (`path.`, `path[`, `path["`, `path ` for a method).
+  - Esc undoes the browser's writes; Enter / Tab hand focus back.
+  - Typing opens the browser at the token, marks and selects the match, and dims the rest.
+  - In a method's arguments, a signature hint underlines the current argument, which is also marked in the method's usage.
 
 ### Changed
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.

@@ -1,40 +1,51 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  registerTerminalInsert,
-  insertIntoTerminal,
+  registerConsoleInput,
+  writeToConsole,
+  isBrowserWriting,
+  snapshotConsole,
+  restoreConsole,
+  focusConsole,
+  type ConsoleInputApi,
 } from '@/components/panel-views/terminal/terminalBridge';
 
-beforeEach(() => {
-  registerTerminalInsert(null);
-});
+function fakeInput(): ConsoleInputApi & { seen: boolean[] } {
+  const seen: boolean[] = [];
+  return {
+    seen,
+    replaceToken: vi.fn(() => void seen.push(isBrowserWriting())),
+    focusEnd: vi.fn(),
+    getState: vi.fn(() => ({ text: 'abc', cursor: 1 })),
+    restore: vi.fn(() => void seen.push(isBrowserWriting())),
+  };
+}
+
+beforeEach(() => registerConsoleInput(null));
 
 describe('terminalBridge', () => {
-  it('insertIntoTerminal returns false when no pane is mounted', () => {
-    expect(insertIntoTerminal('rom list')).toBe(false);
+  it('does nothing while no console is mounted', () => {
+    expect(writeToConsole('machine.')).toBe(false);
+    expect(focusConsole()).toBe(false);
+    expect(snapshotConsole()).toBeNull();
   });
 
-  it('forwards text to the registered setter and returns true', () => {
-    const setter = vi.fn();
-    registerTerminalInsert(setter);
-    expect(insertIntoTerminal('cpu.pc')).toBe(true);
-    expect(setter).toHaveBeenCalledWith('cpu.pc');
+  it("forwards writes, marked as the browser's own while they run", () => {
+    const api = fakeInput();
+    registerConsoleInput(api);
+    expect(writeToConsole('machine.cpu.')).toBe(true);
+    expect(api.replaceToken).toHaveBeenCalledWith('machine.cpu.');
+    expect(api.seen).toEqual([true]);
+    expect(isBrowserWriting()).toBe(false);
   });
 
-  it('null re-registration disables the bridge', () => {
-    const setter = vi.fn();
-    registerTerminalInsert(setter);
-    registerTerminalInsert(null);
-    expect(insertIntoTerminal('x')).toBe(false);
-    expect(setter).not.toHaveBeenCalled();
-  });
-
-  it('re-registration replaces the previous setter', () => {
-    const a = vi.fn();
-    const b = vi.fn();
-    registerTerminalInsert(a);
-    registerTerminalInsert(b);
-    insertIntoTerminal('hello');
-    expect(a).not.toHaveBeenCalled();
-    expect(b).toHaveBeenCalledWith('hello');
+  it('snapshots and restores the input, and hands focus over', () => {
+    const api = fakeInput();
+    registerConsoleInput(api);
+    const s = snapshotConsole();
+    expect(s).toEqual({ text: 'abc', cursor: 1 });
+    restoreConsole(s!);
+    expect(api.restore).toHaveBeenCalledWith({ text: 'abc', cursor: 1 });
+    focusConsole();
+    expect(api.focusEnd).toHaveBeenCalled();
   });
 });
