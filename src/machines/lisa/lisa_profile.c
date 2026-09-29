@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // lisa_profile.c
-// Apple ProFile parallel hard disk.  See lisa_profile.h and docs/machines/lisa/lisa.md §14.
+// Apple ProFile parallel hard disk.  See lisa_profile.h and docs/reference/machines/lisa/lisa.md §14.
 //
 // Behavioural model of the ProFile controller's byte-at-a-time handshake,
 // reverse-engineered from Apple's own drivers (boot ROM RM248.B and OS
@@ -35,7 +35,7 @@
 
 LOG_USE_CATEGORY_NAME("profile")
 
-// On-the-wire block geometry (docs/machines/lisa/lisa.md §14): 20-byte tag/header + 512 data.
+// On-the-wire block geometry (docs/reference/machines/lisa/lisa.md §14): 20-byte tag/header + 512 data.
 #define PRO_TAG    20
 #define PRO_DATA   512
 #define PRO_BLOCK  (PRO_TAG + PRO_DATA) // 532
@@ -49,7 +49,7 @@ LOG_USE_CATEGORY_NAME("profile")
 // command handshake) is what lets an edge-waiting driver — the SCO Xenix
 // on-disk loader, which clears CA1 right after the handshake and then polls for
 // a fresh edge — actually complete; see lisa_profile_portb and
-// docs/machines/lisa/profile.md.  A few ms, in the FDC's ballpark.
+// docs/internals/machines/lisa/profile.md.  A few ms, in the FDC's ballpark.
 #define PRO_READ_CYCLES 24000u
 
 // Standard 5 MB ProFile: 9728 logical blocks (the canonical device the Lisa
@@ -60,7 +60,7 @@ LOG_USE_CATEGORY_NAME("profile")
 // The controller's reserved device-info / spare-table block.
 #define PRO_INFO_BLOCK 0xFFFFFFu
 
-// Port-B control lines (docs/machines/lisa/lisa.md §14): CMD/ = PB4 (0 = asserted), DRW = PB3.
+// Port-B control lines (docs/reference/machines/lisa/lisa.md §14): CMD/ = PB4 (0 = asserted), DRW = PB3.
 #define PB_CMD 0x10
 #define PB_DRW 0x08
 
@@ -269,7 +269,7 @@ void lisa_profile_portb(lisa_profile_t *pf, uint8_t portb) {
             // CA1 right after this handshake (the SCO Xenix on-disk loader) then
             // sees a fresh data-ready transition rather than an edge that
             // already fired during the handshake — without which it spins
-            // forever (docs/machines/lisa/profile.md).
+            // forever (docs/internals/machines/lisa/profile.md).
             pro_enter(pf, PH_READ); // buffer already filled by pro_parse_command
             remove_event(pf->sched, &pro_complete, pf); // coalesce any prior pending
             scheduler_new_cpu_event(pf->sched, &pro_complete, pf, 0, PRO_READ_CYCLES, 0);
@@ -383,7 +383,7 @@ bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
 // pick_delta_dir: a volatile /tmp base keeps its delta adjacent (NULL ⇒
 // image_create derives the dir); everything else routes the delta under the
 // active per-machine checkpoint directory so it shares state.checkpoint's
-// lifetime (docs/core/storage/checkpointing.md).  checkpoint_machine_dir() is
+// lifetime (docs/internals/core/checkpointing.md).  checkpoint_machine_dir() is
 // NULL when no machine dir is active (headless tests) → adjacent-to-base.
 static const char *pro_delta_dir(const char *base) {
     if (base && strncmp(base, "/tmp/", 5) == 0)

@@ -159,7 +159,7 @@ typedef struct scsi_bus_decl {
 
 // One auxiliary CPU core on a machine (heterogeneous multi-CPU): a
 // peripheral processor executing real guest code on the main timeline
-// (docs/core/cpu/cores.md).  Exported as `capabilities.aux_cpus`.
+// (docs/internals/core/cpu/cores.md).  Exported as `capabilities.aux_cpus`.
 struct aux_cpu_slot {
     const char *name; // instance name — the machine.<name> node; NULL terminates
     const char *arch; // ISA token, e.g. "dsp3210"

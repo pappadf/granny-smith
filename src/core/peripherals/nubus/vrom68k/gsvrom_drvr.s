@@ -8,7 +8,7 @@
 | system heap, so the CPB data and card ops are emitted into it with the
 | "DR" prefix.
 |
-| csCode ABI per docs/core/peripherals/nubus_vrom.md sec. 10 (confirmed
+| csCode ABI per docs/reference/hardware/nubus/declaration-rom.md sec. 10 (confirmed
 | against the GC ROM's driver): Control 0-9, Status 2-10.
 |
 | (The driver private storage layout — the pv* equates — lives in

@@ -3,7 +3,7 @@
 # and 12" RGB (sense $2) — once per depth (1, 2, 4, 8 bpp) — with PRAM
 # pre-seeded so the Slot Manager's GET_SLOT_DEPTH picks up the desired
 # sResource at boot time.  See test.script for the detailed setup and
-# docs/core/memory/pram.md §3/§6 for the validator + sPRAMRec layout.
+# docs/internals/core/memory/pram.md §3/§6 for the validator + sPRAMRec layout.
 #
 # The 15" Portrait and 21" RGB halves of this sweep were re-hosted to
 # suite-iix (an 8-of-16 split); the sixteen cells now span two hosts.

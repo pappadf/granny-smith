@@ -1917,7 +1917,7 @@ static scheduler_t *sched_self_from(struct object *self) {
 // `scheduler.events` — the pending queue as a list of maps.
 //
 // Replaces cmd_events(int argc, char *argv[]), which had ZERO callers: the
-// exact argc/argv shape docs/core/shell/object-model.md says was retired, so
+// exact argc/argv shape docs/internals/core/object/object-model.md says was retired, so
 // the event queue was the one piece of scheduler state nothing could inspect.
 // That mattered more than it sounds -- the teardown warning in
 // machine_teardown.c reports a COUNT of leaked events and nothing could then

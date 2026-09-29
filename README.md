@@ -91,7 +91,7 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 - **Firefox** - works partially; some compatibility problems remain
 - **Ethernet** - the Quadras' SONIC and the AV machines' MACE controllers are modeled at the register/self-test level but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
 - **Sound input** - modeled on the AV machines (Singer): the browser microphone reaches the guest's Sound control panel and PlainTalk speech recognition. The PDM and TNT machines' AWACS plays sound but its input is not modeled, and the Quadras' EASC runs as an ASC-compatible core
-- **LaserWriter** - a print job is interpreted into a PDF by the EfterScript session library: in the browser by default (the interpreter runs in its own worker), in the headless build when it is compiled with `PLATEN=1`; otherwise the job is only spooled (see `docs/core/network/laserwriter.md`)
+- **LaserWriter** - a print job is interpreted into a PDF by the EfterScript session library: in the browser by default (the interpreter runs in its own worker), in the headless build when it is compiled with `PLATEN=1`; otherwise the job is only spooled (see `docs/reference/protocols/laserwriter-session.md`)
 
 ## A Note on AI
 

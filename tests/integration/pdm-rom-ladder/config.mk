@@ -1,4 +1,4 @@
-# Integration test: PDM ROM boot ladder (docs/machines/pdm/pdm.md, "Boot ladder")
+# Integration test: PDM ROM boot ladder (docs/internals/machines/pdm/pdm.md, "Boot ladder")
 #
 # THE verification instrument for the PowerPC/PDM bring-up: boots the
 # shipping 1994-03 PDM ROM headless for a bounded instruction budget and

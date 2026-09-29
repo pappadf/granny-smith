@@ -33,7 +33,7 @@
 // the card reports idle unless there is a specific, bounded reason not
 // to; every such reason must state what clears it.  This is a
 // documented divergence (divergence 1 in
-// docs/core/peripherals/pci/cards/voodoo2.md).
+// docs/internals/core/peripherals/pci/cards/voodoo2.md).
 //
 // ENDIANNESS.  The register file and LFB are little-endian PCI domain.
 // This card is not a TNT device — it must not use a family macro — so
@@ -404,7 +404,7 @@ typedef struct voodoo2 {
     // 8-bit-per-channel output through the gamma CLUT; fb_ram is the
     // card's little-endian domain, so scanout holds the converted
     // raster (the conversion is this card's own edge, per
-    // docs/core/peripherals/pci.md "Endianness at a card's edge").
+    // docs/internals/core/peripherals/pci.md "Endianness at a card's edge").
     display_t display;
     uint8_t *scanout;
     bool driving; // last evaluated pass-through state (edge detection)

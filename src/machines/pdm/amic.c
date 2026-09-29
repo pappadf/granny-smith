@@ -791,7 +791,7 @@ static void pdm_scc_rx_arm(config_t *cfg, int idx) {
 // are the AMIC half: window addressing, the 16-bit down-counter, and the
 // DMA-complete interrupt the raw-read path terminates on.
 //
-// Addressing (docs/machines/pdm/swim3.md, "AMIC DMA"): the channel is
+// Addressing (docs/internals/machines/pdm/swim3.md, "AMIC DMA"): the channel is
 // hard-wired into the window's second 64 KB, so only the LOW 16 bits of
 // the address advance — a transfer that would run off the end wraps
 // inside that 64 KB rather than walking into the next region.

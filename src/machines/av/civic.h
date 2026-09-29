@@ -5,7 +5,7 @@
 // CIVIC (Cyclone Integrated Video Interfaces Controller, 343S1096) — the AV
 // frame-buffer / video-timing controller — plus its downstream Sebastian
 // RAMDAC/CLUT (343S0704) and the Endeavor/Clifton/PUMA pixel-clock
-// synthesizer latches.  Contract: docs/machines/av/civic.md.
+// synthesizer latches.  Contract: docs/internals/machines/av/civic.md.
 //
 // The one thing to get right first: CIVIC's register
 // interface is BIT-SERIAL — one bit per longword, only D[0] meaningful,

@@ -138,7 +138,7 @@ static void print_category_config(const struct log_category *c) {
 //
 // These replace log_configure(category, "level=5 stdout=off file=..."), which
 // was a flag grammar inside a string parsed with strtok_r -- the exact shape
-// docs/core/shell/object-model.md ("Library conventions") says named
+// docs/internals/core/object/object-model.md ("Library conventions") says named
 // arguments exist to retire.
 // The framework could not validate it (the slot was declared V_NONE, so it
 // was told nothing to validate), completion could not offer the keys or their

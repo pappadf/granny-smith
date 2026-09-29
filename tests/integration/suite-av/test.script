@@ -98,7 +98,7 @@ let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
 let av_hd = "../../data/systems/system_7_1_77mb_av.img"
 # Spoken-command media.  Generated, not recorded, and conditioned to the
 # PlainTalk microphone contract (levels and dynamics Apple's recognizer
-# accepts; see docs/machines/av/singer.md on why raw capture matters).
+# accepts; see docs/internals/machines/av/singer.md on why raw capture matters).
 let av_sr_trash = "../../data/speech/sr-open-the-trash.wav"
 let av_sr_date = "../../data/speech/sr-what-day-is-it.wav"
 
@@ -371,7 +371,7 @@ def row_video_in(model, golden) {
 # on the DSP3210), and the Singer frame engine plays
 # the result.  The kernel must SURVIVE playback: emr stays $8000 — a dead
 # kernel still reads state "running" (waiti with the timer free-running),
-# so emr is the aliveness check (docs/machines/av/dsp.md).
+# so emr is the aliveness check (docs/internals/machines/av/dsp.md).
 def row_av_beep() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
@@ -781,7 +781,7 @@ def row_av_audio_in_device() {
     assert machine.audioin.connected == false "audioin: 'none' reports connected"
     assert machine.audioin.gain == 100 "audioin: default gain ${machine.audioin.gain}, want 100"
     # singerStat presents the mic straps (BI1/BI3 for the input-source
-    # enumeration, BI4 for the output port — docs/machines/av/singer.md).
+    # enumeration, BI4 for the output port — docs/internals/machines/av/singer.md).
     assert (machine.memory.peek.l(0x50F31208) & 0xD) == 0xD "audioin: singerStat ${machine.memory.peek.l(0x50F31208):08x} lacks the mic straps"
     # Tone source: connected, deterministic.
     machine.audioin.source = "tone"

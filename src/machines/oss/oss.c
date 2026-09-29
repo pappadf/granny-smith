@@ -89,7 +89,7 @@ static void clear_status_byte(oss_t *oss, uint32_t lane, uint8_t value) {
 // the PSC's sndPhase/UTSC, the PPC decrementer.  The OSS was the outlier.
 //
 // RATE IS UNATTESTED.  Neither the F19 theory-of-operation volumes nor
-// docs/machines/oss/iifx.md states what clock drives it, so this follows the
+// docs/reference/machines/iifx/iop.md states what clock drives it, so this follows the
 // precedent of psc_utsc(), which is scheduler_time_ns()/1000
 // -- and ticks at 1 MHz.  Nothing in the corpus reads the counter at all
 // (measured across iifx-mactest, iifx-marathon and iifx-install-76: zero

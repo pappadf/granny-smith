@@ -6,7 +6,7 @@
 // Three representations, two conversions, one invariant: an AETF stream
 // decodes to a map, the map re-encodes to the same bytes, and the text form
 // round-trips through both.  Layouts are transcribed from
-// docs/core/network/ppc_appleevents.md §5.2 (stream), §5.4 (lists and
+// docs/internals/core/network/ppc_appleevents.md §5.2 (stream), §5.4 (lists and
 // records) and §6 (map and text forms) — no transport is involved, so every
 // case is a fraction of a millisecond.
 

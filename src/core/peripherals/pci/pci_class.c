@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // pci_class.c
-// The `machine.pci.*` object-model surface (docs/core/peripherals/pci.md,
+// The `machine.pci.*` object-model surface (docs/internals/core/peripherals/pci.md,
 // "Object model").
 //
 // The nubus_class.c shape, ported — with its two warts fixed.  A slot node

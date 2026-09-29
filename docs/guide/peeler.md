@@ -213,5 +213,5 @@ the library itself ships unit tests in `src/peeler/test/`.
 
 - peeler upstream repository: <https://github.com/pappadf/peeler>
 - peeler documentation: `src/peeler/docs/`
-- [`docs/core/shell/object-model.md`](../core/shell/object-model.md) — the surface
+- [`docs/internals/core/object/object-model.md`](../internals/core/object/object-model.md) — the surface
   `archive.*` participates in.

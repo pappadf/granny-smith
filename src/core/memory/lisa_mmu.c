@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // lisa_mmu.c
-// Apple Lisa custom segment MMU. See lisa_mmu.h and docs/machines/lisa/lisa.md §4-7.
+// Apple Lisa custom segment MMU. See lisa_mmu.h and docs/reference/machines/lisa/lisa.md §4-7.
 //
 // Translation model (verified against the rev-H boot ROM source,
 // "Lisa Boot ROM RM248.{E,K}.TEXT"):
@@ -20,7 +20,7 @@
 //    override) — proven by the ROM's CONCHK context test.  Normal translation
 //    forces context 0 in supervisor mode.
 //  * SETUP strobe polarity per the ROM equates: $00FCE010 = SETUP ON (START),
-//    $00FCE012 = SETUP OFF.  (docs/machines/lisa/lisa.md §6.1 lists these reversed — the ROM
+//    $00FCE012 = SETUP OFF.  (docs/reference/machines/lisa/lisa.md §6.1 lists these reversed — the ROM
 //    source is authoritative.)
 
 #include "lisa_mmu.h"
@@ -38,7 +38,7 @@
 
 LOG_USE_CATEGORY_NAME("memory");
 
-// Lisa video timing (docs/machines/lisa/lisa.md §8): the state machine scans 379 lines of 720
+// Lisa video timing (docs/reference/machines/lisa/lisa.md §8): the state machine scans 379 lines of 720
 // pixels at the 5.09375 MHz CPU clock, ~60 Hz vertical.  The Status Register
 // vertical-retrace bit (bit 2) is held set for ~90 µs after retrace begins.
 #define LISA_FRAME_CYCLES   84896u // 5,093,750 Hz / 60 Hz ≈ one displayed frame
@@ -336,7 +336,7 @@ void lisa_mmu_set_nmi(lisa_mmu_t *m, void (*cb)(void *, bool), void *ctx) {
 // memory errors, diagnostics inactive).
 static uint8_t lisa_status_byte(lisa_mmu_t *m) {
     // Status Register bit 2 = vertical retrace, modelled as the real hardware
-    // (docs/machines/lisa/lisa.md §7.4).  The bit is ACTIVE-LOW:
+    // (docs/reference/machines/lisa/lisa.md §7.4).  The bit is ACTIVE-LOW:
     // the video state machine drives it 0 while in vertical retrace and 1 during
     // active scan.  `vertical` is a latch set on the rising edge into each frame's
     // ~90 µs retrace window (a pure function of the cycle counter), cleared during

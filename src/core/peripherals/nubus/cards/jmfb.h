@@ -84,7 +84,7 @@
 // mdc_8_24 is the real card (needs an offered vROM dump); 8_24 is its
 // always-available generic sibling with the built-in GS declaration ROM
 // (same HLE register model — see
-// docs/core/peripherals/nubus_generic_vrom.md).
+// docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t mdc_8_24_kind;
 extern const nubus_card_kind_t jmfb_generic_kind;
 

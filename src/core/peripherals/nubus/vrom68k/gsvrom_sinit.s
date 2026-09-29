@@ -2,7 +2,7 @@
 | Copyright (c) pappadf
 |
 | gsvrom_sinit.s
-| SecondaryInit — family swap (nubus_vrom.md sec. 9).  Runs under Slot
+| SecondaryInit — family swap (declaration-rom.md sec. 9).  Runs under Slot
 | Manager v1+ with the Toolbox alive.  When 32-bit QuickDraw is present,
 | swap the 24-bit boot family (GS_BOOT_SPID) for the 32-bit one
 | (GS_DEFER_SPID) whose framebuffer lives in super-slot DRAM, and — if

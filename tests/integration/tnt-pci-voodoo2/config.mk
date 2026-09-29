@@ -1,5 +1,5 @@
 # Integration test: the 3dfx Voodoo2 enumerates and survives bring-up
-# (docs/core/peripherals/pci/cards/voodoo2.md).
+# (docs/internals/core/peripherals/pci/cards/voodoo2.md).
 #
 # The first ROM-less socket card on the generic PCI core: no expansion
 # ROM, no FCode, no ndrv.  The acceptance shape is Apple's own

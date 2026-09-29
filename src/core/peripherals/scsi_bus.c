@@ -243,7 +243,7 @@ int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
 //
 // Evaluated lazily against the cycle counter rather than from a scheduler
 // event.  Not because an event would be imprecise -- it would not:
-// docs/core/scheduler/scheduler.md §1.2 lists "events fire with sprint-length
+// docs/internals/core/scheduler/scheduler.md §1.2 lists "events fire with sprint-length
 // jitter" as a misconception, and sprints are sized to stop AT the next event,
 // so one lands on its cycle give or take the instruction-atomicity overshoot.
 //

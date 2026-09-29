@@ -19,15 +19,26 @@ case there is nothing to do.
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
 - `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — the only UI
-- `docs/`: Design, architecture, and developer docs, following the code tree:
-  `docs/guide/` (dev/process), `docs/core/<area>/` for `src/core/`,
-  `docs/machines/<family>/` for `src/machines/`, `docs/notes/`
-  (investigation logs, not reference). One doc area may cover several
-  source directories: `docs/core/shell/` covers `src/core/object/`
-  (object-model.md) and `src/core/debug/` (log.md), and
-  `docs/core/storage/` covers `src/core/vfs/`; a family doc may cover
+- `docs/`: Four classes of content, split by the classification rule in
+  `docs/README.md` (the map of the whole tree — read it first):
+  `docs/guide/` (dev/process), `docs/internals/core/<area>/` for `src/core/`,
+  `docs/internals/machines/<family>/` for `src/machines/` — all granny-smith
+  internals; `docs/user/` (end-user docs, no source checkout needed);
+  `docs/reference/` (granny-smith-agnostic hardware/protocol/format
+  reference: `hardware/`, `machines/<family>/`, `protocols/`, `formats/`,
+  planned `os/`), with one family/machine/device page set per machine
+  family — pages not yet written are placeholder stubs, marked
+  `<!-- gs-doc-status: stub -->`; `docs/articles/` (curated long-form);
+  `docs/notes/` (investigation logs, not reference). `docs/internals/`
+  mirrors `src/` (a `src/` file needs no doc, but a doc that exists lives
+  at the mirrored path — exceptions are registered in
+  `docs/internals/README.md`, enforced by `scripts/check-doc-mirror.py`);
+  a family doc may cover
   several sources (`tnt/tnt.md` is the whole TNT family). `src/machines/runtime/`
-  is shared infrastructure and has no doc directory.
+  is shared infrastructure and has no doc directory. A PR adding a machine,
+  family or device to `src/` also adds its `reference/` page, at least as a
+  stub, in the same PR; content rules R1–R6 and the doc templates live in
+  `docs/README.md`, linted by `scripts/check-doc-rules.py`.
 - `build/`: Generated artifacts — do not edit
 - `scripts/`: Tools and helpers
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
@@ -35,7 +46,7 @@ case there is nothing to do.
 - `third-party/`: External libraries (git submodules, e.g. single-step-tests,
   powerpc-test)
 
-Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/core/<subsystem>/`; machine/family docs live under `docs/machines/<family>/`.
+Emulator modules (e.g., scsi, cpu) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/internals/core/<subsystem>/` (the model) with their hardware reference pages under `docs/reference/hardware/`; machine/family docs live under `docs/internals/machines/<family>/` (the model) and `docs/reference/machines/<family>/` (the hardware).
 
   - The `peeler` archive library now lives in-tree at `src/peeler/` (formerly a
     `third-party/peeler` submodule), so no submodule init is needed for it.
@@ -203,9 +214,9 @@ to not break this rule in the first place.
 - Memory logpoints fire on **read** or **write** accesses without halting:
   - `debug.logpoints.add addr=<addr> mode=write width=l message="…"` — log every write (`mode=read` / `mode=rw` likewise; `width` is `b`/`w`/`l`)
   - Default category is `memory` (enable with `debug.log memory 1`)
-  - `message=` is a fire-time template (see `docs/core/shell/shell.md`): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
+  - `message=` is a fire-time template (see `docs/internals/core/shell/shell.md`): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
   - Implemented without slowing the fast path: covered pages are zeroed in the
-    SoA arrays so only logged pages take the slow-path penalty (see `docs/core/memory/memory.md`)
+    SoA arrays so only logged pages take the slow-path penalty (see `docs/internals/core/memory/memory.md`)
 - Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
   stream live with `debug.log exceptions 1`
 
@@ -238,7 +249,7 @@ after the instruction that makes the access, instead of logging:
 Every emulator subsystem is exposed through a single tagged-union value
 type and an opaque `object_t` tree rooted at the implicit `emu` root (never
 typed). Emulated hardware nests under one `machine` node
-(see `docs/core/shell/object-model.md`); the emulator's own services and the
+(see `docs/internals/core/object/object-model.md`); the emulator's own services and the
 simulated network are its siblings at the root:
 
 - **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`;
@@ -278,9 +289,9 @@ The browser frontend calls into the tree via `gsEval(path, args?)` (see
 method that returns nothing, or to an `{error}` object on any failure — so
 check success with `gsOk(r)` (or `=== true` for a boolean method), never
 `r !== null`; write an attribute as `gsEval('machine.cpu.d0', [v])`, never as
-a `"path = value"` string (docs/core/shell/object-model.md, "The result
+a `"path = value"` string (docs/internals/core/object/object-model.md, "The result
 contract"). Inside the shell (v2 script language —
-see `docs/core/shell/shell.md`), the same tree is reachable via:
+see `docs/internals/core/shell/shell.md`), the same tree is reachable via:
 
   machine.cpu.pc                 # bare path → read (& print at the REPL)
   machine.cpu.d0 = 0x1234        # path = expr → typed write

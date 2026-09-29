@@ -10,7 +10,7 @@ export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped' | 'c
 export type DriveActivity = 'idle' | 'read' | 'write';
 
 // Three pacing modes, mirroring the core's schedule_paced/schedule_accelerated/
-// schedule_unthrottled (docs/core/scheduler/scheduler.md): 'live' = wall-clock
+// schedule_unthrottled (docs/internals/core/scheduler/scheduler.md): 'live' = wall-clock
 // paced, 'accel' = real-time timebase with a faster CPU (accelerator-card
 // model; the adaptive governor picks the speed), 'turbo' = as fast as the host
 // allows. The guest timeline is identical in live/turbo; accel trades that

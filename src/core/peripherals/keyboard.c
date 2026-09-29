@@ -212,7 +212,7 @@ extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_ke
     }
 
     // Translate ADB virtual key code to Mac Plus raw code.
-    // The full table is docs/core/peripherals/keyboard.md §6.4, derived from
+    // The full table is docs/reference/hardware/keyboard.md §6.4, derived from
     // Guide to the Macintosh Family Hardware 2e Figure 7-6 (p.282).
     //
     // Three prefix forms, not two.  Guide 2e p.283 (:6694):

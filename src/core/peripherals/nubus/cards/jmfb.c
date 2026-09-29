@@ -606,7 +606,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             // ROM keeps the slot record below; only that record is the card's.
             // Per-slot sPRAMRec layout (8 bytes): each slot's record
             // lives at offset (0x46 + (slot - 9) * 8) in PRAM (see
-            // docs/core/memory/pram.md §6).  $46..$47 = BoardID, $48 = savedMode,
+            // docs/reference/formats/mac-pram.md §6).  $46..$47 = BoardID, $48 = savedMode,
             // $49/$4A = savedSRsrcID / savedRawSRsrcID, $4B..$4D = 0.
             uint8_t pram_off = (uint8_t)(0x46 + (card->slot - 9) * 8);
             rtc_pram_write(rtc, pram_off + 0, 0x00);
@@ -964,7 +964,7 @@ const nubus_card_kind_t mdc_8_24_kind = {
 
 // Generic sibling kind: always-available twin of mdc_8_24 with a built-in
 // declaration ROM — zero-configuration by construction (see
-// docs/core/peripherals/nubus_generic_vrom.md).  The short id is what users
+// docs/internals/core/peripherals/nubus_generic_vrom.md).  The short id is what users
 // type in boot documents.
 const nubus_card_kind_t jmfb_generic_kind = {
     .id = "8_24",

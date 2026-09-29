@@ -1,7 +1,7 @@
 # PPC Toolbox program linking — discover a System 7 guest's linkable
 # applications and open an Apple event session to one of them.
 #
-# The host side is docs/core/network/ppc_appleevents.md: NBP discovery (§3),
+# The host side is docs/internals/core/network/ppc_appleevents.md: NBP discovery (§3),
 # the list-ports browse (§4.6), and the session request/accept dialog with a
 # guest user name (§4.3, §4.4), all riding the ADSP endpoint of
 # appletalk.md §3.  This test is the interop proof — every layer here is

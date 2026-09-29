@@ -713,7 +713,7 @@ static void prepare_reg3_reply(adb_t *adb, const adb_device_t *dev) {
 
 // Populates reply_buf with Keyboard Register 2 (modifier keys + LEDs).
 //
-// Layout per docs/core/peripherals/adb.md "Register 2 (Modifier Keys)": a 0 bit
+// Layout per docs/reference/hardware/adb.md "Register 2 (Modifier Keys)": a 0 bit
 // means the key is DOWN or the LED is ON; every unused/reserved bit reads 1.
 // The modifier bits are derived from kbd_pressed[] rather than kept as separate
 // state, so a key held with `keyboard.down` stays reported until `keyboard.up`

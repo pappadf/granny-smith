@@ -6,7 +6,7 @@
 //
 // Every Apple framebuffer from RBV onward decodes a 3-bit code from the
 // DB-15 connector's three sense pins to identify the attached monitor
-// (docs/core/peripherals/video.md §5.3), and that code means the same thing on
+// (docs/reference/hardware/video-overview.md §5.3), and that code means the same thing on
 // every part.  It was nevertheless spelled out in four places -- a per-card
 // nubus_monitor_t catalogue keyed by sense code, a chip-local switch in Ariel,
 // a literal in Civic, and a derivation in DAFB -- so "sense 2 is 512x384" had

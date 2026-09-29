@@ -1,6 +1,6 @@
 // Microphone state — the browser side of the AV audio-in path
 // (C side: src/platform/wasm/em_audio_in.c; the guest-side contract is
-// docs/machines/av/singer.md).
+// docs/internals/machines/av/singer.md).
 //
 // Transport: em_audio_in.c owns a lock-free SPSC ring + atomic header in the
 // shared wasm heap and announces its address once via Module.onAudioInReady.

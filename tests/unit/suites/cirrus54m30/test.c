@@ -197,7 +197,7 @@ static void gr(uint8_t i, uint8_t v) {
 }
 
 // What Open Firmware 1.1.22 programs on a cold boot (cirrus54m30.c,
-// "Deriving the mode"; also docs/machines/tnt/tnt.md): 640x480, 8 bpp.
+// "Deriving the mode"; also docs/internals/machines/tnt/tnt.md): 640x480, 8 bpp.
 static void program_of_640x480x8(void) {
     seq(0x01, 0x01); // SR01 bit 0: 8 dots per character clock
     seq(0x07, 0xF1); // SR07 bit 0 = extended mode, bits [3:1] = 000 = 8 bpp
@@ -435,7 +435,7 @@ TEST(bar_sizing_matches_the_declaration) {
     ASSERT_TRUE(pci_cfg_bar_size(dev, 0) == 0x01000000u);
     ASSERT_TRUE(pci_cfg_bar_size(dev, 1) == 0x200u);
     // An assigned base reads back masked to the BAR's alignment: Open
-    // Firmware's I/O assignment of $00010000 (docs/machines/tnt/tnt.md).
+    // Firmware's I/O assignment of $00010000 (docs/internals/machines/tnt/tnt.md).
     cfg_write32(dev, PCI_CFG_BAR0 + 4, 0x00010000u);
     ASSERT_TRUE(cfg_read(dev, PCI_CFG_BAR0 + 4) == 0x00010001u);
     unseat(dev);

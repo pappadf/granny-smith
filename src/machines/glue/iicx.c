@@ -6,7 +6,7 @@
 // and the dual-VIA / 68030 / Universal-ROM family with the SE/30, but
 // replaces the slot-$E built-in video with a real NuBus slot at $9
 // (defaulting to the Apple Macintosh Display Card 8•24).  See
-// docs/machines/glue/iicx.md.
+// docs/reference/machines/glue/iicx.md.
 //
 // Diff vs se30.c at a glance:
 //   * Slot table: $9 = VIDEO with mdc_8_24 default, $A/$B = EMPTY,

@@ -10,7 +10,7 @@
 | Slot Manager copies the whole sExecBlock to RAM before running it, so
 | everything referenced here must be inside the block.
 |
-| Entry (per docs/core/peripherals/nubus_vrom.md sec. 8): A0 -> seBlock;
+| Entry (per docs/reference/hardware/nubus/declaration-rom.md sec. 8): A0 -> seBlock;
 | only _SlotManager and _SwapMMUMode are guaranteed callable; return
 | status in seStatus (0 = success).
 
@@ -44,7 +44,7 @@ GSPrimaryInit:
 	| on the 32-bit sister once it loads).  The set of top-level spIDs is
 	| the one private convention the fragment still carries ("the sister
 	| ids the emulator seeds into PRAM" -- see
-	| docs/core/peripherals/nubus_generic_vrom.md); it is NOT mode geometry
+	| docs/internals/core/peripherals/nubus_generic_vrom.md); it is NOT mode geometry
 	| (that now lives only in the generated records) — so the personality's
 	| SpidTab lists ids alone, no width/height.
 	lea	PISpidTab(pc),a3

@@ -39,7 +39,7 @@ contributions.
 At its heart, the emulator core is intentionally headless and platform-agnostic.
 It emulates the full memory and device state of a Macintosh, including video
 RAM, but does not itself render graphics or provide a graphical user interface.
-Instead, the core exposes one **object model** (`docs/core/shell/object-model.md`):
+Instead, the core exposes one **object model** (`docs/internals/core/object/object-model.md`):
 every subsystem is a node in a tree, and every operation is a read, a write or
 a call on one of its members. Callers reach the tree through the **mailbox**
 (`src/core/mailbox/mailbox.h`), a control block and two record rings in memory
@@ -57,7 +57,7 @@ features. The browser-based frontend renders the Macintosh display in a
 canvas, maps host keyboard and mouse events to the emulator, and drives every
 feature through the mailbox from the page (`docs/guide/web.md`); the headless
 build is an in-process client of the same mailbox, feeding it a script file,
-stdin or a TCP daemon connection (`docs/core/shell/shell.md`). Both rely on the
+stdin or a TCP daemon connection (`docs/internals/core/shell/shell.md`). Both rely on the
 same portable core logic.
 
 This separation of concerns allows the emulator to be easily embedded in
@@ -149,7 +149,7 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
     and the inspector UI all walk the same tree, so a new class is
     visible everywhere as soon as it's attached. There is no separate
     "command registry" or "JS API" layer to maintain in lock-step.
-  - See [`docs/core/shell/object-model.md`](../core/shell/object-model.md) for the substrate
+  - See [`docs/internals/core/object/object-model.md`](../internals/core/object/object-model.md) for the substrate
     and the conventions modules follow when adding a class.
 
 - **Checkpointing (optional):**
@@ -207,11 +207,11 @@ There is no separate command framework, no parallel JS API. Adding a
 new operation is one act — declare a member on the right class — and
 every caller sees it.
 
-See [`docs/core/shell/object-model.md`](../core/shell/object-model.md) for the substrate, the
+See [`docs/internals/core/object/object-model.md`](../internals/core/object/object-model.md) for the substrate, the
 path forms in detail, the lifecycle invariants (process-singleton vs.
 cfg-scoped), and the recipe for adding a new class.
 
-See [`docs/core/shell/shell.md`](../core/shell/shell.md) for the line-input layer specifically:
+See [`docs/internals/core/shell/shell.md`](../internals/core/shell/shell.md) for the line-input layer specifically:
 tokenisation, `$alias` expansion, `${expr}` interpolation, shell
 variables, scripts, and tab completion.
 
@@ -303,8 +303,8 @@ can access what they need without depending on internal struct layout.
 
 The scheduler is the core component responsible for managing emulated time. It
 tracks clock cycles, schedules time-based events on a single priority queue,
-and runs the CPU in event-bounded sprints. See `docs/core/scheduler/scheduler.md` for the
-detailed design and `docs/core/scheduler/timing.md` for the practical timing rules.
+and runs the CPU in event-bounded sprints. See `docs/internals/core/scheduler/scheduler.md` for the
+detailed design and `docs/internals/core/scheduler/timing.md` for the practical timing rules.
 
 There are two pacing modes (`schedule_paced`, `schedule_unthrottled`) that
 control, on the WASM target, how many VBL frame-units run per host frame —
@@ -323,7 +323,7 @@ in **pacing**:
   rhythm. Result: paced to the user's display refresh. The guest sequence is the
   same as headless; only how many frame-units a host tick batches differs.
 
-See `docs/core/scheduler/scheduler.md` §10 for the full design.
+See `docs/internals/core/scheduler/scheduler.md` §10 for the full design.
 
 ## Checkpointing
 
@@ -346,7 +346,7 @@ There are two primary types of checkpoints, each serving a distinct purpose:
   changes. This approach allows for fast, frequent state saves without
   unnecessary duplication. The emulator thread only serialises into a buffer;
   the write and the atomic rename run on the I/O worker, so the machine keeps
-  running while the file lands (`docs/core/storage/checkpointing.md`).
+  running while the file lands (`docs/internals/core/checkpointing.md`).
 
 - **Consolidated checkpoint:** Explicitly created by the user to export the
   entire machine state into a single file or stream. In this mode, _all_
@@ -370,8 +370,8 @@ strictly read-only base content; nothing writable lands there any more.
 `<machine_id>` is a 16-hex-char opaque token in `localStorage`; it rotates only
 on explicit "new machine" actions and is pushed to the C side once per process
 via `checkpoint --machine <id> <created>`. A startup sweep deletes any sibling
-machine directories whose name does not match. See [`docs/core/storage/checkpointing.md`](../core/storage/checkpointing.md)
-for the full design and [`docs/core/storage/image.md`](../core/storage/image.md) for the image-layer API
+machine directories whose name does not match. See [`docs/internals/core/checkpointing.md`](../internals/core/checkpointing.md)
+for the full design and [`docs/internals/core/storage/image.md`](../internals/core/storage/image.md) for the image-layer API
 that backs it.
 
 ## Repository Layout
@@ -392,7 +392,7 @@ The repository is organized as follows:
       - _cpu_internal.h_ — Shared struct and static inline helpers
       - _cpu_ops.h_ / _cpu_decode.h_ — Template-based decoder generation
       - _cpu_disasm.c_ — Disassembler
-    - **memory/** — Page-table-based memory map (see `docs/core/memory/memory.md`)
+    - **memory/** — Page-table-based memory map (see `docs/internals/core/memory/memory.md`)
     - **peripherals/** — VIA, SCC, SCSI, floppy, RTC, keyboard, mouse, sound
     - **scheduler/** — Event scheduling and timing
     - **debug/** — Debugger, logging, and diagnostics
@@ -484,7 +484,7 @@ in burst events on the shared scheduler queue (the AV family's DSP3210,
 `src/core/cpu/dsp3210/` + `src/machines/av/dsp.c`).  The core-module
 contract — injected bus hooks, burn-down execution ABI, mandatory
 disassembler, `machine.<name>` object node, `capabilities.aux_cpus` — is
-[docs/core/cpu/cores.md](../core/cpu/cores.md); the scheduler reaches the
+[docs/internals/core/cpu/cores.md](../internals/core/cpu/cores.md); the scheduler reaches the
 main CPU through the narrow `sched_cpu_if_t` seam so a main-CPU architecture
 plugs in without scheduler changes.
 
@@ -563,7 +563,7 @@ re-seats every populated socket rather than only the wildcard one.
 **PCI (`core/peripherals/pci/`)** is the same architecture ported to the
 second expansion bus, deliberately as a parallel module rather than a
 shared abstraction — the two differ in kind, not degree, on identity,
-discovery and address assignment (see `docs/core/peripherals/pci.md`).
+discovery and address assignment (see `docs/internals/core/peripherals/pci.md`).
 Machines declare `pci_slots` topology, card kinds declare
 `pci_attach_t`, and `pci_card_fits_socket` computes the offer. The two
 things PCI adds are a **generic type-0 config header** shared by every
@@ -577,5 +577,5 @@ never includes a machine header.
 The CPU is split into template-instantiated decoders (`cpu_68000.c`,
 `cpu_68030.c`) sharing helpers via `cpu_internal.h`. The memory subsystem uses a
 page-table architecture serving the static map of the 68000 machines and the
-PMMU-rebuilt map of the 68030 machines alike. See `docs/core/memory/memory.md`
+PMMU-rebuilt map of the 68030 machines alike. See `docs/internals/core/memory/memory.md`
 for details. Checkpoint I/O is factored into a standalone `checkpoint.c` module.

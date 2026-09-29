@@ -4,7 +4,7 @@
 // pci_card.h
 // PCI device abstraction — the analogue of nubus/card.h, and the only
 // header a pluggable card driver under pci/cards/ needs.  See
-// docs/core/peripherals/pci.md.
+// docs/internals/core/peripherals/pci.md.
 //
 // Three things live here:
 //   * pci_config_decl_t — everything the GENERIC config header

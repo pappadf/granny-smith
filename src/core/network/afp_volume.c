@@ -533,7 +533,7 @@ static uint16_t afp_srvr_flags(void) {
     return (uint16_t)(AFP_SRVR_FLAG_COPYFILE | AFP_SRVR_FLAG_SERVERMESSAGES | AFP_SRVR_FLAG_NOSAVEPWD);
 }
 
-// Build Service Status Block per docs/core/network/appletalk_server.md
+// Build Service Status Block per docs/internals/core/network/appletalk_server.md
 int atalk_build_status_block(const char *server_name, const char *machine_type, uint8_t **out_buf, size_t *out_len) {
     if (!out_buf || !out_len)
         return -1;

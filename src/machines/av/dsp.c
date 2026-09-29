@@ -9,7 +9,7 @@
 // and an idle core (held in reset, or parked in waiti with nothing
 // pending) costs zero events until a kick.
 //
-// Board wiring (docs/machines/av/dsp.md):
+// Board wiring (docs/internals/machines/av/dsp.md):
 //   * bus hooks — guest-physical through the bus resolver (the PSC-DMA
 //     pattern; the CPU MMU is deliberately not in the path); the host
 //     decoder never maps the on-chip $5003xxxx window (the core decodes

@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // voodoo2_raster.h
-// The raster-backend seam (docs/core/peripherals/pci/cards/voodoo2.md,
+// The raster-backend seam (docs/internals/core/peripherals/pci/cards/voodoo2.md,
 // "The raster seam: commands, snapshot, backends").
 //
 // The two triangle routes — host-setup and on-chip setup — converge on
@@ -60,7 +60,7 @@
 // The FILL CONVENTION the walker implements is CHOSEN, NOT KNOWN: the
 // Voodoo2 spec's own §7.2 defers the TRIANGLE walk to an SST-1
 // Programming Guide nobody holds.  The convention (documented in
-// docs/core/peripherals/pci/cards/voodoo2.md): vertices in 12.4, the
+// docs/internals/core/peripherals/pci/cards/voodoo2.md): vertices in 12.4, the
 // sample point at the pixel's integer coordinate, half-open top-left
 // edge inclusion with the winding taken from the command's area sign,
 // and parameter iteration from vertex A's truncated position.  Goldens

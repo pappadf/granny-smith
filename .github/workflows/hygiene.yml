@@ -45,3 +45,15 @@ jobs:
       # subdirectories left ~140 links pointing one level too high).
       - name: Markdown links
         run: python3 scripts/check-links.py
+
+      # The docs content rules that are machine-checkable (docs/README.md):
+      # the R1/R2 denylist with a baseline of known not-yet-fixed violations,
+      # plus the structural checks on placeholder stubs.
+      - name: Docs content rules
+        run: python3 scripts/check-doc-rules.py
+
+      # docs/internals/ mirrors src/: an internals doc lives at the path
+      # mirrored from its owning source, or is registered as an exception
+      # in docs/internals/README.md.
+      - name: Docs mirror src/
+        run: python3 scripts/check-doc-mirror.py

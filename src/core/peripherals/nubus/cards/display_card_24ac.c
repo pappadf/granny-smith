@@ -4,7 +4,7 @@
 // display_card_24ac.c
 // "Apple Macintosh Display Card 24AC" — a 24-bit colour NuBus display
 // card with a hardware QuickDraw fill/raster accelerator.  See
-// docs/core/peripherals/nubus/cards/display_card_24ac.md.  Cloned from the
+// docs/internals/core/peripherals/nubus/cards/display_card_24ac.md.  Cloned from the
 // 8•24 (jmfb.c) shape, plus the acceleration engine that document describes.
 //
 // Two halves:

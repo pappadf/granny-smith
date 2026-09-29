@@ -4,7 +4,7 @@
 // appletalk_ppc.c
 // PPC Toolbox session layer over ADSP.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md — §2 for the record
+// Coding reference: docs/internals/core/network/ppc_appleevents.md — §2 for the record
 // layouts, §3 for NBP discovery, §4 for the session dialog and message-block
 // framing.  Section numbers in the comments refer to that document.
 //

@@ -77,7 +77,7 @@ printf 'debug.step\nmachine.cpu.pc\n' | nc -w 3 localhost 6800
 - Interactive replies echo the return value, so `echo`, `scheduler.run`,
   `debug.step` and `disasm` print a trailing `true`.
 
-## Shell grammar (full spec: `docs/core/shell/shell.md`)
+## Shell grammar (full spec: `docs/internals/core/shell/shell.md`)
 
 ```
 machine.cpu.pc                          # bare path: read and print
@@ -322,6 +322,6 @@ rather than `vfs.cat` for binary data.
 ## See also
 
 - `disasm-tool` skill: static disassembly of ROMs and binaries.
-- `docs/core/shell/shell.md`, `docs/core/shell/object-model.md`, `docs/core/shell/log.md`.
+- `docs/internals/core/shell/shell.md`, `docs/internals/core/object/object-model.md`, `docs/internals/core/debug/log.md`.
 - Working examples: `tests/integration/object-debug`, `object-logpoint`,
   `object-expr`, `shell-v2`, `boot-config`, and `lib/mac.script`.

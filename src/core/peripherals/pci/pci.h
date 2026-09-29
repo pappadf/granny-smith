@@ -4,7 +4,7 @@
 // pci.h
 // PCI subsystem — the bus controller, the per-machine slot table, the
 // card-kind registry, staged per-slot configuration and the lifecycle
-// hooks every PCI family uses.  See docs/core/peripherals/pci.md.
+// hooks every PCI family uses.  See docs/internals/core/peripherals/pci.md.
 //
 // The shape is deliberately the proven NuBus one (nubus.h), upgraded
 // where PCI is genuinely different:

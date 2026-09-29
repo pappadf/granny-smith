@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// The Apple-event endpoint's tables (docs/core/network/ppc_appleevents.md §8):
+// The Apple-event endpoint's tables (docs/internals/core/network/ppc_appleevents.md §8):
 // the inbox a guest's events land in, and the event table a script's sends
 // fill.  See Makefile.
 

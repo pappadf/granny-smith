@@ -6,8 +6,8 @@
 // RAM).  NOT an Apple IWM: the 68000 issues high-level commands by writing a
 // command block into the shared RAM and the coprocessor returns logical
 // 512-byte sectors.  Modeled behaviourally (the iop_swim.c pattern), reusing
-// disk_read_data / the Sony geometry helpers.  See docs/machines/lisa/lisa.md §13 and
-// docs/machines/lisa/fdc.md.
+// disk_read_data / the Sony geometry helpers.  See docs/reference/machines/lisa/lisa.md §13 and
+// docs/internals/machines/lisa/fdc.md.
 //
 // Shared RAM at physical $00C001 (logical $00FCC001), byte N at $C001 + 2*N
 // (the controller RAM sits on the odd bytes of the 68000 bus; the ROM uses
@@ -71,7 +71,7 @@ image_t *lisa_fdc_disk_image(const lisa_fdc_t *fdc);
 bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path);
 // Write a factory-fresh parameter memory (defaults, empty device table, valid
 // checksum) into the controller RAM.  `boot_vol` is the BootVol nibble from
-// pram_format.md §4 -- 1 = built-in Sony floppy, 2 = the parallel-port
+// pram.md §4 -- 1 = built-in Sony floppy, 2 = the parallel-port
 // ProFile.  Called at construction; exposed so a machine can re-seed.
 // `valid` false stores a deliberately non-verifying checksum -- a machine
 // whose battery was just replaced, so the OS rebuilds the device table from

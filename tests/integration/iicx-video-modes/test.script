@@ -31,7 +31,7 @@
 #
 # `rtc.pram.validate` stamps the XPRAM validity token ($0C-$0F='NuMc') so
 # `_InitUtil` skips its XPRAM cold-init pass; without it the seeded
-# slot-PRAM gets clobbered (docs/core/memory/pram.md §3).  A machine is
+# slot-PRAM gets clobbered (docs/internals/core/memory/pram.md §3).  A machine is
 # built with the token already, so the call only restates it.
 #
 # (sense → sister sRsrcID) mapping derived empirically — see Section

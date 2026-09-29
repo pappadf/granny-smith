@@ -3,7 +3,7 @@
 
 // singer.h
 // The Singer codec + PSC sound frame engine — the AV family's sound
-// datapath.  Contract: docs/machines/av/singer.md.
+// datapath.  Contract: docs/internals/machines/av/singer.md.
 //
 // The engine runs a scheduler event at the programmed frame cadence
 // (`sndSize` sample frames at the `pSndRate` codec rate, phase-locked to

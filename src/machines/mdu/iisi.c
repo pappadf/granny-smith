@@ -5,7 +5,7 @@
 // Macintosh IIsi ("Erickson", 20 MHz 68030, 1990) machine implementation.
 // Architecturally the IIci with the Egret companion chip added: Egret rides
 // VIA1's shift register and takes over ADB, the RTC, parameter RAM, the
-// 1-second tick, and soft power-off.  See docs/machines/mdu/iisi.md.
+// 1-second tick, and soft power-off.  See docs/reference/machines/mdu/iisi.md.
 //
 // Diff vs iici.c at a glance:
 //   * VIA1 port B + shift register drive the Egret companion (egret.c) instead

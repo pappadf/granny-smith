@@ -5,7 +5,7 @@
 // The `appletalk.aevt` surface: send Apple events to guest applications, take
 // delivery of the ones they send us, and publish both as object-model state.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md §5 (high-level event
+// Coding reference: docs/internals/core/network/ppc_appleevents.md §5 (high-level event
 // framing), §6 (the map and text forms), §7 (what we implement) and §8 (this
 // surface).  The codec itself lives in appletalk_aevt_codec.c; the session
 // layer under it is appletalk_ppc.c.

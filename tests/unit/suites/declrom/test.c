@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 // Declaration-ROM builder unit tests.  The builder is described in
-// docs/core/peripherals/nubus_generic_vrom.md.
+// docs/internals/core/peripherals/nubus_generic_vrom.md.
 //
 // gsvrom_generate builds every personality's image host-side from a monitors[]
 // table mirroring the card kinds'; each image must pass the structural

@@ -5,7 +5,7 @@
 // The PCI bus controller: device tables, config dispatch, bridge-window
 // decode, the card-kind registry, staged per-slot configuration, the slot
 // walk and the lifecycle / interrupt fan-outs.  See pci.h and
-// docs/core/peripherals/pci.md.
+// docs/internals/core/peripherals/pci.md.
 //
 // Nothing here knows about any machine: a family creates a bus per host
 // bridge, hands the bus its decode windows, seats its own builtin devices

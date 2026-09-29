@@ -6,7 +6,7 @@
 // their dispatch.  The volume table and server identity are in afp_volume.c,
 // the parameter-area codec in afp_params.c, FPEnumerate in afp_enum.c.
 //
-// The wire reference is docs/core/network/appletalk_server.md; the AFP 2.1
+// The wire reference is docs/internals/core/network/appletalk_server.md; the AFP 2.1
 // additions (FPGetSrvrMsg, the file-ID calls, FPExchangeFiles, FPCatSearch)
 // follow Apple's AppleTalk Filing Protocol v2.1/2.2 specification (AppleShare IP
 // 6.3 Developer's Kit, 1999).  Persistent server state lives in three

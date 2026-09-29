@@ -53,7 +53,7 @@ static const char *const TNT[] = {"pm7500", "pm8500", "pm9500", NULL};
 // ConfigInfo 64-bit sum — tells them apart.  Never identify one by version.
 static const char *const ANS[] = {"ans500", "ans700", NULL};
 // Apple Lisa 2 (rev H) and Macintosh XL ("3A") interleaved boot ROMs
-// (docs/machines/lisa/lisa.md §16), each two 8 KB byte-slice chips.
+// (docs/reference/machines/lisa/lisa.md §16), each two 8 KB byte-slice chips.
 static const char *const LISA[] = {"lisa", NULL};
 static const char *const MACXL[] = {"macxl", NULL};
 

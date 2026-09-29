@@ -839,7 +839,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     atalk_server_init(); // registers itself as ASP's client
     atalk_printer_register();
     // The three program-linking layers, bottom up: ADSP carries PPC sessions,
-    // which carry Apple events (docs/core/network/ppc_appleevents.md §1).
+    // which carry Apple events (docs/internals/core/network/ppc_appleevents.md §1).
     atalk_adsp_init(scheduler);
     atalk_ppc_init();
     atalk_aevt_init();

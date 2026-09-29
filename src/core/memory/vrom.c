@@ -54,7 +54,7 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
 // genuine cards and the "fake" SE/30 onboard-video ROM alike — carries a
 // 20-byte Format Block at the top of the dense chip image; its 4-byte CRC
 // (preceded by the `$5A932BC7` TestPattern) is the intrinsic, Slot-Manager-
-// validated checksum.  See docs/core/peripherals/nubus_vrom.md §2.  We read
+// validated checksum.  See docs/reference/hardware/nubus/declaration-rom.md §2.  We read
 // it as identity, the direct analog of rom.c keying on the main ROM's
 // checksum word — no emulator-invented hash.  Field offsets from EOF of the
 // dense chip (high address = end), per §2 / §12:

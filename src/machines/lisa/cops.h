@@ -4,7 +4,7 @@
 // cops.h
 // Apple Lisa COPS microcontroller (National COP421-class) — keyboard, mouse,
 // real-time clock, and soft-power, reached through VIA1 port A.  See
-// docs/machines/lisa/lisa.md §11 and docs/machines/lisa/cops.md.
+// docs/reference/machines/lisa/lisa.md §11 and docs/internals/machines/lisa/cops.md.
 //
 // Host interface (verified against the rev-H boot ROM, RM248.K.TEXT):
 //  * Command path (COPSCMD): the host writes a command byte to VIA1 port A,
@@ -63,7 +63,7 @@ void cops_inject_mouse(cops_t *cops, int dx, int dy, int button);
 void cops_set_warp(cops_t *cops, int x, int y);
 
 // Report a press of the Lisa's soft power-off switch.  The COPS delivers it as
-// the $80 lead-in + $FB status code (docs/machines/lisa/lisa.md §11.2); LOS
+// the $80 lead-in + $FB status code (docs/reference/machines/lisa/lisa.md §11.2); LOS
 // catches $FB and runs its orderly shutdown (FS_Shutdown → the boot volume's
 // MDDF mountinfo := unmounted), so a saved image boots clean afterwards.
 void cops_soft_power_off(cops_t *cops);

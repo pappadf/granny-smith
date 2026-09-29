@@ -125,7 +125,7 @@ transports, installed at module construction:
 - **`Module.onAudioInState(active)`** / **`Module.onAudioInInjected(path)`**
   — the Singer's capture gate, and the file `machine.audioin.inject` just
   fed the guest (the page plays it aloud too); see
-  [../machines/av/singer.md](../machines/av/singer.md).
+  [../machines/av/singer.md](../internals/machines/av/singer.md).
 - **`Module.onVoodooGpuOverlay(visible)`** — whether the Voodoo2
   takeover's overlay canvas should show.
 
@@ -165,7 +165,7 @@ transports, installed at module construction:
   `<job>-<title>.pdf`.  The protocol is
   [`laserwriter_ring_protocol.h`](../../src/core/network/laserwriter_ring_protocol.h)
   / `printer/platenProtocol.ts`; the whole path is
-  [`docs/core/network/laserwriter.md`](../core/network/laserwriter.md) §5.5.
+  [`docs/reference/protocols/laserwriter-session.md`](../reference/protocols/laserwriter-session.md) §5.5.
 
 One input rides the module config the other way: **`gsAudioWorkletUrl`**,
 the bundled audio-out worklet, which `em_audio.c` loads when sound
@@ -530,7 +530,7 @@ in [`state/toasts.svelte.ts`](../../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
 
-Highlights — see [object-model.md](../core/shell/object-model.md) for the
+Highlights — see [object-model.md](../internals/core/object/object-model.md) for the
 typed-dispatch and introspection surface.
 
 - **`machine.rom.identify(path)`** → `{recognised, checksum, name,
@@ -547,7 +547,7 @@ typed-dispatch and introspection surface.
   Filesystem-tab "Unpack" action.
 - **`vfs.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
   image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
-  browse inside images; see [`target-filesystems.md`](../core/storage/target-filesystems.md).
+  browse inside images; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`storage.cp([-r], src, dst)`** — copy, including *out of* an image into
   OPFS (backs copy-out and Download). **`storage.rm(path)`** /
   **`storage.mv(src, dst)`** — recursive remove / move, run worker-side so
@@ -569,7 +569,7 @@ typed-dispatch and introspection surface.
   read-only `connected` / `fields` — the AV video digitizer's host source.
   The camera toolbar button sets `host`; the button itself is gated on
   `capabilities.video_in` from `machine.profile`. See
-  [../machines/av/vdc.md](../machines/av/vdc.md).
+  [../machines/av/vdc.md](../internals/machines/av/vdc.md).
 - **`machine.boot(model=..., rom=..., ...)`** — destroys any current
   machine and creates a fresh one from a complete configuration document
   (model and rom required; nothing is inherited from the previous
@@ -693,10 +693,11 @@ view; errors still toast.
   parameter-memory checksum left invalid (`machine.hd.pram_init(2, false)`),
   so the boot ROM goes to the ProFile instead of its startup-device screen and
   the OS restores its device table from the disk's own snapshot.  A bare HFS volume
-  (no partition map — the Mini vMac / archive.org shape), or a partitioned
-  disk with no driver (the Disk Copy / SheepShaver shape), is attached
+  (no partition map — the shape of most of the archive.org Macintosh
+  library), or a partitioned
+  disk with no driver (the Disk Copy 4.2 image shape), is attached
   through the volume wrapper and boots
-  ([bare-volume-wrapper.md](../core/storage/bare-volume-wrapper.md)).
+  ([bare-volume-wrapper.md](../internals/core/storage/bare-volume-wrapper.md)).
 - `cd=<url>` — downloaded into `/opfs/images/cd/`, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
@@ -779,7 +780,7 @@ https://pappadf.github.io/gs-pages/staging/
 
 The IDLE images in that item are raw 532-byte-block ProFile disks; the
 Office System 3.1, Workshop 3.0 and Xenix ones boot (verified 2026-09-28);
-`IDLE_MacWorksXL30` stops with boot-ROM error 23, and the `LisaEM_*` ones
+`IDLE_MacWorksXL30` stops with boot-ROM error 23, and the `LisaEM_*` ones <!-- lint-allow: LisaEm -->
 (DiskCopy 4.2 files with tags) have not been tried as ProFile disks.  The
 `apple-lisa-h-1983` item's chip dumps do not verify (scattered single-bit
 differences from the known Rev H ROM) and are refused.
@@ -909,7 +910,7 @@ is also the user gesture `getUserMedia` needs) and is shown only on
 machines whose profile reports `capabilities.video_in`. The physical
 device is attached only while that toggle *and* the guest's capture
 engine are both on — see `Module.onVideoInState` above and
-[../machines/av/vdc.md](../machines/av/vdc.md).
+[../machines/av/vdc.md](../internals/machines/av/vdc.md).
 
 ## COOP/COEP Headers
 
@@ -923,7 +924,7 @@ headers intact through Codespaces' port-forwarding proxy.
 
 - Wire new features through the object model
   (`bus/emulator.ts::gsEval(path, args)`). The bridge contract is
-  documented in [object-model.md](../core/shell/object-model.md).
+  documented in [object-model.md](../internals/core/object/object-model.md).
 - New panel views drop into
   [`app/web2/src/components/panel-views/`](../../app/web2/src/components/panel-views/)
   and get registered in `PanelTab` / `PanelContent`.

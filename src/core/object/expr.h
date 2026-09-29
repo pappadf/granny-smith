@@ -3,7 +3,7 @@
 
 // expr.h
 // Recursive-descent expression parser/evaluator for the shell's
-// `${...}` form. See docs/core/shell/shell.md.
+// `${...}` form. See docs/internals/core/shell/shell.md.
 //
 // The parser is pure (no parse-time side effects). Evaluation may
 // invoke methods on the object tree, which can have side effects;

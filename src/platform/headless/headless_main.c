@@ -154,7 +154,7 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
 // no longer a scheduler event armed per machine: the run loop injects it
 // imperatively, one VBL pulse per frame-unit, via scheduler_run_frame() — the
 // same path web2's scheduler_main_loop() takes.  See hl_run_statement
-// / the main loop below, and docs/core/scheduler/scheduler.md §10.
+// / the main loop below, and docs/internals/core/scheduler/scheduler.md §10.
 
 // Signal handling for graceful shutdown
 static volatile sig_atomic_t g_running = 1;

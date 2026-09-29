@@ -5,7 +5,7 @@
 // ADSP — AppleTalk Data Stream Protocol endpoint (DDP type 7).
 //
 // Reference: Inside AppleTalk, 2nd ed., chapter 12, distilled into
-// docs/core/network/appletalk.md §III.3.  Section numbers in the comments
+// docs/reference/protocols/appletalk.md §III.3.  Section numbers in the comments
 // below are that chapter's own page numbers (12-nn).
 //
 // The file has three parts:

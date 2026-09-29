@@ -181,7 +181,7 @@ Example implementation section comment:
 
 Three rules that had been re-derived from scratch in four different files
 before anyone wrote them down. The first is stated in full in
-[`../core/storage/checkpointing.md`](../core/storage/checkpointing.md) under
+[`../core/storage/checkpointing.md`](../internals/core/checkpointing.md) under
 "Struct layout guideline"; it is repeated here because that is not where
 people writing a new device look.
 
