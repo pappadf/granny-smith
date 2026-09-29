@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // image_wrap.c
-// Bare-volume wrapper — see image_wrap.h and
+// Volume wrapper — see image_wrap.h and
 // docs/core/storage/bare-volume-wrapper.md.
 
 #include "image_wrap.h"
@@ -11,6 +11,7 @@
 #include "common.h"
 #include "gs_out.h"
 #include "gsdisk_driver.h" // generated: gsdisk_drvr[] (src/core/storage/gsdisk/)
+#include "image_apm.h"
 #include "log.h"
 
 #include <stdlib.h>
@@ -164,27 +165,98 @@ void image_wrap_build_prefix(uint8_t *out, uint64_t volume_blocks, const char *b
     put_entry(e, n, prefix, vol, "MacOS", "Apple_HFS", PM_VALID | PM_ALLOCATED | PM_IN_USE | PM_READABLE | PM_WRITABLE);
 }
 
-int image_wrap_bare_volume(image_t *image) {
-    if (!image || image->wrap_prefix || image->block_size != BLK || image->raw_size < 3 * BLK)
-        return 0;
-    uint8_t head[3 * BLK];
-    uint64_t reads = image->reads; // the sniff is not guest activity
-    size_t got = disk_read_data(image, 0, head, sizeof(head));
+bool image_wrap_find_driverless_hfs(const uint8_t *head, size_t len, uint64_t *start, uint64_t *blocks) {
+    if (!head || len < 2 * BLK || !image_apm_probe_magic(head + BLK))
+        return false;
+    // A DDM that names a driver means the disk has one (or claims to): leave
+    // it to the ROM.
+    if (head[DDM_SIG] == 'E' && head[DDM_SIG + 1] == 'R' && (head[DDM_DRVR_COUNT] || head[DDM_DRVR_COUNT + 1]))
+        return false;
+    apm_table_t *t = image_apm_parse_buffer(head, len, NULL);
+    if (!t)
+        return false;
+    // A map cut short (by the buffer or a bad entry) could hide a driver.
+    bool ok = t->n_partitions == t->map_block_count;
+    const apm_partition_t *hfs = NULL;
+    for (uint32_t i = 0; ok && i < t->n_partitions; i++) {
+        const apm_partition_t *p = &t->partitions[i];
+        // A driver means the ROM can boot it already; an A/UX partition is
+        // reached by A/UX through the map, which the wrapper would hide.
+        if (p->fs_kind == APM_FS_DRIVER || p->fs_kind == APM_FS_UFS)
+            ok = false;
+        else if (p->fs_kind == APM_FS_HFS) {
+            if (hfs)
+                ok = false; // exactly one: the guest sees only it
+            hfs = p;
+        }
+    }
+    ok = ok && hfs && hfs->start_block >= 2 && hfs->size_blocks >= 3;
+    if (ok) {
+        *start = hfs->start_block;
+        *blocks = hfs->size_blocks;
+    }
+    image_apm_free(t);
+    return ok;
+}
+
+// Read `size` bytes at `offset` of the image without counting it as guest
+// activity (the sniff is not).
+static bool sniff(image_t *image, size_t offset, uint8_t *buf, size_t size) {
+    uint64_t reads = image->reads;
+    size_t got = disk_read_data(image, offset, buf, size);
     image->reads = reads;
-    if (got != sizeof(head))
-        return 0;
-    if (!image_wrap_is_bare_volume(head, sizeof(head)))
-        return 0;
+    return got == size;
+}
+
+// Head read for the sniff: block 0 and the longest map the prefix itself
+// would hold (entries 1..63).
+#define SNIFF_BLOCKS (IMAGE_WRAP_MAP_START + IMAGE_WRAP_MAP_BLOCKS)
+
+int image_wrap_volume(image_t *image) {
+    if (!image || image->wrap_prefix || image->block_size != BLK || image->raw_size < 3 * BLK)
+        return IMAGE_WRAP_NONE;
+    size_t total_blocks = image->raw_size / BLK;
+    size_t head_len = (total_blocks < SNIFF_BLOCKS ? total_blocks : SNIFF_BLOCKS) * BLK;
+    uint8_t *head = (uint8_t *)malloc(head_len);
+    if (!head)
+        return -1;
+    int kind = IMAGE_WRAP_NONE;
+    uint64_t start = 0, blocks = 0;
+    if (sniff(image, 0, head, head_len)) {
+        if (image_wrap_is_bare_volume(head, head_len)) {
+            kind = IMAGE_WRAP_BARE;
+            blocks = total_blocks;
+        } else if (image_wrap_find_driverless_hfs(head, head_len, &start, &blocks) && start < total_blocks) {
+            // The partition must hold an HFS volume where the map says, and
+            // is clipped to the file (an image cut short of its map's claim).
+            if (blocks > total_blocks - start)
+                blocks = total_blocks - start;
+            if (blocks >= 3 && sniff(image, (size_t)start * BLK, head, 3 * BLK) &&
+                image_wrap_is_bare_volume(head, 3 * BLK))
+                kind = IMAGE_WRAP_DRIVERLESS;
+        }
+    }
+    free(head);
+    if (kind == IMAGE_WRAP_NONE)
+        return IMAGE_WRAP_NONE;
     uint8_t *prefix = (uint8_t *)malloc((size_t)IMAGE_WRAP_PREFIX_BLOCKS * BLK);
     if (!prefix)
         return -1;
-    image_wrap_build_prefix(prefix, image->raw_size / BLK, get_build_id());
+    image_wrap_build_prefix(prefix, blocks, get_build_id());
     image->wrap_prefix = prefix;
     image->wrap_blocks = IMAGE_WRAP_PREFIX_BLOCKS;
-    image->raw_size += (size_t)IMAGE_WRAP_PREFIX_BLOCKS * BLK;
+    image->wrap_base = (size_t)start * BLK;
+    image->wrap_storage_size = image->raw_size;
+    image->raw_size = (size_t)(IMAGE_WRAP_PREFIX_BLOCKS + blocks) * BLK;
     image->type = image_hd;
-    LOG(1, "wrapped bare volume %s: %u-block partition map + GSDisk driver in front of %zu blocks",
-        image->filename ? image->filename : "?", IMAGE_WRAP_PREFIX_BLOCKS,
-        image->raw_size / BLK - IMAGE_WRAP_PREFIX_BLOCKS);
-    return 1;
+    if (kind == IMAGE_WRAP_BARE)
+        LOG(1, "wrapped bare volume %s: %u-block partition map + GSDisk driver in front of %llu blocks",
+            image->filename ? image->filename : "?", IMAGE_WRAP_PREFIX_BLOCKS, (unsigned long long)blocks);
+    else
+        LOG(1,
+            "wrapped driverless partitioned disk %s: %u-block partition map + GSDisk driver in front of its "
+            "Apple_HFS partition (%llu blocks at block %llu)",
+            image->filename ? image->filename : "?", IMAGE_WRAP_PREFIX_BLOCKS, (unsigned long long)blocks,
+            (unsigned long long)start);
+    return kind;
 }

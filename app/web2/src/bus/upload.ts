@@ -50,10 +50,13 @@ import { attachCdrom, insertFloppy } from './media';
 // (bus/xfer.ts; see STAGING above).  A stream's small network chunks are
 // gathered into full windows first, so a download costs one request per
 // window, not per packet.  Nothing buffers the whole file, so any size works.
+// `onProgress` hears the bytes taken from the source so far: per network
+// chunk for a stream (a download's progress bar), per window otherwise.
 // Returns true on success.
 export async function streamToOpfs(
   opfsPath: string,
   source: Blob | ReadableStream<Uint8Array> | Uint8Array,
+  onProgress?: (bytesWritten: number) => void,
 ): Promise<boolean> {
   try {
     const size = await xferChunkBytes();
@@ -65,20 +68,27 @@ export async function streamToOpfs(
       wrote = true;
     };
     if (source instanceof Uint8Array) {
-      for (let at = 0; at < source.length; at += size)
+      for (let at = 0; at < source.length; at += size) {
         await put(source.subarray(at, Math.min(at + size, source.length)));
+        onProgress?.(pos);
+      }
     } else if (source instanceof Blob) {
-      for (let at = 0; at < source.size; at += size)
+      for (let at = 0; at < source.size; at += size) {
         await put(
           new Uint8Array(await source.slice(at, Math.min(at + size, source.size)).arrayBuffer()),
         );
+        onProgress?.(pos);
+      }
     } else {
       const reader = source.getReader();
       const pending = new Uint8Array(size);
       let fill = 0;
+      let seen = 0;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        seen += value?.length ?? 0;
+        onProgress?.(seen);
         for (let at = 0; value && at < value.length; ) {
           const n = Math.min(size - fill, value.length - at);
           pending.set(value.subarray(at, at + n), fill);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// The bare-volume wrapper's layout.  See Makefile.
+// The volume wrapper's layout and sniffs.  See Makefile.
 
 #include "image_apm.h"
 #include "image_wrap.h"
@@ -17,8 +17,8 @@ const char *get_build_id(void) {
     return "test-build";
 }
 
-// image_wrap_bare_volume's sniff reads through here; the layout tests call
-// image_wrap_build_prefix directly, so no test reaches it.
+// image_wrap_volume's sniff reads through here; the tests call the pure
+// layout and sniff functions directly, so no test reaches it.
 size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     (void)disk;
     (void)offset;
@@ -55,6 +55,40 @@ static void bare_head(uint8_t *head) {
     head[1] = 'K';
     head[2 * BLK] = 'B';
     head[2 * BLK + 1] = 'D';
+}
+
+static void wr32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+// Write map entry `i` (1-based) of an `n`-entry map into `head`.
+static void map_entry(uint8_t *head, uint32_t i, uint32_t n, uint32_t start, uint32_t blocks, const char *type) {
+    uint8_t *e = head + (size_t)i * BLK;
+    memset(e, 0, BLK);
+    e[0] = 'P';
+    e[1] = 'M';
+    wr32(e + 4, n);
+    wr32(e + 8, start);
+    wr32(e + 12, blocks);
+    memcpy(e + 48, type, strlen(type));
+}
+
+// The head of a Disk Copy / SheepShaver disk: a DDM naming no drivers and a
+// three-entry map — the map itself, Apple_HFS at 64, an Apple_Free tail.
+// `head` holds DL_HEAD_BLOCKS blocks.
+#define DL_HEAD_BLOCKS 64u
+static void driverless_head(uint8_t *head) {
+    memset(head, 0, DL_HEAD_BLOCKS * BLK);
+    head[0] = 'E';
+    head[1] = 'R';
+    head[2] = 0x02; // sbBlkSize 512
+    wr32(head + 4, 245760);
+    map_entry(head, 1, 3, 1, 63, "Apple_partition_map");
+    map_entry(head, 2, 3, 64, 245680, "Apple_HFS");
+    map_entry(head, 3, 3, 245744, 16, "Apple_Free");
 }
 
 // --- tests -----------------------------------------------------------------------
@@ -178,6 +212,62 @@ TEST(test_bare_volume_sniff) {
     free(buf);
 }
 
+// A partition map with no driver and one Apple_HFS partition is found, and
+// the partition's extent is reported; with no DDM at all as well.
+TEST(test_driverless_disk_is_found) {
+    uint8_t head[DL_HEAD_BLOCKS * BLK];
+    uint64_t start = 0, blocks = 0;
+    driverless_head(head);
+    ASSERT_TRUE(image_wrap_find_driverless_hfs(head, sizeof(head), &start, &blocks));
+    ASSERT_EQ_INT(start, 64);
+    ASSERT_EQ_INT(blocks, 245680);
+    ASSERT_TRUE(!image_wrap_is_bare_volume(head, sizeof(head))); // the other shape
+
+    memset(head, 0, BLK); // no DDM, the map alone
+    start = blocks = 0;
+    ASSERT_TRUE(image_wrap_find_driverless_hfs(head, sizeof(head), &start, &blocks));
+    ASSERT_EQ_INT(start, 64);
+}
+
+// Anything that has a driver, more or less than one HFS partition, an A/UX
+// partition, or a map the buffer cannot hold whole is left alone.
+TEST(test_driverless_sniff_rejects) {
+    uint8_t head[DL_HEAD_BLOCKS * BLK];
+    uint64_t start = 0, blocks = 0;
+
+    driverless_head(head);
+    head[17] = 1; // the DDM names a driver
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(head, sizeof(head), &start, &blocks));
+
+    driverless_head(head);
+    map_entry(head, 3, 3, 245744, 16, "Apple_Driver43"); // a driver partition
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(head, sizeof(head), &start, &blocks));
+
+    driverless_head(head);
+    map_entry(head, 3, 3, 245744, 16, "Apple_HFS"); // two HFS partitions
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(head, sizeof(head), &start, &blocks));
+
+    driverless_head(head);
+    map_entry(head, 2, 3, 64, 245680, "Apple_Free"); // no HFS partition
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(head, sizeof(head), &start, &blocks));
+
+    driverless_head(head);
+    map_entry(head, 3, 3, 245744, 16, "Apple_UNIX_SVR2"); // A/UX reads the map
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(head, sizeof(head), &start, &blocks));
+
+    driverless_head(head);
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(head, 3 * BLK, &start, &blocks)); // map cut short
+
+    uint8_t bare[3 * BLK];
+    bare_head(bare);
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(bare, sizeof(bare), &start, &blocks)); // no map
+
+    // The wrapper's own prefix has a driver: never wrapped twice.
+    uint8_t *buf = build(20480);
+    ASSERT_TRUE(!image_wrap_find_driverless_hfs(buf, (size_t)DL_HEAD_BLOCKS * BLK, &start, &blocks));
+    free(buf);
+}
+
 int main(void) {
     RUN(test_ddm_names_one_68k_driver);
     RUN(test_partition_map_parses_to_three_entries);
@@ -185,6 +275,8 @@ int main(void) {
     RUN(test_build_id_is_stamped_into_the_driver);
     RUN(test_boot_checksum_matches_the_rom_algorithm);
     RUN(test_bare_volume_sniff);
+    RUN(test_driverless_disk_is_found);
+    RUN(test_driverless_sniff_rejects);
     fprintf(stderr, "All image_wrap tests passed\n");
     return 0;
 }

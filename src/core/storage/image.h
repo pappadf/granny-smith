@@ -80,12 +80,17 @@ struct image {
     uint32_t tag_bytes; // tag bytes per sector (12 on a Lisa 400 KB disk)
     uint32_t tag_count; // number of tagged sectors
 
-    // Bare-volume wrapper (image_wrap.h): a synthesised partition-map +
-    // driver prefix served in front of the volume.  wrap_blocks blocks of
-    // wrap_prefix precede block 0 of `storage`; raw_size includes them.
-    // NULL / 0 for every other image.
+    // Volume wrapper (image_wrap.h): a synthesised partition-map + driver
+    // prefix served in front of an HFS volume.  wrap_blocks blocks of
+    // wrap_prefix precede the volume, which starts wrap_base bytes into
+    // `storage` (0 for a bare volume; the Apple_HFS partition's start for a
+    // driverless partitioned disk).  raw_size is the prefix plus the volume;
+    // wrap_storage_size is the storage's own size.  NULL / 0 for every
+    // other image.
     uint8_t *wrap_prefix;
     uint32_t wrap_blocks;
+    size_t wrap_base;
+    size_t wrap_storage_size;
 };
 
 struct image;

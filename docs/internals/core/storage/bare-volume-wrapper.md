@@ -1,4 +1,4 @@
-## Bare-Volume Wrapper and the GSDisk Driver
+## Volume Wrapper and the GSDisk Driver
 
 A **bare volume** is an HFS (or HFS+) volume image with nothing in front of
 it: block 0 holds the volume's boot blocks (`LK`), the Master Directory Block
@@ -18,16 +18,37 @@ So `scsi.attach_hd` (every SCSI hard-disk attach: `machine.attach_hd`, the
 the guest sees a disk with a synthesised map and an in-tree driver in front of
 the untouched volume.
 
+A **driverless partitioned disk** has the same problem one step later: block 0
+is a Driver Descriptor Map naming no drivers (or no DDM at all), block 1 on is
+an Apple Partition Map, and the map has an `Apple_HFS` partition but no
+`Apple_Driver*` one. Disk Copy 4.2 writes this shape (for example
+archive.org's `MacOS9AndSheepShaverForMac` `OS9.img` <!-- lint-allow: SheepShaver -->: a DDM with
+`sbDrvrCount 0`, the map at 1–63, `Apple_HFS` at 64, a 16-block `Apple_Free`
+tail). The ROM finds no driver and skips the disk. The wrapper handles it by
+wrapping just its `Apple_HFS` partition, exactly as if that partition were a
+bare volume.
+
 Sources: [`image_wrap.c`](../../../../src/core/storage/image_wrap.c) /
 [`image_wrap.h`](../../../../src/core/storage/image_wrap.h) (layout, sniff,
 checksum), [`gsdisk/gsdisk_drvr.s`](../../../../src/core/storage/gsdisk/gsdisk_drvr.s)
-(the driver), [`gsdisk/gsdisk.mk`](../../../../src/core/storage/gsdisk/gsdisk.mk)
+(the driver), [`gsdisk/gsdisk.mk`](../../../../src/core/storage/gsdisk/gsdisk.mk):docs/core/storage/bare-volume-wrapper.md
 (its build).
 
 ### What is wrapped, and what is not
 
-`image_wrap_bare_volume()` wraps an image when its first three blocks show a
-volume header at 1024 (`BD` or `H+`) and neither `ER` at 0 nor `PM` at 512.
+`image_wrap_volume()` wraps an image in two cases:
+
+- **A bare volume** (`image_wrap_is_bare_volume`): the first three blocks show
+  a volume header at 1024 (`BD` or `H+`), with neither `ER` at 0 nor `PM` at
+  512.
+- **A driverless partitioned disk** (`image_wrap_find_driverless_hfs`): `PM`
+  at 512; block 0 is not `ER`, or is a DDM with `sbDrvrCount 0`; the whole map
+  parses (it must fit in the first 64 blocks, like the wrapper's own); no
+  entry is `Apple_Driver*` or `Apple_UNIX_SVR2` (A/UX reads the map itself,
+  and would lose its partitions); and exactly one entry is `Apple_HFS`. That
+  partition must itself pass the bare-volume sniff. It is clipped to the file
+  if the map claims more.
+
 It is called only on the SCSI hard-disk attach path (`media_open` in
 `system.c`):
 
@@ -37,8 +58,11 @@ It is called only on the SCSI hard-disk attach path (`media_open` in
 - **Floppies are never wrapped**: floppies are bare by design.
 - **The VFS is unaffected**: browsing goes through the bare-HFS namespace as
   before.
-- **Partitioned disks are never touched**, including a disk the wrapper itself
-  produced (its block 0 is `ER`).
+- **Partitioned disks with a driver are never touched**, including a disk the
+  wrapper itself produced (its DDM names the GSDisk driver).
+- **A driverless disk shows the guest its HFS partition only.** Its own map
+  and any other partitions (`Apple_Free`, `Apple_Void`, …) are hidden behind
+  the synthesised map. The file keeps them.
 
 ### Layout the guest sees
 
@@ -62,24 +86,27 @@ layout never shifts between builds.
 
 The prefix lives in memory (`image_t.wrap_prefix`, `wrap_blocks`). Only
 `disk_read_data` / `disk_write_data` know about it: offsets below the prefix
-are served from memory, everything else is shifted down onto the image's
-storage, which still holds just the volume. So:
+are served from memory, and everything else is shifted onto the volume, which
+starts `wrap_base` bytes into the image's storage (0 for a bare volume, the
+`Apple_HFS` partition's start for a driverless disk). So:
 
 - **the file is never modified** — guest writes land in the image's delta as
   for any disk, at the volume's own offsets;
-- `raw_size` / `disk_size()` include the prefix (the SCSI layer's bounds and
-  READ CAPACITY see the whole disk);
-- `storage.export_raw` and checkpoints' consolidated data carry the volume
-  only;
+- `raw_size` / `disk_size()` are the prefix plus the volume (the SCSI
+  layer's bounds and READ CAPACITY see the whole disk); `wrap_storage_size`
+  keeps the storage's own size;
+- `storage.export_raw` and checkpoints' consolidated data carry the file's
+  shape: the bare volume, or the whole partitioned disk;
 - a write into the prefix (a partitioning tool rewriting the map) changes the
   in-memory copy and is logged; it is not persisted, and the prefix is rebuilt
   on the next open.
 
 **Checkpoints.** The per-image flags byte `image_checkpoint` writes
 (`IMAGE_CKPT_WRITABLE`, formerly the bare `writable` flag) gains
-`IMAGE_CKPT_WRAPPED`; the saved `raw_size` is the storage's. The restore
-(`mac_checkpoint_restore_one_image`) re-wraps an image carrying the bit
-before its storage is restored, so the SCSI device that re-binds to it by name
+`IMAGE_CKPT_WRAPPED`; the saved `raw_size` is the storage's
+(`wrap_storage_size`). The restore (`mac_checkpoint_restore_one_image`)
+re-wraps an image carrying the bit (re-running the same sniff, which finds the
+same partition) before its storage is restored, so the SCSI device that re-binds to it by name
 sees the same disk. Checkpoints written before this change never have the bit
 set, and read unchanged.
 
@@ -175,7 +202,10 @@ fallback when the assembler is missing.
 
 - `tests/unit/suites/image_wrap` — the DDM, the three map entries (parsed by
   `image_apm_parse_buffer`), the ROM's driver-partition checks and checksum,
-  the build stamp, and the bare-volume sniff.
+  the build stamp, the bare-volume sniff, and the driverless-disk sniff (found
+  with and without a DDM; rejected with a driver in the DDM or the map, with
+  zero or two HFS partitions, with an A/UX partition, with a map cut short, and
+  on the wrapper's own prefix).
 - `tests/integration/scsi-bare-volume` — one machine of every family that
   boots Mac OS from SCSI, each to the Finder off a wrapped volume: the
   archive.org System 7.5.3 volume on the SE/30 (glue), IIci (MDU), Quadra 700
@@ -187,7 +217,10 @@ fallback when the assembler is missing.
   Apple's own driver too). Plus two wrapped disks on one bus and a checkpoint
   round trip. The Lisa/MacXL (ProFile, no SCSI) and the Network Servers (no
   Mac OS) are out of scope. Media: `tests/data/systems/system_7_5_3_25mb_bare.img`
-  and `system_7_0_1_10mb_bare_plus.img`.
+  and `system_7_0_1_10mb_bare_plus.img`. The `driverless` row boots the IIci
+  off the 7.5.3 volume put behind a driverless map at setup by
+  `scripts/hfs-to-driverless-apm.py` (the OS9.img shape), and takes it through
+  a checkpoint round trip.
 - `tests/e2e/web2-specs/url-archive-boot.spec.ts` — the web UI's archive.org
   URL booting the same volume.
 
@@ -198,6 +231,8 @@ fallback when the assembler is missing.
   it (`machine.rtc.pram.boot_device`).
 - The volume must be < 4 GB (the driver computes byte positions in 32 bits,
   as the Device Manager does).
-- Up to 4 `Apple_HFS` partitions per disk (the wrapper makes one).
+- Up to 4 `Apple_HFS` partitions per disk (the wrapper makes one). A
+  driverless disk with more than one `Apple_HFS` partition is not wrapped:
+  showing only one would hide the others.
 - The prefix is not persisted: tools that rewrite the partition map (HD SC
   Setup's "Update") see their change until the disk is reopened.

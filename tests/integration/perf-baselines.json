@@ -56,6 +56,10 @@
       "instr": 772706113,
       "tolerance": 0.2
     },
+    "scsi-bare-volume/driverless": {
+      "instr": 222068553,
+      "tolerance": 0.2
+    },
     "scsi-bare-volume/iici-753": {
       "instr": 222068484,
       "tolerance": 0.2
