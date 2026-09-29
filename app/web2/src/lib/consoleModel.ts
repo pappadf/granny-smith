@@ -23,6 +23,10 @@
 // re-rendering anything.  At job end -- or 2 s after a held line arrived --
 // the rest is settled: an annotation whose lines never came renders its own
 // lines, and unclaimed held lines become `stderr` entries in arrival order.
+// The worker's printErr lines travel apart from the job's records and can
+// land after the job's end: an error committed without its lines remembers
+// them, and matching stderr lines that come within the settle time are
+// absorbed rather than shown a second time.
 //
 // New entries are buffered and handed to `onFlush` once per frame; at most
 // `cap` entries are kept (the oldest dropped).
@@ -96,6 +100,9 @@ export class ConsoleModel {
   private active: number | null = null;
   private heldErr: string[] = [];
   private cancelSettle: (() => void) | null = null;
+  // Lines of errors committed before their stderr arrived (see above).
+  private late: string[] = [];
+  private cancelLate: (() => void) | null = null;
 
   constructor(private readonly opts: ConsoleModelOptions) {
     this.cap = opts.cap ?? CONSOLE_CAP;
@@ -126,6 +133,10 @@ export class ConsoleModel {
         this.add('text', r.line, null);
         return;
       case 'stderr':
+        if (this.late.length && this.late[0] === r.line) {
+          this.late.shift();
+          return;
+        }
         if (this.active === null) {
           this.add('stderr', r.line, null);
           return;
@@ -219,6 +230,7 @@ export class ConsoleModel {
       if (it.t === 'error') {
         const claimed = this.claim(it.lines);
         if (!claimed && !force) return;
+        if (!claimed) this.expectLate(it.lines);
         this.add('error', it.lines.join('\n'), job);
       } else if (it.t === 'value') {
         this.add('value', it.text, job, it.json);
@@ -242,6 +254,17 @@ export class ConsoleModel {
       }
     }
     return false;
+  }
+
+  // An error was committed without its stderr lines: absorb them if they
+  // arrive within the settle time.
+  private expectLate(lines: string[]): void {
+    this.late.push(...lines);
+    this.cancelLate?.();
+    this.cancelLate = this.opts.setTimer(() => {
+      this.cancelLate = null;
+      this.late = [];
+    }, ERROR_SETTLE_MS);
   }
 
   private armSettle(): void {

@@ -41,10 +41,19 @@ test('the console renders values and errors, and Copy as commands round-trips', 
   await value.locator('summary').click();
   await expect(value.locator('.kv-row')).toHaveCount(3);
 
-  // --- A failing statement: an error entry, not loose stderr.
+  // --- A failing statement: one error entry, not loose stderr as well.  The
+  // worker's printErr line can land after the job's end; it must not show
+  // a second time once it does (well within the 2 s settle time).
   await idle(page);
+  const errorsBefore = await output(page).locator('.entry.error').count();
   await terminalRun(page, 'nosuch.member.anywhere');
-  await expect(output(page).locator('.entry.error').last()).not.toBeEmpty({ timeout: 10_000 });
+  await expect(output(page).locator('.entry.error')).toHaveCount(errorsBefore + 1, {
+    timeout: 10_000,
+  });
+  await expect(output(page).locator('.entry.error').last()).toContainText('nosuch');
+  await page.waitForTimeout(2_500);
+  await expect(output(page).locator('.entry.stderr')).toHaveCount(0);
+  await expect(output(page).locator('.entry.error')).toHaveCount(errorsBefore + 1);
 
   // --- Copy as commands, over a clean three-command transcript.
   await idle(page);

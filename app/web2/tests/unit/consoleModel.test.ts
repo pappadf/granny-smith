@@ -192,6 +192,42 @@ describe('ConsoleModel errors', () => {
     ]);
   });
 
+  it('stderr lines that arrive after the job ended are not shown twice', () => {
+    // The worker's printErr travels apart from the job's records: in the
+    // browser an unknown command's line lands after job_end.
+    const m = make();
+    m.push({ kind: 'job_start', job: 20 });
+    m.push({ kind: 'error', job: 20, lines: ["line 1: unknown command or path 'dfsgdfg'"] });
+    m.push({ kind: 'job_end', job: 20 });
+    m.push({ kind: 'stderr', line: "line 1: unknown command or path 'dfsgdfg'" });
+    frame();
+    expect(view()).toEqual([['error', "line 1: unknown command or path 'dfsgdfg'"]]);
+    // Also when the next job has started meanwhile (type-ahead).
+    m.push({ kind: 'job_start', job: 21 });
+    m.push({ kind: 'error', job: 21, lines: ['a', 'b'] });
+    m.push({ kind: 'job_end', job: 21 });
+    m.push({ kind: 'job_start', job: 22 });
+    m.push({ kind: 'stderr', line: 'a' });
+    m.push({ kind: 'stderr', line: 'b' });
+    m.push({ kind: 'job_end', job: 22 });
+    frame();
+    expect(view().slice(1)).toEqual([['error', 'a\nb']]);
+  });
+
+  it('a late line past the settle time is shown', () => {
+    const m = make();
+    m.push({ kind: 'job_start', job: 23 });
+    m.push({ kind: 'error', job: 23, lines: ['x'] });
+    m.push({ kind: 'job_end', job: 23 });
+    for (const t of timers.filter((t) => t.live && t.ms === ERROR_SETTLE_MS)) t.fn();
+    m.push({ kind: 'stderr', line: 'x' });
+    frame();
+    expect(view()).toEqual([
+      ['error', 'x'],
+      ['stderr', 'x'],
+    ]);
+  });
+
   it('two identical errors in one job each claim their own run of lines', () => {
     const m = make();
     m.push({ kind: 'job_start', job: 11 });
