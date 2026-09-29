@@ -566,15 +566,12 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
     case V_OBJECT:
         complete_path(partial, out);
         break;
-    case V_STRING: {
-        // Heuristic: arg names of "path" / "src" / "dst" / "out_dir" /
-        // "file" → filesystem paths. Other strings get nothing — guessing
-        // a tree path here would litter the menu with irrelevant names.
-        const char *nm = a->name ? a->name : "";
-        if (strstr(nm, "path") || strstr(nm, "src") || strstr(nm, "dst") || strstr(nm, "file") || strstr(nm, "dir"))
+    case V_STRING:
+        // A string declared VAL_PATH names a filesystem path. Other strings
+        // get nothing — guessing here would litter the menu.
+        if (a->presentation_flags & VAL_PATH)
             complete_paths(partial, out);
         break;
-    }
     default:
         break;
     }

@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Round trip about 17 ms at p95 with the machine in turbo.
 
 ### Changed
+- **File-path completion follows `VAL_PATH`** — a string argument completes against the filesystem when it is declared `VAL_PATH`, no longer when its name contains `path`, `src`, `dst`, `file` or `dir`; object-path arguments such as `alias.add path` stop offering files.
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.
   - `storage.*`, `vfs.ls/list/mkdir/cat`, `archive.*` and the root `download` merge into **`files`** (`files.cp`, `files.ls`, `files.archive.extract`, `files.download`, …; `storage.images` → `files.images`).
   - The image-VFS mount cache is the collection `files.mounts[n]`, indexed by a never-reused mount serial; `storage.mounts` / `storage.list_partitions` are gone and `storage.unmount(path)` is `files.mounts[files.mounts.find(path)].unmount()`.

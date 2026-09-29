@@ -281,8 +281,10 @@ layered over the shell store.
 - **Mid-path partials** (`machine.cpu.`, `machine.floppy.drive[0].`) —
   members of the resolved-so-far node.
 - **Method-argument position** — dispatched by the resolved method's
-  `arg_decl_t[i]`: enums offer their values, path arguments complete
-  against the filesystem, and so on.
+  `arg_decl_t[i]`: enums offer their values, bools `true`/`false`, and a
+  string argument declared `VAL_PATH` completes against the filesystem
+  (through the VFS).  The flag decides, not the argument's name: a
+  `path` argument that names an object path gets no file candidates.
 
 With `shell.complete(line, cursor, true)` each candidate comes back as
 `{text, kind, doc, task}` (`kind` ∈ `object`, `collection`, `attr`,
