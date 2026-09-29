@@ -487,11 +487,15 @@ static value_t dsp_method_disasm(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
+static const value_t dsp_def_step = {.kind = V_UINT, .u = 1};
+static const value_t dsp_def_disasm = {.kind = V_UINT, .u = 16};
+
 static const arg_decl_t dsp_step_args[] = {
     {.name = "count",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "instructions to execute (default 1)"},
+     .default_value = &dsp_def_step,
+     .doc = "instructions to execute"},
 };
 
 static const arg_decl_t dsp_disasm_args[] = {
@@ -500,11 +504,12 @@ static const arg_decl_t dsp_disasm_args[] = {
      .presentation_flags = VAL_HEX,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
-     .doc = "start address (default: current pc)"},
+     .doc = "start address; omitted: the current PC"},
     {.name = "count",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "instructions (default 16, max 256)"},
+     .default_value = &dsp_def_disasm,
+     .doc = "instructions (max 256)"},
 };
 
 static const member_t av_dsp_members[] = {
@@ -564,6 +569,7 @@ static const member_t av_dsp_members[] = {
 
 static const class_desc_t av_dsp_class = {
     .name = "dsp",
+    .doc = "The AT&T DSP3210 on the AV Macs: registers, step, disassembly",
     .members = av_dsp_members,
     .n_members = sizeof(av_dsp_members) / sizeof(av_dsp_members[0]),
 };

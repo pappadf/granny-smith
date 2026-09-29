@@ -264,16 +264,23 @@ static const arg_decl_t archive_extract_args[] = {
      .kind = V_STRING,
      .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Output directory (default: cwd)"},
+     .doc = "Output directory; omitted: the current directory"},
 };
 
 static const member_t archive_members[] = {
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "Return the archive format (\"sit\" / \"cpt\" / \"hqx\" / \"bin\" / \"sea\") or empty if not an archive",
-     .method = {.args = archive_path_arg, .nargs = 1, .result = V_STRING, .fn = archive_method_identify}              },
+     .examples = (const char *const[]){"files.archive.identify \"/opfs/downloads/app.sit\"", NULL},
+     .doc = "Identify a Mac archive's format",
+     .method = {.result_doc = "\"sit\", \"cpt\", \"hqx\", \"bin\" or \"sea\"; empty when not an archive",
+                .args = archive_path_arg,
+                .nargs = 1,
+                .result = V_STRING,
+                .fn = archive_method_identify}                                                                        },
     {.kind = M_METHOD,
      .name = "extract",
+     .examples = (const char *const[]){"files.archive.extract \"/opfs/downloads/app.sit\"",
+                                       "files.archive.extract \"/opfs/downloads/app.sit\" \"/opfs/unpacked\"", NULL},
      .doc = "Extract a Mac archive into out_dir",
      .method =
          {.ui_flags = MM_IO, .args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},

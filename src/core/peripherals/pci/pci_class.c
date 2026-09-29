@@ -432,6 +432,7 @@ static const member_t pci_slots_members[] = {
 
 const class_desc_t pci_slots_class = {
     .name = "pci_slots",
+    .doc = "PCI slots, by slot number",
     .members = pci_slots_members,
     .n_members = sizeof(pci_slots_members) / sizeof(pci_slots_members[0]),
 };
@@ -440,6 +441,7 @@ const class_desc_t pci_slots_class = {
 // the container above.
 const class_desc_t pci_class = {
     .name = "pci",
+    .doc = "The PCI expansion bus: slots and their cards",
     .members = NULL,
     .n_members = 0,
 };

@@ -398,6 +398,7 @@ static const member_t gc_members[] = {
 
 static const class_desc_t gc_class = {
     .name = "irq_controller",
+    .doc = "Grand Central, the PCI Power Mac I/O controller: interrupt state",
     .members = gc_members,
     .n_members = sizeof(gc_members) / sizeof(gc_members[0]),
 };
@@ -556,6 +557,7 @@ static const member_t nvram_members[] = {
 
 static const class_desc_t nvram_class = {
     .name = "nvram",
+    .doc = "Grand Central's NVRAM: read, write, snapshot, clear",
     .members = nvram_members,
     .n_members = sizeof(nvram_members) / sizeof(nvram_members[0]),
 };

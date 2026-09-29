@@ -604,12 +604,18 @@ static value_t lisa_fd_drive_index(struct object *self, const member_t *m) {
     return val_int(0);
 }
 
+static const value_t lisa_false = {.kind = V_BOOL, .b = false};
+static const value_t lisa_true = {.kind = V_BOOL, .b = true};
 static const arg_decl_t lisa_fd_insert_args[] = {
     {.name = "path",
      .kind = V_STRING,
      .presentation_flags = VAL_PATH,
-     .doc = "Host path or storage URI of the image to mount"                                                          },
-    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
+     .doc = "Host path or storage URI of the image to mount"},
+    {.name = "writable",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lisa_false,
+     .doc = "Mount writable"},
 };
 
 static const member_t lisa_fd_drive_members[] = {
@@ -645,7 +651,7 @@ static const member_t lisa_fd_drives_members[] = {
      .child = {.cls = &lisa_fd_drive_class, .indexed = true, .get = lisa_fd_drives_get, .slots = 1}},
 };
 static const class_desc_t lisa_fd_drives_class = {
-    .name = "floppy_drives", .members = lisa_fd_drives_members, .n_members = 1};
+    .name = "floppy_drives", .doc = "Floppy drives, by index", .members = lisa_fd_drives_members, .n_members = 1};
 
 static const member_t lisa_fd_members[] = {0}; // container only; the drives collection is the child
 static const class_desc_t lisa_fd_class = {
@@ -808,7 +814,7 @@ static const arg_decl_t lisa_hd_pram_init_args[] = {
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &pram_def_valid,
-     .doc = "true (default) = a verifying checksum; false = a fresh battery, so the OS rebuilds the device table "
+     .doc = "true = a verifying checksum; false = a fresh battery, so the OS rebuilds the device table "
             "from the boot volume's MDDF snapshot"},
     {.name = "installed",
      .kind = V_BOOL,
@@ -828,7 +834,11 @@ static const arg_decl_t lisa_hd_attach_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
      .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"},
-    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default true)"},
+    {.name = "writable",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lisa_true,
+     .doc = "Mount writable"},
 };
 
 static const member_t lisa_hd_members[] = {
@@ -862,7 +872,10 @@ static const member_t lisa_hd_members[] = {
      .doc = "Load the machine parameter memory from a file (call before booting)",
      .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}},
 };
-static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 6};
+static const class_desc_t lisa_hd_class = {.name = "profile",
+                                           .doc = "The ProFile hard disk on the parallel port, and its PRAM",
+                                           .members = lisa_hd_members,
+                                           .n_members = 6};
 
 static void lisa_register_profile_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
@@ -904,7 +917,8 @@ static const member_t lisa_power_members[] = {
      .doc = "Press the soft power-off switch (COPS $FB); LOS does an orderly shutdown",
      .method = {.result = V_NONE, .fn = lisa_power_off}},
 };
-static const class_desc_t lisa_power_class = {.name = "power", .members = lisa_power_members, .n_members = 1};
+static const class_desc_t lisa_power_class = {
+    .name = "power", .doc = "The Lisa's soft power switch", .members = lisa_power_members, .n_members = 1};
 
 static void lisa_register_power_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);

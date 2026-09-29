@@ -501,6 +501,7 @@ static const member_t videoin_members[] = {
 
 static const class_desc_t videoin_class = {
     .name = "videoin",
+    .doc = "The video input: a source image or pattern, and captured fields",
     .members = videoin_members,
     .n_members = sizeof(videoin_members) / sizeof(videoin_members[0]),
 };

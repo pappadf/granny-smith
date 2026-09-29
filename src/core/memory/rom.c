@@ -650,6 +650,7 @@ static const member_t rom_members[] = {
 
 static const class_desc_t rom_class = {
     .name = "rom",
+    .doc = "The machine ROM: identity, integrity, load",
     .members = rom_members,
     .n_members = sizeof(rom_members) / sizeof(rom_members[0]),
 };

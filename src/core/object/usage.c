@@ -126,6 +126,12 @@ static void type_text(vbuf_t *b, value_kind_t kind, uint16_t presentation) {
     }
 }
 
+// An argument's kind for its type text: a V_NONE argument accepts any value
+// (the declaration's older spelling of V_ANY), so it reads "any".
+static value_kind_t arg_kind(const arg_decl_t *a) {
+    return a->kind == V_NONE ? V_ANY : a->kind;
+}
+
 // The path of `obj` plus `.member` (no leading dot at the root).
 static void full_path(vbuf_t *b, struct object *obj, const char *member) {
     char buf[512];
@@ -195,7 +201,7 @@ static void method_text(vbuf_t *t, const char *sig, const member_t *m) {
         if (nw > name_w)
             name_w = nw;
         vbuf_t tt = {0};
-        type_text(&tt, a->kind, a->presentation_flags);
+        type_text(&tt, arg_kind(a), a->presentation_flags);
         if (tt.p && strlen(tt.p) > type_w)
             type_w = strlen(tt.p);
         vbuf_free(&tt);
@@ -206,12 +212,15 @@ static void method_text(vbuf_t *t, const char *sig, const member_t *m) {
         put(t, a->name ? a->name : "");
         pad(t, name_w + 2 - text_width(a->name ? a->name : ""));
         vbuf_t tt = {0};
-        type_text(&tt, a->kind, a->presentation_flags);
+        type_text(&tt, arg_kind(a), a->presentation_flags);
         put(t, tt.p ? tt.p : "");
         pad(t, type_w + 2 - (tt.p ? strlen(tt.p) : 0));
         vbuf_free(&tt);
         put(t, a->doc ? a->doc : "");
-        if (a->default_value && a->default_value->kind != V_NONE) {
+        // An empty-string default is "none given", not a value to show.
+        bool shown_default = a->default_value && a->default_value->kind != V_NONE &&
+                             !(a->default_value->kind == V_STRING && (!a->default_value->s || !*a->default_value->s));
+        if (shown_default) {
             put(t, " (default ");
             value_text(t, a->default_value);
             put(t, ")");

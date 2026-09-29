@@ -455,6 +455,7 @@ static const member_t rbv_members[] = {
 
 static const class_desc_t rbv_class = {
     .name = "irq_controller",
+    .doc = "RBV, the IIci/IIsi RAM-based video and interrupt chip",
     .members = rbv_members,
     .n_members = sizeof(rbv_members) / sizeof(rbv_members[0]),
 };

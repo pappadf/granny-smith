@@ -317,6 +317,7 @@ static const member_t shell_alias_members[] = {
 
 const class_desc_t shell_alias_class = {
     .name = "alias",
+    .doc = "User and built-in aliases: add, remove, list",
     .members = shell_alias_members,
     .n_members = sizeof(shell_alias_members) / sizeof(shell_alias_members[0]),
 };

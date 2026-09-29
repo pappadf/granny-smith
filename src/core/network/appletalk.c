@@ -2998,6 +2998,7 @@ static const member_t atalk_volumes_collection_members[] = {
 
 static const class_desc_t atalk_volumes_collection_class = {
     .name = "atalk_volumes",
+    .doc = "Host directories exported as AFP volumes",
     .members = atalk_volumes_collection_members,
     .n_members = ARRAY_LEN(atalk_volumes_collection_members),
 };
@@ -3226,6 +3227,7 @@ static const member_t atalk_afp_members[] = {
 
 static const class_desc_t atalk_afp_class = {
     .name = "atalk_afp",
+    .doc = "The host AFP file server: exported volumes, server name and message",
     .members = atalk_afp_members,
     .n_members = ARRAY_LEN(atalk_afp_members),
 };
@@ -3358,6 +3360,7 @@ static const member_t atalk_printer_members[] = {
 
 static const class_desc_t atalk_printer_class = {
     .name = "atalk_printer",
+    .doc = "The emulated LaserWriter: status, captured documents, last job",
     .members = atalk_printer_members,
     .n_members = ARRAY_LEN(atalk_printer_members),
 };

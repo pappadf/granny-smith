@@ -997,6 +997,7 @@ static const member_t av_audioin_members[] = {
 
 static const class_desc_t av_audioin_class = {
     .name = "audioin",
+    .doc = "The audio input: a WAV source, gain, level and injection into the guest",
     .members = av_audioin_members,
     .n_members = sizeof(av_audioin_members) / sizeof(av_audioin_members[0]),
 };
@@ -1092,6 +1093,7 @@ static const member_t ain_capture_members[] = {
 
 static const class_desc_t av_audioin_capture_class = {
     .name = "capture",
+    .doc = "Record what the audio-input source delivered to the guest",
     .members = ain_capture_members,
     .n_members = sizeof(ain_capture_members) / sizeof(ain_capture_members[0]),
 };

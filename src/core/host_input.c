@@ -248,7 +248,10 @@ static const arg_decl_t keyboard_type_args[] = {
 
 static const arg_decl_t keyboard_press_args[] = {
     // V_NONE: body accepts either a name string or a numeric ADB keycode.
-    {.name = "key", .kind = V_NONE, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
+    {.name = "key",
+     .kind = V_NONE,
+     .validation_flags = OBJ_ARG_POLY,
+     .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
 };
 
 static const member_t keyboard_members[] = {
@@ -277,6 +280,7 @@ static const member_t keyboard_members[] = {
 
 static const class_desc_t keyboard_class = {
     .name = "keyboard",
+    .doc = "The host keyboard as the guest sees it: press, hold, release and type keys",
     .members = keyboard_members,
     .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),
 };

@@ -356,6 +356,7 @@ static const member_t nubus_slots_members[] = {
 
 const class_desc_t nubus_slots_class = {
     .name = "nubus_slots",
+    .doc = "NuBus slots, by slot number",
     .members = nubus_slots_members,
     .n_members = sizeof(nubus_slots_members) / sizeof(nubus_slots_members[0]),
 };
@@ -364,6 +365,7 @@ const class_desc_t nubus_slots_class = {
 // the container above.
 const class_desc_t nubus_class = {
     .name = "nubus",
+    .doc = "The NuBus expansion bus: slots and their cards",
     .members = NULL,
     .n_members = 0,
 };

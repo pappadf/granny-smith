@@ -1961,7 +1961,10 @@ static value_t scc_ch_method_sent(struct object *self, const member_t *m, int ar
 }
 
 static const arg_decl_t scc_ch_receive_args[] = {
-    {.name = "data", .kind = V_NONE, .doc = "String to deliver, or a single byte value"},
+    {.name = "data",
+     .kind = V_NONE,
+     .validation_flags = OBJ_ARG_POLY,
+     .doc = "String to deliver, or a single byte value"},
 };
 
 static const member_t scc_ch_members[] = {
@@ -2014,6 +2017,7 @@ static const member_t scc_ch_members[] = {
 
 static const class_desc_t scc_channel_class = {
     .name = "scc_channel",
+    .doc = "One SCC serial channel: queued output, injected input",
     .members = scc_ch_members,
     .n_members = sizeof(scc_ch_members) / sizeof(scc_ch_members[0]),
 };
@@ -2043,6 +2047,7 @@ static const member_t scc_members[] = {
 
 static const class_desc_t scc_class = {
     .name = "scc",
+    .doc = "The Z8530 SCC serial controller: channels a and b",
     .members = scc_members,
     .n_members = sizeof(scc_members) / sizeof(scc_members[0]),
 };

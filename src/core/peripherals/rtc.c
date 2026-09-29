@@ -650,6 +650,7 @@ static const member_t rtc_members[] = {
 
 static const class_desc_t rtc_class = {
     .name = "rtc",
+    .doc = "The real-time clock: its time and write-protect bit",
     .members = rtc_members,
     .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
 };

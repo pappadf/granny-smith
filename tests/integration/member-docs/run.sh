@@ -11,7 +11,7 @@
 # Booting is what makes the walk total: a device's members exist only on the
 # machine that has it.  The same per-model boot list as object-class-registry.
 #
-# allow.txt holds the gaps that exist today.  It may only shrink: a line
+# allow.txt holds known gaps.  It is empty, and may only shrink: a line
 # reported here that is not in it fails the test, and so does a line in it
 # that no model reports any more (remove it).  Regenerate with REGEN=1.
 set -euo pipefail

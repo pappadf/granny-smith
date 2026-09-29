@@ -499,6 +499,7 @@ static const member_t tnt_board_members[] = {
 
 static const class_desc_t tnt_board_class = {
     .name = "board",
+    .doc = "The logic board's system registers: keyswitch, bus clock, NVRAM clear",
     .members = tnt_board_members,
     .n_members = sizeof(tnt_board_members) / sizeof(tnt_board_members[0]),
 };

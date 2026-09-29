@@ -217,9 +217,16 @@ rest, default), `result` type and, when declared, `result_doc` and
 `shell.lint_members()` (internal) walks the live tree and reports every
 documentation gap — an undocumented argument or basic-tier node, an untyped
 argument without `OBJ_ARG_POLY`, a `V_ANY` result without `result_doc`, an
-enum without its values, a default mentioned but not declared — and
+enum without its values, a default mentioned but not declared, a basic-tier
+method of task run, storage or debug without `examples`, and an example
+with a path that does not resolve (checked with `shell.highlight`) — and
 `tests/integration/member-docs` fails on any gap not in its allow-list,
-which may only shrink.
+which may only shrink (it is empty).
+
+A doc says what a member is; the usage text says how to call it.  So an
+argument's default is declared (`default_value`, which usage prints as
+`(default …)`) rather than written into its doc; a default that is computed
+is written as `omitted: …`; and invocation forms go in `examples`.
 
 `machine` is the instance; `catalog` is the catalogue. `machine.nubus` and
 `machine.pci` are attached only on a machine with that bus. The root's own

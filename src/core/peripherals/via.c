@@ -1282,9 +1282,11 @@ VIA_PORT_MEMBERS(via_port_b_members, 1);
 // clang-format on
 
 static const class_desc_t via_port_a_class = {.name = "via_port",
+                                              .doc = "VIA port A: output, input and direction registers",
                                               .members = via_port_a_members,
                                               .n_members = sizeof(via_port_a_members) / sizeof(via_port_a_members[0])};
 static const class_desc_t via_port_b_class = {.name = "via_port",
+                                              .doc = "VIA port B: output, input and direction registers",
                                               .members = via_port_b_members,
                                               .n_members = sizeof(via_port_b_members) / sizeof(via_port_b_members[0])};
 
@@ -1326,6 +1328,7 @@ static const member_t via_members[] = {
 
 static const class_desc_t via_class = {
     .name = "via",
+    .doc = "A 6522 VIA: timers, shift register, interrupt flags, ports a and b",
     .members = via_members,
     .n_members = sizeof(via_members) / sizeof(via_members[0]),
 };

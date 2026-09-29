@@ -1020,6 +1020,7 @@ static const member_t amic_members[] = {
 
 static const class_desc_t amic_class = {
     .name = "irq_controller",
+    .doc = "AMIC, the Power Mac 6100/7100/8100 I/O controller: interrupt state",
     .members = amic_members,
     .n_members = sizeof(amic_members) / sizeof(amic_members[0]),
 };

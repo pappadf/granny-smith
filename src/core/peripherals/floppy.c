@@ -1255,7 +1255,7 @@ static const arg_decl_t floppy_create_args[] = {
     {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Output path"},
     {.name = "hd",
      .kind = V_NONE,
-     .validation_flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
      .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"                    },
 };
 
@@ -1264,12 +1264,12 @@ static const member_t floppy_members[] = {
      .name = "type",
      .doc = "Controller type: iwm (Plus), swim (SE/30-class) or swim3 (PowerMac)",
      .flags = VAL_RO,
-     .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}},
+     .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}                                   },
     {.kind = M_ATTR,
      .name = "sel",
      .doc = "VIA-driven head-select signal",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL}                                    },
     {.kind = M_METHOD,
      .name = "identify",
      .flags = M_CAT_ADVANCED,
@@ -1277,8 +1277,10 @@ static const member_t floppy_members[] = {
      .method = {.args = floppy_path_arg, .nargs = 1, .result = V_STRING, .fn = floppy_method_identify}},
     {.kind = M_METHOD,
      .name = "create",
+     .examples = (const char *const[]){"machine.floppy.create \"/opfs/images/fd/blank.dsk\"",
+                                       "machine.floppy.create \"/opfs/images/fd/blank-hd.dsk\" hd", NULL},
      .doc = "Create a blank floppy image and auto-mount it",
-     .method = {.args = floppy_create_args, .nargs = 2, .result = V_BOOL, .fn = floppy_method_create}},
+     .method = {.args = floppy_create_args, .nargs = 2, .result = V_BOOL, .fn = floppy_method_create} },
 };
 
 static const class_desc_t floppy_class = {
@@ -1594,12 +1596,17 @@ static value_t floppy_drive_method_insert(struct object *self, const member_t *m
     return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
+static const value_t floppy_false = {.kind = V_BOOL, .b = false};
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path",
      .kind = V_STRING,
      .presentation_flags = VAL_PATH,
-     .doc = "Host path or storage URI of the image to mount"                                                          },
-    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
+     .doc = "Host path or storage URI of the image to mount"},
+    {.name = "writable",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &floppy_false,
+     .doc = "Mount writable"},
 };
 
 static const member_t floppy_drive_members[] = {
@@ -1666,6 +1673,7 @@ static const member_t floppy_drives_collection_members[] = {
 };
 static const class_desc_t floppy_drives_collection_class = {
     .name = "floppy_drives",
+    .doc = "Floppy drives, by index",
     .members = floppy_drives_collection_members,
     .n_members = 1,
 };

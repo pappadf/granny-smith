@@ -16,6 +16,11 @@
 //   4. a writable V_ENUM attribute, or a V_ENUM argument, without enum_values
 //   5. an optional argument whose doc mentions a default but has none
 //   6. a node shown in the basic tier whose doc is empty
+//   7. a basic-tier method of task run, storage or debug without examples
+//      (the tasks whose methods a user reaches for by hand most)
+//   8. an example that does not read as a valid statement against the live
+//      tree (checked by the caller's example_ok: a path in it that does not
+//      resolve)
 
 #include "lint.h"
 
@@ -31,6 +36,7 @@
 #define LINT_MAX_VISITED 8192
 
 typedef struct {
+    bool (*example_ok)(const char *example);
     value_t *items;
     size_t len, cap;
     struct object *visited[LINT_MAX_VISITED];
@@ -122,6 +128,17 @@ static void lint_members(lint_ctx_t *cx, struct object *o, const char *path, boo
             lint_args(cx, task, mpath, m);
             if (m->method.result == V_ANY && !m->method.result_doc)
                 report(cx, task, mpath, "V_ANY result without result_doc");
+            if (basic && !(m->method.ui_flags & MM_HIDDEN) && task &&
+                (!strcmp(task, "run") || !strcmp(task, "storage") || !strcmp(task, "debug")) &&
+                !(m->examples && m->examples[0]))
+                report(cx, task, mpath, "method has no examples");
+            for (size_t e = 0; cx->example_ok && m->examples && m->examples[e]; e++) {
+                if (!cx->example_ok(m->examples[e])) {
+                    char rule[300];
+                    snprintf(rule, sizeof(rule), "example does not resolve: %s", m->examples[e]);
+                    report(cx, task, mpath, rule);
+                }
+            }
             break;
         }
         case M_CHILD:
@@ -199,10 +216,11 @@ static void lint_object(lint_ctx_t *cx, struct object *o, const char *path, bool
     object_each_attached_ordered(o, lint_attached, &a);
 }
 
-value_t object_lint_members(void) {
+value_t object_lint_members(bool (*example_ok)(const char *example)) {
     lint_ctx_t *cx = (lint_ctx_t *)calloc(1, sizeof(*cx));
     if (!cx)
         return val_err("lint_members: out of memory");
+    cx->example_ok = example_ok;
     lint_object(cx, object_root(), "", true);
     value_t out = val_list(cx->items, cx->len);
     free(cx);

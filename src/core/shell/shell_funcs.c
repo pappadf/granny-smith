@@ -109,6 +109,7 @@ static const class_desc_t func_entry_class = {
 // attached children so path resolution finds them by name.
 static const class_desc_t functions_class = {
     .name = "functions",
+    .doc = "Functions defined with def, by name",
     .members = NULL,
     .n_members = 0,
 };

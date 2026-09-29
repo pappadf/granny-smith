@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Round trip about 17 ms at p95 with the machine in turbo.
 
 ### Changed
+- **Member docs complete** — the doc lint's allow-list is empty on every model.
+  - Defaults are declared rather than written into docs; `help` prints them as `(default …)`, and computed ones read `omitted: …`.
+  - Every basic-tier method of the run, storage and debug tasks has examples, and results that need it have a `Returns:` line; the lint requires both, and checks that each example resolves against the live tree.
+  - `memory.dump` documents its real default count (64, not 16).
+  - `machine.boot`'s unset fields no longer show placeholder defaults (`""`, `0`, `255`) in `help` and argument forms.
 - **File-path completion follows `VAL_PATH`** — a string argument completes against the filesystem when it is declared `VAL_PATH`, no longer when its name contains `path`, `src`, `dst`, `file` or `dir`; object-path arguments such as `alias.add path` stop offering files.
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.
   - `storage.*`, `vfs.ls/list/mkdir/cat`, `archive.*` and the root `download` merge into **`files`** (`files.cp`, `files.ls`, `files.archive.extract`, `files.download`, …; `storage.images` → `files.images`).

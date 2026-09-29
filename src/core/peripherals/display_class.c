@@ -102,15 +102,19 @@ static const member_t fb_members[] = {
      .attr = {.type = V_UINT, .get = fb_attr_raw_size}                           },
 };
 
-const class_desc_t display_fb_class = {
-    .name = "framebuffer", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
+const class_desc_t display_fb_class = {.name = "framebuffer",
+                                       .doc = "The framebuffer: base, geometry, depth and pixel format",
+                                       .members = fb_members,
+                                       .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 // The `video` wrapper reads the same descriptor, so `machine.video.width` and
 // `machine.video.framebuffer.width` both work -- a card's geometry is
 // reachable at `slot[N].card.mode.width` and the built-in chips should not
 // need a deeper path for the same fact.
-static const class_desc_t display_video_class = {
-    .name = "video", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
+static const class_desc_t display_video_class = {.name = "video",
+                                                 .doc = "The built-in video output: geometry and framebuffer",
+                                                 .members = fb_members,
+                                                 .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 // --- machine.video, for the soldered-down producers -------------------------
 

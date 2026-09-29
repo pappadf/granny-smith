@@ -681,7 +681,7 @@ static const arg_decl_t meta_complete_args[] = {
     {.name = "cursor",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Cursor position in line; defaults to end-of-line"},
+     .doc = "Cursor position in line; omitted: the end of the line"},
 };
 
 static const arg_decl_t meta_member_args[] = {
@@ -699,7 +699,7 @@ static const arg_decl_t meta_members_args[] = {
     {.name = "values",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Also read each attribute's current value (default false)"},
+     .doc = "Also read each attribute's current value"},
 };
 
 static const member_t meta_members[] = {

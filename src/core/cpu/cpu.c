@@ -939,9 +939,9 @@ static const member_t cpu_members[] = {
     ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
     ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
     ATTR_RO_ADV("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
-    {.kind = M_METHOD, .name = "frame",
-     .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
-     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},
+    {.kind = M_METHOD, .name = "frame", .examples = (const char *const[]){"machine.cpu.frame", "machine.cpu.frame 0x40800000 16", NULL},
+     .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
+     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},
 };
 // clang-format on
 
@@ -1045,6 +1045,7 @@ static const member_t fpu_members[] = {
 
 static const class_desc_t fpu_class = {
     .name = "fpu",
+    .doc = "The 68881/68882 floating-point unit registers",
     .members = fpu_members,
     .n_members = sizeof(fpu_members) / sizeof(fpu_members[0]),
 };
@@ -1222,7 +1223,7 @@ static const arg_decl_t mmu68k_translate_args[] = {
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
-     .doc = "translate for supervisor (true) or user (false); default: the CPU's current state"},
+     .doc = "translate for supervisor (true) or user (false); omitted: the CPU's current state"},
     {.name = "fetch",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1235,31 +1236,31 @@ static const arg_decl_t mmu68k_peek_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_peek_size4,
-     .doc = "1, 2 or 4 bytes (default 4)"},
+     .doc = "1, 2 or 4 bytes"},
     {.name = "space",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
-     .doc = "\"logical\" (default) or \"physical\""},
+     .doc = "\"logical\" or \"physical\"; omitted: logical"},
 };
 
 // The two methods, appended to both 68K mmu member tables.
+// clang-format off
 #define MMU68K_METHODS                                                                                                 \
-    {                                                                                                                  \
-        .kind = M_METHOD,                                                                                              \
-        .name = "translate",                                                                                           \
-        .doc = "Translate an address: {phys, valid, via}, side-effect-free (same shape on every MMU kind)",            \
-        .method = {.args = mmu68k_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu68k_method_translate} \
-},        \
-    {                                                                                                                  \
-        .kind = M_METHOD, .name = "peek",                                                                              \
-        .doc = "Read memory, logical (through the MMU) or physical; side-effect-free", .method = {                     \
-            .args = mmu68k_peek_args,                                                                                  \
-            .nargs = 3,                                                                                                \
-            .result = V_UINT,                                                                                          \
-            .fn = mmu68k_method_peek                                                                                   \
-        }                                                                                                              \
-    }
+    {.kind = M_METHOD,                                                                                                 \
+     .name = "translate",                                                                                              \
+     .examples = (const char *const[]){"machine.cpu.mmu.translate 0x40800000",                                         \
+                                       "machine.cpu.mmu.translate 0x2000 supervisor=false", NULL},                     \
+     .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",                                   \
+     .method = {.result_doc = "{phys, valid, via}",                                                                    \
+                .args = mmu68k_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu68k_method_translate}},           \
+    {.kind = M_METHOD,                                                                                                 \
+     .name = "peek",                                                                                                   \
+     .examples = (const char *const[]){"machine.cpu.mmu.peek 0x40800000", "machine.cpu.mmu.peek 0x400 2 physical",     \
+                                       NULL},                                                                          \
+     .doc = "Read memory, logical (through the MMU) or physical; side-effect-free",                                    \
+     .method = {.args = mmu68k_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu68k_method_peek}}
+// clang-format on
 
 static const member_t mmu_members[] = {
     {.kind = M_ATTR,
@@ -1312,6 +1313,7 @@ static const member_t mmu_members[] = {
 
 static const class_desc_t mmu_class = {
     .name = "mmu",
+    .doc = "The 68030 PMMU: translation registers, peek and translate",
     .members = mmu_members,
     .n_members = sizeof(mmu_members) / sizeof(mmu_members[0]),
 };
@@ -1408,6 +1410,7 @@ static const member_t mmu040_members[] = {
 
 static const class_desc_t mmu040_class = {
     .name = "mmu040",
+    .doc = "The 68040 MMU: translation registers, peek and translate",
     .members = mmu040_members,
     .n_members = sizeof(mmu040_members) / sizeof(mmu040_members[0]),
 };

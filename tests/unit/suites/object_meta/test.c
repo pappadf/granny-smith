@@ -14,6 +14,7 @@
 //   - `meta.complete(...)` returns an empty list when no provider is
 //     installed (tolerant degradation for unit-test contexts)
 
+#include "lint.h"
 #include "meta.h"
 #include "object.h"
 #include "test_assert.h"
@@ -430,6 +431,61 @@ TEST(test_member_effective_task) {
     object_root_reset();
 }
 
+// Lint rules 7 and 8: a basic-tier run/storage/debug method needs examples,
+// and each example must pass the caller's check.
+static const member_t lx_members[] = {
+    {.kind = M_METHOD,
+     .name = "bare",
+     .doc = "No examples",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+    {.kind = M_METHOD,
+     .name = "good",
+     .examples = (const char *const[]){"lx.good", NULL},
+     .doc = "A resolving example",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+    {.kind = M_METHOD,
+     .name = "bad",
+     .examples = (const char *const[]){"lx.good", "lx.bda", NULL},
+     .doc = "One example that does not resolve",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+    {.kind = M_METHOD,
+     .name = "other",
+     .doc = "Another task: no examples needed",
+     .method = {.task = "io", .args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+};
+static const class_desc_t lx_class = {
+    .name = "Lx", .members = lx_members, .n_members = 4, .doc = "A lint node", .task = "debug"};
+
+static bool example_ok(const char *example) {
+    return strstr(example, "bda") == NULL;
+}
+
+static bool has_line(const value_t *list, const char *line) {
+    for (size_t i = 0; i < list->list.len; i++)
+        if (strcmp(list->list.items[i].s, line) == 0)
+            return true;
+    return false;
+}
+
+TEST(test_lint_examples) {
+    object_root_reset();
+    struct object *lx = object_new(&lx_class, NULL, "lx");
+    object_attach(object_root(), lx);
+    value_t out = object_lint_members(example_ok);
+    ASSERT_EQ_INT(V_LIST, out.kind);
+    ASSERT_TRUE(has_line(&out, "debug\tlx.bare: method has no examples"));
+    ASSERT_TRUE(has_line(&out, "debug\tlx.bad: example does not resolve: lx.bda"));
+    ASSERT_EQ_INT(2, (int)out.list.len);
+    value_free(&out);
+    // Without a check, only the missing examples are reported.
+    out = object_lint_members(NULL);
+    ASSERT_EQ_INT(1, (int)out.list.len);
+    value_free(&out);
+    object_detach(lx);
+    object_delete(lx);
+    object_root_reset();
+}
+
 // A value's map entry by key, or NULL.
 static const value_t *map_get(const value_t *m, const char *key) {
     if (!m || m->kind != V_MAP)
@@ -496,5 +552,6 @@ int main(void) {
     RUN(test_valid_keys);
     RUN(test_member_effective_task);
     RUN(test_meta_members_keys);
+    RUN(test_lint_examples);
     return 0;
 }

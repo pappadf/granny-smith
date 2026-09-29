@@ -1105,6 +1105,7 @@ static const member_t ppc_ports_members[] = {
 
 static const class_desc_t ppc_ports_class = {
     .name = "ppc_ports",
+    .doc = "Program-linking ports found on the network by browse",
     .members = ppc_ports_members,
     .n_members = ARRAY_LEN(ppc_ports_members),
 };
@@ -1276,6 +1277,7 @@ static const member_t ppc_members[] = {
 
 static const class_desc_t ppc_class = {
     .name = "ppc",
+    .doc = "Program-to-program communication: network ports, sessions, statistics",
     .members = ppc_members,
     .n_members = ARRAY_LEN(ppc_members),
 };

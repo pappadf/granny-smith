@@ -273,12 +273,16 @@ static value_t mouse_method_trace(struct object *self, const member_t *m, int ar
     return val_none();
 }
 
+// Omitting `mode` is the mode named "default".
+static const value_t mouse_def_mode = {.kind = V_STRING, .s = (char *)"default"};
+
 static const arg_decl_t mouse_move_args[] = {
     {.name = "x", .kind = V_INT, .doc = "Target X coordinate"},
     {.name = "y", .kind = V_INT, .doc = "Target Y coordinate"},
     {.name = "mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &mouse_def_mode,
      .doc = "\"default\" (a Mac: absolute Toolbox cursor; a Lisa: deltas), \"relative\" (deltas, every machine), "
             "\"global\" (Toolbox MTemp), \"hw\" (= relative), or \"aux\" (A/UX MAE)"},
 };
@@ -292,10 +296,11 @@ static const arg_decl_t mouse_click_args[] = {
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &mouse_click_def_down,
-     .doc = "true = press, false = release (default true)"},
+     .doc = "true = press, false = release"                                                                },
     {.name = "mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &mouse_def_mode,
      .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), \"hw\" (raw), or \"aux\" (A/UX MAE)"},
 };
 static const arg_decl_t mouse_trace_args[] = {
@@ -319,6 +324,7 @@ static const member_t mouse_members[] = {
 
 static const class_desc_t mouse_class = {
     .name = "mouse",
+    .doc = "The host mouse as the guest sees it: move, click, trace",
     .members = mouse_members,
     .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
 };

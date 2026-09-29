@@ -458,6 +458,7 @@ static const member_t capture_members[] = {
 
 static const class_desc_t audio_capture_class = {
     .name = "capture",
+    .doc = "Record the sound output stream; peak tells whether it carries a signal",
     .members = capture_members,
     .n_members = sizeof(capture_members) / sizeof(capture_members[0]),
 };

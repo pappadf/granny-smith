@@ -317,13 +317,27 @@ static const struct {
     {"shell",   "Shell",   "Aliases, functions, scripts"                 },
 };
 
-// `shell.lint_members()` — the doc-completeness lint (lint.c).
+// A method example passes when shell.highlight finds nothing unresolved in it.
+static bool example_resolves(const char *example) {
+    value_t spans = shell_highlight(example);
+    bool ok = spans.kind == V_LIST;
+    for (size_t i = 0; ok && i < spans.list.len; i++) {
+        const value_t *cls = value_map_get(&spans.list.items[i], "class");
+        if (cls && cls->kind == V_STRING && cls->s && strcmp(cls->s, "unknown") == 0)
+            ok = false;
+    }
+    value_free(&spans);
+    return ok;
+}
+
+// `shell.lint_members()` — the doc-completeness lint (lint.c), with the
+// examples checked against the live tree.
 static value_t shell_method_lint_members(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     (void)argv;
-    return object_lint_members();
+    return object_lint_members(example_resolves);
 }
 
 // `shell.tasks` — [{id, label, doc}] in chip order.
@@ -379,7 +393,7 @@ static const arg_decl_t shell_complete_args[] = {
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
-     .doc = "Cursor position in line (a byte offset); defaults to end-of-line"},
+     .doc = "Cursor position in line (a byte offset); omitted: the end of the line"},
     {.name = "detail",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,

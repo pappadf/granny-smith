@@ -775,6 +775,7 @@ static const member_t aevt_events_members[] = {
 
 static const class_desc_t aevt_events_class = {
     .name = "aevt_events",
+    .doc = "Apple events sent from the host, by index or by tag",
     .members = aevt_events_members,
     .n_members = ARRAY_LEN(aevt_events_members),
 };
@@ -894,6 +895,7 @@ static const member_t aevt_inbox_members[] = {
 
 static const class_desc_t aevt_inbox_class = {
     .name = "aevt_inbox",
+    .doc = "Apple events the guest sent to the host",
     .members = aevt_inbox_members,
     .n_members = ARRAY_LEN(aevt_inbox_members),
 };
@@ -1121,7 +1123,7 @@ static const arg_decl_t aevt_send_args[] = {
      .width = 8,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &aevt_def_timeout,
-     .doc = "Reply budget in guest instructions (default 20 million)"},
+     .doc = "Reply budget in guest instructions"},
     {.name = "tag",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1131,7 +1133,7 @@ static const arg_decl_t aevt_send_args[] = {
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &aevt_def_mode,
-     .doc = "\"wait\" (default) or \"no_reply\""},
+     .doc = "\"wait\" or \"no_reply\""},
 };
 
 static const arg_decl_t aevt_send_raw_args[] = {
@@ -1178,6 +1180,7 @@ static const member_t aevt_members[] = {
 
 static const class_desc_t aevt_class = {
     .name = "aevt",
+    .doc = "Apple events over AppleTalk: send to guest ports, receive replies and events",
     .members = aevt_members,
     .n_members = ARRAY_LEN(aevt_members),
 };
