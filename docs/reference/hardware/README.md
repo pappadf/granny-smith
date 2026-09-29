@@ -19,7 +19,7 @@ family-specific hardware lives under
 | [video-overview.md](video-overview.md) | 68k-era Mac video hardware | content |
 | [sonic.md](sonic.md) | National DP83932 SONIC Ethernet | stub |
 | [dsp3210.md](dsp3210.md) | AT&T DSP3210 DSP | stub |
-| [laserwriter-iint.md](laserwriter-iint.md) | LaserWriter II NT board | stub |
+| [laserwriter-iint.md](laserwriter-iint.md) | LaserWriter II NT board | content |
 
 ## scsi/
 
