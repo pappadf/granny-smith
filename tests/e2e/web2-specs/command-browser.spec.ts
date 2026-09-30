@@ -42,7 +42,8 @@ test("the command browser walks the model and shows usage", async ({
       });
 
   await rowNamed("files").locator(".twistie").click();
-  const ls = rowNamed("ls");
+  // `ls` is also a command (Commands section, above): the last one is files.ls.
+  const ls = rowNamed("ls").last();
   await expect(ls).toBeVisible({ timeout: 10_000 });
   // A click previews: the usage shows in the details pane, the console is
   // untouched; a double-click inserts.
