@@ -153,6 +153,11 @@ vi.mock('@/bus/emulator', () => {
         return { signature: '', arg_spans: [], text: `USAGE OF ${String(args?.[0])}` };
       if (path === 'shell.alias.list') return [];
       if (path === 'shell.keywords') return [];
+      if (path === 'shell.command.list')
+        return [
+          { name: 'ls', target: 'debug.step', doc: 'Step', builtin: true, available: true },
+          { name: 'run', target: 'scheduler.run', doc: '', builtin: true, available: false },
+        ];
       return null;
     },
   };
@@ -200,8 +205,8 @@ describe('CommandBrowser (structural, model-generated)', () => {
     const { container } = render(CommandBrowser);
     await row(container, 'machine');
     const sections = Array.from(container.querySelectorAll('.cmd-row.kind-section'));
-    // (The mock root has no methods of its own, so no Commands section.)
     expect(sections.map((s) => s.querySelector('.name')?.textContent)).toEqual([
+      'Commands',
       'Machine',
       'Emulator',
       'Aliases',
@@ -210,16 +215,29 @@ describe('CommandBrowser (structural, model-generated)', () => {
     expect(sections.map((s) => s.getAttribute('aria-expanded'))).toEqual([
       'true',
       'true',
+      'true',
       'false',
       'false',
     ]);
     // Collapsing a domain hides its members.
-    await fireEvent.click(sections[0].querySelector('.twistie')!);
+    await fireEvent.click(sections[1].querySelector('.twistie')!);
     await waitFor(() =>
       expect(
         Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'machine'),
       ).toBe(false),
     );
+  });
+
+  it('Commands lists the available commands, typed bare', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    const ls = await row(container, 'ls');
+    expect(ls.querySelector('.doc')?.textContent).toContain('debug.step');
+    expect(
+      Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'run'),
+    ).toBe(false);
+    await fireEvent.click(ls.querySelector('.cmd-line')!);
+    expect(input.writes).toEqual(['ls ']);
   });
 
   it('a leaf row shows the first sentence of its doc and its type', async () => {
@@ -295,6 +313,9 @@ describe('CommandBrowser ↔ console', () => {
     await row(container, 'cpu');
     expect(input.writes).toEqual([]);
     const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    // The first row is the Commands headline: selecting it writes nothing.
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    expect(input.writes).toEqual([]);
     await fireEvent.keyDown(tree, { key: 'ArrowDown' });
     await waitFor(() => expect(input.writes.length).toBe(1));
   });

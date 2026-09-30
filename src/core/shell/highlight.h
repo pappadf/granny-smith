@@ -8,6 +8,7 @@
 #ifndef SHELL_HIGHLIGHT_H
 #define SHELL_HIGHLIGHT_H
 
+#include "object.h"
 #include "value.h"
 
 #include <stdbool.h>
@@ -23,5 +24,11 @@ value_t shell_highlight(const char *text);
 // statement is a call, not an unknown path.  Installed by the shell; NULL
 // (the default) knows no functions.
 void highlight_set_function_probe(bool (*probe)(const char *name));
+
+// Whether `word` is a command (commands.h) whose target is a method now;
+// fills `out` with that method's node.  A command word at the head of a
+// statement is that method, its arguments checked against its declaration.
+// Installed by the shell; NULL (the default) knows no commands.
+void highlight_set_command_probe(bool (*probe)(const char *word, node_t *out));
 
 #endif // SHELL_HIGHLIGHT_H

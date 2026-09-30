@@ -122,6 +122,14 @@ static const member_t util_members[] = {
 };
 static const class_desc_t util_class = {.name = "util", .members = util_members, .n_members = 1};
 
+// `bp` is a command running debug.breakpoints.add.
+static bool is_command(const char *word, node_t *out) {
+    if (strcmp(word, "bp") != 0)
+        return false;
+    *out = object_resolve(object_root(), "debug.breakpoints.add");
+    return node_valid(*out);
+}
+
 static bool is_function(const char *name) {
     return strcmp(name, "myfn") == 0;
 }
@@ -143,6 +151,7 @@ static void build_tree(void) {
     char err[128];
     alias_register_builtin("pc", "machine.cpu.pc", err, sizeof(err));
     highlight_set_function_probe(is_function);
+    highlight_set_command_probe(is_command);
 }
 
 // === Rendering ====================================================================
@@ -204,6 +213,11 @@ TEST(test_corpus) {
     check("machine.floppy.drive[7].insert x", "machine:object floppy:object drive:object [:operator 7:number "
                                               "]:operator insert:unknown");
     check("util.echo hello 42 0x1f", "util:object echo:method 42:number 0x1f:number");
+    // A command word is its method, with the method's arguments.
+    check("bp 0x40 cond physical", "bp:method 0x40:number physical:enum");
+    check("command bp2 = debug.breakpoints.add",
+          "command:decl bp2:method =:operator debug:object breakpoints:object add:method");
+    check("bq 1", "bq:unknown 1:number");
     // Enums: an argument matching its declared values, positionally or by name.
     check("debug.breakpoints.add 0x40 cond physical",
           "debug:object breakpoints:object add:method 0x40:number physical:enum");

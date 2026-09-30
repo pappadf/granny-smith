@@ -12,10 +12,12 @@
 
 #include "shell_funcs.h"
 
+#include "commands.h"
 #include "expr.h"
 #include "highlight.h"
 #include "script.h"
 #include "shell_var.h"
+#include "usage.h"
 #include "value.h"
 #include "job/job.h"
 
@@ -331,8 +333,19 @@ static bool function_exists(const char *name) {
     return true;
 }
 
+// A command whose target is a method now (commands.h), for highlighting.
+static bool command_exists(const char *word, node_t *out) {
+    return shell_command_lookup(word, out, NULL, 0);
+}
+
+static bool command_target(const char *word, char *target, size_t target_size) {
+    return shell_command_lookup(word, NULL, target, target_size);
+}
+
 void shell_funcs_install(struct object *shell_obj) {
     highlight_set_function_probe(function_exists);
+    highlight_set_command_probe(command_exists);
+    object_usage_set_command_probe(command_target);
     if (!shell_obj || g_functions_obj)
         return;
     g_functions_obj = object_new(&functions_class, NULL, "functions");

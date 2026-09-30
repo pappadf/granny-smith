@@ -17,6 +17,7 @@
 #include "job/job.h"
 
 #include "alias.h"
+#include "commands.h"
 #include "expr.h"
 #include "object.h"
 #include "parse.h"
@@ -36,6 +37,7 @@
 typedef enum {
     ST_LET = 1,
     ST_ALIAS,
+    ST_COMMAND_DEF,
     ST_ASSIGN,
     ST_COMMAND,
     ST_EXPR,
@@ -712,6 +714,25 @@ static stmt_t *parse_stmt_text(parser_t *ps, const char *text, int line_no) {
         }
         parse_error(ps, line_no, "alias: expected `alias NAME = PATH`");
         return NULL;
+    }
+    // `command NAME = PATH` -- a contextual keyword, not a reserved word (a
+    // member may be called `command`): only this exact shape declares a
+    // command; anything else is parsed as usual.
+    if ((after = kw_match(p, "command"))) {
+        const char *q = skip_sp(after);
+        if (ident_start(*q)) {
+            const char *scan = q;
+            while (ident_char(*scan))
+                scan++;
+            const char *eq = skip_sp(scan);
+            const char *path = skip_sp(eq + 1);
+            if (*eq == '=' && eq[1] != '=' && *path) {
+                stmt_t *st = stmt_new(ST_COMMAND_DEF, line_no);
+                st->name = dup_trim(q, scan);
+                st->text = strdup(path);
+                return st;
+            }
+        }
     }
     if (kw_match(p, "elif") || kw_match(p, "else")) {
         parse_error(ps, line_no, "'%s' without a preceding if-block", kw_match(p, "elif") ? "elif" : "else");
@@ -1650,6 +1671,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     value_t errv = val_none();
     char norm_path[512] = "";
     struct object *path_base = NULL;
+    bool is_command = false;
 
     // Try the object tree first; fall back to the user-function
     // registry for single-identifier heads.
@@ -1669,13 +1691,18 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
             if (fn) {
                 value_free(&errv);
                 p = q;
+            } else if (*q != '.' && *q != '[' && shell_command_lookup(name, &node, NULL, 0)) {
+                // A command: the word runs the method it names.
+                value_free(&errv);
+                p = q;
+                is_command = true;
             }
         }
         // Bare read into a structured value: the head may address a map
         // key / list slot inside an attribute result
         // (`machine.config.vroms[0].card_id`). Only for argument-less
         // heads — values cannot take command arguments.
-        if (!fn && norm_path[0] && path_base && *skip_sp(p) == '\0') {
+        if (!fn && !is_command && norm_path[0] && path_base && *skip_sp(p) == '\0') {
             value_t v = expr_object_path_read(path_base, norm_path);
             if (!val_is_error(&v)) {
                 value_free(&errv);
@@ -1695,7 +1722,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
             }
             value_free(&v);
         }
-        if (!fn) {
+        if (!fn && !is_command) {
             exec_error(cx, st->line, "%s", errv.err ? errv.err : "unknown command");
             value_free(&errv);
             return;
@@ -2092,6 +2119,12 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
         char err[160];
         if (alias_add_user(st->name, st->text, err, sizeof(err)) < 0)
             exec_error(cx, st->line, "alias: %s", err);
+        return;
+    }
+    case ST_COMMAND_DEF: {
+        char err[200];
+        if (shell_command_define(st->name, st->text, err, sizeof(err)) < 0)
+            exec_error(cx, st->line, "command: %s", err);
         return;
     }
     case ST_ASSIGN:

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Commands** — bare words that run a method: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `cd`, `pwd` (the `files` methods, with the new `files.cd` / `files.pwd`), `run`, `stop`, `reset`, `step`, `disasm`.  `command NAME = PATH` declares your own; `$` aliases stay for values and places.  Highlighting, completion and `help` follow the method a command runs, and the command browser lists them under Commands.
 - **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
 - **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
 - **Self-describing object model** — every node and member carries a doc, a domain, a task and a type descriptor in `meta.members`; `help` / `shell.usage` render usage text from it, `shell.complete` reports per-candidate kinds and docs, and value/error annotation records ride the job stream.

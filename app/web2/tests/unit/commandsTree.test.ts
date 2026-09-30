@@ -129,6 +129,11 @@ vi.mock('@/bus/emulator', () => {
           'mine=machine.cpu',
         ];
       if (path === 'shell.keywords') return [{ word: 'while', syntax: 'while <expr> { … }' }];
+      if (path === 'shell.command.list')
+        return [
+          { name: 'st', target: 'machine.cpu.step', doc: 'Step', builtin: true, available: true },
+          { name: 'gone', target: 'x.y', doc: '', builtin: false, available: false },
+        ];
       return null;
     },
   };
@@ -160,7 +165,11 @@ describe('command browser rows (model projection)', () => {
     ]);
     expect(rows.every((r) => r.expandable)).toBe(true);
     const names = async (i: number) => (await expand(rows[i])).map((r) => `${r.kind}:${r.name}`);
-    expect(await names(0)).toEqual(['method:help']);
+    // The root's own methods, then the commands whose target exists now.
+    expect(await names(0)).toEqual(['method:help', 'method:st']);
+    const st = (await expand(rows[0]))[1];
+    expect(st.insert).toBe('st ');
+    expect(st.path).toBe('machine.cpu.step');
     expect(await names(1)).toEqual(['object:machine']);
     expect(await names(2)).toEqual(['object:debug']);
   });

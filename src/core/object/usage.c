@@ -349,8 +349,19 @@ static void finish(vbuf_t *t) {
         t->p[--t->len] = '\0';
 }
 
+static bool (*g_command_probe)(const char *word, char *target, size_t target_size);
+
+void object_usage_set_command_probe(bool (*probe)(const char *word, char *target, size_t target_size)) {
+    g_command_probe = probe;
+}
+
 value_t object_usage(const char *path) {
     node_t n = object_resolve(object_root(), path ? path : "");
+    // A command word: the usage of the method it names, with a closing note.
+    char target[256] = "";
+    const char *word = path ? path : "";
+    if (!node_valid(n) && g_command_probe && g_command_probe(word, target, sizeof(target)))
+        n = object_resolve(object_root(), target);
     if (!node_valid(n))
         return val_err("usage: path '%s' did not resolve", path ? path : "");
     vbuf_t sig = {0}, text = {0};
@@ -368,6 +379,14 @@ value_t object_usage(const char *path) {
             return val_err("usage: '%s' names no object right now", path ? path : "");
         }
         node_text(&text, obj);
+    }
+    if (target[0]) {
+        finish(&text);
+        put(&text, "\n\n`");
+        put(&text, word);
+        put(&text, "` is a command: it runs ");
+        put(&text, target);
+        put(&text, ".");
     }
     finish(&text);
     value_map_builder_t *b = val_map_new();

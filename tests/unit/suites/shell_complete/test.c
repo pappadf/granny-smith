@@ -7,6 +7,7 @@
 // gets none.  The VFS is a stub directory holding `disk.img` and `roms/`.
 
 #include "cmd_complete.h"
+#include "commands.h"
 #include "object.h"
 #include "shell_var.h"
 #include "test_assert.h"
@@ -145,9 +146,29 @@ TEST(test_flag_not_name_decides_per_slot) {
     ASSERT_TRUE(!has("disk.img"));
 }
 
+TEST(test_command_word_completes_and_takes_its_methods_arguments) {
+    build_tree();
+    shell_command_clear_user();
+    char err[200];
+    ASSERT_TRUE(shell_command_define("ld", "tool.load", err, sizeof(err)) == 0);
+    // A command is a word at the start of a line, with its method's doc.
+    complete("l");
+    ASSERT_TRUE(has("ld"));
+    // Its arguments are the method's: `image` is VAL_PATH.
+    complete("ld ");
+    ASSERT_TRUE(g_opendir_calls == 1);
+    ASSERT_TRUE(has("disk.img"));
+    ASSERT_TRUE(g_out.has_context && strcmp(g_out.ctx_method, "tool.load") == 0);
+    // A target that is not a method, or a root path as the name, is refused.
+    ASSERT_TRUE(shell_command_define("tl", "tool", err, sizeof(err)) < 0);
+    ASSERT_TRUE(shell_command_define("tool", "tool.load", err, sizeof(err)) < 0);
+    shell_command_clear_user();
+}
+
 int main(void) {
     RUN(test_val_path_argument_gets_files);
     RUN(test_argument_named_path_without_flag_gets_none);
     RUN(test_flag_not_name_decides_per_slot);
+    RUN(test_command_word_completes_and_takes_its_methods_arguments);
     return 0;
 }

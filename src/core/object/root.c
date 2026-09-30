@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "alias.h"
+#include "commands.h"
 #include "debug.h"
 #include "nubus.h"
 #include "object.h"
@@ -390,9 +391,11 @@ void root_install(struct config *cfg) {
         storage_object_classes_init(cfg, images_obj);
     }
 
-    // shell.alias child object.
-    if (shell_obj)
+    // shell.alias and shell.command child objects.
+    if (shell_obj) {
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
+        attach_stub(shell_obj, &shell_command_class, cfg, "command");
+    }
 
     // `machine.nubus` / `machine.pci` — attached under the machine node
     // (they are emulated hardware, not meta objects), and only when the

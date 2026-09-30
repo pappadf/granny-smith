@@ -325,7 +325,7 @@ static value_t shell_method_lint_members(struct object *self, const member_t *m,
     return object_lint_members(example_resolves);
 }
 
-// `shell.keywords` — [{word, syntax}] for every reserved word.
+// `shell.keywords` — [{word, syntax}] for every keyword.
 static value_t shell_get_keywords(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -337,6 +337,12 @@ static value_t shell_get_keywords(struct object *self, const member_t *m) {
         val_map_put(b, "syntax", val_str(object_reserved_word_syntax(i)));
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
+    // `command` is a contextual keyword (a member may be named `command`),
+    // so it is not a reserved word; it is a keyword all the same.
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "word", val_str("command"));
+    val_map_put(b, "syntax", val_str("command <name> = <path> — a bare word that runs the method"));
+    val_list_push(&items, &len, &cap, val_map_finish(b));
     return val_list(items, len);
 }
 

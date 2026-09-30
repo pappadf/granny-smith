@@ -36,6 +36,7 @@ plus `shell.complete`, `shell.expand`, the alias leaves and
 | [shell.c](../../../../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
 | [shell_var.c](../../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
+| [commands.c](../../../../src/core/shell/commands.c) | Commands: the built-ins, `command NAME = PATH`, the `shell.command` surface |
 | [cmd_complete.c](../../../../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
 | [highlight.c](../../../../src/core/shell/highlight.c) | `shell.highlight`: syntax classes of a line or block, paths resolved against the live tree |
 | [cmd_cp.c](../../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `files.cp` / `files.import` |
@@ -50,6 +51,7 @@ per line, except that brace blocks span lines (see below).
 |------|---------|
 | `let NAME = EXPR` | Declare a binding in the current scope |
 | `alias NAME = PATH` | Declare a reference binding (path text, re-resolved per access) |
+| `command NAME = PATH` | Declare a command: the bare word `NAME` runs the method at `PATH` (see Commands) |
 | `$NAME = EXPR` | Mutate an existing binding (error if undeclared) |
 | `PATH = EXPR` | Attribute write with a typed right-hand side |
 | `CMDPATH ARG…` | Command call (argument mode) |
@@ -181,6 +183,35 @@ scope, run the body, and pop; `return EXPR` (or falling off the end →
 `none`) yields the value. Recursion is allowed up to the 16-frame cap.
 Functions work in call form inside any expression — including logpoint
 message templates — via the expression layer's function hook.
+
+## Commands
+
+A command is a bare word that runs a method: `ls /opfs` runs
+`files.ls /opfs`.  Where an alias (`$pc`) stands for a value or a place and
+works anywhere with `$`, a command stands for a verb and works only as the
+first word of a statement — in argument mode a bare word is a string.
+
+| Built-in | Runs | Built-in | Runs |
+|---|---|---|---|
+| `ls` | `files.ls` | `pwd` | `files.pwd` |
+| `cat` | `files.cat` | `run` | `scheduler.run` |
+| `cp` | `files.cp` | `stop` | `scheduler.stop` |
+| `mv` | `files.mv` | `reset` | `machine.reset` |
+| `rm` | `files.rm` | `step` | `debug.step` |
+| `mkdir` | `files.mkdir` | `disasm` | `debug.disasm` |
+| `cd` | `files.cd` | | |
+
+`command NAME = PATH` (or `shell.command.add`) declares one; the target must
+resolve to a method, and `NAME` must not be a reserved word, a built-in, or
+a path at the root.  `shell.command.remove` drops a user command and
+`shell.command.list` lists them all, with whether each target exists right
+now (`run` needs a machine).  At the head of a statement a tree path, a
+keyword and a `def` function all win over a command.  `command` is a
+contextual keyword, not a reserved word: only `command NAME = PATH` at the
+start of a statement declares one, so a member may still be named `command`.
+
+Highlighting, completion, the signature hint and `help` follow the method a
+command runs: `help ls` prints `files.ls`'s usage, noting that `ls` runs it.
 
 ## Output
 

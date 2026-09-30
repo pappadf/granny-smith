@@ -995,7 +995,8 @@ and the console follow each other through
 [`terminalBridge.ts`](../../app/web2/src/components/panel-views/terminal/terminalBridge.ts)
 and [`state/terminalSync.svelte.ts`](../../app/web2/src/state/terminalSync.svelte.ts).
 The browser's top level is a row of expandable section headlines:
-Commands (the root's own methods), one per domain the root's children
+Commands (the root's own methods, then the commands whose target exists —
+`ls`, `cd`, `run`, … — each typed bare), one per domain the root's children
 declare (Machine, Emulator, Network), then Aliases and Language.  A
 section's rows sit at its own indent; the domain sections start open,
 Aliases and Language closed.  The browser lists basic and advanced members

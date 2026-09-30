@@ -38,6 +38,12 @@ void highlight_set_function_probe(bool (*probe)(const char *name)) {
     g_function_probe = probe;
 }
 
+static bool (*g_command_probe)(const char *word, node_t *out);
+
+void highlight_set_command_probe(bool (*probe)(const char *word, node_t *out)) {
+    g_command_probe = probe;
+}
+
 // === Span list ================================================================
 
 typedef struct {
@@ -674,6 +680,34 @@ static const char *statement(hl_t *h, const char *p) {
             return q;
         } else if (word_is(s, e, "true") || word_is(s, e, "false") || word_is(s, e, "none")) {
             return expr_until(h, p, '\0');
+        } else if (word_is(s, e, "command") && ident_start(*q)) {
+            // `command NAME = PATH` (a contextual keyword: any other shape
+            // is a path statement).
+            const char *ne = ident_end(q);
+            const char *eq = skip_ws(ne);
+            if (*eq == '=' && eq[1] != '=') {
+                emit(h, s, e, "decl");
+                emit(h, q, ne, "method");
+                emit(h, eq, eq + 1, "operator");
+                const char *r = skip_ws(eq + 1);
+                return ident_start(*r) ? path(h, r, NULL) : r;
+            }
+        }
+        // A command word: the method it names, with its arguments.
+        if (g_command_probe && *e != '.' && *e != '[' && *e != '(' && e - s < 64) {
+            char word[64];
+            memcpy(word, s, (size_t)(e - s));
+            word[e - s] = '\0';
+            node_t cmd = {0};
+            bool is_path = node_valid(object_resolve(object_root(), word));
+            bool is_function = g_function_probe && g_function_probe(word);
+            if (!is_path && !is_function && g_command_probe(word, &cmd)) {
+                emit(h, s, e, "method");
+                const char *r = skip_ws(e);
+                if (!*r || *r == '\n' || *r == ';' || *r == '#' || *r == '{' || *r == '}')
+                    return *r == '#' ? comment(h, r) : r;
+                return arguments(h, r, cmd);
+            }
         }
         // A path statement.
         node_t n = {0};
