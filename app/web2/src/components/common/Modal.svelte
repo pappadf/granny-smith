@@ -7,10 +7,20 @@
     onClose?: () => void;
     /** Whether clicking the backdrop or pressing Esc dismisses the modal. */
     dismissible?: boolean;
+    /** A large card sized to the window (a document viewer) instead of a 520px one. */
+    wide?: boolean;
     children?: Snippet;
     actions?: Snippet;
   }
-  let { open, title, onClose, dismissible = true, children, actions }: Props = $props();
+  let {
+    open,
+    title,
+    onClose,
+    dismissible = true,
+    wide = false,
+    children,
+    actions,
+  }: Props = $props();
 
   function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget && dismissible) onClose?.();
@@ -31,7 +41,7 @@
 
 {#if open}
   <div class="modal-backdrop" role="presentation" onclick={handleBackdropClick}>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-label={title}>
+    <div class="modal-card" class:wide role="dialog" aria-modal="true" aria-label={title}>
       {#if title}
         <h2 class="modal-title">{title}</h2>
       {/if}
@@ -69,6 +79,18 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+  }
+  .modal-card.wide {
+    width: min(92vw, 1000px);
+    max-width: none;
+    height: min(90vh, 1100px);
+    padding: 14px 16px;
+    gap: 10px;
+  }
+  .modal-card.wide .modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
   }
   .modal-title {
     margin: 0;

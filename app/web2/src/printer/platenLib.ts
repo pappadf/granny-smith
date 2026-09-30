@@ -1,8 +1,9 @@
 // EfterScript's platen library as the worker sees it: the standalone
 // Emscripten module `make platen-module` links from the released archive
 // (build/platen-<version>.js + .wasm), loaded on the first print job, and
-// a thin wrapper over its C ABI (local/platen/<version>/platen.h: one job
-// per PAP job — new, feed, read replies / errors, finish, pdf, free).  The
+// a thin wrapper over its C ABI (local/platen/<version>/platen.h: printers
+// that keep their interpreter between jobs, and one job per PAP job on a
+// printer — feed, read replies / errors, finish, pdf, free).  The
 // module is non-threaded and owns its own memory; nothing here touches the
 // emulator's heap.  Every function that can allocate may grow that memory,
 // so the heap views are re-read from the module after each call.
@@ -15,7 +16,9 @@ export interface PlatenModule {
   UTF8ToString(ptr: number): string;
   _malloc(bytes: number): number;
   _free(ptr: number): void;
-  _platen_job_new(cfg: number): number;
+  _platen_printer_new(cfg: number): number;
+  _platen_printer_job(printer: number): number;
+  _platen_printer_free(printer: number): void;
   _platen_job_feed(job: number, bytes: number, len: number): number;
   _platen_job_read_replies(job: number, buf: number, cap: number): number;
   _platen_job_read_errors(job: number, buf: number, cap: number): number;
@@ -90,7 +93,8 @@ export interface Drained {
   truncated: boolean;
 }
 
-// The library, one call per ABI function.  A job handle is the C pointer.
+// The library, one call per ABI function.  Printer and job handles are the
+// C pointers.
 export class PlatenLib {
   private readonly m: PlatenModule;
   private scratch = 0; // the drain buffer, allocated on first use
@@ -99,10 +103,27 @@ export class PlatenLib {
     this.m = m;
   }
 
-  // Creates a job from `cfg`; 0 on failure (lastError says why).  The
-  // config and its strings live in one allocation freed after the call:
-  // the library retains nothing the host passes in.
-  jobNew(cfg: PlatenJobConfig): number {
+  // Creates a printer from `cfg` (the identity seeded, the prelude run);
+  // 0 on failure (lastError says why).
+  printerNew(cfg: PlatenJobConfig): number {
+    return this.withConfig(cfg, (block) => this.m._platen_printer_new(block));
+  }
+
+  // Opens a job on `printer`; 0 while another job on it is open, which for
+  // the worker (one job at a time) means an earlier job wedged it.
+  printerJob(printer: number): number {
+    return this.m._platen_printer_job(printer);
+  }
+
+  // Frees `printer`; a job still open on it stays valid until freed itself.
+  printerFree(printer: number): void {
+    this.m._platen_printer_free(printer);
+  }
+
+  // Lays `cfg` out as a platen_config and calls `use` with it.  The config
+  // and its strings live in one allocation freed after the call: the
+  // library retains nothing the host passes in.
+  private withConfig(cfg: PlatenJobConfig, use: (block: number) => number): number {
     const enc = new TextEncoder();
     const strings: Uint8Array[] = [];
     let stringBytes = 0;
@@ -146,7 +167,7 @@ export class PlatenLib {
       u32[(block + 28) >> 2] = cfg.embedAllFonts ? 1 : 0;
       u32[(block + 32) >> 2] = cfg.stepBudgetLo >>> 0;
       u32[(block + 36) >> 2] = cfg.stepBudgetHi >>> 0;
-      return this.m._platen_job_new(block);
+      return use(block);
     } finally {
       this.m._free(block);
     }

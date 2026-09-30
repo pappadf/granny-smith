@@ -2,11 +2,12 @@
 // Copyright (c) pappadf
 
 // laserwriter_job.c
-// One interpreter job per EOF-delimited PAP job, driven through the
-// transport: begin issues OPEN, feed issues FEED, finish issues FINISH, and
-// the transport's answers arrive later as callbacks that this module turns
-// into the PAP layer's events.  The status text and the document hand-off
-// live here too.  See laserwriter_job.h.
+// One interpreter job per EOF-delimited PAP job, on the machine's printer,
+// driven through the transport: begin issues OPEN, feed issues FEED, finish
+// issues FINISH, and the transport's answers arrive later as callbacks that
+// this module turns into the PAP layer's events.  The printer's identity
+// (its id and counters), the status text and the document hand-off live
+// here too.  See laserwriter_job.h.
 
 #include "laserwriter_job.h"
 
@@ -64,6 +65,12 @@ __attribute__((weak)) void laserwriter_sink_capture(const laserwriter_capture_t 
 // download.  Past this the job fails and the session aborts.
 #define LASERWRITER_OPEN_TIMEOUT_NS (120ull * 1000000000ull)
 
+// What a successful exitserver writes among the job's replies (platen's
+// embedding guide): the one trace a job leaves of having made its changes
+// permanent, counted for appletalk.printer.interpreter_permanent_jobs.
+static const char k_exitserver_ack[] = "%%[exitserver: permanent state may be changed]%%";
+#define LASERWRITER_ACK_LEN (sizeof(k_exitserver_ack) - 1)
+
 // ============================================================================
 // Type Definitions (Private)
 // ============================================================================
@@ -97,9 +104,17 @@ typedef struct {
     char last_outcome[128];
     laserwriter_listener_t listener;
     void *listener_ctx;
+    // The printer the jobs run on (laserwriter_job.h, "The printer")
+    uint32_t printer_id; // 0 until its first job
+    uint32_t printer_jobs; // jobs it has served
+    uint32_t printer_permanent_jobs; // of those, jobs acknowledged by exitserver
+    char ack_window[LASERWRITER_ACK_LEN]; // the last reply bytes, for the acknowledgement
+    size_t ack_fill;
+    bool ack_seen; // this job's replies carried it
 } laserwriter_state_t;
 
 static laserwriter_state_t g_lw;
+static uint32_t g_printer_counter; // the last printer id handed out; ids never repeat
 static atalk_timer_t g_lw_poll_timer; // drains the transport while an answer is owed
 
 // ============================================================================
@@ -134,6 +149,39 @@ static void lw_poll_disarm(void) {
     atalk_timer_cancel_all(&g_lw_poll_timer);
 }
 
+// The current printer's id, taking a new one when there is none (the
+// transport creates the interpreter on the first open for it).
+static uint32_t lw_printer_id(void) {
+    if (g_lw.printer_id == 0) {
+        if (++g_printer_counter == 0)
+            g_printer_counter = 1;
+        g_lw.printer_id = g_printer_counter;
+        g_lw.printer_jobs = 0;
+        g_lw.printer_permanent_jobs = 0;
+        LOG(2, "laserwriter: printer %u in service", (unsigned)g_lw.printer_id);
+    }
+    return g_lw.printer_id;
+}
+
+// Watches the reply stream for exitserver's acknowledgement; the line may
+// span replies.  Counted once per job.
+static void lw_scan_ack(const uint8_t *bytes, size_t len) {
+    for (size_t i = 0; i < len && !g_lw.ack_seen; i++) {
+        if (g_lw.ack_fill == LASERWRITER_ACK_LEN) {
+            memmove(g_lw.ack_window, g_lw.ack_window + 1, LASERWRITER_ACK_LEN - 1);
+            g_lw.ack_fill--;
+        }
+        g_lw.ack_window[g_lw.ack_fill++] = (char)bytes[i];
+        if (g_lw.ack_fill == LASERWRITER_ACK_LEN &&
+            memcmp(g_lw.ack_window, k_exitserver_ack, LASERWRITER_ACK_LEN) == 0) {
+            g_lw.ack_seen = true;
+            g_lw.printer_permanent_jobs++;
+            LOG(2, "laserwriter: job %u made its changes permanent (exitserver) on printer %u", (unsigned)g_lw.job_id,
+                (unsigned)g_lw.printer_id);
+        }
+    }
+}
+
 // Appends `len` bytes to the unread-output buffer, dropping past the cap.
 static void lw_output_append(const uint8_t *bytes, size_t len) {
     if (bytes && len && !byteq_append(&g_lw.output, bytes, len, LASERWRITER_OUTPUT_MAX))
@@ -143,8 +191,10 @@ static void lw_output_append(const uint8_t *bytes, size_t len) {
 // Queues what a feed or a finish produced: the reply channel first, then
 // the error reports, as the library ordered them.
 static void lw_take_output(const uint8_t *reply, size_t reply_len, const uint8_t *errors, size_t errors_len) {
-    if (reply_len)
+    if (reply_len) {
         LOG(3, "laserwriter: job %u reply %zu bytes", (unsigned)g_lw.job_id, reply_len);
+        lw_scan_ack(reply, reply_len);
+    }
     lw_output_append(reply, reply_len);
     if (errors_len) {
         LOG(2, "laserwriter: job %u error report: %.*s", (unsigned)g_lw.job_id,
@@ -246,12 +296,21 @@ static void lw_poll_cb(void *source, uint64_t data) {
 // ============================================================================
 
 // OPENED: the job takes data.
-static void lw_on_opened(uint32_t job_id, void *ctx) {
+static void lw_on_opened(uint32_t job_id, bool printer_restarted, void *ctx) {
     (void)ctx;
     if (!lw_is_ours(job_id, "OPENED") || g_lw.state != JOB_OPENING)
         return;
+    if (printer_restarted) {
+        // A device restart: what earlier jobs downloaded is gone
+        LOG(1, "laserwriter: printer %u was wedged by an earlier job; restarted (downloads lost)",
+            (unsigned)g_lw.printer_id);
+        g_lw.printer_jobs = 0;
+        g_lw.printer_permanent_jobs = 0;
+    }
+    g_lw.printer_jobs++;
     g_lw.state = JOB_READY;
-    LOG(2, "laserwriter: job %u started (%s)", (unsigned)job_id, laserwriter_transport_name());
+    LOG(2, "laserwriter: job %u started on printer %u (%s)", (unsigned)job_id, (unsigned)g_lw.printer_id,
+        laserwriter_transport_name());
     lw_notify(LASERWRITER_EVENT_OPENED, NULL);
 }
 
@@ -392,7 +451,9 @@ bool laserwriter_job_begin(uint32_t job_id) {
     g_lw.title_window_len = 0;
     g_lw.pages = 0;
     g_lw.ended_early = false;
-    if (!laserwriter_transport_open(job_id, &cfg)) {
+    g_lw.ack_fill = 0;
+    g_lw.ack_seen = false;
+    if (!laserwriter_transport_open(lw_printer_id(), job_id, &cfg)) {
         LOG(1, "laserwriter: job %u: the transport refused the open", (unsigned)job_id);
         g_lw.job_id = 0;
         return false;
@@ -415,10 +476,6 @@ bool laserwriter_job_ready(void) {
 
 bool laserwriter_job_finishing(void) {
     return g_lw.state == JOB_FINISHING;
-}
-
-bool laserwriter_job_feed_pending(void) {
-    return g_lw.state == JOB_FEEDING || g_lw.state == JOB_FINISHING;
 }
 
 bool laserwriter_job_feed(uint32_t sequence, const uint8_t *data, size_t len) {
@@ -511,6 +568,57 @@ const char *laserwriter_job_last_outcome(void) {
     return g_lw.last_outcome;
 }
 
+// ============================================================================
+// The printer
+// ============================================================================
+
+void laserwriter_printer_retire(void) {
+    laserwriter_job_abort();
+    if (g_lw.printer_id) {
+        LOG(2, "laserwriter: printer %u retired after %u jobs", (unsigned)g_lw.printer_id, (unsigned)g_lw.printer_jobs);
+        laserwriter_transport_printer_free(g_lw.printer_id);
+    }
+    g_lw.printer_id = 0;
+    g_lw.printer_jobs = 0;
+    g_lw.printer_permanent_jobs = 0;
+}
+
+laserwriter_printer_t laserwriter_printer_detach(void) {
+    laserwriter_job_abort();
+    laserwriter_printer_t p = {
+        .id = g_lw.printer_id, .jobs = g_lw.printer_jobs, .permanent_jobs = g_lw.printer_permanent_jobs};
+    if (p.id)
+        LOG(2, "laserwriter: printer %u detached", (unsigned)p.id);
+    g_lw.printer_id = 0;
+    g_lw.printer_jobs = 0;
+    g_lw.printer_permanent_jobs = 0;
+    return p;
+}
+
+void laserwriter_printer_reattach(laserwriter_printer_t printer) {
+    laserwriter_printer_retire();
+    g_lw.printer_id = printer.id;
+    g_lw.printer_jobs = printer.jobs;
+    g_lw.printer_permanent_jobs = printer.permanent_jobs;
+    if (printer.id)
+        LOG(2, "laserwriter: printer %u back in service", (unsigned)printer.id);
+}
+
+void laserwriter_printer_free_detached(laserwriter_printer_t printer) {
+    if (printer.id) {
+        LOG(2, "laserwriter: detached printer %u freed", (unsigned)printer.id);
+        laserwriter_transport_printer_free(printer.id);
+    }
+}
+
+uint32_t laserwriter_printer_jobs(void) {
+    return g_lw.printer_jobs;
+}
+
+uint32_t laserwriter_printer_permanent_jobs(void) {
+    return g_lw.printer_permanent_jobs;
+}
+
 #else // !GS_PLATEN
 
 // ============================================================================
@@ -542,10 +650,6 @@ bool laserwriter_job_ready(void) {
 }
 
 bool laserwriter_job_finishing(void) {
-    return false;
-}
-
-bool laserwriter_job_feed_pending(void) {
     return false;
 }
 
@@ -589,6 +693,29 @@ uint32_t laserwriter_job_last_pages(void) {
 
 const char *laserwriter_job_last_outcome(void) {
     return "";
+}
+
+void laserwriter_printer_retire(void) {}
+
+laserwriter_printer_t laserwriter_printer_detach(void) {
+    laserwriter_printer_t none = {0, 0, 0};
+    return none;
+}
+
+void laserwriter_printer_reattach(laserwriter_printer_t printer) {
+    (void)printer;
+}
+
+void laserwriter_printer_free_detached(laserwriter_printer_t printer) {
+    (void)printer;
+}
+
+uint32_t laserwriter_printer_jobs(void) {
+    return 0;
+}
+
+uint32_t laserwriter_printer_permanent_jobs(void) {
+    return 0;
 }
 
 #endif // GS_PLATEN

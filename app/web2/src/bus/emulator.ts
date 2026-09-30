@@ -29,6 +29,7 @@ import {
   whenVoodooGpuReady,
 } from '@/gpu/voodoo2Gpu.svelte';
 import { onPrinterAttach } from '@/printer/platen';
+import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
 // The audio-out worklet, bundled on its own (em_audio.c loads it).
 import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
@@ -760,6 +761,9 @@ function routeCoreEvent(ev: CoreEvent): void {
       break;
     case 'notify:checkpoint_saved':
       setCheckpointSaved(num(d.elapsed_ms));
+      break;
+    case 'notify:printer_status':
+      if (typeof d.status === 'string') setPrinterStatus(d.status);
       break;
     case 'log:log':
       if (typeof d.line === 'string') routeLogEmit(d.line);

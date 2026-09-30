@@ -5,7 +5,8 @@
 // The browser transport: the interpreter runs in a Web Worker with its own
 // module, and the two sides share a control block and two byte rings in
 // the wasm heap (laserwriter_ring_protocol.h).  This side writes OPEN /
-// FEED / FINISH / ABANDON records into the outbound ring and, from
+// FEED / FINISH / ABANDON / PRINTER_FREE records into the outbound ring
+// and, from
 // laserwriter_transport_poll(), drains OPENED / OPEN_FAILED / FED /
 // FINISHED from the inbound ring into the bridge's callbacks.  It never
 // blocks: a record that does not fit fails the request.
@@ -196,11 +197,13 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
     }
     char scratch[256];
     switch (kind) {
-    case LWRING_R_OPENED:
+    case LWRING_R_OPENED: {
+        uint32_t flags = payload_len >= 4 * LWRING_OPENED_WORDS ? RD_LE32(p + 4 * LWRING_OPENED_FLAGS) : 0;
         g_ring.outstanding = 0;
         if (g_ring.cb.on_opened)
-            g_ring.cb.on_opened(job_id, g_ring.cb_ctx);
+            g_ring.cb.on_opened(job_id, (flags & LWRING_OPENED_F_RESTARTED) != 0, g_ring.cb_ctx);
         break;
+    }
     case LWRING_R_OPEN_FAILED: {
         uint32_t text_len = RD_LE32(p + 4 * LWRING_OPEN_FAILED_TEXT);
         const uint8_t *text = p + 4 * LWRING_OPEN_FAILED_WORDS;
@@ -295,8 +298,8 @@ void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t
     g_ring.cb_ctx = ctx;
 }
 
-bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t *cfg) {
-    if (!cfg || !ring_create())
+bool laserwriter_transport_open(uint32_t printer_id, uint32_t job_id, const laserwriter_job_config_t *cfg) {
+    if (!cfg || printer_id == 0 || !ring_create())
         return false;
     if (g_ring.outstanding || g_ring.job_id) {
         LOG(1, "laserwriter: job %u: open while job %u is held", (unsigned)job_id, (unsigned)g_ring.job_id);
@@ -318,6 +321,7 @@ bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t 
         return false;
     }
     WR_LE32(p + 4 * LWRING_OPEN_JOB, job_id);
+    WR_LE32(p + 4 * LWRING_OPEN_PRINTER, printer_id);
     WR_LE32(p + 4 * LWRING_OPEN_COMPRESS, cfg->compress ? 1u : 0u);
     WR_LE32(p + 4 * LWRING_OPEN_EMBED, cfg->embed_all_fonts ? 1u : 0u);
     WR_LE32(p + 4 * LWRING_OPEN_BUDGET_L, (uint32_t)cfg->step_budget);
@@ -340,7 +344,8 @@ bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t 
     g_ring.job_id = job_id;
     ring_issue(LWRING_R_OPEN, 0);
     ring_publish();
-    LOG(3, "laserwriter: job %u open queued (ring, %u bytes)", (unsigned)job_id, (unsigned)len);
+    LOG(3, "laserwriter: job %u open queued on printer %u (ring, %u bytes)", (unsigned)job_id, (unsigned)printer_id,
+        (unsigned)len);
     return true;
 }
 
@@ -411,6 +416,21 @@ void laserwriter_transport_abandon(uint32_t job_id) {
     }
     WR_LE32(p + 4 * LWRING_ABANDON_JOB, job_id);
     ring_publish();
+}
+
+void laserwriter_transport_printer_free(uint32_t printer_id) {
+    // No region, no worker: no printer was ever created
+    if (!g_ring.region || printer_id == 0)
+        return;
+    uint8_t *p = ring_reserve(LWRING_R_PRINTER_FREE, LWRING_HDR_BYTES + 4u * LWRING_PRINTER_FREE_WORDS);
+    if (!p) {
+        // The worker keeps the printer until the page closes; nothing else goes wrong
+        LOG(1, "laserwriter: no room in the interpreter ring to free printer %u", (unsigned)printer_id);
+        return;
+    }
+    WR_LE32(p + 4 * LWRING_PRINTER_FREE_ID, printer_id);
+    ring_publish();
+    LOG(3, "laserwriter: printer %u free queued (ring)", (unsigned)printer_id);
 }
 
 void laserwriter_transport_poll(void) {

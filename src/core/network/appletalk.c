@@ -17,6 +17,7 @@
 #include "appletalk_ppc.h"
 #include "atalk_id.h"
 #include "common.h"
+#include "laserwriter_job.h"
 #include "log.h"
 #include "object.h"
 #include "scc.h"
@@ -174,11 +175,13 @@ typedef struct {
 // it down and keeps what it needs to put it back here, until one of the two
 // machines is destroyed (appletalk_delete): the old one -- the load
 // succeeded, drop this -- or the new one -- the load failed, so rebuild the
-// stack for the machine that keeps running.
+// stack for the machine that keeps running.  The old machine's printer waits
+// here too (detached, not freed): a failed load gives it back.
 static struct {
     scc_t *scc;
     scheduler_t *scheduler;
     atalk_config_t *config;
+    laserwriter_printer_t printer;
 } g_superseded;
 
 static void appletalk_teardown(void);
@@ -815,12 +818,15 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     // tree, keeping its bindings and configuration in case the load fails.
     if (g_atalk_object) {
         free(g_superseded.config);
+        laserwriter_printer_free_detached(g_superseded.printer); // an earlier load never resolved
         g_superseded.scc = g_scc;
         g_superseded.scheduler = g_scheduler;
         g_superseded.config = malloc(sizeof(atalk_config_t));
         if (g_superseded.config)
             atalk_config_capture(g_superseded.config);
         appletalk_teardown();
+        // The new machine gets a printer of its own
+        g_superseded.printer = laserwriter_printer_detach();
     }
     g_scc = scc; // Store SCC dependency for later use
     scc_set_frame_sink(scc, llap_receive, NULL);
@@ -1040,11 +1046,17 @@ static void appletalk_teardown(void) {
 // old machine from what init kept.  (It used to stay bound to the freed
 // machine: the next frame read the freed SCC.)  The guest's sessions
 // do not survive that; its shares, names and printer do.
-void appletalk_delete(scc_t *scc) {
+//
+// The printer lives as long as the machine (laserwriter_job.h): it ends
+// here with the machine, unless `power_cycle` says the machine is being
+// rebuilt as itself.  After a successful load the old machine's printer is
+// freed; after a failed one it goes back into service.
+void appletalk_delete(scc_t *scc, bool power_cycle) {
     if (!scc || scc != g_scc) {
         // Not the machine this stack serves: a Lisa, or the machine a
         // successful checkpoint load replaced.
         if (scc && scc == g_superseded.scc) {
+            laserwriter_printer_free_detached(g_superseded.printer);
             free(g_superseded.config);
             memset(&g_superseded, 0, sizeof(g_superseded));
         }
@@ -1055,12 +1067,17 @@ void appletalk_delete(scc_t *scc) {
         scc_t *prev_scc = g_superseded.scc;
         scheduler_t *prev_sched = g_superseded.scheduler;
         atalk_config_t *prev_cfg = g_superseded.config;
+        laserwriter_printer_t prev_printer = g_superseded.printer;
         memset(&g_superseded, 0, sizeof(g_superseded));
         LOG(1, "atalk: the checkpoint load failed; restoring the stack of the machine that keeps running");
+        laserwriter_printer_reattach(prev_printer); // retires the failed machine's
         appletalk_init(prev_sched, prev_scc, NULL);
         if (prev_cfg)
             atalk_config_apply(prev_cfg);
         free(prev_cfg);
+    } else if (!power_cycle) {
+        // The machine is gone, and its printer with it
+        laserwriter_printer_retire();
     }
 }
 
@@ -3299,6 +3316,26 @@ static value_t atalk_printer_attr_last_outcome(struct object *self, const member
     (void)m;
     return val_str(atalk_printer_last_outcome());
 }
+static value_t atalk_printer_attr_interpreter_jobs(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_int(atalk_printer_interpreter_jobs());
+}
+static value_t atalk_printer_attr_interpreter_permanent_jobs(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_int(atalk_printer_interpreter_permanent_jobs());
+}
+static value_t atalk_printer_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    char err[192];
+    if (atalk_printer_restart(err, sizeof(err)) != 0)
+        return atalk_err("cannot restart the printer", err);
+    return val_bool(true);
+}
 
 static const member_t atalk_printer_stats_members[] = {
     OBJ_U64_FIELD(atalk_printer_stats_t, jobs, "Jobs that ran to their end"),
@@ -3355,6 +3392,24 @@ static const member_t atalk_printer_members[] = {
      .doc = "Outcome of the last finished job: ok, error: <name> in <command>, budget",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = atalk_printer_attr_last_outcome}},
+    {.kind = M_ATTR,
+     .name = "interpreter_jobs",
+     .doc = "Jobs this machine's printer has served since it was created (0 until its first job)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = atalk_printer_attr_interpreter_jobs}},
+    {.kind = M_ATTR,
+     .name = "interpreter_permanent_jobs",
+     .doc = "Of those, jobs whose changes exitserver made permanent (startjob is not counted)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = atalk_printer_attr_interpreter_permanent_jobs}},
+    {.kind = M_METHOD,
+     .name = "restart",
+     .doc = "Power-cycle the printer: a job in progress is cut off, and what jobs made permanent is lost",
+     .method = {.args = NULL,
+                .nargs = 0,
+                .result = V_BOOL,
+                .fn = atalk_printer_method_restart,
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 
 static const class_desc_t atalk_printer_class = {

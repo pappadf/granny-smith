@@ -42,6 +42,8 @@ serverdict begin exitserver
 
 The printer ingests this payload, writes it into `userdict`, and responds with the value `1` when the upload is complete so the driver knows not to resend it in the future.
 
+The emulated LaserWriter behaves the same way: the upload runs on the machine's printer, `exitserver` makes it permanent, and the next print's query finds PatchPrep resident and skips the upload. A new machine, a checkpoint load or `appletalk.printer.restart()` starts a fresh printer, and the driver uploads again, as it would after a LaserWriter was switched off (`appletalk-print-persist`).
+
 ## 3. Font Directory Query
 
 After resolving PatchPrep, the driver inventories the fonts it can expect on the device. The PostScript query looks like this:
@@ -122,14 +124,22 @@ generic path. The AppleTalk entity type advertised over NBP is still
 ### The rows that print, and CI
 
 `tests/integration/appletalk-print` (System 6.0.8, a Plus, LaserWriter
-7.0) and `tests/integration/appletalk-print-71` (System 7.1, a IIcx,
-LaserWriter 7.1.2) drive a real print from the Chooser to a PDF. Both
-are gated on the interpreter: a `PLATEN=0` binary makes them log a skip
+7.0), `tests/integration/appletalk-print-71` (System 7.1, a IIcx,
+LaserWriter 7.1.2) and `tests/integration/appletalk-print-lw8` (System
+7.5, a IIci, LaserWriter 8.1.1) drive a real print from the Chooser to a
+PDF. The LaserWriter 8 row also bounds how long the print takes and how
+much the driver sends: that driver acts on its query's answers, and a
+status line on the read channel once cost it a 330 KB detour (`pap.md`
+§6.3a). `tests/integration/appletalk-print-persist` prints five times on
+the first row's machine, across a `machine.restart`, an
+`appletalk.printer.restart()` and a `machine.boot`, and checks the
+PatchPrep upload happens exactly when the printer is new. All four are
+gated on the interpreter: a `PLATEN=0` binary makes them log a skip
 and pass, so CI runs the integration tiers with `PLATEN=1` — otherwise
 they are green without printing anything, which is how a System 7.1
 defect once reached a user with CI green.
 
-The two exist separately because the driver versions differ in what they
+They exist separately because the driver versions differ in what they
 send; see the bridge note for the defects only the 7.1.2 path reached.
 
 ## 5.1 Building with the interpreter
@@ -195,12 +205,22 @@ compiled either way.
   keeps it in memory, never in a file of its own; a job larger than 32 MB is
   aborted rather than captured in part.
 * `appletalk.printer` observability: `interpreter`, `status`, `documents`,
-  `last_pages`, `last_outcome`.
+  `last_pages`, `last_outcome`, and the machine's printer:
+  `interpreter_jobs`, `interpreter_permanent_jobs` (jobs `exitserver` made
+  permanent).
+* `appletalk.printer.restart()` — power-cycle the printer: a job in progress
+  is cut off, and what jobs downloaded permanently is lost. The machine and
+  the printer's configuration are untouched.
 
 ## 5.3 Identity and prelude
 
 The interpreter is seeded with the product/version/revision identity and a
-host prelude that makes `statusdict` look like a LaserWriter. The prelude
+host prelude that makes `statusdict` look like a LaserWriter. It is the
+machine's printer: built on the first job and kept for the machine's
+lifetime (kept across `machine.restart`, new on `machine.boot` and on a
+checkpoint load), so what a job makes permanent with `exitserver` — the
+classic driver's PatchPrep — is there for every later job, as on a real
+LaserWriter. The prelude
 lives in the repository as `src/core/network/laserwriter_prelude.ps`,
 embedded at build time; see [`laserwriter_job.md`](../../internals/core/network/laserwriter_job.md).
 

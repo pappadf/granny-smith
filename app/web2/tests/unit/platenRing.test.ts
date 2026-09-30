@@ -88,7 +88,7 @@ function coreWrite(r: Region, kind: number, words: number[], texts: Uint8Array[]
   Atomics.notify(r.ctrl, P.C_OUT_HEAD);
 }
 
-function coreOpen(r: Region, jobId: number): void {
+function coreOpen(r: Region, jobId: number, printerId = 1): void {
   const enc = new TextEncoder();
   const idBlock = enc.encode(IDENTITY.map((e) => `${e.key}\0${e.value}\0`).join(''));
   const body = new Uint8Array(idBlock.length + PRELUDE.length);
@@ -96,6 +96,7 @@ function coreOpen(r: Region, jobId: number): void {
   body.set(PRELUDE, idBlock.length);
   const words = new Array<number>(P.OPEN_WORDS).fill(0);
   words[P.OPEN_JOB] = jobId;
+  words[P.OPEN_PRINTER] = printerId;
   words[P.OPEN_COMPRESS] = 1;
   words[P.OPEN_EMBED] = 0;
   words[P.OPEN_BUDGET_L] = 100000000;
@@ -224,6 +225,7 @@ describe.skipIf(!moduleJs)('platen ring loop', () => {
 
     expect(answers.map((a) => a.kind)).toEqual([P.R_OPENED, P.R_FED, P.R_FINISHED]);
     expect(answers[0].words[P.OPENED_JOB]).toBe(1);
+    expect(answers[0].words[P.OPENED_FLAGS]).toBe(0);
     expect(answers[0].len).toBe(P.pad8(P.HDR_BYTES + 4 * P.OPENED_WORDS));
     const fed = answers[1];
     expect(fed.words[P.FED_JOB]).toBe(1);
@@ -253,6 +255,50 @@ describe.skipIf(!moduleJs)('platen ring loop', () => {
     expect(doc.pages).toBe(1);
     expect(new TextDecoder().decode(doc.pdf.subarray(0, 5))).toBe('%PDF-');
   }, 30_000);
+
+  it('keeps what a job made permanent for the next job on its printer, until PRINTER_FREE', async () => {
+    const r = makeRegion(64 << 10, 64 << 10);
+    const rec = recorder();
+    const ring = new PlatenRing(r.sab, CTRL_AT, lib, rec.host);
+    const loop = ring.run();
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    // One job on printer 5: OPEN, one FEED, FINISH; its three answers and
+    // everything the program wrote to its reply channel
+    const job = async (
+      jobId: number,
+      program: string,
+    ): Promise<{ answers: Answer[]; replies: string }> => {
+      coreOpen(r, jobId, 5);
+      coreFeed(r, jobId, 1, enc.encode(program));
+      coreFinish(r, jobId, '');
+      const answers: Answer[] = [];
+      for (let i = 0; i < 400 && answers.length < 3; i++) {
+        answers.push(...coreRead(r).filter((a) => a.kind !== P.R_PAD));
+        if (answers.length < 3) await new Promise((res) => setTimeout(res, 25));
+      }
+      expect(answers.map((a) => a.kind)).toEqual([P.R_OPENED, P.R_FED, P.R_FINISHED]);
+      const replies = dec.decode(answers[1].texts[0]) + dec.decode(answers[2].texts[2]);
+      return { answers, replies };
+    };
+    const defined = (name: string) => `/${name} where { pop (kept) } { (gone) } ifelse ==\n`;
+
+    // Job 1 makes a definition permanent (the password is the OPEN's, 0)
+    const a = await job(1, 'serverdict begin 0 exitserver /gs_mark 42 def\n');
+    expect(a.replies).toContain('%%[exitserver: permanent state may be changed]%%');
+    // Job 2 sees it; what job 2 defines itself is reverted at its end
+    const b = await job(2, 'gs_mark == /gs_temp 1 def\n');
+    expect(b.replies).toContain('42');
+    const c = await job(3, defined('gs_temp'));
+    expect(c.replies).toContain('(gone)');
+    // A new printer (the machine went) starts from the prelude alone
+    coreWrite(r, P.R_PRINTER_FREE, [5], []);
+    const d = await job(4, defined('gs_mark'));
+    expect(d.replies).toContain('(gone)');
+
+    ring.stop();
+    await loop;
+  }, 60_000);
 
   it('a record that would cross the ring end is preceded by a PAD and restarts at 0', async () => {
     const outSize = 8192;

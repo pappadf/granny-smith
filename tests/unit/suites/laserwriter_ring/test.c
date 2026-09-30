@@ -145,9 +145,13 @@ static bool worker_write(uint32_t kind, const uint32_t *words, int n_words, cons
     return true;
 }
 
-static bool worker_send_opened(uint32_t job) {
-    uint32_t w[LWRING_OPENED_WORDS] = {job};
+static bool worker_send_opened_flags(uint32_t job, uint32_t flags) {
+    uint32_t w[LWRING_OPENED_WORDS] = {job, flags};
     return worker_write(LWRING_R_OPENED, w, LWRING_OPENED_WORDS, NULL, NULL, 0);
+}
+
+static bool worker_send_opened(uint32_t job) {
+    return worker_send_opened_flags(job, 0);
 }
 
 static bool worker_send_open_failed(uint32_t job, const char *text) {
@@ -194,6 +198,7 @@ static bool worker_send_finished(uint32_t job, uint32_t outcome, uint32_t pages,
 
 typedef struct {
     int opened, open_failed, fed, finished;
+    bool restarted; // the last OPENED said the printer was replaced
     uint32_t job_id;
     uint32_t seq;
     laserwriter_feed_status_t status;
@@ -210,10 +215,11 @@ typedef struct {
 
 static events_t g_ev;
 
-static void on_opened(uint32_t job_id, void *ctx) {
+static void on_opened(uint32_t job_id, bool printer_restarted, void *ctx) {
     ASSERT_TRUE(ctx == &g_ev);
     g_ev.opened++;
     g_ev.job_id = job_id;
+    g_ev.restarted = printer_restarted;
 }
 
 static void on_open_failed(uint32_t job_id, const char *error, void *ctx) {
@@ -261,6 +267,9 @@ static const laserwriter_transport_callbacks_t g_callbacks = {
     .on_finished = on_finished,
 };
 
+// The printer every job here opens on (the bridge names printers).
+#define TEST_PRINTER 7u
+
 // A small configuration standing in for the bridge's identity and prelude.
 static const laserwriter_identity_t g_identity[] = {
     {"product",  "(Test Press)"},
@@ -284,7 +293,7 @@ static void config(laserwriter_job_config_t *cfg) {
 static void open_and_ack(uint32_t job) {
     laserwriter_job_config_t cfg;
     config(&cfg);
-    ASSERT_TRUE(laserwriter_transport_open(job, &cfg));
+    ASSERT_TRUE(laserwriter_transport_open(TEST_PRINTER, job, &cfg));
     uint32_t kind, len;
     const uint8_t *p;
     ASSERT_TRUE(worker_read(&kind, &p, &len));
@@ -306,7 +315,7 @@ static void open_and_ack(uint32_t job) {
 TEST(open_carries_the_configuration) {
     laserwriter_job_config_t cfg;
     config(&cfg);
-    ASSERT_TRUE(laserwriter_transport_open(11, &cfg));
+    ASSERT_TRUE(laserwriter_transport_open(TEST_PRINTER, 11, &cfg));
     ASSERT_EQ_INT(g_attach_calls, 1); // the region exists and the platform was asked once
     ASSERT_TRUE(g_notify_calls > 0); // the worker was woken on OUT_HEAD
 
@@ -315,6 +324,7 @@ TEST(open_carries_the_configuration) {
     ASSERT_TRUE(worker_read(&kind, &p, &len));
     ASSERT_EQ_INT(kind, LWRING_R_OPEN);
     ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_OPEN_JOB), 11);
+    ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_OPEN_PRINTER), TEST_PRINTER);
     ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_OPEN_COMPRESS), 1);
     ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_OPEN_EMBED), 0);
     ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_OPEN_BUDGET_L), 2);
@@ -345,6 +355,7 @@ TEST(open_carries_the_configuration) {
     laserwriter_transport_poll();
     ASSERT_EQ_INT(g_ev.opened, 1);
     ASSERT_EQ_INT(g_ev.job_id, 11);
+    ASSERT_TRUE(!g_ev.restarted);
 }
 
 TEST(feed_and_fed_round_trip) {
@@ -416,7 +427,7 @@ TEST(finish_and_finished_round_trip) {
 TEST(open_failed_carries_the_reason) {
     laserwriter_job_config_t cfg;
     config(&cfg);
-    ASSERT_TRUE(laserwriter_transport_open(12, &cfg));
+    ASSERT_TRUE(laserwriter_transport_open(TEST_PRINTER, 12, &cfg));
     uint32_t kind, len;
     const uint8_t *p;
     ASSERT_TRUE(worker_read(&kind, &p, &len));
@@ -428,6 +439,54 @@ TEST(open_failed_carries_the_reason) {
     ASSERT_TRUE(strcmp(g_ev.text, "prelude error: undefined in lw_test") == 0);
     // No job is held afterwards: opening again works
     open_and_ack(13);
+}
+
+// ---- printers ---------------------------------------------------------------
+
+// A job opens on a printer the bridge names; there is no printer 0.  (Job
+// 13 is held on entry, from open_failed_carries_the_reason.)
+TEST(open_refuses_printer_zero) {
+    laserwriter_job_config_t cfg;
+    config(&cfg);
+    uint32_t kind, len;
+    const uint8_t *p;
+    ASSERT_TRUE(!laserwriter_transport_open(0, 12, &cfg));
+    ASSERT_TRUE(!worker_read(&kind, &p, &len)); // nothing was written
+}
+
+// A wedged printer the worker replaced: the bridge hears it with OPENED.
+// Job 13 is re-opened here and left held for the tests after.
+TEST(opened_reports_a_restarted_printer) {
+    uint32_t kind, len;
+    const uint8_t *p;
+    laserwriter_transport_abandon(13);
+    ASSERT_TRUE(worker_read(&kind, &p, &len));
+    ASSERT_EQ_INT(kind, LWRING_R_ABANDON);
+    laserwriter_job_config_t cfg;
+    config(&cfg);
+    ASSERT_TRUE(laserwriter_transport_open(TEST_PRINTER, 13, &cfg));
+    ASSERT_TRUE(worker_read(&kind, &p, &len));
+    ASSERT_EQ_INT(kind, LWRING_R_OPEN);
+    int before = g_ev.opened;
+    ASSERT_TRUE(worker_send_opened_flags(13, LWRING_OPENED_F_RESTARTED));
+    laserwriter_transport_poll();
+    ASSERT_EQ_INT(g_ev.opened, before + 1);
+    ASSERT_TRUE(g_ev.restarted);
+}
+
+// PRINTER_FREE names the printer and asks for no answer.  (Freeing the
+// printer's job first is the bridge's business; the transport forwards.)
+TEST(printer_free_writes_the_record) {
+    uint32_t kind, len;
+    const uint8_t *p;
+    laserwriter_transport_printer_free(TEST_PRINTER);
+    ASSERT_TRUE(worker_read(&kind, &p, &len));
+    ASSERT_EQ_INT(kind, LWRING_R_PRINTER_FREE);
+    ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_PRINTER_FREE_ID), TEST_PRINTER);
+    ASSERT_EQ_INT(len + LWRING_HDR_BYTES, LWRING_PAD8(LWRING_HDR_BYTES + 4 * LWRING_PRINTER_FREE_WORDS));
+    ASSERT_TRUE(!worker_read(&kind, &p, &len));
+    laserwriter_transport_printer_free(0); // no printer 0: nothing
+    ASSERT_TRUE(!worker_read(&kind, &p, &len));
 }
 
 // ---- abandon, stale answers, a lost worker --------------------------------
@@ -443,7 +502,7 @@ TEST(abandon_writes_the_record_and_drops_late_answers) {
     ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_ABANDON_JOB), 13);
     laserwriter_job_config_t cfg;
     config(&cfg);
-    ASSERT_TRUE(laserwriter_transport_open(14, &cfg));
+    ASSERT_TRUE(laserwriter_transport_open(TEST_PRINTER, 14, &cfg));
     ASSERT_TRUE(worker_read(&kind, &p, &len));
     ASSERT_EQ_INT(kind, LWRING_R_OPEN);
     ASSERT_TRUE(worker_send_fed(13, 1, LWRING_FEED_WAITING, 0, NULL, 0, NULL, 0, 0)); // stale
@@ -603,7 +662,7 @@ TEST(outbound_ring_with_no_room_refuses_the_request) {
     cfg.prelude_len = sizeof(prelude);
     bool refused = false;
     for (int i = 0; i < 20 && !refused; i++) {
-        if (laserwriter_transport_open(job, &cfg)) {
+        if (laserwriter_transport_open(TEST_PRINTER, job, &cfg)) {
             opened_ok++;
             laserwriter_transport_abandon(job); // 16 bytes more, no ack needed
             job++;
@@ -755,6 +814,9 @@ int main(void) {
     RUN(feed_and_fed_round_trip);
     RUN(finish_and_finished_round_trip);
     RUN(open_failed_carries_the_reason);
+    RUN(open_refuses_printer_zero);
+    RUN(opened_reports_a_restarted_printer);
+    RUN(printer_free_writes_the_record);
     RUN(abandon_writes_the_record_and_drops_late_answers);
     RUN(lost_worker_fails_the_outstanding_request);
     RUN(outbound_ring_wraps_with_pads_and_keeps_every_byte);
