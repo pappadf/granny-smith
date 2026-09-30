@@ -186,6 +186,7 @@ typedef struct {
 } attached_ctx_t;
 
 static void lint_attached(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
     attached_ctx_t *a = (attached_ctx_t *)ud;
     const char *name = object_name(child);
     if (!name)
