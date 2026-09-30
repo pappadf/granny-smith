@@ -45,17 +45,18 @@ let model: ConsoleModel | null = null;
 // The model, created (and fed) on first use.
 export function consoleModel(): ConsoleModel {
   if (!model) {
-    model = new ConsoleModel({
+    const m: ConsoleModel = new ConsoleModel({
       schedule: frame,
       setTimer: (fn, ms) => {
         const t = setTimeout(fn, ms);
         return () => clearTimeout(t);
       },
+      // A frame already scheduled when the model was reset flushes nothing.
       onFlush: (entries) => {
-        consoleState.entries = entries;
+        if (model === m) consoleState.entries = entries;
       },
     });
-    const m = model;
+    model = m;
     setConsoleSink((r) => m.push(r));
   }
   return model;
