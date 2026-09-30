@@ -2958,6 +2958,10 @@ static const arg_decl_t lp_add_args[] = {
      .doc = "\"logical\" or \"physical\""},
 };
 
+static const collection_desc_t bp_collection_entries = {
+    .entry = &breakpoint_entry_class, .by_index = {.get = bp_entries_get, .next = bp_entries_next}
+};
+
 static const member_t bp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
@@ -2975,13 +2979,7 @@ static const member_t bp_collection_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
     // `list` retired: read `entries` — the REPL renders
     // an object list as a table.
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &breakpoint_entry_class,
-               .indexed = true,
-               .get = bp_entries_get,
-               .next = bp_entries_next,
-               .lookup = NULL}},
+    OBJ_ENTRIES(&bp_collection_entries, NULL),
 };
 
 static const class_desc_t bp_collection_class = {
@@ -2989,6 +2987,10 @@ static const class_desc_t bp_collection_class = {
     .doc = "PC breakpoints: add and clear; entries by id",
     .members = bp_collection_members,
     .n_members = sizeof(bp_collection_members) / sizeof(bp_collection_members[0]),
+};
+
+static const collection_desc_t lp_collection_entries = {
+    .entry = &logpoint_entry_class, .by_index = {.get = lp_entries_get, .next = lp_entries_next}
 };
 
 static const member_t lp_collection_members[] = {
@@ -3008,13 +3010,7 @@ static const member_t lp_collection_members[] = {
      .doc = "Remove every logpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
     // `list` retired: read `entries`.
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &logpoint_entry_class,
-               .indexed = true,
-               .get = lp_entries_get,
-               .next = lp_entries_next,
-               .lookup = NULL}},
+    OBJ_ENTRIES(&lp_collection_entries, NULL),
 };
 
 static const class_desc_t lp_collection_class = {
@@ -3132,6 +3128,10 @@ static const arg_decl_t wp_add_args[] = {
      .doc = "\"logical\" or \"physical\""},
 };
 
+static const collection_desc_t wp_collection_entries = {
+    .entry = &watchpoint_entry_class, .by_index = {.get = wp_entries_get, .next = wp_entries_next}
+};
+
 static const member_t wp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
@@ -3147,13 +3147,7 @@ static const member_t wp_collection_members[] = {
      .examples = EXAMPLES("debug.watchpoints.clear"),
      .doc = "Remove every watchpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = wp_method_clear}},
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &watchpoint_entry_class,
-               .indexed = true,
-               .get = wp_entries_get,
-               .next = wp_entries_next,
-               .lookup = NULL}},
+    OBJ_ENTRIES(&wp_collection_entries, NULL),
 };
 
 static const class_desc_t wp_collection_class = {

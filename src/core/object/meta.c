@@ -305,7 +305,7 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
         kind_str = "method";
         break;
     case M_CHILD:
-        kind_str = mb->child.indexed ? "child[]" : "child";
+        kind_str = member_is_collection(mb) ? "child[]" : "child";
         break;
     }
     char buf[320];
@@ -375,7 +375,7 @@ static value_t meta_method_indices(struct object *self, const member_t *m, int a
     (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
-    if (!mb || mb->kind != M_CHILD || !mb->child.indexed)
+    if (!member_is_collection(mb))
         return val_err("indices: '%s' is not an indexed child", argv[0].s);
     return indices_of(insp, mb);
 }
@@ -441,61 +441,31 @@ value_t meta_type_descriptor(value_kind_t kind, uint8_t width, uint16_t presenta
     return val_map_finish(b);
 }
 
-// The one `entries` member of a collection container's class, or NULL when
-// `cls` is not a collection container (§ collections: exactly one member
-// named `entries`, indexed).
-const member_t *meta_collection_entries(const class_desc_t *cls) {
-    if (!cls)
-        return NULL;
-    const member_t *found = NULL;
-    for (size_t i = 0; i < cls->n_members; i++) {
-        const member_t *m = &cls->members[i];
-        if (m->kind == M_CHILD && m->child.indexed) {
-            if (found || !m->name || strcmp(m->name, "entries") != 0)
-                return NULL;
-            found = m;
-        }
-    }
-    return found;
-}
-
 // The live keys of a keyed collection member, as a V_LIST<V_STRING>, or none.
 static value_t keys_of(struct object *insp, const member_t *mb) {
-    if (!mb->child.keys)
+    if (!mb->child.collection->by_key.next_key)
         return val_none();
-    const char **names = NULL;
-    int n = mb->child.keys(insp, &names);
     value_t *items = NULL;
     size_t len = 0, cap = 0;
-    for (int i = 0; i < n; i++)
-        val_list_push(&items, &len, &cap, val_str(names[i] ? names[i] : ""));
+    for (const char *k = object_child_next_key(insp, mb, NULL); k; k = object_child_next_key(insp, mb, k))
+        val_list_push(&items, &len, &cap, val_str(k));
     return val_list(items, len);
+}
+
+// Whether a collection hands out entries by index.
+static bool by_index(const member_t *mb) {
+    return mb->child.collection->by_index.get != NULL;
 }
 
 // Put the collection keys of a child that is (or is not) a collection
 // container: `collection`, and for a container `indices` / `keys`.
 static void put_collection(value_map_builder_t *b, struct object *child) {
-    const member_t *entries = child ? meta_collection_entries(object_class(child)) : NULL;
+    const member_t *entries = child ? class_collection(object_class(child)) : NULL;
     val_map_put(b, "collection", val_bool(entries != NULL));
     if (!entries)
         return;
-    bool indexed = entries->child.get || entries->child.next;
-    val_map_put(b, "indices", indexed ? indices_of(child, entries) : val_none());
+    val_map_put(b, "indices", by_index(entries) ? indices_of(child, entries) : val_none());
     val_map_put(b, "keys", keys_of(child, entries));
-}
-
-// The object a named, non-indexed child member stands for right now (its
-// lookup, else the attached child of that name), or NULL.
-static struct object *named_child_object(struct object *insp, const member_t *mb) {
-    struct object *c = NULL;
-    if (mb->child.lookup && !mb->child.reference)
-        c = mb->child.lookup(insp, mb->name);
-    if (!c) {
-        node_t n = node_child((node_t){.obj = insp, .member = NULL, .index = -1}, mb->name);
-        if (node_valid(n) && !n.member)
-            c = n.obj;
-    }
-    return c;
 }
 
 static value_t describe_member(struct object *insp, const member_t *mb, bool values) {
@@ -506,8 +476,8 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
     val_map_put(b, "category", val_str(category_name(mb->flags)));
     val_map_put(b, "label", val_str(mb->label ? mb->label : (mb->name ? mb->name : "")));
     struct object *child = NULL;
-    if (mb->kind == M_CHILD && !mb->child.indexed)
-        child = named_child_object(insp, mb);
+    if (mb->kind == M_CHILD && !mb->child.reference)
+        child = object_named_child(insp, mb);
     const char *doc = mb->doc ? mb->doc : "";
     if (mb->kind == M_CHILD && !*doc && child)
         doc = object_doc(child);
@@ -522,10 +492,9 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
             val_map_put(b, "value", node_get((node_t){.obj = insp, .member = mb, .index = -1}));
         break;
     case M_CHILD:
-        val_map_put(b, "indexed", val_bool(mb->child.indexed));
-        if (mb->child.indexed) {
-            bool by_index = mb->child.get || mb->child.next;
-            val_map_put(b, "indices", by_index ? indices_of(insp, mb) : val_none());
+        val_map_put(b, "indexed", val_bool(member_is_collection(mb)));
+        if (member_is_collection(mb)) {
+            val_map_put(b, "indices", by_index(mb) ? indices_of(insp, mb) : val_none());
             val_map_put(b, "keys", keys_of(insp, mb));
             val_map_put(b, "collection", val_bool(false));
         } else {

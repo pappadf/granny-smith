@@ -33,15 +33,17 @@ typedef struct pci_slot_nodes {
     struct object *slot;
     struct object *card;
     struct object *config;
-    struct object *bar[PCI_BAR_SLOTS];
+    object_cache_t bars; // the bar nodes, by BAR index; their data is this record
     struct object *fb; // the card's nominated framebuffer node, if any
     pci_device_t *dev;
     int number; // instance data for the slot wrapper
-    int bar_index[PCI_BAR_SLOTS]; // instance data for the bar nodes
 } pci_slot_nodes_t;
 
 static pci_root_t *g_obj_root = NULL;
 static pci_slot_nodes_t g_slot_nodes[PCI_OBJ_SLOTS];
+// The slot wrapper objects, by slot number.
+static const class_desc_t pci_slot_class;
+static object_cache_t g_slot_objects = OBJECT_CACHE(&pci_slot_class, "slot");
 
 // === catalog.pci_cards ======================================================
 
@@ -70,23 +72,12 @@ static pci_slot_nodes_t *node_rec(struct object *self) {
     return (pci_slot_nodes_t *)object_data(self);
 }
 
-// The BAR index a bar node stands for (its instance data is the int inside
-// the owning slot record).
+// The BAR index a bar node stands for (its cache index), and the slot record
+// it belongs to (its instance data).
 static int bar_index_of(struct object *self, pci_slot_nodes_t **rec_out) {
-    const int *idx = (const int *)object_data(self);
-    if (!idx)
-        return -1;
-    for (int s = 0; s < PCI_OBJ_SLOTS; s++) {
-        pci_slot_nodes_t *n = &g_slot_nodes[s];
-        for (int b = 0; b < PCI_BAR_SLOTS; b++) {
-            if (&n->bar_index[b] == idx) {
-                if (rec_out)
-                    *rec_out = n;
-                return b;
-            }
-        }
-    }
-    return -1;
+    if (rec_out)
+        *rec_out = node_rec(self);
+    return object_entry_index(self);
 }
 
 static value_t bar_attr_index(struct object *self, const member_t *m) {
@@ -200,7 +191,7 @@ static struct object *pci_bar_get(struct object *self, int index) {
     pci_slot_nodes_t *n = node_rec(self);
     if (!n || index < 0 || index >= PCI_BAR_SLOTS)
         return NULL;
-    return n->bar[index];
+    return object_cache_find(&n->bars, index);
 }
 
 static const member_t config_members[] = {
@@ -231,15 +222,12 @@ static const member_t config_members[] = {
 };
 // `config.bar` -- the BAR collection: a container whose entries are the bar
 // nodes.  Its instance data is the slot record, like the config node's.
-static const member_t pci_bars_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Base address registers; index 0..5, plus 6 for the expansion ROM",
-     .child = {.cls = &pci_bar_class, .indexed = true, .get = pci_bar_get, .slots = PCI_BAR_SLOTS}},
+static const collection_desc_t pci_bars = {
+    .entry = &pci_bar_class,
+    .by_index = {.get = pci_bar_get, .slots = PCI_BAR_SLOTS},
+    .name = "pci_bars",
+    .entries_doc = "Base address registers; index 0..5, plus 6 for the expansion ROM",
 };
-static const class_desc_t pci_bars_class = {.name = "pci_bars",
-                                            .members = pci_bars_members,
-                                            .n_members = sizeof(pci_bars_members) / sizeof(pci_bars_members[0])};
 
 static const class_desc_t pci_config_class = {
     .name = "config", .members = config_members, .n_members = sizeof(config_members) / sizeof(config_members[0])};
@@ -402,19 +390,14 @@ static struct object *pci_slot_get(struct object *self, int index) {
 }
 
 // `machine.pci.slot` -- the slot collection: a container (attached under
-// `machine.pci` by the install hook below) whose entries are the declared slots.
-static const member_t pci_slots_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Declared PCI slots; index by slot number, e.g. slot[1].card.config",
-     .child = {.cls = &pci_slot_class, .indexed = true, .get = pci_slot_get, .slots = PCI_OBJ_SLOTS}},
-};
-
-static const class_desc_t pci_slots_class = {
+// `machine.pci` by the install hook below) whose entries are the declared
+// slots.
+static const collection_desc_t pci_slots = {
+    .entry = &pci_slot_class,
+    .by_index = {.get = pci_slot_get, .slots = PCI_OBJ_SLOTS},
     .name = "pci_slots",
     .doc = "PCI slots, by slot number",
-    .members = pci_slots_members,
-    .n_members = sizeof(pci_slots_members) / sizeof(pci_slots_members[0]),
+    .entries_doc = "Declared PCI slots; index by slot number, e.g. slot[1].card.config",
 };
 
 // `machine.pci` itself carries no members of its own: its `slot` child is
@@ -426,23 +409,6 @@ static const class_desc_t pci_class = {
     .n_members = 0,
 };
 
-static struct object *g_slots_container = NULL;
-
-// The container is freed by root_uninstall; forget it then.
-static void slots_container_dtor(struct object *o) {
-    if (g_slots_container == o)
-        g_slots_container = NULL;
-}
-
-static void pci_objects_adopt(struct object *slots) {
-    g_slots_container = slots;
-    if (slots)
-        object_set_destructor(slots, slots_container_dtor);
-    for (int i = 0; i < PCI_OBJ_SLOTS; i++)
-        if (g_slot_nodes[i].slot)
-            object_set_logical_parent(g_slot_nodes[i].slot, slots, NULL, i, NULL);
-}
-
 // `machine.pci` and its slot collection, under the machine node (they are
 // emulated hardware, not meta objects), on a machine with that bus.
 static void pci_root_install(struct config *cfg) {
@@ -453,10 +419,10 @@ static void pci_root_install(struct config *cfg) {
         return;
     object_set_label(bus, "PCI");
     object_set_order(bus, 101);
-    struct object *slots = root_attach_stub(bus, object_new(&pci_slots_class, cfg, "slot"));
+    struct object *slots = root_attach_stub(bus, object_collection_new(&pci_slots, cfg, "slot"));
     if (slots) {
         object_set_label(slots, "Slots");
-        pci_objects_adopt(slots);
+        object_cache_set_parent(&g_slot_objects, slots);
     }
 }
 
@@ -475,13 +441,11 @@ void pci_objects_build(pci_root_t *root) {
         pci_slot_nodes_t *n = &g_slot_nodes[i];
         n->number = i;
         n->dev = pci_slot_device(root, i);
-        n->slot = object_new(&pci_slot_class, &n->number, "slot");
+        n->slot = object_cache_at(&g_slot_objects, i, &n->number);
         if (!n->slot)
             continue;
         object_set_label(n->slot, decl->label ? decl->label : "Slot");
         object_set_order(n->slot, i);
-        if (g_slots_container)
-            object_set_logical_parent(n->slot, g_slots_container, NULL, i, NULL);
         if (!n->dev)
             continue; // empty socket: the wrapper plus its staged attrs
 
@@ -500,22 +464,22 @@ void pci_objects_build(pci_root_t *root) {
             object_set_order(n->config, 10);
             object_set_category(n->config, M_CAT_ADVANCED);
             object_attach(n->card, n->config);
-            struct object *bars = object_new(&pci_bars_class, n, "bar");
+            struct object *bars = object_collection_new(&pci_bars, n, "bar");
             if (bars) {
                 object_set_label(bars, "BARs");
                 object_set_order(bars, 10);
                 object_attach(n->config, bars);
             }
+            n->bars = (object_cache_t)OBJECT_CACHE(&pci_bar_class, "bar");
+            object_cache_set_parent(&n->bars, bars);
             for (int b = 0; b < PCI_BAR_SLOTS; b++) {
                 if (!pci_cfg_bar_size(n->dev, b))
                     continue;
-                n->bar_index[b] = b;
-                n->bar[b] = object_new(&pci_bar_class, &n->bar_index[b], "bar");
-                if (!n->bar[b])
+                struct object *bar = object_cache_at(&n->bars, b, n);
+                if (!bar)
                     continue;
-                object_set_label(n->bar[b], "BAR");
-                object_set_order(n->bar[b], b);
-                object_set_logical_parent(n->bar[b], bars, NULL, b, NULL);
+                object_set_label(bar, "BAR");
+                object_set_order(bar, b);
             }
         }
 
@@ -551,17 +515,12 @@ struct object *pci_active_framebuffer_object(void) {
 }
 
 void pci_objects_teardown(void) {
-    for (int i = 0; i < PCI_OBJ_SLOTS; i++) {
-        // The bar nodes are not attached to the config node (the indexed
-        // child member serves them), so free them explicitly first.
-        for (int b = 0; b < PCI_BAR_SLOTS; b++) {
-            if (g_slot_nodes[i].bar[b])
-                object_delete_tree(g_slot_nodes[i].bar[b]);
-        }
-        if (g_slot_nodes[i].slot)
-            object_delete_tree(g_slot_nodes[i].slot); // slot + attached subtree
-        memset(&g_slot_nodes[i], 0, sizeof(g_slot_nodes[i]));
-    }
+    // The bar nodes are not attached to the config node (the collection
+    // serves them), so free them first; then each slot with its subtree.
+    for (int i = 0; i < PCI_OBJ_SLOTS; i++)
+        object_cache_clear(&g_slot_nodes[i].bars);
+    object_cache_clear(&g_slot_objects);
+    memset(g_slot_nodes, 0, sizeof(g_slot_nodes));
     g_obj_root = NULL;
 }
 

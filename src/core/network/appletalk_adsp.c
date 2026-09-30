@@ -1206,15 +1206,16 @@ static struct object *g_adsp_object;
 static struct object *g_adsp_conns_object;
 static struct object *g_adsp_stats_object;
 
-OBJECT_POOL(g_adsp_conn_pool, ADSP_MAX_CONNECTIONS);
-
 static const class_desc_t adsp_class;
 static const class_desc_t adsp_conns_class;
 static const class_desc_t adsp_conn_class;
 static const class_desc_t adsp_stats_class;
 
+// The collection entry objects, made on first use.
+static object_cache_t g_adsp_conn_entries = OBJECT_CACHE(&adsp_conn_class, NULL);
+
 static adsp_conn_t *adsp_obj_conn(struct object *self) {
-    int slot = object_pool_slot(self);
+    int slot = object_entry_index(self);
     return slot >= 0 ? adsp_conn_at(g_adsp, slot) : NULL;
 }
 
@@ -1351,14 +1352,15 @@ static struct object *adsp_conns_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ADSP_MAX_CONNECTIONS || !adsp_conn_at(g_adsp, index))
         return NULL;
-    return object_pool_at(&g_adsp_conn_pool, index);
+    return object_cache_at(&g_adsp_conn_entries, index, NULL);
 }
 
+static const collection_desc_t adsp_conns_entries = {
+    .entry = &adsp_conn_class, .by_index = {.get = adsp_conns_get, .slots = ADSP_MAX_CONNECTIONS}
+};
+
 static const member_t adsp_conns_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Live ADSP connection ends",
-     .child = {.cls = &adsp_conn_class, .indexed = true, .get = adsp_conns_get, .slots = ADSP_MAX_CONNECTIONS}},
+    OBJ_ENTRIES(&adsp_conns_entries, "Live ADSP connection ends"),
 };
 
 static const class_desc_t adsp_conns_class = {
@@ -1439,12 +1441,11 @@ void atalk_adsp_install_objects(struct object *parent) {
 
     // Entry objects are handed out by the collection callbacks and never
     // attached, so the cascade delete does not free them (we do, below).
-    object_pool_create(&g_adsp_conn_pool, &adsp_conn_class);
-    object_pool_set_parent(&g_adsp_conn_pool, g_adsp_conns_object);
+    object_cache_set_parent(&g_adsp_conn_entries, g_adsp_conns_object);
 }
 
 void atalk_adsp_remove_objects(void) {
-    object_pool_delete(&g_adsp_conn_pool);
+    object_cache_clear(&g_adsp_conn_entries);
     struct object **nodes[] = {&g_adsp_conns_object, &g_adsp_stats_object, &g_adsp_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

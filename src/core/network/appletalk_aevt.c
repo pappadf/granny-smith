@@ -596,9 +596,6 @@ static struct object *g_aevt_events_object;
 static struct object *g_aevt_inbox_object;
 static struct object *g_aevt_stats_object;
 
-OBJECT_POOL(g_aevt_event_pool, AEVT_MAX_EVENTS);
-OBJECT_POOL(g_aevt_inbox_pool, AEVT_MAX_INBOX);
-
 static const class_desc_t aevt_class;
 static const class_desc_t aevt_events_class;
 static const class_desc_t aevt_event_class;
@@ -606,8 +603,12 @@ static const class_desc_t aevt_inbox_class;
 static const class_desc_t aevt_inbox_entry_class;
 static const class_desc_t aevt_stats_class;
 
+// The collection entry objects, made on first use.
+static object_cache_t g_aevt_event_entries = OBJECT_CACHE(&aevt_event_class, NULL);
+static object_cache_t g_aevt_inbox_entries = OBJECT_CACHE(&aevt_inbox_entry_class, NULL);
+
 static int aevt_obj_slot(struct object *self) {
-    return object_pool_slot(self);
+    return object_entry_index(self);
 }
 
 static aevt_event_t *aevt_obj_event(struct object *self) {
@@ -735,25 +736,25 @@ static struct object *aevt_events_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_event_count || !g_events[index].in_use)
         return NULL;
-    return object_pool_at(&g_aevt_event_pool, index);
+    return object_cache_at(&g_aevt_event_entries, index, NULL);
 }
 // Name lookup resolves the `tag:` given at send time (§8).
 static struct object *aevt_events_lookup(struct object *self, const char *name) {
     (void)self;
     for (int i = 0; i < g_event_count; i++)
         if (g_events[i].in_use && g_events[i].tag[0] && !strcmp(g_events[i].tag, name))
-            return object_pool_at(&g_aevt_event_pool, i);
+            return object_cache_at(&g_aevt_event_entries, i, NULL);
     return NULL;
 }
 
+static const collection_desc_t aevt_events_entries = {
+    .entry = &aevt_event_class,
+    .by_index = {.get = aevt_events_get, .slots = AEVT_MAX_EVENTS},
+    .by_key = {.lookup = aevt_events_lookup}
+};
+
 static const member_t aevt_events_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &aevt_event_class,
-               .indexed = true,
-               .get = aevt_events_get,
-               .slots = AEVT_MAX_EVENTS,
-               .lookup = aevt_events_lookup}},
+    OBJ_ENTRIES(&aevt_events_entries, NULL),
 };
 
 static const class_desc_t aevt_events_class = {
@@ -838,7 +839,7 @@ static struct object *aevt_inbox_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_inbox_count || !g_inbox[index].in_use)
         return NULL;
-    return object_pool_at(&g_aevt_inbox_pool, index);
+    return object_cache_at(&g_aevt_inbox_entries, index, NULL);
 }
 
 static value_t aevt_inbox_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -850,6 +851,10 @@ static value_t aevt_inbox_method_clear(struct object *self, const member_t *m, i
     return val_none();
 }
 
+static const collection_desc_t aevt_inbox_entries = {
+    .entry = &aevt_inbox_entry_class, .by_index = {.get = aevt_inbox_get, .slots = AEVT_MAX_INBOX}
+};
+
 static const member_t aevt_inbox_members[] = {
     {.kind = M_METHOD,
      .name = "clear",
@@ -859,9 +864,7 @@ static const member_t aevt_inbox_members[] = {
                 .result = V_NONE,
                 .fn = aevt_inbox_method_clear,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &aevt_inbox_entry_class, .indexed = true, .get = aevt_inbox_get, .slots = AEVT_MAX_INBOX}},
+    OBJ_ENTRIES(&aevt_inbox_entries, NULL),
 };
 
 static const class_desc_t aevt_inbox_class = {
@@ -951,8 +954,8 @@ static value_t aevt_attr_set_auto_reply(struct object *self, const member_t *m, 
 // Shared tail of send and send_raw: register the event and start it.
 static value_t aevt_finish_send(aevt_event_t *ev) {
     aevt_begin(ev);
-    if (ev->slot < AEVT_MAX_EVENTS && object_pool_at(&g_aevt_event_pool, ev->slot))
-        return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
+    if (ev->slot < AEVT_MAX_EVENTS && object_cache_at(&g_aevt_event_entries, ev->slot, NULL))
+        return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
     return val_none();
 }
 
@@ -1055,7 +1058,7 @@ static value_t aevt_method_send_raw(struct object *self, const member_t *m, int 
     ppc_session_t *s = aevt_session_for(ev->target, err, sizeof(err));
     if (!s) {
         aevt_fail(ev, err);
-        return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
+        return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
     }
     ev->session = s;
     if (atalk_ppc_session_state(s) == PPC_SESSION_OPEN) {
@@ -1070,7 +1073,7 @@ static value_t aevt_method_send_raw(struct object *self, const member_t *m, int 
     } else {
         aevt_fail(ev, "no session to that port is open yet; browse and retry");
     }
-    return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
+    return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
 }
 
 static const value_t aevt_def_timeout = {.kind = V_UINT, .width = 8, .u = AEVT_DEFAULT_TIMEOUT_INSTR};
@@ -1172,16 +1175,13 @@ void atalk_aevt_install_objects(struct object *parent) {
         object_attach(g_aevt_object, g_aevt_stats_object);
     }
 
-    object_pool_create(&g_aevt_event_pool, &aevt_event_class);
-
-    object_pool_set_parent(&g_aevt_event_pool, g_aevt_events_object);
-    object_pool_create(&g_aevt_inbox_pool, &aevt_inbox_entry_class);
-    object_pool_set_parent(&g_aevt_inbox_pool, g_aevt_inbox_object);
+    object_cache_set_parent(&g_aevt_event_entries, g_aevt_events_object);
+    object_cache_set_parent(&g_aevt_inbox_entries, g_aevt_inbox_object);
 }
 
 void atalk_aevt_remove_objects(void) {
-    object_pool_delete(&g_aevt_event_pool);
-    object_pool_delete(&g_aevt_inbox_pool);
+    object_cache_clear(&g_aevt_event_entries);
+    object_cache_clear(&g_aevt_inbox_entries);
     struct object **nodes[] = {&g_aevt_events_object, &g_aevt_inbox_object, &g_aevt_stats_object, &g_aevt_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

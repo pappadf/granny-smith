@@ -117,38 +117,21 @@ static void lint_members(lint_ctx_t *cx, struct object *o, const char *path, boo
         case M_CHILD:
             if (m->child.reference)
                 break;
-            if (m->child.indexed) {
-                // Entries of an indexed and/or keyed collection.
+            if (m->child.collection) {
+                // Entries of an indexed and/or keyed collection, under the
+                // container's path.
                 for (int k = object_child_next(o, m, -1); k >= 0; k = object_child_next(o, m, k)) {
                     char ep[640];
-                    // `entries` is the container's own member: the entry path
-                    // is the container's path with the index.
-                    if (strcmp(m->name, "entries") == 0)
-                        snprintf(ep, sizeof(ep), "%s[%d]", path, k);
-                    else
-                        snprintf(ep, sizeof(ep), "%s[%d]", mpath, k);
-                    visit_child(cx, m->child.get ? m->child.get(o, k) : NULL, ep, false);
+                    snprintf(ep, sizeof(ep), "%s[%d]", path, k);
+                    visit_child(cx, object_entry_at(o, m, k), ep, false);
                 }
-                if (m->child.keys && m->child.lookup) {
-                    const char **names = NULL;
-                    int n = m->child.keys(o, &names);
-                    // Copy: visiting an entry may call keys() again.
-                    char **copy = n > 0 ? (char **)calloc((size_t)n, sizeof(char *)) : NULL;
-                    for (int k = 0; copy && k < n; k++)
-                        copy[k] = strdup(names[k] ? names[k] : "");
-                    for (int k = 0; copy && k < n; k++) {
-                        char ep[640];
-                        if (strcmp(m->name, "entries") == 0)
-                            snprintf(ep, sizeof(ep), "%s[\"%s\"]", path, copy[k]);
-                        else
-                            snprintf(ep, sizeof(ep), "%s[\"%s\"]", mpath, copy[k]);
-                        visit_child(cx, m->child.lookup(o, copy[k]), ep, false);
-                        free(copy[k]);
-                    }
-                    free(copy);
+                for (const char *k = object_child_next_key(o, m, NULL); k; k = object_child_next_key(o, m, k)) {
+                    char ep[640];
+                    snprintf(ep, sizeof(ep), "%s[\"%s\"]", path, k);
+                    visit_child(cx, object_entry_by_key(o, m, k), ep, false);
                 }
             } else {
-                struct object *c = m->child.lookup ? m->child.lookup(o, m->name) : NULL;
+                struct object *c = m->child.lookup ? object_named_child(o, m) : NULL;
                 if (c) {
                     if (basic && !*object_doc(c) && !(m->doc && *m->doc))
                         report(cx, mpath, "node shown in the basic tier has no doc");

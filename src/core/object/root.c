@@ -43,18 +43,9 @@ static struct object *resolve_target(const value_t *path_arg) {
         return n.obj;
     if (n.member->kind != M_CHILD)
         return n.obj;
-    if (n.member->child.indexed) {
-        if (n.index < 0 || !n.member->child.get)
-            return n.obj;
-        struct object *c = n.member->child.get(n.obj, n.index);
-        return c ? c : n.obj;
-    }
-    if (n.member->child.lookup) {
-        struct object *c = n.member->child.lookup(n.obj, n.member->name);
-        if (c)
-            return c;
-    }
-    return n.obj;
+    struct object *c =
+        n.member->child.collection ? object_entry_at(n.obj, n.member, n.index) : object_named_child(n.obj, n.member);
+    return c ? c : n.obj;
 }
 
 // Growable V_STRING list used to accumulate object/attribute/method

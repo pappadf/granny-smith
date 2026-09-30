@@ -121,9 +121,9 @@ static const class_desc_t atalk_session_class;
 static const class_desc_t atalk_printer_class;
 static const class_desc_t atalk_printer_stats_class;
 
-OBJECT_POOL(g_atalk_volume_pool, ATALK_AFP_MAX_VOLUMES);
-OBJECT_POOL(g_atalk_nbp_pool, ATALK_NBP_MAX_ENTRIES);
-OBJECT_POOL(g_atalk_session_pool, ATALK_ASP_MAX_SESSIONS);
+static object_cache_t g_atalk_volume_entries = OBJECT_CACHE(&atalk_volume_class, NULL);
+static object_cache_t g_atalk_nbp_entries = OBJECT_CACHE(&atalk_nbp_entry_class, NULL);
+static object_cache_t g_atalk_session_entries = OBJECT_CACHE(&atalk_session_class, NULL);
 
 // Singleton object-tree nodes — lifetime tied to appletalk_init/delete.
 static struct object *g_atalk_object;
@@ -934,15 +934,13 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     atalk_ppc_install_objects(g_atalk_object);
     atalk_aevt_install_objects(g_atalk_object);
 
-    // Collection entry objects are pre-allocated once and handed out by the
-    // get()/next() callbacks; they are never attached, so the cascade delete
-    // does not free them (this module does, in appletalk_delete).
-    object_pool_create(&g_atalk_volume_pool, &atalk_volume_class);
-    object_pool_set_parent(&g_atalk_volume_pool, g_atalk_volumes_object);
-    object_pool_create(&g_atalk_nbp_pool, &atalk_nbp_entry_class);
-    object_pool_set_parent(&g_atalk_nbp_pool, g_atalk_nbp_object);
-    object_pool_create(&g_atalk_session_pool, &atalk_session_class);
-    object_pool_set_parent(&g_atalk_session_pool, g_atalk_sessions_object);
+    // Collection entry objects are made on first use by their caches and
+    // handed out by the get() callbacks; they are never attached, so the
+    // cascade delete does not free them (this module does, in
+    // appletalk_delete).
+    object_cache_set_parent(&g_atalk_volume_entries, g_atalk_volumes_object);
+    object_cache_set_parent(&g_atalk_nbp_entries, g_atalk_nbp_object);
+    object_cache_set_parent(&g_atalk_session_entries, g_atalk_sessions_object);
 }
 
 // ============================================================================
@@ -1004,10 +1002,10 @@ static void appletalk_teardown(void) {
     // CTS arms an LLAP timer.
     atalk_timers_forget();
 
-    // Collection entry objects are never attached, so free them by hand.
-    object_pool_delete(&g_atalk_volume_pool);
-    object_pool_delete(&g_atalk_nbp_pool);
-    object_pool_delete(&g_atalk_session_pool);
+    // Collection entry objects are never attached, so free them here.
+    object_cache_clear(&g_atalk_volume_entries);
+    object_cache_clear(&g_atalk_nbp_entries);
+    object_cache_clear(&g_atalk_session_entries);
 
     struct object **attached[] = {&g_atalk_volumes_object,       &g_atalk_sessions_object, &g_atalk_afp_stats_object,
                                   &g_atalk_afp_object,           &g_atalk_stats_object,    &g_atalk_nbp_object,
@@ -2732,7 +2730,7 @@ static const class_desc_t atalk_stats_class = {
 // --- appletalk.nbp ---------------------------------------------------------
 
 static int atalk_slot_of(struct object *self) {
-    return object_pool_slot(self);
+    return object_entry_index(self);
 }
 
 // The NBP entry accessors re-read the registry each time: entries can be
@@ -2790,7 +2788,7 @@ static struct object *atalk_nbp_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_NBP_MAX_ENTRIES || !atalk_nbp_entry_in_use(index))
         return NULL;
-    return object_pool_at(&g_atalk_nbp_pool, index);
+    return object_cache_at(&g_atalk_nbp_entries, index, NULL);
 }
 // Named lookup so `appletalk.nbp["Shared Folders"]` resolves.
 static struct object *atalk_nbp_entry_lookup(struct object *self, const char *name) {
@@ -2798,20 +2796,19 @@ static struct object *atalk_nbp_entry_lookup(struct object *self, const char *na
     for (int i = 0; i < ATALK_NBP_MAX_ENTRIES && i < atalk_nbp_entry_max(); i++) {
         atalk_nbp_info_t info;
         if (atalk_nbp_entry_info(i, &info) && strcmp(info.object, name) == 0)
-            return object_pool_at(&g_atalk_nbp_pool, i);
+            return object_cache_at(&g_atalk_nbp_entries, i, NULL);
     }
     return NULL;
 }
 
+static const collection_desc_t atalk_nbp_collection_entries = {
+    .entry = &atalk_nbp_entry_class,
+    .by_index = {.get = atalk_nbp_get, .slots = ATALK_NBP_MAX_ENTRIES},
+    .by_key = {.lookup = atalk_nbp_entry_lookup}
+};
+
 static const member_t atalk_nbp_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Every entity this host advertises",
-     .child = {.cls = &atalk_nbp_entry_class,
-               .indexed = true,
-               .get = atalk_nbp_get,
-               .slots = ATALK_NBP_MAX_ENTRIES,
-               .lookup = atalk_nbp_entry_lookup}},
+    OBJ_ENTRIES(&atalk_nbp_collection_entries, "Every entity this host advertises"),
 };
 
 static const class_desc_t atalk_nbp_collection_class = {
@@ -2917,7 +2914,7 @@ static struct object *atalk_volumes_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_AFP_MAX_VOLUMES || !atalk_afp_volume_in_use(index))
         return NULL;
-    return object_pool_at(&g_atalk_volume_pool, index);
+    return object_cache_at(&g_atalk_volume_entries, index, NULL);
 }
 // Name lookup, so `appletalk.afp.volumes["Shared"].cnid_count` reads naturally.
 static struct object *atalk_volumes_lookup(struct object *self, const char *name) {
@@ -2925,7 +2922,7 @@ static struct object *atalk_volumes_lookup(struct object *self, const char *name
     int slot = atalk_afp_volume_find(name);
     if (slot < 0 || slot >= ATALK_AFP_MAX_VOLUMES)
         return NULL;
-    return object_pool_at(&g_atalk_volume_pool, slot);
+    return object_cache_at(&g_atalk_volume_entries, slot, NULL);
 }
 
 // Constructive methods return the object they made, so a script can chain
@@ -2938,9 +2935,9 @@ static value_t atalk_volumes_method_add(struct object *self, const member_t *m, 
     int slot = atalk_afp_volume_add(argv[0].s, argv[1].s, err, sizeof(err));
     if (slot < 0)
         return atalk_err("cannot add the volume", err);
-    if (slot >= ATALK_AFP_MAX_VOLUMES || !object_pool_at(&g_atalk_volume_pool, slot))
+    if (slot >= ATALK_AFP_MAX_VOLUMES || !object_cache_at(&g_atalk_volume_entries, slot, NULL))
         return val_none();
-    return val_obj(object_pool_at(&g_atalk_volume_pool, slot));
+    return val_obj(object_cache_at(&g_atalk_volume_entries, slot, NULL));
 }
 
 static value_t atalk_volumes_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2968,6 +2965,12 @@ static const arg_decl_t atalk_volumes_remove_args[] = {
     {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Volume name to withdraw"},
 };
 
+static const collection_desc_t atalk_volumes_collection_entries = {
+    .entry = &atalk_volume_class,
+    .by_index = {.get = atalk_volumes_get, .slots = ATALK_AFP_MAX_VOLUMES},
+    .by_key = {.lookup = atalk_volumes_lookup}
+};
+
 static const member_t atalk_volumes_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
@@ -2976,7 +2979,7 @@ static const member_t atalk_volumes_collection_members[] = {
                 .nargs = 2,
                 .result = V_OBJECT,
                 .fn = atalk_volumes_method_add,
-                .ui_flags = MM_MUTATE}},
+                .ui_flags = MM_MUTATE}                 },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Withdraw an AFP volume by name",
@@ -2985,13 +2988,7 @@ static const member_t atalk_volumes_collection_members[] = {
                 .result = V_NONE,
                 .fn = atalk_volumes_method_remove,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &atalk_volume_class,
-               .indexed = true,
-               .get = atalk_volumes_get,
-               .slots = ATALK_AFP_MAX_VOLUMES,
-               .lookup = atalk_volumes_lookup}},
+    OBJ_ENTRIES(&atalk_volumes_collection_entries, NULL),
 };
 
 static const class_desc_t atalk_volumes_collection_class = {
@@ -3062,17 +3059,15 @@ static struct object *atalk_sessions_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_ASP_MAX_SESSIONS || !atalk_asp_session_in_use(index))
         return NULL;
-    return object_pool_at(&g_atalk_session_pool, index);
+    return object_cache_at(&g_atalk_session_entries, index, NULL);
 }
 
+static const collection_desc_t atalk_sessions_collection_entries = {
+    .entry = &atalk_session_class, .by_index = {.get = atalk_sessions_get, .slots = ATALK_ASP_MAX_SESSIONS}
+};
+
 static const member_t atalk_sessions_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &atalk_session_class,
-               .indexed = true,
-               .get = atalk_sessions_get,
-               .slots = ATALK_ASP_MAX_SESSIONS,
-               .lookup = NULL}},
+    OBJ_ENTRIES(&atalk_sessions_collection_entries, NULL),
 };
 
 static const class_desc_t atalk_sessions_collection_class = {

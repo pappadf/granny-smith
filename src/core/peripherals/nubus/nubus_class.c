@@ -86,6 +86,9 @@ typedef struct {
 
 static nubus_bus_t *g_obj_bus = NULL;
 static nubus_slot_nodes_t g_slot_nodes[NUBUS_OBJ_SLOTS];
+// The slot wrapper objects, by slot number.
+static const class_desc_t nubus_slot_class;
+static object_cache_t g_slot_objects = OBJECT_CACHE(&nubus_slot_class, "slot");
 
 static nubus_card_t *node_card(struct object *self) {
     return (nubus_card_t *)object_data(self);
@@ -333,19 +336,14 @@ static struct object *nubus_slot_get(struct object *self, int index) {
 }
 
 // `machine.nubus.slot` -- the slot collection: a container (attached under
-// `machine.nubus` by the install hook below) whose entries are the declared slots.
-static const member_t nubus_slots_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Populated NuBus slots ($9..$E); index by slot number, e.g. slot[9].card.framebuffer",
-     .child = {.cls = &nubus_slot_class, .indexed = true, .get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1}},
-};
-
-static const class_desc_t nubus_slots_class = {
+// `machine.nubus` by the install hook below) whose entries are the declared
+// slots.
+static const collection_desc_t nubus_slots = {
+    .entry = &nubus_slot_class,
+    .by_index = {.get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1},
     .name = "nubus_slots",
     .doc = "NuBus slots, by slot number",
-    .members = nubus_slots_members,
-    .n_members = sizeof(nubus_slots_members) / sizeof(nubus_slots_members[0]),
+    .entries_doc = "Populated NuBus slots ($9..$E); index by slot number, e.g. slot[9].card.framebuffer",
 };
 
 // `machine.nubus` itself carries no members of its own: its `slot` child is
@@ -357,23 +355,6 @@ static const class_desc_t nubus_class = {
     .n_members = 0,
 };
 
-static struct object *g_slots_container = NULL;
-
-// The container is freed by root_uninstall; forget it then.
-static void slots_container_dtor(struct object *o) {
-    if (g_slots_container == o)
-        g_slots_container = NULL;
-}
-
-static void nubus_objects_adopt(struct object *slots) {
-    g_slots_container = slots;
-    if (slots)
-        object_set_destructor(slots, slots_container_dtor);
-    for (int i = 0; i < NUBUS_OBJ_SLOTS; i++)
-        if (g_slot_nodes[i].slot)
-            object_set_logical_parent(g_slot_nodes[i].slot, slots, NULL, i, NULL);
-}
-
 // `machine.nubus` and its slot collection, under the machine node (they are
 // emulated hardware, not meta objects), on a machine with that bus.
 static void nubus_root_install(struct config *cfg) {
@@ -384,10 +365,10 @@ static void nubus_root_install(struct config *cfg) {
         return;
     object_set_label(bus, "NuBus");
     object_set_order(bus, 100);
-    struct object *slots = root_attach_stub(bus, object_new(&nubus_slots_class, cfg, "slot"));
+    struct object *slots = root_attach_stub(bus, object_collection_new(&nubus_slots, cfg, "slot"));
     if (slots) {
         object_set_label(slots, "Slots");
-        nubus_objects_adopt(slots);
+        object_cache_set_parent(&g_slot_objects, slots);
     }
 }
 
@@ -426,13 +407,11 @@ void nubus_objects_build(nubus_bus_t *bus) {
         nubus_slot_nodes_t *n = &g_slot_nodes[i];
 
         s_slot_numbers[i] = i;
-        n->slot = object_new(&nubus_slot_class, &s_slot_numbers[i], "slot");
+        n->slot = object_cache_at(&g_slot_objects, i, &s_slot_numbers[i]);
         if (!n->slot)
             continue;
         object_set_label(n->slot, "Slot");
         object_set_order(n->slot, i);
-        if (g_slots_container)
-            object_set_logical_parent(n->slot, g_slots_container, NULL, i, NULL);
 
         if (!card)
             continue; // empty socket: just the wrapper + staged attrs
@@ -460,11 +439,8 @@ void nubus_objects_build(nubus_bus_t *bus) {
 }
 
 void nubus_objects_teardown(void) {
-    for (int i = 0; i < NUBUS_OBJ_SLOTS; i++) {
-        if (g_slot_nodes[i].slot)
-            object_delete_tree(g_slot_nodes[i].slot); // frees the slot + attached subtree
-        memset(&g_slot_nodes[i], 0, sizeof(g_slot_nodes[i]));
-    }
+    object_cache_clear(&g_slot_objects); // frees each slot + attached subtree
+    memset(g_slot_nodes, 0, sizeof(g_slot_nodes));
     g_obj_bus = NULL;
 }
 

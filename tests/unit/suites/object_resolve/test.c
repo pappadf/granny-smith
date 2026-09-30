@@ -91,12 +91,13 @@ static const class_desc_t dev_class = {
     .n_members = 1,
 };
 
+static const collection_desc_t bucket_entries = {
+    .entry = &dev_class, .by_index = {.get = bucket_get, .next = bucket_next}
+};
+
 // Bucket exposes one indexed child member named "devices".
 static const member_t bucket_members[] = {
-    {.kind = M_CHILD,
-     .name = "devices",
-     .flags = 0,
-     .child = {.cls = &dev_class, .indexed = true, .get = bucket_get, .next = bucket_next, .lookup = NULL}},
+    {.kind = M_CHILD, .name = "devices", .flags = 0, .child = {.collection = &bucket_entries}},
 };
 static const class_desc_t bucket_class = {
     .name = "bucket",

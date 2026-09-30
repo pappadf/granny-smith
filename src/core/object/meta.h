@@ -57,9 +57,6 @@ void meta_set_complete_provider(meta_complete_fn fn);
 value_t meta_type_descriptor(value_kind_t kind, uint8_t width, uint16_t presentation, const char *const *enum_values);
 const char *meta_presentation_text(uint16_t flags); // "hex", "path", … or NULL
 
-// The `entries` member of a collection container's class, or NULL.
-const member_t *meta_collection_entries(const class_desc_t *cls);
-
 #ifdef __cplusplus
 }
 #endif

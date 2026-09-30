@@ -1643,11 +1643,12 @@ static struct object *floppy_drives_get(struct object *self, int index) {
     return floppy->drive_objects[index];
 }
 
+static const collection_desc_t floppy_drives_collection_entries = {
+    .entry = &floppy_drive_class, .by_index = {.get = floppy_drives_get, .slots = NUM_DRIVES}
+};
+
 static const member_t floppy_drives_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child =
-         {.cls = &floppy_drive_class, .indexed = true, .get = floppy_drives_get, .slots = NUM_DRIVES, .lookup = NULL}},
+    OBJ_ENTRIES(&floppy_drives_collection_entries, NULL),
 };
 static const class_desc_t floppy_drives_collection_class = {
     .name = "floppy_drives",

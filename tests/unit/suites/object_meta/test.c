@@ -251,11 +251,12 @@ static struct object *devs_get(struct object *self, int index) {
     return (index >= 0 && index < 8) ? g_dev_objs[index] : NULL;
 }
 
+static const collection_desc_t devs_entries = {
+    .entry = &dev_class, .by_index = {.get = devs_get, .slots = 8}
+};
+
 static const member_t devs_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Devices",
-     .child = {.cls = &dev_class, .indexed = true, .get = devs_get, .slots = 8}},
+    {.kind = M_CHILD, .name = "entries", .doc = "Devices", .child = {.collection = &devs_entries}},
 };
 static const class_desc_t devs_class = {.name = "Devs", .members = devs_members, .n_members = 1};
 
@@ -267,17 +268,19 @@ static struct object *cats_lookup(struct object *self, const char *name) {
     return NULL;
 }
 
-static int cats_keys(struct object *self, const char ***out) {
+static const char *cats_next_key(struct object *self, const char *prev) {
     (void)self;
-    *out = g_cat_names;
-    return 2;
+    if (!prev)
+        return g_cat_names[0];
+    return strcmp(prev, g_cat_names[0]) == 0 ? g_cat_names[1] : NULL;
 }
 
+static const collection_desc_t cats_entries = {
+    .entry = &empty_class, .by_key = {.lookup = cats_lookup, .next_key = cats_next_key}
+};
+
 static const member_t cats_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Categories",
-     .child = {.cls = &empty_class, .indexed = true, .lookup = cats_lookup, .keys = cats_keys}},
+    {.kind = M_CHILD, .name = "entries", .doc = "Categories", .child = {.collection = &cats_entries}},
 };
 static const class_desc_t cats_class = {.name = "Cats", .members = cats_members, .n_members = 1};
 

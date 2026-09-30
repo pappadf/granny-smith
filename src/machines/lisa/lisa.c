@@ -643,10 +643,12 @@ static struct object *lisa_fd_drives_get(struct object *self, int index) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return (ls && index == 0) ? ls->fd_drive_obj : NULL;
 }
+static const collection_desc_t lisa_fd_drives_entries = {
+    .entry = &lisa_fd_drive_class, .by_index = {.get = lisa_fd_drives_get, .slots = 1}
+};
+
 static const member_t lisa_fd_drives_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &lisa_fd_drive_class, .indexed = true, .get = lisa_fd_drives_get, .slots = 1}},
+    OBJ_ENTRIES(&lisa_fd_drives_entries, NULL),
 };
 static const class_desc_t lisa_fd_drives_class = {
     .name = "floppy_drives", .doc = "Floppy drives, by index", .members = lisa_fd_drives_members, .n_members = 1};

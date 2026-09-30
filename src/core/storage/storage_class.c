@@ -42,32 +42,22 @@
 // === Object-model class descriptors =========================================
 //
 // `files.images`
-// enumerates the cfg->images[] entries. Slot index in the indexed
-// child matches the slot in cfg->images[]; n_images is dense from
-// 0..n_images-1, so the collection's count() returns cfg->n_images
-// and next(prev) advances to prev+1 until n_images.
-
-typedef struct {
-    config_t *cfg;
-    int slot;
-} files_image_data_t;
-
-static files_image_data_t g_image_data[MAX_IMAGES];
-static struct object *g_image_objs[MAX_IMAGES];
+// enumerates the cfg->images[] entries. Slot index in the collection
+// matches the slot in cfg->images[]; n_images is dense from
+// 0..n_images-1, so the collection's count() returns cfg->n_images.
+// Each entry's data is the cfg; its index is its slot.
 
 static image_t *files_image_at(struct object *self) {
-    files_image_data_t *d = (files_image_data_t *)object_data(self);
-    if (!d || !d->cfg)
+    config_t *cfg = (config_t *)object_data(self);
+    int slot = object_entry_index(self);
+    if (!cfg || slot < 0 || slot >= cfg->n_images)
         return NULL;
-    if (d->slot < 0 || d->slot >= d->cfg->n_images)
-        return NULL;
-    return d->cfg->images[d->slot];
+    return cfg->images[slot];
 }
 
 static value_t files_image_attr_index(struct object *self, const member_t *m) {
     (void)m;
-    files_image_data_t *d = (files_image_data_t *)object_data(self);
-    return val_int(d ? d->slot : -1);
+    return val_int(object_entry_index(self));
 }
 static value_t files_image_attr_filename(struct object *self, const member_t *m) {
     (void)m;
@@ -162,13 +152,16 @@ static const class_desc_t files_image_class = {
     .doc = "One configured disk image",
 };
 
+// The image entry objects, made on first use; freed with the machine.
+static object_cache_t g_images = OBJECT_CACHE(&files_image_class, NULL);
+
 static struct object *files_images_get(struct object *self, int index) {
     config_t *cfg = (config_t *)object_data(self);
     if (!cfg || index < 0 || index >= MAX_IMAGES)
         return NULL;
     if (index >= cfg->n_images || !cfg->images[index])
         return NULL;
-    return g_image_objs[index];
+    return object_cache_at(&g_images, index, cfg);
 }
 
 // `files.import(host_path, dst_path)` — copy `host_path` to `dst_path`
@@ -253,17 +246,10 @@ static const arg_decl_t files_import_args[] = {
     ARG_PATH("dst_path", "Destination path (e.g. under /opfs/images/<category>/)"),
 };
 
-static const member_t files_images_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child =
-         {.cls = &files_image_class, .indexed = true, .get = files_images_get, .slots = MAX_IMAGES, .lookup = NULL}},
-};
-
-static const class_desc_t files_images_collection_class = {
+static const collection_desc_t files_images = {
+    .entry = &files_image_class,
+    .by_index = {.get = files_images_get, .slots = MAX_IMAGES},
     .name = "files_images",
-    .members = files_images_collection_members,
-    .n_members = sizeof(files_images_collection_members) / sizeof(files_images_collection_members[0]),
     .doc = "The machine's configured disk images",
 };
 
@@ -1076,20 +1062,11 @@ static const class_desc_t files_class = {
 // freed entry fires its invalidators, so a held reference goes stale rather
 // than dangling.
 
-#define FILES_MOUNT_ENTRIES 16
-
-typedef struct {
-    int serial; // -1 = free
-    struct object *obj;
-} files_mount_entry_t;
-
-static files_mount_entry_t g_mount_entries[FILES_MOUNT_ENTRIES];
 static struct object *g_files_object = NULL;
-static struct object *g_files_mounts_object = NULL;
 
 // The serial an entry object stands for.
 static int mount_entry_serial(struct object *self) {
-    return (int)(intptr_t)object_data(self);
+    return object_entry_index(self);
 }
 
 // Snapshot of the entry's mount; false when it has been unmounted since.
@@ -1097,44 +1074,26 @@ static bool mount_entry_info(struct object *self, image_vfs_mount_info_t *info) 
     return image_vfs_mount_info(mount_entry_serial(self), info);
 }
 
-static value_t mount_attr_path(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_str(info.path);
-}
+// The fields of a mount entry, each attribute's user_data.
+enum { MOUNT_PATH, MOUNT_FORMAT, MOUNT_PARTITIONS, MOUNT_REFCOUNT, MOUNT_BUSY };
 
-static value_t mount_attr_format(struct object *self, const member_t *m) {
-    (void)m;
+// One getter for every mount attribute: the field its user_data names.
+static value_t mount_attr_get(struct object *self, const member_t *m) {
     image_vfs_mount_info_t info;
     if (!mount_entry_info(self, &info))
         return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_str(info.format);
-}
-
-static value_t mount_attr_partitions(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_uint(4, info.partitions);
-}
-
-static value_t mount_attr_refcount(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_uint(4, info.refcount);
-}
-
-static value_t mount_attr_busy(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_bool(info.busy);
+    switch ((int)(uintptr_t)m->attr.user_data) {
+    case MOUNT_PATH:
+        return val_str(info.path);
+    case MOUNT_FORMAT:
+        return val_str(info.format);
+    case MOUNT_PARTITIONS:
+        return val_uint(4, info.partitions);
+    case MOUNT_REFCOUNT:
+        return val_uint(4, info.refcount);
+    default:
+        return val_bool(info.busy);
+    }
 }
 
 // `files.mounts[n].unmount()` — drop this cached image-VFS mount.  With
@@ -1163,27 +1122,35 @@ static const member_t files_mount_members[] = {
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Canonical host path of the mounted image file",
-     .attr = {.type = V_STRING, .get = mount_attr_path}                                                       },
+     .attr = {.type = V_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PATH}            },
     {.kind = M_ATTR,
      .name = "format",
      .doc = "Container format: APM, HFS, UFS or raw",
-     .attr = {.type = V_STRING, .get = mount_attr_format}                                                     },
+     .attr = {.type = V_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_FORMAT}          },
     {.kind = M_ATTR,
      .name = "partitions",
      .doc = "Partitions the mount exposes",
-     .attr = {.type = V_UINT, .width = 4, .get = mount_attr_partitions}                                       },
+     .attr =
+         {.type = V_UINT, .width = 4, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PARTITIONS}},
     {.kind = M_ATTR,
      .name = "refcount",
      .doc = "Open handles into the mount",
-     .attr = {.type = V_UINT, .width = 4, .get = mount_attr_refcount, .presentation_flags = VAL_VOLATILE}     },
+     .attr = {.type = V_UINT,
+              .width = 4,
+              .get = mount_attr_get,
+              .user_data = (const void *)(uintptr_t)MOUNT_REFCOUNT,
+              .presentation_flags = VAL_VOLATILE}                                                                   },
     {.kind = M_ATTR,
      .name = "busy",
      .doc = "True while the mount refuses service (unmount pending, or the image is attached writable)",
-     .attr = {.type = V_BOOL, .get = mount_attr_busy, .presentation_flags = VAL_VOLATILE}                     },
+     .attr = {.type = V_BOOL,
+              .get = mount_attr_get,
+              .user_data = (const void *)(uintptr_t)MOUNT_BUSY,
+              .presentation_flags = VAL_VOLATILE}                                                                   },
     {.kind = M_METHOD,
      .name = "unmount",
      .doc = "Drop this cached image mount",
-     .method = {.ui_flags = MM_MUTATE, .args = NULL, .nargs = 0, .result = V_BOOL, .fn = mount_method_unmount}},
+     .method = {.ui_flags = MM_MUTATE, .args = NULL, .nargs = 0, .result = V_BOOL, .fn = mount_method_unmount}      },
 };
 
 static const class_desc_t files_mount_class = {
@@ -1193,44 +1160,31 @@ static const class_desc_t files_mount_class = {
     .doc = "One cached disk-image mount",
 };
 
-// Free entry objects whose mount is gone.
-static void mount_entries_sweep(void) {
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++) {
-        files_mount_entry_t *e = &g_mount_entries[i];
-        if (e->obj && !image_vfs_mount_info(e->serial, NULL)) {
-            object_delete(e->obj);
-            e->obj = NULL;
-            e->serial = -1;
-        }
-    }
+// The mount entry objects, by serial: made when a serial is first handed
+// out and freed once its mount is gone.
+static object_cache_t g_mounts = OBJECT_CACHE(&files_mount_class, NULL);
+
+// Whether an entry's mount is still there.
+static bool mount_entry_live(struct object *entry, void *ud) {
+    (void)ud;
+    return image_vfs_mount_info(mount_entry_serial(entry), NULL);
 }
 
 static struct object *files_mounts_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || !image_vfs_mount_info(index, NULL))
         return NULL;
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++)
-        if (g_mount_entries[i].obj && g_mount_entries[i].serial == index)
-            return g_mount_entries[i].obj;
-    mount_entries_sweep();
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++) {
-        files_mount_entry_t *e = &g_mount_entries[i];
-        if (e->obj)
-            continue;
-        e->obj = object_new(&files_mount_class, (void *)(intptr_t)index, NULL);
-        if (!e->obj)
-            return NULL;
-        e->serial = index;
-        object_set_logical_parent(e->obj, g_files_mounts_object, NULL, index, NULL);
-        return e->obj;
-    }
-    return NULL; // more live mounts than entry slots: cannot happen (image_vfs holds 8)
+    struct object *o = object_cache_find(&g_mounts, index);
+    if (o)
+        return o;
+    object_cache_sweep(&g_mounts, mount_entry_live, NULL);
+    return object_cache_at(&g_mounts, index, NULL);
 }
 
 static int files_mounts_next(struct object *self, int prev_index) {
     (void)self;
     if (prev_index < 0)
-        mount_entries_sweep();
+        object_cache_sweep(&g_mounts, mount_entry_live, NULL);
     return image_vfs_next_serial(prev_index);
 }
 
@@ -1250,11 +1204,7 @@ static value_t files_mounts_method_find(struct object *self, const member_t *m, 
     return val_int(image_vfs_serial_for_path(path));
 }
 
-static const member_t files_mounts_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Cached image mounts, by mount serial",
-     .child = {.cls = &files_mount_class, .indexed = true, .get = files_mounts_get, .next = files_mounts_next}},
+static const member_t files_mounts_verbs[] = {
     {.kind = M_METHOD,
      .name = "find",
      .examples = EXAMPLES("files.mounts.find \"/opfs/images/hd/system.img\""),
@@ -1262,44 +1212,30 @@ static const member_t files_mounts_members[] = {
      .method = {.args = files_path_arg, .nargs = 1, .result = V_INT, .fn = files_mounts_method_find}},
 };
 
-static const class_desc_t files_mounts_class = {
+static const collection_desc_t files_mounts = {
+    .entry = &files_mount_class,
+    .by_index = {.get = files_mounts_get, .next = files_mounts_next},
     .name = "mounts",
-    .members = files_mounts_members,
-    .n_members = sizeof(files_mounts_members) / sizeof(files_mounts_members[0]),
     .doc = "Cached disk-image mounts, by mount serial",
+    .entries_doc = "Cached image mounts, by mount serial",
+    .verbs = files_mounts_verbs,
+    .n_verbs = sizeof(files_mounts_verbs) / sizeof(files_mounts_verbs[0]),
 };
 
-// Per-slot image-entry object setup/teardown for files.images
-// indexed children.
-static void files_images_init(struct config *cfg, struct object *images) {
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        g_image_data[i].cfg = cfg;
-        g_image_data[i].slot = i;
-        g_image_objs[i] = object_new(&files_image_class, &g_image_data[i], NULL);
-        object_set_logical_parent(g_image_objs[i], images, NULL, i, NULL);
-    }
-}
-
+// The image entries go with the machine.
 static void files_images_teardown(void) {
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        if (g_image_objs[i]) {
-            object_delete(g_image_objs[i]);
-            g_image_objs[i] = NULL;
-        }
-        g_image_data[i].cfg = NULL;
-        g_image_data[i].slot = 0;
-    }
+    object_cache_clear(&g_images);
 }
 
 // files.images: the storage view of cfg->images, under the process singleton
 // `files`, installed with every machine.
 static void files_images_install(struct config *cfg) {
-    struct object *images = root_attach_stub(g_files_object, object_new(&files_images_collection_class, cfg, "images"));
+    struct object *images = root_attach_stub(g_files_object, object_collection_new(&files_images, cfg, "images"));
     if (!images)
         return;
     object_set_label(images, "Images");
     object_set_order(images, 10);
-    files_images_init(cfg, images);
+    object_cache_set_parent(&g_images, images);
 }
 
 // `files` is a process singleton created at shell init: the file methods,
@@ -1308,19 +1244,18 @@ static void files_images_install(struct config *cfg) {
 void files_init(void) {
     if (g_files_object)
         return;
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++)
-        g_mount_entries[i].serial = -1;
     g_files_object = object_new(&files_class, NULL, "files");
     if (!g_files_object)
         return;
     object_set_label(g_files_object, "Files");
     object_set_order(g_files_object, 30);
     object_attach(object_root(), g_files_object);
-    g_files_mounts_object = object_new(&files_mounts_class, NULL, "mounts");
-    if (g_files_mounts_object) {
-        object_set_label(g_files_mounts_object, "Mounts");
-        object_set_order(g_files_mounts_object, 20);
-        object_attach(g_files_object, g_files_mounts_object);
+    struct object *mounts = object_collection_new(&files_mounts, NULL, "mounts");
+    if (mounts) {
+        object_set_label(mounts, "Mounts");
+        object_set_order(mounts, 20);
+        object_attach(g_files_object, mounts);
+        object_cache_set_parent(&g_mounts, mounts);
     }
     archive_init(g_files_object);
     root_register_install(files_images_install, files_images_teardown);

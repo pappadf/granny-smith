@@ -506,10 +506,12 @@ static struct object *sparse_get(struct object *self, int index) {
     return (index >= 0 && index < 4) ? g_sparse_items[index] : NULL;
 }
 static const class_desc_t sparse_item_class = {.name = "sparse_item", .members = NULL, .n_members = 0};
+static const collection_desc_t sparse_entries = {
+    .entry = &sparse_item_class, .by_index = {.get = sparse_get, .slots = 4}
+};
+
 static const member_t sparse_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &sparse_item_class, .indexed = true, .get = sparse_get, .slots = 4}},
+    {.kind = M_CHILD, .name = "entries", .child = {.collection = &sparse_entries}},
 };
 static const class_desc_t sparse_class = {.name = "sparse", .members = sparse_members, .n_members = 1};
 
@@ -532,26 +534,52 @@ TEST(test_slots_walk_and_count) {
     value_free(&n);
 }
 
-// An entry pool: one entry per slot, each knowing its slot; at() is bounded;
-// delete empties it.
-OBJECT_POOL(g_test_pool, 3);
+// An entry cache: entries made on first use, found again by index or key,
+// each knowing its index and linked to the container once it is set; a sweep
+// frees the dead ones and clear frees the rest.
+static bool keep_even(struct object *entry, void *ud) {
+    (void)ud;
+    return object_entry_index(entry) % 2 == 0;
+}
 
-TEST(test_object_pool_entries_know_their_slots) {
-    object_pool_create(&g_test_pool, &sparse_item_class);
-    for (int i = 0; i < 3; i++) {
-        struct object *e = object_pool_at(&g_test_pool, i);
-        ASSERT_TRUE(e != NULL);
-        ASSERT_EQ_INT(i, object_pool_slot(e));
-    }
-    ASSERT_TRUE(object_pool_at(&g_test_pool, 3) == NULL);
-    ASSERT_TRUE(object_pool_at(&g_test_pool, -1) == NULL);
-    ASSERT_EQ_INT(-1, object_pool_slot(NULL));
-    object_pool_delete(&g_test_pool);
-    ASSERT_TRUE(object_pool_at(&g_test_pool, 0) == NULL);
+TEST(test_object_cache_entries) {
+    object_root_reset();
+    object_cache_t cache = OBJECT_CACHE(&sparse_item_class, NULL);
+    struct object *e1 = object_cache_at(&cache, 1, NULL);
+    ASSERT_TRUE(e1 != NULL);
+    ASSERT_TRUE(object_cache_at(&cache, 1, NULL) == e1);
+    ASSERT_EQ_INT(1, object_entry_index(e1));
+    ASSERT_TRUE(object_cache_find(&cache, 2) == NULL);
+    ASSERT_TRUE(object_cache_at(&cache, -1, NULL) == NULL);
+    ASSERT_EQ_INT(-1, object_entry_index(NULL));
+
+    // The container, set after the entry was made, becomes its logical parent.
+    struct object *box = object_new(&sparse_class, NULL, "box");
+    object_attach(object_root(), box);
+    object_cache_set_parent(&cache, box);
+    ASSERT_TRUE(object_logical_parent(e1) == box);
+    ASSERT_EQ_INT(1, object_logical_index(e1));
+    struct object *k = object_cache_key(&cache, "scsi", NULL);
+    ASSERT_TRUE(k != NULL && object_cache_key(&cache, "scsi", NULL) == k);
+    ASSERT_TRUE(strcmp(object_logical_key(k), "scsi") == 0);
+
+    // A sweep frees the entries whose record is gone (odd indices, the key).
+    object_cache_at(&cache, 2, NULL);
+    object_cache_sweep(&cache, keep_even, NULL);
+    ASSERT_TRUE(object_cache_find(&cache, 1) == NULL);
+    ASSERT_TRUE(object_cache_find(&cache, 2) != NULL);
+
+    // The container going first only costs the entries their path.
+    object_delete(box);
+    ASSERT_TRUE(cache.parent == NULL);
+    ASSERT_TRUE(object_logical_parent(object_cache_find(&cache, 2)) == NULL);
+    object_cache_clear(&cache);
+    ASSERT_TRUE(object_cache_find(&cache, 2) == NULL);
+    object_root_reset();
 }
 
 int main(void) {
-    RUN(test_object_pool_entries_know_their_slots);
+    RUN(test_object_cache_entries);
     RUN(test_slots_walk_and_count);
     RUN(test_counter_fields_read_their_block);
     RUN(test_node_call_succeeds);

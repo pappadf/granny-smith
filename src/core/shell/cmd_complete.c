@@ -330,7 +330,7 @@ static void push_name_match(struct completion *out, const char *name, bool is_ob
 
 // Detail kind of a child object: a collection container or a plain object.
 static comp_kind_t object_kind(struct object *o) {
-    return (o && meta_collection_entries(object_class(o))) ? COMP_KIND_COLLECTION : COMP_KIND_OBJECT;
+    return (o && class_collection(object_class(o))) ? COMP_KIND_COLLECTION : COMP_KIND_OBJECT;
 }
 
 static void complete_class_members(struct object *target, const char *tail, struct completion *out) {
@@ -343,7 +343,7 @@ static void complete_class_members(struct object *target, const char *tail, stru
             continue;
         comp_kind_t kind = m->kind == M_ATTR     ? COMP_KIND_ATTR
                            : m->kind == M_METHOD ? COMP_KIND_METHOD
-                           : m->child.indexed    ? COMP_KIND_COLLECTION
+                           : m->child.collection ? COMP_KIND_COLLECTION
                                                  : COMP_KIND_OBJECT;
         set_detail(out, kind, m->doc);
         push_name_match(out, m->name, m->kind == M_CHILD, tail);
@@ -376,7 +376,7 @@ static void complete_attached(struct object *o, const char *tail, struct complet
 // Indexed-child completion: `floppy.drives.<TAB>` should suggest live
 // indices as bare integers ("0", "1"). Pool-allocates the name strings.
 static void complete_indexed_children(struct object *o, const member_t *m, const char *tail, struct completion *out) {
-    if (!o || !m || m->kind != M_CHILD || !m->child.indexed)
+    if (!o || !member_is_collection(m))
         return;
     set_detail(out, COMP_KIND_OBJECT, NULL);
     int idx = object_child_next(o, m, -1);
@@ -454,18 +454,15 @@ static void complete_path(const char *partial, struct completion *out) {
     // partial with the correctly-prefixed candidate.
     struct completion local = {0};
 
-    if (n.member && n.member->kind == M_CHILD && n.member->child.indexed && n.index < 0) {
+    if (member_is_collection(n.member) && n.index < 0) {
         complete_indexed_children(n.obj, n.member, tail, &local);
     } else {
         // For an object node, the class is on the object itself; for a
         // child-member with index resolved, descend into the live child.
         struct object *target = n.obj;
-        if (n.member && n.member->kind == M_CHILD) {
-            if (n.member->child.indexed && n.member->child.get)
-                target = n.member->child.get(n.obj, n.index);
-            else if (n.member->child.lookup)
-                target = n.member->child.lookup(n.obj, n.member->name);
-        }
+        if (n.member && n.member->kind == M_CHILD)
+            target = n.member->child.collection ? object_entry_at(n.obj, n.member, n.index)
+                                                : object_named_child(n.obj, n.member);
         if (target) {
             complete_class_members(target, tail, &local);
             complete_attached(target, tail, &local);

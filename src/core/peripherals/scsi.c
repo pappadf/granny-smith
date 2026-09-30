@@ -2033,10 +2033,12 @@ static struct object *scsi_devices_get(struct object *self, int index) {
     return scsi->device_objects[index];
 }
 
+static const collection_desc_t scsi_devices_collection_entries = {
+    .entry = &scsi_device_class, .by_index = {.get = scsi_devices_get, .slots = 8}
+};
+
 static const member_t scsi_devices_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &scsi_device_class, .indexed = true, .get = scsi_devices_get, .slots = 8, .lookup = NULL}},
+    OBJ_ENTRIES(&scsi_devices_collection_entries, NULL),
 };
 static const class_desc_t scsi_devices_collection_class = {
     .name = "scsi_devices",
