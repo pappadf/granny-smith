@@ -7,7 +7,10 @@ This page is what the 6100/7100/8100 add around it: where the AMIC island
 decodes it, how the AMIC floppy DMA channel feeds it, and where its
 interrupt lands.  `src/machines/pdm/swim3.c` is the board's face of the
 shared model — the three DMA movers and the interrupt sink it is bound
-to — and `amic.c` owns the channel.
+to — and `amic.c` owns the channel.  Hardware reference:
+[swim3.md](../../../reference/machines/pdm/swim3.md) for the part on this
+board (the chip-level reference lives in the shared page above), cited by
+section below.
 
 All three models have the same subsystem — one internal manual-inject
 SuperDrive, no external port — so this is one piece of hardware for the
@@ -29,6 +32,9 @@ the Network Servers, which is why the shared model exists.)
 
 ## Decoding
 
+(Reference: [swim3.md](../../../reference/machines/pdm/swim3.md) §2.1 —
+the chip decodes only A0–A3, so the stride is board decode.)
+
 Sixteen byte-wide registers at `$50F16000`, **stride `$200`** (index =
 offset >> 9; the chip's A0–A3 hang off `BufAddr<9..12>`).  So Data is at
 `$0000`, Timer at `$0200`, … IntMask at `$1E00`.  Presenting IWM
@@ -48,6 +54,9 @@ level 2 — *not* the AMIC DMA interrupt.  Which of the two paths a
 transfer ends on matters (below).
 
 ## AMIC DMA
+
+(Reference: [amic.md](../../../reference/machines/pdm/amic.md) §3.6 for
+the floppy channel, §3.3 for the DMA window.)
 
 Floppy data never moves by PIO on this family; there is no fallback if the
 DMA channel is missing.  The channel's registers are at `$50F32060`
@@ -85,6 +94,9 @@ either direction; the channel does the address advance, the count and the
 completion interrupt.
 
 ## What the driver does that the shared page describes generically
+
+(Reference: [swim3.md](../../../reference/machines/pdm/swim3.md) §4.1 for
+the presence gates, §4.4–§4.8 for the read/write/format driver paths.)
 
 - The GCR format routine **self-tunes its intersector sync count** by
   measuring rotational wrap with `_GetMicroSeconds`; an emulator whose

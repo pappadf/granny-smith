@@ -15,8 +15,16 @@ megabyte holds the PPC exception tables, HWInit, the nanokernel, and the
 Sources: Apple, *Power Macintosh Computers* Developer Note (1994); the
 Power Macintosh 8100 schematic set; the MPC601 User's Manual; the shipping
 ROM itself, whose hardware-init sequence is the primary behavioral oracle.
+Hardware reference: [pdm.md](../../../reference/machines/pdm/pdm.md)
+(family), [pm6100.md](../../../reference/machines/pdm/pm6100.md) /
+[pm7100.md](../../../reference/machines/pdm/pm7100.md) /
+[pm8100.md](../../../reference/machines/pdm/pm8100.md) (machines) and the
+device pages they link, cited by section below.
 
 ## Board model
+
+(Reference: [pdm.md](../../../reference/machines/pdm/pdm.md) §2.1 for the
+one-board layout, §4 for the device roster.)
 
 Two Apple ASICs around Tier-1 silicon:
 
@@ -60,6 +68,9 @@ is a stub in `amic.c` until a real model lands.
 
 ## Memory map
 
+(Reference: [pdm.md](../../../reference/machines/pdm/pdm.md) §3.1 for the
+physical map, §3.2 for the DRAM bank windows, §3.5 for the slot windows.)
+
 | Range | Contents |
 |---|---|
 | `$00000000-$3FFFFFFF` | DRAM bank windows (HMC-owned; layout per model + config) |
@@ -79,6 +90,9 @@ the nanokernel reflects it into the 68k emulator as an ordinary bus error
 to record an empty slot.  See `bart.md`.
 
 ## Timing model
+
+(Reference: [pdm.md](../../../reference/machines/pdm/pdm.md) §2.2 for the
+CPU:bus ratio, §5.4 for the clock tree and the 60.15 Hz VIA tick.)
 
 CPI is 1.0 (with 601 branch folding in the core), which makes HWInit's
 DEC-timed measurement loops land exactly: measured CPU clock snaps to the
@@ -103,4 +117,5 @@ Past that wall, `tests/integration/suite-pdm` boots System 7.5 from SCSI to
 the Finder desktop on all three models, and covers the NuBus bridge: a
 Macintosh Display Card 24AC in slot `$C` of an 8100 (enumerated, driven, and
 carried as a second screen), the empty-socket fault contract, and a
-save/restore round trip with a card seated.
+save/restore round trip with a card seated — plus the SWIM3 floppy rows
+(mount, GCR-800K media, write/eject, format).

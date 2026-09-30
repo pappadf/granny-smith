@@ -39,11 +39,12 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
 
 - Initialization
   - `void log_init(void);`
-    - Optional; idempotent. Prepares internal registry and registers shell commands.
+    - Optional; idempotent. Prepares internal registry (the legacy `log` shell command registration is retired — configuration goes through the `debug.log` method).
 
 - Category management
   - `log_category_t* log_register_category(const char* name);`
     - Registers or returns existing category by name. On first registration, the level defaults to `0` (OFF).
+    - The name must be declared in the category manifest (`GS_LOG_CATEGORIES` in `src/core/debug/log_categories.h`) — a name not in the manifest is a typo and is refused, not created.
     - Returns non‑NULL pointer on success; `NULL` on OOM or invalid name.
   - `log_category_t* log_get_category(const char* name);`
     - Looks up existing category; returns `NULL` if not found.
@@ -167,39 +168,37 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
   - Category pointers are stable for the process lifetime. Modules cache their `log_category_t*` in static file‑scope variables for fast checks.
 
 
-## Shell command (src/log.c)
+## Shell surface (`debug.log`)
 
-The shell exposes a single, unified `log` command (category: "Logging") with argument‑based configuration. It’s registered by `log_init()` and visible in `help`.
+The shell exposes the configuration as a typed method on the `debug` object: `debug.log(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command is retired). The category is a V_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
 
 - Grammar
-  - `log` — list all categories and their settings
-  - `log <cat>` — show one category’s settings
-  - `log <cat> [<level> | level=N] [stdout=on|off] [file=<path>|file=off] [ts=on|off]`
+  - `debug.log_levels()` — every registered category and its current level, as a map
+  - `debug.log(<cat>)` — show one category's settings
+  - `debug.log(<cat>, level=<n>, stdout=<bool>, file=<path>, ts=<bool>, pc=<bool>)` — any subset of the named arguments; each given one is applied, then the settings print
 
 - Behavior
-  - Unknown categories are auto‑created when you set options for them.
-  - Bare integer without a key is treated as `level`.
+  - Categories come from the manifest; an unknown name is an error, never auto-created.
   - `file=<path>` opens/creates the file in append mode; `file=off` disables the file sink.
-  - `stdout=on|off` enables/disables writing to stdout for that category (defaults to `on`).
-  - `ts=on|off` toggles including a timestamp prefix based on `cpu_instr_count()`.
+  - `stdout=<bool>` enables/disables writing to stdout for that category (defaults to `on`).
+  - `ts=<bool>` toggles including a timestamp prefix based on `cpu_instr_count()`.
+  - `pc=<bool>` toggles including the PC register in the prefix.
 
 - Examples
   ```
-  log                         # list all
-  log cpu                     # show cpu settings
-  log cpu 5                   # set level to 5
-  log cpu level=7 stdout=off  # quiet stdout for cpu
-  log cpu file=/tmp/cpu.log   # append to file as well
-  log cpu file=off            # stop writing to file
-  log cpu ts=on               # include instruction-count timestamp in prefix
-  log cpu level=10 stdout=on file=/tmp/cpu.log ts=on
+  debug.log_levels()                          # list all categories and levels
+  debug.log("cpu")                           # show cpu settings
+  debug.log("cpu", level=5)                  # set level to 5
+  debug.log("cpu", level=7, stdout=false)     # quiet stdout for cpu
+  debug.log("cpu", file="tmp/cpu.log")        # append to file as well
+  debug.log("cpu", ts=true)                   # include instruction-count timestamp in prefix
   ```
 
 
 ## Usage by modules
 
 - Registration (once) and selecting an implicit category
-  - In `src/appletalk.c` (and similarly in `cpu.c`, `floppy.c`, etc.):
+  - In `src/core/network/appletalk.c` (and similarly in `cpu.c`, `floppy.c`, etc.):
     ```c
     #include "log.h"
 
@@ -267,18 +266,17 @@ The shell exposes a single, unified `log` command (category: "Logging") with arg
 - Category registration:
   - Returns existing category when called repeatedly with the same name.
   - Returns `NULL` on allocation failure; modules may fall back to a static dummy category whose level is 0 (silent) to keep code safe.
-- Shell command:
-  - Rejects negative levels; prints `log: invalid level`.
-  - `log <cat>` (no modifiers) reports `unknown category "name"` when the category does not exist yet.
-  - `log <cat> ...options...` auto-creates the category before applying options, so pre-configuring future categories works.
+- Shell surface:
+  - Rejects negative levels; `debug.log` returns an error ("level must be a non-negative integer").
+  - `debug.log(<cat>)` (no modifiers) reports `unknown category "name"` when the category is not in the manifest.
 
 
 ## Integration points
 
-- `src/log.c` — implementation (registry, shell command, sinks, formatting).
-- `src/log.h` — public header used by modules and the shell.
-- `src/shell.c` — calls `log_init()`; tokenizer already supports quoted args.
-- Build: Makefile already includes `src/*.c` via wildcard.
+- `src/core/debug/log.c` — implementation (registry, sinks, formatting) and the category manifest loader.
+- `src/core/debug/log_categories.h` — the category manifest (`GS_LOG_CATEGORIES`), the one place a new category is declared.
+- `src/core/debug/log.h` — public header used by modules and the shell.
+- `src/core/shell/shell.c` — calls `log_init()`; the `debug.log` / `debug.log_levels` methods live on the `debug` object (`src/core/debug/debug.c`).
 
 ## Level guidelines and recommendations
 
@@ -309,18 +307,19 @@ Notes:
 
 ## Built-in debug categories
 
-Two pre-defined categories pair with debug shell commands and feed into the
+Three pre-defined categories pair with debug shell commands and feed into the
 standard log pipeline:
 
-- **`logpoint`** — emitted by PC logpoints (`logpoint set <addr> [msg]`).
-  Default level 0 (silent). Enable with `log logpoint 1` to see each hit.
+- **`logpoint`** — emitted by PC logpoints (`debug.logpoints.add addr=<addr> [message="…"]`).
+  Default level 0 (silent). Enable with `debug.log("logpoint", level=1)` to see each hit.
 - **`memory`** — emitted by memory read/write logpoints
-  (`logpoint --write|--read <addr> [msg]`). Each event reports `addr`, `size`,
-  `value`, `pc`, and optionally a substituted user message that may reference
-  `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`, `$cpu.a0..a7`, `$addr`.
+  (`debug.logpoints.add addr=<addr> mode=read|write|rw [width=b|w|l] [message="…"]`). Each event reports `addr`, `size`,
+  `value`, `pc`, and optionally a substituted user message: `${expr}` splices
+  any expression (`${machine.cpu.pc}`), while `$value`, `$addr` and `$size`
+  are per-fire bindings that exist only at the hit.
   See `docs/internals/core/memory/memory.md` for the fast-path-preserving mechanism that backs these.
 - **`exceptions`** — emitted by the CPU exception trace ring
-  (`info exceptions` dumps the ring; `log exceptions 1` streams every event).
+  (`debug.exceptions [filter]` dumps the ring; `debug.log("exceptions", level=1)` streams every event).
   Each line includes vector, frame format, faulting/stacked PC, fault address,
   R/W direction, SR, VBR, and a marker for double-fault detection. Replaces
   ad-hoc `fprintf` instrumentation in `cpu_internal.h` for MMU/bus-error

@@ -11,9 +11,14 @@ Sources: Apple, *Power Macintosh Computers* Developer Note (1994); Apple,
 *Designing Cards and Drivers for the Macintosh Family*, 3rd ed. (1992),
 ch. 7–8; the Power Macintosh 8100 schematic set (051-0333 rev A, sheets
 22–23); and the shipping 1994-03 ROM, whose `NuBusReset`, `TestForBart`
-and `_HWPriv` selector 12 are the behavioral oracle.
+and `_HWPriv` selector 12 are the behavioral oracle.  Hardware reference:
+[bart.md](../../../reference/machines/pdm/bart.md), cited by section
+below.
 
 ## Topology — the slots are `$C`/`$D`/`$E`
+
+(Reference: [bart.md](../../../reference/machines/pdm/bart.md) §1.4 for
+the slot-numbering question.)
 
 The 7100 and 8100 carry three NuBus connectors, numbered **`$C`, `$D`,
 `$E`** — the widely repeated numbering, and the one the *software* uses.
@@ -41,6 +46,9 @@ listed per machine (`nubus_card_fits_socket`).
 
 ## What software sees
 
+(Reference: [bart.md](../../../reference/machines/pdm/bart.md) §2.1–§2.6
+for the registers, §3.1 and §3.4 for the decode and the windows.)
+
 ### Registers (`$F0000000`, byte-wide)
 
 | Offset | Name | Behavior |
@@ -67,6 +75,10 @@ window for the PDS.  Each is registered as an *empty* window before
 answers, and everything left over faults.
 
 ## Faults are the contract
+
+(Reference: [bart.md](../../../reference/machines/pdm/bart.md) §3.5 for
+the fault and timeout behaviour, §4.1 for the presence probe, §4.3 for the
+declaration-ROM search.)
 
 Four places must fault, and the ROM depends on each:
 
@@ -97,6 +109,10 @@ faulting: nothing in the ROM depends on that path, and a recoverable fault
 would be the wrong kind of failure.
 
 ## Interrupts belong to AMIC, not BART
+
+(Reference: [bart.md](../../../reference/machines/pdm/bart.md) §3.6; the
+AMIC-side bank in
+[amic.md](../../../reference/machines/pdm/amic.md) §2.3.)
 
 Each connector's `/NMRQ` runs from the slot straight to an AMIC pin; BART
 is not in the path.  The Slot Manager reads the lines from AMIC's

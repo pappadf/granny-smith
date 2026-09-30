@@ -11,7 +11,7 @@ does this image have?" and "give me the bytes of `/etc/motd` (or a resource
 fork) out of this volume" cheaply and deterministically.
 
 ```
-shell / web terminal     image partmap | image probe | files.ls | files.list | files.cat | files.cp
+shell / web terminal     files.partmap | files.probe | files.ls | files.list | files.cat | files.cp
         │                  web Filesystem tree → files.list (image descent)
         ▼
   VFS resolver  ───────  path normalise + descent + auto-mount cache   (src/core/vfs/vfs.c)
@@ -24,7 +24,7 @@ shell / web terminal     image partmap | image probe | files.ls | files.list | f
    APM parser    HFS walker      UFS walker
  (image_apm.c)  (image_hfs.c)   (image_ufs.c)
         └───────────┬───────────────┘
-              storage / image.c  ── disk_read_data / disk_read_bytes (512-byte blocks)
+              storage / image.c  ── disk_read_data (512-byte blocks)
 ```
 
 Everything under the block-read line is byte-offset parsing; the filesystem
@@ -387,7 +387,7 @@ Two resolver variants:
 Partition enumeration at the mount root lists **all** partitions — including
 ones that can't be descended into (`map`, `driver`, `free`, `patches`). Those
 stat as empty read-only directories; `opendir` on them returns `-ENOTDIR`. Use
-`image partmap` for the full typed layout.
+`storage.partmap` for the full typed layout.
 
 ---
 
@@ -418,7 +418,7 @@ Content access (`src/core/vfs/vfs_class.c`, `src/core/shell/cmd_cp.c`):
 Example session:
 
 ```
-> image partmap /opfs/disks/aux.img
+> storage.partmap /opfs/disks/aux.img
 format: APM (512B blocks, 81920 total)
   #  Name              Type             Start   Size  FS
   1  Apple            Apple_partition_map   1     63  map
@@ -515,7 +515,7 @@ The web frontend runs these through the **Terminal console**
 | `src/core/storage/macroman.{c,h}` | MacRoman → UTF-8 transcoder (shared) |
 | `src/core/storage/storage_class.c` | `files.partmap/probe/mounts/unmount` |
 | `src/core/shell/cmd_cp.c` | `cp` (VFS-backed, supports image→host) |
-| `src/core/storage/image.{c,h}` | Underlying disk image + `disk_read_data` / `disk_read_bytes` |
+| `src/core/storage/image.{c,h}` | Underlying disk image + `disk_read_data` |
 
 See also: `docs/internals/core/storage/image.md` (image container & delta storage), `docs/internals/core/peripherals/scsi.md`
 (attaching images to the guest), and `docs/internals/core/shell/shell.md` (the object-model shell).

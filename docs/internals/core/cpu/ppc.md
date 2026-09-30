@@ -206,9 +206,9 @@ bit for the PDM profiles.
 
 `CPU_MODEL_PPC604` is a bounded delta over the shared machinery — decoder
 template, softfloat kernel, exception plumbing, sched-if/debug-if, SoA
-discipline all carry over untouched.  It is dead code on every shipping
-machine until the TNT family lands (the DSP3210/601 precedent).  The
-deltas, each keyed on `cpu_model`:
+discipline all carry over untouched.  It is live on the TNT family's 604
+machines (pm8500/pm9500 and the Apple Network Server; the DSP3210/601
+precedent).  The deltas, each keyed on `cpu_model`:
 
 - **Holdover rejection**: every POWER holdover, MQ (SPR 0), the RTC SPRs
   (4/5/20/21), the POWER DEC read (SPR 6) and HID1 take the illegal
@@ -239,7 +239,8 @@ deltas, each keyed on `cpu_model`:
   registers see the munged address like RAM does — the guest compensates
   itself (Apple's Open Firmware `ar-rl@` is `little? if 4 xor then xl@`).
   First user: the Apple Network Server's NT-era Open Firmware
-  (`little-endian? true` after the pe-loader's forced reboot), which
+  (`little-endian? true` after the pe-loader's forced reboot; hardware
+  reference: [ans.md](../../../reference/machines/ans/ans.md)), which
   pair-swaps and byte-reverses its own dictionary in place before flipping
   MSR[LE], then loads the PowerPC-LE `VENEER.EXE` (docs/internals/machines/tnt/tnt.md).
   On that machine the *bridge* carries the other half of the trick: Bandit
@@ -304,7 +305,7 @@ deltas, each keyed on `cpu_model`:
 - `tests/unit/suites/ppc_vectors/` — the [powerpc-test](https://github.com/pappadf/powerpc-test)
   smoke tier (`third-party/powerpc-test`) replayed through its own
   reference runner with this core as the runner's `custom` backend: 206
-  encodings, 1153 vectors, four randomized replays each.  Inputs are
+  encodings, 1132 vectors, four randomized replays each.  Inputs are
   SPARSE, so every unlisted register is randomized on every replay and the
   read set and write set are checked for free — an instruction that
   consults a register it should not, or writes one it should not, fails

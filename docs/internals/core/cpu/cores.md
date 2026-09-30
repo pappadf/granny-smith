@@ -4,7 +4,8 @@ How Granny Smith executes more than one CPU per machine: exactly one
 **main CPU** that owns emulated time (the 68K today), plus any number of
 **auxiliary cores** — peripheral processors that execute real guest code
 but do not control time.  The first auxiliary core is the AV family's
-DSP3210 (`src/core/cpu/dsp3210/`, wired by `src/machines/av/dsp.c`).
+DSP3210 (`src/core/cpu/dsp3210/`, wired by `src/machines/av/dsp.c`;
+hardware reference: [dsp3210.md](../../../reference/hardware/dsp3210.md)).
 
 ## Time model
 

@@ -5,12 +5,17 @@ logic: the whole classic-Mac interrupt model, a 10-channel DMA engine, the
 AWACS sound engine, built-in video timing, and all `$50Fxxxxx` address
 decode.  Sources: Apple, *Power Macintosh Computers* Developer Note (1994)
 Fig 2-2 and pp. 15–23, the 8100 schematics, and the shipping ROM's
-hardware-init writes.  The sound block dispatches to `awacs.c`
-(`awacs.md`), video control and the Ariel CLUT to `ariel.c` (`video.md`);
-remaining DMA datapaths (SCSI, floppy, SCC, Ethernet) land as the boot
-ladder (`tests/integration/pdm-rom-ladder`) needs them.
+hardware-init writes.  Hardware reference:
+[amic.md](../../../reference/machines/pdm/amic.md), cited by section
+below.  The sound block dispatches to `awacs.c` (`awacs.md`), video
+control and the Ariel CLUT to `ariel.c` (`video.md`); of the remaining DMA
+datapaths the SCSI (Curio/53CF96) channels, the floppy channel and the
+SCC serial engines below are modelled, and Ethernet waits on a real MACE
+model (`amic.c` still stubs that aperture).
 
 ## Decode (island offsets from `$50F00000`)
+
+(Reference: [amic.md](../../../reference/machines/pdm/amic.md) §2.1.)
 
 | Offset | Block |
 |---|---|
@@ -27,6 +32,10 @@ ladder (`tests/integration/pdm-rom-ladder`) needs them.
 All registers are byte-wide; wider accesses decompose big-endian.
 
 ## Interrupt model
+
+(Reference: [amic.md](../../../reference/machines/pdm/amic.md) §2.3 for
+the pseudo-VIA banks, §2.4 for the ICR, §3.1 for the CPU interrupt line,
+§3.2 for the nanokernel dispatch.)
 
 One level-sensitive wire into the 601 (`ppc_set_ext_irq`), recomputed
 after **every** flag/enable write:
@@ -55,7 +64,8 @@ after **every** flag/enable write:
   pin; the bridge is not in that path — see bart.md); VBL (bit 6) is the only
   software-clearable bit (write `$40`).  The device bank aggregates
   SCSI/FDC/any-slot levels gated by set/clear-convention IERs (writable
-  masks `$78` slot / `$3B` device).
+  masks `$78` slot / `$7B` device — bit 6 is the 8100's fast-SCSI-B
+  enable).
 - **VBL**: a free-running raster event asserts the slot IFR VBL
   flag (drives bit 6 LOW) every frame at 66⅔ Hz — the Hi-Res 640×480
   mode's field rate, an exact cycle count (freq×3/200) on every PDM
@@ -66,6 +76,8 @@ after **every** flag/enable write:
   (`SonoraSlotIER` bit 6) gates only the interrupt, never the flag.
 
 ## Monitor sense
+
+(Reference: [amic.md](../../../reference/machines/pdm/amic.md) §3.9.)
 
 `SonoraVdSenseRg` (`+$28002`) models the three open-collector HDI-45
 sense lines with 10 kΩ pull-ups: readback bits 6:4 = wired-AND of the
@@ -81,9 +93,13 @@ hardware behaviour for this monitor.
   the per-engine flag∧enable bits (the sound engine's `+$14014`/`+$14018`
   for `+$A`, the channel control bytes for `+8`); acks go to the engine's
   own register — the ROM never writes the mirrors — and any set mirror
-  bit asserts the ICR's DMA source level.
+  bit asserts the ICR's DMA source level
+  ([amic.md](../../../reference/machines/pdm/amic.md) §2.4).
 
 ## DMA register file (subset)
+
+(Reference: [amic.md](../../../reference/machines/pdm/amic.md) §2.5, §3.3
+for the DMA buffer window.)
 
 The register surface stores and reads back with the documented semantics
 (RST self-clears and stops a channel; SCSI keeps DIR and the bus-speed
@@ -94,6 +110,9 @@ transfer engines live with their devices — SCSI and floppy in their own
 files, the SCC serial engines below.
 
 ## SCC serial DMA engines
+
+(Reference: [amic.md](../../../reference/machines/pdm/amic.md) §3.5 for
+the channels, §4.4 for the driver sequences.)
 
 Register blocks `$50F32080` / `$50F32090` / `$50F320A0` / `$50F320B0`
 (TxA / RxA / TxB / RxB) carry a 32-bit address, a 13-bit count and the

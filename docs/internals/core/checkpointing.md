@@ -33,7 +33,7 @@ Background checkpoints (quick checkpoints saved automatically) are serialised in
 - `<created>` is a UTC timestamp in compact ISO 8601 (`YYYYMMDDTHHMMSSZ`) — purely for human legibility in `ls /opfs/checkpoints/`. Code never parses it.
 - `<id>` (per-image instance id) is also 16 hex chars, minted by the image layer in `image_create`. Each writable image gets a fresh one — reusing the same base image for an unrelated machine no longer replays stale deltas.
 
-The C side is told about the active machine via `machine.register(<id>, <created>)`, which the frontend (`app/web2/src/bus/emulator.ts`, from the identity minted in `app/web2/src/lib/machineId.ts`) issues exactly once on startup before any image is opened. The handler calls `checkpoint_machine_set` and then `checkpoint_machine_sweep_others` to drop stale machine directories left behind by previous sessions.
+The C side is told about the active machine via `machine.register(<id>, <created>)`, which the frontend (`app/web2/src/bus/emulator.ts`, from the identity minted in `app/web2/src/lib/machineId.ts`) issues exactly once on startup before any image is opened. The handler routes through `gs_register_machine`, which calls `checkpoint_machine_set`.
 
 `checkpoint_machine_set` is called **at most once per process lifetime**. Rotation is a JS-driven page reload; the C side does not support changing machine identity in-place.
 
@@ -61,7 +61,7 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
 ## Checkpointing Design
 
 - **Opaque handle:**
-  - `checkpoint_t` is an opaque pointer to a checkpoint handle. Its internals are defined in `system.c`.
+  - `checkpoint_t` is an opaque pointer to a checkpoint handle. Its internals are defined in `checkpoint.c`.
 
 - **Stream helpers:**
   - `system_read_checkpoint_data(checkpoint, data, size)` and `system_write_checkpoint_data(checkpoint, data, size)` are macros that wrap typed I/O with a header containing the size, source filename, and line number for robust validation and diagnostics.
@@ -73,13 +73,11 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
   - Each subsystem declares its checkpoint function in its own header, alongside `*_init` and `delete_*`. The central `system.h` does not list all subsystem checkpoint prototypes; consumers include the relevant subsystem headers as needed.
 
 - **Save/Load commands:**
-  - `machine.register(<id>, <created>)` (legacy alias: `checkpoint --machine <id> <created>`): Activates the per-machine directory `<machine_id>-<created>` under `/opfs/checkpoints/` and sweeps stale sibling dirs. **Must be the first checkpoint operation in the process** (called once by the web2 bus at startup, before any image is opened); subsequent calls in the same process are rejected.
-  - `checkpoint --save <file>`: Iterates all subsystems and writes a consolidated machine snapshot to the specified file. Consolidated checkpoints are self-contained and live wherever the user chooses — they do **not** go under `/opfs/checkpoints/<machine_id>-...`, which is reserved for the single quick-checkpoint slot.
-  - `checkpoint --load <file>`: Constructs a new `config_t` via the active machine profile, restoring each subsystem from the stream.
-  - `checkpoint --validate <path>`: Checks if the file contains a valid checkpoint (magic bytes).
-  - `checkpoint --probe`: Returns 0 if a valid `state.checkpoint` exists in the current machine directory.
-  - `checkpoint load`: Rebuilds the machine from the stream (the new machine is constructed before the old one is destroyed). The debug object is part of the machine, so the previous machine's breakpoints and logpoints do not survive a load; add them again afterwards. Memory logpoints added after a load fire as they did before it (#172).
-  - `checkpoint clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory, together with the image deltas and journals there that no open image holds — the discarded state's deltas can never be reached again, and would otherwise accumulate one per session; the directory itself is left in place.
+  - `machine.register(<id>, <created>)`: Activates the per-machine directory `<machine_id>-<created>` under `/opfs/checkpoints/`. **Must be the first checkpoint operation in the process** (called once by the web2 bus at startup, before any image is opened); subsequent calls in the same process are rejected.
+  - `checkpoint.save(path, [mode])`: Iterates all subsystems and writes a consolidated machine snapshot to the specified file. `mode` is `"content"` (default: embed image bytes) or `"refs"` (record paths only — smaller file, requires the same images on restore). Consolidated checkpoints are self-contained and live wherever the user chooses — they do **not** go under `/opfs/checkpoints/<machine_id>-...`, which is reserved for the single quick-checkpoint slot.
+  - `checkpoint.probe()`: Returns true if a valid `state.checkpoint` exists in the current machine directory.
+  - `checkpoint.load([path])`: Rebuilds the machine from the named checkpoint file, or auto-loads the latest valid checkpoint for the active machine when the path is omitted. Constructs a new `config_t` via the active machine profile, restoring each subsystem from the stream (the new machine is constructed before the old one is destroyed). The debug object is part of the machine, so the previous machine's breakpoints and logpoints do not survive a load; add them again afterwards. Memory logpoints added after a load fire as they did before it (#172).
+  - `checkpoint.clear`: Deletes `state.checkpoint` (and any leftover `*.tmp`) inside the current machine directory, together with the image deltas and journals there that no open image holds — the discarded state's deltas can never be reached again, and would otherwise accumulate one per session; the directory itself is left in place.
 
 - **File format & signature:**
   - Two on-disk formats are used:
@@ -141,7 +139,7 @@ Read-only image opens (`image_open_readonly`) park their throwaway delta and jou
   - Preserve robustness and debuggability with size validation and source location tagging.
 
 - **Macros and debug metadata:**
-  - `system_write_checkpoint_data(cp, data, size)` and `system_read_checkpoint_data(cp, data, size)` are macros that expand to `x_system_*` and automatically capture `__FILE__` and `__LINE__`.
+  - `system_write_checkpoint_data(cp, data, size)` and `system_read_checkpoint_data(cp, data, size)` are macros that expand to `system_*_checkpoint_data_loc` and automatically capture `__FILE__` and `__LINE__`.
   - The written stream stores a size header, the originating file path and line, and then the raw bytes. On read, mismatches are reported with the saved source anchors.
 
 - **Struct layout guideline:**
@@ -150,18 +148,18 @@ Read-only image opens (`image_open_readonly`) park their throwaway delta and jou
   - **Layout changes are free.** The stream is positional with no version field and a build-ID mismatch is rejected outright (`checkpoint.c`; the ID is `__DATE__ " " __TIME__`, force-recompiled every build), so a checkpoint can only ever be restored by the exact binary that wrote it. There is no old format to support. The one real constraint is that a save and its restore must change **together, in the same commit** — a swapped pair does not fail at the swap, it cross-loads and dies later at whichever block first disagrees on size.
 
 - **Orchestration and ordering:**
-  - `setup_plus_checkpoint(file, kind)` opens a write handle and invokes each subsystem's `<subsystem>_checkpoint` in a well-defined order (RAM, CPU, scheduler, RTC, SCC, sound, VIA, mouse, SCSI, keyboard, floppy, etc.).
-  - `setup_plus(checkpoint)` constructs all subsystems with the same stream handle so each subsystem can restore directly during init.
+  - `system_checkpoint(file, kind)` opens a write handle and delegates to the machine profile's `substrate->checkpoint_save` callback, which invokes each subsystem's `<subsystem>_checkpoint` in a well-defined order (the shared prefix, `machine_checkpoint_save_core`, writes RAM, CPU, scheduler, IRQ, RTC, SCC, AppleTalk, VIA, then the family adds its own devices).
+  - The machine profile's `init(cfg, checkpoint)` (e.g. `plus_init`) constructs all subsystems with the same stream handle so each subsystem can restore directly during init.
 
 - **Cross-subsystem state:**
   - If a command or state spans multiple subsystems (e.g., floppy + image paths), keep the serialization logic in `system.c` or at an appropriate orchestration layer to avoid tight coupling inside a device subsystem.
 
 - Disk images and storage backends
-  - `image_checkpoint` writes the on-disk filename, a flags byte (`IMAGE_CKPT_WRITABLE`, and `IMAGE_CKPT_WRAPPED` for a bare volume attached through the wrapper — the restore re-wraps it; see `docs/core/storage/bare-volume-wrapper.md`), the storage's raw size (`raw_size`, without any wrapper prefix), the per-image `instance_path` stem, and then delegates to `storage_checkpoint`. The `instance_path` field is what lets a future restore reopen the same delta+journal pair without relying on adjacent-to-base sidecars.
+  - `image_checkpoint` writes the on-disk filename, a flags byte (`IMAGE_CKPT_WRITABLE`, and `IMAGE_CKPT_WRAPPED` for a bare volume attached through the wrapper — the restore re-wraps it; see `docs/internals/core/storage/bare-volume-wrapper.md`), the storage's raw size (`raw_size`, without any wrapper prefix), the per-image `instance_path` stem, and then delegates to `storage_checkpoint`. The `instance_path` field is what lets a future restore reopen the same delta+journal pair without relying on adjacent-to-base sidecars.
   - `storage_checkpoint` inspects `checkpoint_get_kind(checkpoint)` to decide whether to write only the bitmap (quick checkpoints) or stream the entire delta (consolidated checkpoints). It is unchanged by the storage-isolation rewrite — the bitmap and block streams are still file-format-compatible at the storage layer.
-  - During restore the machine init code (e.g. `plus_init`, `se30_init`) reads `(name, writable, raw_size, instance_path)` and picks an opener based on `(writable, kind)`:
-    - **Consolidated + writable** → `image_create_empty(name, raw_size)` recreates the base file, then `image_create(name, checkpoint_machine_dir())` mints a fresh writable instance; `storage_restore_from_checkpoint` populates all delta blocks from the embedded data.
-    - **Quick + writable** → `image_open(name, instance_path)` reopens the same delta+journal that were live at save time. `storage_restore_from_checkpoint` reads the bitmap from the checkpoint stream and sets it as the current state. The delta's block data is already correct (OPFS auto-persisted every write).
+  - During restore the image-restore helper (`mac_checkpoint_restore_one_image` in `src/machines/runtime/checkpoint_images.c`) reads `(name, writable, raw_size, instance_path)` and picks an opener based on `(writable, kind)`:
+    - **Consolidated + writable** → `image_create_empty(name, raw_size)` recreates the base file (only when absent), then `image_create_with_geometry(name, checkpoint_machine_dir(), geom)` mints a fresh writable instance; `storage_restore_from_checkpoint` populates all delta blocks from the embedded data.
+    - **Quick + writable** → `image_open_with_geometry(name, instance_path, geom)` reopens the same delta+journal that were live at save time. `storage_restore_from_checkpoint` reads the bitmap from the checkpoint stream and sets it as the current state. The delta's block data is already correct (OPFS auto-persisted every write).
     - **Read-only** → `image_open_readonly(name)`. Per-instance scratch under `/tmp/gs-image-ro/` is fresh.
   - Old checkpoints written before the format change become unreadable naturally through `checkpoint_validate_build_id`; no migration code exists.
 

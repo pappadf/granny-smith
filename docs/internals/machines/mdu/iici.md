@@ -2,8 +2,11 @@
 
 The **Macintosh IIci** ("Aurora", 25 MHz 68030, March 1989) is the first
 of the RBV/MDU-class colour Macs. Granny Smith models it in
-[src/machines/iici.c](../../../../src/machines/mdu/iici.c) /
+[src/machines/mdu/iici.c](../../../../src/machines/mdu/iici.c) /
 [iici_internal.h](../../../../src/machines/mdu/iici_internal.h).
+Hardware reference: [iici.md](../../../reference/machines/mdu/iici.md)
+(identity §1, deltas §2, per-subsystem wiring §3 — video §3.3, the RBV §3.4,
+the NuBus sockets §4.1).
 
 Architecturally the IIci is **"the IIcx with VIA2 replaced by the RBV
 chip and built-in video scanned out of main RAM."** It shares the IIcx's 68030 + integrated PMMU, the
@@ -97,8 +100,10 @@ hard disk, to a working Finder desktop. The rows `iici-701-fd`,
 boot each and pixel-match the desktop.
 
 Deferred (not v1): the optional Parity Generator Card, the 32 KB L2
-cache card, sound IRQ delivery (`RvSndIRQ` is unwired, matching the
-IIfx's ASC), and user-installable NuBus cards in slots `$C/$D/$E`.
+cache card, and sound IRQ delivery (`RvSndIRQ` is unwired, matching the
+IIfx's ASC). The three NuBus sockets `$C/$D/$E` are declared and
+seat cards (the `iici-24ac-dual` row boots a dual-display desktop with a
+24AC in socket $C).
 
 ## See also
 

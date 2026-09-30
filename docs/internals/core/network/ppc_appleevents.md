@@ -581,7 +581,7 @@ appletalk
     send(target, event, timeout:, tag:, mode:)  -> the event object
     send_raw(target, bytes)                     -> the event object
     events       collection  state, text, class, id, reply, errn, tag
-    inbox        collection  received events: class, id, sender, map, text
+    inbox        collection  received events: class, id, sender, event, text, error
       clear()                forget them all, making room for more
     auto_reply   rw string   text-form template answering inbox events
     stats                    sent, replied, errors, received, timeouts,

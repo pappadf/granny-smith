@@ -12,7 +12,7 @@ module — see "Why not one expansion-bus abstraction" below.
 | `pci_card.h` | `pci_device_t` / `pci_device_ops_t` / `pci_card_kind_t` — the only header a card driver under `cards/` needs |
 | `config_space.h` / `config_space.c` | the generic type-0 header: IDs, class, command/status, BAR latch + sizing, expansion-ROM BAR, interrupt line |
 | `pci_class.c` | the `machine.pci.slot[N]` object surface |
-| `cards/` | pluggable card drivers (empty today) |
+| `cards/` | pluggable card drivers (`mach64gx.c`, `voodoo2.c`, `scripts53c8xx.c` / `sym53c825.c`, `cirrus54m30.c`) |
 
 Host **bridges** are chipset, so they live with their family
 (`machines/tnt/bandit.c`). The core never includes a machine header; the
@@ -273,8 +273,9 @@ must never be the machine's display declares `card_class = "3d"` so the
 
 Not done, with reasons: the host-overlay BAR fast path (above); PCI-PCI
 bridges (type-1 cycles keep returning all-ones — no subordinate buses
-exist on these machines); bus mastering (no modelled device masters, and
-the DBDMA hooks are the precedent when one does).
+exist on these machines); a generic bus-master API in the core (the 53C8xx
+SCRIPTS engine masters into the host's physical space directly, the DBDMA
+rule — MMU not in the path — rather than through the bus).
 
 ## Card options
 
@@ -310,6 +311,9 @@ broken by which bus actually seated something.  See the TNT doc for the
   `cards/` convention, adopted for PCI with the Voodoo2)
 - `docs/internals/machines/tnt/tnt.md` — the bridge adapter, slot tables and the
   interrupt map
+- `docs/reference/hardware/pci/pci.md` — the PCI bus hardware reference:
+  the address spaces, the config header, cycle types and the Open Firmware
+  programming model
 - `docs/reference/hardware/pci/expansion-rom.md` — expansion-ROM identity and
   provisioning, the FCode path's half of the story
 - `docs/reference/hardware/nubus/declaration-rom.md` — the declaration-ROM sibling the

@@ -696,7 +696,7 @@ Pages of interest:
 * `0x30` Apple vendor-specific (Apple HD SC Setup's "APPLE COMPUTER, INC."
   drive identification — the emulator returns this to pass Setup's
   identity check; see `CMD_MODE_SENSE` in
-  [scsi.c](../../../../src/core/peripherals/scsi.c)).
+  [scsi_bus.c](../../../../src/core/peripherals/scsi_bus.c)).
 
 ##### What MODE SELECT actually honours
 
