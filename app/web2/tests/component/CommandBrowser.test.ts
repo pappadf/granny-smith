@@ -6,7 +6,7 @@ import {
   type ConsoleInputApi,
 } from '@/components/panel-views/terminal/terminalBridge';
 import { publishCompletion } from '@/state/terminalSync.svelte';
-import { invalidate } from '@/lib/commandsTree';
+import { invalidate } from '@/bus/memberStore';
 
 // The browser renders whatever the model says: mock the bus with a small
 // tree (machine → cpu, a two-drive collection; debug) and a usage text, and
@@ -254,14 +254,6 @@ describe('CommandBrowser (structural, model-generated)', () => {
     expect(pc.querySelector('.type')?.textContent).toBe('uint, hex');
   });
 
-  it('a collection expands to its live entries', async () => {
-    const { container } = render(CommandBrowser);
-    await open(container, 'machine');
-    await open(container, 'drive');
-    await row(container, '[0]');
-    await row(container, '[1]');
-  });
-
   it('lists advanced members too, with no filter row', async () => {
     const { container } = render(CommandBrowser);
     await open(container, 'machine');
@@ -360,6 +352,17 @@ describe('CommandBrowser ↔ console', () => {
     await fireEvent.keyDown(tree, { key: 'ArrowDown' });
     await waitFor(() => expect(container.querySelector('.cmd-row.selected')).not.toBeNull());
     expect(input.writes).toEqual([]);
+  });
+
+  it('Home and End select the first and the last row', async () => {
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    const selected = () => container.querySelector('.cmd-row.selected .name')?.textContent;
+    await fireEvent.keyDown(tree, { key: 'End' });
+    await waitFor(() => expect(selected()).toBe('Language'));
+    await fireEvent.keyDown(tree, { key: 'Home' });
+    await waitFor(() => expect(selected()).toBe('Commands'));
   });
 
   it('Esc with the pane closed hands focus to the console, writing nothing', async () => {

@@ -7,7 +7,14 @@
 // nothing is hand-maintained.
 
 import { isModuleReady } from '@/bus/emulator';
-import { loadMembers, type MemberInfo, type TypeDescriptor } from '@/bus/systemTree';
+import type { MemberInfo, TypeDescriptor } from '@/bus/systemTree';
+import {
+  DOMAIN_LABEL,
+  collectionEntries,
+  join,
+  members,
+  membersWithValues,
+} from '@/bus/memberStore';
 
 export type SysKind = 'divider' | 'object' | 'collection' | 'entry' | 'attr';
 
@@ -40,39 +47,6 @@ export interface Level {
 }
 
 const EMPTY: Level = { rows: [], methods: [], submenus: [] };
-
-const DOMAIN_LABEL: Record<string, string> = {
-  machine: 'Machine',
-  emulator: 'Emulator',
-  network: 'Network',
-};
-
-function join(path: string, name: string): string {
-  return path ? `${path}.${name}` : name;
-}
-
-// Structure (members without values) per path, to tell a methods-only node
-// from a folder without asking again on every refresh.
-const structure = new Map<string, MemberInfo[]>();
-
-export function invalidateStructure(): void {
-  structure.clear();
-}
-
-async function structureOf(path: string): Promise<MemberInfo[]> {
-  const hit = structure.get(path);
-  if (hit) return hit;
-  const ms = await loadMembers(path);
-  structure.set(path, ms);
-  return ms;
-}
-
-// A node's members with their values; a node whose values do not fit the
-// reply (or fail to read) comes back without them.
-async function withValues(path: string): Promise<MemberInfo[]> {
-  const ms = await loadMembers(path, true);
-  return ms.length ? ms : loadMembers(path);
-}
 
 function visibleMethods(ms: MemberInfo[]): MemberInfo[] {
   return ms.filter((m) => m.kind === 'method' && !m.hidden && m.category !== 'internal');
@@ -150,7 +124,7 @@ async function memberRows(path: string, ms: MemberInfo[], skip?: MemberInfo): Pr
     (m) => m !== skip && m.kind === 'child' && !m.collection && !m.indexed,
   );
   const kinds = await Promise.all(
-    children.map(async (m) => isMethodsOnly(await structureOf(join(path, m.name)))),
+    children.map(async (m) => isMethodsOnly(await members(join(path, m.name)))),
   );
   const methodsOnly = new Set(children.filter((_, i) => kinds[i]));
   const rows: SysRow[] = [];
@@ -161,7 +135,7 @@ async function memberRows(path: string, ms: MemberInfo[], skip?: MemberInfo): Pr
     else if (m.kind === 'child') {
       if (methodsOnly.has(m)) {
         const sub = join(path, m.name);
-        submenus.push({ name: m.name, path: sub, methods: visibleMethods(await structureOf(sub)) });
+        submenus.push({ name: m.name, path: sub, methods: visibleMethods(await members(sub)) });
       } else rows.push(nodeRow(path, m));
     }
   }
@@ -171,7 +145,7 @@ async function memberRows(path: string, ms: MemberInfo[], skip?: MemberInfo): Pr
 // The root: its children under domain dividers.
 export async function loadRoot(): Promise<Level> {
   if (!isModuleReady()) return EMPTY;
-  const ms = await loadMembers('');
+  const ms = await members('');
   const rows: SysRow[] = [];
   let domain: string | undefined;
   for (const m of ms) {
@@ -188,31 +162,15 @@ export async function loadRoot(): Promise<Level> {
 
 // The level under an object or entry row.
 async function objectLevel(path: string): Promise<Level> {
-  return memberRows(path, await withValues(path));
+  return memberRows(path, await membersWithValues(path));
 }
 
 // The level under a collection: its live entries (by index, or by key), then
 // the container's own members except `entries`.
 async function collectionLevel(path: string): Promise<Level> {
-  const ms = await withValues(path);
-  const entries = ms.find((m) => m.kind === 'child' && m.name === 'entries' && m.indexed);
-  let indices: number[] = [];
-  let keys: string[] = [];
-  if (entries) {
-    indices = Array.isArray(entries.indices) ? entries.indices : [];
-    keys = Array.isArray(entries.keys) ? entries.keys : [];
-  } else {
-    // A bare indexed member: its parent lists the entries.
-    const dot = path.lastIndexOf('.');
-    const parent = dot >= 0 ? path.slice(0, dot) : '';
-    const name = dot >= 0 ? path.slice(dot + 1) : path;
-    const pm = (await loadMembers(parent)).find((m) => m.name === name);
-    indices = Array.isArray(pm?.indices) ? pm.indices : [];
-    keys = Array.isArray(pm?.keys) ? pm.keys : [];
-  }
-  const rows: SysRow[] = indices.length
-    ? indices.map((i) => entryRow(`[${i}]`, `${path}[${i}]`))
-    : keys.map((k) => entryRow(`["${k}"]`, `${path}["${k}"]`));
+  const ms = await membersWithValues(path);
+  const { entries, items } = await collectionEntries(path, ms);
+  const rows = items.map((e) => entryRow(e.name, e.path));
   // A bare indexed member answers for itself only through its entries.
   if (!entries) return { rows, methods: [], submenus: [] };
   const own = await memberRows(path, ms, entries);
@@ -239,17 +197,4 @@ export function shown(row: SysRow, showAdvanced: boolean): boolean {
   return row.category !== 'advanced' || showAdvanced;
 }
 
-// The core events that re-read the visible levels (the machine's booting
-// reloads everything: `state:machine_booted`).
-export const REFRESH_EVENTS = new Set([
-  'state:mode_started',
-  'state:mode_ended',
-  'state:breakpoint_hit',
-  'state:speed',
-  'notify:checkpoint_saved',
-  'notify:floppy',
-  'notify:drive_activity',
-  'notify:media',
-]);
-export const RELOAD_EVENT = 'state:machine_booted';
 export const REFRESH_INTERVAL_MS = 2000;

@@ -14,9 +14,8 @@
 
 import { tabComplete, type CompletionResult } from '@/bus/emulator';
 import { publishCompletion } from '@/state/terminalSync.svelte';
-import { loadUsageInfo, type UsageInfo } from '@/lib/commandsTree';
+import { argSpan16, loadUsageInfo } from '@/lib/usage';
 import { loadHighlight, type HlSpan } from '@/lib/highlight';
-import { utf8ToUtf16 } from '@/lib/utf8';
 
 const SYNC_DELAY_MS = 40;
 const HIGHLIGHT_DELAY_MS = 30;
@@ -49,8 +48,6 @@ export class InputAssist {
   #lastHl: { text: string; spans: readonly HlSpan[] } = { text: '', spans: [] };
 
   #hintDismissed = '';
-  // shell.usage answers by method path.
-  #usage: Record<string, UsageInfo | null> = {};
 
   constructor(input: () => HighlightTarget | null) {
     this.#input = input;
@@ -141,24 +138,18 @@ export class InputAssist {
       if (!method) this.#hintDismissed = '';
       return;
     }
-    let u = this.#usage[method];
-    if (u === undefined) {
-      u = await loadUsageInfo(method);
-      this.#usage[method] = u;
-    }
+    const u = await loadUsageInfo(method);
     if (this.#disposed) return;
     if (!u || !u.signature || this.#lastResult !== r) {
       if (!u?.signature) this.hint = null;
       return;
     }
-    const idx = r?.context.argIndex ?? null;
-    const span = idx !== null ? u.argSpans[idx] : null;
+    const span = argSpan16(u, r?.context.argIndex ?? null);
     if (!span) {
       this.hint = { before: u.signature, arg: '', after: '' };
       return;
     }
-    const a = utf8ToUtf16(u.signature, span[0]);
-    const b = utf8ToUtf16(u.signature, span[1]);
+    const [a, b] = span;
     this.hint = {
       before: u.signature.slice(0, a),
       arg: u.signature.slice(a, b),
