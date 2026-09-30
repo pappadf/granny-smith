@@ -1,6 +1,7 @@
 <script lang="ts">
   import { machine, type MachineStatus } from '@/state/machine.svelte';
   import { activity, bridgeBusy } from '@/state/activity.svelte';
+  import { printer, reopenPrintedDocument } from '@/state/printer.svelte';
   import { setCapsLock } from '@/bus/emulator';
   import { shortModel } from '@/lib/machine';
   import DriveActivity from './DriveActivity.svelte';
@@ -45,6 +46,26 @@
     const t = setTimeout(() => (cpFlash = false), 180);
     return () => clearTimeout(t);
   });
+  // The LaserWriter: what it is doing while a job runs (the core's PAP
+  // status, state/printer), then a button that reopens the last document.
+  const printerJob = $derived(printer.job ? ` “${printer.job}”` : '');
+  const printerLabel = $derived(
+    printer.activity === 'starting'
+      ? 'Printer starting up'
+      : printer.activity === 'busy'
+        ? `Printing${printerJob}`
+        : printer.activity === 'printing'
+          ? `Printing${printerJob} · page ${printer.page}`
+          : printer.activity === 'error'
+            ? `Print failed: ${printer.error}`
+            : '',
+  );
+  const printerBusy = $derived(
+    printer.activity === 'starting' ||
+      printer.activity === 'busy' ||
+      printer.activity === 'printing',
+  );
+
   const cpTitle = $derived(
     machine.checkpoint
       ? `Last background checkpoint ${new Date(machine.checkpoint.at).toLocaleTimeString()} (${machine.checkpoint.ms.toFixed(1)} ms)`
@@ -111,6 +132,26 @@
         <div class="sb-item sb-busy" title="The emulator is still working on a request">
           <span class="label">Busy: {bridgeBusy.path} ({bridgeBusy.seconds} s)</span>
         </div>
+      {/if}
+      {#if printerLabel}
+        <div
+          class="sb-item sb-printer"
+          class:error={printer.activity === 'error'}
+          title="LaserWriter — {printer.status}"
+        >
+          {#if printerBusy}<span class="upload-spinner"></span>{/if}
+          <span class="printer-label">{printerLabel}</span>
+        </div>
+      {:else if printer.document}
+        <button
+          class="sb-item sb-printer sb-printed"
+          title="Show the last printed document ({printer.document.name})"
+          onclick={reopenPrintedDocument}
+        >
+          <Icon name="file" size={13} /><span class="printer-label"
+            >{printer.document.title || printer.document.name}</span
+          >
+        </button>
       {/if}
       {#if activity.current}
         <div class="sb-item sb-upload" title="{activity.verb} in progress">
@@ -232,6 +273,22 @@
     opacity: 0.6;
     animation: gs-upload-pulse 1s ease-in-out infinite;
   }
+  .sb-printer {
+    gap: 6px;
+    font-size: 11px;
+  }
+  .sb-printer.error {
+    opacity: 0.8;
+  }
+  .sb-printed {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 11px;
+    line-height: inherit;
+  }
+  .printer-label,
   .upload-label {
     max-width: 28ch;
     overflow: hidden;

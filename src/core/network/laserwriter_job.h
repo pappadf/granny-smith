@@ -101,12 +101,6 @@ bool laserwriter_job_ready(void);
 // keeps it when the workstation closes right after its EOF).
 bool laserwriter_job_finishing(void);
 
-// True while a feed or a finish awaits its acknowledgement.  A query's
-// reply arrives with that acknowledgement, so the PAP layer answers no
-// read credit with a status line meanwhile (Inside AppleTalk 2e ch. 10:
-// the read-driven model — the credit waits for real data).
-bool laserwriter_job_feed_pending(void);
-
 // Feeds `len` bytes of the program (at most one flow quantum) that answered
 // SendData `sequence`.  FED follows; output produced by the feed waits for
 // laserwriter_job_read_output.  False when not issued (not ready).

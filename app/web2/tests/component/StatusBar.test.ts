@@ -3,6 +3,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import StatusBar from '@/components/status-bar/StatusBar.svelte';
 import { tick } from 'svelte';
 import { machine, setDriveActivity, type MachineStatus } from '@/state/machine.svelte';
+import {
+  printer,
+  setPrinterStatus,
+  showPrintedDocument,
+  _resetPrinterForTests,
+} from '@/state/printer.svelte';
 
 beforeEach(() => {
   machine.status = 'no-machine';
@@ -10,6 +16,9 @@ beforeEach(() => {
   machine.ram = null;
   machine.drives = { hd: true, fd: true, cd: true };
   machine.driveActivity = { hd: 'idle', fd: 'idle', cd: 'idle' };
+  (URL as unknown as { createObjectURL: unknown }).createObjectURL = () => 'blob:the-pdf';
+  (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => undefined;
+  _resetPrinterForTests();
 });
 
 describe('StatusBar', () => {
@@ -85,5 +94,54 @@ describe('StatusBar', () => {
       (d) => d.querySelector('.drive-ico')?.textContent === 'CP',
     );
     expect(cp?.getAttribute('title')).toMatch(/Last background checkpoint .+\(12\.3 ms\)/);
+  });
+
+  it('shows what the printer is doing, and nothing while it is idle', async () => {
+    machine.status = 'running';
+    const { container } = render(StatusBar);
+    const item = () => container.querySelector('.sb-printer');
+    expect(item()).toBeNull();
+    setPrinterStatus('status: starting up');
+    await tick();
+    expect(item()?.textContent).toContain('Printer starting up');
+    setPrinterStatus('status: busy; source: AppleTalk; job: MacOS7');
+    await tick();
+    expect(item()?.textContent).toContain('Printing “MacOS7”');
+    expect(item()?.getAttribute('title')).toBe(
+      'LaserWriter — status: busy; source: AppleTalk; job: MacOS7',
+    );
+    setPrinterStatus('status: printing; source: AppleTalk; job: MacOS7; page: 1');
+    await tick();
+    expect(item()?.textContent).toContain('Printing “MacOS7” · page 1');
+    setPrinterStatus('status: idle');
+    await tick();
+    expect(item()).toBeNull();
+  });
+
+  it('a failed job shows why', async () => {
+    machine.status = 'running';
+    const { container } = render(StatusBar);
+    setPrinterStatus('status: idle; error: feed failed');
+    await tick();
+    expect(container.querySelector('.sb-printer')?.textContent).toContain(
+      'Print failed: feed failed',
+    );
+  });
+
+  it('once idle, the last document can be reopened from the bar', async () => {
+    machine.status = 'running';
+    const { container } = render(StatusBar);
+    showPrintedDocument({
+      name: '00002-MacOS7.pdf',
+      title: 'MacOS7',
+      pages: 1,
+      pdf: new Uint8Array([0x25]),
+    });
+    printer.viewerOpen = false;
+    await tick();
+    const button = container.querySelector('button.sb-printed') as HTMLButtonElement;
+    expect(button.textContent).toContain('MacOS7');
+    button.click();
+    expect(printer.viewerOpen).toBe(true);
   });
 });

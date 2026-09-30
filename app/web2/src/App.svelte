@@ -4,6 +4,7 @@
   import ToastStack from './components/common/ToastStack.svelte';
   import CheckpointResumePrompt from './components/dialogs/CheckpointResumePrompt.svelte';
   import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
+  import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
   import { theme, applyThemeToHtml, systemTheme } from '@/state/theme.svelte';
   import { layout } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
@@ -49,6 +50,7 @@
 <ToastStack />
 <CheckpointResumePrompt />
 <PreviewNoticeDialog />
+<PrintViewerDialog />
 
 <style>
   :global(html),

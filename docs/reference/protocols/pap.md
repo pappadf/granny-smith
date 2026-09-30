@@ -183,21 +183,24 @@ in both), and the session follows its events:
 - **OpenConn** is answered at once with OpenReply and the status `status:
   starting up`; the interpreter job is opened in the same instant, but the
   **first SendData is issued only when its OPENED arrives** (through the
-  usual issue gap, §6.1). While starting up, the driver's status reads get
-  the status line. An OPEN_FAILED (a refused configuration, an interpreter
+  usual issue gap, §6.1). An OPEN_FAILED (a refused configuration, an interpreter
   that never started) aborts the session; the error stays in the status
   string until the next job.
 - Each **SendData transaction's data is gathered** (at most one flow
   quantum) and fed as one piece when the transaction completes, with its
   sequence number. **The next SendData goes out after that feed's FED
   acknowledgement** (plus the issue gap) — never before.
-- **A read credit is answered with the status line only while no feed is
-  unacknowledged.** The library guarantees a query's answer is available
-  as soon as the feed that completed it returns, so the FED carries the
-  reply and it goes out on the held credit (§6.4 read-driven model: the
-  credit waits for real data). A credit that arrives while the printer's
-  own SendData is on the wire, or between jobs, is answered with the
-  status line so the driver's progress poll never blocks.
+- **A read credit waits for the program's own output**, as a LaserWriter's
+  does (§6.4 read-driven model: the credit waits for real data). A feed's
+  replies go out on the held credits when its FED arrives, and a finished
+  job's output ends with EOF on the read channel. A credit is never
+  answered with the status line: status is what SendStatus returns. The
+  LaserWriter 8 driver reads its opening query's answers from this
+  channel in order, and took a status line sent there for the first
+  answer. It then assumed a Level 1 printer without resident fonts,
+  and sent Level 1 procsets plus a ~300 KB TrueType download of Helvetica
+  for a one-page Finder window. That took four times as long as the 20 KB
+  job it sends once it reads the real answers (`appletalk-print-lw8`).
 - **EOF** from the driver (with or after the last data) issues FINISH after
   the last FED; on **FINISHED** the document is counted (and, headless,
   written), the completion's output goes out on the credits followed by

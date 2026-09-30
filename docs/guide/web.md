@@ -161,8 +161,12 @@ transports, installed at module construction:
   and posts the wasm memory and the address; the worker parks in
   `Atomics.waitAsync` on the outbound ring's head while the C side wakes
   it with `emscripten_futex_wake`.  Each finished PDF comes back to the
-  page as a transferable and is downloaded at once as
-  `<job>-<title>.pdf`.  The protocol is
+  page as a transferable and opens in a viewer dialog (the browser's own
+  PDF viewer in a frame, with Download and Open-in-a-tab), named
+  `<job>-<title>.pdf`; a browser without an inline viewer
+  (`navigator.pdfViewerEnabled` false, e.g. Chrome on Android) downloads
+  it at once instead.  The status bar shows the printer's activity from
+  the `printer_status` event and reopens the last document.  The protocol is
   [`laserwriter_ring_protocol.h`](../../src/core/network/laserwriter_ring_protocol.h)
   / `printer/platenProtocol.ts`; the whole path is
   [`docs/reference/protocols/laserwriter-session.md`](../reference/protocols/laserwriter-session.md) §5.5.
@@ -275,6 +279,7 @@ callbacks is emitted at its source too; the page routes each in
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
+| `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
 | `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
 | `log:log` | the log sink, every line | `{line}` |
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |
