@@ -3,13 +3,12 @@ import {
   rootRows,
   expand,
   firstSentence,
-  invalidate,
-  invalidationFor,
   loadAliases,
   visible,
   type BrowserRow,
 } from '@/lib/commandsTree';
 import { typeText } from '@/lib/typeDescriptor';
+import { changeFor, invalidate } from '@/bus/memberStore';
 
 // The browser is a structural projection of the model: mock the bus with a
 // tiny tree and assert the rows it produces.
@@ -230,9 +229,10 @@ describe('command browser rows (model projection)', () => {
   });
 
   it('events map to the levels they change', () => {
-    expect(invalidationFor('state:machine_booted')).toBe('');
-    expect(invalidationFor('notify:media')).toBe('machine.scsi');
-    expect(invalidationFor('notify:floppy')).toBe('machine.floppy');
-    expect(invalidationFor('state:speed')).toBeNull();
+    expect(changeFor('state:machine_booted')).toEqual({ reload: true, dropped: [] });
+    expect(changeFor('notify:media')).toEqual({ reload: false, dropped: ['machine.scsi'] });
+    expect(changeFor('notify:floppy')).toEqual({ reload: false, dropped: ['machine.floppy'] });
+    expect(changeFor('state:speed')).toEqual({ reload: false, dropped: [] });
+    expect(changeFor('notify:screen')).toBeNull();
   });
 });

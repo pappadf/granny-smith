@@ -14,18 +14,17 @@
     loadRoot,
     loadLevel,
     shown,
-    invalidateStructure,
-    REFRESH_EVENTS,
-    RELOAD_EVENT,
     REFRESH_INTERVAL_MS,
     type Level,
     type SysRow,
   } from '@/lib/systemRows';
   import type { ArgInfo, MemberInfo } from '@/bus/systemTree';
-  import { gsEval, isGsError, gsErrorText, onCoreEvent, whenModuleReady } from '@/bus/emulator';
+  import { gsEval, isGsError, gsErrorText, whenModuleReady } from '@/bus/emulator';
+  import { invalidate, onMembersChanged } from '@/bus/memberStore';
+  import { TreeState } from '@/lib/treeState.svelte';
   import { machine } from '@/state/machine.svelte';
   import { systemView } from '@/state/system.svelte';
-  import { consoleEcho, consoleSubmit, onConsoleJobDone } from '@/state/console.svelte';
+  import { consoleEcho, consoleSubmit } from '@/state/console.svelte';
   import { formatValue, parseCommit, assignStatement, callStatement } from '@/lib/typeDescriptor';
   import { isContainer } from '@/lib/taggedValue';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
@@ -43,73 +42,27 @@
   // out of the image categories the New Machine dialog offers.
   const EXPORT_DIR = '/opfs/exports';
 
-  let root = $state<Level>({ rows: [], methods: [], submenus: [] });
-  let levels = $state<Record<string, Level>>({});
-  let loading = $state(true);
   let selectedKey = $state('');
   let editingKey = $state('');
   let listEl = $state<HTMLUListElement | null>(null);
-  let destroyed = false;
 
-  interface FlatRow {
-    row: SysRow;
-    depth: number;
-  }
-
-  // The rows on screen, depth-first through the open levels.
-  const flat = $derived.by(() => {
-    const out: FlatRow[] = [];
-    const walk = (rows: SysRow[], depth: number) => {
-      for (const row of rows) {
-        if (row.kind !== 'divider' && !shown(row, systemView.showAdvanced)) continue;
-        out.push({ row, depth });
-        if (row.expandable && systemView.expanded[row.path] && levels[row.path])
-          walk(levels[row.path].rows, depth + 1);
-      }
-    };
-    walk(root.rows, 0);
-    return out;
+  // Open levels are kept by path in systemView (a model row's key is its
+  // path), so they survive the tab closing.
+  const tree = new TreeState<SysRow, Level>({
+    root: loadRoot,
+    load: loadLevel,
+    rows: (l) => l.rows,
+    shown: (row) => row.kind === 'divider' || shown(row, systemView.showAdvanced),
+    reloadOnOpen: () => true,
+    expanded: () => systemView.expanded,
+    refreshed: () => {
+      if (systemView.reveal) showRevealed();
+    },
   });
+  const flat = $derived(tree.flat);
+  const root = $derived(tree.rootRows);
 
   // --- loading and refresh --------------------------------------------------------
-
-  // Re-read the root and every open level (top-down, so a level whose parent
-  // lost it is dropped).  One pass at a time; a request during a pass runs
-  // once more after it.
-  let running = false;
-  let again = false;
-  async function refresh(): Promise<void> {
-    if (running) {
-      again = true;
-      return;
-    }
-    running = true;
-    try {
-      do {
-        again = false;
-        await pass();
-      } while (again && !destroyed);
-    } finally {
-      running = false;
-    }
-  }
-
-  async function pass(): Promise<void> {
-    const r = await loadRoot();
-    const next: Record<string, Level> = {};
-    const walk = async (rows: SysRow[]) => {
-      const open = rows.filter((row) => row.expandable && systemView.expanded[row.path]);
-      const loaded = await Promise.all(open.map((row) => loadLevel(row)));
-      for (let i = 0; i < open.length; i++) next[open[i].path] = loaded[i];
-      for (const l of loaded) await walk(l.rows);
-    };
-    await walk(r.rows);
-    if (destroyed) return;
-    root = r;
-    levels = next;
-    loading = false;
-    if (systemView.reveal) showRevealed();
-  }
 
   // Select the row another surface asked for, once it is loaded.
   function showRevealed(): void {
@@ -122,33 +75,21 @@
     );
   }
 
-  async function reload(): Promise<void> {
-    invalidateStructure();
-    await refresh();
-  }
-
-  async function toggle(row: SysRow): Promise<void> {
-    if (!row.expandable) return;
-    if (systemView.expanded[row.path]) {
-      systemView.expanded[row.path] = false;
-      return;
-    }
-    levels[row.path] = await loadLevel(row);
-    systemView.expanded[row.path] = true;
-  }
-
   // Machine up or down: the tree changes shape.
   $effect(() => {
     void machine.status;
-    untrack(() => void whenModuleReady().then(reload));
+    untrack(
+      () =>
+        void whenModuleReady().then(() => {
+          invalidate('');
+          return tree.refresh();
+        }),
+    );
   });
 
-  const unsubscribe = onCoreEvent((ev) => {
-    const k = `${ev.kind}:${ev.event}`;
-    if (k === RELOAD_EVENT) void reload();
-    else if (REFRESH_EVENTS.has(k)) void refresh();
-  });
-  const unsubscribeJobs = onConsoleJobDone(() => void refresh());
+  // A change in the model re-reads the open levels (a reload after a boot
+  // keeps them by path).
+  const unsubscribe = onMembersChanged(() => void tree.refresh());
 
   // Every 2 s while the machine runs and the page is in the foreground (the
   // tab being open is this component being mounted).
@@ -157,13 +98,12 @@
     timer = setInterval(() => {
       if (machine.status !== 'running') return;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      void refresh();
+      void tree.refresh();
     }, REFRESH_INTERVAL_MS);
   });
   onDestroy(() => {
-    destroyed = true;
+    tree.dispose();
     unsubscribe();
-    unsubscribeJobs();
     if (timer) clearInterval(timer);
   });
 
@@ -198,7 +138,7 @@
     if (isGsError(res)) return gsErrorText(res);
     consoleEcho(assignStatement(row.path, c.value, row.type));
     endEdit();
-    void refresh();
+    void tree.refresh();
     return null;
   }
 
@@ -271,7 +211,7 @@
         `${p.method.verb ?? p.method.name}: ${formatValue(res, p.method.result)}`,
         'info',
       );
-    void refresh();
+    void tree.refresh();
     return null;
   }
 
@@ -368,7 +308,7 @@
     const y = ev.clientY;
     let items: ContextMenuItem[] = [];
     if (row.expandable) {
-      const level = levels[row.path] ?? (await loadLevel(row));
+      const level = tree.levels[row.key] ?? (await loadLevel(row));
       items = methodItems(level, row.path);
     }
     if (items.length) items.push({ sep: true });
@@ -402,13 +342,13 @@
       if (!cur.expandable) return;
       if (!!systemView.expanded[cur.path] !== (ev.key === 'ArrowRight')) {
         ev.preventDefault();
-        void toggle(cur);
+        void tree.toggle(cur);
       }
       return;
     }
     if (ev.key === 'Enter' || ev.key === 'F2') {
       ev.preventDefault();
-      if (cur.expandable) void toggle(cur);
+      if (cur.expandable) void tree.toggle(cur);
       else if (editable(cur) && cur.type?.kind === 'bool')
         void commit(cur, formatValue(cur.value, cur.type) === 'true' ? 'false' : 'true');
       else startEdit(cur);
@@ -427,9 +367,9 @@
       Advanced
     </label>
   </div>
-  {#if loading}
+  {#if !tree.loaded}
     <p class="hint">Loading system tree…</p>
-  {:else if root.rows.length === 0}
+  {:else if root.length === 0}
     <p class="hint">No machine is running yet. Start one from the Welcome view.</p>
   {:else}
     <ul class="sys-tree" role="tree" tabindex="0" bind:this={listEl} onkeydown={onKey}>
@@ -458,7 +398,7 @@
               title={row.doc ? `${row.doc}\n${row.path}` : row.path}
               onclick={() => {
                 selectedKey = row.key;
-                if (row.expandable) void toggle(row);
+                if (row.expandable) void tree.toggle(row);
               }}
             >
               <span class="twistie" class:open aria-hidden="true">

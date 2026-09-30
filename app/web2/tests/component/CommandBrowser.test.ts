@@ -6,7 +6,7 @@ import {
   type ConsoleInputApi,
 } from '@/components/panel-views/terminal/terminalBridge';
 import { publishCompletion } from '@/state/terminalSync.svelte';
-import { invalidate } from '@/lib/commandsTree';
+import { invalidate } from '@/bus/memberStore';
 
 // The browser renders whatever the model says: mock the bus with a small
 // tree (machine → cpu, a two-drive collection; debug) and a usage text, and

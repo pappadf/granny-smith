@@ -10,7 +10,8 @@
 // by the core events that change what a level holds (invalidationFor).
 
 import { gsEval, isModuleReady } from '@/bus/emulator';
-import { loadMembers, type MemberInfo, type TypeDescriptor } from '@/bus/systemTree';
+import type { MemberInfo, TypeDescriptor } from '@/bus/systemTree';
+import { DOMAIN_LABEL, collectionEntries, join, members } from '@/bus/memberStore';
 
 export type RowKind =
   | 'section' // a top-level headline: Commands, a domain, Aliases, Language
@@ -41,68 +42,6 @@ export interface BrowserRow {
 export function firstSentence(doc: string): string {
   const i = doc.indexOf('. ');
   return i >= 0 ? doc.slice(0, i + 1) : doc;
-}
-
-function join(path: string, name: string): string {
-  return path ? `${path}.${name}` : name;
-}
-
-// --- cache --------------------------------------------------------------------
-
-const memberCache = new Map<string, MemberInfo[]>();
-
-// `path`'s members, from the cache or one meta.members call.  `fresh` skips
-// the cache (a collection container is always re-read on expansion).
-async function members(path: string, fresh = false): Promise<MemberInfo[]> {
-  if (!fresh) {
-    const hit = memberCache.get(path);
-    if (hit) return hit;
-  }
-  const ms = await loadMembers(path);
-  memberCache.set(path, ms);
-  return ms;
-}
-
-// Drop cached levels at or under `prefix` ('' drops everything).
-export function invalidate(prefix = ''): void {
-  if (!prefix) {
-    memberCache.clear();
-    return;
-  }
-  for (const k of [...memberCache.keys()])
-    if (k === prefix || k.startsWith(`${prefix}.`) || k.startsWith(`${prefix}[`))
-      memberCache.delete(k);
-}
-
-// A console job may add or remove entries anywhere: drop every cached
-// level that lists a collection (the containers, and the parents of bare
-// indexed members).  Answers the dropped paths.
-export function invalidateCollections(): string[] {
-  const dropped: string[] = [];
-  for (const [path, ms] of [...memberCache.entries()]) {
-    if (ms.some((m) => m.kind === 'child' && (m.indexed || m.collection))) {
-      memberCache.delete(path);
-      dropped.push(path);
-    }
-  }
-  return dropped;
-}
-
-// The cache invalidation a core event implies (`kind:event`), or null when
-// it changes nothing the browser shows.
-export function invalidationFor(event: string): string | null {
-  switch (event) {
-    case 'state:machine_booted':
-      return '';
-    case 'notify:floppy':
-      return 'machine.floppy';
-    case 'notify:media':
-      return 'machine.scsi';
-    case 'notify:checkpoint_saved':
-      return 'checkpoint';
-    default:
-      return null;
-  }
 }
 
 // --- rows ---------------------------------------------------------------------
@@ -162,29 +101,8 @@ async function objectRows(path: string): Promise<BrowserRow[]> {
 async function collectionRows(path: string): Promise<BrowserRow[]> {
   // Re-read on every expansion: entries come and go.
   const ms = await members(path, true);
-  const entriesMember = ms.find((m) => m.kind === 'child' && m.name === 'entries' && m.indexed);
-  const out: BrowserRow[] = [];
-  // Entries of the container (its `entries` member), or -- for a bare indexed
-  // member reached directly -- of the member itself, whose parent answers.
-  let indices: number[] = [];
-  let keys: string[] = [];
-  if (entriesMember) {
-    indices = Array.isArray(entriesMember.indices) ? entriesMember.indices : [];
-    keys = Array.isArray(entriesMember.keys) ? entriesMember.keys : [];
-  } else {
-    const dot = path.lastIndexOf('.');
-    const parent = dot >= 0 ? path.slice(0, dot) : '';
-    const name = dot >= 0 ? path.slice(dot + 1) : path;
-    const pm = (await members(parent, true)).find((m) => m.name === name);
-    indices = Array.isArray(pm?.indices) ? pm.indices : [];
-    keys = Array.isArray(pm?.keys) ? pm.keys : [];
-  }
-  // A hybrid collection (indexed and keyed) is written in the indexed form.
-  if (indices.length) {
-    for (const i of indices) out.push(entryRow(`[${i}]`, `${path}[${i}]`));
-  } else {
-    for (const k of keys) out.push(entryRow(`["${k}"]`, `${path}["${k}"]`));
-  }
+  const { entries: entriesMember, items } = await collectionEntries(path, ms);
+  const out = items.map((e) => entryRow(e.name, e.path));
   for (const m of ms) {
     if (m === entriesMember || (m.kind === 'method' && m.hidden)) continue;
     out.push(memberRow(path, m));
@@ -217,12 +135,6 @@ async function childRows(row: BrowserRow): Promise<BrowserRow[]> {
       return [];
   }
 }
-
-const DOMAIN_LABEL: Record<string, string> = {
-  machine: 'Machine',
-  emulator: 'Emulator',
-  network: 'Network',
-};
 
 // The browser's root: one expandable headline per section -- the root's
 // own verbs (Commands), each domain its children live in (in model order),

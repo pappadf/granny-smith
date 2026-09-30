@@ -29,9 +29,6 @@
     aliasGroupKey,
     expand,
     firstSentence,
-    invalidate,
-    invalidateCollections,
-    invalidationFor,
     loadAliases,
     loadUsageInfo,
     rootRows,
@@ -40,11 +37,11 @@
     type UsageInfo,
   } from '@/lib/commandsTree';
   import { typeText } from '@/lib/typeDescriptor';
-  import { onCoreEvent, whenModuleReady } from '@/bus/emulator';
+  import { whenModuleReady } from '@/bus/emulator';
+  import { covers, invalidate, onMembersChanged } from '@/bus/memberStore';
   import { focusConsole, registerBrowserReveal, writeToConsole } from './terminalBridge';
   import { pathPrefixes } from '@/lib/objectPath';
   import { terminalSync } from '@/state/terminalSync.svelte';
-  import { onConsoleJobDone } from '@/state/console.svelte';
   import { completionFocus } from '@/lib/pathToken';
   import { utf8ToUtf16 } from '@/lib/utf8';
   import { highlightParts, loadHighlight, type HlSpan } from '@/lib/highlight';
@@ -112,45 +109,19 @@
     return out;
   }
 
-  // Re-read the open levels at or under `prefix`.
-  function rereadUnder(prefix: string): void {
-    for (const k of Object.keys(children)) {
-      const row = findRow(k);
-      if (
-        row &&
-        expanded[k] &&
-        (row.path === prefix ||
-          row.path.startsWith(`${prefix}.`) ||
-          row.path.startsWith(`${prefix}[`))
-      )
-        void expand(row).then((rows) => (children[k] = rows));
-    }
-  }
-
-  // Events that change what a level holds drop its cache and re-read it.
-  const unsubscribe = onCoreEvent((ev) => {
-    const prefix = invalidationFor(`${ev.kind}:${ev.event}`);
-    if (prefix === null) return;
-    if (prefix === '') {
+  // A change in the model re-reads the open levels it dropped.
+  const unsubscribe = onMembersChanged((c) => {
+    if (c.reload) {
       void reload();
       return;
     }
-    invalidate(prefix);
-    rereadUnder(prefix);
-  });
-  // A console job may have added or removed collection entries.
-  const unsubscribeJobs = onConsoleJobDone(() => {
-    for (const p of invalidateCollections()) rereadUnder(p);
     for (const k of Object.keys(children)) {
       const row = findRow(k);
-      if (row?.kind === 'collection' && expanded[k])
+      if (row && expanded[k] && c.dropped.some((p) => covers(p, row.path)))
         void expand(row).then((rows) => (children[k] = rows));
     }
   });
-  onDestroy(() => {
-    unsubscribe();
-    unsubscribeJobs();
-  });
+  onDestroy(unsubscribe);
 
   function findRow(key: string): BrowserRow | undefined {
     const stack = [...roots];
