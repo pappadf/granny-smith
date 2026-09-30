@@ -195,6 +195,11 @@ async function row(container: HTMLElement, name: string): Promise<HTMLElement> {
   });
 }
 
+// The details pane's usage text, or null when the pane is closed.
+function usageText(container: HTMLElement): string | null {
+  return container.querySelector('.details .usage')?.textContent ?? null;
+}
+
 async function open(container: HTMLElement, name: string): Promise<void> {
   const r = await row(container, name);
   await fireEvent.click(r.querySelector('.twistie')!);
@@ -237,6 +242,8 @@ describe('CommandBrowser (structural, model-generated)', () => {
       Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'run'),
     ).toBe(false);
     await fireEvent.click(ls.querySelector('.cmd-line')!);
+    expect(input.writes).toEqual([]);
+    await fireEvent.dblClick(ls.querySelector('.cmd-line')!);
     expect(input.writes).toEqual(['ls ']);
   });
 
@@ -266,17 +273,51 @@ describe('CommandBrowser (structural, model-generated)', () => {
     expect(container.querySelector('.chips')).toBeNull();
   });
 
-  it('selecting a leaf writes its path and shows its usage text', async () => {
+  it('a click previews: the usage shows in the details pane, nothing is written', async () => {
     const input = fakeInput();
     const { container } = render(CommandBrowser);
     await open(container, 'machine');
     await open(container, 'cpu');
     const step = await row(container, 'step');
     await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
+    expect(input.writes).toEqual([]);
+    // Another row replaces the preview; still nothing written.
+    await fireEvent.click((await row(container, 'pc')).querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.pc'));
+    expect(input.writes).toEqual([]);
+  });
+
+  it('the details pane closes with ×, with Esc, and with a second click on the row', async () => {
+    fakeInput();
+    const { container, getByLabelText } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const step = await row(container, 'step');
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).not.toBeNull());
+    await fireEvent.click(getByLabelText('Close'));
+    await waitFor(() => expect(usageText(container)).toBeNull());
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).not.toBeNull());
+    await fireEvent.keyDown(tree, { key: 'Escape' });
+    await waitFor(() => expect(usageText(container)).toBeNull());
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).not.toBeNull());
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).toBeNull());
+  });
+
+  it('Insert writes the selection and hands focus to the console', async () => {
+    const input = fakeInput();
+    const { container, getByText } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    await fireEvent.click((await row(container, 'step')).querySelector('.cmd-line')!);
+    await fireEvent.click(await waitFor(() => getByText('Insert')));
     expect(input.writes).toEqual(['machine.cpu.step ']);
-    await waitFor(() =>
-      expect(step.querySelector('.usage')?.textContent).toBe('USAGE OF machine.cpu.step'),
-    );
+    expect(input.focusEnd).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -284,9 +325,13 @@ describe('CommandBrowser ↔ console', () => {
   it('writes each kind of row as it is typed', async () => {
     const input = fakeInput();
     const { container } = render(CommandBrowser);
-    const click = async (name: string) =>
-      fireEvent.click((await row(container, name)).querySelector('.cmd-line')!);
-    await click('machine'); // selecting an object also opens it
+    // A click opens an object; a double-click inserts the row.
+    const click = async (name: string) => {
+      const line = (await row(container, name)).querySelector('.cmd-line')!;
+      await fireEvent.click(line);
+      await fireEvent.dblClick(line);
+    };
+    await click('machine');
     await click('cpu');
     await click('pc');
     await click('step');
@@ -306,18 +351,17 @@ describe('CommandBrowser ↔ console', () => {
     ]);
   });
 
-  it('expanding writes nothing; ↑/↓ select and write', async () => {
+  it('expanding and ↑/↓ write nothing', async () => {
     const input = fakeInput();
     const { container } = render(CommandBrowser);
     await open(container, 'machine');
     await row(container, 'cpu');
     expect(input.writes).toEqual([]);
     const tree = container.querySelector('.cmd-tree') as HTMLElement;
-    // The first row is the Commands headline: selecting it writes nothing.
     await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await waitFor(() => expect(container.querySelector('.cmd-row.selected')).not.toBeNull());
     expect(input.writes).toEqual([]);
-    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
-    await waitFor(() => expect(input.writes.length).toBe(1));
   });
 
   it('Esc restores the input as it was when the browser took focus', async () => {
@@ -326,14 +370,15 @@ describe('CommandBrowser ↔ console', () => {
     const tree = container.querySelector('.cmd-tree') as HTMLElement;
     await fireEvent.focusIn(tree);
     await fireEvent.click((await row(container, 'machine')).querySelector('.cmd-line')!);
-    await fireEvent.click((await row(container, 'cpu')).querySelector('.cmd-line')!);
+    await fireEvent.dblClick((await row(container, 'machine')).querySelector('.cmd-line')!);
+    await fireEvent.dblClick((await row(container, 'cpu')).querySelector('.cmd-line')!);
     expect(input.getState).toHaveBeenCalledTimes(1); // snapshot on the first write only
     await fireEvent.keyDown(tree, { key: 'Escape' });
     expect(input.restore).toHaveBeenCalledWith({ text: 'orig', cursor: 4 });
     expect(input.focusEnd).toHaveBeenCalled();
   });
 
-  it('Enter on a leaf, or Tab, hands focus to the console', async () => {
+  it('Enter on a leaf inserts it; Tab hands focus to the console', async () => {
     const input = fakeInput();
     const { container } = render(CommandBrowser);
     await open(container, 'machine');
@@ -341,6 +386,7 @@ describe('CommandBrowser ↔ console', () => {
     await fireEvent.click((await row(container, 'pc')).querySelector('.cmd-line')!);
     const tree = container.querySelector('.cmd-tree') as HTMLElement;
     await fireEvent.keyDown(tree, { key: 'Enter' });
+    expect(input.writes).toEqual(['machine.cpu.pc']);
     expect(input.focusEnd).toHaveBeenCalledTimes(1);
     await fireEvent.keyDown(tree, { key: 'Tab' });
     expect(input.focusEnd).toHaveBeenCalledTimes(2);
@@ -364,9 +410,7 @@ describe('CommandBrowser ↔ console', () => {
     await waitFor(() => expect(step.classList.contains('selected')).toBe(true));
     expect(step.classList.contains('match')).toBe(true);
     expect((await row(container, 'pc')).classList.contains('dim')).toBe(true);
-    await waitFor(() =>
-      expect(step.querySelector('.usage')?.textContent).toBe('USAGE OF machine.cpu.step'),
-    );
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
   });
 
   it('in a method’s arguments: selects the method and marks the argument in its usage', async () => {
@@ -384,7 +428,9 @@ describe('CommandBrowser ↔ console', () => {
       false,
     );
     const ins = await row(container, 'insert');
-    await waitFor(() => expect(ins.querySelector('.usage-arg')?.textContent).toBe('[writable]'));
+    await waitFor(() =>
+      expect(container.querySelector('.details .usage-arg')?.textContent).toBe('[writable]'),
+    );
     expect(ins.classList.contains('selected')).toBe(true);
   });
 
@@ -416,10 +462,11 @@ describe('CommandBrowser ↔ console', () => {
     await open(container, 'cpu');
     const ins = await row(container, 'insert');
     await fireEvent.click(ins.querySelector('.cmd-line')!);
-    await waitFor(() => expect(ins.querySelectorAll('.usage .hl-method').length).toBe(2));
-    const methods = Array.from(ins.querySelectorAll('.usage .hl-method')).map((e) => e.textContent);
+    const pane = () => container.querySelector('.details .usage');
+    await waitFor(() => expect(pane()?.querySelectorAll('.hl-method').length).toBe(2));
+    const methods = Array.from(pane()!.querySelectorAll('.hl-method')).map((e) => e.textContent);
     expect(methods).toEqual(['insert', 'insert']);
-    expect(ins.querySelector('.usage')?.textContent).toBe(
+    expect(pane()?.textContent).toBe(
       'machine.cpu.insert <path> [writable]\ne.g.  machine.cpu.insert a.img\n\nMount an image',
     );
   });

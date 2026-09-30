@@ -30,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Live refresh on state events, console jobs, and every 2 s while the machine runs.
   - Ctrl/Cmd-click on a console object link reveals the node in SYSTEM.
 - **Command browser and console follow each other**:
-  - Selecting a row writes its path at the console's cursor (`path.`, `path[`, `path["`, `path ` for a method).
-  - Esc undoes the browser's writes; Enter / Tab hand focus back.
+  - A click previews a row: its usage shows in a closable details pane under the tree.
+  - A double-click, Enter or the pane's Insert button writes its path at the console's cursor (`path.`, `path[`, `path["`, `path ` for a method) and hands focus back.
   - Typing opens the browser at the token, marks and selects the match, and dims the rest.
   - In a method's arguments, a signature hint underlines the current argument, which is also marked in the method's usage.
 - **Syntax highlighting** — `shell.highlight(text)` classifies a line or block the way the parser reads it, resolving path segments against the live tree:

@@ -2,19 +2,24 @@
   // The Terminal's command browser: a structural view of the object model
   // (levels are path segments, as typed), for composing statements.  Every
   // row comes from the model (lib/commandsTree.ts): a leaf shows its segment,
-  // the first sentence of its doc and, for an attribute, its type; the
-  // selected leaf shows its usage text (shell.usage) underneath.  Basic and
-  // advanced members are both listed, so the browser can follow any path
-  // typed in the console.
+  // the first sentence of its doc and, for an attribute, its type.  Basic
+  // and advanced members are both listed, so the browser can follow any
+  // path typed in the console.
   //
-  // It follows the console and writes to it:
-  // - Selecting a row (a click on its name, ↑/↓, type-to-find) replaces
-  //   the path token at the console's cursor with the row's text (`path.`,
-  //   `path[`, `path["`, `path[i].`, `path ` for a method, `path` for an
-  //   attribute, `$name`, `keyword `).  Expanding (twistie, ←/→) writes
-  //   nothing.  The first write after the browser takes focus snapshots
-  //   the input; Esc restores it and returns focus to the console.  Enter
-  //   on a leaf, or Tab, hands focus to the console.
+  // Browsing and writing are separate:
+  // - Selecting a row (a click, ↑/↓, type-to-find) only previews it: its
+  //   usage text (shell.usage) shows in the details pane under the tree.
+  //   The pane closes with its ×, with Esc, or with a second click on the
+  //   same row.
+  // - Inserting is explicit -- a double-click, Enter on a leaf, or the
+  //   pane's Insert button -- and replaces the path token at the console's
+  //   cursor with the row's text (`path.`, `path[`, `path["`, `path[i].`,
+  //   `path ` for a method, `path` for an attribute, `$name`, `keyword `),
+  //   then hands focus to the console.  The first insert after the browser
+  //   takes focus snapshots the input; Esc (with the pane closed) restores
+  //   it and returns focus to the console.  Tab hands focus over too.
+  //
+  // It follows the console:
   // - As the user types, the console's shell.complete answer
   //   (state/terminalSync) opens the levels of the path token, marks the
   //   children matching the partial segment and dims the rest; with the
@@ -228,14 +233,29 @@
     writeToConsole(row.insert);
   }
 
-  // Selecting a row: it becomes the selection (a method or attribute shows
-  // its usage) and, when `doWrite`, its text replaces the path token at the
-  // console's cursor.
-  async function select(row: BrowserRow, doWrite: boolean, arg: number | null = null) {
+  // Insert a row into the console (explicit: double-click, Enter, Insert)
+  // and hand focus over, so typing carries on where it was written.
+  function insert(row: BrowserRow): void {
+    if (!row.insert) return;
+    write(row);
+    focusConsole();
+  }
+
+  // Whether the details pane shows the selection's usage.
+  let detailsOpen = $state(false);
+  const selectedRow = $derived(selectedKey ? findRow(selectedKey) : undefined);
+
+  function closeDetails(): void {
+    detailsOpen = false;
+  }
+
+  // Selecting a row: it becomes the selection, and a method or attribute
+  // shows its usage in the details pane.  Nothing is written.
+  async function select(row: BrowserRow, arg: number | null = null) {
     const changed = selectedKey !== row.key;
     selectedKey = row.key;
     markArg = arg;
-    if (doWrite) write(row);
+    if (row.kind === 'method' || row.kind === 'attr') detailsOpen = true;
     if (!changed && usage) return;
     usage = null;
     usageHl = {};
@@ -288,16 +308,26 @@
     );
   }
 
-  // A click on a row's name selects it (and writes); a group or section
-  // opens or closes.
+  // A click on a row previews it (a second click on the same leaf closes
+  // the pane); a group, section or node also opens or closes.
   function onRowClick(row: BrowserRow): void {
     if (row.kind === 'group' || row.kind === 'section') {
       void toggle(row);
-      void select(row, false);
+      void select(row);
       return;
     }
-    void select(row, true);
+    if (selectedKey === row.key && detailsOpen && !row.expandable) {
+      closeDetails();
+      return;
+    }
+    void select(row);
     if (row.expandable) void open(row);
+  }
+
+  // A double-click inserts the row into the console.
+  function onRowDblClick(row: BrowserRow): void {
+    if (row.kind === 'group' || row.kind === 'section') return;
+    insert(row);
   }
 
   function onTwistieClick(ev: MouseEvent, row: BrowserRow): void {
@@ -375,7 +405,7 @@
       // In a method's arguments: that method, with the argument marked.
       const row = await openTo(method);
       if (row) {
-        await select(row, false, r.context.argIndex);
+        await select(row, r.context.argIndex);
         scrollToSelected();
       }
       return;
@@ -383,7 +413,7 @@
     if (!fromBrowser && f.partial && hits.length) {
       const exact = hits.find((h) => bare(h.name) === f.partial) ?? hits[0];
       if (!parentRow) await sectionOf(exact.name, true);
-      await select(exact, false);
+      await select(exact);
       scrollToSelected();
     }
   }
@@ -407,7 +437,7 @@
     await open(subRow);
     const row = (children[subRow.key] ?? []).find((r) => r.key === `alias:${pick.name}`);
     if (row && !fromBrowser) {
-      await select(row, false);
+      await select(row);
       scrollToSelected();
     }
   }
@@ -428,6 +458,11 @@
     const cur = idx >= 0 ? rows[idx].row : undefined;
     if (ev.key === 'Escape') {
       ev.preventDefault();
+      // First Esc closes the details pane; the next one leaves the browser.
+      if (detailsOpen) {
+        closeDetails();
+        return;
+      }
       if (snapshot) restoreConsole(snapshot);
       snapshot = null;
       focusConsole();
@@ -450,7 +485,7 @@
     if (ev.key === 'Enter') {
       if (!cur) return;
       ev.preventDefault();
-      if (isLeaf(cur)) focusConsole();
+      if (isLeaf(cur)) insert(cur);
       else void toggle(cur);
       return;
     }
@@ -463,7 +498,7 @@
             ? Math.min(rows.length - 1, idx + 1)
             : Math.max(0, idx - 1);
       if (next === idx) return;
-      void select(rows[next].row, true);
+      void select(rows[next].row);
       scrollToSelected();
       return;
     }
@@ -479,7 +514,7 @@
         const r = rows[(start + k) % n].row;
         if (r.kind !== 'section' && bare(r.name).toLowerCase().startsWith(q)) {
           ev.preventDefault();
-          void select(r, true);
+          void select(r);
           scrollToSelected();
           return;
         }
@@ -500,7 +535,7 @@
       if (prefix !== path) await open(row);
     }
     if (!found) return;
-    await select(found, false);
+    await select(found);
     scrollToSelected();
   }
   registerBrowserReveal((path) => void reveal(path));
@@ -578,6 +613,7 @@
           tabindex="-1"
           title={tooltip(row)}
           onclick={() => onRowClick(row)}
+          ondblclick={() => onRowDblClick(row)}
         >
           <span
             class="twistie"
@@ -598,16 +634,33 @@
             <span class="doc">{row.expandable ? row.doc : firstSentence(row.doc)}</span>
           {/if}
         </div>
-        {#if selected && usageLines}
-          <pre
-            class="usage">{#each usageLines as runs, li (li)}{#if li > 0}{NEWLINE}{/if}{#each runs as r, ri (ri)}{#if r.mark}<mark
-                    class="usage-arg {r.cls ? `hl-${r.cls}` : ''}">{r.text}</mark
-                  >{:else if r.cls}<span class="hl-{r.cls}">{r.text}</span
-                  >{:else}{r.text}{/if}{/each}{/each}</pre>
-        {/if}
       </li>
     {/each}
   </ul>
+  {#if detailsOpen && usageLines && selectedRow}
+    <section class="details" aria-label="Usage">
+      <header class="details-head">
+        <span class="details-name">{selectedRow.name}</span>
+        <button class="details-close" aria-label="Close" title="Close (Esc)" onclick={closeDetails}
+          >×</button
+        >
+      </header>
+      <pre
+        class="usage">{#each usageLines as runs, li (li)}{#if li > 0}{NEWLINE}{/if}{#each runs as r, ri (ri)}{#if r.mark}<mark
+                class="usage-arg {r.cls ? `hl-${r.cls}` : ''}">{r.text}</mark
+              >{:else if r.cls}<span class="hl-{r.cls}">{r.text}</span
+              >{:else}{r.text}{/if}{/each}{/each}</pre>
+      {#if selectedRow.insert}
+        <footer class="details-foot">
+          <button
+            class="details-insert"
+            title="Insert into the console (double-click, or Enter)"
+            onclick={() => selectedRow && insert(selectedRow)}>Insert</button
+          >
+        </footer>
+      {/if}
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -769,15 +822,61 @@
       display: none;
     }
   }
+  /* The details pane: the selection's usage, under the tree. */
+  .details {
+    flex: 0 1 auto;
+    max-height: 45%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-top: 1px solid var(--gs-border, rgba(128, 128, 128, 0.3));
+    background: var(--gs-info-bg, rgba(80, 140, 220, 0.08));
+  }
+  .details-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 4px 0 10px;
+  }
+  .details-name {
+    font-family: var(--gs-font-mono, monospace);
+    font-size: 12px;
+    color: var(--gs-fg-muted);
+  }
+  .details-close {
+    border: none;
+    background: transparent;
+    color: var(--gs-fg-muted);
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  .details-close:hover {
+    color: var(--gs-fg);
+  }
+  .details-foot {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 8px 6px;
+  }
+  .details-insert {
+    font-size: 12px;
+    padding: 2px 12px;
+    border-radius: 3px;
+    border: 1px solid var(--gs-accent, rgba(80, 140, 220, 0.8));
+    background: var(--gs-accent-bg, rgba(80, 140, 220, 0.25));
+    color: var(--gs-fg-bright, var(--gs-fg));
+    cursor: pointer;
+  }
   .usage {
-    margin: 2px 12px 6px calc(30px + var(--depth) * 14px);
-    padding: 6px 10px;
+    margin: 0;
+    padding: 4px 10px 6px;
+    overflow: auto;
     font-size: 12px;
     line-height: 1.4;
     white-space: pre-wrap;
     color: var(--gs-fg);
-    background: var(--gs-info-bg, rgba(80, 140, 220, 0.08));
-    border-left: 2px solid var(--gs-info-border, rgba(80, 140, 220, 0.5));
     font-family: var(--gs-font-mono, monospace);
   }
 </style>

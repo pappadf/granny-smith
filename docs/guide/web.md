@@ -1003,8 +1003,14 @@ Aliases and Language closed.  The browser lists basic and advanced members
 alike (never internal ones), so any path typed in the console has a row to
 follow; following it opens the section the path lives in.
 
-**Browser → console.** Selecting a row (a click on its name, ↑/↓,
-type-to-find) replaces the path token at the console's cursor:
+**Browsing previews.** Selecting a row (a click, ↑/↓, type-to-find) only
+previews it: a method's or attribute's usage text shows in the details pane
+under the tree, and the console is left alone.  The pane closes with its ×,
+with Esc, or with a second click on the same row.
+
+**Browser → console.** Inserting is explicit — a double-click, Enter on a
+leaf, or the pane's Insert button — and replaces the path token at the
+console's cursor, then hands focus to the console:
 
 | Row | Written |
 |---|---|
@@ -1017,10 +1023,9 @@ type-to-find) replaces the path token at the console's cursor:
 | alias / keyword | `$name` / `keyword ` |
 
 - Expanding or collapsing (twistie, ←/→) writes nothing.
-- The first write after the browser takes focus snapshots the input; Esc
-  puts it back and returns focus to the console.
-- Enter on a leaf, or Tab, hands focus to the console with the cursor at
-  the end.
+- With the pane closed, Esc returns focus to the console, putting the input
+  back as it was if the browser inserted since it took focus.
+- Tab hands focus to the console with the cursor at the end.
 
 **Console → browser.** Each change of the input asks
 `shell.complete(line, cursor, true)` once typing pauses. The browser then

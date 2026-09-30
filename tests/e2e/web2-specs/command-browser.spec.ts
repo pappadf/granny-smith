@@ -44,10 +44,16 @@ test("the command browser walks the model and shows usage", async ({
   await rowNamed("files").locator(".twistie").click();
   const ls = rowNamed("ls");
   await expect(ls).toBeVisible({ timeout: 10_000 });
+  // A click previews: the usage shows in the details pane, the console is
+  // untouched; a double-click inserts.
   await ls.locator(".cmd-line").click();
-  await expect(ls.locator(".usage")).toContainText("files.ls [path]", {
+  await expect(browser.locator(".details .usage")).toContainText("files.ls [path]", {
     timeout: 10_000,
   });
+  await expect(page.locator(".console .cm-content")).not.toContainText("files.ls");
+  await browser.getByRole("button", { name: "Close" }).click();
+  await expect(browser.locator(".details")).toHaveCount(0);
+  await ls.locator(".cmd-line").dblclick();
   await expect(page.locator(".console .cm-content")).toContainText("files.ls", {
     timeout: 10_000,
   });
@@ -56,8 +62,8 @@ test("the command browser walks the model and shows usage", async ({
 // Typing follows into the browser, and the browser writes back: on an SE/30,
 // `machine.floppy.drive[0].ins` opens machine → floppy → drive → [0] and
 // selects `insert` with its usage; in its arguments the signature hint
-// underlines the current one.  A selection in the browser rewrites the
-// path token, and Esc puts the input back.
+// underlines the current one.  A double-click in the browser rewrites the
+// path token.
 test("the browser follows the console and writes to it", async ({ page }) => {
   test.setTimeout(180_000);
   await gotoWeb2(page);
@@ -95,7 +101,7 @@ test("the browser follows the console and writes to it", async ({ page }) => {
   await page.keyboard.type("machine.floppy.drive[0].ins");
   const insert = rowNamed("insert");
   await expect(insert).toHaveClass(/selected/, { timeout: 10_000 });
-  await expect(insert.locator(".usage")).toContainText(
+  await expect(browser.locator(".details .usage")).toContainText(
     "machine.floppy.drive[0].insert",
     {
       timeout: 10_000,
@@ -108,14 +114,11 @@ test("the browser follows the console and writes to it", async ({ page }) => {
     timeout: 10_000,
   });
 
-  // The browser writes: selecting `drive` rewrites the token; Esc restores.
+  // The browser writes on a double-click: it rewrites the token.
   await page.keyboard.press("Control+a");
   await page.keyboard.type("echo mach");
-  await browser.locator(".cmd-tree").focus();
-  await rowNamed("scsi").locator(".cmd-line").first().click();
+  await rowNamed("scsi").locator(".cmd-line").first().dblclick();
   await expect(page.locator(CONSOLE_INPUT)).toHaveText("echo machine.scsi.", {
     timeout: 10_000,
   });
-  await page.keyboard.press("Escape");
-  await expect(page.locator(CONSOLE_INPUT)).toHaveText("echo mach");
 });
