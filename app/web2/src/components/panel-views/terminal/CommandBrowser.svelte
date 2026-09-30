@@ -1,7 +1,9 @@
 <script lang="ts">
   // The Terminal's command browser: a structural view of the object model
   // (levels are path segments, as typed), for composing statements.  Every
-  // row comes from the model (lib/commandsTree.ts): a leaf shows its segment,
+  // row comes from the model (lib/commandsTree.ts); the tree, the selection
+  // and the console-following marks live in state/commandTree.svelte.ts,
+  // which this renders.  A leaf shows its segment,
   // the first sentence of its doc and, for an attribute, its type.  Basic
   // and advanced members are both listed, so the browser can follow any
   // path typed in the console.
@@ -26,155 +28,36 @@
   //   current argument marked in its usage.
   import { onDestroy, untrack } from 'svelte';
   import {
-    aliasGroupKey,
-    expand,
     firstSentence,
-    loadAliases,
     loadUsageInfo,
-    rootRows,
-    visible,
     type BrowserRow,
     type UsageInfo,
   } from '@/lib/commandsTree';
   import { typeText } from '@/lib/typeDescriptor';
   import { whenModuleReady } from '@/bus/emulator';
-  import { covers, invalidate, onMembersChanged } from '@/bus/memberStore';
   import { focusConsole, registerBrowserReveal, writeToConsole } from './terminalBridge';
-  import { pathPrefixes } from '@/lib/objectPath';
   import { terminalSync } from '@/state/terminalSync.svelte';
-  import { completionFocus } from '@/lib/pathToken';
+  import { CommandTree } from '@/state/commandTree.svelte';
+  import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
   import { utf8ToUtf16 } from '@/lib/utf8';
   import { highlightParts, loadHighlight, type HlSpan } from '@/lib/highlight';
   import Icon from '@/components/common/Icon.svelte';
   import { machine } from '@/state/machine.svelte';
 
-  let roots = $state<BrowserRow[]>([]);
-  // Loaded children per row key, and which rows are open.
-  let children = $state<Record<string, BrowserRow[]>>({});
-  let expanded = $state<Record<string, boolean>>({});
-  let selectedKey = $state('');
+  const ct = new CommandTree();
+  const tree = ct.tree;
+  onDestroy(() => ct.dispose());
+
   let usage = $state<UsageInfo | null>(null);
   // The argument marked in the usage (the console's cursor is in it).
   let markArg = $state<number | null>(null);
-  // Following the console: rows matching the partial segment, and the
-  // other rows of that level (dimmed).
-  let matchKeys = $state<Set<string>>(new Set());
-  let otherKeys = $state<Set<string>>(new Set());
   let listEl = $state<HTMLUListElement | null>(null);
 
   // Rebuild the root when a machine boots or goes (its members change).
   $effect(() => {
     void machine.status;
-    untrack(() => void reload());
+    untrack(() => void whenModuleReady().then(() => ct.reload()));
   });
-
-  async function reload(): Promise<void> {
-    await whenModuleReady();
-    invalidate('');
-    roots = await rootRows();
-    // Sections start open, except Aliases and Language; a section the user
-    // collapsed stays collapsed across reloads.
-    for (const r of roots) if (!(r.key in expanded)) expanded[r.key] = r.key.startsWith('section:');
-    // Re-read every level still open.
-    const open = Object.keys(expanded).filter((k) => expanded[k]);
-    children = {};
-    for (const k of open) {
-      const row = findRow(k);
-      if (row) children[k] = await expand(row);
-    }
-  }
-
-  // The section holding the root member `name` (Commands or a domain), with
-  // its rows loaded; opened when `openIt`.
-  async function sectionOf(name: string, openIt: boolean): Promise<BrowserRow | undefined> {
-    for (const s of roots) {
-      if (!s.key.startsWith('section:')) continue;
-      if (!children[s.key]) children[s.key] = await expand(s);
-      if (children[s.key].some((r) => r.name === name)) {
-        if (openIt) await open(s);
-        return s;
-      }
-    }
-    return undefined;
-  }
-
-  // Every root member, across the Commands and domain sections.
-  async function rootMembers(): Promise<BrowserRow[]> {
-    const out: BrowserRow[] = [];
-    for (const s of roots) {
-      if (!s.key.startsWith('section:')) continue;
-      if (!children[s.key]) children[s.key] = await expand(s);
-      out.push(...children[s.key]);
-    }
-    return out;
-  }
-
-  // A change in the model re-reads the open levels it dropped.
-  const unsubscribe = onMembersChanged((c) => {
-    if (c.reload) {
-      void reload();
-      return;
-    }
-    for (const k of Object.keys(children)) {
-      const row = findRow(k);
-      if (row && expanded[k] && c.dropped.some((p) => covers(p, row.path)))
-        void expand(row).then((rows) => (children[k] = rows));
-    }
-  });
-  onDestroy(unsubscribe);
-
-  function findRow(key: string): BrowserRow | undefined {
-    const stack = [...roots];
-    while (stack.length) {
-      const r = stack.pop()!;
-      if (r.key === key) return r;
-      const c = children[r.key];
-      if (c) stack.push(...c);
-    }
-    return undefined;
-  }
-
-  function isOpen(row: BrowserRow): boolean {
-    return !!expanded[row.key];
-  }
-
-  interface FlatRow {
-    row: BrowserRow;
-    depth: number;
-  }
-
-  // The rows on screen, depth-first through the open levels.
-  const flat = $derived.by(() => {
-    const out: FlatRow[] = [];
-    const walk = (rows: BrowserRow[], depth: number) => {
-      for (const row of rows) {
-        if (!visible(row)) continue;
-        out.push({ row, depth });
-        // A section's rows sit at its own indent: it is a headline.
-        if (row.expandable && isOpen(row) && children[row.key])
-          walk(children[row.key], row.kind === 'section' ? depth : depth + 1);
-      }
-    };
-    walk(roots, 0);
-    return out;
-  });
-
-  async function open(row: BrowserRow): Promise<void> {
-    if (!row.expandable || expanded[row.key]) return;
-    // A collection is re-read on every expansion: entries come and go.
-    if (!children[row.key] || row.kind === 'collection') children[row.key] = await expand(row);
-    expanded[row.key] = true;
-  }
-
-  async function toggle(row: BrowserRow): Promise<void> {
-    if (!row.expandable) return;
-    if (expanded[row.key]) expanded[row.key] = false;
-    else await open(row);
-  }
-
-  function isLeaf(row: BrowserRow): boolean {
-    return !row.expandable;
-  }
 
   // --- writing to the console ------------------------------------------------
 
@@ -188,7 +71,7 @@
 
   // Whether the details pane shows the selection's usage.
   let detailsOpen = $state(false);
-  const selectedRow = $derived(selectedKey ? findRow(selectedKey) : undefined);
+  const selectedRow = $derived(ct.selected);
 
   function closeDetails(): void {
     detailsOpen = false;
@@ -197,8 +80,8 @@
   // Selecting a row: it becomes the selection, and a method or attribute
   // shows its usage in the details pane.  Nothing is written.
   async function select(row: BrowserRow, arg: number | null = null) {
-    const changed = selectedKey !== row.key;
-    selectedKey = row.key;
+    const changed = ct.selectedKey !== row.key;
+    ct.select(row);
     markArg = arg;
     if (row.kind === 'method' || row.kind === 'attr') detailsOpen = true;
     if (!changed && usage) return;
@@ -207,7 +90,7 @@
     if (row.kind === 'method' || row.kind === 'attr') {
       const key = row.key;
       const u = await loadUsageInfo(row.path);
-      if (selectedKey !== key) return;
+      if (ct.selectedKey !== key) return;
       usage = u;
       if (u) void highlightUsage(u, key);
     }
@@ -239,7 +122,7 @@
     const seq = ++usageSeq;
     const lines = codeLines(u);
     const spans = await Promise.all(lines.map((l) => loadHighlight(l.text)));
-    if (selectedKey !== key || seq !== usageSeq) return;
+    if (ct.selectedKey !== key || seq !== usageSeq) return;
     const next: Record<number, HlSpan[]> = {};
     lines.forEach((l, k) => {
       next[l.index] = spans[k].map((s) => ({ ...s, from: s.from + l.lead, to: s.to + l.lead }));
@@ -257,144 +140,30 @@
   // the pane); a group, section or node also opens or closes.
   function onRowClick(row: BrowserRow): void {
     if (row.kind === 'group' || row.kind === 'section') {
-      void toggle(row);
+      void tree.toggle(row);
       void select(row);
       return;
     }
-    if (selectedKey === row.key && detailsOpen && !row.expandable) {
+    if (ct.selectedKey === row.key && detailsOpen && !row.expandable) {
       closeDetails();
       return;
     }
     void select(row);
-    if (row.expandable) void open(row);
-  }
-
-  // A double-click inserts the row into the console.
-  function onRowDblClick(row: BrowserRow): void {
-    if (row.kind === 'group' || row.kind === 'section') return;
-    insert(row);
+    if (row.expandable) void tree.open(row);
   }
 
   function onTwistieClick(ev: MouseEvent, row: BrowserRow): void {
     ev.stopPropagation();
-    void toggle(row);
+    void tree.toggle(row);
   }
 
   // --- following the console ------------------------------------------------------
 
-  // Open the levels down to `path` (a node, or a collection / its entry);
-  // answers its row when it is shown.
-  async function openTo(path: string): Promise<BrowserRow | undefined> {
-    let found: BrowserRow | undefined;
-    const prefixes = pathPrefixes(path);
-    if (prefixes.length) await sectionOf(prefixes[0], true);
-    for (const prefix of prefixes) {
-      const row = flat.find((f) => f.row.path === prefix && f.row.kind !== 'group')?.row;
-      if (!row) return undefined;
-      found = row;
-      await open(row);
-    }
-    return found;
-  }
-
-  // A row's name as a candidate spells it (`[0]` → `0`, `["scsi"]` → `scsi`).
-  function bare(name: string): string {
-    return name.replace(/^\["?/, '').replace(/"?\]$/, '').replace(/^\$/, '');
-  }
-
-  function mark(level: BrowserRow[], names: string[], partial: string): BrowserRow[] {
-    if (!partial) {
-      matchKeys = new Set();
-      otherKeys = new Set();
-      return [];
-    }
-    const want = new Set(names);
-    const hits = level.filter((r) => r.kind !== 'section' && want.has(bare(r.name)));
-    matchKeys = new Set(hits.map((r) => r.key));
-    otherKeys = new Set(
-      level.filter((r) => r.kind !== 'section' && !matchKeys.has(r.key)).map((r) => r.key),
-    );
-    return hits;
-  }
-
-  // Each console update starts a follow; one that a newer update overtook
-  // (it awaits the model) stops before it marks or selects anything.
-  let followSeq = 0;
-
   async function follow(): Promise<void> {
-    const seq = ++followSeq;
-    const stale = () => seq !== followSeq;
-    const r = terminalSync.result;
-    // An emptied input (a command was run, or the line cleared) has nothing
-    // to document: close the pane and drop the marks.
-    if (terminalSync.line.trim() === '') {
-      detailsOpen = false;
-      matchKeys = new Set();
-      otherKeys = new Set();
-      return;
-    }
-    if (!r) {
-      matchKeys = new Set();
-      otherKeys = new Set();
-      return;
-    }
-    const f = completionFocus(
-      terminalSync.line,
-      r.span,
-      r.candidates.map((c) => c.text),
-    );
-
-    if (f.alias !== null) {
-      await followAlias(f.alias, f.names, stale);
-      return;
-    }
-
-    // Open the levels of the token; mark the children matching the partial.
-    const parentRow = f.parent ? await openTo(f.parent) : undefined;
-    if (stale()) return;
-    if (f.parent && !parentRow) {
-      mark([], [], '');
-      return;
-    }
-    const level = parentRow ? (children[parentRow.key] ?? []) : await rootMembers();
-    if (stale()) return;
-    const hits = mark(level, f.names, f.partial);
-
-    const method = r.context.method;
-    if (method) {
-      // In a method's arguments: that method, with the argument marked.
-      const row = await openTo(method);
-      if (row && !stale()) {
-        await select(row, r.context.argIndex);
-        scrollToSelected();
-      }
-      return;
-    }
-    if (f.partial && hits.length) {
-      const exact = hits.find((h) => bare(h.name) === f.partial) ?? hits[0];
-      if (!parentRow) await sectionOf(exact.name, true);
-      if (stale()) return;
-      await select(exact);
-      scrollToSelected();
-    }
-  }
-
-  async function followAlias(name: string, names: string[], stale: () => boolean) {
-    const group = roots.find((r) => r.key === 'group:aliases');
-    if (!group) return;
-    await open(group);
-    const all = await loadAliases();
-    if (stale()) return;
-    const pick =
-      all.find((a) => a.name === name) ??
-      (names.length === 1 ? all.find((a) => a.name === names[0]) : undefined);
-    if (!pick) return;
-    const subRow = (children[group.key] ?? []).find((r) => r.key === aliasGroupKey(pick));
-    if (!subRow) return;
-    await open(subRow);
-    const row = (children[subRow.key] ?? []).find((r) => r.key === `alias:${pick.name}`);
-    if (row && !stale()) {
-      await select(row);
+    const a = await ct.follow(terminalSync.line, terminalSync.result);
+    if (a?.kind === 'close') closeDetails();
+    else if (a?.kind === 'select') {
+      await select(a.row, a.arg);
       scrollToSelected();
     }
   }
@@ -409,9 +178,9 @@
   let findAt = 0;
 
   function onKey(ev: KeyboardEvent): void {
-    const rows = flat;
+    const rows = tree.flat;
     if (!rows.length) return;
-    const idx = rows.findIndex((f) => f.row.key === selectedKey);
+    const idx = rows.findIndex((f) => f.row.key === ct.selectedKey);
     const cur = idx >= 0 ? rows[idx].row : undefined;
     if (ev.key === 'Escape') {
       ev.preventDefault();
@@ -430,28 +199,23 @@
     }
     if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
       if (!cur?.expandable) return;
-      const want = ev.key === 'ArrowRight';
-      if (!!expanded[cur.key] !== want) {
+      if (tree.isOpen(cur) !== (ev.key === 'ArrowRight')) {
         ev.preventDefault();
-        void toggle(cur);
+        void tree.toggle(cur);
       }
       return;
     }
     if (ev.key === 'Enter') {
       if (!cur) return;
       ev.preventDefault();
-      if (isLeaf(cur)) insert(cur);
-      else void toggle(cur);
+      if (cur.expandable) void tree.toggle(cur);
+      else insert(cur);
       return;
     }
-    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    const nav = listKeyFromEvent(ev);
+    if (nav) {
       ev.preventDefault();
-      const next =
-        idx < 0
-          ? 0
-          : ev.key === 'ArrowDown'
-            ? Math.min(rows.length - 1, idx + 1)
-            : Math.max(0, idx - 1);
+      const next = cycleListSelection(rows.length, idx, nav);
       if (next === idx) return;
       void select(rows[next].row);
       scrollToSelected();
@@ -467,7 +231,7 @@
       const start = findBuf.length > 1 ? Math.max(idx, 0) : idx + 1;
       for (let k = 0; k < n; k++) {
         const r = rows[(start + k) % n].row;
-        if (r.kind !== 'section' && bare(r.name).toLowerCase().startsWith(q)) {
+        if (r.word && r.word.toLowerCase().startsWith(q)) {
           ev.preventDefault();
           void select(r);
           scrollToSelected();
@@ -480,15 +244,7 @@
   // Select the node at `path` (a console object link), opening the levels
   // above it.  Stops at the deepest level that is shown.
   async function reveal(path: string): Promise<void> {
-    let found: BrowserRow | undefined;
-    const prefixes = pathPrefixes(path);
-    if (prefixes.length) await sectionOf(prefixes[0], true);
-    for (const prefix of prefixes) {
-      const row = flat.find((f) => f.row.path === prefix)?.row;
-      if (!row) break;
-      found = row;
-      if (prefix !== path) await open(row);
-    }
+    const found = await ct.openPath(path, { openLast: false });
     if (!found) return;
     await select(found);
     scrollToSelected();
@@ -547,14 +303,14 @@
 
 <div class="cmd-browser">
   <ul class="cmd-tree" role="tree" tabindex="0" onkeydown={onKey} bind:this={listEl}>
-    {#each flat as { row, depth } (row.key)}
-      {@const open = isOpen(row)}
-      {@const selected = selectedKey === row.key}
+    {#each tree.flat as { row, depth } (row.key)}
+      {@const open = tree.isOpen(row)}
+      {@const selected = ct.selectedKey === row.key}
       <li
         class="cmd-row kind-{row.kind}"
         class:selected
-        class:dim={otherKeys.has(row.key)}
-        class:match={matchKeys.has(row.key)}
+        class:dim={ct.otherKeys.has(row.key)}
+        class:match={ct.matchKeys.has(row.key)}
         role="treeitem"
         aria-selected={selected}
         aria-expanded={row.expandable ? open : undefined}
@@ -567,7 +323,7 @@
           tabindex="-1"
           title={tooltip(row)}
           onclick={() => onRowClick(row)}
-          ondblclick={() => onRowDblClick(row)}
+          ondblclick={() => insert(row)}
         >
           <span
             class="twistie"

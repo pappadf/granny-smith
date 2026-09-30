@@ -1,12 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  rootRows,
-  expand,
-  firstSentence,
-  loadAliases,
-  visible,
-  type BrowserRow,
-} from '@/lib/commandsTree';
+import { rootRows, expand, firstSentence, loadAliases, type BrowserRow } from '@/lib/commandsTree';
 import { typeText } from '@/lib/typeDescriptor';
 import { changeFor, invalidate } from '@/bus/memberStore';
 
@@ -102,6 +95,15 @@ vi.mock('@/bus/emulator', () => {
         doc: 'Plumbing',
         hidden: true,
       },
+      {
+        name: 'trace',
+        kind: 'attr',
+        category: 'internal',
+        label: 'trace',
+        doc: 'Internal',
+        readonly: true,
+        type: t('bool'),
+      },
     ],
     'machine.drive.meta.members': [
       {
@@ -145,7 +147,7 @@ const byName = (rows: BrowserRow[], name: string) => rows.find((r) => r.name ===
 // A root member, from whichever section lists it.
 async function rootMember(name: string): Promise<BrowserRow> {
   for (const sec of await rootRows()) {
-    if (!sec.key.startsWith('section:')) continue;
+    if (!sec.rootMembers) continue;
     const hit = (await expand(sec)).find((r) => r.name === name);
     if (hit) return hit;
   }
@@ -173,7 +175,7 @@ describe('command browser rows (model projection)', () => {
     expect(await names(2)).toEqual(['object:debug']);
   });
 
-  it('levels are path segments; hidden methods never appear', async () => {
+  it('levels are path segments; hidden methods and internal members never appear', async () => {
     const machine = await rootMember('machine');
     const cpu = byName(await expand(machine), 'cpu');
     const rows = await expand(cpu);
@@ -196,11 +198,27 @@ describe('command browser rows (model projection)', () => {
     expect(entries[0].kind).toBe('entry');
   });
 
-  it('advanced members are visible; internal ones never are', async () => {
+  it('a row carries the word a candidate spells', async () => {
     const machine = await rootMember('machine');
-    const vbr = byName(await expand(byName(await expand(machine), 'cpu')), 'vbr');
-    expect(visible(vbr)).toBe(true);
-    expect(visible({ ...vbr, category: 'internal' })).toBe(false);
+    const entries = await expand(byName(await expand(machine), 'drive'));
+    expect(entries.map((r) => [r.name, r.word])).toEqual([
+      ['[0]', '0'],
+      ['[1]', '1'],
+    ]);
+    const aliases = await expand(byName(await rootRows(), 'Aliases'));
+    expect((await expand(aliases[1])).map((r) => [r.name, r.word])).toEqual([['$pc', 'pc']]);
+  });
+
+  it('every section is keyed section:*, with where its rows come from and whether it starts open', async () => {
+    const rows = await rootRows();
+    expect(rows.map((r) => [r.key, r.defaultOpen, r.rootMembers])).toEqual([
+      ['section:commands', true, true],
+      ['section:machine', true, true],
+      ['section:emulator', true, true],
+      ['section:aliases', false, false],
+      ['section:language', false, false],
+    ]);
+    expect(rows.every((r) => typeof r.source === 'function')).toBe(true);
   });
 
   it('aliases group into User, Built-in and Mac globals; keywords come from the model', async () => {
