@@ -23,7 +23,8 @@
 // so the annotation itself is not shown.
 //
 // New entries are buffered and handed to `onFlush` once per frame; at most
-// `cap` entries are kept (the oldest dropped).
+// `cap` entries are kept (the oldest dropped).  After dispose() the model
+// takes nothing more and its scheduled frame is cancelled.
 
 import type { HlSpan } from '@/lib/highlight';
 
@@ -55,8 +56,10 @@ export type ConsoleRecord =
 
 export interface ConsoleModelOptions {
   cap?: number;
-  // Runs `fn` once, at the next frame (requestAnimationFrame in the view).
-  schedule: (fn: () => void) => void;
+  // Runs `fn` once, at the next frame (requestAnimationFrame in the view);
+  // returns a handle for `cancel`.
+  schedule: (fn: () => void) => number;
+  cancel?: (handle: number) => void;
   // Receives the entries to show after each frame's batch.
   onFlush: (entries: readonly ConsoleEntry[]) => void;
 }
@@ -72,7 +75,9 @@ interface JobState {
 export class ConsoleModel {
   private entries: ConsoleEntry[] = [];
   private pending: ConsoleEntry[] = [];
-  private scheduled = false;
+  // The scheduled frame's handle, while one is pending.
+  private frame: number | null = null;
+  private disposed = false;
   private nextId = 1;
   private readonly cap: number;
   private jobs = new Map<number, JobState>();
@@ -98,9 +103,19 @@ export class ConsoleModel {
   }
 
   clear(): void {
+    if (this.disposed) return;
     this.entries = [];
     this.pending = [];
     this.opts.onFlush(this.entries);
+  }
+
+  // Drops what is pending and cancels the scheduled frame.
+  dispose(): void {
+    this.disposed = true;
+    if (this.frame !== null) this.opts.cancel?.(this.frame);
+    this.frame = null;
+    this.pending = [];
+    this.jobs.clear();
   }
 
   push(r: ConsoleRecord): void {
@@ -204,22 +219,24 @@ export class ConsoleModel {
     json?: unknown,
     spans?: readonly HlSpan[],
   ) {
+    if (this.disposed) return;
     const e: ConsoleEntry = { id: this.nextId++, kind, text, job };
     if (json !== undefined) (e as { json?: unknown }).json = json;
     if (spans?.length) (e as { spans?: readonly HlSpan[] }).spans = spans;
     this.pending.push(e);
-    if (!this.scheduled) {
-      this.scheduled = true;
-      this.opts.schedule(() => this.flush());
-    }
+    this.frame ??= this.opts.schedule(() => this.flush());
   }
 
   // Once per frame: append the batch, drop the oldest beyond the cap.
   flush(): void {
     // A job not run by this console (no job_end will come) ends its lines
     // with the batch.
+    if (this.disposed) {
+      this.frame = null;
+      return;
+    }
     this.endLine(this.loose, null);
-    this.scheduled = false;
+    this.frame = null;
     if (!this.pending.length) return;
     let next = this.entries.concat(this.pending);
     this.pending = [];

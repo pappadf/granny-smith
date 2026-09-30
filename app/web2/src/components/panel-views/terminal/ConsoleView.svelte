@@ -28,14 +28,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { seedPrompt, tabComplete, needsContinuation, whenModuleReady } from '@/bus/emulator';
   import { machine } from '@/state/machine.svelte';
-  import {
-    consoleState,
-    consoleModel,
-    consoleSubmit,
-    consoleInterrupt,
-    consoleClear,
-    refreshPrompt,
-  } from '@/state/console.svelte';
+  import { appConsole, type Console } from '@/state/console.svelte';
   import { commandsText, jobOutputText, normalisePaste } from '@/lib/consoleModel';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { ConsoleHistory } from '@/lib/consoleHistory';
@@ -49,14 +42,15 @@
   import type { CompletionResult } from '@/bus/emulator';
   import { revealInSystem } from '@/state/system.svelte';
 
+  // The console to show: the app's, or a test's own.
+  let { console: con = appConsole }: { console?: Console } = $props();
+  const consoleState = $derived(con.state);
+
   let outputEl = $state<HTMLDivElement | null>(null);
   let inputHost = $state<HTMLDivElement | null>(null);
   let input: ConsoleInput | null = null;
   let destroyed = false;
   let startupError = $state('');
-
-  // The model starts listening now: records replay into it.
-  consoleModel();
 
   // --- auto-scroll ----------------------------------------------------------
   // Only while the view is at the bottom; appending never re-renders what is
@@ -144,7 +138,7 @@
     void machine.model;
     void (async () => {
       await seedPrompt();
-      if (!destroyed && consoleState.runningSince === null) refreshPrompt();
+      if (!destroyed && consoleState.runningSince === null) con.refreshPrompt();
     })();
   });
 
@@ -274,7 +268,7 @@
           sel?.addRange(r);
         },
       },
-      { label: 'Clear', action: () => consoleClear() },
+      { label: 'Clear', action: () => con.model.clear() },
     );
     openContextMenu(items, ev.clientX, ev.clientY);
   }
@@ -422,15 +416,15 @@
       input = createConsoleInput(inputHost, {
         submit: (text) => {
           followSubmit();
-          consoleSubmit(text, lastHl.text === text ? lastHl.spans : undefined);
+          con.submit(text, lastHl.text === text ? lastHl.spans : undefined);
         },
         needsContinuation: (text) => needsContinuation(text),
         complete: (line, cursor) => tabComplete(line, cursor),
         interrupt: () => {
           input?.setText('');
-          void consoleInterrupt();
+          void con.interrupt();
         },
-        clear: () => consoleClear(),
+        clear: () => con.model.clear(),
         find: () => openFind(),
         outputSelection,
         history,
@@ -450,7 +444,7 @@
       }
       if (destroyed) return;
       await seedPrompt();
-      refreshPrompt();
+      con.refreshPrompt();
     })();
   });
 
