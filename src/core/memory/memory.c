@@ -1743,14 +1743,12 @@ void memory_map_print(memory_map_t *restrict mem) {
 // instance_data on the memory node is the memory_map_t* itself.
 // Lifetime is tied to memory_map_init / memory_map_delete.
 
-static value_t attr_mem_ram_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mem_ram_size) {
     memory_map_t *mem = (memory_map_t *)object_data(self);
     return val_uint(4, mem ? mem->ram_size : 0u);
 }
 
-static value_t attr_mem_rom_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mem_rom_size) {
     memory_map_t *mem = (memory_map_t *)object_data(self);
     return val_uint(4, mem ? mem->rom_size : 0u);
 }
@@ -1761,9 +1759,7 @@ static value_t attr_mem_rom_size(struct object *self, const member_t *m) {
 // non-printable bytes. Used to migrate the legacy `$str.<src>`
 // vocabulary onto the unified ${...} interpolator.
 
-static value_t method_mem_read_cstring(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_mem_read_cstring) {
     uint32_t addr = (uint32_t)argv[0].u;
     int max_chars = 96;
     if (argc >= 2) {
@@ -1809,9 +1805,7 @@ static const arg_decl_t mem_read_cstring_args[] = {
 // integer or a string (alias / register name / expression resolved by the
 // rich-parser). Output goes to stdout in the legacy `x` layout; the method
 // returns true on dispatch success.
-static value_t method_mem_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_mem_dump) {
     // addr is V_NONE-kind: an integer, or a string symbol/alias the
     // address parser resolves (parse_address handles $hex / 0x / symbol).
     uint32_t addr = 0;
@@ -1878,10 +1872,7 @@ static const arg_decl_t mem_dump_args[] = {
 // physical address), and the page-table backing of the physical page.
 // Diagnostic aid for when memory.peek/find results look wrong: the debug
 // read path is only trustworthy where this reports a valid mapping.
-static value_t method_mem_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mem_translate) {
     uint32_t addr = (uint32_t)argv[0].u & g_address_mask;
     char buf[256];
     // No 68K PMMU/040 state, but the CPU translates by other means (the
@@ -1923,15 +1914,11 @@ static const arg_decl_t mem_translate_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical guest address"},
 };
 
-static value_t attr_mem_slowpath_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_mem_slowpath_count) {
     return val_uint(8, g_mem_slowpath_count);
 }
 
-static value_t attr_mem_slowpath_hist(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_mem_slowpath_hist) {
     char buf[1024];
     size_t off = 0;
     for (int i = 0; i < 32; i++)
@@ -1997,26 +1984,17 @@ static const class_desc_t memory_class = {
 // caller-supplied address. Used by ${...} interpolation in logpoint
 // messages and any expression that needs a peek.
 
-static value_t method_mem_peek_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mem_peek_b) {
     value_t v = val_uint(1, memory_debug_read_uint8((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t method_mem_peek_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mem_peek_w) {
     value_t v = val_uint(2, memory_debug_read_uint16((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t method_mem_peek_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mem_peek_l) {
     value_t v = val_uint(4, memory_debug_read_uint32((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
@@ -2047,9 +2025,7 @@ static uint8_t peek_byte_in_space(uint32_t addr, bool physical) {
     return memory_debug_read_uint8(addr);
 }
 
-static value_t method_mem_peek_bytes(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_mem_peek_bytes) {
     uint32_t addr = (uint32_t)argv[0].u;
     uint64_t count = argv[1].u;
     // `space` omitted keeps the historical meaning (through the 68K MMU;
@@ -2128,24 +2104,15 @@ static const class_desc_t mem_peek_class = {
 // caller-supplied address. Pairs with memory.peek, replacing the legacy
 // `set <addr>.<size> <value>` shell form.
 
-static value_t method_mem_poke_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mem_poke_b) {
     memory_debug_write_uint8((uint32_t)argv[0].u, (uint8_t)argv[1].u);
     return val_none();
 }
-static value_t method_mem_poke_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mem_poke_w) {
     memory_debug_write_uint16((uint32_t)argv[0].u, (uint16_t)argv[1].u);
     return val_none();
 }
-static value_t method_mem_poke_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mem_poke_l) {
     memory_debug_write_uint32((uint32_t)argv[0].u, (uint32_t)argv[1].u);
     return val_none();
 }

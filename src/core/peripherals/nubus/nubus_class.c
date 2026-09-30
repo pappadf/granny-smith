@@ -113,13 +113,11 @@ static uint64_t nubus_fb_base(void *owner) {
 }
 
 // --- declrom node -----------------------------------------------------------
-static value_t declrom_attr_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(declrom_attr_size) {
     nubus_card_t *c = node_card(self);
     return val_uint(4, c ? (uint64_t)c->declrom_size : 0);
 }
-static value_t declrom_attr_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(declrom_attr_present) {
     nubus_card_t *c = node_card(self);
     return val_bool(c && c->declrom && c->declrom_size > 0);
 }
@@ -137,8 +135,7 @@ static const class_desc_t nubus_declrom_class = {
     .name = "declrom", .members = declrom_members, .n_members = sizeof(declrom_members) / sizeof(declrom_members[0])};
 
 // --- clut node --------------------------------------------------------------
-static value_t clut_attr_len(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(clut_attr_len) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)d->clut_len : 0);
 }
@@ -152,23 +149,19 @@ static const class_desc_t nubus_clut_class = {
 // Same numbers as the framebuffer node, under the card's own `mode` child --
 // this one carries the CARD as instance data, so it reads the descriptor
 // through node_disp rather than through a display_fb_node_t.
-static value_t mode_attr_width(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_width) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)d->width : 0);
 }
-static value_t mode_attr_height(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_height) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)d->height : 0);
 }
-static value_t mode_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_depth) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)display_bpp(d->format) : 0);
 }
-static value_t mode_attr_format(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_format) {
     display_t *d = node_disp(self);
     return val_str(d ? display_format_name(d->format) : "");
 }
@@ -194,13 +187,11 @@ static const class_desc_t nubus_mode_class = {
     .name = "mode", .members = mode_members, .n_members = sizeof(mode_members) / sizeof(mode_members[0])};
 
 // --- card node --------------------------------------------------------------
-static value_t card_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_name) {
     nubus_card_t *c = node_card(self);
     return val_str((c && c->ops && c->ops->name) ? c->ops->name(c) : "");
 }
-static value_t card_attr_slot(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_slot) {
     nubus_card_t *c = node_card(self);
     return val_int(c ? c->slot : -1);
 }
@@ -228,8 +219,7 @@ static int node_slot_number(struct object *self) {
     return n ? *n : -1;
 }
 
-static value_t slot_attr_number(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_number) {
     return val_int(node_slot_number(self));
 }
 
@@ -238,14 +228,12 @@ static value_t slot_attr_number(struct object *self, const member_t *m) {
 // wildcard alias; a concrete entry beats the wildcard).  Only SOCKET slots
 // accept a pick; reads return the staged id ("" when none, and always ""
 // on builtin slots).  Cleared when nubus_init consumes it.
-static value_t slot_attr_card_id_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_card_id_get) {
     const char *id = nubus_staged_card_get(node_slot_number(self));
     return val_str(id ? id : "");
 }
 
-static value_t slot_attr_card_id_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(slot_attr_card_id_set) {
     int slot = node_slot_number(self);
     if (in.kind != V_STRING) {
         value_free(&in);
@@ -276,14 +264,12 @@ static value_t slot_attr_card_id_set(struct object *self, const member_t *m, val
 // machine.boot (concrete-slot sibling of the `nubus.video_mode` alias).
 // At boot the id is routed into the slot's resolved card kind; a mode that
 // doesn't belong to that card logs and is ignored.
-static value_t slot_attr_video_mode_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_video_mode_get) {
     const char *id = nubus_staged_mode_get(node_slot_number(self));
     return val_str(id ? id : "");
 }
 
-static value_t slot_attr_video_mode_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(slot_attr_video_mode_set) {
     int slot = node_slot_number(self);
     if (in.kind != V_STRING) {
         value_free(&in);

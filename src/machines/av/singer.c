@@ -785,14 +785,12 @@ static int singer_load_wav(av_singer_t *s, const char *path) {
     return 0;
 }
 
-static value_t ain_attr_source_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_source_get) {
     av_singer_t *s = singer_self(self);
     return val_str(s ? ain_src_name(s->ain_src) : "none");
 }
 
-static value_t ain_attr_source_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(ain_attr_source_set) {
     av_singer_t *s = singer_self(self);
     if (!s) {
         value_free(&in);
@@ -807,20 +805,17 @@ static value_t ain_attr_source_set(struct object *self, const member_t *m, value
     return val_none();
 }
 
-static value_t ain_attr_connected(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_connected) {
     av_singer_t *s = singer_self(self);
     return val_bool(s && singer_ain_connected(s));
 }
 
-static value_t ain_attr_gain_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_gain_get) {
     av_singer_t *s = singer_self(self);
     return val_uint(2, s ? s->ain_gain : 100);
 }
 
-static value_t ain_attr_gain_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(ain_attr_gain_set) {
     av_singer_t *s = singer_self(self);
     if (!s) {
         value_free(&in);
@@ -835,20 +830,17 @@ static value_t ain_attr_gain_set(struct object *self, const member_t *m, value_t
     return val_none();
 }
 
-static value_t ain_attr_samples(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_samples) {
     av_singer_t *s = singer_self(self);
     return val_uint(8, s ? s->ain_samples : 0);
 }
 
-static value_t ain_attr_position(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_position) {
     av_singer_t *s = singer_self(self);
     return val_uint(4, s ? s->wav_pos : 0);
 }
 
-static value_t ain_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(ain_method_load) {
     av_singer_t *s = singer_self(self);
     if (!s || argc < 1)
         return val_err("audioin not available");
@@ -858,10 +850,7 @@ static value_t ain_method_load(struct object *self, const member_t *m, int argc,
     return val_uint(4, s->wav_frames);
 }
 
-static value_t ain_method_rewind(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(ain_method_rewind) {
     av_singer_t *s = singer_self(self);
     if (!s)
         return val_err("audioin not available");
@@ -872,8 +861,7 @@ static value_t ain_method_rewind(struct object *self, const member_t *m, int arg
 // inject = load, plus the platform monitor hook: in the browser the same
 // file is also played through the host speakers so an audience hears what
 // the guest was just fed.  `load` stays silent — tests use it.
-static value_t ain_method_inject(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(ain_method_inject) {
     av_singer_t *s = singer_self(self);
     if (!s || argc < 1)
         return val_err("audioin not available");
@@ -884,14 +872,12 @@ static value_t ain_method_inject(struct object *self, const member_t *m, int arg
     return val_uint(4, s->wav_frames);
 }
 
-static value_t ain_attr_advise_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_advise_get) {
     av_singer_t *s = singer_self(self);
     return val_bool(s && s->ain_advise);
 }
 
-static value_t ain_attr_advise_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(ain_attr_advise_set) {
     av_singer_t *s = singer_self(self);
     if (!s) {
         value_free(&in);
@@ -905,14 +891,12 @@ static value_t ain_attr_advise_set(struct object *self, const member_t *m, value
     return val_none();
 }
 
-static value_t ain_attr_monitor_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_monitor_get) {
     av_singer_t *s = singer_self(self);
     return val_bool(s && s->ain_monitor);
 }
 
-static value_t ain_attr_monitor_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(ain_attr_monitor_set) {
     av_singer_t *s = singer_self(self);
     if (!s)
         return val_err("audioin not available");
@@ -920,14 +904,12 @@ static value_t ain_attr_monitor_set(struct object *self, const member_t *m, valu
     return val_none();
 }
 
-static value_t ain_attr_level(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_level) {
     av_singer_t *s = singer_self(self);
     return val_int(s ? s->ain_level : 0);
 }
 
-static value_t ain_attr_peak(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_attr_peak) {
     av_singer_t *s = singer_self(self);
     return val_int(s ? s->ain_peak : 0);
 }
@@ -1001,29 +983,23 @@ static const class_desc_t av_audioin_class = {
 // machine.audioin.capture — record what the source delivered
 // ============================================================
 
-static value_t ain_cap_attr_active(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_cap_attr_active) {
     av_singer_t *s = (av_singer_t *)object_data(self);
     return val_bool(s && s->ain_cap_active);
 }
 
-static value_t ain_cap_attr_frames(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_cap_attr_frames) {
     av_singer_t *s = (av_singer_t *)object_data(self);
     return val_uint(8, s ? (uint64_t)(s->ain_cap_n / 2) : 0);
 }
 
-static value_t ain_cap_attr_seconds(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ain_cap_attr_seconds) {
     av_singer_t *s = (av_singer_t *)object_data(self);
     uint32_t rate = s && s->ain_cap_rate ? s->ain_cap_rate : 24000;
     return val_float(s ? (double)(s->ain_cap_n / 2) / (double)rate : 0.0);
 }
 
-static value_t ain_cap_method_start(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(ain_cap_method_start) {
     av_singer_t *s = (av_singer_t *)object_data(self);
     if (!s)
         return val_err("audioin not available");
@@ -1035,8 +1011,7 @@ static value_t ain_cap_method_start(struct object *self, const member_t *m, int 
     return val_bool(true);
 }
 
-static value_t ain_cap_method_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(ain_cap_method_stop) {
     av_singer_t *s = (av_singer_t *)object_data(self);
     if (!s)
         return val_err("audioin not available");

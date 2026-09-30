@@ -3022,78 +3022,63 @@ static voodoo2_t *node_card(struct object *self) {
     return (voodoo2_t *)object_data(self);
 }
 
-static value_t regs_attr_status(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_status) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_status(v) : 0);
 }
-static value_t regs_attr_init_enable(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_init_enable) {
     voodoo2_t *v = node_card(self);
     if (!v)
         return val_uint(4, 0);
     return val_uint(4, (v->init_enable & ~INITEN_RO_MASK) | (V2_CHIP_REVISION << 12) | (V2_CHIP_FAB << 16));
 }
-static value_t regs_attr_fbiinit0(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit0) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT0] : 0);
 }
-static value_t regs_attr_fbiinit1(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit1) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT1] : 0);
 }
-static value_t regs_attr_fbiinit2(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit2) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT2] : 0);
 }
-static value_t regs_attr_fbiinit3(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit3) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT3] : 0);
 }
-static value_t regs_attr_fbiinit7(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit7) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT7] : 0);
 }
-static value_t regs_attr_fb_size(struct object *self, const member_t *m) {
-    (void)m;
-    (void)self;
+static DEF_GETTER(regs_attr_fb_size) {
     return val_uint(4, V2_FB_SIZE);
 }
-static value_t regs_attr_tmu_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_tmu_size) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->tex_size : 0);
 }
-static value_t regs_attr_raster(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_raster) {
     voodoo2_t *v = node_card(self);
     return val_str(v ? v2_raster_name(v->raster) : "");
 }
-static value_t regs_attr_gpu_engaged(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_gpu_engaged) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && v2_raster_presents(v->raster));
 }
-static value_t regs_attr_gpu_present_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_gpu_present_get) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && !v->gpu_no_present);
 }
-static value_t regs_attr_gpu_present_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(regs_attr_gpu_present_set) {
     voodoo2_t *v = node_card(self);
     if (!v)
         return val_err("regs.gpu_present: no card");
     v->gpu_no_present = !in.b;
     return val_none();
 }
-static value_t regs_attr_gpu_stats(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_gpu_stats) {
     voodoo2_t *v = node_card(self);
     static char buf[1024];
     if (!v)
@@ -3105,9 +3090,7 @@ static const arg_decl_t regs_tex_offset_args[] = {
     {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
     {.name = "lod", .kind = V_INT, .doc = "LOD level (0-8)"     },
 };
-static value_t regs_method_tex_offset(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_tex_offset) {
     voodoo2_t *v = node_card(self);
     int64_t tmu = argv[0].i, lod = argv[1].i;
     if (!v || tmu < 0 || tmu >= V2_NUM_TMUS || lod < 0 || lod > 8)
@@ -3122,9 +3105,7 @@ static const arg_decl_t regs_gamma_args[] = {
 // The gamma ramp as the scanout (and the takeover's present) applies it:
 // the interpolated CLUT once the guest has programmed one, identity
 // before — the gate for the top segment's flat hold (divergence 10).
-static value_t regs_method_gamma(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_gamma) {
     voodoo2_t *v = node_card(self);
     int64_t ch = argv[0].i, in = argv[1].i;
     if (!v || ch < 0 || ch > 2 || in < 0 || in > 255)
@@ -3143,9 +3124,7 @@ static const arg_decl_t regs_tex_save_args[] = {
      .presentation_flags = VAL_PATH,
      .doc = "Host file to write the raw texture RAM to"},
 };
-static value_t regs_method_tex_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_tex_save) {
     voodoo2_t *v = node_card(self);
     int64_t tmu = argv[0].i;
     if (!v || tmu < 0 || tmu >= V2_NUM_TMUS)
@@ -3164,9 +3143,7 @@ static value_t regs_method_tex_save(struct object *self, const member_t *m, int 
 static const arg_decl_t regs_read_arg[] = {
     {.name = "offset", .kind = V_INT, .doc = "Register byte offset ($000-$3FC, V2 spec pp.22-26)"},
 };
-static value_t regs_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_read) {
     voodoo2_t *v = node_card(self);
     int64_t off = argv[0].i;
     if (!v || off < 0 || off > 0x3FC)
@@ -3251,18 +3228,15 @@ static const class_desc_t v2_regs_class = {
     .n_members = sizeof(regs_members) / sizeof(regs_members[0]),
 };
 
-static value_t dac_attr_video_khz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_video_khz) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_video_pll_khz(v) : 0);
 }
-static value_t dac_attr_graphics_khz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_graphics_khz) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_graphics_pll_khz(v) : 0);
 }
-static value_t dac_attr_read_latch(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_read_latch) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->dac_read_latch : 0);
 }
@@ -3288,28 +3262,22 @@ static const class_desc_t v2_dac_class = {
     .n_members = sizeof(dac_members) / sizeof(dac_members[0]),
 };
 
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_width) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_screen_width(v) : 0);
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_height) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_screen_height(v) : 0);
 }
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
-    (void)self;
+static DEF_GETTER(fb_attr_depth) {
     return val_uint(4, 16); // the framebuffer is natively 5-6-5
 }
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_stride) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_screen_width(v) * 2u : 0);
 }
-static value_t fb_attr_displayed(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_displayed) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->displayed_buffer : 0);
 }
@@ -3340,13 +3308,11 @@ static const class_desc_t v2_fb_class = {
     .n_members = sizeof(fb_members) / sizeof(fb_members[0]),
 };
 
-static value_t video_attr_drives(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(video_attr_drives) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && v2_drives_monitor(v));
 }
-static value_t video_attr_swaps_pending(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(video_attr_swaps_pending) {
     voodoo2_t *v = node_card(self);
     if (!v)
         return val_uint(4, 0);

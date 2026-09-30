@@ -141,28 +141,24 @@ static struct object *meta_inspected(struct object *self) {
     return self ? (struct object *)object_data(self) : NULL;
 }
 
-static value_t meta_get_class(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_class) {
     struct object *insp = meta_inspected(self);
     const class_desc_t *cls = insp ? object_class(insp) : NULL;
     return val_str(cls && cls->name ? cls->name : "");
 }
 
-static value_t meta_get_doc(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_doc) {
     return val_str(object_doc(meta_inspected(self)));
 }
 
-static value_t meta_get_path(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_path) {
     struct object *insp = meta_inspected(self);
     char buf[512];
     object_compute_path(insp, buf, sizeof(buf));
     return val_str(buf);
 }
 
-static value_t meta_get_children(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_children) {
     struct object *insp = meta_inspected(self);
     if (!insp)
         return val_list(NULL, 0);
@@ -186,8 +182,7 @@ static value_t meta_get_children(struct object *self, const member_t *m) {
     return val_list(acc.items, acc.len);
 }
 
-static value_t meta_get_attributes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_attributes) {
     struct object *insp = meta_inspected(self);
     if (!insp)
         return val_list(NULL, 0);
@@ -208,8 +203,7 @@ static value_t meta_get_attributes(struct object *self, const member_t *m) {
     return val_list(acc.items, acc.len);
 }
 
-static value_t meta_get_methods(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_methods) {
     struct object *insp = meta_inspected(self);
     if (!insp)
         return val_list(NULL, 0);
@@ -245,8 +239,7 @@ static const char *category_name(uint16_t flags) {
 
 // `label` — the inspected node's display label. Falls back
 // to its path-segment name when no explicit label was set.
-static value_t meta_get_label(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_label) {
     struct object *insp = meta_inspected(self);
     const char *label = object_label(insp);
     return val_str(label ? label : "");
@@ -255,8 +248,7 @@ static value_t meta_get_label(struct object *self, const member_t *m) {
 // `category` — the inspected node's own visibility tier (basic / advanced /
 // internal). Lets the SYSTEM tab decide whether to show a child object
 // without a separate allowlist.
-static value_t meta_get_category(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(meta_get_category) {
     struct object *insp = meta_inspected(self);
     return val_str(category_name(object_category(insp)));
 }
@@ -267,9 +259,7 @@ static value_t meta_get_category(struct object *self, const member_t *m) {
 // provider returns a V_LIST<V_STRING> on success or a V_ERROR; when no
 // provider is registered (unit tests, headless boot before shell_init),
 // an empty list is the tolerant default.
-static value_t meta_method_complete(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(meta_method_complete) {
     // `line` is a required V_STRING and `cursor` a V_INT, so node_validate_args
     // has already rejected a call that does not supply them that way.  Only
     // `cursor` being absent is still a live case -- it is optional with no
@@ -284,9 +274,8 @@ static value_t meta_method_complete(struct object *self, const member_t *m, int 
 // `member(name)` — short text description of one named member. Cheaper
 // than enumerating the full attributes/methods list when the caller
 // already knows which member it wants.
-static value_t meta_method_member(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
+static DEF_METHOD(meta_method_member) {
+    // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const class_desc_t *cls = insp ? object_class(insp) : NULL;
     const member_t *mb = class_find_member(cls, argv[0].s);
@@ -318,9 +307,8 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
 // inspected class: "basic" / "advanced" / "internal". The
 // SYSTEM tab reads this to decide whether to show an attribute/method row.
 // Unknown names default to "basic" (faithful-by-default).
-static value_t meta_method_member_category(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
+static DEF_METHOD(meta_method_member_category) {
+    // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     return val_str(category_name(mb ? mb->flags : 0));
@@ -328,9 +316,8 @@ static value_t meta_method_member_category(struct object *self, const member_t *
 
 // `member_label(name)` — display label of a named member, falling back to the
 // name itself.
-static value_t meta_method_member_label(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
+static DEF_METHOD(meta_method_member_label) {
+    // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     const char *label = (mb && mb->label) ? mb->label : argv[0].s;
@@ -342,9 +329,8 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
 // verb label, destructive/mutate/hidden/io flags, declared arg
 // count, and doc. Returns a V_ERROR if the member
 // is not a method.
-static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
+static DEF_METHOD(meta_method_method_info) {
+    // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!mb || mb->kind != M_METHOD)
@@ -370,9 +356,8 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
 // error/list distinction to tell "indexed collection" from "named child".
 static value_t indices_of(struct object *insp, const member_t *mb);
 
-static value_t meta_method_indices(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc; // the declared arg table guarantees argv[0] is a non-empty string
+static DEF_METHOD(meta_method_indices) {
+    // the declared arg table guarantees argv[0] is a non-empty string
     struct object *insp = meta_inspected(self);
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!member_is_collection(mb))
@@ -574,8 +559,7 @@ static void each_attached_describe(struct object *parent, struct object *child, 
     member_list_push((member_list_t *)ud, val_map_finish(b));
 }
 
-static value_t meta_method_members(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(meta_method_members) {
     bool values = argc >= 1 && argv[0].kind == V_BOOL && argv[0].b;
     struct object *insp = meta_inspected(self);
     if (!insp)

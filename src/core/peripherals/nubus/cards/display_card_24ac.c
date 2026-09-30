@@ -1237,12 +1237,10 @@ static nubus_card_t *node_card(struct object *self) {
 // This card's own object children, attached through the KIND's attach_objects
 // hook.  They used to live in nubus_class.c behind an is_card() test, which
 // meant a core file knew this card existed.
-static value_t eng_attr_enabled_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_enabled_get) {
     return val_bool(display_card_24ac_engine_enabled(node_card(self)));
 }
-static value_t eng_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(eng_attr_enabled_set) {
     if (in.kind != V_BOOL) {
         value_free(&in);
         return val_err("engine.enabled: expected a boolean");
@@ -1251,28 +1249,22 @@ static value_t eng_attr_enabled_set(struct object *self, const member_t *m, valu
     value_free(&in);
     return val_none();
 }
-static value_t eng_attr_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_mode) {
     return val_uint(1, display_card_24ac_engine_mode(node_card(self)));
 }
-static value_t eng_attr_operand(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_operand) {
     return val_uint(4, display_card_24ac_engine_operand(node_card(self)));
 }
-static value_t eng_attr_fill_ops(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_fill_ops) {
     return val_uint(8, display_card_24ac_engine_fill_ops(node_card(self)));
 }
-static value_t eng_attr_fill_bytes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_fill_bytes) {
     return val_uint(8, display_card_24ac_engine_fill_bytes(node_card(self)));
 }
-static value_t eng_attr_copy_ops(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_copy_ops) {
     return val_uint(8, display_card_24ac_engine_copy_ops(node_card(self)));
 }
-static value_t eng_attr_copy_bytes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_copy_bytes) {
     return val_uint(8, display_card_24ac_engine_copy_bytes(node_card(self)));
 }
 static const member_t engine_members[] = {

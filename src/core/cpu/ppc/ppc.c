@@ -1072,7 +1072,7 @@ static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
     return NULL;
 }
 
-static value_t attr_ppc_get(struct object *self, const member_t *m) {
+static DEF_GETTER(attr_ppc_get) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1097,7 +1097,7 @@ static value_t attr_ppc_get(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) {
+static DEF_SETTER(attr_ppc_set) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1150,17 +1150,14 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
 
 // Read `instr_count`: the scheduler's retired-instruction count, which is
 // architecture-neutral (68K exposes the same attribute).
-static value_t ppc_attr_instr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(ppc_attr_instr_count) {
     return val_uint(8, cpu_instr_count());
 }
 
 // `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
 // the contract every CPU-like object shares (debug_frame_build; debug.frame
 // is the same call).
-static value_t ppc_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(ppc_method_frame) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1224,8 +1221,7 @@ static const class_desc_t ppc_cpu_class = {
 // shape as every other MMU kind's (debug.h).  Omitted `supervisor` means the
 // current MSR[PR]; `fetch` translates with the instruction-side rules (the
 // IBATs, MSR[IT]) instead of the data side.
-static value_t mmu_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(mmu_method_translate) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1241,8 +1237,7 @@ static value_t mmu_method_translate(struct object *self, const member_t *m, int 
 // reads through the data-side translation; "physical" reads the address as
 // is.  (machine.memory.peek on a PowerPC machine is physical; this is the
 // logical read a debugger wants.)
-static value_t mmu_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(mmu_method_peek) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1326,7 +1321,7 @@ static const class_desc_t ppc_mmu_class = {
 // Registered alongside the arithmetic datapath; its existence is
 // also what flips the capability probe's `fpu` bit for the PDM machines.
 
-static value_t attr_fpr_get(struct object *self, const member_t *m) {
+static DEF_GETTER(attr_fpr_get) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1336,7 +1331,7 @@ static value_t attr_fpr_get(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) {
+static DEF_SETTER(attr_fpr_set) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");

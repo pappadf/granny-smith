@@ -569,17 +569,12 @@ static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
 // machine uses; `eject` and `present` go straight to the FDC. Each
 // object's instance_data is the config_t.
 
-static value_t lisa_fd_drive_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(lisa_fd_drive_insert) {
     bool writable = (argc >= 2) ? argv[1].b : false;
     return val_bool(system_fd_insert(argv[0].s, 0, writable) == 0);
 }
 
-static value_t lisa_fd_drive_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lisa_fd_drive_eject) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     if (!ls || !ls->fdc)
         return val_err("floppy.drives.0: no controller");
@@ -592,15 +587,12 @@ static value_t lisa_fd_drive_eject(struct object *self, const member_t *m, int a
     return val_none();
 }
 
-static value_t lisa_fd_drive_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lisa_fd_drive_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && ls->fdc && lisa_fdc_disk_present(ls->fdc));
 }
 
-static value_t lisa_fd_drive_index(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(lisa_fd_drive_index) {
     return val_int(0);
 }
 
@@ -683,8 +675,7 @@ static void lisa_register_floppy_object(config_t *cfg) {
 // small object.  `attach` opens (or creates blank) a 532-bytes/block image and
 // drives the OCD/ line; `detach` flushes and disconnects.  instance_data = cfg.
 
-static value_t lisa_hd_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_attach) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     // Read by kind: `path` now has a V_NONE default so that
@@ -700,10 +691,7 @@ static value_t lisa_hd_attach(struct object *self, const member_t *m, int argc, 
     return val_bool(true);
 }
 
-static value_t lisa_hd_detach(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lisa_hd_detach) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
@@ -713,14 +701,12 @@ static value_t lisa_hd_detach(struct object *self, const member_t *m, int argc, 
     return val_none();
 }
 
-static value_t lisa_hd_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lisa_hd_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && lisa_profile_attached(ls->profile));
 }
 
-static value_t lisa_hd_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_save) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
@@ -758,8 +744,7 @@ static const arg_decl_t lisa_hd_save_args[] = {
 // and which makes the boot depend on the disk image actually carrying a good
 // clean-shutdown snapshot rather than on a pre-seeded hardware entry masking
 // a broken one.
-static value_t lisa_hd_pram_init(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_pram_init) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     if (!ls || !ls->fdc)
         return val_err("pram: no controller");
@@ -772,8 +757,7 @@ static value_t lisa_hd_pram_init(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
-static value_t lisa_hd_pram_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_pram_save) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!ls || !ls->fdc)
@@ -785,8 +769,7 @@ static value_t lisa_hd_pram_save(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
-static value_t lisa_hd_pram_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_pram_load) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!ls || !ls->fdc)
@@ -898,10 +881,7 @@ static void lisa_register_profile_object(config_t *cfg) {
 // unmounted) — so a `profile.save` afterwards yields an image that cold-boots
 // without the "startup disk was in use" scavenge prompt.  No-op pre-boot / on a
 // machine whose OS isn't listening; harmless either way (the code just queues).
-static value_t lisa_power_off(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lisa_power_off) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     if (!ls || !ls->cops)
         return val_err("power: no COPS");

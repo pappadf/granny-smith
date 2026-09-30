@@ -362,19 +362,13 @@ value_t audio_out_match_value(const char *golden_wav) {
 // Object-model surface: the `capture` node
 // ============================================================================
 
-static value_t capture_method_start(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(capture_method_start) {
     if (!audio_out_capture_start())
         return val_err("sound.capture.start: capture already active");
     return val_none();
 }
 
-static value_t capture_method_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(capture_method_stop) {
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     if (path) {
         size_t n = strlen(path);
@@ -389,15 +383,11 @@ static value_t capture_method_stop(struct object *self, const member_t *m, int a
     return val_uint(4, (uint64_t)frames);
 }
 
-static value_t capture_attr_active(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(capture_attr_active) {
     return val_bool(audio_out_capture_active());
 }
 
-static value_t capture_attr_frames(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(capture_attr_frames) {
     return val_uint(4, audio_out_capture_frames());
 }
 
@@ -405,9 +395,7 @@ static value_t capture_attr_frames(struct object *self, const member_t *m) {
 // stream's first sample (the ASC's offset-binary silence sits at a constant
 // non-zero level; peak-vs-first isolates actual signal).  Diagnostic: lets a
 // live session answer "is there audio IN the stream?" without exporting a WAV.
-static value_t capture_attr_peak(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(capture_attr_peak) {
     if (!s.samples || s.nsamples == 0)
         return val_uint(4, 0);
     int16_t base = s.samples[0];

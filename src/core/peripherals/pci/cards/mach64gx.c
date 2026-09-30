@@ -2769,28 +2769,23 @@ static mach64_t *node_card(struct object *self) {
     return (mach64_t *)object_data(self);
 }
 
-static value_t mon_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_id) {
     mach64_t *c = node_card(self);
     return val_str((c && c->mon) ? c->mon->id : "");
 }
-static value_t mon_attr_primary(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_primary) {
     mach64_t *c = node_card(self);
     return val_uint(1, (c && c->mon) ? c->mon->primary : 7);
 }
-static value_t mon_attr_sensed_primary(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_sensed_primary) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->sense_primary : 0);
 }
-static value_t mon_attr_sensed_ext(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_sensed_ext) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->sense_ext : 0);
 }
-static value_t mon_attr_probed(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_probed) {
     mach64_t *c = node_card(self);
     return val_bool(c && c->sense_seen);
 }
@@ -2820,44 +2815,34 @@ static const member_t monitor_members[] = {
 static const class_desc_t mach64_monitor_class = {
     .name = "monitor", .members = monitor_members, .n_members = sizeof(monitor_members) / sizeof(monitor_members[0])};
 
-static value_t regs_attr_chip_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(regs_attr_chip_id) {
     return val_uint(4, MACH64_CHIP_ID);
 }
-static value_t regs_attr_config_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_config_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_CONFIG_CNTL] : 0);
 }
-static value_t regs_attr_aperture(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_aperture) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? mach64_aperture_size(c) : 0);
 }
-static value_t regs_attr_vram(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_vram) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->vram_size : 0);
 }
-static value_t regs_attr_crtc_gen(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_crtc_gen) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_CRTC_GEN_CNTL] : 0);
 }
-static value_t regs_attr_mem_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_mem_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_MEM_CNTL] : 0);
 }
-static value_t regs_attr_dac_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_dac_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? mach64_reg_read(c, DW_DAC_CNTL) : 0);
 }
-static value_t regs_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_read) {
     mach64_t *c = node_card(self);
     int64_t dw = argv[0].i;
     if (!c || dw < 0 || dw >= MACH64_NUM_REGS)
@@ -2907,29 +2892,23 @@ static const member_t regs_members[] = {
 static const class_desc_t mach64_regs_class = {
     .name = "regs", .members = regs_members, .n_members = sizeof(regs_members) / sizeof(regs_members[0])};
 
-static value_t dac_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_index) {
     mach64_t *c = node_card(self);
     return val_uint(2, c ? c->dac_index : 0);
 }
-static value_t dac_attr_pixel_format(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_pixel_format) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_indexed[0x0A] : 0);
 }
-static value_t dac_attr_misc2(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_misc2) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_indexed[0x71] : 0);
 }
-static value_t dac_attr_pixel_mask(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_pixel_mask) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_pixel_mask : 0);
 }
-static value_t dac_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(dac_method_read) {
     mach64_t *c = node_card(self);
     int64_t idx = argv[0].i;
     if (!c || idx < 0 || idx >= (int64_t)sizeof(c->dac_indexed))

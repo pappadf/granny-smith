@@ -1010,33 +1010,27 @@ static int ppc_obj_slot(struct object *self) {
 
 // --- appletalk.ppc.ports[i] --------------------------------------------------
 
-static value_t ppc_port_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_name) {
     ppc_port_info_t info;
     return val_str(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.name : "");
 }
-static value_t ppc_port_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_type) {
     ppc_port_info_t info;
     return val_str(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.type : "");
 }
-static value_t ppc_port_attr_machine(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_machine) {
     ppc_port_info_t info;
     return val_str(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.machine : "");
 }
-static value_t ppc_port_attr_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_node) {
     ppc_port_info_t info;
     return val_uint(1, atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.node : 0);
 }
-static value_t ppc_port_attr_socket(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_socket) {
     ppc_port_info_t info;
     return val_uint(1, atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.socket : 0);
 }
-static value_t ppc_port_attr_auth(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_auth) {
     ppc_port_info_t info;
     return val_bool(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.auth_required : false);
 }
@@ -1111,35 +1105,28 @@ static ppc_session_t *ppc_obj_session(struct object *self) {
     return atalk_ppc_session_at(ppc_obj_slot(self));
 }
 
-static value_t ppc_session_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_id) {
     return val_uint(4, atalk_ppc_session_id(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_state) {
     int st = (int)atalk_ppc_session_state(ppc_obj_session(self));
     if (st < 0 || st >= PPC_SESSION_STATE_COUNT)
         st = 0;
     return val_enum(st, PPC_SESSION_STATE_NAMES, PPC_SESSION_STATE_COUNT);
 }
-static value_t ppc_session_attr_role(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_role) {
     return val_str(atalk_ppc_session_initiator(ppc_obj_session(self)) ? "initiator" : "responder");
 }
-static value_t ppc_session_attr_port(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_port) {
     return val_str(atalk_ppc_session_port(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_peer_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_peer_node) {
     return val_uint(1, atalk_ppc_session_peer_node(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_bytes_in(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_bytes_in) {
     return val_uint(8, atalk_ppc_session_bytes_in(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_bytes_out(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_bytes_out) {
     return val_uint(8, atalk_ppc_session_bytes_out(ppc_obj_session(self)));
 }
 
@@ -1234,20 +1221,14 @@ static const class_desc_t ppc_stats_class = {
 
 // --- appletalk.ppc -----------------------------------------------------------
 
-static value_t ppc_method_browse(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(ppc_method_browse) {
     char err[192] = "";
     if (atalk_ppc_browse(err, sizeof(err)) != 0)
         return val_err("cannot browse for program-linking ports: %s", err);
     return val_none();
 }
 
-static value_t ppc_attr_browsing(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(ppc_attr_browsing) {
     return val_bool(atalk_ppc_browse_in_flight());
 }
 

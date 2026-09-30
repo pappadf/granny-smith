@@ -38,10 +38,7 @@
 //
 // `log.set(cat)` with nothing else prints the category's current settings,
 // which is what the bare form always did.
-static value_t log_method_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(log_method_set) {
     if (argv[0].kind != V_ENUM || !argv[0].enm.table)
         return val_err("log.set: category is required");
     const char *category = argv[0].enm.table[argv[0].enm.idx];
@@ -90,9 +87,7 @@ static void log_level_map_cb(const log_category_t *cat, void *ud) {
 // map {<category>: <level>, ...}.  The Logs view's level editor reads
 // this to populate its list (the categories register lazily, so the set grows
 // as subsystems first log; a freshly booted machine has registered its own).
-static value_t log_attr_levels(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(log_attr_levels) {
     value_map_builder_t *b = val_map_new();
     log_foreach_category(log_level_map_cb, b);
     return val_map_finish(b);
@@ -143,13 +138,11 @@ static const log_category_t *entry_cat(struct object *self) {
     return (const log_category_t *)object_data(self);
 }
 
-static value_t cat_attr_level_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_level_get) {
     return val_uint(4, (uint64_t)log_get_level(entry_cat(self)));
 }
 
-static value_t cat_attr_level_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_level_set) {
     bool ok = false;
     int64_t level = val_as_i64(&in, &ok);
     value_free(&in);
@@ -159,25 +152,21 @@ static value_t cat_attr_level_set(struct object *self, const member_t *m, value_
     return val_none();
 }
 
-static value_t cat_attr_stdout_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_stdout_get) {
     return val_bool(log_get_category_stdout(entry_cat(self)));
 }
 
-static value_t cat_attr_stdout_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_stdout_set) {
     log_set_category_stdout(log_category_name(entry_cat(self)), in.b);
     return val_none();
 }
 
-static value_t cat_attr_file_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_file_get) {
     const char *path = log_get_category_file(entry_cat(self));
     return val_str(path ? path : "off");
 }
 
-static value_t cat_attr_file_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_file_set) {
     const char *path = in.s ? in.s : "off";
     int rc = log_set_category_file(log_category_name(entry_cat(self)), path);
     value_t out = rc == 0 ? val_none() : val_err("cannot open log file '%s'", path);
@@ -185,24 +174,20 @@ static value_t cat_attr_file_set(struct object *self, const member_t *m, value_t
     return out;
 }
 
-static value_t cat_attr_ts_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_ts_get) {
     return val_bool(log_get_category_timestamp(entry_cat(self)));
 }
 
-static value_t cat_attr_ts_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_ts_set) {
     log_set_category_timestamp(log_category_name(entry_cat(self)), in.b);
     return val_none();
 }
 
-static value_t cat_attr_pc_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_pc_get) {
     return val_bool(log_get_category_show_pc(entry_cat(self)));
 }
 
-static value_t cat_attr_pc_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_pc_set) {
     log_set_category_show_pc(log_category_name(entry_cat(self)), in.b);
     return val_none();
 }

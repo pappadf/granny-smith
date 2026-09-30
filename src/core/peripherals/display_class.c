@@ -17,44 +17,36 @@ static display_t *node_disp(struct object *self) {
     return (n && n->resolve) ? n->resolve(n->owner) : NULL;
 }
 
-static value_t fb_attr_base(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_base) {
     display_fb_node_t *n = fb_node(self);
     return val_uint(4, (n && n->base) ? n->base(n->owner) : 0);
 }
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_width) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->width : 0);
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_height) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->height : 0);
 }
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_stride) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->stride : 0);
 }
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_depth) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? display_bpp(d->format) : 0);
 }
-static value_t fb_attr_format(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_format) {
     display_t *d = node_disp(self);
     return val_str(d ? display_format_name(d->format) : "");
 }
-static value_t fb_attr_raw_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_raw_size) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? (uint64_t)d->stride * d->height : 0);
 }
 
-static value_t fb_attr_clut_len(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_clut_len) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->clut_len : 0);
 }

@@ -323,7 +323,7 @@ value_t obj_u64_at(const void *block, const member_t *m) {
     return val_uint(8, v);
 }
 
-value_t obj_u64_field_get(struct object *self, const member_t *m) {
+DEF_GETTER(obj_u64_field_get) {
     return obj_u64_at(object_data(self), m);
 }
 
@@ -1124,8 +1124,7 @@ uint32_t object_collection_count(struct object *self, const member_t *m) {
 
 // `count` for a collection container with no count of its own: its live
 // entries.
-static value_t synth_count_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(synth_count_get) {
     return val_uint(4, object_collection_count(self, class_collection(object_class(self))));
 }
 

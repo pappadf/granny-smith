@@ -134,6 +134,16 @@ typedef value_t (*attr_get_fn)(struct object *self, const struct member *m);
 // kinds carry no allocation, so a setter for those may skip the free.
 typedef value_t (*attr_set_fn)(struct object *self, const struct member *m, value_t in);
 typedef value_t (*method_fn)(struct object *self, const struct member *m, int argc, const value_t *argv);
+
+// Definitions of the three callback shapes, for bodies that need not use
+// every parameter: `static DEF_GETTER(cpu_attr_pc) { ... }`.  The setter's
+// `in` stays a plain parameter -- the setter owns it and must free it.
+#define OBJ_UNUSED     __attribute__((unused))
+#define DEF_GETTER(fn) value_t fn(struct object *self OBJ_UNUSED, const struct member *m OBJ_UNUSED)
+#define DEF_SETTER(fn) value_t fn(struct object *self OBJ_UNUSED, const struct member *m OBJ_UNUSED, value_t in)
+#define DEF_METHOD(fn)                                                                                                 \
+    value_t fn(struct object *self OBJ_UNUSED, const struct member *m OBJ_UNUSED, int argc OBJ_UNUSED,                 \
+               const value_t *argv OBJ_UNUSED)
 typedef struct object *(*child_get_fn)(struct object *self, int index);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
 typedef struct object *(*child_lookup_fn)(struct object *self, const char *name);

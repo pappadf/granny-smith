@@ -614,8 +614,7 @@ static cpu_t *cpu_from(struct object *self) {
 
 // === CPU class ==============================================================
 
-static value_t attr_cpu_pc(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_pc) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -624,8 +623,7 @@ static value_t attr_cpu_pc(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_cpu_sr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_sr) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -634,8 +632,7 @@ static value_t attr_cpu_sr(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_cpu_ccr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_ccr) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -644,8 +641,7 @@ static value_t attr_cpu_ccr(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_cpu_ssp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_ssp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -654,8 +650,7 @@ static value_t attr_cpu_ssp(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_cpu_usp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_usp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -664,8 +659,7 @@ static value_t attr_cpu_usp(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_cpu_msp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_msp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -674,8 +668,7 @@ static value_t attr_cpu_msp(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_cpu_vbr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_vbr) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -684,8 +677,7 @@ static value_t attr_cpu_vbr(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_cpu_sp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_cpu_sp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -753,8 +745,7 @@ CPU_AREG_RW(7)
 
 // === Setters for the named registers and CCR-bit attributes ===
 
-static value_t set_cpu_pc(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_pc) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -762,8 +753,7 @@ static value_t set_cpu_pc(struct object *self, const member_t *m, value_t in) {
     return val_none();
 }
 
-static value_t set_cpu_sr(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_sr) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -771,8 +761,7 @@ static value_t set_cpu_sr(struct object *self, const member_t *m, value_t in) {
     return val_none();
 }
 
-static value_t set_cpu_ccr(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_ccr) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -782,8 +771,7 @@ static value_t set_cpu_ccr(struct object *self, const member_t *m, value_t in) {
     return val_none();
 }
 
-static value_t set_cpu_ssp(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_ssp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -791,8 +779,7 @@ static value_t set_cpu_ssp(struct object *self, const member_t *m, value_t in) {
     return val_none();
 }
 
-static value_t set_cpu_usp(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_usp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -800,8 +787,7 @@ static value_t set_cpu_usp(struct object *self, const member_t *m, value_t in) {
     return val_none();
 }
 
-static value_t set_cpu_msp(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_msp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -809,8 +795,7 @@ static value_t set_cpu_msp(struct object *self, const member_t *m, value_t in) {
     return val_none();
 }
 
-static value_t set_cpu_vbr(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_vbr) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -819,8 +804,7 @@ static value_t set_cpu_vbr(struct object *self, const member_t *m, value_t in) {
 }
 
 // `cpu.sp` aliases A7 (the active stack pointer).
-static value_t set_cpu_sp(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(set_cpu_sp) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -831,17 +815,14 @@ static value_t set_cpu_sp(struct object *self, const member_t *m, value_t in) {
 // `cpu.instr_count` — total instructions retired since reset. Read-only;
 // the scheduler owns the counter. Mirrors `print instr` from the legacy
 // shell.
-static value_t attr_cpu_instr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_cpu_instr_count) {
     return val_uint(8, cpu_instr_count());
 }
 
 // `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
 // the contract every CPU-like object shares (debug_frame_build; debug.frame
 // is the same call).
-static value_t cpu_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(cpu_method_frame) {
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -961,8 +942,7 @@ static fpu_state_t *fpu_from(struct object *self) {
     return (fpu_state_t *)object_data(self);
 }
 
-static value_t attr_fpu_fpcr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_fpu_fpcr) {
     fpu_state_t *fpu = fpu_from(self);
     if (!fpu)
         return val_err("fpu not present");
@@ -971,8 +951,7 @@ static value_t attr_fpu_fpcr(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_fpu_fpsr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_fpu_fpsr) {
     fpu_state_t *fpu = fpu_from(self);
     if (!fpu)
         return val_err("fpu not present");
@@ -981,8 +960,7 @@ static value_t attr_fpu_fpsr(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_fpu_fpiar(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_fpu_fpiar) {
     fpu_state_t *fpu = fpu_from(self);
     if (!fpu)
         return val_err("fpu not present");
@@ -995,7 +973,7 @@ static value_t attr_fpu_fpiar(struct object *self, const member_t *m) {
 // as V_BYTES (10 bytes) so the formatter can hex-dump it and tests
 // can compare bit-for-bit. Conversion to a host double is lossy and
 // belongs in a future helper; this keeps the raw payload visible.
-static value_t attr_fpu_fpN(struct object *self, const member_t *m) {
+static DEF_GETTER(attr_fpu_fpN) {
     fpu_state_t *fpu = fpu_from(self);
     if (!fpu)
         return val_err("fpu not present");
@@ -1060,8 +1038,7 @@ static mmu_state_t *mmu_from(struct object *self) {
     return (mmu_state_t *)object_data(self);
 }
 
-static value_t attr_mmu_tc(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_tc) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1070,8 +1047,7 @@ static value_t attr_mmu_tc(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_crp_hi(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_crp_hi) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1080,8 +1056,7 @@ static value_t attr_mmu_crp_hi(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_crp_lo(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_crp_lo) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1090,8 +1065,7 @@ static value_t attr_mmu_crp_lo(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_srp_hi(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_srp_hi) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1100,8 +1074,7 @@ static value_t attr_mmu_srp_hi(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_srp_lo(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_srp_lo) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1110,8 +1083,7 @@ static value_t attr_mmu_srp_lo(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_tt0(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_tt0) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1120,8 +1092,7 @@ static value_t attr_mmu_tt0(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_tt1(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_tt1) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1130,8 +1101,7 @@ static value_t attr_mmu_tt1(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_mmusr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_mmusr) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1140,8 +1110,7 @@ static value_t attr_mmu_mmusr(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_mmu_enabled(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu_enabled) {
     mmu_state_t *mmu = mmu_from(self);
     if (!mmu)
         return val_err("mmu not present");
@@ -1169,9 +1138,7 @@ static bool tt040_hit(uint32_t tt, uint32_t addr, bool supervisor) {
 // translate(addr, [supervisor], [fetch]) -> {phys, valid, via}.  Omitted
 // `supervisor` means the CPU's current state.  `fetch` selects the 040's
 // instruction TT registers; the 030 PMMU's TT match does not distinguish.
-static value_t mmu68k_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(mmu68k_method_translate) {
     uint32_t addr = (uint32_t)argv[0].u;
     bool sup = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : debug_cpu_is_supervisor();
     bool fetch = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
@@ -1192,9 +1159,7 @@ static value_t mmu68k_method_translate(struct object *self, const member_t *m, i
 // peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
 // reads through the MMU in the CPU's current state; "physical" reads the
 // physical address directly.
-static value_t mmu68k_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(mmu68k_method_peek) {
     uint32_t addr = (uint32_t)argv[0].u;
     unsigned size = (argc >= 2 && argv[1].kind == V_UINT) ? (unsigned)argv[1].u : 4;
     bool physical;
@@ -1347,8 +1312,7 @@ MMU040_HEX_ATTR(urp)
 MMU040_HEX_ATTR(srp)
 MMU040_HEX_ATTR(mmusr)
 
-static value_t attr_mmu040_enabled(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(attr_mmu040_enabled) {
     mmu040_state_t *mmu = mmu040_from(self);
     if (!mmu)
         return val_err("mmu not present");

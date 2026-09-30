@@ -253,20 +253,14 @@ void shell_command_clear_user(void) {
 
 // === shell.command ============================================================
 
-static value_t method_command_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_command_add) {
     char err[200];
     if (shell_command_define(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
         return val_err("command: %s", err);
     return val_none();
 }
 
-static value_t method_command_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_command_remove) {
     char err[200];
     if (shell_command_remove(argv[0].s, err, sizeof(err)) < 0)
         return val_err("command: %s", err);
@@ -291,11 +285,7 @@ static bool list_collect(const char *name, const char *target, bool builtin, voi
     return val_list_push(&acc->items, &acc->len, &acc->cap, val_map_finish(b));
 }
 
-static value_t method_command_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_command_list) {
     list_acc_t acc = {0};
     shell_command_each(list_collect, &acc);
     return val_list(acc.items, acc.len);

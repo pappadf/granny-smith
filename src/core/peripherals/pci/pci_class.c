@@ -80,34 +80,29 @@ static int bar_index_of(struct object *self, pci_slot_nodes_t **rec_out) {
     return object_entry_index(self);
 }
 
-static value_t bar_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_index) {
     return val_int(bar_index_of(self, NULL));
 }
 
-static value_t bar_attr_base(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_base) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     return val_uint(4, (rec && rec->dev && b >= 0) ? pci_cfg_bar_base(rec->dev, b) : 0);
 }
 
-static value_t bar_attr_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_size) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     return val_uint(4, (rec && rec->dev && b >= 0) ? pci_cfg_bar_size(rec->dev, b) : 0);
 }
 
-static value_t bar_attr_mapped(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_mapped) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     return val_bool(rec && rec->dev && b >= 0 && pci_cfg_bar_enabled(rec->dev, b));
 }
 
-static value_t bar_attr_kind(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_kind) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     if (!rec || !rec->dev || b < 0 || !rec->dev->decl)
@@ -154,33 +149,27 @@ static const class_desc_t pci_bar_class = {
 
 // === config node ============================================================
 
-static value_t cfg_attr_command(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_command) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(2, (n && n->dev) ? n->dev->cfg.command : 0);
 }
-static value_t cfg_attr_status(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_status) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(2, (n && n->dev) ? n->dev->cfg.status : 0);
 }
-static value_t cfg_attr_cache_line(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_cache_line) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(1, (n && n->dev) ? n->dev->cfg.cache_line_size : 0);
 }
-static value_t cfg_attr_int_line(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_int_line) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_int((n && n->dev) ? n->dev->cfg.interrupt_line : 0);
 }
-static value_t cfg_attr_rom_bar(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_rom_bar) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(4, (n && n->dev) ? n->dev->cfg.rom_bar : 0);
 }
-static value_t cfg_attr_rom_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_rom_size) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(4, (n && n->dev) ? (uint64_t)n->dev->rom_size : 0);
 }
@@ -238,23 +227,19 @@ static pci_device_t *card_dev(struct object *self) {
     return (pci_device_t *)object_data(self);
 }
 
-static value_t card_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_name) {
     pci_device_t *d = card_dev(self);
     return val_str((d && d->ops && d->ops->name) ? d->ops->name(d) : "");
 }
-static value_t card_attr_vendor(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_vendor) {
     pci_device_t *d = card_dev(self);
     return val_uint(2, (d && d->decl) ? d->decl->vendor_id : 0);
 }
-static value_t card_attr_device(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_device) {
     pci_device_t *d = card_dev(self);
     return val_uint(2, (d && d->decl) ? d->decl->device_id : 0);
 }
-static value_t card_attr_class(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_class) {
     pci_device_t *d = card_dev(self);
     return val_uint(4, (d && d->decl) ? d->decl->class_code : 0);
 }
@@ -288,27 +273,22 @@ static const pci_slot_decl_t *node_slot_decl(struct object *self) {
     return pci_slot_decl_get(g_obj_root, node_slot_number(self));
 }
 
-static value_t slot_attr_number(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_number) {
     return val_int(node_slot_number(self));
 }
-static value_t slot_attr_label(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_label) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_str((d && d->label) ? d->label : "");
 }
-static value_t slot_attr_bus(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_bus) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_int(d ? d->bus : -1);
 }
-static value_t slot_attr_device(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_device) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_int(d ? d->device : -1);
 }
-static value_t slot_attr_irq(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_irq) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_int(d ? d->int_line : -1);
 }
@@ -317,14 +297,12 @@ static value_t slot_attr_irq(struct object *self, const member_t *m) {
 // machine.boot (the concrete-slot sibling of machine.boot's `pci_card=`
 // wildcard; a concrete entry beats the wildcard).  Only SOCKET slots
 // accept a pick; "" clears.  Consumed and cleared by pci_seat_slots.
-static value_t slot_attr_card_id_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_card_id_get) {
     const char *id = pci_staged_card_get(node_slot_number(self));
     return val_str(id ? id : "");
 }
 
-static value_t slot_attr_card_id_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(slot_attr_card_id_set) {
     int slot = node_slot_number(self);
     if (in.kind != V_STRING) {
         value_free(&in);

@@ -1211,8 +1211,7 @@ VIA_BYTE_GETTER(acr, via_get_acr)
 VIA_BYTE_GETTER(pcr, via_get_pcr)
 VIA_BYTE_GETTER(sr, via_get_sr)
 
-static value_t via_attr_freq_factor(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(via_attr_freq_factor) {
     via_t *via = via_instance_from(self);
     return val_uint(1, via_get_freq_factor(via));
 }
@@ -1224,19 +1223,19 @@ static unsigned port_index_from_member(const member_t *m) {
     return (unsigned)(uintptr_t)m->attr.user_data;
 }
 
-static value_t via_port_attr_output(struct object *self, const member_t *m) {
+static DEF_GETTER(via_port_attr_output) {
     via_t *via = via_instance_from(self);
     value_t v = val_uint(1, via_port_output(via, port_index_from_member(m)));
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t via_port_attr_input(struct object *self, const member_t *m) {
+static DEF_GETTER(via_port_attr_input) {
     via_t *via = via_instance_from(self);
     value_t v = val_uint(1, via_port_input(via, port_index_from_member(m)));
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t via_port_attr_direction(struct object *self, const member_t *m) {
+static DEF_GETTER(via_port_attr_direction) {
     via_t *via = via_instance_from(self);
     value_t v = val_uint(1, via_port_direction(via, port_index_from_member(m)));
     v.flags |= VAL_HEX;

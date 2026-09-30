@@ -39,9 +39,7 @@
 // === Attribute getters ====================================================
 
 // `shell.prompt` — current prompt text. Read once per terminal redraw.
-static value_t shell_get_prompt(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(shell_get_prompt) {
     char buf[256];
     shell_build_prompt(buf, sizeof(buf));
     return val_str(buf);
@@ -51,9 +49,7 @@ static value_t shell_get_prompt(struct object *self, const member_t *m) {
 // "true while a command is in flight"; in practice the
 // only commands that meaningfully run are scheduler-driven (the rest
 // finish synchronously), so this is the right proxy.
-static value_t shell_get_running(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(shell_get_running) {
     scheduler_t *s = system_scheduler();
     return val_bool(s ? scheduler_is_running(s) : false);
 }
@@ -97,9 +93,7 @@ static bool var_collect_cb(const char *name, const value_t *v, void *ud) {
     return str_list_push(acc, line);
 }
 
-static value_t shell_get_vars(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(shell_get_vars) {
     str_list_t acc = {0};
     shell_var_each(var_collect_cb, &acc);
     return val_list(acc.items, acc.len);
@@ -112,9 +106,7 @@ static value_t shell_get_vars(struct object *self, const member_t *m) {
 // as before; the return value is the new prompt text, or a V_ERROR on
 // dispatch failure. Programmatic callers should prefer typed
 // `gs_eval(path, args)` — this method is for the line-input front-end.
-static value_t shell_method_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(shell_method_run) {
     if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
         return val_err("shell.run: expected (line)");
 
@@ -151,9 +143,7 @@ static value_t shell_method_run(struct object *self, const member_t *m, int argc
 // basename). The `meta.complete` method on the synthetic Meta overlay
 // delegates here through the provider hook in shell.c and keeps the
 // bare-list shape.
-static value_t shell_method_complete(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(shell_method_complete) {
     const char *line = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s) ? argv[0].s : "";
     int cursor = (int)strlen(line);
     if (argc >= 2) {
@@ -208,9 +198,7 @@ static value_t shell_method_complete(struct object *self, const member_t *m, int
 // against the current bindings. Retained for test harnesses; line-level
 // preprocessing no longer exists in v2, so this is exactly the
 // dq-string interpolator.
-static value_t shell_method_expand(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(shell_method_expand) {
     if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
         return val_err("shell.expand: expected (text)");
     expr_ctx_t ectx;
@@ -222,9 +210,7 @@ static value_t shell_method_expand(struct object *self, const member_t *m, int a
 // script interpreter via script_run_file, so `include` paths inside it
 // resolve relative to the file. Returns V_NONE on success, V_ERROR if
 // the script aborted.
-static value_t shell_method_script_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(shell_method_script_run) {
     if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
         return val_err("shell.script_run: expected (path)");
     const char *path = argv[0].s;
@@ -236,10 +222,7 @@ static value_t shell_method_script_run(struct object *self, const member_t *m, i
 // `shell.eval(text)` — run a (possibly multi-line) script source string
 // through the interpreter. The JS terminal and tests use this to submit
 // brace-balanced buffers without touching disk.
-static value_t shell_method_eval(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(shell_method_eval) {
     if (argv[0].kind != V_STRING || !argv[0].s)
         return val_err("shell.eval: expected (text)");
     if (script_run_source(argv[0].s) != 0)
@@ -251,11 +234,7 @@ static value_t shell_method_eval(struct object *self, const member_t *m, int arg
 // running script loop at its next iteration check. Equivalent
 // to the terminal's Ctrl-C path, exposed as a method so JS callers
 // route through `gs_eval` like every other interaction.
-static value_t shell_method_interrupt(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(shell_method_interrupt) {
     // "Cancel my job, or stop my mode": the client being served owns what
     // it interrupts and nothing else.  Outside a request (client 0: the
     // headless REPL's own line) it is the old unconditional stop.
@@ -276,29 +255,20 @@ static value_t shell_method_interrupt(struct object *self, const member_t *m, in
 
 // `shell.usage(path)` — {signature, arg_spans, text} (usage.c); `help`
 // prints the text.
-static value_t shell_method_usage(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(shell_method_usage) {
     return object_usage(argv[0].s);
 }
 
 // `shell.highlight(text)` — syntax classes for a line or block (highlight.c):
 // what the console colours as the user types.
-static value_t shell_method_highlight(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(shell_method_highlight) {
     return shell_highlight(argv[0].s ? argv[0].s : "");
 }
 
 // `shell.needs_continuation(text)` — true while `text` is an incomplete
 // statement or block, so a console knows whether Enter submits or breaks
 // the line.
-static value_t shell_method_needs_continuation(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(shell_method_needs_continuation) {
     return val_bool(script_needs_continuation(argv[0].s ? argv[0].s : ""));
 }
 
@@ -317,18 +287,12 @@ static bool example_resolves(const char *example) {
 
 // `shell.lint_members()` — the doc-completeness lint (lint.c), with the
 // examples checked against the live tree.
-static value_t shell_method_lint_members(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(shell_method_lint_members) {
     return object_lint_members(example_resolves);
 }
 
 // `shell.keywords` — [{word, syntax}] for every keyword (object.c's table).
-static value_t shell_get_keywords(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(shell_get_keywords) {
     value_t *items = NULL;
     size_t len = 0, cap = 0;
     for (size_t i = 0; i < object_keyword_count(); i++) {

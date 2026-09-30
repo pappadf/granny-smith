@@ -2735,28 +2735,23 @@ static int atalk_slot_of(struct object *self) {
 
 // The NBP entry accessors re-read the registry each time: entries can be
 // re-registered under a new name without the object identity changing.
-static value_t atalk_nbp_attr_object(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_object) {
     atalk_nbp_info_t info;
     return val_str(atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.object : "");
 }
-static value_t atalk_nbp_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_type) {
     atalk_nbp_info_t info;
     return val_str(atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.type : "");
 }
-static value_t atalk_nbp_attr_zone(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_zone) {
     atalk_nbp_info_t info;
     return val_str(atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.zone : "");
 }
-static value_t atalk_nbp_attr_socket(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_socket) {
     atalk_nbp_info_t info;
     return val_uint(1, atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.socket : 0);
 }
-static value_t atalk_nbp_attr_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_node) {
     atalk_nbp_info_t info;
     return val_uint(1, atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.node : 0);
 }
@@ -2819,41 +2814,31 @@ static const class_desc_t atalk_nbp_collection_class = {
 
 // --- appletalk.afp.volumes.[i] ---------------------------------------------
 
-static value_t atalk_volume_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_name) {
     const char *s = atalk_afp_volume_name(atalk_slot_of(self));
     return val_str(s ? s : "");
 }
-static value_t atalk_volume_attr_path(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_path) {
     const char *s = atalk_afp_volume_path(atalk_slot_of(self));
     return val_str(s ? s : "");
 }
-static value_t atalk_volume_attr_vol_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_vol_id) {
     return val_uint(2, atalk_afp_volume_vol_id(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_open_forks(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_open_forks) {
     return val_uint(4, atalk_afp_volume_open_forks(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_sessions_using(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_sessions_using) {
     return val_uint(4, atalk_afp_volume_sessions_using(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_catalog_generation(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_catalog_generation) {
     return val_uint(4, atalk_afp_volume_catalog_generation(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_cnid_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_cnid_count) {
     return val_uint(4, atalk_afp_volume_cnid_count(atalk_slot_of(self)));
 }
 
-static value_t atalk_volume_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(atalk_volume_method_remove) {
     const char *name = atalk_afp_volume_name(atalk_slot_of(self));
     if (!name)
         return val_err("volume already removed");
@@ -2927,10 +2912,7 @@ static struct object *atalk_volumes_lookup(struct object *self, const char *name
 
 // Constructive methods return the object they made, so a script can chain
 // straight into it.
-static value_t atalk_volumes_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(atalk_volumes_method_add) {
     char err[192];
     int slot = atalk_afp_volume_add(argv[0].s, argv[1].s, err, sizeof(err));
     if (slot < 0)
@@ -2940,10 +2922,7 @@ static value_t atalk_volumes_method_add(struct object *self, const member_t *m, 
     return val_obj(object_cache_at(&g_atalk_volume_entries, slot, NULL));
 }
 
-static value_t atalk_volumes_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(atalk_volumes_method_remove) {
     char err[192];
     if (atalk_afp_volume_remove(argv[0].s, err, sizeof(err)) != 0)
         return atalk_err("cannot remove the volume", err);
@@ -3000,28 +2979,23 @@ static const class_desc_t atalk_volumes_collection_class = {
 
 // --- appletalk.afp.sessions ------------------------------------------------
 
-static value_t atalk_session_attr_ref(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_ref) {
     atalk_session_info_t info;
     return val_uint(2, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.session_ref : 0);
 }
-static value_t atalk_session_attr_client_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_client_node) {
     atalk_session_info_t info;
     return val_uint(1, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.client_node : 0);
 }
-static value_t atalk_session_attr_afp_version(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_afp_version) {
     atalk_session_info_t info;
     return val_str(atalk_asp_session_info(atalk_slot_of(self), &info) ? info.afp_version : "");
 }
-static value_t atalk_session_attr_open_forks(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_open_forks) {
     atalk_session_info_t info;
     return val_uint(4, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.open_forks : 0);
 }
-static value_t atalk_session_attr_idle_ns(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_idle_ns) {
     atalk_session_info_t info;
     return val_uint(8, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.idle_ns : 0);
 }
@@ -3081,9 +3055,7 @@ static const class_desc_t atalk_sessions_collection_class = {
 // The per-code error tally is a map rather than a fixed member list: only the
 // codes that have actually occurred appear, so the tree stays small and the
 // integration tests can assert on one key.
-static value_t atalk_afp_stats_attr_errors_by_code(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_stats_attr_errors_by_code) {
     value_map_builder_t *b = val_map_new();
     int32_t code = 0;
     uint64_t count = 0;
@@ -3095,9 +3067,7 @@ static value_t atalk_afp_stats_attr_errors_by_code(struct object *self, const me
     return val_map_finish(b);
 }
 
-static value_t atalk_afp_stats_attr_ok_by_command(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_stats_attr_ok_by_command) {
     value_map_builder_t *b = val_map_new();
     const char *name = NULL;
     uint64_t count = 0;
@@ -3130,27 +3100,19 @@ static const class_desc_t atalk_afp_stats_class = {
 
 // --- appletalk.afp ---------------------------------------------------------
 
-static value_t atalk_afp_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_enabled) {
     return val_bool(atalk_afp_get_enabled());
 }
-static value_t atalk_afp_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_afp_attr_set_enabled) {
     char err[192];
     if (atalk_afp_set_enabled(in.b, err, sizeof(err)) != 0)
         return atalk_err("cannot change the AFP server state", err);
     return val_none();
 }
-static value_t atalk_afp_attr_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_name) {
     return val_str(atalk_afp_get_name());
 }
-static value_t atalk_afp_attr_set_name(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_afp_attr_set_name) {
     char err[192];
     if (atalk_afp_set_name(in.s, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -3159,14 +3121,10 @@ static value_t atalk_afp_attr_set_name(struct object *self, const member_t *m, v
     value_free(&in);
     return val_none();
 }
-static value_t atalk_afp_attr_message(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_message) {
     return val_str(atalk_afp_get_message());
 }
-static value_t atalk_afp_attr_set_message(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_afp_attr_set_message) {
     char err[192];
     if (atalk_afp_set_message(in.s, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -3175,9 +3133,7 @@ static value_t atalk_afp_attr_set_message(struct object *self, const member_t *m
     value_free(&in);
     return val_none();
 }
-static value_t atalk_afp_attr_versions(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_versions) {
     int count = 0;
     const char *const *versions = atalk_afp_versions(&count);
     value_t *items = (value_t *)calloc((size_t)(count > 0 ? count : 1), sizeof(value_t));
@@ -3219,28 +3175,20 @@ static const class_desc_t atalk_afp_class = {
 
 // --- appletalk.printer -----------------------------------------------------
 
-static value_t atalk_printer_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_enabled) {
     return val_bool(atalk_printer_get_enabled());
 }
-static value_t atalk_printer_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_printer_attr_set_enabled) {
     char err[192];
     if (atalk_printer_set_enabled(in.b, err, sizeof(err)) != 0)
         return atalk_err("cannot change the printer state", err);
     return val_none();
 }
-static value_t atalk_printer_attr_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_name) {
     const char *n = atalk_printer_get_name();
     return val_str(n ? n : "");
 }
-static value_t atalk_printer_attr_set_name(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_printer_attr_set_name) {
     char err[192];
     if (atalk_printer_set_name(in.s, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -3249,57 +3197,35 @@ static value_t atalk_printer_attr_set_name(struct object *self, const member_t *
     value_free(&in);
     return val_none();
 }
-static value_t atalk_printer_attr_status(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_status) {
     return val_str(atalk_printer_get_status());
 }
-static value_t atalk_printer_attr_interpreter(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_interpreter) {
     return val_bool(atalk_printer_has_interpreter());
 }
-static value_t atalk_printer_attr_capture(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_capture) {
     return val_bool(atalk_printer_get_capture());
 }
-static value_t atalk_printer_attr_set_capture(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_printer_attr_set_capture) {
     atalk_printer_set_capture(in.b);
     return val_none();
 }
-static value_t atalk_printer_attr_documents(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_documents) {
     return val_int(atalk_printer_documents());
 }
-static value_t atalk_printer_attr_last_pages(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_last_pages) {
     return val_int(atalk_printer_last_pages());
 }
-static value_t atalk_printer_attr_last_outcome(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_last_outcome) {
     return val_str(atalk_printer_last_outcome());
 }
-static value_t atalk_printer_attr_interpreter_jobs(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_interpreter_jobs) {
     return val_int(atalk_printer_interpreter_jobs());
 }
-static value_t atalk_printer_attr_interpreter_permanent_jobs(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_printer_attr_interpreter_permanent_jobs) {
     return val_int(atalk_printer_interpreter_permanent_jobs());
 }
-static value_t atalk_printer_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(atalk_printer_method_restart) {
     char err[192];
     if (atalk_printer_restart(err, sizeof(err)) != 0)
         return atalk_err("cannot restart the printer", err);
@@ -3383,20 +3309,14 @@ static const class_desc_t atalk_printer_class = {
 
 // --- appletalk root --------------------------------------------------------
 
-static value_t atalk_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_attr_enabled) {
     return val_bool(atalk_get_enabled());
 }
-static value_t atalk_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_attr_set_enabled) {
     atalk_set_enabled(in.b);
     return val_none();
 }
-static value_t atalk_attr_node_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_attr_node_id) {
     return val_uint(1, atalk_node_id());
 }
 

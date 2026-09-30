@@ -78,92 +78,58 @@ static value_t cfg_str(const char *s) {
     return val_str(s ? s : "");
 }
 
-static value_t cfg_attr_model(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_model) {
     return cfg_str(s_record.model);
 }
-static value_t cfg_attr_ram(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_ram) {
     return val_uint(4, s_record.ram_kb);
 }
-static value_t cfg_attr_rom(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_rom) {
     return cfg_str(s_record.rom);
 }
-static value_t cfg_attr_rom_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_rom_id) {
     return cfg_str(s_record.rom_id);
 }
-static value_t cfg_attr_rom2(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_rom2) {
     return cfg_str(s_record.rom2);
 }
-static value_t cfg_attr_vrom(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_vrom) {
     return cfg_str(s_record.vrom);
 }
-static value_t cfg_attr_video_card(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_video_card) {
     return cfg_str(s_record.video_card);
 }
-static value_t cfg_attr_video_sense(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_video_sense) {
     return val_int(s_record.video_sense);
 }
-static value_t cfg_attr_video_mode(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_video_mode) {
     return cfg_str(s_record.video_mode);
 }
-static value_t cfg_attr_custom_mode(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_custom_mode) {
     return cfg_str(s_record.custom_mode);
 }
-static value_t cfg_attr_monitor(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_monitor) {
     return cfg_str(s_record.monitor);
 }
-static value_t cfg_attr_pci_card(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_pci_card) {
     return cfg_str(s_record.pci_card);
 }
-static value_t cfg_attr_prom(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_prom) {
     return cfg_str(s_record.prom);
 }
-static value_t cfg_attr_pci_option(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_pci_option) {
     return cfg_str(s_record.pci_option);
 }
-static value_t cfg_attr_created(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_created) {
     return cfg_str(s_record.created);
 }
-static value_t cfg_attr_valid(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_valid) {
     return val_bool(s_record.valid);
 }
 
 // `machine.config.vroms` — list of the resolved declaration-ROM picks:
 // [{card_id, path, crc, explicit}, ...] maps in load order.
-static value_t cfg_attr_vroms(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_vroms) {
     value_t *items = NULL;
     if (s_record.n_vroms > 0) {
         items = (value_t *)calloc((size_t)s_record.n_vroms, sizeof(value_t));
@@ -188,9 +154,7 @@ static value_t cfg_attr_vroms(struct object *self, const member_t *m) {
 // [{bus, slot, card_id, explicit}, ...] in the order the slot walks
 // populated them.  `explicit` separates what the user chose from what the
 // slot's own default supplied (see machine_config_slot_card_t).
-static value_t cfg_attr_slot_cards(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_slot_cards) {
     value_t *items = NULL;
     if (s_record.n_slot_cards > 0) {
         items = (value_t *)calloc((size_t)s_record.n_slot_cards, sizeof(value_t));

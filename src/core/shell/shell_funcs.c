@@ -50,15 +50,13 @@ static script_func_t *func_from(struct object *self) {
     return (script_func_t *)object_data(self);
 }
 
-static value_t func_get_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(func_get_name) {
     script_func_t *f = func_from(self);
     return val_str(f ? f->name : "");
 }
 
 // `params` — the declared parameter list, comma-joined.
-static value_t func_get_params(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(func_get_params) {
     script_func_t *f = func_from(self);
     char buf[256] = "";
     size_t off = 0;
@@ -71,10 +69,7 @@ static value_t func_get_params(struct object *self, const member_t *m) {
     return val_str(buf);
 }
 
-static value_t func_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(func_method_remove) {
     script_func_t *f = func_from(self);
     if (!f)
         return val_err("function entry has no registry backing");

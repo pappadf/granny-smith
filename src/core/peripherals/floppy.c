@@ -1169,8 +1169,7 @@ static floppy_t *floppy_self_from(struct object *self) {
 
 static const char *const FLOPPY_TYPE_NAMES[] = {"iwm", "swim", "swim3"};
 
-static value_t floppy_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_attr_type) {
     floppy_t *floppy = floppy_self_from(self);
     int t = floppy ? floppy_get_type(floppy) : 0;
     if (t < 0 || t > 2)
@@ -1178,8 +1177,7 @@ static value_t floppy_attr_type(struct object *self, const member_t *m) {
     return val_enum(t, FLOPPY_TYPE_NAMES, 3);
 }
 
-static value_t floppy_attr_sel(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_attr_sel) {
     return val_bool(floppy_get_sel(floppy_self_from(self)));
 }
 
@@ -1187,10 +1185,7 @@ static value_t floppy_attr_sel(struct object *self, const member_t *m) {
 // image ("400K" / "800K" / "1.4MB"), or empty string otherwise. Empty is
 // falsy under the predicate-truthy rule, so callers can do
 //   `assert ${floppy.identify(path)} "not a floppy"`.
-static value_t floppy_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(floppy_method_identify) {
     image_t *img = image_open_readonly(argv[0].s);
     if (!img)
         return val_str("");
@@ -1219,9 +1214,7 @@ static value_t floppy_method_identify(struct object *self, const member_t *m, in
 // `floppy.create(path, [hd])` — create a blank floppy image and auto-mount
 // it. `hd` is the optional density flag: "hd" / true → 1.44 MB, anything
 // else → 800 KB. The legacy `--hd` string spelling is also accepted.
-static value_t floppy_method_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(floppy_method_create) {
     bool high_density = false;
     int preferred = -1;
     // hd is V_NONE-kind: body discriminates string / bool / integer.
@@ -1299,43 +1292,35 @@ static const class_desc_t floppy_class = {
 // Members read as zero on a variant that has no such register; `type` on the
 // parent says which variant is in front of you.
 
-static value_t floppy_ctrl_attr_ism_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_ism_mode) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_int(f ? f->ism_mode : 0);
 }
-static value_t floppy_ctrl_attr_ism_setup(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_ism_setup) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_int(f ? f->ism_setup : 0);
 }
-static value_t floppy_ctrl_attr_ism_error(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_ism_error) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_int(f ? f->ism_error : 0);
 }
-static value_t floppy_ctrl_attr_ism_phase(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_ism_phase) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_int(f ? f->ism_phase : 0);
 }
-static value_t floppy_ctrl_attr_in_ism(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_in_ism) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_bool(f && f->in_ism_mode);
 }
-static value_t floppy_ctrl_attr_fifo_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_fifo_count) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_int(f ? f->ism_fifo_count : 0);
 }
-static value_t floppy_ctrl_attr_iwm_lines(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_iwm_lines) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_int(f ? f->iwm_lines : 0);
 }
-static value_t floppy_ctrl_attr_iwm_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_ctrl_attr_iwm_mode) {
     floppy_t *f = (floppy_t *)object_data(self);
     return val_int(f ? f->mode : 0);
 }
@@ -1393,36 +1378,31 @@ static floppy_t *floppy_drive_floppy(struct object *self, unsigned *slot_out) {
     return link->floppy;
 }
 
-static value_t floppy_drive_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_drive_attr_index) {
     unsigned slot = 0;
     (void)floppy_drive_floppy(self, &slot);
     return val_int((int)slot);
 }
 
-static value_t floppy_drive_attr_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_drive_attr_present) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     return val_bool(floppy && floppy_is_inserted(floppy, (int)slot));
 }
 
-static value_t floppy_drive_attr_track(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_drive_attr_track) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     return val_int(floppy_drive_track(floppy, slot));
 }
 
-static value_t floppy_drive_attr_side(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_drive_attr_side) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     return val_int(floppy_drive_side(floppy, slot));
 }
 
-static value_t floppy_drive_attr_motor_on(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_drive_attr_motor_on) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     return val_bool(floppy_drive_motor_on(floppy, slot));
@@ -1435,8 +1415,7 @@ static value_t floppy_drive_attr_motor_on(struct object *self, const member_t *m
 // parent entry; present/path are read live. Returned by the drive's `disk`
 // child lookup only when a disk is inserted.
 
-static value_t floppy_disk_attr_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_disk_attr_present) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     return val_bool(floppy && floppy_is_inserted(floppy, (int)slot));
@@ -1445,16 +1424,14 @@ static value_t floppy_disk_attr_present(struct object *self, const member_t *m) 
 // Write-protect is user-visible state the UI had no way to read back, and
 // density is what distinguishes the four capacities the drive can hold.  Both
 // come straight from the medium.
-static value_t floppy_disk_attr_writable(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_disk_attr_writable) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
     return val_bool(img && img->writable);
 }
 
-static value_t floppy_disk_attr_density(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_disk_attr_density) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
@@ -1474,16 +1451,14 @@ static value_t floppy_disk_attr_density(struct object *self, const member_t *m) 
     }
 }
 
-static value_t floppy_disk_attr_path(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_disk_attr_path) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     const char *p = floppy_drive_disk_path(floppy, slot);
     return val_str(p ? p : "");
 }
 
-static value_t floppy_disk_attr_filename(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(floppy_disk_attr_filename) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     image_t *img = floppy_drive_image(floppy, slot);
@@ -1492,10 +1467,7 @@ static value_t floppy_disk_attr_filename(struct object *self, const member_t *m)
 }
 
 // `eject()` — proxy to the owning drive's eject.
-static value_t floppy_disk_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(floppy_disk_method_eject) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     if (!floppy)
@@ -1554,10 +1526,7 @@ static struct object *floppy_drive_disk_lookup(struct object *self, const char *
     return floppy->disk_objects[slot];
 }
 
-static value_t floppy_drive_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(floppy_drive_method_eject) {
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     if (!floppy)
@@ -1570,8 +1539,7 @@ static value_t floppy_drive_method_eject(struct object *self, const member_t *m,
 // `floppy.drives[N].insert(path, [writable])` — mount an image into this
 // specific drive. Calls system_fd_insert directly so persistence / VFS
 // resolution / drive-occupancy bookkeeping all stay in one place.
-static value_t floppy_drive_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(floppy_drive_method_insert) {
     unsigned slot = 0;
     if (!floppy_drive_floppy(self, &slot))
         return val_err("floppy.drives.N.insert: floppy controller not available");

@@ -127,9 +127,7 @@ static bool find_range_args(int argc, const value_t *argv, int i0, uint32_t *sta
     return *end_out >= *start_out;
 }
 
-static value_t find_method_str(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_str) {
     const char *text = argv[0].s ? argv[0].s : "";
     size_t n = strlen(text);
     if (n == 0)
@@ -142,9 +140,7 @@ static value_t find_method_str(struct object *self, const member_t *m, int argc,
     return scan_memory_list(start, end, (const uint8_t *)text, n);
 }
 
-static value_t find_method_bytes(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_bytes) {
     // Pattern arrives as a space-separated hex string ("4E 71").
     uint8_t pattern[FIND_MAX_PATTERN_LEN];
     size_t plen = 0;
@@ -195,15 +191,11 @@ static value_t find_int_common(const char *label, size_t width, int argc, const 
     return scan_memory_list(start, end, pattern, width);
 }
 
-static value_t find_method_word(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_word) {
     return find_int_common("debug.find.word", 2, argc, argv);
 }
 
-static value_t find_method_long(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_long) {
     return find_int_common("debug.find.long", 4, argc, argv);
 }
 

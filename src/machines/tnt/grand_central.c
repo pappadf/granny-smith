@@ -362,8 +362,7 @@ GC_U32_ATTR(levels, gc->int_levels)
 GC_U32_ATTR(mask, gc->int_mask)
 GC_U32_ATTR(latch, gc->int_latch)
 
-static value_t gc_attr_clear_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_clear_mode) {
     return val_uint(1, gc_obj(object_data(self))->int_mode1 ? 1u : 0u);
 }
 
@@ -411,9 +410,7 @@ static uint8_t *nvram_store(struct object *self) {
     return st ? st->gc.nvram : NULL;
 }
 
-static value_t nvram_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_peek) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -424,9 +421,7 @@ static value_t nvram_method_peek(struct object *self, const member_t *m, int arg
     return val_uint(1, nv[addr]);
 }
 
-static value_t nvram_method_poke(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_poke) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -444,9 +439,7 @@ static value_t nvram_method_poke(struct object *self, const member_t *m, int arg
     return val_none();
 }
 
-static value_t nvram_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_dump) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -458,10 +451,7 @@ static value_t nvram_method_dump(struct object *self, const member_t *m, int arg
     return val_bytes(nv + addr, (size_t)n);
 }
 
-static value_t nvram_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(nvram_method_snapshot) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -470,9 +460,7 @@ static value_t nvram_method_snapshot(struct object *self, const member_t *m, int
 
 // Whole-store restore from a snapshot: how a row seeds one boot's formatted
 // store into another.
-static value_t nvram_method_restore(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_restore) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -486,10 +474,7 @@ static value_t nvram_method_restore(struct object *self, const member_t *m, int 
 
 // `machine.nvram.clear()` — the battery pull, on every TNT board (the
 // Network Server's `machine.board.clear_nvram()` is the same call).
-static value_t nvram_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(nvram_method_clear) {
     config_t *cfg = (config_t *)object_data(self);
     if (!cfg || !tnt_st(cfg))
         return val_err("nvram not available");
@@ -497,9 +482,7 @@ static value_t nvram_method_clear(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
-static value_t nvram_attr_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(nvram_attr_size) {
     return val_uint(4, TNT_NVRAM_SIZE);
 }
 

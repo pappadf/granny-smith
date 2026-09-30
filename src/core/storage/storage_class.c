@@ -55,40 +55,33 @@ static image_t *files_image_at(struct object *self) {
     return cfg->images[slot];
 }
 
-static value_t files_image_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_index) {
     return val_int(object_entry_index(self));
 }
-static value_t files_image_attr_filename(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_filename) {
     image_t *img = files_image_at(self);
     const char *s = img ? image_get_filename(img) : NULL;
     return val_str(s ? s : "");
 }
-static value_t files_image_attr_path(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_path) {
     image_t *img = files_image_at(self);
     const char *s = img ? image_path(img) : NULL;
     return val_str(s ? s : "");
 }
-static value_t files_image_attr_raw_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_raw_size) {
     image_t *img = files_image_at(self);
     return val_uint(8, img ? (uint64_t)img->raw_size : 0);
 }
-static value_t files_image_attr_writable(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_writable) {
     image_t *img = files_image_at(self);
     return val_bool(img ? img->writable : false);
 }
 
-static value_t files_image_attr_reads(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_reads) {
     image_t *img = files_image_at(self);
     return val_uint(8, img ? img->reads : 0);
 }
-static value_t files_image_attr_writes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_writes) {
     image_t *img = files_image_at(self);
     return val_uint(8, img ? img->writes : 0);
 }
@@ -100,8 +93,7 @@ static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
     [image_fd_hd] = "fd_hd", [image_hd] = "hd",       [image_cdrom] = "cdrom",
 };
 
-static value_t files_image_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_type) {
     image_t *img = files_image_at(self);
     int t = img ? (int)img->type : 0;
     int max = (int)(sizeof(STORAGE_IMAGE_TYPE_NAMES) / sizeof(STORAGE_IMAGE_TYPE_NAMES[0]));
@@ -220,10 +212,7 @@ static int work_profile_create(io_leaf_t *j) {
 }
 
 // Returns the destination path as a V_STRING.
-static value_t files_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_import) {
     const char *host_path = argv[0].s;
     const char *dst_path = argv[1].s;
     if (!dst_path || !*dst_path)
@@ -255,10 +244,7 @@ static const collection_desc_t files_images = {
 
 // `files.list_dir(path)` — list directory entries via the VFS as a
 // V_LIST<V_STRING>. Used by url-media.js to enumerate ROMs in OPFS.
-static value_t files_method_list_dir(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_list_dir) {
     vfs_dir_t *d = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(argv[0].s, &d, &be);
@@ -303,9 +289,7 @@ static const arg_decl_t files_list_dir_args[] = {
 // image-VFS mount table.
 
 // `files.cp(src, dst, [recursive])` — copy host/VFS file to a VFS path.
-static value_t files_method_cp(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(files_method_cp) {
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
     bool recursive = argc > 2 && argv[2].kind == V_BOOL && argv[2].b;
@@ -325,10 +309,7 @@ static value_t files_method_cp(struct object *self, const member_t *m, int argc,
 // Unlike `cp` — which copies a file's data fork verbatim (for an NDIF `.img`
 // that is the still-compressed data fork) — this decodes the image and emits
 // its logical block device, ready to re-mount or `dd`.  Refuses to overwrite.
-static value_t files_method_export_raw(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_export_raw) {
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
     if (destination_attached(dst))
@@ -342,9 +323,7 @@ static value_t files_method_export_raw(struct object *self, const member_t *m, i
 
 // `files.find_media(dir, [dst])` — search a directory for a recognised
 // floppy image; if `dst` is given, the image is copied there.
-static value_t files_method_find_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(files_method_find_media) {
     const char *dir = argv[0].s;
     if (!dir || !*dir)
         return val_err("files.find_media: expected a non-empty directory path");
@@ -360,10 +339,7 @@ static value_t files_method_find_media(struct object *self, const member_t *m, i
 // V_STRING (label/size string) and integer (byte count). The size
 // string that system_hd_create parses accepts model labels, human
 // sizes, and byte counts alike, so integers stringify cleanly.
-static value_t files_method_hd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_hd_create) {
     char size_str[64];
     if (argv[1].kind == V_STRING) {
         snprintf(size_str, sizeof(size_str), "%s", argv[1].s ? argv[1].s : "");
@@ -402,7 +378,7 @@ static bool files_path_is_protected(const char *p) {
 // main-thread OPFS API keeps the worker's WasmFS inode cache coherent, so a
 // later worker-side create at the same path (e.g. re-copying a file out of an
 // image after deleting it) doesn't hit a dangling inode.
-static value_t files_method_rm(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static DEF_METHOD(files_method_rm) {
     checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
@@ -420,7 +396,7 @@ static value_t files_method_rm(struct object *self, const member_t *m, int argc,
 // files.rm, routing the web UI's moves through the worker (rather than the
 // browser's main-thread OPFS API) keeps WasmFS coherent. Tries rename() first
 // (fast / atomic on the same volume); falls back to a recursive copy + remove.
-static value_t files_method_mv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static DEF_METHOD(files_method_mv) {
     checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
@@ -460,9 +436,7 @@ static value_t files_method_mv(struct object *self, const member_t *m, int argc,
 // floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
 // the `fd create` shell command this does NOT insert the disk into a drive —
 // the New Machine dialog persists the file and lets the user select it.
-static value_t files_method_fd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(files_method_fd_create) {
     const char *path = argv[0].s;
     if (!path || !*path)
         return val_err("files.fd_create: empty path");
@@ -481,10 +455,7 @@ static value_t files_method_fd_create(struct object *self, const member_t *m, in
 // parallel-port disk with 532-byte blocks, a distinct on-disk format. `blocks`
 // is a V_NONE slot accepting an integer or numeric string. Standard sizes:
 // 5 MB = 9728 blocks; 10 MB ≈ 19448 (the LOS-documented full Widget capacity).
-static value_t files_method_profile_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_profile_create) {
     const char *path = argv[0].s;
     if (!path || !*path)
         return val_err("files.profile_create: empty path");
@@ -530,10 +501,7 @@ static const char *apm_fs_kind_label(enum apm_fs_kind k) {
 }
 
 // `files.partmap(path)` — print the Apple Partition Map of an image.
-static value_t files_method_partmap(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_partmap) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img)
@@ -558,10 +526,7 @@ static value_t files_method_partmap(struct object *self, const member_t *m, int 
 }
 
 // `files.probe(path)` — identify the format of a disk image.
-static value_t files_method_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_probe) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
@@ -594,19 +559,13 @@ static value_t files_method_probe(struct object *self, const member_t *m, int ar
 }
 
 // `files.path_exists(path)` — true if the path resolves in the shell VFS.
-static value_t files_method_path_exists(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_path_exists) {
     vfs_stat_t st;
     return val_bool(vfs_stat(argv[0].s, &st) == 0);
 }
 
 // `files.path_size(path)` — file size in bytes (0 on stat failure).
-static value_t files_method_path_size(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_path_size) {
     const char *path = argv[0].s;
     vfs_stat_t st = {0};
     int rc = vfs_stat(path, &st);
@@ -622,10 +581,7 @@ static value_t files_method_path_size(struct object *self, const member_t *m, in
 // difference (or of the end of the shorter file).  A fork-fidelity test that
 // only asked "are they equal?" would report a bare false; the offset says
 // where the round trip lost the bytes.
-static value_t files_method_path_compare(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_path_compare) {
     vfs_file_t *fa = NULL;
     vfs_file_t *fb = NULL;
     const vfs_backend_t *ba = NULL;
@@ -701,15 +657,11 @@ static const arg_decl_t files_cp_args[] = {
 #define STORAGE_XFER_BYTES (2u << 20)
 static uint8_t g_xfer[STORAGE_XFER_BYTES];
 
-static value_t files_attr_xfer_buffer(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(files_attr_xfer_buffer) {
     return val_uint(4, (uint32_t)(uintptr_t)g_xfer);
 }
 
-static value_t files_attr_xfer_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(files_attr_xfer_size) {
     return val_uint(4, STORAGE_XFER_BYTES);
 }
 
@@ -783,10 +735,7 @@ static value_t xfer_dispatch(const char *path, uint64_t offset, uint64_t len, bo
 
 // `files.xfer_write(path, offset, len)` — write the window's first `len`
 // bytes to `path` at `offset`; offset 0 creates (or truncates) the file.
-static value_t files_method_xfer_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_xfer_write) {
     uint64_t offset = argv[1].u, len = argv[2].u;
     if (len > STORAGE_XFER_BYTES)
         return val_err("files.xfer_write: %llu bytes is more than the %u-byte window", (unsigned long long)len,
@@ -796,10 +745,7 @@ static value_t files_method_xfer_write(struct object *self, const member_t *m, i
 
 // `files.xfer_read(path, offset, len)` — read up to `len` bytes of `path`
 // from `offset` into the window; answers how many (0 at the end).
-static value_t files_method_xfer_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_xfer_read) {
     uint64_t offset = argv[1].u, len = argv[2].u;
     if (len > STORAGE_XFER_BYTES)
         len = STORAGE_XFER_BYTES;
@@ -876,10 +822,7 @@ static const arg_decl_t files_path_arg_optional[] = {
 // `files.download(path)` — trigger a browser file download. Routes to the
 // platform-specific gs_download (WASM streams via Blob+anchor); a platform
 // with no browser says so.
-static value_t files_method_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_download) {
     int rc = gs_download(argv[0].s);
     if (rc == -2)
         return val_err("download: not supported on this platform");
@@ -1078,7 +1021,7 @@ static bool mount_entry_info(struct object *self, image_vfs_mount_info_t *info) 
 enum { MOUNT_PATH, MOUNT_FORMAT, MOUNT_PARTITIONS, MOUNT_REFCOUNT, MOUNT_BUSY };
 
 // One getter for every mount attribute: the field its user_data names.
-static value_t mount_attr_get(struct object *self, const member_t *m) {
+static DEF_GETTER(mount_attr_get) {
     image_vfs_mount_info_t info;
     if (!mount_entry_info(self, &info))
         return val_err("mount %d is gone", mount_entry_serial(self));
@@ -1099,10 +1042,7 @@ static value_t mount_attr_get(struct object *self, const member_t *m) {
 // `files.mounts[n].unmount()` — drop this cached image-VFS mount.  With
 // handles still open the mount refuses new access and the last handle to
 // close drops it.
-static value_t mount_method_unmount(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(mount_method_unmount) {
     image_vfs_mount_info_t info;
     if (!mount_entry_info(self, &info))
         return val_err("unmount: mount %d is gone", mount_entry_serial(self));
@@ -1190,10 +1130,7 @@ static int files_mounts_next(struct object *self, int prev_index) {
 
 // `files.mounts.find(path)` — the index of the mount caching `path`
 // (relative, canonical, or through the VFS's own path forms), or -1.
-static value_t files_mounts_method_find(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_mounts_method_find) {
     const char *path = argv[0].s;
     char resolved[VFS_PATH_MAX];
     const vfs_backend_t *be = NULL;

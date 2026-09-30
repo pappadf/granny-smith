@@ -1925,8 +1925,7 @@ static scheduler_t *sched_self_from(struct object *self) {
 // That mattered more than it sounds -- the teardown warning in
 // machine_teardown.c reports a COUNT of leaked events and nothing could then
 // say which.
-static value_t sched_attr_events(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_events) {
     struct scheduler *s = sched_self_from(self);
     if (!s)
         return val_err("scheduler.events: no scheduler");
@@ -1955,8 +1954,7 @@ static value_t sched_attr_events(struct object *self, const member_t *m) {
     return val_list(items, len);
 }
 
-static value_t sched_attr_running(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_running) {
     return val_bool(scheduler_is_running(sched_self_from(self)));
 }
 
@@ -1966,8 +1964,7 @@ static value_t sched_attr_running(struct object *self, const member_t *m) {
 static const char *const sched_mode_names[] = {"paced", "accelerated", "turbo", NULL};
 static const enum schedule_mode sched_mode_values[] = {schedule_paced, schedule_accelerated, schedule_unthrottled};
 
-static value_t sched_attr_mode_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_mode_get) {
     enum schedule_mode mode = sched_self_from(self)->mode;
     for (size_t i = 0; i < 3; i++)
         if (sched_mode_values[i] == mode)
@@ -1985,8 +1982,7 @@ bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
     return false;
 }
 
-static value_t sched_attr_mode_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(sched_attr_mode_set) {
     // node_set has already coerced a name to V_ENUM against the table.
     if (in.kind != V_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
         value_free(&in);
@@ -1997,16 +1993,14 @@ static value_t sched_attr_mode_set(struct object *self, const member_t *m, value
     return val_none();
 }
 
-static value_t sched_attr_cpi(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_cpi) {
     return val_uint(4, avg_cycles_per_instr(sched_self_from(self)));
 }
 
 // Debug override for the per-machine CPI constant. Mode-independent; changing
 // it mid-run alters the guest timeline from that point on, so it is a tuning
 // and experimentation tool, not something the UI exposes.
-static value_t sched_attr_cpi_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(sched_attr_cpi_set) {
     if (in.u < 1 || in.u > 255)
         return val_err("scheduler.cpi: value %llu out of range (1..255)", (unsigned long long)in.u);
     scheduler_set_cpi(sched_self_from(self), (uint32_t)in.u);
@@ -2019,12 +2013,10 @@ static value_t sched_attr_cpi_set(struct object *self, const member_t *m, value_
 // selects auto; 1.0..8.0 pins. The setting is retained (and checkpointed) in
 // every mode but only applies in 'accelerated'; the governor's live speed is
 // transient.
-static value_t sched_attr_speed(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_speed) {
     return val_float((double)scheduler_current_speed_x256(sched_self_from(self)) / 256.0);
 }
-static value_t sched_attr_speed_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(sched_attr_speed_set) {
     if (isnan(in.f) || (in.f != 0.0 && (in.f < 1.0 || in.f > 8.0)))
         return val_err("scheduler.speed: %g out of range (0 = auto, or 1.0 .. 8.0)", in.f);
     scheduler_set_speed(sched_self_from(self), in.f);
@@ -2032,44 +2024,35 @@ static value_t sched_attr_speed_set(struct object *self, const member_t *m, valu
 }
 
 // Whether the adaptive governor is choosing the speed (scheduler.speed = 0)
-static value_t sched_attr_speed_auto(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_speed_auto) {
     return val_bool(sched_self_from(self)->speed_x256 == SPEED_X256_AUTO);
 }
 
 // User cap on the accelerated-mode multiplier (governor ceiling; also clamps
 // a pinned speed). Persisted.
-static value_t sched_attr_max_speed(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_max_speed) {
     return val_float((double)sched_self_from(self)->max_speed_x256 / 256.0);
 }
-static value_t sched_attr_max_speed_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(sched_attr_max_speed_set) {
     if (isnan(in.f) || in.f < 1.0 || in.f > 8.0)
         return val_err("scheduler.max_speed: %g out of range (1.0 .. 8.0)", in.f);
     scheduler_set_max_speed(sched_self_from(self), in.f);
     return val_none();
 }
 
-static value_t sched_attr_cycles(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_cycles) {
     return val_uint(8, scheduler_cpu_cycles(sched_self_from(self)));
 }
 
-static value_t sched_attr_events_fired(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(sched_attr_events_fired) {
     return val_uint(8, g_sched_events_fired);
 }
 
-static value_t sched_attr_instr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(sched_attr_instr_count) {
     return val_uint(8, cpu_instr_count());
 }
 
-static value_t sched_attr_frequency(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(sched_attr_frequency) {
     return val_uint(4, sched_self_from(self)->frequency);
 }
 
@@ -2078,9 +2061,7 @@ static value_t sched_attr_frequency(struct object *self, const member_t *m) {
 // CLOCK_PROCESS_CPUTIME_ID on every query.  Sample the delta around a
 // scheduler.run call and divide instr_count delta by it for emulator
 // IPS that excludes OS scheduling jitter and I/O wait.
-static value_t sched_attr_host_user_ns(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(sched_attr_host_user_ns) {
     return val_uint(8, host_clock_ns(CLOCK_PROCESS_CPUTIME_ID));
 }
 
@@ -2089,14 +2070,11 @@ static value_t sched_attr_host_user_ns(struct object *self, const member_t *m) {
 // query.  Sample the delta around a scheduler.run call and divide
 // instr_count delta by it for perceived emulator IPS — what the user
 // actually waits for.  Always >= host_user_ns delta by definition.
-static value_t sched_attr_host_wall_ns(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(sched_attr_host_wall_ns) {
     return val_uint(8, host_clock_ns(CLOCK_MONOTONIC));
 }
 
-static value_t sched_method_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(sched_method_run) {
     scheduler_t *s = sched_self_from(self);
     if (!s)
         return val_err("scheduler.run: scheduler not initialised");
@@ -2106,10 +2084,7 @@ static value_t sched_method_run(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-static value_t sched_method_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(sched_method_stop) {
     scheduler_t *s = sched_self_from(self);
     if (!s)
         return val_err("scheduler.stop: scheduler not initialised");

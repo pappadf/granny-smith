@@ -620,65 +620,54 @@ static aevt_event_t *aevt_obj_event(struct object *self) {
 
 // --- appletalk.aevt.events[i] ------------------------------------------------
 
-static value_t aevt_event_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_state) {
     aevt_event_t *ev = aevt_obj_event(self);
     int st = ev ? (int)aevt_effective_state(ev) : 0;
     return val_enum(st, AEVT_STATE_NAMES, AEVT_STATE_COUNT);
 }
-static value_t aevt_event_attr_target(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_target) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->target : "");
 }
-static value_t aevt_event_attr_tag(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_tag) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->tag : "");
 }
-static value_t aevt_event_attr_text(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_text) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev && ev->text ? ev->text : "");
 }
-static value_t aevt_event_attr_class(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_class) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->class4 : "");
 }
-static value_t aevt_event_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_id) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->id4 : "");
 }
-static value_t aevt_event_attr_reply(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_reply) {
     aevt_event_t *ev = aevt_obj_event(self);
     if (!ev || ev->reply.kind != V_MAP)
         return val_map(NULL, 0);
     return value_dup(&ev->reply);
 }
-static value_t aevt_event_attr_request(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_request) {
     aevt_event_t *ev = aevt_obj_event(self);
     if (!ev || ev->request.kind != V_MAP)
         return val_map(NULL, 0);
     return value_dup(&ev->request);
 }
-static value_t aevt_event_attr_errn(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_errn) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_int(ev ? ev->errn : 0);
 }
-static value_t aevt_event_attr_error(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_error) {
     aevt_event_t *ev = aevt_obj_event(self);
     if (ev)
         aevt_effective_state(ev); // a lazy timeout produces the message
     return val_str(ev && ev->error ? ev->error : "");
 }
-static value_t aevt_event_attr_return_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_return_id) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_uint(4, ev ? ev->return_id : 0);
 }
@@ -773,35 +762,29 @@ static aevt_inbox_t *aevt_obj_inbox(struct object *self) {
     return &g_inbox[slot];
 }
 
-static value_t aevt_inbox_attr_sender(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_sender) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in ? in->sender : "");
 }
-static value_t aevt_inbox_attr_class(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_class) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in ? in->class4 : "");
 }
-static value_t aevt_inbox_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_id) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in ? in->id4 : "");
 }
-static value_t aevt_inbox_attr_event(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_event) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     if (!in || in->map.kind != V_MAP)
         return val_map(NULL, 0);
     return value_dup(&in->map);
 }
-static value_t aevt_inbox_attr_text(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_text) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in && in->text ? in->text : "");
 }
-static value_t aevt_inbox_attr_error(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_error) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     if (in && val_is_error(&in->map))
         return val_str(val_as_str(&in->map));
@@ -842,11 +825,7 @@ static struct object *aevt_inbox_get(struct object *self, int index) {
     return object_cache_at(&g_aevt_inbox_entries, index, NULL);
 }
 
-static value_t aevt_inbox_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(aevt_inbox_method_clear) {
     aevt_inbox_clear();
     return val_none();
 }
@@ -895,28 +874,20 @@ static const class_desc_t aevt_stats_class = {
 
 // --- appletalk.aevt ----------------------------------------------------------
 
-static value_t aevt_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(aevt_attr_enabled) {
     return val_bool(g_enabled);
 }
-static value_t aevt_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(aevt_attr_set_enabled) {
     char err[192] = "";
     if (atalk_ppc_set_host_port(g_port_name, in.b, err, sizeof(err)) != 0)
         return val_err("cannot change the host program-linking port: %s", err);
     g_enabled = in.b;
     return val_none();
 }
-static value_t aevt_attr_port_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(aevt_attr_port_name) {
     return val_str(g_port_name);
 }
-static value_t aevt_attr_set_port_name(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(aevt_attr_set_port_name) {
     char err[192] = "";
     if (atalk_ppc_set_host_port(in.s, g_enabled, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -926,14 +897,10 @@ static value_t aevt_attr_set_port_name(struct object *self, const member_t *m, v
     value_free(&in);
     return val_none();
 }
-static value_t aevt_attr_auto_reply(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(aevt_attr_auto_reply) {
     return val_str(g_auto_reply);
 }
-static value_t aevt_attr_set_auto_reply(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(aevt_attr_set_auto_reply) {
     const char *text = in.s ? in.s : "";
     if (text[0]) {
         // Reject a template that does not parse now rather than at delivery.
@@ -959,10 +926,7 @@ static value_t aevt_finish_send(aevt_event_t *ev) {
     return val_none();
 }
 
-static value_t aevt_method_send(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(aevt_method_send) {
     const char *target = val_as_str(&argv[0]);
     const char *text = val_as_str(&argv[1]);
     if (!target || !*target)
@@ -1018,10 +982,7 @@ static value_t aevt_method_send(struct object *self, const member_t *m, int argc
     return aevt_finish_send(ev);
 }
 
-static value_t aevt_method_send_raw(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(aevt_method_send_raw) {
     const char *target = val_as_str(&argv[0]);
     if (!target || !*target)
         return val_err("no target port was named");

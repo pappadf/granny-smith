@@ -1376,44 +1376,34 @@ static nubus_card_t *node_card(struct object *self) {
 // This card's own object children, attached through the KIND's attach_objects
 // hook.  They used to live in nubus_class.c behind an is_card() test, which
 // meant a core file knew this card existed.
-static value_t gc_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_state) {
     return val_str(display_card_824gc_state(node_card(self)));
 }
-static value_t gc_attr_cb(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_cb) {
     return val_uint(4, display_card_824gc_cb_addr(node_card(self)));
 }
-static value_t gc_attr_seq(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_seq) {
     return val_uint(4, display_card_824gc_seq(node_card(self)));
 }
-static value_t gc_attr_lastfunc(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_lastfunc) {
     return val_uint(4, display_card_824gc_lastfunc(node_card(self)));
 }
-static value_t gc_attr_rpc_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_rpc_count) {
     return val_uint(8, display_card_824gc_rpc_count(node_card(self)));
 }
-static value_t gc_attr_queue_bytes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_queue_bytes) {
     return val_uint(8, display_card_824gc_queue_bytes(node_card(self)));
 }
-static value_t gc_attr_on(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_on) {
     return val_bool(display_card_824gc_gc_on(node_card(self)));
 }
-static value_t gc_attr_error(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_error) {
     return val_int(display_card_824gc_error(node_card(self)));
 }
-static value_t gc_attr_force_decline_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_force_decline_get) {
     return val_bool(display_card_824gc_force_decline(node_card(self)));
 }
-static value_t gc_attr_force_decline_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(gc_attr_force_decline_set) {
     if (in.kind != V_BOOL) {
         value_free(&in);
         return val_err("gc.force_decline: expected a boolean");

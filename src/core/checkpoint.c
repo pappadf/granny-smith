@@ -1451,19 +1451,11 @@ bool checkpoint_validate_build_id(const char *filename) {
 // uses to detect and resume from a quick-saved state. None of the methods
 // read object_data; they all go through the platform-level helpers.
 
-static value_t checkpoint_method_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(checkpoint_method_probe) {
     return val_bool(system_checkpoint_probe());
 }
 
-static value_t checkpoint_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(checkpoint_method_clear) {
     checkpoint_quick_wait(); // a publish in flight lands first, or the clear would race its rename
     return val_bool(gs_checkpoint_clear() == 0);
 }
@@ -1479,9 +1471,7 @@ static value_t checkpoint_method_clear(struct object *self, const member_t *m, i
 // `checkpoint.load("probe")` ran a probe instead of loading a file called
 // probe.  `checkpoint.probe()` above has been the real entry point all along,
 // so that string-match was vestigial -- reachable, but only by accident.
-static value_t checkpoint_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(checkpoint_method_load) {
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     checkpoint_quick_wait(); // load the file the publish in flight is about to complete
     return val_bool(system_checkpoint_load(path) == 0);
@@ -1496,9 +1486,7 @@ static value_t checkpoint_method_load(struct object *self, const member_t *m, in
 // handler strcmp'd against FIVE spellings — refs / reference / names /
 // content / inline — of which only two ever appeared in its usage line or its
 // error message.  The three undocumented aliases are dropped.
-static value_t checkpoint_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(checkpoint_method_save) {
     if (argc < 1 || !argv[0].s || !*argv[0].s)
         return val_err("checkpoint.save: path is required");
     // enum index 0 = "content", 1 = "refs"; absent means content.
@@ -1510,25 +1498,18 @@ static value_t checkpoint_method_save(struct object *self, const member_t *m, in
 // under the given label. Routes to the platform-specific
 // gs_background_checkpoint (WASM implements via save_quick_checkpoint;
 // headless prints a "not supported" stub).
-static value_t checkpoint_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(checkpoint_method_snapshot) {
     return val_bool(gs_background_checkpoint(argv[0].s) == 0);
 }
 
 // `checkpoint.auto` (V_BOOL, RW) — exposes the WASM background-checkpoint
 // loop's enabled flag.  A platform with no such loop (headless) reads false
 // and refuses the set.
-static value_t checkpoint_attr_auto_get(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(checkpoint_attr_auto_get) {
     return val_bool(gs_checkpoint_auto_get());
 }
 
-static value_t checkpoint_attr_auto_set(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(checkpoint_attr_auto_set) {
     if (gs_checkpoint_auto_set(in.b) != 0)
         return val_err("checkpoint.auto: not supported on this platform");
     return val_none();

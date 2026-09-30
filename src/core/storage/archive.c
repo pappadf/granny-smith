@@ -232,19 +232,14 @@ static int work_extract(io_leaf_t *j) {
 // Mac archive ("sit" / "cpt" / "hqx" / "bin" / "sea"), or empty string
 // when the file is unreadable or not an archive. Empty is falsy under
 // the predicate-truthy rule — same shape as floppy.identify.
-static value_t archive_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(archive_method_identify) {
     const char *format = archive_identify_file(argv[0].s);
     return val_str(format ? format : "");
 }
 
 // `files.archive.extract(path, [out_dir])` — extract a Mac archive into out_dir
 // (defaults to the current working directory). Returns true on success.
-static value_t archive_method_extract(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(archive_method_extract) {
     const char *path = argv[0].s;
     const char *out_dir = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
     io_leaf_t *j = io_leaf_new(path, out_dir);

@@ -285,9 +285,7 @@ void vrom_clear_explicit(void) {
 // Object-model class descriptor
 // ============================================================================
 
-static value_t vrom_attr_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(vrom_attr_size) {
     return val_uint(4, VROM_EXPECTED_SIZE);
 }
 
@@ -295,10 +293,7 @@ static value_t vrom_attr_size(struct object *self, const member_t *m) {
 // upload ingest offering a freshly stored file so an "(auto)" boot sees it
 // without a page reload.  Returns true iff the file was recognised and
 // registered; false is "not a vROM", not an error.
-static value_t vrom_method_offer(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(vrom_method_offer) {
     vrom_id_t id;
     bool recognised = vrom_identify_card(argv[0].s, &id);
     if (recognised)
@@ -321,10 +316,7 @@ static value_t vrom_method_offer(struct object *self, const member_t *m, int arg
 // human-readable name comes from catalog.profile, not here.  (The card
 // factories load by CONTENT — declrom_load_vrom_card — so the on-disk name
 // never matters.)
-static value_t vrom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(vrom_method_identify) {
     const char *path = argv[0].s;
     vrom_id_t id;
     size_t size = 0;

@@ -2338,8 +2338,7 @@ static breakpoint_t *bp_from(struct object *self) {
 const char *const debug_space_values[] = {"logical", "physical", NULL};
 #define DEBUG_SPACE_COUNT 2
 
-static value_t bp_attr_addr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bp_attr_addr) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
@@ -2348,8 +2347,7 @@ static value_t bp_attr_addr(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t bp_attr_space(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bp_attr_space) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
@@ -2357,8 +2355,7 @@ static value_t bp_attr_space(struct object *self, const member_t *m) {
     return val_enum(idx, debug_space_values, DEBUG_SPACE_COUNT);
 }
 
-static value_t bp_attr_condition(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bp_attr_condition) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
@@ -2366,8 +2363,7 @@ static value_t bp_attr_condition(struct object *self, const member_t *m) {
     return val_str(c ? c : "");
 }
 
-static value_t bp_attr_condition_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(bp_attr_condition_set) {
     breakpoint_t *bp = bp_from(self);
     if (!bp) {
         value_free(&in);
@@ -2380,8 +2376,7 @@ static value_t bp_attr_condition_set(struct object *self, const member_t *m, val
 }
 
 // Read `enabled`.
-static value_t bp_attr_enabled(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bp_attr_enabled) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
@@ -2389,8 +2384,7 @@ static value_t bp_attr_enabled(struct object *self, const member_t *m) {
 }
 
 // Write `enabled`: false keeps the breakpoint but stops it firing.
-static value_t bp_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(bp_attr_enabled_set) {
     breakpoint_t *bp = bp_from(self);
     if (!bp) {
         value_free(&in);
@@ -2401,26 +2395,21 @@ static value_t bp_attr_enabled_set(struct object *self, const member_t *m, value
     return val_none();
 }
 
-static value_t bp_attr_hit_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bp_attr_hit_count) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
     return val_uint(4, breakpoint_get_hit_count(bp));
 }
 
-static value_t bp_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bp_attr_id) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
     return val_int(breakpoint_get_id(bp));
 }
 
-static value_t bp_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(bp_method_remove) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint already removed");
@@ -2485,8 +2474,7 @@ static logpoint_t *lp_from(struct object *self) {
     return (logpoint_t *)object_data(self);
 }
 
-static value_t lpe_attr_addr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_addr) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
@@ -2494,8 +2482,7 @@ static value_t lpe_attr_addr(struct object *self, const member_t *m) {
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t lpe_attr_end_addr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_end_addr) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
@@ -2503,8 +2490,7 @@ static value_t lpe_attr_end_addr(struct object *self, const member_t *m) {
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t lpe_attr_kind(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_kind) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
@@ -2514,47 +2500,39 @@ static value_t lpe_attr_kind(struct object *self, const member_t *m) {
         idx = 0;
     return val_enum(idx, names, 4);
 }
-static value_t lpe_attr_level(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_level) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
     return val_int(logpoint_get_level(lp));
 }
-static value_t lpe_attr_category(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_category) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
     const char *n = logpoint_get_category_name(lp);
     return val_str(n ? n : "");
 }
-static value_t lpe_attr_message(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_message) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
     const char *s = logpoint_get_message(lp);
     return val_str(s ? s : "");
 }
-static value_t lpe_attr_hit_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_hit_count) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
     return val_uint(4, logpoint_get_hit_count(lp));
 }
-static value_t lpe_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lpe_attr_id) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint detached");
     return val_int(logpoint_get_id(lp));
 }
-static value_t lpe_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lpe_method_remove) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("logpoint already removed");
@@ -2625,23 +2603,20 @@ struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
 // the entry shares the logpoint accessors; what differs is the surface: a
 // `mode`, no message/level/category, and `enabled`.
 
-static value_t wpe_attr_space(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(wpe_attr_space) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("watchpoint detached");
     return val_enum(lp->space == ADDR_PHYSICAL ? 1 : 0, debug_space_values, DEBUG_SPACE_COUNT);
 }
-static value_t wpe_attr_enabled(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(wpe_attr_enabled) {
     logpoint_t *lp = lp_from(self);
     if (!lp)
         return val_err("watchpoint detached");
     return val_bool(!lp->disabled);
 }
 // Write `enabled`: false keeps the watchpoint but stops it firing.
-static value_t wpe_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(wpe_attr_enabled_set) {
     logpoint_t *lp = lp_from(self);
     if (!lp) {
         value_free(&in);
@@ -2739,8 +2714,7 @@ static int lp_entries_next(struct object *self, int prev_index) {
     return debug_logpoint_next_id(debug_from(self), prev_index);
 }
 
-static value_t bp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(bp_method_add) {
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
@@ -2768,10 +2742,7 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     return val_obj(breakpoint_get_entry_object(bp));
 }
 
-static value_t bp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(bp_method_clear) {
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
@@ -2779,10 +2750,7 @@ static value_t bp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-static value_t lp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lp_method_clear) {
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
@@ -2796,8 +2764,7 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
 // `message` is a template slot: stored raw, evaluated per fire
 // with `$value`/`$addr`/`$size` bindings in scope. Returns the created
 // entry object, like breakpoints.add.
-static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lp_method_add) {
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
@@ -3036,8 +3003,7 @@ static int wp_entries_next(struct object *self, int prev_index) {
 
 // `debug.watchpoints.add addr=0x16A mode=write width=l` -- stops the machine
 // after the instruction that makes a matching access.  Returns the entry.
-static value_t wp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(wp_method_add) {
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
@@ -3091,10 +3057,7 @@ static value_t wp_method_add(struct object *self, const member_t *m, int argc, c
     return val_obj(logpoint_get_entry_object(lp));
 }
 
-static value_t wp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(wp_method_clear) {
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
@@ -3170,9 +3133,7 @@ static const arg_decl_t debug_exceptions_args[] = {
      .doc = "0 = print all; 1 = filter out routine traps/IRQs"},
 };
 extern void debug_exc_trace_dump(int filter);
-static value_t debug_method_exceptions(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(debug_method_exceptions) {
     int filter = (argc >= 1) ? (int)argv[0].i : 0;
     debug_exc_trace_dump(filter);
     return val_bool(true);
@@ -3192,9 +3153,7 @@ static value_t debug_method_exceptions(struct object *self, const member_t *m, i
 // this method's return value — it pulls a structured snapshot via
 // `debug.frame` instead — so this can keep the historical
 // printf-+-val_bool shape that scripts depend on.
-static value_t debug_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(debug_method_disasm) {
     const cpu_debug_if_t *dif = system_cpu_debug_if();
     if (!dif)
         return val_err("debug.disasm: CPU not initialised");
@@ -3415,9 +3374,7 @@ value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, 
 
 // `debug.frame([addr], [count], [before])` — the main CPU's frame; the same
 // as `machine.cpu.frame`, kept under debug for the tools that call it.
-static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(debug_method_frame) {
     return debug_frame_build(system_cpu_debug_if(), "debug.frame", argc, argv);
 }
 
@@ -3445,9 +3402,7 @@ const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {
 // `debug.step([n])` — single-step n instructions (default 1) and stop.
 // Wraps the scheduler's run-N-then-stop pattern in one call so debug
 // scripts don't have to chain `scheduler.run(n)` + `scheduler.stop`.
-static value_t debug_method_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(debug_method_step) {
     int64_t count = (argc >= 1) ? argv[0].i : 1;
     if (count <= 0)
         return val_err("debug.step: count must be positive");
@@ -3540,10 +3495,7 @@ static int mac_global_lookup(const char *name) {
     return -1;
 }
 
-static value_t method_mac_globals_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mac_globals_read) {
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
@@ -3585,10 +3537,7 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
     }
 }
 
-static value_t method_mac_globals_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mac_globals_write) {
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.write: unknown global '%s'", argv[0].s);
@@ -3625,10 +3574,7 @@ static value_t method_mac_globals_write(struct object *self, const member_t *m, 
     return val_none();
 }
 
-static value_t method_mac_globals_address(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mac_globals_address) {
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
@@ -3637,11 +3583,7 @@ static value_t method_mac_globals_address(struct object *self, const member_t *m
     return v;
 }
 
-static value_t method_mac_globals_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_mac_globals_list) {
     // Build a deduplicated list of names (the table has a few historical
     // duplicates such as TimeSCSIDB; the legacy resolver kept first-found).
     value_t *items = (value_t *)calloc(mac_global_vars_count, sizeof(value_t));
@@ -3720,10 +3662,7 @@ static const class_desc_t debug_mac_globals_class = {
 // Mac-specific facets (process info, target backtrace, …) belong here
 // in time; for now this covers the typed-bridge needs.
 
-static value_t method_mac_atrap(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_mac_atrap) {
     return val_str(macos_atrap_name((uint16_t)argv[0].u));
 }
 
@@ -3755,10 +3694,7 @@ static const class_desc_t debug_mac_class = {
 // Wraps the legacy `screenshot` subcommand family. Each method
 // delegates to the framebuffer logic in this module.
 
-static value_t screen_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(screen_method_save) {
     const char *path = argv[0].s;
     if (!*path)
         return val_err("screen.save: empty path");
@@ -3809,9 +3745,7 @@ static int screen_parse_exclude_rects(const char *who, const display_t *d, int a
     return n;
 }
 
-static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(screen_method_match) {
     const char *ref = argv[0].s;
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
@@ -3841,9 +3775,7 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
 // library calls it every few million cycles).  An unreadable reference is
 // still a hard error: polling against a missing golden would spin to the
 // ceiling and report a timeout instead of the actual mistake.
-static value_t screen_method_matches(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(screen_method_matches) {
     const char *ref = argv[0].s;
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
@@ -3859,9 +3791,7 @@ static value_t screen_method_matches(struct object *self, const member_t *m, int
     return val_bool(result == 0);
 }
 
-static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(screen_method_match_or_save) {
     const char *ref = argv[0].s;
     const char *actual = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
     const display_t *d = system_display_synced();
@@ -3887,9 +3817,7 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
     return val_bool(false);
 }
 
-static value_t screen_method_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(screen_method_checksum) {
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.checksum: framebuffer not available");
@@ -3906,16 +3834,12 @@ static value_t screen_method_checksum(struct object *self, const member_t *m, in
 // `screen.width` / `screen.height` — read the active display's pixel
 // dimensions.  Lets e2e and integration tests stop hardcoding 512/342 so
 // they keep working when a IIcx/IIx with a 640x480 NuBus card boots.
-static value_t screen_attr_width(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(screen_attr_width) {
     const display_t *d = system_display();
     return val_int(d ? (int64_t)d->width : 0);
 }
 
-static value_t screen_attr_height(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(screen_attr_height) {
     const display_t *d = system_display();
     return val_int(d ? (int64_t)d->height : 0);
 }
@@ -3925,9 +3849,7 @@ static value_t screen_attr_height(struct object *self, const member_t *m) {
 // reachable as `nubus.slot[N].card.framebuffer.depth`, but the coverage
 // records the integration suites emit need the depth of the screen that
 // is actually live, without first knowing which device owns it.
-static value_t screen_attr_depth(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(screen_attr_depth) {
     const display_t *d = system_display();
     // A fourth copy of the bits-per-pixel switch lived here -- and this is the
     // one every integration row asserts on (`machine.screen.depth`), so it is
@@ -3940,16 +3862,12 @@ static value_t screen_attr_depth(struct object *self, const member_t *m) {
 // (one display pixel's width:height in host units; see display.h).  1:1 is
 // square (every Mac); the Lisa 2's 720x364 raster reports 2:3 so the frontend
 // can stretch it vertically.  0 in the descriptor normalizes to 1 here.
-static value_t screen_attr_par_w(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(screen_attr_par_w) {
     const display_t *d = system_display();
     return val_int(d && d->par_w ? (int64_t)d->par_w : 1);
 }
 
-static value_t screen_attr_par_h(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(screen_attr_par_h) {
     const display_t *d = system_display();
     return val_int(d && d->par_h ? (int64_t)d->par_h : 1);
 }
@@ -4070,15 +3988,11 @@ static const arg_decl_t screen_checksum_args[] = {
 // Stride and format: every per-card framebuffer node has had these, and the
 // generic `screen` node -- the one node that exists on EVERY machine,
 // including the ones with built-in video and no card node at all -- did not.
-static value_t screen_attr_stride(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(screen_attr_stride) {
     const display_t *d = system_display();
     return val_uint(4, d ? d->stride : 0);
 }
-static value_t screen_attr_format(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(screen_attr_format) {
     const display_t *d = system_display();
     return val_str(d ? display_format_name(d->format) : "");
 }

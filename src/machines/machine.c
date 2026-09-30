@@ -224,9 +224,7 @@ static const hw_profile_t *active_profile_or_error(const char *attr_name, value_
     return cfg->machine;
 }
 
-static value_t attr_machine_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_machine_id) {
     value_t err;
     const hw_profile_t *p = active_profile_or_error("id", &err);
     if (!p)
@@ -237,9 +235,7 @@ static value_t attr_machine_id(struct object *self, const member_t *m) {
 // `catalog.models` — every registered model id, in registry order.  Answers
 // without a running machine, so a script can iterate the roster instead of
 // keeping its own copy of it.
-static value_t attr_catalog_models(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_catalog_models) {
     size_t n = 0;
     const hw_profile_t *const *list = machine_list(&n);
     value_t *items = n ? (value_t *)calloc(n, sizeof(value_t)) : NULL;
@@ -250,9 +246,7 @@ static value_t attr_catalog_models(struct object *self, const member_t *m) {
     return val_list(items, n);
 }
 
-static value_t attr_machine_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_machine_name) {
     value_t err;
     const hw_profile_t *p = active_profile_or_error("name", &err);
     if (!p)
@@ -260,9 +254,7 @@ static value_t attr_machine_name(struct object *self, const member_t *m) {
     return val_str(p->name ? p->name : "");
 }
 
-static value_t attr_machine_freq(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_machine_freq) {
     value_t err;
     const hw_profile_t *p = active_profile_or_error("freq", &err);
     if (!p)
@@ -270,9 +262,7 @@ static value_t attr_machine_freq(struct object *self, const member_t *m) {
     return val_uint(4, p->freq);
 }
 
-static value_t attr_machine_ram(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_machine_ram) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return val_err("machine.ram: no machine booted; check machine.created first");
@@ -288,9 +278,7 @@ static value_t attr_machine_ram(struct object *self, const member_t *m) {
 // behaviour, with the step between them invisible.  The bit meanings are
 // per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
 // this is a bitmap and not an enum.
-static value_t attr_machine_irq(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_machine_irq) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return val_err("machine.irq: no machine");
@@ -299,9 +287,7 @@ static value_t attr_machine_irq(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_machine_ipl(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_machine_ipl) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return val_err("machine.ipl: no machine");
@@ -310,9 +296,7 @@ static value_t attr_machine_ipl(struct object *self, const member_t *m) {
     return val_uint(1, cpu_get_ipl(cfg->cpu));
 }
 
-static value_t attr_machine_created(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_machine_created) {
     config_t *cfg = global_emulator;
     return val_bool(cfg && cfg->machine != NULL);
 }
@@ -700,10 +684,7 @@ static value_t build_profile(const hw_profile_t *p) {
 // catalog.profile(id) — static lookup, returns the model's full configuration
 // shape as a typed map.  Errors when id is empty
 // or doesn't match a registered profile.
-static value_t catalog_method_profile(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(catalog_method_profile) {
     const char *id = argv[0].s;
     if (!id || !*id)
         return val_err("catalog.profile: id must be non-empty");
@@ -1210,10 +1191,7 @@ static uint64_t boot_uint(const value_t *v, uint64_t unset) {
 // rom are required; every other field falls back to the model's own
 // defaults.  An explicitly empty value is rejected by the named-argument
 // grammar.  Use machine.restart to power-cycle the running machine.
-static value_t machine_method_boot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(machine_method_boot) {
     uint64_t sense = boot_uint(&argv[5], 0xFF);
     boot_config_t doc = {
         .model = boot_str(&argv[0]),
@@ -1243,11 +1221,7 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
 // object tree all survive; this is the reset button.  machine.boot and
 // machine.restart both construct a new machine, so this is the only verb that
 // reboots a machine and keeps its NVRAM.
-static value_t machine_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(machine_method_reset) {
     if (!global_emulator)
         return val_err("machine.reset: no machine is running; boot one first");
     system_machine_reset();
@@ -1261,11 +1235,7 @@ static value_t machine_method_reset(struct object *self, const member_t *m, int 
 // that is not construction configuration (volume, host capture sources) is out
 // of scope — the frontend re-asserts it.  Scheduler pacing is the exception
 // every rebuild keeps: it is the harness's setting, not the machine's.
-static value_t machine_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(machine_method_restart) {
     const machine_config_record_t *rec = machine_config_record();
     if (!global_emulator || !rec->valid)
         return val_err("machine.restart: no machine is running; boot one first");
@@ -1324,10 +1294,7 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
 
 // machine.register(id, created) — record the active machine identity for
 // checkpointing. Routes to the platform's gs_register_machine.
-static value_t machine_method_register(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(machine_method_register) {
     return val_bool(gs_register_machine(argv[0].s, argv[1].s) == 0);
 }
 
@@ -1420,9 +1387,7 @@ static const arg_decl_t catalog_profile_args[] = {
 // the Lisa's ProFile.  Each answers the bay it used, {bus, id, label}, which
 // is what eject_media takes back.
 
-static value_t machine_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(machine_method_attach_hd) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return val_err("machine.attach_hd: no machine is running");
@@ -1440,10 +1405,7 @@ static value_t machine_method_attach_hd(struct object *self, const member_t *m, 
     return media_bay_value(&bays[which]);
 }
 
-static value_t machine_method_attach_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(machine_method_attach_cdrom) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return val_err("machine.attach_cdrom: no machine is running");
@@ -1456,9 +1418,7 @@ static value_t machine_method_attach_cdrom(struct object *self, const member_t *
     return media_bay_value(&bay);
 }
 
-static value_t machine_method_eject_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(machine_method_eject_media) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return val_err("machine.eject_media: no machine is running");
@@ -1632,15 +1592,11 @@ struct object *machine_object(void) {
 // given.  A process singleton created at shell init; every member answers
 // without a machine.
 
-static value_t attr_catalog_nubus_cards(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_catalog_nubus_cards) {
     return nubus_cards_list();
 }
 
-static value_t attr_catalog_pci_cards(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(attr_catalog_pci_cards) {
     return pci_cards_list();
 }
 

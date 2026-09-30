@@ -81,9 +81,7 @@ static void each_attached_collect(struct object *parent, struct object *child, v
         acc->oom = true; // reported by the caller; see string_list_push
 }
 
-static value_t method_root_objects(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_objects) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("objects: path did not resolve");
@@ -105,9 +103,7 @@ static value_t method_root_objects(struct object *self, const member_t *m, int a
     return val_list(acc.items, acc.len);
 }
 
-static value_t method_root_attributes(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_attributes) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("attributes: path did not resolve");
@@ -128,9 +124,7 @@ static value_t method_root_attributes(struct object *self, const member_t *m, in
     return val_list(acc.items, acc.len);
 }
 
-static value_t method_root_methods(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_methods) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("methods: path did not resolve");
@@ -154,9 +148,7 @@ static value_t method_root_methods(struct object *self, const member_t *m, int a
 // `help(path?)` — the usage text of any path (usage.c): a method's
 // signature, arguments and doc; an attribute's type, value and doc; a node's
 // doc and member lists.  The same text shell.usage returns.
-static value_t method_root_help(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_help) {
     const char *path = (argc >= 1 && argv[0].s) ? argv[0].s : "";
     value_t v = object_usage_text(path);
     if (v.kind == V_ERROR) {
@@ -169,11 +161,7 @@ static value_t method_root_help(struct object *self, const member_t *m, int argc
 // `time()` — wall-clock seconds since the Unix epoch. Useful for
 // timestamping log lines from scripts; deterministic test runs use
 // `rtc.time =` instead.
-static value_t method_root_time(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_root_time) {
     return val_uint(8, (uint64_t)time(NULL));
 }
 
@@ -185,11 +173,7 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
 // `quit()` — request emulator shutdown. Headless sets the script
 // quit flag and stops the scheduler; in the browser, which owns the page's
 // lifecycle, it says so rather than doing nothing silently.
-static value_t method_root_quit(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_root_quit) {
     if (gs_quit() != 0)
         return val_err("quit: not supported on this platform");
     return val_none();
@@ -199,9 +183,7 @@ static value_t method_root_quit(struct object *self, const member_t *m, int argc
 // classic `echo` shell command so test scripts can write the result
 // of a `$(...)` expression to stdout without going through any
 // detour. Returns true on success.
-static value_t method_root_echo(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_echo) {
     for (int i = 0; i < argc; i++) {
         if (i > 0)
             gs_outc(' ');

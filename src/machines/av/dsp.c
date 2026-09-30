@@ -283,68 +283,59 @@ static const char *av_dsp_state_name(av_dsp_t *d) {
     return "running";
 }
 
-static value_t dsp_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_state) {
     av_dsp_t *d = dsp_self(self);
     return val_str(d ? av_dsp_state_name(d) : "reset");
 }
 
-static value_t dsp_attr_pc(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_pc) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->pc : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_ps(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_ps) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->ps : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_emr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_emr) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->emr : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_pcw(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_pcw) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->pcw : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_sp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_sp) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->r[21] : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_evtp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_evtp) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->r[22] : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_instr_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_instr_count) {
     av_dsp_t *d = dsp_self(self);
     return val_uint(8, d ? d->core->icount : 0);
 }
 
-static value_t dsp_method_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(dsp_method_step) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
@@ -451,8 +442,7 @@ static cpu_debug_if_t dsp_debug_if(av_dsp_t *d) {
 
 // `machine.dsp.frame([addr], [count], [before])` -- the same frame as
 // machine.cpu.frame, for the DSP.
-static value_t dsp_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(dsp_method_frame) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
@@ -462,8 +452,7 @@ static value_t dsp_method_frame(struct object *self, const member_t *m, int argc
 
 // `machine.dsp.disasm([addr], [count])` prints a listing and answers true,
 // as debug.disasm does for the main CPU; the typed rows are frame's.
-static value_t dsp_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(dsp_method_disasm) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");

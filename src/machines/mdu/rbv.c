@@ -420,8 +420,7 @@ RBV_BYTE_ATTR(reg_senb)
 RBV_BYTE_ATTR(reg_monp)
 RBV_BYTE_ATTR(reg_datab)
 
-static value_t rbv_attr_variant(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(rbv_attr_variant) {
     return val_str(((const rbv_t *)object_data(self))->variant == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci");
 }
 

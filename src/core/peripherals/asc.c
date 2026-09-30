@@ -854,8 +854,7 @@ static asc_t *asc_self_from(struct object *self) {
     return (asc_t *)object_data(self);
 }
 
-static value_t asc_attr_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_mode) {
     return val_uint(1, asc_self_from(self)->mode);
 }
 
@@ -863,24 +862,19 @@ static value_t asc_attr_mode(struct object *self, const member_t *m) {
 // FIFO-IRQ status register (0x804) is read-clears, so inspecting it via
 // memory.peek perturbs the guest; these attributes read the model state
 // directly for stall diagnosis.
-static value_t asc_attr_fifo_count_a(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_count_a) {
     return val_uint(1, asc_self_from(self)->fifo_count[0]);
 }
-static value_t asc_attr_fifo_count_b(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_count_b) {
     return val_uint(1, asc_self_from(self)->fifo_count[1]);
 }
-static value_t asc_attr_fifo_irq_status(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_irq_status) {
     return val_uint(1, asc_self_from(self)->fifo_irq_status);
 }
-static value_t asc_attr_fifo_armed_a(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_armed_a) {
     return val_bool(asc_self_from(self)->fifo_above_half[0]);
 }
-static value_t asc_attr_fifo_armed_b(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_armed_b) {
     return val_bool(asc_self_from(self)->fifo_above_half[1]);
 }
 
