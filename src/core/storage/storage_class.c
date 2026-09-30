@@ -901,6 +901,9 @@ static const arg_decl_t storage_profile_create_args[] = {
 static const arg_decl_t storage_path_arg[] = {
     {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image path"},
 };
+static const arg_decl_t files_dir_arg[] = {
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Directory, absolute or relative"},
+};
 static const arg_decl_t files_any_path_arg[] = {
     {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "File or directory path"},
 };
@@ -1076,6 +1079,16 @@ static const member_t storage_members[] = {
      .examples = (const char *const[]){"files.mkdir \"/opfs/images/cd\"", NULL},
      .doc = "Create a directory",
      .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_mkdir}                   },
+    {.kind = M_METHOD,
+     .name = "cd",
+     .examples = (const char *const[]){"files.cd \"/opfs/images\"", "files.cd ..", NULL},
+     .doc = "Make a directory the current one: where relative paths start, and what ls lists by default",
+     .method = {.args = files_dir_arg, .nargs = 1, .result = V_NONE, .fn = files_method_cd}                           },
+    {.kind = M_METHOD,
+     .name = "pwd",
+     .examples = (const char *const[]){"files.pwd", NULL},
+     .doc = "The current directory",
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = files_method_pwd}                                 },
     {.kind = M_METHOD,
      .name = "cat",
      .examples = (const char *const[]){"files.cat \"/opfs/notes.txt\"", NULL},

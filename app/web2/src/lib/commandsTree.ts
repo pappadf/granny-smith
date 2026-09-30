@@ -231,8 +231,13 @@ export async function rootRows(): Promise<BrowserRow[]> {
   if (!isModuleReady()) return [];
   const ms = await members('');
   const out: BrowserRow[] = [];
-  if (ms.some((m) => m.kind === 'method' && !m.hidden))
-    out.push(section('section:commands', 'Commands', "The root's own commands"));
+  out.push(
+    section(
+      'section:commands',
+      'Commands',
+      "Words typed bare: the root's own methods and command aliases",
+    ),
+  );
   const seen = new Set<string>();
   for (const m of ms) {
     if (m.kind !== 'child') continue;
@@ -257,12 +262,53 @@ const DOMAIN_DOC: Record<string, string> = {
 // The rows of a Commands or domain section.
 async function sectionRows(row: BrowserRow): Promise<BrowserRow[]> {
   const ms = await members('');
-  if (row.key === 'section:commands')
-    return ms.filter((m) => m.kind === 'method' && !m.hidden).map((m) => memberRow('', m));
+  if (row.key === 'section:commands') {
+    const own = ms.filter((m) => m.kind === 'method' && !m.hidden).map((m) => memberRow('', m));
+    const aliases = (await loadCommands()).map(commandRow);
+    return [...own, ...aliases];
+  }
   const d = row.key.slice('section:'.length);
   return ms
     .filter((m) => m.kind === 'child' && (m.domain ?? 'emulator') === d)
     .map((m) => memberRow('', m));
+}
+
+// A command alias: a bare word that runs a method (shell.commands).
+export interface CommandAlias {
+  name: string;
+  target: string;
+  doc: string;
+  builtin: boolean;
+}
+
+export async function loadCommands(): Promise<CommandAlias[]> {
+  const list = await gsEval('shell.commands');
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter(
+      (c): c is CommandAlias =>
+        !!c && typeof c === 'object' && typeof (c as CommandAlias).name === 'string',
+    )
+    .map((c) => ({
+      name: c.name,
+      target: typeof c.target === 'string' ? c.target : '',
+      doc: typeof c.doc === 'string' ? c.doc : '',
+      builtin: !!c.builtin,
+    }));
+}
+
+// A command alias's row: typed bare, its usage that of the method it runs.
+function commandRow(c: CommandAlias): BrowserRow {
+  return {
+    key: `cmd:${c.name}`,
+    kind: 'method',
+    name: c.name,
+    path: c.target,
+    doc: `${c.target}${c.doc ? ` — ${c.doc}` : ''}`,
+    category: 'basic',
+    insert: `${c.name} `,
+    expandable: false,
+  };
 }
 
 function section(key: string, name: string, doc: string): BrowserRow {
@@ -292,8 +338,8 @@ function group(key: string, name: string, doc: string): BrowserRow {
 }
 
 // The rows of a synthetic group: Aliases (User, Built-in, and a collapsed Mac
-// globals subgroup for the ~500 built-ins over debug.mac.globals) and
-// Language (shell.keywords).
+// globals subgroup for built-ins over debug.mac.globals; command aliases are
+// listed under Commands instead) and Language (shell.keywords).
 export async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
   if (row.key === 'group:language') {
     const kws = await gsEval('shell.keywords');
@@ -311,7 +357,6 @@ export async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
         expandable: false,
       }));
   }
-  const aliases = await loadAliases();
   if (row.key === 'group:aliases')
     return [
       group('group:aliases:user', 'User', 'Aliases defined in this session'),
@@ -322,6 +367,8 @@ export async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
         'Built-in aliases for the Mac low-memory globals',
       ),
     ];
+  const commands = new Set((await loadCommands()).map((c) => c.name));
+  const aliases = (await loadAliases()).filter((a) => !commands.has(a.name));
   const pick =
     row.key === 'group:aliases:user'
       ? aliases.filter((a) => !a.builtin)

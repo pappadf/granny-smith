@@ -155,3 +155,31 @@ value_t files_method_cat(struct object *self, const member_t *m, int argc, const
     be->close(f);
     return val_bool(true);
 }
+
+// `files.cd(path)` -- make a directory the current one: the directory
+// relative paths start from, and what files.ls / files.list show when
+// given no path.
+value_t files_method_cd(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    char abs[VFS_PATH_MAX];
+    if (vfs_normalise_path(argv[0].s, abs, sizeof(abs)) < 0)
+        return val_err("cd: path too long");
+    vfs_stat_t st;
+    if (vfs_stat(abs, &st) < 0)
+        return val_err("cd: no such directory '%s'", argv[0].s);
+    if (!(st.mode & VFS_MODE_DIR))
+        return val_err("cd: not a directory '%s'", argv[0].s);
+    vfs_set_cwd(abs);
+    return val_none();
+}
+
+// `files.pwd()` -- the current directory.
+value_t files_method_pwd(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_str(vfs_get_cwd());
+}
