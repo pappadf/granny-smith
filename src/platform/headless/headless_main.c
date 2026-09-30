@@ -1462,13 +1462,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Check ROM file exists
-    FILE *f = fopen(rom_file, "rb");
-    if (!f) {
-        fprintf(stderr, "Error: Cannot open ROM file: %s\n", rom_file);
-        return 1;
-    }
-    fclose(f);
+    // The ROM path is not checked here: it may run through an image or an
+    // archive (roms.zip/Plus.rom), which only the core's VFS resolves.  The
+    // loader reports a path that does not open.
 
     // Line-buffer stdout when output is redirected or piped
     if (script_file || !isatty(STDOUT_FILENO)) {

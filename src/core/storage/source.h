@@ -47,6 +47,10 @@ typedef enum { GS_FORK_DATA, GS_FORK_RSRC, GS_FORK_FINFO } gs_fork_t;
 // Size of the Finder info a GS_FORK_FINFO source holds.
 #define GS_FINDER_INFO_SIZE 32u
 
+// True when `key` is `parent` or names something inside it: a member
+// ("<parent>/partition1/...") or a wrapper layer ("<parent>#dc42").
+bool gs_key_within(const char *key, const char *parent);
+
 // === Constructors ===========================================================
 
 // A host file, read with pread (so any thread may read it).  Its key is the
@@ -89,6 +93,11 @@ int gs_source_read_exact(gs_source_t *s, uint64_t off, void *buf, size_t len);
 // The whole source into a malloc'd buffer of at most `max` bytes.  0 or a
 // negative errno (-EFBIG over `max`).  An empty source gives *out NULL.
 int gs_source_read_all(gs_source_t *s, size_t max, uint8_t **out, size_t *out_len);
+
+// Read the whole data fork of `path` (through the path opener, so the path
+// may run through an image or an archive) into a malloc'd buffer of at most
+// `max` bytes.  0 or a negative errno.
+int gs_read_path(const char *path, size_t max, uint8_t **out, size_t *out_len);
 
 // The tier's name ("random", "indexed", "earned", "stream", "whole").
 const char *gs_tier_name(gs_tier_t t);

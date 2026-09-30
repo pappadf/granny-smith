@@ -21,6 +21,17 @@
 #include <unistd.h>
 
 // ============================================================================
+// Keys
+// ============================================================================
+
+bool gs_key_within(const char *key, const char *parent) {
+    if (!key || !parent || !*parent)
+        return false;
+    size_t n = strlen(parent);
+    return strncmp(key, parent, n) == 0 && (key[n] == '\0' || key[n] == '/' || key[n] == '#');
+}
+
+// ============================================================================
 // Host file
 // ============================================================================
 
@@ -158,6 +169,18 @@ int gs_source_read_all(gs_source_t *s, size_t max, uint8_t **out, size_t *out_le
     *out = buf;
     *out_len = (size_t)size;
     return 0;
+}
+
+int gs_read_path(const char *path, size_t max, uint8_t **out, size_t *out_len) {
+    *out = NULL;
+    *out_len = 0;
+    int err = 0;
+    gs_source_t *s = gs_source_open_path(path, GS_FORK_DATA, &err);
+    if (!s)
+        return err ? err : -ENOENT;
+    int rc = gs_source_read_all(s, max, out, out_len);
+    gs_source_release(s);
+    return rc;
 }
 
 const char *gs_tier_name(gs_tier_t t) {

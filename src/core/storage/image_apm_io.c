@@ -8,6 +8,7 @@
 
 #include "image.h"
 #include "image_apm.h"
+#include "source.h"
 
 #include <stdlib.h>
 
@@ -59,6 +60,39 @@ apm_table_t *image_apm_parse(image_t *img, const char **errmsg) {
         return NULL;
     }
 
+    apm_table_t *table = image_apm_parse_buffer(buf, scan_bytes, errmsg);
+    free(buf);
+    return table;
+}
+
+apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg) {
+    if (!src) {
+        if (errmsg)
+            *errmsg = image_apm_err_nil;
+        return NULL;
+    }
+    // The same scan as image_apm_parse: up to 257 blocks, in whole blocks.
+    uint64_t size = gs_source_size(src);
+    size_t scan_bytes = (size_t)(256 + 1) * APM_BLOCK_SIZE;
+    if (scan_bytes > size)
+        scan_bytes = (size_t)(size - size % APM_BLOCK_SIZE);
+    if (scan_bytes < 2 * APM_BLOCK_SIZE) {
+        if (errmsg)
+            *errmsg = image_apm_err_read;
+        return NULL;
+    }
+    uint8_t *buf = malloc(scan_bytes);
+    if (!buf) {
+        if (errmsg)
+            *errmsg = image_apm_err_alloc;
+        return NULL;
+    }
+    if (gs_source_read_exact(src, 0, buf, scan_bytes) != 0) {
+        free(buf);
+        if (errmsg)
+            *errmsg = image_apm_err_read;
+        return NULL;
+    }
     apm_table_t *table = image_apm_parse_buffer(buf, scan_bytes, errmsg);
     free(buf);
     return table;

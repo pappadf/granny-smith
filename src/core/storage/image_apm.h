@@ -66,6 +66,10 @@ bool image_apm_probe_magic(const uint8_t *block1);
 // table and must free it with image_apm_free.  `errmsg` may be NULL.
 apm_table_t *image_apm_parse(image_t *img, const char **errmsg);
 
+// The same over a byte source holding the disk.
+struct peel_source;
+apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg);
+
 // Parse APM directly from a contiguous byte buffer.  Exposed for unit
 // tests that want to exercise the parser without dragging in the full
 // image/storage stack; production callers should use image_apm_parse.

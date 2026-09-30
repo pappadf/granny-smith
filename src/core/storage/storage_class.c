@@ -1314,6 +1314,7 @@ void files_init(void) {
         object_attach(g_files_object, g_files_mounts_object);
     }
     archive_init(g_files_object);
+    vfs_init(); // namespace formats, and the VFS as the path opener
 }
 
 // Per-slot image-entry object setup/teardown for files.images

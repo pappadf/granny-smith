@@ -52,12 +52,27 @@ struct gs_namespace {
     const gs_namespace_ops_t *ops;
     void *ctx;
     gs_source_t *src; // the source it was opened on (retained)
+    int refs; // the opener's, plus one per source it has handed out
 };
 
-// Allocate a namespace over `src` (retained).  NULL on OOM (ctx is not freed).
+// Allocate a namespace over `src` (retained), with one reference.  NULL on
+// OOM (ctx is not freed).
 gs_namespace_t *gs_namespace_new(const gs_namespace_ops_t *ops, void *ctx, gs_source_t *src);
-// Close and free (releases src).  NULL-safe.
+// References: a source a namespace opens holds one, so the file outlives
+// the mount that listed it.  The last release closes (and releases src).
+gs_namespace_t *gs_namespace_retain(gs_namespace_t *ns);
+void gs_namespace_release(gs_namespace_t *ns);
+// The opener's release.  NULL-safe.
 void gs_namespace_close(gs_namespace_t *ns);
+
+// Convenience wrappers over the ops.
+int gs_ns_list(gs_namespace_t *ns, const char *path, gs_dirent_t **out, int *count); // malloc'd array
+int gs_ns_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out);
+gs_source_t *gs_ns_open(gs_namespace_t *ns, const char *path, gs_fork_t fork, int *err);
+
+// Register the namespace formats (a disk, and every peeler archive) with
+// the format registry.  Idempotent.
+void gs_ns_register_formats(void);
 
 // === The namespace formats ==================================================
 //
@@ -78,8 +93,18 @@ gs_namespace_t *gs_ns_open_ufs(gs_source_t *src);
 // info.  `format` is the peeler format name.
 gs_namespace_t *gs_ns_open_archive(gs_source_t *src, const char *format);
 
+// What a namespace is, for listings: a disk's "APM" / "HFS" / "UFS", an
+// archive's peeler format ("zip", "sit", "bin", ...).  NULL when `ns` is
+// not that kind.
+const char *gs_ns_disk_kind(gs_namespace_t *ns);
+const char *gs_ns_archive_format(gs_namespace_t *ns);
+
 // Path helpers for implementations: split `path` into components (at most
 // `max`, in `buf`), ignoring empty ones.  Returns the count, or -ENAMETOOLONG.
 int gs_ns_split(const char *path, char *buf, size_t buf_cap, const char **comps, int max);
+
+// Finder info (32 bytes: FInfo + FXInfo) with the type, creator and flags
+// set, the rest zero -- for formats that record only those.
+void gs_ns_finder_info(uint32_t type, uint32_t creator, uint16_t flags, uint8_t out[GS_FINDER_INFO_SIZE]);
 
 #endif // GS_NAMESPACE_H

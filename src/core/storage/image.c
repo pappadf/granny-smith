@@ -123,18 +123,11 @@ bool image_path_is_open_writable(const char *path) {
     return false;
 }
 
-// True when `key` is `wkey` or names something inside it ("wkey/..." or a
-// wrapper layer "wkey#...").
-static bool key_within(const char *key, const char *wkey) {
-    size_t n = strlen(wkey);
-    return strncmp(key, wkey, n) == 0 && (key[n] == '\0' || key[n] == '/' || key[n] == '#' || key[n] == '@');
-}
-
 bool image_key_is_open_writable(const char *key) {
     if (!key || !*key)
         return false;
     for (const image_t *im = g_open_writable; im; im = im->next_writable)
-        if (im->source_key && key_within(key, im->source_key))
+        if (im->source_key && gs_key_within(key, im->source_key))
             return true;
     return false;
 }

@@ -14,6 +14,7 @@
 
 #include "rom.h"
 #include "gs_out.h"
+#include "source.h"
 
 #include "cpu.h"
 #include "machine_config.h"
@@ -228,35 +229,18 @@ int rom_info_compatible_count(const rom_info_t *info) {
 // File I/O
 // ============================================================================
 
-// Read an entire ROM file into a fresh buffer. Caller frees on success.
-static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet) {
-    // Size via stat — fseek(SEEK_END)+ftell on a binary stream is technically
-    // UB per ISO C (offset of end is implementation-defined). stat is portable
-    // and matches what the rest of the codebase uses for file sizing.
-    struct stat st;
-    if (stat(filename, &st) != 0 || st.st_size <= 0) {
-        if (!quiet)
-            gs_outf("Failed to stat ROM file: %s\n", filename);
-        return NULL;
-    }
-    size_t file_size = (size_t)st.st_size;
+// Largest file read as a ROM: far above any Mac ROM (4 MiB), well below
+// anything that would strain memory.
+#define ROM_FILE_MAX (64u * 1024u * 1024u)
 
-    FILE *f = fopen(filename, "rb");
-    if (!f) {
-        if (!quiet)
-            gs_outf("Failed to open ROM file: %s\n", filename);
-        return NULL;
-    }
-    uint8_t *rom_data = malloc(file_size);
-    if (!rom_data) {
-        fclose(f);
-        if (!quiet)
-            gs_outf("Failed to allocate memory for ROM\n");
-        return NULL;
-    }
-    size_t n = fread(rom_data, 1, file_size, f);
-    fclose(f);
-    if (n != file_size) {
+// Read an entire ROM file into a fresh buffer. Caller frees on success.  The
+// path goes through the VFS, so a ROM may be a member of an archive or a
+// file inside a disk image (roms.zip/Plus.rom).
+static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet) {
+    uint8_t *rom_data = NULL;
+    size_t file_size = 0;
+    int rc = gs_read_path(filename, ROM_FILE_MAX, &rom_data, &file_size);
+    if (rc != 0 || file_size == 0) {
         free(rom_data);
         if (!quiet)
             gs_outf("Failed to read ROM file: %s\n", filename);

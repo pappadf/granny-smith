@@ -71,20 +71,8 @@ int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_
 
 // Largest compressed chunk decoded in one buffer.  Disk Copy writes chunks
 // of a few dozen KB; anything near this is a corrupt map, not a big disk.
-// Uncompressed chunks are streamed and have no such limit.
+// Uncompressed chunks are read straight through and have no such limit.
+// The decoded image is served as a chunk-mapped source (image_chunkmap.h).
 #define NDIF_MAX_CHUNK_BYTES (64u * 1024u * 1024u)
-
-// Reads exactly `n` bytes at byte offset `off` of the image's data fork.
-// 0, or a negative errno (a short read is an error).
-typedef int (*ndif_read_fn)(void *ctx, uint64_t off, void *buf, size_t n);
-
-// Decode the whole image described by `map` into `out`, a file open for
-// writing: pre-extends it to map->sectors * 512 and writes every non-zero
-// chunk in place, reading the data fork through `read`.  The one
-// implementation for every caller -- host files (image.c) and images nested
-// inside a mounted volume (image_vfs.c).  Every chunk must lie inside the
-// image; a compressed chunk may not exceed NDIF_MAX_CHUNK_BYTES.  0 or a
-// negative errno; on failure `out` holds a partial image.
-int ndif_materialize(const ndif_map_t *map, ndif_read_fn read, void *ctx, FILE *out);
 
 #endif // GS_IMAGE_NDIF_H
