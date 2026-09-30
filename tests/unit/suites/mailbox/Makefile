@@ -12,6 +12,8 @@ EXTRA_SRCS   := ../../../../src/core/mailbox/mailbox.c \
                 ../../../../src/core/job/job.c \
                 ../../../../src/core/job/seam.c \
                 ../../../../src/core/io/io_worker.c \
-                ../../../../src/core/mailbox/gs_out.c
+                ../../../../src/core/mailbox/gs_out.c \
+                ../../../../src/core/object/value.c \
+                ../../../../src/core/object/value_format.c
 EXTRA_CFLAGS := -DGS_MBX_REQ_BYTES=4096u -DGS_MBX_EVT_BYTES=4096u
 include ../../common.mk

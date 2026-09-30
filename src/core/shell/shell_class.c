@@ -148,7 +148,8 @@ static value_t shell_method_run(struct object *self, const member_t *m, int argc
 // {candidates: V_LIST<V_STRING>, span: {start, end}} where span is the
 // half-open range of line text each candidate replaces (object-path
 // candidates cover the whole word; filesystem candidates only the
-// basename). The `meta.complete` method on the synthetic Meta overlay
+// basename).  With detail, candidates are {text, kind, doc} and the map
+// adds `context` and `truncated`. The `meta.complete` method on the synthetic Meta overlay
 // delegates here through the provider hook in shell.c and keeps the
 // bare-list shape.
 static value_t shell_method_complete(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -200,6 +201,8 @@ static value_t shell_method_complete(struct object *self, const member_t *m, int
                     comp.has_context && comp.ctx_arg_index >= 0 ? val_int(comp.ctx_arg_index) : val_none());
         val_map_put(ctx, "arg_name", comp.ctx_arg_name ? val_str(comp.ctx_arg_name) : val_none());
         val_map_put(b, "context", val_map_finish(ctx));
+        // Whether candidates were dropped (the item table or the pool filled).
+        val_map_put(b, "truncated", val_bool(comp.truncated));
     }
     return val_map_finish(b);
 }

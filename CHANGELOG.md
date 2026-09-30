@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **A job's error is written once** — as the job's `error` record; stderr carries it only when no record can hold it whole (outside a job, or the full text behind a shortened `truncated` record).  Headless without `--framed` prints error records to stderr, so its output reads as before; `--framed` clients get `@error` without a stderr copy.  The web console no longer matches stderr lines to errors, which also fixes long errors showing twice.
 - **The first word of a line means one thing everywhere** — `help`, completion and highlighting follow the interpreter's order (path, then `def` function, then command), so a `def ls` shadows the `ls` command for all of them.  `include` is now a reserved word; `shell.keywords` lists every keyword, the contextual `command` included.
+- **Highlighting and completion read statements through the parser's classifier** (`src/core/shell/syntax.c`), so they agree with what runs:
+  - `$x + 1` highlights as a command with argument-mode words (it is one); a wrong-shaped `alias` is a declaration error, not a path; `command X =` with no path is a path statement; `;` does not end a statement, and a comment starts at the first unquoted `#`.
+  - Completion works on later lines of a block and inside an inline `{ … }` body, and counts argument slots the way the parser binds them.
+  - `true`, `false` and `none` at the start of a statement are expressions (they failed as unknown paths); `in` and `do` there are a parse error.
+  - `shell.complete(…, true)` reports `truncated` when candidates were dropped.
+- **Annotation records are built from value maps** — `job_annotate` escapes the kind and attaches the record to the job it was resolved for; the records on the wire are unchanged.  An assert's message is no longer cut at 512 bytes.
 - **`files.cp` takes `recursive=true`** instead of a `-r` string argument; `files.partmap` drops its `--json` argument, which never changed the output.
 - **Member docs complete** — the doc lint's allow-list is empty on every model.
   - Defaults are declared rather than written into docs; `help` prints them as `(default …)`, and computed ones read `omitted: …`.

@@ -7,6 +7,7 @@
 
 #include "io/io_worker.h"
 #include "mailbox/mailbox.h"
+#include "object/value_format.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -235,60 +236,79 @@ static gs_job_t *annotation_target_locked(void) {
     return g_call.serving ? g_active : NULL;
 }
 
-bool job_annotate(const char *kind, const char *fields, const char *reduced, bool *used_reduced) {
+// The entries of map `m` as JSON object members, without the braces (tagged
+// JSON, the bridge's form); "" for none.  Malloc'd, NULL on failure.
+static char *annotation_fields(const value_t *m) {
+    if (!m || m->kind != V_MAP || m->map.len == 0)
+        return strdup("");
+    vbuf_t b = {0};
+    value_format(m, VFMT_JSON_TAGGED, &b);
+    if (!b.p || b.len < 2)
+        return b.p;
+    // Drop the enclosing `{` `}`.
+    memmove(b.p, b.p + 1, b.len - 2);
+    b.p[b.len - 2] = '\0';
+    return b.p;
+}
+
+bool job_annotate(const char *kind, const value_t *fields, const value_t *reduced, bool *used_reduced) {
     if (used_reduced)
         *used_reduced = false;
     if (!job_current() && !g_call.serving)
         return false;
+    // Everything but the job's ids is formatted before the lock.
+    vbuf_t kjson = {0};
+    value_t kv = val_str(kind ? kind : "");
+    value_format(&kv, VFMT_JSON, &kjson);
+    value_free(&kv);
+    char *bodies[2] = {annotation_fields(fields), reduced ? annotation_fields(reduced) : NULL};
     size_t max = gs_mailbox_record_max();
     max = max > 16 ? max - 16 : max; // the record header
-    char *json = NULL;
-    for (int pass = 0; pass < 2 && !json; pass++) {
-        const char *body = pass == 0 ? fields : reduced;
-        if (pass == 1 && !reduced)
-            break;
-        size_t need = 80 + strlen(kind) + (body ? strlen(body) : 0);
-        char *buf = (char *)malloc(need);
-        if (!buf)
-            return false;
-        pthread_mutex_lock(&g_mu);
-        gs_job_t *j = annotation_target_locked();
-        uint32_t req = j ? j->req_id : 0, client = j ? j->client : 0;
-        pthread_mutex_unlock(&g_mu);
-        int n = snprintf(buf, need, "{\"event\":\"%s\",\"id\":%u,\"client\":%u%s%s}", kind, (unsigned)req,
-                         (unsigned)client, body && *body ? "," : "", body ? body : "");
-        if (n > 0 && (size_t)n <= max) {
-            json = buf;
-            if (used_reduced)
-                *used_reduced = pass == 1;
-        } else {
-            free(buf);
+    struct job_annot *a = (struct job_annot *)calloc(1, sizeof(*a));
+    bool placed = false, shortened = false;
+    pthread_mutex_lock(&g_mu);
+    // The job is resolved once: the ids in the record and the stream it joins
+    // are the same job's.
+    gs_job_t *j = annotation_target_locked();
+    // Nothing to attach it to, or past the 1 MiB cut: dropped.
+    if (a && kjson.p && bodies[0] && j && !j->out_cut) {
+        for (int pass = 0; pass < 2 && !a->json; pass++) {
+            const char *body = bodies[pass];
+            if (!body)
+                break;
+            size_t need = 64 + kjson.len + strlen(body);
+            char *buf = (char *)malloc(need);
+            if (!buf)
+                break;
+            int n = snprintf(buf, need, "{\"event\":%s,\"id\":%u,\"client\":%u%s%s}", kjson.p, (unsigned)j->req_id,
+                             (unsigned)j->client, *body ? "," : "", body);
+            if (n > 0 && (size_t)n <= max) {
+                a->json = buf;
+                shortened = pass == 1;
+            } else {
+                free(buf);
+            }
+        }
+        if (a->json) {
+            a->at = j->out_base + j->out_len;
+            if (j->annot_tail)
+                j->annot_tail->next = a;
+            else
+                j->annot_head = a;
+            j->annot_tail = a;
+            placed = true;
         }
     }
-    if (!json)
-        return false;
-    struct job_annot *a = (struct job_annot *)calloc(1, sizeof(*a));
-    if (!a) {
-        free(json);
-        return false;
-    }
-    a->json = json;
-    pthread_mutex_lock(&g_mu);
-    gs_job_t *j = annotation_target_locked();
-    if (!j || j->out_cut) {
-        // Nothing to attach it to, or past the 1 MiB cut: dropped.
-        pthread_mutex_unlock(&g_mu);
-        free(a->json);
-        free(a);
-        return false;
-    }
-    a->at = j->out_base + j->out_len;
-    if (j->annot_tail)
-        j->annot_tail->next = a;
-    else
-        j->annot_head = a;
-    j->annot_tail = a;
     pthread_mutex_unlock(&g_mu);
+    if (!placed)
+        free(a);
+    vbuf_free(&kjson);
+    free(bodies[0]);
+    free(bodies[1]);
+    if (!placed)
+        return false;
+    if (used_reduced)
+        *used_reduced = shortened;
     wake_emulator();
     return true;
 }

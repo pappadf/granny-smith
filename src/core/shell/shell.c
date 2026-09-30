@@ -291,15 +291,20 @@ static void print_value_here(void *p) {
     const value_t *v = (const value_t *)p;
     bool annotate = v && v->kind != V_NONE && v->kind != V_ERROR;
     if (annotate)
-        annotate = job_annotate("value_begin", "", NULL, NULL);
+        annotate = job_annotate("value_begin", NULL, NULL, NULL);
     format_value_print(v);
     if (!annotate)
         return;
-    vbuf_t j = {0};
-    vbuf_append(&j, "\"json\":", 7);
-    value_format(v, VFMT_JSON_TAGGED, &j);
-    job_annotate("value", j.p ? j.p : "\"json\":null", "\"truncated\":true", NULL);
-    vbuf_free(&j);
+    // {json: V}, or {truncated: true} when that does not fit a record.
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "json", value_dup(v));
+    value_t full = val_map_finish(b);
+    b = val_map_new();
+    val_map_put(b, "truncated", val_bool(true));
+    value_t reduced = val_map_finish(b);
+    job_annotate("value", &full, &reduced, NULL);
+    value_free(&full);
+    value_free(&reduced);
 }
 
 void shell_print_value(const value_t *v) {
