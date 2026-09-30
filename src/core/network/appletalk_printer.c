@@ -217,7 +217,6 @@ static bool pap_try_deliver_pending_reply(void);
 #if GS_PLATEN
 static void pap_reply_bytes_append(const uint8_t *data, size_t len);
 static void pap_platen_pull_output(void);
-static void pap_platen_answer_status_credits(void);
 static void pap_platen_ingest_fragment(pap_session_t *sess, const atp_response_fragment_t *fragment);
 static void pap_platen_transaction_done(pap_session_t *sess, uint16_t seq);
 static void pap_platen_flush_rx(pap_session_t *sess);
@@ -786,32 +785,6 @@ static bool pap_try_deliver_pending_reply(void) {
     return true;
 }
 
-// Answers held read credits with the current status string (no EOF) once the
-// interpreter's own output is drained.  A LaserWriter always has status to
-// report, and the driver polls status while it streams a job — holding these
-// credits forever stalls that stream.  The reader→writer credit for pulling
-// PostScript is a separate transaction (pap_issue_senddata_request) and is
-// never answered here.  Nor is any credit answered here while a feed is
-// unacknowledged (the caller checks laserwriter_job_feed_pending): the
-// feed's reply arrives with the acknowledgement and must go out on the
-// credit, since a query's answer is available as soon as the feed that
-// completed it returns.
-static void pap_platen_answer_status_credits(void) {
-    if (byteq_len(&g_session.reply) > 0 || g_session.reply_eof_pending)
-        return; // interpreter output (and its terminating EOF) comes first
-    char line[PRINTER_STATUS_MAX + 3];
-    int len = pap_format_status_line(g_printer.status_text, line, sizeof(line));
-    while (true) {
-        pap_status_credit_t *credit = pap_status_queue_head();
-        if (!credit)
-            break;
-        LOG(3, "PAP -> Mac StatusData conn=%u bytes=%d eof=0 source=status", (unsigned)credit->atp.user[0], len);
-        pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0],
-                               (len > 0) ? (const uint8_t *)line : NULL, len, false);
-        pap_status_queue_pop();
-    }
-}
-
 #else // !GS_PLATEN
 
 // Sends a stored reply string out on the oldest pending SendData credit.
@@ -1317,15 +1290,12 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
         } else {
             LOG(3, "pap: queued SendData credit conn=%u seq=%u depth=%u", (unsigned)conn_id, (unsigned)seq,
                 (unsigned)g_session.pending_status_count);
+            // With the interpreter a credit waits for the program's own
+            // output, as a LaserWriter's does: the read channel carries
+            // replies and EOF, never status (that is SendStatus's job).
+            // Answering it with a status line made LaserWriter 8 take the
+            // line for the answer to its opening query.
             pap_try_deliver_pending_reply();
-#if GS_PLATEN
-            // Whatever the reply channel did not consume is answered with the
-            // status string, so the driver's progress poll never blocks —
-            // unless a feed is unacknowledged: its reply is on its way and
-            // belongs on this credit (answered from the FED event).
-            if (!laserwriter_job_feed_pending())
-                pap_platen_answer_status_credits();
-#endif
         }
         return;
     }
@@ -1533,11 +1503,10 @@ static void pap_platen_event(laserwriter_event_t event, const char *detail, void
         break;
     case LASERWRITER_EVENT_FED:
         pap_update_progress_status();
-        // The feed's reply goes out on the held credits; the rest of them
-        // get the status line; then the driver's EOF ends the job or the
-        // next read goes out
+        // The feed's reply goes out on the held credits (the rest wait for
+        // more output); then the driver's EOF ends the job or the next
+        // read goes out
         pap_platen_pull_output();
-        pap_platen_answer_status_credits();
         if (sess->eof_pending) {
             sess->eof_pending = false;
             LOG(2, "pap: job %u EOF after %zu bytes", sess->job_id, sess->bytes_received);

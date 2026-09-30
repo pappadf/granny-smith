@@ -96,10 +96,10 @@ five states: idle, opening, ready, feeding, finishing.
   [`pap.md`](../../../reference/protocols/pap.md) §6.3a).
 
 One request is outstanding at a time. The PAP layer asks
-`laserwriter_job_ready()` before reading more data and
-`laserwriter_job_feed_pending()` before answering a read credit with a
-status line (see [`pap.md`](../../../reference/protocols/pap.md) §6.3a for
-the two PAP rules this gives).
+`laserwriter_job_ready()` before reading more data, and answers the
+driver's read credits only with the job's output (see
+[`pap.md`](../../../reference/protocols/pap.md) §6.3a for the PAP rules
+this gives).
 
 ## Status and observability
 

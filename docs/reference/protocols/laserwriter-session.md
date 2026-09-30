@@ -122,14 +122,18 @@ generic path. The AppleTalk entity type advertised over NBP is still
 ### The rows that print, and CI
 
 `tests/integration/appletalk-print` (System 6.0.8, a Plus, LaserWriter
-7.0) and `tests/integration/appletalk-print-71` (System 7.1, a IIcx,
-LaserWriter 7.1.2) drive a real print from the Chooser to a PDF. Both
-are gated on the interpreter: a `PLATEN=0` binary makes them log a skip
+7.0), `tests/integration/appletalk-print-71` (System 7.1, a IIcx,
+LaserWriter 7.1.2) and `tests/integration/appletalk-print-lw8` (System
+7.5, a IIci, LaserWriter 8.1.1) drive a real print from the Chooser to a
+PDF. The LaserWriter 8 row also bounds how long the print takes and how
+much the driver sends: that driver acts on its query's answers, and a
+status line on the read channel once cost it a 330 KB detour (`pap.md`
+§6.3a). All three are gated on the interpreter: a `PLATEN=0` binary makes them log a skip
 and pass, so CI runs the integration tiers with `PLATEN=1` — otherwise
 they are green without printing anything, which is how a System 7.1
 defect once reached a user with CI green.
 
-The two exist separately because the driver versions differ in what they
+They exist separately because the driver versions differ in what they
 send; see the bridge note for the defects only the 7.1.2 path reached.
 
 ## 5.1 Building with the interpreter

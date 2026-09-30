@@ -417,10 +417,6 @@ bool laserwriter_job_finishing(void) {
     return g_lw.state == JOB_FINISHING;
 }
 
-bool laserwriter_job_feed_pending(void) {
-    return g_lw.state == JOB_FEEDING || g_lw.state == JOB_FINISHING;
-}
-
 bool laserwriter_job_feed(uint32_t sequence, const uint8_t *data, size_t len) {
     if (g_lw.state != JOB_READY) {
         LOG(1, "laserwriter: job %u: feed while not ready (state %d)", (unsigned)g_lw.job_id, (int)g_lw.state);
@@ -542,10 +538,6 @@ bool laserwriter_job_ready(void) {
 }
 
 bool laserwriter_job_finishing(void) {
-    return false;
-}
-
-bool laserwriter_job_feed_pending(void) {
     return false;
 }
 
