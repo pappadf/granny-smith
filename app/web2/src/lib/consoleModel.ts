@@ -7,26 +7,20 @@
 // Entries:
 //   command  the submitted input
 //   text     a job's printed text, or a Module.print line outside a job
-//   stderr   a printErr line not claimed by an `error` annotation
+//   stderr   a printErr line, or another client's error
 //   value    the text a job printed between `value_begin` and `value`
-//   error    an `error` annotation with the stderr lines it claimed
+//   error    an `error` annotation of this console's job
 //   echo     a statement another surface ran on the user's behalf
 //
 // Values: after `value_begin` for a job, its text is held until the
 // `value` annotation; the held text becomes one `value` entry.  If the job
 // ends first, the held text becomes `text`.
 //
-// Errors: while this console's job runs, printErr lines are held.  An
-// `error` annotation claims the earliest run of held lines equal to its
-// `lines`; output after an annotation waits behind it until it has claimed
-// its lines, so the error entry lands at the annotation's position without
-// re-rendering anything.  At job end -- or 2 s after a held line arrived --
-// the rest is settled: an annotation whose lines never came renders its own
-// lines, and unclaimed held lines become `stderr` entries in arrival order.
-// The worker's printErr lines travel apart from the job's records and can
-// land after the job's end: an error committed without its lines remembers
-// them, and matching stderr lines that come within the settle time are
-// absorbed rather than shown a second time.
+// Errors: the core writes a job's error once, as an `error` annotation in
+// the job's ordered record stream; it goes to stderr only when no record
+// can carry it.  A `truncated` annotation (the shortened form of an error
+// too large for a record) is such a case: its full text comes on stderr,
+// so the annotation itself is not shown.
 //
 // New entries are buffered and handed to `onFlush` once per frame; at most
 // `cap` entries are kept (the oldest dropped).
@@ -57,7 +51,7 @@ export type ConsoleRecord =
   | { kind: 'output'; text: string; job: number | null }
   | { kind: 'value_begin'; job: number }
   | { kind: 'value'; job: number; json?: unknown }
-  | { kind: 'error'; job: number; lines: string[] }
+  | { kind: 'error'; job: number; lines: string[]; truncated?: boolean }
   | { kind: 'job_start'; job: number }
   | { kind: 'job_end'; job: number };
 
@@ -65,27 +59,16 @@ export interface ConsoleModelOptions {
   cap?: number;
   // Runs `fn` once, at the next frame (requestAnimationFrame in the view).
   schedule: (fn: () => void) => void;
-  // Arms a one-shot timer; returns its cancel.
-  setTimer: (fn: () => void, ms: number) => () => void;
   // Receives the entries to show after each frame's batch.
   onFlush: (entries: readonly ConsoleEntry[]) => void;
 }
 
 export const CONSOLE_CAP = 5000;
-export const ERROR_SETTLE_MS = 2000;
-
-// One item of a job's ordered output: a finished line, a finished value, or
-// an error annotation still looking for its stderr lines.
-type Item =
-  | { t: 'text'; text: string }
-  | { t: 'value'; text: string; json?: unknown }
-  | { t: 'error'; lines: string[] };
 
 interface JobState {
   tail: string; // a partial line not yet ended
   holding: boolean; // between value_begin and value
   held: string; // the value's text so far
-  queue: Item[];
 }
 
 export class ConsoleModel {
@@ -95,14 +78,9 @@ export class ConsoleModel {
   private nextId = 1;
   private readonly cap: number;
   private jobs = new Map<number, JobState>();
-  private loose: JobState = { tail: '', holding: false, held: '', queue: [] };
-  // This console's running job, whose stderr is held.
+  private loose: JobState = { tail: '', holding: false, held: '' };
+  // This console's running job.
   private active: number | null = null;
-  private heldErr: string[] = [];
-  private cancelSettle: (() => void) | null = null;
-  // Lines of errors committed before their stderr arrived (see above).
-  private late: string[] = [];
-  private cancelLate: (() => void) | null = null;
 
   constructor(private readonly opts: ConsoleModelOptions) {
     this.cap = opts.cap ?? CONSOLE_CAP;
@@ -133,24 +111,14 @@ export class ConsoleModel {
         this.add('text', r.line, null);
         return;
       case 'stderr':
-        if (this.late.length && this.late[0] === r.line) {
-          this.late.shift();
-          return;
-        }
-        if (this.active === null) {
-          this.add('stderr', r.line, null);
-          return;
-        }
-        this.heldErr.push(r.line);
-        this.drain(this.active, this.job(this.active));
-        this.armSettle();
+        this.add('stderr', r.line, null);
         return;
       case 'output':
         this.output(r.job, r.text);
         return;
       case 'value_begin': {
         const s = this.job(r.job);
-        this.endLine(s, false);
+        this.endLine(s, r.job);
         s.holding = true;
         s.held = '';
         return;
@@ -161,18 +129,14 @@ export class ConsoleModel {
         s.holding = false;
         const text = s.held.endsWith('\n') ? s.held.slice(0, -1) : s.held;
         s.held = '';
-        s.queue.push({ t: 'value', text, json: r.json });
-        this.drain(r.job, s);
+        this.add('value', text, r.job, r.json);
         return;
       }
       case 'error': {
-        // Another client's error: its stderr was not held, so it is
-        // already shown.
-        if (r.job !== this.active) return;
+        if (r.truncated) return; // the full text comes on stderr
         const s = this.job(r.job);
-        this.endLine(s, false);
-        s.queue.push({ t: 'error', lines: r.lines });
-        this.drain(r.job, s);
+        this.endLine(s, r.job);
+        this.add(r.job === this.active ? 'error' : 'stderr', r.lines.join('\n'), r.job);
         return;
       }
       case 'job_start':
@@ -192,7 +156,7 @@ export class ConsoleModel {
     if (id === null || id !== this.active) return this.loose;
     let s = this.jobs.get(id);
     if (!s) {
-      s = { tail: '', holding: false, held: '', queue: [] };
+      s = { tail: '', holding: false, held: '' };
       this.jobs.set(id, s);
     }
     return s;
@@ -207,80 +171,17 @@ export class ConsoleModel {
     const all = s.tail + text;
     const lines = all.split('\n');
     s.tail = lines.pop() ?? '';
-    for (const line of lines) s.queue.push({ t: 'text', text: line });
+    for (const line of lines) this.add('text', line, job);
     // A request's capture (job null) is complete in itself.
-    if (job === null) this.endLine(s, false);
-    this.drain(job, s);
+    if (job === null) this.endLine(s, null);
   }
 
   // Ends a partial line (at a value/error boundary, or the job's end).
-  private endLine(s: JobState, drain: boolean): void {
+  private endLine(s: JobState, job: number | null): void {
     if (s.tail) {
-      s.queue.push({ t: 'text', text: s.tail });
+      this.add('text', s.tail, job);
       s.tail = '';
     }
-    if (drain) this.drain(null, s);
-  }
-
-  // Commits a job's queue in order up to the first error annotation that
-  // has not yet found its stderr lines (unless `force`).
-  private drain(job: number | null, s: JobState, force = false): void {
-    while (s.queue.length) {
-      const it = s.queue[0];
-      if (it.t === 'error') {
-        const claimed = this.claim(it.lines);
-        if (!claimed && !force) return;
-        if (!claimed) this.expectLate(it.lines);
-        this.add('error', it.lines.join('\n'), job);
-      } else if (it.t === 'value') {
-        this.add('value', it.text, job, it.json);
-      } else {
-        this.add('text', it.text, job);
-      }
-      s.queue.shift();
-    }
-  }
-
-  // Removes the earliest run of held stderr lines equal to `lines`.
-  private claim(lines: string[]): boolean {
-    if (!lines.length) return true;
-    const h = this.heldErr;
-    for (let i = 0; i + lines.length <= h.length; i++) {
-      let ok = true;
-      for (let k = 0; k < lines.length && ok; k++) ok = h[i + k] === lines[k];
-      if (ok) {
-        h.splice(i, lines.length);
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // An error was committed without its stderr lines: absorb them if they
-  // arrive within the settle time.
-  private expectLate(lines: string[]): void {
-    this.late.push(...lines);
-    this.cancelLate?.();
-    this.cancelLate = this.opts.setTimer(() => {
-      this.cancelLate = null;
-      this.late = [];
-    }, ERROR_SETTLE_MS);
-  }
-
-  private armSettle(): void {
-    if (this.cancelSettle) return;
-    this.cancelSettle = this.opts.setTimer(() => {
-      this.cancelSettle = null;
-      this.settleErrors();
-    }, ERROR_SETTLE_MS);
-  }
-
-  // Held stderr that no annotation has claimed becomes plain stderr.
-  private settleErrors(): void {
-    if (this.active !== null) this.drain(this.active, this.job(this.active), true);
-    const rest = this.heldErr;
-    this.heldErr = [];
-    for (const line of rest) this.add('stderr', line, this.active);
   }
 
   private endJob(id: number): void {
@@ -291,17 +192,11 @@ export class ConsoleModel {
       s.holding = false;
       const text = s.held.endsWith('\n') ? s.held.slice(0, -1) : s.held;
       s.held = '';
-      if (text) for (const line of text.split('\n')) s.queue.push({ t: 'text', text: line });
+      if (text) for (const line of text.split('\n')) this.add('text', line, id);
     }
-    this.endLine(s, false);
-    this.drain(id, s, true);
+    this.endLine(s, id);
     this.jobs.delete(id);
-    if (this.active === id) {
-      this.cancelSettle?.();
-      this.cancelSettle = null;
-      this.settleErrors();
-      this.active = null;
-    }
+    this.active = null;
   }
 
   private add(
@@ -327,7 +222,7 @@ export class ConsoleModel {
   flush(): void {
     // A job not run by this console (no job_end will come) ends its lines
     // with the batch.
-    this.endLine(this.loose, true);
+    this.endLine(this.loose, null);
     this.scheduled = false;
     if (!this.pending.length) return;
     let next = this.entries.concat(this.pending);

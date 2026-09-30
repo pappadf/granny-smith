@@ -61,11 +61,13 @@ int script_run_file(const char *path);
 // more lines before submitting.
 bool script_needs_continuation(const char *buf);
 
-// Every statement-error report goes through here: `text` (exactly what is
-// written to stderr, newline-terminated, possibly several lines) goes to
-// stderr, and inside a job an `error` annotation records file (the include
-// path of the reporting site, or ""), line (0 when none), message and the
-// text's lines at this point of the job's record stream.
+// Every statement-error report goes through here.  `text` is the report
+// as printed (newline-terminated, possibly several lines).  Inside a job it
+// becomes an `error` annotation at this point of the job's record stream:
+// file (the include path of the reporting site, or ""), line (0 when
+// none), message and the text's lines.  It goes to stderr only when no
+// record can carry it whole (outside a job, past the output cut, or as a
+// `truncated` record's full text).
 void script_report_error(const char *file, int line, const char *msg, const char *text);
 
 // Ctrl-C for loops: the interpreter checks this once per iteration and

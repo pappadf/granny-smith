@@ -235,7 +235,9 @@ static gs_job_t *annotation_target_locked(void) {
     return g_call.serving ? g_active : NULL;
 }
 
-bool job_annotate(const char *kind, const char *fields, const char *reduced) {
+bool job_annotate(const char *kind, const char *fields, const char *reduced, bool *used_reduced) {
+    if (used_reduced)
+        *used_reduced = false;
     if (!job_current() && !g_call.serving)
         return false;
     size_t max = gs_mailbox_record_max();
@@ -255,10 +257,13 @@ bool job_annotate(const char *kind, const char *fields, const char *reduced) {
         pthread_mutex_unlock(&g_mu);
         int n = snprintf(buf, need, "{\"event\":\"%s\",\"id\":%u,\"client\":%u%s%s}", kind, (unsigned)req,
                          (unsigned)client, body && *body ? "," : "", body ? body : "");
-        if (n > 0 && (size_t)n <= max)
+        if (n > 0 && (size_t)n <= max) {
             json = buf;
-        else
+            if (used_reduced)
+                *used_reduced = pass == 1;
+        } else {
             free(buf);
+        }
     }
     if (!json)
         return false;

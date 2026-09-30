@@ -238,10 +238,13 @@ prints is bracketed by two annotation records in the job's record stream —
 `value_begin` before its text and `value` after it, carrying the value as
 tagged JSON (`"json"`, or `"truncated":true` when that would not fit a
 record) — and every statement error (`script_report_error`, the single
-reporter: the text still goes to stderr unchanged) adds an `error` record
-with `file`, `line`, `message` and the stderr `lines`.  The printed text is
-byte-identical either way; a consumer that wants only text ignores the
-annotations.  Every record, text included, is bounded by a quarter of the
+reporter) is an `error` record with `file`, `line`, `message` and the
+report's `lines`.  A job's error is written only as that record; it goes
+to stderr when no record can carry it whole: outside a job, past the
+output cut, or as the full text of a record shortened to fit (which says
+`"truncated":true`).  Headless without `--framed` prints an error record's
+lines to stderr, so its streams read as before; a consumer that wants only
+text ignores the other annotations.  Every record, text included, is bounded by a quarter of the
 event ring (`gs_mailbox_record_max`), measured on the escaped text.
 
 ## Scripts

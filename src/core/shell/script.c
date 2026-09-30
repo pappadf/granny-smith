@@ -1119,14 +1119,16 @@ static void error_fields(vbuf_t *b, const char *file, int line, const char *msg,
 }
 
 void script_report_error(const char *file, int line, const char *msg, const char *text) {
-    // The text exactly as it has always been written: stderr.
-    fputs(text, stderr);
-    // Inside a job, also an `error` annotation at this point of the job's
-    // record stream, so a console can match the stderr lines to it.
+    // Inside a job: once, as an `error` annotation at this point of the
+    // job's record stream (clients print or render it).  stderr only when no
+    // record can carry it whole: outside a job, past the output cut, or when
+    // only the shortened form fits (that record says `truncated`).
     vbuf_t full = {0}, reduced = {0};
     error_fields(&full, file ? file : "", line, msg ? msg : "", text, 0);
     error_fields(&reduced, file ? file : "", line, msg ? msg : "", text, 512);
-    job_annotate("error", full.p ? full.p : "", reduced.p ? reduced.p : "");
+    bool shortened = false;
+    if (!job_annotate("error", full.p ? full.p : "", reduced.p ? reduced.p : "", &shortened) || shortened)
+        fputs(text, stderr);
     vbuf_free(&full);
     vbuf_free(&reduced);
 }

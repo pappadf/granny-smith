@@ -1,5 +1,5 @@
 // The console's output model: records in, entries out -- values between
-// their markers, errors claiming their stderr lines, one flush per frame,
+// their markers, errors from their annotations, one flush per frame,
 // the entry cap.
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
@@ -7,12 +7,10 @@ import {
   commandsText,
   jobOutputText,
   normalisePaste,
-  ERROR_SETTLE_MS,
   type ConsoleEntry,
 } from '@/lib/consoleModel';
 
 let frames: Array<() => void>;
-let timers: Array<{ fn: () => void; ms: number; live: boolean }>;
 let flushes: number;
 let shown: readonly ConsoleEntry[];
 
@@ -20,11 +18,6 @@ function make(cap?: number): ConsoleModel {
   return new ConsoleModel({
     cap,
     schedule: (fn) => frames.push(fn),
-    setTimer: (fn, ms) => {
-      const t = { fn, ms, live: true };
-      timers.push(t);
-      return () => (t.live = false);
-    },
     onFlush: (e) => {
       flushes++;
       shown = e;
@@ -43,7 +36,6 @@ const view = () => shown.map((e) => [e.kind, e.text]);
 
 beforeEach(() => {
   frames = [];
-  timers = [];
   flushes = 0;
   shown = [];
 });
@@ -156,146 +148,64 @@ describe('ConsoleModel values', () => {
 });
 
 describe('ConsoleModel errors', () => {
-  const ASSERT = ['line 3: assert $x', 'ASSERT FAILED: $x'];
-
-  it('claims stderr lines that arrived before the annotation', () => {
+  it("renders this console's error annotation at its place in the output", () => {
     const m = make();
-    m.push({ kind: 'job_start', job: 9 });
-    m.push({ kind: 'output', job: 9, text: 'ok\n' });
-    m.push({ kind: 'stderr', line: ASSERT[0] });
-    m.push({ kind: 'stderr', line: ASSERT[1] });
-    m.push({ kind: 'error', job: 9, lines: ASSERT });
-    m.push({ kind: 'output', job: 9, text: 'next\n' });
-    m.push({ kind: 'job_end', job: 9 });
+    m.push({ kind: 'job_start', job: 1 });
+    m.push({ kind: 'output', job: 1, text: 'before\n' });
+    m.push({ kind: 'error', job: 1, lines: ['bad', 'worse'] });
+    m.push({ kind: 'output', job: 1, text: 'after\n' });
+    m.push({ kind: 'job_end', job: 1 });
     frame();
     expect(view()).toEqual([
-      ['text', 'ok'],
-      ['error', ASSERT.join('\n')],
-      ['text', 'next'],
+      ['text', 'before'],
+      ['error', 'bad\nworse'],
+      ['text', 'after'],
     ]);
   });
 
-  it('waits for stderr lines that arrive after the annotation, keeping order', () => {
+  it('ends a partial line at the error', () => {
     const m = make();
-    m.push({ kind: 'job_start', job: 10 });
-    m.push({ kind: 'error', job: 10, lines: ASSERT });
-    m.push({ kind: 'output', job: 10, text: 'later\n' });
-    frame();
-    // The output behind the unresolved error waits: nothing re-renders later.
-    expect(view()).toEqual([]);
-    m.push({ kind: 'stderr', line: ASSERT[0] });
-    m.push({ kind: 'stderr', line: ASSERT[1] });
+    m.push({ kind: 'job_start', job: 1 });
+    m.push({ kind: 'output', job: 1, text: 'partial' });
+    m.push({ kind: 'error', job: 1, lines: ['bad'] });
+    m.push({ kind: 'job_end', job: 1 });
     frame();
     expect(view()).toEqual([
-      ['error', ASSERT.join('\n')],
-      ['text', 'later'],
+      ['text', 'partial'],
+      ['error', 'bad'],
     ]);
   });
 
-  it('stderr lines that arrive after the job ended are not shown twice', () => {
-    // The worker's printErr travels apart from the job's records: in the
-    // browser an unknown command's line lands after job_end.
+  it('a truncated annotation is not shown: its full text comes on stderr', () => {
     const m = make();
-    m.push({ kind: 'job_start', job: 20 });
-    m.push({ kind: 'error', job: 20, lines: ["line 1: unknown command or path 'dfsgdfg'"] });
-    m.push({ kind: 'job_end', job: 20 });
-    m.push({ kind: 'stderr', line: "line 1: unknown command or path 'dfsgdfg'" });
+    m.push({ kind: 'job_start', job: 1 });
+    m.push({ kind: 'error', job: 1, lines: ['cut'], truncated: true });
+    m.push({ kind: 'stderr', line: 'the full text' });
+    m.push({ kind: 'job_end', job: 1 });
     frame();
-    expect(view()).toEqual([['error', "line 1: unknown command or path 'dfsgdfg'"]]);
-    // Also when the next job has started meanwhile (type-ahead).
-    m.push({ kind: 'job_start', job: 21 });
-    m.push({ kind: 'error', job: 21, lines: ['a', 'b'] });
-    m.push({ kind: 'job_end', job: 21 });
-    m.push({ kind: 'job_start', job: 22 });
-    m.push({ kind: 'stderr', line: 'a' });
-    m.push({ kind: 'stderr', line: 'b' });
-    m.push({ kind: 'job_end', job: 22 });
-    frame();
-    expect(view().slice(1)).toEqual([['error', 'a\nb']]);
+    expect(view()).toEqual([['stderr', 'the full text']]);
   });
 
-  it('a late line past the settle time is shown', () => {
+  it('stderr lines are shown as they come, during a job or not', () => {
     const m = make();
-    m.push({ kind: 'job_start', job: 23 });
-    m.push({ kind: 'error', job: 23, lines: ['x'] });
-    m.push({ kind: 'job_end', job: 23 });
-    for (const t of timers.filter((t) => t.live && t.ms === ERROR_SETTLE_MS)) t.fn();
-    m.push({ kind: 'stderr', line: 'x' });
+    m.push({ kind: 'stderr', line: 'one' });
+    m.push({ kind: 'job_start', job: 1 });
+    m.push({ kind: 'stderr', line: 'two' });
+    m.push({ kind: 'job_end', job: 1 });
     frame();
     expect(view()).toEqual([
-      ['error', 'x'],
-      ['stderr', 'x'],
+      ['stderr', 'one'],
+      ['stderr', 'two'],
     ]);
   });
 
-  it('two identical errors in one job each claim their own run of lines', () => {
+  it("shows another client's error as stderr", () => {
     const m = make();
-    m.push({ kind: 'job_start', job: 11 });
-    m.push({ kind: 'stderr', line: 'oops' });
-    m.push({ kind: 'error', job: 11, lines: ['oops'] });
-    m.push({ kind: 'output', job: 11, text: 'between\n' });
-    m.push({ kind: 'error', job: 11, lines: ['oops'] });
-    m.push({ kind: 'stderr', line: 'oops' });
-    m.push({ kind: 'job_end', job: 11 });
+    m.push({ kind: 'job_start', job: 1 });
+    m.push({ kind: 'error', job: 7, lines: ['elsewhere'] });
+    m.push({ kind: 'job_end', job: 1 });
     frame();
-    expect(view()).toEqual([
-      ['error', 'oops'],
-      ['text', 'between'],
-      ['error', 'oops'],
-    ]);
-  });
-
-  it('unclaimed held lines become stderr at job end, in arrival order', () => {
-    const m = make();
-    m.push({ kind: 'job_start', job: 12 });
-    m.push({ kind: 'stderr', line: 'warn a' });
-    m.push({ kind: 'stderr', line: 'boom' });
-    m.push({ kind: 'error', job: 12, lines: ['boom'] });
-    m.push({ kind: 'stderr', line: 'warn b' });
-    m.push({ kind: 'job_end', job: 12 });
-    frame();
-    expect(view()).toEqual([
-      ['error', 'boom'],
-      ['stderr', 'warn a'],
-      ['stderr', 'warn b'],
-    ]);
-  });
-
-  it('settles held lines 2 s after one arrives, while the job still runs', () => {
-    const m = make();
-    m.push({ kind: 'job_start', job: 13 });
-    m.push({ kind: 'stderr', line: 'lonely' });
-    frame();
-    expect(view()).toEqual([]);
-    const t = timers.find((x) => x.live);
-    expect(t?.ms).toBe(ERROR_SETTLE_MS);
-    t!.fn();
-    frame();
-    expect(view()).toEqual([['stderr', 'lonely']]);
-  });
-
-  it('an annotation whose lines never came renders its own lines at job end', () => {
-    const m = make();
-    m.push({ kind: 'job_start', job: 14 });
-    m.push({ kind: 'error', job: 14, lines: ['parse error'] });
-    m.push({ kind: 'job_end', job: 14 });
-    frame();
-    expect(view()).toEqual([['error', 'parse error']]);
-  });
-
-  it('stderr outside the console job is shown at once', () => {
-    const m = make();
-    m.push({ kind: 'stderr', line: 'boot warning' });
-    frame();
-    expect(view()).toEqual([['stderr', 'boot warning']]);
-  });
-
-  it("ignores another client's error annotation (its stderr already shows)", () => {
-    const m = make();
-    m.push({ kind: 'stderr', line: 'x' });
-    m.push({ kind: 'error', job: 99, lines: ['x'] });
-    frame();
-    expect(view()).toEqual([['stderr', 'x']]);
+    expect(view()).toEqual([['stderr', 'elsewhere']]);
   });
 });
 

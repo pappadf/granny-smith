@@ -530,8 +530,8 @@ export async function gsEvalLine(line: string): Promise<number> {
       routeConsole({ kind: 'job_start', job: id });
     });
     // The job's output records precede its result on the ring, so what it
-    // printed is in by now: the console settles the job (a last line
-    // without a newline, held values and errors).
+    // printed is in by now: the console ends the job (a last line without a
+    // newline, a value whose marker never came).
     if (foregroundJob !== null) routeConsole({ kind: 'job_end', job: foregroundJob });
     if (r.ok) {
       const prompt: unknown = JSON.parse(r.json);
@@ -790,6 +790,7 @@ function routeCoreEvent(ev: CoreEvent): void {
           kind: 'error',
           job,
           lines: (d.lines as unknown[]).map((l) => String(l)),
+          truncated: d.truncated === true,
         });
       break;
     default:

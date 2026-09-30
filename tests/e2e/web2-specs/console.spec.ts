@@ -3,7 +3,7 @@
 
 // web2 e2e: the Terminal's console against the real core.  A value the REPL
 // prints becomes one structured entry (a list expands), a failing statement
-// becomes an error entry (its stderr claimed by the job's error annotation),
+// becomes one error entry (the job's error annotation; nothing on stderr),
 // and "Copy as commands" of a three-command transcript, pasted back and run,
 // is one command whose output entries equal the original three's.
 

@@ -115,8 +115,9 @@ bool job_output_append(const char *text, size_t len);
 // {"event":"<kind>","id":req,"client":c,<fields>}; `fields` and `reduced`
 // are JSON object bodies without braces.  When the full record would exceed
 // the ring's record bound the `reduced` body is used instead (callers keep it
-// ≤ 8 KiB).  False outside a job, or past the 1 MiB output cut.
-bool job_annotate(const char *kind, const char *fields, const char *reduced);
+// ≤ 8 KiB); `used_reduced` (optional) says whether it was.  False outside a
+// job, or past the 1 MiB output cut.
+bool job_annotate(const char *kind, const char *fields, const char *reduced, bool *used_reduced);
 
 // --- Inline mode --------------------------------------------------------------
 // Without a job thread a script runs on the emulator thread inside the

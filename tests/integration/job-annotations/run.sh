@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Feeds jobs to headless --framed on stdin and checks the record stream
-# (check.py): annotation order, value text between its markers, error lines
-# matching stderr, the reduced form of an oversized value, and escaped
-# control-byte output that fits the ring.
+# (check.py): annotation order, value text between its markers, an error
+# written once (as its record, not also to stderr), the reduced form of an
+# oversized value, and escaped control-byte output that fits the ring.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$WORK_DIR"

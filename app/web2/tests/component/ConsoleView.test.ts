@@ -103,10 +103,7 @@ describe('ConsoleView', () => {
     job(1, [{ kind: 'output', job: 1, text: 'hi\n' }]);
     m.push({ kind: 'stderr', line: 'warn' });
     m.echo('machine.cpu.d0 = 0x1');
-    job(2, [
-      { kind: 'stderr', line: 'bad' },
-      { kind: 'error', job: 2, lines: ['bad'] },
-    ]);
+    job(2, [{ kind: 'error', job: 2, lines: ['bad'] }]);
     await waitFor(() =>
       expect(entries(container)).toEqual([
         ['command', 'echo hi'],

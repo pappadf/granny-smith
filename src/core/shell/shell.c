@@ -291,14 +291,14 @@ static void print_value_here(void *p) {
     const value_t *v = (const value_t *)p;
     bool annotate = v && v->kind != V_NONE && v->kind != V_ERROR;
     if (annotate)
-        annotate = job_annotate("value_begin", "", NULL);
+        annotate = job_annotate("value_begin", "", NULL, NULL);
     format_value_print(v);
     if (!annotate)
         return;
     vbuf_t j = {0};
     vbuf_append(&j, "\"json\":", 7);
     value_format(v, VFMT_JSON_TAGGED, &j);
-    job_annotate("value", j.p ? j.p : "\"json\":null", "\"truncated\":true");
+    job_annotate("value", j.p ? j.p : "\"json\":null", "\"truncated\":true", NULL);
     vbuf_free(&j);
 }
 

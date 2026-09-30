@@ -47,10 +47,6 @@ export function consoleModel(): ConsoleModel {
   if (!model) {
     const m: ConsoleModel = new ConsoleModel({
       schedule: frame,
-      setTimer: (fn, ms) => {
-        const t = setTimeout(fn, ms);
-        return () => clearTimeout(t);
-      },
       // A frame already scheduled when the model was reset flushes nothing.
       onFlush: (entries) => {
         if (model === m) consoleState.entries = entries;

@@ -44,12 +44,13 @@ first_out = next(i for i, (k, _) in enumerate(block) if k == "out")
 need("before" in block[first_out][1]["text"], "text before the value comes first")
 need(block[-1][0] in ("value", "out"), "stream ends with the last statement")
 
-# 2. An assert failure: its stderr line and an error record whose lines equal it.
+# 2. An assert failure: one error record, and nothing on stderr (the core
+#    writes a job's error once, as the record).
 errs = [r for i in ids for k, r in jobs[i] if k == "error"]
 need(len(errs) == 1, "expected one error record, got %d" % len(errs))
 if errs:
     need(errs[0]["lines"] == ["ASSERT FAILED: boom"], "error lines %r" % errs[0]["lines"])
-    need(all(l in stderr for l in errs[0]["lines"]), "error lines are the stderr lines")
+    need(not any(l in stderr for l in errs[0]["lines"]), "the error is not written to stderr as well")
     need(errs[0]["message"] == "ASSERT FAILED: boom", "error message")
 
 # 3. A 256 KiB string: its value record is the reduced form.

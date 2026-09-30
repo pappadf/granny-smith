@@ -922,16 +922,15 @@ entries from those records:
 |---|---|
 | `command` | the submitted input (shown after a `›` glyph) |
 | `text` | a job's printed lines, or a `Module.print` line outside a job |
-| `stderr` | a `printErr` line no `error` annotation claimed |
+| `stderr` | a `printErr` line, or another client's `error` annotation |
 | `value` | the text between `value_begin` and `value`; with the value's tagged JSON, an object renders as a link to its node in the command browser and a list or map expands |
-| `error` | an `error` annotation with the stderr lines it claimed |
+| `error` | an `error` annotation of the console's job, at its place in the output |
 | `echo` | a statement another surface ran for the user (dimmed) |
 
-While the console's job runs, its stderr lines are held. An `error`
-annotation claims the earliest run of held lines equal to its `lines`. The
-job's later output waits behind an unresolved annotation, so nothing is
-re-rendered. At the job's end, or 2 s after a held line arrived, the rest
-settles: unclaimed lines become `stderr` entries.
+The core writes a job's error once, as its `error` annotation, so the entry
+needs no matching against stderr. The one exception is an error too large
+for a record: its annotation is the shortened `truncated` form, which the
+console skips, and the full text arrives on stderr instead.
 
 New entries are appended once per animation frame. At most 5 000 are kept.
 Off-screen entries skip layout (`content-visibility: auto`). Auto-scroll
