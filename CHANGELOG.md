@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `memory.dump` documents its real default count (64, not 16).
   - `machine.boot`'s unset fields no longer show placeholder defaults (`""`, `0`, `255`) in `help` and argument forms.
 - **File-path completion follows `VAL_PATH`** — a string argument completes against the filesystem when it is declared `VAL_PATH`, no longer when its name contains `path`, `src`, `dst`, `file` or `dir`; object-path arguments such as `alias.add path` stop offering files.
+- **Object-model internals restructured** — paths, `meta.members` and shell behaviour are unchanged, except as listed.
+  - A collection is one `collection_desc_t` (entry class; by index and/or by key, with a `next_key` iterator) named by its container's `entries` member; meta, lint, completion and `count` read it, not member names.  `object_collection_new` builds a plain container from the descriptor, and `object_cache_t` is the one lazy entry cache (by index or key) in place of entry pools and hand-kept arrays.
+  - One tree walk (`object_walk`) with canonical paths drives the doc lint; the per-class lint rules live beside the class validator and are checked once per class.
+  - An optional argument with no default that a call skips reaches the method as `none`, also before a later named argument; `obj_arg_unset` is gone.  A computed default is declared as `default_doc`.  In `meta.members`, an empty-string default now reads `null`.
+  - `VAL_RO` is gone: an attribute is read-only when it has no setter.
+  - Every `space` argument (`machine.cpu.mmu.peek`, `machine.memory.peek.bytes`) is the enum `logical` / `physical`; `machine.boot`'s `rom`, `rom2`, `vrom` and `prom` are file paths (`VAL_PATH`).
+  - `files.images`, `machine.nubus` and `machine.pci` are installed by their own subsystems through root install hooks.
 - **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.
   - `storage.*`, `vfs.ls/list/mkdir/cat`, `archive.*` and the root `download` merge into **`files`** (`files.cp`, `files.ls`, `files.archive.extract`, `files.download`, …; `storage.images` → `files.images`).
   - The image-VFS mount cache is the collection `files.mounts[n]`, indexed by a never-reused mount serial; `storage.mounts` / `storage.list_partitions` are gone and `storage.unmount(path)` is `files.mounts[files.mounts.find(path)].unmount()`.
