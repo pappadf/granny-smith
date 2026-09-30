@@ -35,9 +35,9 @@ family-specific hardware lives under
 | page | subject | status |
 |---|---|---|
 | [nubus/declaration-rom.md](nubus/declaration-rom.md) | the NuBus declaration ROM format | content |
-| [nubus/nubus.md](nubus/nubus.md) | the NuBus itself | stub |
-| [nubus/cards/display-card-8-24.md](nubus/cards/display-card-8-24.md) | Display Card 8•24 | stub |
-| [nubus/cards/display-card-24ac.md](nubus/cards/display-card-24ac.md) | Display Card 24AC | stub |
+| [nubus/nubus.md](nubus/nubus.md) | the NuBus itself | content |
+| [nubus/cards/display-card-8-24.md](nubus/cards/display-card-8-24.md) | Display Card 8•24 | content |
+| [nubus/cards/display-card-24ac.md](nubus/cards/display-card-24ac.md) | Display Card 24AC | content |
 
 ## pci/
 
