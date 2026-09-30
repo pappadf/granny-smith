@@ -89,6 +89,30 @@ describe('printed documents', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:doc-1');
   });
 
+  it('lets go of the pointer lock when a document opens', () => {
+    const exitPointerLock = vi.fn();
+    const canvas = document.createElement('canvas');
+    Object.defineProperty(document, 'pointerLockElement', { value: canvas, configurable: true });
+    Object.defineProperty(document, 'exitPointerLock', {
+      value: exitPointerLock,
+      configurable: true,
+    });
+    try {
+      showPrintedDocument(doc('00002-MacOS7.pdf'));
+      expect(exitPointerLock).toHaveBeenCalledTimes(1);
+      closePrintedDocument();
+      reopenPrintedDocument();
+      expect(exitPointerLock).toHaveBeenCalledTimes(2);
+      // Not locked: nothing to let go of.
+      Object.defineProperty(document, 'pointerLockElement', { value: null, configurable: true });
+      showPrintedDocument(doc('00004-MacOS7.pdf'));
+      expect(exitPointerLock).toHaveBeenCalledTimes(2);
+    } finally {
+      delete (document as unknown as Record<string, unknown>).pointerLockElement;
+      delete (document as unknown as Record<string, unknown>).exitPointerLock;
+    }
+  });
+
   it('reopening with nothing printed does nothing', () => {
     reopenPrintedDocument();
     expect(printer.viewerOpen).toBe(false);

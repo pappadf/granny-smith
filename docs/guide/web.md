@@ -166,7 +166,8 @@ transports, installed at module construction:
   it with `emscripten_futex_wake`.  Each finished PDF comes back to the
   page as a transferable and opens in a viewer dialog (the browser's own
   PDF viewer in a frame, with Download and Open-in-a-tab), named
-  `<job>-<title>.pdf`; a browser without an inline viewer
+  `<job>-<title>.pdf`, releasing the pointer lock first so the cursor
+  is free to use it; a browser without an inline viewer
   (`navigator.pdfViewerEnabled` false, e.g. Chrome on Android) downloads
   it at once instead.  The status bar shows the printer's activity from
   the `printer_status` event and reopens the last document.  The protocol is
