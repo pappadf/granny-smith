@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Round trip about 17 ms at p95 with the machine in turbo.
 
 ### Changed
+- **Command browser keys** — Home, End, PageUp and PageDown move the selection, as in the other lists.
 - **A job's error is written once** — as the job's `error` record; stderr carries it only when no record can hold it whole (outside a job, or the full text behind a shortened `truncated` record).  Headless without `--framed` prints error records to stderr, so its output reads as before; `--framed` clients get `@error` without a stderr copy.  The web console no longer matches stderr lines to errors, which also fixes long errors showing twice.
 - **The first word of a line means one thing everywhere** — `help`, completion and highlighting follow the interpreter's order (path, then `def` function, then command), so a `def ls` shadows the `ls` command for all of them.  `include` is now a reserved word; `shell.keywords` lists every keyword, the contextual `command` included.
 - **`files.cp` takes `recursive=true`** instead of a `-r` string argument; `files.partmap` drops its `--json` argument, which never changed the output.
