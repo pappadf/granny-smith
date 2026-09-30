@@ -202,8 +202,7 @@ void tnt_lcd_line(config_t *cfg, int line, char *out, size_t out_size) {
 // exactly one value, so `machine.lcd.line(2)` says what `line[2].text`
 // would, without four child objects to own and tear down.
 
-static value_t lcd_attr_text(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lcd_attr_text) {
     config_t *cfg = (config_t *)object_data(self);
     char buf[ANS_LCD_LINES * (ANS_LCD_COLS + 1) + 1];
     size_t used = 0;
@@ -218,32 +217,27 @@ static value_t lcd_attr_text(struct object *self, const member_t *m) {
     return val_str(buf);
 }
 
-static value_t lcd_attr_cursor(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lcd_attr_cursor) {
     tnt_lcd_t *l = lcd((config_t *)object_data(self));
     return val_uint(1, l ? l->addr : 0);
 }
 
-static value_t lcd_attr_writes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lcd_attr_writes) {
     tnt_lcd_t *l = lcd((config_t *)object_data(self));
     return val_uint(4, l ? l->writes : 0);
 }
 
-static value_t lcd_attr_commands(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lcd_attr_commands) {
     tnt_lcd_t *l = lcd((config_t *)object_data(self));
     return val_uint(4, l ? l->commands : 0);
 }
 
-static value_t lcd_attr_on(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lcd_attr_on) {
     tnt_lcd_t *l = lcd((config_t *)object_data(self));
     return val_bool(l && l->display_on);
 }
 
-static value_t lcd_method_line(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lcd_method_line) {
     config_t *cfg = (config_t *)object_data(self);
     if (argc < 1)
         return val_err("line: want a line number 0..%d", ANS_LCD_LINES - 1);
@@ -264,28 +258,23 @@ static const member_t tnt_lcd_members[] = {
     {.kind = M_ATTR,
      .name = "text",
      .doc = "All four display lines, newline-separated, trailing padding trimmed",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = lcd_attr_text, .set = NULL}},
+     .attr = {.type = V_STRING, .get = lcd_attr_text, .set = NULL}                           },
     {.kind = M_ATTR,
      .name = "cursor",
      .doc = "The controller's address counter (DDRAM address)",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = lcd_attr_cursor, .set = NULL}},
+     .attr = {.type = V_UINT, .get = lcd_attr_cursor, .set = NULL}                           },
     {.kind = M_ATTR,
      .name = "writes",
      .doc = "Character writes to the data register since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = lcd_attr_writes, .set = NULL}},
+     .attr = {.type = V_UINT, .get = lcd_attr_writes, .set = NULL}                           },
     {.kind = M_ATTR,
      .name = "commands",
      .doc = "Command-register writes since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = lcd_attr_commands, .set = NULL}},
+     .attr = {.type = V_UINT, .get = lcd_attr_commands, .set = NULL}                         },
     {.kind = M_ATTR,
      .name = "on",
      .doc = "Display enabled (HD44780 display on/off control)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = lcd_attr_on, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = lcd_attr_on, .set = NULL}                               },
     {.kind = M_METHOD,
      .name = "line",
      .doc = "One display line as a string (0 = top)",

@@ -125,8 +125,9 @@ static void format_object_table(struct object *o) {
         const member_t *mb = &cls->members[i];
         if (!mb->name || mb->kind != M_CHILD)
             continue;
-        const char *child_cls = (mb->child.cls && mb->child.cls->name) ? mb->child.cls->name : "object";
-        gs_outf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.indexed ? "[]" : "");
+        const class_desc_t *ccls = mb->child.collection ? mb->child.collection->entry : mb->child.cls;
+        const char *child_cls = (ccls && ccls->name) ? ccls->name : "object";
+        gs_outf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.collection ? "[]" : "");
     }
 }
 

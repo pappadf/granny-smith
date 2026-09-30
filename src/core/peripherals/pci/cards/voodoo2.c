@@ -3022,78 +3022,63 @@ static voodoo2_t *node_card(struct object *self) {
     return (voodoo2_t *)object_data(self);
 }
 
-static value_t regs_attr_status(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_status) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_status(v) : 0);
 }
-static value_t regs_attr_init_enable(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_init_enable) {
     voodoo2_t *v = node_card(self);
     if (!v)
         return val_uint(4, 0);
     return val_uint(4, (v->init_enable & ~INITEN_RO_MASK) | (V2_CHIP_REVISION << 12) | (V2_CHIP_FAB << 16));
 }
-static value_t regs_attr_fbiinit0(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit0) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT0] : 0);
 }
-static value_t regs_attr_fbiinit1(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit1) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT1] : 0);
 }
-static value_t regs_attr_fbiinit2(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit2) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT2] : 0);
 }
-static value_t regs_attr_fbiinit3(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit3) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT3] : 0);
 }
-static value_t regs_attr_fbiinit7(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_fbiinit7) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->reg[R_FBIINIT7] : 0);
 }
-static value_t regs_attr_fb_size(struct object *self, const member_t *m) {
-    (void)m;
-    (void)self;
+static DEF_GETTER(regs_attr_fb_size) {
     return val_uint(4, V2_FB_SIZE);
 }
-static value_t regs_attr_tmu_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_tmu_size) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->tex_size : 0);
 }
-static value_t regs_attr_raster(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_raster) {
     voodoo2_t *v = node_card(self);
     return val_str(v ? v2_raster_name(v->raster) : "");
 }
-static value_t regs_attr_gpu_engaged(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_gpu_engaged) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && v2_raster_presents(v->raster));
 }
-static value_t regs_attr_gpu_present_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_gpu_present_get) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && !v->gpu_no_present);
 }
-static value_t regs_attr_gpu_present_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(regs_attr_gpu_present_set) {
     voodoo2_t *v = node_card(self);
     if (!v)
         return val_err("regs.gpu_present: no card");
     v->gpu_no_present = !in.b;
     return val_none();
 }
-static value_t regs_attr_gpu_stats(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_gpu_stats) {
     voodoo2_t *v = node_card(self);
     static char buf[1024];
     if (!v)
@@ -3105,9 +3090,7 @@ static const arg_decl_t regs_tex_offset_args[] = {
     {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
     {.name = "lod", .kind = V_INT, .doc = "LOD level (0-8)"     },
 };
-static value_t regs_method_tex_offset(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_tex_offset) {
     voodoo2_t *v = node_card(self);
     int64_t tmu = argv[0].i, lod = argv[1].i;
     if (!v || tmu < 0 || tmu >= V2_NUM_TMUS || lod < 0 || lod > 8)
@@ -3122,9 +3105,7 @@ static const arg_decl_t regs_gamma_args[] = {
 // The gamma ramp as the scanout (and the takeover's present) applies it:
 // the interpolated CLUT once the guest has programmed one, identity
 // before — the gate for the top segment's flat hold (divergence 10).
-static value_t regs_method_gamma(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_gamma) {
     voodoo2_t *v = node_card(self);
     int64_t ch = argv[0].i, in = argv[1].i;
     if (!v || ch < 0 || ch > 2 || in < 0 || in > 255)
@@ -3143,9 +3124,7 @@ static const arg_decl_t regs_tex_save_args[] = {
      .presentation_flags = VAL_PATH,
      .doc = "Host file to write the raw texture RAM to"},
 };
-static value_t regs_method_tex_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_tex_save) {
     voodoo2_t *v = node_card(self);
     int64_t tmu = argv[0].i;
     if (!v || tmu < 0 || tmu >= V2_NUM_TMUS)
@@ -3164,9 +3143,7 @@ static value_t regs_method_tex_save(struct object *self, const member_t *m, int 
 static const arg_decl_t regs_read_arg[] = {
     {.name = "offset", .kind = V_INT, .doc = "Register byte offset ($000-$3FC, V2 spec pp.22-26)"},
 };
-static value_t regs_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_read) {
     voodoo2_t *v = node_card(self);
     int64_t off = argv[0].i;
     if (!v || off < 0 || off > 0x3FC)
@@ -3178,83 +3155,71 @@ static const member_t regs_members[] = {
     {.kind = M_ATTR,
      .name = "status",
      .doc = "status ($000): FIFO free space, retrace, busy bits, swaps pending",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_status}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_status}                                                                                                                                  },
     {.kind = M_ATTR,
      .name = "init_enable",
      .doc = "initEnable (config $40): fbiInit gate, FIFO gate, DAC remap, real revision in 15:12",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_init_enable}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_init_enable}                                                                                                                             },
     {.kind = M_ATTR,
      .name = "fbi_init0",
      .doc = "fbiInit0: bit 0 VGA pass-through, bit 3 register swizzle enable, resets",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit0}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit0}                                                                                                                                },
     {.kind = M_ATTR,
      .name = "fbi_init1",
      .doc = "fbiInit1: video reset, LFB read enable, blanking, output enables",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit1}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit1}                                                                                                                                },
     {.kind = M_ATTR,
      .name = "fbi_init2",
      .doc = "fbiInit2: DRAM control, buffer offset, refresh (DAC data while remapped)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit2}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit2}                                                                                                                                },
     {.kind = M_ATTR,
      .name = "fbi_init3",
      .doc = "fbiInit3: bit 0 alternate register mapping, texture disable",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit3}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit3}                                                                                                                                },
     {.kind = M_ATTR,
      .name = "fbi_init7",
      .doc = "fbiInit7: bit 8 CMDFIFO enable; 7:0 the graphics-clock strap byte",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit7}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_fbiinit7}                                                                                                                                },
     {.kind = M_ATTR,
      .name = "fb_size",
      .doc = "Framebuffer memory in bytes (4 MB on every retail SKU)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = regs_attr_fb_size}},
+     .attr = {.type = V_UINT, .get = regs_attr_fb_size}                                                                                                                                                                },
     {.kind = M_ATTR,
      .name = "tmu_size",
      .doc = "Texture memory per TMU in bytes (the 8/12 MB SKU choice)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = regs_attr_tmu_size}},
+     .attr = {.type = V_UINT, .get = regs_attr_tmu_size}                                                                                                                                                               },
     {.kind = M_ATTR,
      .name = "raster",
      .doc = "The raster backend in use: sw (normative), null, thread, or webgpu (pci_option=\"raster=...\")",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = regs_attr_raster}},
+     .attr = {.type = V_STRING, .get = regs_attr_raster}                                                                                                                                                               },
     {.kind = M_ATTR,
      .name = "gpu_engaged",
      .doc = "True while the WebGPU takeover draws and presents the card's frames (raster=webgpu, monitor driven)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = regs_attr_gpu_engaged}},
+     .attr = {.type = V_BOOL, .get = regs_attr_gpu_engaged}                                                                                                                                                            },
     {.kind = M_ATTR,
      .name = "gpu_present",
      .doc = "The WebGPU takeover presents each vblank (default true); false keeps it rendering without touching the "
-            "canvas — the headless-browser diagnostic (frames still read back through the shadow)", .attr = {.type = V_BOOL, .get = regs_attr_gpu_present_get, .set = regs_attr_gpu_present_set}},
+            "canvas — the headless-browser diagnostic (frames still read back through the shadow)",              .attr = {.type = V_BOOL, .get = regs_attr_gpu_present_get, .set = regs_attr_gpu_present_set}        },
     {.kind = M_ATTR,
      .name = "gpu_stats",
      .doc = "The WebGPU takeover's counters: engagements, fallbacks by reason, readbacks, texture uploads (\"\" "
-            "elsewhere)", .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = regs_attr_gpu_stats}},
+            "elsewhere)",                                                                                          .attr = {.type = V_STRING, .get = regs_attr_gpu_stats}                                              },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read any Chuck register by its byte offset",
-     .method = {.args = regs_read_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}},
+     .method = {.args = regs_read_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}                                                                                                                           },
     {.kind = M_METHOD,
      .name = "gamma",
      .doc = "The video gamma ramp's output for an 8-bit input on a channel (0 r, 1 g, 2 b): the interpolated "
-            "33-entry CLUT once programmed, identity before", .method = {.args = regs_gamma_args, .nargs = 2, .result = V_UINT, .fn = regs_method_gamma}},
+            "33-entry CLUT once programmed, identity before",                                                      .method = {.args = regs_gamma_args, .nargs = 2, .result = V_UINT, .fn = regs_method_gamma}          },
     {.kind = M_METHOD,
      .name = "tex_offset",
      .doc = "Byte offset of a LOD level in the packed mip chain, per the TMU's live tLOD "
-            "(the V2 p.118 size-table arithmetic; the spec's worked examples pin it)", .method = {.args = regs_tex_offset_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_offset}},
+            "(the V2 p.118 size-table arithmetic; the spec's worked examples pin it)",                             .method = {.args = regs_tex_offset_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_offset}},
     {.kind = M_METHOD,
      .name = "tex_save",
      .doc = "Dump a TMU's raw texture RAM to a host file (debug: offline texel forensics)",
-     .method = {.args = regs_tex_save_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_save}},
+     .method = {.args = regs_tex_save_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_save}                                                                                                                  },
 };
 
 static const class_desc_t v2_regs_class = {
@@ -3263,18 +3228,15 @@ static const class_desc_t v2_regs_class = {
     .n_members = sizeof(regs_members) / sizeof(regs_members[0]),
 };
 
-static value_t dac_attr_video_khz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_video_khz) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_video_pll_khz(v) : 0);
 }
-static value_t dac_attr_graphics_khz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_graphics_khz) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_graphics_pll_khz(v) : 0);
 }
-static value_t dac_attr_read_latch(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_read_latch) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->dac_read_latch : 0);
 }
@@ -3283,17 +3245,14 @@ static const member_t dac_members[] = {
     {.kind = M_ATTR,
      .name = "video_khz",
      .doc = "CLK0 (video) PLL output, from the ICS5342's programmed M/N/P",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = dac_attr_video_khz}                                },
     {.kind = M_ATTR,
      .name = "graphics_khz",
      .doc = "CLK1 (graphics) PLL output",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = dac_attr_graphics_khz}                             },
     {.kind = M_ATTR,
      .name = "read_latch",
      .doc = "Last byte read from the DAC (what a remapped fbiInit2 returns)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_read_latch}},
 };
 
@@ -3303,28 +3262,22 @@ static const class_desc_t v2_dac_class = {
     .n_members = sizeof(dac_members) / sizeof(dac_members[0]),
 };
 
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_width) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_screen_width(v) : 0);
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_height) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_screen_height(v) : 0);
 }
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
-    (void)self;
+static DEF_GETTER(fb_attr_depth) {
     return val_uint(4, 16); // the framebuffer is natively 5-6-5
 }
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_stride) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v2_screen_width(v) * 2u : 0);
 }
-static value_t fb_attr_displayed(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_displayed) {
     voodoo2_t *v = node_card(self);
     return val_uint(4, v ? v->displayed_buffer : 0);
 }
@@ -3333,28 +3286,20 @@ static const member_t fb_members[] = {
     {.kind = M_ATTR,
      .name = "width",
      .doc = "Active raster width in pixels (videoDimensions)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_width}    },
+     .attr = {.type = V_UINT, .get = fb_attr_width}                                                                   },
     {.kind = M_ATTR,
      .name = "height",
      .doc = "Active raster height in lines",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_height}   },
+     .attr = {.type = V_UINT, .get = fb_attr_height}                                                                  },
     {.kind = M_ATTR,
      .name = "depth",
      .doc = "Bits per pixel (always 16 — the framebuffer is 5-6-5)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_depth}    },
-    {.kind = M_ATTR,
-     .name = "stride",
-     .doc = "Scanout bytes per row",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_stride}   },
+     .attr = {.type = V_UINT, .get = fb_attr_depth}                                                                   },
+    {.kind = M_ATTR, .name = "stride", .doc = "Scanout bytes per row", .attr = {.type = V_UINT, .get = fb_attr_stride}},
     {.kind = M_ATTR,
      .name = "displayed_buffer",
      .doc = "Physical colour buffer being scanned (status[11:10])",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_displayed}},
+     .attr = {.type = V_UINT, .get = fb_attr_displayed}                                                               },
 };
 static const class_desc_t v2_fb_class = {
     .name = "voodoo2_fb",
@@ -3363,13 +3308,11 @@ static const class_desc_t v2_fb_class = {
     .n_members = sizeof(fb_members) / sizeof(fb_members[0]),
 };
 
-static value_t video_attr_drives(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(video_attr_drives) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && v2_drives_monitor(v));
 }
-static value_t video_attr_swaps_pending(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(video_attr_swaps_pending) {
     voodoo2_t *v = node_card(self);
     if (!v)
         return val_uint(4, 0);
@@ -3381,13 +3324,11 @@ static const member_t video_members[] = {
     {.kind = M_ATTR,
      .name = "drives_monitor",
      .doc = "The pass-through predicate: true while the Voodoo drives the monitor "
-            "(fbiInit0[0] set, video running, unblanked, outputs driven)",   .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = video_attr_drives}       },
+            "(fbiInit0[0] set, video running, unblanked, outputs driven)",   .attr = {.type = V_BOOL, .get = video_attr_drives}},
     {.kind = M_ATTR,
      .name = "swaps_pending",
      .doc = "swapbufferCMDs issued and not yet retired at a frame boundary",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = video_attr_swaps_pending}},
+     .attr = {.type = V_UINT, .get = video_attr_swaps_pending}                                                                 },
 };
 static const class_desc_t v2_video_class = {
     .name = "voodoo2_video",

@@ -420,8 +420,7 @@ RBV_BYTE_ATTR(reg_senb)
 RBV_BYTE_ATTR(reg_monp)
 RBV_BYTE_ATTR(reg_datab)
 
-static value_t rbv_attr_variant(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(rbv_attr_variant) {
     return val_str(((const rbv_t *)object_data(self))->variant == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci");
 }
 
@@ -429,27 +428,22 @@ static const member_t rbv_members[] = {
     IRQ_CONTROLLER_MEMBERS(&rbv_irq_ops){.kind = M_ATTR,
                                          .name = "variant",
                                          .doc = "RBV silicon variant",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_STRING, .get = rbv_attr_variant, .set = NULL}                                                 },
     {.kind = M_ATTR,
                                          .name = "slot_pending",
                                          .doc = "Raw slot IRQ requests, active-high (before RvSEnb)",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = rbv_attr_slot_pending, .set = NULL}},
     {.kind = M_ATTR,
                                          .name = "slot_enable",
                                          .doc = "RvSEnb: which slots may raise RvAnySlot",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_senb, .set = NULL}                   },
     {.kind = M_ATTR,
                                          .name = "monp",
                                          .doc = "RvMonP: depth, monitor sense and video bits",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_monp, .set = NULL}                   },
     {.kind = M_ATTR,
                                          .name = "datab",
                                          .doc = "RvDataB: latched control bits (cache, soft power, sound path)",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_datab, .set = NULL}                  },
 };
 

@@ -14,8 +14,11 @@
 // KIND's attach_objects() hook, never by identity tests here.
 
 #include "config_space.h"
+#include "machine_profile.h"
 #include "object.h"
 #include "pci.h"
+#include "root.h"
+#include "system_config.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -30,15 +33,17 @@ typedef struct pci_slot_nodes {
     struct object *slot;
     struct object *card;
     struct object *config;
-    struct object *bar[PCI_BAR_SLOTS];
+    object_cache_t bars; // the bar nodes, by BAR index; their data is this record
     struct object *fb; // the card's nominated framebuffer node, if any
     pci_device_t *dev;
     int number; // instance data for the slot wrapper
-    int bar_index[PCI_BAR_SLOTS]; // instance data for the bar nodes
 } pci_slot_nodes_t;
 
 static pci_root_t *g_obj_root = NULL;
 static pci_slot_nodes_t g_slot_nodes[PCI_OBJ_SLOTS];
+// The slot wrapper objects, by slot number.
+static const class_desc_t pci_slot_class;
+static object_cache_t g_slot_objects = OBJECT_CACHE(&pci_slot_class, "slot");
 
 // === catalog.pci_cards ======================================================
 
@@ -67,53 +72,37 @@ static pci_slot_nodes_t *node_rec(struct object *self) {
     return (pci_slot_nodes_t *)object_data(self);
 }
 
-// The BAR index a bar node stands for (its instance data is the int inside
-// the owning slot record).
+// The BAR index a bar node stands for (its cache index), and the slot record
+// it belongs to (its instance data).
 static int bar_index_of(struct object *self, pci_slot_nodes_t **rec_out) {
-    const int *idx = (const int *)object_data(self);
-    if (!idx)
-        return -1;
-    for (int s = 0; s < PCI_OBJ_SLOTS; s++) {
-        pci_slot_nodes_t *n = &g_slot_nodes[s];
-        for (int b = 0; b < PCI_BAR_SLOTS; b++) {
-            if (&n->bar_index[b] == idx) {
-                if (rec_out)
-                    *rec_out = n;
-                return b;
-            }
-        }
-    }
-    return -1;
+    if (rec_out)
+        *rec_out = node_rec(self);
+    return object_entry_index(self);
 }
 
-static value_t bar_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_index) {
     return val_int(bar_index_of(self, NULL));
 }
 
-static value_t bar_attr_base(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_base) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     return val_uint(4, (rec && rec->dev && b >= 0) ? pci_cfg_bar_base(rec->dev, b) : 0);
 }
 
-static value_t bar_attr_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_size) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     return val_uint(4, (rec && rec->dev && b >= 0) ? pci_cfg_bar_size(rec->dev, b) : 0);
 }
 
-static value_t bar_attr_mapped(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_mapped) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     return val_bool(rec && rec->dev && b >= 0 && pci_cfg_bar_enabled(rec->dev, b));
 }
 
-static value_t bar_attr_kind(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(bar_attr_kind) {
     pci_slot_nodes_t *rec = NULL;
     int b = bar_index_of(self, &rec);
     if (!rec || !rec->dev || b < 0 || !rec->dev->decl)
@@ -137,27 +126,22 @@ static const member_t bar_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .doc = "BAR number (6 = the expansion-ROM BAR at config $30)",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = bar_attr_index}                               },
     {.kind = M_ATTR,
      .name = "base",
      .doc = "Decoded base address assigned by the guest's firmware",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bar_attr_base}},
     {.kind = M_ATTR,
      .name = "size",
      .doc = "Region size in bytes (what the $FFFFFFFF sizing probe reports)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = bar_attr_size}                               },
     {.kind = M_ATTR,
      .name = "kind",
      .doc = "Space this BAR decodes: mem / mem_prefetch / io / rom",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = bar_attr_kind}                             },
     {.kind = M_ATTR,
      .name = "mapped",
      .doc = "True while the device actually decodes this region",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = bar_attr_mapped}                             },
 };
 static const class_desc_t pci_bar_class = {
@@ -165,33 +149,27 @@ static const class_desc_t pci_bar_class = {
 
 // === config node ============================================================
 
-static value_t cfg_attr_command(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_command) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(2, (n && n->dev) ? n->dev->cfg.command : 0);
 }
-static value_t cfg_attr_status(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_status) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(2, (n && n->dev) ? n->dev->cfg.status : 0);
 }
-static value_t cfg_attr_cache_line(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_cache_line) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(1, (n && n->dev) ? n->dev->cfg.cache_line_size : 0);
 }
-static value_t cfg_attr_int_line(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_int_line) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_int((n && n->dev) ? n->dev->cfg.interrupt_line : 0);
 }
-static value_t cfg_attr_rom_bar(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_rom_bar) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(4, (n && n->dev) ? n->dev->cfg.rom_bar : 0);
 }
-static value_t cfg_attr_rom_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cfg_attr_rom_size) {
     pci_slot_nodes_t *n = node_rec(self);
     return val_uint(4, (n && n->dev) ? (uint64_t)n->dev->rom_size : 0);
 }
@@ -202,52 +180,43 @@ static struct object *pci_bar_get(struct object *self, int index) {
     pci_slot_nodes_t *n = node_rec(self);
     if (!n || index < 0 || index >= PCI_BAR_SLOTS)
         return NULL;
-    return n->bar[index];
+    return object_cache_find(&n->bars, index);
 }
 
 static const member_t config_members[] = {
     {.kind = M_ATTR,
      .name = "command",
      .doc = "Config $04 command register (bit 0 = I/O, 1 = memory, 2 = bus master)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = cfg_attr_command}},
     {.kind = M_ATTR,
      .name = "status",
      .doc = "Config $06 status register",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = cfg_attr_status} },
     {.kind = M_ATTR,
      .name = "cache_line",
      .doc = "Config $0C cache line size, in longwords",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = cfg_attr_cache_line}                            },
     {.kind = M_ATTR,
      .name = "interrupt_line",
      .doc = "Config $3C interrupt line — the controller line number the OS stored",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = cfg_attr_int_line}                               },
     {.kind = M_ATTR,
      .name = "rom_bar",
      .doc = "Config $30 expansion-ROM BAR (bit 0 = decode enable)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = cfg_attr_rom_bar}},
     {.kind = M_ATTR,
      .name = "rom_size",
      .doc = "Expansion-ROM image size in bytes (0 = no ROM)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = cfg_attr_rom_size}                              },
 };
 // `config.bar` -- the BAR collection: a container whose entries are the bar
 // nodes.  Its instance data is the slot record, like the config node's.
-static const member_t pci_bars_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Base address registers; index 0..5, plus 6 for the expansion ROM",
-     .child = {.cls = &pci_bar_class, .indexed = true, .get = pci_bar_get, .slots = PCI_BAR_SLOTS}},
+static const collection_desc_t pci_bars = {
+    .entry = &pci_bar_class,
+    .by_index = {.get = pci_bar_get, .slots = PCI_BAR_SLOTS},
+    .name = "pci_bars",
+    .entries_doc = "Base address registers; index 0..5, plus 6 for the expansion ROM",
 };
-static const class_desc_t pci_bars_class = {.name = "pci_bars",
-                                            .members = pci_bars_members,
-                                            .n_members = sizeof(pci_bars_members) / sizeof(pci_bars_members[0])};
 
 static const class_desc_t pci_config_class = {
     .name = "config", .members = config_members, .n_members = sizeof(config_members) / sizeof(config_members[0])};
@@ -258,48 +227,37 @@ static pci_device_t *card_dev(struct object *self) {
     return (pci_device_t *)object_data(self);
 }
 
-static value_t card_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_name) {
     pci_device_t *d = card_dev(self);
     return val_str((d && d->ops && d->ops->name) ? d->ops->name(d) : "");
 }
-static value_t card_attr_vendor(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_vendor) {
     pci_device_t *d = card_dev(self);
     return val_uint(2, (d && d->decl) ? d->decl->vendor_id : 0);
 }
-static value_t card_attr_device(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_device) {
     pci_device_t *d = card_dev(self);
     return val_uint(2, (d && d->decl) ? d->decl->device_id : 0);
 }
-static value_t card_attr_class(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_class) {
     pci_device_t *d = card_dev(self);
     return val_uint(4, (d && d->decl) ? d->decl->class_code : 0);
 }
 
 static const member_t card_members[] = {
-    {.kind = M_ATTR,
-     .name = "name",
-     .doc = "Device display name",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = card_attr_name}                               },
+    {.kind = M_ATTR, .name = "name", .doc = "Device display name", .attr = {.type = V_STRING, .get = card_attr_name}},
     {.kind = M_ATTR,
      .name = "vendor_id",
      .doc = "PCI vendor id (config $00)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_vendor}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_vendor}                               },
     {.kind = M_ATTR,
      .name = "device_id",
      .doc = "PCI device id (config $02)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_device}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_device}                               },
     {.kind = M_ATTR,
      .name = "class_code",
      .doc = "24-bit class / subclass / prog-if (config $09..$0B)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_class} },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = card_attr_class}                                },
 };
 static const class_desc_t pci_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
@@ -315,27 +273,22 @@ static const pci_slot_decl_t *node_slot_decl(struct object *self) {
     return pci_slot_decl_get(g_obj_root, node_slot_number(self));
 }
 
-static value_t slot_attr_number(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_number) {
     return val_int(node_slot_number(self));
 }
-static value_t slot_attr_label(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_label) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_str((d && d->label) ? d->label : "");
 }
-static value_t slot_attr_bus(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_bus) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_int(d ? d->bus : -1);
 }
-static value_t slot_attr_device(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_device) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_int(d ? d->device : -1);
 }
-static value_t slot_attr_irq(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_irq) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_int(d ? d->int_line : -1);
 }
@@ -344,14 +297,12 @@ static value_t slot_attr_irq(struct object *self, const member_t *m) {
 // machine.boot (the concrete-slot sibling of machine.boot's `pci_card=`
 // wildcard; a concrete entry beats the wildcard).  Only SOCKET slots
 // accept a pick; "" clears.  Consumed and cleared by pci_seat_slots.
-static value_t slot_attr_card_id_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_card_id_get) {
     const char *id = pci_staged_card_get(node_slot_number(self));
     return val_str(id ? id : "");
 }
 
-static value_t slot_attr_card_id_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(slot_attr_card_id_set) {
     int slot = node_slot_number(self);
     if (in.kind != V_STRING) {
         value_free(&in);
@@ -381,28 +332,23 @@ static const member_t slot_members[] = {
     {.kind = M_ATTR,
      .name = "number",
      .doc = "Logical slot number (1-based, in the machine's declared order)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = slot_attr_number}                                      },
+     .attr = {.type = V_INT, .get = slot_attr_number}},
     {.kind = M_ATTR,
      .name = "label",
      .doc = "Slot name silkscreened on the board (\"A1\", \"VCI\")",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = slot_attr_label}                                    },
+     .attr = {.type = V_STRING, .get = slot_attr_label}},
     {.kind = M_ATTR,
      .name = "bus",
      .doc = "Host-bridge bus index this slot sits on",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = slot_attr_bus}                                         },
+     .attr = {.type = V_INT, .get = slot_attr_bus}},
     {.kind = M_ATTR,
      .name = "device",
      .doc = "PCI device number (IDSEL AD line) on that bus",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = slot_attr_device}                                      },
+     .attr = {.type = V_INT, .get = slot_attr_device}},
     {.kind = M_ATTR,
      .name = "irq",
      .doc = "Interrupt-controller line the slot's strapped INTA-D reaches",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = slot_attr_irq}                                         },
+     .attr = {.type = V_INT, .get = slot_attr_irq}},
     {.kind = M_ATTR,
      .name = "card_id",
      .doc = "Staged card pick for this socket for the next machine.boot (\"\" = none)",
@@ -422,45 +368,40 @@ static struct object *pci_slot_get(struct object *self, int index) {
 }
 
 // `machine.pci.slot` -- the slot collection: a container (attached under
-// `machine.pci` by root_install) whose entries are the declared slots.
-static const member_t pci_slots_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Declared PCI slots; index by slot number, e.g. slot[1].card.config",
-     .child = {.cls = &pci_slot_class, .indexed = true, .get = pci_slot_get, .slots = PCI_OBJ_SLOTS}},
-};
-
-const class_desc_t pci_slots_class = {
+// `machine.pci` by the install hook below) whose entries are the declared
+// slots.
+static const collection_desc_t pci_slots = {
+    .entry = &pci_slot_class,
+    .by_index = {.get = pci_slot_get, .slots = PCI_OBJ_SLOTS},
     .name = "pci_slots",
     .doc = "PCI slots, by slot number",
-    .members = pci_slots_members,
-    .n_members = sizeof(pci_slots_members) / sizeof(pci_slots_members[0]),
+    .entries_doc = "Declared PCI slots; index by slot number, e.g. slot[1].card.config",
 };
 
 // `machine.pci` itself carries no members of its own: its `slot` child is
 // the container above.
-const class_desc_t pci_class = {
+static const class_desc_t pci_class = {
     .name = "pci",
     .doc = "The PCI expansion bus: slots and their cards",
     .members = NULL,
     .n_members = 0,
 };
 
-static struct object *g_slots_container = NULL;
-
-// The container is freed by root_uninstall; forget it then.
-static void slots_container_dtor(struct object *o) {
-    if (g_slots_container == o)
-        g_slots_container = NULL;
-}
-
-void pci_objects_adopt(struct object *slots) {
-    g_slots_container = slots;
-    if (slots)
-        object_set_destructor(slots, slots_container_dtor);
-    for (int i = 0; i < PCI_OBJ_SLOTS; i++)
-        if (g_slot_nodes[i].slot)
-            object_set_logical_parent(g_slot_nodes[i].slot, slots, NULL, i, NULL);
+// `machine.pci` and its slot collection, under the machine node (they are
+// emulated hardware, not meta objects), on a machine with that bus.
+static void pci_root_install(struct config *cfg) {
+    if (!cfg || !cfg->pci)
+        return;
+    struct object *bus = root_attach_stub(machine_object(), object_new(&pci_class, cfg, "pci"));
+    if (!bus)
+        return;
+    object_set_label(bus, "PCI");
+    object_set_order(bus, 101);
+    struct object *slots = root_attach_stub(bus, object_collection_new(&pci_slots, cfg, "slot"));
+    if (slots) {
+        object_set_label(slots, "Slots");
+        object_cache_set_parent(&g_slot_objects, slots);
+    }
 }
 
 // === Object-tree build / teardown ===========================================
@@ -469,6 +410,7 @@ void pci_objects_build(pci_root_t *root) {
     pci_objects_teardown(); // idempotent — drop any prior trees first
     if (!root)
         return;
+    root_register_install(pci_root_install, NULL); // idempotent
     g_obj_root = root;
     for (int i = 0; i < PCI_OBJ_SLOTS; i++) {
         const pci_slot_decl_t *decl = pci_slot_decl_get(root, i);
@@ -477,13 +419,11 @@ void pci_objects_build(pci_root_t *root) {
         pci_slot_nodes_t *n = &g_slot_nodes[i];
         n->number = i;
         n->dev = pci_slot_device(root, i);
-        n->slot = object_new(&pci_slot_class, &n->number, "slot");
+        n->slot = object_cache_at(&g_slot_objects, i, &n->number);
         if (!n->slot)
             continue;
         object_set_label(n->slot, decl->label ? decl->label : "Slot");
         object_set_order(n->slot, i);
-        if (g_slots_container)
-            object_set_logical_parent(n->slot, g_slots_container, NULL, i, NULL);
         if (!n->dev)
             continue; // empty socket: the wrapper plus its staged attrs
 
@@ -502,22 +442,22 @@ void pci_objects_build(pci_root_t *root) {
             object_set_order(n->config, 10);
             object_set_category(n->config, M_CAT_ADVANCED);
             object_attach(n->card, n->config);
-            struct object *bars = object_new(&pci_bars_class, n, "bar");
+            struct object *bars = object_collection_new(&pci_bars, n, "bar");
             if (bars) {
                 object_set_label(bars, "BARs");
                 object_set_order(bars, 10);
                 object_attach(n->config, bars);
             }
+            n->bars = (object_cache_t)OBJECT_CACHE(&pci_bar_class, "bar");
+            object_cache_set_parent(&n->bars, bars);
             for (int b = 0; b < PCI_BAR_SLOTS; b++) {
                 if (!pci_cfg_bar_size(n->dev, b))
                     continue;
-                n->bar_index[b] = b;
-                n->bar[b] = object_new(&pci_bar_class, &n->bar_index[b], "bar");
-                if (!n->bar[b])
+                struct object *bar = object_cache_at(&n->bars, b, n);
+                if (!bar)
                     continue;
-                object_set_label(n->bar[b], "BAR");
-                object_set_order(n->bar[b], b);
-                object_set_logical_parent(n->bar[b], bars, NULL, b, NULL);
+                object_set_label(bar, "BAR");
+                object_set_order(bar, b);
             }
         }
 
@@ -553,17 +493,12 @@ struct object *pci_active_framebuffer_object(void) {
 }
 
 void pci_objects_teardown(void) {
-    for (int i = 0; i < PCI_OBJ_SLOTS; i++) {
-        // The bar nodes are not attached to the config node (the indexed
-        // child member serves them), so free them explicitly first.
-        for (int b = 0; b < PCI_BAR_SLOTS; b++) {
-            if (g_slot_nodes[i].bar[b])
-                object_delete_tree(g_slot_nodes[i].bar[b]);
-        }
-        if (g_slot_nodes[i].slot)
-            object_delete_tree(g_slot_nodes[i].slot); // slot + attached subtree
-        memset(&g_slot_nodes[i], 0, sizeof(g_slot_nodes[i]));
-    }
+    // The bar nodes are not attached to the config node (the collection
+    // serves them), so free them first; then each slot with its subtree.
+    for (int i = 0; i < PCI_OBJ_SLOTS; i++)
+        object_cache_clear(&g_slot_nodes[i].bars);
+    object_cache_clear(&g_slot_objects);
+    memset(g_slot_nodes, 0, sizeof(g_slot_nodes));
     g_obj_root = NULL;
 }
 

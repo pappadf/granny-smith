@@ -5,11 +5,6 @@
 // Object-model substrate: classes, members, objects, nodes, path resolution.
 //
 // Tests construct toy classes directly to exercise the resolver.
-//
-// Indexed-child stability: indices are sparse and stable. New entries
-// receive max_index_ever + 1; removed indices are never recycled. The
-// child descriptor's get/count/next callbacks implement that contract;
-// this module does not assume a particular collection storage strategy.
 
 #ifndef GS_OBJECT_OBJECT_H
 #define GS_OBJECT_OBJECT_H
@@ -45,11 +40,10 @@ struct class_desc;
 // OBJ_ARG_GROUPED — this optional argument is part of an all-or-nothing group
 // that the method body checks by argument count (screen.match's exclude
 // rectangles: one reference, or a reference plus all four edges, or plus all
-// eight).  Such a slot deliberately has no default: skipping it alone is not a
-// legal call, so the class validator's "an optional with no default that
-// precedes another optional is unreachable by name" rule does not apply.
-// Saying so in the declaration is the point — without it the grouping lives
-// only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
+// eight).  An optional argument with no default that a caller skips reaches
+// the body as V_NONE; a grouped one may not be skipped alone -- naming a later
+// argument past it is an error -- so the grouping lives in the declaration and
+// not only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
 #define OBJ_ARG_GROUPED 0x0040u
 // OBJ_ARG_NONE_OK — the slot also takes `none`, meaning "unset": an
 // attribute such as machine.scc.a.output is a path while it is set and
@@ -63,11 +57,11 @@ struct class_desc;
 
 // === Member visibility category ==============================================
 //
-// A three-tier visibility classification, stored in the high bits of
-// member_t.flags (the low bits hold VAL_RO/VAL_HEX/… from value.h, which
-// occupy 0x0001..0x0020). Every consumer (SYSTEM tab, command browser)
-// reads the category off the model so visibility cannot drift the way a
-// hand-maintained allowlist did:
+// A three-tier visibility classification, the only content of member_t.flags
+// (an attribute is read-only when it has no setter; display flags live in
+// the slot's presentation_flags). Every consumer (SYSTEM tab, command
+// browser) reads the category off the model so visibility cannot drift the
+// way a hand-maintained allowlist did:
 //   basic    — always shown in the tree; the default (0).
 //   advanced — shown only with the "Advanced" toggle on.
 //   internal — never shown in the tree, but fully scriptable.
@@ -103,7 +97,26 @@ typedef struct arg_decl {
     const char *const *enum_values; // NULL-terminated table for V_ENUM
     const value_t *default_value; // optional default for OBJ_ARG_OPTIONAL slots
     const char *doc;
+    // What an omitted optional argument means when that is computed rather
+    // than a value (`the current PC`, `the model's`).  Shown after the doc as
+    // `; omitted: <default_doc>`; an argument has this or default_value.
+    const char *default_doc;
 } arg_decl_t;
+
+// True if the argument declares a default worth showing: a value other than
+// none or the empty string.
+bool arg_has_default(const arg_decl_t *a);
+
+// An argument's doc as a reader sees it: its doc, then `; omitted: …` for a
+// computed default.  Writes into buf (NUL-terminated, truncated).
+void arg_doc_text(const arg_decl_t *a, char *buf, size_t size);
+
+// A NULL-terminated example list for member_t.examples.
+#define EXAMPLES(...) ((const char *const[]){__VA_ARGS__, NULL})
+
+// A required string argument naming a VFS path.
+#define ARG_PATH(arg_name, arg_doc)                                                                                    \
+    {.name = (arg_name), .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = (arg_doc)}
 
 // === Function pointer types ==================================================
 //
@@ -121,12 +134,59 @@ typedef value_t (*attr_get_fn)(struct object *self, const struct member *m);
 // kinds carry no allocation, so a setter for those may skip the free.
 typedef value_t (*attr_set_fn)(struct object *self, const struct member *m, value_t in);
 typedef value_t (*method_fn)(struct object *self, const struct member *m, int argc, const value_t *argv);
+
+// Definitions of the three callback shapes, for bodies that need not use
+// every parameter: `static DEF_GETTER(cpu_attr_pc) { ... }`.  The setter's
+// `in` stays a plain parameter -- the setter owns it and must free it.
+#define OBJ_UNUSED     __attribute__((unused))
+#define DEF_GETTER(fn) value_t fn(struct object *self OBJ_UNUSED, const struct member *m OBJ_UNUSED)
+#define DEF_SETTER(fn) value_t fn(struct object *self OBJ_UNUSED, const struct member *m OBJ_UNUSED, value_t in)
+#define DEF_METHOD(fn)                                                                                                 \
+    value_t fn(struct object *self OBJ_UNUSED, const struct member *m OBJ_UNUSED, int argc OBJ_UNUSED,                 \
+               const value_t *argv OBJ_UNUSED)
 typedef struct object *(*child_get_fn)(struct object *self, int index);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
 typedef struct object *(*child_lookup_fn)(struct object *self, const char *name);
-// Keyed-collection enumeration: fills *out_names with the live keys and returns
-// their count.  The names are borrowed and valid until the next call.
-typedef int (*child_keys_fn)(struct object *self, const char ***out_names);
+// Keyed-collection enumeration: the live key after `prev` (NULL to start), or
+// NULL at the end.  The key stays valid while its entry exists.
+typedef const char *(*child_next_key_fn)(struct object *self, const char *prev);
+
+// === Collection descriptor ===================================================
+//
+// How a collection hands out its entries.  By index, the ids are sparse and
+// stable (new entries take max_index_ever + 1; removed ids are never reused):
+// get(i) answers each index in [0, slots), NULL for a hole, or -- for ids with
+// no fixed bound -- next(prev) walks the live ones (-1 to start, -1 at the
+// end) and get(i) answers each.  By key, lookup(key) answers an entry and
+// next_key(prev) walks the live keys; keys are short identifiers
+// (object_valid_key).  A collection may be both (`appletalk.afp.volumes`,
+// whose lookup maps a volume name onto its slot).
+//
+// A collection is the one `entries` member of its container node's class
+// (OBJ_ENTRIES); the container carries the collection verbs (add, clear,
+// find).  A container with nothing but its entries is made from the
+// descriptor alone by object_collection_new, which reads the container
+// fields below.
+typedef struct collection_desc {
+    const struct class_desc *entry; // class of every entry
+    struct {
+        child_get_fn get;
+        child_next_fn next;
+        int slots;
+    } by_index;
+    struct {
+        child_lookup_fn lookup;
+        child_next_key_fn next_key;
+    } by_key;
+    // For object_collection_new: the container class's name and doc, the
+    // entries member's doc, and further container members (collection
+    // verbs).
+    const char *name;
+    const char *doc;
+    const char *entries_doc;
+    const struct member *verbs;
+    size_t n_verbs;
+} collection_desc_t;
 
 // === Member descriptor =======================================================
 
@@ -144,7 +204,7 @@ typedef struct member {
     member_kind_t kind;
     const char *name;
     const char *doc;
-    uint16_t flags; // VAL_RO + M_CAT_* visibility (per-member, not per-slot)
+    uint16_t flags; // M_CAT_* visibility
     // Optional display label. The path segment stays
     // `name`; the tree shows `label` when present, else `name`. NULL = use
     // the name.
@@ -189,29 +249,19 @@ typedef struct member {
             const char *result_doc;
         } method;
         struct {
+            // A named child: its class, and lookup(self, name)→object|NULL
+            // when the child is not statically attached.
             const struct class_desc *cls;
-            bool indexed;
+            child_lookup_fn lookup;
+            // A collection's entries (the container's `entries` member):
+            // the descriptor that hands them out.  A class has at most one.
+            const struct collection_desc *collection;
             // A non-owning reference edge: the child is a
             // cross-reference the parent points at but does not own. It does
             // not cascade-delete and renders as a clickable link, not an
             // expandable child. Reference children are always callback-backed
             // (never in the attached/owning list) so cascade never frees them.
             bool reference;
-            // Indexed children: get(i)→object|NULL (NULL = hole) for i in
-            //                   [0, slots); the core walks them.  A collection
-            //                   whose ids are sparse past any fixed bound gives
-            //                   next(prev)→next live index or -1 (start at -1)
-            //                   instead.  A class whose one indexed child this
-            //                   is answers `count` with its live entries.
-            // Named children:   lookup(name)→object|NULL.
-            child_get_fn get;
-            int slots;
-            child_next_fn next;
-            child_lookup_fn lookup; // for named children (when not statically attached)
-            // Keyed collections (`log.category["scsi"]`): the live key set.
-            // A keyed collection's `entries` member is indexed with
-            // get = next = NULL and sets lookup + keys.
-            child_keys_fn keys;
         } child;
     };
 } member_t;
@@ -272,10 +322,9 @@ void object_delete(struct object *o);
 // (deepest children first, then `o`). "Owned" means the attached-child
 // (object_attach) edges, which form the spanning tree and the canonical
 // path. Reference edges (member_t.child.reference, always
-// callback-backed and never attached) are not followed. Indexed-collection
-// item objects produced by member get/next callbacks are likewise not
-// attached, so they are not freed here — their owning module frees them in
-// its own destructor. Each object's destructor (object_set_destructor)
+// callback-backed and never attached) are not followed. Collection entries
+// are likewise not attached, so they are not freed here — their owning
+// module (or its object_cache) frees them. Each object's destructor (object_set_destructor)
 // runs before its wrapper memory is freed.
 void object_delete_tree(struct object *o);
 
@@ -292,8 +341,8 @@ void object_set_destructor(struct object *o, object_dtor_fn dtor);
 // Tree topology. Both object_attach and object_detach are O(1).
 // object_attach asserts that child is not already attached elsewhere.
 // Named statically-attached children are looked up by walking the
-// attached list; indexed children are looked up via the child member's
-// get/next callbacks instead.
+// attached list; collection entries are handed out by the collection
+// descriptor instead.
 void object_attach(struct object *parent, struct object *child);
 void object_detach(struct object *child);
 
@@ -321,36 +370,84 @@ const char *object_logical_name(struct object *o); // named-child segment, or NU
 int object_logical_index(struct object *o); // entry index, or -1
 const char *object_logical_key(struct object *o); // entry key, or NULL
 
+// Room for any canonical path (object_compute_path truncates past it).
+#define OBJ_PATH_MAX 512
+
 // Keys of keyed collections are short identifiers: [A-Za-z0-9_.-]{1,63}.
 #define OBJ_KEY_MAX 63
 bool object_valid_key(const char *key);
 
-// === Entry pools =============================================================
+// === Collections =============================================================
+
+// A container's `entries` member over collection descriptor `coll`.
+#define OBJ_ENTRIES(coll, doc_text)                                                                                    \
+    {                                                                                                                  \
+        .kind = M_CHILD, .name = "entries", .doc = (doc_text), .child = {.collection = (coll) }                        \
+    }
+
+// True if `m` is a collection's entries member.
+static inline bool member_is_collection(const member_t *m) {
+    return m && m->kind == M_CHILD && m->child.collection;
+}
+
+// The collection member of a class (its one `entries` member), or NULL: what
+// makes a node a collection container.
+const member_t *class_collection(const class_desc_t *cls);
+
+// A container node over `coll` with no class of its own: object_new of a
+// class built once per descriptor from its container fields (name, doc,
+// entries_doc, verbs).
+struct object *object_collection_new(const collection_desc_t *coll, void *data, const char *name);
+
+// Entry `index` / `key` of collection member `m` on `self`, or NULL.  An entry
+// handed out without a logical parent is given `self` as one.
+struct object *object_entry_at(struct object *self, const member_t *m, int index);
+struct object *object_entry_by_key(struct object *self, const member_t *m, const char *key);
+
+// The object named child member `m` stands for right now: its lookup (given a
+// logical parent as above), else the attached child of that name; or NULL.
+struct object *object_named_child(struct object *self, const member_t *m);
+
+// The next live index after `prev` (-1 to start), or -1: the collection's
+// next(), or a walk of get() over its slots.
+int object_child_next(struct object *self, const member_t *m, int prev);
+
+// The next live key after `prev` (NULL to start), or NULL.
+const char *object_child_next_key(struct object *self, const member_t *m, const char *prev);
+
+// Live entries of collection member `m`: its indices, or for a collection
+// that is keyed only, its keys.
+uint32_t object_collection_count(struct object *self, const member_t *m);
+
+// === Entry caches ============================================================
 //
-// A collection whose entries are made once, one per slot of the table they
-// stand for: entry i's data is its slot number, so its callbacks find their
-// record with object_pool_slot(self), and the collection's get() hands out
-// object_pool_at(pool, i).  OBJECT_POOL declares the storage; the network
-// modules each carried a data type, two arrays and a create and a delete loop
-// per collection -- eight of them.
-typedef struct {
-    struct object **objs;
-    int *slots;
-    int n;
-} object_pool_t;
+// The entry objects of one collection, made on first use and found again by
+// index or key.  Each is an object_new of the cache's class and name over the
+// `data` given when it is made, with the container (object_cache_set_parent,
+// before or after) as its logical parent; the cache owns them.  A collection
+// whose records come and go frees the entries of dead ones with
+// object_cache_sweep; object_cache_clear frees them all, with any subtree
+// attached to them.
+typedef struct object_cache {
+    const class_desc_t *cls; // entry class
+    const char *name; // entry object name (borrowed), may be NULL
+    struct object *parent; // the container; cleared if it is freed first
+    struct object_cache_slot *slots; // heap: one per entry made
+    int n, cap;
+} object_cache_t;
 
-#define OBJECT_POOL(name, count)                                                                                       \
-    static struct object *name##_objs[count];                                                                          \
-    static int name##_slots[count];                                                                                    \
-    static object_pool_t name = {name##_objs, name##_slots, (count)}
+#define OBJECT_CACHE(entry_cls, entry_name) {.cls = (entry_cls), .name = (entry_name)}
 
-void object_pool_create(object_pool_t *pool, const class_desc_t *cls);
-// Register `parent` (the collection container) as every entry's logical
-// parent, entry i at index i.
-void object_pool_set_parent(object_pool_t *pool, struct object *parent);
-void object_pool_delete(object_pool_t *pool);
-struct object *object_pool_at(const object_pool_t *pool, int slot); // NULL out of range or before create
-int object_pool_slot(struct object *entry); // -1 for no entry
+struct object *object_cache_at(object_cache_t *c, int index, void *data); // find or make
+struct object *object_cache_key(object_cache_t *c, const char *key, void *data); // find or make
+struct object *object_cache_find(const object_cache_t *c, int index); // NULL when not made
+void object_cache_set_parent(object_cache_t *c, struct object *parent);
+// Free every entry for which live(entry, ud) is false.
+void object_cache_sweep(object_cache_t *c, bool (*live)(struct object *entry, void *ud), void *ud);
+void object_cache_clear(object_cache_t *c);
+
+// The index an entry was made at by its cache, or -1.
+int object_entry_index(struct object *entry);
 
 // === Counter blocks ==========================================================
 //
@@ -364,7 +461,7 @@ value_t obj_u64_field_get(struct object *self, const member_t *m);
 
 #define OBJ_U64_FIELD_WITH(block_type, field, doc_text, getter)                                                        \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
+        .kind = M_ATTR, .name = #field, .doc = doc_text, .attr = {                                                     \
             .type = V_UINT,                                                                                            \
             .width = 8,                                                                                                \
             .get = getter,                                                                                             \
@@ -414,7 +511,7 @@ const char *object_domain_name(uint8_t domain); // "emulator" | "machine" | "net
 
 // Iterate this object's statically-attached children (named children
 // added via object_attach). Calls fn for each. Indexed children declared
-// via member_t.child.get/next are not visited here.
+// by a collection descriptor are not visited here.
 void object_each_attached(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
                           void *ud);
 
@@ -427,6 +524,46 @@ void object_each_attached_ordered(struct object *o, void (*fn)(struct object *pa
 // Linear lookup of a member by name. Returns NULL if not found.
 const member_t *class_find_member(const class_desc_t *cls, const char *name);
 
+// === Member predicates =======================================================
+//
+// The one reading of each question every surface asks of a member (meta,
+// usage, lint, completion).
+
+// Read-only: an attribute with no setter.
+static inline bool member_is_readonly(const member_t *m) {
+    return m->kind == M_ATTR && !m->attr.set;
+}
+
+// Shown in the basic tier: category basic, and not a hidden method.
+static inline bool member_is_basic(const member_t *m) {
+    return (m->flags & M_CAT_MASK) == M_CAT_BASIC && !(m->kind == M_METHOD && (m->method.ui_flags & MM_HIDDEN));
+}
+
+// Listed on its node (help's member lists): not internal, and not a hidden
+// method.
+static inline bool member_is_listed(const member_t *m) {
+    return (m->flags & M_CAT_MASK) != M_CAT_INTERNAL && !(m->kind == M_METHOD && (m->method.ui_flags & MM_HIDDEN));
+}
+
+// === Tree walk ===============================================================
+//
+// One walk of the live tree for every tool that visits all of it (the doc
+// lint): from `start`, each object once -- then its declared members, its
+// named children, its collection entries and its attached children, depth
+// first -- with its canonical path (as meta.path gives it; "" for the root).
+typedef struct object_visitor {
+    // An object reached.  `via` is the child member it was reached through
+    // (NULL for the start and attached children); `basic` whether it shows
+    // in the basic tier (an entry or a named child's subtree does not);
+    // `first` whether it is the first object of its class the walk met.
+    // Return false to skip its members and subtree.
+    bool (*object)(struct object *o, const member_t *via, const char *path, bool basic, bool first, void *ud);
+    // A declared member of an object reached; `path` is the member's path.
+    void (*member)(struct object *o, const member_t *m, const char *path, bool first, void *ud);
+} object_visitor_t;
+
+void object_walk(struct object *start, const object_visitor_t *v, void *ud);
+
 // === Node and resolution =====================================================
 
 // Resolution returns a node = (object, member, index). The node is the
@@ -435,7 +572,7 @@ const member_t *class_find_member(const class_desc_t *cls, const char *name);
 typedef struct node {
     struct object *obj;
     const member_t *member; // NULL if the path resolves to an object itself
-    int index; // for M_CHILD with indexed=true; -1 otherwise
+    int index; // entry index on a collection member; -1 otherwise
 } node_t;
 
 // True if the node is bound to something resolvable.
@@ -487,17 +624,13 @@ typedef struct {
 value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
                        value_t *out_argv, int *out_argc);
 
-// The next live index of an indexed child member after `prev` (-1 to start),
-// or -1: the member's own next(), or a walk of get() over its slots.
-int object_child_next(struct object *self, const member_t *m, int prev);
-
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);
 
-// Name-key descent into an indexed collection: `volumes["Shared"]`. Routed to
-// the child member's `lookup` callback, which maps a stable name onto whatever
-// slot currently holds it. Returns an invalid node when the collection has no
-// lookup callback or the name is unknown.
+// Key descent into a collection: `volumes["Shared"]`. Routed to the
+// collection's by_key lookup, which maps a stable name onto whatever entry
+// currently holds it. Returns an invalid node when the collection has no
+// lookup or the key is unknown.
 node_t node_child_key(node_t n, const char *key);
 
 // === Reserved-word check =====================================================
@@ -554,15 +687,12 @@ void object_fire_invalidators(struct object *o);
 // writes a one-line message into err_buf (may be NULL).
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
 
-// Default value for an optional argument that has no real default.
-//
-// node_validate_args can only truncate argc at the tail, so an optional slot a
-// caller skipped must still be filled if any later optional was supplied. Give
-// such a slot `.default_value = &obj_arg_unset` and the body sees V_NONE,
-// meaning "not supplied". Declaring a real kind and defaulting to a sentinel of
-// some *other* kind (V_INT -1 for a V_UINT slot, say) is the thing this
-// replaces: it makes the body re-check a kind the declaration already fixed.
-extern const value_t obj_arg_unset;
+// Documentation gaps a member declares, beside the hard errors above: a
+// basic-tier method argument with no doc, an untyped (V_ANY / V_NONE)
+// argument without OBJ_ARG_POLY, a V_ANY result without result_doc.  Calls
+// report once per gap; `a` is the argument, or NULL for a member rule.
+typedef void (*object_doc_gap_fn)(const member_t *m, const arg_decl_t *a, const char *rule, void *ud);
+void object_member_doc_gaps(const member_t *m, object_doc_gap_fn report, void *ud);
 
 // === Meta-attribute slot ====================================================
 //

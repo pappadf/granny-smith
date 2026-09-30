@@ -889,7 +889,7 @@ static value_t lisa_method_peek(struct object *self, const member_t *mb, int arg
     return val_uint((uint8_t)size, lisa_mmu_debug_read((uint32_t)argv[0].u, size, debug_cpu_is_supervisor()));
 }
 
-// peek's default size: a named `space` must be reachable past it.
+// peek's default size.
 static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
 
 static const arg_decl_t lisa_translate_args[] = {
@@ -897,12 +897,11 @@ static const arg_decl_t lisa_translate_args[] = {
     {.name = "supervisor",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "translate for supervisor (context 0) or user; omitted: the CPU's current state"},
+     .doc = "translate for supervisor (context 0) or user",
+     .default_doc = "the CPU's current state"},
     {.name = "fetch",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
      .doc = "accepted for the uniform signature; the segment MMU does not distinguish"},
 };
 static const arg_decl_t lisa_peek_args[] = {
@@ -913,35 +912,34 @@ static const arg_decl_t lisa_peek_args[] = {
      .default_value = &k_peek_size4,
      .doc = "1, 2 or 4 bytes"},
     {.name = "space",
-     .kind = V_STRING,
+     .kind = V_ENUM,
+     .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "\"logical\"; \"physical\" is refused on the Lisa; omitted: logical"},
+     .doc = "\"logical\"; \"physical\" is refused on the Lisa",
+     .default_doc = "logical"},
 };
 
 static const member_t lisa_mmu_members[] = {
     {.kind = M_ATTR,
      .name = "start",
-     .flags = VAL_RO,
      .doc = "START/SETUP latch: set at power-on, translation bypassed while set",
-     .attr = {.type = V_BOOL, .get = lisa_attr_start}                                        },
+     .attr = {.type = V_BOOL, .get = lisa_attr_start}},
     {.kind = M_ATTR,
      .name = "context",
-     .flags = VAL_RO,
      .doc = "User context selected by the SEG1/SEG2 latches (0-3); supervisor mode always uses 0",
-     .attr = {.type = V_INT, .get = lisa_attr_context}                                       },
+     .attr = {.type = V_INT, .get = lisa_attr_context}},
     {.kind = M_METHOD,
      .name = "translate",
-     .examples = (const char *const[]){"machine.cpu.mmu.translate 0x20000", NULL},
+     .examples = EXAMPLES("machine.cpu.mmu.translate 0x20000"),
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind, plus the segment space)",
      .method = {.result_doc = "{phys, valid, via, space}",
                 .args = lisa_translate_args,
                 .nargs = 3,
                 .result = V_MAP,
-                .fn = lisa_method_translate}                                                 },
+                .fn = lisa_method_translate}},
     {.kind = M_METHOD,
      .name = "peek",
-     .examples = (const char *const[]){"machine.cpu.mmu.peek 0x20000", NULL},
+     .examples = EXAMPLES("machine.cpu.mmu.peek 0x20000"),
      .doc = "Read memory through the segment MMU; side-effect-free",
      .method = {.args = lisa_peek_args, .nargs = 3, .result = V_UINT, .fn = lisa_method_peek}},
 };

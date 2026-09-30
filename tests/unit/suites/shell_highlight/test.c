@@ -74,11 +74,12 @@ static int drive_next(struct object *self, int prev) {
     (void)self;
     return prev + 1 < 2 ? prev + 1 : -1;
 }
+static const collection_desc_t floppy_entries = {
+    .entry = &drive_class, .by_index = {.get = drive_get, .next = drive_next}
+};
+
 static const member_t floppy_members[] = {
-    {.kind = M_CHILD,
-     .name = "drive",
-     .doc = "Drives",
-     .child = {.cls = &drive_class, .indexed = true, .get = drive_get, .next = drive_next}},
+    {.kind = M_CHILD, .name = "drive", .doc = "Drives", .child = {.collection = &floppy_entries}},
 };
 static const class_desc_t floppy_class = {.name = "floppy", .members = floppy_members, .n_members = 1};
 static const class_desc_t machine_class = {.name = "machine", .members = NULL, .n_members = 0};
