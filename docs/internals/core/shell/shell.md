@@ -212,6 +212,9 @@ start of a statement declares one, so a member may still be named `command`.
 
 Highlighting, completion, the signature hint and `help` follow the method a
 command runs: `help ls` prints `files.ls`'s usage, noting that `ls` runs it.
+They all read the first word through one resolver (`shell_head_resolve`,
+`commands.h`), in the interpreter's order, so a `def ls` shadows the
+command for `help` and completion exactly as it does when the line runs.
 
 ## Output
 
@@ -370,7 +373,8 @@ hint cannot disagree:
 - **Node** — `<full.path> — <label>`, its doc, then `attributes:`,
   `methods:` and `children:` lines (basic and advanced tiers).
 
-`shell.keywords` lists every reserved word with its one-line syntax.
+`shell.keywords` lists every keyword (the reserved words and the
+contextual `command`) with its one-line syntax.
 
 ## See also
 

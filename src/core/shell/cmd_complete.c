@@ -498,7 +498,7 @@ static void complete_path(const char *partial, struct completion *out) {
 // === Commands =================================================================
 //
 // Command words (commands.h) at the head of a statement: those whose target
-// is a method now, and which no root member shadows.
+// is a method now, and which no root member or `def` function shadows.
 
 struct command_acc {
     const char *partial;
@@ -510,7 +510,7 @@ static bool command_cb(const char *name, const char *target, bool builtin, void 
     (void)builtin;
     struct command_acc *acc = (struct command_acc *)ud;
     node_t n;
-    if (node_valid(object_resolve(object_root(), name)) || !shell_command_lookup(name, &n, NULL, 0))
+    if (shell_head_resolve(name, strlen(name), &n, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
         return true;
     // The name is the iteration's copy: keep it in the per-call pool.
     const char *copy = pool_strdup(name);
@@ -843,11 +843,11 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
             complete_path(partial, out);
         } else {
             // Statement keywords.
-            static const char *const kws[] = {"let", "alias", "command",  "if",     "elif", "else",  "while",
-                                              "for", "break", "continue", "return", "def",  "assert"};
-            for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++) {
+            for (size_t i = 0; i < object_keyword_count(); i++) {
+                if (!object_keyword_is_statement(i))
+                    continue;
                 set_detail(out, COMP_KIND_KEYWORD, NULL);
-                push_match(out, kws[i], partial);
+                push_match(out, object_keyword(i), partial);
             }
             complete_root_members(partial, out);
             complete_commands(partial, out);
@@ -866,10 +866,12 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     first[fwlen] = '\0';
 
     // Resolve as a tree path — root methods and dotted method paths
-    // (`floppy.drives[0].insert`) both land here.
+    // (`floppy.drives[0].insert`) both land here.  A bare word is read the
+    // way the interpreter reads it: a command stands for the method it
+    // names; a `def` function has no declared arguments.
     node_t cmd_node = object_resolve(object_root(), first);
-    // A command word stands for the method it names.
-    if (!node_valid(cmd_node) && !strpbrk(first, ".[") && !shell_command_lookup(first, &cmd_node, NULL, 0))
+    if (!node_valid(cmd_node) && !strpbrk(first, ".[") &&
+        shell_word_resolve(first, strlen(first), &cmd_node, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
         cmd_node = (node_t){0};
     if (node_valid(cmd_node) && cmd_node.member && cmd_node.member->kind == M_METHOD) {
         set_arg_context(out, cmd_node, line, info, partial);

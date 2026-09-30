@@ -61,6 +61,28 @@ let d = shell.highlight("command ll = files.list")
 assert $d[0].class == "decl" "command is a keyword"
 assert $d[1].class == "method" "the declared word"
 
+# === A def function shadows a command, everywhere =============================
+# The interpreter runs the function; help, completion and highlighting say
+# the same.
+def ls() {
+    return "mine"
+}
+assert ls() == "mine" "the function runs"
+let fu = shell.usage("ls")
+assert contains($fu.text, "function") "help ls describes the function"
+assert $fu.signature == "" "no files.ls signature for the function"
+let fc = shell.complete("l", 1, true)
+for k in $fc.candidates {
+    assert $k.text != "ls" || $k.kind != "method" "ls is not offered as the files.ls command"
+}
+let fa = shell.complete("ls /", 4, true)
+assert $fa.context.method == none "no files.ls argument context"
+shell.functions.ls.remove
+assert shell.usage("ls").signature == "files.ls [path]" "the command is back"
+
+# `include` is a reserved word.
+assert try(shell.command.add("include", "files.list"), "err") == "err" "include is reserved"
+
 rm $dir
 echo "shell-command-words-ok"
 quit

@@ -21,9 +21,12 @@ value_t object_usage(const char *path);
 // Just the text (what `help <path>` prints), or V_ERROR.
 value_t object_usage_text(const char *path);
 
-// Whether `word` is a command, and the method path it runs: for a word
-// that is no path, usage shows that method's text (with a note saying so).
-// Installed by the shell; NULL (the default) knows no commands.
-void object_usage_set_command_probe(bool (*probe)(const char *word, char *target, size_t target_size));
+// How the shell reads a word that is no path (the object layer cannot ask
+// the shell itself): a `def` function, or a command running the method
+// whose path it writes to `target`.  Usage of a function is a note; of a
+// command, the method's text with a note.  Installed by the shell; NULL
+// (the default) knows neither.
+typedef enum { USAGE_WORD_NONE, USAGE_WORD_FUNCTION, USAGE_WORD_COMMAND } usage_word_t;
+void object_usage_set_word_resolver(usage_word_t (*resolve)(const char *word, char *target, size_t target_size));
 
 #endif // GS_OBJECT_USAGE_H

@@ -10,8 +10,10 @@
 // Byte offsets are checked on non-ASCII text.
 
 #include "alias.h"
+#include "commands.h"
 #include "highlight.h"
 #include "object.h"
+#include "shell_funcs.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -122,16 +124,13 @@ static const member_t util_members[] = {
 };
 static const class_desc_t util_class = {.name = "util", .members = util_members, .n_members = 1};
 
-// `bp` is a command running debug.breakpoints.add.
-static bool is_command(const char *word, node_t *out) {
-    if (strcmp(word, "bp") != 0)
-        return false;
-    *out = object_resolve(object_root(), "debug.breakpoints.add");
-    return node_valid(*out);
+// The function registry, stubbed: `myfn` is a def function.
+static int g_fn_token;
+script_func_t *shell_func_find(const char *name) {
+    return strcmp(name, "myfn") == 0 ? (script_func_t *)&g_fn_token : NULL;
 }
-
-static bool is_function(const char *name) {
-    return strcmp(name, "myfn") == 0;
+void shell_func_release(script_func_t *f) {
+    (void)f;
 }
 
 static void build_tree(void) {
@@ -150,8 +149,10 @@ static void build_tree(void) {
     object_attach(object_root(), object_new(&util_class, NULL, "util"));
     char err[128];
     alias_register_builtin("pc", "machine.cpu.pc", err, sizeof(err));
-    highlight_set_function_probe(is_function);
-    highlight_set_command_probe(is_command);
+    // `bp` is a command running debug.breakpoints.add.
+    shell_command_clear_user();
+    if (shell_command_define("bp", "debug.breakpoints.add", err, sizeof(err)) != 0)
+        fprintf(stderr, "command bp: %s\n", err);
 }
 
 // === Rendering ====================================================================

@@ -354,6 +354,16 @@ const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
     return r;
 }
 
+bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out) {
+    job_tables_lock();
+    const char *r = alias_lookup_impl(name, kind_out);
+    bool ok = r && buf && strlen(r) < size;
+    if (ok)
+        memcpy(buf, r, strlen(r) + 1);
+    job_tables_unlock();
+    return ok;
+}
+
 void alias_each(alias_iter_fn fn, void *ud) {
     job_tables_lock();
     alias_each_impl(fn, ud);

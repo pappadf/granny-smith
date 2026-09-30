@@ -7,6 +7,7 @@
 
 #include "commands.h"
 
+#include "shell_funcs.h"
 #include "value.h"
 #include "job/job.h"
 
@@ -47,6 +48,9 @@ typedef struct {
 static user_cmd_t *g_user;
 static size_t g_user_count, g_user_cap;
 
+// Longest target path, NUL included.
+#define TARGET_MAX 256
+
 static int builtin_index(const char *name) {
     for (size_t i = 0; i < N_BUILTIN; i++)
         if (strcmp(k_builtin[i].name, name) == 0)
@@ -74,6 +78,14 @@ static bool method_node(const char *path, node_t *out) {
 int shell_command_define(const char *name, const char *target, char *err, size_t err_size) {
     if (!object_validate_name(name, err, err_size))
         return -1;
+    if (strlen(name) >= SHELL_NAME_MAX) {
+        snprintf(err, err_size, "'%s' is longer than %d characters", name, SHELL_NAME_MAX - 1);
+        return -1;
+    }
+    if (strlen(target) >= TARGET_MAX) {
+        snprintf(err, err_size, "the target path is longer than %d characters", TARGET_MAX - 1);
+        return -1;
+    }
     if (builtin_index(name) >= 0) {
         snprintf(err, err_size, "'%s' is a built-in command", name);
         return -1;
@@ -148,7 +160,7 @@ int shell_command_remove(const char *name, char *err, size_t err_size) {
 bool shell_command_lookup(const char *word, node_t *out, char *target, size_t target_size) {
     if (!word || !*word)
         return false;
-    char path[256];
+    char path[TARGET_MAX];
     int b = builtin_index(word);
     if (b >= 0) {
         snprintf(path, sizeof(path), "%s", k_builtin[b].target);
@@ -166,6 +178,46 @@ bool shell_command_lookup(const char *word, node_t *out, char *target, size_t ta
     if (target && target_size)
         snprintf(target, target_size, "%s", path);
     return true;
+}
+
+shell_head_t shell_word_resolve(const char *word, size_t len, node_t *out, script_func_t **fn_out, char *target,
+                                size_t target_size) {
+    if (fn_out)
+        *fn_out = NULL;
+    if (len == 0 || len >= SHELL_NAME_MAX)
+        return SHELL_HEAD_NONE;
+    char name[SHELL_NAME_MAX];
+    memcpy(name, word, len);
+    name[len] = '\0';
+    script_func_t *fn = shell_func_find(name);
+    if (fn) {
+        if (fn_out)
+            *fn_out = fn;
+        else
+            shell_func_release(fn);
+        return SHELL_HEAD_FUNCTION;
+    }
+    if (shell_command_lookup(name, out, target, target_size))
+        return SHELL_HEAD_COMMAND;
+    return SHELL_HEAD_NONE;
+}
+
+shell_head_t shell_head_resolve(const char *word, size_t len, node_t *out, script_func_t **fn_out, char *target,
+                                size_t target_size) {
+    if (fn_out)
+        *fn_out = NULL;
+    if (len == 0 || len >= SHELL_NAME_MAX)
+        return SHELL_HEAD_NONE;
+    char name[SHELL_NAME_MAX];
+    memcpy(name, word, len);
+    name[len] = '\0';
+    node_t n = object_resolve(object_root(), name);
+    if (node_valid(n)) {
+        if (out)
+            *out = n;
+        return SHELL_HEAD_PATH;
+    }
+    return shell_word_resolve(name, len, out, fn_out, target, target_size);
 }
 
 void shell_command_each(shell_command_fn fn, void *ud) {

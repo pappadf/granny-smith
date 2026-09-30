@@ -14,7 +14,6 @@
 
 #include "commands.h"
 #include "expr.h"
-#include "highlight.h"
 #include "script.h"
 #include "shell_var.h"
 #include "usage.h"
@@ -323,29 +322,21 @@ static value_t func_expr_hook(void *ud, const char *name, int argc, const value_
 
 // === Install / uninstall ====================================================
 
-// For shell.highlight: a def'd function's name heads a call, not an
-// unknown path.
-static bool function_exists(const char *name) {
-    script_func_t *f = shell_func_find(name);
-    if (!f)
-        return false;
-    shell_func_release(f);
-    return true;
-}
-
-// A command whose target is a method now (commands.h), for highlighting.
-static bool command_exists(const char *word, node_t *out) {
-    return shell_command_lookup(word, out, NULL, 0);
-}
-
-static bool command_target(const char *word, char *target, size_t target_size) {
-    return shell_command_lookup(word, NULL, target, target_size);
+// For help / shell.usage (object layer): a word that is no path, read the
+// way the interpreter reads it (commands.h).
+static usage_word_t usage_word(const char *word, char *target, size_t target_size) {
+    switch (shell_word_resolve(word, strlen(word), NULL, NULL, target, target_size)) {
+    case SHELL_HEAD_FUNCTION:
+        return USAGE_WORD_FUNCTION;
+    case SHELL_HEAD_COMMAND:
+        return USAGE_WORD_COMMAND;
+    default:
+        return USAGE_WORD_NONE;
+    }
 }
 
 void shell_funcs_install(struct object *shell_obj) {
-    highlight_set_function_probe(function_exists);
-    highlight_set_command_probe(command_exists);
-    object_usage_set_command_probe(command_target);
+    object_usage_set_word_resolver(usage_word);
     if (!shell_obj || g_functions_obj)
         return;
     g_functions_obj = object_new(&functions_class, NULL, "functions");

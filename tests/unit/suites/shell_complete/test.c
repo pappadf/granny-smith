@@ -9,6 +9,7 @@
 #include "cmd_complete.h"
 #include "commands.h"
 #include "object.h"
+#include "shell_funcs.h"
 #include "shell_var.h"
 #include "test_assert.h"
 #include "value.h"
@@ -19,6 +20,15 @@
 #include <string.h>
 
 // === Stubs =====================================================================
+
+// No def functions here.
+script_func_t *shell_func_find(const char *name) {
+    (void)name;
+    return NULL;
+}
+void shell_func_release(script_func_t *f) {
+    (void)f;
+}
 
 void shell_var_each(shell_var_iter_fn fn, void *ud) {
     (void)fn;

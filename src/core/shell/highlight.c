@@ -25,24 +25,13 @@
 #include "highlight.h"
 
 #include "alias.h"
+#include "commands.h"
 #include "object.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #define PREFIX_MAX 512
-
-static bool (*g_function_probe)(const char *name);
-
-void highlight_set_function_probe(bool (*probe)(const char *name)) {
-    g_function_probe = probe;
-}
-
-static bool (*g_command_probe)(const char *word, node_t *out);
-
-void highlight_set_command_probe(bool (*probe)(const char *word, node_t *out)) {
-    g_command_probe = probe;
-}
 
 // === Span list ================================================================
 
@@ -357,12 +346,11 @@ static const char *path_rest(hl_t *h, const char *p, prefix_t *pf) {
             if (*q != ']')
                 return q; // unterminated index: stop here
             emit(h, q, q + 1, "operator");
+            // A failed index makes what follows unknown; the index itself
+            // keeps its literal classes.
             if (pf->known && pf->ok) {
                 prefix_add(pf, open, q + 1, false);
-                const char *cls = prefix_resolve(pf);
-                // A failed index makes what follows unknown; the index
-                // itself keeps its literal classes.
-                (void)cls;
+                (void)prefix_resolve(pf);
             }
             p = q + 1;
             continue;
@@ -371,10 +359,10 @@ static const char *path_rest(hl_t *h, const char *p, prefix_t *pf) {
     }
 }
 
-// A path starting with an identifier at p.  `call` — a `(` follows: an
-// unresolved head is a function (builtin or def), not unknown.  Answers
-// the end; `out` (optional) gets the resolved node when the whole path
-// resolved.
+// A path starting with an identifier at p.  An unresolved single word
+// followed by `(`, or naming a `def` function, is a call, not unknown.
+// Answers the end; `out` (optional) gets the resolved node when the whole
+// path resolved.
 static const char *path(hl_t *h, const char *p, node_t *out) {
     const char *e = ident_end(p);
     const char *after = e;
@@ -388,7 +376,8 @@ static const char *path(hl_t *h, const char *p, node_t *out) {
             emit(h, p, e, "method");
             return e;
         }
-        if (g_function_probe && pf.len && g_function_probe(pf.text) && *after != '.' && *after != '[') {
+        if (*after != '.' && *after != '[' &&
+            shell_word_resolve(p, (size_t)(e - p), NULL, NULL, NULL, 0) == SHELL_HEAD_FUNCTION) {
             emit(h, p, e, "method");
             return e;
         }
@@ -412,10 +401,13 @@ static const char *binding(hl_t *h, const char *p) {
     size_t n = (size_t)(e - s) < sizeof(name) - 1 ? (size_t)(e - s) : sizeof(name) - 1;
     memcpy(name, s, n);
     name[n] = '\0';
-    const char *target = alias_lookup(name, NULL);
-    emit(h, p, e, target ? "alias" : "variable");
-    prefix_t pf = {.ok = true, .known = target != NULL};
-    if (target) {
+    // The emulator thread highlights while the job thread may redefine
+    // aliases: work on a copy.
+    char target[PREFIX_MAX];
+    bool is_alias = alias_lookup_copy(name, target, sizeof(target), NULL);
+    emit(h, p, e, is_alias ? "alias" : "variable");
+    prefix_t pf = {.ok = true, .known = is_alias};
+    if (is_alias) {
         prefix_add(&pf, target, target + strlen(target), false);
         (void)prefix_resolve(&pf);
     }
@@ -694,14 +686,9 @@ static const char *statement(hl_t *h, const char *p) {
             }
         }
         // A command word: the method it names, with its arguments.
-        if (g_command_probe && *e != '.' && *e != '[' && *e != '(' && e - s < 64) {
-            char word[64];
-            memcpy(word, s, (size_t)(e - s));
-            word[e - s] = '\0';
+        if (*e != '.' && *e != '[' && *e != '(') {
             node_t cmd = {0};
-            bool is_path = node_valid(object_resolve(object_root(), word));
-            bool is_function = g_function_probe && g_function_probe(word);
-            if (!is_path && !is_function && g_command_probe(word, &cmd)) {
+            if (shell_head_resolve(s, (size_t)(e - s), &cmd, NULL, NULL, 0) == SHELL_HEAD_COMMAND) {
                 emit(h, s, e, "method");
                 const char *r = skip_ws(e);
                 if (!*r || *r == '\n' || *r == ';' || *r == '#' || *r == '{' || *r == '}')

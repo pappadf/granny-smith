@@ -509,10 +509,13 @@ node_t node_child_key(node_t n, const char *key);
 // Returns true if `name` collides with a reserved word.
 bool object_is_reserved_word(const char *name);
 
-// The reserved words, in table order, each with a one-line syntax.
-size_t object_reserved_word_count(void);
-const char *object_reserved_word(size_t i);
-const char *object_reserved_word_syntax(size_t i);
+// The shell's keywords, in table order, each with a one-line syntax: the
+// reserved words plus contextual ones (`command`, a keyword only in its
+// statement shape).  `is_statement`: it heads a statement.
+size_t object_keyword_count(void);
+const char *object_keyword(size_t i);
+const char *object_keyword_syntax(size_t i);
+bool object_keyword_is_statement(size_t i);
 
 // Validate a candidate member/alias name. Returns true if acceptable.
 // Diagnostic messages are written to err_buf (may be NULL).

@@ -325,24 +325,18 @@ static value_t shell_method_lint_members(struct object *self, const member_t *m,
     return object_lint_members(example_resolves);
 }
 
-// `shell.keywords` — [{word, syntax}] for every keyword.
+// `shell.keywords` — [{word, syntax}] for every keyword (object.c's table).
 static value_t shell_get_keywords(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     value_t *items = NULL;
     size_t len = 0, cap = 0;
-    for (size_t i = 0; i < object_reserved_word_count(); i++) {
+    for (size_t i = 0; i < object_keyword_count(); i++) {
         value_map_builder_t *b = val_map_new();
-        val_map_put(b, "word", val_str(object_reserved_word(i)));
-        val_map_put(b, "syntax", val_str(object_reserved_word_syntax(i)));
+        val_map_put(b, "word", val_str(object_keyword(i)));
+        val_map_put(b, "syntax", val_str(object_keyword_syntax(i)));
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
-    // `command` is a contextual keyword (a member may be named `command`),
-    // so it is not a reserved word; it is a keyword all the same.
-    value_map_builder_t *b = val_map_new();
-    val_map_put(b, "word", val_str("command"));
-    val_map_put(b, "syntax", val_str("command <name> = <path> — a bare word that runs the method"));
-    val_list_push(&items, &len, &cap, val_map_finish(b));
     return val_list(items, len);
 }
 
@@ -406,7 +400,7 @@ static const member_t shell_members[] = {
      .attr = {.type = V_LIST, .get = shell_get_vars, .set = NULL}},
     {.kind = M_ATTR,
      .name = "keywords",
-     .doc = "Every reserved word with its one-line syntax: [{word, syntax}]",
+     .doc = "Every keyword with its one-line syntax: [{word, syntax}]",
      .flags = VAL_RO,
      .attr = {.type = V_LIST, .get = shell_get_keywords, .set = NULL}},
     {.kind = M_METHOD,

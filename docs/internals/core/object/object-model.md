@@ -309,9 +309,12 @@ access, so they survive `machine.boot`:
 ### Reserved words
 
 Statement keywords: `let`, `alias`, `if`, `elif`, `else`, `while`,
-`for`, `in`, `break`, `continue`, `return`, `def`, `assert`. Literals:
-`true`, `false`, `none`. Held: `do`. These may not be used as member,
-alias, or binding names (`object_validate_name`). `on`/`off`/`yes`/`no`
+`for`, `in`, `break`, `continue`, `return`, `def`, `assert`, `include`.
+Literals: `true`, `false`, `none`. Held: `do`. These may not be used as
+member, alias, or binding names (`object_validate_name`). `command` is a
+keyword too, but contextual: only `command NAME = PATH` is the statement,
+so a member may be named `command`. One table in `object.c` holds them all,
+with each word's syntax; `shell.keywords` and completion read it. `on`/`off`/`yes`/`no`
 are **not** reserved — they remain accepted as input coercions for
 bool-typed argument slots only.
 

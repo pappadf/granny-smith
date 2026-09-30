@@ -349,19 +349,42 @@ static void finish(vbuf_t *t) {
         t->p[--t->len] = '\0';
 }
 
-static bool (*g_command_probe)(const char *word, char *target, size_t target_size);
+static usage_word_t (*g_word_resolver)(const char *word, char *target, size_t target_size);
 
-void object_usage_set_command_probe(bool (*probe)(const char *word, char *target, size_t target_size)) {
-    g_command_probe = probe;
+void object_usage_set_word_resolver(usage_word_t (*resolve)(const char *word, char *target, size_t target_size)) {
+    g_word_resolver = resolve;
+}
+
+static value_t usage_map(const char *sig, value_t spans, const char *text) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "signature", val_str(sig));
+    val_map_put(b, "arg_spans", spans);
+    val_map_put(b, "text", val_str(text));
+    return val_map_finish(b);
 }
 
 value_t object_usage(const char *path) {
     node_t n = object_resolve(object_root(), path ? path : "");
-    // A command word: the usage of the method it names, with a closing note.
+    // A word that is no path: a function (a note), or a command (the usage
+    // of the method it runs, with a closing note).
     char target[256] = "";
     const char *word = path ? path : "";
-    if (!node_valid(n) && g_command_probe && g_command_probe(word, target, sizeof(target)))
-        n = object_resolve(object_root(), target);
+    if (!node_valid(n) && g_word_resolver) {
+        usage_word_t w = g_word_resolver(word, target, sizeof(target));
+        if (w == USAGE_WORD_FUNCTION) {
+            vbuf_t t = {0};
+            put(&t, "`");
+            put(&t, word);
+            put(&t, "` is a function, defined with def.");
+            value_t r = usage_map("", val_list(NULL, 0), t.p);
+            vbuf_free(&t);
+            return r;
+        }
+        if (w == USAGE_WORD_COMMAND)
+            n = object_resolve(object_root(), target);
+        else
+            target[0] = '\0';
+    }
     if (!node_valid(n))
         return val_err("usage: path '%s' did not resolve", path ? path : "");
     vbuf_t sig = {0}, text = {0};
@@ -389,13 +412,10 @@ value_t object_usage(const char *path) {
         put(&text, ".");
     }
     finish(&text);
-    value_map_builder_t *b = val_map_new();
-    val_map_put(b, "signature", val_str(sig.p ? sig.p : ""));
-    val_map_put(b, "arg_spans", spans);
-    val_map_put(b, "text", val_str(text.p ? text.p : ""));
+    value_t r = usage_map(sig.p ? sig.p : "", spans, text.p ? text.p : "");
     vbuf_free(&sig);
     vbuf_free(&text);
-    return val_map_finish(b);
+    return r;
 }
 
 value_t object_usage_text(const char *path) {

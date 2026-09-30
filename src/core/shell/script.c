@@ -1677,25 +1677,20 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     // registry for single-identifier heads.
     const char *head = p;
     if (!resolve_path_head_ex(&p, &ectx, &node, &errv, norm_path, sizeof(norm_path), &path_base)) {
-        // Single bare identifier → user function?
+        // A single bare word: a `def` function, else a command (the word
+        // runs the method it names).  commands.h has the order.
         const char *q = head;
         if (ident_start(*q)) {
             const char *s = q;
             while (ident_char(*q))
                 q++;
-            char name[64];
-            size_t n = (size_t)(q - s) < sizeof(name) - 1 ? (size_t)(q - s) : sizeof(name) - 1;
-            memcpy(name, s, n);
-            name[n] = '\0';
-            fn = shell_func_find(name);
-            if (fn) {
+            shell_head_t h = SHELL_HEAD_NONE;
+            if (*q != '.' && *q != '[')
+                h = shell_word_resolve(s, (size_t)(q - s), &node, &fn, NULL, 0);
+            if (h == SHELL_HEAD_FUNCTION || h == SHELL_HEAD_COMMAND) {
                 value_free(&errv);
                 p = q;
-            } else if (*q != '.' && *q != '[' && shell_command_lookup(name, &node, NULL, 0)) {
-                // A command: the word runs the method it names.
-                value_free(&errv);
-                p = q;
-                is_command = true;
+                is_command = h == SHELL_HEAD_COMMAND;
             }
         }
         // Bare read into a structured value: the head may address a map

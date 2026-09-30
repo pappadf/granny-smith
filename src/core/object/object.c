@@ -572,55 +572,67 @@ static struct object *find_attached_child(struct object *parent, const char *nam
 // are case-sensitive everywhere else in the codebase. This is the set
 // docs/internals/core/object/object-model.md ("Reserved words") documents.
 
-// Each reserved word with its one-line syntax (shell.keywords); the syntax
-// sits next to the word so the two cannot drift.
+// The shell's keywords, each with its one-line syntax (shell.keywords); the
+// syntax sits next to the word so the two cannot drift.  One table for the
+// reserved-word check, shell.keywords and completion.
+//   reserved   may not name a member, alias or binding; a contextual
+//              keyword (`command`) is a keyword only in its statement shape
+//   statement  heads a statement (offered at the start of a line)
+enum { KW_RESERVED = 1, KW_STATEMENT = 2 };
 static const struct {
     const char *word;
     const char *syntax;
-} RESERVED_WORDS[] = {
+    unsigned flags;
+} KEYWORDS[] = {
     // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
     // words to bool-slot input coercions (validate_slot) — they are
     // ordinary identifiers again.
-    {"true",     "true — the boolean literal"                           },
-    {"false",    "false — the boolean literal"                          },
-    {"none",     "none — no value (an unset optional, an absent result)"},
+    {"true",     "true — the boolean literal",                                 KW_RESERVED               },
+    {"false",    "false — the boolean literal",                                KW_RESERVED               },
+    {"none",     "none — no value (an unset optional, an absent result)",      KW_RESERVED               },
     // Statement keywords.
-    {"let",      "let <name> = <expr>"                                    },
-    {"alias",    "alias <name> = <path>"                                  },
-    {"if",       "if <expr> { … }"                                      },
-    {"elif",     "} elif <expr> { … }"                                  },
-    {"else",     "} else { … }"                                         },
-    {"while",    "while <expr> { … }"                                   },
-    {"for",      "for <name> in <expr> { … }"                           },
-    {"in",       "for <name> in <expr> { … }"                           },
-    {"break",    "break — leave the innermost loop"                     },
-    {"continue", "continue — next iteration of the innermost loop"      },
-    {"return",   "return [<expr>]"                                        },
-    {"def",      "def <name>(<param>, …) { … }"                       },
-    {"assert",   "assert <expr> [\"message\"]"                            },
+    {"let",      "let <name> = <expr>",                                          KW_RESERVED | KW_STATEMENT},
+    {"alias",    "alias <name> = <path>",                                        KW_RESERVED | KW_STATEMENT},
+    {"command",  "command <name> = <path> — a bare word that runs the method", KW_STATEMENT              },
+    {"if",       "if <expr> { … }",                                            KW_RESERVED | KW_STATEMENT},
+    {"elif",     "} elif <expr> { … }",                                        KW_RESERVED | KW_STATEMENT},
+    {"else",     "} else { … }",                                               KW_RESERVED | KW_STATEMENT},
+    {"while",    "while <expr> { … }",                                         KW_RESERVED | KW_STATEMENT},
+    {"for",      "for <name> in <expr> { … }",                                 KW_RESERVED | KW_STATEMENT},
+    {"in",       "for <name> in <expr> { … }",                                 KW_RESERVED               },
+    {"break",    "break — leave the innermost loop",                           KW_RESERVED | KW_STATEMENT},
+    {"continue", "continue — next iteration of the innermost loop",            KW_RESERVED | KW_STATEMENT},
+    {"return",   "return [<expr>]",                                              KW_RESERVED | KW_STATEMENT},
+    {"def",      "def <name>(<param>, …) { … }",                             KW_RESERVED | KW_STATEMENT},
+    {"assert",   "assert <expr> [\"message\"]",                                  KW_RESERVED | KW_STATEMENT},
+    {"include",  "include <path> — run a script file here",                    KW_RESERVED | KW_STATEMENT},
     // Held for a possible future post-test loop.
-    {"do",       "do — reserved"                                        },
+    {"do",       "do — reserved",                                              KW_RESERVED               },
 };
 
-#define N_RESERVED_WORDS (sizeof(RESERVED_WORDS) / sizeof(RESERVED_WORDS[0]))
+#define N_KEYWORDS (sizeof(KEYWORDS) / sizeof(KEYWORDS[0]))
 
-size_t object_reserved_word_count(void) {
-    return N_RESERVED_WORDS;
+size_t object_keyword_count(void) {
+    return N_KEYWORDS;
 }
 
-const char *object_reserved_word(size_t i) {
-    return i < N_RESERVED_WORDS ? RESERVED_WORDS[i].word : NULL;
+const char *object_keyword(size_t i) {
+    return i < N_KEYWORDS ? KEYWORDS[i].word : NULL;
 }
 
-const char *object_reserved_word_syntax(size_t i) {
-    return i < N_RESERVED_WORDS ? RESERVED_WORDS[i].syntax : NULL;
+const char *object_keyword_syntax(size_t i) {
+    return i < N_KEYWORDS ? KEYWORDS[i].syntax : NULL;
+}
+
+bool object_keyword_is_statement(size_t i) {
+    return i < N_KEYWORDS && (KEYWORDS[i].flags & KW_STATEMENT);
 }
 
 bool object_is_reserved_word(const char *name) {
     if (!name)
         return false;
-    for (size_t i = 0; i < N_RESERVED_WORDS; i++)
-        if (strcmp(name, RESERVED_WORDS[i].word) == 0)
+    for (size_t i = 0; i < N_KEYWORDS; i++)
+        if ((KEYWORDS[i].flags & KW_RESERVED) && strcmp(name, KEYWORDS[i].word) == 0)
             return true;
     return false;
 }

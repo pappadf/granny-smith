@@ -17,8 +17,38 @@
 
 #include "object.h"
 
-// Declare a user command.  The target must resolve to a method now, and the
-// name must be an identifier that is not a reserved word, a root member or
+typedef struct script_func script_func_t;
+
+// Longest command or function word, NUL included.  Longer words are neither.
+#define SHELL_NAME_MAX 64
+
+// What the first word of a statement means.  One answer for the
+// interpreter, highlighting, completion and help, in the interpreter's
+// order: a tree path, then a `def` function, then a command.
+typedef enum {
+    SHELL_HEAD_NONE,
+    SHELL_HEAD_PATH,
+    SHELL_HEAD_FUNCTION,
+    SHELL_HEAD_COMMAND,
+} shell_head_t;
+
+// Resolve the bare word `word` (`len` bytes, no `.` or `[` after it).
+//   SHELL_HEAD_PATH      `out` (optional) is its node
+//   SHELL_HEAD_FUNCTION  `fn_out` (optional) takes a reference the caller
+//                        releases with shell_func_release
+//   SHELL_HEAD_COMMAND   `out` is the target method's node, `target`
+//                        (optional, `target_size` bytes) its path
+shell_head_t shell_head_resolve(const char *word, size_t len, node_t *out, script_func_t **fn_out, char *target,
+                                size_t target_size);
+
+// The same, skipping the path step, for a caller that already tried the
+// word as a path.
+shell_head_t shell_word_resolve(const char *word, size_t len, node_t *out, script_func_t **fn_out, char *target,
+                                size_t target_size);
+
+// Declare a user command.  The target must resolve to a method now (and be
+// a path shorter than 256 bytes), and the name must be an identifier
+// shorter than SHELL_NAME_MAX that is not a reserved word, a root member or
 // a built-in command.  Redeclaring a user command replaces it.  0 on
 // success, -1 with a one-line message in `err`.
 int shell_command_define(const char *name, const char *target, char *err, size_t err_size);
@@ -36,7 +66,7 @@ bool shell_command_lookup(const char *word, node_t *out, char *target, size_t ta
 typedef bool (*shell_command_fn)(const char *name, const char *target, bool builtin, void *ud);
 void shell_command_each(shell_command_fn fn, void *ud);
 
-// Drop the user commands (checkpoint restore, tests).
+// Drop the user commands (tests).
 void shell_command_clear_user(void);
 
 // The `shell.command` node: add / remove / list.
