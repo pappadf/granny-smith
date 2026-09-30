@@ -26,7 +26,7 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 
 The single old `image_open(filename, writable)` is replaced by three explicit operations matching the three real use cases:
 
-- **`image_open_readonly(const char *base_path)`** — opens a base image with no on-disk delta. The image layer mints a scratch instance under `/tmp/gs-image-ro/`; the delta and journal there are deleted on `image_close`. Use this for probes (`storage.partmap`, `storage.probe`, `machine.scsi.identify_hd`, `floppy.identify`, …) and for read-only mounts (CD-ROM).
+- **`image_open_readonly(const char *base_path)`** — opens a base image with no on-disk delta. The image layer mints a scratch instance under `/tmp/gs-image-ro/`; the delta and journal there are deleted on `image_close`. Use this for probes (`files.partmap`, `files.probe`, `machine.scsi.identify_hd`, `floppy.identify`, …) and for read-only mounts (CD-ROM).
 - **`image_create(const char *base_path, const char *delta_dir)`** — opens a fresh writable instance. The image layer mints a 16-hex-char opaque id and creates `<delta_dir>/<id>.delta` and `<delta_dir>/<id>.journal`. If `delta_dir` is `NULL`, the `GS_STORAGE_CACHE` directory is used when set (the integration runner's per-test sidecar routing), else the directory of the base image (legacy adjacent-to-base layout — used by tests with no machine identity).
 - **`image_open(const char *base_path, const char *instance_path)`** — reopens an existing writable instance. `instance_path` is the stem returned by `image_path()` when the instance was first created; the image layer appends `.delta` and `.journal` itself. Used by checkpoint restore.
 

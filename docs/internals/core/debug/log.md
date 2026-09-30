@@ -39,7 +39,7 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
 
 - Initialization
   - `void log_init(void);`
-    - Optional; idempotent. Prepares internal registry (the legacy `log` shell command registration is retired — configuration goes through the `debug.log` method).
+    - Optional; idempotent. Prepares internal registry (the legacy `log` shell command registration is retired — configuration goes through the `log.set` method).
 
 - Category management
   - `log_category_t* log_register_category(const char* name);`
@@ -168,14 +168,14 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
   - Category pointers are stable for the process lifetime. Modules cache their `log_category_t*` in static file‑scope variables for fast checks.
 
 
-## Shell surface (`debug.log`)
+## Shell surface (`log.set`)
 
-The shell exposes the configuration as a typed method on the `debug` object: `debug.log(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command is retired). The category is a V_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
+The shell exposes the configuration as a typed method on the root `log` object: `log.set(category, level=, stdout=, file=, ts=, pc=)`, with real named arguments (the legacy flat `log` command and the earlier `debug.log` method are retired). The category is a V_ENUM over the manifest, so completion offers every declared name and a typo is rejected at the call, not silently configured.
 
 - Grammar
-  - `debug.log_levels()` — every registered category and its current level, as a map
-  - `debug.log(<cat>)` — show one category's settings
-  - `debug.log(<cat>, level=<n>, stdout=<bool>, file=<path>, ts=<bool>, pc=<bool>)` — any subset of the named arguments; each given one is applied, then the settings print
+  - `log.levels` — every registered category and its current level, as a map
+  - `log.set(<cat>)` — show one category's settings
+  - `log.set(<cat>, level=<n>, stdout=<bool>, file=<path>, ts=<bool>, pc=<bool>)` — any subset of the named arguments; each given one is applied, then the settings print
 
 - Behavior
   - Categories come from the manifest; an unknown name is an error, never auto-created.
@@ -186,12 +186,12 @@ The shell exposes the configuration as a typed method on the `debug` object: `de
 
 - Examples
   ```
-  debug.log_levels()                          # list all categories and levels
-  debug.log("cpu")                           # show cpu settings
-  debug.log("cpu", level=5)                  # set level to 5
-  debug.log("cpu", level=7, stdout=false)     # quiet stdout for cpu
-  debug.log("cpu", file="tmp/cpu.log")        # append to file as well
-  debug.log("cpu", ts=true)                   # include instruction-count timestamp in prefix
+  log.levels                                 # list all categories and levels
+  log.set("cpu")                            # show cpu settings
+  log.set("cpu", level=5)                   # set level to 5
+  log.set("cpu", level=7, stdout=false)      # quiet stdout for cpu
+  log.set("cpu", file="tmp/cpu.log")         # append to file as well
+  log.set("cpu", ts=true)                    # include instruction-count timestamp in prefix
   ```
 
 
@@ -267,8 +267,8 @@ The shell exposes the configuration as a typed method on the `debug` object: `de
   - Returns existing category when called repeatedly with the same name.
   - Returns `NULL` on allocation failure; modules may fall back to a static dummy category whose level is 0 (silent) to keep code safe.
 - Shell surface:
-  - Rejects negative levels; `debug.log` returns an error ("level must be a non-negative integer").
-  - `debug.log(<cat>)` (no modifiers) reports `unknown category "name"` when the category is not in the manifest.
+  - Rejects negative levels; `log.set` returns an error ("level must be a non-negative integer").
+  - `log.set(<cat>)` (no modifiers) reports `unknown category "name"` when the category is not in the manifest.
 
 
 ## Integration points
@@ -276,7 +276,7 @@ The shell exposes the configuration as a typed method on the `debug` object: `de
 - `src/core/debug/log.c` — implementation (registry, sinks, formatting) and the category manifest loader.
 - `src/core/debug/log_categories.h` — the category manifest (`GS_LOG_CATEGORIES`), the one place a new category is declared.
 - `src/core/debug/log.h` — public header used by modules and the shell.
-- `src/core/shell/shell.c` — calls `log_init()`; the `debug.log` / `debug.log_levels` methods live on the `debug` object (`src/core/debug/debug.c`).
+- `src/core/shell/shell.c` — calls `log_init()`; the `log.set` method and `log.levels` attribute live on the root `log` object (`src/core/debug/log_class.c`).
 
 ## Level guidelines and recommendations
 
@@ -311,7 +311,7 @@ Three pre-defined categories pair with debug shell commands and feed into the
 standard log pipeline:
 
 - **`logpoint`** — emitted by PC logpoints (`debug.logpoints.add addr=<addr> [message="…"]`).
-  Default level 0 (silent). Enable with `debug.log("logpoint", level=1)` to see each hit.
+  Default level 0 (silent). Enable with `log.set("logpoint", level=1)` to see each hit.
 - **`memory`** — emitted by memory read/write logpoints
   (`debug.logpoints.add addr=<addr> mode=read|write|rw [width=b|w|l] [message="…"]`). Each event reports `addr`, `size`,
   `value`, `pc`, and optionally a substituted user message: `${expr}` splices
@@ -319,7 +319,7 @@ standard log pipeline:
   are per-fire bindings that exist only at the hit.
   See `docs/internals/core/memory/memory.md` for the fast-path-preserving mechanism that backs these.
 - **`exceptions`** — emitted by the CPU exception trace ring
-  (`debug.exceptions [filter]` dumps the ring; `debug.log("exceptions", level=1)` streams every event).
+  (`debug.exceptions [filter]` dumps the ring; `log.set("exceptions", level=1)` streams every event).
   Each line includes vector, frame format, faulting/stacked PC, fault address,
   R/W direction, SR, VBR, and a marker for double-fault detection. Replaces
   ad-hoc `fprintf` instrumentation in `cpu_internal.h` for MMU/bus-error

@@ -387,7 +387,7 @@ Two resolver variants:
 Partition enumeration at the mount root lists **all** partitions — including
 ones that can't be descended into (`map`, `driver`, `free`, `patches`). Those
 stat as empty read-only directories; `opendir` on them returns `-ENOTDIR`. Use
-`storage.partmap` for the full typed layout.
+`files.partmap` for the full typed layout.
 
 ---
 
@@ -418,7 +418,7 @@ Content access (`src/core/vfs/vfs_class.c`, `src/core/shell/cmd_cp.c`):
 Example session:
 
 ```
-> storage.partmap /opfs/disks/aux.img
+> files.partmap /opfs/disks/aux.img
 format: APM (512B blocks, 81920 total)
   #  Name              Type             Start   Size  FS
   1  Apple            Apple_partition_map   1     63  map
