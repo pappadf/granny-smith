@@ -102,6 +102,8 @@ NOTES = {
   "ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom": "Apple Network Server 500/700, Open Firmware 2.26NT (the Windows NT firmware) — re-interleaved from its four chip dumps.",
   "ans500-ans700-2.26b6-9630c68b-a71fb907dd180b8a.rom": "Apple Network Server 500/700, Open Firmware 2.26B6 — re-interleaved from its four chip dumps; shares its header sum with the TNT v2 ROM.",
   "pm7500-pm8500-pm9500-96cd923d.rom": "Power Macintosh 7500/8500/9500 (“TNT”) universal 4 MB ROM v1 (1995-08, “Boot TNT 0.1”) — also served the unemulated 7200; the Grand Central BoxID register, not the ROM, selects the machine.",
+  "pmg3dt-pmg3mt-78f57389.rom":     "Power Macintosh G3 (beige, “Gossamer”) 4 MB ROM Rev C, $077D.45F2, Open Firmware 2.4 — one image for the desktop and minitower; the board-ID register, not the ROM, selects the enclosure.",
+  "pmg3dt-pmg3mt-reva-79d68d63.rom": "Power Macintosh G3 (beige) 4 MB ROM Rev A, $077D.40F2, Open Firmware 2.0f1 — the first-shipping image (`AAPL,Gossamer`); same board program as Rev C.",
   "lisa2-revh-098917b2.rom":         "Apple Lisa 2 boot ROM rev H (interleaved 16 KB image; the id is the boot ROM's own check word at $3FFE).",
   "macxl-3a-094c82f0.rom":           "Macintosh XL boot ROM “3A” (interleaved 16 KB image).",
   "builtin-se30-video-4f71ff1a.vrom":"SE/30 onboard-video declaration ROM — a built-in video slot, not a NuBus card.",

@@ -401,6 +401,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // inventory reads them), then Heathrow, then the memory map.
     gos_i2c_init(cfg);
     gos_heathrow_init(cfg);
+    gos_grackle_attach_objects(cfg);
     gos_heathrow_attach_objects(cfg);
     gos_memory_layout(cfg);
 
@@ -475,6 +476,7 @@ static void gossamer_teardown(config_t *cfg) {
             gos_nvram_carry_valid = false;
         }
         gos_heathrow_detach_objects(cfg);
+        gos_grackle_detach_objects(cfg);
         davbus_teardown(&st->screamer_host);
         if (st->mesh) {
             mesh_delete(st->mesh);

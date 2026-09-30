@@ -176,10 +176,12 @@ int gos_i2c_read(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *o
     }
     if (has_sub)
         st->i2c.ptr = sub;
-    // An EEPROM streams sequentially from its pointer; the host stops the
-    // transfer once it has its count (Cuda's open-ended read).  Serve a
-    // bounded run.
-    int n = max < 32 ? max : 32;
+    // An EEPROM streams sequentially from its pointer (wrapping at 256)
+    // for as long as the master keeps clocking; the host stops the Cuda
+    // transfer once it has its count.  Serve as much as the reply buffer
+    // holds: Open Firmware's /perch probe reads more than 32 bytes and
+    // treats a short reply as a missing card.
+    int n = max < GOS_SPD_SIZE ? max : GOS_SPD_SIZE;
     for (int i = 0; i < n; i++)
         out[i] = rom[(uint8_t)(st->i2c.ptr + i)];
     LOG(3, "read $%02X sub $%02X -> $%02X $%02X $%02X $%02X", addr8, st->i2c.ptr, out[0], n > 1 ? out[1] : 0,

@@ -289,12 +289,13 @@ static uint32_t ppc_l2cr_read(ppc_t *p) {
     return v;
 }
 
-// L2CR write: every bit but L2IP is stored.  Setting L2I while L2E is
-// clear starts a global invalidate — the handshake the Gossamer boot
-// program polls on before any I/O (750UM §9.1.5: "L2I must not be set
-// while the L2 cache is enabled"; with L2E set the request is ignored).
+// L2CR write: every bit but L2IP is stored.  A 0->1 transition of L2I
+// starts a global invalidate — the handshake the Gossamer boot program
+// polls on before any I/O (750UM §9.1.5).  The manual says software
+// should clear L2E first, but the Gossamer ROM sets L2I together with
+// L2E and still polls L2IP, so the invalidate runs either way.
 static void ppc_l2cr_write(ppc_t *p, uint32_t v) {
-    bool start = (v & PPC750_L2CR_L2I) && !(p->l2cr & PPC750_L2CR_L2I) && !(v & PPC750_L2CR_L2E);
+    bool start = (v & PPC750_L2CR_L2I) && !(p->l2cr & PPC750_L2CR_L2I);
     p->l2cr = v & ~PPC750_L2CR_L2IP;
     if (start) {
         if (p->scheduler && p->tick_mul)

@@ -138,7 +138,7 @@ static void test_hid0(void) {
 }
 
 // L2CR: the enable/invalidate handshake (750UM §9.1.5), unbound path —
-// L2IP reads 1 once after L2I is set with L2E clear, then 0.
+// L2IP reads 1 once after L2I is set, then 0.
 static void test_l2cr_handshake(void) {
     fresh750();
     // Configure (L2SIZ=10, L2CLK=100, L2RAM=10), L2E clear.
@@ -163,9 +163,11 @@ static void test_l2cr_handshake(void) {
     step1(e_spr(4, 1017, 1));
     step1(e_spr(3, 1017, 0));
     CHECK_EQ(P->gpr[3], 0xA9000000u);
-    // L2I with L2E set is ignored (must not be set while enabled).
+    // L2I with L2E set still starts an invalidate (the ROM's sequence).
     P->gpr[4] = 0xA9200000u;
     step1(e_spr(4, 1017, 1));
+    step1(e_spr(3, 1017, 0));
+    CHECK_EQ(P->gpr[3], 0xA9200001u);
     step1(e_spr(3, 1017, 0));
     CHECK_EQ(P->gpr[3], 0xA9200000u);
     // Supervisor-only

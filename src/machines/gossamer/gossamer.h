@@ -250,6 +250,7 @@ typedef struct gossamer_state {
     swim3_t swim3;
     gos_fdring_t fdring;
     gos_scc_dma_ctx_t scc_dma_ctx[2];
+    struct object *grackle_object; // machine.grackle
     struct object *hr_object; // machine.heathrow (the interrupt controller)
     struct object *nvram_object; // machine.nvram
     struct object *board_object; // machine.board (Grackle + board register)
@@ -299,6 +300,8 @@ uint16_t gos_board_id(config_t *cfg); // the $FF000004 halfword
 
 void gos_heathrow_init(config_t *cfg); // power-on registers (NVRAM survives)
 void gos_heathrow_pci_attach(config_t *cfg); // header + BAR0 backing at device $10
+void gos_grackle_attach_objects(config_t *cfg);
+void gos_grackle_detach_objects(config_t *cfg);
 void gos_heathrow_attach_objects(config_t *cfg);
 void gos_heathrow_detach_objects(config_t *cfg);
 // Level of interrupt source n (0-63): updates Levels, edge-latches into

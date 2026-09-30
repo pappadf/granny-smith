@@ -46,6 +46,8 @@
 #include "gossamer.h"
 
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "pci.h"
 #include "ppc.h"
 
@@ -531,4 +533,120 @@ void gos_grackle_init(config_t *cfg) {
     pci_bus_add_window(st->bus, PCI_SPACE_IO, GOS_PCI_IO_BASE, GOS_PCI_IO_SIZE, 0x0u, 0x007FFFFFu, "PCI I/O (Grackle)");
 
     gos_grackle_reset(cfg);
+}
+
+// ============================================================
+// Object node: machine.grackle (read-only register view)
+// ============================================================
+
+static gos_grackle_t *grk_obj(struct object *self) {
+    gossamer_state_t *st = gos_st((config_t *)object_data(self));
+    return st ? &st->grackle : NULL;
+}
+
+// Bytes of RAM the controller decodes right now: the enabled banks'
+// windows that have a DIMM side behind them, with MEMGO set.
+static uint32_t grk_decoded_bytes(const gos_grackle_t *g) {
+    if (!(cfg32(g, G_MCCR1) & MCCR1_MEMGO))
+        return 0;
+    uint32_t total = 0;
+    for (unsigned n = 0; n < GOS_MEM_BANKS; n++) {
+        uint32_t lo, hi;
+        if (!(g->cfg[G_BANK_EN] & (1u << n)) || !g->bank_size[n])
+            continue;
+        bank_window(g, n, &lo, &hi);
+        if (hi >= lo)
+            total += hi - lo + 1u;
+    }
+    return total;
+}
+
+#define GRK_U32_ATTR(NAME, EXPR)                                                                                       \
+    static value_t grk_attr_##NAME(struct object *self, const member_t *m) {                                           \
+        (void)m;                                                                                                       \
+        const gos_grackle_t *g = grk_obj(self);                                                                        \
+        value_t v = val_uint(4, g ? (EXPR) : 0u);                                                                      \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+GRK_U32_ATTR(picr1, cfg32(g, G_PICR1))
+GRK_U32_ATTR(picr2, cfg32(g, G_PICR2))
+GRK_U32_ATTR(mccr1, cfg32(g, G_MCCR1))
+GRK_U32_ATTR(mccr2, cfg32(g, G_MCCR2))
+GRK_U32_ATTR(mccr3, cfg32(g, G_MCCR3))
+GRK_U32_ATTR(mccr4, cfg32(g, G_MCCR4))
+GRK_U32_ATTR(bank_enable, g->cfg[G_BANK_EN])
+GRK_U32_ATTR(ram_decoded, grk_decoded_bytes(g))
+GRK_U32_ATTR(config_address, g->cfg_addr)
+
+static value_t grk_method_config(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    const gos_grackle_t *g = grk_obj(self);
+    if (!g)
+        return val_err("grackle not available");
+    uint64_t reg = argv[0].u;
+    if (reg > 0xFCu || (reg & 3u))
+        return val_err("grackle.config: register $%llX is not a dword offset in $00-$FC", (unsigned long long)reg);
+    value_t v = val_uint(4, cfg32(g, (uint32_t)reg));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+#define GRK_RO_ATTR(NAME, DOC)                                                                                         \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = #NAME, .doc = DOC, .flags = VAL_RO, .attr = {                                          \
+            .type = V_UINT,                                                                                            \
+            .presentation_flags = VAL_HEX,                                                                             \
+            .get = grk_attr_##NAME,                                                                                    \
+            .set = NULL                                                                                                \
+        }                                                                                                              \
+    }
+
+static const arg_decl_t grk_config_args[] = {
+    {.name = "reg", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "dword-aligned register offset ($00-$FC)"},
+};
+
+static const member_t grk_members[] = {
+    GRK_RO_ATTR(picr1, "Processor interface configuration 1 ($A8)"),
+    GRK_RO_ATTR(picr2, "Processor interface configuration 2 ($AC)"),
+    GRK_RO_ATTR(mccr1, "Memory control configuration 1 ($F0; bit 19 = MEMGO)"),
+    GRK_RO_ATTR(mccr2, "Memory control configuration 2 ($F4)"),
+    GRK_RO_ATTR(mccr3, "Memory control configuration 3 ($F8)"),
+    GRK_RO_ATTR(mccr4, "Memory control configuration 4 ($FC)"),
+    GRK_RO_ATTR(bank_enable, "Memory bank enable ($A0)"),
+    GRK_RO_ATTR(ram_decoded, "Bytes of RAM the enabled banks decode (0 while MEMGO is clear)"),
+    GRK_RO_ATTR(config_address, "The CONFIG_ADDR latch (CF8 format)"),
+    {.kind = M_METHOD,
+                                                            .name = "config",
+                                                            .doc = "Read one of Grackle's own configuration dwords (device 0)",
+                                                            .method = {.args = grk_config_args, .nargs = 1, .result = V_UINT, .fn = grk_method_config}},
+};
+
+static const class_desc_t grk_class = {
+    .name = "grackle",
+    .members = grk_members,
+    .n_members = sizeof(grk_members) / sizeof(grk_members[0]),
+};
+
+void gos_grackle_attach_objects(config_t *cfg) {
+    gossamer_state_t *st = gos_st(cfg);
+    if (!st || st->grackle_object)
+        return;
+    st->grackle_object = object_new(&grk_class, cfg, "grackle");
+    if (st->grackle_object) {
+        object_set_label(st->grackle_object, "Grackle");
+        object_set_order(st->grackle_object, 44);
+        object_attach(machine_object(), st->grackle_object);
+    }
+}
+
+void gos_grackle_detach_objects(config_t *cfg) {
+    gossamer_state_t *st = gos_st(cfg);
+    if (st && st->grackle_object) {
+        object_detach(st->grackle_object);
+        object_delete(st->grackle_object);
+        st->grackle_object = NULL;
+    }
 }
