@@ -3553,7 +3553,6 @@ static const class_desc_t debug_class = {
     .members = debug_members,
     .n_members = sizeof(debug_members) / sizeof(debug_members[0]),
     .doc = "Debugger: stepping, breakpoints, logpoints, watchpoints and memory search",
-    .task = "debug",
 };
 
 // === debug.mac.globals — Mac low-memory globals access ======================
@@ -4197,7 +4196,6 @@ static const class_desc_t screen_class = {
     .members = screen_members,
     .n_members = sizeof(screen_members) / sizeof(screen_members[0]),
     .doc = "The machine's display",
-    .task = "io",
 };
 
 // === Process-singleton lifecycle ============================================

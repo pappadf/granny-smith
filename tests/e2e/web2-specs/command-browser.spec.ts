@@ -33,8 +33,6 @@ test("the command browser walks the model and shows usage", async ({
     ["Machine", "Emulator"],
     { timeout: 15_000 },
   );
-  // Task chips come from shell.tasks.
-  await expect(browser.locator(".chip").first()).toHaveText("Run");
 
   const rowNamed = (name: string) =>
     browser

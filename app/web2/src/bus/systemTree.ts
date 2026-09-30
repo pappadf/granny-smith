@@ -21,8 +21,6 @@ export interface MemberInfo {
   collection?: boolean; // child: a collection container (entries addressed [i] / ["k"])
   domain?: 'machine' | 'emulator' | 'network'; // root children
   type?: TypeDescriptor; // attr
-  // The member's effective task (inherited down the tree), or null.
-  task?: string | null;
   // method: the method_info fields
   verb?: string;
   destructive?: boolean;

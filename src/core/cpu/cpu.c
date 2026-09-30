@@ -950,7 +950,6 @@ static const class_desc_t cpu_class = {
     .members = cpu_members,
     .n_members = sizeof(cpu_members) / sizeof(cpu_members[0]),
     .doc = "The main CPU: registers and execution state",
-    .task = "debug",
 };
 
 // === CPU.fpu child class ====================================================

@@ -133,7 +133,7 @@ describe('ConsoleInput keys', () => {
   it('Tab inserts a lone candidate, with a space unless it drills in', async () => {
     type('she');
     completion = {
-      candidates: [{ text: 'shell.', kind: 'object', doc: '', task: null }],
+      candidates: [{ text: 'shell.', kind: 'object', doc: '' }],
       span: { start: 0, end: 3 },
       context: { method: null, argIndex: null, argName: null },
     };
@@ -146,8 +146,8 @@ describe('ConsoleInput keys', () => {
     type('shell.co');
     completion = {
       candidates: [
-        { text: 'complete', kind: 'method', doc: '', task: null },
-        { text: 'complete_x', kind: 'method', doc: '', task: null },
+        { text: 'complete', kind: 'method', doc: '' },
+        { text: 'complete_x', kind: 'method', doc: '' },
       ],
       span: { start: 6, end: 8 },
       context: { method: null, argIndex: null, argName: null },

@@ -28,7 +28,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'help',
         doc: 'Usage text. More.',
-        task: 'shell',
       },
       {
         name: 'machine',
@@ -46,7 +45,6 @@ vi.mock('@/bus/emulator', () => {
         label: 'debug',
         doc: 'Debugger',
         domain: 'emulator',
-        task: 'debug',
         collection: false,
       },
     ],
@@ -57,7 +55,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'cpu',
         doc: 'CPU',
-        task: 'debug',
         collection: false,
       },
       {
@@ -66,7 +63,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'Drives',
         doc: 'Drives',
-        task: 'storage',
         collection: true,
         indices: [0, 1],
         keys: null,
@@ -79,7 +75,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'pc',
         doc: 'Program counter',
-        task: 'debug',
         readonly: false,
         type: t('uint', 'hex'),
       },
@@ -89,7 +84,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'advanced',
         label: 'vbr',
         doc: 'Vector base',
-        task: 'debug',
         readonly: false,
         type: t('uint', 'hex'),
       },
@@ -99,7 +93,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'step',
         doc: 'Step',
-        task: 'debug',
         hidden: false,
       },
       {
@@ -108,7 +101,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'run',
         doc: 'Plumbing',
-        task: 'debug',
         hidden: true,
       },
     ],
@@ -119,7 +111,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'entries',
         doc: '',
-        task: 'storage',
         indexed: true,
         indices: [0, 1],
         keys: null,
@@ -184,11 +175,11 @@ describe('command browser rows (model projection)', () => {
     expect(entries[0].kind).toBe('entry');
   });
 
-  it('advanced members are visible only with the toggle', async () => {
+  it('advanced members are visible; internal ones never are', async () => {
     const machine = byName(await rootRows(), 'machine');
     const vbr = byName(await expand(byName(await expand(machine), 'cpu')), 'vbr');
-    expect(visible(vbr, false)).toBe(false);
-    expect(visible(vbr, true)).toBe(true);
+    expect(visible(vbr)).toBe(true);
+    expect(visible({ ...vbr, category: 'internal' })).toBe(false);
   });
 
   it('aliases group into User, Built-in and Mac globals; keywords come from the model', async () => {

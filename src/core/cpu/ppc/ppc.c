@@ -1213,7 +1213,6 @@ static const class_desc_t ppc_cpu_class = {
     .members = ppc_members,
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
     .doc = "The main CPU (PowerPC): registers and execution state",
-    .task = "debug",
 };
 
 // === machine.cpu.mmu ========================================================

@@ -83,7 +83,6 @@ static void push_match(struct completion *out, const char *cand, const char *pre
     }
     out->kinds[out->count] = (uint8_t)out->cur_kind;
     out->docs[out->count] = out->cur_doc;
-    out->tasks[out->count] = out->cur_task;
     out->items[out->count++] = cand;
 }
 
@@ -107,10 +106,9 @@ const char *comp_kind_name(comp_kind_t k) {
 }
 
 // Set the detail the next candidates get.
-static void set_detail(struct completion *out, comp_kind_t kind, const char *doc, const char *task) {
+static void set_detail(struct completion *out, comp_kind_t kind, const char *doc) {
     out->cur_kind = kind;
     out->cur_doc = doc;
-    out->cur_task = task;
 }
 
 // === Filesystem path completion =============================================
@@ -148,7 +146,7 @@ static void complete_paths(const char *prefix, struct completion *out) {
     if (vfs_opendir(dir, &vd, &be) < 0)
         return;
     vfs_dirent_t ent;
-    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
+    set_detail(out, COMP_KIND_VALUE, NULL);
     while (out->count < CMD_MAX_COMPLETIONS) {
         int rc = be->readdir(vd, &ent);
         if (rc <= 0)
@@ -187,14 +185,14 @@ static void complete_paths(const char *prefix, struct completion *out) {
 static void complete_enum(const char *const *enum_values, const char *partial, struct completion *out) {
     if (!enum_values)
         return;
-    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
+    set_detail(out, COMP_KIND_VALUE, NULL);
     for (const char *const *ev = enum_values; *ev; ev++)
         push_match(out, *ev, partial);
 }
 
 static void complete_bool(const char *partial, struct completion *out) {
     static const char *bool_values[] = {"on", "off", "true", "false", NULL};
-    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
+    set_detail(out, COMP_KIND_VALUE, NULL);
     for (const char **v = bool_values; *v; v++)
         push_match(out, *v, partial);
 }
@@ -346,7 +344,7 @@ static void complete_class_members(struct object *target, const char *tail, stru
                            : m->kind == M_METHOD ? COMP_KIND_METHOD
                            : m->child.indexed    ? COMP_KIND_COLLECTION
                                                  : COMP_KIND_OBJECT;
-        set_detail(out, kind, m->doc, target ? member_effective_task(target, m, NULL) : NULL);
+        set_detail(out, kind, m->doc);
         push_name_match(out, m->name, m->kind == M_CHILD, tail);
     }
 }
@@ -363,7 +361,7 @@ static void each_attached_cb(struct object *parent, struct object *child, void *
     if (!name)
         return;
     // Attached children are objects: complete to "name.".
-    set_detail(acc->out, object_kind(child), object_doc(child), member_effective_task(parent, NULL, child));
+    set_detail(acc->out, object_kind(child), object_doc(child));
     push_name_match(acc->out, name, true, acc->tail);
 }
 
@@ -379,7 +377,7 @@ static void complete_attached(struct object *o, const char *tail, struct complet
 static void complete_indexed_children(struct object *o, const member_t *m, const char *tail, struct completion *out) {
     if (!o || !m || m->kind != M_CHILD || !m->child.indexed)
         return;
-    set_detail(out, COMP_KIND_OBJECT, NULL, member_effective_task(o, m, NULL));
+    set_detail(out, COMP_KIND_OBJECT, NULL);
     int idx = object_child_next(o, m, -1);
     while (idx >= 0 && out->count < CMD_MAX_COMPLETIONS) {
         // Indexed children resolve to objects: complete to "N.".
@@ -491,7 +489,6 @@ static void complete_path(const char *partial, struct completion *out) {
         if (out->count < CMD_MAX_COMPLETIONS) {
             out->kinds[out->count] = local.kinds[i];
             out->docs[out->count] = local.docs[i];
-            out->tasks[out->count] = local.tasks[i];
             out->items[out->count++] = copy;
         }
     }
@@ -529,7 +526,7 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
             if (!nm || strlen(nm) != name_len || strncmp(nm, partial, name_len) != 0)
                 continue;
             char buf[160];
-            set_detail(out, COMP_KIND_VALUE, args[i].doc, NULL);
+            set_detail(out, COMP_KIND_VALUE, args[i].doc);
             if (args[i].kind == V_ENUM && args[i].enum_values) {
                 for (const char *const *ev = args[i].enum_values; *ev; ev++) {
                     snprintf(buf, sizeof(buf), "%s=%s", nm, *ev);
@@ -583,7 +580,7 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
             continue;
         char nbuf[96];
         snprintf(nbuf, sizeof(nbuf), "%s=", args[i].name);
-        set_detail(out, COMP_KIND_ATTR, args[i].doc, NULL);
+        set_detail(out, COMP_KIND_ATTR, args[i].doc);
         push_match(out, pool_strdup(nbuf), partial);
     }
 }
@@ -689,7 +686,7 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
 
 static void complete_bindings(const char *prefix, struct completion *out) {
     binding_complete_ctx_t cc = {.out = out, .prefix = prefix};
-    set_detail(out, COMP_KIND_ALIAS, NULL, NULL);
+    set_detail(out, COMP_KIND_ALIAS, NULL);
     // Scope bindings first (let / --var), then the alias table. The
     // alias walk is prefix-filtered in its callback so the ~500-entry
     // mac-global table doesn't flood a bare `$`.
@@ -773,7 +770,7 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     out->ctx_method[0] = '\0';
     out->ctx_arg_index = -1;
     out->ctx_arg_name = NULL;
-    set_detail(out, COMP_KIND_VALUE, NULL, NULL);
+    set_detail(out, COMP_KIND_VALUE, NULL);
     pool_reset();
 
     int len = (int)strlen(line);
@@ -817,7 +814,7 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
             static const char *const kws[] = {"let", "alias", "if",       "elif",   "else", "while",
                                               "for", "break", "continue", "return", "def",  "assert"};
             for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++) {
-                set_detail(out, COMP_KIND_KEYWORD, NULL, "shell");
+                set_detail(out, COMP_KIND_KEYWORD, NULL);
                 push_match(out, kws[i], partial);
             }
             complete_root_members(partial, out);

@@ -9,8 +9,8 @@ import { publishCompletion } from '@/state/terminalSync.svelte';
 import { invalidate } from '@/lib/commandsTree';
 
 // The browser renders whatever the model says: mock the bus with a small
-// tree (machine → cpu, a two-drive collection; debug), the task chips and a
-// usage text, and drive the component.
+// tree (machine → cpu, a two-drive collection; debug) and a usage text, and
+// drive the component.
 vi.mock('@/bus/emulator', () => {
   const t = { kind: 'uint', width: 0, presentation: 'hex', enum: null };
   const members: Record<string, unknown[]> = {
@@ -22,7 +22,6 @@ vi.mock('@/bus/emulator', () => {
         label: 'M',
         doc: 'The computer',
         domain: 'machine',
-        task: null,
         collection: false,
       },
       {
@@ -32,7 +31,6 @@ vi.mock('@/bus/emulator', () => {
         label: 'debug',
         doc: 'Debugger',
         domain: 'emulator',
-        task: 'debug',
         collection: false,
       },
     ],
@@ -43,7 +41,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'cpu',
         doc: 'CPU',
-        task: 'debug',
         collection: false,
       },
       {
@@ -52,7 +49,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'Drives',
         doc: 'Floppy drives',
-        task: 'storage',
         collection: true,
         indices: [0, 1],
         keys: null,
@@ -63,7 +59,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'category',
         doc: 'Log categories',
-        task: 'logs',
         collection: true,
         indices: null,
         keys: ['scsi'],
@@ -76,7 +71,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'pc',
         doc: 'Program counter. The next instruction.',
-        task: 'debug',
         readonly: false,
         type: t,
       },
@@ -86,7 +80,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'advanced',
         label: 'vbr',
         doc: 'Vector base',
-        task: 'debug',
         readonly: false,
         type: t,
       },
@@ -96,7 +89,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'step',
         doc: 'Run N instructions',
-        task: 'debug',
         hidden: false,
       },
       {
@@ -105,7 +97,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'insert',
         doc: 'Mount an image',
-        task: 'debug',
         hidden: false,
       },
     ],
@@ -116,7 +107,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'entries',
         doc: '',
-        task: 'logs',
         indexed: true,
         indices: null,
         keys: ['scsi'],
@@ -129,7 +119,6 @@ vi.mock('@/bus/emulator', () => {
         category: 'basic',
         label: 'entries',
         doc: '',
-        task: 'storage',
         indexed: true,
         indices: [0, 1],
         keys: null,
@@ -142,12 +131,6 @@ vi.mock('@/bus/emulator', () => {
     whenModuleReady: () => Promise.resolve(),
     gsEval: async (path: string, args?: unknown[]) => {
       if (path in members) return members[path];
-      if (path === 'shell.tasks')
-        return [
-          { id: 'run', label: 'Run', doc: '' },
-          { id: 'storage', label: 'Storage', doc: '' },
-          { id: 'debug', label: 'Debug', doc: '' },
-        ];
       if (path === 'shell.highlight' && args?.[0] === 'machine.cpu.insert <path> [writable]')
         return [
           { start: 0, end: 7, class: 'object' },
@@ -237,38 +220,13 @@ describe('CommandBrowser (structural, model-generated)', () => {
     await row(container, '[1]');
   });
 
-  it('advanced members show only with the Advanced toggle', async () => {
-    const { container, getByText } = render(CommandBrowser);
+  it('lists advanced members too, with no filter row', async () => {
+    const { container } = render(CommandBrowser);
     await open(container, 'machine');
     await open(container, 'cpu');
     await row(container, 'pc');
-    expect(
-      Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'vbr'),
-    ).toBe(false);
-    await fireEvent.click(getByText('Advanced'));
     await row(container, 'vbr');
-  });
-
-  it('a task chip dims rows of other tasks and collapses their subtrees', async () => {
-    const { container, getByText } = render(CommandBrowser);
-    await open(container, 'machine');
-    await row(container, 'drive');
-    await open(container, 'cpu');
-    await row(container, 'pc');
-    await fireEvent.click(await waitFor(() => getByText('Storage')));
-    await waitFor(() =>
-      expect((container.querySelector('.cmd-row.dim .name') as HTMLElement | null) !== null).toBe(
-        true,
-      ),
-    );
-    const drive = await row(container, 'drive');
-    expect(drive.classList.contains('dim')).toBe(false);
-    // cpu belongs to debug: collapsed while Storage filters.
-    await waitFor(() =>
-      expect(
-        Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'pc'),
-      ).toBe(false),
-    );
+    expect(container.querySelector('.chips')).toBeNull();
   });
 
   it('selecting a leaf writes its path and shows its usage text', async () => {
@@ -356,7 +314,7 @@ describe('CommandBrowser ↔ console', () => {
       'machine.cpu.st',
       14,
       {
-        candidates: [{ text: 'step', kind: 'method', doc: '', task: 'debug' }],
+        candidates: [{ text: 'step', kind: 'method', doc: '' }],
         span: { start: 12, end: 14 },
         context: { method: null, argIndex: null, argName: null },
       },
@@ -401,7 +359,7 @@ describe('CommandBrowser ↔ console', () => {
       'machine.cpu.pc',
       14,
       {
-        candidates: [{ text: 'pc', kind: 'attr', doc: '', task: 'debug' }],
+        candidates: [{ text: 'pc', kind: 'attr', doc: '' }],
         span: { start: 12, end: 14 },
         context: { method: null, argIndex: null, argName: null },
       },

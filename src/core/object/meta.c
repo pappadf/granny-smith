@@ -337,11 +337,9 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
     return val_str(label);
 }
 
-static value_t task_value(const char *task);
-
 // `method_info(name)` — UI metadata for a method member, a typed map so the
 // context menu and command browser render it without a static catalogue:
-// verb label, task category, destructive/mutate/hidden/io flags, declared arg
+// verb label, destructive/mutate/hidden/io flags, declared arg
 // count, and doc. Returns a V_ERROR if the member
 // is not a method.
 static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -355,7 +353,6 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
     val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
     val_map_put(b, "verb", val_str(mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : "")));
     val_map_put(b, "category", val_str(category_name(mb->flags)));
-    val_map_put(b, "task", task_value(member_effective_task(insp, mb, NULL)));
     val_map_put(b, "doc", val_str(mb->doc ? mb->doc : ""));
     val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
     val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
@@ -483,11 +480,6 @@ value_t meta_type_descriptor(value_kind_t kind, uint8_t width, uint16_t presenta
     return val_map_finish(b);
 }
 
-// A task id as a value: the string, or none.
-static value_t task_value(const char *task) {
-    return task ? val_str(task) : val_none();
-}
-
 // The one `entries` member of a collection container's class, or NULL when
 // `cls` is not a collection container (§ collections: exactly one member
 // named `entries`, indexed).
@@ -559,7 +551,6 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
     if (mb->kind == M_CHILD && !*doc && child)
         doc = object_doc(child);
     val_map_put(b, "doc", val_str(doc));
-    val_map_put(b, "task", task_value(member_effective_task(insp, mb, child)));
     switch (mb->kind) {
     case M_ATTR:
         val_map_put(b, "readonly", val_bool((mb->flags & VAL_RO) != 0 || !mb->attr.set));
@@ -645,7 +636,6 @@ static void each_attached_describe(struct object *parent, struct object *child, 
     const char *label = object_label(child);
     val_map_put(b, "label", val_str(label ? label : name));
     val_map_put(b, "doc", val_str(object_doc(child)));
-    val_map_put(b, "task", task_value(member_effective_task(parent, NULL, child)));
     if (!object_parent(parent)) // a root child: its domain
         val_map_put(b, "domain", val_str(object_domain_name(object_domain(child))));
     val_map_put(b, "indexed", val_bool(false));
@@ -761,7 +751,7 @@ static const member_t meta_members[] = {
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_label}},
     {.kind = M_METHOD,
      .name = "method_info",
-     .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
+     .doc = "JSON UI metadata for a method (verb, destructive, mutate, hidden, nargs)",
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}},
     {.kind = M_METHOD,
      .name = "members",

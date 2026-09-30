@@ -338,7 +338,6 @@ static const class_desc_t log_class = {
     .members = log_members,
     .n_members = sizeof(log_members) / sizeof(log_members[0]),
     .doc = "Logging configuration: per-category levels and sinks",
-    .task = "log",
 };
 
 void log_class_init(void) {

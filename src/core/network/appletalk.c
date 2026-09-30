@@ -882,7 +882,6 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
         return;
     object_set_order(g_atalk_object, 100);
     object_set_domain(g_atalk_object, OBJ_DOMAIN_NETWORK);
-    object_set_task(g_atalk_object, "network");
     object_attach(object_root(), g_atalk_object);
 
     g_atalk_stats_object = object_new(&atalk_stats_class, (void *)atalk_get_stats(), "stats");

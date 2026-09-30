@@ -1253,7 +1253,7 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
             // device's `image` child lookup only when a medium is present.
             scsi->image_objects[i] = object_new(&scsi_image_class, &scsi->device_links[i], "image");
             // Callback-backed children: device[i] under the collection,
-            // device[i].image under its device (paths and task inheritance).
+            // device[i].image under its device (for its path).
             object_set_logical_parent(scsi->device_objects[i], scsi->devices_object, NULL, i, NULL);
             object_set_logical_parent(scsi->image_objects[i], scsi->device_objects[i], "image", -1, NULL);
         }
@@ -1892,8 +1892,7 @@ static const member_t scsi_image_members[] = {
                 .result = V_BOOL,
                 .fn = scsi_image_method_export,
                 .ui_flags = MM_MUTATE | MM_IO,
-                .verb_label = "Save image…",
-                .task = "storage"}},
+                .verb_label = "Save image…"}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the medium from the owning device",
@@ -1901,8 +1900,7 @@ static const member_t scsi_image_members[] = {
                 .nargs = 0,
                 .result = V_BOOL,
                 .fn = scsi_image_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task = "storage"}},
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 
 static const class_desc_t scsi_image_class = {
@@ -2248,7 +2246,6 @@ static const class_desc_t scsi_static_class = {
     .members = scsi_static_members,
     .n_members = sizeof(scsi_static_members) / sizeof(scsi_static_members[0]),
     .doc = "SCSI image identification (before a machine exists)",
-    .task = "storage",
 };
 
 // Pre-machine singleton holding the static subset. Replaced by the
@@ -2312,5 +2309,4 @@ static const class_desc_t scsi_class = {
     .members = scsi_members,
     .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),
     .doc = "SCSI bus controller and its devices",
-    .task = "storage",
 };

@@ -994,6 +994,8 @@ rows from [`lib/commandsTree.ts`](../../app/web2/src/lib/commandsTree.ts))
 and the console follow each other through
 [`terminalBridge.ts`](../../app/web2/src/components/panel-views/terminal/terminalBridge.ts)
 and [`state/terminalSync.svelte.ts`](../../app/web2/src/state/terminalSync.svelte.ts).
+The browser lists basic and advanced members alike (never internal ones),
+so any path typed in the console has a row to follow.
 
 **Browser → console.** Selecting a row (a click on its name, ↑/↓,
 type-to-find) replaces the path token at the console's cursor:

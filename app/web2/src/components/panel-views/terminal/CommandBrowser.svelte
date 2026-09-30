@@ -3,9 +3,9 @@
   // (levels are path segments, as typed), for composing statements.  Every
   // row comes from the model (lib/commandsTree.ts): a leaf shows its segment,
   // the first sentence of its doc and, for an attribute, its type; the
-  // selected leaf shows its usage text (shell.usage) underneath.  Task chips
-  // (shell.tasks) filter by dimming; the Advanced toggle controls whether
-  // advanced-tier members are shown at all.
+  // selected leaf shows its usage text (shell.usage) underneath.  Basic and
+  // advanced members are both listed, so the browser can follow any path
+  // typed in the console.
   //
   // It follows the console and writes to it:
   // - Selecting a row (a click on its name, ↑/↓, type-to-find) replaces
@@ -28,13 +28,11 @@
     invalidateCollections,
     invalidationFor,
     loadAliases,
-    loadTasks,
     loadUsageInfo,
     rootRows,
     typeText,
     visible,
     type BrowserRow,
-    type TaskChip,
     type UsageInfo,
   } from '@/lib/commandsTree';
   import { onCoreEvent, whenModuleReady } from '@/bus/emulator';
@@ -59,9 +57,6 @@
   // Loaded children per row key, and which rows are open.
   let children = $state<Record<string, BrowserRow[]>>({});
   let expanded = $state<Record<string, boolean>>({});
-  let tasks = $state<TaskChip[]>([]);
-  let task = $state<string | null>(null); // the selected task chip
-  let showAdvanced = $state(false);
   let selectedKey = $state('');
   let usage = $state<UsageInfo | null>(null);
   // The argument marked in the usage (the console's cursor is in it).
@@ -81,9 +76,7 @@
   async function reload(): Promise<void> {
     await whenModuleReady();
     invalidate('');
-    const [r, t] = await Promise.all([rootRows(), loadTasks()]);
-    roots = r;
-    tasks = t;
+    roots = await rootRows();
     // Re-read every level still open.
     const open = Object.keys(expanded).filter((k) => expanded[k]);
     children = {};
@@ -144,21 +137,8 @@
     return undefined;
   }
 
-  // Does a row belong to the selected task?  With no task, everything does.
-  function matches(row: BrowserRow): boolean {
-    return !task || row.task === task;
-  }
-
-  // An object whose own task is another one is a subtree with no match: it
-  // stays collapsed while the filter is on.
-  function filteredOut(row: BrowserRow): boolean {
-    return (
-      !!task && row.expandable && row.kind !== 'group' && row.task !== null && row.task !== task
-    );
-  }
-
   function isOpen(row: BrowserRow): boolean {
-    return !!expanded[row.key] && !filteredOut(row);
+    return !!expanded[row.key];
   }
 
   interface FlatRow {
@@ -171,7 +151,7 @@
     const out: FlatRow[] = [];
     const walk = (rows: BrowserRow[], depth: number) => {
       for (const row of rows) {
-        if (row.kind !== 'divider' && !visible(row, showAdvanced)) continue;
+        if (row.kind !== 'divider' && !visible(row)) continue;
         out.push({ row, depth });
         if (row.expandable && isOpen(row) && children[row.key]) walk(children[row.key], depth + 1);
       }
@@ -293,10 +273,6 @@
   function onTwistieClick(ev: MouseEvent, row: BrowserRow): void {
     ev.stopPropagation();
     void toggle(row);
-  }
-
-  function onChip(id: string): void {
-    task = task === id ? null : id;
   }
 
   // --- following the console ------------------------------------------------------
@@ -539,26 +515,6 @@
 </script>
 
 <div class="cmd-browser">
-  <div class="chips" role="toolbar" aria-label="Filter by task">
-    {#each tasks as chip (chip.id)}
-      <button
-        class="chip"
-        class:active={task === chip.id}
-        title={chip.doc}
-        aria-label={`${chip.label} tasks`}
-        aria-pressed={task === chip.id}
-        onclick={() => onChip(chip.id)}>{chip.label}</button
-      >
-    {/each}
-    <button
-      class="chip adv"
-      class:active={showAdvanced}
-      title="Show advanced members"
-      aria-pressed={showAdvanced}
-      onclick={() => (showAdvanced = !showAdvanced)}>Advanced</button
-    >
-  </div>
-
   <ul
     class="cmd-tree"
     role="tree"
@@ -576,7 +532,7 @@
         <li
           class="cmd-row kind-{row.kind}"
           class:selected
-          class:dim={!matches(row) || otherKeys.has(row.key)}
+          class:dim={otherKeys.has(row.key)}
           class:match={matchKeys.has(row.key)}
           role="treeitem"
           aria-selected={selected}
@@ -628,30 +584,6 @@
     height: 100%;
     min-height: 0;
     container-type: inline-size;
-  }
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--gs-border, rgba(128, 128, 128, 0.25));
-  }
-  .chip {
-    font-size: 11px;
-    padding: 1px 8px;
-    border-radius: 10px;
-    border: 1px solid var(--gs-border, rgba(128, 128, 128, 0.4));
-    background: transparent;
-    color: var(--gs-fg-muted);
-    cursor: pointer;
-  }
-  .chip.active {
-    background: var(--gs-accent-bg, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright);
-    border-color: var(--gs-accent, rgba(80, 140, 220, 0.8));
-  }
-  .chip.adv {
-    margin-left: auto;
   }
   .cmd-tree {
     list-style: none;

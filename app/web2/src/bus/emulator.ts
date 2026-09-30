@@ -584,7 +584,6 @@ export interface CompletionCandidate {
   text: string;
   kind: string; // object, collection, attr, method, alias, keyword, value, …
   doc: string;
-  task: string | null;
 }
 
 export interface CompletionResult {
@@ -607,14 +606,13 @@ export async function tabComplete(line: string, cursor: number): Promise<Complet
   const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
   const candidates: CompletionCandidate[] = [];
   for (const c of obj.candidates) {
-    if (typeof c === 'string') candidates.push({ text: c, kind: '', doc: '', task: null });
+    if (typeof c === 'string') candidates.push({ text: c, kind: '', doc: '' });
     else if (c && typeof c === 'object' && typeof (c as { text?: unknown }).text === 'string') {
       const o = c as Record<string, unknown>;
       candidates.push({
         text: o.text as string,
         kind: str(o.kind) ?? '',
         doc: str(o.doc) ?? '',
-        task: str(o.task),
       });
     }
   }

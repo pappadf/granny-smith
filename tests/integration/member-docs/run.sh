@@ -2,7 +2,7 @@
 # Documentation completeness of the object model.
 #
 # shell.lint_members() walks the live tree and reports each documentation
-# gap as `<task>\t<path>: <rule>` (src/core/object/lint.c lists the rules):
+# gap as `<path>: <rule>` (src/core/object/lint.c lists the rules):
 # an argument or node with no doc, an untyped argument, a V_ANY result with
 # nothing said about it, an enum without its values, a default mentioned in
 # prose but not declared.  help, the command browser and the argument forms

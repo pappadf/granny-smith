@@ -47,7 +47,6 @@ struct object {
     uint16_t category; // M_CAT_* visibility for attached nodes
     uint8_t domain; // OBJ_DOMAIN_* for root children
     const char *doc; // optional one-sentence doc; NULL = the class's
-    const char *task; // optional task id; NULL = the class's
     object_dtor_fn dtor; // optional destructor for instance_data (default NULL)
     struct object *parent;
     struct object *first_child;
@@ -502,45 +501,6 @@ const char *object_domain_name(uint8_t domain) {
     default:
         return "emulator";
     }
-}
-
-void object_set_task(struct object *o, const char *task) {
-    if (o)
-        o->task = task;
-}
-
-const char *object_task(struct object *o) {
-    if (!o)
-        return NULL;
-    if (o->task)
-        return o->task;
-    return o->cls ? o->cls->task : NULL;
-}
-
-struct object *object_up(struct object *o) {
-    if (!o)
-        return NULL;
-    return o->parent ? o->parent : o->lparent;
-}
-
-const char *member_effective_task(struct object *node, const member_t *m, struct object *child) {
-    if (m && m->kind == M_METHOD && m->method.task)
-        return m->method.task;
-    // A child member answers first for the child object itself.
-    if (child) {
-        const char *t = object_task(child);
-        if (t)
-            return t;
-    }
-    // Then the owning node and each node above it, stopping before the root:
-    // the root's own methods carry their task individually, so nothing is
-    // inherited from it.
-    for (struct object *o = node; o && o != g_root; o = object_up(o)) {
-        const char *t = object_task(o);
-        if (t)
-            return t;
-    }
-    return NULL;
 }
 
 // Visit attached children in ascending (order, attach_seq). Fan-out is

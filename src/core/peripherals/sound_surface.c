@@ -170,7 +170,6 @@ static const class_desc_t sound_surface_class = {
     .members = sound_members,
     .n_members = sizeof sound_members / sizeof sound_members[0],
     .doc = "Sound output and capture",
-    .task = "io",
 };
 
 struct object *sound_object_new(const sound_surface_t *s) {

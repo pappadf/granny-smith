@@ -1614,7 +1614,6 @@ static const class_desc_t checkpoint_class = {
     .members = checkpoint_members,
     .n_members = sizeof(checkpoint_members) / sizeof(checkpoint_members[0]),
     .doc = "Saves and restores the whole machine state",
-    .task = "run",
 };
 
 // ============================================================================

@@ -42,17 +42,15 @@ const char *comp_kind_name(comp_kind_t k);
 
 struct completion {
     const char *items[CMD_MAX_COMPLETIONS];
-    // Detail per item (borrowed like items): kind, one-line doc, task id.
+    // Detail per item (borrowed like items): kind and one-line doc.
     uint8_t kinds[CMD_MAX_COMPLETIONS];
     const char *docs[CMD_MAX_COMPLETIONS];
-    const char *tasks[CMD_MAX_COMPLETIONS];
     int count;
     int start;
     int end;
     // The detail the next pushed candidates get (set by the completer).
     comp_kind_t cur_kind;
     const char *cur_doc;
-    const char *cur_task;
     // Argument context: set when the cursor is in an argument position of a
     // resolved method.  arg_index is the DECLARED slot (a `name=` argument
     // names its own slot).

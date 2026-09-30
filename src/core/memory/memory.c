@@ -1991,7 +1991,6 @@ static const class_desc_t memory_class = {
     .members = memory_members,
     .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
     .doc = "Guest memory: map, peek and poke",
-    .task = "debug",
 };
 
 // === memory.peek child class ================================================

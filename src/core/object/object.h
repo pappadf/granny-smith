@@ -184,11 +184,6 @@ typedef struct member {
             // Short verb shown in menus ("Save image…") when distinct from
             // the method name ("export"). NULL = use the method name.
             const char *verb_label;
-            // By-task grouping for the command browser: one of the ids
-            // shell.tasks lists ("run", "storage", "io", "debug", "log",
-            // "network", "shell").  NULL inherits the node's task
-            // (member_effective_task); a different axis from the tree.
-            const char *task;
             // Optional one-line description of the result, for a method
             // whose result kind alone says little (V_ANY, V_MAP, V_LIST).
             const char *result_doc;
@@ -230,7 +225,6 @@ typedef struct class_desc {
     size_t n_members;
     void *(*instance_data)(struct object *o); // optional, for casts
     const char *doc; // one sentence describing a node of this class; NULL = none
-    const char *task; // task id inherited by the class's members (see member_effective_task); NULL = none
 } class_desc_t;
 
 // === Root object =============================================================
@@ -417,23 +411,6 @@ const char *object_doc(struct object *o);
 void object_set_domain(struct object *o, uint8_t domain);
 uint8_t object_domain(struct object *o);
 const char *object_domain_name(uint8_t domain); // "emulator" | "machine" | "network"
-
-// Task of an object (overrides its class's task; NULL = the class's).  The
-// string is borrowed.
-void object_set_task(struct object *o, const char *task);
-const char *object_task(struct object *o); // object's own task, else its class's, else NULL
-
-// The node one step up for inheritance: the attached parent, else the
-// logical parent (object_set_logical_parent), else NULL.
-struct object *object_up(struct object *o);
-
-// A member's effective task: for a method, its own `task`; for a child,
-// the child object's (object, then class); then the owning node's object
-// task, its class task, and so on up the tree, stopping before the root
-// (the root's methods carry their task individually).  NULL when nothing
-// on the way names one.  `child` is the resolved child object for an
-// M_CHILD member (NULL otherwise).
-const char *member_effective_task(struct object *node, const member_t *m, struct object *child);
 
 // Iterate this object's statically-attached children (named children
 // added via object_attach). Calls fn for each. Indexed children declared

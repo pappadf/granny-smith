@@ -287,7 +287,7 @@ layered over the shell store.
   `path` argument that names an object path gets no file candidates.
 
 With `shell.complete(line, cursor, true)` each candidate comes back as
-`{text, kind, doc, task}` (`kind` ∈ `object`, `collection`, `attr`,
+`{text, kind, doc}` (`kind` ∈ `object`, `collection`, `attr`,
 `method`, `alias`, `keyword`, `value`), and a `context` says where the
 cursor is: `{method, arg_index, arg_name}`, where `arg_index` is the
 *declared* slot (a `name=` word names its own slot; earlier `name=` words do
@@ -339,8 +339,7 @@ hint cannot disagree:
 - **Node** — `<full.path> — <label>`, its doc, then `attributes:`,
   `methods:` and `children:` lines (basic and advanced tiers).
 
-`shell.keywords` lists every reserved word with its one-line syntax;
-`shell.tasks` (internal) lists the command browser's task chips in order.
+`shell.keywords` lists every reserved word with its one-line syntax.
 
 ## See also
 

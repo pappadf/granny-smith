@@ -2210,5 +2210,4 @@ static const class_desc_t scheduler_class = {
     .members = scheduler_members,
     .n_members = sizeof(scheduler_members) / sizeof(scheduler_members[0]),
     .doc = "Runs the machine: start, stop, pacing mode and speed",
-    .task = "run",
 };

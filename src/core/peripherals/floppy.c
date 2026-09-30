@@ -984,7 +984,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
             // Per-drive medium node, sharing the same drive link.
             floppy->disk_objects[i] = object_new(&floppy_disk_class, &floppy->drive_links[i], "disk");
             // Callback-backed children: drive[i] under the collection,
-            // drive[i].disk under its drive (paths and task inheritance).
+            // drive[i].disk under its drive (for its path).
             object_set_logical_parent(floppy->drive_objects[i], floppy->drives_object, NULL, i, NULL);
             object_set_logical_parent(floppy->disk_objects[i], floppy->drive_objects[i], "disk", -1, NULL);
         }
@@ -1288,7 +1288,6 @@ static const class_desc_t floppy_class = {
     .members = floppy_members,
     .n_members = sizeof(floppy_members) / sizeof(floppy_members[0]),
     .doc = "Floppy controller and drives",
-    .task = "storage",
 };
 
 // --- Controller node: the live register file, per variant -------------------
@@ -1549,8 +1548,7 @@ static const member_t floppy_disk_members[] = {
                 .nargs = 0,
                 .result = V_NONE,
                 .fn = floppy_disk_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task = "storage"}},
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 
 static const class_desc_t floppy_disk_class = {

@@ -655,7 +655,7 @@ static const class_desc_t lisa_fd_drives_class = {
 
 static const member_t lisa_fd_members[] = {0}; // container only; the drives collection is the child
 static const class_desc_t lisa_fd_class = {
-    .name = "floppy", .members = NULL, .n_members = 0, .doc = "Floppy controller and drive", .task = "storage"};
+    .name = "floppy", .members = NULL, .n_members = 0, .doc = "Floppy controller and drive"};
 
 // Attach the `floppy` → `drives` → `drives[0]` object tree for this machine.
 static void lisa_register_floppy_object(config_t *cfg) {

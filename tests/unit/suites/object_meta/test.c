@@ -381,7 +381,7 @@ TEST(test_valid_keys) {
     ASSERT_TRUE(!object_valid_key(long_key));
 }
 
-// === Effective task and meta.members keys ================================
+// === meta.members keys ====================================================
 
 static const arg_decl_t tk_args[] = {
     {.name = "mode", .kind = V_ENUM, .enum_values = (const char *const[]){"a", "b", NULL}, .doc = "Mode"},
@@ -391,48 +391,19 @@ static const member_t tk_members[] = {
     {.kind = M_ATTR,
      .name = "x",
      .doc = "An x",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = toy_get_pc}               },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = toy_get_pc}},
     {.kind = M_METHOD,
      .name = "go",
      .doc = "Go",
-     .method = {.args = tk_args, .nargs = 1, .result = V_NONE, .fn = toy_step}                },
+     .method = {.args = tk_args, .nargs = 1, .result = V_NONE, .fn = toy_step} },
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Save",
-     .method = {.task = "storage", .args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}    },
 };
-static const class_desc_t tk_class = {
-    .name = "Tk", .members = tk_members, .n_members = 3, .doc = "A task node", .task = "debug"};
+static const class_desc_t tk_class = {.name = "Tk", .members = tk_members, .n_members = 3, .doc = "A toy node"};
 
-TEST(test_member_effective_task) {
-    object_root_reset();
-    struct object *top = object_new(&tk_class, NULL, "top");
-    object_attach(object_root(), top);
-    struct object *inner = object_new(&empty_class, NULL, "inner");
-    object_attach(top, inner);
-    // An attribute inherits its node's class task; a method's own wins.
-    ASSERT_TRUE(strcmp(member_effective_task(top, &tk_members[0], NULL), "debug") == 0);
-    ASSERT_TRUE(strcmp(member_effective_task(top, &tk_members[2], NULL), "storage") == 0);
-    // A node without a task inherits from above; an object task overrides.
-    ASSERT_TRUE(strcmp(member_effective_task(inner, NULL, NULL), "debug") == 0);
-    object_set_task(inner, "io");
-    ASSERT_TRUE(strcmp(member_effective_task(inner, NULL, NULL), "io") == 0);
-    // A callback-backed entry walks to its logical parent.
-    struct object *entry = object_new(&empty_class, NULL, NULL);
-    object_set_logical_parent(entry, top, NULL, 0, NULL);
-    ASSERT_TRUE(strcmp(member_effective_task(entry, NULL, NULL), "debug") == 0);
-    // Nothing is inherited from the root.
-    ASSERT_TRUE(member_effective_task(object_root(), NULL, NULL) == NULL);
-    object_delete(entry);
-    object_detach(inner);
-    object_delete(inner);
-    object_detach(top);
-    object_delete(top);
-    object_root_reset();
-}
-
-// Lint rules 7 and 8: a basic-tier run/storage/debug method needs examples,
-// and each example must pass the caller's check.
+// Lint rule 7: each example must pass the caller's check.
 static const member_t lx_members[] = {
     {.kind = M_METHOD,
      .name = "bare",
@@ -448,13 +419,8 @@ static const member_t lx_members[] = {
      .examples = (const char *const[]){"lx.good", "lx.bda", NULL},
      .doc = "One example that does not resolve",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
-    {.kind = M_METHOD,
-     .name = "other",
-     .doc = "Another task: no examples needed",
-     .method = {.task = "io", .args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
 };
-static const class_desc_t lx_class = {
-    .name = "Lx", .members = lx_members, .n_members = 4, .doc = "A lint node", .task = "debug"};
+static const class_desc_t lx_class = {.name = "Lx", .members = lx_members, .n_members = 3, .doc = "A lint node"};
 
 static bool example_ok(const char *example) {
     return strstr(example, "bda") == NULL;
@@ -473,13 +439,12 @@ TEST(test_lint_examples) {
     object_attach(object_root(), lx);
     value_t out = object_lint_members(example_ok);
     ASSERT_EQ_INT(V_LIST, out.kind);
-    ASSERT_TRUE(has_line(&out, "debug\tlx.bare: method has no examples"));
-    ASSERT_TRUE(has_line(&out, "debug\tlx.bad: example does not resolve: lx.bda"));
-    ASSERT_EQ_INT(2, (int)out.list.len);
-    value_free(&out);
-    // Without a check, only the missing examples are reported.
-    out = object_lint_members(NULL);
+    ASSERT_TRUE(has_line(&out, "lx.bad: example does not resolve: lx.bda"));
     ASSERT_EQ_INT(1, (int)out.list.len);
+    value_free(&out);
+    // Without a check, nothing is reported (a method needs no examples).
+    out = object_lint_members(NULL);
+    ASSERT_EQ_INT(0, (int)out.list.len);
     value_free(&out);
     object_detach(lx);
     object_delete(lx);
@@ -510,7 +475,7 @@ TEST(test_meta_members_keys) {
     ASSERT_TRUE(strcmp(map_get(type, "kind")->s, "uint") == 0);
     ASSERT_TRUE(strcmp(map_get(type, "presentation")->s, "hex") == 0);
     ASSERT_TRUE(map_get(type, "enum")->kind == V_NONE);
-    ASSERT_TRUE(strcmp(map_get(x, "task")->s, "debug") == 0);
+    ASSERT_TRUE(map_get(x, "task") == NULL);
     const value_t *go = &list.list.items[1];
     const value_t *args = map_get(go, "args");
     ASSERT_TRUE(args && args->kind == V_LIST && args->list.len == 1);
@@ -520,14 +485,13 @@ TEST(test_meta_members_keys) {
     ASSERT_TRUE(map_get(&args->list.items[0], "optional")->kind == V_BOOL);
     ASSERT_TRUE(map_get(&args->list.items[0], "default")->kind == V_NONE);
     ASSERT_TRUE(strcmp(map_get(map_get(go, "result"), "kind")->s, "none") == 0);
-    ASSERT_TRUE(strcmp(map_get(&list.list.items[2], "task")->s, "storage") == 0);
     value_free(&list);
 
-    // The root's view of `top`: doc from the class, task, domain.
+    // The root's view of `top`: doc from the class, domain.
     node_t r = object_resolve(object_root(), "meta.members");
     value_t rl = node_call(r, 0, NULL);
     ASSERT_TRUE(rl.kind == V_LIST && rl.list.len == 1);
-    ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "doc")->s, "A task node") == 0);
+    ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "doc")->s, "A toy node") == 0);
     ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "domain")->s, "emulator") == 0);
     ASSERT_TRUE(map_get(&rl.list.items[0], "collection")->kind == V_BOOL);
     value_free(&rl);
@@ -550,7 +514,6 @@ int main(void) {
     RUN(test_logical_parent_paths);
     RUN(test_resolver_adopts_unregistered_entries);
     RUN(test_valid_keys);
-    RUN(test_member_effective_task);
     RUN(test_meta_members_keys);
     RUN(test_lint_examples);
     return 0;

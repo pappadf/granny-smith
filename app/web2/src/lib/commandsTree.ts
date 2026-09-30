@@ -1,7 +1,7 @@
 // The Terminal's command browser, as data: a STRUCTURAL view of the one
 // object model -- levels are path segments, exactly as they are typed -- with
 // every row generated from meta.members.  Nothing here is hand-maintained:
-// the task chips come from shell.tasks, the keywords from shell.keywords, the
+// the keywords come from shell.keywords, the
 // aliases from shell.alias.list, and a row's one-line description, type and
 // usage text from the model (docs/internals/core/object/object-model.md).
 //
@@ -28,19 +28,12 @@ export interface BrowserRow {
   name: string; // the path segment shown (`drive`, `[0]`, `["scsi"]`, `$pc`)
   path: string; // the full path ('' for synthetic rows)
   doc: string;
-  task: string | null; // effective task
   category: string; // basic | advanced | internal
   insert: string; // what selecting the row writes over the path token at the cursor
   expandable: boolean;
   type?: TypeDescriptor; // attr
   readonly?: boolean; // attr
   keyed?: boolean; // collection: its entries are keyed by name
-}
-
-export interface TaskChip {
-  id: string;
-  label: string;
-  doc: string;
 }
 
 // The first sentence of a doc (up to the first ". " or the end).
@@ -121,7 +114,6 @@ function memberRow(path: string, m: MemberInfo): BrowserRow {
     name: m.name,
     path: full,
     doc: m.doc ?? '',
-    task: m.task ?? null,
     category: m.category ?? 'basic',
   };
   if (m.kind === 'method')
@@ -150,12 +142,10 @@ function memberRow(path: string, m: MemberInfo): BrowserRow {
   };
 }
 
-// Whether a member is shown at all: never internal members or hidden
-// methods; advanced ones only with the Advanced toggle.
-export function visible(row: BrowserRow, showAdvanced: boolean): boolean {
-  if (row.category === 'internal') return false;
-  if (row.category === 'advanced' && !showAdvanced) return false;
-  return true;
+// Whether a member is shown at all: every basic and advanced member, never
+// internal ones (hidden methods are left out when the level is read).
+export function visible(row: BrowserRow): boolean {
+  return row.category !== 'internal';
 }
 
 // The rows directly under an object path: its attributes, methods and
@@ -190,11 +180,9 @@ async function collectionRows(path: string): Promise<BrowserRow[]> {
   }
   // A hybrid collection (indexed and keyed) is written in the indexed form.
   if (indices.length) {
-    for (const i of indices)
-      out.push(entryRow(`[${i}]`, `${path}[${i}]`, entriesMember?.task ?? null));
+    for (const i of indices) out.push(entryRow(`[${i}]`, `${path}[${i}]`));
   } else {
-    for (const k of keys)
-      out.push(entryRow(`["${k}"]`, `${path}["${k}"]`, entriesMember?.task ?? null));
+    for (const k of keys) out.push(entryRow(`["${k}"]`, `${path}["${k}"]`));
   }
   for (const m of ms) {
     if (m === entriesMember || (m.kind === 'method' && m.hidden)) continue;
@@ -203,14 +191,13 @@ async function collectionRows(path: string): Promise<BrowserRow[]> {
   return out;
 }
 
-function entryRow(name: string, path: string, task: string | null): BrowserRow {
+function entryRow(name: string, path: string): BrowserRow {
   return {
     key: path,
     kind: 'entry',
     name,
     path,
     doc: '',
-    task,
     category: 'basic',
     insert: `${path}.`,
     expandable: true,
@@ -267,21 +254,19 @@ function divider(domain: string): BrowserRow {
     name: DOMAIN_LABEL[domain] ?? domain,
     path: '',
     doc: '',
-    task: null,
     category: 'basic',
     insert: '',
     expandable: false,
   };
 }
 
-function group(key: string, name: string, doc: string, task: string | null = 'shell'): BrowserRow {
+function group(key: string, name: string, doc: string): BrowserRow {
   return {
     key,
     kind: 'group',
     name,
     path: '',
     doc,
-    task,
     category: 'basic',
     insert: '',
     expandable: true,
@@ -303,7 +288,6 @@ export async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
         name: k.word,
         path: '',
         doc: k.syntax,
-        task: 'shell',
         category: 'basic',
         insert: `${k.word} `,
         expandable: false,
@@ -332,7 +316,6 @@ export async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
     name: `$${a.name}`,
     path: a.path,
     doc: a.path,
-    task: 'shell',
     category: 'basic',
     insert: `$${a.name}`,
     expandable: false,
@@ -368,16 +351,6 @@ export async function loadAliases(): Promise<AliasInfo[]> {
 // The rows under any expandable row.
 export async function expand(row: BrowserRow): Promise<BrowserRow[]> {
   return row.kind === 'group' ? groupRows(row) : childRows(row);
-}
-
-// The task chips, in order (shell.tasks).
-export async function loadTasks(): Promise<TaskChip[]> {
-  if (!isModuleReady()) return [];
-  const t = await gsEval('shell.tasks');
-  if (!Array.isArray(t)) return [];
-  return t.filter(
-    (c): c is TaskChip => !!c && typeof c === 'object' && typeof (c as TaskChip).id === 'string',
-  );
 }
 
 // shell.usage: the usage text, and for a method its signature (the text's

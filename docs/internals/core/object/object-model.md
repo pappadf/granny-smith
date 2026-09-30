@@ -194,19 +194,14 @@ domains:
 Each root child carries its **domain** (`object_set_domain`: machine,
 emulator or network), which draws the dividers at the tree's top.
 
-### Metadata: docs, tasks, types
+### Metadata: docs and types
 
-A class declares a one-sentence `doc` and optionally a `task`; an object
-can override both (`object_set_doc`, `object_set_task`), and `object_doc`
-answers the object's doc, else its class's.  A method may name its own
-`task`, a `result_doc`, and `examples`.  A member's **effective task**
-(`member_effective_task`) is its own, else its node's (object, then class),
-else the nearest ancestor's — entries walking to their container through
-their logical parent — stopping before the root.  The ids are those
-`shell.tasks` lists: run, storage, io, debug, log, network, shell.
+A class declares a one-sentence `doc`; an object can override it
+(`object_set_doc`), and `object_doc` answers the object's doc, else its
+class's.  A method may declare a `result_doc` and `examples`.
 
 `meta.members(values?)` describes each member with, besides name, kind,
-category, label and doc: the effective `task` (or none); for an attribute
+category, label and doc: for an attribute
 its `type` descriptor `{kind, width, presentation, enum}` (presentation is
 the first of sensitive / path / hex / bin / dec, `VAL_PATH` marking a string
 that names a VFS path); for a method its `args` (name, doc, type, optional,
@@ -217,9 +212,8 @@ rest, default), `result` type and, when declared, `result_doc` and
 `shell.lint_members()` (internal) walks the live tree and reports every
 documentation gap — an undocumented argument or basic-tier node, an untyped
 argument without `OBJ_ARG_POLY`, a `V_ANY` result without `result_doc`, an
-enum without its values, a default mentioned but not declared, a basic-tier
-method of task run, storage or debug without `examples`, and an example
-with a path that does not resolve (checked with `shell.highlight`) — and
+enum without its values, a default mentioned but not declared, and an
+example with a path that does not resolve (checked with `shell.highlight`) — and
 `tests/integration/member-docs` fails on any gap not in its allow-list,
 which may only shrink (it is empty).
 

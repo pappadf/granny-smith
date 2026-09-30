@@ -1094,7 +1094,6 @@ static const class_desc_t files_class = {
     .members = storage_members,
     .n_members = sizeof(storage_members) / sizeof(storage_members[0]),
     .doc = "Host files, disk images, image mounts and archives",
-    .task = "storage",
 };
 
 // === files.mounts =============================================================
