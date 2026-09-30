@@ -44,8 +44,9 @@ The peeler library is vendored in-tree:
   `test/`), a self-contained copy of the upstream project. It keeps its
   own standalone `Makefile` so it can still be built/tested on its own.
 - **Build** — sources are compiled directly alongside the emulator via
-  the explicit `PEELER_SRC` list in the top-level `Makefile` /
-  `Makefile.headless`, with `-Isrc/peeler/include -Isrc/peeler/lib`.
+  the explicit `PEELER_SRC` list in `src/sources.mk`, shared by the
+  top-level `Makefile` and `Makefile.headless`, with
+  `-Isrc/peeler/include -Isrc/peeler/lib`.
 - **Linkage** — peeler objects link into both the WASM module and the
   headless binary.
 
@@ -75,9 +76,15 @@ The emulator-side wrapper lives at
 - Implements `archive_identify_file(path)` and
   `archive_extract_file(path, out_dir)` — small C wrappers over the
   peeler API that the typed methods bind to.
-- Discards resource forks on extraction. The emulator filesystems
-  don't model resource forks, and the only callers want the data
-  fork (disk images, system files unpacked from `.sit` / `.hqx`).
+- Dispatches `archive.extract` as an I/O-job leaf (`MM_IO`), so decoding
+  and writing a large archive never blocks the emulator thread.
+- Writes each file's data fork under its name and, when the file carries
+  a resource fork and/or Finder Info, an AppleDouble `._<name>` sidecar
+  beside it (via peeler's `peel_build_sidecar`). A Mac file stays
+  lossless on the flat host filesystem — e.g. a StuffIt/MacBinary-wrapped
+  NDIF disk image unpacks to a mountable pair — and the sidecar
+  interoperates with macOS/Netatalk. A file with neither gets no
+  sidecar.
 
 ## Supported formats
 
@@ -89,12 +96,14 @@ The emulator-side wrapper lives at
 
 ## Build process
 
-The top-level `Makefile` adds the peeler sources directly:
+The shared source list `src/sources.mk` (included by both the top-level
+`Makefile` and `Makefile.headless`) adds the peeler sources directly:
 
 ```makefile
 PEELER_DIR := src/peeler
 
 PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
+              $(PEELER_DIR)/lib/appledouble.c \
               $(PEELER_DIR)/lib/err.c \
               $(PEELER_DIR)/lib/util.c \
               $(PEELER_DIR)/lib/formats/bin.c \
@@ -155,7 +164,9 @@ menu wiring lives in
    automatically.
 2. **Iterate files** — walk `peel_file_list_t.files[]`.
 3. **Write output** — write each file's data fork to the destination
-   directory, creating parent directories as needed.
+   directory, creating parent directories as needed, and write an
+   AppleDouble `._<name>` sidecar when the file has a resource fork
+   and/or Finder Info (a data-only file gets no sidecar).
 4. **Cleanup** — `peel_file_list_free()`.
 
 ### Mac metadata handling
@@ -169,9 +180,10 @@ Classic Mac files contain:
 In the emulator's filesystems:
 
 - Data forks are written as regular files.
-- Resource forks are discarded (no filesystem support; not needed for
-  the disk-image / boot-floppy use cases that drive most extractions).
-- Finder metadata is available in `peel_file_meta_t` but not stored.
+- Resource forks and Finder Info are preserved in an AppleDouble
+  `._<name>` sidecar beside the data file (`peel_build_sidecar`), so a
+  StuffIt/MacBinary-wrapped NDIF disk image unpacks to a mountable pair.
+- Finder metadata is also available directly in `peel_file_meta_t`.
 
 ## Error handling
 
