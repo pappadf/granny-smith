@@ -1,7 +1,7 @@
 // The LaserWriter interpreter ring's wire protocol — the TypeScript mirror
 // of src/core/network/laserwriter_ring_protocol.h.  The printer bridge on
-// the emulator's pthread writes OPEN / FEED / FINISH / ABANDON records into
-// the outbound ring; the platen worker (platen.worker.ts, the loop in
+// the emulator's pthread writes OPEN / FEED / FINISH / ABANDON /
+// PRINTER_FREE records into the outbound ring; the platen worker (platen.worker.ts, the loop in
 // platenRing.ts) consumes them and answers OPENED / OPEN_FAILED / FED /
 // FINISHED through the inbound ring.  Keep the two files in step: every
 // name and value here is the header's, and PROTOCOL_VERSION is checked at
@@ -17,7 +17,7 @@
 // reader rejects a len that is not a multiple of 8.  HEAD / TAIL are
 // monotonic byte counts mod 2^32.  All words are little-endian.
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const MAGIC = 0x4c575250; // 'LWRP'
 
 // Control-block word indices (Int32Array view at the control base).
@@ -51,17 +51,20 @@ export const TITLE_MAX = 63;
 
 // Records, core -> worker.
 
+// OPEN opens a job on a printer (the bridge names printers); the
+// configuration creates the printer on its first job and is ignored after.
 export const R_OPEN = 1;
 export const OPEN_JOB = 0;
-export const OPEN_COMPRESS = 1;
-export const OPEN_EMBED = 2;
-export const OPEN_BUDGET_L = 3;
-export const OPEN_BUDGET_H = 4;
-export const OPEN_PASSWORD = 5;
-export const OPEN_ID_COUNT = 6;
-export const OPEN_ID_BYTES = 7;
-export const OPEN_PRELUDE = 8;
-export const OPEN_WORDS = 9;
+export const OPEN_PRINTER = 1;
+export const OPEN_COMPRESS = 2;
+export const OPEN_EMBED = 3;
+export const OPEN_BUDGET_L = 4;
+export const OPEN_BUDGET_H = 5;
+export const OPEN_PASSWORD = 6;
+export const OPEN_ID_COUNT = 7;
+export const OPEN_ID_BYTES = 8;
+export const OPEN_PRELUDE = 9;
+export const OPEN_WORDS = 10;
 
 export const R_FEED = 2;
 export const FEED_JOB = 0;
@@ -78,10 +81,19 @@ export const R_ABANDON = 4;
 export const ABANDON_JOB = 0;
 export const ABANDON_WORDS = 1;
 
+// The printer's machine is gone (or the printer restarted): free it.
+export const R_PRINTER_FREE = 5;
+export const PRINTER_FREE_ID = 0;
+export const PRINTER_FREE_WORDS = 1;
+
 // Records, worker -> core.
 export const R_OPENED = 16;
 export const OPENED_JOB = 0;
-export const OPENED_WORDS = 1;
+export const OPENED_FLAGS = 1;
+export const OPENED_WORDS = 2;
+
+// The printer was wedged and was replaced before the job opened.
+export const OPENED_F_RESTARTED = 1 << 0;
 
 export const R_OPEN_FAILED = 17;
 export const OPEN_FAILED_JOB = 0;

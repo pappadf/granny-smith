@@ -174,7 +174,7 @@ jobs:
       # (see its step below). Suites are parallel-safe because each test gets a
       # private GS_STORAGE_CACHE, so nothing writes beside the shared media.
       # PLATEN=1 throughout: the printer rows (appletalk-print,
-      # appletalk-print-71, appletalk-print-lw8) reach the PostScript interpreter only in a
+      # appletalk-print-71, appletalk-print-lw8, appletalk-print-persist) reach the PostScript interpreter only in a
       # bridge build — without it they detect the missing interpreter,
       # log a skip and pass, which is how a System 7.1 printing defect
       # reached a user with CI green. The build fetches the prebuilt

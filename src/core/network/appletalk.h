@@ -201,6 +201,17 @@ uint32_t atalk_printer_documents(void);
 uint32_t atalk_printer_last_pages(void);
 const char *atalk_printer_last_outcome(void);
 
+// The machine's printer (laserwriter_job.h, "The printer"): jobs it has
+// served since it was created, and of those, jobs exitserver made permanent.
+uint32_t atalk_printer_interpreter_jobs(void);
+uint32_t atalk_printer_interpreter_permanent_jobs(void);
+
+// Power-cycles the printer: a PAP session in progress is closed and its job
+// abandoned, and the next job starts on a new interpreter.  Configuration
+// (name, enabled, capture) and the advertisement are untouched.  Nonzero,
+// with the reason in `err`, when the build has no interpreter.
+int atalk_printer_restart(char *err, size_t err_len);
+
 // === NBP (Name Binding Protocol) ===
 
 // NBP service publication helpers.
@@ -249,8 +260,10 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
 void appletalk_checkpoint(checkpoint_t *checkpoint);
 
 // Destructor: `scc` is the departing machine's SCC.  A no-op unless the stack
-// is bound to that machine (see appletalk.c).
-void appletalk_delete(scc_t *scc);
+// is bound to that machine (see appletalk.c).  `power_cycle`: the machine is
+// being rebuilt as itself (machine.restart), so it keeps its printer; any
+// other teardown ends the printer with the machine.
+void appletalk_delete(scc_t *scc, bool power_cycle);
 
 // Server module hooks: publish the NBP advertisement at startup, release
 // volumes and forks at teardown.

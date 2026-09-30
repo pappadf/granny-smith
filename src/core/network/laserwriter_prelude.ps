@@ -1,9 +1,10 @@
 %!PS
 % Host prelude for the emulated LaserWriter's PostScript interpreter.
 % Embedded at build time (laserwriter.mk -> build/laserwriter/
-% laserwriter_prelude.h) and run once per job at the server level before
-% the workstation's program, so everything defined here is what the driver
-% finds in the device.
+% laserwriter_prelude.h) and run once, at the server level, when the
+% machine's printer is created (its first job), before any workstation
+% program; every job starts from that state, so everything defined here is
+% what the driver finds in the device.
 %
 % What the driver's setup code asks the device: statusdict timeouts and
 % feed state, the Level 1 page-size procedures, and the userdict page-type

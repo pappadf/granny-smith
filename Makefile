@@ -174,7 +174,7 @@ PLATEN_PREREQS :=
 # middleware reads build/, `ui2` copies it into dist/.
 PLATEN_MODULE_JS   := $(BUILD_DIR)/platen-$(PLATEN_VERSION).js
 PLATEN_MODULE_WASM := $(BUILD_DIR)/platen-$(PLATEN_VERSION).wasm
-PLATEN_MODULE_EXPORTS := _platen_job_new,_platen_job_feed,_platen_job_read_replies,_platen_job_read_errors,_platen_job_finish,_platen_job_pdf,_platen_job_error_name,_platen_job_offending,_platen_job_pages,_platen_job_free,_platen_last_error,_malloc,_free
+PLATEN_MODULE_EXPORTS := _platen_printer_new,_platen_printer_job,_platen_printer_free,_platen_job_feed,_platen_job_read_replies,_platen_job_read_errors,_platen_job_finish,_platen_job_pdf,_platen_job_error_name,_platen_job_offending,_platen_job_pages,_platen_job_free,_platen_last_error,_malloc,_free
 PLATEN_MODULE_LDFLAGS := -O2 \
            $(PLATEN_WASM_LDFLAGS) \
            --no-entry \
@@ -242,7 +242,9 @@ endif
 # The interpreter worker's module, from the fetched release archive.
 platen-module: $(PLATEN_MODULE_JS)
 
-$(PLATEN_MODULE_JS): $(PLATEN_LIB_WASM) | check-emcc
+# The Makefile is a prerequisite too: PLATEN_MODULE_EXPORTS lives here, and a
+# module linked with an older export list lacks what the worker now calls.
+$(PLATEN_MODULE_JS): $(PLATEN_LIB_WASM) Makefile | check-emcc
 	@mkdir -p $(dir $@)
 	@echo "Linking the platen module ($(PLATEN_VERSION)) with $(CC)"
 	$(CC) $(PLATEN_MODULE_LDFLAGS) $< -o $@

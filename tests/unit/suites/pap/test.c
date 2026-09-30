@@ -315,6 +315,18 @@ TEST(a_query_split_across_fragments_is_answered) {
     ASSERT_TRUE(g_last_reply[0] == '0');
 }
 
+// Without the interpreter there is no printer to power-cycle: restart says
+// so, and a session in progress is left alone.
+TEST(restart_without_an_interpreter_is_refused) {
+    setup();
+    open_conn(9);
+    char err[128] = "";
+    ASSERT_TRUE(atalk_printer_restart(err, sizeof err) != 0);
+    ASSERT_TRUE(strstr(err, "no PostScript interpreter") != NULL);
+    ASSERT_EQ_INT(0, (int)atalk_printer_interpreter_jobs());
+    ASSERT_EQ_INT(0, (int)atalk_printer_interpreter_permanent_jobs());
+}
+
 int main(void) {
     RUN(a_job_reaches_the_capture_sink_whole);
     RUN(a_job_too_large_is_aborted);
@@ -322,6 +334,7 @@ int main(void) {
     RUN(an_idle_connection_times_out_on_its_own);
     RUN(a_printer_rename_that_cannot_be_published_changes_nothing);
     RUN(a_query_split_across_fragments_is_answered);
+    RUN(restart_without_an_interpreter_is_refused);
     printf("pap: all tests passed\n");
     return 0;
 }

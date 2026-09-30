@@ -4,7 +4,9 @@
 // Printing in the browser: the LaserWriter bridge's OPEN / FEED / FINISH go
 // over the shared-memory ring to the platen worker, and the finished PDF
 // comes back to the page, which shows it in the viewer dialog (downloading
-// it from there under its name).  The guest side is the integration
+// it from there under its name).  The guest prints twice: the worker keeps
+// the machine's printer between the two, so the second print finds the
+// PatchPrep procset the first one downloaded with exitserver.  The guest side is the integration
 // suite's appletalk-print script (Chooser -> LaserWriter -> Finder Print
 // Directory on System 6.0.8), driven here from the terminal.
 
@@ -85,8 +87,27 @@ machine.adb.mouse.click false
 scheduler.run 100000000
 scheduler.run 200000000
 scheduler.run 300000000
-echo "printer: documents=\${appletalk.printer.documents} pages=\${appletalk.printer.last_pages} outcome='\${appletalk.printer.last_outcome}' status='\${appletalk.printer.status}' jobs=\${appletalk.printer.stats.jobs} bytes=\${appletalk.printer.stats.bytes} aborts=\${appletalk.printer.stats.aborts}"
-assert appletalk.printer.documents >= 1 "no document was produced"
+assert appletalk.printer.documents == 1 "the first print produced no document"
+assert appletalk.printer.interpreter_permanent_jobs == 1 "the first print did not download PatchPrep"
+machine.adb.mouse.move 53 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 100 203
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.adb.mouse.move 452 45
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 100000000
+scheduler.run 200000000
+scheduler.run 300000000
+echo "printer: documents=\${appletalk.printer.documents} pages=\${appletalk.printer.last_pages} outcome='\${appletalk.printer.last_outcome}' status='\${appletalk.printer.status}' jobs=\${appletalk.printer.stats.jobs} bytes=\${appletalk.printer.stats.bytes} aborts=\${appletalk.printer.stats.aborts} permanent=\${appletalk.printer.interpreter_permanent_jobs} interpreter_jobs=\${appletalk.printer.interpreter_jobs}"
+assert appletalk.printer.documents == 2 "the second print produced no document"
+assert appletalk.printer.interpreter_permanent_jobs == 1 "the second print downloaded PatchPrep again: the worker's printer forgot it"
 assert appletalk.printer.last_pages == 1 "the printed document is not one page"
 assert appletalk.printer.last_outcome == "ok" "the job did not finish cleanly"
 assert appletalk.printer.status == "status: idle" "the printer is not idle after the job"
@@ -136,7 +157,9 @@ test('a print job from the guest ends as a PDF in the viewer', async ({ page }) 
     return `ctrl: ${Array.from(w).join(' ')}`;
   });
   console.log(line, '\n', platen, '\n', logs.filter((l) => /platen|printer|laserwriter|pap|download/i.test(l)).join('\n'));
-  expect(line).toContain('documents=1');
+  expect(line).toContain('documents=2');
+  // The terminal wraps the line; read the fields past the wrap from the whole text
+  expect(text.replace(/\n/g, '')).toContain('permanent=1');
   expect(line).toContain("outcome='ok'");
 
   // The document opened in the viewer: the PDF in a frame, and a download
