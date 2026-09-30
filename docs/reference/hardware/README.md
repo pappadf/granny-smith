@@ -50,3 +50,6 @@ family-specific hardware lives under
 | [pci/cards/mach64.md](pci/cards/mach64.md) | ATI mach64 GX and VT | content |
 | [pci/cards/rage-128.md](pci/cards/rage-128.md) | ATI Rage 128 VR and GL | content |
 | [pci/cards/voodoo1.md](pci/cards/voodoo1.md) | 3dfx Voodoo Graphics (SST-1) | content |
+| [pci/cards/rage-ii.md](pci/cards/rage-ii.md) | ATI Rage II (Xclaim 3D class) | content |
+| [pci/cards/twinturbo.md](pci/cards/twinturbo.md) | IMS TwinTurbo 128 | content |
+| [pci/cards/quickdraw3d.md](pci/cards/quickdraw3d.md) | Apple QuickDraw 3D accelerator (Gotham) | content |
