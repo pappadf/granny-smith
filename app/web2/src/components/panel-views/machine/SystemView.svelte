@@ -159,9 +159,16 @@
     return path.slice(Math.max(path.lastIndexOf('.'), path.lastIndexOf('[')) + 1) || path;
   }
 
+  // Methods the tab runs its own way, by the method's full path or its
+  // name: `export` saves the image to /opfs and downloads it (saveImage).
+  const METHOD_HANDLERS = new Map<string, (path: string, m: MemberInfo) => void>([
+    ['export', (path) => void saveImage(path)],
+  ]);
+
   function choose(path: string, m: MemberInfo): void {
-    if (m.name === 'export') {
-      void saveImage(path);
+    const handler = METHOD_HANDLERS.get(`${path}.${m.name}`) ?? METHOD_HANDLERS.get(m.name);
+    if (handler) {
+      handler(path, m);
       return;
     }
     if (m.destructive) confirming = { path, method: m };
