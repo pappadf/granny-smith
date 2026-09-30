@@ -781,8 +781,11 @@ the sound codec the 1997 firmware publishes is still **AWACS** — there is no `
 `compatible` string in any image in evidence, so no driver takes a Screamer path on these
 machines even if the board carries the register-compatible superset part [5].
 
-The 7300/7600/8600/9600 machine pages are stubs in this tree; the 7500/8500/9500 page set plus
-this section is currently their specification.
+The 7600, 8600 and 9600 have their own machine pages in this tree —
+[pm7600.md](pm7600.md), [pm8600.md](pm8600.md) and [pm9600.md](pm9600.md)
+(the last covering the 9600/200MP) — which carry this section's facts
+forward; the 7300, a Catalyst-platform machine rather than a Hammerhead
+one, remains covered by this section and §6.4.
 
 ## 7. Open questions
 
