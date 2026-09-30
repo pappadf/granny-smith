@@ -5,10 +5,11 @@
 // edit or a call in the console.
 //
 // Values arrive tagged (VFMT_JSON_TAGGED): a hex uint as the string "0x1f",
-// other integers as JSON numbers, an enum as {enum, index}, an object as
-// {object, name, path}.
+// other integers as JSON numbers, an enum, object or error as its tag
+// (lib/taggedValue).
 
 import type { TypeDescriptor } from '@/bus/systemTree';
+import { isTaggedEnum, tagText } from '@/lib/taggedValue';
 
 // C's printf("%g"): six significant digits, trailing zeros dropped, an
 // exponent outside 1e-4 .. 1e6.
@@ -25,12 +26,12 @@ export function formatG(x: number): string {
   return strip(x.toFixed(Math.max(0, 5 - exp)));
 }
 
-function isTaggedEnum(v: unknown): v is { enum: string | null; index: number } {
-  return !!v && typeof v === 'object' && 'enum' in v && 'index' in v;
-}
-
-function isTaggedObject(v: unknown): v is { object: string; name: string; path?: string } {
-  return !!v && typeof v === 'object' && 'object' in v && 'name' in v;
+// Type text of an attribute: kind plus hex / bin / path, as usage shows it.
+export function typeText(t?: TypeDescriptor): string {
+  if (!t) return '';
+  if (t.kind === 'enum') return 'enum';
+  const p = t.presentation;
+  return p === 'hex' || p === 'bin' || p === 'path' ? `${t.kind}, ${p}` : t.kind;
 }
 
 // A value as the REPL prints it (lists and maps as compact JSON on one line).
@@ -49,10 +50,8 @@ export function formatValue(v: unknown, t?: TypeDescriptor): string {
     }
     return Number.isInteger(v) ? String(v) : formatG(v);
   }
-  if (isTaggedEnum(v)) return v.enum ?? `<enum:${v.index}>`;
-  if (isTaggedObject(v)) return v.path || `<${v.object}:${v.name}>`;
-  if (v && typeof v === 'object' && 'error' in v)
-    return `<error: ${String((v as { error: unknown }).error)}>`;
+  const tag = tagText(v);
+  if (tag !== null) return tag;
   try {
     return JSON.stringify(v);
   } catch {

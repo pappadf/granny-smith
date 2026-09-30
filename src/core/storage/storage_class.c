@@ -22,6 +22,7 @@
 #include "image_part.h"
 #include "image_vfs.h"
 #include "object.h"
+#include "root.h"
 #include "shell.h"
 #include "storage_util.h"
 #include "system.h"
@@ -41,63 +42,46 @@
 // === Object-model class descriptors =========================================
 //
 // `files.images`
-// enumerates the cfg->images[] entries. Slot index in the indexed
-// child matches the slot in cfg->images[]; n_images is dense from
-// 0..n_images-1, so the collection's count() returns cfg->n_images
-// and next(prev) advances to prev+1 until n_images.
-
-typedef struct {
-    config_t *cfg;
-    int slot;
-} files_image_data_t;
-
-static files_image_data_t g_image_data[MAX_IMAGES];
-static struct object *g_image_objs[MAX_IMAGES];
+// enumerates the cfg->images[] entries. Slot index in the collection
+// matches the slot in cfg->images[]; n_images is dense from
+// 0..n_images-1, so the collection's count() returns cfg->n_images.
+// Each entry's data is the cfg; its index is its slot.
 
 static image_t *files_image_at(struct object *self) {
-    files_image_data_t *d = (files_image_data_t *)object_data(self);
-    if (!d || !d->cfg)
+    config_t *cfg = (config_t *)object_data(self);
+    int slot = object_entry_index(self);
+    if (!cfg || slot < 0 || slot >= cfg->n_images)
         return NULL;
-    if (d->slot < 0 || d->slot >= d->cfg->n_images)
-        return NULL;
-    return d->cfg->images[d->slot];
+    return cfg->images[slot];
 }
 
-static value_t files_image_attr_index(struct object *self, const member_t *m) {
-    (void)m;
-    files_image_data_t *d = (files_image_data_t *)object_data(self);
-    return val_int(d ? d->slot : -1);
+static DEF_GETTER(files_image_attr_index) {
+    return val_int(object_entry_index(self));
 }
-static value_t files_image_attr_filename(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_filename) {
     image_t *img = files_image_at(self);
     const char *s = img ? image_get_filename(img) : NULL;
     return val_str(s ? s : "");
 }
-static value_t files_image_attr_path(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_path) {
     image_t *img = files_image_at(self);
     const char *s = img ? image_path(img) : NULL;
     return val_str(s ? s : "");
 }
-static value_t files_image_attr_raw_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_raw_size) {
     image_t *img = files_image_at(self);
     return val_uint(8, img ? (uint64_t)img->raw_size : 0);
 }
-static value_t files_image_attr_writable(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_writable) {
     image_t *img = files_image_at(self);
     return val_bool(img ? img->writable : false);
 }
 
-static value_t files_image_attr_reads(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_reads) {
     image_t *img = files_image_at(self);
     return val_uint(8, img ? img->reads : 0);
 }
-static value_t files_image_attr_writes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_writes) {
     image_t *img = files_image_at(self);
     return val_uint(8, img ? img->writes : 0);
 }
@@ -109,8 +93,7 @@ static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
     [image_fd_hd] = "fd_hd", [image_hd] = "hd",       [image_cdrom] = "cdrom",
 };
 
-static value_t files_image_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(files_image_attr_type) {
     image_t *img = files_image_at(self);
     int t = img ? (int)img->type : 0;
     int max = (int)(sizeof(STORAGE_IMAGE_TYPE_NAMES) / sizeof(STORAGE_IMAGE_TYPE_NAMES[0]));
@@ -122,42 +105,34 @@ static value_t files_image_attr_type(struct object *self, const member_t *m) {
 static const member_t files_image_members[] = {
     {.kind = M_ATTR,
      .name = "index",
-     .flags = VAL_RO,
      .doc = "Position in files.images; stable only while no image is added or removed",
      .attr = {.type = V_INT, .get = files_image_attr_index, .set = NULL}                                      },
     {.kind = M_ATTR,
      .name = "filename",
-     .flags = VAL_RO,
      .doc = "Last path component, for display",
      .attr = {.type = V_STRING, .get = files_image_attr_filename, .set = NULL}                                },
     {.kind = M_ATTR,
      .name = "path",
-     .flags = VAL_RO,
      .doc = "Full host path or storage URI the image was opened from",
      .attr = {.type = V_STRING, .get = files_image_attr_path, .set = NULL}                                    },
     {.kind = M_ATTR,
      .name = "raw_size",
-     .flags = VAL_RO,
      .doc = "Logical size of the image in bytes, before any container or compression layer",
      .attr = {.type = V_UINT, .get = files_image_attr_raw_size, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "writable",
-     .flags = VAL_RO,
      .doc = "True when guest writes reach the image (directly or through a checkpoint delta)",
      .attr = {.type = V_BOOL, .get = files_image_attr_writable, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "type",
-     .flags = VAL_RO,
      .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
      .attr = {.type = V_ENUM, .get = files_image_attr_type, .set = NULL}                                      },
     {.kind = M_ATTR,
      .name = "reads",
-     .flags = VAL_RO,
      .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
      .attr = {.type = V_UINT, .get = files_image_attr_reads, .set = NULL, .presentation_flags = VAL_VOLATILE} },
     {.kind = M_ATTR,
      .name = "writes",
-     .flags = VAL_RO,
      .doc = "Drive writes to the image since it was opened",
      .attr = {.type = V_UINT, .get = files_image_attr_writes, .set = NULL, .presentation_flags = VAL_VOLATILE}},
 };
@@ -169,13 +144,16 @@ static const class_desc_t files_image_class = {
     .doc = "One configured disk image",
 };
 
+// The image entry objects, made on first use; freed with the machine.
+static object_cache_t g_images = OBJECT_CACHE(&files_image_class, NULL);
+
 static struct object *files_images_get(struct object *self, int index) {
     config_t *cfg = (config_t *)object_data(self);
     if (!cfg || index < 0 || index >= MAX_IMAGES)
         return NULL;
     if (index >= cfg->n_images || !cfg->images[index])
         return NULL;
-    return g_image_objs[index];
+    return object_cache_at(&g_images, index, cfg);
 }
 
 // `files.import(host_path, dst_path)` — copy `host_path` to `dst_path`
@@ -234,10 +212,7 @@ static int work_profile_create(io_leaf_t *j) {
 }
 
 // Returns the destination path as a V_STRING.
-static value_t files_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_import) {
     const char *host_path = argv[0].s;
     const char *dst_path = argv[1].s;
     if (!dst_path || !*dst_path)
@@ -256,33 +231,20 @@ static value_t files_method_import(struct object *self, const member_t *m, int a
 }
 
 static const arg_decl_t files_import_args[] = {
-    {.name = "host_path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Host path to read"},
-    {.name = "dst_path",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
-     .doc = "Destination path (e.g. under /opfs/images/<category>/)"                                  },
+    ARG_PATH("host_path", "Host path to read"),
+    ARG_PATH("dst_path", "Destination path (e.g. under /opfs/images/<category>/)"),
 };
 
-static const member_t files_images_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child =
-         {.cls = &files_image_class, .indexed = true, .get = files_images_get, .slots = MAX_IMAGES, .lookup = NULL}},
-};
-
-const class_desc_t files_images_collection_class = {
+static const collection_desc_t files_images = {
+    .entry = &files_image_class,
+    .by_index = {.get = files_images_get, .slots = MAX_IMAGES},
     .name = "files_images",
-    .members = files_images_collection_members,
-    .n_members = sizeof(files_images_collection_members) / sizeof(files_images_collection_members[0]),
     .doc = "The machine's configured disk images",
 };
 
 // `files.list_dir(path)` — list directory entries via the VFS as a
 // V_LIST<V_STRING>. Used by url-media.js to enumerate ROMs in OPFS.
-static value_t files_method_list_dir(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_list_dir) {
     vfs_dir_t *d = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(argv[0].s, &d, &be);
@@ -318,7 +280,7 @@ static value_t files_method_list_dir(struct object *self, const member_t *m, int
 }
 
 static const arg_decl_t files_list_dir_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Directory path"},
+    ARG_PATH("path", "Directory path"),
 };
 
 // === Disk-image probe / mount surface =======================================
@@ -327,9 +289,7 @@ static const arg_decl_t files_list_dir_args[] = {
 // image-VFS mount table.
 
 // `files.cp(src, dst, [recursive])` — copy host/VFS file to a VFS path.
-static value_t files_method_cp(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(files_method_cp) {
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
     bool recursive = argc > 2 && argv[2].kind == V_BOOL && argv[2].b;
@@ -349,10 +309,7 @@ static value_t files_method_cp(struct object *self, const member_t *m, int argc,
 // Unlike `cp` — which copies a file's data fork verbatim (for an NDIF `.img`
 // that is the still-compressed data fork) — this decodes the image and emits
 // its logical block device, ready to re-mount or `dd`.  Refuses to overwrite.
-static value_t files_method_export_raw(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_export_raw) {
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
     if (destination_attached(dst))
@@ -366,9 +323,7 @@ static value_t files_method_export_raw(struct object *self, const member_t *m, i
 
 // `files.find_media(dir, [dst])` — search a directory for a recognised
 // floppy image; if `dst` is given, the image is copied there.
-static value_t files_method_find_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(files_method_find_media) {
     const char *dir = argv[0].s;
     if (!dir || !*dir)
         return val_err("files.find_media: expected a non-empty directory path");
@@ -384,10 +339,7 @@ static value_t files_method_find_media(struct object *self, const member_t *m, i
 // V_STRING (label/size string) and integer (byte count). The size
 // string that system_hd_create parses accepts model labels, human
 // sizes, and byte counts alike, so integers stringify cleanly.
-static value_t files_method_hd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_hd_create) {
     char size_str[64];
     if (argv[1].kind == V_STRING) {
         snprintf(size_str, sizeof(size_str), "%s", argv[1].s ? argv[1].s : "");
@@ -426,7 +378,7 @@ static bool files_path_is_protected(const char *p) {
 // main-thread OPFS API keeps the worker's WasmFS inode cache coherent, so a
 // later worker-side create at the same path (e.g. re-copying a file out of an
 // image after deleting it) doesn't hit a dangling inode.
-static value_t files_method_rm(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static DEF_METHOD(files_method_rm) {
     checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
@@ -444,7 +396,7 @@ static value_t files_method_rm(struct object *self, const member_t *m, int argc,
 // files.rm, routing the web UI's moves through the worker (rather than the
 // browser's main-thread OPFS API) keeps WasmFS coherent. Tries rename() first
 // (fast / atomic on the same volume); falls back to a recursive copy + remove.
-static value_t files_method_mv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static DEF_METHOD(files_method_mv) {
     checkpoint_quick_wait(); // a checkpoint publish in flight lands before anything moves or goes
     (void)self;
     (void)m;
@@ -484,9 +436,7 @@ static value_t files_method_mv(struct object *self, const member_t *m, int argc,
 // floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
 // the `fd create` shell command this does NOT insert the disk into a drive —
 // the New Machine dialog persists the file and lets the user select it.
-static value_t files_method_fd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(files_method_fd_create) {
     const char *path = argv[0].s;
     if (!path || !*path)
         return val_err("files.fd_create: empty path");
@@ -505,10 +455,7 @@ static value_t files_method_fd_create(struct object *self, const member_t *m, in
 // parallel-port disk with 532-byte blocks, a distinct on-disk format. `blocks`
 // is a V_NONE slot accepting an integer or numeric string. Standard sizes:
 // 5 MB = 9728 blocks; 10 MB ≈ 19448 (the LOS-documented full Widget capacity).
-static value_t files_method_profile_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_profile_create) {
     const char *path = argv[0].s;
     if (!path || !*path)
         return val_err("files.profile_create: empty path");
@@ -554,10 +501,7 @@ static const char *apm_fs_kind_label(enum apm_fs_kind k) {
 }
 
 // `files.partmap(path)` — print the Apple Partition Map of an image.
-static value_t files_method_partmap(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_partmap) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img)
@@ -582,10 +526,7 @@ static value_t files_method_partmap(struct object *self, const member_t *m, int 
 }
 
 // `files.probe(path)` — identify the format of a disk image.
-static value_t files_method_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_probe) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
@@ -618,19 +559,13 @@ static value_t files_method_probe(struct object *self, const member_t *m, int ar
 }
 
 // `files.path_exists(path)` — true if the path resolves in the shell VFS.
-static value_t files_method_path_exists(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_path_exists) {
     vfs_stat_t st;
     return val_bool(vfs_stat(argv[0].s, &st) == 0);
 }
 
 // `files.path_size(path)` — file size in bytes (0 on stat failure).
-static value_t files_method_path_size(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_path_size) {
     const char *path = argv[0].s;
     vfs_stat_t st = {0};
     int rc = vfs_stat(path, &st);
@@ -646,10 +581,7 @@ static value_t files_method_path_size(struct object *self, const member_t *m, in
 // difference (or of the end of the shorter file).  A fork-fidelity test that
 // only asked "are they equal?" would report a bare false; the offset says
 // where the round trip lost the bytes.
-static value_t files_method_path_compare(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_path_compare) {
     vfs_file_t *fa = NULL;
     vfs_file_t *fb = NULL;
     const vfs_backend_t *ba = NULL;
@@ -703,13 +635,13 @@ static const arg_decl_t files_compare_args[] = {
 
 static const value_t files_cp_not_recursive = {.kind = V_BOOL, .b = false};
 static const arg_decl_t files_cp_args[] = {
-    {.name = "src", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Source path (host or VFS)"},
-    {.name = "dst", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Destination path"},
+    ARG_PATH("src", "Source path (host or VFS)"),
+    ARG_PATH("dst", "Destination path"),
     {.name = "recursive",
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &files_cp_not_recursive,
-     .doc = "Copy a directory and everything under it"},
+                                 .kind = V_BOOL,
+                                 .validation_flags = OBJ_ARG_OPTIONAL,
+                                 .default_value = &files_cp_not_recursive,
+                                 .doc = "Copy a directory and everything under it"},
 };
 // === The file-transfer window =================================================
 //
@@ -725,15 +657,11 @@ static const arg_decl_t files_cp_args[] = {
 #define STORAGE_XFER_BYTES (2u << 20)
 static uint8_t g_xfer[STORAGE_XFER_BYTES];
 
-static value_t files_attr_xfer_buffer(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(files_attr_xfer_buffer) {
     return val_uint(4, (uint32_t)(uintptr_t)g_xfer);
 }
 
-static value_t files_attr_xfer_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(files_attr_xfer_size) {
     return val_uint(4, STORAGE_XFER_BYTES);
 }
 
@@ -807,10 +735,7 @@ static value_t xfer_dispatch(const char *path, uint64_t offset, uint64_t len, bo
 
 // `files.xfer_write(path, offset, len)` — write the window's first `len`
 // bytes to `path` at `offset`; offset 0 creates (or truncates) the file.
-static value_t files_method_xfer_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_xfer_write) {
     uint64_t offset = argv[1].u, len = argv[2].u;
     if (len > STORAGE_XFER_BYTES)
         return val_err("files.xfer_write: %llu bytes is more than the %u-byte window", (unsigned long long)len,
@@ -820,10 +745,7 @@ static value_t files_method_xfer_write(struct object *self, const member_t *m, i
 
 // `files.xfer_read(path, offset, len)` — read up to `len` bytes of `path`
 // from `offset` into the window; answers how many (0 at the end).
-static value_t files_method_xfer_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_xfer_read) {
     uint64_t offset = argv[1].u, len = argv[2].u;
     if (len > STORAGE_XFER_BYTES)
         len = STORAGE_XFER_BYTES;
@@ -831,67 +753,61 @@ static value_t files_method_xfer_read(struct object *self, const member_t *m, in
 }
 
 static const arg_decl_t files_xfer_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "File path"},
-    {.name = "offset", .kind = V_UINT, .doc = "Byte offset in the file"},
-    {.name = "len", .kind = V_UINT, .doc = "Byte count (at most files.xfer_size)"},
+    ARG_PATH("path", "File path"),
+    {.name = "offset", .kind = V_UINT, .doc = "Byte offset in the file"             },
+    {.name = "len",    .kind = V_UINT, .doc = "Byte count (at most files.xfer_size)"},
 };
 
 static const arg_decl_t files_export_raw_args[] = {
-    {.name = "src",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
-     .doc = "Source image path (host, or nested inside a mounted image)"},
-    {.name = "dst",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
-     .doc = "Destination host path for the decoded raw image"           },
+    ARG_PATH("src", "Source image path (host, or nested inside a mounted image)"),
+    ARG_PATH("dst", "Destination host path for the decoded raw image"),
 };
 static const arg_decl_t files_find_media_args[] = {
-    {.name = "dir", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Directory to scan"},
+    ARG_PATH("dir", "Directory to scan"),
     {.name = "dst",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Optional path to copy match into"},
+                                  .kind = V_STRING,
+                                  .presentation_flags = VAL_PATH,
+                                  .validation_flags = OBJ_ARG_OPTIONAL,
+                                  .doc = "Optional path to copy match into"},
 };
 static const arg_decl_t files_hd_create_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image output path"},
+    ARG_PATH("path", "Image output path"),
     {.name = "size",
-     .kind = V_NONE,
-     .validation_flags = OBJ_ARG_POLY,
-     .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"                               },
+                                   .kind = V_NONE,
+                                   .validation_flags = OBJ_ARG_POLY,
+                                   .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
 };
 static const arg_decl_t files_rm_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Path to remove (recursive)"},
+    ARG_PATH("path", "Path to remove (recursive)"),
 };
 static const arg_decl_t files_mv_args[] = {
-    {.name = "src", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Source path"     },
-    {.name = "dst", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Destination path"},
+    ARG_PATH("src", "Source path"),
+    ARG_PATH("dst", "Destination path"),
 };
 static const value_t files_false = {.kind = V_BOOL, .b = false};
 static const arg_decl_t files_fd_create_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image output path"},
+    ARG_PATH("path", "Image output path"),
     {.name = "high_density",
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &files_false,
-     .doc = "true = 1.4 MB, false = 800 KB"},
+                                   .kind = V_BOOL,
+                                   .validation_flags = OBJ_ARG_OPTIONAL,
+                                   .default_value = &files_false,
+                                   .doc = "true = 1.4 MB, false = 800 KB"},
 };
 static const arg_decl_t files_profile_create_args[] = {
-    {.name = "path",   .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image output path"},
+    ARG_PATH("path", "Image output path"),
     {.name = "blocks",
-     .kind = V_NONE,
-     .validation_flags = OBJ_ARG_POLY,
-     .doc = "ProFile block count, a number or a numeric string (532-byte blocks; 5 MB = 9728)"     },
+                                   .kind = V_NONE,
+                                   .validation_flags = OBJ_ARG_POLY,
+                                   .doc = "ProFile block count, a number or a numeric string (532-byte blocks; 5 MB = 9728)"},
 };
 static const arg_decl_t files_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image path"},
+    ARG_PATH("path", "Image path"),
 };
 static const arg_decl_t files_dir_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Directory, absolute or relative"},
+    ARG_PATH("path", "Directory, absolute or relative"),
 };
 static const arg_decl_t files_any_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "File or directory path"},
+    ARG_PATH("path", "File or directory path"),
 };
 
 static const arg_decl_t files_path_arg_optional[] = {
@@ -899,16 +815,14 @@ static const arg_decl_t files_path_arg_optional[] = {
      .kind = V_STRING,
      .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Directory path; omitted: the current directory"},
+     .doc = "Directory path",
+     .default_doc = "the current directory"},
 };
 
 // `files.download(path)` — trigger a browser file download. Routes to the
 // platform-specific gs_download (WASM streams via Blob+anchor); a platform
 // with no browser says so.
-static value_t files_method_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_method_download) {
     int rc = gs_download(argv[0].s);
     if (rc == -2)
         return val_err("download: not supported on this platform");
@@ -918,160 +832,160 @@ static value_t files_method_download(struct object *self, const member_t *m, int
 static const member_t files_members[] = {
     {.kind = M_ATTR,
      .name = "xfer_buffer",
-     .flags = VAL_RO | M_CAT_INTERNAL,
+     .flags = M_CAT_INTERNAL,
      .doc = "Address of the file-transfer window in wasm memory (the web page's upload path)",
-     .attr = {.type = V_UINT, .get = files_attr_xfer_buffer, .set = NULL}                                             },
+     .attr = {.type = V_UINT, .get = files_attr_xfer_buffer, .set = NULL}},
     {.kind = M_ATTR,
      .name = "xfer_size",
-     .flags = VAL_RO | M_CAT_INTERNAL,
+     .flags = M_CAT_INTERNAL,
      .doc = "Size of the file-transfer window in bytes",
-     .attr = {.type = V_UINT, .get = files_attr_xfer_size, .set = NULL}                                               },
+     .attr = {.type = V_UINT, .get = files_attr_xfer_size, .set = NULL}},
     {.kind = M_METHOD,
      .name = "xfer_write",
      .flags = M_CAT_INTERNAL,
      .doc = "Write the transfer window's first len bytes to path at offset (offset 0 creates the file)",
      .method =
-         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_BOOL, .fn = files_method_xfer_write}    },
+         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_BOOL, .fn = files_method_xfer_write}},
     {.kind = M_METHOD,
      .name = "xfer_read",
      .flags = M_CAT_INTERNAL,
      .doc = "Read up to len bytes of path at offset into the transfer window; answers the count",
      .method =
-         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_UINT, .fn = files_method_xfer_read}     },
+         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_UINT, .fn = files_method_xfer_read}},
     {.kind = M_METHOD,
      .name = "import",
-     .examples = (const char *const[]){"files.import \"/tmp/upload.img\" \"/opfs/images/hd/upload.img\"", NULL},
+     .examples = EXAMPLES("files.import \"/tmp/upload.img\" \"/opfs/images/hd/upload.img\""),
      .doc = "Copy a host file to a destination path",
      .method = {.result_doc = "the destination path",
                 .ui_flags = MM_IO,
                 .args = files_import_args,
                 .nargs = 2,
                 .result = V_STRING,
-                .fn = files_method_import}                                                                            },
+                .fn = files_method_import}},
     {.kind = M_METHOD,
      .name = "list_dir",
-     .examples = (const char *const[]){"files.list_dir \"/opfs/images\"", NULL},
+     .examples = EXAMPLES("files.list_dir \"/opfs/images\""),
      .doc = "List a directory's entry names",
      .method = {.result_doc = "the entry names, as strings",
                 .args = files_list_dir_args,
                 .nargs = 1,
                 .result = V_LIST,
-                .fn = files_method_list_dir}                                                                          },
+                .fn = files_method_list_dir}},
     {.kind = M_METHOD,
      .name = "cp",
-     .examples = (const char *const[]){"files.cp \"/opfs/images/fd/tools.dsk\" \"/opfs/backup/tools.dsk\"",
-                                       "files.cp \"/opfs/images\" \"/opfs/backup\" recursive=true", NULL},
+     .examples = EXAMPLES("files.cp \"/opfs/images/fd/tools.dsk\" \"/opfs/backup/tools.dsk\"",
+     "files.cp \"/opfs/images\" \"/opfs/backup\" recursive=true"),
      .doc = "Copy a host or VFS path to another VFS path",
-     .method = {.ui_flags = MM_IO, .args = files_cp_args, .nargs = 3, .result = V_BOOL, .fn = files_method_cp}        },
+     .method = {.ui_flags = MM_IO, .args = files_cp_args, .nargs = 3, .result = V_BOOL, .fn = files_method_cp}},
     {.kind = M_METHOD,
      .name = "export_raw",
-     .examples = (const char *const[]){"files.export_raw \"/opfs/images/fd/disk.image\" \"/opfs/raw/disk.raw\"", NULL},
+     .examples = EXAMPLES("files.export_raw \"/opfs/images/fd/disk.image\" \"/opfs/raw/disk.raw\""),
      .doc = "Decode a disk image (incl. NDIF nested in a mounted image) to a flat raw image on the host",
      .method = {.ui_flags = MM_IO,
                 .args = files_export_raw_args,
                 .nargs = 2,
                 .result = V_BOOL,
-                .fn = files_method_export_raw}                                                                        },
+                .fn = files_method_export_raw}},
     {.kind = M_METHOD,
      .name = "find_media",
-     .examples = (const char *const[]){"files.find_media \"/opfs/unpacked\"",
-                                       "files.find_media \"/opfs/unpacked\" \"/opfs/images/fd/found.dsk\"", NULL},
+     .examples = EXAMPLES("files.find_media \"/opfs/unpacked\"",
+     "files.find_media \"/opfs/unpacked\" \"/opfs/images/fd/found.dsk\""),
      .doc = "Find a recognised floppy/disk image in a directory",
-     .method = {.args = files_find_media_args, .nargs = 2, .result = V_BOOL, .fn = files_method_find_media}           },
+     .method = {.args = files_find_media_args, .nargs = 2, .result = V_BOOL, .fn = files_method_find_media}},
     {.kind = M_METHOD,
      .name = "hd_create",
-     .examples = (const char *const[]){"files.hd_create \"/opfs/images/hd/new.img\" \"40M\"",
-                                       "files.hd_create \"/opfs/images/hd/hd20.img\" \"HD20SC\"", NULL},
+     .examples = EXAMPLES("files.hd_create \"/opfs/images/hd/new.img\" \"40M\"",
+     "files.hd_create \"/opfs/images/hd/hd20.img\" \"HD20SC\""),
      .doc = "Create a blank SCSI HD image",
      .method =
          {.ui_flags = MM_IO, .args = files_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = files_method_hd_create}},
     {.kind = M_METHOD,
      .name = "fd_create",
-     .examples = (const char *const[]){"files.fd_create \"/opfs/images/fd/blank.dsk\"",
-                                       "files.fd_create \"/opfs/images/fd/blank-hd.dsk\" true", NULL},
+     .examples = EXAMPLES("files.fd_create \"/opfs/images/fd/blank.dsk\"",
+     "files.fd_create \"/opfs/images/fd/blank-hd.dsk\" true"),
      .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
      .method =
          {.ui_flags = MM_IO, .args = files_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = files_method_fd_create}},
     {.kind = M_METHOD,
      .name = "profile_create",
-     .examples = (const char *const[]){"files.profile_create \"/opfs/images/hd/profile.img\" 9728", NULL},
+     .examples = EXAMPLES("files.profile_create \"/opfs/images/hd/profile.img\" 9728"),
      .doc = "Create a blank Lisa/XL ProFile image (raw 532-byte/block zero file)",
-     .method = {.args = files_profile_create_args, .nargs = 2, .result = V_BOOL, .fn = files_method_profile_create}   },
+     .method = {.args = files_profile_create_args, .nargs = 2, .result = V_BOOL, .fn = files_method_profile_create}},
     {.kind = M_METHOD,
      .name = "rm",
-     .examples = (const char *const[]){"files.rm \"/opfs/images/hd/old.img\"", NULL},
+     .examples = EXAMPLES("files.rm \"/opfs/images/hd/old.img\""),
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
-     .method = {.ui_flags = MM_IO, .args = files_rm_args, .nargs = 1, .result = V_BOOL, .fn = files_method_rm}        },
+     .method = {.ui_flags = MM_IO, .args = files_rm_args, .nargs = 1, .result = V_BOOL, .fn = files_method_rm}},
     {.kind = M_METHOD,
      .name = "mv",
-     .examples = (const char *const[]){"files.mv \"/opfs/images/hd/new.img\" \"/opfs/images/hd/work.img\"", NULL},
+     .examples = EXAMPLES("files.mv \"/opfs/images/hd/new.img\" \"/opfs/images/hd/work.img\""),
      .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
-     .method = {.args = files_mv_args, .nargs = 2, .result = V_BOOL, .fn = files_method_mv}                           },
+     .method = {.args = files_mv_args, .nargs = 2, .result = V_BOOL, .fn = files_method_mv}},
     {.kind = M_METHOD,
      .name = "partmap",
-     .examples = (const char *const[]){"files.partmap \"/opfs/images/hd/system.img\"", NULL},
+     .examples = EXAMPLES("files.partmap \"/opfs/images/hd/system.img\""),
      .doc = "Print the Apple Partition Map of an image",
-     .method = {.args = files_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_partmap}                     },
+     .method = {.args = files_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_partmap}},
     {.kind = M_METHOD,
      .name = "probe",
-     .examples = (const char *const[]){"files.probe \"/opfs/images/fd/disk.image\"", NULL},
+     .examples = EXAMPLES("files.probe \"/opfs/images/fd/disk.image\""),
      .doc = "Identify the format of a disk image",
-     .method = {.args = files_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_probe}                       },
+     .method = {.args = files_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_probe}},
     {.kind = M_METHOD,
      .name = "path_exists",
-     .examples = (const char *const[]){"files.path_exists \"/opfs/images/hd/system.img\"", NULL},
+     .examples = EXAMPLES("files.path_exists \"/opfs/images/hd/system.img\""),
      .doc = "True if the path resolves in the shell VFS",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_path_exists}             },
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_path_exists}},
     {.kind = M_METHOD,
      .name = "path_size",
-     .examples = (const char *const[]){"files.path_size \"/opfs/images/hd/system.img\"", NULL},
+     .examples = EXAMPLES("files.path_size \"/opfs/images/hd/system.img\""),
      .doc = "File size in bytes (0 on stat failure)",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_UINT, .fn = files_method_path_size}               },
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_UINT, .fn = files_method_path_size}},
     {.kind = M_METHOD,
      .name = "path_compare",
      .flags = M_CAT_ADVANCED,
      .doc = "Byte-compare two files: -1 if identical, else the first differing offset",
-     .method = {.args = files_compare_args, .nargs = 2, .result = V_INT, .fn = files_method_path_compare}             },
+     .method = {.args = files_compare_args, .nargs = 2, .result = V_INT, .fn = files_method_path_compare}},
     {.kind = M_METHOD,
      .name = "ls",
-     .examples = (const char *const[]){"files.ls", "files.ls \"/opfs/images\"", NULL},
+     .examples = EXAMPLES("files.ls", "files.ls \"/opfs/images\""),
      .doc = "Print a directory listing",
-     .method = {.args = files_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = files_method_ls}                 },
+     .method = {.args = files_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = files_method_ls}},
     {.kind = M_METHOD,
      .name = "list",
-     .examples = (const char *const[]){"files.list", "files.list \"/opfs/images/hd/system.img/System Folder\"", NULL},
+     .examples = EXAMPLES("files.list", "files.list \"/opfs/images/hd/system.img/System Folder\""),
      .doc = "List a directory, descending into disk images",
      .method = {.result_doc = "a list of {name, kind, size} maps",
                 .args = files_path_arg_optional,
                 .nargs = 1,
                 .result = V_LIST,
-                .fn = files_method_list}                                                                              },
+                .fn = files_method_list}},
     {.kind = M_METHOD,
      .name = "mkdir",
-     .examples = (const char *const[]){"files.mkdir \"/opfs/images/cd\"", NULL},
+     .examples = EXAMPLES("files.mkdir \"/opfs/images/cd\""),
      .doc = "Create a directory",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_mkdir}                   },
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_mkdir}},
     {.kind = M_METHOD,
      .name = "cd",
-     .examples = (const char *const[]){"files.cd \"/opfs/images\"", "files.cd ..", NULL},
+     .examples = EXAMPLES("files.cd \"/opfs/images\"", "files.cd .."),
      .doc = "Make a directory the current one: where relative paths start, and what ls lists by default",
-     .method = {.args = files_dir_arg, .nargs = 1, .result = V_NONE, .fn = files_method_cd}                           },
+     .method = {.args = files_dir_arg, .nargs = 1, .result = V_NONE, .fn = files_method_cd}},
     {.kind = M_METHOD,
      .name = "pwd",
-     .examples = (const char *const[]){"files.pwd", NULL},
+     .examples = EXAMPLES("files.pwd"),
      .doc = "The current directory",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = files_method_pwd}                                 },
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = files_method_pwd}},
     {.kind = M_METHOD,
      .name = "cat",
-     .examples = (const char *const[]){"files.cat \"/opfs/notes.txt\"", NULL},
+     .examples = EXAMPLES("files.cat \"/opfs/notes.txt\""),
      .doc = "Print the raw bytes of a file (data fork, rsrc, finder_info)",
-     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_cat}                     },
+     .method = {.args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_cat}},
     {.kind = M_METHOD,
      .name = "download",
-     .examples = (const char *const[]){"files.download \"/opfs/images/hd/system.img\"", NULL},
+     .examples = EXAMPLES("files.download \"/opfs/images/hd/system.img\""),
      .doc = "Trigger a browser file download (WASM-only)",
      .method =
-         {.ui_flags = MM_IO, .args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_download}   },
+         {.ui_flags = MM_IO, .args = files_any_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_download}},
 };
 
 static const class_desc_t files_class = {
@@ -1091,20 +1005,11 @@ static const class_desc_t files_class = {
 // freed entry fires its invalidators, so a held reference goes stale rather
 // than dangling.
 
-#define FILES_MOUNT_ENTRIES 16
-
-typedef struct {
-    int serial; // -1 = free
-    struct object *obj;
-} files_mount_entry_t;
-
-static files_mount_entry_t g_mount_entries[FILES_MOUNT_ENTRIES];
 static struct object *g_files_object = NULL;
-static struct object *g_files_mounts_object = NULL;
 
 // The serial an entry object stands for.
 static int mount_entry_serial(struct object *self) {
-    return (int)(intptr_t)object_data(self);
+    return object_entry_index(self);
 }
 
 // Snapshot of the entry's mount; false when it has been unmounted since.
@@ -1112,53 +1017,32 @@ static bool mount_entry_info(struct object *self, image_vfs_mount_info_t *info) 
     return image_vfs_mount_info(mount_entry_serial(self), info);
 }
 
-static value_t mount_attr_path(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_str(info.path);
-}
+// The fields of a mount entry, each attribute's user_data.
+enum { MOUNT_PATH, MOUNT_FORMAT, MOUNT_PARTITIONS, MOUNT_REFCOUNT, MOUNT_BUSY };
 
-static value_t mount_attr_format(struct object *self, const member_t *m) {
-    (void)m;
+// One getter for every mount attribute: the field its user_data names.
+static DEF_GETTER(mount_attr_get) {
     image_vfs_mount_info_t info;
     if (!mount_entry_info(self, &info))
         return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_str(info.format);
-}
-
-static value_t mount_attr_partitions(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_uint(4, info.partitions);
-}
-
-static value_t mount_attr_refcount(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_uint(4, info.refcount);
-}
-
-static value_t mount_attr_busy(struct object *self, const member_t *m) {
-    (void)m;
-    image_vfs_mount_info_t info;
-    if (!mount_entry_info(self, &info))
-        return val_err("mount %d is gone", mount_entry_serial(self));
-    return val_bool(info.busy);
+    switch ((int)(uintptr_t)m->attr.user_data) {
+    case MOUNT_PATH:
+        return val_str(info.path);
+    case MOUNT_FORMAT:
+        return val_str(info.format);
+    case MOUNT_PARTITIONS:
+        return val_uint(4, info.partitions);
+    case MOUNT_REFCOUNT:
+        return val_uint(4, info.refcount);
+    default:
+        return val_bool(info.busy);
+    }
 }
 
 // `files.mounts[n].unmount()` — drop this cached image-VFS mount.  With
 // handles still open the mount refuses new access and the last handle to
 // close drops it.
-static value_t mount_method_unmount(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(mount_method_unmount) {
     image_vfs_mount_info_t info;
     if (!mount_entry_info(self, &info))
         return val_err("unmount: mount %d is gone", mount_entry_serial(self));
@@ -1177,33 +1061,36 @@ static value_t mount_method_unmount(struct object *self, const member_t *m, int 
 static const member_t files_mount_members[] = {
     {.kind = M_ATTR,
      .name = "path",
-     .flags = VAL_RO,
      .doc = "Canonical host path of the mounted image file",
-     .attr = {.type = V_STRING, .get = mount_attr_path}},
+     .attr = {.type = V_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PATH}            },
     {.kind = M_ATTR,
      .name = "format",
-     .flags = VAL_RO,
      .doc = "Container format: APM, HFS, UFS or raw",
-     .attr = {.type = V_STRING, .get = mount_attr_format}},
+     .attr = {.type = V_STRING, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_FORMAT}          },
     {.kind = M_ATTR,
      .name = "partitions",
-     .flags = VAL_RO,
      .doc = "Partitions the mount exposes",
-     .attr = {.type = V_UINT, .width = 4, .get = mount_attr_partitions}},
+     .attr =
+         {.type = V_UINT, .width = 4, .get = mount_attr_get, .user_data = (const void *)(uintptr_t)MOUNT_PARTITIONS}},
     {.kind = M_ATTR,
      .name = "refcount",
-     .flags = VAL_RO,
      .doc = "Open handles into the mount",
-     .attr = {.type = V_UINT, .width = 4, .get = mount_attr_refcount, .presentation_flags = VAL_VOLATILE}},
+     .attr = {.type = V_UINT,
+              .width = 4,
+              .get = mount_attr_get,
+              .user_data = (const void *)(uintptr_t)MOUNT_REFCOUNT,
+              .presentation_flags = VAL_VOLATILE}                                                                   },
     {.kind = M_ATTR,
      .name = "busy",
-     .flags = VAL_RO,
      .doc = "True while the mount refuses service (unmount pending, or the image is attached writable)",
-     .attr = {.type = V_BOOL, .get = mount_attr_busy, .presentation_flags = VAL_VOLATILE}},
+     .attr = {.type = V_BOOL,
+              .get = mount_attr_get,
+              .user_data = (const void *)(uintptr_t)MOUNT_BUSY,
+              .presentation_flags = VAL_VOLATILE}                                                                   },
     {.kind = M_METHOD,
      .name = "unmount",
      .doc = "Drop this cached image mount",
-     .method = {.ui_flags = MM_MUTATE, .args = NULL, .nargs = 0, .result = V_BOOL, .fn = mount_method_unmount}},
+     .method = {.ui_flags = MM_MUTATE, .args = NULL, .nargs = 0, .result = V_BOOL, .fn = mount_method_unmount}      },
 };
 
 static const class_desc_t files_mount_class = {
@@ -1213,53 +1100,37 @@ static const class_desc_t files_mount_class = {
     .doc = "One cached disk-image mount",
 };
 
-// Free entry objects whose mount is gone.
-static void mount_entries_sweep(void) {
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++) {
-        files_mount_entry_t *e = &g_mount_entries[i];
-        if (e->obj && !image_vfs_mount_info(e->serial, NULL)) {
-            object_delete(e->obj);
-            e->obj = NULL;
-            e->serial = -1;
-        }
-    }
+// The mount entry objects, by serial: made when a serial is first handed
+// out and freed once its mount is gone.
+static object_cache_t g_mounts = OBJECT_CACHE(&files_mount_class, NULL);
+
+// Whether an entry's mount is still there.
+static bool mount_entry_live(struct object *entry, void *ud) {
+    (void)ud;
+    return image_vfs_mount_info(mount_entry_serial(entry), NULL);
 }
 
 static struct object *files_mounts_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || !image_vfs_mount_info(index, NULL))
         return NULL;
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++)
-        if (g_mount_entries[i].obj && g_mount_entries[i].serial == index)
-            return g_mount_entries[i].obj;
-    mount_entries_sweep();
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++) {
-        files_mount_entry_t *e = &g_mount_entries[i];
-        if (e->obj)
-            continue;
-        e->obj = object_new(&files_mount_class, (void *)(intptr_t)index, NULL);
-        if (!e->obj)
-            return NULL;
-        e->serial = index;
-        object_set_logical_parent(e->obj, g_files_mounts_object, NULL, index, NULL);
-        return e->obj;
-    }
-    return NULL; // more live mounts than entry slots: cannot happen (image_vfs holds 8)
+    struct object *o = object_cache_find(&g_mounts, index);
+    if (o)
+        return o;
+    object_cache_sweep(&g_mounts, mount_entry_live, NULL);
+    return object_cache_at(&g_mounts, index, NULL);
 }
 
 static int files_mounts_next(struct object *self, int prev_index) {
     (void)self;
     if (prev_index < 0)
-        mount_entries_sweep();
+        object_cache_sweep(&g_mounts, mount_entry_live, NULL);
     return image_vfs_next_serial(prev_index);
 }
 
 // `files.mounts.find(path)` — the index of the mount caching `path`
 // (relative, canonical, or through the VFS's own path forms), or -1.
-static value_t files_mounts_method_find(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(files_mounts_method_find) {
     const char *path = argv[0].s;
     char resolved[VFS_PATH_MAX];
     const vfs_backend_t *be = NULL;
@@ -1270,27 +1141,38 @@ static value_t files_mounts_method_find(struct object *self, const member_t *m, 
     return val_int(image_vfs_serial_for_path(path));
 }
 
-static const member_t files_mounts_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Cached image mounts, by mount serial",
-     .child = {.cls = &files_mount_class, .indexed = true, .get = files_mounts_get, .next = files_mounts_next}},
+static const member_t files_mounts_verbs[] = {
     {.kind = M_METHOD,
      .name = "find",
-     .examples = (const char *const[]){"files.mounts.find \"/opfs/images/hd/system.img\"", NULL},
+     .examples = EXAMPLES("files.mounts.find \"/opfs/images/hd/system.img\""),
      .doc = "Index of the mount caching an image path, or -1",
      .method = {.args = files_path_arg, .nargs = 1, .result = V_INT, .fn = files_mounts_method_find}},
 };
 
-static const class_desc_t files_mounts_class = {
+static const collection_desc_t files_mounts = {
+    .entry = &files_mount_class,
+    .by_index = {.get = files_mounts_get, .next = files_mounts_next},
     .name = "mounts",
-    .members = files_mounts_members,
-    .n_members = sizeof(files_mounts_members) / sizeof(files_mounts_members[0]),
     .doc = "Cached disk-image mounts, by mount serial",
+    .entries_doc = "Cached image mounts, by mount serial",
+    .verbs = files_mounts_verbs,
+    .n_verbs = sizeof(files_mounts_verbs) / sizeof(files_mounts_verbs[0]),
 };
 
-struct object *files_object(void) {
-    return g_files_object;
+// The image entries go with the machine.
+static void files_images_teardown(void) {
+    object_cache_clear(&g_images);
+}
+
+// files.images: the storage view of cfg->images, under the process singleton
+// `files`, installed with every machine.
+static void files_images_install(struct config *cfg) {
+    struct object *images = root_attach_stub(g_files_object, object_collection_new(&files_images, cfg, "images"));
+    if (!images)
+        return;
+    object_set_label(images, "Images");
+    object_set_order(images, 10);
+    object_cache_set_parent(&g_images, images);
 }
 
 // `files` is a process singleton created at shell init: the file methods,
@@ -1299,41 +1181,19 @@ struct object *files_object(void) {
 void files_init(void) {
     if (g_files_object)
         return;
-    for (int i = 0; i < FILES_MOUNT_ENTRIES; i++)
-        g_mount_entries[i].serial = -1;
     g_files_object = object_new(&files_class, NULL, "files");
     if (!g_files_object)
         return;
     object_set_label(g_files_object, "Files");
     object_set_order(g_files_object, 30);
     object_attach(object_root(), g_files_object);
-    g_files_mounts_object = object_new(&files_mounts_class, NULL, "mounts");
-    if (g_files_mounts_object) {
-        object_set_label(g_files_mounts_object, "Mounts");
-        object_set_order(g_files_mounts_object, 20);
-        object_attach(g_files_object, g_files_mounts_object);
+    struct object *mounts = object_collection_new(&files_mounts, NULL, "mounts");
+    if (mounts) {
+        object_set_label(mounts, "Mounts");
+        object_set_order(mounts, 20);
+        object_attach(g_files_object, mounts);
+        object_cache_set_parent(&g_mounts, mounts);
     }
     archive_init(g_files_object);
-}
-
-// Per-slot image-entry object setup/teardown for files.images
-// indexed children. Called from root_install / root_uninstall.
-void files_images_init(struct config *cfg, struct object *images) {
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        g_image_data[i].cfg = cfg;
-        g_image_data[i].slot = i;
-        g_image_objs[i] = object_new(&files_image_class, &g_image_data[i], NULL);
-        object_set_logical_parent(g_image_objs[i], images, NULL, i, NULL);
-    }
-}
-
-void files_images_teardown(void) {
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        if (g_image_objs[i]) {
-            object_delete(g_image_objs[i]);
-            g_image_objs[i] = NULL;
-        }
-        g_image_data[i].cfg = NULL;
-        g_image_data[i].slot = 0;
-    }
+    root_register_install(files_images_install, files_images_teardown);
 }

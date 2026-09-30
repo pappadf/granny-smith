@@ -512,12 +512,12 @@ let foregroundJob: number | null = null;
 
 // Runs a terminal line as a script job (REQ_SCRIPT): the answer is the
 // shell's new prompt when the job ends -- after every `scheduler.run` in
-// it has run to its stop -- or an error.  Returns 0 on success, -1 on
-// failure (the interpreter has printed the reason).
-export async function gsEvalLine(line: string): Promise<number> {
-  if (!moduleReady || !mailbox) return -1;
+// it has run to its stop -- or an error, which the interpreter has already
+// printed into the job's output.  Resolves when the job is over.
+export async function gsEvalLine(line: string): Promise<void> {
+  if (!moduleReady || !mailbox) return;
   const text = (line ?? '').toString();
-  if (!text.trim()) return 0;
+  if (!text.trim()) return;
   const stopWatch = watchRequest('terminal line');
   try {
     const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
@@ -531,11 +531,9 @@ export async function gsEvalLine(line: string): Promise<number> {
     if (r.ok) {
       const prompt: unknown = JSON.parse(r.json);
       if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
-      return 0;
     }
-    return -1;
   } catch {
-    return -1;
+    // The request itself failed: the console shows nothing for it.
   } finally {
     foregroundJob = null;
     stopWatch();

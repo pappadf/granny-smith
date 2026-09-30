@@ -22,7 +22,7 @@ export {
   type CompletionResult,
   type CompletionCandidate,
 } from './emulator';
-export { setConsoleSink, routeConsole, routePrintLine, routeLogEmit } from './logSink';
+export { routeConsole, routePrintLine, routeLogEmit } from './logSink';
 export { loadMembers, type MemberInfo, type TypeDescriptor, type ArgInfo } from './systemTree';
 export {
   writeRegister,

@@ -31,7 +31,8 @@ import type { CompletionResult } from '@/bus/emulator';
 import { normalisePaste } from '@/lib/consoleModel';
 import { replaceTokenAt } from '@/lib/pathToken';
 import type { HlSpan } from '@/lib/highlight';
-import { copyText, type ConsoleHistory } from '@/lib/consoleHistory';
+import type { ConsoleHistory } from '@/lib/consoleHistory';
+import { copyText } from '@/lib/clipboard';
 
 export interface ConsoleInputHandlers {
   // Enter on complete input: run it.

@@ -283,68 +283,59 @@ static const char *av_dsp_state_name(av_dsp_t *d) {
     return "running";
 }
 
-static value_t dsp_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_state) {
     av_dsp_t *d = dsp_self(self);
     return val_str(d ? av_dsp_state_name(d) : "reset");
 }
 
-static value_t dsp_attr_pc(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_pc) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->pc : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_ps(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_ps) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->ps : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_emr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_emr) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->emr : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_pcw(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_pcw) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->pcw : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_sp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_sp) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->r[21] : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_evtp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_evtp) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->r[22] : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_instr_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_instr_count) {
     av_dsp_t *d = dsp_self(self);
     return val_uint(8, d ? d->core->icount : 0);
 }
 
-static value_t dsp_method_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(dsp_method_step) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
@@ -451,8 +442,7 @@ static cpu_debug_if_t dsp_debug_if(av_dsp_t *d) {
 
 // `machine.dsp.frame([addr], [count], [before])` -- the same frame as
 // machine.cpu.frame, for the DSP.
-static value_t dsp_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(dsp_method_frame) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
@@ -462,8 +452,7 @@ static value_t dsp_method_frame(struct object *self, const member_t *m, int argc
 
 // `machine.dsp.disasm([addr], [count])` prints a listing and answers true,
 // as debug.disasm does for the main CPU; the typed rows are frame's.
-static value_t dsp_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(dsp_method_disasm) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
@@ -503,8 +492,8 @@ static const arg_decl_t dsp_disasm_args[] = {
      .kind = V_UINT,
      .presentation_flags = VAL_HEX,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "start address; omitted: the current PC"},
+     .doc = "start address",
+     .default_doc = "the current PC"},
     {.name = "count",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -516,51 +505,43 @@ static const member_t av_dsp_members[] = {
     {.kind = M_ATTR,
      .name = "state",
      .doc = "reset | running | idle | crashed",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = dsp_attr_state, .set = NULL}},
+     .attr = {.type = V_STRING, .get = dsp_attr_state, .set = NULL}                                           },
     {.kind = M_ATTR,
      .name = "pc",
      .doc = "Program counter (next instruction)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_pc, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_pc, .set = NULL}                                                },
     {.kind = M_ATTR,
      .name = "ps",
      .doc = "Processor status flags",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_ps, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_ps, .set = NULL}                                                },
     {.kind = M_ATTR,
      .name = "emr",
      .doc = "Exception mask register",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_emr, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_emr, .set = NULL}                                               },
     {.kind = M_ATTR,
      .name = "pcw",
      .doc = "Processor control word",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_pcw, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_pcw, .set = NULL}                                               },
     {.kind = M_ATTR,
      .name = "sp",
      .doc = "Stack pointer (r21)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_sp, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_sp, .set = NULL}                                                },
     {.kind = M_ATTR,
      .name = "evtp",
      .doc = "Exception vector table pointer (r22)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_evtp, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_evtp, .set = NULL}                                              },
     {.kind = M_ATTR,
      .name = "instr_count",
      .doc = "DSP instructions executed since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_instr_count, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_instr_count, .set = NULL}                                       },
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Execute up to N instructions; returns the number executed",
-     .method = {.args = dsp_step_args, .nargs = 1, .result = V_UINT, .fn = dsp_method_step}},
+     .method = {.args = dsp_step_args, .nargs = 1, .result = V_UINT, .fn = dsp_method_step}                   },
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Print a disassembly of N instructions through the DSP's own bus view",
-     .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_BOOL, .fn = dsp_method_disasm}},
+     .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_BOOL, .fn = dsp_method_disasm}               },
     {.kind = M_METHOD,
      .name = "frame",
      .doc = "Debug frame, the same shape as machine.cpu.frame: {arch, pc, regs, rows, fpu}",

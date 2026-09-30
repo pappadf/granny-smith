@@ -57,6 +57,7 @@ struct object {
     char *lname; // owned: named-child segment or entry key (see lkeyed)
     int lindex; // entry index, or -1
     bool lkeyed; // true: lname is a collection key, not a member name
+    int entry_index; // index its object_cache made it at, or -1
 };
 
 // Monotonic counter handed out at each object_attach, giving attached
@@ -158,9 +159,6 @@ static void validate_class_once(const class_desc_t *cls) {
 }
 #endif
 
-// The "no default, but not a hole" sentinel — see object_validate_class.
-const value_t obj_arg_unset = {.kind = V_NONE};
-
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
     if (!cls)
         return NULL;
@@ -174,6 +172,7 @@ struct object *object_new(const class_desc_t *cls, void *instance_data, const ch
     o->instance_data = instance_data;
     o->name = name;
     o->lindex = -1;
+    o->entry_index = -1;
     return o;
 }
 
@@ -315,30 +314,6 @@ const char *object_name(const struct object *o) {
 void *object_data(struct object *o) {
     return o ? o->instance_data : NULL;
 }
-void object_pool_create(object_pool_t *pool, const class_desc_t *cls) {
-    for (int i = 0; i < pool->n; i++) {
-        pool->slots[i] = i;
-        pool->objs[i] = object_new(cls, &pool->slots[i], NULL);
-    }
-}
-
-void object_pool_delete(object_pool_t *pool) {
-    for (int i = 0; i < pool->n; i++) {
-        if (pool->objs[i])
-            object_delete(pool->objs[i]);
-        pool->objs[i] = NULL;
-    }
-}
-
-struct object *object_pool_at(const object_pool_t *pool, int slot) {
-    return (slot >= 0 && slot < pool->n) ? pool->objs[slot] : NULL;
-}
-
-int object_pool_slot(struct object *entry) {
-    const int *slot = (const int *)object_data(entry);
-    return slot ? *slot : -1;
-}
-
 value_t obj_u64_at(const void *block, const member_t *m) {
     if (!block)
         return val_uint(8, 0);
@@ -348,7 +323,7 @@ value_t obj_u64_at(const void *block, const member_t *m) {
     return val_uint(8, v);
 }
 
-value_t obj_u64_field_get(struct object *self, const member_t *m) {
+DEF_GETTER(obj_u64_field_get) {
     return obj_u64_at(object_data(self), m);
 }
 
@@ -423,12 +398,6 @@ bool object_valid_key(const char *key) {
             return false;
     }
     return n <= OBJ_KEY_MAX;
-}
-
-void object_pool_set_parent(object_pool_t *pool, struct object *parent) {
-    for (int i = 0; i < pool->n; i++)
-        if (pool->objs[i])
-            object_set_logical_parent(pool->objs[i], parent, NULL, i, NULL);
 }
 
 void object_each_attached(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
@@ -554,6 +523,23 @@ const member_t *class_find_member(const class_desc_t *cls, const char *name) {
     return NULL;
 }
 
+bool arg_has_default(const arg_decl_t *a) {
+    const value_t *d = a ? a->default_value : NULL;
+    if (!d || d->kind == V_NONE)
+        return false;
+    return !(d->kind == V_STRING && (!d->s || !*d->s)); // "" means none given
+}
+
+void arg_doc_text(const arg_decl_t *a, char *buf, size_t size) {
+    if (!buf || !size)
+        return;
+    const char *doc = (a && a->doc) ? a->doc : "";
+    if (a && a->default_doc)
+        snprintf(buf, size, "%s%somitted: %s", doc, *doc ? "; " : "", a->default_doc);
+    else
+        snprintf(buf, size, "%s", doc);
+}
+
 // Look up a statically-attached child by name (one of the parent's
 // linked children). Used when the class declares a named child without
 // providing its own lookup callback.
@@ -664,9 +650,6 @@ bool object_validate_name(const char *name, char *err_buf, size_t err_size) {
     return true;
 }
 
-// Forward declaration: defined in the validator section below.
-static const char *kind_name(value_kind_t k);
-
 // A V_ENUM table must be NULL-terminated: validate_slot and the tab completer
 // both walk one looking for the sentinel, so a table without it reads past its
 // own end.  Checking only [0] -- which is all this used to do -- catches an
@@ -728,6 +711,14 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             }
         }
 
+        // member_t.flags holds the visibility category and nothing else.
+        if (m->flags & ~M_CAT_MASK) {
+            if (err_buf && err_size)
+                snprintf(err_buf, err_size, "%s.%s: flags 0x%x outside the category bits", cls->name, m->name,
+                         (unsigned)m->flags);
+            return false;
+        }
+
         // Every attribute and method carries doc text.  The object tree is the
         // documentation -- `help machine.via1` is what a reader has instead of
         // a manual -- so a member without a `.doc` is a member that silently
@@ -780,21 +771,17 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                                  m->name, p->name ? p->name : "?");
                     return false;
                 }
-                // A V_NONE default is the "no default, but not a hole"
-                // sentinel (obj_arg_unset).  node_validate_args only truncates
-                // argc at the tail, so an optional slot that a caller skipped
-                // has to be *filled* with something before the later optionals
-                // it precedes; V_NONE is that something, and the body reads it
-                // as "not supplied".  It is deliberately exempt from the
-                // kind-match rule below -- the alternative is what
-                // logpoints.add used to do, declare V_UINT and default to
-                // V_INT -1, which forced the body to re-discriminate the kind
-                // it had already declared.
-                if (p->default_value && p->default_value->kind != V_NONE && p->default_value->kind != p->kind) {
+                if (p->default_value && p->default_value->kind != p->kind) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: default for arg '%s' is %s, declared %s", cls->name,
-                                 m->name, p->name ? p->name : "?", kind_name(p->default_value->kind),
-                                 kind_name(p->kind));
+                                 m->name, p->name ? p->name : "?", value_kind_name(p->default_value->kind),
+                                 value_kind_name(p->kind));
+                    return false;
+                }
+                if (p->default_value && p->default_doc) {
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size, "%s.%s: arg '%s' has both a default and a default_doc", cls->name,
+                                 m->name, p->name ? p->name : "?");
                     return false;
                 }
                 if (p->kind == V_ENUM && !enum_table_ok(p->enum_values)) {
@@ -817,36 +804,28 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     return false;
                 }
             }
-            // An optional slot with no default is only reachable by *tail*
-            // truncation: node_validate_args fills skipped slots from their
-            // defaults and can shorten argc only at the end.  So an optional
-            // slot that is followed by another optional and has no default is
-            // a hole nobody can step over -- naming any later argument fails
-            // with "missing argument '<this one>'", which is how
-            // debug.breakpoints.add(addr, space="physical") became impossible
-            // to call.  Give such a slot a real default, or &obj_arg_unset --
-            // or, if it belongs to an all-or-nothing group the body checks by
-            // argument count, say so with OBJ_ARG_GROUPED.
-            for (int a = 0; a < nargs - 1; a++) {
-                if (!(args[a].validation_flags & OBJ_ARG_OPTIONAL) || args[a].default_value)
-                    continue;
-                if (args[a].validation_flags & OBJ_ARG_GROUPED)
-                    continue; // all-or-nothing group: skipping it alone is not a legal call
-                for (int b = a + 1; b < nargs; b++) {
-                    if (!(args[b].validation_flags & OBJ_ARG_OPTIONAL))
-                        continue;
-                    if (err_buf && err_size)
-                        snprintf(err_buf, err_size,
-                                 "%s.%s: optional arg '%s' has no default but '%s' follows it, so naming '%s' is "
-                                 "impossible",
-                                 cls->name, m->name, args[a].name ? args[a].name : "?",
-                                 args[b].name ? args[b].name : "?", args[b].name ? args[b].name : "?");
-                    return false;
-                }
-            }
             if (rest_count > 1) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: only one rest arg allowed", cls->name, m->name);
+                return false;
+            }
+        }
+
+        // Collection invariants: one per class, and a way to reach its entries.
+        if (member_is_collection(m)) {
+            const collection_desc_t *c = m->child.collection;
+            const char *why = NULL;
+            if (class_collection(cls) != m)
+                why = "a class has at most one collection member";
+            else if (!c->by_index.get && !c->by_key.lookup)
+                why = "a collection needs by_index.get or by_key.lookup";
+            else if (c->by_index.next && !c->by_index.get)
+                why = "by_index.next needs by_index.get";
+            else if (c->by_key.next_key && !c->by_key.lookup)
+                why = "by_key.next_key needs by_key.lookup";
+            if (why) {
+                if (err_buf && err_size)
+                    snprintf(err_buf, err_size, "%s.%s: %s", cls->name, m->name, why);
                 return false;
             }
         }
@@ -890,6 +869,153 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
         }
     }
     return true;
+}
+
+void object_member_doc_gaps(const member_t *m, object_doc_gap_fn report, void *ud) {
+    if (!m || !report || m->kind != M_METHOD)
+        return;
+    bool basic = member_is_basic(m);
+    for (int k = 0; k < m->method.nargs && m->method.args; k++) {
+        const arg_decl_t *a = &m->method.args[k];
+        if (basic && (!a->doc || !*a->doc))
+            report(m, a, "argument has no doc", ud);
+        if ((a->kind == V_ANY || a->kind == V_NONE) && !(a->validation_flags & OBJ_ARG_POLY))
+            report(m, a, "untyped argument (V_ANY/V_NONE) without OBJ_ARG_POLY", ud);
+    }
+    if (m->method.result == V_ANY && !m->method.result_doc)
+        report(m, NULL, "V_ANY result without result_doc", ud);
+}
+
+// === Tree walk ===============================================================
+
+// An open-addressed set of pointers, for the walk's visited objects and
+// classes.
+typedef struct {
+    const void **slots;
+    size_t cap, n;
+} ptr_set_t;
+
+// Hash a pointer onto a power-of-two table.
+static size_t ptr_hash(const void *p, size_t cap) {
+    uintptr_t x = (uintptr_t)p;
+    x ^= x >> 17;
+    x *= (uintptr_t)0x9E3779B97F4A7C15ull;
+    return (size_t)(x >> 7) & (cap - 1);
+}
+
+// Add `p`; false when it was already there (or the set cannot grow).
+static bool ptr_set_add(ptr_set_t *s, const void *p) {
+    if ((s->n + 1) * 2 > s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 256;
+        const void **t = (const void **)calloc(cap, sizeof(*t));
+        if (!t)
+            return false;
+        for (size_t i = 0; i < s->cap; i++) {
+            if (!s->slots[i])
+                continue;
+            size_t h = ptr_hash(s->slots[i], cap);
+            while (t[h])
+                h = (h + 1) & (cap - 1);
+            t[h] = s->slots[i];
+        }
+        free(s->slots);
+        s->slots = t;
+        s->cap = cap;
+    }
+    size_t h = ptr_hash(p, s->cap);
+    while (s->slots[h]) {
+        if (s->slots[h] == p)
+            return false;
+        h = (h + 1) & (s->cap - 1);
+    }
+    s->slots[h] = p;
+    s->n++;
+    return true;
+}
+
+typedef struct {
+    const object_visitor_t *v;
+    void *ud;
+    ptr_set_t objects, classes;
+} walk_t;
+
+static void walk_object(walk_t *w, struct object *o, const member_t *via, const char *fallback, bool basic);
+
+// "<path>.<name>", or the name at the root; false when it does not fit.
+static bool join_path(char *out, size_t size, const char *path, const char *name) {
+    return snprintf(out, size, "%s%s%s", path, *path ? "." : "", name) < (int)size;
+}
+
+typedef struct {
+    walk_t *w;
+    const char *path;
+    bool basic;
+} walk_attached_t;
+
+static void walk_attached(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    walk_attached_t *a = (walk_attached_t *)ud;
+    if (!object_name(child))
+        return;
+    char p[OBJ_PATH_MAX];
+    if (!join_path(p, sizeof(p), a->path, object_name(child)))
+        return;
+    walk_object(a->w, child, NULL, p, a->basic && (object_category(child) & M_CAT_MASK) == M_CAT_BASIC);
+}
+
+// Visit `o` once, under its canonical path (else `fallback`, the path it was
+// reached by), then its members, named children, entries and attached
+// children.
+static void walk_object(walk_t *w, struct object *o, const member_t *via, const char *fallback, bool basic) {
+    if (!o || !ptr_set_add(&w->objects, o))
+        return;
+    const class_desc_t *cls = object_class(o);
+    bool first = cls && ptr_set_add(&w->classes, cls);
+    char path[OBJ_PATH_MAX];
+    object_compute_path(o, path, sizeof(path));
+    if (!path[0] && o != object_root() && snprintf(path, sizeof(path), "%s", fallback) >= (int)sizeof(path))
+        return;
+    if (w->v->object && !w->v->object(o, via, path, basic, first, w->ud))
+        return;
+    // Below an entry or a named child nothing counts as the basic tier.
+    bool sub_basic = via ? false : basic;
+    for (size_t i = 0; cls && i < cls->n_members; i++) {
+        const member_t *m = &cls->members[i];
+        if (!m->name)
+            continue;
+        char mpath[OBJ_PATH_MAX];
+        if (!join_path(mpath, sizeof(mpath), path, m->name))
+            continue;
+        if (w->v->member)
+            w->v->member(o, m, mpath, first, w->ud);
+        if (m->kind != M_CHILD || m->child.reference)
+            continue;
+        if (!m->child.collection) {
+            if (m->child.lookup)
+                walk_object(w, object_named_child(o, m), m, mpath, sub_basic && (m->flags & M_CAT_MASK) == M_CAT_BASIC);
+            continue;
+        }
+        char ep[OBJ_PATH_MAX];
+        for (int k = object_child_next(o, m, -1); k >= 0; k = object_child_next(o, m, k)) {
+            if (snprintf(ep, sizeof(ep), "%s[%d]", path, k) < (int)sizeof(ep))
+                walk_object(w, object_entry_at(o, m, k), m, ep, false);
+        }
+        for (const char *k = object_child_next_key(o, m, NULL); k; k = object_child_next_key(o, m, k)) {
+            if (snprintf(ep, sizeof(ep), "%s[\"%s\"]", path, k) < (int)sizeof(ep))
+                walk_object(w, object_entry_by_key(o, m, k), m, ep, false);
+        }
+    }
+    walk_attached_t a = {.w = w, .path = path, .basic = sub_basic};
+    object_each_attached_ordered(o, walk_attached, &a);
+}
+
+void object_walk(struct object *start, const object_visitor_t *v, void *ud) {
+    if (!start || !v)
+        return;
+    walk_t w = {.v = v, .ud = ud};
+    walk_object(&w, start, NULL, "", true);
+    free(w.objects.slots);
+    free(w.classes.slots);
 }
 
 // === Path resolution =========================================================
@@ -955,54 +1081,57 @@ static const char *parse_ident(const char *p, char *buf, size_t buf_size) {
     return p;
 }
 
+const member_t *class_collection(const class_desc_t *cls) {
+    for (size_t i = 0; cls && i < cls->n_members; i++)
+        if (member_is_collection(&cls->members[i]))
+            return &cls->members[i];
+    return NULL;
+}
+
 int object_child_next(struct object *self, const member_t *m, int prev) {
-    if (!m || m->kind != M_CHILD || !m->child.indexed)
+    if (!member_is_collection(m))
         return -1;
-    if (m->child.next)
-        return m->child.next(self, prev);
-    if (!m->child.get)
+    const collection_desc_t *c = m->child.collection;
+    if (c->by_index.next)
+        return c->by_index.next(self, prev);
+    if (!c->by_index.get)
         return -1;
-    for (int i = prev < 0 ? 0 : prev + 1; i < m->child.slots; i++)
-        if (m->child.get(self, i))
+    for (int i = prev < 0 ? 0 : prev + 1; i < c->by_index.slots; i++)
+        if (c->by_index.get(self, i))
             return i;
     return -1;
 }
 
-// The one indexed child member of a class, or NULL when it has none or more.
-static const member_t *sole_indexed_child(const class_desc_t *cls) {
-    const member_t *found = NULL;
-    for (size_t i = 0; cls && i < cls->n_members; i++) {
-        if (cls->members[i].kind != M_CHILD || !cls->members[i].child.indexed)
-            continue;
-        if (found)
-            return NULL;
-        found = &cls->members[i];
-    }
-    return found;
+const char *object_child_next_key(struct object *self, const member_t *m, const char *prev) {
+    if (!member_is_collection(m) || !m->child.collection->by_key.next_key)
+        return NULL;
+    return m->child.collection->by_key.next_key(self, prev);
 }
 
-// `count` for a class with one indexed child and no count of its own: its
-// live entries.  Collections had to declare one each (with a callback the
-// core never called), and three did not.
-static value_t synth_count_get(struct object *self, const member_t *m) {
-    (void)m;
-    const member_t *child = sole_indexed_child(object_class(self));
-    uint64_t n = 0;
-    if (child && !child->child.get && !child->child.next && child->child.keys) {
-        const char **names = NULL;
-        int k = child->child.keys(self, &names);
-        return val_uint(4, k > 0 ? (uint64_t)k : 0);
+uint32_t object_collection_count(struct object *self, const member_t *m) {
+    if (!member_is_collection(m))
+        return 0;
+    uint32_t n = 0;
+    if (m->child.collection->by_index.get) {
+        for (int i = object_child_next(self, m, -1); i >= 0; i = object_child_next(self, m, i))
+            n++;
+    } else {
+        for (const char *k = object_child_next_key(self, m, NULL); k; k = object_child_next_key(self, m, k))
+            n++;
     }
-    for (int i = object_child_next(self, child, -1); i >= 0; i = object_child_next(self, child, i))
-        n++;
-    return val_uint(4, n);
+    return n;
+}
+
+// `count` for a collection container with no count of its own: its live
+// entries.
+static DEF_GETTER(synth_count_get) {
+    return val_uint(4, object_collection_count(self, class_collection(object_class(self))));
 }
 
 static const member_t k_synth_count = {
     .kind = M_ATTR,
     .name = "count",
     .doc = "Live entries in the collection",
-    .flags = VAL_RO,
     .attr = {.type = V_UINT, .width = 4, .get = synth_count_get}
 };
 
@@ -1017,6 +1146,186 @@ static void adopt_logical(struct object *child, const member_t *m, struct object
     if (key && !object_valid_key(key))
         return;
     object_set_logical_parent(child, parent, name, index, key);
+}
+
+struct object *object_entry_at(struct object *self, const member_t *m, int index) {
+    if (!member_is_collection(m) || index < 0 || !m->child.collection->by_index.get)
+        return NULL;
+    struct object *o = m->child.collection->by_index.get(self, index);
+    adopt_logical(o, m, self, NULL, index, NULL);
+    return o;
+}
+
+struct object *object_entry_by_key(struct object *self, const member_t *m, const char *key) {
+    if (!member_is_collection(m) || !key || !m->child.collection->by_key.lookup)
+        return NULL;
+    struct object *o = m->child.collection->by_key.lookup(self, key);
+    adopt_logical(o, m, self, NULL, -1, key);
+    return o;
+}
+
+struct object *object_named_child(struct object *self, const member_t *m) {
+    if (!m || m->kind != M_CHILD || m->child.collection)
+        return NULL;
+    struct object *o = m->child.lookup ? m->child.lookup(self, m->name) : NULL;
+    if (o)
+        adopt_logical(o, m, self, m->name, -1, NULL);
+    else
+        o = find_attached_child(self, m->name);
+    return o;
+}
+
+// === Collection containers ===================================================
+
+// A container class built for a collection descriptor by
+// object_collection_new: the entries member, then the descriptor's verbs.
+// Built once per descriptor and kept for the process, like a static one.
+typedef struct generated_class {
+    const collection_desc_t *coll;
+    class_desc_t cls;
+    struct generated_class *next;
+    member_t members[];
+} generated_class_t;
+
+static generated_class_t *g_generated;
+
+static const class_desc_t *collection_class(const collection_desc_t *coll) {
+    for (generated_class_t *g = g_generated; g; g = g->next)
+        if (g->coll == coll)
+            return &g->cls;
+    size_t n = 1 + coll->n_verbs;
+    generated_class_t *g = (generated_class_t *)calloc(1, sizeof(*g) + n * sizeof(member_t));
+    if (!g)
+        return NULL;
+    g->members[0] = (member_t)OBJ_ENTRIES(coll, coll->entries_doc);
+    if (coll->n_verbs)
+        memcpy(&g->members[1], coll->verbs, coll->n_verbs * sizeof(member_t));
+    g->cls = (class_desc_t){.name = coll->name, .members = g->members, .n_members = n, .doc = coll->doc};
+    g->coll = coll;
+    g->next = g_generated;
+    g_generated = g;
+    return &g->cls;
+}
+
+struct object *object_collection_new(const collection_desc_t *coll, void *data, const char *name) {
+    const class_desc_t *cls = coll ? collection_class(coll) : NULL;
+    return cls ? object_new(cls, data, name) : NULL;
+}
+
+// === Entry caches ============================================================
+
+// One entry of an object_cache: made at `index`, or under `key`.
+struct object_cache_slot {
+    int index; // -1 for a keyed entry
+    char *key; // owned; NULL for an indexed entry
+    struct object *obj;
+};
+
+// The cache's container is being freed: its entries lose their path, not
+// their life.
+static void cache_parent_gone(void *ud) {
+    ((object_cache_t *)ud)->parent = NULL;
+}
+
+// Point one entry's logical parent at the cache's container.
+static void cache_link(const object_cache_t *c, const struct object_cache_slot *e) {
+    if (e->key && !object_valid_key(e->key))
+        return;
+    object_set_logical_parent(e->obj, c->parent, NULL, e->key ? -1 : e->index, e->key);
+}
+
+// Make a new entry and record it.
+static struct object *cache_add(object_cache_t *c, int index, const char *key, void *data) {
+    if (c->n == c->cap) {
+        int cap = c->cap ? c->cap * 2 : 8;
+        struct object_cache_slot *t =
+            (struct object_cache_slot *)realloc(c->slots, (size_t)cap * sizeof(struct object_cache_slot));
+        if (!t)
+            return NULL;
+        c->slots = t;
+        c->cap = cap;
+    }
+    char *k = key ? strdup(key) : NULL;
+    if (key && !k)
+        return NULL;
+    struct object *o = object_new(c->cls, data, c->name);
+    if (!o) {
+        free(k);
+        return NULL;
+    }
+    o->entry_index = index;
+    struct object_cache_slot *e = &c->slots[c->n++];
+    *e = (struct object_cache_slot){.index = index, .key = k, .obj = o};
+    if (c->parent)
+        cache_link(c, e);
+    return o;
+}
+
+struct object *object_cache_find(const object_cache_t *c, int index) {
+    for (int i = 0; c && i < c->n; i++)
+        if (!c->slots[i].key && c->slots[i].index == index)
+            return c->slots[i].obj;
+    return NULL;
+}
+
+struct object *object_cache_at(object_cache_t *c, int index, void *data) {
+    if (!c || index < 0)
+        return NULL;
+    struct object *o = object_cache_find(c, index);
+    return o ? o : cache_add(c, index, NULL, data);
+}
+
+struct object *object_cache_key(object_cache_t *c, const char *key, void *data) {
+    if (!c || !key)
+        return NULL;
+    for (int i = 0; i < c->n; i++)
+        if (c->slots[i].key && strcmp(c->slots[i].key, key) == 0)
+            return c->slots[i].obj;
+    return cache_add(c, -1, key, data);
+}
+
+void object_cache_set_parent(object_cache_t *c, struct object *parent) {
+    if (!c || c->parent == parent)
+        return;
+    if (c->parent)
+        object_unregister_invalidator(c->parent, cache_parent_gone, c);
+    c->parent = parent;
+    if (parent)
+        object_register_invalidator(parent, cache_parent_gone, c);
+    for (int i = 0; i < c->n; i++)
+        cache_link(c, &c->slots[i]);
+}
+
+// Free entry i, moving the last one into its place.
+static void cache_drop(object_cache_t *c, int i) {
+    struct object_cache_slot e = c->slots[i];
+    c->slots[i] = c->slots[--c->n];
+    free(e.key);
+    object_delete_tree(e.obj);
+}
+
+void object_cache_sweep(object_cache_t *c, bool (*live)(struct object *entry, void *ud), void *ud) {
+    for (int i = 0; c && live && i < c->n;) {
+        if (live(c->slots[i].obj, ud))
+            i++;
+        else
+            cache_drop(c, i);
+    }
+}
+
+void object_cache_clear(object_cache_t *c) {
+    if (!c)
+        return;
+    while (c->n > 0)
+        cache_drop(c, c->n - 1);
+    free(c->slots);
+    c->slots = NULL;
+    c->cap = 0;
+    object_cache_set_parent(c, NULL);
+}
+
+int object_entry_index(struct object *entry) {
+    return entry ? entry->entry_index : -1;
 }
 
 node_t node_child(node_t n, const char *segment) {
@@ -1060,7 +1369,7 @@ node_t node_child(node_t n, const char *segment) {
     // Case 1: `n` is sitting on an indexed-child member with no index
     // chosen yet. An integer segment supplies that index. This is what
     // makes both `bucket.devices[0]` and `bucket.devices.0` work.
-    if (n.member && n.member->kind == M_CHILD && n.member->child.indexed && n.index < 0 && is_int)
+    if (member_is_collection(n.member) && n.index < 0 && is_int)
         return (node_t){.obj = n.obj, .member = n.member, .index = (int)ival};
 
     // Determine the "current object" we descend from. If `n` already
@@ -1069,28 +1378,12 @@ node_t node_child(node_t n, const char *segment) {
     // against that target.
     struct object *here = n.obj;
     if (n.member && n.member->kind == M_CHILD) {
-        if (n.member->child.indexed) {
-            if (n.index < 0)
-                return bad; // case 1 above already handled int segments
-            if (!n.member->child.get)
-                return bad;
-            struct object *child = n.member->child.get(n.obj, n.index);
-            if (!child)
-                return bad;
-            adopt_logical(child, n.member, n.obj, NULL, n.index, NULL);
-            here = child;
-        } else {
-            struct object *child = NULL;
-            if (n.member->child.lookup)
-                child = n.member->child.lookup(n.obj, n.member->name);
-            if (child)
-                adopt_logical(child, n.member, n.obj, n.member->name, -1, NULL);
-            if (!child)
-                child = find_attached_child(n.obj, n.member->name);
-            if (!child)
-                return bad;
-            here = child;
-        }
+        if (n.member->child.collection && n.index < 0)
+            return bad; // case 1 above already handled int segments
+        here = n.member->child.collection ? object_entry_at(n.obj, n.member, n.index)
+                                          : object_named_child(n.obj, n.member);
+        if (!here)
+            return bad;
     }
 
     // Synthetic `meta` segment.
@@ -1106,19 +1399,11 @@ node_t node_child(node_t n, const char *segment) {
         return (node_t){.obj = meta, .member = NULL, .index = -1};
     }
 
-    // Integer segment now means "first indexed-child member of `here`."
-    // Conventionally a class declares at most one such member (e.g.
-    // `scsi.devices`), so taking the first match matches user intent.
+    // Integer segment now means "the collection member of `here`" (a class
+    // declares at most one): `bucket.0` is `bucket.<entries>.0`.
     if (is_int) {
-        const class_desc_t *cls = object_class(here);
-        if (!cls)
-            return bad;
-        for (size_t i = 0; i < cls->n_members; i++) {
-            const member_t *m = &cls->members[i];
-            if (m->kind == M_CHILD && m->child.indexed)
-                return (node_t){.obj = here, .member = m, .index = (int)ival};
-        }
-        return bad;
+        const member_t *m = class_collection(object_class(here));
+        return m ? (node_t){.obj = here, .member = m, .index = (int)ival} : bad;
     }
 
     // Identifier segment → named member of here's class.
@@ -1126,7 +1411,7 @@ node_t node_child(node_t n, const char *segment) {
     const member_t *m = class_find_member(cls, segment);
     if (m)
         return (node_t){.obj = here, .member = m, .index = -1};
-    if (strcmp(segment, "count") == 0 && sole_indexed_child(cls))
+    if (strcmp(segment, "count") == 0 && class_collection(cls))
         return (node_t){.obj = here, .member = &k_synth_count, .index = -1};
 
     // Identifier may also name a statically-attached child object the
@@ -1147,34 +1432,14 @@ node_t node_child_key(node_t n, const char *key) {
     node_t bad = (node_t){0};
     if (!n.obj || !key || !*key)
         return bad;
-    if (n.member && n.member->kind != M_CHILD)
-        return bad;
-
-    // Case 1: already sitting on the indexed-child member itself.
-    if (n.member && n.member->kind == M_CHILD && n.member->child.indexed && n.index < 0) {
-        if (!n.member->child.lookup)
-            return bad;
-        struct object *hit = n.member->child.lookup(n.obj, key);
-        adopt_logical(hit, n.member, n.obj, NULL, -1, key);
-        return hit ? (node_t){.obj = hit, .member = NULL, .index = -1} : bad;
-    }
-    if (n.member && n.member->kind == M_CHILD)
-        return bad; // a resolved slot or named child is not itself a collection
-
-    // Case 2: the object is a collection wrapper — use its first indexed
-    // child member, the same convention the integer form follows.
-    const class_desc_t *cls = object_class(n.obj);
-    if (!cls)
-        return bad;
-    for (size_t i = 0; i < cls->n_members; i++) {
-        const member_t *m = &cls->members[i];
-        if (m->kind != M_CHILD || !m->child.indexed || !m->child.lookup)
-            continue;
-        struct object *hit = m->child.lookup(n.obj, key);
-        adopt_logical(hit, m, n.obj, NULL, -1, key);
-        return hit ? (node_t){.obj = hit, .member = NULL, .index = -1} : bad;
-    }
-    return bad;
+    // Sitting on the collection member itself, or on its container.
+    const member_t *m = n.member;
+    if (!m)
+        m = class_collection(object_class(n.obj));
+    else if (!member_is_collection(m) || n.index >= 0)
+        return bad; // a resolved entry or named child is not itself a collection
+    struct object *hit = object_entry_by_key(n.obj, m, key);
+    return hit ? (node_t){.obj = hit, .member = NULL, .index = -1} : bad;
 }
 
 node_t object_resolve(struct object *root, const char *path) {
@@ -1311,44 +1576,6 @@ static void slot_from_attr(typed_slot_t *out, const member_t *m) {
     out->default_value = NULL;
 }
 
-// Human-readable kind name used in error messages.
-static const char *kind_name(value_kind_t k) {
-    // Slot-declaration sentinel; not one of the live value kinds below.
-    if (k == V_ANY)
-        return "ANY";
-    switch (k) {
-    case V_NONE:
-        return "NONE";
-    case V_BOOL:
-        return "BOOL";
-    case V_INT:
-        return "INT";
-    case V_UINT:
-        return "UINT";
-    case V_FLOAT:
-        return "FLOAT";
-    case V_STRING:
-        return "STRING";
-    case V_BYTES:
-        return "BYTES";
-    case V_ENUM:
-        return "ENUM";
-    case V_LIST:
-        return "LIST";
-    case V_MAP:
-        return "MAP";
-    case V_OBJECT:
-        return "OBJECT";
-    case V_ERROR:
-        return "ERROR";
-    case V_REF:
-        return "REF";
-    case V_RANGE:
-        return "RANGE";
-    }
-    return "?";
-}
-
 // True if the value's bit pattern fits in `width` bytes interpreted under
 // the value's own signedness. `width=0` and `width=10` (FPU extended) mean
 // "no explicit constraint" and we treat them as 8 bytes.
@@ -1474,7 +1701,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
 
     if (in->kind != s->kind) {
         if (strict) {
-            snprintf(err_buf, err_size, "must be %s, got %s", kind_name(s->kind), kind_name(in->kind));
+            snprintf(err_buf, err_size, "must be %s, got %s", value_kind_name(s->kind), value_kind_name(in->kind));
             return VALIDATE_ERR;
         }
         // V_INT ↔ V_UINT with width fit + sign reinterpret.
@@ -1548,7 +1775,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
             };
             rewrote = true;
         } else {
-            snprintf(err_buf, err_size, "must be %s, got %s", kind_name(s->kind), kind_name(in->kind));
+            snprintf(err_buf, err_size, "must be %s, got %s", value_kind_name(s->kind), value_kind_name(in->kind));
             return VALIDATE_ERR;
         }
     } else {
@@ -1661,11 +1888,11 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
     }
 
     bool any_rewrite = false;
-    int eff_n = fixed_n;
-    if (in_argc > eff_n)
-        eff_n = in_argc;
-    if (eff_n > OBJ_VALIDATE_MAX_ARGS)
-        eff_n = OBJ_VALIDATE_MAX_ARGS;
+    // Every fixed slot is materialised in scratch -- given, default-filled, or
+    // V_NONE for an optional the caller skipped -- so a body may read any
+    // declared slot.  argc counts through the last slot that was given or
+    // default-filled; an optional left out at the tail shortens it.
+    int eff_n = 0;
 
     // Fixed slots.
     for (int i = 0; i < fixed_n; i++) {
@@ -1673,20 +1900,18 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         slot_from_arg(&s, &args[i]);
 
         if (i >= in_argc || in_argv[i].kind == V_NONE) {
-            // Optional missing (or a V_NONE hole) — fill with default if
-            // provided.
+            // Optional missing (or a V_NONE hole) — fill with the default,
+            // else with none.
             if (args[i].default_value) {
                 scratch[i] = *args[i].default_value;
-                any_rewrite = true;
-            } else if (i < last_given) {
-                // A hole before a later given slot can't be expressed to the
-                // body (argc truncation only works at the tail).
+                eff_n = i + 1;
+            } else if ((args[i].validation_flags & OBJ_ARG_GROUPED) && i < last_given) {
+                // A grouped slot cannot be skipped alone.
                 return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
             } else {
-                // Optional without default — body sees argc < nargs.
-                eff_n = i;
-                break;
+                scratch[i] = val_none();
             }
+            any_rewrite = true;
             continue;
         }
 
@@ -1699,6 +1924,7 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         scratch[i] = (st == VALIDATE_REWRITE) ? out_v : in_argv[i];
         if (st == VALIDATE_REWRITE)
             any_rewrite = true;
+        eff_n = i + 1;
     }
 
     // Rest slot: validate each tail item against the rest slot's kind/width/etc.
@@ -1729,7 +1955,7 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         eff_n = fixed_n + eff_rest_n;
     }
 
-    *out_argv = (any_rewrite || in_argc < fixed_n) ? scratch : in_argv;
+    *out_argv = any_rewrite ? scratch : in_argv;
     *out_argc = eff_n;
     return val_none();
 }
@@ -1779,8 +2005,8 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
     if ((slot->flags & OBJ_ARG_NONE_OK) && out->kind == V_NONE)
         return;
     if (slot->kind != out->kind) {
-        fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, kind_name(slot->kind),
-                kind_name(out->kind));
+        fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, value_kind_name(slot->kind),
+                value_kind_name(out->kind));
         assert(out->kind == slot->kind && "return kind mismatch");
     }
     if ((slot->kind == V_INT || slot->kind == V_UINT) && slot->width) {
@@ -1811,7 +2037,7 @@ static value_t node_get_here(node_t n) {
         // Propagate display flags from the slot's presentation_flags
         // (VAL_HEX/VAL_DEC/VAL_BIN/VAL_VOLATILE/VAL_SENSITIVE) onto the
         // value so formatters see the intent without consulting the
-        // descriptor separately. Per-member VAL_RO stays on member.flags
+        // descriptor separately.
         // and does not propagate (it controls writability, not display).
         v.flags |= n.member->attr.presentation_flags;
 #ifndef NDEBUG
@@ -1824,43 +2050,31 @@ static value_t node_get_here(node_t n) {
     case M_METHOD:
         return val_err("'%s' is a method; use a call form", n.member->name);
     case M_CHILD: {
-        if (n.member->child.indexed) {
-            if (!n.member->child.get)
+        if (n.member->child.collection) {
+            if (!n.member->child.collection->by_index.get)
                 return val_err("indexed child '%s' has no get callback", n.member->name);
             if (n.index < 0) {
                 // Index-less read of an indexed collection returns the
                 // whole collection as V_LIST of entry objects (`.entries`
                 // is the data; the REPL's table formatter is the
                 // presentation).
-                size_t cap = 8, len = 0;
-                value_t *items = (value_t *)malloc(cap * sizeof(value_t));
-                if (!items)
-                    return val_err("out of memory");
-                {
-                    for (int i = object_child_next(n.obj, n.member, -1); i >= 0;
-                         i = object_child_next(n.obj, n.member, i)) {
-                        struct object *c = n.member->child.get(n.obj, i);
-                        if (!c)
-                            continue;
-                        if (len == cap) {
-                            cap *= 2;
-                            value_t *t = (value_t *)realloc(items, cap * sizeof(value_t));
-                            if (!t) {
-                                free(items);
-                                return val_err("out of memory");
-                            }
-                            items = t;
-                        }
-                        items[len++] = val_obj(c);
+                value_t *items = NULL;
+                size_t len = 0, cap = 0;
+                for (int i = object_child_next(n.obj, n.member, -1); i >= 0;
+                     i = object_child_next(n.obj, n.member, i)) {
+                    struct object *c = object_entry_at(n.obj, n.member, i);
+                    if (c && !val_list_push(&items, &len, &cap, val_obj(c))) {
+                        free(items);
+                        return val_err("out of memory");
                     }
                 }
                 return val_list(items, len);
             }
-            struct object *c = n.member->child.get(n.obj, n.index);
+            struct object *c = object_entry_at(n.obj, n.member, n.index);
             if (!c) {
                 // The user-facing path is typically `<parent>[<i>]`
                 // (the resolver auto-routes a bare integer segment
-                // into the first indexed-child member). Name the
+                // into the collection member). Name the
                 // parent object rather than the internal member name
                 // so the diagnostic matches what the user typed.
                 const char *parent = object_name(n.obj);
@@ -1868,11 +2082,7 @@ static value_t node_get_here(node_t n) {
             }
             return val_obj(c);
         }
-        struct object *c = NULL;
-        if (n.member->child.lookup)
-            c = n.member->child.lookup(n.obj, n.member->name);
-        if (!c)
-            c = find_attached_child(n.obj, n.member->name);
+        struct object *c = object_named_child(n.obj, n.member);
         if (!c)
             return val_err("named child '%s' not present", n.member->name);
         return val_obj(c);
@@ -1890,13 +2100,9 @@ static value_t node_set_here(node_t n, value_t v) {
         value_free(&v);
         return val_err("'%s' is not a settable attribute", n.member ? n.member->name : "(object)");
     }
-    if (n.member->flags & VAL_RO) {
-        value_free(&v);
-        return val_err("'%s' is read-only", n.member->name);
-    }
     if (!n.member->attr.set) {
         value_free(&v);
-        return val_err("attribute '%s' has no setter", n.member->name);
+        return val_err("'%s' is read-only", n.member->name);
     }
     value_t err = node_validate_set(n.obj, n.member, &v);
     if (err.kind == V_ERROR) {

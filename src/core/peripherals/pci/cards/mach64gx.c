@@ -2769,28 +2769,23 @@ static mach64_t *node_card(struct object *self) {
     return (mach64_t *)object_data(self);
 }
 
-static value_t mon_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_id) {
     mach64_t *c = node_card(self);
     return val_str((c && c->mon) ? c->mon->id : "");
 }
-static value_t mon_attr_primary(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_primary) {
     mach64_t *c = node_card(self);
     return val_uint(1, (c && c->mon) ? c->mon->primary : 7);
 }
-static value_t mon_attr_sensed_primary(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_sensed_primary) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->sense_primary : 0);
 }
-static value_t mon_attr_sensed_ext(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_sensed_ext) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->sense_ext : 0);
 }
-static value_t mon_attr_probed(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_probed) {
     mach64_t *c = node_card(self);
     return val_bool(c && c->sense_seen);
 }
@@ -2799,70 +2794,55 @@ static const member_t monitor_members[] = {
     {.kind = M_ATTR,
      .name = "id",
      .doc = "Strapped monitor id (see catalog.profile for the card's list)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = mon_attr_id}                                     },
     {.kind = M_ATTR,
      .name = "sense_code",
      .doc = "The monitor's 3-bit primary sense code",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = mon_attr_primary}                                  },
     {.kind = M_ATTR,
      .name = "probed",
      .doc = "True once the guest has driven the monitor-ID pins",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = mon_attr_probed}                                   },
     {.kind = M_ATTR,
      .name = "sensed_primary",
      .doc = "The primary code the guest actually read back",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = mon_attr_sensed_primary}                           },
     {.kind = M_ATTR,
      .name = "sensed_extended",
      .doc = "The 6-bit extended code the guest's four-step walk assembled",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = mon_attr_sensed_ext}},
 };
 static const class_desc_t mach64_monitor_class = {
     .name = "monitor", .members = monitor_members, .n_members = sizeof(monitor_members) / sizeof(monitor_members[0])};
 
-static value_t regs_attr_chip_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(regs_attr_chip_id) {
     return val_uint(4, MACH64_CHIP_ID);
 }
-static value_t regs_attr_config_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_config_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_CONFIG_CNTL] : 0);
 }
-static value_t regs_attr_aperture(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_aperture) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? mach64_aperture_size(c) : 0);
 }
-static value_t regs_attr_vram(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_vram) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->vram_size : 0);
 }
-static value_t regs_attr_crtc_gen(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_crtc_gen) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_CRTC_GEN_CNTL] : 0);
 }
-static value_t regs_attr_mem_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_mem_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_MEM_CNTL] : 0);
 }
-static value_t regs_attr_dac_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_dac_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? mach64_reg_read(c, DW_DAC_CNTL) : 0);
 }
-static value_t regs_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_read) {
     mach64_t *c = node_card(self);
     int64_t dw = argv[0].i;
     if (!c || dw < 0 || dw >= MACH64_NUM_REGS)
@@ -2879,38 +2859,31 @@ static const member_t regs_members[] = {
     {.kind = M_ATTR,
      .name = "chip_id",
      .doc = "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_chip_id}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_chip_id}      },
     {.kind = M_ATTR,
      .name = "config_cntl",
      .doc = "CONFIG_CNTL (I/O only): aperture size, location and VGA disable",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl}  },
     {.kind = M_ATTR,
      .name = "aperture_size",
      .doc = "Bytes of BAR0 the aperture currently covers (0 = disabled)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = regs_attr_aperture}},
+     .attr = {.type = V_UINT, .get = regs_attr_aperture}                                    },
     {.kind = M_ATTR,
      .name = "vram_size",
      .doc = "Bytes of video memory on this card",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = regs_attr_vram}},
+     .attr = {.type = V_UINT, .get = regs_attr_vram}                                        },
     {.kind = M_ATTR,
      .name = "crtc_gen_cntl",
      .doc = "CRTC_GEN_CNTL: pixel width, extended-display and CRTC enables",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_crtc_gen}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_crtc_gen}     },
     {.kind = M_ATTR,
      .name = "mem_cntl",
      .doc = "MEM_CNTL: MEM_SIZE in bits 2:0",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_mem_cntl}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_mem_cntl}     },
     {.kind = M_ATTR,
      .name = "dac_cntl",
      .doc = "DAC_CNTL, monitor-ID pins read live in bits 26:24",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_dac_cntl}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_dac_cntl}     },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read any register by its DWORD offset",
@@ -2919,29 +2892,23 @@ static const member_t regs_members[] = {
 static const class_desc_t mach64_regs_class = {
     .name = "regs", .members = regs_members, .n_members = sizeof(regs_members) / sizeof(regs_members[0])};
 
-static value_t dac_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_index) {
     mach64_t *c = node_card(self);
     return val_uint(2, c ? c->dac_index : 0);
 }
-static value_t dac_attr_pixel_format(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_pixel_format) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_indexed[0x0A] : 0);
 }
-static value_t dac_attr_misc2(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_misc2) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_indexed[0x71] : 0);
 }
-static value_t dac_attr_pixel_mask(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_pixel_mask) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_pixel_mask : 0);
 }
-static value_t dac_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(dac_method_read) {
     mach64_t *c = node_card(self);
     int64_t idx = argv[0].i;
     if (!c || idx < 0 || idx >= (int64_t)sizeof(c->dac_indexed))
@@ -2957,23 +2924,19 @@ static const member_t dac_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .doc = "The RGB514's 16-bit indexed-register pointer",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_index}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_index}       },
     {.kind = M_ATTR,
      .name = "pixel_format",
      .doc = "Indexed $0A Pixel Format (3 = 8 bpp, 4 = 15/16, 5 = 24, 6 = 32)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dac_attr_pixel_format}},
+     .attr = {.type = V_UINT, .get = dac_attr_pixel_format}                               },
     {.kind = M_ATTR,
      .name = "misc_control_2",
      .doc = "Indexed $71: pixel-clock select, colour resolution, port select",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_misc2}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_misc2}       },
     {.kind = M_ATTR,
      .name = "pixel_mask",
      .doc = "The RS 010 pixel mask ($FF = no masking)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_pixel_mask}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_pixel_mask}  },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read an RGB514 indexed register",

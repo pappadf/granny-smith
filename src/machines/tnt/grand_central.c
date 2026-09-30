@@ -362,8 +362,7 @@ GC_U32_ATTR(levels, gc->int_levels)
 GC_U32_ATTR(mask, gc->int_mask)
 GC_U32_ATTR(latch, gc->int_latch)
 
-static value_t gc_attr_clear_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(gc_attr_clear_mode) {
     return val_uint(1, gc_obj(object_data(self))->int_mode1 ? 1u : 0u);
 }
 
@@ -372,27 +371,22 @@ static const member_t gc_members[] = {
                                         .kind = M_ATTR,
                                         .name = "events",
                                         .doc = "Edge-latched source rising edges (write-1-to-clear in mode 0)",
-                                        .flags = VAL_RO,
                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_events, .set = NULL}},
     {.kind = M_ATTR,
                                         .name = "source_levels",
                                         .doc = "Live source picture, never latched",
-                                        .flags = VAL_RO,
                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_levels, .set = NULL}},
     {.kind = M_ATTR,
                                         .name = "mask",
                                         .doc = "Per-source enables",
-                                        .flags = VAL_RO,
                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_mask, .set = NULL}                 },
     {.kind = M_ATTR,
                                         .name = "latch",
                                         .doc = "Mode-1 per-source output latch",
-                                        .flags = VAL_RO,
                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_latch, .set = NULL} },
     {.kind = M_ATTR,
                                         .name = "clear_mode",
                                         .doc = "0 = power-on ((events|levels) & mask); 1 = NanoKernel acknowledge (latch & mask)",
-                                        .flags = VAL_RO,
                                         .attr = {.type = V_UINT, .get = gc_attr_clear_mode, .set = NULL}                                          },
 };
 
@@ -416,9 +410,7 @@ static uint8_t *nvram_store(struct object *self) {
     return st ? st->gc.nvram : NULL;
 }
 
-static value_t nvram_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_peek) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -429,9 +421,7 @@ static value_t nvram_method_peek(struct object *self, const member_t *m, int arg
     return val_uint(1, nv[addr]);
 }
 
-static value_t nvram_method_poke(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_poke) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -449,9 +439,7 @@ static value_t nvram_method_poke(struct object *self, const member_t *m, int arg
     return val_none();
 }
 
-static value_t nvram_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_dump) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -463,10 +451,7 @@ static value_t nvram_method_dump(struct object *self, const member_t *m, int arg
     return val_bytes(nv + addr, (size_t)n);
 }
 
-static value_t nvram_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(nvram_method_snapshot) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -475,9 +460,7 @@ static value_t nvram_method_snapshot(struct object *self, const member_t *m, int
 
 // Whole-store restore from a snapshot: how a row seeds one boot's formatted
 // store into another.
-static value_t nvram_method_restore(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(nvram_method_restore) {
     uint8_t *nv = nvram_store(self);
     if (!nv)
         return val_err("nvram not available");
@@ -491,10 +474,7 @@ static value_t nvram_method_restore(struct object *self, const member_t *m, int 
 
 // `machine.nvram.clear()` — the battery pull, on every TNT board (the
 // Network Server's `machine.board.clear_nvram()` is the same call).
-static value_t nvram_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(nvram_method_clear) {
     config_t *cfg = (config_t *)object_data(self);
     if (!cfg || !tnt_st(cfg))
         return val_err("nvram not available");
@@ -502,9 +482,7 @@ static value_t nvram_method_clear(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
-static value_t nvram_attr_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(nvram_attr_size) {
     return val_uint(4, TNT_NVRAM_SIZE);
 }
 
@@ -527,24 +505,23 @@ static const member_t nvram_members[] = {
     {.kind = M_ATTR,
      .name = "size",
      .doc = "Store size in bytes (256 banks of 32)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}                                   },
     {.kind = M_METHOD,
      .name = "peek",
      .doc = "Read one byte at a flat offset (the Mac OS XPRAM image is at $1300 + PRAM address)",
-     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}},
+     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}      },
     {.kind = M_METHOD,
      .name = "poke",
      .doc = "Write 1..N bytes at a flat offset",
-     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}},
+     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}      },
     {.kind = M_METHOD,
      .name = "dump",
      .doc = "Read N bytes starting at a flat offset",
-     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}},
+     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}     },
     {.kind = M_METHOD,
      .name = "snapshot",
      .doc = "Read the whole 8 KB store",
-     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}},
+     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}            },
     {.kind = M_METHOD,
      .name = "restore",
      .doc = "Write the whole store from a snapshot",
@@ -552,7 +529,7 @@ static const member_t nvram_members[] = {
     {.kind = M_METHOD,
      .name = "clear",
      .doc = "Blank the store — what removing the board battery does (Open Firmware reformats it next boot)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}                },
 };
 
 static const class_desc_t nvram_class = {

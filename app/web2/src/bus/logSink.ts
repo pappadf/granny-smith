@@ -11,37 +11,17 @@
 //     log_set_sink.  Every formatted log line lands here regardless of
 //     per-category stdout=on/off; they feed the Logs view only.
 //
-// The console consumes the first two as ConsoleRecords (lib/consoleModel).
+// The console consumes the first two as ConsoleRecords (lib/consoleModel):
+// the app's console model exists from the start (state/console), so they
+// go straight into it, whether or not the Terminal has been opened.
 
 import { appendLog } from '@/state/logs.svelte';
+import { appConsole } from '@/state/console.svelte';
 import { parseLogLine } from '@/lib/logParse';
 import type { ConsoleRecord } from '@/lib/consoleModel';
 
-let consoleSink: ((r: ConsoleRecord) => void) | null = null;
-
-// Records sent while no console exists (before the Terminal tab is first
-// opened), replayed when one registers -- boot output and a script's
-// results used to be dropped.  Bounded: the oldest go first.
-const BACKLOG_MAX = 2000;
-let backlog: ConsoleRecord[] = [];
-
-// The console model registers itself when it is created (state/console);
-// null drops it (resetConsole).
-export function setConsoleSink(fn: ((r: ConsoleRecord) => void) | null): void {
-  consoleSink = fn;
-  if (fn && backlog.length) {
-    const records = backlog;
-    backlog = [];
-    for (const r of records) fn(r);
-  }
-}
-
 export function routeConsole(r: ConsoleRecord): void {
-  if (consoleSink) consoleSink(r);
-  else {
-    backlog.push(r);
-    if (backlog.length > BACKLOG_MAX) backlog.splice(0, backlog.length - BACKLOG_MAX);
-  }
+  appConsole.model.push(r);
 }
 
 // Module.print: a stdout line outside any job.

@@ -596,9 +596,6 @@ static struct object *g_aevt_events_object;
 static struct object *g_aevt_inbox_object;
 static struct object *g_aevt_stats_object;
 
-OBJECT_POOL(g_aevt_event_pool, AEVT_MAX_EVENTS);
-OBJECT_POOL(g_aevt_inbox_pool, AEVT_MAX_INBOX);
-
 static const class_desc_t aevt_class;
 static const class_desc_t aevt_events_class;
 static const class_desc_t aevt_event_class;
@@ -606,8 +603,12 @@ static const class_desc_t aevt_inbox_class;
 static const class_desc_t aevt_inbox_entry_class;
 static const class_desc_t aevt_stats_class;
 
+// The collection entry objects, made on first use.
+static object_cache_t g_aevt_event_entries = OBJECT_CACHE(&aevt_event_class, NULL);
+static object_cache_t g_aevt_inbox_entries = OBJECT_CACHE(&aevt_inbox_entry_class, NULL);
+
 static int aevt_obj_slot(struct object *self) {
-    return object_pool_slot(self);
+    return object_entry_index(self);
 }
 
 static aevt_event_t *aevt_obj_event(struct object *self) {
@@ -619,65 +620,54 @@ static aevt_event_t *aevt_obj_event(struct object *self) {
 
 // --- appletalk.aevt.events[i] ------------------------------------------------
 
-static value_t aevt_event_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_state) {
     aevt_event_t *ev = aevt_obj_event(self);
     int st = ev ? (int)aevt_effective_state(ev) : 0;
     return val_enum(st, AEVT_STATE_NAMES, AEVT_STATE_COUNT);
 }
-static value_t aevt_event_attr_target(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_target) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->target : "");
 }
-static value_t aevt_event_attr_tag(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_tag) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->tag : "");
 }
-static value_t aevt_event_attr_text(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_text) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev && ev->text ? ev->text : "");
 }
-static value_t aevt_event_attr_class(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_class) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->class4 : "");
 }
-static value_t aevt_event_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_id) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_str(ev ? ev->id4 : "");
 }
-static value_t aevt_event_attr_reply(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_reply) {
     aevt_event_t *ev = aevt_obj_event(self);
     if (!ev || ev->reply.kind != V_MAP)
         return val_map(NULL, 0);
     return value_dup(&ev->reply);
 }
-static value_t aevt_event_attr_request(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_request) {
     aevt_event_t *ev = aevt_obj_event(self);
     if (!ev || ev->request.kind != V_MAP)
         return val_map(NULL, 0);
     return value_dup(&ev->request);
 }
-static value_t aevt_event_attr_errn(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_errn) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_int(ev ? ev->errn : 0);
 }
-static value_t aevt_event_attr_error(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_error) {
     aevt_event_t *ev = aevt_obj_event(self);
     if (ev)
         aevt_effective_state(ev); // a lazy timeout produces the message
     return val_str(ev && ev->error ? ev->error : "");
 }
-static value_t aevt_event_attr_return_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_event_attr_return_id) {
     aevt_event_t *ev = aevt_obj_event(self);
     return val_uint(4, ev ? ev->return_id : 0);
 }
@@ -686,58 +676,41 @@ static const member_t aevt_event_members[] = {
     {.kind = M_ATTR,
      .name = "state",
      .doc = "queued, sent, replied, error or timeout",
-     .flags = VAL_RO,
-     .attr = {.type = V_ENUM, .enum_values = AEVT_STATE_NAMES, .get = aevt_event_attr_state}},
+     .attr = {.type = V_ENUM, .enum_values = AEVT_STATE_NAMES, .get = aevt_event_attr_state}                                },
     {.kind = M_ATTR,
      .name = "target",
      .doc = "The program-linking port this event was addressed to",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_event_attr_target}                              },
+     .attr = {.type = V_STRING, .get = aevt_event_attr_target}                                                              },
     {.kind = M_ATTR,
      .name = "tag",
      .doc = "Lookup key given at send time, if any",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_event_attr_tag}                                 },
-    {.kind = M_ATTR,
-     .name = "class",
-     .doc = "Event class",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_event_attr_class}                               },
-    {.kind = M_ATTR,
-     .name = "id",
-     .doc = "Event ID",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_event_attr_id}                                  },
+     .attr = {.type = V_STRING, .get = aevt_event_attr_tag}                                                                 },
+    {.kind = M_ATTR, .name = "class", .doc = "Event class",         .attr = {.type = V_STRING, .get = aevt_event_attr_class}},
+    {.kind = M_ATTR, .name = "id",    .doc = "Event ID",            .attr = {.type = V_STRING, .get = aevt_event_attr_id}   },
     {.kind = M_ATTR,
      .name = "text",
      .doc = "The request in text form",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_event_attr_text}                                },
+     .attr = {.type = V_STRING, .get = aevt_event_attr_text}                                                                },
     {.kind = M_ATTR,
      .name = "request",
      .doc = "The request as a map",
-     .flags = VAL_RO,
-     .attr = {.type = V_MAP, .get = aevt_event_attr_request}                                },
+     .attr = {.type = V_MAP, .get = aevt_event_attr_request}                                                                },
     {.kind = M_ATTR,
      .name = "reply",
      .doc = "The reply as a map; empty until one arrives",
-     .flags = VAL_RO,
-     .attr = {.type = V_MAP, .get = aevt_event_attr_reply}                                  },
+     .attr = {.type = V_MAP, .get = aevt_event_attr_reply}                                                                  },
     {.kind = M_ATTR,
      .name = "errn",
      .doc = "keyErrorNumber from the reply; 0 means success",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = aevt_event_attr_errn}                                   },
+     .attr = {.type = V_INT, .get = aevt_event_attr_errn}                                                                   },
     {.kind = M_ATTR,
      .name = "error",
      .doc = "Why the event failed, when it did",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_event_attr_error}                               },
+     .attr = {.type = V_STRING, .get = aevt_event_attr_error}                                                               },
     {.kind = M_ATTR,
      .name = "return_id",
      .doc = "The return ID that correlates the reply",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = aevt_event_attr_return_id}                 },
+     .attr = {.type = V_UINT, .width = 4, .get = aevt_event_attr_return_id}                                                 },
 };
 
 static const class_desc_t aevt_event_class = {
@@ -752,25 +725,25 @@ static struct object *aevt_events_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_event_count || !g_events[index].in_use)
         return NULL;
-    return object_pool_at(&g_aevt_event_pool, index);
+    return object_cache_at(&g_aevt_event_entries, index, NULL);
 }
 // Name lookup resolves the `tag:` given at send time (§8).
 static struct object *aevt_events_lookup(struct object *self, const char *name) {
     (void)self;
     for (int i = 0; i < g_event_count; i++)
         if (g_events[i].in_use && g_events[i].tag[0] && !strcmp(g_events[i].tag, name))
-            return object_pool_at(&g_aevt_event_pool, i);
+            return object_cache_at(&g_aevt_event_entries, i, NULL);
     return NULL;
 }
 
+static const collection_desc_t aevt_events_entries = {
+    .entry = &aevt_event_class,
+    .by_index = {.get = aevt_events_get, .slots = AEVT_MAX_EVENTS},
+    .by_key = {.lookup = aevt_events_lookup}
+};
+
 static const member_t aevt_events_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &aevt_event_class,
-               .indexed = true,
-               .get = aevt_events_get,
-               .slots = AEVT_MAX_EVENTS,
-               .lookup = aevt_events_lookup}},
+    OBJ_ENTRIES(&aevt_events_entries, NULL),
 };
 
 static const class_desc_t aevt_events_class = {
@@ -789,35 +762,29 @@ static aevt_inbox_t *aevt_obj_inbox(struct object *self) {
     return &g_inbox[slot];
 }
 
-static value_t aevt_inbox_attr_sender(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_sender) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in ? in->sender : "");
 }
-static value_t aevt_inbox_attr_class(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_class) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in ? in->class4 : "");
 }
-static value_t aevt_inbox_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_id) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in ? in->id4 : "");
 }
-static value_t aevt_inbox_attr_event(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_event) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     if (!in || in->map.kind != V_MAP)
         return val_map(NULL, 0);
     return value_dup(&in->map);
 }
-static value_t aevt_inbox_attr_text(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_text) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     return val_str(in && in->text ? in->text : "");
 }
-static value_t aevt_inbox_attr_error(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(aevt_inbox_attr_error) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     if (in && val_is_error(&in->map))
         return val_str(val_as_str(&in->map));
@@ -828,33 +795,21 @@ static const member_t aevt_inbox_entry_members[] = {
     {.kind = M_ATTR,
      .name = "sender",
      .doc = "The port the event came from",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_sender}},
-    {.kind = M_ATTR,
-     .name = "class",
-     .doc = "Event class",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_class} },
-    {.kind = M_ATTR,
-     .name = "id",
-     .doc = "Event ID",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_id}    },
+     .attr = {.type = V_STRING, .get = aevt_inbox_attr_sender}                                                             },
+    {.kind = M_ATTR, .name = "class", .doc = "Event class",        .attr = {.type = V_STRING, .get = aevt_inbox_attr_class}},
+    {.kind = M_ATTR, .name = "id",    .doc = "Event ID",           .attr = {.type = V_STRING, .get = aevt_inbox_attr_id}   },
     {.kind = M_ATTR,
      .name = "event",
      .doc = "The decoded event as a map",
-     .flags = VAL_RO,
-     .attr = {.type = V_MAP, .get = aevt_inbox_attr_event}    },
+     .attr = {.type = V_MAP, .get = aevt_inbox_attr_event}                                                                 },
     {.kind = M_ATTR,
      .name = "text",
      .doc = "The event in text form",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_text}  },
+     .attr = {.type = V_STRING, .get = aevt_inbox_attr_text}                                                               },
     {.kind = M_ATTR,
      .name = "error",
      .doc = "Why the event could not be decoded, if it could not",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = aevt_inbox_attr_error} },
+     .attr = {.type = V_STRING, .get = aevt_inbox_attr_error}                                                              },
 };
 
 static const class_desc_t aevt_inbox_entry_class = {
@@ -867,17 +822,17 @@ static struct object *aevt_inbox_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_inbox_count || !g_inbox[index].in_use)
         return NULL;
-    return object_pool_at(&g_aevt_inbox_pool, index);
+    return object_cache_at(&g_aevt_inbox_entries, index, NULL);
 }
 
-static value_t aevt_inbox_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(aevt_inbox_method_clear) {
     aevt_inbox_clear();
     return val_none();
 }
+
+static const collection_desc_t aevt_inbox_entries = {
+    .entry = &aevt_inbox_entry_class, .by_index = {.get = aevt_inbox_get, .slots = AEVT_MAX_INBOX}
+};
 
 static const member_t aevt_inbox_members[] = {
     {.kind = M_METHOD,
@@ -888,9 +843,7 @@ static const member_t aevt_inbox_members[] = {
                 .result = V_NONE,
                 .fn = aevt_inbox_method_clear,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &aevt_inbox_entry_class, .indexed = true, .get = aevt_inbox_get, .slots = AEVT_MAX_INBOX}},
+    OBJ_ENTRIES(&aevt_inbox_entries, NULL),
 };
 
 static const class_desc_t aevt_inbox_class = {
@@ -921,28 +874,20 @@ static const class_desc_t aevt_stats_class = {
 
 // --- appletalk.aevt ----------------------------------------------------------
 
-static value_t aevt_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(aevt_attr_enabled) {
     return val_bool(g_enabled);
 }
-static value_t aevt_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(aevt_attr_set_enabled) {
     char err[192] = "";
     if (atalk_ppc_set_host_port(g_port_name, in.b, err, sizeof(err)) != 0)
         return val_err("cannot change the host program-linking port: %s", err);
     g_enabled = in.b;
     return val_none();
 }
-static value_t aevt_attr_port_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(aevt_attr_port_name) {
     return val_str(g_port_name);
 }
-static value_t aevt_attr_set_port_name(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(aevt_attr_set_port_name) {
     char err[192] = "";
     if (atalk_ppc_set_host_port(in.s, g_enabled, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -952,14 +897,10 @@ static value_t aevt_attr_set_port_name(struct object *self, const member_t *m, v
     value_free(&in);
     return val_none();
 }
-static value_t aevt_attr_auto_reply(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(aevt_attr_auto_reply) {
     return val_str(g_auto_reply);
 }
-static value_t aevt_attr_set_auto_reply(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(aevt_attr_set_auto_reply) {
     const char *text = in.s ? in.s : "";
     if (text[0]) {
         // Reject a template that does not parse now rather than at delivery.
@@ -980,15 +921,12 @@ static value_t aevt_attr_set_auto_reply(struct object *self, const member_t *m, 
 // Shared tail of send and send_raw: register the event and start it.
 static value_t aevt_finish_send(aevt_event_t *ev) {
     aevt_begin(ev);
-    if (ev->slot < AEVT_MAX_EVENTS && object_pool_at(&g_aevt_event_pool, ev->slot))
-        return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
+    if (ev->slot < AEVT_MAX_EVENTS && object_cache_at(&g_aevt_event_entries, ev->slot, NULL))
+        return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
     return val_none();
 }
 
-static value_t aevt_method_send(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(aevt_method_send) {
     const char *target = val_as_str(&argv[0]);
     const char *text = val_as_str(&argv[1]);
     if (!target || !*target)
@@ -1044,10 +982,7 @@ static value_t aevt_method_send(struct object *self, const member_t *m, int argc
     return aevt_finish_send(ev);
 }
 
-static value_t aevt_method_send_raw(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(aevt_method_send_raw) {
     const char *target = val_as_str(&argv[0]);
     if (!target || !*target)
         return val_err("no target port was named");
@@ -1084,7 +1019,7 @@ static value_t aevt_method_send_raw(struct object *self, const member_t *m, int 
     ppc_session_t *s = aevt_session_for(ev->target, err, sizeof(err));
     if (!s) {
         aevt_fail(ev, err);
-        return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
+        return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
     }
     ev->session = s;
     if (atalk_ppc_session_state(s) == PPC_SESSION_OPEN) {
@@ -1099,14 +1034,10 @@ static value_t aevt_method_send_raw(struct object *self, const member_t *m, int 
     } else {
         aevt_fail(ev, "no session to that port is open yet; browse and retry");
     }
-    return val_obj(object_pool_at(&g_aevt_event_pool, ev->slot));
+    return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
 }
 
-// Interior optional slots need defaults, or the named-argument binder's
-// V_NONE holes are reported as missing arguments when a later slot is named
-// (the same trap debug.logpoints.add documents).
 static const value_t aevt_def_timeout = {.kind = V_UINT, .width = 8, .u = AEVT_DEFAULT_TIMEOUT_INSTR};
-static const value_t aevt_def_tag = {.kind = V_STRING, .s = (char *)""};
 static const value_t aevt_def_mode = {.kind = V_STRING, .s = (char *)"wait"};
 
 static const arg_decl_t aevt_send_args[] = {
@@ -1127,7 +1058,6 @@ static const arg_decl_t aevt_send_args[] = {
     {.name = "tag",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &aevt_def_tag,
      .doc = "Lookup key, so events[\"name\"] finds this event"},
     {.name = "mode",
      .kind = V_STRING,
@@ -1206,16 +1136,13 @@ void atalk_aevt_install_objects(struct object *parent) {
         object_attach(g_aevt_object, g_aevt_stats_object);
     }
 
-    object_pool_create(&g_aevt_event_pool, &aevt_event_class);
-
-    object_pool_set_parent(&g_aevt_event_pool, g_aevt_events_object);
-    object_pool_create(&g_aevt_inbox_pool, &aevt_inbox_entry_class);
-    object_pool_set_parent(&g_aevt_inbox_pool, g_aevt_inbox_object);
+    object_cache_set_parent(&g_aevt_event_entries, g_aevt_events_object);
+    object_cache_set_parent(&g_aevt_inbox_entries, g_aevt_inbox_object);
 }
 
 void atalk_aevt_remove_objects(void) {
-    object_pool_delete(&g_aevt_event_pool);
-    object_pool_delete(&g_aevt_inbox_pool);
+    object_cache_clear(&g_aevt_event_entries);
+    object_cache_clear(&g_aevt_inbox_entries);
     struct object **nodes[] = {&g_aevt_events_object, &g_aevt_inbox_object, &g_aevt_stats_object, &g_aevt_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

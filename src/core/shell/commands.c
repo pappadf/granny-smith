@@ -253,20 +253,14 @@ void shell_command_clear_user(void) {
 
 // === shell.command ============================================================
 
-static value_t method_command_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_command_add) {
     char err[200];
     if (shell_command_define(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
         return val_err("command: %s", err);
     return val_none();
 }
 
-static value_t method_command_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_command_remove) {
     char err[200];
     if (shell_command_remove(argv[0].s, err, sizeof(err)) < 0)
         return val_err("command: %s", err);
@@ -291,11 +285,7 @@ static bool list_collect(const char *name, const char *target, bool builtin, voi
     return val_list_push(&acc->items, &acc->len, &acc->cap, val_map_finish(b));
 }
 
-static value_t method_command_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_command_list) {
     list_acc_t acc = {0};
     shell_command_each(list_collect, &acc);
     return val_list(acc.items, acc.len);
@@ -312,17 +302,17 @@ static const arg_decl_t command_remove_args[] = {
 static const member_t shell_command_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .examples = (const char *const[]){"shell.command.add ll files.list", NULL},
+     .examples = EXAMPLES("shell.command.add ll files.list"),
      .doc = "Declare a user command (the same as `command NAME = PATH`)",
      .method = {.args = command_add_args, .nargs = 2, .result = V_NONE, .fn = method_command_add}      },
     {.kind = M_METHOD,
      .name = "remove",
-     .examples = (const char *const[]){"shell.command.remove ll", NULL},
+     .examples = EXAMPLES("shell.command.remove ll"),
      .doc = "Remove a user command",
      .method = {.args = command_remove_args, .nargs = 1, .result = V_NONE, .fn = method_command_remove}},
     {.kind = M_METHOD,
      .name = "list",
-     .examples = (const char *const[]){"shell.command.list", NULL},
+     .examples = EXAMPLES("shell.command.list"),
      .doc = "Every command, built-ins first",
      .method = {.result_doc = "[{name, target, doc, builtin, available}]; available: the target is a method "
                               "right now",

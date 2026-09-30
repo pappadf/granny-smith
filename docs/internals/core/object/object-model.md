@@ -45,6 +45,8 @@ the same errors. There is no shadow API.
 | [alias.h](../../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
 | [api.h](../../../../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
 | [meta.h](../../../../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
+| [usage.h](../../../../src/core/object/usage.h) | Usage text for any path (`help`, `shell.usage`) |
+| [lint.h](../../../../src/core/object/lint.h) | The member-doc lint behind `shell.lint_members` |
 | [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.interrupt`, `shell.prompt`/`running`/`vars`; aliases live on its `shell.alias` child: `add`/`remove`/`list`) |
 | [root.c](../../../../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
 
@@ -56,7 +58,7 @@ Every value crossing an object-model boundary is a `value_t` — a tagged
 union with a discriminator (`V_NONE` / `V_BOOL` / `V_INT` / `V_UINT` /
 `V_FLOAT` / `V_STRING` / `V_BYTES` / `V_ENUM` / `V_LIST` / `V_MAP` /
 `V_OBJECT` / `V_ERROR`), a width hint for fixed-size integers, and display
-flags (`VAL_HEX`, `VAL_RO`, `VAL_VOLATILE`, `VAL_SENSITIVE`, …). Errors are
+flags (`VAL_HEX`, `VAL_VOLATILE`, `VAL_SENSITIVE`, `VAL_PATH`, …). Errors are
 in-band: a `value_t` of kind `V_ERROR` carries a string message rather
 than relying on a separate return channel or out-pointer.
 
@@ -103,9 +105,10 @@ table. Each `member_t` is one of three kinds:
   `width` (1/2/4/8 for sized integers), optional `enum_values` table,
   and slot flags (`OBJ_ARG_NONEMPTY`, `OBJ_ARG_STRICT_KIND`). Setters
   whose input fails those constraints are short-circuited by the
-  framework with a uniform error before the body runs. Attributes
-  that lack a setter or carry the `VAL_RO` flag reject `node_set`
-  cleanly. Each member has a per-member `user_data` pointer so
+  framework with a uniform error before the body runs. An attribute
+  is read-only exactly when it has no setter (`member_is_readonly`);
+  `node_set` rejects it cleanly. A member's `flags` hold only its
+  visibility category (`M_CAT_*`). Each member has a per-member `user_data` pointer so
   dispatchers shared across many attributes (the 471-entry
   `mac.globals` is one such case) recover their context from the
   member descriptor instead of via lookup tables.
@@ -129,22 +132,22 @@ table. Each `member_t` is one of three kinds:
   state of its own — `machine.adb` — can stay a singleton.
 - **`M_METHOD`** — a callable taking declared `arg_decl_t` parameters
   and returning a `value_t`. Each parameter declares its kind,
-  optional `width`, optional `enum_values`, optional `default_value`,
-  a doc string, and per-slot flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
+  optional `width`, optional `enum_values`, optional `default_value`
+  (or, for a default that is computed, a `default_doc`), a doc string,
+  and per-slot flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
   `OBJ_ARG_NONEMPTY`, `OBJ_ARG_STRICT_KIND`). The framework validates
   argv against this declaration before invoking the body (see
   *Typed dispatch validation* below) and the completer reads the
   same metadata for argument-position suggestions.
 - **`M_CHILD`** — a child object. Children are either *named* (a fixed
-  name with its own class) or *indexed* (a sparse, stable-id
-  collection: `child.get(i)` answers each index in `[0, child.slots)`,
-  NULL for a hole, and the framework walks them; a collection whose ids
-  are sparse past any fixed bound gives a `child.next` iterator instead,
-  as the debugger's breakpoints do). Indexed children are how
-  `debug.breakpoints[7]` and `machine.floppy.drive[0]` work without the
-  framework needing to know a collection's storage shape. A class whose
-  one indexed child is its collection answers `count` with the live
-  entries, unless it declares a `count` of its own.
+  name with its own class, attached or handed out by `lookup`) or a
+  *collection's entries* (`child.collection`, see below). Collections are
+  how `debug.breakpoints[7]` and `machine.floppy.drive[0]` work without
+  the framework needing to know a collection's storage shape.
+
+Callback bodies are written with `DEF_GETTER(name)`, `DEF_SETTER(name)`
+and `DEF_METHOD(name)`, which spell the three signatures with the
+parameters a body may leave unused marked so.
 
 Member tables are static `const`. The framework walks them linearly
 for resolution, completion, and help; no string lookup tables are
@@ -153,26 +156,46 @@ maintained at runtime.
 ### Collections and entries
 
 Every collection has one shape: a **container node** (`machine.floppy.drive`,
-`debug.breakpoints`, `files.mounts`, `log.category`) whose class declares
-one child member named `entries` with `child.indexed = true`. An *indexed*
-collection sets `get` (or `next`); a *keyed* collection sets `lookup` and
-`keys` (`child_keys_fn`, the live key set) with `get = next = NULL`. A
-collection may be both (`appletalk.afp.volumes`). Collection verbs (`add`,
-`clear`, `find`) live on the container. Paths address entries as
-`drive[0]`, `slot[9]` or `category["scsi"]`; keys of keyed collections are
-short identifiers, `[A-Za-z0-9_.-]{1,63}` (`object_valid_key`).
+`debug.breakpoints`, `files.mounts`, `log.category`) whose class has one
+member naming a **collection descriptor**, `collection_desc_t`
+(`OBJ_ENTRIES(&desc, doc)`, the member called `entries`). The descriptor
+says how entries are handed out: its `entry` class, and `by_index`
+(`get(i)` for each index in `[0, slots)`, NULL for a hole, or `next(prev)`
+for ids with no fixed bound) and/or `by_key` (`lookup(key)` and a
+`next_key(prev)` iterator over the live keys). Indices are sparse and
+stable: a new entry takes max-index-ever + 1 and removed ids are never
+reused. A collection may be both (`appletalk.afp.volumes`). A class has at
+most one collection member, and that member is what makes a node a
+container (`class_collection`): meta, lint, completion and `count` read the
+descriptor, never member names. A container answers `count` with its live
+entries unless it declares a `count` of its own. Collection verbs (`add`,
+`clear`, `find`) live on the container; a container with nothing but its
+entries (and perhaps a verb or two) is built from the descriptor alone by
+`object_collection_new`, which reads its `name`, `doc`, `entries_doc` and
+`verbs`. Paths address entries as `drive[0]`, `slot[9]` or
+`category["scsi"]`; keys are short identifiers, `[A-Za-z0-9_.-]{1,63}`
+(`object_valid_key`).
 
 Entries, and lookup-backed named children such as `drive[n].disk` and
 `device[n].image`, are handed out by callbacks and never attached, so they
-have no parent of their own. Their creator registers a **logical parent**
-with `object_set_logical_parent(obj, parent, name, index, key)`: a
+have no parent of their own. They get a **logical parent**
+(`object_set_logical_parent(obj, parent, name, index, key)`): a
 non-owning back-link (never cascade-deleted, cleared if the parent is freed
 first) that gives the entry its path — `<parent>.<name>`, `<parent>[<index>]`
 or `<parent>["<key>"]` — as `meta.path` and the bridge report it. The
 resolver adopts any callback-backed child that was not registered the first
-time it hands one out, so a missed registration costs nothing but the path
-before first use. Reference children (`child.reference`, e.g. `screen.source`)
-get no logical parent.
+time it hands one out (`object_entry_at`, `object_entry_by_key`,
+`object_named_child`), so a missed registration costs nothing but the path
+before first use. Reference children (`child.reference`, e.g.
+`screen.source`) get no logical parent.
+
+A module whose entries are objects of their own keeps them in an **entry
+cache**, `object_cache_t`: entries made on first use by index
+(`object_cache_at`) or key (`object_cache_key`), each linked to the
+container whenever it is set (`object_cache_set_parent`, before or after),
+each knowing its index (`object_entry_index`); `object_cache_sweep` frees
+the entries whose record is gone and `object_cache_clear` frees the rest
+with any attached subtree.
 
 ### The root
 
@@ -209,18 +232,26 @@ rest, default), `result` type and, when declared, `result_doc` and
 `examples`; for a child `collection` (and a container's live `indices` /
 `keys`) and, at the root, `domain`.
 
-`shell.lint_members()` (internal) walks the live tree and reports every
-documentation gap — an undocumented argument or basic-tier node, an untyped
-argument without `OBJ_ARG_POLY`, a `V_ANY` result without `result_doc`, an
-enum without its values, a default mentioned but not declared, and an
-example with a path that does not resolve (checked with `shell.highlight`) — and
-`tests/integration/member-docs` fails on any gap not in its allow-list,
-which may only shrink (it is empty).
+`shell.lint_members()` (internal) walks the live tree (`object_walk`, the
+one walk that hands out every object once with its canonical path) and
+reports every documentation gap: per class, once, the members' own gaps
+(`object_member_doc_gaps`, beside `object_validate_class`: an undocumented
+basic-tier argument, an untyped argument without `OBJ_ARG_POLY`, a `V_ANY`
+result without `result_doc`) and an example with a path that does not
+resolve (checked with `shell.highlight`); per node, a node shown in the
+basic tier with no doc. What a declaration gets outright wrong (an enum
+without its values) the class validator refuses. `tests/integration/member-docs`
+fails on any gap not in its allow-list, which may only shrink (it is empty).
 
 A doc says what a member is; the usage text says how to call it.  So an
 argument's default is declared (`default_value`, which usage prints as
 `(default …)`) rather than written into its doc; a default that is computed
-is written as `omitted: …`; and invocation forms go in `examples`.
+is declared as `default_doc` (shown after the doc as `; omitted: …`); and
+invocation forms go in `examples` (`EXAMPLES("…", "…")`). A string argument
+that names a VFS path is `ARG_PATH(name, doc)`. `arg_has_default` (a value
+other than none or the empty string), `member_is_readonly`,
+`member_is_basic` and `member_is_listed` are the one reading of those
+questions for meta, usage and lint.
 
 `machine` is the instance; `catalog` is the catalogue. `machine.nubus` and
 `machine.pci` are attached only on a machine with that bus. The root's own
@@ -383,7 +414,13 @@ arrived from.
 - **`V_OBJECT` non-NULL.** `V_OBJECT` slots reject `argv[i].obj == NULL`.
 - **Default fill.** Optional parameters that declare a `default_value`
   are synthesised into the rewritten argv when the caller omits them,
-  so the body reads `argv[N]` without an `argc` check.
+  so the body reads `argv[N]` without an `argc` check. An optional
+  parameter with no default that the caller skips — at the tail, or as a
+  hole before a later named argument — reaches the body as `none`
+  (`V_NONE`); every declared slot is readable, and `argc` counts through
+  the last slot that was given or defaulted. A slot flagged
+  `OBJ_ARG_GROUPED` belongs to an all-or-nothing group the body checks by
+  count, and may not be skipped alone.
 
 ### Coercion policy
 
@@ -451,10 +488,14 @@ call. Hard errors abort startup in every build configuration:
 - More than one `OBJ_ARG_REST` slot, or `OBJ_ARG_REST` not on the
   last slot, or `OBJ_ARG_REST` combined with `OBJ_ARG_OPTIONAL`.
 - `default_value` set on a non-optional parameter, or whose kind
-  doesn't match the slot.
+  doesn't match the slot; `default_value` and `default_doc` together.
 - `V_ENUM` slot with no `enum_values` table.
 - Arg-only flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
   `default_value`) set on an attribute slot.
+- Member `flags` outside the visibility category bits.
+- More than one collection member in a class, or a collection that hands
+  out no entries (`by_index.get` or `by_key.lookup`), or a `next` /
+  `next_key` without its `get` / `lookup`.
 
 This turns class-author mistakes into first-boot failures rather
 than first-call surprises.
@@ -565,7 +606,13 @@ Objects in the tree fall into two camps:
   where the object node is allocated and attached to the root, and
   where any built-in aliases the subsystem owns get registered.
 
-The cfg-scoped install path (`root_install`) is idempotent for the
+The cfg-scoped install path (`root_install`) attaches the shell namespace,
+then runs every subsystem's **install hook**: a subsystem registers
+`root_register_install(install, uninstall)` once (storage from
+`files_init`, NuBus and PCI from their object build) and its install
+attaches its own nodes with `root_attach_stub` — `files.images`,
+`machine.nubus`, `machine.pci` — so the object layer includes no
+subsystem header. It is idempotent for the
 same `cfg` and atomic across cfg changes: a checkpoint reload that
 calls `system_create(new)` followed by `system_destroy(old)` does the
 right thing because the install path detaches stubs from the previous
@@ -757,9 +804,11 @@ singleton or cfg-scoped:
    discrimination on `V_ANY` / `V_NONE`-kind slots.
 3. **Attach the object** at the right lifecycle point — for cfg-scoped
    classes, do it inside the existing `*_init` (next to the
-   `cfg->foo = foo_init(...)` call); for process-singletons, add a
-   small `foo_class_register` / `foo_class_unregister` pair and call
-   `foo_class_register` from `shell_init`.
+   `cfg->foo = foo_init(...)` call), or register a root install hook
+   (`root_register_install`) when the node belongs under a root stub;
+   for process-singletons, add a small `foo_class_register` and call it
+   from `shell_init`. A collection is a `collection_desc_t` plus, when
+   its entries are objects of their own, an `object_cache_t`.
 4. **Register any built-in aliases** the class wants to expose
    (`alias_register_builtin`); idempotent, so safe under repeated
    inits.

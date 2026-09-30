@@ -38,18 +38,11 @@ vi.mock('@/bus/emulator', () => ({
   gsEvalLine: async (line: string) => {
     runs.push(line);
     if (blockRuns) await new Promise<void>((r) => (release = r));
-    return 0;
   },
 }));
 
 import ConsoleView from '@/components/panel-views/terminal/ConsoleView.svelte';
-import {
-  consoleModel,
-  consoleSubmit,
-  consoleInterrupt,
-  consoleState,
-  resetConsole,
-} from '@/state/console.svelte';
+import { createConsole, type Console } from '@/state/console.svelte';
 import {
   registerBrowserReveal,
   writeToConsole,
@@ -59,10 +52,13 @@ import { layout } from '@/state/layout.svelte';
 import { systemView } from '@/state/system.svelte';
 
 let clip: string[];
+// Each test's own console.
+let con: Console;
+const view = () => render(ConsoleView, { props: { console: con } });
 
 beforeEach(() => {
   completion = null;
-  resetConsole();
+  con = createConsole();
   runs.length = 0;
   blockRuns = false;
   release = null;
@@ -77,13 +73,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  con.dispose();
   closeContextMenu();
   registerBrowserReveal(null);
 });
 
 // Feed one job's records, as the bus would.
-function job(id: number, records: Array<Parameters<ReturnType<typeof consoleModel>['push']>[0]>) {
-  const m = consoleModel();
+function job(id: number, records: Array<Parameters<Console['model']['push']>[0]>) {
+  const m = con.model;
   m.push({ kind: 'job_start', job: id });
   for (const r of records) m.push(r);
   m.push({ kind: 'job_end', job: id });
@@ -97,8 +94,8 @@ const entries = (c: HTMLElement) =>
 
 describe('ConsoleView', () => {
   it('renders entries by kind', async () => {
-    const { container } = render(ConsoleView);
-    const m = consoleModel();
+    const { container } = view();
+    const m = con.model;
     m.command('echo hi');
     job(1, [{ kind: 'output', job: 1, text: 'hi\n' }]);
     m.push({ kind: 'stderr', line: 'warn' });
@@ -118,7 +115,7 @@ describe('ConsoleView', () => {
   it('an object value links to its node in the browser', async () => {
     const reveal = vi.fn();
     registerBrowserReveal(reveal);
-    const { container } = render(ConsoleView);
+    const { container } = view();
     job(3, [
       { kind: 'value_begin', job: 3 },
       { kind: 'output', job: 3, text: '<object>\n' },
@@ -139,7 +136,7 @@ describe('ConsoleView', () => {
   });
 
   it('a map value expands to its keys', async () => {
-    const { container } = render(ConsoleView);
+    const { container } = view();
     job(4, [
       { kind: 'value_begin', job: 4 },
       { kind: 'output', job: 4, text: '{"a":1,"b":[2,3]}\n' },
@@ -158,8 +155,8 @@ describe('ConsoleView', () => {
   });
 
   it('Copy as commands copies the clicked command; Copy output its job', async () => {
-    const { container } = render(ConsoleView);
-    const m = consoleModel();
+    const { container } = view();
+    const m = con.model;
     m.command('let a = 1');
     job(5, [{ kind: 'output', job: 5, text: 'one\ntwo\n' }]);
     const cmd = await waitFor(() => {
@@ -181,8 +178,8 @@ describe('ConsoleView', () => {
   });
 
   it('Ctrl+F finds and marks matches', async () => {
-    const { container } = render(ConsoleView);
-    const m = consoleModel();
+    const { container } = view();
+    const m = con.model;
     m.push({ kind: 'print', line: 'alpha beta' });
     m.push({ kind: 'print', line: 'gamma' });
     m.push({ kind: 'print', line: 'Beta again' });
@@ -206,12 +203,12 @@ describe('ConsoleView', () => {
   });
 
   it('runs submitted lines one at a time, in order, each after its command entry', async () => {
-    const { container } = render(ConsoleView);
+    const { container } = view();
     blockRuns = true;
-    consoleSubmit('echo one');
-    consoleSubmit('echo two');
+    con.submit('echo one');
+    con.submit('echo two');
     await waitFor(() => expect(runs).toEqual(['echo one']));
-    expect(consoleState.queued).toBe(1);
+    expect(con.state.queued).toBe(1);
     expect(container.querySelector('.console')?.classList.contains('busy')).toBe(true);
     release?.();
     await waitFor(() => expect(runs).toEqual(['echo one', 'echo two']));
@@ -225,12 +222,12 @@ describe('ConsoleView', () => {
   });
 
   it('Ctrl+C drops the type-ahead and says when there is nothing to interrupt', async () => {
-    const { container } = render(ConsoleView);
+    const { container } = view();
     blockRuns = true;
-    consoleSubmit('echo one');
-    consoleSubmit('echo two');
+    con.submit('echo one');
+    con.submit('echo two');
     await waitFor(() => expect(runs).toEqual(['echo one']));
-    await consoleInterrupt();
+    await con.interrupt();
     release?.();
     await waitFor(() =>
       expect(entries(container).map((e) => e[1])).toContain(
@@ -241,7 +238,7 @@ describe('ConsoleView', () => {
   });
 
   it('shows the prompt beside the input', async () => {
-    const { container } = render(ConsoleView);
+    const { container } = view();
     await waitFor(() =>
       expect(container.querySelector('.console-prompt')?.textContent).toBe('gs>'),
     );
@@ -250,7 +247,7 @@ describe('ConsoleView', () => {
 
 describe('ConsoleView signature hint', () => {
   it('shows the signature with the current argument underlined; Esc hides it, Ctrl+Shift+Space brings it back', async () => {
-    const { container } = render(ConsoleView);
+    const { container } = view();
     const cm = await waitFor(() => {
       const el = container.querySelector('.cm-content');
       expect(el).toBeTruthy();
@@ -289,14 +286,14 @@ describe('ConsoleView signature hint', () => {
 
 describe('ConsoleView scrolling', () => {
   it('stays where the user scrolled, but a submitted command returns it to the bottom', async () => {
-    const { container } = render(ConsoleView);
+    const { container } = view();
     const out = container.querySelector('.console-output') as HTMLElement;
     // jsdom has no layout: give the output a fixed geometry.
     Object.defineProperty(out, 'scrollHeight', { value: 1000, configurable: true });
     Object.defineProperty(out, 'clientHeight', { value: 100, configurable: true });
     Object.defineProperty(out, 'scrollTop', { value: 100, writable: true, configurable: true });
     await fireEvent.scroll(out);
-    consoleModel().command('echo more');
+    con.model.command('echo more');
     await waitFor(() => expect(entries(container).length).toBe(1));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     expect(out.scrollTop).toBe(100);
@@ -315,7 +312,7 @@ describe('ConsoleView scrolling', () => {
 
 describe('ConsoleView highlighting', () => {
   it('colours the input and keeps the colours on the command entry', async () => {
-    const { container } = render(ConsoleView);
+    const { container } = view();
     const cm = await waitFor(() => {
       const el = container.querySelector('.cm-content');
       expect(el).toBeTruthy();

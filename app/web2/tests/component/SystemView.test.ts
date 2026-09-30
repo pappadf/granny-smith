@@ -139,6 +139,24 @@ const MODEL: Record<string, () => unknown[]> = {
         { name: 'size', doc: 'Bytes', type: int, optional: true, rest: false, default: null },
       ],
     },
+    {
+      name: 'export',
+      kind: 'method',
+      category: 'basic',
+      label: 'export',
+      doc: 'Export the image',
+      verb: 'Export',
+      args: [
+        {
+          name: 'path',
+          doc: 'Where',
+          type: { kind: 'string', width: 0, presentation: 'path', enum: null },
+          optional: false,
+          rest: false,
+          default: null,
+        },
+      ],
+    },
   ],
 };
 
@@ -440,6 +458,20 @@ describe('SystemView menus', () => {
     await fireEvent.click(go);
     await waitFor(() => expect(calls).toContainEqual(['files.create', ['/opfs/a.img', 256]]));
     expect(echo).toHaveBeenCalledWith('files.create "/opfs/a.img" 256');
+  });
+
+  it('export saves the image its own way instead of opening a form', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(null);
+    const { container } = render(SystemView);
+    await waitFor(() => expect(rowEl(container, 'files')).not.toBeNull());
+    await fireEvent.contextMenu(
+      rowEl(container, 'files')!.querySelector('.sys-line') as HTMLElement,
+    );
+    await fireEvent.click(await waitFor(() => menuItem('Export…')));
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    expect(calls).toContainEqual(['files.filename', []]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    prompt.mockRestore();
   });
 
   it('Copy value and Copy path', async () => {

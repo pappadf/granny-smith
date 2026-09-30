@@ -1,7 +1,8 @@
 // meta.members, typed: one node's members (attributes with their values when
 // asked, methods with their UI metadata and argument descriptors, children
 // with their collection shape).  The SYSTEM tab (lib/systemRows) and the
-// command browser (lib/commandsTree) both build from it.
+// command browser (lib/commandsTree) both build from it, through the shared
+// cache in bus/memberStore.
 
 import { gsEval } from './emulator';
 

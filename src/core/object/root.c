@@ -5,9 +5,9 @@
 // Defines the `emu` root class — the top-level introspection methods
 // (objects / attributes / methods / help / time) plus a few thin
 // wrappers (quit / echo) — and orchestrates the
-// install/uninstall of the small set of cfg-scoped stubs that hang off
-// it (the shell namespace and shell.alias child, files.images, the view of
-// cfg->images).
+// install/uninstall of the cfg-scoped stubs that hang off it: the shell
+// namespace and its children here, and each subsystem's own nodes through
+// the install hooks it registers (root_register_install).
 
 #include "root.h"
 #include "gs_out.h"
@@ -18,21 +18,14 @@
 
 #include "alias.h"
 #include "commands.h"
-#include "debug.h"
-#include "nubus.h"
 #include "object.h"
-#include "pci.h"
 #include "shell_funcs.h"
-#include "storage.h"
 #include "system.h"
-#include "system_config.h"
 #include "usage.h"
 #include "value.h"
 
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
 extern const class_desc_t shell_class; // src/core/shell/shell_class.c
-extern const class_desc_t nubus_class; // src/core/peripherals/nubus/nubus_class.c
-extern const class_desc_t pci_class; // src/core/peripherals/pci/pci_class.c
 
 // === Introspection root methods =============================================
 // `objects`, `attributes`, `methods`, `help`, `time`. Each accepts an
@@ -50,18 +43,9 @@ static struct object *resolve_target(const value_t *path_arg) {
         return n.obj;
     if (n.member->kind != M_CHILD)
         return n.obj;
-    if (n.member->child.indexed) {
-        if (n.index < 0 || !n.member->child.get)
-            return n.obj;
-        struct object *c = n.member->child.get(n.obj, n.index);
-        return c ? c : n.obj;
-    }
-    if (n.member->child.lookup) {
-        struct object *c = n.member->child.lookup(n.obj, n.member->name);
-        if (c)
-            return c;
-    }
-    return n.obj;
+    struct object *c =
+        n.member->child.collection ? object_entry_at(n.obj, n.member, n.index) : object_named_child(n.obj, n.member);
+    return c ? c : n.obj;
 }
 
 // Growable V_STRING list used to accumulate object/attribute/method
@@ -97,9 +81,7 @@ static void each_attached_collect(struct object *parent, struct object *child, v
         acc->oom = true; // reported by the caller; see string_list_push
 }
 
-static value_t method_root_objects(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_objects) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("objects: path did not resolve");
@@ -121,9 +103,7 @@ static value_t method_root_objects(struct object *self, const member_t *m, int a
     return val_list(acc.items, acc.len);
 }
 
-static value_t method_root_attributes(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_attributes) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("attributes: path did not resolve");
@@ -144,9 +124,7 @@ static value_t method_root_attributes(struct object *self, const member_t *m, in
     return val_list(acc.items, acc.len);
 }
 
-static value_t method_root_methods(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_methods) {
     struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
     if (!target)
         return val_err("methods: path did not resolve");
@@ -170,9 +148,7 @@ static value_t method_root_methods(struct object *self, const member_t *m, int a
 // `help(path?)` — the usage text of any path (usage.c): a method's
 // signature, arguments and doc; an attribute's type, value and doc; a node's
 // doc and member lists.  The same text shell.usage returns.
-static value_t method_root_help(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_help) {
     const char *path = (argc >= 1 && argv[0].s) ? argv[0].s : "";
     value_t v = object_usage_text(path);
     if (v.kind == V_ERROR) {
@@ -185,11 +161,7 @@ static value_t method_root_help(struct object *self, const member_t *m, int argc
 // `time()` — wall-clock seconds since the Unix epoch. Useful for
 // timestamping log lines from scripts; deterministic test runs use
 // `rtc.time =` instead.
-static value_t method_root_time(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_root_time) {
     return val_uint(8, (uint64_t)time(NULL));
 }
 
@@ -201,11 +173,7 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
 // `quit()` — request emulator shutdown. Headless sets the script
 // quit flag and stops the scheduler; in the browser, which owns the page's
 // lifecycle, it says so rather than doing nothing silently.
-static value_t method_root_quit(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_root_quit) {
     if (gs_quit() != 0)
         return val_err("quit: not supported on this platform");
     return val_none();
@@ -215,9 +183,7 @@ static value_t method_root_quit(struct object *self, const member_t *m, int argc
 // classic `echo` shell command so test scripts can write the result
 // of a `$(...)` expression to stdout without going through any
 // detour. Returns true on success.
-static value_t method_root_echo(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(method_root_echo) {
     for (int i = 0; i < argc; i++) {
         if (i > 0)
             gs_outc(' ');
@@ -321,26 +287,55 @@ static struct object *g_stubs[MAX_STUBS];
 static int g_stub_count = 0;
 static struct config *g_installed_cfg = NULL;
 
-static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
+// The registered subsystem install hooks, run in registration order.
+#define MAX_INSTALL_HOOKS 8
+static struct {
+    root_install_fn install;
+    root_uninstall_fn uninstall;
+} g_hooks[MAX_INSTALL_HOOKS];
+static int g_hook_count = 0;
+
+void root_register_install(root_install_fn install, root_uninstall_fn uninstall) {
+    if (!install)
+        return;
+    for (int i = 0; i < g_hook_count; i++)
+        if (g_hooks[i].install == install)
+            return; // already registered
+    if (g_hook_count >= MAX_INSTALL_HOOKS) {
+        fprintf(stderr, "root: install-hook table full (%d)\n", MAX_INSTALL_HOOKS);
+        return;
+    }
+    g_hooks[g_hook_count].install = install;
+    g_hooks[g_hook_count].uninstall = uninstall;
+    g_hook_count++;
+}
+
+struct object *root_attach_stub(struct object *parent, struct object *o) {
+    if (!o)
+        return NULL;
+    const class_desc_t *cls = object_class(o);
     if (g_stub_count >= MAX_STUBS) {
-        // Two callers discard this result (files.images, shell.alias), so an
-        // exhausted table made a whole subtree quietly absent -- which reads
-        // as a missing feature, not a resource limit.  The class-validation
-        // failure a few lines below already prints; this one did not.
-        fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS, name ? name : "(unnamed)");
+        // A discarded result makes a whole subtree quietly absent -- which
+        // reads as a missing feature, not a resource limit -- so say so.
+        fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS,
+                object_name(o) ? object_name(o) : "(unnamed)");
+        object_delete(o);
         return NULL;
     }
     char err[200];
     if (!object_validate_class(cls, err, sizeof(err))) {
-        fprintf(stderr, "root: class '%s' invalid: %s\n", cls->name ? cls->name : "?", err);
+        fprintf(stderr, "root: class '%s' invalid: %s\n", cls && cls->name ? cls->name : "?", err);
+        object_delete(o);
         return NULL;
     }
-    struct object *o = object_new(cls, data, name);
-    if (!o)
-        return NULL;
     object_attach(parent ? parent : object_root(), o);
     g_stubs[g_stub_count++] = o;
     return o;
+}
+
+// A stub of class `cls` over `data`.
+static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
+    return root_attach_stub(parent, object_new(cls, data, name));
 }
 
 void root_install_class(void) {
@@ -375,56 +370,18 @@ void root_install(struct config *cfg) {
     // platform-level facades (mouse, screen, files, log, catalog) are
     // process-singletons attached from shell_init.
     //
-    // What remains here is the Shell class instance, files.images (the
-    // view of cfg->images), and the shell.alias child.
+    // What remains here is the Shell class instance with its children, and
+    // then each registered subsystem hook (files.images, machine.nubus,
+    // machine.pci).
     struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
     if (shell_obj) {
         object_set_order(shell_obj, 60);
         shell_funcs_install(shell_obj); // `shell.functions` container
-    }
-    // files.images: the storage view of cfg->images, under the process
-    // singleton `files`.
-    struct object *images_obj = attach_stub(files_object(), &files_images_collection_class, cfg, "images");
-    if (images_obj) {
-        object_set_label(images_obj, "Images");
-        object_set_order(images_obj, 10);
-        files_images_init(cfg, images_obj);
-    }
-
-    // shell.alias and shell.command child objects.
-    if (shell_obj) {
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
         attach_stub(shell_obj, &shell_command_class, cfg, "command");
     }
-
-    // `machine.nubus` / `machine.pci` — attached under the machine node
-    // (they are emulated hardware, not meta objects), and only when the
-    // booted model has that bus.  Each carries its slot collection, a
-    // container whose entries are the slot nodes the bus built.
-    if (cfg && cfg->nubus) {
-        struct object *nubus_obj = attach_stub(machine_object(), &nubus_class, cfg, "nubus");
-        if (nubus_obj) {
-            object_set_label(nubus_obj, "NuBus");
-            object_set_order(nubus_obj, 100);
-            struct object *slots = attach_stub(nubus_obj, &nubus_slots_class, cfg, "slot");
-            if (slots) {
-                object_set_label(slots, "Slots");
-                nubus_objects_adopt(slots);
-            }
-        }
-    }
-    if (cfg && cfg->pci) {
-        struct object *pci_obj = attach_stub(machine_object(), &pci_class, cfg, "pci");
-        if (pci_obj) {
-            object_set_label(pci_obj, "PCI");
-            object_set_order(pci_obj, 101);
-            struct object *slots = attach_stub(pci_obj, &pci_slots_class, cfg, "slot");
-            if (slots) {
-                object_set_label(slots, "Slots");
-                pci_objects_adopt(slots);
-            }
-        }
-    }
+    for (int i = 0; i < g_hook_count; i++)
+        g_hooks[i].install(cfg);
 }
 
 void root_uninstall(void) {
@@ -441,9 +398,10 @@ void root_uninstall(void) {
     g_stub_count = 0;
     // Subsystem-scoped entries (scsi/floppy/atalk-share/cpu/etc) are
     // torn down by their owning *_delete functions during machine
-    // teardown. Only the cfg-scoped files.images entry array is freed
-    // here.
-    files_images_teardown();
+    // teardown; a hook's own uninstall drops what it kept about its stubs.
+    for (int i = 0; i < g_hook_count; i++)
+        if (g_hooks[i].uninstall)
+            g_hooks[i].uninstall();
     // The root method table is NOT reverted here, deliberately.
     //
     // It used to be, and that was a process-scoped global being undone by a

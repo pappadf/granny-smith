@@ -108,7 +108,7 @@ TEST(test_shared_members_are_the_same_on_every_controller) {
     for (int i = 0; i < 6; i++) {
         ASSERT_TRUE(strcmp(toy_plain_members[i].name, want[i]) == 0);
         ASSERT_EQ_INT(toy_plain_members[i].kind, M_ATTR);
-        ASSERT_TRUE((toy_plain_members[i].flags & VAL_RO) != 0); // never writable
+        ASSERT_TRUE(toy_plain_members[i].attr.set == NULL); // never writable
         ASSERT_TRUE(toy_full_members[i].attr.get == toy_plain_members[i].attr.get);
     }
 }

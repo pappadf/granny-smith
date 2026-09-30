@@ -244,19 +244,13 @@ void pci_deassert_irq(pci_device_t *dev);
 
 // === Object model ===========================================================
 
-// The `machine.pci` class lives in pci_class.c; root.c attaches it (the
-// declaration is beside nubus_class's there, not in this header, so core
-// files that only drive hardware need not pull in the object model).
+// The `machine.pci` node and its slot collection live in pci_class.c, which
+// installs them with every PCI machine (root_register_install); core files
+// that only drive hardware need not pull in the object model.
 
 void pci_objects_build(pci_root_t *root);
 void pci_objects_teardown(void);
-// Register `slots` (the machine.pci.slot container) as the logical parent
-// of every slot node, now and for nodes built later.
-struct object;
-void pci_objects_adopt(struct object *slots);
-// The slot container's class, and every registered card-driver id
-// (catalog.pci_cards).
-extern const struct class_desc pci_slots_class;
+// Every registered card-driver id (catalog.pci_cards).
 value_t pci_cards_list(void);
 // Teardown only if the trees describe `root` (checkpoint-restore ordering:
 // the new machine's tree is built before the old machine is destroyed).

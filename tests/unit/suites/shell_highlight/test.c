@@ -14,6 +14,7 @@
 #include "highlight.h"
 #include "object.h"
 #include "shell_funcs.h"
+#include "syntax.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -73,11 +74,12 @@ static int drive_next(struct object *self, int prev) {
     (void)self;
     return prev + 1 < 2 ? prev + 1 : -1;
 }
+static const collection_desc_t floppy_entries = {
+    .entry = &drive_class, .by_index = {.get = drive_get, .next = drive_next}
+};
+
 static const member_t floppy_members[] = {
-    {.kind = M_CHILD,
-     .name = "drive",
-     .doc = "Drives",
-     .child = {.cls = &drive_class, .indexed = true, .get = drive_get, .next = drive_next}},
+    {.kind = M_CHILD, .name = "drive", .doc = "Drives", .child = {.collection = &floppy_entries}},
 };
 static const class_desc_t floppy_class = {.name = "floppy", .members = floppy_members, .n_members = 1};
 static const class_desc_t machine_class = {.name = "machine", .members = NULL, .n_members = 0};
@@ -290,7 +292,170 @@ TEST(test_blocks_span_lines) {
     object_root_reset();
 }
 
+// === Parser and highlighter agree ===================================================
+//
+// Each statement goes through the parser's classifier (script_classify, what
+// script_parse builds its tree from) and through shell.highlight, and the
+// statement family read off each must match: a declaration, a keyword form,
+// an assignment, a command (argument mode) or an expression.
+
+typedef enum { FAM_DECL, FAM_KEYWORD, FAM_ASSIGN, FAM_COMMAND, FAM_EXPR } family_t;
+
+static const char *const k_family[] = {"decl", "keyword", "assign", "command", "expr"};
+
+// The family the parser gives a statement.
+static family_t parser_family(const script_stmt_t *c) {
+    switch (c->kind) {
+    case SCRIPT_STMT_LET:
+    case SCRIPT_STMT_ALIAS:
+    case SCRIPT_STMT_COMMAND_DEF:
+    case SCRIPT_STMT_DEF:
+        return FAM_DECL;
+    case SCRIPT_STMT_ASSIGN:
+        return FAM_ASSIGN;
+    case SCRIPT_STMT_COMMAND:
+        return FAM_COMMAND;
+    case SCRIPT_STMT_EXPR:
+        return FAM_EXPR;
+    case SCRIPT_STMT_INVALID: {
+        // A keyword in the wrong shape keeps its keyword's family.
+        size_t n = c->head ? (size_t)(c->head_end - c->head) : 0;
+        if ((n == 3 && strncmp(c->head, "let", 3) == 0) || (n == 5 && strncmp(c->head, "alias", 5) == 0))
+            return FAM_DECL;
+        char w[16] = "";
+        if (n && n < sizeof(w))
+            memcpy(w, c->head, n);
+        return object_is_reserved_word(w) ? FAM_KEYWORD : FAM_EXPR;
+    }
+    default:
+        return FAM_KEYWORD;
+    }
+}
+
+// The span starting at byte `at`, or NULL.
+static const value_t *span_at(const value_t *v, size_t at) {
+    for (size_t i = 0; i < v->list.len; i++)
+        if (map_u(&v->list.items[i], "start") == at)
+            return &v->list.items[i];
+    return NULL;
+}
+
+// The family the highlighter shows: the head span's class, and whether an
+// operator follows the head (an `=`: assignment; anything else: expression).
+static family_t highlight_family(const char *text, const script_stmt_t *c) {
+    value_t v = shell_highlight(text);
+    family_t f = FAM_EXPR;
+    const char *cls = v.list.len ? map_s(&v.list.items[0], "class") : "";
+    size_t first = v.list.len ? (size_t)map_u(&v.list.items[0], "start") : 0;
+    const char *w = text + first;
+    bool literal = strncmp(w, "true", 4) == 0 || strncmp(w, "false", 5) == 0 || strncmp(w, "none", 4) == 0;
+    if (strcmp(cls, "decl") == 0) {
+        f = FAM_DECL;
+    } else if (strcmp(cls, "keyword") == 0 && !literal) {
+        f = FAM_KEYWORD;
+    } else if (c->head && c->head_end && c->head == text + first) {
+        // A path or binding head: what the highlighter does right after it.
+        const char *r = c->head_end;
+        while (*r == ' ' || *r == '\t')
+            r++;
+        const value_t *after = *r ? span_at(&v, (size_t)(r - text)) : NULL;
+        bool op = after && strcmp(map_s(after, "class"), "operator") == 0;
+        bool plain_binding = *c->head == '$' && strcspn(c->head, ".[") >= (size_t)(c->head_end - c->head);
+        if (op && *r == '=')
+            f = FAM_ASSIGN;
+        else if (op && *r == '(' && r > c->head_end)
+            f = FAM_COMMAND; // a parenthesised argument
+        else if (op)
+            f = FAM_EXPR; // a call form or an operator
+        else if (!*r && plain_binding)
+            f = FAM_EXPR; // a lone `$name` reads the binding
+        else
+            f = FAM_COMMAND; // a bare path, or argument-mode words
+    }
+    value_free(&v);
+    return f;
+}
+
+TEST(test_parser_and_highlighter_agree) {
+    build_tree();
+    static const char *const corpus[] = {
+        "machine.cpu.pc",
+        "machine.cpu.pc = 5",
+        "machine.cpu.pc == 5",
+        "machine.floppy.drive[0].insert a.img",
+        "machine.floppy.drive[0].insert(\"a.img\")",
+        "util.echo (1 + 2)",
+        "util.echo hi there",
+        "bp 0x40",
+        "myfn 1 2",
+        "myfn(1)",
+        "ghost x",
+        "$x",
+        "$x = 1",
+        "$x + 1",
+        "$x.y z",
+        "$d.insert -1",
+        "$pc",
+        "$pc = 4",
+        "let x = 1",
+        "let x",
+        "let x =",
+        "alias d = machine.floppy",
+        "alias",
+        "alias.list",
+        "alias d",
+        "command c = util.echo",
+        "command c =",
+        "command",
+        "command.x",
+        "if $x { util.echo 1 }",
+        "while true",
+        "for i in 0..3",
+        "def f(a)",
+        "return $x",
+        "return",
+        "break",
+        "break 2",
+        "continue",
+        "assert $x == 1 \"one\"",
+        "include \"lib.script\"",
+        "true",
+        "none == none",
+        "1 + 2",
+        "\"text\"",
+        "(machine.cpu.pc)",
+        "[1, 2]",
+        "do",
+        "in",
+        "util.echo a; util.echo b",
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(corpus) / sizeof(corpus[0]); i++) {
+        const char *text = corpus[i];
+        script_line_t ln;
+        script_line_split(text, text + strlen(text), &ln);
+        family_t want = parser_family(&ln.stmt);
+        family_t got = highlight_family(text, &ln.stmt);
+        if (want != got) {
+            fprintf(stderr, "  %s: parser %s, highlighter %s\n", text, k_family[want], k_family[got]);
+            failures++;
+        }
+    }
+    ASSERT_EQ_INT(0, failures);
+    // The divergences this pins: `$x + 1` is a command in argument mode, a
+    // wrong-shaped `alias` is a declaration keyword (an error), and
+    // `command X =` with no path is a path statement.
+    g_failures = 0;
+    check("$x + 1", "$x:variable 1:number");
+    check("alias d", "alias:decl d:alias");
+    check("command c =", "command:unknown");
+    check("util.echo a; util.echo b", "util:object echo:method");
+    ASSERT_EQ_INT(0, g_failures);
+    object_root_reset();
+}
+
 int main(void) {
+    RUN(test_parser_and_highlighter_agree);
     RUN(test_corpus);
     RUN(test_offsets_are_utf8_bytes);
     RUN(test_blocks_span_lines);

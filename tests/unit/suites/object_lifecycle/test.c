@@ -100,7 +100,6 @@ static const member_t metmeta_members[] = {
     {.kind = M_ATTR,
      .name = "shown",
      .doc = "basic attribute",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = metmeta_shown_get, .set = NULL}},
     {.kind = M_ATTR,
      .name = "raw_reg",
