@@ -246,7 +246,21 @@ export class ConsoleModel {
   }
 }
 
-// --- Copy helpers -----------------------------------------------------------
+// --- Lookup and copy helpers --------------------------------------------------
+
+// The entry with `id` (entries are in id order: binary search).
+export function entryById(entries: readonly ConsoleEntry[], id: number): ConsoleEntry | undefined {
+  let lo = 0;
+  let hi = entries.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const e = entries[mid];
+    if (e.id === id) return e;
+    if (e.id < id) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return undefined;
+}
 
 // The statements of `command` entries, one per line.
 export function commandsText(entries: readonly ConsoleEntry[]): string {
