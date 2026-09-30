@@ -75,6 +75,16 @@ export function setPrinterStatus(status: string): void {
   }
 }
 
+// Opens the viewer.  A document usually lands while the user is still in
+// the emulated machine, with the pointer locked to the screen (em_main.c
+// locks it on a click), which would leave them no cursor to use the viewer
+// with.  So the lock is let go first; the core's pointerlockchange handler
+// then releases the guest's button and keys, as for Esc.
+function openViewer(): void {
+  if (typeof document !== 'undefined' && document.pointerLockElement) document.exitPointerLock();
+  printer.viewerOpen = true;
+}
+
 // A finished document from the interpreter worker: kept, and shown in the
 // viewer.  The previous document's URL is released.
 export function showPrintedDocument(doc: {
@@ -86,12 +96,12 @@ export function showPrintedDocument(doc: {
   const url = URL.createObjectURL(new Blob([doc.pdf as BlobPart], { type: 'application/pdf' }));
   if (printer.document) URL.revokeObjectURL(printer.document.url);
   printer.document = { name: doc.name, title: doc.title, pages: doc.pages, url };
-  printer.viewerOpen = true;
+  openViewer();
 }
 
 // Shows the last document again (the status bar's button).
 export function reopenPrintedDocument(): void {
-  if (printer.document) printer.viewerOpen = true;
+  if (printer.document) openViewer();
 }
 
 // Closes the viewer.  The document stays, so the status bar can reopen it;
