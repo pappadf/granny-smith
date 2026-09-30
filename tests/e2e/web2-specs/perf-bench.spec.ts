@@ -54,7 +54,7 @@ async function probeSample(
       `echo "${key}=\${machine.cpu.instr_count},\${scheduler.host_wall_ns}"`,
     );
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
     if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
   }
@@ -68,7 +68,7 @@ async function probeString(page: Page, expr: string): Promise<string> {
     const key = `ps${++probeSeq}`;
     await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
     if (m) return m[1];
   }
@@ -130,7 +130,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
 
   // Terminal up (the typed path to the object model).
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // --- PRIMARY: Accelerated via the web2 toolbar ----------------------------
   await page.getByRole('button', { name: 'accelerated', exact: true }).click();

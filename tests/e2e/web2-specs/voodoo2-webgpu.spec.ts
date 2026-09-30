@@ -74,7 +74,7 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
   let text = "";
   for (let attempt = 0; attempt < 240; attempt++) {
     await page.waitForTimeout(1000);
-    text = await page.locator(".xterm-rows").innerText();
+    text = await page.locator(".console-output").innerText();
     if (text.includes("draw-webgpu: takeover drawing section complete")) break;
     if (/assert(ion)? failed|error:|Error/.test(text)) break;
   }

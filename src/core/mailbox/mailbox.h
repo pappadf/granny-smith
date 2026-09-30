@@ -57,7 +57,13 @@
 //   EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json
 //              A core event (gs_event.h); a job's printed output arrives as
 //              EVT_LOG {"event":"output","id":request,"client":c,"text":...}
-//              records in the order the job produced it.
+//              records in the order the job produced it.  Annotation
+//              records sit among them at the positions they describe:
+//              {"event":"value_begin",…} and {"event":"value",…,"json":…}
+//              bracket the text of a value the REPL printed, and
+//              {"event":"error",…,"file","line","message","lines"} marks a
+//              statement error (its text went to stderr).  Every record is
+//              at most a quarter of the event ring (gs_mailbox_record_max).
 //
 // The drain never blocks: a result the event ring has no room for is
 // held back and retried at the next drain, and no further requests are
@@ -263,6 +269,14 @@ uint32_t gs_mailbox_current_client(const gs_mailbox_t *m);
 // publishing; false when the ring has no room -- output is never dropped,
 // the job keeps it for the next drain.
 bool gs_mailbox_emit_output(gs_mailbox_t *m, const char *json);
+
+// The largest record (header + JSON) any producer should write: a quarter of
+// the event ring, so a record always fits -- mbx_reserve can never place one
+// longer than the ring, and with wrap padding may fail for good on one
+// longer than half of it.  Set once by gs_mailbox_init; readable from any
+// thread.
+void gs_mailbox_set_record_max(size_t bytes);
+size_t gs_mailbox_record_max(void);
 
 // Writes one EVT_RESULT (not published: the drain publishes).  False when
 // the event ring has no room.  For the job layer, whose results arrive

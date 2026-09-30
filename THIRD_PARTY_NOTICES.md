@@ -1,23 +1,25 @@
 # Third-Party Notices
 
 Granny Smith uses the following third-party libraries at runtime. The UI at
-`app/web2/` bundles all of them — Svelte 5, JSZip, `@xterm/xterm`, and
-`@xterm/addon-fit`.
+`app/web2/` bundles all of them — Svelte 5, JSZip, and CodeMirror 6 / Lezer.
 
 ---
 
-## xterm.js v5.x (`@xterm/xterm`)
+## CodeMirror 6 (`@codemirror/state`, `view`, `language`, `autocomplete`, `commands`) and Lezer (`@lezer/common`, `@lezer/highlight`)
 
-- **Website:** <https://xtermjs.org/>
-- **Repository:** <https://github.com/xtermjs/xterm.js>
+- **Website:** <https://codemirror.net/>
+- **Repository:** <https://github.com/codemirror> and <https://github.com/lezer-parser>
 - **License:** MIT
-- **Used in:** [app/web2/src/components/panel-views/terminal/TerminalPane.svelte](app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
-  (bundled, dynamic-imported so the terminal chunk only loads when the Terminal
-  tab first mounts).
+- **Used in:** [app/web2/src/components/panel-views/terminal/ConsoleInput.ts](app/web2/src/components/panel-views/terminal/ConsoleInput.ts)
+  (bundled, dynamic-imported so the chunk only loads when the Terminal
+  console first mounts). Their dependencies `style-mod`, `w3c-keyname`,
+  `crelt` and `@marijn/find-cluster-break`, by the same author and under
+  the same license, are bundled with them. The Lezer packages carry the
+  copyright line "Copyright (C) 2018 by Marijn Haverbeke".
 
 > MIT License
 >
-> Copyright (c) 2017-2022, The xterm.js authors
+> Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
 >
 > Permission is hereby granted, free of charge, to any person obtaining a copy
 > of this software and associated documentation files (the "Software"), to deal
@@ -26,25 +28,16 @@ Granny Smith uses the following third-party libraries at runtime. The UI at
 > copies of the Software, and to permit persons to whom the Software is
 > furnished to do so, subject to the following conditions:
 >
-> The above copyright notice and this permission notice shall be included in all
-> copies or substantial portions of the Software.
+> The above copyright notice and this permission notice shall be included in
+> all copies or substantial portions of the Software.
 >
 > THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 > IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 > FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 > AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-> SOFTWARE.
-
----
-
-## xterm-addon-fit v0.10.x (`@xterm/addon-fit`)
-
-- **Repository:** <https://github.com/xtermjs/xterm.js> (packages/addon-fit)
-- **License:** MIT (same as xterm.js above)
-- **Used in:** [app/web2/src/components/panel-views/terminal/TerminalPane.svelte](app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
-  (bundled).
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+> THE SOFTWARE.
 
 ---
 

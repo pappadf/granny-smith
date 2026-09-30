@@ -13,9 +13,11 @@
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
+#include "value_format.h"
 #include "job/job.h"
 
 #include "alias.h"
+#include "commands.h"
 #include "expr.h"
 #include "object.h"
 #include "parse.h"
@@ -35,6 +37,7 @@
 typedef enum {
     ST_LET = 1,
     ST_ALIAS,
+    ST_COMMAND_DEF,
     ST_ASSIGN,
     ST_COMMAND,
     ST_EXPR,
@@ -712,6 +715,25 @@ static stmt_t *parse_stmt_text(parser_t *ps, const char *text, int line_no) {
         parse_error(ps, line_no, "alias: expected `alias NAME = PATH`");
         return NULL;
     }
+    // `command NAME = PATH` -- a contextual keyword, not a reserved word (a
+    // member may be called `command`): only this exact shape declares a
+    // command; anything else is parsed as usual.
+    if ((after = kw_match(p, "command"))) {
+        const char *q = skip_sp(after);
+        if (ident_start(*q)) {
+            const char *scan = q;
+            while (ident_char(*scan))
+                scan++;
+            const char *eq = skip_sp(scan);
+            const char *path = skip_sp(eq + 1);
+            if (*eq == '=' && eq[1] != '=' && *path) {
+                stmt_t *st = stmt_new(ST_COMMAND_DEF, line_no);
+                st->name = dup_trim(q, scan);
+                st->text = strdup(path);
+                return st;
+            }
+        }
+    }
     if (kw_match(p, "elif") || kw_match(p, "else")) {
         parse_error(ps, line_no, "'%s' without a preceding if-block", kw_match(p, "elif") ? "elif" : "else");
         return NULL;
@@ -1052,6 +1074,73 @@ void script_expr_ctx(expr_ctx_t *out) {
 static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
 static _Thread_local int g_include_depth = 0;
 
+static void report_plain_error(const char *err);
+
+// Append `s` to `b` as a JSON string, truncated to `max` bytes (0: whole).
+static void json_str(vbuf_t *b, const char *s, size_t max) {
+    char *cut = NULL;
+    if (max && strlen(s) > max) {
+        cut = strndup(s, max);
+        s = cut ? cut : "";
+    }
+    value_t v = val_str(s);
+    value_format(&v, VFMT_JSON, b);
+    value_free(&v);
+    free(cut);
+}
+
+// The fields of an `error` annotation; `max` bounds each string (the
+// reduced form), 0 for the full one.
+static void error_fields(vbuf_t *b, const char *file, int line, const char *msg, const char *text, size_t max) {
+    vbuf_appendf(b, "\"file\":");
+    json_str(b, file, max ? 256 : 0);
+    vbuf_appendf(b, ",\"line\":%d,\"message\":", line);
+    json_str(b, msg, max);
+    vbuf_appendf(b, ",\"lines\":[");
+    // The stderr text split at newlines, the empty last element dropped.
+    const char *p = text;
+    bool first = true;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        char *ln = strndup(p, n);
+        if (!first)
+            vbuf_append(b, ",", 1);
+        json_str(b, ln ? ln : "", max);
+        free(ln);
+        first = false;
+        p += n;
+        if (*p == '\n')
+            p++;
+    }
+    vbuf_append(b, "]", 1);
+    if (max)
+        vbuf_appendf(b, ",\"truncated\":true");
+}
+
+void script_report_error(const char *file, int line, const char *msg, const char *text) {
+    // Inside a job: once, as an `error` annotation at this point of the
+    // job's record stream (clients print or render it).  stderr only when no
+    // record can carry it whole: outside a job, past the output cut, or when
+    // only the shortened form fits (that record says `truncated`).
+    vbuf_t full = {0}, reduced = {0};
+    error_fields(&full, file ? file : "", line, msg ? msg : "", text, 0);
+    error_fields(&reduced, file ? file : "", line, msg ? msg : "", text, 512);
+    bool shortened = false;
+    if (!job_annotate("error", full.p ? full.p : "", reduced.p ? reduced.p : "", &shortened) || shortened)
+        fputs(text, stderr);
+    vbuf_free(&full);
+    vbuf_free(&reduced);
+}
+
+// An error with no line of its own (a parse error, a failed include):
+// reported with file "" and line 0, its text the message plus a newline.
+static void report_plain_error(const char *err) {
+    char text[1100];
+    snprintf(text, sizeof(text), "%s\n", err);
+    script_report_error("", 0, err, text);
+}
+
 static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     char buf[512];
     va_list ap;
@@ -1060,10 +1149,13 @@ static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     va_end(ap);
     // Prefix the innermost executing file so suite/library diagnostics
     // carry an accurate file:line even across `include`.
+    char text[1024];
+    const char *file = g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "";
     if (g_include_depth > 0)
-        fprintf(stderr, "%s: line %d: %s\n", g_include_stack[g_include_depth - 1], line, buf);
+        snprintf(text, sizeof(text), "%s: line %d: %s\n", file, line, buf);
     else
-        fprintf(stderr, "line %d: %s\n", line, buf);
+        snprintf(text, sizeof(text), "line %d: %s\n", line, buf);
+    script_report_error(file, line, buf, text);
     cx->sig = SIG_ERROR;
 }
 
@@ -1581,32 +1673,33 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     value_t errv = val_none();
     char norm_path[512] = "";
     struct object *path_base = NULL;
+    bool is_command = false;
 
     // Try the object tree first; fall back to the user-function
     // registry for single-identifier heads.
     const char *head = p;
     if (!resolve_path_head_ex(&p, &ectx, &node, &errv, norm_path, sizeof(norm_path), &path_base)) {
-        // Single bare identifier → user function?
+        // A single bare word: a `def` function, else a command (the word
+        // runs the method it names).  commands.h has the order.
         const char *q = head;
         if (ident_start(*q)) {
             const char *s = q;
             while (ident_char(*q))
                 q++;
-            char name[64];
-            size_t n = (size_t)(q - s) < sizeof(name) - 1 ? (size_t)(q - s) : sizeof(name) - 1;
-            memcpy(name, s, n);
-            name[n] = '\0';
-            fn = shell_func_find(name);
-            if (fn) {
+            shell_head_t h = SHELL_HEAD_NONE;
+            if (*q != '.' && *q != '[')
+                h = shell_word_resolve(s, (size_t)(q - s), &node, &fn, NULL, 0);
+            if (h == SHELL_HEAD_FUNCTION || h == SHELL_HEAD_COMMAND) {
                 value_free(&errv);
                 p = q;
+                is_command = h == SHELL_HEAD_COMMAND;
             }
         }
         // Bare read into a structured value: the head may address a map
         // key / list slot inside an attribute result
         // (`machine.config.vroms[0].card_id`). Only for argument-less
         // heads — values cannot take command arguments.
-        if (!fn && norm_path[0] && path_base && *skip_sp(p) == '\0') {
+        if (!fn && !is_command && norm_path[0] && path_base && *skip_sp(p) == '\0') {
             value_t v = expr_object_path_read(path_base, norm_path);
             if (!val_is_error(&v)) {
                 value_free(&errv);
@@ -1626,7 +1719,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
             }
             value_free(&v);
         }
-        if (!fn) {
+        if (!fn && !is_command) {
             exec_error(cx, st->line, "%s", errv.err ? errv.err : "unknown command");
             value_free(&errv);
             return;
@@ -1950,14 +2043,21 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
             snprintf(msg, sizeof(msg), "%s", m.s);
         value_free(&m);
     }
-    if (is_err)
-        fprintf(stderr, "line %d: %s\n", st->line, v.err ? v.err : "error in assert predicate");
     // stderr, with its predicate error.  These are one failure event and used
     // to go to two streams, so a test log could interleave them in either
     // order or split them across files -- and that output is exactly what a
     // failure investigation reads.  Results go to stdout,
     // diagnostics to stderr.
-    fprintf(stderr, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
+    char text[1400];
+    size_t o = 0;
+    if (is_err)
+        o += (size_t)snprintf(text, sizeof(text), "line %d: %s\n", st->line,
+                              v.err ? v.err : "error in assert predicate");
+    if (o < sizeof(text))
+        snprintf(text + o, sizeof(text) - o, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
+    char amsg[600];
+    snprintf(amsg, sizeof(amsg), "ASSERT FAILED: %s", msg[0] ? msg : st->text);
+    script_report_error(g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "", st->line, amsg, text);
     value_free(&v);
     cx->sig = SIG_ERROR;
 }
@@ -2016,6 +2116,12 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
         char err[160];
         if (alias_add_user(st->name, st->text, err, sizeof(err)) < 0)
             exec_error(cx, st->line, "alias: %s", err);
+        return;
+    }
+    case ST_COMMAND_DEF: {
+        char err[200];
+        if (shell_command_define(st->name, st->text, err, sizeof(err)) < 0)
+            exec_error(cx, st->line, "command: %s", err);
         return;
     }
     case ST_ASSIGN:
@@ -2146,7 +2252,7 @@ int script_run_line(const char *line) {
     char err[256];
     script_t *s = script_parse(line, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     int rc = script_exec(s, true);
@@ -2174,7 +2280,7 @@ int script_run_text(const char *src, bool interactive) {
     char err[256];
     script_t *s = script_parse(src, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     int rc = exec_isolated(s, interactive);
@@ -2186,7 +2292,7 @@ int script_run_source(const char *src) {
     char err[256];
     script_t *s = script_parse(src, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     int rc = exec_isolated(s, false);
@@ -2198,7 +2304,7 @@ int script_run_file(const char *path) {
     char err[512];
     exec_sig_t sig = include_exec_file(path, err, sizeof(err));
     if (sig == SIG_ERROR) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     return 0; // SIG_QUIT is a clean stop, not a failure

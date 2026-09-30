@@ -41,8 +41,8 @@ while IFS= read -r -d '' f; do
     base="$(basename "$f")"
     case "$base" in
         *.rom)  obj="machine.rom.identify"  ;;
-        *.vrom) obj="machine.vrom.identify" ;;
-        *.prom) obj="machine.prom.identify" ;;
+        *.vrom) obj="catalog.vroms.identify" ;;
+        *.prom) obj="catalog.proms.identify" ;;
         *) continue ;;
     esac
     printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
@@ -57,7 +57,7 @@ echo "quit" >> "$SCRIPT"
 
 OUT="$WORK/identify.out"
 GS_STORAGE_CACHE="$WORK/cache" "$HEADLESS_BIN" \
-    rom="$BOOT_ROM" --no-prompt --speed=max "script=$SCRIPT" > "$OUT" 2>/dev/null
+    rom="$BOOT_ROM" --no-prompt --speed=turbo "script=$SCRIPT" > "$OUT" 2>/dev/null
 
 python3 - "$OUT" "$OUT_FILE" <<'PY'
 import json, re, sys, os

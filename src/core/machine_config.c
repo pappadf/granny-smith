@@ -315,6 +315,7 @@ void machine_config_object_init(struct object *machine_obj) {
         return;
     s_config_object = object_new(&config_class, NULL, "config");
     if (s_config_object) {
+        object_set_category(s_config_object, M_CAT_ADVANCED);
         object_set_label(s_config_object, "Built-from configuration");
         object_set_order(s_config_object, 96);
         object_attach(machine_obj, s_config_object);

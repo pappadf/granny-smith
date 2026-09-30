@@ -8,8 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Commands** — bare words that run a method: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `cd`, `pwd` (the `files` methods, with the new `files.cd` / `files.pwd`), `run`, `stop`, `reset`, `step`, `disasm`.  `command NAME = PATH` declares your own; `$` aliases stay for values and places.  Highlighting, completion and `help` follow the method a command runs, and the command browser lists them under Commands.
 - **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
 - **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
+- **Self-describing object model** — every node and member carries a doc, a domain and a type descriptor in `meta.members`; `help` / `shell.usage` render usage text from it, `shell.complete` reports per-candidate kinds and docs, and value/error annotation records ride the job stream.
+- **Structural command browser** — the Terminal's browser now walks the live model (expandable sections for the root commands, each domain, Aliases and Language; collections with their entries; basic and advanced members alike) and shows the core's usage text for the selected member.
+- **Terminal console replaces xterm.js** — DOM-rendered output entries (commands, text, values, errors) and a CodeMirror 6 input:
+  - a printed value is one entry (objects link to the command browser; lists and maps expand);
+  - a failing statement is one error entry;
+  - multi-line input, with Enter continuing an open block;
+  - a completion popup with each candidate's kind and doc;
+  - a pasted block runs as one job;
+  - the output follows new entries while it is at the bottom, and running a command always returns it there;
+  - Ctrl+C copies a selection, else interrupts;
+  - an output context menu (Copy as commands, Copy output, Copy value as JSON) and find (Ctrl/Cmd+F).
+  - History moves to `localStorage` (`gs.console.history`).
+- **SYSTEM tab edits the model** — values are shown as the REPL prints them.
+  - Editing: double-click, or Enter / F2. A bool toggles; an enum picks from a dropdown.
+  - A literal is written through the bridge and echoed to the console as its statement; an expression runs as a console statement.
+  - Node methods run from the context menu: destructive ones confirm, and methods with arguments get a generated form with a file browser for paths.
+  - Copy value / Copy path.
+  - Live refresh on state events, console jobs, and every 2 s while the machine runs.
+  - Ctrl/Cmd-click on a console object link reveals the node in SYSTEM.
+- **Command browser and console follow each other**:
+  - A click previews a row: its usage shows in a closable details pane under the tree, which also closes when the console's input empties (a command ran).
+  - A double-click, Enter or the pane's Insert button writes its path at the console's cursor (`path.`, `path[`, `path["`, `path ` for a method) and hands focus back.
+  - Typing opens the browser at the token, marks and selects the match, and dims the rest.
+  - In a method's arguments, a signature hint underlines the current argument, which is also marked in the method's usage.
+- **Syntax highlighting** — `shell.highlight(text)` classifies a line or block the way the parser reads it, resolving path segments against the live tree:
+  - Unknown segments are marked, as are enum values, bindings versus aliases, strings with `${…}` interpolation, and comments.
+  - The console colours its input and command entries with it, and the command browser colours usage signatures and examples.
+  - Round trip about 17 ms at p95 with the machine in turbo.
+
+### Changed
+- **A job's error is written once** — as the job's `error` record; stderr carries it only when no record can hold it whole (outside a job, or the full text behind a shortened `truncated` record).  Headless without `--framed` prints error records to stderr, so its output reads as before; `--framed` clients get `@error` without a stderr copy.  The web console no longer matches stderr lines to errors, which also fixes long errors showing twice.
+- **The first word of a line means one thing everywhere** — `help`, completion and highlighting follow the interpreter's order (path, then `def` function, then command), so a `def ls` shadows the `ls` command for all of them.  `include` is now a reserved word; `shell.keywords` lists every keyword, the contextual `command` included.
+- **`files.cp` takes `recursive=true`** instead of a `-r` string argument; `files.partmap` drops its `--json` argument, which never changed the output.
+- **Member docs complete** — the doc lint's allow-list is empty on every model.
+  - Defaults are declared rather than written into docs; `help` prints them as `(default …)`, and computed ones read `omitted: …`.
+  - Every basic-tier run, storage and debug method has examples, and results that need it have a `Returns:` line; the lint checks that each example resolves against the live tree.
+  - `memory.dump` documents its real default count (64, not 16).
+  - `machine.boot`'s unset fields no longer show placeholder defaults (`""`, `0`, `255`) in `help` and argument forms.
+- **File-path completion follows `VAL_PATH`** — a string argument completes against the filesystem when it is declared `VAL_PATH`, no longer when its name contains `path`, `src`, `dst`, `file` or `dir`; object-path arguments such as `alias.add path` stop offering files.
+- **Object model reorganised** (no compatibility aliases): the root now holds, in a fixed order, `machine scheduler checkpoint files debug log shell catalog appletalk`.
+  - `storage.*`, `vfs.ls/list/mkdir/cat`, `archive.*` and the root `download` merge into **`files`** (`files.cp`, `files.ls`, `files.archive.extract`, `files.download`, …; `storage.images` → `files.images`).
+  - The image-VFS mount cache is the collection `files.mounts[n]`, indexed by a never-reused mount serial; `storage.mounts` / `storage.list_partitions` are gone and `storage.unmount(path)` is `files.mounts[files.mounts.find(path)].unmount()`.
+  - `find.*` → `debug.find.*`; `debug.log(…)` → `log.set(…)`; `debug.log_levels()` → `log.levels`; each category is also an object, `log.category["scsi"].level = 5`.
+  - `machine.models` / `machine.profile(m)` / `machine.nubus.cards()` / `machine.pci.cards()` / `machine.vrom` / `machine.prom` → `catalog.models` / `catalog.profile(m)` / `catalog.nubus_cards` / `catalog.pci_cards` / `catalog.vroms` / `catalog.proms`; `machine.nubus` and `machine.pci` exist only on a machine with that bus.
+  - `shell.aliases`, `shell.alias_set`, `shell.alias_unset` are removed (use `shell.alias.list/add/remove`).
+  - `scheduler.mode` is an enum of `paced`, `accelerated`, `turbo`; the aliases `real`, `realtime`, `hw`, `hardware`, `accel`, `max` are no longer accepted there, by `--speed=`, or by `?speed=`.
+  - Collection entries and lookup-backed children report their path (`machine.scsi.device[3].image`, `log.category["scsi"]`); new core events `state:machine_booted` and `notify:media`.
 
 ## [v0.8.0] — 2026-08-11
 

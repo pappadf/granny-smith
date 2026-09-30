@@ -19,7 +19,7 @@ export type DriveActivity = 'idle' | 'read' | 'write';
 // predate the relabel and stay stable.
 export type SchedulerMode = 'live' | 'accel' | 'turbo';
 
-// Typed MMU kind, sourced from `machine.profile(id).capabilities.mmu.kind`
+// Typed MMU kind, sourced from `catalog.profile(id).capabilities.mmu.kind`
 // (no longer guessed from the model's display name). The debug panels gate
 // their PMMU register views on this so the Lisa's segment MMU never shows
 // the wrong (68030) panels.

@@ -158,9 +158,9 @@ def phase3_install_75() {
 # Prove the System landed, and publish the volume for phase 4.
 def phase3_export() {
     machine.scsi.device[1].image.export "${$WORK_DIR}/installed.img"
-    let root = vfs.list("${$WORK_DIR}/installed.img/partition6")
+    let root = files.list("${$WORK_DIR}/installed.img/partition6")
     echo "target root: ${$root}"
-    let sysfolder = vfs.list("${$WORK_DIR}/installed.img/partition6/System Folder")
+    let sysfolder = files.list("${$WORK_DIR}/installed.img/partition6/System Folder")
     echo "System Folder: ${len($sysfolder)} items"
     # THE ANTI-TRUNCATION CHECK.  `installed.png` matching the Installer's
     # "Installation was successful." dialog is the primary proof, but a golden
@@ -178,24 +178,24 @@ def phase3_export() {
     # NOT " Installer Temp": the Installer leaves its own scratch folder behind
     # even on a fully successful run (verified against the completed volume), so
     # its absence is not a completion marker however much it looks like one.
-    assert storage.path_exists("${$WORK_DIR}/installed.img/partition6/SimpleText") "no SimpleText at the volume root — the install stopped before its last files"
-    assert storage.path_exists("${$WORK_DIR}/installed.img/partition6/System 7.5 --Read Me") "no 'System 7.5 --Read Me' — the install stopped before its last files"
-    assert storage.path_exists("${$WORK_DIR}/installed.img/partition6/System Folder/Scrapbook File") "no Scrapbook File in the System Folder — the install stopped before its last files"
+    assert files.path_exists("${$WORK_DIR}/installed.img/partition6/SimpleText") "no SimpleText at the volume root — the install stopped before its last files"
+    assert files.path_exists("${$WORK_DIR}/installed.img/partition6/System 7.5 --Read Me") "no 'System 7.5 --Read Me' — the install stopped before its last files"
+    assert files.path_exists("${$WORK_DIR}/installed.img/partition6/System Folder/Scrapbook File") "no Scrapbook File in the System Folder — the install stopped before its last files"
     # Name the two files that make a System Folder bootable rather than
     # counting entries: 7.5's Easy Install lays down nine items here (System,
     # Finder, Apple Menu Items, Control Panels, Extensions, Fonts, Launcher
     # Items, Preferences and the Installer's own " Installer Temp"), and a
     # count is both weaker evidence and more brittle than this.
-    assert storage.path_exists("${$WORK_DIR}/installed.img/partition6/System Folder/System") "no System file — the install did not land"
-    assert storage.path_exists("${$WORK_DIR}/installed.img/partition6/System Folder/Finder") "no Finder — the install did not land"
+    assert files.path_exists("${$WORK_DIR}/installed.img/partition6/System Folder/System") "no System file — the install did not land"
+    assert files.path_exists("${$WORK_DIR}/installed.img/partition6/System Folder/Finder") "no Finder — the install did not land"
     # The loader partition Drive Setup 2.0d5c2 wrote must still be there: the
     # 7.5 Installer writes a volume, it does not re-partition the drive, and
     # Copland's rule 207 will look for this again in phase 4.
-    storage.partmap "${$WORK_DIR}/installed.img"
-    assert len(vfs.list("${$WORK_DIR}/installed.img")) == 7 "the install disturbed the partition map"
+    files.partmap "${$WORK_DIR}/installed.img"
+    assert len(files.list("${$WORK_DIR}/installed.img")) == 7 "the install disturbed the partition map"
 
-    storage.cp "${$WORK_DIR}/installed.img" "${$media}/copland_target_75_230mb.img"
-    assert storage.path_exists("${$media}/copland_target_75_230mb.img") "the installed volume was not published to media/"
+    files.cp "${$WORK_DIR}/installed.img" "${$media}/copland_target_75_230mb.img"
+    assert files.path_exists("${$media}/copland_target_75_230mb.img") "the installed volume was not published to media/"
 }
 
 if have_media($target) && have_media("${$ssw75}/Install Disk 7.img") && have_media($ddk_cd) && have_media($host_hd) {

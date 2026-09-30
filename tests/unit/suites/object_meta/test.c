@@ -14,11 +14,13 @@
 //   - `meta.complete(...)` returns an empty list when no provider is
 //     installed (tolerant degradation for unit-test contexts)
 
+#include "lint.h"
 #include "meta.h"
 #include "object.h"
 #include "test_assert.h"
 #include "value.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -223,6 +225,281 @@ TEST(test_meta_complete_returns_empty_without_provider) {
     object_root_reset();
 }
 
+// === Logical parents: callback-backed children have paths =================
+//
+// A small `scsi` tree shaped like the real one: an attached collection
+// container `device` whose entries come from get(), each with a
+// lookup-backed `image` child, plus a keyed collection `category`.
+
+static struct object *g_dev_objs[8];
+static struct object *g_img_objs[8];
+static struct object *g_cat_objs[2];
+static const char *g_cat_names[2] = {"cpu", "scsi"};
+
+static const class_desc_t empty_class = {.name = "Empty", .members = NULL, .n_members = 0};
+
+static struct object *img_lookup(struct object *self, const char *name) {
+    (void)name;
+    for (int i = 0; i < 8; i++)
+        if (g_dev_objs[i] == self)
+            return g_img_objs[i];
+    return NULL;
+}
+
+static const member_t dev_members[] = {
+    {.kind = M_CHILD, .name = "image", .doc = "Medium", .child = {.cls = &empty_class, .lookup = img_lookup}},
+};
+static const class_desc_t dev_class = {.name = "Dev", .members = dev_members, .n_members = 1};
+
+static struct object *devs_get(struct object *self, int index) {
+    (void)self;
+    return (index >= 0 && index < 8) ? g_dev_objs[index] : NULL;
+}
+
+static const member_t devs_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .doc = "Devices",
+     .child = {.cls = &dev_class, .indexed = true, .get = devs_get, .slots = 8}},
+};
+static const class_desc_t devs_class = {.name = "Devs", .members = devs_members, .n_members = 1};
+
+static struct object *cats_lookup(struct object *self, const char *name) {
+    (void)self;
+    for (int i = 0; i < 2; i++)
+        if (strcmp(name, g_cat_names[i]) == 0)
+            return g_cat_objs[i];
+    return NULL;
+}
+
+static int cats_keys(struct object *self, const char ***out) {
+    (void)self;
+    *out = g_cat_names;
+    return 2;
+}
+
+static const member_t cats_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .doc = "Categories",
+     .child = {.cls = &empty_class, .indexed = true, .lookup = cats_lookup, .keys = cats_keys}},
+};
+static const class_desc_t cats_class = {.name = "Cats", .members = cats_members, .n_members = 1};
+
+// Resolve `path` + ".meta.path" and compare with `want`.
+static bool path_is(const char *path, const char *want) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s.meta.path", path);
+    node_t n = object_resolve(object_root(), buf);
+    if (!node_valid(n))
+        return false;
+    value_t v = node_get(n);
+    bool ok = v.kind == V_STRING && v.s && strcmp(v.s, want) == 0;
+    value_free(&v);
+    return ok;
+}
+
+TEST(test_logical_parent_paths) {
+    object_root_reset();
+    struct object *scsi = object_new(&empty_class, NULL, "scsi");
+    object_attach(object_root(), scsi);
+    struct object *devs = object_new(&devs_class, NULL, "device");
+    object_attach(scsi, devs);
+    struct object *cats = object_new(&cats_class, NULL, "category");
+    object_attach(object_root(), cats);
+    memset(g_dev_objs, 0, sizeof(g_dev_objs));
+    memset(g_img_objs, 0, sizeof(g_img_objs));
+    g_dev_objs[3] = object_new(&dev_class, NULL, NULL);
+    g_img_objs[3] = object_new(&empty_class, NULL, "image");
+    object_set_logical_parent(g_dev_objs[3], devs, NULL, 3, NULL);
+    object_set_logical_parent(g_img_objs[3], g_dev_objs[3], "image", -1, NULL);
+    for (int i = 0; i < 2; i++) {
+        g_cat_objs[i] = object_new(&empty_class, NULL, NULL);
+        object_set_logical_parent(g_cat_objs[i], cats, NULL, -1, g_cat_names[i]);
+    }
+
+    ASSERT_TRUE(path_is("scsi.device", "scsi.device"));
+    ASSERT_TRUE(path_is("scsi.device[3]", "scsi.device[3]"));
+    ASSERT_TRUE(path_is("scsi.device[3].image", "scsi.device[3].image"));
+    ASSERT_TRUE(path_is("category[\"scsi\"]", "category[\"scsi\"]"));
+    ASSERT_TRUE(object_logical_parent(g_dev_objs[3]) == devs);
+    ASSERT_TRUE(object_logical_index(g_dev_objs[3]) == 3);
+    ASSERT_TRUE(object_logical_key(g_cat_objs[1]) && strcmp(object_logical_key(g_cat_objs[1]), "scsi") == 0);
+
+    // A keyed collection counts its keys.
+    node_t cn = object_resolve(object_root(), "category.count");
+    ASSERT_TRUE(node_valid(cn));
+    value_t c = node_get(cn);
+    ASSERT_TRUE(c.kind == V_UINT && c.u == 2);
+
+    // The parent going first clears the link: no dangling back-pointer, and
+    // the child loses its path rather than printing a freed one.
+    object_detach(devs);
+    object_delete(devs);
+    ASSERT_TRUE(object_logical_parent(g_dev_objs[3]) == NULL);
+    char buf[64];
+    object_compute_path(g_dev_objs[3], buf, sizeof(buf));
+    ASSERT_TRUE(buf[0] == '\0');
+
+    // The child going first unregisters itself from the parent.
+    object_delete(g_img_objs[3]);
+    object_delete(g_dev_objs[3]);
+    for (int i = 0; i < 2; i++)
+        object_delete(g_cat_objs[i]);
+    object_detach(cats);
+    object_delete(cats);
+    object_detach(scsi);
+    object_delete(scsi);
+    object_root_reset();
+}
+
+TEST(test_resolver_adopts_unregistered_entries) {
+    object_root_reset();
+    struct object *devs = object_new(&devs_class, NULL, "device");
+    object_attach(object_root(), devs);
+    memset(g_dev_objs, 0, sizeof(g_dev_objs));
+    g_dev_objs[5] = object_new(&dev_class, NULL, NULL);
+    // No explicit registration: the first resolution adopts it.
+    ASSERT_TRUE(path_is("device[5]", "device[5]"));
+    ASSERT_TRUE(object_logical_parent(g_dev_objs[5]) == devs);
+    object_delete(g_dev_objs[5]);
+    g_dev_objs[5] = NULL;
+    object_detach(devs);
+    object_delete(devs);
+    object_root_reset();
+}
+
+TEST(test_valid_keys) {
+    ASSERT_TRUE(object_valid_key("scsi"));
+    ASSERT_TRUE(object_valid_key("a-b.c_9"));
+    ASSERT_TRUE(!object_valid_key(""));
+    ASSERT_TRUE(!object_valid_key("has space"));
+    ASSERT_TRUE(!object_valid_key("quote\""));
+    char long_key[80];
+    memset(long_key, 'k', sizeof(long_key) - 1);
+    long_key[sizeof(long_key) - 1] = '\0';
+    ASSERT_TRUE(!object_valid_key(long_key));
+}
+
+// === meta.members keys ====================================================
+
+static const arg_decl_t tk_args[] = {
+    {.name = "mode", .kind = V_ENUM, .enum_values = (const char *const[]){"a", "b", NULL}, .doc = "Mode"},
+};
+
+static const member_t tk_members[] = {
+    {.kind = M_ATTR,
+     .name = "x",
+     .doc = "An x",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = toy_get_pc}},
+    {.kind = M_METHOD,
+     .name = "go",
+     .doc = "Go",
+     .method = {.args = tk_args, .nargs = 1, .result = V_NONE, .fn = toy_step} },
+    {.kind = M_METHOD,
+     .name = "save",
+     .doc = "Save",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}    },
+};
+static const class_desc_t tk_class = {.name = "Tk", .members = tk_members, .n_members = 3, .doc = "A toy node"};
+
+// Lint rule 7: each example must pass the caller's check.
+static const member_t lx_members[] = {
+    {.kind = M_METHOD,
+     .name = "bare",
+     .doc = "No examples",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+    {.kind = M_METHOD,
+     .name = "good",
+     .examples = (const char *const[]){"lx.good", NULL},
+     .doc = "A resolving example",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+    {.kind = M_METHOD,
+     .name = "bad",
+     .examples = (const char *const[]){"lx.good", "lx.bda", NULL},
+     .doc = "One example that does not resolve",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = toy_step}},
+};
+static const class_desc_t lx_class = {.name = "Lx", .members = lx_members, .n_members = 3, .doc = "A lint node"};
+
+static bool example_ok(const char *example) {
+    return strstr(example, "bda") == NULL;
+}
+
+static bool has_line(const value_t *list, const char *line) {
+    for (size_t i = 0; i < list->list.len; i++)
+        if (strcmp(list->list.items[i].s, line) == 0)
+            return true;
+    return false;
+}
+
+TEST(test_lint_examples) {
+    object_root_reset();
+    struct object *lx = object_new(&lx_class, NULL, "lx");
+    object_attach(object_root(), lx);
+    value_t out = object_lint_members(example_ok);
+    ASSERT_EQ_INT(V_LIST, out.kind);
+    ASSERT_TRUE(has_line(&out, "lx.bad: example does not resolve: lx.bda"));
+    ASSERT_EQ_INT(1, (int)out.list.len);
+    value_free(&out);
+    // Without a check, nothing is reported (a method needs no examples).
+    out = object_lint_members(NULL);
+    ASSERT_EQ_INT(0, (int)out.list.len);
+    value_free(&out);
+    object_detach(lx);
+    object_delete(lx);
+    object_root_reset();
+}
+
+// A value's map entry by key, or NULL.
+static const value_t *map_get(const value_t *m, const char *key) {
+    if (!m || m->kind != V_MAP)
+        return NULL;
+    for (size_t i = 0; i < m->map.len; i++)
+        if (strcmp(m->map.entries[i].key, key) == 0)
+            return &m->map.entries[i].val;
+    return NULL;
+}
+
+TEST(test_meta_members_keys) {
+    object_root_reset();
+    struct object *top = object_new(&tk_class, NULL, "top");
+    object_attach(object_root(), top);
+    node_t n = object_resolve(object_root(), "top.meta.members");
+    ASSERT_TRUE(node_valid(n));
+    value_t list = node_call(n, 0, NULL);
+    ASSERT_TRUE(list.kind == V_LIST && list.list.len == 3);
+    const value_t *x = &list.list.items[0];
+    const value_t *type = map_get(x, "type");
+    ASSERT_TRUE(type && type->kind == V_MAP);
+    ASSERT_TRUE(strcmp(map_get(type, "kind")->s, "uint") == 0);
+    ASSERT_TRUE(strcmp(map_get(type, "presentation")->s, "hex") == 0);
+    ASSERT_TRUE(map_get(type, "enum")->kind == V_NONE);
+    ASSERT_TRUE(map_get(x, "task") == NULL);
+    const value_t *go = &list.list.items[1];
+    const value_t *args = map_get(go, "args");
+    ASSERT_TRUE(args && args->kind == V_LIST && args->list.len == 1);
+    const value_t *atype = map_get(&args->list.items[0], "type");
+    ASSERT_TRUE(strcmp(map_get(atype, "kind")->s, "enum") == 0);
+    ASSERT_TRUE(map_get(atype, "enum")->kind == V_LIST && map_get(atype, "enum")->list.len == 2);
+    ASSERT_TRUE(map_get(&args->list.items[0], "optional")->kind == V_BOOL);
+    ASSERT_TRUE(map_get(&args->list.items[0], "default")->kind == V_NONE);
+    ASSERT_TRUE(strcmp(map_get(map_get(go, "result"), "kind")->s, "none") == 0);
+    value_free(&list);
+
+    // The root's view of `top`: doc from the class, domain.
+    node_t r = object_resolve(object_root(), "meta.members");
+    value_t rl = node_call(r, 0, NULL);
+    ASSERT_TRUE(rl.kind == V_LIST && rl.list.len == 1);
+    ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "doc")->s, "A toy node") == 0);
+    ASSERT_TRUE(strcmp(map_get(&rl.list.items[0], "domain")->s, "emulator") == 0);
+    ASSERT_TRUE(map_get(&rl.list.items[0], "collection")->kind == V_BOOL);
+    value_free(&rl);
+    object_detach(top);
+    object_delete(top);
+    object_root_reset();
+}
+
 int main(void) {
     RUN(test_meta_segment_resolves);
     RUN(test_root_meta_resolves);
@@ -234,5 +511,10 @@ int main(void) {
     RUN(test_meta_node_cached);
     RUN(test_class_with_meta_member_rejected);
     RUN(test_meta_complete_returns_empty_without_provider);
+    RUN(test_logical_parent_paths);
+    RUN(test_resolver_adopts_unregistered_entries);
+    RUN(test_valid_keys);
+    RUN(test_meta_members_keys);
+    RUN(test_lint_examples);
     return 0;
 }

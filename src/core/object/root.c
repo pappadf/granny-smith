@@ -4,9 +4,9 @@
 // root.c
 // Defines the `emu` root class — the top-level introspection methods
 // (objects / attributes / methods / help / time) plus a few thin
-// wrappers (quit / assert / echo / download) — and orchestrates the
+// wrappers (quit / echo) — and orchestrates the
 // install/uninstall of the small set of cfg-scoped stubs that hang off
-// it (the shell namespace and shell.alias child, the storage view of
+// it (the shell namespace and shell.alias child, files.images, the view of
 // cfg->images).
 
 #include "root.h"
@@ -17,15 +17,18 @@
 #include <time.h>
 
 #include "alias.h"
+#include "commands.h"
 #include "debug.h"
+#include "nubus.h"
 #include "object.h"
+#include "pci.h"
 #include "shell_funcs.h"
+#include "storage.h"
 #include "system.h"
 #include "system_config.h"
+#include "usage.h"
 #include "value.h"
 
-extern const class_desc_t storage_class_real; // src/core/storage/storage.c
-extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
 extern const class_desc_t shell_class; // src/core/shell/shell_class.c
 extern const class_desc_t nubus_class; // src/core/peripherals/nubus/nubus_class.c
@@ -164,22 +167,19 @@ static value_t method_root_methods(struct object *self, const member_t *m, int a
     return val_list(acc.items, acc.len);
 }
 
-// `help(path?)` — return the doc string of the resolved member. For
-// object-typed nodes, returns the class name (no separate "class doc"
-// field exists in the substrate yet).
+// `help(path?)` — the usage text of any path (usage.c): a method's
+// signature, arguments and doc; an attribute's type, value and doc; a node's
+// doc and member lists.  The same text shell.usage returns.
 static value_t method_root_help(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     const char *path = (argc >= 1 && argv[0].s) ? argv[0].s : "";
-    node_t n = object_resolve(object_root(), path);
-    if (!node_valid(n))
+    value_t v = object_usage_text(path);
+    if (v.kind == V_ERROR) {
+        value_free(&v);
         return val_err("help: path did not resolve");
-    if (n.member && n.member->doc)
-        return val_str(n.member->doc);
-    if (n.member)
-        return val_str(n.member->name ? n.member->name : "");
-    const class_desc_t *cls = object_class(n.obj);
-    return val_str(cls && cls->name ? cls->name : "");
+    }
+    return v;
 }
 
 // `time()` — wall-clock seconds since the Unix epoch. Useful for
@@ -194,8 +194,8 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
 }
 
 // === Top-level wrappers =====================================================
-// quit / assert / echo / download. Subsystem-specific verbs live with
-// their owning class (cpu.*, memory.*, debug.*, archive.*, …); only the
+// quit / echo. Subsystem-specific verbs live with
+// their owning class (cpu.*, memory.*, debug.*, files.*, …); only the
 // process-wide ones stay here.
 
 // `quit()` — request emulator shutdown. Headless sets the script
@@ -249,22 +249,6 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-// `download(path)` — trigger a browser file download. Routes to the
-// platform-specific gs_download (WASM streams via Blob+anchor); a platform
-// with no browser says so.
-static value_t method_root_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    int rc = gs_download(argv[0].s);
-    if (rc == -2)
-        return val_err("download: not supported on this platform");
-    return val_bool(rc == 0);
-}
-
-static const arg_decl_t root_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "File path"},
-};
 static const arg_decl_t root_path_args[] = {
     {.name = "path",
      .kind = V_STRING,
@@ -281,37 +265,33 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}                   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}                },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}                   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
     {.kind = M_METHOD,
      .name = "help",
-     .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}                    },
+     .doc = "Usage text of a path: signature, arguments, type, value, doc",
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                                },
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
     // `assert` is a statement keyword in shell v2 (script.c); the former
     // root method is gone — its name is now a reserved word.
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                                },
-    {.kind = M_METHOD,
-     .name = "download",
-     .doc = "Trigger a browser file download (WASM-only)",
-     .method = {.ui_flags = MM_IO, .args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}},
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
 };
 
 static const class_desc_t emu_root_class_real = {
@@ -343,7 +323,7 @@ static struct config *g_installed_cfg = NULL;
 
 static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
     if (g_stub_count >= MAX_STUBS) {
-        // Two callers discard this result (storage.images, shell.alias), so an
+        // Two callers discard this result (files.images, shell.alias), so an
         // exhausted table made a whole subtree quietly absent -- which reads
         // as a missing feature, not a resource limit.  The class-validation
         // failure a few lines below already prints; this one did not.
@@ -392,44 +372,58 @@ void root_install(struct config *cfg) {
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,
     // floppy_init, sound_init, appletalk_init, debug_init). The
-    // platform-level facades (mouse, keyboard, screen, vfs, find) are
-    // process-singletons attached from shell_init via their owning
-    // module's *_class_register hook.
+    // platform-level facades (mouse, screen, files, log, catalog) are
+    // process-singletons attached from shell_init.
     //
-    // What remains here is the Shell class instance, the storage view
-    // of cfg->images, and the shell.alias child (kept attached for
-    // backwards compatibility with the existing
-    // `shell.alias.{add,remove,list}` surface).
+    // What remains here is the Shell class instance, files.images (the
+    // view of cfg->images), and the shell.alias child.
     struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
-    if (shell_obj)
+    if (shell_obj) {
+        object_set_order(shell_obj, 60);
         shell_funcs_install(shell_obj); // `shell.functions` container
-    struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
-    if (storage_obj) {
-        attach_stub(storage_obj, &storage_images_collection_class, cfg, "images");
-        storage_object_classes_init(cfg);
+    }
+    // files.images: the storage view of cfg->images, under the process
+    // singleton `files`.
+    struct object *images_obj = attach_stub(files_object(), &files_images_collection_class, cfg, "images");
+    if (images_obj) {
+        object_set_label(images_obj, "Images");
+        object_set_order(images_obj, 10);
+        files_images_init(cfg, images_obj);
     }
 
-    // shell.alias child object.
-    if (shell_obj)
+    // shell.alias and shell.command child objects.
+    if (shell_obj) {
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
-
-    // `machine.nubus.*` namespace.  Attached under the machine node — NuBus
-    // is emulated hardware, not a meta object.  The registry is empty until
-    // cfg->nubus exists, so `machine.nubus.cards()` returns [] pre-population;
-    // once populated the surface gains slot.<n>/ children.
-    struct object *nubus_obj = attach_stub(machine_object(), &nubus_class, cfg, "nubus");
-    if (nubus_obj) {
-        object_set_label(nubus_obj, "NuBus");
-        object_set_order(nubus_obj, 100);
+        attach_stub(shell_obj, &shell_command_class, cfg, "command");
     }
 
-    // `machine.pci.*` — the same treatment, beside NuBus.  The slot
-    // children exist only once a PCI machine's slot walk has run
-    // (pci_objects_build), so this reads empty on every other model.
-    struct object *pci_obj = attach_stub(machine_object(), &pci_class, cfg, "pci");
-    if (pci_obj) {
-        object_set_label(pci_obj, "PCI");
-        object_set_order(pci_obj, 101);
+    // `machine.nubus` / `machine.pci` — attached under the machine node
+    // (they are emulated hardware, not meta objects), and only when the
+    // booted model has that bus.  Each carries its slot collection, a
+    // container whose entries are the slot nodes the bus built.
+    if (cfg && cfg->nubus) {
+        struct object *nubus_obj = attach_stub(machine_object(), &nubus_class, cfg, "nubus");
+        if (nubus_obj) {
+            object_set_label(nubus_obj, "NuBus");
+            object_set_order(nubus_obj, 100);
+            struct object *slots = attach_stub(nubus_obj, &nubus_slots_class, cfg, "slot");
+            if (slots) {
+                object_set_label(slots, "Slots");
+                nubus_objects_adopt(slots);
+            }
+        }
+    }
+    if (cfg && cfg->pci) {
+        struct object *pci_obj = attach_stub(machine_object(), &pci_class, cfg, "pci");
+        if (pci_obj) {
+            object_set_label(pci_obj, "PCI");
+            object_set_order(pci_obj, 101);
+            struct object *slots = attach_stub(pci_obj, &pci_slots_class, cfg, "slot");
+            if (slots) {
+                object_set_label(slots, "Slots");
+                pci_objects_adopt(slots);
+            }
+        }
     }
 }
 
@@ -447,9 +441,9 @@ void root_uninstall(void) {
     g_stub_count = 0;
     // Subsystem-scoped entries (scsi/floppy/atalk-share/cpu/etc) are
     // torn down by their owning *_delete functions during machine
-    // teardown. Only the cfg-scoped storage.images entry array is freed
+    // teardown. Only the cfg-scoped files.images entry array is freed
     // here.
-    storage_object_classes_teardown();
+    files_images_teardown();
     // The root method table is NOT reverted here, deliberately.
     //
     // It used to be, and that was a process-scoped global being undone by a

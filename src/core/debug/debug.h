@@ -167,6 +167,7 @@ struct debug {
     struct object *wp_collection_object;
     struct object *mac_object; // debug.mac
     struct object *mac_globals_object; // debug.mac.globals
+    struct object *find_object; // debug.find
 };
 
 typedef struct debug debug_t;

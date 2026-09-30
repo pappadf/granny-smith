@@ -23,7 +23,7 @@ assert debug.mac.globals.read("SysMap") != 0 "first boot: no System file opened"
 
 # A floppy in the second bay exercises the floppy half of the transfer.
 # Inserted after the boot so the ROM's boot scan never touches it.
-assert storage.fd_create("${$WORK_DIR}/scratch.fd", false) "blank floppy created"
+assert files.fd_create("${$WORK_DIR}/scratch.fd", false) "blank floppy created"
 machine.floppy.drive[0].insert "${$WORK_DIR}/scratch.fd" true
 assert machine.floppy.drive[0].disk.present "floppy inserted"
 

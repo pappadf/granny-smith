@@ -1,6 +1,6 @@
 // @vitest-environment node
 // The page moves file bytes through the core's transfer window (bus/xfer.ts):
-// a copy into wasm memory plus a storage.xfer_write / xfer_read request, never
+// a copy into wasm memory plus a files.xfer_write / xfer_read request, never
 // a Module.FS call on the page's thread (which deadlocked Safari).  The fake
 // core below keeps "files" in a Map and serves the window from a fake heap.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -23,9 +23,9 @@ const files = new Map<string, Uint8Array>();
 beforeEach(() => {
   bridge.reset();
   files.clear();
-  bridge.reply('storage.xfer_buffer', WINDOW_PTR);
-  bridge.reply('storage.xfer_size', WINDOW_SIZE);
-  bridge.reply('storage.xfer_write', (args: unknown) => {
+  bridge.reply('files.xfer_buffer', WINDOW_PTR);
+  bridge.reply('files.xfer_size', WINDOW_SIZE);
+  bridge.reply('files.xfer_write', (args: unknown) => {
     const [path, offset, len] = args as [string, number, number];
     const old = offset === 0 ? new Uint8Array(0) : (files.get(path) ?? new Uint8Array(0));
     const next = new Uint8Array(Math.max(old.length, offset + len));
@@ -34,7 +34,7 @@ beforeEach(() => {
     files.set(path, next);
     return true;
   });
-  bridge.reply('storage.xfer_read', (args: unknown) => {
+  bridge.reply('files.xfer_read', (args: unknown) => {
     const [path, offset, len] = args as [string, number, number];
     const f = files.get(path);
     if (!f) return { error: 'no such file' };
@@ -52,7 +52,7 @@ describe('the transfer window', () => {
     const data = bytes(40);
     expect(await streamToOpfs('/opfs/upload/a.rom', new Blob([data]))).toBe(true);
     expect(files.get('/opfs/upload/a.rom')).toEqual(data);
-    expect(bridge.paths().filter((p) => p === 'storage.xfer_write')).toHaveLength(3); // 16+16+8
+    expect(bridge.paths().filter((p) => p === 'files.xfer_write')).toHaveLength(3); // 16+16+8
   });
 
   it("a stream's small chunks are gathered into full windows", async () => {
@@ -65,7 +65,7 @@ describe('the transfer window', () => {
     });
     expect(await streamToOpfs('/opfs/upload/b.img', stream)).toBe(true);
     expect(files.get('/opfs/upload/b.img')).toEqual(data);
-    expect(bridge.paths().filter((p) => p === 'storage.xfer_write')).toHaveLength(3); // not 8
+    expect(bridge.paths().filter((p) => p === 'files.xfer_write')).toHaveLength(3); // not 8
   });
 
   it('an empty source still creates the file', async () => {
@@ -93,7 +93,7 @@ describe('the transfer window', () => {
   });
 
   it('a refused write reports failure', async () => {
-    bridge.reply('storage.xfer_write', { error: 'disk full' });
+    bridge.reply('files.xfer_write', { error: 'disk full' });
     expect(await streamToOpfs('/c', new Blob([bytes(4)]))).toBe(false);
   });
 });

@@ -55,11 +55,11 @@ let voldl753 = "${$WORK_DIR}/driverless753.img"
 # driver partition (IMAGE_WRAP_PREFIX_BLOCKS).
 let PREFIX_BYTES = 96 * 512
 
-# The storage.images entry whose file is `path` (by its base name).
+# The files.images entry whose file is `path` (by its base name).
 def image_index(path) {
     let i = 0
-    while $i < storage.images.count {
-        if storage.images[$i].filename == $path { return $i }
+    while $i < files.images.count {
+        if files.images[$i].filename == $path { return $i }
         $i = $i + 1
     }
     error("no attached image ${$path}")
@@ -79,13 +79,13 @@ def assert_desktop(label) {
 # attached as a CD-ROM is NOT wrapped (the CD driver reads bare HFS itself).
 def row_wrap_layout() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
-    let file_size = storage.path_size("${$vol753}")
+    let file_size = files.path_size("${$vol753}")
     assert scsi_identify_ok() "wrap-layout: identify_hd refused the bare volume"
     assert machine.scsi.attach_hd("${$vol753}", 0) "wrap-layout: attach_hd failed"
     assert machine.scsi.device[0].type == "hd" "wrap-layout: SCSI 0 is not a hard disk"
     let i = image_index($vol753)
-    assert storage.images[$i].raw_size == $file_size + $PREFIX_BYTES "wrap-layout: disk is ${storage.images[$i].raw_size} bytes, want ${$file_size} + ${$PREFIX_BYTES}"
-    assert storage.path_size("${$vol753}") == $file_size "wrap-layout: the volume file changed size"
+    assert files.images[$i].raw_size == $file_size + $PREFIX_BYTES "wrap-layout: disk is ${files.images[$i].raw_size} bytes, want ${$file_size} + ${$PREFIX_BYTES}"
+    assert files.path_size("${$vol753}") == $file_size "wrap-layout: the volume file changed size"
     assert machine.scsi.attach_cdrom("${$vol753}", 3) "wrap-layout: attach_cdrom failed"
     assert machine.scsi.device[3].type == "cdrom" "wrap-layout: SCSI 3 is not a CD-ROM"
 }
@@ -109,6 +109,10 @@ def check_desktop(golden) {
 # extensions parade) cannot pass for the desktop.
 def boot_desktop(label, model, rom, ram, vol, golden, warm) {
     machine.boot model="${$model}" ram=$ram rom="${$rom}"
+    # A fixed clock: the RTC otherwise starts at the host's wall time, and a
+    # menu-bar clock turning over during the settle wait costs a random
+    # extra 60M instructions (perf gate) on some runs and not others.
+    machine.rtc.time = "2026-04-26T21:30:00"
     assert machine.scsi.attach_hd("${$vol}", 0) "${$label}: attach_hd failed"
     machine.rtc.pram.boot_device = 0
     scheduler.run $warm
@@ -117,8 +121,8 @@ def boot_desktop(label, model, rom, ram, vol, golden, warm) {
     let i = image_index($vol)
     # The volume was read through the driver; the Finder also writes to it
     # (desktop database, volume info) — through the driver into the delta.
-    assert storage.images[$i].reads > 0 "${$label}: nothing read from the disk"
-    assert storage.images[$i].writes > 0 "${$label}: nothing written to the disk"
+    assert files.images[$i].reads > 0 "${$label}: nothing read from the disk"
+    assert files.images[$i].writes > 0 "${$label}: nothing written to the disk"
     check_desktop($golden)
     report_perf("scsi-bare-volume/${$label}", scheduler.instr_count)
 }
@@ -169,7 +173,7 @@ def row_two_volumes() {
     scheduler.run 150000000
     wait_stable(1600000000)
     assert_desktop("two-volumes")
-    assert storage.images[image_index($vol701)].reads > 0 "two-volumes: the second volume was never read"
+    assert files.images[image_index($vol701)].reads > 0 "two-volumes: the second volume was never read"
     check_desktop("goldens/iici-7.5.3-640x480x1-bare-two-volumes.png")
 }
 
@@ -185,7 +189,7 @@ def row_checkpoint() {
     assert checkpoint.save("${$WORK_DIR}/bare-volume.checkpoint") "checkpoint: save failed"
     assert checkpoint.load("${$WORK_DIR}/bare-volume.checkpoint") "checkpoint: load failed"
     let i = image_index($vol753)
-    assert storage.images[$i].raw_size == storage.path_size("${$vol753}") + $PREFIX_BYTES "checkpoint: restored disk is not wrapped"
+    assert files.images[$i].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "checkpoint: restored disk is not wrapped"
     # Keep running off the restored disk: the Finder must still be there.
     scheduler.run 200000000
     assert_desktop("checkpoint")
@@ -199,24 +203,25 @@ def row_checkpoint() {
 # read the map where the volume should be.
 def row_driverless() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
-    let file_size = storage.path_size("${$voldl753}")
+    machine.rtc.time = "2026-04-26T21:30:00" # a fixed clock, as boot_desktop
+    let file_size = files.path_size("${$voldl753}")
     assert machine.scsi.attach_hd("${$voldl753}", 0) "driverless: attach_hd failed"
     let i = image_index($voldl753)
-    assert storage.images[$i].raw_size == storage.path_size("${$vol753}") + $PREFIX_BYTES "driverless: disk is ${storage.images[$i].raw_size} bytes, want the HFS partition + ${$PREFIX_BYTES}"
+    assert files.images[$i].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "driverless: disk is ${files.images[$i].raw_size} bytes, want the HFS partition + ${$PREFIX_BYTES}"
     scheduler.run 150000000
     wait_stable(1600000000)
     assert_desktop("driverless")
-    assert storage.images[$i].writes > 0 "driverless: nothing written to the disk"
+    assert files.images[$i].writes > 0 "driverless: nothing written to the disk"
     check_desktop("goldens/iici-7.5.3-640x480x1-bare-finder.png")
     report_perf("scsi-bare-volume/driverless", scheduler.instr_count)
     assert checkpoint.save("${$WORK_DIR}/driverless.checkpoint") "driverless: checkpoint save failed"
     assert checkpoint.load("${$WORK_DIR}/driverless.checkpoint") "driverless: checkpoint load failed"
     let j = image_index($voldl753)
-    assert storage.images[$j].raw_size == storage.path_size("${$vol753}") + $PREFIX_BYTES "driverless: restored disk is not wrapped"
+    assert files.images[$j].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "driverless: restored disk is not wrapped"
     scheduler.run 200000000
     assert_desktop("driverless (restored)")
     check_desktop("goldens/iici-7.5.3-640x480x1-bare-finder.png")
-    assert storage.path_size("${$voldl753}") == $file_size "driverless: the disk file changed size"
+    assert files.path_size("${$voldl753}") == $file_size "driverless: the disk file changed size"
 }
 
 # ---- row dispatch ------------------------------------------------------------------

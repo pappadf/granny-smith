@@ -410,7 +410,7 @@ so `PLATEN_DIR=/workspaces/efterscript` supplied `target/release/libplaten.a`):
   log-only tweak):
   `printer: documents=1 pages=1 outcome='ok' status='status: idle'`,
   `=== PASS: appletalk-print ===`.
-- The same row with `debug.log "appletalk" "level=6"` prefixed (temporary
+- The same row with `log.set "appletalk" level=6` prefixed (temporary
   twin directory, deleted afterwards):
   `printer: documents=1 pages=1 outcome='ok' status='status: idle'`,
   `=== PASS: appletalk-print-log ===`. In the transcript: OpenReply goes

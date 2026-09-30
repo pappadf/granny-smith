@@ -1468,8 +1468,10 @@ static const member_t gc_members[] = {
      .doc = "Decline the drawing funcs ($2D/$15/$30) so the ROM path renders everything (the differential oracle)",
      .attr = {.type = V_BOOL, .get = gc_attr_force_decline_get, .set = gc_attr_force_decline_set}},
 };
-static const class_desc_t display_card_824gc_gc_class = {
-    .name = "gc", .members = gc_members, .n_members = sizeof(gc_members) / sizeof(gc_members[0])};
+static const class_desc_t display_card_824gc_gc_class = {.name = "gc",
+                                                         .doc = "The 8*24 GC card's accelerator: RPC state and queue",
+                                                         .members = gc_members,
+                                                         .n_members = sizeof(gc_members) / sizeof(gc_members[0])};
 
 static void display_card_824gc_attach_objects(nubus_card_t *card, struct object *card_node) {
     if (!card || !card_node)

@@ -364,13 +364,13 @@ TEST(test_any_attribute_slot_rejected) {
 //
 // node_validate_args says it directly: "argc truncation only works at the
 // tail", so an optional slot with NO default_value cannot be a hole before a
-// later given slot.  debug.log(cat, level=3, ts=on) hit exactly that on
+// later given slot.  log.set(cat, level=3, ts=on) hit exactly that on
 // `file`, which sits between them.
 //
 // A V_NONE default is filled in and SKIPS validation, so it means "the caller
 // did not mention this one" -- which is what a body needs to distinguish
 // "unset" from "set to the default".  This pins that property, because the
-// typed debug.log depends on it.
+// typed log.set depends on it.
 static const value_t opt_unset = {.kind = V_NONE};
 
 static value_t skippable_fn(struct object *self, const member_t *m, int argc, const value_t *argv) {

@@ -71,12 +71,15 @@ echo "core-layering: OK — no path fabrication in the ROM/vROM loader areas"
 # a deliberate act; growing it by accident is what this check stops.
 ALLOWED_EXTERNAL_CLASSES="
 display_fb_class
+find_class
 nubus_class
+nubus_slots_class
 pci_class
+pci_slots_class
 shell_alias_class
+shell_command_class
 shell_class
-storage_class_real
-storage_images_collection_class
+files_images_collection_class
 "
 
 fail=0

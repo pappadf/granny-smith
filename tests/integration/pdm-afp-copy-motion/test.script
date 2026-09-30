@@ -20,7 +20,7 @@
 include "../lib/mac.script"
 
 let img = "${$WORK_DIR}/macos81.img"
-let payload_size = storage.path_size("${$WORK_DIR}/share/payload.image")
+let payload_size = files.path_size("${$WORK_DIR}/share/payload.image")
 if have_media($img) {
 
 machine.boot model="pm6100" ram=24576 rom="${$ROM}"

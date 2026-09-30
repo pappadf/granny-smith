@@ -361,4 +361,4 @@ live in the headless integration tests, not here.
 
 - Traces: `npx playwright show-trace tests/e2e/test-results/<test>/trace.zip`
 - Screenshots/artifacts land under `tests/e2e/test-results/<test>-<project>/`
-- Drive the emulator's shell from a spec via the Terminal panel (`.xterm`)
+- Drive the emulator's shell from a spec via the Terminal console (`tests/e2e/helpers/terminal.ts`: its input is `.console .cm-content`, its output `.console-output`)

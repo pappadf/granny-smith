@@ -1202,9 +1202,9 @@ static const member_t ppc_members[] = {
     {.kind = M_ATTR, .name = "instr_count", .flags = VAL_RO,
      .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
      .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
-    {.kind = M_METHOD, .name = "frame",
-     .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
-     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
+    {.kind = M_METHOD, .name = "frame", .examples = (const char *const[]){"machine.cpu.frame", "machine.cpu.frame 0xfff00100 16", NULL},
+     .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
+     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
 };
 // clang-format on
 
@@ -1212,6 +1212,7 @@ static const class_desc_t ppc_cpu_class = {
     .name = "ppc",
     .members = ppc_members,
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
+    .doc = "The main CPU (PowerPC): registers and execution state",
 };
 
 // === machine.cpu.mmu ========================================================
@@ -1276,7 +1277,7 @@ static const arg_decl_t mmu_translate_args[] = {
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
-     .doc = "translate for supervisor (true) or user (false); default: MSR[PR]"},
+     .doc = "translate for supervisor (true) or user (false); omitted: from MSR[PR]"},
     {.name = "fetch",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1289,27 +1290,35 @@ static const arg_decl_t mmu_peek_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_peek_size4,
-     .doc = "1, 2 or 4 bytes (default 4)"},
+     .doc = "1, 2 or 4 bytes"},
     {.name = "space",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &obj_arg_unset,
-     .doc = "\"logical\" (default) or \"physical\""},
+     .doc = "\"logical\" or \"physical\"; omitted: logical"},
 };
 
 static const member_t ppc_mmu_members[] = {
     {.kind = M_METHOD,
      .name = "translate",
-     .doc = "Translate an address: {phys, valid, via}, side-effect-free (same shape on every MMU kind)",
-     .method = {.args = mmu_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu_method_translate}},
+     .examples = (const char *const[]){"machine.cpu.mmu.translate 0x5fff8000", NULL},
+     .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",
+     .method = {.result_doc = "{phys, valid, via}",
+                .args = mmu_translate_args,
+                .nargs = 3,
+                .result = V_MAP,
+                .fn = mmu_method_translate}                                                },
     {.kind = M_METHOD,
      .name = "peek",
+     .examples =
+         (const char *const[]){"machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical", NULL},
      .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
-     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}         },
+     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}},
 };
 
 static const class_desc_t ppc_mmu_class = {
     .name = "ppc_mmu",
+    .doc = "The PowerPC MMU: BATs, segment registers, peek and translate",
     .members = ppc_mmu_members,
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
 };
@@ -1364,6 +1373,7 @@ static const member_t ppc_fpu_members[] = {
 
 static const class_desc_t ppc_fpu_class = {
     .name = "ppc_fpu",
+    .doc = "The PowerPC floating-point registers and FPSCR",
     .members = ppc_fpu_members,
     .n_members = sizeof(ppc_fpu_members) / sizeof(ppc_fpu_members[0]),
 };

@@ -925,8 +925,11 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
     // Object-tree binding — instance_data is the scheduler itself.
     s->object = object_new(&scheduler_class, s, "scheduler");
-    if (s->object)
+    if (s->object) {
+        object_set_order(s->object, 10); // root order: machine 0, scheduler 10, checkpoint 20, files 30, debug 40, log
+                                         // 50, shell 60, catalog 70, appletalk 100
         object_attach(object_root(), s->object);
+    }
 
     return s;
 }
@@ -1952,51 +1955,30 @@ static value_t sched_attr_events(struct object *self, const member_t *m) {
     return val_list(items, len);
 }
 
-static const char *mode_label(enum schedule_mode m) {
-    switch (m) {
-    case schedule_paced:
-        return "paced";
-    case schedule_unthrottled:
-        return "turbo";
-    case schedule_accelerated:
-        return "accelerated";
-    default:
-        return "?";
-    }
-}
-
 static value_t sched_attr_running(struct object *self, const member_t *m) {
     (void)m;
     return val_bool(scheduler_is_running(sched_self_from(self)));
 }
 
+// scheduler.mode values, in enum-index order.  The legacy aliases (real,
+// realtime, hw, hardware → paced; accel → accelerated; max → turbo) are gone
+// everywhere: the attribute, --speed= and ?speed= take these three only.
+static const char *const sched_mode_names[] = {"paced", "accelerated", "turbo", NULL};
+static const enum schedule_mode sched_mode_values[] = {schedule_paced, schedule_accelerated, schedule_unthrottled};
+
 static value_t sched_attr_mode_get(struct object *self, const member_t *m) {
     (void)m;
-    return val_str(mode_label(sched_self_from(self)->mode));
+    enum schedule_mode mode = sched_self_from(self)->mode;
+    for (size_t i = 0; i < 3; i++)
+        if (sched_mode_values[i] == mode)
+            return val_enum((int)i, sched_mode_names, 3);
+    return val_err("scheduler.mode: unknown internal mode %d", (int)mode);
 }
+
 bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
-    // Legacy three-mode names stay accepted as aliases so existing scripts
-    // keep working: real/realtime and hw/hardware were the wall-clock modes
-    // → paced; max was the run-flat-out mode → turbo.  (There were three
-    // copies of this table, and they disagreed: the setter took real/hw, the
-    // command lines realtime/hardware.)
-    static const struct {
-        const char *name;
-        enum schedule_mode mode;
-    } names[] = {
-        {"paced",       schedule_paced      },
-        {"real",        schedule_paced      },
-        {"realtime",    schedule_paced      },
-        {"hw",          schedule_paced      },
-        {"hardware",    schedule_paced      },
-        {"accelerated", schedule_accelerated},
-        {"accel",       schedule_accelerated},
-        {"turbo",       schedule_unthrottled},
-        {"max",         schedule_unthrottled},
-    };
-    for (size_t i = 0; name && i < sizeof(names) / sizeof(names[0]); i++) {
-        if (strcmp(name, names[i].name) == 0) {
-            *out = names[i].mode;
+    for (size_t i = 0; name && i < 3; i++) {
+        if (strcmp(name, sched_mode_names[i]) == 0) {
+            *out = sched_mode_values[i];
             return true;
         }
     }
@@ -2005,15 +1987,13 @@ bool scheduler_mode_from_string(const char *name, enum schedule_mode *out) {
 
 static value_t sched_attr_mode_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
-    scheduler_t *s = sched_self_from(self);
-    enum schedule_mode mode;
-    if (!scheduler_mode_from_string(in.s, &mode)) {
-        value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: paced, accelerated, turbo)", in.s);
+    // node_set has already coerced a name to V_ENUM against the table.
+    if (in.kind != V_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
         value_free(&in);
-        return e;
+        return val_err("scheduler.mode: expected paced, accelerated or turbo");
     }
+    scheduler_set_mode(sched_self_from(self), sched_mode_values[in.enm.idx]);
     value_free(&in);
-    scheduler_set_mode(s, mode);
     return val_none();
 }
 
@@ -2149,82 +2129,85 @@ static const member_t scheduler_members[] = {
      .name = "running",
      .doc = "True while the scheduler is executing instructions",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = sched_attr_running, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = sched_attr_running, .set = NULL}                                                 },
     {.kind = M_ATTR,
      .name = "mode",
-     .doc = "Pacing mode ('paced' | 'accelerated' | 'turbo'; legacy aliases real/hw → paced, max → turbo, "
-            "accel → accelerated)", .flags = 0,
-     .attr = {.type = V_STRING, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
+     .doc = "Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo (flat out)",
+     .flags = 0,
+     .attr = {.type = V_ENUM, .enum_values = sched_mode_names, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
     {.kind = M_ATTR,
      .name = "cpi",
      .doc = "Per-machine cycles per instruction (mode-independent; writable as a debug override, 1..255)",
-     .flags = 0,
-     .attr = {.type = V_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}},
+     .flags = M_CAT_ADVANCED,
+     .attr = {.type = V_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}                                       },
     {.kind = M_ATTR,
      .name = "speed",
      .doc = "Accelerated-mode CPU speed multiplier in force (live). Write 0 for auto (adaptive governor, "
             "capped by max_speed) or 1.0..8.0 to pin a fixed multiplier. Only takes effect while mode is "
-            "'accelerated'; timebase (VBL/VIA/sound) stays real-time regardless", .flags = 0,
-     .attr = {.type = V_FLOAT, .get = sched_attr_speed, .set = sched_attr_speed_set}},
+            "'accelerated'; timebase (VBL/VIA/sound) stays real-time regardless",                            .flags = 0,
+     .attr = {.type = V_FLOAT, .get = sched_attr_speed, .set = sched_attr_speed_set}                                  },
     {.kind = M_ATTR,
      .name = "speed_auto",
      .doc = "True while the adaptive governor is choosing the accelerated-mode speed (scheduler.speed = 0)",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = sched_attr_speed_auto, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = sched_attr_speed_auto, .set = NULL}                                              },
     {.kind = M_ATTR,
      .name = "max_speed",
      .doc = "Cap on the accelerated-mode multiplier (1.0..8.0): the adaptive governor's ceiling, and pinned "
-            "speeds are clamped to it. Persisted", .flags = 0,
-     .attr = {.type = V_FLOAT, .get = sched_attr_max_speed, .set = sched_attr_max_speed_set}},
+            "speeds are clamped to it. Persisted",                                                           .flags = 0,
+     .attr = {.type = V_FLOAT, .get = sched_attr_max_speed, .set = sched_attr_max_speed_set}                          },
     {.kind = M_ATTR,
      .name = "cycles",
      .doc = "Total CPU cycles executed so far",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sched_attr_cycles, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_UINT, .get = sched_attr_cycles, .set = NULL}                                                  },
     {.kind = M_ATTR,
      .name = "events_fired",
      .doc = "Total scheduler events dispatched since process start (diagnostic)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sched_attr_events_fired, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_UINT, .get = sched_attr_events_fired, .set = NULL}                                            },
     {.kind = M_ATTR,
      .name = "instr_count",
      .doc = "Total CPU instructions executed so far",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sched_attr_instr_count, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_UINT, .get = sched_attr_instr_count, .set = NULL}                                             },
     {.kind = M_ATTR,
      .name = "frequency",
      .doc = "CPU clock frequency in Hz",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sched_attr_frequency, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_UINT, .get = sched_attr_frequency, .set = NULL}                                               },
     {.kind = M_ATTR,
      .name = "host_user_ns",
      .doc = "Process user-CPU time since daemon start, ns (POSIX CLOCK_PROCESS_CPUTIME_ID). "
             "Sample before+after scheduler.run; divide instr_count delta by the time delta "
-            "and multiply by 1e9 for emulator throughput in instructions per CPU-second.", .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sched_attr_host_user_ns, .set = NULL}},
+            "and multiply by 1e9 for emulator throughput in instructions per CPU-second.",                   .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_UINT, .get = sched_attr_host_user_ns, .set = NULL}                                            },
     {.kind = M_ATTR,
      .name = "host_wall_ns",
      .doc = "Host monotonic wall-clock time, ns (POSIX CLOCK_MONOTONIC). "
             "Sample before+after scheduler.run; divide instr_count delta by the time delta "
-            "and multiply by 1e9 for perceived emulator throughput in instructions per real second.", .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sched_attr_host_wall_ns, .set = NULL}},
+            "and multiply by 1e9 for perceived emulator throughput in instructions per real second.",        .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_UINT, .get = sched_attr_host_wall_ns, .set = NULL}                                            },
     {.kind = M_ATTR,
      .name = "events",
      .doc = "Pending event queue: {source, event, when, delta, data} per entry",
-     .flags = VAL_VOLATILE,
-     .attr = {.type = V_LIST, .get = sched_attr_events}},
+     .flags = VAL_VOLATILE | M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = sched_attr_events}                                                               },
     {.kind = M_METHOD,
      .name = "run",
+     .examples = (const char *const[]){"scheduler.run", "scheduler.run 20000000", NULL},
      .doc = "Start execution; with an instruction budget, stop after that many",
-     .method = {.args = sched_run_args, .nargs = 1, .result = V_BOOL, .fn = sched_method_run}},
+     .method = {.args = sched_run_args, .nargs = 1, .result = V_BOOL, .fn = sched_method_run}                         },
     {.kind = M_METHOD,
      .name = "stop",
+     .examples = (const char *const[]){"scheduler.stop", NULL},
      .doc = "Interrupt execution",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = sched_method_stop}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = sched_method_stop}                                  },
 };
 
 static const class_desc_t scheduler_class = {
     .name = "scheduler",
     .members = scheduler_members,
     .n_members = sizeof(scheduler_members) / sizeof(scheduler_members[0]),
+    .doc = "Runs the machine: start, stop, pacing mode and speed",
 };

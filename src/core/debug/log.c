@@ -190,11 +190,27 @@ int log_set_category_file(const char *category, const char *path) {
     return set_category_file(c, path ? path : "off");
 }
 
-// Print one category's current settings, as `debug.log <cat>` does.
+bool log_get_category_stdout(const log_category_t *cat) {
+    return cat && cat->to_stdout;
+}
+
+bool log_get_category_timestamp(const log_category_t *cat) {
+    return cat && cat->timestamp;
+}
+
+bool log_get_category_show_pc(const log_category_t *cat) {
+    return cat && cat->show_pc;
+}
+
+const char *log_get_category_file(const log_category_t *cat) {
+    return cat ? cat->file_path : NULL;
+}
+
+// Print one category's current settings, as `log.set <cat>` does.
 void log_print_category(const char *category) {
     struct log_category *c = (struct log_category *)log_get_category(category);
     if (!c) {
-        printf("unknown category \"%s\" (see debug.log_levels() for the full list)\n", category);
+        printf("unknown category \"%s\" (see log.levels for the full list)\n", category);
         return;
     }
     print_category_config(c);
@@ -233,7 +249,7 @@ const char *log_category_description(const char *name) {
     return NULL;
 }
 
-// Create every category the manifest declares, so `debug.log` with no
+// Create every category the manifest declares, so `log.levels`
 // arguments lists the real, complete set rather than only what has been hit
 // or configured so far.
 void log_register_manifest(void) {
@@ -252,8 +268,8 @@ log_category_t *log_register_category(const char *name) {
     if (!name || !*name)
         return NULL;
     // A category that is not in the manifest is a typo, in code or in a
-    // `debug.log` argument.  It used to be created on the spot, which is how
-    // `debug.log cpuu 10` reported success and produced nothing.
+    // `log.set` argument.  It used to be created on the spot, which is how
+    // `log.set cpuu 10` reported success and produced nothing.
     GS_ASSERTF(name_in_manifest(name), "log category '%s' is not in GS_LOG_CATEGORIES", name);
     if (!name_in_manifest(name))
         return NULL;

@@ -1505,6 +1505,7 @@ static const class_desc_t adb_class = {
     .name = "adb",
     .members = NULL,
     .n_members = 0,
+    .doc = "Apple Desktop Bus: keyboard and mouse",
 };
 
 static struct object *s_adb_object = NULL;

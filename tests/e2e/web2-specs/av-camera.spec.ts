@@ -49,7 +49,7 @@ test.use({
   },
 });
 
-// Scan the xterm buffer for a probe key's answer.
+// Scan the console output for a probe key's answer.
 //
 // The answer is bracketed by the key on BOTH sides (`p1=none=p1`) and the
 // capture class excludes the `${}` characters, which makes the match immune
@@ -58,7 +58,7 @@ test.use({
 // carries the uninterpolated `p1=${...}=p1` (whose body contains `$` and `{`).
 // Only a fully rendered output line can satisfy both delimiters.
 async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   const re = new RegExp(`${key}=([^=${'${}'}\\s]+)=${key}`);
   for (const line of text.split('\n')) {
     const m = line.trim().match(re);
@@ -70,7 +70,7 @@ async function readKey(page: Page, key: string): Promise<string | null> {
 // Read one object-model value back through the terminal. A fresh key per
 // probe keeps a stale echo from satisfying the match. The answer is polled
 // out of the buffer rather than read after a fixed delay: the round trip is
-// main thread → SAB bridge → emulator worker → xterm render, and a fixed
+// main thread → SAB bridge → emulator worker → console render, and a fixed
 // wait is exactly the kind of timing assumption that flakes under load.
 let probeSeq = 0;
 async function probe(page: Page, expr: string, timeoutMs = 10_000): Promise<string | null> {
@@ -120,7 +120,7 @@ test('AV camera control drives the video-in path with the fake camera', async ({
   await expect(camBtn).toHaveAttribute('aria-pressed', 'false');
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   // Warm up the terminal: the first typed line can land before the pane has
   // focus, so prove the round trip works before asserting on its answers.
   await expect

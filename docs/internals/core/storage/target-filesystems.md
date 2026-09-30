@@ -11,8 +11,8 @@ does this image have?" and "give me the bytes of `/etc/motd` (or a resource
 fork) out of this volume" cheaply and deterministically.
 
 ```
-shell / web terminal     image partmap | image probe | vfs.ls | vfs.list | vfs.cat | storage.cp
-        │                  web Filesystem tree → vfs.list (image descent)
+shell / web terminal     image partmap | image probe | files.ls | files.list | files.cat | files.cp
+        │                  web Filesystem tree → files.list (image descent)
         ▼
   VFS resolver  ───────  path normalise + descent + auto-mount cache   (src/core/vfs/vfs.c)
         │
@@ -399,19 +399,20 @@ Partition inspection (`src/core/storage/storage_class.c`):
 
 | Command | Effect |
 |---------|--------|
-| `storage.partmap <path> [--json]` | Parse and print the partition map (text table or JSON array). |
-| `storage.probe <path>` | Print the detected format without descending — APM, ISO 9660 (`CD001` @ 0x8000), APM+ISO hybrid, bare HFS, or raw. |
-| `storage.mounts [--json]` | Enumerate currently-cached auto-mounts (format, partition count, refs, busy/ok). |
-| `storage.unmount <path>` | Force-close a cached auto-mount. |
+| `files.partmap <path>` | Parse and print the partition map as a text table. |
+| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (`CD001` @ 0x8000), APM+ISO hybrid, bare HFS, or raw. |
+| `files.mounts[n]` | The currently-cached auto-mounts, indexed by a never-reused mount serial: `path`, `format`, `partitions`, `refcount`, `busy`. |
+| `files.mounts.find <path>` | The serial `n` of the mount caching `path`, or -1. |
+| `files.mounts[n].unmount` | Force-close a cached auto-mount. |
 
 Content access (`src/core/vfs/vfs_class.c`, `src/core/shell/cmd_cp.c`):
 
 | Command | Effect |
 |---------|--------|
-| `vfs.ls [path]` | List a directory (names to stdout) — descends into images, partitions, and HFS/UFS directories. Defaults to the cwd. |
-| `vfs.list [path]` | Like `vfs.ls`, but returns a **JSON array** `[{name, kind, size}]` instead of printing. Same descent rules. This is what the web Filesystem tree calls to expand a disk image. |
-| `vfs.cat <path>` | Dump a file's bytes — data fork, or `…/rsrc` resource fork, or `…/finf` Finder info. |
-| `vfs.mkdir <path>` | Create a directory — **host paths only** (image paths return `-EROFS`). |
+| `files.ls [path]` | List a directory (names to stdout) — descends into images, partitions, and HFS/UFS directories. Defaults to the cwd. |
+| `files.list [path]` | Like `files.ls`, but returns a **JSON array** `[{name, kind, size}]` instead of printing. Same descent rules. This is what the web Filesystem tree calls to expand a disk image. |
+| `files.cat <path>` | Dump a file's bytes — data fork, or `…/rsrc` resource fork, or `…/finf` Finder info. |
+| `files.mkdir <path>` | Create a directory — **host paths only** (image paths return `-EROFS`). |
 | `cp <src> <dst>` | Copy a file/tree, including *out of* an image into OPFS. |
 
 Example session:
@@ -425,29 +426,29 @@ format: APM (512B blocks, 81920 total)
   3  MacOS            Apple_HFS            96  20480  HFS
   4  Root             Apple_UNIX_SVR2   20576  61344  UFS
 
-> vfs.ls /opfs/disks/aux.img/partition4/etc
+> files.ls /opfs/disks/aux.img/partition4/etc
 motd
 passwd
 ...
 
-> vfs.cat /opfs/disks/aux.img/partition4/etc/motd
+> files.cat /opfs/disks/aux.img/partition4/etc/motd
 Welcome to A/UX
 
-> vfs.cat "/opfs/disks/sys7.img/partition3/System Folder/Finder/rsrc"   # resource fork
+> files.cat "/opfs/disks/sys7.img/partition3/System Folder/Finder/rsrc"   # resource fork
 ```
 
 A file whose on-disk HFS name contains `/` is addressed by substituting `:`:
 
 ```
-> vfs.ls /opfs/disks/MacTest.image/partition1
+> files.ls /opfs/disks/MacTest.image/partition1
 MacTest cx:ci
-> vfs.cat "/opfs/disks/MacTest.image/partition1/MacTest cx:ci"
+> files.cat "/opfs/disks/MacTest.image/partition1/MacTest cx:ci"
 ```
 
 ### From the browser
 
-The web frontend runs these through the **terminal pane**
-(`app/web2/src/components/panel-views/terminal/TerminalPane.svelte`) via
+The web frontend runs these through the **Terminal console**
+(`app/web2/src/state/console.svelte.ts`) via
 `gsEvalLine`, and programmatically via `gsEval` (`app/web2/src/bus/emulator.ts`).
 
 > **The Filesystem panel descends into disk images.** The Filesystem tree
@@ -456,12 +457,12 @@ The web frontend runs these through the **terminal pane**
 > (`.img` / `.dsk` / `.dc42` / `.iso` / `.toast` / `.cdr` / `.hda` / `.image`)
 > is **expandable**: expanding it lists the image's partitions, and each
 > partition expands into its HFS/UFS contents. The tree routes those listings
-> through `vfs.list` (`app/web2/src/bus/vfs.ts`) instead of OPFS; the
+> through `files.list` (`app/web2/src/bus/vfs.ts`) instead of OPFS; the
 > classification helpers live in `app/web2/src/lib/diskImage.ts`. Everything
 > inside an image is **read-only** — the tree omits rename/delete/unpack from
 > the context menu and refuses drops *onto* an image (the image backend is
 > `-EROFS`). Two ways to get data *out* of an image, both via the VFS-backed
-> `storage.cp` (recursive for folders):
+> `files.cp` (recursive for folders):
 >
 > - **Download** a file — copies its data fork to a scratch OPFS path, hands
 >   the bytes to the browser, then deletes the scratch file.
@@ -469,7 +470,7 @@ The web frontend runs these through the **terminal pane**
 >   OPFS-to-OPFS drag still *moves*; an image source can't be moved, so it
 >   copies). The drag's drop-effect shows "copy" vs "move" accordingly.
 >
-> (Resource forks aren't surfaced in the tree; use `vfs.cat …/rsrc` for those.)
+> (Resource forks aren't surfaced in the tree; use `files.cat …/rsrc` for those.)
 
 ---
 
@@ -482,7 +483,7 @@ The web frontend runs these through the **terminal pane**
 | UFS | UFS-1 / 4.3BSD-Tahoe, big-endian; direct + single + double indirect; root traversal; symlink reporting | triple-indirect; files > 4 GiB; symlink following |
 | Mutability | read-only everywhere (`-EROFS`) | any write path into an image |
 | Concurrency | refuses descent into a file the guest has SCSI-attached (`-EBUSY`) | — |
-| GUI | terminal commands (`vfs.*`, `image …`); **read-only image descent in the Filesystem tree** (expand image → partitions → HFS/UFS contents); **Download** or **drag out** a file/folder from an image (copied via `storage.cp`) | writing into an image from the tree (read-only); resource-fork extraction from the tree (use `vfs.cat …/rsrc`) |
+| GUI | terminal commands (`vfs.*`, `image …`); **read-only image descent in the Filesystem tree** (expand image → partitions → HFS/UFS contents); **Download** or **drag out** a file/folder from an image (copied via `files.cp`) | writing into an image from the tree (read-only); resource-fork extraction from the tree (use `files.cat …/rsrc`) |
 
 ---
 
@@ -506,13 +507,13 @@ The web frontend runs these through the **terminal pane**
 | `src/core/vfs/vfs.{c,h}` | VFS backend interface, path resolver, convenience wrappers, cwd |
 | `src/core/vfs/host_vfs.c` | Host (POSIX/OPFS) backend |
 | `src/core/vfs/image_vfs.{c,h}` | Auto-mount cache + image backend; in-image path parsing; partition routing |
-| `src/core/vfs/vfs_class.c` | Object-model `vfs.ls` / `vfs.cat` / `vfs.mkdir` bindings |
+| `src/core/vfs/vfs_class.c` | Object-model `files.ls` / `files.cat` / `files.mkdir` bindings |
 | `src/core/storage/image_apm.{c,h}` | Pure APM parser |
 | `src/core/storage/image_apm_io.c` | Image-backed APM entry point |
 | `src/core/storage/image_hfs.{c,h}` | HFS catalog + Extents Overflow walker, fork reader |
 | `src/core/storage/image_ufs.{c,h}` | UFS-1 superblock + inode walker, file reader |
 | `src/core/storage/macroman.{c,h}` | MacRoman → UTF-8 transcoder (shared) |
-| `src/core/storage/storage_class.c` | `storage.partmap/probe/mounts/unmount` |
+| `src/core/storage/storage_class.c` | `files.partmap/probe/mounts/unmount` |
 | `src/core/shell/cmd_cp.c` | `cp` (VFS-backed, supports image→host) |
 | `src/core/storage/image.{c,h}` | Underlying disk image + `disk_read_data` / `disk_read_bytes` |
 

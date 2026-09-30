@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# archive.extract must not write outside its output directory.
+# files.archive.extract must not write outside its output directory.
 set -euo pipefail
 
 mkdir -p "$WORK_DIR"
@@ -9,8 +9,8 @@ rm -rf "$OUT" "$WORK_DIR/escape"
 python3 "$(dirname "$0")/make_archive.py" "$ARCHIVE" "../escape" "payload"
 
 SCRIPT="$WORK_DIR/extract.script"
-printf 'archive.extract "%s" "%s"\nquit\n' "$ARCHIVE" "$OUT" > "$SCRIPT"
-"$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=max > "$WORK_DIR/extract.log" 2>&1 || true
+printf 'files.archive.extract "%s" "%s"\nquit\n' "$ARCHIVE" "$OUT" > "$SCRIPT"
+"$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=turbo > "$WORK_DIR/extract.log" 2>&1 || true
 
 fail=0
 if [ -e "$WORK_DIR/escape" ]; then

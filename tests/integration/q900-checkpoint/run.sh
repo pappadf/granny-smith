@@ -24,7 +24,7 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     model=q900 ram=8192 \
     hd="$TEST_TMPDIR/hd.img" \
     script="$TEST_TMPDIR/step1.script" \
-    --speed=max
+    --speed=turbo
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
     echo "ERROR: Checkpoint file not created: $CHECKPOINT_FILE"
@@ -50,6 +50,6 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=q900 ram=8192 \
     script="$TEST_TMPDIR/step2.script" \
-    --speed=max
+    --speed=turbo
 
 echo "Quadra 900 checkpoint test passed!"

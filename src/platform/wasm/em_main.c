@@ -875,7 +875,7 @@ int main(void) {
     // addressed registry (names are irrelevant — each offer is identified by
     // content).  The platform names the directory; core walks it and never
     // builds a path of its own.  Mid-session uploads are offered by the
-    // web app's ingest path (machine.vrom.offer), so this startup pass only
+    // web app's ingest path (catalog.vroms.offer), so this startup pass only
     // needs to cover what already persisted.
     vrom_offer_dir("/opfs/images/vrom", NULL);
     // ...and the same pass over the persistent PCI expansion-ROM store, for

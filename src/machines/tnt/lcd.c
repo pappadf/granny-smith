@@ -294,6 +294,7 @@ static const member_t tnt_lcd_members[] = {
 
 static const class_desc_t tnt_lcd_class = {
     .name = "lcd",
+    .doc = "The front-panel LCD of the Network Server: text and cursor",
     .members = tnt_lcd_members,
     .n_members = sizeof(tnt_lcd_members) / sizeof(tnt_lcd_members[0]),
 };

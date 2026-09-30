@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# machine.profile() schema-snapshot test.
+# catalog.profile() schema-snapshot test.
 #
-# Dumps machine.profile for every registered model, normalizes each profile to
+# Dumps catalog.profile for every registered model, normalizes each profile to
 # a value-independent SHAPE string (see schema.mjs), and diffs against the
 # committed golden snapshot. Fails loudly when a field is added, removed, or
 # retyped — the JSON the frontend (and any other consumer) probes is a
@@ -13,23 +13,23 @@ SCRIPT="$WORK_DIR/profiles.script"
 ACTUAL="$WORK_DIR/schema.actual"
 mkdir -p "$WORK_DIR"
 
-# Every registered model, read from the emulator itself (machine.models),
+# Every registered model, read from the emulator itself (catalog.models),
 # so a newly registered machine cannot be silently left out.
 cat > "$SCRIPT" <<'SCRIPT'
-let ms = machine.models
+let ms = catalog.models
 for m in $ms {
-    echo "${machine.profile($m)}"
+    echo "${catalog.profile($m)}"
 }
 quit
 SCRIPT
 
-"$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=max > "$OUT" 2>&1
+"$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=turbo > "$OUT" 2>&1
 
 node ./schema.mjs < "$OUT" > "$ACTUAL"
 
 if ! diff -u ./schema.expected "$ACTUAL"; then
     echo ""
-    echo "FAIL: machine.profile() schema drift (diff above: - golden, + actual)."
+    echo "FAIL: catalog.profile() schema drift (diff above: - golden, + actual)."
     echo "If the shape change is intentional, regenerate the golden:"
     echo "  make -C tests/integration test-machine-profile-schema  # then copy build/integration/.../schema.actual"
     echo "  cp build/integration/machine-profile-schema/schema.actual \\"

@@ -99,7 +99,7 @@ The same three-party split NuBus uses:
 
 - **Machines declare topology** — `hw_profile_t.pci_slots`, a
   sentinel-terminated `pci_slot_decl_t[]` naming each socket's bus, IDSEL
-  and interrupt line. One pointer feeds both `machine.profile` and
+  and interrupt line. One pointer feeds both `catalog.profile` and
   `pci_init`, so the configuration view and the runtime cannot drift.
 - **Cards declare attachment** — `PCI_ATTACH_PCI` for a real card,
   `PCI_ATTACH_BUILTIN` (the conservative zero default) for a soldered-down
@@ -157,7 +157,7 @@ socket and builtin, populated or not** — an empty socket's staged
 attribute is exactly how the next boot gets configured. A populated slot
 grows a `card` subtree with the identity attributes and a `config` child
 (Advanced) exposing the live header and one `bar[i]` node per declared BAR
-plus the expansion-ROM BAR. `machine.pci.cards()` lists the registry.
+plus the expansion-ROM BAR. `catalog.pci_cards` lists the registry.
 
 ## Why not one expansion-bus abstraction
 
@@ -287,7 +287,7 @@ this layer cannot tell a typo from a key it does not know, and refusing
 would make every unknown option fatal.
 
 A kind also DECLARES the options a user should be offered
-(`pci_card_kind_t.options`), and `machine.profile` publishes them, so a
+(`pci_card_kind_t.options`), and `catalog.profile` publishes them, so a
 frontend can render a control per option without knowing which card it is.
 Declaring is separate from accepting: a card may still take keys it does
 not advertise (the Mach64 GX accepts `monitor=` for debugging but offers

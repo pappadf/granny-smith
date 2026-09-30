@@ -1537,19 +1537,25 @@ static value_t checkpoint_attr_auto_set(struct object *self, const member_t *m, 
 static const arg_decl_t checkpoint_load_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Checkpoint path; empty auto-loads the latest"},
 };
 
 static const char *const checkpoint_mode_values[] = {"content", "refs", NULL};
 
+static const value_t checkpoint_def_mode = {
+    .kind = V_ENUM, .enm = {.idx = 0, .table = checkpoint_mode_values, .n_table = 2}
+};
+
 static const arg_decl_t checkpoint_save_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Checkpoint output path"},
     {.name = "mode",
      .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .enum_values = checkpoint_mode_values,
-     .doc = "\"content\" (default) embeds image bytes; \"refs\" records paths only"},
+     .default_value = &checkpoint_def_mode,
+     .doc = "\"content\" embeds image bytes; \"refs\" records paths only"},
 };
 
 static const arg_decl_t checkpoint_snapshot_args[] = {
@@ -1561,25 +1567,44 @@ static const member_t checkpoint_members[] = {
      .name = "auto",
      .doc = "Automatic background checkpoints enabled: the periodic save and the tab-hidden save (WASM only)",
      .flags = 0,
-     .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}},
+     .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}                  },
     {.kind = M_METHOD,
      .name = "probe",
+     .examples = (const char *const[]){"checkpoint.probe", NULL},
      .doc = "True if a valid checkpoint exists for the active machine",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_probe}},
+     .method = {.result_doc = "true when one exists",
+                .args = NULL,
+                .nargs = 0,
+                .result = V_BOOL,
+                .fn = checkpoint_method_probe}                                                                   },
     {.kind = M_METHOD,
      .name = "clear",
+     .examples = (const char *const[]){"checkpoint.clear", NULL},
      .doc = "Remove all checkpoint files for the active machine, and the image deltas no open image holds",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}                       },
     {.kind = M_METHOD,
      .name = "load",
-     .doc = "Load a checkpoint (auto-loads latest when path is omitted)",
-     .method = {.args = checkpoint_load_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_load}},
+     .examples =
+         (const char *const[]){"checkpoint.load", "checkpoint.load \"/opfs/checkpoints/before-install.gscp\"", NULL},
+     .doc = "Load a checkpoint",
+     .method = {.result_doc = "true when it loaded",
+                .args = checkpoint_load_args,
+                .nargs = 1,
+                .result = V_BOOL,
+                .fn = checkpoint_method_load}                                                                    },
     {.kind = M_METHOD,
      .name = "save",
+     .examples = (const char *const[]){"checkpoint.save \"/opfs/checkpoints/before-install.gscp\"",
+                                       "checkpoint.save \"/tmp/state.gscp\" refs", NULL},
      .doc = "Save the current machine state to a checkpoint file",
-     .method = {.args = checkpoint_save_args, .nargs = 2, .result = V_BOOL, .fn = checkpoint_method_save}},
+     .method = {.result_doc = "true when it was written",
+                .args = checkpoint_save_args,
+                .nargs = 2,
+                .result = V_BOOL,
+                .fn = checkpoint_method_save}                                                                    },
     {.kind = M_METHOD,
      .name = "snapshot",
+     .examples = (const char *const[]){"checkpoint.snapshot \"before-install\"", NULL},
      .doc = "Capture a quick (background) checkpoint under the given label",
      .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_snapshot}},
 };
@@ -1588,6 +1613,7 @@ static const class_desc_t checkpoint_class = {
     .name = "checkpoint",
     .members = checkpoint_members,
     .n_members = sizeof(checkpoint_members) / sizeof(checkpoint_members[0]),
+    .doc = "Saves and restores the whole machine state",
 };
 
 // ============================================================================
@@ -1600,8 +1626,10 @@ void checkpoint_init(void) {
     if (s_checkpoint_object)
         return;
     s_checkpoint_object = object_new(&checkpoint_class, NULL, "checkpoint");
-    if (s_checkpoint_object)
+    if (s_checkpoint_object) {
+        object_set_order(s_checkpoint_object, 20);
         object_attach(object_root(), s_checkpoint_object);
+    }
 }
 
 void checkpoint_delete(void) {

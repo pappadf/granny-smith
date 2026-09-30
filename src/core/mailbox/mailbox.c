@@ -39,6 +39,18 @@ static void wake_on_req_head(void) {
         gs_mailbox_notify(g_wake_word);
 }
 
+// A quarter of the event ring (gs_mailbox_set_record_max); the default holds
+// before any mailbox exists.
+static size_t g_record_max = 16u << 10;
+
+void gs_mailbox_set_record_max(size_t bytes) {
+    __atomic_store_n(&g_record_max, bytes, __ATOMIC_RELEASE);
+}
+
+size_t gs_mailbox_record_max(void) {
+    return __atomic_load_n(&g_record_max, __ATOMIC_ACQUIRE);
+}
+
 size_t gs_mailbox_region_bytes(uint32_t req_bytes, uint32_t evt_bytes) {
     return GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + req_bytes + evt_bytes;
 }
@@ -62,6 +74,7 @@ volatile uint32_t *gs_mailbox_init(gs_mailbox_t *m, void *region, uint32_t req_b
     mbx_ring_init(&m->req, m->ctrl, GS_MBX_C_REQ_HEAD, GS_MBX_C_REQ_TAIL, req, req_bytes);
     mbx_ring_init(&m->evt, m->ctrl, GS_MBX_C_EVT_HEAD, GS_MBX_C_EVT_TAIL, req + req_bytes, evt_bytes);
     m->eval = eval;
+    gs_mailbox_set_record_max(evt_bytes / 4u);
     for (int i = 0; i < GS_MBX_CTRL_WORDS; i++)
         m->ctrl[i] = 0;
     m->ctrl[GS_MBX_C_MAGIC] = GS_MAILBOX_MAGIC;

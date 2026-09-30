@@ -70,7 +70,7 @@ async function terminalEval(page: Page, expr: string): Promise<string | null> {
     await terminalRun(page, `echo "${key}=\${${expr}}"`);
     for (let i = 0; i < 10; i++) {
       await page.waitForTimeout(400);
-      const text = await page.locator('.xterm-rows').innerText();
+      const text = await page.locator('.console-output').innerText();
       const values = [...text.matchAll(new RegExp(`${key}=(\\S+)`, 'g'))]
         .map((m) => m[1])
         .filter((v) => !v.startsWith('$'));
@@ -94,9 +94,9 @@ async function configureAndStart(page: Page): Promise<number> {
   return t0;
 }
 
-// Count "ROM loaded successfully" banners currently visible in the xterm.
+// Count "ROM loaded successfully" banners currently in the console.
 async function bannerCount(page: Page): Promise<number> {
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   return (text.match(/ROM loaded successfully/g) ?? []).length;
 }
 
@@ -161,9 +161,9 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   });
 
   // Terminal pane visible before any boot: C-side boot banners stream into
-  // the xterm from t=0.
+  // the console from t=0.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // ---- Phase 1: dirty the image the way the user's sessions did ----------
   // Boot the virgin image, fast-forward ~2 minutes of wall time deep into

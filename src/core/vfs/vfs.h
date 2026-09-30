@@ -120,4 +120,9 @@ int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err
 const char *vfs_get_cwd(void);
 void vfs_set_cwd(const char *path);
 
+// Normalise `input` (absolute, or relative to the current directory)
+// resolving `.` and `..`: an absolute path in `out`.  0 on success,
+// -ENAMETOOLONG when it does not fit.
+int vfs_normalise_path(const char *input, char *out, size_t outlen);
+
 #endif // VFS_H

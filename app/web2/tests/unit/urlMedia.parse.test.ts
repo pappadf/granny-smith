@@ -17,11 +17,11 @@ describe('parseUrlMediaParams', () => {
   });
 
   it('extracts rom, vrom, model, speed', () => {
-    const p = parseUrlMediaParams(make('rom=/r&vrom=/v&model=Macintosh+Plus&speed=max'));
+    const p = parseUrlMediaParams(make('rom=/r&vrom=/v&model=Macintosh+Plus&speed=turbo'));
     expect(p.rom).toBe('/r');
     expect(p.vrom).toBe('/v');
     expect(p.model).toBe('Macintosh Plus');
-    expect(p.speed).toBe('max');
+    expect(p.speed).toBe('turbo');
   });
 
   it('collects floppies fd0..fdN', () => {

@@ -12,7 +12,7 @@ the line-input and scripting surface that walks it.
 
 Two callers reach the emulator through the shell layer:
 
-- The **xterm.js terminal** in the browser, where users type commands
+- The **Terminal console** in the browser, where users type commands
   interactively.
 - The **headless CLI** (`gs-headless`), which reads a script file
   (`script=...`), stdin, or its TCP daemon socket.
@@ -36,8 +36,10 @@ plus `shell.complete`, `shell.expand`, the alias leaves and
 | [shell.c](../../../../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
 | [shell_var.c](../../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
+| [commands.c](../../../../src/core/shell/commands.c) | Commands: the built-ins, `command NAME = PATH`, the `shell.command` surface |
 | [cmd_complete.c](../../../../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
-| [cmd_cp.c](../../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `storage.cp` / `storage.import` |
+| [highlight.c](../../../../src/core/shell/highlight.c) | `shell.highlight`: syntax classes of a line or block, paths resolved against the live tree |
+| [cmd_cp.c](../../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `files.cp` / `files.import` |
 | `src/core/object/expr.c` | Expression grammar and evaluator; string interpolation; `try`/`error`/`range`/`len` |
 
 ## Statements
@@ -49,6 +51,7 @@ per line, except that brace blocks span lines (see below).
 |------|---------|
 | `let NAME = EXPR` | Declare a binding in the current scope |
 | `alias NAME = PATH` | Declare a reference binding (path text, re-resolved per access) |
+| `command NAME = PATH` | Declare a command: the bare word `NAME` runs the method at `PATH` (see Commands) |
 | `$NAME = EXPR` | Mutate an existing binding (error if undeclared) |
 | `PATH = EXPR` | Attribute write with a typed right-hand side |
 | `CMDPATH ARG…` | Command call (argument mode) |
@@ -181,6 +184,38 @@ scope, run the body, and pop; `return EXPR` (or falling off the end →
 Functions work in call form inside any expression — including logpoint
 message templates — via the expression layer's function hook.
 
+## Commands
+
+A command is a bare word that runs a method: `ls /opfs` runs
+`files.ls /opfs`.  Where an alias (`$pc`) stands for a value or a place and
+works anywhere with `$`, a command stands for a verb and works only as the
+first word of a statement — in argument mode a bare word is a string.
+
+| Built-in | Runs | Built-in | Runs |
+|---|---|---|---|
+| `ls` | `files.ls` | `pwd` | `files.pwd` |
+| `cat` | `files.cat` | `run` | `scheduler.run` |
+| `cp` | `files.cp` | `stop` | `scheduler.stop` |
+| `mv` | `files.mv` | `reset` | `machine.reset` |
+| `rm` | `files.rm` | `step` | `debug.step` |
+| `mkdir` | `files.mkdir` | `disasm` | `debug.disasm` |
+| `cd` | `files.cd` | | |
+
+`command NAME = PATH` (or `shell.command.add`) declares one; the target must
+resolve to a method, and `NAME` must not be a reserved word, a built-in, or
+a path at the root.  `shell.command.remove` drops a user command and
+`shell.command.list` lists them all, with whether each target exists right
+now (`run` needs a machine).  At the head of a statement a tree path, a
+keyword and a `def` function all win over a command.  `command` is a
+contextual keyword, not a reserved word: only `command NAME = PATH` at the
+start of a statement declares one, so a member may still be named `command`.
+
+Highlighting, completion, the signature hint and `help` follow the method a
+command runs: `help ls` prints `files.ls`'s usage, noting that `ls` runs it.
+They all read the first word through one resolver (`shell_head_resolve`,
+`commands.h`), in the interpreter's order, so a `def ls` shadows the
+command for `help` and completion exactly as it does when the line runs.
+
 ## Output
 
 **Formatting lives at the REPL surface.** Interactive statements print
@@ -194,7 +229,23 @@ failing `assert` messages, and errors. A bare read in a script is
 silent; wrap it in `echo "path = ${path}"` when the log line matters.
 
 The headless REPL shows a `... ` continuation prompt while a multi-line
-`{` block is open (a quote-aware depth counter; `script_needs_continuation`).
+`{` block is open (a quote-aware depth counter; `script_needs_continuation`,
+exposed as the hidden `shell.needs_continuation(text)` so a console can
+tell whether Enter submits or breaks the line).
+
+**Structured results ride beside the text.** Inside a job, a value the REPL
+prints is bracketed by two annotation records in the job's record stream —
+`value_begin` before its text and `value` after it, carrying the value as
+tagged JSON (`"json"`, or `"truncated":true` when that would not fit a
+record) — and every statement error (`script_report_error`, the single
+reporter) is an `error` record with `file`, `line`, `message` and the
+report's `lines`.  A job's error is written only as that record; it goes
+to stderr when no record can carry it whole: outside a job, past the
+output cut, or as the full text of a record shortened to fit (which says
+`"truncated":true`).  Headless without `--framed` prints an error record's
+lines to stderr, so its streams read as before; a consumer that wants only
+text ignores the other annotations.  Every record, text included, is bounded by a quarter of the
+event ring (`gs_mailbox_record_max`), measured on the escaped text.
 
 ## Scripts
 
@@ -224,7 +275,10 @@ adds `@event <kind> <json>` lines for every core event (`mode_started`,
 `mode_ended` with its reason), `@out <json>` for each output record
 (`{"event":"output","id":..,"client":..,"text":..}`), `@progress <json>`
 for an I/O job's progress (`{"id":..,"done":..,"total":..}`), and
-`@end ok|error` after each statement, for a client that wants to parse
+`@value_begin <json>` / `@value <json>` / `@error <json>` for the
+annotation records, in stream order among the `@out` lines (an `@out` line
+may split where an annotation falls; the concatenated text is unchanged),
+and `@end ok|error` after each statement, for a client that wants to parse
 where a statement ended rather than time out on silence. Ctrl-C cancels
 the statement in flight, else stops a run stdin started, else stops the
 machine; the daemon's control connection does the same for the daemon's
@@ -264,8 +318,66 @@ layered over the shell store.
 - **Mid-path partials** (`machine.cpu.`, `machine.floppy.drive[0].`) —
   members of the resolved-so-far node.
 - **Method-argument position** — dispatched by the resolved method's
-  `arg_decl_t[i]`: enums offer their values, path arguments complete
-  against the filesystem, and so on.
+  `arg_decl_t[i]`: enums offer their values, bools `true`/`false`, and a
+  string argument declared `VAL_PATH` completes against the filesystem
+  (through the VFS).  The flag decides, not the argument's name: a
+  `path` argument that names an object path gets no file candidates.
+
+With `shell.complete(line, cursor, true)` each candidate comes back as
+`{text, kind, doc}` (`kind` ∈ `object`, `collection`, `attr`,
+`method`, `alias`, `keyword`, `value`), and a `context` says where the
+cursor is: `{method, arg_index, arg_name}`, where `arg_index` is the
+*declared* slot (a `name=` word names its own slot; earlier `name=` words do
+not count as positionals), all `none` outside an argument position.
+`cursor` and the returned span are UTF-8 byte offsets.
+
+## Highlighting
+
+`shell.highlight(text)` returns the syntax classes of a line or block as a
+list of `{start, end, class}` spans. Offsets are UTF-8 bytes; spans are
+half-open, ordered and non-overlapping. The text is read the way the
+parser reads it: keyword forms, assignments, call forms, and commands whose
+arguments are in argument mode. Path segments resolve against the live tree
+as they are read.
+
+| Class | For |
+|---|---|
+| `keyword` | reserved words (`if`, `for`, `in`, `return`, `true`, …) |
+| `decl` | `let`, `alias`, `def` |
+| `variable` / `alias` | `$name`, by whether an alias of that name exists |
+| `number`, `string` | literals (`0x…`, `0b…`, decimal, floats; `"…"`, `'…'`) |
+| `interp` | `${`, a `:FMT` suffix and `}` inside a double-quoted string |
+| `operator`, `comment` | operators and brackets; `#` to the end of the line |
+| `object`, `attribute`, `method` | a resolved path segment, by what it names |
+| `enum` | an argument word matching its declared values, or the value of an enum attribute's assignment |
+| `unknown` | the first path segment that does not resolve, and every segment after it |
+
+A bare word in argument mode is a string and gets no class. A word before
+`(` that does not resolve is a function call (`method`); so is the name of
+a `def` function at the head of a statement. Partial input still gets spans
+for what lexes (an unterminated string runs to the end); the call never
+fails.
+
+## Help and usage
+
+`help <path>` prints the usage text of any path, and `shell.usage(path)`
+returns it as `{signature, arg_spans, text}` — one renderer
+(`src/core/object/usage.c`), so help, the command browser and a signature
+hint cannot disagree:
+
+- **Method** — the signature `<full.path> <arg> [optional] [rest…]`, an enum
+  argument writing its values (`[space: logical | physical]`); one aligned
+  line per argument (name, type text, doc, `(default …)`); `Returns: …` and
+  `e.g.  …` lines when the member declares `result_doc` / `examples`; a
+  blank line and the doc wrapped at 72 columns.  `arg_spans[i]` is the byte
+  span of argument i's bracketed form in the signature.
+- **Attribute** — `<full.path> : <type text>` (plus ` (read-only)`), then
+  ` = <value>` unless sensitive or unreadable, a blank line and the doc.
+- **Node** — `<full.path> — <label>`, its doc, then `attributes:`,
+  `methods:` and `children:` lines (basic and advanced tiers).
+
+`shell.keywords` lists every keyword (the reserved words and the
+contextual `command`) with its one-line syntax.
 
 ## See also
 

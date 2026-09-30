@@ -23,12 +23,14 @@ function se30(mode = 'paced'): void {
   bridge.reply('machine.id', 'se30');
   bridge.reply('machine.name', 'Macintosh SE/30');
   bridge.reply('machine.ram', 8192);
-  bridge.reply('machine.profile', { id: 'se30', capabilities: { mmu: { kind: '68030_pmmu' } } });
+  bridge.reply('catalog.profile', { id: 'se30', capabilities: { mmu: { kind: '68030_pmmu' } } });
   bridge.reply('machine.screen.width', 512);
   bridge.reply('machine.screen.height', 342);
   bridge.reply('machine.screen.par_w', 1);
   bridge.reply('machine.screen.par_h', 1);
-  bridge.reply('scheduler.mode', (args: unknown) => (args ? null : mode));
+  // An enum reads as {enum, index} over the bridge.
+  const index = ['paced', 'accelerated', 'turbo'].indexOf(mode);
+  bridge.reply('scheduler.mode', (args: unknown) => (args ? null : { enum: mode, index }));
   bridge.reply('scheduler.run', null);
 }
 

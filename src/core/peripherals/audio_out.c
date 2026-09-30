@@ -425,6 +425,7 @@ static value_t capture_attr_peak(struct object *self, const member_t *m) {
 static const arg_decl_t capture_stop_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Optional WAV path to write the capture to (golden regeneration)"},
 };
@@ -457,6 +458,7 @@ static const member_t capture_members[] = {
 
 static const class_desc_t audio_capture_class = {
     .name = "capture",
+    .doc = "Record the sound output stream; peak tells whether it carries a signal",
     .members = capture_members,
     .n_members = sizeof(capture_members) / sizeof(capture_members[0]),
 };

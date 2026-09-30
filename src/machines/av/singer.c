@@ -933,7 +933,10 @@ static value_t ain_attr_peak(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t ain_load_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "PCM16 WAV prepared at the codec rate (mono or stereo)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "PCM16 WAV prepared at the codec rate (mono or stereo)"},
 };
 
 static const member_t av_audioin_members[] = {
@@ -952,11 +955,11 @@ static const member_t av_audioin_members[] = {
      .attr = {.type = V_UINT, .get = ain_attr_gain_get, .set = ain_attr_gain_set}},
     {.kind = M_ATTR,
      .name = "advise",
-     .doc = "Judge the incoming audio ~1/s (level, clipping, spectrum); needs debug.log singer \"level=1\"",
+     .doc = "Judge the incoming audio ~1/s (level, clipping, spectrum); needs log.set singer level=1",
      .attr = {.type = V_BOOL, .get = ain_attr_advise_get, .set = ain_attr_advise_set}},
     {.kind = M_ATTR,
      .name = "monitor",
-     .doc = "Log the input level ~1/s; needs the singer category on: debug.log singer \"level=1\"",
+     .doc = "Log the input level ~1/s; needs the singer category on: log.set singer level=1",
      .attr = {.type = V_BOOL, .get = ain_attr_monitor_get, .set = ain_attr_monitor_set}},
     {.kind = M_ATTR,
      .name = "level",
@@ -994,6 +997,7 @@ static const member_t av_audioin_members[] = {
 
 static const class_desc_t av_audioin_class = {
     .name = "audioin",
+    .doc = "The audio input: a WAV source, gain, level and injection into the guest",
     .members = av_audioin_members,
     .n_members = sizeof(av_audioin_members) / sizeof(av_audioin_members[0]),
 };
@@ -1056,6 +1060,7 @@ static value_t ain_cap_method_stop(struct object *self, const member_t *m, int a
 static const arg_decl_t ain_cap_stop_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Write the capture here as a PCM16 WAV (replayable with audioin.load)"},
 };
@@ -1088,6 +1093,7 @@ static const member_t ain_capture_members[] = {
 
 static const class_desc_t av_audioin_capture_class = {
     .name = "capture",
+    .doc = "Record what the audio-input source delivered to the guest",
     .members = ain_capture_members,
     .n_members = sizeof(ain_capture_members) / sizeof(ain_capture_members[0]),
 };

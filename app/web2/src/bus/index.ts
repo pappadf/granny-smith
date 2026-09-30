@@ -17,17 +17,13 @@ export {
   seedPrompt,
   shellInterrupt,
   tabComplete,
+  needsContinuation,
   getModule,
   type CompletionResult,
+  type CompletionCandidate,
 } from './emulator';
-export { setTerminalSink, routePrintLine, routeLogEmit } from './logSink';
-export {
-  loadSystemRoots,
-  loadSystemChildren,
-  loadNodeMethods,
-  type SystemTreeNode,
-  type MethodInfo,
-} from './systemTree';
+export { setConsoleSink, routeConsole, routePrintLine, routeLogEmit } from './logSink';
+export { loadMembers, type MemberInfo, type TypeDescriptor, type ArgInfo } from './systemTree';
 export {
   writeRegister,
   peekL,

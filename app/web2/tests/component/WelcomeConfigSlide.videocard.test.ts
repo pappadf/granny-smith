@@ -56,7 +56,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         }
         return null;
       }
-      if (path === 'machine.profile') {
+      if (path === 'catalog.profile') {
         const id = (args?.[0] as string) ?? '';
         const byId: Record<string, object> = {
           // The SE/30 builtin slot carries TWO sibling kinds (the generic

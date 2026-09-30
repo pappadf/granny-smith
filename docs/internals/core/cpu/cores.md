@@ -239,7 +239,7 @@ both reserved for whichever core owns emulated time.
 
 `hw_profile_t.aux_cpus` (sentinel-terminated `struct aux_cpu_slot`
 `{name, arch, freq}`) exports `capabilities.aux_cpus` from
-`machine.profile` — the frontend and tests assert cores from data, never
+`catalog.profile` — the frontend and tests assert cores from data, never
 from model names.
 
 ## When a device earns a core

@@ -83,7 +83,7 @@ async function probeState(page: Page): Promise<{ instr: number; running: boolean
   const key = `probe${++probeSeq}`;
   await terminalRun(page, `echo "${key}=\${machine.cpu.instr_count},\${scheduler.running}"`);
   await page.waitForTimeout(400);
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   const m = text.match(new RegExp(`${key}=(\\d+),(true|false)`));
   if (!m) return null;
   return { instr: Number(m[1]), running: m[2] === 'true' };
@@ -204,7 +204,7 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
     // wait to sit in, a turbo stretch before the stop would run straight
     // past the splash. Then turbo (a mode change only; it does not resume).
     await page.locator('button.ptab[data-tab="terminal"]').click();
-    await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
     await terminalRun(page, 'scheduler.stop');
     await expect
       .poll(async () => (await currentState(page)).running, { timeout: 15_000, intervals: [500] })

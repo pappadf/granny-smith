@@ -59,8 +59,30 @@ void object_compute_path(struct object *obj, char *buf, size_t buf_size) {
         return;
     }
 
-    // Root (or detached): empty path.
+    // Callback-backed child (collection entry, lookup-backed named child):
+    // no attached parent, but a logical one -- `<parent>.<name>`,
+    // `<parent>[<index>]` or `<parent>["<key>"]`.
     struct object *parent = object_parent(obj);
+    struct object *lparent = parent ? NULL : object_logical_parent(obj);
+    if (lparent) {
+        object_compute_path(lparent, buf, buf_size);
+        size_t len = strlen(buf);
+        char seg[OBJ_KEY_MAX + 8];
+        const char *lname = object_logical_name(obj);
+        const char *lkey = object_logical_key(obj);
+        if (lname)
+            snprintf(seg, sizeof(seg), "%s%s", len > 0 ? "." : "", lname);
+        else if (lkey)
+            snprintf(seg, sizeof(seg), "[\"%s\"]", lkey);
+        else
+            snprintf(seg, sizeof(seg), "[%d]", object_logical_index(obj));
+        size_t slen = strlen(seg);
+        if (len + slen + 1 <= buf_size)
+            memcpy(buf + len, seg, slen + 1);
+        return;
+    }
+
+    // Root (or detached): empty path.
     if (!parent)
         return;
 
@@ -127,12 +149,8 @@ static value_t meta_get_class(struct object *self, const member_t *m) {
 }
 
 static value_t meta_get_doc(struct object *self, const member_t *m) {
-    (void)self;
     (void)m;
-    // Class descriptors do not carry a doc string today. Reserved for a
-    // future class_desc_t.doc field; how a class doc would be encoded is
-    // still an open question.
-    return val_str("");
+    return val_str(object_doc(meta_inspected(self)));
 }
 
 static value_t meta_get_path(struct object *self, const member_t *m) {
@@ -321,7 +339,7 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
 
 // `method_info(name)` — UI metadata for a method member, a typed map so the
 // context menu and command browser render it without a static catalogue:
-// verb label, task category, destructive/mutate/hidden/io flags, declared arg
+// verb label, destructive/mutate/hidden/io flags, declared arg
 // count, and doc. Returns a V_ERROR if the member
 // is not a method.
 static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -335,7 +353,6 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
     val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
     val_map_put(b, "verb", val_str(mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : "")));
     val_map_put(b, "category", val_str(category_name(mb->flags)));
-    val_map_put(b, "task", val_str(mb->method.task_category ? mb->method.task_category : ""));
     val_map_put(b, "doc", val_str(mb->doc ? mb->doc : ""));
     val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
     val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
@@ -387,6 +404,139 @@ static value_t indices_of(struct object *insp, const member_t *mb) {
     return val_list(items, len);
 }
 
+// === Type descriptors (§ type descriptor) ==================================
+//
+// {kind, width, presentation, enum}: what a value of this slot is, for
+// editors, argument forms, usage text and completion.
+
+static const char *kind_text(value_kind_t k) {
+    if (k == V_ANY) // a declaration-only sentinel outside the enum
+        return "any";
+    switch (k) {
+    case V_NONE:
+        return "none";
+    case V_BOOL:
+        return "bool";
+    case V_INT:
+        return "int";
+    case V_UINT:
+        return "uint";
+    case V_FLOAT:
+        return "float";
+    case V_STRING:
+        return "string";
+    case V_BYTES:
+        return "bytes";
+    case V_ENUM:
+        return "enum";
+    case V_LIST:
+        return "list";
+    case V_MAP:
+        return "map";
+    case V_OBJECT:
+        return "object";
+    case V_REF:
+        return "ref";
+    case V_RANGE:
+        return "range";
+    default:
+        return "none";
+    }
+}
+
+const char *meta_kind_text(value_kind_t k) {
+    return kind_text(k);
+}
+
+const char *meta_presentation_text(uint16_t flags) {
+    if (flags & VAL_SENSITIVE)
+        return "sensitive";
+    if (flags & VAL_PATH)
+        return "path";
+    if (flags & VAL_HEX)
+        return "hex";
+    if (flags & VAL_BIN)
+        return "bin";
+    if (flags & VAL_DEC)
+        return "dec";
+    return NULL;
+}
+
+value_t meta_type_descriptor(value_kind_t kind, uint8_t width, uint16_t presentation, const char *const *enum_values) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "kind", val_str(kind_text(kind)));
+    val_map_put(b, "width", val_uint(1, width));
+    const char *pres = meta_presentation_text(presentation);
+    val_map_put(b, "presentation", pres ? val_str(pres) : val_none());
+    if (enum_values && enum_values[0]) {
+        value_t *items = NULL;
+        size_t len = 0, cap = 0;
+        for (size_t i = 0; enum_values[i]; i++)
+            val_list_push(&items, &len, &cap, val_str(enum_values[i]));
+        val_map_put(b, "enum", val_list(items, len));
+    } else {
+        val_map_put(b, "enum", val_none());
+    }
+    return val_map_finish(b);
+}
+
+// The one `entries` member of a collection container's class, or NULL when
+// `cls` is not a collection container (§ collections: exactly one member
+// named `entries`, indexed).
+const member_t *meta_collection_entries(const class_desc_t *cls) {
+    if (!cls)
+        return NULL;
+    const member_t *found = NULL;
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *m = &cls->members[i];
+        if (m->kind == M_CHILD && m->child.indexed) {
+            if (found || !m->name || strcmp(m->name, "entries") != 0)
+                return NULL;
+            found = m;
+        }
+    }
+    return found;
+}
+
+// The live keys of a keyed collection member, as a V_LIST<V_STRING>, or none.
+static value_t keys_of(struct object *insp, const member_t *mb) {
+    if (!mb->child.keys)
+        return val_none();
+    const char **names = NULL;
+    int n = mb->child.keys(insp, &names);
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (int i = 0; i < n; i++)
+        val_list_push(&items, &len, &cap, val_str(names[i] ? names[i] : ""));
+    return val_list(items, len);
+}
+
+// Put the collection keys of a child that is (or is not) a collection
+// container: `collection`, and for a container `indices` / `keys`.
+static void put_collection(value_map_builder_t *b, struct object *child) {
+    const member_t *entries = child ? meta_collection_entries(object_class(child)) : NULL;
+    val_map_put(b, "collection", val_bool(entries != NULL));
+    if (!entries)
+        return;
+    bool indexed = entries->child.get || entries->child.next;
+    val_map_put(b, "indices", indexed ? indices_of(child, entries) : val_none());
+    val_map_put(b, "keys", keys_of(child, entries));
+}
+
+// The object a named, non-indexed child member stands for right now (its
+// lookup, else the attached child of that name), or NULL.
+static struct object *named_child_object(struct object *insp, const member_t *mb) {
+    struct object *c = NULL;
+    if (mb->child.lookup && !mb->child.reference)
+        c = mb->child.lookup(insp, mb->name);
+    if (!c) {
+        node_t n = node_child((node_t){.obj = insp, .member = NULL, .index = -1}, mb->name);
+        if (node_valid(n) && !n.member)
+            c = n.obj;
+    }
+    return c;
+}
+
 static value_t describe_member(struct object *insp, const member_t *mb, bool values) {
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
@@ -394,27 +544,67 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
     val_map_put(b, "kind", val_str(kind));
     val_map_put(b, "category", val_str(category_name(mb->flags)));
     val_map_put(b, "label", val_str(mb->label ? mb->label : (mb->name ? mb->name : "")));
-    val_map_put(b, "doc", val_str(mb->doc ? mb->doc : ""));
+    struct object *child = NULL;
+    if (mb->kind == M_CHILD && !mb->child.indexed)
+        child = named_child_object(insp, mb);
+    const char *doc = mb->doc ? mb->doc : "";
+    if (mb->kind == M_CHILD && !*doc && child)
+        doc = object_doc(child);
+    val_map_put(b, "doc", val_str(doc));
     switch (mb->kind) {
     case M_ATTR:
         val_map_put(b, "readonly", val_bool((mb->flags & VAL_RO) != 0 || !mb->attr.set));
+        val_map_put(
+            b, "type",
+            meta_type_descriptor(mb->attr.type, mb->attr.width, mb->attr.presentation_flags, mb->attr.enum_values));
         if (values)
             val_map_put(b, "value", node_get((node_t){.obj = insp, .member = mb, .index = -1}));
         break;
     case M_CHILD:
         val_map_put(b, "indexed", val_bool(mb->child.indexed));
-        if (mb->child.indexed)
-            val_map_put(b, "indices", indices_of(insp, mb));
+        if (mb->child.indexed) {
+            bool by_index = mb->child.get || mb->child.next;
+            val_map_put(b, "indices", by_index ? indices_of(insp, mb) : val_none());
+            val_map_put(b, "keys", keys_of(insp, mb));
+            val_map_put(b, "collection", val_bool(false));
+        } else {
+            put_collection(b, child);
+        }
         break;
-    case M_METHOD:
+    case M_METHOD: {
         val_map_put(b, "verb", val_str(mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : "")));
-        val_map_put(b, "task", val_str(mb->method.task_category ? mb->method.task_category : ""));
         val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
         val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
         val_map_put(b, "hidden", val_bool((mb->method.ui_flags & MM_HIDDEN) != 0));
         val_map_put(b, "io", val_bool((mb->method.ui_flags & MM_IO) != 0));
         val_map_put(b, "nargs", val_int((int64_t)mb->method.nargs));
+        value_t *args = NULL;
+        size_t len = 0, cap = 0;
+        for (int i = 0; i < mb->method.nargs && mb->method.args; i++) {
+            const arg_decl_t *a = &mb->method.args[i];
+            value_map_builder_t *ab = val_map_new();
+            val_map_put(ab, "name", val_str(a->name ? a->name : ""));
+            val_map_put(ab, "doc", val_str(a->doc ? a->doc : ""));
+            val_map_put(ab, "type", meta_type_descriptor(a->kind, a->width, a->presentation_flags, a->enum_values));
+            val_map_put(ab, "optional", val_bool((a->validation_flags & OBJ_ARG_OPTIONAL) != 0));
+            val_map_put(ab, "rest", val_bool((a->validation_flags & OBJ_ARG_REST) != 0));
+            bool has_default = a->default_value && a->default_value->kind != V_NONE;
+            val_map_put(ab, "default", has_default ? value_dup(a->default_value) : val_none());
+            val_list_push(&args, &len, &cap, val_map_finish(ab));
+        }
+        val_map_put(b, "args", val_list(args, len));
+        val_map_put(b, "result", meta_type_descriptor(mb->method.result, 0, 0, NULL));
+        if (mb->method.result_doc)
+            val_map_put(b, "result_doc", val_str(mb->method.result_doc));
         break;
+    }
+    }
+    if (mb->examples && mb->examples[0]) {
+        value_t *ex = NULL;
+        size_t len = 0, cap = 0;
+        for (size_t i = 0; mb->examples[i]; i++)
+            val_list_push(&ex, &len, &cap, val_str(mb->examples[i]));
+        val_map_put(b, "examples", val_list(ex, len));
     }
     return val_map_finish(b);
 }
@@ -436,7 +626,6 @@ static void member_list_push(member_list_t *acc, value_t v) {
 }
 
 static void each_attached_describe(struct object *parent, struct object *child, void *ud) {
-    (void)parent;
     const char *name = object_name(child);
     if (!name)
         return;
@@ -446,8 +635,11 @@ static void each_attached_describe(struct object *parent, struct object *child, 
     val_map_put(b, "category", val_str(category_name(object_category(child))));
     const char *label = object_label(child);
     val_map_put(b, "label", val_str(label ? label : name));
-    val_map_put(b, "doc", val_str(""));
+    val_map_put(b, "doc", val_str(object_doc(child)));
+    if (!object_parent(parent)) // a root child: its domain
+        val_map_put(b, "domain", val_str(object_domain_name(object_domain(child))));
     val_map_put(b, "indexed", val_bool(false));
+    put_collection(b, child);
     member_list_push((member_list_t *)ud, val_map_finish(b));
 }
 
@@ -479,7 +671,7 @@ static const arg_decl_t meta_complete_args[] = {
     {.name = "cursor",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Cursor position in line; defaults to end-of-line"},
+     .doc = "Cursor position in line; omitted: the end of the line"},
 };
 
 static const arg_decl_t meta_member_args[] = {
@@ -497,7 +689,7 @@ static const arg_decl_t meta_members_args[] = {
     {.name = "values",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Also read each attribute's current value (default false)"},
+     .doc = "Also read each attribute's current value"},
 };
 
 static const member_t meta_members[] = {
@@ -508,7 +700,7 @@ static const member_t meta_members[] = {
      .attr = {.type = V_STRING, .get = meta_get_class, .set = NULL}},
     {.kind = M_ATTR,
      .name = "doc",
-     .doc = "Class doc string (placeholder until class_desc_t.doc lands)",
+     .doc = "One-sentence description of the inspected node (its own doc, else its class's)",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = meta_get_doc, .set = NULL}},
     {.kind = M_ATTR,
@@ -559,7 +751,7 @@ static const member_t meta_members[] = {
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_label}},
     {.kind = M_METHOD,
      .name = "method_info",
-     .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
+     .doc = "JSON UI metadata for a method (verb, destructive, mutate, hidden, nargs)",
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}},
     {.kind = M_METHOD,
      .name = "members",

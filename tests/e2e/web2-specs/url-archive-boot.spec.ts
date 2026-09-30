@@ -118,7 +118,7 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
     return route.fulfill({ status: 404, body: 'not routed' });
   });
 
-  const q = `?ROM=${encodeURIComponent(ROM_MEMBER_URL)}&HD0=${encodeURIComponent(HD_URL)}&speed=max`;
+  const q = `?ROM=${encodeURIComponent(ROM_MEMBER_URL)}&HD0=${encodeURIComponent(HD_URL)}&speed=turbo`;
   await page.goto(`/index.html${q}`);
   await waitReady(page);
 
@@ -136,10 +136,10 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
   // The bare volume went in as a hard disk, grown by the wrapper's prefix.
   expect(await gsEvalInPage(page, 'machine.scsi.device[0].type')).toMatchObject({ enum: 'hd' });
   const size = fs.statSync(BARE_753).size;
-  const images = (await gsEvalInPage(page, 'storage.images.count')) as number;
+  const images = (await gsEvalInPage(page, 'files.images.count')) as number;
   let wrapped = false;
   for (let i = 0; i < images; i++) {
-    if ((await gsEvalInPage(page, `storage.images[${i}].raw_size`)) === size + 96 * 512)
+    if ((await gsEvalInPage(page, `files.images[${i}].raw_size`)) === size + 96 * 512)
       wrapped = true;
   }
   expect(wrapped).toBe(true);
@@ -234,7 +234,7 @@ test('a Lisa boots Office System from archive.org: two ROM chips + a ProFile zip
 
   const q =
     `?ROM=${encodeURIComponent(LISA_ODD_URL)}&ROM=${encodeURIComponent(LISA_EVEN_URL)}` +
-    `&HD0=${encodeURIComponent(LISA_HD_URL)}&speed=max`;
+    `&HD0=${encodeURIComponent(LISA_HD_URL)}&speed=turbo`;
   await page.goto(`/index.html${q}`);
   await waitReady(page);
   await expect(

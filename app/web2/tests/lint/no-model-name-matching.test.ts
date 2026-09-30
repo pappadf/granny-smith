@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 
 // Lint guard: the UI must derive machine capabilities
-// from machine.profile() (the `capabilities` / `video_slots` probe), NEVER by
+// from catalog.profile() (the `capabilities` / `video_slots` probe), NEVER by
 // matching on the human-readable model name. The original sin was
 // `/SE\/30|II/i.test(model)` duplicated across machine.ts / upload.ts /
 // emulator.ts / urlMedia.ts to decide MMU presence — so a new MMU machine
@@ -22,7 +22,7 @@ const FORBIDDEN: { why: string; pattern: RegExp }[] = [
   {
     // The smoking gun: an escaped-slash model name inside a regex literal.
     // "iix-iicx-se30-97221136.rom" (a filename) has no backslash, so it does not match this.
-    why: 'regex literal matching the "SE/30" model name (use machine.profile capabilities instead)',
+    why: 'regex literal matching the "SE/30" model name (use catalog.profile capabilities instead)',
     pattern: /SE\\\/30/,
   },
   {
@@ -31,7 +31,7 @@ const FORBIDDEN: { why: string; pattern: RegExp }[] = [
     // are legitimate; this targets capability-by-model-name only. Name
     // *fragments* in a regex literal are caught by the rule above regardless
     // of the variable they are tested against.
-    why: 'regex .test() on a model-name variable (derive capabilities from machine.profile, not the name)',
+    why: 'regex .test() on a model-name variable (derive capabilities from catalog.profile, not the name)',
     pattern: /\.test\(\s*(model|modelName|machineName|modelId)\b/,
   },
 ];

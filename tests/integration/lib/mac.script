@@ -376,7 +376,7 @@ def assert_addr(want32) {
 # whose prepared image has not been fetched echo "skip:" and report an
 # uncovered target cell instead of failing.
 def have_media(path) {
-    return storage.path_exists("${$path}")
+    return files.path_exists("${$path}")
 }
 
 # --- performance telemetry ---------------------------------------------------

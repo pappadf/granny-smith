@@ -115,20 +115,20 @@ def install_os8() {
 # Phase 5 — prove Copland landed, and publish the volume for the boot test.
 def export_volume() {
     machine.scsi.device[1].image.export "${$WORK_DIR}/copland-installed.img"
-    let root = vfs.list("${$WORK_DIR}/copland-installed.img/partition6")
+    let root = files.list("${$WORK_DIR}/copland-installed.img/partition6")
     echo "target root: ${$root}"
-    let mos = vfs.list("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder")
+    let mos = files.list("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder")
     echo "Mac OS Folder (${len($mos)} items): ${$mos}"
-    let sysf = vfs.list("${$WORK_DIR}/copland-installed.img/partition6/System Folder")
+    let sysf = files.list("${$WORK_DIR}/copland-installed.img/partition6/System Folder")
     echo "System Folder (${len($sysf)} items): ${$sysf}"
 
     # Copland installs BESIDE the 7.5 System, it does not replace it: the
     # machine boots 7.5 normally and Copland only on a Caps Lock latch.  So
     # both folders must be here — one missing means the wrong thing happened,
     # in either direction.
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder") "no Mac OS Folder — Copland did not land on the target volume"
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System Folder/System") "the 7.5 System is gone — Copland should install alongside it, not over it"
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System 7.5 --Read Me") "the 7.5 install this started from is not intact"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder") "no Mac OS Folder — Copland did not land on the target volume"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System Folder/System") "the 7.5 System is gone — Copland should install alongside it, not over it"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System 7.5 --Read Me") "the 7.5 install this started from is not intact"
 
     # Name what has to be there rather than counting entries — a count is both
     # weaker evidence and more brittle (the lesson pm7100-copland-install paid
@@ -138,21 +138,21 @@ def export_volume() {
     # Libraries` and `Hardware Support` are the microkernel's own trees, and
     # `Mac OS 8 Applications` / `Apple Extras` come from the other two packages
     # rule 206 adds, so between them they cover all three.
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/Mac OS Loader") "no Mac OS Loader — the secondary loader partition would have nothing to chain to"
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/System") "no Mac OS 8 System file"
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/System Libraries") "no System Libraries — the microkernel tree is missing"
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/Hardware Support") "no Hardware Support — the microkernel tree is incomplete"
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS 8 Applications") "no Mac OS 8 Applications — a package the installer adds did not run"
-    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Apple Extras") "no Apple Extras — a package the installer adds did not run"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/Mac OS Loader") "no Mac OS Loader — the secondary loader partition would have nothing to chain to"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/System") "no Mac OS 8 System file"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/System Libraries") "no System Libraries — the microkernel tree is missing"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/Hardware Support") "no Hardware Support — the microkernel tree is incomplete"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS 8 Applications") "no Mac OS 8 Applications — a package the installer adds did not run"
+    assert files.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Apple Extras") "no Apple Extras — a package the installer adds did not run"
 
     # The loader partition Drive Setup 2.0d5c2 wrote must still be there: it is
     # what rule 207 checked on the way in, and what the ROM's secondary loader
     # will need on the way out.
-    storage.partmap "${$WORK_DIR}/copland-installed.img"
-    assert len(vfs.list("${$WORK_DIR}/copland-installed.img")) == 7 "the install disturbed the partition map"
+    files.partmap "${$WORK_DIR}/copland-installed.img"
+    assert len(files.list("${$WORK_DIR}/copland-installed.img")) == 7 "the install disturbed the partition map"
 
-    storage.cp "${$WORK_DIR}/copland-installed.img" "${$media}/copland_d11e4_installed_230mb.img"
-    assert storage.path_exists("${$media}/copland_d11e4_installed_230mb.img") "the installed volume was not published to media/"
+    files.cp "${$WORK_DIR}/copland-installed.img" "${$media}/copland_d11e4_installed_230mb.img"
+    assert files.path_exists("${$media}/copland_d11e4_installed_230mb.img") "the installed volume was not published to media/"
 }
 
 if have_media($target) && have_media($ddk_cd) && have_media($host_hd) {

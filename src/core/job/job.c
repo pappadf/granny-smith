@@ -25,12 +25,25 @@ struct gs_job {
     char *out;
     size_t out_len, out_cap;
     bool out_cut;
+    // Bytes of output already written to the ring: out[0] is byte
+    // out_base of everything the job has printed.
+    uint64_t out_base;
+    // Pending annotations (job_annotate), in order: each is written once
+    // the text before its position has been.
+    struct job_annot *annot_head, *annot_tail;
     gs_job_t *next;
 };
+
+// One annotation record waiting for its position in the output stream.
+struct job_annot {
+    uint64_t at; // absolute output offset it follows
+    char *json;
+    struct job_annot *next;
+};
 #define JOB_OUTPUT_MAX (1u << 20)
-// The most output one EVT_LOG record carries (its JSON stays well inside
-// the event ring).
-#define JOB_OUTPUT_CHUNK (16u << 10)
+// Room an output record needs besides its escaped text: the record header
+// and the {"event":"output","id":…,"client":…,"text":"…"} envelope.
+#define JOB_RECORD_OVERHEAD 128u
 
 // The pending emulator call: one at a time, since there is one job thread.
 typedef struct {
@@ -65,6 +78,12 @@ bool job_thread_running(void) {
 }
 
 static void job_free(gs_job_t *j) {
+    while (j->annot_head) {
+        struct job_annot *a = j->annot_head;
+        j->annot_head = a->next;
+        free(a->json);
+        free(a);
+    }
     free(j->src);
     free(j->out);
     free(j);
@@ -118,21 +137,59 @@ bool job_output_append(const char *text, size_t len) {
     return true;
 }
 
-// Writes the job's buffered output as EVT_LOG output records (each at most
-// JOB_OUTPUT_CHUNK bytes of text, JSON-escaped), as far as the ring has
-// room.  Returns whether everything was written.  g_mu held by the caller
-// for the buffer; the ring is the emulator thread's own.
+static void wake_emulator(void);
+
+// The escaped length of one byte of output text inside a JSON string.
+static size_t escaped_len(unsigned char c) {
+    if (c == '"' || c == '\\' || c == '\n' || c == '\t')
+        return 2;
+    if (c < 0x20)
+        return 6;
+    return 1;
+}
+
+// Writes the job's buffered output as EVT_LOG output records, and its
+// annotations at their positions, as far as the ring has room.  Each text
+// record is sized by its ESCAPED length so the record fits the ring's record
+// bound (gs_mailbox_record_max) -- a 16 KiB chunk of control bytes escapes to
+// ~96 KiB, which could never fit the headless ring, and the flush used to
+// retry it forever.  A text record never crosses an annotation's position.
+// Returns whether everything was written.  g_mu held by the caller for the
+// buffer; the ring is the emulator thread's own.
 static bool job_flush_output(struct gs_mailbox *m, gs_job_t *j) {
-    while (j->out_len) {
-        size_t n = j->out_len < JOB_OUTPUT_CHUNK ? j->out_len : JOB_OUTPUT_CHUNK;
+    size_t budget = gs_mailbox_record_max();
+    budget = budget > JOB_RECORD_OVERHEAD + 64 ? budget - JOB_RECORD_OVERHEAD : 64;
+    for (;;) {
+        // An annotation whose position has been reached goes next.
+        struct job_annot *a = j->annot_head;
+        if (a && a->at <= j->out_base) {
+            if (!gs_mailbox_emit_output(m, a->json))
+                return false;
+            j->annot_head = a->next;
+            if (!j->annot_head)
+                j->annot_tail = NULL;
+            free(a->json);
+            free(a);
+            continue;
+        }
+        if (!j->out_len)
+            return true;
+        // Text up to the next annotation's position, at most `budget`
+        // escaped bytes.
+        size_t limit = j->out_len;
+        if (a && a->at - j->out_base < limit)
+            limit = (size_t)(a->at - j->out_base);
+        size_t n = 0, esc = 0;
+        while (n < limit && esc + escaped_len((unsigned char)j->out[n]) <= budget)
+            esc += escaped_len((unsigned char)j->out[n++]);
         // Do not split a UTF-8 sequence: back up to a boundary unless this
-        // is the tail.
-        if (n < j->out_len)
+        // chunk ends where it must (the tail, or an annotation).
+        if (n < limit)
             while (n > 1 && ((unsigned char)j->out[n] & 0xC0u) == 0x80u)
                 n--;
-        // {"event":"output","id":N,"client":N,"text":"..."} -- escaping can
-        // grow the text six-fold.
-        size_t cap = 64 + n * 6;
+        if (n == 0)
+            n = 1;
+        size_t cap = 64 + esc + 8;
         char *json = (char *)malloc(cap);
         if (!json)
             return true; // drop rather than wedge
@@ -164,7 +221,75 @@ static bool job_flush_output(struct gs_mailbox *m, gs_job_t *j) {
             return false;
         memmove(j->out, j->out + n, j->out_len - n);
         j->out_len -= n;
+        j->out_base += n;
     }
+}
+
+// The job an annotation or a line of output belongs to right now: the one
+// on this job thread, or the one whose call the emulator thread is serving.
+// g_mu held.
+static gs_job_t *annotation_target_locked(void) {
+    gs_job_t *j = job_current();
+    if (j)
+        return j;
+    return g_call.serving ? g_active : NULL;
+}
+
+bool job_annotate(const char *kind, const char *fields, const char *reduced, bool *used_reduced) {
+    if (used_reduced)
+        *used_reduced = false;
+    if (!job_current() && !g_call.serving)
+        return false;
+    size_t max = gs_mailbox_record_max();
+    max = max > 16 ? max - 16 : max; // the record header
+    char *json = NULL;
+    for (int pass = 0; pass < 2 && !json; pass++) {
+        const char *body = pass == 0 ? fields : reduced;
+        if (pass == 1 && !reduced)
+            break;
+        size_t need = 80 + strlen(kind) + (body ? strlen(body) : 0);
+        char *buf = (char *)malloc(need);
+        if (!buf)
+            return false;
+        pthread_mutex_lock(&g_mu);
+        gs_job_t *j = annotation_target_locked();
+        uint32_t req = j ? j->req_id : 0, client = j ? j->client : 0;
+        pthread_mutex_unlock(&g_mu);
+        int n = snprintf(buf, need, "{\"event\":\"%s\",\"id\":%u,\"client\":%u%s%s}", kind, (unsigned)req,
+                         (unsigned)client, body && *body ? "," : "", body ? body : "");
+        if (n > 0 && (size_t)n <= max) {
+            json = buf;
+            if (used_reduced)
+                *used_reduced = pass == 1;
+        } else {
+            free(buf);
+        }
+    }
+    if (!json)
+        return false;
+    struct job_annot *a = (struct job_annot *)calloc(1, sizeof(*a));
+    if (!a) {
+        free(json);
+        return false;
+    }
+    a->json = json;
+    pthread_mutex_lock(&g_mu);
+    gs_job_t *j = annotation_target_locked();
+    if (!j || j->out_cut) {
+        // Nothing to attach it to, or past the 1 MiB cut: dropped.
+        pthread_mutex_unlock(&g_mu);
+        free(a->json);
+        free(a);
+        return false;
+    }
+    a->at = j->out_base + j->out_len;
+    if (j->annot_tail)
+        j->annot_tail->next = a;
+    else
+        j->annot_head = a;
+    j->annot_tail = a;
+    pthread_mutex_unlock(&g_mu);
+    wake_emulator();
     return true;
 }
 
@@ -395,7 +520,8 @@ bool job_layer_has_work(void) {
     if (__atomic_load_n(&g_call.pending, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_done, __ATOMIC_ACQUIRE) != NULL)
         return true;
     gs_job_t *a = __atomic_load_n(&g_active, __ATOMIC_ACQUIRE);
-    return a && __atomic_load_n(&a->out_len, __ATOMIC_ACQUIRE) != 0;
+    return a && (__atomic_load_n(&a->out_len, __ATOMIC_ACQUIRE) != 0 ||
+                 __atomic_load_n(&a->annot_head, __ATOMIC_ACQUIRE) != NULL);
 }
 
 int job_layer_service(struct gs_mailbox *m) {

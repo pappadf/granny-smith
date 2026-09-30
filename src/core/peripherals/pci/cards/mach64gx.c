@@ -461,7 +461,7 @@ static const mach64_monitor_sense_t mach64_sense[] = {
 };
 
 // The depths Apple documents per raster at 2 MB (9500 developer note table
-// 2-1).  These reach the configuration dialog through machine.profile.
+// 2-1).  These reach the configuration dialog through catalog.profile.
 static const int depths_8_16_24[] = {8, 16, 24, 0};
 static const int depths_8_16[] = {8, 16, 0};
 
@@ -2798,7 +2798,7 @@ static value_t mon_attr_probed(struct object *self, const member_t *m) {
 static const member_t monitor_members[] = {
     {.kind = M_ATTR,
      .name = "id",
-     .doc = "Strapped monitor id (see machine.profile for the card's list)",
+     .doc = "Strapped monitor id (see catalog.profile for the card's list)",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = mon_attr_id}                                     },
     {.kind = M_ATTR,

@@ -886,6 +886,8 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     g_atalk_object = object_new(&atalk_class, NULL, "appletalk");
     if (!g_atalk_object)
         return;
+    object_set_order(g_atalk_object, 100);
+    object_set_domain(g_atalk_object, OBJ_DOMAIN_NETWORK);
     object_attach(object_root(), g_atalk_object);
 
     g_atalk_stats_object = object_new(&atalk_stats_class, (void *)atalk_get_stats(), "stats");
@@ -936,8 +938,11 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     // get()/next() callbacks; they are never attached, so the cascade delete
     // does not free them (this module does, in appletalk_delete).
     object_pool_create(&g_atalk_volume_pool, &atalk_volume_class);
+    object_pool_set_parent(&g_atalk_volume_pool, g_atalk_volumes_object);
     object_pool_create(&g_atalk_nbp_pool, &atalk_nbp_entry_class);
+    object_pool_set_parent(&g_atalk_nbp_pool, g_atalk_nbp_object);
     object_pool_create(&g_atalk_session_pool, &atalk_session_class);
+    object_pool_set_parent(&g_atalk_session_pool, g_atalk_sessions_object);
 }
 
 // ============================================================================
@@ -2970,8 +2975,12 @@ static const arg_decl_t atalk_volumes_add_args[] = {
     {.name = "name",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_NONEMPTY,
-     .doc = "Volume name as clients see it (max 32 chars)"                                                     },
-    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Host directory to publish"},
+     .doc = "Volume name as clients see it (max 32 chars)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Host directory to publish"},
 };
 static const arg_decl_t atalk_volumes_remove_args[] = {
     {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Volume name to withdraw"},
@@ -3005,6 +3014,7 @@ static const member_t atalk_volumes_collection_members[] = {
 
 static const class_desc_t atalk_volumes_collection_class = {
     .name = "atalk_volumes",
+    .doc = "Host directories exported as AFP volumes",
     .members = atalk_volumes_collection_members,
     .n_members = ARRAY_LEN(atalk_volumes_collection_members),
 };
@@ -3233,6 +3243,7 @@ static const member_t atalk_afp_members[] = {
 
 static const class_desc_t atalk_afp_class = {
     .name = "atalk_afp",
+    .doc = "The host AFP file server: exported volumes, server name and message",
     .members = atalk_afp_members,
     .n_members = ARRAY_LEN(atalk_afp_members),
 };
@@ -3403,6 +3414,7 @@ static const member_t atalk_printer_members[] = {
 
 static const class_desc_t atalk_printer_class = {
     .name = "atalk_printer",
+    .doc = "The emulated LaserWriter: status, captured documents, last job",
     .members = atalk_printer_members,
     .n_members = ARRAY_LEN(atalk_printer_members),
 };
@@ -3442,4 +3454,5 @@ static const class_desc_t atalk_class = {
     .name = "appletalk",
     .members = atalk_members,
     .n_members = ARRAY_LEN(atalk_members),
+    .doc = "Simulated AppleTalk network: file server, printer, program linking",
 };

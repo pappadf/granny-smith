@@ -165,7 +165,7 @@ Selection and identification:
   refused with a clear log and the card falls back to its default geometry.
   Modes larger than the 1 MB minor window need the QD32 re-open path (see
   gaps) and are rejected.
-- `machine.profile` lists both variants for a slot; a built-in slot that has
+- `catalog.profile` lists both variants for a slot; a built-in slot that has
   a generic variant is reported as not `fixed`, so the configuration UI
   offers the choice with the generic option always available (it needs no
   uploaded file).

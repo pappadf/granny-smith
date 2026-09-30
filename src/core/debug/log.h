@@ -21,18 +21,13 @@ typedef struct log_category log_category_t;
 // Initialization (idempotent).
 void log_init(void);
 
-// `debug.log(category, spec)` core. `category` NULL/empty prints every
-// category's config; `spec` NULL/empty prints the named category's
-// config, otherwise it is a whitespace-delimited option string
-// (`"5"`, `"level=5 file=tmp/x.log stdout=off ts=on"`). Returns 0 on
-
 // Category management -------------------------------------------------------
 // Registers a category (or returns existing). On first creation, level = 0.
 // Returns NULL on OOM or invalid name.
 log_category_t *log_register_category(const char *name);
 
 // Create every category GS_LOG_CATEGORIES declares.  Called once from
-// setup_init so `debug.log` with no arguments lists the complete set rather
+// setup_init so `log.levels` and `log.category` list the complete set rather
 // than only what has been hit so far.
 void log_register_manifest(void);
 
@@ -53,6 +48,12 @@ int log_set_category_file(const char *category, const char *path); // NULL/"off"
 
 // Print one category's current settings.
 void log_print_category(const char *category);
+
+// Per-category configuration getters (the log.category[...] attributes).
+bool log_get_category_stdout(const log_category_t *cat);
+bool log_get_category_timestamp(const log_category_t *cat);
+bool log_get_category_show_pc(const log_category_t *cat);
+const char *log_get_category_file(const log_category_t *cat); // NULL when no file sink
 
 // One-line description from the manifest, or NULL for an unknown name.
 const char *log_category_description(const char *name);

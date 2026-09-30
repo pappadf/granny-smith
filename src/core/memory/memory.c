@@ -22,7 +22,7 @@
 #include "platform.h"
 #include "rom.h"
 
-// The category memory logpoints already use (AGENTS.md); debug.log memory N.
+// The category memory logpoints already use (AGENTS.md); log.set memory N.
 LOG_USE_CATEGORY_NAME("memory");
 
 // === Bus-error window ======================================================
@@ -1794,9 +1794,14 @@ static value_t method_mem_read_cstring(struct object *self, const member_t *m, i
     return val_str(buf);
 }
 
+static const value_t mem_def_max_chars = {.kind = V_INT, .i = 96};
 static const arg_decl_t mem_read_cstring_args[] = {
-    {.name = "addr",      .kind = V_UINT, .presentation_flags = VAL_HEX,        .doc = "guest memory address"          },
-    {.name = "max_chars", .kind = V_INT,  .validation_flags = OBJ_ARG_OPTIONAL, .doc = "max chars to read (default 96)"},
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "max_chars",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &mem_def_max_chars,
+     .doc = "max chars to read (1..4096)"},
 };
 
 // `memory.dump(addr, [count])` — hex-dump `count` bytes from `addr`.
@@ -1855,9 +1860,17 @@ static value_t method_mem_dump(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
+static const value_t mem_def_dump_count = {.kind = V_INT, .i = 64};
 static const arg_decl_t mem_dump_args[] = {
-    {.name = "addr", .kind = V_NONE, .doc = "guest memory address (integer or alias/expression)"},
-    {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "byte count (default 16)"},
+    {.name = "addr",
+     .kind = V_NONE,
+     .validation_flags = OBJ_ARG_POLY,
+     .doc = "guest memory address: an integer, or a symbol / alias name"},
+    {.name = "count",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &mem_def_dump_count,
+     .doc = "byte count (max 512)"},
 };
 
 // `memory.translate(addr)` — report the debug-path translation of a logical
@@ -1932,40 +1945,52 @@ static const member_t memory_members[] = {
      .name = "ram_size",
      .flags = VAL_RO,
      .doc = "Installed RAM in bytes, as the machine's memory map reports it",
-     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}                       },
     {.kind = M_ATTR,
      .name = "slowpath_count",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "CPU memory accesses taken through the slow path since process start (diagnostic)",
-     .attr = {.type = V_UINT, .get = attr_mem_slowpath_count, .set = NULL}},
+     .attr = {.type = V_UINT, .get = attr_mem_slowpath_count, .set = NULL}                 },
     {.kind = M_ATTR,
      .name = "slowpath_hist",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Slow-path accesses bucketed by MB of (masked) address (diagnostic)",
-     .attr = {.type = V_STRING, .get = attr_mem_slowpath_hist, .set = NULL}},
+     .attr = {.type = V_STRING, .get = attr_mem_slowpath_hist, .set = NULL}                },
     {.kind = M_ATTR,
      .name = "rom_size",
      .flags = VAL_RO,
      .doc = "Size in bytes of the loaded ROM image",
-     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}                       },
     {.kind = M_METHOD,
      .name = "read_cstring",
+     .examples = (const char *const[]){"machine.memory.read_cstring 0x910", NULL},
      .doc = "Read a quoted, escape-encoded C string at addr",
-     .method = {.args = mem_read_cstring_args, .nargs = 2, .result = V_STRING, .fn = method_mem_read_cstring}},
+     .method = {.result_doc = "the string, quoted, with non-printable bytes escaped as \\xNN",
+                .args = mem_read_cstring_args,
+                .nargs = 2,
+                .result = V_STRING,
+                .fn = method_mem_read_cstring}                                             },
     {.kind = M_METHOD,
      .name = "dump",
-     .doc = "Hex-dump count bytes at addr (replaces the legacy `x` / examine)",
+     .examples = (const char *const[]){"machine.memory.dump 0x400", "machine.memory.dump $pc 32", NULL},
+     .doc = "Hex-dump count bytes at addr",
      .method = {.args = mem_dump_args, .nargs = 2, .result = V_NONE, .fn = method_mem_dump}},
     {.kind = M_METHOD,
      .name = "translate",
-     .doc = "Show debug-path MMU translation of a logical address (validity + phys + backing)",
-     .method = {.args = mem_translate_args, .nargs = 1, .result = V_STRING, .fn = method_mem_translate}},
+     .examples = (const char *const[]){"machine.memory.translate 0x400", NULL},
+     .doc = "Show the debug-path MMU translation of a logical address",
+     .method = {.result_doc = "one line: MMU state, the supervisor and user walks, and the physical page's backing",
+                .args = mem_translate_args,
+                .nargs = 1,
+                .result = V_STRING,
+                .fn = method_mem_translate}                                                },
 };
 
 static const class_desc_t memory_class = {
     .name = "memory",
     .members = memory_members,
     .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
+    .doc = "Guest memory: map, peek and poke",
 };
 
 // === memory.peek child class ================================================
@@ -2071,24 +2096,29 @@ static const arg_decl_t mem_peek_bytes_args[] = {
 static const member_t mem_peek_members[] = {
     {.kind = M_METHOD,
      .name = "b",
+     .examples = (const char *const[]){"machine.memory.peek.b 0x12f", NULL},
      .doc = "Read 1 byte at addr",
      .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}           },
     {.kind = M_METHOD,
      .name = "w",
+     .examples = (const char *const[]){"machine.memory.peek.w 0x28e", NULL},
      .doc = "Read 2 bytes (big-endian word) at addr",
      .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}           },
     {.kind = M_METHOD,
      .name = "l",
+     .examples = (const char *const[]){"machine.memory.peek.l 0x16a", NULL},
      .doc = "Read 4 bytes (big-endian long) at addr",
      .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}           },
     {.kind = M_METHOD,
      .name = "bytes",
-     .doc = "Read `count` bytes at addr (bulk; max 4096 bytes per call)",
+     .examples = (const char *const[]){"machine.memory.peek.bytes 0x400 16", NULL},
+     .doc = "Read count bytes at addr (bulk; max 4096 bytes per call)",
      .method = {.args = mem_peek_bytes_args, .nargs = 3, .result = V_BYTES, .fn = method_mem_peek_bytes}},
 };
 
 static const class_desc_t mem_peek_class = {
     .name = "peek",
+    .doc = "Side-effect-free reads of guest memory by width",
     .members = mem_peek_members,
     .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
 };
@@ -2129,20 +2159,24 @@ static const arg_decl_t mem_poke_args[] = {
 static const member_t mem_poke_members[] = {
     {.kind = M_METHOD,
      .name = "b",
+     .examples = (const char *const[]){"machine.memory.poke.b 0x12f 0", NULL},
      .doc = "Write 1 byte at addr",
      .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_b}},
     {.kind = M_METHOD,
      .name = "w",
+     .examples = (const char *const[]){"machine.memory.poke.w 0x28e 0x3fff", NULL},
      .doc = "Write 2 bytes (big-endian word) at addr",
      .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_w}},
     {.kind = M_METHOD,
      .name = "l",
+     .examples = (const char *const[]){"machine.memory.poke.l 0x16a 0", NULL},
      .doc = "Write 4 bytes (big-endian long) at addr",
      .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_l}},
 };
 
 static const class_desc_t mem_poke_class = {
     .name = "poke",
+    .doc = "Writes to guest memory by width",
     .members = mem_poke_members,
     .n_members = sizeof(mem_poke_members) / sizeof(mem_poke_members[0]),
 };

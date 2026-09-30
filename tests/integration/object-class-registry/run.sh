@@ -63,7 +63,7 @@ for entry in $MODELS; do
     out="$WORK_DIR/$model.log"
     # A model that cannot boot at all is a different test's problem, so the
     # exit status is not checked here -- only what the validator said.
-    "$HEADLESS_BIN" rom="$rom" model="$model" script="$SCRIPT" --speed=max > "$out" 2>&1 || true
+    "$HEADLESS_BIN" rom="$rom" model="$model" script="$SCRIPT" --speed=turbo > "$out" 2>&1 || true
     n=$((n + 1))
     if grep -q '^object: class' "$out"; then
         echo "FAIL: $model registered an invalid class:"

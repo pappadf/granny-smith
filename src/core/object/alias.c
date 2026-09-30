@@ -317,6 +317,7 @@ static const member_t shell_alias_members[] = {
 
 const class_desc_t shell_alias_class = {
     .name = "alias",
+    .doc = "User and built-in aliases: add, remove, list",
     .members = shell_alias_members,
     .n_members = sizeof(shell_alias_members) / sizeof(shell_alias_members[0]),
 };
@@ -351,6 +352,16 @@ const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
     const char *r = alias_lookup_impl(name, kind_out);
     job_tables_unlock();
     return r;
+}
+
+bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out) {
+    job_tables_lock();
+    const char *r = alias_lookup_impl(name, kind_out);
+    bool ok = r && buf && strlen(r) < size;
+    if (ok)
+        memcpy(buf, r, strlen(r) + 1);
+    job_tables_unlock();
+    return ok;
 }
 
 void alias_each(alias_iter_fn fn, void *ud) {

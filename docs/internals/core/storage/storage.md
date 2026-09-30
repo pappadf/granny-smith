@@ -162,7 +162,7 @@ int16 resource ID as base-10, including a leading `-` for negative values
 Example shell session:
 
 ```
-> vfs.ls "/images/sys.img/System Folder/Finder/rsrc/"
+> files.ls "/images/sys.img/System Folder/Finder/rsrc/"
 CODE
 MENU
 vers
@@ -170,10 +170,10 @@ STR#
 …
 _raw
 
-> vfs.cat "/images/sys.img/System Folder/Finder/rsrc/vers/1.info"
+> files.cat "/images/sys.img/System Folder/Finder/rsrc/vers/1.info"
 {"name":"","attrs":["purgeable"],"size":50}
 
-> storage.cp -r "/images/sys.img/System Folder/Finder/rsrc/" "/tmp/finder-rsrc/"
+> files.cp "/images/sys.img/System Folder/Finder/rsrc/" "/tmp/finder-rsrc/" recursive=true
 ```
 
 Eligibility rules:
@@ -189,7 +189,7 @@ Eligibility rules:
   first; on miss the full literal component list is retried.
 
 For binary data over the headless TCP shell or JS bridge, prefer
-`storage.cp <path> <dst>` over `vfs.cat <path>` — the latter streams
+`files.cp <path> <dst>` over `files.cat <path>` — the latter streams
 non-printable bytes into the response stream, which is fine for small
 text resources but unsafe for arbitrary code/PICT/SND bytes.
 

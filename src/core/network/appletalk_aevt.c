@@ -775,6 +775,7 @@ static const member_t aevt_events_members[] = {
 
 static const class_desc_t aevt_events_class = {
     .name = "aevt_events",
+    .doc = "Apple events sent from the host, by index or by tag",
     .members = aevt_events_members,
     .n_members = ARRAY_LEN(aevt_events_members),
 };
@@ -894,6 +895,7 @@ static const member_t aevt_inbox_members[] = {
 
 static const class_desc_t aevt_inbox_class = {
     .name = "aevt_inbox",
+    .doc = "Apple events the guest sent to the host",
     .members = aevt_inbox_members,
     .n_members = ARRAY_LEN(aevt_inbox_members),
 };
@@ -1121,7 +1123,7 @@ static const arg_decl_t aevt_send_args[] = {
      .width = 8,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &aevt_def_timeout,
-     .doc = "Reply budget in guest instructions (default 20 million)"},
+     .doc = "Reply budget in guest instructions"},
     {.name = "tag",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1131,7 +1133,7 @@ static const arg_decl_t aevt_send_args[] = {
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &aevt_def_mode,
-     .doc = "\"wait\" (default) or \"no_reply\""},
+     .doc = "\"wait\" or \"no_reply\""},
 };
 
 static const arg_decl_t aevt_send_raw_args[] = {
@@ -1145,14 +1147,14 @@ static const member_t aevt_members[] = {
     {.kind = M_ATTR,
      .name = "enabled",
      .doc = "Advertise the host program-linking port and accept sessions",
-     .attr = {.type = V_BOOL, .get = aevt_attr_enabled, .set = aevt_attr_set_enabled}        },
+     .attr = {.type = V_BOOL, .get = aevt_attr_enabled, .set = aevt_attr_set_enabled}},
     {.kind = M_ATTR,
      .name = "port_name",
      .doc = "NBP object name of the host port guests see in their PPC browser",
      .attr = {.type = V_STRING,
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = aevt_attr_port_name,
-              .set = aevt_attr_set_port_name}                                                },
+              .set = aevt_attr_set_port_name}},
     {.kind = M_ATTR,
      .name = "auto_reply",
      .doc = "Text-form reply sent for each inbox event; empty means a plain noErr answer",
@@ -1164,19 +1166,21 @@ static const member_t aevt_members[] = {
                 .nargs = ARRAY_LEN(aevt_send_args),
                 .result = V_OBJECT,
                 .fn = aevt_method_send,
-                .ui_flags = MM_MUTATE}                                                       },
+                .ui_flags = MM_MUTATE}},
     {.kind = M_METHOD,
      .name = "send_raw",
+     .flags = M_CAT_ADVANCED,
      .doc = "Send a pre-flattened event stream verbatim (golden and fuzz path)",
      .method = {.args = aevt_send_raw_args,
                 .nargs = ARRAY_LEN(aevt_send_raw_args),
                 .result = V_OBJECT,
                 .fn = aevt_method_send_raw,
-                .ui_flags = MM_MUTATE}                                                       },
+                .ui_flags = MM_MUTATE}},
 };
 
 static const class_desc_t aevt_class = {
     .name = "aevt",
+    .doc = "Apple events over AppleTalk: send to guest ports, receive replies and events",
     .members = aevt_members,
     .n_members = ARRAY_LEN(aevt_members),
 };
@@ -1203,7 +1207,10 @@ void atalk_aevt_install_objects(struct object *parent) {
     }
 
     object_pool_create(&g_aevt_event_pool, &aevt_event_class);
+
+    object_pool_set_parent(&g_aevt_event_pool, g_aevt_events_object);
     object_pool_create(&g_aevt_inbox_pool, &aevt_inbox_entry_class);
+    object_pool_set_parent(&g_aevt_inbox_pool, g_aevt_inbox_object);
 }
 
 void atalk_aevt_remove_objects(void) {

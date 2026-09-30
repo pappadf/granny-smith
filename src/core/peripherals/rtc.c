@@ -505,8 +505,10 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
         object_set_order(rtc->object, 60);
         object_attach(machine_object(), rtc->object);
         rtc->pram_object = object_new(&rtc_pram_class, rtc, "pram");
-        if (rtc->pram_object)
+        if (rtc->pram_object) {
+            object_set_category(rtc->pram_object, M_CAT_ADVANCED);
             object_attach(rtc->object, rtc->pram_object);
+        }
     }
 
     return rtc;
@@ -648,6 +650,7 @@ static const member_t rtc_members[] = {
 
 static const class_desc_t rtc_class = {
     .name = "rtc",
+    .doc = "The real-time clock: its time and write-protect bit",
     .members = rtc_members,
     .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
 };

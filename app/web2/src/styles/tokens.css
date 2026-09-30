@@ -89,9 +89,29 @@
   --gs-terminal-bg: #0d0f11; /* terminal.background dark */
   --gs-terminal-fg: #cccccc; /* terminal.foreground dark */
   --gs-terminal-cursor: #cccccc;
-  /* Selection overlay — xterm's built-in default is translucent white,
-     which vanishes on a light background, so both themes set it. */
+  /* Selection in the console: translucent white vanishes on a light
+     background, so both themes set it. */
   --gs-terminal-selection: rgba(255, 255, 255, 0.25);
+
+  /* Syntax palette (VS Code Dark+): the command browser, SYSTEM, the
+     console's entries and input, and the usage block. */
+  --gs-syntax-method: #dcdcaa;
+  --gs-syntax-attribute: #9cdcfe;
+  --gs-syntax-variable: #9cdcfe;
+  --gs-syntax-alias: #9cdcfe;
+  --gs-syntax-object: inherit;
+  --gs-syntax-operator: inherit;
+  --gs-syntax-decl: #569cd6;
+  --gs-syntax-interp: #569cd6;
+  --gs-syntax-keyword: #c586c0;
+  --gs-syntax-string: #ce9178;
+  --gs-syntax-number: #b5cea8;
+  --gs-syntax-enum: #4fc1ff;
+  --gs-syntax-type: #4ec9b0;
+  --gs-syntax-comment: #6a9955;
+  --gs-syntax-unknown: #f14c4c;
+  --gs-syntax-error: #f14c4c;
+  --gs-syntax-dim: #808080;
 
   /* Diff highlight — applied to debug panes (registers / FPU / memory)
      on cells whose value differs from the previous refresh. Persists
@@ -196,6 +216,25 @@
   --gs-terminal-fg: #333333; /* terminal.foreground light */
   --gs-terminal-cursor: #333333;
   --gs-terminal-selection: #add6ff; /* editor-blue, visible on #f6f6f6 */
+
+  /* Syntax palette (VS Code Light+; see the dark theme). */
+  --gs-syntax-method: #795e26;
+  --gs-syntax-attribute: #001080;
+  --gs-syntax-variable: #001080;
+  --gs-syntax-alias: #001080;
+  --gs-syntax-object: inherit;
+  --gs-syntax-operator: inherit;
+  --gs-syntax-decl: #0000ff;
+  --gs-syntax-interp: #0000ff;
+  --gs-syntax-keyword: #af00db;
+  --gs-syntax-string: #a31515;
+  --gs-syntax-number: #098658;
+  --gs-syntax-enum: #0070c1;
+  --gs-syntax-type: #267f99;
+  --gs-syntax-comment: #008000;
+  --gs-syntax-unknown: #e51400;
+  --gs-syntax-error: #e51400;
+  --gs-syntax-dim: #6e7781;
 
   /* Diff highlight (see dark theme note). */
   --gs-changed-bg: rgba(220, 170, 0, 0.22);

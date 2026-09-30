@@ -110,7 +110,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   // (false polls print "false"; nothing else in this session prints a bare
   // "true" line).
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   await expect
     .poll(
@@ -118,7 +118,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
         await terminalRun(page, 'machine.screen.match "/opfs/upload/login-ref.png"');
         // Give the worker round-trip + echo a moment to land in the buffer.
         await page.waitForTimeout(1_000);
-        const text = await page.locator('.xterm-rows').innerText();
+        const text = await page.locator('.console-output').innerText();
         return text
           .split('\n')
           .map((l) => l.trim())

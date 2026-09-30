@@ -6,7 +6,7 @@
 # id N on the first bus whatever the model, while the web frontend used the
 # boot bay.  On a Network Server the boot bay is id 2 and the CD bay id 0, so
 # the two front ends put the same disk in different places.  Both now go
-# through profile_hd_bays / profile_cdrom_bay, which machine.profile exports
+# through profile_hd_bays / profile_cdrom_bay, which catalog.profile exports
 # as hd_bays / hd_default / cdrom and machine.attach_hd / attach_cdrom use.
 
 TEST_NAME := Media bays

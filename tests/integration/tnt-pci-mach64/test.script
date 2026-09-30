@@ -24,29 +24,29 @@
 # --- Expansion-ROM identification, before anything is seated. ---------------
 # Identity is the CRC-32 of the whole chip image; no filename is ever
 # inspected.  The two catalogued dumps of this card:
-assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").recognised "the -104 dump must be recognised"
-assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").card_id == "mach64_gx" "and must provide the mach64_gx card"
-assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").card_id == "mach64_gx" "so must the earlier -101 programming"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").recognised "the -104 dump must be recognised"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").card_id == "mach64_gx" "and must provide the mach64_gx card"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").card_id == "mach64_gx" "so must the earlier -101 programming"
 # ...and the failures, each told apart from the others.  A PC/x86 option
 # ROM is the predictable user error and must not be mistaken for "not a ROM".
-assert !machine.prom.identify("${$WORK_DIR}/fake-x86-vga.prom").recognised "an x86 option ROM must be rejected"
-assert !machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom") "...and must not register as an offer"
-assert !machine.prom.identify("${$WORK_DIR}/uncatalogued.prom").recognised "an uncatalogued OF ROM must be rejected"
-assert !machine.prom.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an expansion ROM"
+assert !catalog.proms.identify("${$WORK_DIR}/fake-x86-vga.prom").recognised "an x86 option ROM must be rejected"
+assert !catalog.proms.offer("${$WORK_DIR}/fake-x86-vga.prom") "...and must not register as an offer"
+assert !catalog.proms.identify("${$WORK_DIR}/uncatalogued.prom").recognised "an uncatalogued OF ROM must be rejected"
+assert !catalog.proms.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an expansion ROM"
 
 # The frontend's ingest path, end to end: a persistent store that does not
 # exist yet is created, the staged file is copied into it, and the copy is
 # offered.  This is not hypothetical — the web UI shipped briefly with the
 # store directory missing from its startup mkdir list, and every upload of
-# a .prom died with a bare "Failed to save" because storage.cp does not
+# a .prom died with a bare "Failed to save" because files.cp does not
 # create parent directories.
-vfs.mkdir "${$WORK_DIR}/prom-store"
-assert storage.cp("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom", "${$WORK_DIR}/prom-store/437584e0") "a freshly created store must accept the copy"
-assert machine.prom.offer("${$WORK_DIR}/prom-store/437584e0") "and the stored copy must register as an offer"
-assert machine.prom.identify("${$WORK_DIR}/prom-store/437584e0").card_id == "mach64_gx" "identity survives the copy and the rename"
+files.mkdir "${$WORK_DIR}/prom-store"
+assert files.cp("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom", "${$WORK_DIR}/prom-store/437584e0") "a freshly created store must accept the copy"
+assert catalog.proms.offer("${$WORK_DIR}/prom-store/437584e0") "and the stored copy must register as an offer"
+assert catalog.proms.identify("${$WORK_DIR}/prom-store/437584e0").card_id == "mach64_gx" "identity survives the copy and the rename"
 
 # --- The card kind reaches the configuration layer from one declaration. ----
-assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu]" "the card must be registered"
+assert catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu]" "the card must be registered"
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
@@ -408,8 +408,8 @@ assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "and must leave the car
 
 # The card DECLARES what it will accept, so a frontend can offer a control
 # without knowing which card it is.
-assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].key == "vram" "the card must declare its option"
-assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].default_value == "2m" "...and what it does by default"
+assert catalog.profile("pm9500").pci_slots[0].cards[0].options[0].key == "vram" "the card must declare its option"
+assert catalog.profile("pm9500").pci_slots[0].cards[0].options[0].default_value == "2m" "...and what it does by default"
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
@@ -460,7 +460,7 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 # --- A card that requires an expansion ROM cannot boot without one. ---------
 # Strict resolution runs BEFORE the running machine is touched, so a
 # rejected boot leaves the current machine alive.
-machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom")
+catalog.proms.offer("${$WORK_DIR}/fake-x86-vga.prom")
 assert machine.id == "pm9500" "the machine survives"
 
 quit

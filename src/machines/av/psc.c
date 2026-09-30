@@ -751,6 +751,7 @@ static const member_t psc_members[] = {
 
 static const class_desc_t psc_class = {
     .name = "irq_controller",
+    .doc = "PSC, the Quadra AV DMA and interrupt controller: interrupt state",
     .members = psc_members,
     .n_members = sizeof(psc_members) / sizeof(psc_members[0]),
 };

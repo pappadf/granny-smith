@@ -31,6 +31,10 @@ extern config_t *global_emulator;
 // singleton before mounting the per-machine `scsi` object at root.
 static void scsi_static_detach(void);
 
+// Live per-machine primary (`machine.scsi`) instances; the static singleton
+// comes back only when the last one goes.
+static int s_primary_live = 0;
+
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
 static const class_desc_t scsi_class;
@@ -1221,16 +1225,20 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
     // the "scsi" name at root — detach it first so dispatch on the new
     // per-machine object isn't shadowed.
     bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
-    if (primary)
+    if (primary) {
         scsi_static_detach();
+        s_primary_live++;
+    }
     scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
         object_set_label(scsi->object, primary ? "SCSI" : name);
         object_set_order(scsi->object, primary ? 90 : 91);
         object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
-        if (scsi->bus_object)
+        if (scsi->bus_object) {
+            object_set_category(scsi->bus_object, M_CAT_ADVANCED);
             object_attach(scsi->object, scsi->bus_object);
+        }
         scsi->devices_object = object_new(&scsi_devices_collection_class, scsi, "device");
         if (scsi->devices_object) {
             object_set_label(scsi->devices_object, "Devices");
@@ -1244,6 +1252,10 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
             // fetch the live image_t lazily. Returned by the
             // device's `image` child lookup only when a medium is present.
             scsi->image_objects[i] = object_new(&scsi_image_class, &scsi->device_links[i], "image");
+            // Callback-backed children: device[i] under the collection,
+            // device[i].image under its device (for its path).
+            object_set_logical_parent(scsi->device_objects[i], scsi->devices_object, NULL, i, NULL);
+            object_set_logical_parent(scsi->image_objects[i], scsi->device_objects[i], "image", -1, NULL);
         }
     }
 
@@ -1520,7 +1532,10 @@ void scsi_delete(scsi_t *scsi) {
     // Restore the pre-machine static singleton so the next round of
     // upload validation (e.g. the Welcome view after stopping a
     // machine) keeps resolving `scsi.identify_hd` / `identify_cdrom`.
-    if (primary)
+    // Only when no other primary bus is live: checkpoint.load builds the new
+    // machine before destroying the old one, and a singleton re-attached then
+    // would shadow the new machine's `machine.scsi` (head-push attach).
+    if (primary && --s_primary_live == 0)
         scsi_class_register();
 }
 
@@ -1756,7 +1771,10 @@ static value_t scsi_dev_method_info(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t scsi_dev_insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host path or storage URI of the image to mount"},
 };
 
 // --- Medium (image) node: machine.scsi.device[N].image ---------------------
@@ -1835,6 +1853,7 @@ static value_t scsi_image_method_eject(struct object *self, const member_t *m, i
 static const arg_decl_t scsi_image_export_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Destination host path for the flattened image (must not exist)"},
 };
@@ -1873,8 +1892,7 @@ static const member_t scsi_image_members[] = {
                 .result = V_BOOL,
                 .fn = scsi_image_method_export,
                 .ui_flags = MM_MUTATE | MM_IO,
-                .verb_label = "Save image…",
-                .task_category = "storage"}},
+                .verb_label = "Save image…"}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the medium from the owning device",
@@ -1882,8 +1900,7 @@ static const member_t scsi_image_members[] = {
                 .nargs = 0,
                 .result = V_BOOL,
                 .fn = scsi_image_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task_category = "storage"}},
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 
 static const class_desc_t scsi_image_class = {
@@ -2036,6 +2053,7 @@ static const member_t scsi_devices_collection_members[] = {
 };
 static const class_desc_t scsi_devices_collection_class = {
     .name = "scsi_devices",
+    .doc = "SCSI devices, by bus ID",
     .members = scsi_devices_collection_members,
     .n_members = 1,
 };
@@ -2191,12 +2209,12 @@ static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t scsi_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
 };
 
 static const arg_decl_t scsi_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image file path"    },
-    {.name = "id",   .kind = V_INT,    .doc = "SCSI bus index 0..6"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
+    {.name = "id", .kind = V_INT, .doc = "SCSI bus index 0..6"},
 };
 
 // Subset of `scsi_members` that doesn't depend on a live bus instance:
@@ -2209,14 +2227,16 @@ static const member_t scsi_static_members[] = {
     {.kind = M_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}                                },
     {.kind = M_METHOD,
      .name = "identify_hd",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}   },
     {.kind = M_METHOD,
      .name = "identify_cdrom",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
 };
@@ -2225,6 +2245,7 @@ static const class_desc_t scsi_static_class = {
     .name = "scsi",
     .members = scsi_static_members,
     .n_members = sizeof(scsi_static_members) / sizeof(scsi_static_members[0]),
+    .doc = "SCSI image identification (before a machine exists)",
 };
 
 // Pre-machine singleton holding the static subset. Replaced by the
@@ -2255,26 +2276,30 @@ static const member_t scsi_members[] = {
      .name = "loopback",
      .doc = "Loopback test card / passive terminator",
      .flags = 0,
-     .attr = {.type = V_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}},
+     .attr = {.type = V_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}            },
     {.kind = M_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
+     .flags = VAL_RO | M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}                                 },
     {.kind = M_METHOD,
      .name = "identify_hd",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}    },
     {.kind = M_METHOD,
      .name = "identify_cdrom",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom} },
     {.kind = M_METHOD,
      .name = "attach_hd",
+     .examples = (const char *const[]){"machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1", NULL},
      .doc = "Attach a hard-disk image at the given SCSI id",
-     .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_hd}},
+     .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_hd}   },
     {.kind = M_METHOD,
      .name = "attach_cdrom",
+     .examples = (const char *const[]){"machine.scsi.attach_cdrom \"/opfs/images/cd/install.iso\" 3", NULL},
      .doc = "Attach a CD-ROM image at the given SCSI id",
      .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_cdrom}},
 };
@@ -2283,4 +2308,5 @@ static const class_desc_t scsi_class = {
     .name = "scsi",
     .members = scsi_members,
     .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),
+    .doc = "SCSI bus controller and its devices",
 };

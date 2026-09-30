@@ -25,7 +25,7 @@
 
 // One category for the whole checkpoint path.  This file used "checkpoint"
 // while checkpoint.c uses "ckpt" and system.c reached for "ckpt" inline, so
-// `debug.log checkpoint 2` turned up a third of the subsystem and the other
+// `log.set checkpoint 2` turned up a third of the subsystem and the other
 // two thirds stayed silent.
 LOG_USE_CATEGORY_NAME("ckpt")
 

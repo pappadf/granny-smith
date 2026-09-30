@@ -83,7 +83,7 @@ static const class_desc_t reftoy_class = {
 };
 
 // A class exercising the new member-level metadata (visibility category +
-// method UI flags + verb label + task category + ordering weight).
+// method UI flags + verb label + ordering weight).
 static value_t meta_method_stub(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -122,17 +122,12 @@ static const member_t metmeta_members[] = {
                 .result = V_NONE,
                 .fn = meta_method_stub,
                 .ui_flags = MM_MUTATE,
-                .verb_label = "Save image…",
-                .task_category = "storage"}},
+                .verb_label = "Save image…"}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "destructive method",
-     .method = {.args = NULL,
-                .nargs = 0,
-                .result = V_NONE,
-                .fn = meta_method_stub,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task_category = "storage"}},
+     .method =
+         {.args = NULL, .nargs = 0, .result = V_NONE, .fn = meta_method_stub, .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
 };
 static const class_desc_t metmeta_class = {
     .name = "metmeta",
@@ -294,7 +289,6 @@ TEST(test_member_metadata) {
     ASSERT_TRUE((exp->method.ui_flags & MM_MUTATE) != 0);
     ASSERT_TRUE((exp->method.ui_flags & MM_DESTRUCTIVE) == 0);
     ASSERT_TRUE(exp->method.verb_label && strcmp(exp->method.verb_label, "Save image…") == 0);
-    ASSERT_TRUE(exp->method.task_category && strcmp(exp->method.task_category, "storage") == 0);
     ASSERT_TRUE((ej->method.ui_flags & MM_DESTRUCTIVE) != 0);
 }
 
@@ -364,7 +358,6 @@ TEST(test_meta_members) {
 
     const value_t *exp = member_entry(&list, "export");
     ASSERT_TRUE(exp && entry_str(exp, "kind", "method") && entry_str(exp, "verb", "Save image…"));
-    ASSERT_TRUE(entry_str(exp, "task", "storage"));
     const value_t *mut = value_map_get(exp, "mutate");
     ASSERT_TRUE(mut && mut->kind == V_BOOL && mut->b);
     const value_t *des = value_map_get(member_entry(&list, "eject"), "destructive");

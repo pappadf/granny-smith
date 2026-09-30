@@ -3137,8 +3137,11 @@ static value_t regs_method_gamma(struct object *self, const member_t *m, int arg
 }
 
 static const arg_decl_t regs_tex_save_args[] = {
-    {.name = "tmu",  .kind = V_INT,    .doc = "Which Bruce (0 or 1)"                     },
-    {.name = "path", .kind = V_STRING, .doc = "Host file to write the raw texture RAM to"},
+    {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host file to write the raw texture RAM to"},
 };
 static value_t regs_method_tex_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
@@ -3355,6 +3358,7 @@ static const member_t fb_members[] = {
 };
 static const class_desc_t v2_fb_class = {
     .name = "voodoo2_fb",
+    .doc = "The Voodoo2 framebuffer: geometry and the displayed buffer",
     .members = fb_members,
     .n_members = sizeof(fb_members) / sizeof(fb_members[0]),
 };
@@ -3387,6 +3391,7 @@ static const member_t video_members[] = {
 };
 static const class_desc_t v2_video_class = {
     .name = "voodoo2_video",
+    .doc = "The Voodoo2 video output: whether it drives the monitor",
     .members = video_members,
     .n_members = sizeof(video_members) / sizeof(video_members[0]),
 };

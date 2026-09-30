@@ -12,9 +12,11 @@
 
 #include "shell_funcs.h"
 
+#include "commands.h"
 #include "expr.h"
 #include "script.h"
 #include "shell_var.h"
+#include "usage.h"
 #include "value.h"
 #include "job/job.h"
 
@@ -108,6 +110,7 @@ static const class_desc_t func_entry_class = {
 // attached children so path resolution finds them by name.
 static const class_desc_t functions_class = {
     .name = "functions",
+    .doc = "Functions defined with def, by name",
     .members = NULL,
     .n_members = 0,
 };
@@ -319,7 +322,21 @@ static value_t func_expr_hook(void *ud, const char *name, int argc, const value_
 
 // === Install / uninstall ====================================================
 
+// For help / shell.usage (object layer): a word that is no path, read the
+// way the interpreter reads it (commands.h).
+static usage_word_t usage_word(const char *word, char *target, size_t target_size) {
+    switch (shell_word_resolve(word, strlen(word), NULL, NULL, target, target_size)) {
+    case SHELL_HEAD_FUNCTION:
+        return USAGE_WORD_FUNCTION;
+    case SHELL_HEAD_COMMAND:
+        return USAGE_WORD_COMMAND;
+    default:
+        return USAGE_WORD_NONE;
+    }
+}
+
 void shell_funcs_install(struct object *shell_obj) {
+    object_usage_set_word_resolver(usage_word);
     if (!shell_obj || g_functions_obj)
         return;
     g_functions_obj = object_new(&functions_class, NULL, "functions");

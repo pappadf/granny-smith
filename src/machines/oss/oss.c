@@ -338,6 +338,7 @@ static const member_t oss_members[] = {
 
 static const class_desc_t oss_class = {
     .name = "irq_controller",
+    .doc = "OSS, the Mac IIfx interrupt controller: sources and levels",
     .members = oss_members,
     .n_members = sizeof(oss_members) / sizeof(oss_members[0]),
 };

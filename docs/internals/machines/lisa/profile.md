@@ -216,7 +216,7 @@ already work through the existing `output_cb` (fires on port-A/B writes).
    read/write. Detection = OCD already-connected.
 3. `lisa.c`: wire VIA2 PB0/PB1/CA1/CA2 + the read hook to the device; add it to the
    `floppy`-style object surface or a `hd` object so a test/UI can attach an image.
-   Create a blank 5 MB ProFile image (storage.profile_create-style).
+   Create a blank 5 MB ProFile image (files.profile_create-style).
 4. Bring-up milestones: (a) ROM lists the ProFile in "STARTUP FROM…"; (b) ROM reads
    block 0; (c) Workshop boots from floppy and *sees* the ProFile.
 5. **COPS keyboard injection** (separate, also needed): the Workshop install is

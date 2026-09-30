@@ -29,11 +29,12 @@ int archive_extract_file(const char *path, const char *out_dir);
 
 // === Object-model class descriptor =========================================
 //
-// `archive` is a process-singleton namespace registered at shell_init
-// alongside rom / vrom / machine / checkpoint. It exposes `identify`
-// and `extract` methods.
+// `files.archive` is a process-singleton node created with `files` at
+// shell_init. It exposes `identify` and `extract` methods.  `parent` is the
+// node it is attached under (`files`).
 
-void archive_init(void);
+struct object;
+void archive_init(struct object *parent);
 void archive_delete(void);
 
 #endif // ARCHIVE_H

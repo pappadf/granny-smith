@@ -1961,7 +1961,10 @@ static value_t scc_ch_method_sent(struct object *self, const member_t *m, int ar
 }
 
 static const arg_decl_t scc_ch_receive_args[] = {
-    {.name = "data", .kind = V_NONE, .doc = "String to deliver, or a single byte value"},
+    {.name = "data",
+     .kind = V_NONE,
+     .validation_flags = OBJ_ARG_POLY,
+     .doc = "String to deliver, or a single byte value"},
 };
 
 static const member_t scc_ch_members[] = {
@@ -1987,12 +1990,12 @@ static const member_t scc_ch_members[] = {
      .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending}},
     {.kind = M_ATTR,
      .name = "sent_pending",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Bytes the guest has transmitted that are waiting in the host-side capture buffer",
      .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending}},
     {.kind = M_ATTR,
      .name = "sent_dropped",
-     .flags = VAL_RO,
+     .flags = VAL_RO | M_CAT_ADVANCED,
      .doc = "Transmitted bytes lost because the capture buffer overflowed; nonzero means a script drained too "
             "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}},
     {.kind = M_ATTR,
@@ -2014,6 +2017,7 @@ static const member_t scc_ch_members[] = {
 
 static const class_desc_t scc_channel_class = {
     .name = "scc_channel",
+    .doc = "One SCC serial channel: queued output, injected input",
     .members = scc_ch_members,
     .n_members = sizeof(scc_ch_members) / sizeof(scc_ch_members[0]),
 };
@@ -2037,12 +2041,13 @@ static const member_t scc_members[] = {
     {.kind = M_METHOD,
      .name = "reset",
      .doc = "Reset the SCC (both channels)",
-     .flags = 0,
+     .flags = M_CAT_ADVANCED,
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}      },
 };
 
 static const class_desc_t scc_class = {
     .name = "scc",
+    .doc = "The Z8530 SCC serial controller: channels a and b",
     .members = scc_members,
     .n_members = sizeof(scc_members) / sizeof(scc_members[0]),
 };

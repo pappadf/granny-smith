@@ -5,11 +5,8 @@ import { urlSchedulerMode, parseUrlMediaParams, hasUrlMedia } from '@/bus/urlMed
 describe('urlSchedulerMode', () => {
   it.each([
     ['paced', 'live'],
-    ['realtime', 'live'],
-    ['hardware', 'live'],
     ['accelerated', 'accel'],
     ['turbo', 'turbo'],
-    ['max', 'turbo'],
   ] as const)('%s -> %s', (speed, mode) => {
     expect(urlSchedulerMode(speed)).toBe(mode);
   });
@@ -17,6 +14,11 @@ describe('urlSchedulerMode', () => {
   it('ignores an absent or unknown value', () => {
     expect(urlSchedulerMode(null)).toBeNull();
     expect(urlSchedulerMode('warp')).toBeNull();
+  });
+
+  it('rejects the retired aliases', () => {
+    for (const legacy of ['realtime', 'real', 'hardware', 'hw', 'accel', 'max'])
+      expect(urlSchedulerMode(legacy)).toBeNull();
   });
 });
 

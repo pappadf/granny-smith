@@ -56,6 +56,10 @@ struct class_desc;
 // `none` while it is not, so its setter accepts `none` to clear it and its
 // getter may answer `none`.  Any other kind still has to match the slot.
 #define OBJ_ARG_NONE_OK 0x0080u
+// OBJ_ARG_POLY — a V_ANY / V_NONE argument that is intentionally
+// polymorphic (a size given as a string or a count, say).  The doc lint
+// (shell.lint_members) flags an untyped argument without it.
+#define OBJ_ARG_POLY 0x0100u
 
 // === Member visibility category ==============================================
 //
@@ -120,6 +124,9 @@ typedef value_t (*method_fn)(struct object *self, const struct member *m, int ar
 typedef struct object *(*child_get_fn)(struct object *self, int index);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
 typedef struct object *(*child_lookup_fn)(struct object *self, const char *name);
+// Keyed-collection enumeration: fills *out_names with the live keys and returns
+// their count.  The names are borrowed and valid until the next call.
+typedef int (*child_keys_fn)(struct object *self, const char ***out_names);
 
 // === Member descriptor =======================================================
 
@@ -145,6 +152,9 @@ typedef struct member {
     // Ordering weight for a faithful, deterministic tree.
     // Lower sorts earlier; ties break on declaration order. Default 0.
     int16_t order;
+    // Optional example statements (NULL-terminated), shown by help /
+    // shell.usage as `e.g.  …`.
+    const char *const *examples;
     union {
         struct {
             value_kind_t type;
@@ -174,9 +184,9 @@ typedef struct member {
             // Short verb shown in menus ("Save image…") when distinct from
             // the method name ("export"). NULL = use the method name.
             const char *verb_label;
-            // By-task grouping for the command browser ("storage", "debugger",
-            // "mac", …); a different axis from the structural tree.
-            const char *task_category;
+            // Optional one-line description of the result, for a method
+            // whose result kind alone says little (V_ANY, V_MAP, V_LIST).
+            const char *result_doc;
         } method;
         struct {
             const struct class_desc *cls;
@@ -198,6 +208,10 @@ typedef struct member {
             int slots;
             child_next_fn next;
             child_lookup_fn lookup; // for named children (when not statically attached)
+            // Keyed collections (`log.category["scsi"]`): the live key set.
+            // A keyed collection's `entries` member is indexed with
+            // get = next = NULL and sets lookup + keys.
+            child_keys_fn keys;
         } child;
     };
 } member_t;
@@ -210,6 +224,7 @@ typedef struct class_desc {
     const member_t *members;
     size_t n_members;
     void *(*instance_data)(struct object *o); // optional, for casts
+    const char *doc; // one sentence describing a node of this class; NULL = none
 } class_desc_t;
 
 // === Root object =============================================================
@@ -288,6 +303,28 @@ const char *object_name(const struct object *o);
 void *object_data(struct object *o);
 struct object *object_parent(struct object *o);
 
+// === Logical parents =========================================================
+//
+// Objects handed out by a child callback -- collection entries (get/lookup)
+// and lookup-backed named children such as drive[n].disk -- are never
+// attached, so they have no parent and, without this, no path.  Their
+// creator registers the node whose member produces them: a non-owning
+// back-link (not added to the parent's child list, not cascade-deleted),
+// cleared automatically if the parent is freed first.  Exactly one of
+// `name` (a named lookup child), `index >= 0` (an indexed entry) or `key` (a
+// keyed entry) is given; `name` and `key` are copied.  The path is then
+// `<parent>.<name>`, `<parent>[<index>]` or `<parent>["<key>"]`.  Passing a
+// NULL parent clears the link.
+void object_set_logical_parent(struct object *obj, struct object *parent, const char *name, int index, const char *key);
+struct object *object_logical_parent(struct object *o); // NULL when none
+const char *object_logical_name(struct object *o); // named-child segment, or NULL
+int object_logical_index(struct object *o); // entry index, or -1
+const char *object_logical_key(struct object *o); // entry key, or NULL
+
+// Keys of keyed collections are short identifiers: [A-Za-z0-9_.-]{1,63}.
+#define OBJ_KEY_MAX 63
+bool object_valid_key(const char *key);
+
 // === Entry pools =============================================================
 //
 // A collection whose entries are made once, one per slot of the table they
@@ -308,6 +345,9 @@ typedef struct {
     static object_pool_t name = {name##_objs, name##_slots, (count)}
 
 void object_pool_create(object_pool_t *pool, const class_desc_t *cls);
+// Register `parent` (the collection container) as every entry's logical
+// parent, entry i at index i.
+void object_pool_set_parent(object_pool_t *pool, struct object *parent);
 void object_pool_delete(object_pool_t *pool);
 struct object *object_pool_at(const object_pool_t *pool, int slot); // NULL out of range or before create
 int object_pool_slot(struct object *entry); // -1 for no entry
@@ -356,6 +396,21 @@ int object_order(struct object *o);
 // Default M_CAT_BASIC (always shown).
 void object_set_category(struct object *o, uint16_t category);
 uint16_t object_category(struct object *o);
+
+// One-sentence description of this node.  object_doc answers the object's
+// own doc, else its class's, else "" -- never NULL.  The string is borrowed
+// and must outlive the object.
+void object_set_doc(struct object *o, const char *doc);
+const char *object_doc(struct object *o);
+
+// Domain of a root child: what the top-level node *is*.  Drives the dividers
+// in the SYSTEM tab and at the command browser's root.
+#define OBJ_DOMAIN_EMULATOR 0 // default
+#define OBJ_DOMAIN_MACHINE  1
+#define OBJ_DOMAIN_NETWORK  2
+void object_set_domain(struct object *o, uint8_t domain);
+uint8_t object_domain(struct object *o);
+const char *object_domain_name(uint8_t domain); // "emulator" | "machine" | "network"
 
 // Iterate this object's statically-attached children (named children
 // added via object_attach). Calls fn for each. Indexed children declared
@@ -453,6 +508,14 @@ node_t node_child_key(node_t n, const char *key);
 //
 // Returns true if `name` collides with a reserved word.
 bool object_is_reserved_word(const char *name);
+
+// The shell's keywords, in table order, each with a one-line syntax: the
+// reserved words plus contextual ones (`command`, a keyword only in its
+// statement shape).  `is_statement`: it heads a statement.
+size_t object_keyword_count(void);
+const char *object_keyword(size_t i);
+const char *object_keyword_syntax(size_t i);
+bool object_keyword_is_statement(size_t i);
 
 // Validate a candidate member/alias name. Returns true if acceptable.
 // Diagnostic messages are written to err_buf (may be NULL).

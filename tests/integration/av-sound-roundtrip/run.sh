@@ -23,7 +23,7 @@ echo "Step 1: record the utterance through the Sound control panel"
     --var WORK_DIR="$WORK_DIR" \
     --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
     $TEST_VAR_ARGS \
-    --speed=max
+    --speed=turbo
 
 [ -f "$PLAYBACK" ] || { echo "ERROR: no playback captured: $PLAYBACK"; exit 1; }
 

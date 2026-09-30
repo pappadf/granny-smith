@@ -45,7 +45,7 @@ the same errors. There is no shadow API.
 | [alias.h](../../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
 | [api.h](../../../../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
 | [meta.h](../../../../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
-| [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.alias_set`/`alias_unset`, `shell.interrupt`, `shell.prompt`/`running`/`aliases`/`vars`) |
+| [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.interrupt`, `shell.prompt`/`running`/`vars`; aliases live on its `shell.alias` child: `add`/`remove`/`list`) |
 | [root.c](../../../../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
 
 ## Core concepts
@@ -68,20 +68,20 @@ time, so there is no borrowed-string path to confuse callers.
 
 `V_MAP` is the keyed sibling of `V_LIST`: an insertion-ordered sequence
 of unique `{key → value}` entries with heap-owned keys and recursively
-owned values. Map-shaped method results (`machine.profile`,
+owned values. Map-shaped method results (`catalog.profile`,
 `machine.rom.identify`, `debug.frame`, `meta.method_info`, …) return it
 directly; the gsEval bridge serialises it as a JSON object exactly once
 (the browser receives a native object, never a JSON string to re-parse).
 Methods build maps with the `val_map_new` / `val_map_put` /
 `val_map_finish` builder and read them with `value_map_get`. In `${…}`
 interpolation a map renders as compact canonical JSON, so
-`echo "${machine.profile("se30")}"` emits machine-parseable text.
+`echo "${catalog.profile("se30")}"` emits machine-parseable text.
 
 A method's UI metadata (`meta.method_info(name)`, and each method entry of
 `meta.members()`) carries four flags from `ui_flags`: `destructive`,
 `mutate`, `hidden` and `io`. `io` (`MM_IO`) marks an I/O job — a method
-whose cost is the size of a file rather than of the machine (`storage.cp`,
-`archive.extract`, `image.export`, `download`, …): it answers when the work
+whose cost is the size of a file rather than of the machine (`files.cp`,
+`files.archive.extract`, `image.export`, `files.download`, …): it answers when the work
 ends, reports progress (`EVT_PROGRESS`), and a cancel of its request stops
 it between chunks (see [`../../guide/web.md`](../../../guide/web.md), "I/O
 jobs").
@@ -150,6 +150,83 @@ Member tables are static `const`. The framework walks them linearly
 for resolution, completion, and help; no string lookup tables are
 maintained at runtime.
 
+### Collections and entries
+
+Every collection has one shape: a **container node** (`machine.floppy.drive`,
+`debug.breakpoints`, `files.mounts`, `log.category`) whose class declares
+one child member named `entries` with `child.indexed = true`. An *indexed*
+collection sets `get` (or `next`); a *keyed* collection sets `lookup` and
+`keys` (`child_keys_fn`, the live key set) with `get = next = NULL`. A
+collection may be both (`appletalk.afp.volumes`). Collection verbs (`add`,
+`clear`, `find`) live on the container. Paths address entries as
+`drive[0]`, `slot[9]` or `category["scsi"]`; keys of keyed collections are
+short identifiers, `[A-Za-z0-9_.-]{1,63}` (`object_valid_key`).
+
+Entries, and lookup-backed named children such as `drive[n].disk` and
+`device[n].image`, are handed out by callbacks and never attached, so they
+have no parent of their own. Their creator registers a **logical parent**
+with `object_set_logical_parent(obj, parent, name, index, key)`: a
+non-owning back-link (never cascade-deleted, cleared if the parent is freed
+first) that gives the entry its path — `<parent>.<name>`, `<parent>[<index>]`
+or `<parent>["<key>"]` — as `meta.path` and the bridge report it. The
+resolver adopts any callback-backed child that was not registered the first
+time it hands one out, so a missed registration costs nothing but the path
+before first use. Reference children (`child.reference`, e.g. `screen.source`)
+get no logical parent.
+
+### The root
+
+The root's children, in their fixed order (`object_set_order`), fall in three
+domains:
+
+| Order | Node | Domain | Holds |
+|---|---|---|---|
+| 0 | `machine` | machine | the emulated computer that exists now |
+| 10 | `scheduler` | emulator | running, pacing (`mode` is the enum `paced` / `accelerated` / `turbo`) |
+| 20 | `checkpoint` | emulator | save / load / snapshot |
+| 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
+| 40 | `debug` | emulator | breakpoints, logpoints, watchpoints, `debug.find` (memory search), `debug.mac` |
+| 50 | `log` | emulator | `log.set(cat, level=, …)`, `log.levels`, `log.category["<cat>"]` with `level` / `stdout` / `file` / `ts` / `pc` |
+| 60 | `shell` | emulator | bindings, functions, `shell.alias` |
+| 70 | `catalog` | emulator | what the emulator can build or fit: `models`, `profile(model)`, `nubus_cards`, `pci_cards`, `vroms`, `proms` |
+| 100 | `appletalk` | network | the simulated network |
+
+Each root child carries its **domain** (`object_set_domain`: machine,
+emulator or network), which draws the dividers at the tree's top.
+
+### Metadata: docs and types
+
+A class declares a one-sentence `doc`; an object can override it
+(`object_set_doc`), and `object_doc` answers the object's doc, else its
+class's.  A method may declare a `result_doc` and `examples`.
+
+`meta.members(values?)` describes each member with, besides name, kind,
+category, label and doc: for an attribute
+its `type` descriptor `{kind, width, presentation, enum}` (presentation is
+the first of sensitive / path / hex / bin / dec, `VAL_PATH` marking a string
+that names a VFS path); for a method its `args` (name, doc, type, optional,
+rest, default), `result` type and, when declared, `result_doc` and
+`examples`; for a child `collection` (and a container's live `indices` /
+`keys`) and, at the root, `domain`.
+
+`shell.lint_members()` (internal) walks the live tree and reports every
+documentation gap — an undocumented argument or basic-tier node, an untyped
+argument without `OBJ_ARG_POLY`, a `V_ANY` result without `result_doc`, an
+enum without its values, a default mentioned but not declared, and an
+example with a path that does not resolve (checked with `shell.highlight`) — and
+`tests/integration/member-docs` fails on any gap not in its allow-list,
+which may only shrink (it is empty).
+
+A doc says what a member is; the usage text says how to call it.  So an
+argument's default is declared (`default_value`, which usage prints as
+`(default …)`) rather than written into its doc; a default that is computed
+is written as `omitted: …`; and invocation forms go in `examples`.
+
+`machine` is the instance; `catalog` is the catalogue. `machine.nubus` and
+`machine.pci` are attached only on a machine with that bus. The root's own
+methods are `objects`, `attributes`, `methods`, `help`, `time`, `quit` and
+`echo`.
+
 ### Objects are instances; nodes are addresses
 
 An `object` is a runtime instance of a class. It carries a back-pointer
@@ -207,10 +284,10 @@ remaining segments index into that value — dotted `map.key`, bracket
 segments work after a call form and through bindings:
 
     machine.config.vroms[0].card_id            # list → map → value
-    machine.profile("se30").capabilities.mmu.kind
+    catalog.profile("se30").capabilities.mmu.kind
     let info = machine.rom.identify("boot.rom")
     echo "${$info.checksum} ${$info["name"]}"
-    for k in machine.profile("se30").capabilities { echo "$k" }   # keys
+    for k in catalog.profile("se30").capabilities { echo "$k" }   # keys
 
 `for … in` over a map iterates its keys (fetch values with `map[$k]`);
 `len(map)` counts entries. Maps are read-only through this surface —
@@ -232,23 +309,26 @@ access, so they survive `machine.boot`:
 ### Reserved words
 
 Statement keywords: `let`, `alias`, `if`, `elif`, `else`, `while`,
-`for`, `in`, `break`, `continue`, `return`, `def`, `assert`. Literals:
-`true`, `false`, `none`. Held: `do`. These may not be used as member,
-alias, or binding names (`object_validate_name`). `on`/`off`/`yes`/`no`
+`for`, `in`, `break`, `continue`, `return`, `def`, `assert`, `include`.
+Literals: `true`, `false`, `none`. Held: `do`. These may not be used as
+member, alias, or binding names (`object_validate_name`). `command` is a
+keyword too, but contextual: only `command NAME = PATH` is the statement,
+so a member may be named `command`. One table in `object.c` holds them all,
+with each word's syntax; `shell.keywords` and completion read it. `on`/`off`/`yes`/`no`
 are **not** reserved — they remain accepted as input coercions for
 bool-typed argument slots only.
 
 ### Library conventions
 
 - **Methods return data; surfaces do the printing.** Search results
-  come back as lists (`find.str(...)` → list of addresses; empty =
+  come back as lists (`debug.find.str(...)` → list of addresses; empty =
   not found; `[0]` is the first hit). `*.list` printers are retired:
   an indexed collection read without an index (`debug.breakpoints.entries`)
   returns the entry objects as a list, and the REPL renders a list of
   same-class objects as a table.
 - **Success/failure flows as value-or-`V_ERROR`**, never a printed
   message plus a bool. `V_BOOL` returns are reserved for methods whose
-  *answer* is a boolean (`storage.path_exists`).
+  *answer* is a boolean (`files.path_exists`).
 - **Absence is never `none`.** "Not found" is an empty collection;
   failure is `V_ERROR`; `none` is the script-side no-value.
 - **Named arguments replace spec strings.** `debug.logpoints.add
@@ -259,8 +339,8 @@ bool-typed argument slots only.
   time with per-fire bindings (`$value`/`$addr`/`$size` for logpoint
   messages).
 - **Tree layout:** emulated hardware lives under `machine.*`; tooling
-  and session surfaces (`debug`, `find`, `scheduler`, `shell`,
-  `storage`) live at the root.
+  and session surfaces (`scheduler`, `checkpoint`, `files`, `debug`,
+  `log`, `shell`, `catalog`) live at the root.
 
 ## Typed dispatch validation
 
@@ -609,7 +689,7 @@ old machine keeps running.
 
 | Argument | Kind | Default | Meaning and validation |
 |---|---|---|---|
-| `model` | string | **required** | Machine model id (`machine.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
+| `model` | string | **required** | Machine model id (`catalog.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
 | `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by content id, as a known ROM whose compatible list contains `model` ([mac-rom.md §10](../../../reference/formats/mac-rom.md#10-rom-provisioning); `machine.c:873-899`). |
 | `ram` | uint (KB) | the model's `ram_default` | Must be one of the model's `ram_options` (`ram_option_allowed`, `machine.c:700`, checked at `863-871`). |
 | `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
@@ -618,7 +698,7 @@ old machine keeps running.
 | `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). |
 | `video_mode` | string | the card's default | Video-mode id for the first socket. It must be a known mode id (`nubus_video_mode_known`, `machine.c:936`). |
 | `custom_mode` | string | none | Custom resolution `WxHxD` for the generic `8_24` kind. Parsed and rejected with the reason (`machine.c:957-961`). |
-| `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `machine.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
+| `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `catalog.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
 | `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket. Rejected on a model with no PCI slots, and for an unknown id (`machine.c:913-924`). |
 | `prom` | string | resolved from the offers | An explicit PCI expansion-ROM pick. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`, `machine.c:970-977`). |
 | `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`). A malformed pair is logged and dropped. Whether a key means anything is up to the card's `stage_option` hook (`stage_pci_options`, `machine.c:806`). |

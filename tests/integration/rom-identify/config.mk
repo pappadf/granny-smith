@@ -1,4 +1,4 @@
-# Integration test: rom.identify / machine.profile probe surface.
+# Integration test: rom.identify / catalog.profile probe surface.
 #
 # Drives the cross-check that prevents drift between the C-side ROM_TABLE
 # and what the frontend's machine-config dialog expects.  Plus is enough as
@@ -6,7 +6,7 @@
 # Universal-ROM compatibility list (se30 / iicx / iix).
 
 TEST_NAME := ROM identify and machine profile probes
-TEST_DESC := rom.identify map shape, machine.profile static lookup, machine.boot validation
+TEST_DESC := rom.identify map shape, catalog.profile static lookup, machine.boot validation
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

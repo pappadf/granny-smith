@@ -6,56 +6,56 @@
 
 # === find: introspection ================================================
 
-# methods("find") lists the four sub-command methods this script
+# methods("debug.find") lists the four sub-command methods this script
 # exercises.
-echo "${methods("find")}"
+echo "${methods("debug.find")}"
 
-# === find.str: ASCII search =============================================
+# === debug.find.str: ASCII search =============================================
 
 # "Apple" appears in the Plus ROM (which is mirrored at 0x400000).
 # Restrict the scan to the primary mirror so the expected hit count is
 # stable.
-let hits = find.str("Apple", 0x400000, 0x440000)
-assert len($hits) > 0 "find.str should locate 'Apple' in the ROM mirror"
+let hits = debug.find.str("Apple", 0x400000, 0x440000)
+assert len($hits) > 0 "debug.find.str should locate 'Apple' in the ROM mirror"
 echo "str-first=${$hits[0]:08x}"
 echo "str-count=${len($hits)}"
 
 # Bounded scan (start + count window).
-let windowed = find.str("Apple", 0x400000, 0x400000 + 0x40000 - 1)
+let windowed = debug.find.str("Apple", 0x400000, 0x400000 + 0x40000 - 1)
 assert len($windowed) == len($hits) "windowed scan should see the same hits"
 
 # Empty pattern is a typed error, not a silent no-op.
-assert try(find.str("", 0x400000, 0x440000), none) == none "empty pattern must error"
+assert try(debug.find.str("", 0x400000, 0x440000), none) == none "empty pattern must error"
 
-# === find.bytes: hex-byte-sequence search ===============================
+# === debug.find.bytes: hex-byte-sequence search ===============================
 
 # Search for NOP (4E 71) in the mapped address range.
-let nops = find.bytes("4E 71", 0x400000, 0x440000)
-assert len($nops) > 0 "find.bytes should hit 68K NOPs"
+let nops = debug.find.bytes("4E 71", 0x400000, 0x440000)
+assert len($nops) > 0 "debug.find.bytes should hit 68K NOPs"
 echo "nop-count=${len($nops)}"
 
 # Non-hex token is rejected.
-assert try(find.bytes("ZZ"), none) == none "non-hex byte token must error"
+assert try(debug.find.bytes("ZZ"), none) == none "non-hex byte token must error"
 
-# === find.word / find.long: big-endian value search =====================
+# === debug.find.word / debug.find.long: big-endian value search =====================
 
 # "Apple" begins with bytes 41 70 ('A','p'), so word 0x4170 hits where
 # "Apple" starts — same location the str test already asserts.
 # Probe a window pinned at the known str hit so the first word/long
 # match is exactly that address (0x4170 also occurs elsewhere in ROM).
-let w = find.word(0x4170, $hits[0], $hits[0] + 3)
-assert $w[0] == $hits[0] "find.word should hit at the str offset"
+let w = debug.find.word(0x4170, $hits[0], $hits[0] + 3)
+assert $w[0] == $hits[0] "debug.find.word should hit at the str offset"
 echo "word-first=${$w[0]:08x}"
 
-let l = find.long(0x4170706C, $hits[0], $hits[0] + 7)
-assert $l[0] == $hits[0] "find.long should hit at the str offset"
+let l = debug.find.long(0x4170706C, $hits[0], $hits[0] + 7)
+assert $l[0] == $hits[0] "debug.find.long should hit at the str offset"
 echo "long-first=${$l[0]:08x}"
 
 # Values exceeding 16 bits must be rejected — not silently truncated.
-assert try(find.word(0x10000, 0x400000, 0x440000), none) == none "16-bit overflow must error"
+assert try(debug.find.word(0x10000, 0x400000, 0x440000), none) == none "16-bit overflow must error"
 
 # Backwards range is rejected.
-assert try(find.str("Apple", 0x500000, 0x400000), none) == none "backwards range must error"
+assert try(debug.find.str("Apple", 0x500000, 0x400000), none) == none "backwards range must error"
 
 # === format specs in ${expr:fmt} ========================================
 #

@@ -34,12 +34,15 @@ tests/e2e/
 │   ├── av-speech-recognition.spec.ts    # PlainTalk recognition from the browser mic
 │   ├── checkpoint-resume.spec.ts        # Checkpoint save → reload → resume (+ SE/30 profile restore)
 │   ├── checkpoint-stall.spec.ts         # Measurement: request round trip across the background checkpoint (VITE_GS_MEASURE=1)
+│   ├── command-browser.spec.ts          # Terminal command browser: dividers, usage; follows the console and writes to it
+│   ├── console.spec.ts                  # Terminal console: value/error entries, Copy as commands → paste → one job
 │   ├── debug-panel.spec.ts              # Debug view on a live machine: register edit, breakpoints, repaint while paused
 │   ├── display-card-config.spec.ts      # New Machine dialog: card-by-name video config
-│   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB storage.cp runs (VITE_GS_MEASURE=1)
+│   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB files.cp runs (VITE_GS_MEASURE=1)
 │   ├── display-drop.spec.ts             # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
 │   ├── fd-duplicate-name.spec.ts        # Duplicate floppy names in the image library
 │   ├── filesystem-tab.spec.ts           # Filesystem tab: descend image, copy/move/rename/unpack
+│   ├── highlight.spec.ts                # Console highlighting: unknown path segments, enums, entry colours; shell.highlight p95 latency under turbo
 │   ├── download-staged.spec.ts          # A core download reaches the page in staged chunks, acked one by one
 │   ├── iicx-video-modes.spec.ts         # Post-shader WebGL canvas baselines (per monitor × depth)
 │   ├── iifx-aux3-realtime.spec.ts       # A/UX 3.0.1 boot to login under the real RAF scheduler
@@ -53,6 +56,7 @@ tests/e2e/
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
 │   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase
 │   ├── shell-prompt.spec.ts             # Terminal: prompt state, Tab completion, history across reloads, scrollback, paste
+│   ├── system-edit.spec.ts              # SYSTEM tab: edit machine.cpu.d0 (literal / expression / error), echo, Copy path
 │   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics
 │   ├── upload.spec.ts                   # Upload picker: streamed staging through the core (Safari regression)
 │   ├── url-archive-boot.spec.ts         # ?ROM=…zip/member, archive.org routing, bare-volume HD boot

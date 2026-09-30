@@ -14,7 +14,7 @@ case there is nothing to do.
 ## Repository Directory Overview
 
 - `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/, object/, vfs/, plus the system and machine-configuration files at its root)
-- `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `archive` object. See `docs/guide/peeler.md`.
+- `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `files.archive` object. See `docs/guide/peeler.md`.
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
@@ -197,28 +197,28 @@ to not break this rule in the first place.
 - `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
 
-- Core code prints through the output sink (`gs_outf` / `gs_outs` / `gs_out`, `src/core/gs_out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in **xterm.js** (browser terminal panel), not the JS console
+- Core code prints through the output sink (`gs_outf` / `gs_outs` / `gs_out`, `src/core/gs_out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
 - In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
 - Test specs live in `tests/e2e/web2-specs/`, shared helper in `tests/e2e/helpers/web2-fs.ts`
 
 **Log categories and levels:**
 - Each module has its own log category (e.g., `cpu`, `floppy`, `scsi`, `logpoint`)
 - Categories have a level threshold (0 = off); a `LOG(level, ...)` call only emits if `level <= category_level`
-- Enable via shell: `debug.log <category> <level>` (e.g., `debug.log cpu 10`)
-- Redirect to file: `debug.log cpu "level=10 file=tmp/cpu.log"`
+- Enable via shell: `log.set <category> <level>` (e.g., `log.set cpu 10`)
+- Redirect to file: `log.set cpu level=10 file=tmp/cpu.log`
 
 **Logpoints (`src/core/debug/debug.c`):**
 - PC logpoints emit a log message when the CPU executes a specific address or range, without stopping
 - Set via shell (named arguments): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
-- The default category is `logpoint` for PC logpoints; enable it with `debug.log logpoint 10`
+- The default category is `logpoint` for PC logpoints; enable it with `log.set logpoint 10`
 - Memory logpoints fire on **read** or **write** accesses without halting:
   - `debug.logpoints.add addr=<addr> mode=write width=l message="…"` — log every write (`mode=read` / `mode=rw` likewise; `width` is `b`/`w`/`l`)
-  - Default category is `memory` (enable with `debug.log memory 1`)
+  - Default category is `memory` (enable with `log.set memory 1`)
   - `message=` is a fire-time template (see `docs/internals/core/shell/shell.md`): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
   - Implemented without slowing the fast path: covered pages are zeroed in the
     SoA arrays so only logged pages take the slow-path penalty (see `docs/internals/core/memory/memory.md`)
 - Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
-  stream live with `debug.log exceptions 1`
+  stream live with `log.set exceptions 1`
 
 **Watchpoints (`debug.watchpoints`):** a memory logpoint that **stops** the machine
 after the instruction that makes the access, instead of logging:
@@ -229,7 +229,7 @@ after the instruction that makes the access, instead of logging:
 - Same page machinery as memory logpoints, and the same semantics on 68K and PowerPC; a
   watchpoint is never listed under `debug.logpoints`
 
-**In Playwright E2E tests:** Use `await runCommand(page, 'debug.log <category> <level>')` or `await runCommand(page, 'debug.logpoints.add ...')` to enable logging or set logpoints programmatically.
+**In Playwright E2E tests:** Use `await runCommand(page, 'log.set <category> <level>')` or `await runCommand(page, 'debug.logpoints.add ...')` to enable logging or set logpoints programmatically.
 
 ## Coding Guidelines
 
@@ -256,20 +256,26 @@ simulated network are its siblings at the root:
   every MMU kind — 68030, 68040, PowerPC, the Lisa's segment MMU — answers
   `mmu.translate(addr, [supervisor], [fetch])` → `{phys, valid, via}` and
   `mmu.peek(addr, [size], [space])` the same way),
-  `machine.memory`, `machine.rom`, `machine.vrom`, `machine.via1`/`via2`,
+  `machine.memory`, `machine.rom`, `machine.via1`/`via2`,
   `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
   `machine.floppy.drive[N].disk`, `machine.scsi.device[N].image`,
-  `machine.sound`, `machine.screen`, `machine.nubus`; the AV machines add
+  `machine.sound`, `machine.screen`, `machine.nubus` / `machine.pci` (only
+  on a machine with that bus; `slot[N]` collections); the AV machines add
   `machine.dsp` (the DSP3210 aux core), `machine.videoin` and
   `machine.audioin` (host camera/microphone source surfaces). (Lisa adds
   `machine.hd` (ProFile) and `machine.power`.)
-- **meta services** (siblings of `machine`): `scheduler`, `debug` (+ `.mac`),
-  `storage`, `vfs`, `checkpoint`, `archive`, `find`, `shell`.
+- **emulator services** (siblings of `machine`, in this fixed root order):
+  `scheduler`, `checkpoint`, `files` (host files, disk images and mounts:
+  `files.ls`/`cp`/`hd_create`/…, `files.images[N]`, `files.mounts[N]`,
+  `files.archive`), `debug` (+ `.find`, `.mac`, `breakpoints`/`logpoints`/
+  `watchpoints`), `log` (`log.set`, `log.levels`, `log.category["scsi"]`),
+  `shell`, `catalog` (what the emulator can build or fit: `models`,
+  `profile(model)`, `nubus_cards`, `pci_cards`, `vroms`, `proms`).
 - **network**: `appletalk` (+ `stats`, `nbp`, `afp` with its `volumes` /
   `sessions` / `stats` subtrees, `printer` with its `stats`, and the
   program-linking layers `adsp`, `ppc` and `aevt`).
 - **root verbs**: `objects`, `attributes`, `methods`, `help`, `echo`,
-  `download`, `quit`, `assert`, `time`.
+  `quit`, `time` (`assert` is a statement keyword).
 
 Hardware paths are model-independent: `machine.scsi.device[0]` means the
 same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)

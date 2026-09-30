@@ -45,12 +45,18 @@ struct object {
     int order; // ordering weight for the SYSTEM tree; default 0
     int attach_seq; // monotonic attach sequence; the stable tiebreak for order
     uint16_t category; // M_CAT_* visibility for attached nodes
+    uint8_t domain; // OBJ_DOMAIN_* for root children
+    const char *doc; // optional one-sentence doc; NULL = the class's
     object_dtor_fn dtor; // optional destructor for instance_data (default NULL)
     struct object *parent;
     struct object *first_child;
     struct object *next_sibling;
     struct invalidator *invalidators; // weak-ref callbacks for held nodes
     struct object *meta_node; // lazily-created Meta node bound to this object (see meta.c)
+    struct object *lparent; // logical (non-owning) parent of a callback-backed child; NULL = none
+    char *lname; // owned: named-child segment or entry key (see lkeyed)
+    int lindex; // entry index, or -1
+    bool lkeyed; // true: lname is a collection key, not a member name
 };
 
 // Monotonic counter handed out at each object_attach, giving attached
@@ -167,6 +173,7 @@ struct object *object_new(const class_desc_t *cls, void *instance_data, const ch
     o->cls = cls;
     o->instance_data = instance_data;
     o->name = name;
+    o->lindex = -1;
     return o;
 }
 
@@ -189,6 +196,9 @@ void object_delete(struct object *o) {
         o->dtor(o);
     if (o->parent)
         object_detach(o);
+    // Drop the weak back-link so the parent's invalidator list does not keep
+    // a callback into freed memory.
+    object_set_logical_parent(o, NULL, NULL, -1, NULL);
     free(o);
 }
 
@@ -346,6 +356,81 @@ struct object *object_parent(struct object *o) {
     return o ? o->parent : NULL;
 }
 
+// Invalidator registered on a logical parent: the parent is going away, so
+// the child forgets it (it stays alive; it just loses its path).
+static void logical_parent_gone(void *ud) {
+    struct object *child = (struct object *)ud;
+    child->lparent = NULL;
+    free(child->lname);
+    child->lname = NULL;
+    child->lindex = -1;
+    child->lkeyed = false;
+}
+
+void object_set_logical_parent(struct object *obj, struct object *parent, const char *name, int index,
+                               const char *key) {
+    if (!obj)
+        return;
+    // Replace any previous link, including its registration on the old parent.
+    if (obj->lparent)
+        object_unregister_invalidator(obj->lparent, logical_parent_gone, obj);
+    free(obj->lname);
+    obj->lparent = NULL;
+    obj->lname = NULL;
+    obj->lindex = -1;
+    obj->lkeyed = false;
+    if (!parent || parent == obj)
+        return;
+    if (key) {
+        GS_ASSERTF(object_valid_key(key), "logical parent key '%s' is not a short identifier", key);
+        obj->lname = strdup(key);
+        obj->lkeyed = true;
+    } else if (name) {
+        obj->lname = strdup(name);
+    } else if (index < 0) {
+        return; // nothing to name the segment with
+    }
+    if ((key || name) && !obj->lname)
+        return; // out of memory: no link rather than a half one
+    obj->lindex = (key || name) ? -1 : index;
+    obj->lparent = parent;
+    object_register_invalidator(parent, logical_parent_gone, obj);
+}
+
+struct object *object_logical_parent(struct object *o) {
+    return o ? o->lparent : NULL;
+}
+
+const char *object_logical_name(struct object *o) {
+    return (o && o->lparent && !o->lkeyed) ? o->lname : NULL;
+}
+
+int object_logical_index(struct object *o) {
+    return (o && o->lparent && !o->lname) ? o->lindex : -1;
+}
+
+const char *object_logical_key(struct object *o) {
+    return (o && o->lparent && o->lkeyed) ? o->lname : NULL;
+}
+
+bool object_valid_key(const char *key) {
+    if (!key || !*key)
+        return false;
+    size_t n = 0;
+    for (const char *p = key; *p; p++, n++) {
+        unsigned char c = (unsigned char)*p;
+        if (!(isalnum(c) || c == '_' || c == '.' || c == '-'))
+            return false;
+    }
+    return n <= OBJ_KEY_MAX;
+}
+
+void object_pool_set_parent(object_pool_t *pool, struct object *parent) {
+    for (int i = 0; i < pool->n; i++)
+        if (pool->objs[i])
+            object_set_logical_parent(pool->objs[i], parent, NULL, i, NULL);
+}
+
 void object_each_attached(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
                           void *ud) {
     if (!o || !fn)
@@ -381,6 +466,41 @@ void object_set_category(struct object *o, uint16_t category) {
 
 uint16_t object_category(struct object *o) {
     return o ? o->category : (uint16_t)M_CAT_BASIC;
+}
+
+void object_set_doc(struct object *o, const char *doc) {
+    if (o)
+        o->doc = doc;
+}
+
+const char *object_doc(struct object *o) {
+    if (!o)
+        return "";
+    if (o->doc)
+        return o->doc;
+    if (o->cls && o->cls->doc)
+        return o->cls->doc;
+    return "";
+}
+
+void object_set_domain(struct object *o, uint8_t domain) {
+    if (o)
+        o->domain = domain;
+}
+
+uint8_t object_domain(struct object *o) {
+    return o ? o->domain : (uint8_t)OBJ_DOMAIN_EMULATOR;
+}
+
+const char *object_domain_name(uint8_t domain) {
+    switch (domain) {
+    case OBJ_DOMAIN_MACHINE:
+        return "machine";
+    case OBJ_DOMAIN_NETWORK:
+        return "network";
+    default:
+        return "emulator";
+    }
 }
 
 // Visit attached children in ascending (order, attach_seq). Fan-out is
@@ -452,36 +572,67 @@ static struct object *find_attached_child(struct object *parent, const char *nam
 // are case-sensitive everywhere else in the codebase. This is the set
 // docs/internals/core/object/object-model.md ("Reserved words") documents.
 
-static const char *const RESERVED_WORDS[] = {
+// The shell's keywords, each with its one-line syntax (shell.keywords); the
+// syntax sits next to the word so the two cannot drift.  One table for the
+// reserved-word check, shell.keywords and completion.
+//   reserved   may not name a member, alias or binding; a contextual
+//              keyword (`command`) is a keyword only in its statement shape
+//   statement  heads a statement (offered at the start of a line)
+enum { KW_RESERVED = 1, KW_STATEMENT = 2 };
+static const struct {
+    const char *word;
+    const char *syntax;
+    unsigned flags;
+} KEYWORDS[] = {
     // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
     // words to bool-slot input coercions (validate_slot) — they are
     // ordinary identifiers again.
-    "true",
-    "false",
-    "none",
+    {"true",     "true — the boolean literal",                                 KW_RESERVED               },
+    {"false",    "false — the boolean literal",                                KW_RESERVED               },
+    {"none",     "none — no value (an unset optional, an absent result)",      KW_RESERVED               },
     // Statement keywords.
-    "let",
-    "alias",
-    "if",
-    "elif",
-    "else",
-    "while",
-    "for",
-    "in",
-    "break",
-    "continue",
-    "return",
-    "def",
-    "assert",
+    {"let",      "let <name> = <expr>",                                          KW_RESERVED | KW_STATEMENT},
+    {"alias",    "alias <name> = <path>",                                        KW_RESERVED | KW_STATEMENT},
+    {"command",  "command <name> = <path> — a bare word that runs the method", KW_STATEMENT              },
+    {"if",       "if <expr> { … }",                                            KW_RESERVED | KW_STATEMENT},
+    {"elif",     "} elif <expr> { … }",                                        KW_RESERVED | KW_STATEMENT},
+    {"else",     "} else { … }",                                               KW_RESERVED | KW_STATEMENT},
+    {"while",    "while <expr> { … }",                                         KW_RESERVED | KW_STATEMENT},
+    {"for",      "for <name> in <expr> { … }",                                 KW_RESERVED | KW_STATEMENT},
+    {"in",       "for <name> in <expr> { … }",                                 KW_RESERVED               },
+    {"break",    "break — leave the innermost loop",                           KW_RESERVED | KW_STATEMENT},
+    {"continue", "continue — next iteration of the innermost loop",            KW_RESERVED | KW_STATEMENT},
+    {"return",   "return [<expr>]",                                              KW_RESERVED | KW_STATEMENT},
+    {"def",      "def <name>(<param>, …) { … }",                             KW_RESERVED | KW_STATEMENT},
+    {"assert",   "assert <expr> [\"message\"]",                                  KW_RESERVED | KW_STATEMENT},
+    {"include",  "include <path> — run a script file here",                    KW_RESERVED | KW_STATEMENT},
     // Held for a possible future post-test loop.
-    "do",
+    {"do",       "do — reserved",                                              KW_RESERVED               },
 };
+
+#define N_KEYWORDS (sizeof(KEYWORDS) / sizeof(KEYWORDS[0]))
+
+size_t object_keyword_count(void) {
+    return N_KEYWORDS;
+}
+
+const char *object_keyword(size_t i) {
+    return i < N_KEYWORDS ? KEYWORDS[i].word : NULL;
+}
+
+const char *object_keyword_syntax(size_t i) {
+    return i < N_KEYWORDS ? KEYWORDS[i].syntax : NULL;
+}
+
+bool object_keyword_is_statement(size_t i) {
+    return i < N_KEYWORDS && (KEYWORDS[i].flags & KW_STATEMENT);
+}
 
 bool object_is_reserved_word(const char *name) {
     if (!name)
         return false;
-    for (size_t i = 0; i < sizeof(RESERVED_WORDS) / sizeof(RESERVED_WORDS[0]); i++)
-        if (strcmp(name, RESERVED_WORDS[i]) == 0)
+    for (size_t i = 0; i < N_KEYWORDS; i++)
+        if ((KEYWORDS[i].flags & KW_RESERVED) && strcmp(name, KEYWORDS[i].word) == 0)
             return true;
     return false;
 }
@@ -837,6 +988,11 @@ static value_t synth_count_get(struct object *self, const member_t *m) {
     (void)m;
     const member_t *child = sole_indexed_child(object_class(self));
     uint64_t n = 0;
+    if (child && !child->child.get && !child->child.next && child->child.keys) {
+        const char **names = NULL;
+        int k = child->child.keys(self, &names);
+        return val_uint(4, k > 0 ? (uint64_t)k : 0);
+    }
     for (int i = object_child_next(self, child, -1); i >= 0; i = object_child_next(self, child, i))
         n++;
     return val_uint(4, n);
@@ -849,6 +1005,19 @@ static const member_t k_synth_count = {
     .flags = VAL_RO,
     .attr = {.type = V_UINT, .width = 4, .get = synth_count_get}
 };
+
+// Safety net for object_set_logical_parent: a callback-backed child whose
+// creator did not register its logical parent gets one the first time the
+// resolver hands it out, so it still has a path.  Owning (attached) children
+// and reference edges are left alone.
+static void adopt_logical(struct object *child, const member_t *m, struct object *parent, const char *name, int index,
+                          const char *key) {
+    if (!child || child->parent || child->lparent || m->child.reference)
+        return;
+    if (key && !object_valid_key(key))
+        return;
+    object_set_logical_parent(child, parent, name, index, key);
+}
 
 node_t node_child(node_t n, const char *segment) {
     node_t bad = (node_t){0};
@@ -908,11 +1077,14 @@ node_t node_child(node_t n, const char *segment) {
             struct object *child = n.member->child.get(n.obj, n.index);
             if (!child)
                 return bad;
+            adopt_logical(child, n.member, n.obj, NULL, n.index, NULL);
             here = child;
         } else {
             struct object *child = NULL;
             if (n.member->child.lookup)
                 child = n.member->child.lookup(n.obj, n.member->name);
+            if (child)
+                adopt_logical(child, n.member, n.obj, n.member->name, -1, NULL);
             if (!child)
                 child = find_attached_child(n.obj, n.member->name);
             if (!child)
@@ -983,6 +1155,7 @@ node_t node_child_key(node_t n, const char *key) {
         if (!n.member->child.lookup)
             return bad;
         struct object *hit = n.member->child.lookup(n.obj, key);
+        adopt_logical(hit, n.member, n.obj, NULL, -1, key);
         return hit ? (node_t){.obj = hit, .member = NULL, .index = -1} : bad;
     }
     if (n.member && n.member->kind == M_CHILD)
@@ -998,6 +1171,7 @@ node_t node_child_key(node_t n, const char *key) {
         if (m->kind != M_CHILD || !m->child.indexed || !m->child.lookup)
             continue;
         struct object *hit = m->child.lookup(n.obj, key);
+        adopt_logical(hit, m, n.obj, NULL, -1, key);
         return hit ? (node_t){.obj = hit, .member = NULL, .index = -1} : bad;
     }
     return bad;
@@ -1230,7 +1404,7 @@ static void coerce_int_sign(value_t *out, value_kind_t target_kind, uint8_t widt
 // underflowing to a near-SIZE_MAX size_t.
 //
 // It stayed latent while the longest enum table in the tree totalled about 45
-// characters against a 120-byte buffer.  Typed `debug.log` arguments armed
+// characters against a 120-byte buffer.  Typed `log.set` arguments armed
 // it: the category slot is an enum over all 62 log categories, so
 // a mistyped category now formats a ~400-character list.  The first thing
 // the typed method did on a bad name was overflow this.
@@ -1286,7 +1460,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
     // V_ANY — and V_NONE, its historical spelling on an argument slot —
     // is the "accept any kind" sentinel: the body sees the value as-is
     // and does its own discrimination. Used today for slots that
-    // legitimately accept multiple kinds (e.g. storage.hd_create's size
+    // legitimately accept multiple kinds (e.g. files.hd_create's size
     // arg, which takes either a string label or an integer count).
     if (s->kind == V_NONE || s->kind == V_ANY) {
         if ((s->flags & OBJ_ARG_NONEMPTY) && in->kind == V_STRING) {

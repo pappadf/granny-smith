@@ -1,0 +1,88 @@
+# Commands: see config.mk.
+
+# === Built-ins run their methods ==============================================
+let dir = "/tmp/gs-shell-command-words"
+if files.path_exists($dir) {
+    rm $dir
+}
+mkdir $dir
+cd $dir
+assert files.pwd() == $dir "cd sets the current directory (pwd: ${files.pwd()})"
+mkdir "sub"
+assert files.path_exists("${$dir}/sub") "a relative path starts at the current directory"
+cd sub
+assert files.pwd() == "${$dir}/sub" "cd into a relative directory"
+cd ..
+assert files.pwd() == $dir "cd .. goes up"
+ls
+assert try(files.cd("${$dir}/nosuch"), "err") == "err" "cd refuses a missing directory"
+run 1000
+stop
+
+# === Declaring commands =======================================================
+command ll = files.list
+let found = false
+for c in shell.command.list() {
+    if $c.name == "ll" {
+        assert $c.target == "files.list" "ll's target"
+        assert $c.builtin == false "ll is a user command"
+        $found = true
+    }
+}
+assert $found "ll is listed"
+ll
+assert try(shell.command.add("pcv", "machine.cpu.pc"), "err") == "err" "a command needs a method"
+assert try(shell.command.add("nope", "no.such.method"), "err") == "err" "a command needs a target that resolves"
+assert try(shell.command.add("files", "files.ls"), "err") == "err" "a root path cannot be a command"
+assert try(shell.command.add("ls", "files.list"), "err") == "err" "a built-in cannot be redeclared"
+assert try(shell.command.add("let", "files.list"), "err") == "err" "a reserved word cannot be a command"
+shell.command.remove ll
+
+# `command` is a contextual keyword: a member may still be called command.
+assert shell.command.meta.path == "shell.command" "shell.command resolves"
+
+# === help, completion, highlighting follow the target =========================
+let u = shell.usage("ls")
+assert $u.signature == "files.ls [path]" "ls's usage is files.ls's"
+let c = shell.complete("l", 1, true)
+let seen = false
+for k in $c.candidates {
+    if $k.text == "ls" {
+        assert $k.kind == "method" "ls completes as a method"
+        $seen = true
+    }
+}
+assert $seen "ls is a completion"
+let a = shell.complete("ls /", 4, true)
+assert $a.context.method == "files.ls" "ls's arguments are files.ls's"
+let h = shell.highlight("ls /tmp")
+assert $h[0].class == "method" "ls highlights as a method"
+let d = shell.highlight("command ll = files.list")
+assert $d[0].class == "decl" "command is a keyword"
+assert $d[1].class == "method" "the declared word"
+
+# === A def function shadows a command, everywhere =============================
+# The interpreter runs the function; help, completion and highlighting say
+# the same.
+def ls() {
+    return "mine"
+}
+assert ls() == "mine" "the function runs"
+let fu = shell.usage("ls")
+assert contains($fu.text, "function") "help ls describes the function"
+assert $fu.signature == "" "no files.ls signature for the function"
+let fc = shell.complete("l", 1, true)
+for k in $fc.candidates {
+    assert $k.text != "ls" || $k.kind != "method" "ls is not offered as the files.ls command"
+}
+let fa = shell.complete("ls /", 4, true)
+assert $fa.context.method == none "no files.ls argument context"
+shell.functions.ls.remove
+assert shell.usage("ls").signature == "files.ls [path]" "the command is back"
+
+# `include` is a reserved word.
+assert try(shell.command.add("include", "files.list"), "err") == "err" "include is reserved"
+
+rm $dir
+echo "shell-command-words-ok"
+quit

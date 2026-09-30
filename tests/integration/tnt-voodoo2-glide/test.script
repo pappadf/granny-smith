@@ -54,10 +54,10 @@ assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
 # a Voodoo2, and the failure is silent.  The shipped image has the
 # collision removed; this pins it.  The CFM registry lives in the system
 # heap — one entry, holding the fragment name, in this window.
-assert len(find.str("3DfxGlideLib2.x", 0x100000, 0x300000)) == 1 "exactly one 3DfxGlideLib2.x registration"
+assert len(debug.find.str("3DfxGlideLib2.x", 0x100000, 0x300000)) == 1 "exactly one 3DfxGlideLib2.x registration"
 # ...and registered-not-prepared: no Glide code is resident at boot
 # (nothing imports it until a client launches).
-assert len(find.str("MacCheckBoardsInSystem", 0x0, 0x4000000)) == 0 "Glide code is not resident before a client runs"
+assert len(debug.find.str("MacCheckBoardsInSystem", 0x0, 0x4000000)) == 0 "Glide code is not resident before a client runs"
 
 # The card is untouched: Mac OS loads no driver for a ROM-less card.
 assert machine.pci.slot[1].card.regs.init_enable == 0x00014000 "initEnable untouched before the client runs (rev 4 CVG, fab 1)"

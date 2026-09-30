@@ -131,11 +131,19 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
 // No-op (consolidation is not needed with the delta model).
 int storage_tick(storage_t *storage);
 
-// Object-model lifecycle hooks for storage.images indexed children.
-// Called by root_install / root_uninstall.
+// Object-model lifecycle hooks for files.images indexed children
+// (`images` is the collection they are entries of). Called by root_install /
+// root_uninstall.
 struct config;
-void storage_object_classes_init(struct config *cfg);
-void storage_object_classes_teardown(void);
+struct object;
+void files_images_init(struct config *cfg, struct object *images);
+void files_images_teardown(void);
+
+// The `files` process singleton (created by files_init at shell init) and
+// its images collection class, which root_install attaches per machine.
+void files_init(void);
+struct object *files_object(void);
+extern const struct class_desc files_images_collection_class;
 
 #ifdef __cplusplus
 }

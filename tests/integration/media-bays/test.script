@@ -3,14 +3,14 @@ assert machine.scsi.device[2].type == "hd" "hd= in the boot bay"
 assert machine.scsi.device[0].type == "cdrom" "cdrom= in the CD bay"
 
 # The profile exports the same answer.
-let p = machine.profile("ans500")
+let p = catalog.profile("ans500")
 assert $p.hd_default.bus == "scsi" "hd_default bus"
 assert $p.hd_default.id == 2 "hd_default is the boot bay"
 assert $p.hd_bays[3].bus == "scsi2" "the second channel's bays follow"
 assert $p.cdrom.id == 0 "cdrom bay"
-assert machine.profile("lisa").hd_default.bus == "profile" "the Lisa's disk is the ProFile"
-assert len(machine.profile("lisa").scsi_buses) == 0 "no phantom SCSI bus on the Lisa"
-assert machine.profile("plus").cdrom == none "no CD bay on the Plus"
+assert catalog.profile("lisa").hd_default.bus == "profile" "the Lisa's disk is the ProFile"
+assert len(catalog.profile("lisa").scsi_buses) == 0 "no phantom SCSI bus on the Lisa"
+assert catalog.profile("plus").cdrom == none "no CD bay on the Plus"
 
 # attach_hd by bay index, on whatever bus the bay is: index 3 is Bay 5, the
 # first bay on the second fast/wide channel.

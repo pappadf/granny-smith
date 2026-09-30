@@ -257,7 +257,7 @@ level too.
 ### PCI slot topology
 
 Each model declares a `pci_slot_decl_t` table (`pm7500.c` and friends)
-that the profile encoder and `pci_init` share, so `machine.profile`'s
+that the profile encoder and `pci_init` share, so `catalog.profile`'s
 `pci_slots` block and the runtime cannot drift.  Sockets are PCI devices
 **13/14/15** on their bridge's bus — the ROM's own `slot-names` bitmask
 (`$0000E000`) on the bandit node, corroborated by Apple's Network Server
