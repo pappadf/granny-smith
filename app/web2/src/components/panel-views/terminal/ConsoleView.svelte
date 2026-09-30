@@ -1,52 +1,6 @@
 <script lang="ts" module>
   import type { ConsoleEntry } from '@/lib/consoleModel';
-
-  // A value entry's shape, from its tagged JSON: an object (a link to its
-  // node), a list or map (expandable), or a scalar (its text).
-  export type ValueShape =
-    | { kind: 'object'; path: string }
-    | { kind: 'list'; items: unknown[] }
-    | { kind: 'map'; items: [string, unknown][] }
-    | { kind: 'scalar' };
-
-  function isTagged(o: Record<string, unknown>): boolean {
-    const keys = Object.keys(o);
-    return (
-      ('enum' in o && 'index' in o && keys.length === 2) ||
-      ('error' in o && keys.length === 1) ||
-      ('object' in o && 'path' in o)
-    );
-  }
-
-  export function valueShape(json: unknown): ValueShape {
-    if (Array.isArray(json))
-      return json.length ? { kind: 'list', items: json } : { kind: 'scalar' };
-    if (json && typeof json === 'object') {
-      const o = json as Record<string, unknown>;
-      if ('object' in o && typeof o.path === 'string' && o.path)
-        return { kind: 'object', path: o.path };
-      if (isTagged(o)) return { kind: 'scalar' };
-      const items = Object.entries(o);
-      return items.length ? { kind: 'map', items } : { kind: 'scalar' };
-    }
-    return { kind: 'scalar' };
-  }
-
-  // One nested value as text: strings quoted, enums by label, objects by
-  // path, containers by size.
-  export function nestedText(v: unknown): string {
-    if (v === null || v === undefined) return 'null';
-    if (typeof v === 'string') return JSON.stringify(v);
-    if (Array.isArray(v)) return `[${v.length}]`;
-    if (typeof v === 'object') {
-      const o = v as Record<string, unknown>;
-      if ('enum' in o && 'index' in o) return String(o.enum ?? o.index);
-      if ('object' in o && 'path' in o) return String(o.path || `<${String(o.object)}>`);
-      if ('error' in o) return `<error: ${String(o.error)}>`;
-      return `{${Object.keys(o).length}}`;
-    }
-    return String(v);
-  }
+  import { valueShape, nestedText } from '@/lib/taggedValue';
 
   export function entryById(
     entries: readonly ConsoleEntry[],
@@ -84,7 +38,8 @@
   } from '@/state/console.svelte';
   import { commandsText, jobOutputText, normalisePaste } from '@/lib/consoleModel';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
-  import { ConsoleHistory, copyText } from '@/lib/consoleHistory';
+  import { ConsoleHistory } from '@/lib/consoleHistory';
+  import { copyText } from '@/lib/clipboard';
   import type { ConsoleInput } from './ConsoleInput';
   import { registerConsoleInput, revealInBrowser } from './terminalBridge';
   import { publishCompletion } from '@/state/terminalSync.svelte';
@@ -521,7 +476,7 @@
     <details class="nested">
       <summary>{nestedText(v)}</summary>
       <div class="kv">
-        {#each shape.kind === 'list' ? shape.items.map((x, i) => [String(i), x] as [string, unknown]) : shape.items as [k, x], i (i)}
+        {#each shape.items as [k, x], i (i)}
           <div class="kv-row"><span class="kv-key">{k}</span>{@render nested(x)}</div>
         {/each}
       </div>
@@ -604,7 +559,7 @@
             <details class="value-tree">
               <summary>{@render textWithMarks(e.text)}</summary>
               <div class="kv">
-                {#each shape.kind === 'list' ? shape.items.map((x, i) => [String(i), x] as [string, unknown]) : shape.items as [k, x], i (i)}
+                {#each shape.items as [k, x], i (i)}
                   <div class="kv-row"><span class="kv-key">{k}</span>{@render nested(x)}</div>
                 {/each}
               </div>

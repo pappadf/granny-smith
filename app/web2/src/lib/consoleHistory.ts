@@ -1,6 +1,6 @@
-// The console's input history and clipboard helper: kept out of
-// ConsoleInput.ts so the console's view can use them without loading
-// CodeMirror (which is code-split, fetched when the Terminal first opens).
+// The console's input history: kept out of ConsoleInput.ts so the console's
+// view can use it without loading CodeMirror (which is code-split, fetched
+// when the Terminal first opens).
 
 export const HISTORY_KEY = 'gs.console.history';
 export const HISTORY_MAX = 500;
@@ -68,14 +68,5 @@ function safeStorage(): Storage | null {
     return typeof localStorage !== 'undefined' ? localStorage : null;
   } catch {
     return null;
-  }
-}
-
-// Writes `text` to the clipboard.
-export async function copyText(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // No clipboard permission (or an insecure context): nothing to do.
   }
 }

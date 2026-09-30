@@ -6,10 +6,10 @@ import {
   invalidate,
   invalidationFor,
   loadAliases,
-  typeText,
   visible,
   type BrowserRow,
 } from '@/lib/commandsTree';
+import { typeText } from '@/lib/typeDescriptor';
 
 // The browser is a structural projection of the model: mock the bus with a
 // tiny tree and assert the rows it produces.
