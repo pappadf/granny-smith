@@ -548,6 +548,12 @@
     cls: string | null;
     mark: boolean;
   }
+  // The pane opening (or its text arriving) shrinks the tree; keep the
+  // selected row in view above it.
+  $effect(() => {
+    if (detailsOpen && usage) scrollToSelected();
+  });
+
   const usageLines = $derived.by((): UsageRun[][] | null => {
     if (!usage) return null;
     const span = markArg !== null ? usage.argSpans[markArg] : null;
@@ -676,8 +682,9 @@
     margin: 0;
     padding: 4px 0;
     overflow-y: auto;
-    flex: 1 1 auto;
-    min-height: 0;
+    /* Takes what the details pane leaves, but keeps a few rows. */
+    flex: 1 1 0;
+    min-height: 72px;
   }
   .cmd-tree:focus {
     outline: none;
@@ -823,9 +830,11 @@
     }
   }
   /* The details pane: the selection's usage, under the tree. */
+  /* It sizes to its content up to 60% of the browser; a longer usage text
+     scrolls inside it, with the header and Insert button kept in view. */
   .details {
-    flex: 0 1 auto;
-    max-height: 45%;
+    flex: 0 0 auto;
+    max-height: 60%;
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -833,6 +842,7 @@
     background: var(--gs-info-bg, rgba(80, 140, 220, 0.08));
   }
   .details-head {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -856,6 +866,7 @@
     color: var(--gs-fg);
   }
   .details-foot {
+    flex: 0 0 auto;
     display: flex;
     justify-content: flex-end;
     padding: 0 8px 6px;
@@ -870,6 +881,8 @@
     cursor: pointer;
   }
   .usage {
+    flex: 0 1 auto;
+    min-height: 0;
     margin: 0;
     padding: 4px 10px 6px;
     overflow: auto;
