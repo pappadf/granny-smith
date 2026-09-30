@@ -451,11 +451,3 @@ export async function loadUsageInfo(path: string): Promise<UsageInfo | null> {
     argSpans: spans,
   };
 }
-
-// Type text of an attribute row: kind plus hex / bin / path, as usage shows it.
-export function typeText(t?: TypeDescriptor): string {
-  if (!t) return '';
-  if (t.kind === 'enum') return 'enum';
-  const p = t.presentation;
-  return p === 'hex' || p === 'bin' || p === 'path' ? `${t.kind}, ${p}` : t.kind;
-}

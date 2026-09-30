@@ -27,6 +27,7 @@
   import { systemView } from '@/state/system.svelte';
   import { consoleEcho, consoleSubmit, onConsoleJobDone } from '@/state/console.svelte';
   import { formatValue, parseCommit, assignStatement, callStatement } from '@/lib/typeDescriptor';
+  import { isContainer } from '@/lib/taggedValue';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import ValueEditor from '@/components/common/ValueEditor.svelte';
   import PathField from '@/components/common/PathField.svelte';
@@ -35,7 +36,7 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { downloadFiles } from '@/bus/fsOps';
   import { sanitizeName } from '@/lib/archive';
-  import { copyText } from '@/lib/consoleHistory';
+  import { copyText } from '@/lib/clipboard';
 
   // Exported images land here: /opfs is file-backed, so writing one costs no
   // wasm heap (see saveImage).  A directory of its own keeps a 512 MB export
@@ -412,19 +413,6 @@
         void commit(cur, formatValue(cur.value, cur.type) === 'true' ? 'false' : 'true');
       else startEdit(cur);
     }
-  }
-
-  function isContainer(v: unknown): boolean {
-    return (
-      (Array.isArray(v) && v.length > 0) ||
-      (!!v &&
-        typeof v === 'object' &&
-        !Array.isArray(v) &&
-        !('enum' in v) &&
-        !('object' in v) &&
-        !('error' in v) &&
-        Object.keys(v).length > 0)
-    );
   }
 </script>
 

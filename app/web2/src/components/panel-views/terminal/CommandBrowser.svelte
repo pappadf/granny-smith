@@ -35,11 +35,11 @@
     loadAliases,
     loadUsageInfo,
     rootRows,
-    typeText,
     visible,
     type BrowserRow,
     type UsageInfo,
   } from '@/lib/commandsTree';
+  import { typeText } from '@/lib/typeDescriptor';
   import { onCoreEvent, whenModuleReady } from '@/bus/emulator';
   import { focusConsole, registerBrowserReveal, writeToConsole } from './terminalBridge';
   import { pathPrefixes } from '@/lib/objectPath';
