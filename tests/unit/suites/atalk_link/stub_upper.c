@@ -18,6 +18,7 @@
 #include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
+#include "laserwriter_job.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -104,6 +105,57 @@ uint32_t atalk_printer_last_pages(void) {
 }
 const char *atalk_printer_last_outcome(void) {
     return "";
+}
+
+uint32_t atalk_printer_interpreter_jobs(void) {
+    return 0;
+}
+uint32_t atalk_printer_interpreter_permanent_jobs(void) {
+    return 0;
+}
+int atalk_printer_restart(char *err, size_t err_len) {
+    (void)err, (void)err_len;
+    return 0;
+}
+
+// ---- the printer's lifetime (laserwriter_job.c) ------------------------------
+//
+// A model of the bridge's printer, so the tests can see which printer each
+// machine lifecycle step keeps, frees or gives back.
+uint32_t g_printer_current;
+uint32_t g_printer_freed[16];
+int g_printer_nfreed;
+static uint32_t g_printer_next = 1;
+
+static void printer_freed(uint32_t id) {
+    if (id && g_printer_nfreed < 16)
+        g_printer_freed[g_printer_nfreed++] = id;
+}
+uint32_t stub_printer_use(void) {
+    if (!g_printer_current)
+        g_printer_current = g_printer_next++;
+    return g_printer_current;
+}
+void stub_printer_reset(void) {
+    g_printer_current = 0;
+    g_printer_nfreed = 0;
+    memset(g_printer_freed, 0, sizeof g_printer_freed);
+}
+void laserwriter_printer_retire(void) {
+    printer_freed(g_printer_current);
+    g_printer_current = 0;
+}
+laserwriter_printer_t laserwriter_printer_detach(void) {
+    laserwriter_printer_t p = {.id = g_printer_current};
+    g_printer_current = 0;
+    return p;
+}
+void laserwriter_printer_reattach(laserwriter_printer_t printer) {
+    laserwriter_printer_retire();
+    g_printer_current = printer.id;
+}
+void laserwriter_printer_free_detached(laserwriter_printer_t printer) {
+    printer_freed(printer.id);
 }
 
 // ---- ADSP / PPC / AEVT -------------------------------------------------------

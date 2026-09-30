@@ -9,6 +9,10 @@
 // asynchronous shape the browser's worker gives it (laserwriter_transport.h).
 // Without a scheduler (a unit test) the queued request runs from
 // laserwriter_transport_poll() instead.  Built only with PLATEN=1.
+//
+// Printers are platen_printer objects in a small table keyed by the
+// bridge's printer id; OPEN creates one on the first job for its id and
+// opens the job on it.
 
 #include "laserwriter_transport.h"
 
@@ -42,6 +46,10 @@ LOG_USE_CATEGORY_NAME("laserwriter");
 // Identity entries kept from the open configuration.
 #define LASERWRITER_IDENTITY_MAX 8
 
+// Printers alive at once: the machine's, plus the one a checkpoint load
+// keeps detached until it knows whether it succeeded (laserwriter_job.h).
+#define LASERWRITER_PRINTERS_MAX 4
+
 // ============================================================================
 // Type Definitions (Private)
 // ============================================================================
@@ -49,14 +57,23 @@ LOG_USE_CATEGORY_NAME("laserwriter");
 // The request kinds that wait for the scheduler.
 typedef enum { OP_NONE = 0, OP_OPEN, OP_FEED, OP_FINISH } direct_op_t;
 
-// The transport: the library job, the one pending request, its copied
-// arguments, and the buffers a result is delivered from.
+// One printer: the bridge's id for it and the library's interpreter.
+typedef struct {
+    uint32_t id; // 0 = free slot
+    platen_printer *printer;
+} direct_printer_t;
+
+// The transport: the printers, the library job, the one pending request,
+// its copied arguments, and the buffers a result is delivered from.
 typedef struct {
     laserwriter_transport_callbacks_t cb;
     void *cb_ctx;
+    direct_printer_t printers[LASERWRITER_PRINTERS_MAX];
     platen_job *job; // the library job, NULL between jobs
     uint32_t job_id; // the bridge's id for it
+    uint32_t job_printer_id; // the printer it runs on
     direct_op_t pending; // the request waiting for the scheduler
+    uint32_t pending_printer_id; // OPEN: the printer to open the job on
     uint32_t pending_job_id;
     uint32_t pending_seq;
     uint8_t *pending_bytes; // FEED: a copy of the program bytes
@@ -115,13 +132,53 @@ static void direct_free_config(void) {
     memset(&g_direct.cfg, 0, sizeof(g_direct.cfg));
 }
 
-// Releases the library job.
+// Releases the library job (a job freed before its finish is abandoned:
+// the printer reverts it).
 static void direct_free_job(void) {
     if (g_direct.job) {
         platen_job_free(g_direct.job);
         g_direct.job = NULL;
     }
     g_direct.job_id = 0;
+    g_direct.job_printer_id = 0;
+}
+
+// The table slot holding printer `id`, or NULL.
+static direct_printer_t *direct_printer_find(uint32_t id) {
+    for (size_t i = 0; i < LASERWRITER_PRINTERS_MAX; i++)
+        if (g_direct.printers[i].id == id && id != 0)
+            return &g_direct.printers[i];
+    return NULL;
+}
+
+// Creates the interpreter for printer `id` in a free slot; NULL (with the
+// reason in `why`) when the library refuses the configuration or the table
+// is full.
+static direct_printer_t *direct_printer_create(uint32_t id, const platen_config *cfg, const char **why) {
+    direct_printer_t *slot = NULL;
+    for (size_t i = 0; i < LASERWRITER_PRINTERS_MAX && !slot; i++)
+        if (g_direct.printers[i].id == 0)
+            slot = &g_direct.printers[i];
+    if (!slot) {
+        *why = "too many printers";
+        return NULL;
+    }
+    platen_printer *p = platen_printer_new(cfg);
+    if (!p) {
+        *why = platen_last_error();
+        return NULL;
+    }
+    slot->id = id;
+    slot->printer = p;
+    LOG(2, "laserwriter: printer %u created (direct)", (unsigned)id);
+    return slot;
+}
+
+// Frees the interpreter in `slot` and empties the slot.
+static void direct_printer_destroy(direct_printer_t *slot) {
+    platen_printer_free(slot->printer);
+    slot->printer = NULL;
+    slot->id = 0;
 }
 
 // Forgets the pending request (its event, its copied bytes).
@@ -175,18 +232,40 @@ static void direct_run_open(void) {
     cfg.embed_all_fonts = g_direct.cfg.embed_all_fonts ? 1 : 0;
     cfg.step_budget = g_direct.cfg.step_budget;
     direct_free_job();
-    g_direct.job = platen_job_new(&cfg);
+    uint32_t printer_id = g_direct.pending_printer_id;
+    const char *why = "";
+    bool restarted = false;
+    direct_printer_t *slot = direct_printer_find(printer_id);
+    if (!slot)
+        slot = direct_printer_create(printer_id, &cfg, &why);
+    if (slot) {
+        g_direct.job = platen_printer_job(slot->printer);
+        if (!g_direct.job) {
+            // The printer holds one job at a time and the bridge one at a
+            // time too, so a busy printer is a wedged one: an earlier job
+            // kept its interpreter.  Replace it, as a device restart would.
+            LOG(1, "laserwriter: printer %u wedged (%s); restarting it", (unsigned)printer_id, platen_last_error());
+            direct_printer_destroy(slot);
+            slot = direct_printer_create(printer_id, &cfg, &why);
+            if (slot) {
+                restarted = true;
+                g_direct.job = platen_printer_job(slot->printer);
+                if (!g_direct.job)
+                    why = platen_last_error();
+            }
+        }
+    }
     direct_free_config();
     if (!g_direct.job) {
-        const char *why = platen_last_error();
-        LOG(1, "laserwriter: job %u: interpreter refused the configuration: %s", (unsigned)job_id, why);
+        LOG(1, "laserwriter: job %u: the interpreter refused the job: %s", (unsigned)job_id, why);
         if (g_direct.cb.on_open_failed)
             g_direct.cb.on_open_failed(job_id, why, g_direct.cb_ctx);
         return;
     }
     g_direct.job_id = job_id;
+    g_direct.job_printer_id = printer_id;
     if (g_direct.cb.on_opened)
-        g_direct.cb.on_opened(job_id, g_direct.cb_ctx);
+        g_direct.cb.on_opened(job_id, restarted, g_direct.cb_ctx);
 }
 
 // Executes FEED: the bytes run, both channels are drained, FED is delivered.
@@ -303,8 +382,8 @@ void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t
     g_direct.cb_ctx = ctx;
 }
 
-bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t *cfg) {
-    if (!cfg || cfg->identity_len > LASERWRITER_IDENTITY_MAX)
+bool laserwriter_transport_open(uint32_t printer_id, uint32_t job_id, const laserwriter_job_config_t *cfg) {
+    if (!cfg || cfg->identity_len > LASERWRITER_IDENTITY_MAX || printer_id == 0)
         return false;
     if (g_direct.pending != OP_NONE)
         return false;
@@ -331,7 +410,8 @@ bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t 
         memcpy(g_direct.prelude, cfg->prelude, cfg->prelude_len);
     }
     g_direct.cfg.prelude = g_direct.prelude;
-    LOG(3, "laserwriter: job %u open queued (direct)", (unsigned)job_id);
+    g_direct.pending_printer_id = printer_id;
+    LOG(3, "laserwriter: job %u open queued on printer %u (direct)", (unsigned)job_id, (unsigned)printer_id);
     return direct_queue(OP_OPEN, job_id);
 }
 
@@ -374,6 +454,20 @@ void laserwriter_transport_abandon(uint32_t job_id) {
         direct_free_job();
 }
 
+void laserwriter_transport_printer_free(uint32_t printer_id) {
+    direct_printer_t *slot = direct_printer_find(printer_id);
+    if (!slot)
+        return;
+    // A job still open on it goes first (either order is allowed; this one
+    // keeps the job from running on an interpreter that is gone)
+    if (g_direct.pending == OP_OPEN && g_direct.pending_printer_id == printer_id)
+        laserwriter_transport_abandon(g_direct.pending_job_id);
+    if (g_direct.job && g_direct.job_printer_id == printer_id)
+        laserwriter_transport_abandon(g_direct.job_id);
+    LOG(2, "laserwriter: printer %u freed (direct)", (unsigned)printer_id);
+    direct_printer_destroy(slot);
+}
+
 void laserwriter_transport_poll(void) {
     // With a scheduler the event delivers; without one, this does
     if (!atalk_scheduler())
@@ -397,7 +491,8 @@ void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t
     (void)ctx;
 }
 
-bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t *cfg) {
+bool laserwriter_transport_open(uint32_t printer_id, uint32_t job_id, const laserwriter_job_config_t *cfg) {
+    (void)printer_id;
     (void)job_id;
     (void)cfg;
     return false;
@@ -419,6 +514,10 @@ bool laserwriter_transport_finish(uint32_t job_id, const char *title) {
 
 void laserwriter_transport_abandon(uint32_t job_id) {
     (void)job_id;
+}
+
+void laserwriter_transport_printer_free(uint32_t printer_id) {
+    (void)printer_id;
 }
 
 void laserwriter_transport_poll(void) {}

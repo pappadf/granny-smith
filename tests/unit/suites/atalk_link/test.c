@@ -724,6 +724,64 @@ TEST(a_publish_that_fails_changes_nothing) {
     link_delete();
 }
 
+// --- the printer's lifetime ---------------------------------------------------
+//
+// The printer lives as long as the emulated machine (laserwriter_job.h):
+// appletalk.c moves it with the machine lifecycle.  These drive the stack
+// through each step and read what the printer model saw.
+
+// A machine that goes takes its printer with it; the next machine starts
+// with none (its first job makes one).
+TEST(a_machine_that_goes_frees_its_printer) {
+    stub_printer_reset();
+    link_boot();
+    uint32_t a = stub_printer_use();
+    link_delete();
+    ASSERT_EQ_INT(0, (int)g_printer_current);
+    ASSERT_EQ_INT(1, g_printer_nfreed);
+    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
+}
+
+// machine.restart rebuilds the same machine, which keeps its printer --
+// and with it what jobs made permanent -- the way it keeps its disks.
+TEST(a_power_cycle_keeps_the_printer) {
+    stub_printer_reset();
+    link_boot();
+    uint32_t a = stub_printer_use();
+    link_restart();
+    ASSERT_EQ_INT((int)a, (int)g_printer_current);
+    ASSERT_EQ_INT(0, g_printer_nfreed);
+    link_delete();
+    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
+}
+
+// A load that succeeds is a different machine: it starts without a printer,
+// and the old machine's is freed when that machine goes.
+TEST(a_successful_load_frees_the_old_printer) {
+    stub_printer_reset();
+    link_boot();
+    uint32_t a = stub_printer_use();
+    link_checkpoint();
+    link_load(false);
+    ASSERT_EQ_INT(0, (int)g_printer_current);
+    ASSERT_EQ_INT(1, g_printer_nfreed);
+    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
+    link_delete();
+}
+
+// A load that fails leaves the running machine as it was -- printer and all.
+TEST(a_failed_load_gives_the_printer_back) {
+    stub_printer_reset();
+    link_boot();
+    uint32_t a = stub_printer_use();
+    link_checkpoint();
+    link_load(true);
+    ASSERT_EQ_INT((int)a, (int)g_printer_current);
+    ASSERT_EQ_INT(0, g_printer_nfreed);
+    link_delete();
+    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
+}
+
 int main(void) {
     RUN(a_publish_that_fails_changes_nothing);
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
@@ -737,6 +795,10 @@ int main(void) {
     RUN(configuration_survives_a_checkpoint);
     RUN(a_failed_load_gives_the_stack_back_to_the_running_machine);
     RUN(a_successful_load_moves_the_stack_to_the_new_machine);
+    RUN(a_machine_that_goes_frees_its_printer);
+    RUN(a_power_cycle_keeps_the_printer);
+    RUN(a_successful_load_frees_the_old_printer);
+    RUN(a_failed_load_gives_the_printer_back);
     RUN(a_malformed_ddp_frame_is_dropped_and_counted);
     RUN(every_discard_is_counted_by_reason);
     RUN(a_lookup_matching_eight_names_answers_with_eight_tuples);

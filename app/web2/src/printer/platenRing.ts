@@ -13,6 +13,11 @@
 // the inbound ring is full it waits on IN_TAIL for the core to consume.
 // A framing violation, a library exception or a module failure marks the
 // worker LOST, after which the core fails whatever it was waiting on.
+//
+// Printers: the bridge names each emulated machine's printer by an id.  The
+// loop keeps one platen printer per id -- created on its first OPEN, freed
+// by PRINTER_FREE -- and opens every job on its printer, so what a job
+// makes permanent (exitserver, startjob) is there for the next.
 
 import {
   ABANDON_JOB,
@@ -53,11 +58,14 @@ import {
   OPEN_JOB,
   OPEN_PASSWORD,
   OPEN_PRELUDE,
+  OPEN_PRINTER,
   OPEN_WORDS,
+  OPENED_F_RESTARTED,
   OUTCOME_BUDGET,
   OUTCOME_ERROR,
   OUTCOME_FAILED,
   OUTCOME_OK,
+  PRINTER_FREE_ID,
   PROTOCOL_VERSION,
   R_ABANDON,
   R_FED,
@@ -68,6 +76,7 @@ import {
   R_OPEN_FAILED,
   R_OPENED,
   R_PAD,
+  R_PRINTER_FREE,
   ringRead,
   ringWrite,
   STATUS_ATTACHED,
@@ -83,6 +92,7 @@ import {
   PLATEN_OUTCOME_ERROR,
   PLATEN_OUTCOME_OK,
   type PlatenEntry,
+  type PlatenJobConfig,
   type PlatenLib,
 } from './platenLib';
 
@@ -143,8 +153,10 @@ export class PlatenRing {
   private readonly host: RingHost;
   private consumed: number; // outbound bytes consumed (mod 2^32)
   private written: number; // inbound bytes written (mod 2^32)
+  private readonly printers = new Map<number, number>(); // printer id -> platen printer
   private job = 0; // the live platen job handle, 0 when none
   private jobId = 0; // its bridge job id
+  private jobPrinter = 0; // the printer id it runs on
   private running = false;
   private lost = false;
 
@@ -244,6 +256,9 @@ export class PlatenRing {
         case R_ABANDON:
           this.onAbandon(getU32(u8, p + 4 * ABANDON_JOB));
           break;
+        case R_PRINTER_FREE:
+          this.onPrinterFree(getU32(u8, p + 4 * PRINTER_FREE_ID));
+          break;
         default:
           throw new Error(`unknown ring record kind ${rec.kind}`);
       }
@@ -256,9 +271,11 @@ export class PlatenRing {
 
   // --- requests -------------------------------------------------------------
 
-  // OPEN: build the platen_config from the record and create the job.
+  // OPEN: open the job on its printer, creating the printer from the
+  // record's configuration on its first job.
   private async onOpen(u8: Uint8Array, p: number, payloadLen: number): Promise<void> {
     const jobId = getU32(u8, p + 4 * OPEN_JOB);
+    const printerId = getU32(u8, p + 4 * OPEN_PRINTER);
     const idCount = getU32(u8, p + 4 * OPEN_ID_COUNT);
     const idBytes = getU32(u8, p + 4 * OPEN_ID_BYTES);
     const preludeLen = getU32(u8, p + 4 * OPEN_PRELUDE);
@@ -277,25 +294,55 @@ export class PlatenRing {
       q += value.bytes + 1;
       identity.push({ key: key.text, value: value.text });
     }
-    const prelude = u8.slice(idEnd, idEnd + preludeLen);
-    const job = this.lib.jobNew({
+    const cfg: PlatenJobConfig = {
       identity,
-      prelude,
+      prelude: u8.slice(idEnd, idEnd + preludeLen),
       serverPassword: getU32(u8, p + 4 * OPEN_PASSWORD) | 0,
       compress: getU32(u8, p + 4 * OPEN_COMPRESS) !== 0,
       embedAllFonts: getU32(u8, p + 4 * OPEN_EMBED) !== 0,
       stepBudgetLo: getU32(u8, p + 4 * OPEN_BUDGET_L),
       stepBudgetHi: getU32(u8, p + 4 * OPEN_BUDGET_H),
-    });
+    };
+    let printer = this.printers.get(printerId) ?? this.newPrinter(printerId, cfg);
+    let job = printer ? this.lib.printerJob(printer) : 0;
+    let flags = 0;
+    if (printer && !job) {
+      // One job at a time here, so a busy printer is a wedged one (an
+      // earlier job kept its interpreter): replace it, as a device restart
+      // would, once
+      console.warn(`[platen] printer ${printerId} wedged; restarting it`);
+      this.freePrinter(printerId);
+      printer = this.newPrinter(printerId, cfg);
+      job = printer ? this.lib.printerJob(printer) : 0;
+      flags = OPENED_F_RESTARTED;
+    }
     if (!job) {
-      const text = cap(encoder.encode(this.lib.lastError() || 'platen_job_new failed'), TEXT_MAX);
+      const why = this.lib.lastError() || 'the printer refused the job';
+      const text = cap(encoder.encode(why), TEXT_MAX);
       await this.write(R_OPEN_FAILED, [jobId, text.length], [text]);
       return;
     }
     this.job = job;
     this.jobId = jobId;
+    this.jobPrinter = printerId;
     Atomics.add(this.ctrl, C_STAT_JOBS, 1);
-    await this.write(R_OPENED, [jobId], []);
+    await this.write(R_OPENED, [jobId, flags], []);
+  }
+
+  // Creates printer `id` from `cfg`; 0 when the library refuses it.
+  private newPrinter(id: number, cfg: PlatenJobConfig): number {
+    const printer = this.lib.printerNew(cfg);
+    if (printer) this.printers.set(id, printer);
+    return printer;
+  }
+
+  // Frees printer `id`, a job still open on it first.
+  private freePrinter(id: number): void {
+    const printer = this.printers.get(id);
+    if (printer === undefined) return;
+    if (this.job && this.jobPrinter === id) this.freeJob();
+    this.lib.printerFree(printer);
+    this.printers.delete(id);
   }
 
   // FEED: run the bytes, drain both channels, answer FED.
@@ -390,15 +437,22 @@ export class PlatenRing {
     );
   }
 
-  // ABANDON: the connection went away; free without finishing.
+  // ABANDON: the connection went away; free without finishing (the
+  // printer reverts the job).
   private onAbandon(jobId: number): void {
     if (this.job && jobId === this.jobId) this.freeJob();
+  }
+
+  // PRINTER_FREE: the printer's machine is gone, or it was restarted.
+  private onPrinterFree(printerId: number): void {
+    this.freePrinter(printerId);
   }
 
   private freeJob(): void {
     if (this.job) this.lib.free(this.job);
     this.job = 0;
     this.jobId = 0;
+    this.jobPrinter = 0;
   }
 
   // --- answers --------------------------------------------------------------

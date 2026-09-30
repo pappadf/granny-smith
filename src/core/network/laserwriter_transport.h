@@ -13,6 +13,14 @@
 // The bridge keeps ONE request outstanding per job (open, then feed or
 // finish, one at a time); abandon is fire-and-forget.  Results for a job
 // id the bridge no longer holds are dropped.
+//
+// Every job runs on a PRINTER: an interpreter that keeps its state between
+// jobs (platen_printer), named by a process-unique printer id the bridge
+// chooses.  A transport creates the printer on the first open for an id,
+// from that open's configuration, and keeps it until printer_free; an open
+// for a printer that already exists ignores the configuration.  Each job
+// starts from the printer's state and is reverted at its end, except what
+// exitserver or startjob made permanent (laserwriter_job.h, "The printer").
 
 #ifndef LASERWRITER_TRANSPORT_H
 #define LASERWRITER_TRANSPORT_H
@@ -81,7 +89,11 @@ typedef struct {
 // Results, delivered from the scheduler (direct) or from
 // laserwriter_transport_poll() (ring) — never from inside a request call.
 typedef struct {
-    void (*on_opened)(uint32_t job_id, void *ctx);
+    // `printer_restarted`: the printer's interpreter was wedged (an earlier
+    // job kept it: a document that could not be closed, a panic), so the
+    // transport replaced it before opening the job -- what earlier jobs made
+    // permanent is gone.
+    void (*on_opened)(uint32_t job_id, bool printer_restarted, void *ctx);
     void (*on_open_failed)(uint32_t job_id, const char *error, void *ctx);
     void (*on_fed)(uint32_t job_id, uint32_t sequence, laserwriter_feed_status_t status, uint32_t pages,
                    const uint8_t *reply, size_t reply_len, const uint8_t *errors, size_t errors_len, bool truncated,
@@ -98,10 +110,11 @@ void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t
 // laserwriter_job_init each time the stack comes up (atalk_timer_t).
 void laserwriter_transport_init(void);
 
-// Starts job `job_id` with `cfg`.  Returns false when the request could
-// not be issued (transport out of room or a request already outstanding);
-// otherwise on_opened / on_open_failed follows.
-bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t *cfg);
+// Starts job `job_id` on printer `printer_id` (non-zero), creating the
+// printer from `cfg` if it does not exist yet.  Returns false when the
+// request could not be issued (transport out of room or a request already
+// outstanding); otherwise on_opened / on_open_failed follows.
+bool laserwriter_transport_open(uint32_t printer_id, uint32_t job_id, const laserwriter_job_config_t *cfg);
 
 // Feeds `len` bytes (at most one PAP flow quantum) answered by SendData
 // `sequence`; on_fed follows with the same sequence.  False when not
@@ -117,7 +130,13 @@ bool laserwriter_transport_finish(uint32_t job_id, const char *title);
 
 // Frees the job without finishing (the connection went away).  No
 // callback follows; a result already in flight for the job is dropped.
+// The job's printer reverts it and serves the next.
 void laserwriter_transport_abandon(uint32_t job_id);
+
+// Frees printer `printer_id` and everything it made permanent.  A job
+// still open on it is abandoned first (the bridge abandons it before, so
+// this is a safety net).  Fire-and-forget; an unknown id is ignored.
+void laserwriter_transport_printer_free(uint32_t printer_id);
 
 // Drains pending results and dispatches their callbacks.  The bridge
 // calls it from its guest-time tick while a request is outstanding; a

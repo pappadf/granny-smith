@@ -49,7 +49,7 @@
 
 // === Constants ===
 
-#define LWRING_PROTOCOL_VERSION 2u
+#define LWRING_PROTOCOL_VERSION 3u
 #define LWRING_MAGIC            0x4C575250u // 'LWRP'
 
 // Control-block word indices (uint32 / Int32Array for Atomics).
@@ -114,26 +114,34 @@
 
 #define LWRING_R_PAD 0u // skip to the ring start (either direction)
 
-// OPEN {job_id, compress, embed_all_fonts, step_budget_lo, step_budget_hi,
-//       server_password (int32), identity_count, identity_bytes, prelude_len}
+// OPEN {job_id, printer_id, compress, embed_all_fonts, step_budget_lo,
+//       step_budget_hi, server_password (int32), identity_count,
+//       identity_bytes, prelude_len}
 //      + identity block + prelude bytes.
-// The platen_config the bridge sets, field by field.  The identity block
-// is identity_count pairs of NUL-terminated strings (key, value — the
-// value a PostScript literal, as platen_entry takes them), identity_bytes
-// long in total; the prelude follows immediately (unterminated, padded
-// to 4 at the record's end).  The worker builds the platen_config from
-// these and calls platen_job_new; it answers OPENED or OPEN_FAILED.
+// Opens job `job_id` on printer `printer_id` (non-zero; the bridge names
+// printers, laserwriter_transport.h).  The rest is the platen_config the
+// bridge sets, field by field.  The identity block is identity_count
+// pairs of NUL-terminated strings (key, value — the value a PostScript
+// literal, as platen_entry takes them), identity_bytes long in total; the
+// prelude follows immediately (unterminated, padded to 4 at the record's
+// end).  When the worker holds no printer for printer_id it builds the
+// platen_config from these and calls platen_printer_new; otherwise the
+// configuration is ignored.  It then calls platen_printer_job and answers
+// OPENED or OPEN_FAILED.  A printer whose platen_printer_job fails is
+// wedged (an earlier job kept its interpreter): the worker replaces it
+// once and says so in OPENED's flags.
 #define LWRING_R_OPEN        1u
 #define LWRING_OPEN_JOB      0
-#define LWRING_OPEN_COMPRESS 1
-#define LWRING_OPEN_EMBED    2
-#define LWRING_OPEN_BUDGET_L 3
-#define LWRING_OPEN_BUDGET_H 4
-#define LWRING_OPEN_PASSWORD 5
-#define LWRING_OPEN_ID_COUNT 6
-#define LWRING_OPEN_ID_BYTES 7
-#define LWRING_OPEN_PRELUDE  8
-#define LWRING_OPEN_WORDS    9
+#define LWRING_OPEN_PRINTER  1
+#define LWRING_OPEN_COMPRESS 2
+#define LWRING_OPEN_EMBED    3
+#define LWRING_OPEN_BUDGET_L 4
+#define LWRING_OPEN_BUDGET_H 5
+#define LWRING_OPEN_PASSWORD 6
+#define LWRING_OPEN_ID_COUNT 7
+#define LWRING_OPEN_ID_BYTES 8
+#define LWRING_OPEN_PRELUDE  9
+#define LWRING_OPEN_WORDS    10
 
 // FEED {job_id, sequence, len} + len bytes of the program, at most
 // LWRING_FEED_MAX.  `sequence` is the PAP SendData sequence the bytes
@@ -153,7 +161,8 @@
 // the download from it and the job id (<job id, 5 digits>-<title>.pdf),
 // since the PDF never passes through the core in the browser.  The worker
 // calls platen_job_finish, drains both channels, posts the PDF to the main
-// thread, and answers FINISHED; then frees the job.
+// thread, and answers FINISHED; then frees the job (its printer keeps what
+// the job made permanent).
 #define LWRING_R_FINISH         3u
 #define LWRING_FINISH_JOB       0
 #define LWRING_FINISH_TITLE_LEN 1
@@ -166,15 +175,28 @@
 #define LWRING_ABANDON_JOB   0
 #define LWRING_ABANDON_WORDS 1
 
+// PRINTER_FREE {printer_id}: the printer's machine is gone (or the
+// printer was restarted).  The worker frees the printer -- a job still open
+// on it first -- and answers nothing; an unknown id is ignored.
+#define LWRING_R_PRINTER_FREE     5u
+#define LWRING_PRINTER_FREE_ID    0
+#define LWRING_PRINTER_FREE_WORDS 1
+
 // === Records, worker -> core ===
 
-// OPENED {job_id}: platen_job_new succeeded; the job takes feeds.
+// OPENED {job_id, flags}: the job is open on its printer and takes feeds.
+// LWRING_OPENED_F_RESTARTED: the printer was wedged and has been replaced
+// first, losing what earlier jobs made permanent.
 #define LWRING_R_OPENED     16u
 #define LWRING_OPENED_JOB   0
-#define LWRING_OPENED_WORDS 1
+#define LWRING_OPENED_FLAGS 1
+#define LWRING_OPENED_WORDS 2
 
-// OPEN_FAILED {job_id, text_len} + text: platen_job_new returned NULL
-// (text = platen_last_error), or the worker could not load its module.
+#define LWRING_OPENED_F_RESTARTED (1u << 0)
+
+// OPEN_FAILED {job_id, text_len} + text: the printer could not be created
+// or the job not opened (text = platen_last_error), or the worker could not
+// load its module.
 #define LWRING_R_OPEN_FAILED     17u
 #define LWRING_OPEN_FAILED_JOB   0
 #define LWRING_OPEN_FAILED_TEXT  1

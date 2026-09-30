@@ -1767,3 +1767,35 @@ uint32_t atalk_printer_last_pages(void) {
 const char *atalk_printer_last_outcome(void) {
     return laserwriter_job_last_outcome();
 }
+
+uint32_t atalk_printer_interpreter_jobs(void) {
+    return laserwriter_printer_jobs();
+}
+
+uint32_t atalk_printer_interpreter_permanent_jobs(void) {
+    return laserwriter_printer_permanent_jobs();
+}
+
+// The printer's power switch: the workstation's connection drops, as it
+// would when a LaserWriter is switched off mid-job, and the interpreter is
+// replaced.  The machine, the advertisement and the configuration stay.
+int atalk_printer_restart(char *err, size_t err_len) {
+#if GS_PLATEN
+    (void)err;
+    (void)err_len;
+    pap_printer_init();
+    if (g_session.active)
+        pap_session_abort("the printer was restarted");
+    // A job finishing after its close goes too: its printer is gone
+    pap_platen_forget_detached();
+    laserwriter_job_discard_output();
+    laserwriter_printer_retire();
+    pap_printer_set_status_idle();
+    LOG(2, "pap: printer restarted");
+    return 0;
+#else
+    if (err && err_len)
+        snprintf(err, err_len, "this build has no PostScript interpreter (PLATEN=0)");
+    return -1;
+#endif
+}

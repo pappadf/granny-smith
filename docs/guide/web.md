@@ -158,7 +158,10 @@ transports, installed at module construction:
   [`printer/platen.worker.ts`](../../app/web2/src/printer/platen.worker.ts)
   then (lazily: the worker fetches its own non-threaded module,
   `platen-<version>.js` beside `main.mjs`, built by `make platen-module`),
-  and posts the wasm memory and the address; the worker parks in
+  and posts the wasm memory and the address; the worker keeps one
+  interpreter per emulated machine's printer (created on its first job,
+  freed by the ring's PRINTER_FREE when the machine goes), so what a job
+  makes permanent with `exitserver` lasts until then.  It parks in
   `Atomics.waitAsync` on the outbound ring's head while the C side wakes
   it with `emscripten_futex_wake`.  Each finished PDF comes back to the
   page as a transferable and opens in a viewer dialog (the browser's own
