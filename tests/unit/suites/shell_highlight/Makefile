@@ -8,5 +8,6 @@ EXTRA_SRCS := ../../../../src/core/job/seam.c \
               ../../../../src/core/object/meta.c \
               ../../../../src/core/object/alias.c \
               ../../../../src/core/shell/highlight.c \
-              ../../../../src/core/shell/commands.c
+              ../../../../src/core/shell/commands.c \
+              ../../../../src/core/shell/syntax.c
 include ../../common.mk

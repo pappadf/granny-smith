@@ -24,6 +24,7 @@
 #include "shell_funcs.h"
 #include "shell_internal.h"
 #include "shell_var.h"
+#include "syntax.h"
 #include "value.h"
 
 #include <ctype.h>
@@ -614,223 +615,83 @@ fail:
     return false;
 }
 
-// Classify + parse one single-line statement (no block forms) from raw
-// text. Used for inline block bodies and by parse_stmt for the simple
-// statement kinds.
+// Duplicate [s, e) trimmed (NULL when s is NULL).
+static char *dup_span(const char *s, const char *e) {
+    return s ? dup_trim(s, e) : NULL;
+}
+
+// Build one single-line statement (no block forms) from raw text: inline
+// block bodies, and parse_stmt for the simple statement kinds.  What the
+// text is comes from script_classify (syntax.h), which the highlighter and
+// completion read too.
 static stmt_t *parse_stmt_text(parser_t *ps, const char *text, int line_no) {
-    const char *p = skip_sp(text);
-    const char *after;
-
-    if ((after = kw_match(p, "break"))) {
-        if (*skip_sp(after) != '\0') {
-            parse_error(ps, line_no, "break takes no arguments");
-            return NULL;
-        }
+    script_stmt_t c;
+    script_classify(text, text + strlen(text), &c);
+    stmt_kind_t kind;
+    switch (c.kind) {
+    case SCRIPT_STMT_EMPTY:
+        parse_error(ps, line_no, "empty statement");
+        return NULL;
+    case SCRIPT_STMT_INVALID:
+        parse_error(ps, line_no, "%s", c.error);
+        return NULL;
+    case SCRIPT_STMT_ELIF:
+    case SCRIPT_STMT_ELSE:
+        parse_error(ps, line_no, "'%s' without a preceding if-block", c.kind == SCRIPT_STMT_ELIF ? "elif" : "else");
+        return NULL;
+    case SCRIPT_STMT_IF:
+    case SCRIPT_STMT_WHILE:
+    case SCRIPT_STMT_FOR:
+    case SCRIPT_STMT_DEF:
+        // Only an inline block's body gets here: parse_stmt takes the rest.
+        parse_error(ps, line_no, "inline blocks cannot nest");
+        return NULL;
+    case SCRIPT_STMT_BREAK:
         return stmt_new(ST_BREAK, line_no);
-    }
-    if ((after = kw_match(p, "continue"))) {
-        if (*skip_sp(after) != '\0') {
-            parse_error(ps, line_no, "continue takes no arguments");
-            return NULL;
-        }
+    case SCRIPT_STMT_CONTINUE:
         return stmt_new(ST_CONTINUE, line_no);
+    case SCRIPT_STMT_RETURN:
+        kind = ST_RETURN;
+        break;
+    case SCRIPT_STMT_INCLUDE:
+        kind = ST_INCLUDE;
+        break;
+    case SCRIPT_STMT_ASSERT:
+        kind = ST_ASSERT;
+        break;
+    case SCRIPT_STMT_LET:
+        kind = ST_LET;
+        break;
+    case SCRIPT_STMT_ALIAS:
+        kind = ST_ALIAS;
+        break;
+    case SCRIPT_STMT_COMMAND_DEF:
+        kind = ST_COMMAND_DEF;
+        break;
+    case SCRIPT_STMT_ASSIGN:
+        kind = ST_ASSIGN;
+        break;
+    case SCRIPT_STMT_COMMAND:
+        kind = ST_COMMAND;
+        break;
+    default:
+        kind = ST_EXPR;
+        break;
     }
-    if ((after = kw_match(p, "return"))) {
-        stmt_t *st = stmt_new(ST_RETURN, line_no);
-        st->text = dup_trim(after, after + strlen(after));
-        return st;
-    }
-    if ((after = kw_match(p, "include"))) {
-        const char *body = skip_sp(after);
-        if (*body == '\0') {
-            parse_error(ps, line_no, "include: missing path");
-            return NULL;
-        }
-        stmt_t *st = stmt_new(ST_INCLUDE, line_no);
-        st->text = strdup(body);
-        return st;
-    }
-    if ((after = kw_match(p, "assert"))) {
-        const char *body = skip_sp(after);
-        if (*body == '\0') {
-            parse_error(ps, line_no, "assert: missing predicate");
-            return NULL;
-        }
-        stmt_t *st = stmt_new(ST_ASSERT, line_no);
-        st->text = strdup(body);
-        return st;
-    }
-    if ((after = kw_match(p, "let"))) {
-        const char *q = skip_sp(after);
-        if (!ident_start(*q)) {
-            parse_error(ps, line_no, "let: expected a name");
-            return NULL;
-        }
-        const char *ns = q;
-        while (ident_char(*q))
-            q++;
-        char *name = dup_trim(ns, q);
-        q = skip_sp(q);
-        if (*q != '=' || q[1] == '=') {
-            parse_error(ps, line_no, "let: expected '=' after name");
-            free(name);
-            return NULL;
-        }
-        q = skip_sp(q + 1);
-        if (*q == '\0') {
-            parse_error(ps, line_no, "let: missing expression");
-            free(name);
-            return NULL;
-        }
-        stmt_t *st = stmt_new(ST_LET, line_no);
-        st->name = name;
-        st->text = strdup(q);
-        return st;
-    }
-    // `alias NAME = PATH` — only the exact statement shape is the
-    // keyword; anything else (e.g. a path starting with `alias.`) falls
-    // through to command parsing.
-    if ((after = kw_match(p, "alias"))) {
-        const char *q = skip_sp(after);
-        if (ident_start(*q)) {
-            const char *ns = q;
-            const char *scan = q;
-            while (ident_char(*scan))
-                scan++;
-            const char *eq = skip_sp(scan);
-            if (*eq == '=' && eq[1] != '=') {
-                char *name = dup_trim(ns, scan);
-                const char *path = skip_sp(eq + 1);
-                if (*path == '\0') {
-                    parse_error(ps, line_no, "alias: missing path");
-                    free(name);
-                    return NULL;
-                }
-                stmt_t *st = stmt_new(ST_ALIAS, line_no);
-                st->name = name;
-                st->text = strdup(path);
-                return st;
-            }
-        }
-        parse_error(ps, line_no, "alias: expected `alias NAME = PATH`");
+    stmt_t *st = stmt_new(kind, line_no);
+    if (!st) {
+        parse_error(ps, line_no, "out of memory");
         return NULL;
     }
-    // `command NAME = PATH` -- a contextual keyword, not a reserved word (a
-    // member may be called `command`): only this exact shape declares a
-    // command; anything else is parsed as usual.
-    if ((after = kw_match(p, "command"))) {
-        const char *q = skip_sp(after);
-        if (ident_start(*q)) {
-            const char *scan = q;
-            while (ident_char(*scan))
-                scan++;
-            const char *eq = skip_sp(scan);
-            const char *path = skip_sp(eq + 1);
-            if (*eq == '=' && eq[1] != '=' && *path) {
-                stmt_t *st = stmt_new(ST_COMMAND_DEF, line_no);
-                st->name = dup_trim(q, scan);
-                st->text = strdup(path);
-                return st;
-            }
-        }
+    if (kind == ST_COMMAND || kind == ST_EXPR) {
+        // The whole statement: the head is part of the command or expression.
+        st->text = dup_span(c.start, c.end);
+    } else {
+        st->text = dup_span(c.rest, c.end);
+        st->name = dup_span(c.name, c.name_end);
+        if (kind == ST_ASSIGN)
+            st->lvalue = dup_span(c.head, c.head_end);
     }
-    if (kw_match(p, "elif") || kw_match(p, "else")) {
-        parse_error(ps, line_no, "'%s' without a preceding if-block", kw_match(p, "elif") ? "elif" : "else");
-        return NULL;
-    }
-
-    // Path-or-binding statement head: decide assignment vs command vs
-    // bare expression by what follows the leading path token.
-    if (*p == '$' || ident_start(*p)) {
-        // Scan the path token: `$`? ident ( '.'seg | '[' … ']' )* —
-        // bracket contents skipped quote-aware.
-        const char *q = p;
-        bool is_binding = (*q == '$');
-        if (is_binding)
-            q++;
-        if (ident_start(*q)) {
-            while (ident_char(*q))
-                q++;
-            const char *ident_end = q;
-            while (1) {
-                if (*q == '.' && (ident_char(q[1]))) {
-                    q++;
-                    while (ident_char(*q))
-                        q++;
-                } else if (*q == '[') {
-                    qstate_t qs = {0};
-                    int depth = 0;
-                    const char *r = q;
-                    for (; *r; r++) {
-                        if (!qs.quote && !qs.esc) {
-                            if (*r == '[')
-                                depth++;
-                            else if (*r == ']') {
-                                depth--;
-                                if (depth == 0) {
-                                    r++;
-                                    break;
-                                }
-                            }
-                        }
-                        qstate_step(&qs, *r);
-                    }
-                    if (depth != 0) {
-                        parse_error(ps, line_no, "unbalanced '['");
-                        return NULL;
-                    }
-                    q = r;
-                } else {
-                    break;
-                }
-            }
-            const char *rest = skip_sp(q);
-            if (*rest == '=' && rest[1] != '=') {
-                // Assignment: LVALUE = EXPR.
-                const char *rhs = skip_sp(rest + 1);
-                if (*rhs == '\0') {
-                    parse_error(ps, line_no, "assignment: missing right-hand side");
-                    return NULL;
-                }
-                stmt_t *st = stmt_new(ST_ASSIGN, line_no);
-                st->lvalue = dup_trim(p, q);
-                st->text = strdup(rhs);
-                return st;
-            }
-            if (*rest == '\0') {
-                if (is_binding && q == ident_end) {
-                    // Plain `$name` → binding read, expression statement.
-                    stmt_t *st = stmt_new(ST_EXPR, line_no);
-                    st->text = strdup(p);
-                    return st;
-                }
-                // Bare path (or `$binding.path`) → zero-argument command:
-                // methods are called, attributes/objects are read.
-                stmt_t *st = stmt_new(ST_COMMAND, line_no);
-                st->text = strdup(p);
-                return st;
-            }
-            if (*q == '(') {
-                // `(` immediately after the path (no space): call form
-                // as a statement → expression statement. (A space then
-                // `(` is a command with a parenthesized argument.)
-                stmt_t *st = stmt_new(ST_EXPR, line_no);
-                st->text = strdup(p);
-                return st;
-            }
-            // Command with arguments.
-            stmt_t *st = stmt_new(ST_COMMAND, line_no);
-            st->text = strdup(p);
-            return st;
-        }
-        // `$` not followed by identifier — let the expression parser
-        // produce its error.
-    }
-
-    // Everything else — numbers, strings, parens, operators — is an
-    // expression statement.
-    stmt_t *st = stmt_new(ST_EXPR, line_no);
-    st->text = strdup(p);
     return st;
 }
 
@@ -841,10 +702,14 @@ static stmt_t *parse_stmt(parser_t *ps) {
     int line_no = ps->line_nos[ps->i];
     ps->i++;
 
+    // The block forms by their keyword (script_classify); the rest is one
+    // line.
     const char *p = skip_sp(line);
-    if (kw_match(p, "if"))
+    script_stmt_t c;
+    script_classify(p, p + strlen(p), &c);
+    if (c.kind == SCRIPT_STMT_IF)
         return parse_if(ps, p, line_no);
-    if (kw_match(p, "while")) {
+    if (c.kind == SCRIPT_STMT_WHILE) {
         char *head = NULL;
         script_block_t *body = NULL;
         if (!parse_block_header(ps, p, line_no, &head, &body))
@@ -862,7 +727,7 @@ static stmt_t *parse_stmt(parser_t *ps) {
         free(head);
         return st;
     }
-    if (kw_match(p, "for")) {
+    if (c.kind == SCRIPT_STMT_FOR) {
         char *head = NULL;
         script_block_t *body = NULL;
         if (!parse_block_header(ps, p, line_no, &head, &body))
@@ -902,7 +767,7 @@ static stmt_t *parse_stmt(parser_t *ps) {
         free(head);
         return st;
     }
-    if (kw_match(p, "def")) {
+    if (c.kind == SCRIPT_STMT_DEF) {
         char *head = NULL;
         script_block_t *body = NULL;
         if (!parse_block_header(ps, p, line_no, &head, &body))
@@ -1598,23 +1463,8 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
         }
         // Template slot? Look up the declared argument this value will
         // land in; template-typed strings are captured raw.
-        bool raw_template = false;
-        if (node.member && node.member->kind == M_METHOD && node.member->method.args) {
-            const arg_decl_t *args = node.member->method.args;
-            int nargs = node.member->method.nargs;
-            const arg_decl_t *decl = NULL;
-            if (name) {
-                for (int i = 0; i < nargs; i++) {
-                    if (args[i].name && strcmp(args[i].name, name) == 0) {
-                        decl = &args[i];
-                        break;
-                    }
-                }
-            } else if (pos_n < nargs) {
-                decl = &args[pos_n];
-            }
-            raw_template = decl && (decl->validation_flags & OBJ_ARG_TEMPLATE);
-        }
+        int slot = script_arg_slot(node.member, pos_n, name, name ? strlen(name) : 0);
+        bool raw_template = slot >= 0 && (node.member->method.args[slot].validation_flags & OBJ_ARG_TEMPLATE);
         value_t v = parse_arg_value(&p, ectx, raw_template);
         if (val_is_error(&v)) {
             result = v;
