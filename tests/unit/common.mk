@@ -72,6 +72,16 @@ MACHINES_DIR := $(EMU_ROOT)/machines
 PEELER_DIR   := $(EMU_ROOT)/peeler
 include $(WORKSPACE_ROOT)/src/sources.mk
 
+# The byte-source layer (src/core/storage/source.h) that storage.c and
+# image.c read through -- sources, the chunk cache, the format registry and
+# the NDIF/UDIF adapters -- and the peeler library it is built on.  A suite
+# linking storage.c or image.c sets USE_SOURCE_LAYER := 1 before including
+# this file.
+SOURCE_LAYER_SRCS := $(addprefix $(CORE_DIR)/storage/,source.c source_cache.c chunk_cache.c format_registry.c \
+                       image_chunkmap.c image_ndif.c image_udif.c image_scratch.c adc.c inflate.c resource_fork.c \
+                       rsrc_dcmp.c macroman.c storage_util.c) \
+                     $(CORE_DIR)/crc32.c $(PEELER_SRC)
+
 INCLUDE_FLAGS ?= -I$(UNIT_ROOT)/support \
                  $(CORE_INCLUDES) \
                  -I$(EMU_ROOT)/platform/wasm \
@@ -156,10 +166,16 @@ COMMON_SRCS := $(filter-out $(foreach s,$(OMIT_STUBS),$(UNIT_ROOT)/support/stub_
 # files under OBJ_DIR mirroring the workspace-relative directory
 # structure.  This avoids name collisions across directories.
 
-ALL_SRCS := $(abspath $(addprefix $(CURDIR)/,$(TEST_SRCS))) \
+# Each file once, in first-listed order: a suite's own list and a shared
+# one (SOURCE_LAYER_SRCS) may both name a file.
+uniq = $(if $1,$(firstword $1) $(call uniq,$(filter-out $(firstword $1),$1)))
+ifeq ($(USE_SOURCE_LAYER),1)
+EXTRA_SRCS += $(SOURCE_LAYER_SRCS)
+endif
+ALL_SRCS := $(call uniq,$(abspath $(addprefix $(CURDIR)/,$(TEST_SRCS))) \
             $(abspath $(COMMON_SRCS)) \
             $(abspath $(EMU_SRCS)) \
-            $(abspath $(EXTRA_SRCS))
+            $(abspath $(EXTRA_SRCS)))
 
 # /workspaces/granny-smith/some/path/foo.c -> $(OBJ_DIR)/some/path/foo.o
 OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))

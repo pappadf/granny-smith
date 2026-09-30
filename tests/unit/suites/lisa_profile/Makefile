@@ -28,4 +28,5 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
 # machines/runtime — neither is on common.mk's default include path.
 EXTRA_CFLAGS  = -I$(EMU_ROOT)/machines/lisa -I$(EMU_ROOT)/machines/runtime
 
+USE_SOURCE_LAYER := 1
 include ../../common.mk

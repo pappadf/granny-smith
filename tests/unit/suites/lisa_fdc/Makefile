@@ -28,4 +28,5 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_fdc.c \
 # lisa_fdc.h lives under machines/lisa, which is not on common.mk's default path.
 EXTRA_CFLAGS  = -I$(EMU_ROOT)/machines/lisa
 
+USE_SOURCE_LAYER := 1
 include ../../common.mk
