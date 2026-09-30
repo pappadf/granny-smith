@@ -62,13 +62,13 @@ ROM source (rev 2.48 / "H"), and Apple's released Lisa OS driver source.
 | Function | Device | Notes |
 | --- | --- | --- |
 | CPU | Motorola 68000 | 5.09375 MHz, 24-bit logical |
-| Memory management | Custom Apple segment MMU | 1K×12-bit descriptor RAM, external to the CPU |
-| Keyboard / mouse / clock / power | COPS (COP421-class) microcontroller | on the A-port of VIA1; always-on (standby supply) |
+| Memory management | [Custom Apple segment MMU](mmu.md) | 1K×12-bit descriptor RAM, external to the CPU |
+| Keyboard / mouse / clock / power | [COPS (COP421-class) microcontroller](cops.md) | on the A-port of VIA1; always-on (standby supply) |
 | Parallel I/O ×2 | two MOS 6522 VIAs | VIA1 = COPS, VIA2 = parallel hard-disk port |
 | Serial | Zilog Z8530 SCC | two channels, autovectored |
-| Floppy | 6504A-based intelligent controller | one Sony 400 KB 3.5″ drive (Lisa 2 / XL) |
-| Hard disk | parallel-port ProFile (external) / Widget (internal 2/10) | NOT SCSI |
-| Video | discrete state machine + DAC | 720×364 1 bpp, framebuffer in main RAM |
+| Floppy | [6504A-based intelligent controller](fdc.md) | one Sony 400 KB 3.5″ drive (Lisa 2 / XL) |
+| Hard disk | [parallel-port ProFile (external) / Widget (internal 2/10)](profile.md) | NOT SCSI |
+| Video | [discrete state machine + DAC](video.md) | 720×364 1 bpp, framebuffer in main RAM |
 
 ### 1.1 Lisa 2 vs. Macintosh XL
 
@@ -229,236 +229,89 @@ low logical memory once the MMU maps RAM there.
 
 The Lisa MMU is a **custom segment translator** implemented as a 1024 × 12-bit
 descriptor RAM, sitting between the CPU's logical address bus and physical
-memory. It is **not** a Motorola PMMU and uses **512-byte pages** (not 4 KB).
+memory. It is **not** a Motorola PMMU and uses **512-byte pages** (not 4 KB):
+128 segments of up to 128 KB each, four context tables with a live
+supervisor-to-context-0 override, and a three-way space decode (main memory,
+I/O, special I/O). The full register file (SOR and SLR, descriptor addressing
+in special-I/O space, read-back and reset state), the behaviour (translation,
+limit check, space decode, context selection, START mode, violations) and the
+programming model (the Boot ROM's bring-up, the OS's System Mapping Table,
+demand loading through the bus-error handler, MacWorks XL) are on the
+[segment MMU](mmu.md) page, §2–§4. The subsections below remain as numbered
+anchors for cross-references and point into that page.
 
 ### 4.1 Logical address decomposition
 
-A 24-bit logical address splits into three fields:
-
-```
- 23                17 16              9 8               0
-+--------------------+-----------------+-----------------+
-|  segment number    | page within seg | byte in page    |
-|   (7 bits, 0-127)  |  (8 bits, 0-255)|  (9 bits)        |
-+--------------------+-----------------+-----------------+
-```
-
-- **Segment number** (bits 23–17): selects one of **128** segments.
-- **Page displacement** (bits 16–9): selects one of up to 256 pages in the
-  segment.
-- **Byte offset** (bits 8–0): the low **9 bits** pass through untranslated
-  (page = **512 bytes**).
-
-A segment is therefore up to 256 × 512 = **128 KB**; the minimum is one 512-byte
-page.
+Bits 23–17 select one of 128 segments, bits 16–9 the page within it (up to
+256), bits 8–0 the byte within a **512-byte page** — so a segment is up to
+256 × 512 = 128 KB. See [mmu.md](mmu.md) §3.1.
 
 ### 4.2 Per-segment descriptors — SOR and SLR
 
-Each segment (per context, §4.5) has two 12-bit registers:
-
-- **SOR — Segment Origin Register.** A 12-bit **physical page number** giving the
-  origin of the segment in physical memory (in units of 512-byte pages). E.g. a
-  segment whose storage begins at physical byte `$002000` has SOR = `$010`.
-- **SLR — Segment Limit Register.** Holds, in 12 bits:
-  - **bits 11–8**: access-control / space-type code (§4.3);
-  - **bits 7–0**: segment **length in pages**, in **two's-complement** form:
-    `$00` = maximum (256 pages = 128 KB), `$FF` = minimum (1 page = 512 bytes).
-    For **stack** segments the sense inverts (`$00` = 1 page, `$FF` = 128 KB) and
-    the segment grows downward.
+Each segment, per context, carries a 12-bit **SOR** (the segment's physical
+origin page) and a 12-bit **SLR** (bits 11–8 the access/space code, bits 7–0
+the length in pages, two's-complement — sense inverted for stack segments).
+Register detail: [mmu.md](mmu.md) §2.2–2.3.
 
 ### 4.3 Access-control / space-type bits (SLR bits 11–8)
 
-| 11 10 9 8 | Meaning |
-| --- | --- |
-| `0 1 0 0` | main memory, read-only, **stack** |
-| `0 1 0 1` | main memory, read-only |
-| `0 1 1 0` | main memory, read/write, **stack** |
-| `0 1 1 1` | main memory, read/write |
-| `1 0 0 1` | **I/O space** |
-| `1 1 0 0` | **page invalid** (segment not present) |
-| `1 1 1 1` | **special-I/O space** (boot ROM + MMU registers) |
-
-All other codes are invalid/unpredictable. The decoded hardware flags are
-**MEM** (memory), **IO**, **RO** (read-only — inhibits writes), and **STK**
-(stack — inverts the limit sense).
+The four code bits select main memory (read-only or read/write, each plain or
+stack), I/O space, an invalid page, or special-I/O space, and decode to the
+MEM / IO / RO / STK flags. See [mmu.md](mmu.md) §2.3 and §3.3.
 
 ### 4.4 Translation and limit check
 
-```
-physical_page = SOR + page_displacement      ; (bits 16-9), high nibble of sum forced to 0
-physical_addr = (physical_page << 9) | (logical bits 8-0)
-```
-
-In parallel, the MMU performs a **limit check**: the page displacement is
-compared against the SLR length. If the page lies outside the segment (an
-overflow the hardware calls **ACCK**), the access is terminated — **CAS is
-suppressed so no memory cycle occurs** — and a Bus Error is raised to the CPU.
-For stack segments the carry sense is inverted (the segment is valid from the
-top downward).
+The physical page is SOR + page displacement (high nibble of the sum forced
+to zero); in parallel the displacement is limit-checked against the SLR, an
+out-of-limit access suppressing CAS — no memory cycle — and raising a Bus
+Error, with the carry sense inverted for stack segments. See
+[mmu.md](mmu.md) §3.1–3.2.
 
 ### 4.5 Contexts (SEG1 / SEG2)
 
-The descriptor RAM holds **four** complete 128-segment tables (4 × 128 × 2
-12-bit words = 1024 words). The active context is selected by two latch bits:
-
-| SEG2 | SEG1 | Context |
-| --- | --- | --- |
-| 0 | 0 | 0 (OS) |
-| 0 | 1 | 1 (user) |
-| 1 | 0 | 2 (user) |
-| 1 | 1 | 3 (user) |
-
-- **Supervisor mode (FC2 asserted) forces context 0** regardless of the latch
-  bits. A trap from a user process into the OS therefore auto-switches to the OS
-  segment table. **Emulation note:** the effective context follows FC2 *live*,
-  so an emulator must re-select the active translation (supervisor → context 0;
-  user → the latch context) on **every** supervisor-bit change — not only on
-  exception entry but also on `RTE` / `MOVE`/`ANDI`-to-SR back to user. If the
-  active context is only switched on exception *entry*, user code resumed by an
-  `RTE` keeps running through the OS (context-0) view, and a user process's
-  private segment (mapped in its own context, e.g. `SYSTEM.SHELL`'s code) faults
-  forever. OS/system code segments live in context 0; a user process reaches them
-  through the inter-segment jump table (§2), which faults them into the process's
-  own context on first use via the demand-load path (§4.8).
-- The latch bits are set/reset by *strobing* (a read or write, value ignored)
-  addresses in the CPU-board control block (§6.1):
-
-| Strobe address | Effect |
-| --- | --- |
-| `$00E008` | reset SEG1 |
-| `$00E00A` | set SEG1 |
-| `$00E00C` | reset SEG2 |
-| `$00E00E` | set SEG2 |
+Four 128-segment tables selected by the SEG1/SEG2 latch bits (strobed at
+`$00E008`–`$00E00E`, §6.1); supervisor mode (FC2) forces context 0 live, on
+every supervisor-bit change. See [mmu.md](mmu.md) §3.4.
 
 ### 4.6 Special-I/O space and MMU-register addressing
 
-The MMU descriptor registers and the boot ROM both live in **special-I/O
-space** (SLR code `1111`). Special-I/O accesses are further decoded by logical
-address bits 15/16 into `ROM/` (boot ROM) vs `MMUIO/` (descriptor RAM).
-
-An MMU descriptor is written through special-I/O space with an address word of
-the form:
-
-```
- SSSSSSS 010 ............ B ...
- (bits 23-17 = segment #)        B = 1 -> write SOR ; B = 0 -> write SLR
-```
-
-where `S` is the segment number whose descriptor is being written and the
-SOR-vs-SLR selection is driven by a low address line. The boot ROM addresses the
-ROM directly in special-I/O space (bits 1–13 = ROM address, not MMU-translated).
+Descriptors are written through special-I/O space at address words encoding
+the segment number, with a low address line selecting SOR vs SLR; the boot ROM
+is addressed directly in the same space. See [mmu.md](mmu.md) §2.4.
 
 ### 4.7 START / setup mode (MMU bypass at reset)
 
-At power-on the descriptor RAM is undefined, so the hardware comes up in **START
-(setup) mode**:
-
-- START is asserted automatically at power-on, and can be set/cleared by
-  software via the **SETUP** strobe (`$00E010` reset / `$00E012` set, §6.1).
-- While START is set, **logical address bit 14 is a switch**:
-  - bit 14 = 0 → the access is satisfied from the **boot ROM in special-I/O
-    space**, MMU bypassed (this is how the CPU fetches the reset vector and runs
-    the ROM before the MMU is programmed);
-  - bit 14 = 1 → the access goes **through the MMU** (so RAM-resident code can
-    run while START is still set).
-- The boot ROM programs the descriptor RAM (mapping physical RAM contiguous from
-  0, and installing segment 126 → I/O, segment 127 → special-I/O) and then
-  clears START to enable normal translation.
+While START is set (the SETUP strobes `$00E010`/`$00E012`, §6.1 — note the
+documented polarity errata), logical address bit 14 switches each access
+between the boot ROM in special-I/O space (MMU bypassed) and normal
+translation. See [mmu.md](mmu.md) §3.5 and §4.1.
 
 ### 4.8 Violation behavior (emulation)
 
-An out-of-limit access, an access to an invalid segment (`1100`), or a write to
-a read-only segment terminates the bus cycle with CAS suppressed and raises a
-68000 **Bus Error** (exception vector `$000008`). The OS's bus-error handler
-reads the Status Register (§7.4) and the Memory Error Address latch (§7.3) to
-classify the fault. An emulator should route these through the same bus-error
-path used for genuine timeouts.
-
-**Demand-loaded segments (the OS's main use of the Bus Error).** Code and data
-segments are *demand-loaded* on first reference: the OS leaves a not-yet-resident
-segment's descriptor **invalid** (`1100`), so a `JMP`/`JSR`/`RTS` into it — or a
-data access to it — faults. The Lisa OS `BUS_ERR` handler
-(`OS/SOURCE-EXCEPASM.TEXT`) recovers it, and the contract on the **MC68000
-group-0 stack frame** is exact — an emulator's 68000 *must* push the genuine
-68000 group-0 frame (not a 68010+/68030 long frame):
-
-```
-+$00  special status word  (R/W, I/N, function-code bits)
-+$02  access address (long) = the faulting logical address  ("BADADDR")
-+$06  instruction register (word)                            ("B1/B2")
-+$08  status register (word)
-+$0A  program counter (long)                                 ("PCX")
-```
-
-The handler:
-
-1. reads the **instruction register** (`+$06`) — on a real 68000 this holds the
-   opcode of the instruction *executing* when the prefetch faulted, i.e. the
-   control-transfer op that branched into the absent segment (`JMP.L $4EF9`,
-   `JSR.L $4EB9`, `JMP/JSR (An)`, `RTS $4E75`, `RTE $4E73`, `TST`). It uses this
-   to recognise a **recoverable code-segment fault** vs. a fatal one
-   (`e_hardsyscode`);
-2. reads the **access address** (`+$02`) to find which segment/offset to load;
-3. **backs the saved PC up** by a per-opcode amount (the prefetch advance: `−2`
-   for `JMP.L`/`JMP(An)`/`JSR(An)`/`RTS`, `−6` for `JSR.L`, `−4` for `JSR d(An)`;
-   `RTE` resumes at the access address). For `JMP`/`JSR` (no stack side effect)
-   this re-enters at the fault target, so the emulator's saved PC may be the
-   target + advance. **`RTS` is special:** the handler *also* does `USP −= 4`
-   (undo the pop) and then `−2`, i.e. it **re-executes the RTS** so the pop
-   re-runs after the segment is in. The saved PC therefore must point at the
-   **`RTS` instruction itself**, not at its (absent-segment) target — otherwise
-   the OS backs `USP` up by 4 without the pop re-running and the user stack is
-   left one long too low (a stale word then surfaces as the next routine's first
-   argument);
-4. validates and maps the segment (`CHECK_CS`/`MAP_SEGMENT`, demand-reading the
-   code from disk if not in memory) and enters the scheduler / `RTE`s to retry.
-
-Emulator requirements this implies: record the address of the instruction being
-decoded each cycle (for `+$0A`/`+$02` and the fetch-fault PC match); on a
-code-fetch fault, push the **opcode of the branching instruction** (kept from the
-last successful fetch — the faulting fetch must *not* overwrite it) as `+$06` and
-advance the saved PC by the per-opcode prefetch amount — except for `RTS`, whose
-saved PC is the **`RTS` instruction's own address** (latched alongside the kept
-opcode) so the OS re-executes it; and keep the PC 24-bit (§2) so `+$02` (24-bit)
-matches the fetch PC. Getting any of these wrong makes the OS mis-classify the
-fault (`e_hardsyscode`/line-F) instead of demand-loading, or corrupt the user
-stack on an `RTS`-into-absent-segment recovery.
-
-**Data faults must be delivered, not only fetch faults.** An instruction-fetch
-fault is self-announcing — the unmapped page reads back as `$FFFF`, decodes as a
-line-F opcode, and is delivered the moment that opcode is executed. A **data**
-read/write fault (a write to a read-only segment, or a demand-loaded data
-segment) has no such inline trigger: the memory layer can only flag it, so the
-emulator **must defer the group-0 bus error and deliver it at instruction
-completion** — exactly where a 68030 delivers its deferred bus error, and a step
-the 68000 decode loop is just as responsible for. Dropping it is not benign: the
-pending-fault flag that `−(A7)`/`LINK`/`MOVEM`/`JSR` consult (to roll back a
-push whose store faulted mid-instruction) stays set, so every later push
-silently skips its stack-pointer update and the supervisor stack corrupts — which
-surfaces much later as a wild inter-segment jump, not as the original write
-fault. The OS relies on data faults for write-protect detection and demand-loaded
-data segments (e.g. the installer's `Read_PMem` writes its status through a VAR
-pointer that may target a not-yet-resident or read-only segment).
+An out-of-limit access, an access to an invalid segment, or a write to a
+read-only segment suppresses CAS and raises a 68000 Bus Error; the OS recovers
+demand-loaded segments through that fault, so the group-0 stack frame's
+instruction register, faulting address and per-opcode saved-PC back-up
+(including the RTS re-execution rule) are load-bearing, and data faults must
+be delivered at instruction completion, not only fetch faults. The full
+contract is on [mmu.md](mmu.md) §3.7 and §4.6.
 
 ---
 
 ## 5. The Memory Management Unit — emulation seam
 
 For an emulator built around a logical→physical translation step, the Lisa MMU
-slots in where a Motorola PMMU would, with three differences to honor:
-
-1. **Page size is 512 bytes**, not 4 KB. A per-page host-pointer cache must be
-   indexed at 512-byte granularity (or translations cached per contiguous
-   segment run, since one SOR maps a whole contiguous page run affinely).
-2. **The translator must return a space tag** (main / I/O / special-I/O) from
-   the SLR access bits, so the access is routed to RAM, the device decoder, or
-   the ROM/MMU-register decoder respectively.
-3. **Four context tables** plus the supervisor→context-0 override, instead of
-   the PMMU's supervisor/user split.
-
-Descriptor writes (§4.6), the context/START strobes (§6.1), and the special-I/O
-decode all belong to the MMU model; the rest of the machine only wires the
-strobe addresses to it.
+slots in where a Motorola PMMU would, with three differences to honor: **page
+size is 512 bytes**, not 4 KB; the translator must return a **space tag**
+(main / I/O / special-I/O) from the SLR access bits so the access is routed to
+RAM, the device decoder, or the ROM/MMU-register decoder; and there are **four
+context tables** plus the supervisor-to-context-0 override instead of the
+PMMU's supervisor/user split. The space flags and context behaviour are on
+[mmu.md](mmu.md) §3.3–3.4, and the page-size, fault-delivery and read-back
+consequences an implementation must honor are collected in its §5 (Quirks &
+errata). Descriptor writes (§4.6), the context/START strobes (§6.1), and the
+special-I/O decode all belong to the MMU model; the rest of the machine only
+wires the strobe addresses to it.
 
 ---
 
@@ -601,54 +454,28 @@ Read by the bus-error handler to classify a fault:
 
 ## 8. Video
 
-- **Display:** **720 × 364** pixels, 1 bit per pixel (black/white), ~60 Hz, on
-  the stock Lisa 2. The video state machine scans 379 total lines of 720 pixels,
-  of which 364 are displayed. The **Macintosh XL** screen-modification kit
-  instead uses a **608**-wide square-pixel raster (76-byte rows); the framebuffer
-  the Finder paints is **608 × 431** (nominal Screen-Kit raster 608×432 — see the
-  model note above). Same framebuffer page, different scan dimensions.
-- **Framebuffer:** a **32 KB page in main RAM** (720 × 364 / 8 = 32,760 bytes,
-  rounded to a 32 KB page). Bit ordering is MSB-first (leftmost pixel = bit 7 of
-  the byte). The last displayed byte's least-significant bit must be 1 so retrace
-  shows black.
-- **Screen base:** set by the **Video Address Latch** at `$00E800` (§6.2), which
-  supplies address bits A15–A20 — i.e. the framebuffer is relocatable to any
-  32 KB-aligned region of physical RAM. This is an **un-translated physical**
-  address (the video fetch does not go through the MMU). An emulator reads this
-  latch to locate the framebuffer each frame.
-- **Vertical-retrace (VBL) interrupt:** generated by the video state machine
-  ("VTIR"), at **IPL 1**. Enabled/disabled via the strobes `$00E018` (VTIRDIS,
-  off) / `$00E01A` (VTIRENB, on) (§6.1). The retrace status is **bit 2 of the
-  Status Register** (`$00F800`) — **active-low**, asserted (= 0) for the ~90 µs
-  retrace window each frame; see §7.4 for the cycle-accurate model and the
-  VTIRDIS-clears-the-latch behaviour the ROM's VIDTST depends on.
-  - **The VBL interrupt is EDGE-triggered and LATCHED — model it as a held level,
-    NOT a fixed-width pulse.** VTIR fires once at the rising edge into each retrace
-    and stays asserted at IPL 1 until the CPU services it (a latched autovector
-    on real hardware). This matters
-    because the kernel is routinely interrupt-masked through the *entire* ~90 µs
-    retrace window: a pulse that de-asserted at the window's end would be **lost**
-    whenever the kernel was masked across it, and retrace-paced OS work would
-    stall. (Concrete symptom: after mounting the boot volume the OS resumes a
-    process that expects a *pending* VBL to drive the install-shell segment load;
-    with a dropped VBL it ran ahead into a non-resident segment and the boot
-    derailed.) The emulator (`lisa.c`) therefore asserts the level-1 VBL source at
-    the retrace edge and holds it until the OS reads the Status Register — the
-    level-1 handler's first action, which identifies *and* acknowledges the VBL
-    (`lisa_vbl_ack` / `lisa_mmu_set_vbl_ack`); the old 458-cycle auto-drop is gone.
-- **Contrast:** software-controlled. A value written to VIA2's A-port is latched
-  in a 74C174 and summed to a DC level driving the CRT (output ~+2 V full black
-  to ~+7 V full white). This is cosmetic; an emulator may model it as a stored
-  level. Because the contrast DAC shares VIA2 with the hard disk, drivers
-  bracket disk I/O so the two uses don't collide.
+The Lisa's display is a **720 × 364**, 1-bit, ~60 Hz raster (379 scanned
+lines, 364 displayed, 45 words per line) generated by a discrete video state
+machine that scans a **32 KB page in main RAM**, located by the write-only
+**Video Address Latch** at `$00E800` (an un-translated physical address —
+bits 0–5 hold A15–A20) and relocatable to any 32 KB-aligned page. The
+vertical-retrace (VBL) interrupt fires at **IPL 1**, edge-triggered and
+latched until software acknowledges it, and is enabled/disabled by the
+`$00E018`/`$00E01A` strobes; the retrace status is Status Register bit 2
+(`$00F800`, active-low). The full register file (latch, strobes, status and
+error bits, contrast latch), the interleaved video memory cycle, the state
+machine, the framebuffer layout and the driver sequences the Boot ROM, the
+Lisa OS and MacWorks XL actually perform are on the [video](video.md) page,
+§2–§4. The subsection below remains as a numbered anchor and points into
+that page.
 
 ### 8.1 Macintosh XL video
 
-The Macintosh XL screen-mod kit changes the dot clock to make pixels square; the
-displayed bitmap stays 720×364. For frame-accurate emulation only the displayed
-geometry (720×364) and a pixel-aspect flag are needed. (The exact modified dot
-clock is not part of the programming model and does not affect boot or rendering
-correctness.)
+The Macintosh XL screen-modification kit rewires the horizontal timing to a
+**608-pixel square-pixel raster** — 76-byte rows, with the Finder actually
+painting 608 × 431 out of the same 32 KB page — leaving the framebuffer page,
+the base latch and the VBL unchanged; only the displayed geometry and the
+pixel aspect differ. See [video.md](video.md) §1.4 and §4.7.
 
 ---
 
@@ -758,220 +585,59 @@ VIA2 aggregates to **IPL 1** (shared with floppy and video).
 
 ## 11. COPS Microcontroller (Keyboard / Mouse / RTC / Soft-Power)
 
-A National Semiconductor **COP421-class** slave microcontroller services four
-peripherals through the A-port of VIA1: the keyboard, the mouse, the real-time
-clock, and software power control. It runs from the standby/battery supply and is
-**always powered** (it keeps the clock running and can power the machine on/off);
-it stops only if the battery is exhausted.
-
-The host writes a **command byte** to VIA1 ORA (`$00DD83`) and reads **response
-bytes** from the same register. Keyboard, mouse, clock, and reset events arrive
-as response bytes; the COPS raises VIA1's interrupt (IPL 2).
-
-**Send handshake — CRDY (VIA1 PB6).** Port A is shared (bidirectional), so the
-host must hand a command byte to the COPS in sync with the COPS's bus access.
-`CRDY` (VIA1 **PB6**, COPS-driven) is a **free-running ready/busy line**: the
-COP421 toggles it continuously as it cycles through its internal scan loop, not
-a static level. To send, the host (a) presents the byte on ORA, (b) spins until
-it sees a CRDY **edge** to a ready phase, (c) drives port A (`DDRA = $FF`) to
-clock the byte into the COPS, then (d) waits for the next CRDY edge and releases
-`DDRA`. The rev-H boot ROM's `COPSCMD` and MacWorks XL's own driver both
-synchronise to CRDY *edges* this way — so an emulator must **toggle CRDY
-continuously** (e.g. a steady period well under the senders' ~10 ms per-edge
-timeout); holding it at a fixed level lets one sender through but hangs the
-other while it waits for an edge that never comes.
+A National Semiconductor **COP421-class** slave microcontroller (two of
+them — one on the I/O board facing the 68000, one inside the keyboard)
+services four peripherals through the A-port of VIA1: the keyboard, the
+mouse, the real-time clock, and software power control. It runs from the
+standby/battery supply and is **always powered** (it keeps the clock running
+and can power the machine on/off); the host writes a **command byte** to
+VIA1 ORA (`$00DD83`) and reads a **response stream** from the same register,
+with every queued response byte raising VIA1's interrupt (IPL 2). The full
+command byte, the response packets (key events, reset/status, keyboard
+identification, mouse), the scan-loop and power behaviour, and the driver
+sequences the Boot ROM and the Lisa OS actually perform are on the
+[COPS](cops.md) page, §2–§4. The subsections below remain as numbered anchors
+for cross-references and point into that page.
 
 ### 11.1 Command byte format (written to VIA1 port A)
 
-| Bits 7…0 | Function |
-| --- | --- |
-| `0000 0000` | turn I/O port on |
-| `0000 0001` | turn I/O port off |
-| `0000 0010` | read clock data |
-| `0001 nnnn` | write nibble `nnnn` to the clock |
-| `0010 spmm` | set clock modes: `s` = enable clock-set mode; **`p` = power on(1)/off(0)**; `mm` = 00 clock/timer disable, 01 timer disable, 10 timer-underflow interrupt, 11 timer-underflow power-on |
-| `0101 nnnn` | set NMI-key high nibble |
-| `0110 nnnn` | set NMI-key low nibble |
-| `1xxx xxxx` | no operation |
+The command byte encodes I/O-port on/off, clock read / write-nibble /
+set-modes (including the power bit and the timer modes) and the NMI-key
+nibbles; `1xxx xxxx` is a no-op. See [cops.md](cops.md) §2.2.
 
 ### 11.2 Reset / status response codes
 
-A reset/status response is a `$80` lead-in byte followed by a code byte:
-
-| Code | Meaning |
-| --- | --- |
-| `$FF` | keyboard-COPS self-test failure |
-| `$FE` | I/O-board-COPS self-test failure |
-| `$FD` | keyboard unplugged |
-| `$FC` | clock timer interrupt |
-| `$FB` | **soft power-off switch pressed** |
-| `$F0–$FA` | reserved |
-| `$Ey` | clock data follows (5 bytes; `y` = year nibble) |
+A `$80` lead-in byte followed by a code byte: self-test failures, keyboard
+unplugged, clock-timer interrupt, the soft power-off switch (`$FB`), or a
+clock-data marker (`$Ey`). See [cops.md](cops.md) §2.4.
 
 ### 11.3 Keyboard
 
-Key events are reported as bytes of the form `d rrr nnnn`, where `d` = direction
-(1 = key down, 0 = key up) and `rrr nnnn` selects the key from the scan matrix.
-The keyboard supports N-key rollover. Any key can be programmed (via the
-`0101`/`0110` commands) to raise the keyboard-reset NMI.
-
-Keyboard **layout/legend** IDs (selected by the keyboard hardware, reported to
-software): `$0F` = old US layout, `$3E` = Dvorak, `$3F` = final US layout (plus
-several international layouts). An emulator maps host key events to Lisa key
-codes through the layout table for the configured layout.
-
-#### The final-US key code table
-
-Transcribed from the boot ROM's own `AsciiTable` (the *Lisa Boot ROM*
-source, `RM248.G.TEXT`),
-96 bytes covering key codes `$20`–`$7F`. The indexing law is in
-*Lisa Boot ROM Asm Listing*, routine `KeyToAscii`: `ANDI #$007F,D1` then
-`SUBI #32,D1` — so the first table byte is key code `$20`, and bit 7 is the
-direction bit rather than part of the index.
-
-|      | `+0`  | `+1` | `+2` | `+3` | `+4` | `+5` | `+6` | `+7` |
-| ---- | ----- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
-| `$20`| Clear | Pad&nbsp;- | Left | Right | Pad&nbsp;7 | Pad&nbsp;8 | Pad&nbsp;9 | Up |
-| `$28`| Pad&nbsp;4 | Pad&nbsp;5 | Pad&nbsp;6 | Down | Pad&nbsp;. | Pad&nbsp;2 | Pad&nbsp;3 | Enter |
-| `$30`| —     | —    | —    | —    | —    | —    | —    | —    |
-| `$38`| —     | —    | —    | —    | —    | —    | —    | —    |
-| `$40`| `-`   | `=`  | —    | —    | `P`  | BkSp | —    | —    |
-| `$48`| Return | Pad&nbsp;0 | —  | —    | `/`  | Pad&nbsp;1 | — | —    |
-| `$50`| `9`   | `0`  | `U`  | `I`  | `J`  | `K`  | `[`  | `]`  |
-| `$58`| `M`   | `L`  | `;`  | `'`  | Space | `,` | `.`  | `O`  |
-| `$60`| `E`   | `6`  | `7`  | `8`  | `5`  | `R`  | `T`  | `Y`  |
-| `$68`| Option | `F` | `G`  | `H`  | `V`  | `C`  | `B`  | `N`  |
-| `$70`| `A`   | `2`  | `3`  | `4`  | `1`  | `Q`  | `S`  | `W`  |
-| `$78`| Tab   | `Z`  | `X`  | `D`  | —    | Alpha&nbsp;Lock | Shift | Command |
-
-The ROM's table stores `$00` for keys with no ASCII form (Option, Tab, Alpha
-Lock, Shift, Command) and for unused slots; those are named above rather than
-derived. Its own comment notes it "assumes alpha-lock so upper case only",
-which is why there are no separate lower-case codes.
-
-Two entries to check a transcription against: `$EB` is `H` held down (`$6B` with
-bit 7 set) — the boot menu's "boot from ProFile" key — and `$F2` is `3`.
-
-`src/machines/lisa/lisa_keymap.c` carries this table, and beside it the
-**ADB keycode → Lisa keycode** map the substrate actually uses, so
-`keyboard.press("h")` and `keyboard.down "shift"` work on the Lisa the way they
-do on a Mac. Key identity across the model is the ADB raw keycode
-(`machine_profile.h`'s `input_key`) — names are resolved once, above the
-substrate, and never reach a machine.
-
-The ROM's **row comments** are what make that map writable: they name the
-physical key behind each code, including which are on the keypad. The ASCII
-column alone cannot, because keypad `5` and main-row `5` both produce `'5'`.
-An earlier resolver inverted that column by character and so sent
-`keyboard.press "5"` to the keypad; `tests/unit/suites/lisa_keymap` now checks
-the map against the ROM table in both directions, and pins the keypad split
-for all ten digits.
-
-Keys one keyboard has and the other does not are **refused, not substituted** —
-the Lisa has no Control and no function keys, no backquote and no backslash;
-the ADB keypad's `*`, `+`, `/` and `=` have no Lisa equivalent.
-
-For the rows that drive the COPS wire rather than press a key —
-the boot menu and the Xenix installer — `machine.adb.keyboard.raw 0xC8` sends
-that byte exactly as given, direction bit and all. No Mac implements it.
+Key events are bytes of the form `d rrr nnnn` (direction bit plus
+scan-matrix code) with N-key rollover; any key can be programmed to raise the
+keyboard-reset NMI, and the keyboard reports a layout/legend ID byte. The key
+codes, layout IDs and the boot ROM's final-US ASCII table are on
+[cops.md](cops.md) §2.3, §2.5, §3.3 and §4.7.
 
 ### 11.4 Mouse
 
-The mouse is enabled with a command of the form `#111 ennn`, where `e` enables
-mouse interrupts and `nnn` selects the report interval (`nnn × 4 ms`). Mouse
-movement is reported as **three response bytes**:
-
-```
-byte 0 = $00     ; "mouse data follows" marker
-byte 1 = dx      ; signed change in X (-127..+127)
-byte 2 = dy      ; signed change in Y (-127..+127)
-```
-
-Deltas **accumulate** in the COPS until the host reads them, then reset. The
-mouse **button** is delivered as a key code `d000 0110` (`d` = 1 pressed, 0
-released). Plugged/unplugged status arrives as `1000 0111` / `0000 0111`.
-
-Unlike the Macintosh — whose CPU reads the mouse's raw **quadrature** off the
-VIA/SCC and counts it in software — the Lisa mouse plugs into the COPS, which
-polls the pulse edges through a multiplexer and counts them itself (HM §6.6.3),
-handing the CPU these **cooked signed deltas**. The CPU never sees quadrature, so
-host input injection feeds `dx`/`dy` directly to the COPS report path (see
-[cops.md](cops.md)), not quadrature pulses.
-
-**Absolute positioning (`mouse.move x y "global"`).** Because the mouse is relative
-and the OS scales the deltas, the emulator can't place the cursor with one report.
-Instead the COPS runs a **closed-loop "warp"** (`cops_set_warp`): on each mouse
-report it reads the OS's live on-screen cursor position and emits a corrective
-delta toward the target pixel, converging in a handful of reports — the standard
-closed-loop technique for positioning a relative mouse. Two LOS facts make it exact:
-
-* The live cursor is in OS globals **`$CC00F0` = X, `$CC00F2` = Y** (word, signed),
-  written by the cursor tracker in **supervisor** mode (context 0) and re-asserted
-  every VBL — so a supervisor read always returns the current cursor. (These are
-  *not* the `$486`/`$488` globals other references mention; those are a separate copy
-  that stays stale in this model.)
-* The OS scales each COPS delta to screen pixels by a fixed per-axis factor —
-  **X × 3/2** (the 720×364 non-square pixel aspect) and **Y × 1** — linearly, with no
-  acceleration threshold. So to close an error `(errX, errY)` the warp injects
-  `dx = errX × 2/3`, `dy = errY`; the loop re-reads each report, so integer-division
-  residue self-corrects.
-
-A `mouse.click` is then the mouse-button keycode, which the OS hit-tests against the
-cursor it has tracked onto the target. (The OS does not blit the cursor sprite on the
-idle Install menu, so a menu screenshot is cursor-less even though the position is
-tracked; the cursor becomes visible once a dialog opens.)
+Mouse reports are three response bytes — a `$00` marker, then signed `dx` and
+`dy` deltas that accumulate in the COPS until read; the button arrives as a
+key code. The COPS counts the motion pulses itself, so the CPU sees cooked
+deltas, never quadrature. See [cops.md](cops.md) §2.6, §3.4 and §4.9.
 
 ### 11.5 Real-time clock
 
-Resolution is 1/10 second with a 16-year span. The clock timer can interrupt
-and/or power the machine on after a programmed interval.
-
-**Reading** (`0000 0010`) returns `$80` then six bytes — an `$Ey` marker
-carrying the year nibble, then five packed BCD bytes. `READCLK`
-(`RM248.M.TEXT`) reads exactly that, and parameter memory reserves
-`$1BA-1BF : Clock setting (Ey,dd,dh,hm,ms,st)` (`RM248.E.TEXT`). `DSPCLK`
-(`RM248.B.TEXT`) pins the widths by loading `CLKDATA+2` as a longword and
-rotating out 1 day digit, 2 hour, 2 minute and 2 second:
-
-| byte | nibbles | |
-|---|---|---|
-| 0 | `E` `y` | marker, **year** |
-| 1 | `d` `d` | day-of-year hundreds, tens |
-| 2 | `d` `h` | day units, hour tens |
-| 3 | `h` `m` | hour units, minute tens |
-| 4 | `m` `s` | minute units, second tens |
-| 5 | `s` `t` | second units, **tenths** |
-
-Eleven digits, which is where the "1/10 second, 16-year span" comes from.
-
-**Setting** is `$2C`, then sixteen `0001 nnnn` one-nibble commands MSB-first
-(`TODSET`), then `$25` to enable. Sixteen and not eleven because the first
-five digits are the **alarm**: the burn-in code sends `SET1` ("initial
-alarm/year/dd setting") and `SET2` = `$10000000`, commented as "day=01, all
-other values=0". That places the clock's eleven digits contiguously from
-digit 5, which is the consistency check — the alarm width itself is inferred
-from what is left over, not stated by a source.
-
-**The year nibble is anchored at 1980**, giving 1980–1995, and the Office
-System enforces a floor of 1981. That anchor is *not* in any source in this
-tree — the ROM never displays or validates a year — and is recorded as a
-project determination.
-
-One consequence: a present-day host clock cannot be represented, so unlike
-every other machine the Lisa does **not** seed from the wall clock. It powers
-up at a fixed **1 January 1984**, inside the usable window and the year the
-Lisa 2 shipped, which also makes Lisa rows reproducible without pinning
-anything. Until 2026-09-21 the model answered the read with five zero bytes,
-which is not "unset" but impossible — day-of-year is 1-based and year 0 is
-1980, below the floor — so Lisa Office System opened a "clock/calendar is not
-set properly" note on every boot and two integration rows dismissed it by
-clicking OK.
+Resolution is 1/10 second with a 16-year span (the year nibble anchored at
+1980); the timer can interrupt and/or power the machine on after a programmed
+interval. The digit layout and the read and set sequences are on
+[cops.md](cops.md) §3.5 and §4.4.
 
 ### 11.6 Soft power
 
-Pressing the front power switch while running delivers reset code `$FB`; software
-performs cleanup and then powers the machine off by issuing a `0010 spmm` command
-with `p = 0`. Power is otherwise only removed by unplugging.
+The power switch while running delivers reset code `$FB`; software performs
+cleanup and powers the machine off with a `0010 spmm` command with `p = 0`.
+The power-on/off sequencing is on [cops.md](cops.md) §3.6 and §4.10.
 
 ---
 
@@ -989,155 +655,89 @@ and let the handler poll.
 
 The Lisa floppy controller is an **intelligent coprocessor** (a 6504A
 microcomputer with 4 KB of private program ROM and a **1 KB buffer RAM shared
-with the 68000**), *not* an Apple IWM. The 68000 issues high-level commands by
-writing a command block into the shared RAM; the coprocessor performs the
-sector-level transfer and returns logical 512-byte sectors. This means an
-emulator models the controller at the **command-block / logical-sector** level
-and never deals with raw GCR cells.
-
-- **Drive:** one **Sony 400 KB** 3.5″ double-sided mechanism on the Lisa 2 /
-  Macintosh XL. (The Lisa 1's twin Twiggy 5.25″ drives are a different machine
-  and out of scope.)
-- **Shared RAM / registers:** physical `$00C001 – $00C7FF` (logical `$00FCCxxx`).
-- **Interrupt:** **IPL 1**; fires on disk insertion, eject-button press, and
-  command (RWTS) completion. The interrupt-enable mask must be set before the
-  68000 may access the shared floppy RAM (otherwise a bus error results).
+with the 68000** at physical `$00C001`–`$00C7FF`, logical `$00FCCxxx`), *not*
+an Apple IWM: the 68000 writes a command block into the shared RAM, strokes a
+single go byte, and the 6504 performs the whole sector-level operation,
+interrupting at **IPL 1** on disk insertion, eject-button press and command
+completion (the interrupt flag must be enabled before the 68000 may access
+the shared RAM, or a bus error results — see [fdc.md](fdc.md) §3.3). An
+emulator therefore models the controller at the **command-block /
+logical-sector** level and never deals with raw GCR cells; the one drive is a
+Sony 400 KB 3.5″ mechanism on the Lisa 2 / Macintosh XL (the Lisa 1's twin
+Twiggy drives are a different machine and out of scope). The full shared-RAM
+register map, the coprocessor's behaviour (command handshake, interrupts,
+seek, spindle-speed control, GCR sector format, retries) and the driver
+sequences the boot ROM, loader and OS actually perform are on the
+[floppy controller](fdc.md) page, §2–§4; the subsections below remain as
+numbered anchors for cross-references and point into that page.
 
 ### 13.1 Controller commands (written to `$00C001`)
 
-| Value | Command |
-| --- | --- |
-| `$81` | execute RWTS (parameters in the command block at `$00FCC003+`) |
-| `$83` | seek to side/track |
-| `$84` | JSR to a routine at `$00C003` |
-| `$85` | clear interrupt status |
-| `$86` | set interrupt mask |
-| `$87` | clear interrupt mask |
-| `$88` | wait in ROM for cold start |
-| `$89` | loop in ROM |
+The **go byte** command set — `$81` execute RWTS, `$83` seek, `$84` call,
+`$85`–`$87` interrupt status and mask control, `$88`/`$89` diagnostic loops —
+is documented with its handshake on [fdc.md](fdc.md) §3.1 and §4.1.
 
 ### 13.2 RWTS command block (logical `$00FCC003+`)
 
-| Address | Field | Values |
-| --- | --- | --- |
-| `$FCC003` | command | `00` read, `01` write, `02` unclamp, `03` format, `04` verify, `05` format-track, `06` verify-track, `07` read-no-checksum, `08` write-no-checksum |
-| `$FCC005` | drive | `00` = drive 2 (lower), `80` = drive 1 (upper) |
-| `$FCC007` | side | `0x` = side 1, `1x` = side 2 |
-| `$FCC009` | sector | Sony: 0–11 (variable by track zone); Twiggy: 0–22 |
-| `$FCC00B` | track | Sony: 0–79; Twiggy: 0–44 |
-| `$FCC00D` | speed | motor-speed byte. Also used by the `$84` (JSR) call as a host↔coprocessor **busy flag**: the host sets it `$FF`, issues `$84`, and polls it back to `0` for completion. |
-| `$FCC00F` | format-confirm | |
-| `$FCC011` | error status | result code (e.g. `$14` write-protect, `$17` unreadable, `$18` unwritable) |
-| `$FCC013` | disk ID | |
-| `$FCC015` | disk type / geometry | The controller reports the inserted media here, and the boot loader reads it to choose the block→(track,sector) conversion: `00` = Twiggy/FileWare (1702 blocks); non-zero with **bit 0 set** = Sony **400 KB** single-sided (800 blocks); **bit 0 clear** = Sony **800 KB** double-sided (1600 blocks). If this byte is left `0`, the loader assumes the 1702-block Twiggy geometry and computes out-of-range (track, sector) for any block past track 0. |
-
-Sectors are 512 bytes plus tag bytes; the I/O buffer the controller uses is 524
-bytes. The Sony 400 KB format uses Apple's 5-zone variable-speed GCR layout:
-12, 11, 10, 9, 8 sectors per track across the five 16-track zones (50 sectors per
-zone-pair × 16 × 512 = 400 KB). An emulator maps `(track, side, sector)` to a
-linear block offset using that zoning.
+Command, drive, side, sector, track, speed/busy, format-confirm, error,
+disk-ID and disk-type bytes — the disk-type byte selects the Twiggy vs Sony
+block-to-(track, sector) conversion — plus the Sony five-zone GCR zoning. See
+[fdc.md](fdc.md) §2.2, §4.2 and §4.5.
 
 ### 13.3 Status byte (`$00C05F`)
 
-| Bit | Meaning |
-| --- | --- |
-| 0 | drive 1 disk-inserted event |
-| 1 | drive 1 eject button |
-| 2 | drive 1 RWTS complete |
-| 3 | OR of bits 0–2 |
-| 4–6 | same as 0–2 for drive 2 |
-| 7 | OR of bits 4–6 |
-
-These are **latched interrupt-event** bits — set when the event occurs (raising
-FDIR / IPL 1), *not* a live snapshot of drive state. **`CLRSTAT` ($85) clears
-them all.** Software drains pending events by issuing `CLRSTAT` until the byte
-reads `0`; consequently bit 0 is a one-shot *insertion* event, **not** a level
-held while media sits in the drive (a perpetually-set "present" bit would make
-that drain loop spin forever). "Unclamp" ($02 RWTS) ejects the disk — the Lisa
-drive is software-eject, so a host that wants to swap disks unclamps the current
-one and the drive then accepts new media.
-
-> **Drive-1 bit layout — verified (session 9).** Lisa 2's single Sony is **drive 1**
-> (bits 0–3 here; `DRIVE` byte `$80`, `LOWER` in `SOURCE-SONYASM`). A drive-1 RWTS
-> completion therefore sets **bit 2 + bit 3** (`$0C`), which is what `lisa_fdc.c`
-> writes — and both the ROM/loader and the OS Sony driver accept it. (A plausible
-> alternative encoding — drive-1 = bit 6 + bit 7 = `$C0` — was tested and **resets
-> the early ROM/loader boot**, confirming the bits-0–3 layout above is correct for
-> the rev-H ROM. Don't re-try `$C0`.)
+Latched interrupt-event bits per drive (insertion, eject, completion, with
+the OR bits), cleared by the `$85` command — one-shot events, not a live
+drive snapshot, with the single Sony as drive 1 (bits 0–3). See
+[fdc.md](fdc.md) §2.4 and §3.4.
 
 ### 13.4 Controller ROM id and parameter memory
 
-Two further regions live in the controller's shared RAM (battery/standby-backed
-on real hardware), unrelated to the RWTS command block:
-
-- **`$FCC031` — disk-controller ROM id** (the OS's `adr_ioboard`). The boot ROM
-  and OS read this byte to detect the machine type and choose the Twiggy vs Sony
-  floppy driver (§16.2). An emulator that models a Sony machine must set it
-  accordingly; a zeroed value reads as a Lisa 1.
-- **`$FCC181` — parameter memory** (PM): 64 bytes = 32 words holding boot volume,
-  screen contrast, beep volume, mouse settings, `pm_ExtendMem`/`pm_MEM_LOSS`, a
-  device-configuration table, and a checksum. The boot ROM's `CHKPM` validates it
-  with a rotate-sum (add word, `ROL #1`) over the 32 words and treats the block as
-  **valid** when the result is `0`. Note this means an all-zero region (e.g. a
-  freshly `calloc`-ed emulator buffer) checksums as a *valid* all-zero PM with
-  boot volume `0` (= Twiggy drive 1); real cold-boot SRAM is undefined and
-  normally fails the checksum, so the firmware initializes PM to defaults.
+`$FCC031` — the disk-controller ROM id the boot ROM and OS read to detect the
+machine type (§16.2) — and `$FCC181` — the battery-backed 64-byte parameter
+memory, valid when its rotate-sum checksum reads `0`. See [fdc.md](fdc.md)
+§2.3 and §2.6, and [pram.md](pram.md) for the parameter block itself.
 
 ---
 
 ## 14. Parallel Hard Disk — ProFile / Widget (NOT SCSI)
 
-The Lisa hard disk is driven over an 8-bit bidirectional **parallel port** built
-from VIA2 (`$00D901`), with a request/strobe handshake. The external **ProFile**
-(5 MB / 10 MB) and the internal **Widget** (on the Lisa 2/10 and Macintosh XL)
-both use this interface. There is no SCSI hardware on the Lisa.
+The Lisa hard disk is driven over an 8-bit bidirectional **parallel port**
+built from VIA2 (`$00D901`, decoded across the whole `$00D800`–`$00D9FF`
+window — see §10.2), with a request/strobe handshake: the external
+**ProFile** (5 MB / 10 MB) and the internal **Widget** (on the Lisa 2/10 and
+Macintosh XL) both use this interface, and there is no SCSI hardware on the
+Lisa. The host exchanges state bytes over VIA2 port A, sends a 6-byte
+command block (command, 24-bit block number, retry count, sparing
+threshold), and whole **532-byte blocks** (a 20-byte page label plus 512 data
+bytes) stream one byte per `PSTRB/` handshake, interrupting at **IPL 1** via
+CA1/`BSY`. The full connector and 6522 wiring, the handshake primitive, the
+command, status and block formats, sparing and the Widget's system commands,
+and the probe and driver sequences the Boot ROM and the Lisa OS actually
+perform are on the [ProFile/Widget](profile.md) page, §2–§4; the subsections
+below remain as numbered anchors and point into that page.
 
 ### 14.1 6522 pin mapping
 
-| 6522 line | Signal | Direction | Notes |
-| --- | --- | --- | --- |
-| VIA2 PA0–PA7 | data DD0–DD7 | bidirectional | the data byte |
-| VIA2 CA2 | `PSTRB/` (data strobe) | out | strobes each byte |
-| VIA2 CA1 / PB1 | `BSY` | in | wired to both; CA1 is the interrupt edge |
-| VIA2 PB0 | `OCD` (open-cable detect) | in | 1 = disconnected |
-| VIA2 PB3 | `DRW` (read/write direction) | out | 1 = read, 0 = write |
-| VIA2 PB4 | `CMD/` | out | 0 = command phase asserted |
-| VIA2 CB2 | `PARITY/` | in | latched; cleared by any access to the B register |
-| VIA1 PB5 | `DIAGPAR` | out | diagnostic parity (on the keyboard VIA) |
-| VIA1 PB7 | `CRES/` | out | controller reset (on the keyboard VIA) |
-| — | `CHK` | in | check; encoded on the keyboard VIA, raises its own key code |
+VIA2 port A is the data path; port B carries `OCD`, `BSY`, `DEN`, `DRW`,
+`CMD/` and the diagnostic lines, with CA1 = `BSY` (the interrupt edge), CA2 =
+`PSTRB/` and CB2 = parity status; `PRES/` and `CRES/` live on VIA1 (§10.1).
+See [profile.md](profile.md) §2.2.
 
 ### 14.2 Handshake and command protocol
 
-The byte-level handshake (derived from Apple's ProFile/Widget driver):
-
-1. The host asserts `CMD/` true (clear VIA2 PB4) and waits for `BSY`.
-2. Host and controller exchange a standard handshake byte **`$55`** (the
-   controller's "ready" reply).
-3. The host sends a **6-byte command buffer** out VIA2 port A, one byte per
-   handshake, in the direction set by `DRW`:
-
-   | Byte | Field |
-   | --- | --- |
-   | 0 | command: `$00` read, `$01` write, `$02` write-verify (plus controller "system"/spare-table commands on the Widget) |
-   | 1–3 | block number (24-bit, big-endian) |
-   | 4 | retry count |
-   | 5 | sparing threshold |
-
-4. For a read, the controller returns a status phase followed by the data; for a
-   write, the host sends the data after the command. Each transferred byte is
-   gated by the `PSTRB/`/`BSY` handshake.
+Every phase is the same five-beat handshake — assert `CMD/`, read the
+controller's state byte, reply `$55` — followed for I/O by the 6-byte
+command block, its bytes clocked by `PSTRB/` and spaced 14–21 CPU cycles
+apart. See [profile.md](profile.md) §3.1 and §3.2.
 
 ### 14.3 Block format
 
-Each disk block is **532–536 bytes**: 512 bytes of data plus a tag/"pagelabel"
-header (the OS uses a 24-byte distributed-directory record). The driver default
-retry count is 10 and the sparing threshold is 3; the Widget detects its size at
-init, and a ProFile is assumed to be ~9,720 blocks. An emulator backs the disk
-with a flat image and services the command buffer with block-level reads/writes,
-synthesizing the status phase and honoring the handshake timing (consecutive
-port accesses must be spaced to support both 6522 clock rates — roughly ≥ 14
-68000 cycles apart).
+Each block is 532 bytes on the interface — a 20-byte page-label header plus
+512 data bytes, label-first on the ProFile — which the OS expands into its
+24-byte pagelabel/distributed-directory record; the Widget reports its size
+at init and a ProFile is assumed to be ~9,720 blocks. See
+[profile.md](profile.md) §3.6, §3.8 and §3.3.
 
 ---
 
