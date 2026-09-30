@@ -20,4 +20,5 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c
+USE_SOURCE_LAYER := 1
 include ../../common.mk

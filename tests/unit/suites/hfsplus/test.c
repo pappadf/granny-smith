@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 // HFS Plus catalog-walker unit tests.
 //
-// image_hfs.c's only dependency on the storage stack is disk_read_data()
-// over an opaque image_t, so we back it with an in-memory buffer holding a
+// image_hfs.c reads an image_t through image_source(), whose only storage
+// entry points are disk_read_data() and disk_size(), so we back them with an in-memory buffer holding a
 // hand-built HFS+ volume (per Apple TN1150) and drive the public API
 // directly — no real image/storage layer required.  The fixture is a
 // minimal but spec-faithful volume:
@@ -42,6 +42,12 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
         return 0; // short read
     memcpy(buf, g_img + offset, size);
     return size;
+}
+
+// The image's size: the whole fixture.
+size_t disk_size(image_t *disk) {
+    (void)disk;
+    return IMG_SIZE;
 }
 
 uint32_t disk_block_size(image_t *disk) {
