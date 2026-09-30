@@ -77,6 +77,9 @@
     await whenModuleReady();
     invalidate('');
     roots = await rootRows();
+    // Sections start open, except Aliases and Language; a section the user
+    // collapsed stays collapsed across reloads.
+    for (const r of roots) if (!(r.key in expanded)) expanded[r.key] = r.key.startsWith('section:');
     // Re-read every level still open.
     const open = Object.keys(expanded).filter((k) => expanded[k]);
     children = {};
@@ -84,6 +87,31 @@
       const row = findRow(k);
       if (row) children[k] = await expand(row);
     }
+  }
+
+  // The section holding the root member `name` (Commands or a domain), with
+  // its rows loaded; opened when `openIt`.
+  async function sectionOf(name: string, openIt: boolean): Promise<BrowserRow | undefined> {
+    for (const s of roots) {
+      if (!s.key.startsWith('section:')) continue;
+      if (!children[s.key]) children[s.key] = await expand(s);
+      if (children[s.key].some((r) => r.name === name)) {
+        if (openIt) await open(s);
+        return s;
+      }
+    }
+    return undefined;
+  }
+
+  // Every root member, across the Commands and domain sections.
+  async function rootMembers(): Promise<BrowserRow[]> {
+    const out: BrowserRow[] = [];
+    for (const s of roots) {
+      if (!s.key.startsWith('section:')) continue;
+      if (!children[s.key]) children[s.key] = await expand(s);
+      out.push(...children[s.key]);
+    }
+    return out;
   }
 
   // Re-read the open levels at or under `prefix`.
@@ -151,9 +179,11 @@
     const out: FlatRow[] = [];
     const walk = (rows: BrowserRow[], depth: number) => {
       for (const row of rows) {
-        if (row.kind !== 'divider' && !visible(row)) continue;
+        if (!visible(row)) continue;
         out.push({ row, depth });
-        if (row.expandable && isOpen(row) && children[row.key]) walk(children[row.key], depth + 1);
+        // A section's rows sit at its own indent: it is a headline.
+        if (row.expandable && isOpen(row) && children[row.key])
+          walk(children[row.key], row.kind === 'section' ? depth : depth + 1);
       }
     };
     walk(roots, 0);
@@ -174,7 +204,7 @@
   }
 
   function isLeaf(row: BrowserRow): boolean {
-    return !row.expandable && row.kind !== 'divider';
+    return !row.expandable;
   }
 
   // --- writing to the console ------------------------------------------------
@@ -202,7 +232,6 @@
   // its usage) and, when `doWrite`, its text replaces the path token at the
   // console's cursor.
   async function select(row: BrowserRow, doWrite: boolean, arg: number | null = null) {
-    if (row.kind === 'divider') return;
     const changed = selectedKey !== row.key;
     selectedKey = row.key;
     markArg = arg;
@@ -259,9 +288,10 @@
     );
   }
 
-  // A click on a row's name selects it (and writes); a group opens.
+  // A click on a row's name selects it (and writes); a group or section
+  // opens or closes.
   function onRowClick(row: BrowserRow): void {
-    if (row.kind === 'group') {
+    if (row.kind === 'group' || row.kind === 'section') {
       void toggle(row);
       void select(row, false);
       return;
@@ -281,7 +311,9 @@
   // answers its row when it is shown.
   async function openTo(path: string): Promise<BrowserRow | undefined> {
     let found: BrowserRow | undefined;
-    for (const prefix of pathPrefixes(path)) {
+    const prefixes = pathPrefixes(path);
+    if (prefixes.length) await sectionOf(prefixes[0], true);
+    for (const prefix of prefixes) {
       const row = flat.find((f) => f.row.path === prefix && f.row.kind !== 'group')?.row;
       if (!row) return undefined;
       found = row;
@@ -302,10 +334,10 @@
       return [];
     }
     const want = new Set(names);
-    const hits = level.filter((r) => r.kind !== 'divider' && want.has(bare(r.name)));
+    const hits = level.filter((r) => r.kind !== 'section' && want.has(bare(r.name)));
     matchKeys = new Set(hits.map((r) => r.key));
     otherKeys = new Set(
-      level.filter((r) => r.kind !== 'divider' && !matchKeys.has(r.key)).map((r) => r.key),
+      level.filter((r) => r.kind !== 'section' && !matchKeys.has(r.key)).map((r) => r.key),
     );
     return hits;
   }
@@ -335,7 +367,7 @@
       mark([], [], '');
       return;
     }
-    const level = parentRow ? (children[parentRow.key] ?? []) : roots;
+    const level = parentRow ? (children[parentRow.key] ?? []) : await rootMembers();
     const hits = mark(level, f.names, f.partial);
 
     const method = r.context.method;
@@ -350,6 +382,7 @@
     }
     if (!fromBrowser && f.partial && hits.length) {
       const exact = hits.find((h) => bare(h.name) === f.partial) ?? hits[0];
+      if (!parentRow) await sectionOf(exact.name, true);
       await select(exact, false);
       scrollToSelected();
     }
@@ -389,7 +422,7 @@
   let findAt = 0;
 
   function onKey(ev: KeyboardEvent): void {
-    const rows = flat.filter((f) => f.row.kind !== 'divider');
+    const rows = flat;
     if (!rows.length) return;
     const idx = rows.findIndex((f) => f.row.key === selectedKey);
     const cur = idx >= 0 ? rows[idx].row : undefined;
@@ -444,7 +477,7 @@
       const start = findBuf.length > 1 ? Math.max(idx, 0) : idx + 1;
       for (let k = 0; k < n; k++) {
         const r = rows[(start + k) % n].row;
-        if (bare(r.name).toLowerCase().startsWith(q)) {
+        if (r.kind !== 'section' && bare(r.name).toLowerCase().startsWith(q)) {
           ev.preventDefault();
           void select(r, true);
           scrollToSelected();
@@ -458,7 +491,9 @@
   // above it.  Stops at the deepest level that is shown.
   async function reveal(path: string): Promise<void> {
     let found: BrowserRow | undefined;
-    for (const prefix of pathPrefixes(path)) {
+    const prefixes = pathPrefixes(path);
+    if (prefixes.length) await sectionOf(prefixes[0], true);
+    for (const prefix of prefixes) {
       const row = flat.find((f) => f.row.path === prefix)?.row;
       if (!row) break;
       found = row;
@@ -524,55 +559,53 @@
     bind:this={listEl}
   >
     {#each flat as { row, depth } (row.key)}
-      {#if row.kind === 'divider'}
-        <li class="divider" role="presentation">{row.name}</li>
-      {:else}
-        {@const open = isOpen(row)}
-        {@const selected = selectedKey === row.key}
-        <li
-          class="cmd-row kind-{row.kind}"
-          class:selected
-          class:dim={otherKeys.has(row.key)}
-          class:match={matchKeys.has(row.key)}
-          role="treeitem"
-          aria-selected={selected}
-          aria-expanded={row.expandable ? open : undefined}
-          style="--depth: {depth}"
+      {@const open = isOpen(row)}
+      {@const selected = selectedKey === row.key}
+      <li
+        class="cmd-row kind-{row.kind}"
+        class:selected
+        class:dim={otherKeys.has(row.key)}
+        class:match={matchKeys.has(row.key)}
+        role="treeitem"
+        aria-selected={selected}
+        aria-expanded={row.expandable ? open : undefined}
+        style="--depth: {depth}"
+      >
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <div
+          class="cmd-line"
+          role="button"
+          tabindex="-1"
+          title={tooltip(row)}
+          onclick={() => onRowClick(row)}
         >
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <div
-            class="cmd-line"
+          <span
+            class="twistie"
+            class:has={row.expandable}
+            class:open
+            onclick={(e) => onTwistieClick(e, row)}
             role="button"
             tabindex="-1"
-            title={tooltip(row)}
-            onclick={() => onRowClick(row)}
+            aria-label={row.expandable ? (open ? 'Collapse' : 'Expand') : ''}
           >
-            <span
-              class="twistie"
-              class:has={row.expandable}
-              class:open
-              onclick={(e) => onTwistieClick(e, row)}
-              role="button"
-              tabindex="-1"
-              aria-label={row.expandable ? (open ? 'Collapse' : 'Expand') : ''}
-            >
-              {#if row.expandable}<Icon name="chevron" size={12} />{/if}
-            </span>
-            <span class="name">{row.name}</span>
-            {#if row.kind === 'attr'}
-              <span class="type">{typeText(row.type)}{row.readonly ? ' ro' : ''}</span>
-            {/if}
-            <span class="doc">{row.expandable ? row.doc : firstSentence(row.doc)}</span>
-          </div>
-          {#if selected && usageLines}
-            <pre
-              class="usage">{#each usageLines as runs, li (li)}{#if li > 0}{NEWLINE}{/if}{#each runs as r, ri (ri)}{#if r.mark}<mark
-                      class="usage-arg {r.cls ? `hl-${r.cls}` : ''}">{r.text}</mark
-                    >{:else if r.cls}<span class="hl-{r.cls}">{r.text}</span
-                    >{:else}{r.text}{/if}{/each}{/each}</pre>
+            {#if row.expandable}<Icon name="chevron" size={12} />{/if}
+          </span>
+          <span class="name">{row.name}</span>
+          {#if row.kind === 'attr'}
+            <span class="type">{typeText(row.type)}{row.readonly ? ' ro' : ''}</span>
           {/if}
-        </li>
-      {/if}
+          {#if row.kind !== 'section'}
+            <span class="doc">{row.expandable ? row.doc : firstSentence(row.doc)}</span>
+          {/if}
+        </div>
+        {#if selected && usageLines}
+          <pre
+            class="usage">{#each usageLines as runs, li (li)}{#if li > 0}{NEWLINE}{/if}{#each runs as r, ri (ri)}{#if r.mark}<mark
+                    class="usage-arg {r.cls ? `hl-${r.cls}` : ''}">{r.text}</mark
+                  >{:else if r.cls}<span class="hl-{r.cls}">{r.text}</span
+                  >{:else}{r.text}{/if}{/each}{/each}</pre>
+        {/if}
+      </li>
     {/each}
   </ul>
 </div>
@@ -600,14 +633,16 @@
     outline: 1px solid var(--gs-focus, #0969da);
     outline-offset: -1px;
   }
-  .divider {
+  /* A section headline: small caps over its rows, which share its indent. */
+  .cmd-row.kind-section > .cmd-line {
+    padding-top: 6px;
+  }
+  .cmd-row.kind-section .name {
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--gs-fg-muted);
-    padding: 6px 10px 2px;
-    user-select: none;
   }
   .cmd-row.selected > .cmd-line {
     background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));

@@ -3,7 +3,7 @@
 
 // web2 e2e: the Terminal's command browser is a structural view of the live
 // object model.  With no machine booted, the root shows the emulator's nodes
-// under their domain dividers; expanding `files` lists its members, and
+// under expandable section headlines; expanding `files` lists its members, and
 // selecting a method both writes its path into the prompt and shows the
 // usage text the core renders (shell.usage).
 
@@ -27,10 +27,10 @@ test("the command browser walks the model and shows usage", async ({
   const browser = page.locator(".cmd-browser");
   await expect(browser).toBeVisible({ timeout: 15_000 });
 
-  // Domain dividers, from the model's root domains (Network appears once a
-  // machine brings AppleTalk up).
-  await expect(browser.locator(".divider")).toHaveText(
-    ["Machine", "Emulator"],
+  // Expandable sections: the root's commands, its domains from the model
+  // (Network appears once a machine brings AppleTalk up), Aliases, Language.
+  await expect(browser.locator(".cmd-row.kind-section .name")).toHaveText(
+    ["Commands", "Machine", "Emulator", "Aliases", "Language"],
     { timeout: 15_000 },
   );
 

@@ -12,7 +12,7 @@ import { gsEval, isModuleReady } from '@/bus/emulator';
 import { loadMembers, type MemberInfo, type TypeDescriptor } from '@/bus/systemTree';
 
 export type RowKind =
-  | 'divider' // a non-interactive domain heading
+  | 'section' // a top-level headline: Commands, a domain, Aliases, Language
   | 'object'
   | 'collection' // a collection container: its entries are addressed [i] / ["k"]
   | 'entry' // one entry of a collection
@@ -223,40 +223,58 @@ const DOMAIN_LABEL: Record<string, string> = {
   network: 'Network',
 };
 
-// The browser's root: the root's own verbs, then its children under domain
-// dividers (in model order), then the Aliases and Language groups.
+// The browser's root: one expandable headline per section -- the root's
+// own verbs (Commands), each domain its children live in (in model order),
+// then Aliases and Language.  A section's rows are its members; they are
+// listed at the headline's own indent.
 export async function rootRows(): Promise<BrowserRow[]> {
   if (!isModuleReady()) return [];
   const ms = await members('');
   const out: BrowserRow[] = [];
-  for (const m of ms) if (m.kind === 'method' && !m.hidden) out.push(memberRow('', m));
-  let domain: string | undefined;
+  if (ms.some((m) => m.kind === 'method' && !m.hidden))
+    out.push(section('section:commands', 'Commands', "The root's own commands"));
+  const seen = new Set<string>();
   for (const m of ms) {
     if (m.kind !== 'child') continue;
     const d = m.domain ?? 'emulator';
-    if (d !== domain) {
-      domain = d;
-      out.push(divider(d));
-    }
-    out.push(memberRow('', m));
+    if (seen.has(d)) continue;
+    seen.add(d);
+    out.push(section(`section:${d}`, DOMAIN_LABEL[d] ?? d, DOMAIN_DOC[d] ?? ''));
   }
   out.push(
-    group('group:aliases', 'Aliases', 'Built-in and user $name shortcuts that expand to a path'),
+    section('group:aliases', 'Aliases', 'Built-in and user $name shortcuts that expand to a path'),
   );
-  out.push(group('group:language', 'Language', 'Shell keywords and their syntax'));
+  out.push(section('group:language', 'Language', 'Shell keywords and their syntax'));
   return out;
 }
 
-function divider(domain: string): BrowserRow {
+const DOMAIN_DOC: Record<string, string> = {
+  machine: 'The emulated computer',
+  emulator: 'The emulator around it: running, files, checkpoints, debugging, logs',
+  network: 'The simulated AppleTalk network',
+};
+
+// The rows of a Commands or domain section.
+async function sectionRows(row: BrowserRow): Promise<BrowserRow[]> {
+  const ms = await members('');
+  if (row.key === 'section:commands')
+    return ms.filter((m) => m.kind === 'method' && !m.hidden).map((m) => memberRow('', m));
+  const d = row.key.slice('section:'.length);
+  return ms
+    .filter((m) => m.kind === 'child' && (m.domain ?? 'emulator') === d)
+    .map((m) => memberRow('', m));
+}
+
+function section(key: string, name: string, doc: string): BrowserRow {
   return {
-    key: `divider:${domain}`,
-    kind: 'divider',
-    name: DOMAIN_LABEL[domain] ?? domain,
+    key,
+    kind: 'section',
+    name,
     path: '',
-    doc: '',
+    doc,
     category: 'basic',
     insert: '',
-    expandable: false,
+    expandable: true,
   };
 }
 
@@ -350,7 +368,8 @@ export async function loadAliases(): Promise<AliasInfo[]> {
 
 // The rows under any expandable row.
 export async function expand(row: BrowserRow): Promise<BrowserRow[]> {
-  return row.kind === 'group' ? groupRows(row) : childRows(row);
+  if (row.kind === 'section' && row.key.startsWith('section:')) return sectionRows(row);
+  return row.kind === 'group' || row.kind === 'section' ? groupRows(row) : childRows(row);
 }
 
 // shell.usage: the usage text, and for a method its signature (the text's

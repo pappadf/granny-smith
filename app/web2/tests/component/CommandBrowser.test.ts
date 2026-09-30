@@ -196,11 +196,30 @@ async function open(container: HTMLElement, name: string): Promise<void> {
 }
 
 describe('CommandBrowser (structural, model-generated)', () => {
-  it('root nodes sit under domain dividers', async () => {
+  it('the root is expandable sections; Aliases and Language start collapsed', async () => {
     const { container } = render(CommandBrowser);
     await row(container, 'machine');
-    const dividers = Array.from(container.querySelectorAll('.divider')).map((d) => d.textContent);
-    expect(dividers).toEqual(['Machine', 'Emulator']);
+    const sections = Array.from(container.querySelectorAll('.cmd-row.kind-section'));
+    // (The mock root has no methods of its own, so no Commands section.)
+    expect(sections.map((s) => s.querySelector('.name')?.textContent)).toEqual([
+      'Machine',
+      'Emulator',
+      'Aliases',
+      'Language',
+    ]);
+    expect(sections.map((s) => s.getAttribute('aria-expanded'))).toEqual([
+      'true',
+      'true',
+      'false',
+      'false',
+    ]);
+    // Collapsing a domain hides its members.
+    await fireEvent.click(sections[0].querySelector('.twistie')!);
+    await waitFor(() =>
+      expect(
+        Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'machine'),
+      ).toBe(false),
+    );
   });
 
   it('a leaf row shows the first sentence of its doc and its type', async () => {

@@ -138,22 +138,35 @@ beforeEach(() => invalidate(''));
 
 const byName = (rows: BrowserRow[], name: string) => rows.find((r) => r.name === name)!;
 
+// A root member, from whichever section lists it.
+async function rootMember(name: string): Promise<BrowserRow> {
+  for (const sec of await rootRows()) {
+    if (!sec.key.startsWith('section:')) continue;
+    const hit = (await expand(sec)).find((r) => r.name === name);
+    if (hit) return hit;
+  }
+  throw new Error(`no root member ${name}`);
+}
+
 describe('command browser rows (model projection)', () => {
-  it('the root: its verbs, its children under domain dividers, then Aliases and Language', async () => {
+  it('the root: expandable sections for the commands, each domain, Aliases and Language', async () => {
     const rows = await rootRows();
     expect(rows.map((r) => `${r.kind}:${r.name}`)).toEqual([
-      'method:help',
-      'divider:Machine',
-      'object:machine',
-      'divider:Emulator',
-      'object:debug',
-      'group:Aliases',
-      'group:Language',
+      'section:Commands',
+      'section:Machine',
+      'section:Emulator',
+      'section:Aliases',
+      'section:Language',
     ]);
+    expect(rows.every((r) => r.expandable)).toBe(true);
+    const names = async (i: number) => (await expand(rows[i])).map((r) => `${r.kind}:${r.name}`);
+    expect(await names(0)).toEqual(['method:help']);
+    expect(await names(1)).toEqual(['object:machine']);
+    expect(await names(2)).toEqual(['object:debug']);
   });
 
   it('levels are path segments; hidden methods never appear', async () => {
-    const machine = byName(await rootRows(), 'machine');
+    const machine = await rootMember('machine');
     const cpu = byName(await expand(machine), 'cpu');
     const rows = await expand(cpu);
     expect(rows.map((r) => r.path)).toEqual([
@@ -167,7 +180,7 @@ describe('command browser rows (model projection)', () => {
   });
 
   it('a collection expands to its live entries', async () => {
-    const machine = byName(await rootRows(), 'machine');
+    const machine = await rootMember('machine');
     const drive = byName(await expand(machine), 'drive');
     expect(drive.kind).toBe('collection');
     const entries = await expand(drive);
@@ -176,7 +189,7 @@ describe('command browser rows (model projection)', () => {
   });
 
   it('advanced members are visible; internal ones never are', async () => {
-    const machine = byName(await rootRows(), 'machine');
+    const machine = await rootMember('machine');
     const vbr = byName(await expand(byName(await expand(machine), 'cpu')), 'vbr');
     expect(visible(vbr)).toBe(true);
     expect(visible({ ...vbr, category: 'internal' })).toBe(false);
