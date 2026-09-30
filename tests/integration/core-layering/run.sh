@@ -77,6 +77,7 @@ nubus_slots_class
 pci_class
 pci_slots_class
 shell_alias_class
+shell_command_class
 shell_class
 storage_images_collection_class
 "
