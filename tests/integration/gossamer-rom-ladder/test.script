@@ -1,0 +1,114 @@
+# Gossamer ROM boot ladder (beige Power Macintosh G3).
+#
+# Every assertion is a hardware truth read from the live machine after a
+# clean bounded run — no PC logpoints or breakpoints (the PDM precedent:
+# the debugger suppresses branch folding and skews any guest-timed
+# measurement).
+#
+# Boot shape: the 750 comes out of reset at $FFF00100 into the ROM's boot
+# program, which programs Grackle (PICR1/PICR2, the L2CR handshake), finds
+# Heathrow at PCI device $10 and assigns its BAR, decodes the board
+# register, sizes RAM from the SPD EEPROMs over Cuda I2C and writes the
+# Grackle bank registers, plays the boot beep, and enters Open Firmware
+# 2.4.  Open Firmware probes the machine, builds its device tree, and hands
+# the NanoKernel its info records; the 68k emulator then runs the Start
+# Manager, which parks looking for boot media (no disk here).
+
+include "../lib/mac.script"
+
+# One pass up to the handoff, shared by both ROMs.  `compat` is the root
+# compatible string the ROM's own Open Firmware version builds, and
+# `fcr` the Feature Control Register value its boot program leaves.
+def ladder(label, compat, fcr) {
+    # --- G1: reset vector, Grackle programmed, L2CR handshake ---------------
+    assert machine.cpu.pc == 0xFFF00100 "G1 ${$label}: reset vector != $FFF00100"
+    assert machine.cpu.pvr == 0x00080202 "G1 ${$label}: PVR is not the 750's"
+
+    # 700M instructions: the boot program, the boot beep, Open Firmware's
+    # probe and device tree, the NanoKernel's init, and the 68k Start
+    # Manager through its media hunt.
+    scheduler.run 700000000
+
+    # The boot program ORs $00040E0C into PICR1 (the PICR1/PICR2 writes at
+    # the top of the boot program) and fills L2CR from its by-PID table:
+    # PID 1 (the desktop) is $A9100000, written only after the L2
+    # invalidate's L2IP handshake completes.
+    assert (machine.grackle.picr1 & 0x00040E0C) == 0x00040E0C "G1 ${$label}: PICR1 bits the boot program sets are missing"
+    assert machine.cpu.l2cr == 0xA9100000 "G1 ${$label}: L2CR != the PID-1 table value $A9100000 (handshake never completed)"
+
+    # --- G2: Heathrow found and configured ----------------------------------
+    # Its FCR is only reachable once the ROM has assigned BAR0 and enabled
+    # memory decode through Grackle's configuration space.
+    assert machine.heathrow.fcr == $fcr "G2 ${$label}: Heathrow FCR != the boot program's value"
+    assert machine.heathrow.clear_mode == 1 "G2 ${$label}: Heathrow never switched to the NanoKernel acknowledge mode"
+
+    # --- G3: the board register ---------------------------------------------
+    # Desktop, PID 1, bus code 6 (66.82 MHz), SWIM3 floppy, burst ROM.
+    assert machine.memory.peek.w(0xFF000004) == 0xBF3D "G3 ${$label}: board register != $BF3D"
+
+    # --- G4: RAM sized from SPD over Cuda I2C ---------------------------------
+    # One 64 MB DIMM in slot 0: its SPD says 12 rows, 9 columns, 4 banks, one
+    # side, and the boot program turns that into bank 0 = 64 MB with MEMGO.
+    assert machine.grackle.bank_enable == 0x01 "G4 ${$label}: Grackle bank enables != bank 0 only"
+    assert (machine.grackle.mccr1 & 0x00080000) != 0 "G4 ${$label}: MCCR1 MEMGO never set"
+    assert machine.grackle.ram_decoded == 0x04000000 "G4 ${$label}: Grackle decodes ${machine.grackle.ram_decoded:x} bytes, not 64 MB"
+
+    # --- G5: Open Firmware ran and wrote its NVRAM configuration --------------
+    assert machine.nvram.peek(0x1800) == 0x12 "G5 ${$label}: Open Firmware's configuration header missing at NVRAM $1800"
+
+    # --- G6: the device tree identifies the machine ---------------------------
+    # Read back from Open Firmware's live workspace in low RAM; the whole
+    # tree is compared against a real machine's dump in gossamer-device-tree.
+    assert len(find.str("${$compat}", 0x0, 0x400000)) > 0 "G6 ${$label}: root compatible ${$compat} missing from the OF tree"
+    assert len(find.str("timebase-frequency", 0x0, 0x400000)) > 0 "G6 ${$label}: cpu node has no timebase-frequency"
+
+    # --- G7: the NanoKernel and the 68k emulator on a 750 ---------------------
+    # The kernel's MMU layout for 64 MB (HTAB at $03FC0000, HTABMASK 3), and
+    # the 68k Start Manager's low memory: ROMBase, the kernel-carved MemTop,
+    # the ProductInfo kind byte the ROM tests for this family ($7F), VIA1 at
+    # Heathrow +$16000, and the timer calibration.
+    assert machine.cpu.sdr1 == 0x03FC0003 "G7 ${$label}: SDR1 not at the 64 MB layout"
+    assert debug.mac.globals.read("ROMBase") == 0xFFC00000 "G7 ${$label}: 68k low memory not initialized (ROMBase)"
+    assert debug.mac.globals.read("MemTop") == 0x03FAE000 "G7 ${$label}: MemTop not at the 64 MB layout"
+    assert machine.memory.peek.b(0xCB3) == 0x7F "G7 ${$label}: BoxFlag != $7F"
+    assert machine.memory.peek.l(0x1D4) == 0xF3016000 "G7 ${$label}: VIA1 base in low memory != Heathrow +$16000"
+    assert machine.memory.peek.w(0xD00) != 0 "G7 ${$label}: TimeDBRA calibration missing"
+}
+
+# ============================================================================
+# Rev C — the primary fixture, G1-G8
+# ============================================================================
+machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+ladder("Rev C", "AAPL,PowerMac G3", 0x01BEFFFA)
+
+# --- G8: the tick chain and the Cuda clock ------------------------------------
+# VIA1 T1 -> Heathrow source 18 -> 750 external interrupt -> NanoKernel
+# acknowledge -> the emulated 68k's level-1 handler incrementing Ticks.  The
+# band allows service jitter, not clock error: expected ticks = cycles x
+# 60.15 / 267.28 MHz.  Time is Cuda's one-second RTC packet arriving.
+assert debug.mac.globals.read("Ticks") != 0 "G8: 68k tick handler not running (Ticks)"
+let k0 = debug.mac.globals.read("Ticks")
+let t0 = debug.mac.globals.read("Time")
+let c0 = scheduler.cycles
+scheduler.run 400000000
+let dticks = debug.mac.globals.read("Ticks") - $k0
+let dtime = debug.mac.globals.read("Time") - $t0
+let dcyc = scheduler.cycles - $c0
+let expect = $dcyc * 6015 / 100 / 267280000
+assert $dticks >= $expect - 10 "G8: tick rate low (${$dticks} vs ~${$expect})"
+assert $dticks <= $expect + 10 "G8: tick rate high (${$dticks} vs ~${$expect})"
+assert $dtime >= 2 && $dtime <= 4 "G8: Time advanced ${$dtime} s over ~3 s of machine time"
+let revc_pc = machine.cpu.pc
+
+# ============================================================================
+# Rev A — Open Firmware 2.0f1, the same board program: G1-G7
+# ============================================================================
+# The two ROMs share the boot program byte for byte; the Open Firmware
+# above it differs (2.0f1 names the machine AAPL,Gossamer, and its boot
+# program leaves the FCR's upper bits set).
+$ROM = "${$TEST_DATA}/roms/pmg3dt-pmg3mt-reva-79d68d63.rom"
+machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+ladder("Rev A", "AAPL,Gossamer", 0x61BEFFFA)
+
+echo "gossamer-rom-ladder: high-water rung G8 reached (Rev C pc=${$revc_pc:08x} ticks=${$dticks}/${$expect} time+${$dtime}; Rev A through G7)"
+quit

@@ -195,6 +195,10 @@ struct av_cuda {
     bool tx_represented;
     // TREQ negation owed at the end of a sync cycle (see CUDA_SYNC_TREQ_NS).
     bool treq_release_pending;
+    // An autopoll packet the host left unclaimed, kept OUT of tx_buf so a
+    // command reply cannot overwrite it (see cuda_present_parked_autopoll).
+    uint8_t ap_park[16];
+    int ap_park_len;
 
     // --- pointers / callbacks (not checkpointed) ---
     struct via *via1;
@@ -324,11 +328,17 @@ static void cuda_send_progress(av_cuda_t *cuda) {
 // window would let the abandonment watchdog reap the reply again).
 #define CUDA_RESEND_DELAY_NS 2000000.0
 
+static bool cuda_bus_idle(av_cuda_t *cuda);
+static bool cuda_present_parked_autopoll(av_cuda_t *cuda);
+
 static void cuda_resend_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
-    if (!cuda->resend_pending)
+    if (!cuda->resend_pending) {
+        if (cuda->ap_park_len && cuda_bus_idle(cuda))
+            cuda_present_parked_autopoll(cuda);
         return;
+    }
     cuda->resend_pending = false;
     if (cuda->state != CUDA_IDLE || cuda->tx_len < 4)
         return; // the host moved on (or a later sync flushed the queue)
@@ -381,8 +391,15 @@ static void cuda_send_timeout_event(void *source, uint64_t data) {
         LOG(2, "tick unclaimed by host — transport reset to idle, tick dropped");
         return;
     }
-    LOG(2, "response unclaimed by host — transport reset to idle, parked for re-presentation");
-    cuda->resend_pending = true;
+    if (cuda->tx_buf[1] == PKT_ADB && (cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL) &&
+        cuda->tx_len <= (int)sizeof(cuda->ap_park)) {
+        LOG(2, "autopoll packet unclaimed by host — transport reset to idle, parked ahead of new data");
+        memcpy(cuda->ap_park, cuda->tx_buf, (size_t)cuda->tx_len);
+        cuda->ap_park_len = cuda->tx_len;
+    } else {
+        LOG(2, "response unclaimed by host — transport reset to idle, parked for re-presentation");
+        cuda->resend_pending = true;
+    }
     remove_event(cuda->sched, &cuda_resend_event, cuda);
     scheduler_new_cpu_event(cuda->sched, &cuda_resend_event, cuda, 0, 0, (uint64_t)CUDA_RESEND_DELAY_NS);
 }
@@ -771,6 +788,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
             cuda->tx_idx = 0;
             cuda->resend_pending = false; // an idle-bus sync flushes the queue
         }
+        cuda->ap_park_len = 0; // parked autopoll data is asynchronous: the sync drops it
         cuda->rx_len = 0;
         cuda->state = CUDA_SYNC;
         // The sync silences EVERY asynchronous source, autopoll included.
@@ -826,6 +844,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
                 !cuda->tx_represented)
                 cuda->resend_pending = true;
             cuda->state = CUDA_SYNC;
+            cuda->ap_park_len = 0;
             cuda->onesec_enabled = false;
             cuda->autopoll_enabled = false; // the sync silences autopoll too (see the main sync branch)
             cuda_set_treq(cuda, false);
@@ -930,11 +949,39 @@ static void cuda_reset_event(void *source, uint64_t data) {
     system_machine_reset();
 }
 
+// A reaped autopoll packet holds ADB data already taken from the device
+// queue.  Left in tx_buf it would be overwritten by the next packet built
+// there — a command reply, a tick, the next autopoll — and the keystrokes
+// in it lost.  The firmware's output queue does not work that way: the
+// undelivered packet is still at its head, behind any command the host
+// runs meanwhile.  So it is parked in its own slot (cuda_send_timeout_event)
+// and, when the next unsolicited send comes round, goes out instead of the
+// new data (which waits a period).  This keeps the ADB stream whole without
+// the bus gate that stalls Copland (see cuda_bus_idle): traffic keeps
+// flowing, it is just the right packet.  A sync drops it, as it drops every
+// asynchronous source.
+//
+// It matters for the beige G3's Open Firmware, which enables autopoll and
+// then leaves the first packets unclaimed while it finishes its ADB probe:
+// Command-Option-O-F held from power-on arrives as [Command Option] then
+// [O F], and losing the first leaves O and F with no modifiers — the boot
+// carries on into Mac OS.
+static bool cuda_present_parked_autopoll(av_cuda_t *cuda) {
+    if (!cuda->ap_park_len)
+        return false;
+    memcpy(cuda->tx_buf, cuda->ap_park, (size_t)cuda->ap_park_len);
+    cuda->tx_len = cuda->ap_park_len;
+    cuda->ap_park_len = 0;
+    LOG(2, "presenting the parked autopoll packet ahead of new unsolicited data");
+    cuda_begin_send(cuda);
+    return true;
+}
+
 // 1-second tick: [attn, tickPkt] — drives the OS one-second timer.
 static void cuda_tick_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
-    if (cuda->onesec_enabled && cuda_bus_idle(cuda)) {
+    if (cuda->onesec_enabled && cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
         if (cuda->onesec_mode == 3 && cuda->mode3_clock) {
             // Mode3Clock: the tick is an RdTime response carrying the
             // 32-bit BE seconds, so the OS's CudaTickHandler seeds lowmem
@@ -967,7 +1014,7 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
     av_cuda_t *cuda = (av_cuda_t *)source;
     LOG(4, "autopoll gate: enabled=%d adb=%d state=%d push=%d pb=$%02X", cuda->autopoll_enabled, cuda->adb != NULL,
         cuda->state, cuda->push_pending, cuda->last_pb);
-    if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
+    if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
         // The device-selection rules live in adb.c, shared with Egret and the
         // SWIM IOP.  Cuda has no WrDevList in this model -- the host
         // can read the device list but not set a polling mask -- so 0 here

@@ -153,6 +153,10 @@ struct adb {
 
     // Tracks which ADB keys are currently held to suppress auto-repeat
     bool kbd_pressed[128];
+    // When each held key went down (a running count), so a re-report after
+    // a bus reset or Flush replays the holds in the order they were made.
+    uint32_t kbd_press_seq[128];
+    uint32_t kbd_press_count;
 
     // Mouse state: deltas accumulated since last Talk R0; reset after each report
     int mouse_dx;
@@ -418,12 +422,16 @@ static bool other_device_service_requesting(const adb_t *adb, uint8_t except) {
 #define ADB_KEY_CLEAR    0x47 // keypad Clear, doubles as Num Lock
 #define ADB_KEY_F14      0x6B // doubles as Scroll Lock
 
-// Re-reports a latched Caps Lock on Register 0 after something has cleared the
-// keyboard's idea of what it last sent — a bus reset or a Flush.  Caps Lock is
-// the only key this can apply to, because it is the only one that is a
-// mechanically locking switch rather than a momentary contact: it is still
-// closed afterwards, and a matrix-scanning keyboard reports a change against
-// its own cleared state, so the next scan sends a fresh key-down.
+// Re-reports every key that is still held on Register 0 after something has
+// cleared the keyboard's idea of what it last sent — a bus reset or a Flush.
+// A matrix-scanning keyboard reports a change against its own cleared state,
+// so a switch that is still closed produces a fresh key-down on the next
+// scan.  For Caps Lock that switch is mechanically locking; for any other key
+// it is a finger holding it down through the reset, which is exactly what the
+// power-on key combinations are: Command-Option-O-F (Open Firmware),
+// Command-Option-P-R (zap PRAM), Shift (extensions off).  The person presses
+// the keys, then the power button; the ROM's ADB init comes afterwards and
+// can only learn about them from this re-report.
 //
 // Both events need it, and the second is the one that is easy to miss.  The
 // ROM's ADB init does SendReset, enumerates by shuffling addresses through 15,
@@ -441,12 +449,28 @@ static bool other_device_service_requesting(const adb_t *adb, uint8_t except) {
 // has cleared it — there is no other path from the switch to that bit.  The
 // claim is falsifiable and was falsified in the useful direction: with this,
 // the latch diverts the boot into the NuKernel loader; without it, the machine
-// starts System 7.5 and the bit is never set.
-static void kbd_relatch_capslock(adb_t *adb, const char *why) {
-    if (!adb->kbd_pressed[ADB_KEY_CAPSLOCK])
-        return;
-    LOG(2, "%s: Caps Lock is a locking switch and is still latched: re-reporting the key-down", why);
-    kbd_enqueue(adb, ADB_KEY_CAPSLOCK);
+// starts System 7.5 and the bit is never set.  The beige G3's Open Firmware
+// makes the same argument for momentary keys: it builds its key map from the
+// Register 0 stream after its own ADB reset, and Command-Option-O-F held from
+// power-on stops it at the prompt only with the held keys re-reported.
+//
+// The keys come back in the order they went down.  Firmware that looks for a
+// combination can test it on the last key's key-down — the beige G3's Open
+// Firmware stops at its prompt for Command-Option-O-F only when F arrives
+// after O — and a person holding a combination pressed it in that order.
+static void kbd_rereport_held(adb_t *adb, const char *why) {
+    bool sent[128] = {false};
+    for (;;) {
+        int next = -1;
+        for (unsigned k = 0; k < 128; k++)
+            if (adb->kbd_pressed[k] && !sent[k] && (next < 0 || adb->kbd_press_seq[k] < adb->kbd_press_seq[next]))
+                next = (int)k;
+        if (next < 0)
+            return;
+        sent[next] = true;
+        LOG(2, "%s: key $%02X is still held: re-reporting the key-down", why, next);
+        kbd_enqueue(adb, (uint8_t)next);
+    }
 }
 
 // Where the keyboard and mouse currently live on the bus (Listen R3 moves
@@ -580,13 +604,11 @@ static void adb_reset(adb_t *adb) {
 
     kbd_queue_reset(adb);
 
-    // Every momentary key comes up released, but a bus reset does not unlatch a
-    // mechanically locking Caps Lock — so it is kept, and Register 2 keeps
-    // reporting it (see kbd_relatch_capslock for the Register 0 half).
-    bool caps_latched = adb->kbd_pressed[ADB_KEY_CAPSLOCK];
-    memset(adb->kbd_pressed, 0, sizeof(adb->kbd_pressed));
-    adb->kbd_pressed[ADB_KEY_CAPSLOCK] = caps_latched;
-    kbd_relatch_capslock(adb, "reset");
+    // A bus reset releases nothing the user is still holding: kbd_pressed[]
+    // is the physical switch state (a latched Caps Lock, a finger on a key),
+    // so it is kept, Register 2 keeps reporting it, and the scan after the
+    // reset re-reports each held key on Register 0 (kbd_rereport_held).
+    kbd_rereport_held(adb, "reset");
 
     adb->mouse_dx = 0;
     adb->mouse_dy = 0;
@@ -614,7 +636,7 @@ static void flush_device(adb_t *adb, uint8_t addr) {
     if (addr == adb->kbd.address) {
         LOG(2, "flush_device: flushing keyboard at addr %d", addr);
         kbd_queue_reset(adb);
-        kbd_relatch_capslock(adb, "flush_device");
+        kbd_rereport_held(adb, "flush_device");
     } else if (addr == adb->mouse.address) {
         LOG(2, "flush_device: flushing mouse at addr %d", addr);
         adb->mouse_dx = 0;
@@ -1352,6 +1374,7 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key) {
             return;
         }
         adb->kbd_pressed[key] = true;
+        adb->kbd_press_seq[key] = ++adb->kbd_press_count;
     } else {
         if (!adb->kbd_pressed[key]) {
             // Spurious key-up (key was never seen as down); discard to avoid confusion
