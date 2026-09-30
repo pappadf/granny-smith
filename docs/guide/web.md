@@ -501,7 +501,12 @@ them from `meta.members` with values.
   folder: its methods are a submenu of its parent's context menu.
 
 **Values** are shown as the REPL prints them
-([`lib/typeDescriptor.ts`](../../app/web2/src/lib/typeDescriptor.ts)):
+([`lib/typeDescriptor.ts`](../../app/web2/src/lib/typeDescriptor.ts)).
+What is an enum, object, error or container is decided in one place,
+[`lib/taggedValue.ts`](../../app/web2/src/lib/taggedValue.ts): a tag is a
+plain object with exactly the tag's keys (`{enum, index}`,
+`{object, name, path}`, `{error}`); the console's value tree uses the same
+rule and text.
 
 | Value | Shown as |
 |---|---|
@@ -905,16 +910,28 @@ a CodeMirror 6 input, in
 [`ConsoleView.svelte`](../../app/web2/src/components/panel-views/terminal/ConsoleView.svelte)
 and [`ConsoleInput.ts`](../../app/web2/src/components/panel-views/terminal/ConsoleInput.ts).
 CodeMirror is code-split (dynamically imported when the console first
-mounts). The entry list lives in
+mounts). The view is assembled from:
+
+| Module | Does |
+|---|---|
+| [`lib/stickToBottom.svelte.ts`](../../app/web2/src/lib/stickToBottom.svelte.ts) | auto-scroll (an attachment on the output) |
+| [`FindBar.svelte`](../../app/web2/src/components/panel-views/terminal/FindBar.svelte) | the find bar and its state; matching is [`lib/find.ts`](../../app/web2/src/lib/find.ts) |
+| [`inputAssist.svelte.ts`](../../app/web2/src/components/panel-views/terminal/inputAssist.svelte.ts) | what the input asks the shell while typing: highlighting, completion, the signature hint |
+| [`ValueTree.svelte`](../../app/web2/src/components/panel-views/terminal/ValueTree.svelte) | a value entry's links and expandable lists / maps |
+
+The entries, the input queue and the running job live in
 [`state/console.svelte.ts`](../../app/web2/src/state/console.svelte.ts), so
-scrollback survives the pane being remounted.
+scrollback survives the pane being remounted. `createConsole()` makes one
+(`{state, model, submit, interrupt, …, dispose}`); the app's is created
+when the module loads, and tests build their own and dispose of them.
 
 **Output.** [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts) turns what
 the core sends into console records: `Module.print` / `Module.printErr`
 lines, a job's output pieces (`log:output`), its annotation records
 (`log:value_begin`, `log:value`, `log:error`), and the start and end of
-the console's own job. It holds what arrives before the console first
-opens and replays it then.
+the console's own job. It pushes them straight into the app's console
+model, which exists from page load, so boot output is there when the
+Terminal first opens.
 [`lib/consoleModel.ts`](../../app/web2/src/lib/consoleModel.ts) makes
 entries from those records:
 
@@ -923,7 +940,7 @@ entries from those records:
 | `command` | the submitted input (shown after a `›` glyph) |
 | `text` | a job's printed lines, or a `Module.print` line outside a job |
 | `stderr` | a `printErr` line, or another client's `error` annotation |
-| `value` | the text between `value_begin` and `value`; with the value's tagged JSON, an object renders as a link to its node in the command browser and a list or map expands |
+| `value` | the text between `value_begin` and `value`; with the value's tagged JSON, an object renders as a link to its node in the command browser and a list or map expands (nested items as SYSTEM prints them) |
 | `error` | an `error` annotation of the console's job, at its place in the output |
 | `echo` | a statement another surface ran for the user (dimmed) |
 
@@ -944,7 +961,7 @@ follows only while the view is at the bottom. While a job runs longer than
 | Enter | submit, unless `shell.needs_continuation(text)` says the block continues (then a newline) |
 | Shift+Enter | newline |
 | ↑ / ↓ | history, on the first / last line |
-| Tab | completion: a lone candidate or a longer common prefix at once, else a popup of `shell.complete(line, cursor, true)` candidates coloured by kind, with their doc |
+| Tab | completion: a lone candidate or a longer common prefix at once, else a popup of `shell.complete(line, cursor, true)` candidates coloured by kind, with their doc (the answer the command browser's sync asked for is reused while the text and cursor are unchanged) |
 | Ctrl+C | copy a selection (input or output); otherwise interrupt |
 | Ctrl+L | clear the output |
 | Mod+F | find in the output |
