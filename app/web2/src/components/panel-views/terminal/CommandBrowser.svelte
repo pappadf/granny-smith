@@ -701,16 +701,15 @@
     outline: 1px solid var(--gs-focus, #0969da);
     outline-offset: -1px;
   }
-  /* A section headline: small caps over its rows, which share its indent. */
+  /* A section headline: a bold row over its rows, which share its indent. */
   .cmd-row.kind-section > .cmd-line {
     padding-top: 6px;
   }
+  /* Same size as the rows under it, set apart by weight only. */
   .cmd-row.kind-section .name {
-    font-size: 10px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--gs-fg-muted);
+    font-family: inherit;
+    color: var(--gs-fg-bright, var(--gs-fg));
   }
   .cmd-row.selected > .cmd-line {
     background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
