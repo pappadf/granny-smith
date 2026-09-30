@@ -35,6 +35,7 @@
 #define GS_MACHINES_TNT_H
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
+#include "davbus.h" // the DAVbus sound cell (core/peripherals/)
 #include "display.h"
 #include "display_class.h" // scanout descriptor (control.c presents through it)
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
@@ -260,26 +261,10 @@ typedef struct tnt_gc {
 #define TNT_INT_VBL 26
 
 // === AWACS state (awacs.c) ==================================================
-// The Grand Central sound face: five 32-bit LE registers on $10 centres
-// at island +$14000, the shared ASCO codec shadows behind the NEWECMD
-// command port, and the DBDMA channel-8 pacing state (a frame-credit
-// gate the periodic tick refills exact-rationally off scheduler cycles).
-typedef struct tnt_awacs {
-    uint32_t sound_ctrl; // +$00: subframe selects, rate field (bits 10:8)
-    uint32_t codec_ctrl; // +$10: last command (NEWECMD reads back clear)
-    uint32_t byte_swap; // +$40: bit 0 = sample data is little-endian
-    uint16_t codec[AWACS_CODEC_REGS]; // expanded-command shadows
-    // Channel-8 pacing (exact-rational: frames = cycles*rate/freq)
-    uint64_t tick_cycles; // cycle stamp of the last credit grant
-    uint64_t tick_frac; // running remainder of (elapsed*rate) mod freq
-    uint32_t credit; // frames the port may consume before the next grant
-    uint8_t tick_armed; // the pacing event is pending (mirrors scheduler)
-    uint8_t partial[4]; // sub-frame byte assembly across port calls
-    uint32_t partial_len;
-    // Diagnostics (machine.sound)
-    uint64_t frames_pushed; // frames rendered into the host stream
-    int32_t peak; // loudest |sample| pushed since power-on
-} tnt_awacs_t;
+// The Grand Central sound face is the shared DAVbus cell (core/peripherals/
+// davbus.c): the register block and channel-8 pacing state are its davbus_t,
+// checkpointed whole; awacs.c wires it to this family.
+typedef davbus_t tnt_awacs_t;
 
 // === Control video state (control.c) ========================================
 // Control (343S1154) is PCI device 11 on the Chaos display bus: a 4 KB
@@ -358,8 +343,7 @@ typedef struct tnt_state {
     struct av_cuda *cuda;
     struct dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
     tnt_awacs_t awacs;
-    struct object *snd_object; // machine.sound node (awacs.c)
-    int16_t *snd_stage; // gain-applied staging frames for audio_out_push
+    davbus_host_t awacs_host; // the cell's wiring (awacs.c; not checkpointed)
 
     // Control video (control.c): register/RaDACal state is checkpointed;
     // the VRAM blob follows it in the tail; the display descriptor and its

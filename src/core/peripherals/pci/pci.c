@@ -63,6 +63,10 @@ struct pci_bus {
     pci_window_t window[PCI_MAX_WINDOWS];
     int window_count;
     bool lane_reverse; // the bridge is reversing byte lanes (pci.h)
+    // The bridge's master-abort policy (pci_bus_set_abort_policy): NULL =
+    // every unclaimed access faults, the Bandit contract.
+    bool (*abort_faults)(void *ctx, bool write);
+    void *abort_ctx;
 };
 
 struct pci_root {
@@ -307,6 +311,11 @@ static uint32_t window_pci_addr(const pci_window_t *w, uint32_t offset) {
 
 static void window_fault(const pci_window_t *w, uint32_t offset, bool write) {
     LOG(4, "%s: unclaimed %s $%08X", w->what, write ? "write" : "read", w->map_base + offset);
+    // A bridge that terminates master aborts quietly (Grackle with TEA/MCP
+    // reporting off) still reads all-ones and drops the write; it just
+    // does not take the machine check.
+    if (w->bus->abort_faults && !w->bus->abort_faults(w->bus->abort_ctx, write))
+        return;
     memory_signal_bus_error(w->map_base + offset, write);
 }
 
@@ -423,6 +432,13 @@ void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on) {
         return;
     bus->lane_reverse = on;
     LOG(1, "%s: byte lanes %s", bus->name, on ? "REVERSED (little-endian client)" : "straight (big-endian)");
+}
+
+void pci_bus_set_abort_policy(pci_bus_t *bus, bool (*faults)(void *ctx, bool write), void *ctx) {
+    if (!bus)
+        return;
+    bus->abort_faults = faults;
+    bus->abort_ctx = ctx;
 }
 
 bool pci_bus_lane_reverse(const pci_bus_t *bus) {

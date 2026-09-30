@@ -132,6 +132,14 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window);
 void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on);
 bool pci_bus_lane_reverse(const pci_bus_t *bus);
 
+// A window access no seated device claims is a master abort.  By default
+// it takes the recoverable transfer error (memory_signal_bus_error) — the
+// Bandit/BART contract.  A bridge whose error reporting is programmable
+// installs `faults`: it is asked on every abort and returns true to
+// signal the error, false to terminate quietly (reads all-ones, writes
+// dropped — Grackle with PICR1 TEA_EN/MCP_EN clear, MPC106UM §9.3.3.3).
+void pci_bus_set_abort_policy(pci_bus_t *bus, bool (*faults)(void *ctx, bool write), void *ctx);
+
 // Seat a device at `device_num` (its IDSEL AD line).  The bus does NOT
 // take ownership of devices registered this way by the family — only of
 // the ones its own slot walk created through a card factory.
