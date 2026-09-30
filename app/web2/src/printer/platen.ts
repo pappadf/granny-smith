@@ -6,11 +6,14 @@
 // module, platen-<version>.js beside main.mjs, is fetched only now — and
 // hands it the wasm memory and the control block's address.  The worker
 // then talks to the bridge through shared memory only; what comes back
-// here is each finished PDF, which is downloaded at once as
-// <job id>-<title>.pdf (the blob + anchor path gs_download uses).
+// here is each finished PDF, named <job id>-<title>.pdf, which opens in the
+// viewer dialog (the browser's own PDF viewer, state/printer.svelte.ts) --
+// or, where the browser has no inline viewer, downloads at once (the blob
+// + anchor path gs_download uses).
 
 import { getModule } from '@/bus/emulator';
 import { showNotification } from '@/state/toasts.svelte';
+import { showPrintedDocument } from '@/state/printer.svelte';
 import type { DocumentMsg } from './platenRing';
 
 let worker: Worker | null = null;
@@ -59,7 +62,7 @@ function start(version: string): void {
         attach(ctrl);
       }
     } else if (m.type === 'document') {
-      download(m as DocumentMsg);
+      deliver(m as DocumentMsg);
     } else if (m.type === 'lost') {
       const reason = (m as { reason?: string }).reason ?? 'unknown';
       console.warn('[platen] interpreter worker lost:', reason);
@@ -87,6 +90,24 @@ function attach(ctrl: number): void {
   // script to read HEAD/TAIL/STATUS when something stalls.
   (window as unknown as { __platen?: unknown }).__platen = { memory, ctrl, worker };
   worker.postMessage({ type: 'attach', memory, ctrl });
+}
+
+// A finished document: the viewer where the browser can show a PDF inline
+// (navigator.pdfViewerEnabled; a browser that predates the property is
+// taken to have one), else the download.  Opening a tab here is no option:
+// the document arrives long after the user's last click, so a popup
+// blocker would stop it.
+function deliver(doc: DocumentMsg): void {
+  if (navigator.pdfViewerEnabled === false) {
+    download(doc);
+    return;
+  }
+  try {
+    showPrintedDocument(doc);
+  } catch (e) {
+    console.error('[platen] cannot show the document:', e);
+    download(doc);
+  }
 }
 
 // The automatic download of a finished document.

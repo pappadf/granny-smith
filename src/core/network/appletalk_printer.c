@@ -11,6 +11,7 @@
 #include "log.h"
 #include "platform.h"
 #include "scheduler.h"
+#include "event/gs_event.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -362,9 +363,14 @@ static void pap_printer_set_status_fmt(const char *fmt, ...) {
         return;
     if (written > PRINTER_STATUS_MAX)
         written = PRINTER_STATUS_MAX;
-    memcpy(g_printer.status_text, buffer, (size_t)written);
-    g_printer.status_text[written] = '\0';
+    buffer[written] = '\0';
+    bool changed = strcmp(buffer, g_printer.status_text) != 0;
+    memcpy(g_printer.status_text, buffer, (size_t)written + 1);
     g_printer.status_len = (uint8_t)written;
+    // The page's status bar shows what the printer is doing: announced on
+    // a change only (a job's status is re-set on every acknowledgement)
+    if (changed)
+        gs_event_emit_text(GS_EVENT_NOTIFY, "printer_status", "status", g_printer.status_text);
 }
 
 // Sets the status string to the default idle message.
