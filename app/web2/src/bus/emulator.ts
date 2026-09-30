@@ -494,19 +494,14 @@ export function gsErrorText(res: unknown): string {
 
 // --- Shell line surface (Terminal pane only) ----------------------------
 //
-// The Terminal view is the single caller of `shell.run` — every other
-// component reaches the core through typed object-model paths via
-// gsEval. An ESLint rule (eslint.config.js) pins this; only the console (state/console.svelte.ts) may construct shell-line
-// strings.
+// Only the console (state/console.svelte.ts) runs free-form shell lines,
+// through gsEvalLine below; every other component reaches the core through
+// typed object-model paths via gsEval (an ESLint rule in eslint.config.js
+// keeps bus/* off `shell.run`).
 
+// The prompt, from the last line's result (seeded by seedPrompt).
 let cachedPrompt: string | null = null;
 
-// Execute a free-form shell line. Returns 0 on success, -1 on dispatch
-// failure. The new prompt is returned from `shell.run` as a V_STRING and
-// cached for getRuntimePrompt(). This is the *only* call to `shell.run`
-// allowed in src/bus/** — the no-restricted-syntax rule pins that, and
-// the disable below is the single sanctioned exception (forwarded from
-// state/console.svelte.ts, the only legitimate caller).
 // The terminal is its own client: a run it starts (`scheduler.run`) is
 // its mode, and its Ctrl-C stops that and nothing else.
 export const CLIENT_TERMINAL = 2;
@@ -523,7 +518,7 @@ export async function gsEvalLine(line: string): Promise<number> {
   if (!moduleReady || !mailbox) return -1;
   const text = (line ?? '').toString();
   if (!text.trim()) return 0;
-  const stopWatch = watchRequest('shell.run');
+  const stopWatch = watchRequest('terminal line');
   try {
     const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
       foregroundJob = id;
@@ -547,11 +542,6 @@ export async function gsEvalLine(line: string): Promise<number> {
   }
 }
 
-// True while a terminal line is still running.
-export function hasForegroundJob(): boolean {
-  return foregroundJob !== null;
-}
-
 export function getRuntimePrompt(): string | null {
   return cachedPrompt;
 }
@@ -559,7 +549,7 @@ export function getRuntimePrompt(): string | null {
 // Seed the cached prompt from the C-side `shell.prompt` attribute.
 // Called by the console on mount so the first prompt is visible
 // before any user input. After this, gsEvalLine keeps cachedPrompt in
-// sync via the return value of `shell.run`.
+// sync from each line's result.
 export async function seedPrompt(): Promise<void> {
   if (!moduleReady) return;
   const r = await gsEval('shell.prompt');

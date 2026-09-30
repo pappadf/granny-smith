@@ -221,16 +221,12 @@ describe('ConsoleInput for the command browser', () => {
     input.view.dispatch({ selection: { anchor: 8 } });
     input.replaceToken('machine.cpu.pc');
     expect(input.text()).toBe('echo machine.cpu.pc + 1');
-    expect(input.getState()).toEqual({ text: 'echo machine.cpu.pc + 1', cursor: 19 });
+    expect(input.view.state.selection.main.head).toBe(19);
     expect(seen[seen.length - 1]).toEqual(['echo machine.cpu.pc + 1', 19]);
   });
 
-  it('restores a snapshot and focuses at the end', () => {
+  it('focuses at the end', () => {
     type('abc');
-    const snap = input.getState();
-    input.replaceToken('machine.');
-    input.restore(snap);
-    expect(input.getState()).toEqual({ text: 'abc', cursor: 3 });
     input.view.dispatch({ selection: { anchor: 0 } });
     input.focusEnd();
     expect(input.view.state.selection.main.head).toBe(3);

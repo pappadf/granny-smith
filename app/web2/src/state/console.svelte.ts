@@ -116,7 +116,7 @@ async function pump(): Promise<void> {
       const { text, spans } = queue.shift()!;
       consoleState.queued = queue.length;
       const m = consoleModel();
-      m.command(text, consoleState.prompt, spans);
+      m.command(text, spans);
       // `clear` is the console's own: no round trip.
       if (text.trim() === 'clear') {
         m.clear();

@@ -51,9 +51,8 @@ export default [
     // and route them to the right files via the source-pattern.
     //
     //   - `shell.run`: only the console (state/console.svelte.ts) may construct
-    //     shell-line strings; bus/* uses typed object-model paths.
-    //     gsEvalLine in bus/emulator.ts is the one legitimate exception
-    //     and carries a local eslint-disable-next-line.
+    //     shell-line strings, and it runs them as script jobs through
+    //     gsEvalLine; bus/* uses typed object-model paths.
     //   - `toast()`: the legacy alias was retired in favour of
     //     `showNotification(msg, severity)`.
     files: ['src/**/*.{ts,svelte,svelte.ts}'],

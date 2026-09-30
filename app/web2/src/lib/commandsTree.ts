@@ -1,12 +1,13 @@
 // The Terminal's command browser, as data: a STRUCTURAL view of the one
-// object model -- levels are path segments, exactly as they are typed -- with
-// every row generated from meta.members.  Nothing here is hand-maintained:
-// the keywords come from shell.keywords, the
+// object model -- levels are path segments, exactly as they are typed.
+// Nothing here is hand-maintained: member rows come from meta.members, the
+// commands from shell.command.list, the keywords from shell.keywords, the
 // aliases from shell.alias.list, and a row's one-line description, type and
 // usage text from the model (docs/internals/core/object/object-model.md).
+// Only the sections that group them are fixed.
 //
 // Levels load lazily and are cached per node path; the cache is invalidated
-// by the core events that change what a level holds (invalidateFor).
+// by the core events that change what a level holds (invalidationFor).
 
 import { gsEval, isModuleReady } from '@/bus/emulator';
 import { loadMembers, type MemberInfo, type TypeDescriptor } from '@/bus/systemTree';
@@ -29,7 +30,7 @@ export interface BrowserRow {
   path: string; // the full path ('' for synthetic rows)
   doc: string;
   category: string; // basic | advanced | internal
-  insert: string; // what selecting the row writes over the path token at the cursor
+  insert: string; // what inserting the row writes over the path token at the cursor
   expandable: boolean;
   type?: TypeDescriptor; // attr
   readonly?: boolean; // attr
@@ -205,7 +206,7 @@ function entryRow(name: string, path: string): BrowserRow {
 }
 
 // The rows under `row`.
-export async function childRows(row: BrowserRow): Promise<BrowserRow[]> {
+async function childRows(row: BrowserRow): Promise<BrowserRow[]> {
   switch (row.kind) {
     case 'collection':
       return collectionRows(row.path);
@@ -326,6 +327,14 @@ function section(key: string, name: string, doc: string): BrowserRow {
   };
 }
 
+// The Aliases sub-group an alias is listed under.
+export function aliasGroupKey(a: AliasInfo): string {
+  if (!a.builtin) return 'group:aliases:user';
+  return a.path.startsWith('debug.mac.globals.')
+    ? 'group:aliases:globals'
+    : 'group:aliases:builtin';
+}
+
 function group(key: string, name: string, doc: string): BrowserRow {
   return {
     key,
@@ -342,7 +351,7 @@ function group(key: string, name: string, doc: string): BrowserRow {
 // The rows of a synthetic group: Aliases (User, Built-in, and a collapsed Mac
 // globals subgroup for built-ins over debug.mac.globals) and Language
 // (shell.keywords).
-export async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
+async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
   if (row.key === 'group:language') {
     const kws = await gsEval('shell.keywords');
     if (!Array.isArray(kws)) return [];
@@ -369,13 +378,7 @@ export async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
         'Built-in aliases for the Mac low-memory globals',
       ),
     ];
-  const aliases = await loadAliases();
-  const pick =
-    row.key === 'group:aliases:user'
-      ? aliases.filter((a) => !a.builtin)
-      : row.key === 'group:aliases:globals'
-        ? aliases.filter((a) => a.builtin && a.path.startsWith('debug.mac.globals.'))
-        : aliases.filter((a) => a.builtin && !a.path.startsWith('debug.mac.globals.'));
+  const pick = (await loadAliases()).filter((a) => aliasGroupKey(a) === row.key);
   return pick.map((a) => ({
     key: `alias:${a.name}`,
     kind: 'alias' as const,
@@ -447,11 +450,6 @@ export async function loadUsageInfo(path: string): Promise<UsageInfo | null> {
     signature: typeof o.signature === 'string' ? o.signature : '',
     argSpans: spans,
   };
-}
-
-// The usage text of a leaf (shell.usage), or '' when it has none.
-export async function loadUsage(path: string): Promise<string> {
-  return (await loadUsageInfo(path))?.text ?? '';
 }
 
 // Type text of an attribute row: kind plus hex / bin / path, as usage shows it.

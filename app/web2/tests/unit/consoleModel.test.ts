@@ -43,7 +43,7 @@ beforeEach(() => {
 describe('ConsoleModel entries', () => {
   it('renders each entry kind', () => {
     const m = make();
-    m.command('echo hi', 'gs>');
+    m.command('echo hi');
     m.push({ kind: 'job_start', job: 7 });
     m.push({ kind: 'output', job: 7, text: 'hi\n' });
     m.push({ kind: 'job_end', job: 7 });
@@ -58,7 +58,6 @@ describe('ConsoleModel entries', () => {
       ['stderr', 'warning: x'],
       ['echo', 'machine.cpu.d0 = 0x1'],
     ]);
-    expect(shown[0].prompt).toBe('gs>');
     expect(shown[1].job).toBe(7);
   });
 

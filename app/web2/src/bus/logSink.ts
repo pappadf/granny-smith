@@ -25,7 +25,8 @@ let consoleSink: ((r: ConsoleRecord) => void) | null = null;
 const BACKLOG_MAX = 2000;
 let backlog: ConsoleRecord[] = [];
 
-// The console registers itself on mount; null on unmount.
+// The console model registers itself when it is created (state/console);
+// null drops it (resetConsole).
 export function setConsoleSink(fn: ((r: ConsoleRecord) => void) | null): void {
   consoleSink = fn;
   if (fn && backlog.length) {

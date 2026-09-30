@@ -62,9 +62,6 @@ export interface ConsoleInput {
   setText(text: string): void;
   // Replace the path token at the cursor (the command browser's write).
   replaceToken(text: string): void;
-  // The text and cursor, and putting them back (the browser's snapshot).
-  getState(): { text: string; cursor: number };
-  restore(s: { text: string; cursor: number }): void;
   // Focus with the cursor at the end.
   focusEnd(): void;
   // Colour the input with `spans` (shell.highlight) if it still holds
@@ -351,8 +348,6 @@ export function createConsoleInput(
       const r = replaceTokenAt(view.state.doc.toString(), view.state.selection.main.head, t);
       setDoc(r.text, r.cursor);
     },
-    getState: () => ({ text: view.state.doc.toString(), cursor: view.state.selection.main.head }),
-    restore: (st) => setDoc(st.text, Math.min(st.cursor, st.text.length)),
     focusEnd: () => {
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();

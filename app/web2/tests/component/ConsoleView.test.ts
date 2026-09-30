@@ -99,7 +99,7 @@ describe('ConsoleView', () => {
   it('renders entries by kind', async () => {
     const { container } = render(ConsoleView);
     const m = consoleModel();
-    m.command('echo hi', 'gs>');
+    m.command('echo hi');
     job(1, [{ kind: 'output', job: 1, text: 'hi\n' }]);
     m.push({ kind: 'stderr', line: 'warn' });
     m.echo('machine.cpu.d0 = 0x1');
@@ -296,7 +296,7 @@ describe('ConsoleView scrolling', () => {
     Object.defineProperty(out, 'clientHeight', { value: 100, configurable: true });
     Object.defineProperty(out, 'scrollTop', { value: 100, writable: true, configurable: true });
     await fireEvent.scroll(out);
-    consoleModel().command('echo more', 'gs>');
+    consoleModel().command('echo more');
     await waitFor(() => expect(entries(container).length).toBe(1));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     expect(out.scrollTop).toBe(100);

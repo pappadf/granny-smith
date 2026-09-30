@@ -172,8 +172,6 @@ function fakeInput() {
     writes,
     replaceToken: vi.fn((t: string) => void writes.push(t)),
     focusEnd: vi.fn(),
-    getState: vi.fn(() => ({ text: 'orig', cursor: 4 })),
-    restore: vi.fn(),
   };
   registerConsoleInput(api as ConsoleInputApi);
   return api;
@@ -364,18 +362,14 @@ describe('CommandBrowser ↔ console', () => {
     expect(input.writes).toEqual([]);
   });
 
-  it('Esc restores the input as it was when the browser took focus', async () => {
+  it('Esc with the pane closed hands focus to the console, writing nothing', async () => {
     const input = fakeInput();
     const { container } = render(CommandBrowser);
     const tree = container.querySelector('.cmd-tree') as HTMLElement;
-    await fireEvent.focusIn(tree);
-    await fireEvent.click((await row(container, 'machine')).querySelector('.cmd-line')!);
-    await fireEvent.dblClick((await row(container, 'machine')).querySelector('.cmd-line')!);
-    await fireEvent.dblClick((await row(container, 'cpu')).querySelector('.cmd-line')!);
-    expect(input.getState).toHaveBeenCalledTimes(1); // snapshot on the first write only
+    await row(container, 'machine');
     await fireEvent.keyDown(tree, { key: 'Escape' });
-    expect(input.restore).toHaveBeenCalledWith({ text: 'orig', cursor: 4 });
-    expect(input.focusEnd).toHaveBeenCalled();
+    expect(input.focusEnd).toHaveBeenCalledTimes(1);
+    expect(input.writes).toEqual([]);
   });
 
   it('Enter on a leaf inserts it; Tab hands focus to the console', async () => {
@@ -396,16 +390,11 @@ describe('CommandBrowser ↔ console', () => {
     fakeInput();
     const { container } = render(CommandBrowser);
     await row(container, 'machine');
-    publishCompletion(
-      'machine.cpu.st',
-      14,
-      {
-        candidates: [{ text: 'step', kind: 'method', doc: '' }],
-        span: { start: 12, end: 14 },
-        context: { method: null, argIndex: null, argName: null },
-      },
-      false,
-    );
+    publishCompletion('machine.cpu.st', 14, {
+      candidates: [{ text: 'step', kind: 'method', doc: '' }],
+      span: { start: 12, end: 14 },
+      context: { method: null, argIndex: null, argName: null },
+    });
     const step = await row(container, 'step');
     await waitFor(() => expect(step.classList.contains('selected')).toBe(true));
     expect(step.classList.contains('match')).toBe(true);
@@ -417,27 +406,17 @@ describe('CommandBrowser ↔ console', () => {
     fakeInput();
     const { container } = render(CommandBrowser);
     await row(container, 'machine');
-    publishCompletion(
-      'machine.cpu.st',
-      14,
-      {
-        candidates: [{ text: 'step', kind: 'method', doc: '' }],
-        span: { start: 12, end: 14 },
-        context: { method: null, argIndex: null, argName: null },
-      },
-      false,
-    );
+    publishCompletion('machine.cpu.st', 14, {
+      candidates: [{ text: 'step', kind: 'method', doc: '' }],
+      span: { start: 12, end: 14 },
+      context: { method: null, argIndex: null, argName: null },
+    });
     await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
-    publishCompletion(
-      '',
-      0,
-      {
-        candidates: [],
-        span: { start: 0, end: 0 },
-        context: { method: null, argIndex: null, argName: null },
-      },
-      false,
-    );
+    publishCompletion('', 0, {
+      candidates: [],
+      span: { start: 0, end: 0 },
+      context: { method: null, argIndex: null, argName: null },
+    });
     await waitFor(() => expect(container.querySelector('.details')).toBeNull());
   });
 
@@ -445,16 +424,11 @@ describe('CommandBrowser ↔ console', () => {
     fakeInput();
     const { container } = render(CommandBrowser);
     await row(container, 'machine');
-    publishCompletion(
-      'machine.cpu.insert /a.img writable=',
-      35,
-      {
-        candidates: [],
-        span: { start: 35, end: 35 },
-        context: { method: 'machine.cpu.insert', argIndex: 1, argName: 'writable' },
-      },
-      false,
-    );
+    publishCompletion('machine.cpu.insert /a.img writable=', 35, {
+      candidates: [],
+      span: { start: 35, end: 35 },
+      context: { method: 'machine.cpu.insert', argIndex: 1, argName: 'writable' },
+    });
     const ins = await row(container, 'insert');
     await waitFor(() =>
       expect(container.querySelector('.details .usage-arg')?.textContent).toBe('[writable]'),
@@ -462,23 +436,18 @@ describe('CommandBrowser ↔ console', () => {
     expect(ins.classList.contains('selected')).toBe(true);
   });
 
-  it("keeps its own selection when the input change was the browser's", async () => {
+  it('keeps the inserted row selected when the console echoes it back', async () => {
     fakeInput();
     const { container } = render(CommandBrowser);
     await open(container, 'machine');
     await open(container, 'cpu');
     const pc = await row(container, 'pc');
     await fireEvent.click(pc.querySelector('.cmd-line')!);
-    publishCompletion(
-      'machine.cpu.pc',
-      14,
-      {
-        candidates: [{ text: 'pc', kind: 'attr', doc: '' }],
-        span: { start: 12, end: 14 },
-        context: { method: null, argIndex: null, argName: null },
-      },
-      true,
-    );
+    publishCompletion('machine.cpu.pc', 14, {
+      candidates: [{ text: 'pc', kind: 'attr', doc: '' }],
+      span: { start: 12, end: 14 },
+      context: { method: null, argIndex: null, argName: null },
+    });
     await waitFor(() => expect(pc.classList.contains('match')).toBe(true));
     expect(pc.classList.contains('selected')).toBe(true);
   });

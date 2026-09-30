@@ -82,18 +82,17 @@
     consoleClear,
     refreshPrompt,
   } from '@/state/console.svelte';
-  import { commandsText, jobOutputText } from '@/lib/consoleModel';
+  import { commandsText, jobOutputText, normalisePaste } from '@/lib/consoleModel';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { ConsoleHistory, copyText } from '@/lib/consoleHistory';
   import type { ConsoleInput } from './ConsoleInput';
-  import { registerConsoleInput, revealInBrowser, isBrowserWriting } from './terminalBridge';
+  import { registerConsoleInput, revealInBrowser } from './terminalBridge';
   import { publishCompletion } from '@/state/terminalSync.svelte';
   import { loadUsageInfo, type UsageInfo } from '@/lib/commandsTree';
   import { utf8ToUtf16 } from '@/lib/utf8';
   import { loadHighlight, highlightParts, type HlSpan } from '@/lib/highlight';
   import type { CompletionResult } from '@/bus/emulator';
   import { revealInSystem } from '@/state/system.svelte';
-  import { normalisePaste } from '@/lib/consoleModel';
 
   let outputEl = $state<HTMLDivElement | null>(null);
   let inputHost = $state<HTMLDivElement | null>(null);
@@ -336,10 +335,6 @@
     }
   }
 
-  // Copy: the text as displayed.  Entries render their text verbatim and
-  // the prompt glyph is CSS (not in the selection), so the native copy is
-  // right; nothing to override.
-
   // A click that selects nothing focuses the input.
   function onOutputMouseUp(ev: MouseEvent): void {
     if (ev.button !== 0) return;
@@ -368,7 +363,6 @@
   // the cursor is in a method's arguments -- becomes the signature hint.
   const SYNC_DELAY_MS = 40;
   let syncTimer: ReturnType<typeof setTimeout> | null = null;
-  let syncFromBrowser = true;
   let syncSeq = 0;
   let lastResult: CompletionResult | null = null;
 
@@ -397,18 +391,14 @@
 
   function onInputChange(text: string, cursor: number): void {
     requestHighlight(text);
-    // A burst counts as the browser's only if every change in it was.
-    syncFromBrowser = syncFromBrowser && isBrowserWriting();
     if (syncTimer) clearTimeout(syncTimer);
     syncTimer = setTimeout(() => {
       syncTimer = null;
-      const fromBrowser = syncFromBrowser;
-      syncFromBrowser = true;
       const seq = ++syncSeq;
       void tabComplete(text, cursor).then((r) => {
         if (destroyed || seq !== syncSeq) return; // a newer change won
         lastResult = r;
-        publishCompletion(text, cursor, r, fromBrowser);
+        publishCompletion(text, cursor, r);
         void updateHint(r);
       });
     }, SYNC_DELAY_MS);

@@ -15,9 +15,8 @@
   //   pane's Insert button -- and replaces the path token at the console's
   //   cursor with the row's text (`path.`, `path[`, `path["`, `path[i].`,
   //   `path ` for a method, `path` for an attribute, `$name`, `keyword `),
-  //   then hands focus to the console.  The first insert after the browser
-  //   takes focus snapshots the input; Esc (with the pane closed) restores
-  //   it and returns focus to the console.  Tab hands focus over too.
+  //   then hands focus to the console.  Esc (with the pane closed) and Tab
+  //   hand focus to the console too.
   //
   // It follows the console:
   // - As the user types, the console's shell.complete answer
@@ -27,6 +26,7 @@
   //   current argument marked in its usage.
   import { onDestroy, untrack } from 'svelte';
   import {
+    aliasGroupKey,
     expand,
     firstSentence,
     invalidate,
@@ -41,15 +41,8 @@
     type UsageInfo,
   } from '@/lib/commandsTree';
   import { onCoreEvent, whenModuleReady } from '@/bus/emulator';
-  import {
-    focusConsole,
-    pathPrefixes,
-    registerBrowserReveal,
-    restoreConsole,
-    snapshotConsole,
-    writeToConsole,
-    type InputState,
-  } from './terminalBridge';
+  import { focusConsole, registerBrowserReveal, writeToConsole } from './terminalBridge';
+  import { pathPrefixes } from '@/lib/objectPath';
   import { terminalSync } from '@/state/terminalSync.svelte';
   import { onConsoleJobDone } from '@/state/console.svelte';
   import { completionFocus } from '@/lib/pathToken';
@@ -214,30 +207,11 @@
 
   // --- writing to the console ------------------------------------------------
 
-  // The input as it was when the browser took focus (Esc puts it back).
-  let snapshotArmed = false;
-  let snapshot: InputState | null = null;
-
-  function onFocusIn(ev: FocusEvent): void {
-    if (listEl && ev.relatedTarget instanceof Node && listEl.contains(ev.relatedTarget)) return;
-    snapshotArmed = true;
-    snapshot = null;
-  }
-
-  function write(row: BrowserRow): void {
-    if (!row.insert) return;
-    if (snapshotArmed) {
-      snapshot = snapshotConsole();
-      snapshotArmed = false;
-    }
-    writeToConsole(row.insert);
-  }
-
   // Insert a row into the console (explicit: double-click, Enter, Insert)
   // and hand focus over, so typing carries on where it was written.
   function insert(row: BrowserRow): void {
     if (!row.insert) return;
-    write(row);
+    writeToConsole(row.insert);
     focusConsole();
   }
 
@@ -372,12 +346,17 @@
     return hits;
   }
 
+  // Each console update starts a follow; one that a newer update overtook
+  // (it awaits the model) stops before it marks or selects anything.
+  let followSeq = 0;
+
   async function follow(): Promise<void> {
+    const seq = ++followSeq;
+    const stale = () => seq !== followSeq;
     const r = terminalSync.result;
-    const fromBrowser = terminalSync.fromBrowser;
     // An emptied input (a command was run, or the line cleared) has nothing
     // to document: close the pane and drop the marks.
-    if (!fromBrowser && terminalSync.line.trim() === '') {
+    if (terminalSync.line.trim() === '') {
       detailsOpen = false;
       matchKeys = new Set();
       otherKeys = new Set();
@@ -395,56 +374,55 @@
     );
 
     if (f.alias !== null) {
-      await followAlias(f.alias, f.names, fromBrowser);
+      await followAlias(f.alias, f.names, stale);
       return;
     }
 
     // Open the levels of the token; mark the children matching the partial.
     const parentRow = f.parent ? await openTo(f.parent) : undefined;
+    if (stale()) return;
     if (f.parent && !parentRow) {
       mark([], [], '');
       return;
     }
     const level = parentRow ? (children[parentRow.key] ?? []) : await rootMembers();
+    if (stale()) return;
     const hits = mark(level, f.names, f.partial);
 
     const method = r.context.method;
     if (method) {
       // In a method's arguments: that method, with the argument marked.
       const row = await openTo(method);
-      if (row) {
+      if (row && !stale()) {
         await select(row, r.context.argIndex);
         scrollToSelected();
       }
       return;
     }
-    if (!fromBrowser && f.partial && hits.length) {
+    if (f.partial && hits.length) {
       const exact = hits.find((h) => bare(h.name) === f.partial) ?? hits[0];
       if (!parentRow) await sectionOf(exact.name, true);
+      if (stale()) return;
       await select(exact);
       scrollToSelected();
     }
   }
 
-  async function followAlias(name: string, names: string[], fromBrowser: boolean) {
+  async function followAlias(name: string, names: string[], stale: () => boolean) {
     const group = roots.find((r) => r.key === 'group:aliases');
     if (!group) return;
     await open(group);
     const all = await loadAliases();
+    if (stale()) return;
     const pick =
       all.find((a) => a.name === name) ??
       (names.length === 1 ? all.find((a) => a.name === names[0]) : undefined);
     if (!pick) return;
-    const sub = !pick.builtin
-      ? 'group:aliases:user'
-      : pick.path.startsWith('debug.mac.globals.')
-        ? 'group:aliases:globals'
-        : 'group:aliases:builtin';
-    const subRow = (children[group.key] ?? []).find((r) => r.key === sub);
+    const subRow = (children[group.key] ?? []).find((r) => r.key === aliasGroupKey(pick));
     if (!subRow) return;
     await open(subRow);
     const row = (children[subRow.key] ?? []).find((r) => r.key === `alias:${pick.name}`);
-    if (row && !fromBrowser) {
+    if (row && !stale()) {
       await select(row);
       scrollToSelected();
     }
@@ -471,8 +449,6 @@
         closeDetails();
         return;
       }
-      if (snapshot) restoreConsole(snapshot);
-      snapshot = null;
       focusConsole();
       return;
     }
@@ -599,14 +575,7 @@
 </script>
 
 <div class="cmd-browser">
-  <ul
-    class="cmd-tree"
-    role="tree"
-    tabindex="0"
-    onkeydown={onKey}
-    onfocusin={onFocusIn}
-    bind:this={listEl}
-  >
+  <ul class="cmd-tree" role="tree" tabindex="0" onkeydown={onKey} bind:this={listEl}>
     {#each flat as { row, depth } (row.key)}
       {@const open = isOpen(row)}
       {@const selected = selectedKey === row.key}

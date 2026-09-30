@@ -38,8 +38,6 @@ export interface ConsoleEntry {
   readonly job: number | null;
   // `value`: the tagged JSON of the value (absent when truncated).
   readonly json?: unknown;
-  // `command`: the prompt the command was typed at.
-  readonly prompt?: string;
   // `command`: its syntax colours when it was submitted (shell.highlight,
   // UTF-16 offsets into `text`).
   readonly spans?: readonly HlSpan[];
@@ -91,8 +89,8 @@ export class ConsoleModel {
     return this.entries;
   }
 
-  command(text: string, prompt = '', spans?: readonly HlSpan[]): void {
-    this.add('command', text, null, undefined, prompt, spans);
+  command(text: string, spans?: readonly HlSpan[]): void {
+    this.add('command', text, null, undefined, spans);
   }
 
   echo(text: string): void {
@@ -204,12 +202,10 @@ export class ConsoleModel {
     text: string,
     job: number | null,
     json?: unknown,
-    prompt?: string,
     spans?: readonly HlSpan[],
   ) {
     const e: ConsoleEntry = { id: this.nextId++, kind, text, job };
     if (json !== undefined) (e as { json?: unknown }).json = json;
-    if (prompt !== undefined) (e as { prompt?: string }).prompt = prompt;
     if (spans?.length) (e as { spans?: readonly HlSpan[] }).spans = spans;
     this.pending.push(e);
     if (!this.scheduled) {
