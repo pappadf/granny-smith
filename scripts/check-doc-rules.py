@@ -66,10 +66,6 @@ BASELINE = {
     ("docs/internals/core/peripherals/mouse_control.md", "PCE"): 1,
     ("docs/internals/core/peripherals/mouse_control.md", "other emulator"): 2,
     ("docs/internals/core/peripherals/pci/cards/voodoo2.md", "other emulator"): 1,
-    ("docs/reference/hardware/iwm-floppy.md", "MAME"): 1,
-    ("docs/reference/hardware/rtc.md", "MAME"): 1,
-    ("docs/reference/hardware/rtc.md", "Mini vMac"): 1,
-    ("docs/reference/hardware/rtc.md", "PCE"): 1,
     ("docs/reference/machines/glue/se30.md", "MAME"): 1,
     ("docs/reference/machines/lisa/pram.md", "other emulator"): 1,
 }

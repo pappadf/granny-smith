@@ -18,11 +18,18 @@ Before the Mac II, video was not "a subsystem" so much as a fixed scan-out of a 
 |---|---|---|---|
 | Macintosh 128K / 512K / Plus | 1984–86 | IWM/PAL state machine reads main RAM | Built-in 9″ 512×342 1-bit |
 | Macintosh SE | 1987 | "BBU" gate array | Built-in 9″ 512×342 1-bit |
-| Macintosh SE/30 | 1989 | "GLUE" ASIC, same scan-out | Built-in 9″ 512×342 1-bit |
+| Macintosh SE/30 | 1989 | "GLUE" ASIC + video PALs, dedicated 64 KB VRAM | Built-in 9″ 512×342 1-bit |
 | Macintosh Classic / Classic II | 1990–91 | Same PAL/state-machine pattern | Built-in 9″ 512×342 1-bit |
 | Macintosh Portable | 1989 | Custom LCD controller | Active-matrix 640×400 1-bit |
 
-There is no programmable video device on these machines — the framebuffer is just a fixed range of main RAM scanned out at 60.15 Hz, and QuickDraw simply writes into it. Depth is fixed at 1 bit-per-pixel and there is no driver to load, no slot resource to enumerate, and no hardware CLUT.
+There is no programmable video device on these machines — the framebuffer is a fixed
+region scanned out at 60.15 Hz, and QuickDraw simply writes into it. Depth is fixed
+at 1 bit-per-pixel and there is no driver to load, no slot resource to enumerate, and
+no hardware CLUT. On the 128K through Plus the framebuffer is a fixed range of main
+RAM; the SE/30 is the exception, with 64 KB of dedicated VRAM and video PALs that
+emulate a 1-bit NuBus video card in slot `$E`
+([glue.md](../machines/glue/glue.md) §3.6, [se30.md](../machines/glue/se30.md)
+§"Video Subsystem").
 
 These machines could only get color (or more pixels) by adding a NuBus card — which on the SE/30 meant the **PDS** (Processor-Direct Slot) plus a third-party adapter card.
 
@@ -83,6 +90,9 @@ From the Mac II family forward, every "modular" Mac and every all-in-one with co
 
 ### 3.1 RBV — *RAM-Based Video* — Mac IIci, IIsi
 
+The chip's full reference page is [rbv.md](../machines/mdu/rbv.md); the IIsi's
+own wiring is [iisi.md](../machines/mdu/iisi.md) §8.
+
 - **Codenames:** RBV (chip) / Erickson (the IIsi variant). An experimental SE/30-class variant existed but did not ship.
 - **Used by:**
   - **Macintosh IIci** (1989) — the first machine to integrate video onto the logic board.
@@ -93,10 +103,16 @@ From the Mac II family forward, every "modular" Mac and every all-in-one with co
 
 ### 3.2 DAFB — *Direct Access Frame Buffer* — Quadra & early-AV family
 
+The MCU family's DAFB pages are [dafb.md](../machines/mcu/dafb.md) and
+[dafb-modes.md](../machines/mcu/dafb-modes.md); per-machine wiring is in the
+Quadra pages ([q700.md](../machines/mcu/q700.md) §3.3 and siblings).
+
 - **Codenames per machine:**
-  - **Quadra 700** — *Spike*
-  - **Quadra 900 / 950** — *Eclipse*
-  - **Quadra 800** — *Zydeco*
+  - **Quadra 700** — *Spike* ([q700.md](../machines/mcu/q700.md) §1.2)
+  - **Quadra 900** — *Eclipse* ([q900.md](../machines/mcu/q900.md) §1)
+  - **Quadra 950** — *Zydeco* — the same Eclipse board architecture at 33 MHz
+    ([q950.md](../machines/mcu/q950.md) §1.2)
+  - **Quadra 800** — project name not established in the sources held here
   - **Quadra 610 / Centris 610** — *Wombat*
   - **Quadra 650 / Centris 650** — *Wombat* (variant)
   - **Quadra 605 / LC 475** — *WLCD* ("Wombat-LCD")
@@ -148,6 +164,9 @@ From the Mac II family forward, every "modular" Mac and every all-in-one with co
 
 ### 3.8 Civic — Quadra 660AV / 840AV
 
+The AV family pages: [civic.md](../machines/av/civic.md),
+[q660av.md](../machines/av/q660av.md), [q840av.md](../machines/av/q840av.md).
+
 - **Codenames:** *Cyclone* = **Quadra 840AV**; the **Quadra 660AV** is the "Tempest"-class sibling. The same chip family is referenced under bring-up names like *Puma* and *TV*.
 - **Capabilities:** Civic is the first 68K-Mac framebuffer that integrates **video-in / video-out**:
   - 1/2/4/8/16 bpp at standard Mac timings up to 832×624 / 1024×768.
@@ -190,7 +209,7 @@ The following table summarizes which video device drives each 68K-era Macintosh.
 | Macintosh LC | 1990 | **V8** ("Elsie") | LC-PDS cards |
 | Macintosh Classic II | 1991 | **Tim** ("Jaws") | — |
 | Macintosh Quadra 700 | 1991 | **DAFB** ("Spike") | JMFB / 8•24 GC |
-| Macintosh Quadra 900 / 950 | 1991/92 | **DAFB** ("Eclipse") | JMFB / 8•24 GC |
+| Macintosh Quadra 900 / 950 | 1991/92 | **DAFB** ("Eclipse"; the 950 is the same Eclipse board at 33 MHz, "Zydeco") | JMFB / 8•24 GC |
 | Macintosh LC II | 1992 | **V8** | LC-PDS |
 | Macintosh LC III / LC III+ | 1993 | **Sonora** | LC-PDS |
 | Macintosh LC 475 / Quadra 605 | 1993 | **DAFB** ("WLCD") | LC-PDS |

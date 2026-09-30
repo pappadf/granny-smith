@@ -1,6 +1,6 @@
 # LaserWriter Driver Workflow
 
-Classic Macintosh systems running the LaserWriter driver follow a repeatable sequence any time a user prints over AppleTalk. The notes below describe that sequence from the driver and printer perspective, using examples captured from original PostScript traffic.
+Classic Macintosh systems running the LaserWriter driver follow a repeatable sequence any time a user prints over AppleTalk. The notes below describe that sequence from the driver and printer perspective, using examples captured from original PostScript traffic. The AppleTalk layers underneath are [appletalk.md](appletalk.md) and [pap.md](pap.md); the controller board inside a real LaserWriter II NT is [laserwriter-iint.md](../hardware/laserwriter-iint.md).
 
 ## 1. Discovery and Session Establishment
 

@@ -46,8 +46,13 @@ copy-protection compatibility, and accurate modeling of edge cases such as motor
 timing, head stepping delays, and raw GCR bitstreams.
 
 This documentation targets the **Macintosh 128K, 512K, and Plus**, using 400 KB
-and 800 KB GCR disks. Later systems using **SWIM** and **MFM (1.44 MB
-“SuperDrive”)** technology are explicitly out of scope.
+and 800 KB GCR disks. The family-level wiring — the VIA lines, the softswitch
+window and the drive connector — is given in
+[compact.md](../machines/compact/compact.md) §4.2, and the Plus's own floppy
+port in [plus.md](../machines/compact/plus.md) §3.4. Later systems using
+**SWIM** and **MFM (1.44 MB “SuperDrive”)** technology are explicitly out of
+scope; the successors are covered in [swim.md](swim.md) (SWIM/SWIM II) and
+[swim3.md](../machines/pdm/swim3.md) (SWIM III on the PDM machines).
 
 ---
 
@@ -840,5 +845,5 @@ offset (in hexadecimal) and the corresponding 8 codewords for that range.
   the sound-buffer-LSB PWM mapping (ROM sums table-mapped values over windows to
   compute duty cycle; the speed bounds vs duty cycle are documented).
 - **ROM driver reliance:** Many protections depend on exact sector headers,
-  interleave, and precise prologue/epilogue and gap lengths. Aim to match
-  MAME/FluxEngine parameters when generating tracks.
+  interleave, and precise prologue/epilogue and gap lengths. Aim to match the
+  layout parameters of real formatted media when generating tracks.

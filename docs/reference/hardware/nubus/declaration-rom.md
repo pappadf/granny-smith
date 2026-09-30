@@ -16,6 +16,13 @@ matching chapters of _Inside Macintosh_. This document collapses those into
 a single place from the perspective of "I need to lay out the bytes of a
 NuBus video card vROM."
 
+The bus itself — arbitration, /RESET and /START cycles, the slot-space
+geometry — is [nubus.md](nubus.md). Concrete vROM specimens are dissected in
+[cards/](cards/): the Display Card 8•24 ([display-card-8-24.md](cards/display-card-8-24.md))
+and the 24AC ([display-card-24ac.md](cards/display-card-24ac.md)). The PCI
+generation's counterpart of this page is
+[../pci/expansion-rom.md](../pci/expansion-rom.md).
+
 ## 1. Where the ROM lives in the address map
 
 ### 1.1 Slot space

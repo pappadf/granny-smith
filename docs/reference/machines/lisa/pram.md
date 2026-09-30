@@ -38,7 +38,7 @@ profile.pram_save "<path>"   # write the 64-byte PRAM to a file
 profile.pram_load "<path>"   # restore it (call before booting; the ROM reads PRAM at startup)
 ```
 
-(backed by `lisa_fdc_pram_save` / `lisa_fdc_pram_load` in `src/core/peripherals/lisa_fdc.c`.)
+(backed by `lisa_fdc_pram_save` / `lisa_fdc_pram_load` in `src/machines/lisa/lisa_fdc.c`.)
 
 ## 2. Field layout (the `pmem` record)
 

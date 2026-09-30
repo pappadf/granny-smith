@@ -11,6 +11,10 @@ bus-master DMA engine to the stock NCR 5380; interrupts are arbitrated by
 the **OSS** chip and memory/ROM decoding by the **FMC**; and an *optional*
 RAM Parity Unit (RPU) may decode at `$50F1E000`.
 
+This page is the IOP device doc of the family set: the machine page is
+[iifx.md](iifx.md), the OSS interrupt controller is [pic.md](pic.md), and
+the SCSI DMA chip is [scsi-dma.md](scsi-dma.md).
+
 ---
 
 ## I/O Processors (IOPs)

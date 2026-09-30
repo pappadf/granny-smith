@@ -131,7 +131,8 @@ disagrees, press the keycode.
 
 The Macintosh Plus keyboard port is a **4-wire RJ‑11 telephone-style connector**
 (often physically an RJ‑11 jack). The keyboard cable carries power plus the two
-protocol lines.
+protocol lines. The connector as the family carries it is documented in
+[compact.md](../machines/compact/compact.md) §4.3.
 
 **RJ‑11 (4-pin) assignments:**
 
@@ -632,15 +633,14 @@ For reference, the complete VIA1 register map (base address at `[VIA]` =
 | Offset  | Register | Keyboard Function                  |
 | ------- | -------- | ---------------------------------- |
 | `$0000` | vBufB    | Port B (mouse/misc state)          |
-| `$0200` | vDirB    | Data direction register B          |
-| `$0400` | vDirA    | Data direction register A          |
-| `$0600` | vT1C     | Timer 1 counter (low)              |
-| `$0800` | vT1CH    | Timer 1 counter (high)             |
-| `$0A00` | vT1L     | Timer 1 latch (low)                |
-| `$0C00` | vT1LH    | Timer 1 latch (high)               |
-| `$0E00` | vT2C     | Timer 2 counter (low)              |
-| `$1000` | vT2CH    | Timer 2 counter (high)             |
-| `$1200` | —        | Reserved                           |
+| `$0400` | vDirB    | Data direction register B          |
+| `$0600` | vDirA    | Data direction register A          |
+| `$0800` | vT1C     | Timer 1 counter (low)              |
+| `$0A00` | vT1CH    | Timer 1 counter (high)             |
+| `$0C00` | vT1L     | Timer 1 latch (low)                |
+| `$0E00` | vT1LH    | Timer 1 latch (high)               |
+| `$1000` | vT2C     | Timer 2 counter (low)              |
+| `$1200` | vT2CH    | Timer 2 counter (high)             |
 | `$1400` | vSR      | **Shift Register (keyboard data)** |
 | `$1600` | vACR     | **Auxiliary Control (shift mode)** |
 | `$1800` | vPCR     | **Peripheral Control**             |
@@ -824,7 +824,8 @@ context:
 | **Hot-swap**       | Not supported               | Supported                       |
 
 ADB provided multiple device support, hot-swapping capability, and a unified
-interface for keyboards, mice, and other input devices. However, the Mac Plus
+interface for keyboards, mice, and other input devices — the ADB protocol is
+covered in [adb.md](adb.md). However, the Mac Plus
 protocol remains important for vintage Mac restoration, hardware emulation, and
 understanding Apple's input device evolution.
 

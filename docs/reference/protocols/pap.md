@@ -397,7 +397,11 @@ Below is a concise summary of each call:
 
 ## 13. PAP Parameters for the LaserWriter
 
-The Apple LaserWriter implements PAP with these constraints:
+The Apple LaserWriter implements PAP with these constraints. (The printer
+controller board on the far end of a real session — the LaserWriter II NT's
+68000 board — is documented in
+[laserwriter-iint.md](../hardware/laserwriter-iint.md), and its PostScript
+session behaviour in [laserwriter-session.md](laserwriter-session.md).)
 
 * **Flow quantum: 8**
 * **Only one job at a time** (never unblocked state; only waiting, ARB, blocked)
