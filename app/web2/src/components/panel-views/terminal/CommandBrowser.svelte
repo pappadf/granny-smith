@@ -375,6 +375,14 @@
   async function follow(): Promise<void> {
     const r = terminalSync.result;
     const fromBrowser = terminalSync.fromBrowser;
+    // An emptied input (a command was run, or the line cleared) has nothing
+    // to document: close the pane and drop the marks.
+    if (!fromBrowser && terminalSync.line.trim() === '') {
+      detailsOpen = false;
+      matchKeys = new Set();
+      otherKeys = new Set();
+      return;
+    }
     if (!r) {
       matchKeys = new Set();
       otherKeys = new Set();

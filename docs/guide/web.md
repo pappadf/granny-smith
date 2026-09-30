@@ -1006,7 +1006,9 @@ follow; following it opens the section the path lives in.
 **Browsing previews.** Selecting a row (a click, ↑/↓, type-to-find) only
 previews it: a method's or attribute's usage text shows in the details pane
 under the tree, and the console is left alone.  The pane closes with its ×,
-with Esc, or with a second click on the same row.
+with Esc, or with a second click on the same row.  It also closes when the
+console's input empties, e.g. after a command runs.  It grows to fit its
+text up to 60% of the browser; a longer text scrolls inside it.
 
 **Browser → console.** Inserting is explicit — a double-click, Enter on a
 leaf, or the pane's Insert button — and replaces the path token at the

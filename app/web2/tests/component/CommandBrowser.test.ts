@@ -413,6 +413,34 @@ describe('CommandBrowser ↔ console', () => {
     await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
   });
 
+  it('closes the details pane when the input empties (the command ran)', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    publishCompletion(
+      'machine.cpu.st',
+      14,
+      {
+        candidates: [{ text: 'step', kind: 'method', doc: '' }],
+        span: { start: 12, end: 14 },
+        context: { method: null, argIndex: null, argName: null },
+      },
+      false,
+    );
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
+    publishCompletion(
+      '',
+      0,
+      {
+        candidates: [],
+        span: { start: 0, end: 0 },
+        context: { method: null, argIndex: null, argName: null },
+      },
+      false,
+    );
+    await waitFor(() => expect(container.querySelector('.details')).toBeNull());
+  });
+
   it('in a method’s arguments: selects the method and marks the argument in its usage', async () => {
     fakeInput();
     const { container } = render(CommandBrowser);
