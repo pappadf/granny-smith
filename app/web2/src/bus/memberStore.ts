@@ -7,6 +7,7 @@
 import { onCoreEvent } from './emulator';
 import { loadMembers, type MemberInfo } from './systemTree';
 import { onConsoleJobDone } from '@/state/console.svelte';
+import { forgetUsage } from '@/lib/usage';
 
 export function join(path: string, name: string): string {
   return path ? `${path}.${name}` : name;
@@ -48,10 +49,12 @@ export async function membersWithValues(path: string): Promise<MemberInfo[]> {
   return ms.length ? ms : members(path);
 }
 
-// Drop cached structure at or under `prefix` ('' drops everything).
+// Drop cached structure at or under `prefix` ('' drops everything, and
+// the usage texts with it: the machine changed).
 export function invalidate(prefix = ''): void {
   if (!prefix) {
     structure.clear();
+    forgetUsage();
     return;
   }
   for (const k of [...structure.keys()]) if (covers(prefix, k)) structure.delete(k);

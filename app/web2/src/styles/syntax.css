@@ -1,0 +1,37 @@
+/* Syntax classes (shell.highlight, lib/highlight.ts): the console's
+   command entries and the command browser's usage blocks.  Every class is
+   a palette colour (tokens.css, --gs-syntax-*). */
+.hl-keyword {
+  color: var(--gs-syntax-keyword);
+}
+.hl-decl,
+.hl-interp {
+  color: var(--gs-syntax-decl);
+}
+.hl-variable {
+  color: var(--gs-syntax-variable);
+}
+.hl-alias {
+  color: var(--gs-syntax-alias);
+}
+.hl-number {
+  color: var(--gs-syntax-number);
+}
+.hl-string {
+  color: var(--gs-syntax-string);
+}
+.hl-comment {
+  color: var(--gs-syntax-comment);
+}
+.hl-method {
+  color: var(--gs-syntax-method);
+}
+.hl-attribute {
+  color: var(--gs-syntax-attribute);
+}
+.hl-enum {
+  color: var(--gs-syntax-enum);
+}
+.hl-unknown {
+  color: var(--gs-syntax-unknown);
+}

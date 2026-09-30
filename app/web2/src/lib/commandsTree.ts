@@ -363,34 +363,3 @@ async function keywordRows(): Promise<BrowserRow[]> {
       expandable: false,
     }));
 }
-
-// --- usage ----------------------------------------------------------------------
-
-// shell.usage: the usage text, and for a method its signature (the text's
-// first line) with each declared argument's [start, end) in it (UTF-8
-// bytes, as the core counts).
-export interface UsageInfo {
-  text: string;
-  signature: string;
-  argSpans: Array<[number, number] | null>;
-}
-
-export async function loadUsageInfo(path: string): Promise<UsageInfo | null> {
-  if (!path) return null;
-  const u = await gsEval('shell.usage', [path]);
-  if (!u || typeof u !== 'object' || typeof (u as { text?: unknown }).text !== 'string')
-    return null;
-  const o = u as { text: string; signature?: unknown; arg_spans?: unknown };
-  const spans = Array.isArray(o.arg_spans)
-    ? o.arg_spans.map((p) =>
-        Array.isArray(p) && typeof p[0] === 'number' && typeof p[1] === 'number'
-          ? ([p[0], p[1]] as [number, number])
-          : null,
-      )
-    : [];
-  return {
-    text: o.text,
-    signature: typeof o.signature === 'string' ? o.signature : '',
-    argSpans: spans,
-  };
-}

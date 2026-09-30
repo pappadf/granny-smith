@@ -347,40 +347,9 @@
     content: '› ';
     color: var(--gs-syntax-dim);
   }
-  /* Syntax classes (shell.highlight) on command entries. */
-  .entry :global(.hl-keyword) {
-    color: var(--gs-syntax-keyword);
-  }
-  .entry :global(.hl-decl),
-  .entry :global(.hl-interp) {
-    color: var(--gs-syntax-decl);
-  }
-  .entry :global(.hl-variable) {
-    color: var(--gs-syntax-variable);
-  }
-  .entry :global(.hl-alias) {
-    color: var(--gs-syntax-alias);
-  }
-  .entry :global(.hl-number) {
-    color: var(--gs-syntax-number);
-  }
-  .entry :global(.hl-string) {
-    color: var(--gs-syntax-string);
-  }
-  .entry :global(.hl-comment) {
-    color: var(--gs-syntax-comment);
-  }
-  .entry :global(.hl-method) {
-    color: var(--gs-syntax-method);
-  }
-  .entry :global(.hl-attribute) {
-    color: var(--gs-syntax-attribute);
-  }
-  .entry :global(.hl-enum) {
-    color: var(--gs-syntax-enum);
-  }
+  /* Syntax colours are global (styles/syntax.css); an unresolved segment
+     in a command entry is also underlined. */
   .entry :global(.hl-unknown) {
-    color: var(--gs-syntax-unknown);
     text-decoration: underline wavy var(--gs-syntax-unknown);
     text-underline-offset: 3px;
   }
