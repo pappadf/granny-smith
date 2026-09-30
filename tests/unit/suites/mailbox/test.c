@@ -14,6 +14,8 @@
 #include "io/io_worker.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h"
+#include "object/meta.h"
+#include "object/object.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -34,6 +36,22 @@ static char g_last_args[256];
 void gs_mailbox_notify(volatile uint32_t *word) {
     (void)word;
     g_notified++;
+}
+
+// Annotation bodies are formatted with value_format; the objects it can
+// name do not occur here.
+const class_desc_t *object_class(const struct object *o) {
+    (void)o;
+    return NULL;
+}
+const char *object_name(const struct object *o) {
+    (void)o;
+    return NULL;
+}
+void object_compute_path(struct object *o, char *buf, size_t size) {
+    (void)o;
+    if (size)
+        buf[0] = '\0';
 }
 
 // The stub leaf: answers {"path": <path>, "args": <args or null>}; a path

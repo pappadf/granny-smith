@@ -70,6 +70,11 @@ bool script_needs_continuation(const char *buf);
 // `truncated` record's full text).
 void script_report_error(const char *file, int line, const char *msg, const char *text);
 
+// The same with the message built from `fmt` and the text the usual
+// `FILE: line N: MESSAGE` (the file part only when `file` is non-empty,
+// the line part only when `line` > 0).
+void script_report_errorf(const char *file, int line, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
 // Ctrl-C for loops: the interpreter checks this once per iteration and
 // unwinds with an error. Wired to `shell.interrupt`.  It cancels the script
 // in flight only: script_exec clears it when the top-level script ends.

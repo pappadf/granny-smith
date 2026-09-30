@@ -215,12 +215,16 @@ bool script_needs_continuation(const char *buf) {
 
 // === Parser =================================================================
 
+// Room for a one-line diagnostic from a parse or a helper (a binding,
+// alias, command or include error); reports themselves are not bounded.
+#define SCRIPT_ERR_MAX 512
+
 typedef struct parser {
     char **lines; // stripped statement lines (comments removed)
     int *line_nos; // original 1-based line numbers
     int n_lines;
     int i; // cursor
-    char err[256];
+    char err[SCRIPT_ERR_MAX];
     int err_line;
     bool err_set;
 } parser_t;
@@ -929,7 +933,6 @@ void script_expr_ctx(expr_ctx_t *out) {
     out->binding_ud = NULL;
 }
 
-// Report a statement-level error and set the abort signal.
 // Include stack (`include "path"`, script_run_file): the chain of files
 // currently executing, innermost last. Drives relative-path resolution,
 // the cycle guard, and file attribution in diagnostics.
@@ -939,48 +942,44 @@ void script_expr_ctx(expr_ctx_t *out) {
 static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
 static _Thread_local int g_include_depth = 0;
 
-static void report_plain_error(const char *err);
+// The innermost file being executed (the include stack's top), or "".
+static const char *current_file(void) {
+    return g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "";
+}
 
-// Append `s` to `b` as a JSON string, truncated to `max` bytes (0: whole).
-static void json_str(vbuf_t *b, const char *s, size_t max) {
-    char *cut = NULL;
-    if (max && strlen(s) > max) {
-        cut = strndup(s, max);
-        s = cut ? cut : "";
-    }
-    value_t v = val_str(s);
-    value_format(&v, VFMT_JSON, b);
-    value_free(&v);
+// `s`, cut to `max` bytes (0: whole), as a string value.
+static value_t str_cut(const char *s, size_t max) {
+    if (!max || strlen(s) <= max)
+        return val_str(s);
+    char *cut = strndup(s, max);
+    value_t v = val_str(cut ? cut : "");
     free(cut);
+    return v;
 }
 
 // The fields of an `error` annotation; `max` bounds each string (the
-// reduced form), 0 for the full one.
-static void error_fields(vbuf_t *b, const char *file, int line, const char *msg, const char *text, size_t max) {
-    vbuf_appendf(b, "\"file\":");
-    json_str(b, file, max ? 256 : 0);
-    vbuf_appendf(b, ",\"line\":%d,\"message\":", line);
-    json_str(b, msg, max);
-    vbuf_appendf(b, ",\"lines\":[");
+// reduced form, which says `truncated`), 0 for the full one.
+static value_t error_fields(const char *file, int line, const char *msg, const char *text, size_t max) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "file", str_cut(file, max ? 256 : 0));
+    val_map_put(b, "line", val_int(line));
+    val_map_put(b, "message", str_cut(msg, max));
     // The stderr text split at newlines, the empty last element dropped.
-    const char *p = text;
-    bool first = true;
-    while (*p) {
-        const char *e = strchr(p, '\n');
-        size_t n = e ? (size_t)(e - p) : strlen(p);
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (const char *p = text; *p;) {
+        size_t n = strcspn(p, "\n");
         char *ln = strndup(p, n);
-        if (!first)
-            vbuf_append(b, ",", 1);
-        json_str(b, ln ? ln : "", max);
+        val_list_push(&items, &len, &cap, str_cut(ln ? ln : "", max));
         free(ln);
-        first = false;
         p += n;
         if (*p == '\n')
             p++;
     }
-    vbuf_append(b, "]", 1);
+    val_map_put(b, "lines", val_list(items, len));
     if (max)
-        vbuf_appendf(b, ",\"truncated\":true");
+        val_map_put(b, "truncated", val_bool(true));
+    return val_map_finish(b);
 }
 
 void script_report_error(const char *file, int line, const char *msg, const char *text) {
@@ -988,39 +987,76 @@ void script_report_error(const char *file, int line, const char *msg, const char
     // job's record stream (clients print or render it).  stderr only when no
     // record can carry it whole: outside a job, past the output cut, or when
     // only the shortened form fits (that record says `truncated`).
-    vbuf_t full = {0}, reduced = {0};
-    error_fields(&full, file ? file : "", line, msg ? msg : "", text, 0);
-    error_fields(&reduced, file ? file : "", line, msg ? msg : "", text, 512);
+    file = file ? file : "";
+    msg = msg ? msg : "";
+    value_t full = error_fields(file, line, msg, text, 0);
+    value_t reduced = error_fields(file, line, msg, text, 512);
     bool shortened = false;
-    if (!job_annotate("error", full.p ? full.p : "", reduced.p ? reduced.p : "", &shortened) || shortened)
+    if (!job_annotate("error", &full, &reduced, &shortened) || shortened)
         fputs(text, stderr);
-    vbuf_free(&full);
-    vbuf_free(&reduced);
+    value_free(&full);
+    value_free(&reduced);
+}
+
+// printf into a malloc'd string (NULL when out of memory).
+static char *vformat(const char *fmt, va_list ap) __attribute__((format(printf, 1, 0)));
+static char *vformat(const char *fmt, va_list ap) {
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap2);
+    va_end(ap2);
+    if (n < 0)
+        return NULL;
+    char *s = (char *)malloc((size_t)n + 1);
+    if (s)
+        vsnprintf(s, (size_t)n + 1, fmt, ap);
+    return s;
+}
+
+// printf into a malloc'd string (NULL when out of memory).
+static char *format_msg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static char *format_msg(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char *s = vformat(fmt, ap);
+    va_end(ap);
+    return s;
+}
+
+void script_report_errorf(const char *file, int line, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char *msg = vformat(fmt, ap);
+    va_end(ap);
+    file = file ? file : "";
+    // The report as printed: `FILE: line N: MSG`, each prefix only when known.
+    vbuf_t text = {0};
+    if (file[0])
+        vbuf_appendf(&text, "%s: ", file);
+    if (line > 0)
+        vbuf_appendf(&text, "line %d: ", line);
+    vbuf_appendf(&text, "%s\n", msg ? msg : "out of memory");
+    script_report_error(file, line, msg ? msg : "out of memory", text.p);
+    vbuf_free(&text);
+    free(msg);
 }
 
 // An error with no line of its own (a parse error, a failed include):
 // reported with file "" and line 0, its text the message plus a newline.
 static void report_plain_error(const char *err) {
-    char text[1100];
-    snprintf(text, sizeof(text), "%s\n", err);
-    script_report_error("", 0, err, text);
+    script_report_errorf("", 0, "%s", err);
 }
 
+// Report a statement error at `line` of the innermost executing file (so
+// suite and library diagnostics carry an accurate file:line across
+// `include`) and set the abort signal.
 static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
-    char buf[512];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    char *msg = vformat(fmt, ap);
     va_end(ap);
-    // Prefix the innermost executing file so suite/library diagnostics
-    // carry an accurate file:line even across `include`.
-    char text[1024];
-    const char *file = g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "";
-    if (g_include_depth > 0)
-        snprintf(text, sizeof(text), "%s: line %d: %s\n", file, line, buf);
-    else
-        snprintf(text, sizeof(text), "line %d: %s\n", line, buf);
-    script_report_error(file, line, buf, text);
+    script_report_errorf(current_file(), line, "%s", msg ? msg : "out of memory");
+    free(msg);
     cx->sig = SIG_ERROR;
 }
 
@@ -1048,7 +1084,7 @@ static char *include_dirname(const char *path) {
 static char *include_resolve(const char *path) {
     if (path[0] == '/' || g_include_depth == 0)
         return strdup(path);
-    char *dir = include_dirname(g_include_stack[g_include_depth - 1]);
+    char *dir = include_dirname(current_file());
     if (!dir)
         return NULL;
     if (!dir[0]) {
@@ -1087,10 +1123,10 @@ static char *slurp_script_file(const char *path) {
 // Parse + execute one script file with the include stack maintained —
 // the shared engine behind `include` and script_run_file(). Returns the
 // terminating signal (SIG_NONE on success) with a one-line diagnostic
-// in `err` on SIG_ERROR.
-static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size) {
+// in `*err` (malloc'd, the caller frees it) on SIG_ERROR.
+static exec_sig_t include_exec_file(const char *path, char **err) {
     if (g_include_depth >= INCLUDE_MAX_DEPTH) {
-        snprintf(err, err_size, "include depth limit (%d) exceeded at '%s'", INCLUDE_MAX_DEPTH, path);
+        *err = format_msg("include depth limit (%d) exceeded at '%s'", INCLUDE_MAX_DEPTH, path);
         return SIG_ERROR;
     }
     // Cycle guard: the canonical path may not already be executing.
@@ -1098,27 +1134,27 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
     const char *key = realpath(path, canon) ? canon : path;
     for (int i = 0; i < g_include_depth; i++) {
         if (strcmp(g_include_stack[i], key) == 0) {
-            snprintf(err, err_size, "include cycle: '%s' is already being included", path);
+            *err = format_msg("include cycle: '%s' is already being included", path);
             return SIG_ERROR;
         }
     }
     char *src = slurp_script_file(path);
     if (!src) {
-        snprintf(err, err_size, "cannot open '%s'", path);
+        *err = format_msg("cannot open '%s'", path);
         return SIG_ERROR;
     }
-    char perr[256];
+    char perr[SCRIPT_ERR_MAX];
     script_t *s = script_parse(src, perr, sizeof(perr));
     free(src);
     if (!s) {
         // perr already reads "line N: msg" — prefix the file.
-        snprintf(err, err_size, "%s: %s", path, perr);
+        *err = format_msg("%s: %s", path, perr);
         return SIG_ERROR;
     }
     char *frame = strdup(key);
     if (!frame) {
         script_free(s);
-        snprintf(err, err_size, "out of memory");
+        *err = format_msg("out of memory");
         return SIG_ERROR;
     }
     g_include_stack[g_include_depth++] = frame;
@@ -1129,7 +1165,7 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
     script_free(s);
     if (cx.sig == SIG_ERROR) {
         // The failing statement already printed its own file:line.
-        snprintf(err, err_size, "'%s' failed", path);
+        *err = format_msg("'%s' failed", path);
         return SIG_ERROR;
     }
     return cx.sig == SIG_QUIT ? SIG_QUIT : SIG_NONE;
@@ -1144,7 +1180,7 @@ static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char 
     // identifier scanning, `.seg` and `[expr]` appending, and the
     // same `"`/`\` rejection for map keys, ~170 lines that had to be kept in
     // step with expr.c by hand and had already drifted.
-    char err[160];
+    char err[SCRIPT_ERR_MAX];
     err[0] = '\0';
     if (expr_read_path_segments(p, ectx, out, out_size, NULL, err, sizeof(err)))
         return true;
@@ -1836,7 +1872,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             item = val_uint(1, iter.bytes.p[i]);
         else
             item = val_int(iter.range.start + (int64_t)i * iter.range.step);
-        char err[160];
+        char err[SCRIPT_ERR_MAX];
         if (shell_binding_let(st->name, item, err, sizeof(err)) < 0) {
             exec_error(cx, st->line, "%s", err);
             break;
@@ -1856,7 +1892,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
 
     shell_binding_remove_top(st->name);
     if (had) {
-        char err[160];
+        char err[SCRIPT_ERR_MAX];
         shell_binding_let(st->name, saved, err, sizeof(err));
     }
     value_free(&iter);
@@ -1884,30 +1920,26 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
         value_free(&v);
         return; // silent on success
     }
-    // Failure: format the message (interpolated now, at failure time).
-    char msg[512] = "";
+    // Failure: the message, interpolated now (at failure time).
+    value_t m = val_none();
     if (msg_at) {
         const char *mp = msg_at;
-        value_t m = expr_parse_dq_string(&mp, &ectx);
-        if (m.kind == V_STRING && m.s)
-            snprintf(msg, sizeof(msg), "%s", m.s);
-        value_free(&m);
+        m = expr_parse_dq_string(&mp, &ectx);
     }
-    // stderr, with its predicate error.  These are one failure event and used
-    // to go to two streams, so a test log could interleave them in either
-    // order or split them across files -- and that output is exactly what a
-    // failure investigation reads.  Results go to stdout,
-    // diagnostics to stderr.
-    char text[1400];
-    size_t o = 0;
+    const char *msg = m.kind == V_STRING && m.s && m.s[0] ? m.s : st->text;
+    // One report, with its predicate error.  These are one failure event and
+    // used to go to two streams, so a test log could interleave them in
+    // either order or split them across files -- and that output is exactly
+    // what a failure investigation reads.
+    vbuf_t text = {0}, amsg = {0};
     if (is_err)
-        o += (size_t)snprintf(text, sizeof(text), "line %d: %s\n", st->line,
-                              v.err ? v.err : "error in assert predicate");
-    if (o < sizeof(text))
-        snprintf(text + o, sizeof(text) - o, "ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
-    char amsg[600];
-    snprintf(amsg, sizeof(amsg), "ASSERT FAILED: %s", msg[0] ? msg : st->text);
-    script_report_error(g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "", st->line, amsg, text);
+        vbuf_appendf(&text, "line %d: %s\n", st->line, v.err ? v.err : "error in assert predicate");
+    vbuf_appendf(&text, "ASSERT FAILED: %s\n", msg);
+    vbuf_appendf(&amsg, "ASSERT FAILED: %s", msg);
+    script_report_error(current_file(), st->line, amsg.p, text.p);
+    vbuf_free(&text);
+    vbuf_free(&amsg);
+    value_free(&m);
     value_free(&v);
     cx->sig = SIG_ERROR;
 }
@@ -1935,13 +1967,14 @@ static void exec_include(stmt_t *st, exec_ctx_t *cx) {
         exec_error(cx, st->line, "include: out of memory");
         return;
     }
-    char err[512];
-    exec_sig_t sig = include_exec_file(path, err, sizeof(err));
+    char *err = NULL;
+    exec_sig_t sig = include_exec_file(path, &err);
     free(path);
     if (sig == SIG_ERROR)
-        exec_error(cx, st->line, "include: %s", err);
+        exec_error(cx, st->line, "include: %s", err ? err : "out of memory");
     else if (sig == SIG_QUIT)
         cx->sig = SIG_QUIT;
+    free(err);
 }
 
 // --- statement dispatch -----------------------------------------------------
@@ -1957,19 +1990,19 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
             value_free(&v);
             return;
         }
-        char err[160];
+        char err[SCRIPT_ERR_MAX];
         if (shell_binding_let(st->name, v, err, sizeof(err)) < 0)
             exec_error(cx, st->line, "%s", err);
         return;
     }
     case ST_ALIAS: {
-        char err[160];
+        char err[SCRIPT_ERR_MAX];
         if (alias_add_user(st->name, st->text, err, sizeof(err)) < 0)
             exec_error(cx, st->line, "alias: %s", err);
         return;
     }
     case ST_COMMAND_DEF: {
-        char err[200];
+        char err[SCRIPT_ERR_MAX];
         if (shell_command_define(st->name, st->text, err, sizeof(err)) < 0)
             exec_error(cx, st->line, "command: %s", err);
         return;
@@ -2037,7 +2070,7 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
         return;
     }
     case ST_DEF: {
-        char err[200];
+        char err[SCRIPT_ERR_MAX];
         if (shell_func_define(st->name, st->params, st->n_params, st->body, err, sizeof(err)) < 0) {
             exec_error(cx, st->line, "def: %s", err);
             return;
@@ -2099,7 +2132,7 @@ value_t script_exec_func_body(script_block_t *body) {
 }
 
 int script_run_line(const char *line) {
-    char err[256];
+    char err[SCRIPT_ERR_MAX];
     script_t *s = script_parse(line, err, sizeof(err));
     if (!s) {
         report_plain_error(err);
@@ -2127,7 +2160,7 @@ static int exec_isolated(script_t *s, bool interactive) {
 }
 
 int script_run_text(const char *src, bool interactive) {
-    char err[256];
+    char err[SCRIPT_ERR_MAX];
     script_t *s = script_parse(src, err, sizeof(err));
     if (!s) {
         report_plain_error(err);
@@ -2139,7 +2172,7 @@ int script_run_text(const char *src, bool interactive) {
 }
 
 int script_run_source(const char *src) {
-    char err[256];
+    char err[SCRIPT_ERR_MAX];
     script_t *s = script_parse(src, err, sizeof(err));
     if (!s) {
         report_plain_error(err);
@@ -2151,11 +2184,10 @@ int script_run_source(const char *src) {
 }
 
 int script_run_file(const char *path) {
-    char err[512];
-    exec_sig_t sig = include_exec_file(path, err, sizeof(err));
-    if (sig == SIG_ERROR) {
-        report_plain_error(err);
-        return -1;
-    }
-    return 0; // SIG_QUIT is a clean stop, not a failure
+    char *err = NULL;
+    exec_sig_t sig = include_exec_file(path, &err);
+    if (sig == SIG_ERROR)
+        report_plain_error(err ? err : "out of memory");
+    free(err);
+    return sig == SIG_ERROR ? -1 : 0; // SIG_QUIT is a clean stop, not a failure
 }
