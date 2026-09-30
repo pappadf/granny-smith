@@ -284,7 +284,7 @@
 
   function scrollToSelected(): void {
     requestAnimationFrame(() =>
-      listEl?.querySelector('.cmd-row.selected')?.scrollIntoView({ block: 'nearest' }),
+      listEl?.querySelector('.cmd-row.selected')?.scrollIntoView?.({ block: 'nearest' }),
     );
   }
 
