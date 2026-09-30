@@ -2037,8 +2037,6 @@ struct object *logpoint_get_entry_object(const logpoint_t *lp) {
 // Lifecycle: Constructor
 // ============================================================================
 
-extern const class_desc_t find_class; // cmd_find.c: debug.find
-
 debug_t *debug_init(void) {
     debug_t *debug = (debug_t *)calloc(1, sizeof(debug_t));
     if (!debug) {

@@ -14,8 +14,11 @@
 // KIND's attach_objects() hook, never by identity tests here.
 
 #include "config_space.h"
+#include "machine_profile.h"
 #include "object.h"
 #include "pci.h"
+#include "root.h"
+#include "system_config.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -399,7 +402,7 @@ static struct object *pci_slot_get(struct object *self, int index) {
 }
 
 // `machine.pci.slot` -- the slot collection: a container (attached under
-// `machine.pci` by root_install) whose entries are the declared slots.
+// `machine.pci` by the install hook below) whose entries are the declared slots.
 static const member_t pci_slots_members[] = {
     {.kind = M_CHILD,
      .name = "entries",
@@ -407,7 +410,7 @@ static const member_t pci_slots_members[] = {
      .child = {.cls = &pci_slot_class, .indexed = true, .get = pci_slot_get, .slots = PCI_OBJ_SLOTS}},
 };
 
-const class_desc_t pci_slots_class = {
+static const class_desc_t pci_slots_class = {
     .name = "pci_slots",
     .doc = "PCI slots, by slot number",
     .members = pci_slots_members,
@@ -416,7 +419,7 @@ const class_desc_t pci_slots_class = {
 
 // `machine.pci` itself carries no members of its own: its `slot` child is
 // the container above.
-const class_desc_t pci_class = {
+static const class_desc_t pci_class = {
     .name = "pci",
     .doc = "The PCI expansion bus: slots and their cards",
     .members = NULL,
@@ -431,7 +434,7 @@ static void slots_container_dtor(struct object *o) {
         g_slots_container = NULL;
 }
 
-void pci_objects_adopt(struct object *slots) {
+static void pci_objects_adopt(struct object *slots) {
     g_slots_container = slots;
     if (slots)
         object_set_destructor(slots, slots_container_dtor);
@@ -440,12 +443,30 @@ void pci_objects_adopt(struct object *slots) {
             object_set_logical_parent(g_slot_nodes[i].slot, slots, NULL, i, NULL);
 }
 
+// `machine.pci` and its slot collection, under the machine node (they are
+// emulated hardware, not meta objects), on a machine with that bus.
+static void pci_root_install(struct config *cfg) {
+    if (!cfg || !cfg->pci)
+        return;
+    struct object *bus = root_attach_stub(machine_object(), object_new(&pci_class, cfg, "pci"));
+    if (!bus)
+        return;
+    object_set_label(bus, "PCI");
+    object_set_order(bus, 101);
+    struct object *slots = root_attach_stub(bus, object_new(&pci_slots_class, cfg, "slot"));
+    if (slots) {
+        object_set_label(slots, "Slots");
+        pci_objects_adopt(slots);
+    }
+}
+
 // === Object-tree build / teardown ===========================================
 
 void pci_objects_build(pci_root_t *root) {
     pci_objects_teardown(); // idempotent — drop any prior trees first
     if (!root)
         return;
+    root_register_install(pci_root_install, NULL); // idempotent
     g_obj_root = root;
     for (int i = 0; i < PCI_OBJ_SLOTS; i++) {
         const pci_slot_decl_t *decl = pci_slot_decl_get(root, i);

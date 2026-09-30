@@ -22,6 +22,7 @@
 #include "image_part.h"
 #include "image_vfs.h"
 #include "object.h"
+#include "root.h"
 #include "shell.h"
 #include "storage_util.h"
 #include "system.h"
@@ -259,7 +260,7 @@ static const member_t files_images_collection_members[] = {
          {.cls = &files_image_class, .indexed = true, .get = files_images_get, .slots = MAX_IMAGES, .lookup = NULL}},
 };
 
-const class_desc_t files_images_collection_class = {
+static const class_desc_t files_images_collection_class = {
     .name = "files_images",
     .members = files_images_collection_members,
     .n_members = sizeof(files_images_collection_members) / sizeof(files_images_collection_members[0]),
@@ -1268,8 +1269,37 @@ static const class_desc_t files_mounts_class = {
     .doc = "Cached disk-image mounts, by mount serial",
 };
 
-struct object *files_object(void) {
-    return g_files_object;
+// Per-slot image-entry object setup/teardown for files.images
+// indexed children.
+static void files_images_init(struct config *cfg, struct object *images) {
+    for (int i = 0; i < MAX_IMAGES; i++) {
+        g_image_data[i].cfg = cfg;
+        g_image_data[i].slot = i;
+        g_image_objs[i] = object_new(&files_image_class, &g_image_data[i], NULL);
+        object_set_logical_parent(g_image_objs[i], images, NULL, i, NULL);
+    }
+}
+
+static void files_images_teardown(void) {
+    for (int i = 0; i < MAX_IMAGES; i++) {
+        if (g_image_objs[i]) {
+            object_delete(g_image_objs[i]);
+            g_image_objs[i] = NULL;
+        }
+        g_image_data[i].cfg = NULL;
+        g_image_data[i].slot = 0;
+    }
+}
+
+// files.images: the storage view of cfg->images, under the process singleton
+// `files`, installed with every machine.
+static void files_images_install(struct config *cfg) {
+    struct object *images = root_attach_stub(g_files_object, object_new(&files_images_collection_class, cfg, "images"));
+    if (!images)
+        return;
+    object_set_label(images, "Images");
+    object_set_order(images, 10);
+    files_images_init(cfg, images);
 }
 
 // `files` is a process singleton created at shell init: the file methods,
@@ -1293,26 +1323,5 @@ void files_init(void) {
         object_attach(g_files_object, g_files_mounts_object);
     }
     archive_init(g_files_object);
-}
-
-// Per-slot image-entry object setup/teardown for files.images
-// indexed children. Called from root_install / root_uninstall.
-void files_images_init(struct config *cfg, struct object *images) {
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        g_image_data[i].cfg = cfg;
-        g_image_data[i].slot = i;
-        g_image_objs[i] = object_new(&files_image_class, &g_image_data[i], NULL);
-        object_set_logical_parent(g_image_objs[i], images, NULL, i, NULL);
-    }
-}
-
-void files_images_teardown(void) {
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        if (g_image_objs[i]) {
-            object_delete(g_image_objs[i]);
-            g_image_objs[i] = NULL;
-        }
-        g_image_data[i].cfg = NULL;
-        g_image_data[i].slot = 0;
-    }
+    root_register_install(files_images_install, files_images_teardown);
 }

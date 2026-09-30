@@ -9,8 +9,11 @@
 #include "card.h"
 #include "display.h"
 #include "display_class.h"
+#include "machine_profile.h"
 #include "nubus.h"
 #include "object.h"
+#include "root.h"
+#include "system_config.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -330,7 +333,7 @@ static struct object *nubus_slot_get(struct object *self, int index) {
 }
 
 // `machine.nubus.slot` -- the slot collection: a container (attached under
-// `machine.nubus` by root_install) whose entries are the declared slots.
+// `machine.nubus` by the install hook below) whose entries are the declared slots.
 static const member_t nubus_slots_members[] = {
     {.kind = M_CHILD,
      .name = "entries",
@@ -338,7 +341,7 @@ static const member_t nubus_slots_members[] = {
      .child = {.cls = &nubus_slot_class, .indexed = true, .get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1}},
 };
 
-const class_desc_t nubus_slots_class = {
+static const class_desc_t nubus_slots_class = {
     .name = "nubus_slots",
     .doc = "NuBus slots, by slot number",
     .members = nubus_slots_members,
@@ -347,7 +350,7 @@ const class_desc_t nubus_slots_class = {
 
 // `machine.nubus` itself carries no members of its own: its `slot` child is
 // the container above.
-const class_desc_t nubus_class = {
+static const class_desc_t nubus_class = {
     .name = "nubus",
     .doc = "The NuBus expansion bus: slots and their cards",
     .members = NULL,
@@ -362,13 +365,30 @@ static void slots_container_dtor(struct object *o) {
         g_slots_container = NULL;
 }
 
-void nubus_objects_adopt(struct object *slots) {
+static void nubus_objects_adopt(struct object *slots) {
     g_slots_container = slots;
     if (slots)
         object_set_destructor(slots, slots_container_dtor);
     for (int i = 0; i < NUBUS_OBJ_SLOTS; i++)
         if (g_slot_nodes[i].slot)
             object_set_logical_parent(g_slot_nodes[i].slot, slots, NULL, i, NULL);
+}
+
+// `machine.nubus` and its slot collection, under the machine node (they are
+// emulated hardware, not meta objects), on a machine with that bus.
+static void nubus_root_install(struct config *cfg) {
+    if (!cfg || !cfg->nubus)
+        return;
+    struct object *bus = root_attach_stub(machine_object(), object_new(&nubus_class, cfg, "nubus"));
+    if (!bus)
+        return;
+    object_set_label(bus, "NuBus");
+    object_set_order(bus, 100);
+    struct object *slots = root_attach_stub(bus, object_new(&nubus_slots_class, cfg, "slot"));
+    if (slots) {
+        object_set_label(slots, "Slots");
+        nubus_objects_adopt(slots);
+    }
 }
 
 // === Object-tree build / teardown ===========================================
@@ -393,6 +413,7 @@ void nubus_objects_build(nubus_bus_t *bus) {
     nubus_objects_teardown(); // idempotent — drop any prior trees first
     if (!bus)
         return;
+    root_register_install(nubus_root_install, NULL); // idempotent
     g_obj_bus = bus;
     for (int i = NUBUS_OBJ_FIRST; i <= NUBUS_OBJ_LAST; i++) {
         nubus_card_t *card = nubus_card(bus, i);

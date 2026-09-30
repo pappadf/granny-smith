@@ -89,6 +89,9 @@ value_t debug_translation_result(uint32_t phys, bool valid, const char *via);
 // The values of every `space` argument: "logical", "physical".
 extern const char *const debug_space_values[];
 
+// The `debug.find` class (memory search, cmd_find.c).
+extern const class_desc_t find_class;
+
 // Read the optional `space` argument at argv[idx] (V_ENUM over
 // debug_space_values, or its string): "logical" (the default, also when
 // omitted) or "physical".  Returns false for anything else.
