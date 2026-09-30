@@ -40,43 +40,40 @@ static uint32_t bs_read_long(arsenic_state *s, int n);
 // Per-symbol probability model with periodic halving.
 typedef struct {
     int nsyms;
-    int base_sym;         // symbol value of index 0
-    int step;             // increment per decode
-    int ceiling;          // rescale when total > ceiling
+    int base_sym; // symbol value of index 0
+    int step; // increment per decode
+    int ceiling; // rescale when total > ceiling
     int total;
     int freq[MODEL_MAX_SYMS];
 } prob_model;
 
 // Initialise a probability model with the given symbol range and parameters.
-static void model_setup(prob_model *m, int lo, int hi, int step, int ceiling)
-{
-    m->nsyms    = hi - lo + 1;
+static void model_setup(prob_model *m, int lo, int hi, int step, int ceiling) {
+    m->nsyms = hi - lo + 1;
     m->base_sym = lo;
-    m->step     = step;
-    m->ceiling  = ceiling;
-    m->total    = m->nsyms * step;
+    m->step = step;
+    m->ceiling = ceiling;
+    m->total = m->nsyms * step;
     for (int i = 0; i < m->nsyms; i++)
         m->freq[i] = step;
 }
 
 // Reset all frequencies to their initial values.
-static void model_reset(prob_model *m)
-{
+static void model_reset(prob_model *m) {
     m->total = m->nsyms * m->step;
     for (int i = 0; i < m->nsyms; i++)
         m->freq[i] = m->step;
 }
 
 // Update the model after decoding symbol at the given index.
-static void model_bump(prob_model *m, int idx)
-{
+static void model_bump(prob_model *m, int idx) {
     m->freq[idx] += m->step;
-    m->total     += m->step;
+    m->total += m->step;
     if (m->total > m->ceiling) {
         m->total = 0;
         for (int i = 0; i < m->nsyms; i++) {
-            m->freq[i] = (m->freq[i] + 1) >> 1;   // halve, round up
-            m->total   += m->freq[i];
+            m->freq[i] = (m->freq[i] + 1) >> 1; // halve, round up
+            m->total += m->freq[i];
         }
     }
 }
@@ -85,9 +82,9 @@ static void model_bump(prob_model *m, int idx)
 // Arithmetic Decoder — sit15.md §4.2 "Decoder State", §4.3 "Decoding One Symbol"
 // ============================================================================
 
-#define AC_PREC  26
-#define AC_ONE   (1 << (AC_PREC - 1))   // 2^25
-#define AC_HALF  (1 << (AC_PREC - 2))   // 2^24
+#define AC_PREC 26
+#define AC_ONE  (1 << (AC_PREC - 1)) // 2^25
+#define AC_HALF (1 << (AC_PREC - 2)) // 2^24
 
 // Arithmetic decoder range/code register pair.
 typedef struct {
@@ -105,15 +102,13 @@ typedef struct {
 } mtf_table;
 
 // Initialise the MTF table to the identity permutation.
-static void mtf_init(mtf_table *m)
-{
+static void mtf_init(mtf_table *m) {
     for (int i = 0; i < 256; i++)
         m->tbl[i] = (uint8_t)i;
 }
 
 // Decode an MTF index: extract the byte at position idx and move it to front.
-static uint8_t mtf_decode(mtf_table *m, int idx)
-{
+static uint8_t mtf_decode(mtf_table *m, int idx) {
     uint8_t val = m->tbl[idx];
     if (idx > 0)
         memmove(&m->tbl[1], &m->tbl[0], (size_t)idx);
@@ -159,42 +154,42 @@ static const uint16_t rand_tbl[256] = {
 struct arsenic_state {
     // Error recovery (§10)
     decode_ctx_t *ctx;
-    bool     eos;                   // end-of-stream seen in a block footer
+    bool eos; // end-of-stream seen in a block footer
 
     // Bitstream (§3)
     peel_msb_t bits;
 
     // Arithmetic decoder (§4.2)
-    ac_state  ac;
+    ac_state ac;
 
     // Probability models (§4.1, §5, §6)
-    prob_model m_primary;           // persists across blocks
-    prob_model m_sel;               // per-block selector model
-    prob_model m_grp[7];            // per-block MTF group models
+    prob_model m_primary; // persists across blocks
+    prob_model m_sel; // per-block selector model
+    prob_model m_grp[7]; // per-block MTF group models
 
     // Block geometry (§5.1)
-    int block_exp;                  // B from the header (0..15)
-    int blk_cap;                    // 1 << (B+9)
+    int block_exp; // B from the header (0..15)
+    int blk_cap; // 1 << (B+9)
 
     // Block data buffer (§6)
-    uint8_t  *blk_buf;             // decoded MTF output, blk_cap bytes
-    uint32_t *lf_map;              // inverse-BWT LF-mapping, blk_cap entries
-    int       blk_len;              // actual decoded length of current block
-    int       bwt_origin;           // BWT primary index
+    uint8_t *blk_buf; // decoded MTF output, blk_cap bytes
+    uint32_t *lf_map; // inverse-BWT LF-mapping, blk_cap entries
+    int blk_len; // actual decoded length of current block
+    int bwt_origin; // BWT primary index
 
     // Output cursor within current block
-    int       out_pos;              // bytes emitted from block so far
-    int       bwt_idx;              // current LF-mapping chase index
+    int out_pos; // bytes emitted from block so far
+    int bwt_idx; // current LF-mapping chase index
 
     // Randomization (§9)
-    bool      randomized;
-    int       rand_ti;              // table index
-    int       rand_next;            // next position to XOR
+    bool randomized;
+    int rand_ti; // table index
+    int rand_next; // next position to XOR
 
     // Final RLE (§8)
-    int       rle_prev;             // last emitted byte value
-    int       rle_streak;           // consecutive identical count (0-4)
-    int       rle_repeat;           // buffered repeat bytes still to emit
+    int rle_prev; // last emitted byte value
+    int rle_streak; // consecutive identical count (0-4)
+    int rle_repeat; // buffered repeat bytes still to emit
 };
 
 // ============================================================================
@@ -204,8 +199,7 @@ struct arsenic_state {
 // Abort decompression with a printf-style error message.
 // sit15.md §10 "Error Conditions" — all fatal conditions funnel here.
 // sit15.md §11.1 "Error Recovery" — longjmp unwinds to the setjmp site.
-static void arsenic_abort(arsenic_state *s, const char *fmt, ...)
-{
+static void arsenic_abort(arsenic_state *s, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(s->ctx->errmsg, sizeof(s->ctx->errmsg), fmt, ap);
@@ -220,8 +214,7 @@ static void arsenic_abort(arsenic_state *s, const char *fmt, ...)
 // sit15.md §3.1 "Byte-to-Bit Extraction" — read the top n bits of the
 //   shift register (at most 25); bs_read_long splits wider fields (e.g.
 //   the 26-bit AC bootstrap) into two reads.
-static uint32_t bs_read(arsenic_state *s, int n)
-{
+static uint32_t bs_read(arsenic_state *s, int n) {
     // A short stream is an error here, not zeros.
     if (!peel_msb_avail(&s->bits, n))
         arsenic_abort(s, "sit15: bitstream exhaustion");
@@ -231,8 +224,7 @@ static uint32_t bs_read(arsenic_state *s, int n)
 // sit15.md §3.1 "Byte-to-Bit Extraction" — Read-long: splits reads
 //   wider than 25 bits into (25) + (n−25), assembling (hi << rem) | lo.
 //   Used for the 26-bit AC bootstrap (§4.2).
-static uint32_t bs_read_long(arsenic_state *s, int n)
-{
+static uint32_t bs_read_long(arsenic_state *s, int n) {
     if (n <= 25)
         return bs_read(s, n);
     uint32_t hi = bs_read(s, 25);
@@ -247,8 +239,7 @@ static uint32_t bs_read_long(arsenic_state *s, int n)
 // Decode one arithmetic-coded symbol from the given model.
 // sit15.md §4.3 "Decoding One Symbol" — scale the range, find the
 // symbol via cumulative frequency, narrow interval, renormalize.
-static int ac_decode_sym(arsenic_state *s, prob_model *m)
-{
+static int ac_decode_sym(arsenic_state *s, prob_model *m) {
     if (m->total == 0)
         arsenic_abort(s, "sit15: model total frequency is zero");
 
@@ -266,9 +257,9 @@ static int ac_decode_sym(arsenic_state *s, prob_model *m)
         cum += m->freq[k];
     }
 
-    int lo  = cum;
-    int hi  = cum + m->freq[k];
-    int w   = m->freq[k];
+    int lo = cum;
+    int hi = cum + m->freq[k];
+    int w = m->freq[k];
 
     // Narrow the interval.
     int base_off = scale * lo;
@@ -281,7 +272,7 @@ static int ac_decode_sym(arsenic_state *s, prob_model *m)
     // Renormalize (§4.3 step 6).
     while (s->ac.range <= AC_HALF) {
         s->ac.range <<= 1;
-        s->ac.code   = (int)(((uint32_t)s->ac.code << 1) | bs_read(s, 1));
+        s->ac.code = (int)(((uint32_t)s->ac.code << 1) | bs_read(s, 1));
     }
 
     model_bump(m, k);
@@ -291,8 +282,7 @@ static int ac_decode_sym(arsenic_state *s, prob_model *m)
 // Decode an n-bit integer from a binary model (LSB-first assembly).
 // sit15.md §3.2 "Arithmetic-Coded Multi-Bit Fields" and §4.4
 // "Decoding a Multi-Bit Field".
-static int ac_decode_field(arsenic_state *s, prob_model *m, int n)
-{
+static int ac_decode_field(arsenic_state *s, prob_model *m, int n) {
     int val = 0;
     for (int i = 0; i < n; i++) {
         if (ac_decode_sym(s, m))
@@ -306,8 +296,7 @@ static int ac_decode_field(arsenic_state *s, prob_model *m, int n)
 // ============================================================================
 
 // Build the LF-mapping permutation table from the decoded block data.
-static void build_lf_map(uint32_t *map, const uint8_t *buf, int len)
-{
+static void build_lf_map(uint32_t *map, const uint8_t *buf, int len) {
     int freq[256];
     int base[256];
     int seen[256];
@@ -338,8 +327,7 @@ static void build_lf_map(uint32_t *map, const uint8_t *buf, int len)
 // sit15.md §7.3 "Reconstruct Original Bytes" — chase the LF-mapping.
 // sit15.md §9 "Randomization" — XOR with 1 at positions determined by
 // the randomization table.
-static uint8_t emit_bwt_byte(arsenic_state *s)
-{
+static uint8_t emit_bwt_byte(arsenic_state *s) {
     // Follow one step of the LF-mapping chain.
     s->bwt_idx = (int)s->lf_map[s->bwt_idx];
     if (s->bwt_idx < 0 || s->bwt_idx >= s->blk_len)
@@ -349,7 +337,7 @@ static uint8_t emit_bwt_byte(arsenic_state *s)
     // §9.2  Randomization de-scramble.
     if (s->randomized && s->rand_next == s->out_pos) {
         b ^= 1;
-        s->rand_ti   = (s->rand_ti + 1) & 0xFF;
+        s->rand_ti = (s->rand_ti + 1) & 0xFF;
         s->rand_next += rand_tbl[s->rand_ti];
     }
     s->out_pos++;
@@ -363,9 +351,9 @@ static uint8_t emit_bwt_byte(arsenic_state *s)
 // Per-block model parameters (§5.2.2).
 // sit15.md §5.2.2 "Block Data" — seven group models partition the
 // MTF index space into ranges with different step/ceiling.
-static const int grp_lo[]   = {  2,   4,   8,  16,  32,  64, 128 };
-static const int grp_hi[]   = {  3,   7,  15,  31,  63, 127, 255 };
-static const int grp_step[] = {  8,   4,   4,   4,   2,   2,   1 };
+static const int grp_lo[] = {2, 4, 8, 16, 32, 64, 128};
+static const int grp_hi[] = {3, 7, 15, 31, 63, 127, 255};
+static const int grp_step[] = {8, 4, 4, 4, 2, 2, 1};
 
 // Consume a zero-run from the selector stream (§6.2).
 // sit15.md §6.2 "Zero Run-Length Decoding" — bijective positional
@@ -380,10 +368,9 @@ static const int grp_step[] = {  8,   4,   4,   4,   2,   2,   1 };
 // of 0 summed to 2^31 - 1, the next `1 << 31` wrapped it to exactly -1, the
 // caller's `blk_len + run_len > blk_cap` was false for a negative length, and
 // memset(buf, fill, (size_t)-1) followed.
-static int consume_zero_run(arsenic_state *s, int first_tok, int *out_sel)
-{
+static int consume_zero_run(arsenic_state *s, int first_tok, int *out_sel) {
     uint64_t total = 0;
-    int      tok   = first_tok;
+    int tok = first_tok;
 
     for (int bit_pos = 0;; bit_pos++) {
         total += (uint64_t)(tok + 1) << bit_pos;
@@ -399,8 +386,7 @@ static int consume_zero_run(arsenic_state *s, int first_tok, int *out_sel)
 }
 
 // Decode a complete block: selector loop → MTF → BWT prep.
-static void decode_block(arsenic_state *s)
-{
+static void decode_block(arsenic_state *s) {
     // (Re)initialise per-block models.
     model_setup(&s->m_sel, 0, 10, 8, 1024);
     for (int g = 0; g < 7; g++)
@@ -412,7 +398,7 @@ static void decode_block(arsenic_state *s)
     // §5.2.1  Block header (via primary model).
     s->randomized = ac_decode_sym(s, &s->m_primary) != 0;
     s->bwt_origin = ac_decode_field(s, &s->m_primary, s->block_exp + 9);
-    s->blk_len    = 0;
+    s->blk_len = 0;
 
     // §6.1–6.3  Main selector loop — fills blk_buf with MTF-decoded bytes.
     int sel = ac_decode_sym(s, &s->m_sel);
@@ -436,8 +422,7 @@ static void decode_block(arsenic_state *s)
         }
 
         // Literal / group-coded symbol (sel 2 … 9).
-        int mtf_idx = (sel == 2) ? 1
-                                 : ac_decode_sym(s, &s->m_grp[sel - 3]);
+        int mtf_idx = (sel == 2) ? 1 : ac_decode_sym(s, &s->m_grp[sel - 3]);
 
         if (s->blk_len >= s->blk_cap)
             arsenic_abort(s, "sit15: block buffer overflow");
@@ -467,13 +452,13 @@ static void decode_block(arsenic_state *s)
         build_lf_map(s->lf_map, s->blk_buf, s->blk_len);
 
     // Prepare output cursor for this block.
-    s->out_pos     = 0;
-    s->bwt_idx     = s->bwt_origin;
-    s->rand_ti     = 0;
-    s->rand_next   = rand_tbl[0];
-    s->rle_prev    = 0;
-    s->rle_streak  = 0;
-    s->rle_repeat  = 0;
+    s->out_pos = 0;
+    s->bwt_idx = s->bwt_origin;
+    s->rand_ti = 0;
+    s->rand_next = rand_tbl[0];
+    s->rle_prev = 0;
+    s->rle_streak = 0;
+    s->rle_repeat = 0;
 }
 
 // ============================================================================
@@ -483,8 +468,7 @@ static void decode_block(arsenic_state *s)
 // Produce one decompressed output byte through the final RLE stage.
 // sit15.md §8 "Final Run-Length Expansion" — after 4 identical bytes
 // the next upstream byte K encodes K additional copies (total = 4 + K).
-static uint8_t produce_byte(arsenic_state *s)
-{
+static uint8_t produce_byte(arsenic_state *s) {
     // Iterative RLE expansion loop (§8).
     // sit15.md §8 "Final Run-Length Expansion" — after 4 identical bytes
     // the next upstream byte K encodes K additional copies.
@@ -520,7 +504,7 @@ static uint8_t produce_byte(arsenic_state *s)
 
         // 4.  Track how many consecutive identical bytes we've seen.
         if (b != (uint8_t)s->rle_prev) {
-            s->rle_prev   = b;
+            s->rle_prev = b;
             s->rle_streak = 1;
         } else {
             s->rle_streak++;
@@ -534,11 +518,10 @@ static uint8_t produce_byte(arsenic_state *s)
 // ============================================================================
 
 // Parse the Arsenic stream header: signature, block-size exponent, initial EOS.
-static bool parse_header(arsenic_state *s)
-{
+static bool parse_header(arsenic_state *s) {
     // §4.2  Bootstrap the arithmetic decoder.
     s->ac.range = AC_ONE;
-    s->ac.code  = (int)bs_read_long(s, AC_PREC);
+    s->ac.code = (int)bs_read_long(s, AC_PREC);
 
     // §5.1  Primary model: symbols {0,1}, increment 1, limit 256.
     model_setup(&s->m_primary, 0, 1, 1, 256);
@@ -562,11 +545,10 @@ static bool parse_header(arsenic_state *s)
     // Allocate block buffers, owned by the decode context until freed, so an
     // abort anywhere after this frees them.
     s->blk_buf = dctx_malloc(s->ctx, (size_t)s->blk_cap);
-    s->lf_map  = dctx_malloc(s->ctx, (size_t)s->blk_cap * sizeof(uint32_t));
+    s->lf_map = dctx_malloc(s->ctx, (size_t)s->blk_cap * sizeof(uint32_t));
 
     return true;
 }
-
 
 // ============================================================================
 // Entry Point (Internal)

@@ -191,8 +191,8 @@ static int ensure_parents(peel_archive_t *a, zip_priv_t *z, const char *path) {
 
 // Locate the central directory: its offset in the source, size and entry
 // count, Zip64 and a prepended stub included.  0 or -1 with *err.
-static int zip_locate_cd(peel_archive_t *a, const peel_probe_t *p, uint64_t *cd_off, uint64_t *cd_size,
-                         uint64_t *count, int64_t *delta, peel_err_t **err) {
+static int zip_locate_cd(peel_archive_t *a, const peel_probe_t *p, uint64_t *cd_off, uint64_t *cd_size, uint64_t *count,
+                         int64_t *delta, peel_err_t **err) {
     int64_t eocd = find_eocd(p->tail, p->tail_len, p->size);
     if (eocd < 0) {
         *err = make_err("ZIP: no end of central directory record");

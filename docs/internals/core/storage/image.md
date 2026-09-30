@@ -7,7 +7,9 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 **Types & Key Values**
 - **`image_t`** *(see `src/core/storage/image.h`)* keeps the paths and handles needed by the delta-file storage layer:
 	- `storage`: opaque `storage_t*` handle used for every block read/write.
-	- `filename`: original path supplied by the user (the immutable base image).
+	- `filename`: original path supplied by the user (the immutable base image); it may run through an image or archive.
+	- `source_key`: key of the byte source that path opened ([source.md](source.md)).
+	- `format`: wrapper layers peeled to reach the disk, outermost first (`raw`, `dc42`, `bin+ndif`, ...); reported as `files.images[n].format`.
 	- `instance_path`: stem `<dir>/<id>` for the per-instance delta+journal pair, where `<id>` is a 16-hex-char opaque id minted by the image layer. `NULL` for read-only mounts.
 	- `delta_path`: `<instance_path>.delta`.
 	- `journal_path`: `<instance_path>.journal`.

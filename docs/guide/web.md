@@ -574,9 +574,10 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
    `acceptFiles(files)`. Auto-detects type by probing each
-   `MediaTypeDescriptor` in order; archives (`.zip`, `.sit`, `.hqx`,
-   `.cpt`, `.bin`, `.sea`) are extracted via `files.archive.extract` and the
-   inner image re-probed. A floppy goes into the first empty drive the
+   `MediaTypeDescriptor` in order; a file the core identifies as an archive
+   (`files.archive.identify`: StuffIt, Compact Pro, Zip, BinHex, MacBinary,
+   gzip — by content, not name) is extracted via `files.archive.extract` and
+   the inner files re-probed. A floppy goes into the first empty drive the
    model has, a CD into the model's CD bay (`bus/media.ts`; an occupied
    bay is refused, not overwritten); ROMs trigger a full cold boot via
    `maybeBootFromRom`.
@@ -616,12 +617,14 @@ typed-dispatch and introspection surface.
   `1.4MB`); empty if not a floppy.
 - **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
   → bool.
-- **`files.archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
-  `.bin` / `.sea`. **`files.archive.extract(path, out_dir)`** → bool; powers the
-  Filesystem-tab "Unpack" action.
-- **`files.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
-  image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
-  browse inside images; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
+- **`files.archive.identify(path)`** → the archive format (`sit`, `cpt`,
+  `zip`, `hqx`, `bin`, `gz`) or an empty string.
+  **`files.archive.extract(path, out_dir)`** → bool; powers upload unpacking
+  and the Filesystem-tab "Unpack" action. See [peeler.md](peeler.md).
+- **`files.list(path)`** → `[{name, kind, size, expandable}]`, descending into
+  disk images (partitions, then HFS/UFS contents) and archives, nested to any
+  depth. `expandable` marks a file the core can open as a tree; the Filesystem
+  tree expands exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
   OPFS (backs copy-out and Download). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so

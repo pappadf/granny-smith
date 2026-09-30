@@ -22,14 +22,14 @@
 // Constants
 // ============================================================================
 
-#define GZ_ID1 0x1f
-#define GZ_ID2 0x8b
+#define GZ_ID1        0x1f
+#define GZ_ID2        0x8b
 #define GZ_CM_DEFLATE 8
 
-#define GZ_FHCRC    0x02
-#define GZ_FEXTRA   0x04
-#define GZ_FNAME    0x08
-#define GZ_FCOMMENT 0x10
+#define GZ_FHCRC     0x02
+#define GZ_FEXTRA    0x04
+#define GZ_FNAME     0x08
+#define GZ_FCOMMENT  0x10
 #define GZ_FRESERVED 0xE0
 
 #define GZ_BGZF_MAX_BLOCK 65536u

@@ -25,16 +25,14 @@
 #define CP_FLAG_DATA_LZH 0x0004
 #define CP_DIR_MARKER    0x80
 
-
 #define CP_WIN_SIZE   8192
 #define CP_WIN_MASK   (CP_WIN_SIZE - 1)
 #define CP_BLOCK_COST 0x1FFF0
 
-#define CP_LIT_COUNT  256
+#define CP_LIT_COUNT   256
 #define CP_LEN_COUNT   64
-#define CP_OFF_COUNT  128
+#define CP_OFF_COUNT   128
 #define CP_MAX_CODELEN 15
-
 
 // ============================================================================
 // Byte-supplier callback type
@@ -67,7 +65,7 @@ typedef int (*cp_getbyte_fn)(void *ctx, int *out);
 // internal.h).
 typedef struct {
     peel_hpool_t pool;
-    int          root;
+    int root;
 } cp_htree_t;
 
 // Build a canonical Huffman decode tree from code lengths (0 = symbol not
@@ -96,7 +94,8 @@ static int cp_htree_decode(cp_htree_t *t, peel_msb_t *bits) {
         if (!peel_msb_avail(bits, 1))
             return -1;
         node = peel_huff_child(&t->pool, node, (int)peel_msb_get(bits, 1));
-        if (node < 0) return -1;
+        if (node < 0)
+            return -1;
     }
 }
 
@@ -110,21 +109,21 @@ static int cp_htree_decode(cp_htree_t *t, peel_msb_t *bits) {
 
 // Streaming LZH decoder state (LZSS + Huffman, block-based).
 typedef struct {
-    peel_msb_t  bits;
+    peel_msb_t bits;
     cp_htree_t lit_tree;
     cp_htree_t len_tree;
     cp_htree_t off_tree;
-    int        tables_ok;     // nonzero when current block tables are built
+    int tables_ok; // nonzero when current block tables are built
 
-    uint8_t    win[CP_WIN_SIZE];
-    size_t     wpos;          // next write position in window
+    uint8_t win[CP_WIN_SIZE];
+    size_t wpos; // next write position in window
 
-    unsigned   blk_cost;      // symbol cost counter for current block
-    size_t     blk_byte_start;// byte offset at start of block data portion
+    unsigned blk_cost; // symbol cost counter for current block
+    size_t blk_byte_start; // byte offset at start of block data portion
 
     // Streaming match state (replaces pend_buf for correct overlapping).
-    size_t     match_src;     // absolute source position for current match
-    unsigned   match_rem;     // bytes remaining in current match
+    size_t match_src; // absolute source position for current match
+    unsigned match_rem; // bytes remaining in current match
 } cp_lzh_t;
 
 // Initialize an LZH decoder from the given byte-supplier callback.
@@ -138,15 +137,18 @@ static void cp_lzh_init(cp_lzh_t *lz, const uint8_t *src, size_t len) {
 // cpt.md § 6.4.1 "Table Serialization Format" — each table is encoded
 // as a sequence of nibble-packed code lengths.
 static int cp_lzh_read_table(peel_msb_t *bits, int8_t *lens, int sym_count) {
-    if (!peel_msb_avail(bits, 8)) return -1;
+    if (!peel_msb_avail(bits, 8))
+        return -1;
     unsigned nbytes = peel_msb_get(bits, 8);
-    if (nbytes * 2u > (unsigned)sym_count) return -1;
+    if (nbytes * 2u > (unsigned)sym_count)
+        return -1;
 
     memset(lens, 0, (size_t)sym_count);
     for (unsigned i = 0; i < nbytes; i++) {
-        if (!peel_msb_avail(bits, 8)) return -1;
+        if (!peel_msb_avail(bits, 8))
+            return -1;
         unsigned v = peel_msb_get(bits, 8);
-        lens[2 * i]     = (int8_t)(v >> 4);
+        lens[2 * i] = (int8_t)(v >> 4);
         lens[2 * i + 1] = (int8_t)(v & 0x0F);
     }
     return 0;
@@ -160,14 +162,20 @@ static int cp_lzh_read_table(peel_msb_t *bits, int8_t *lens, int sym_count) {
 static int cp_lzh_build_tables(cp_lzh_t *lz) {
     int8_t lens[CP_LIT_COUNT]; // largest table
 
-    if (cp_lzh_read_table(&lz->bits, lens, CP_LIT_COUNT) < 0) return -1;
-    if (cp_htree_build(&lz->lit_tree, lens, CP_LIT_COUNT) < 0) return -1;
+    if (cp_lzh_read_table(&lz->bits, lens, CP_LIT_COUNT) < 0)
+        return -1;
+    if (cp_htree_build(&lz->lit_tree, lens, CP_LIT_COUNT) < 0)
+        return -1;
 
-    if (cp_lzh_read_table(&lz->bits, lens, CP_LEN_COUNT) < 0) return -1;
-    if (cp_htree_build(&lz->len_tree, lens, CP_LEN_COUNT) < 0) return -1;
+    if (cp_lzh_read_table(&lz->bits, lens, CP_LEN_COUNT) < 0)
+        return -1;
+    if (cp_htree_build(&lz->len_tree, lens, CP_LEN_COUNT) < 0)
+        return -1;
 
-    if (cp_lzh_read_table(&lz->bits, lens, CP_OFF_COUNT) < 0) return -1;
-    if (cp_htree_build(&lz->off_tree, lens, CP_OFF_COUNT) < 0) return -1;
+    if (cp_lzh_read_table(&lz->bits, lens, CP_OFF_COUNT) < 0)
+        return -1;
+    if (cp_htree_build(&lz->off_tree, lens, CP_OFF_COUNT) < 0)
+        return -1;
 
     lz->tables_ok = 1;
     lz->blk_cost = 0;
@@ -240,7 +248,8 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
         if (flag) {
             // Literal byte.
             int sym = cp_htree_decode(&lz->lit_tree, &lz->bits);
-            if (sym < 0) return -1;
+            if (sym < 0)
+                return -1;
 
             uint8_t b = (uint8_t)sym;
             lz->win[lz->wpos & CP_WIN_MASK] = b;
@@ -251,10 +260,13 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
         } else {
             // Match.
             int mlen_sym = cp_htree_decode(&lz->len_tree, &lz->bits);
-            if (mlen_sym < 0) return -1;
+            if (mlen_sym < 0)
+                return -1;
             int off_sym = cp_htree_decode(&lz->off_tree, &lz->bits);
-            if (off_sym < 0) return -1;
-            if (!peel_msb_avail(&lz->bits, 6)) return -1;
+            if (off_sym < 0)
+                return -1;
+            if (!peel_msb_avail(&lz->bits, 6))
+                return -1;
             unsigned lower6 = peel_msb_get(&lz->bits, 6);
 
             unsigned offset = ((unsigned)off_sym << 6) | lower6;
@@ -265,7 +277,8 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
             // Pro 1.33 and 1.52 archives use it -- refusing it, on the strength
             // of cpt.md's "1-based", broke both corpus archives.  A zero length
             // is still an error.
-            if (mlen == 0) return -1;
+            if (mlen == 0)
+                return -1;
 
             lz->blk_cost += 3;
 
@@ -299,16 +312,17 @@ static int cp_lzh_next(cp_lzh_t *lz, int *out) {
 // Memory-backed byte source for sequential archive reads.
 typedef struct {
     const uint8_t *base;
-    size_t         pos;
-    size_t         end;
+    size_t pos;
+    size_t end;
 } cp_memsrc_t;
 
 // Set up a memory source over a byte range within the archive buffer.
 // Returns -1 if the range leaves the archive.
-static int cp_memsrc_init(cp_memsrc_t *m, const uint8_t *data, size_t archive_len,
-                          size_t offset, size_t length) {
-    if (!m || !data) return -1;
-    if (!peel_extent_fits(offset, length, archive_len)) return -1;
+static int cp_memsrc_init(cp_memsrc_t *m, const uint8_t *data, size_t archive_len, size_t offset, size_t length) {
+    if (!m || !data)
+        return -1;
+    if (!peel_extent_fits(offset, length, archive_len))
+        return -1;
     m->base = data;
     m->pos = offset;
     m->end = offset + length;
@@ -318,7 +332,8 @@ static int cp_memsrc_init(cp_memsrc_t *m, const uint8_t *data, size_t archive_le
 // Supply the next byte from the memory source; returns 1 on success, 0 at end.
 static int cp_memsrc_next(void *ctx, int *out) {
     cp_memsrc_t *m = (cp_memsrc_t *)ctx;
-    if (m->pos >= m->end) return 0;
+    if (m->pos >= m->end)
+        return 0;
     *out = m->base[m->pos++];
     return 1;
 }
@@ -334,11 +349,11 @@ static int cp_memsrc_next(void *ctx, int *out) {
 
 // RLE decoder state with half-escape handling.
 typedef struct {
-    cp_getbyte_fn  src;
-    void          *src_ctx;
-    int            prev_byte;      // last emitted byte (for RLE runs)
-    int            run_left;       // pending repeat count
-    int            escape_pending; // injected 0x81 from half-escape
+    cp_getbyte_fn src;
+    void *src_ctx;
+    int prev_byte; // last emitted byte (for RLE runs)
+    int run_left; // pending repeat count
+    int escape_pending; // injected 0x81 from half-escape
 } cp_rle_t;
 
 // Initialize an RLE decoder from the given byte-supplier callback.
@@ -374,8 +389,10 @@ static int cp_rle_read(cp_rle_t *r, uint8_t *dst, size_t max) {
             r->escape_pending = 0;
         } else {
             int rc = r->src(r->src_ctx, &byte_val);
-            if (rc < 0) return -1; // corrupt input below, not end of it
-            if (rc == 0) return (int)written;
+            if (rc < 0)
+                return -1; // corrupt input below, not end of it
+            if (rc == 0)
+                return (int)written;
         }
 
         if (byte_val != 0x81) {
@@ -388,15 +405,19 @@ static int cp_rle_read(cp_rle_t *r, uint8_t *dst, size_t max) {
         // Escape start (0x81) — read next byte.
         int next;
         int rc = r->src(r->src_ctx, &next);
-        if (rc < 0) return -1;
-        if (rc == 0) return (int)written;
+        if (rc < 0)
+            return -1;
+        if (rc == 0)
+            return (int)written;
 
         if (next == 0x82) {
             // RLE run: 0x81 0x82 <count>
             int count;
             rc = r->src(r->src_ctx, &count);
-            if (rc < 0) return -1;
-            if (rc == 0) return (int)written;
+            if (rc < 0)
+                return -1;
+            if (rc == 0)
+                return (int)written;
             if (count == 0) {
                 // Literal 0x81 followed by 0x82.
                 dst[written++] = 0x81;
@@ -434,12 +455,12 @@ static int cp_rle_read(cp_rle_t *r, uint8_t *dst, size_t max) {
 
 // Fork decompression stream: optional LZH chained into mandatory RLE.
 typedef struct {
-    int        use_lzh;
-    cp_lzh_t   lzh;        // only used when use_lzh is set
-    cp_memsrc_t memsrc;     // raw byte source from archive memory
-    cp_rle_t    rle;
-    size_t      remain;     // uncompressed bytes left to produce
-    int         done;
+    int use_lzh;
+    cp_lzh_t lzh; // only used when use_lzh is set
+    cp_memsrc_t memsrc; // raw byte source from archive memory
+    cp_rle_t rle;
+    size_t remain; // uncompressed bytes left to produce
+    int done;
 } cp_fork_t;
 
 // Adapter: pull one byte from the LZH decoder for the RLE layer.
@@ -449,8 +470,8 @@ static int cp_lzh_adapter(void *ctx, int *out) {
 
 // Initialize a fork stream for RLE-only decompression.  Returns -1 if the
 // compressed range leaves the archive.
-static int cp_fork_init_rle(cp_fork_t *f, const uint8_t *archive, size_t archive_len,
-                            size_t comp_offset, size_t comp_len, size_t uncomp_len) {
+static int cp_fork_init_rle(cp_fork_t *f, const uint8_t *archive, size_t archive_len, size_t comp_offset,
+                            size_t comp_len, size_t uncomp_len) {
     memset(f, 0, sizeof(*f));
     f->use_lzh = 0;
     f->remain = uncomp_len;
@@ -463,8 +484,8 @@ static int cp_fork_init_rle(cp_fork_t *f, const uint8_t *archive, size_t archive
 
 // cpt.md § 9.5 "Fork Stream Composition" — LZH output is piped through
 // an adapter callback into the RLE decoder.
-static int cp_fork_init_lzh(cp_fork_t *f, const uint8_t *archive, size_t archive_len,
-                            size_t comp_offset, size_t comp_len, size_t uncomp_len) {
+static int cp_fork_init_lzh(cp_fork_t *f, const uint8_t *archive, size_t archive_len, size_t comp_offset,
+                            size_t comp_len, size_t uncomp_len) {
     memset(f, 0, sizeof(*f));
     f->use_lzh = 1;
     f->remain = uncomp_len;
@@ -479,12 +500,18 @@ static int cp_fork_init_lzh(cp_fork_t *f, const uint8_t *archive, size_t archive
 // cpt.md § 9.5 "Fork Stream Composition" — each fork reads decompressed
 // bytes through the RLE decoder, counting down uncompressed remaining.
 static int cp_fork_read(cp_fork_t *f, uint8_t *dst, size_t max) {
-    if (f->done || f->remain == 0) return 0;
-    if (max > f->remain) max = f->remain;
+    if (f->done || f->remain == 0)
+        return 0;
+    if (max > f->remain)
+        max = f->remain;
     int n = cp_rle_read(&f->rle, dst, max);
-    if (n <= 0) { f->done = 1; return n; }
+    if (n <= 0) {
+        f->done = 1;
+        return n;
+    }
     f->remain -= (size_t)n;
-    if (f->remain == 0) f->done = 1;
+    if (f->remain == 0)
+        f->done = 1;
     return n;
 }
 
@@ -498,8 +525,8 @@ static int cp_fork_read(cp_fork_t *f, uint8_t *dst, size_t max) {
 
 // Parsed metadata for a single file entry in the directory.
 typedef struct {
-    char     name[256];
-    uint8_t  volume;
+    char name[256];
+    uint8_t volume;
     uint32_t file_offset;
     uint32_t type;
     uint32_t creator;
@@ -512,7 +539,7 @@ typedef struct {
     uint32_t data_uncomp;
     uint32_t rsrc_comp;
     uint32_t data_comp;
-    bool     is_dir;
+    bool is_dir;
 } cp_entry_t;
 
 // ============================================================================
@@ -522,8 +549,8 @@ typedef struct {
 // Growable list of parsed file entries from the directory.
 typedef struct {
     cp_entry_t *entries;
-    size_t      count;
-    size_t      cap;
+    size_t count;
+    size_t cap;
 } cp_archive_t;
 
 // ============================================================================
@@ -535,7 +562,8 @@ static int cp_push_entry(cp_archive_t *ar, const cp_entry_t *e) {
     if (ar->count >= ar->cap) {
         size_t ncap = ar->cap ? ar->cap * 2 : 16;
         void *tmp = realloc(ar->entries, ncap * sizeof(cp_entry_t));
-        if (!tmp) return -1;
+        if (!tmp)
+            return -1;
         ar->entries = (cp_entry_t *)tmp;
         ar->cap = ncap;
     }
@@ -561,16 +589,17 @@ static void cp_join_path(char dst[256], const char *parent, const char *seg, siz
 // cpt.md § 3.3 "Directory Hierarchy" — a directory entry with subtree
 // count C is followed by C depth-first entries.  Consumes C+1 entries
 // from the parent's remaining total.
-static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
-                           size_t *cursor, int remaining, const char *parent,
-                           int depth) {
+static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size, size_t *cursor, int remaining,
+                           const char *parent, int depth) {
     // Each level is one recursive call carrying two 256-byte path buffers,
     // bought by three bytes of archive; unbounded, a 180 KB archive of empty
     // folders overflowed the stack.  Paths are joined into
     // 256 bytes, so no real archive nests anywhere near the cap.
-    if (depth > PEEL_MAX_DIR_DEPTH) return -1;
+    if (depth > PEEL_MAX_DIR_DEPTH)
+        return -1;
     while (remaining > 0) {
-        if (*cursor >= size) return -1;
+        if (*cursor >= size)
+            return -1;
 
         // cpt.md § 3.2.2 "Directory Entry — Directory" — high bit of
         // name-length byte marks a directory.
@@ -578,7 +607,8 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
         int nlen = nl_flag & 0x7F;
         int is_dir = (nl_flag & CP_DIR_MARKER) != 0;
 
-        if (*cursor + 1 + (size_t)nlen > size) return -1;
+        if (*cursor + 1 + (size_t)nlen > size)
+            return -1;
 
         // Extract entry name
         const char *raw_name = (const char *)(data + *cursor + 1);
@@ -594,7 +624,8 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
 
         if (is_dir) {
             // cpt.md § 3.2.2 — directory entry has 2-byte subtree count
-            if (*cursor + 2 > size) return -1;
+            if (*cursor + 2 > size)
+                return -1;
             uint16_t child_cnt = rd16be(data + *cursor);
             *cursor += 2;
             // The folder itself is an entry of the listing.
@@ -602,9 +633,11 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
             memset(&de, 0, sizeof(de));
             snprintf(de.name, sizeof(de.name), "%s", full);
             de.is_dir = true;
-            if (cp_push_entry(ar, &de) < 0) return -1;
+            if (cp_push_entry(ar, &de) < 0)
+                return -1;
             int rc = cp_walk_entries(ar, data, size, cursor, (int)child_cnt, full, depth + 1);
-            if (rc < 0) return rc;
+            if (rc < 0)
+                return rc;
             remaining -= (int)child_cnt + 1;
             continue;
         }
@@ -614,7 +647,8 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
         // create_date(4), mod_date(4), finder_flags(2), data_crc(4),
         // flags(2), rsrc_uncomp(4), data_uncomp(4), rsrc_comp(4),
         // data_comp(4).
-        if (*cursor + 45 > size) return -1;
+        if (*cursor + 45 > size)
+            return -1;
 
         const uint8_t *m = data + *cursor;
         cp_entry_t fe;
@@ -623,23 +657,37 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
 
         // Parse all 45 bytes of file metadata in field order
         size_t off = 0;
-        fe.volume       = m[off]; off += 1;
-        fe.file_offset  = rd32be(m + off); off += 4;
-        fe.type         = rd32be(m + off); off += 4;
-        fe.creator      = rd32be(m + off); off += 4;
-        fe.create_date  = rd32be(m + off); off += 4;
-        fe.mod_date     = rd32be(m + off); off += 4;
-        fe.finder_flags = rd16be(m + off); off += 2;
-        fe.data_crc     = rd32be(m + off); off += 4;
-        fe.flags        = rd16be(m + off); off += 2;
-        fe.rsrc_uncomp  = rd32be(m + off); off += 4;
-        fe.data_uncomp  = rd32be(m + off); off += 4;
-        fe.rsrc_comp    = rd32be(m + off); off += 4;
-        fe.data_comp    = rd32be(m + off); off += 4;
+        fe.volume = m[off];
+        off += 1;
+        fe.file_offset = rd32be(m + off);
+        off += 4;
+        fe.type = rd32be(m + off);
+        off += 4;
+        fe.creator = rd32be(m + off);
+        off += 4;
+        fe.create_date = rd32be(m + off);
+        off += 4;
+        fe.mod_date = rd32be(m + off);
+        off += 4;
+        fe.finder_flags = rd16be(m + off);
+        off += 2;
+        fe.data_crc = rd32be(m + off);
+        off += 4;
+        fe.flags = rd16be(m + off);
+        off += 2;
+        fe.rsrc_uncomp = rd32be(m + off);
+        off += 4;
+        fe.data_uncomp = rd32be(m + off);
+        off += 4;
+        fe.rsrc_comp = rd32be(m + off);
+        off += 4;
+        fe.data_comp = rd32be(m + off);
+        off += 4;
         (void)off;
 
         // Add this file entry to the archive's entry list
-        if (cp_push_entry(ar, &fe) < 0) return -1;
+        if (cp_push_entry(ar, &fe) < 0)
+            return -1;
 
         *cursor += 45;
         remaining -= 1;
@@ -650,15 +698,16 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
 // Parse the directory at the given offset.
 // cpt.md § 3.2.1 "Second Header" — 4-byte CRC, 2-byte total entry count,
 // 1-byte comment length, then the recursive entry tree.
-static int cp_parse_directory(cp_archive_t *ar, const uint8_t *data,
-                              size_t size, uint32_t dir_off) {
-    if ((size_t)dir_off + 7 > size) return -1;
+static int cp_parse_directory(cp_archive_t *ar, const uint8_t *data, size_t size, uint32_t dir_off) {
+    if ((size_t)dir_off + 7 > size)
+        return -1;
 
     // Skip the 4-byte directory CRC (not validated)
     uint16_t total = rd16be(data + dir_off + 4);
     uint8_t comment_len = data[dir_off + 6];
     size_t cursor = (size_t)dir_off + 7 + comment_len;
-    if (cursor > size) return -1;
+    if (cursor > size)
+        return -1;
 
     return cp_walk_entries(ar, data, size, &cursor, (int)total, "", 0);
 }
@@ -670,10 +719,8 @@ static int cp_parse_directory(cp_archive_t *ar, const uint8_t *data,
 // Decompress a single fork into an owned buffer.
 // cpt.md § 2.2 "Compression Pipeline" — RLE-only forks go straight
 // through the RLE decoder; LZH forks pass through LZH then RLE.
-static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len,
-                                     size_t comp_offset, size_t comp_len,
-                                     size_t uncomp_len, bool use_lzh,
-                                     decode_ctx_t *ctx) {
+static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len, size_t comp_offset, size_t comp_len,
+                                     size_t uncomp_len, bool use_lzh, decode_ctx_t *ctx) {
     // Set up the fork stream
     if (uncomp_len > PEEL_MAX_FORK)
         decode_abort(ctx, "fork declares %zu bytes, over the %u MiB limit", uncomp_len,
@@ -700,7 +747,8 @@ static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len,
             grow_free(&out);
             decode_abort(ctx, "corrupt compressed fork data");
         }
-        if (n == 0) break;
+        if (n == 0)
+            break;
         grow_append(&out, chunk, (size_t)n, ctx);
     }
 
@@ -723,14 +771,17 @@ static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len,
 // byte 1 is CP_VOLUME_SINGLE (0x01), and bytes 4..7 hold the directory
 // offset which must be at least 8 and no more than 256 MiB.
 bool cpt_detect(const uint8_t *src, size_t len) {
-    if (!src || len < 8) return false;
+    if (!src || len < 8)
+        return false;
 
     // Check magic and volume bytes
-    if (src[0] != CP_MAGIC || src[1] != CP_VOLUME_SINGLE) return false;
+    if (src[0] != CP_MAGIC || src[1] != CP_VOLUME_SINGLE)
+        return false;
 
     // Validate directory offset is within sane bounds
     uint32_t dir_off = rd32be(src + 4);
-    if (dir_off < 8 || dir_off > 0x10000000) return false;
+    if (dir_off < 8 || dir_off > 0x10000000)
+        return false;
     return true;
 }
 

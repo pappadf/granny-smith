@@ -118,7 +118,7 @@ static inline uint32_t rd32be(const uint8_t *p) {
 // arithmetic.
 #define PEEL_MAX_FORK      ((uint64_t)1 << 30) // largest fork an archive may declare
 #define PEEL_MAX_INPUT     ((uint64_t)1 << 30) // largest file peel_read_file loads
-#define PEEL_MAX_DIR_DEPTH 128                 // deepest folder nesting a walker follows
+#define PEEL_MAX_DIR_DEPTH 128 // deepest folder nesting a walker follows
 
 // ============================================================================
 // Entry Names
@@ -317,7 +317,7 @@ static inline bool peel_lsb_at_end(const peel_lsb_t *r) {
 // their own bit readers and walk a tree with peel_huff_child / peel_huff_sym.
 
 #define PEEL_HUFF_POOL_CAP 2048
-#define PEEL_HUFF_NOSYM    ((int16_t)-1)
+#define PEEL_HUFF_NOSYM    ((int16_t) - 1)
 
 typedef struct {
     int16_t ch[2]; // child node indices, or -1

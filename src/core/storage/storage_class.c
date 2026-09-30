@@ -103,6 +103,12 @@ static value_t files_image_attr_writes(struct object *self, const member_t *m) {
     return val_uint(8, img ? img->writes : 0);
 }
 
+static value_t files_image_attr_format(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = files_image_at(self);
+    return val_str(img && img->format ? img->format : "");
+}
+
 // Designated-initialiser table keyed by `image_type` so a future enum
 // reorder (or a value inserted out of order) keeps the labels aligned.
 static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
@@ -151,6 +157,11 @@ static const member_t files_image_members[] = {
      .flags = VAL_RO,
      .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
      .attr = {.type = V_ENUM, .get = files_image_attr_type, .set = NULL}                                      },
+    {.kind = M_ATTR,
+     .name = "format",
+     .flags = VAL_RO,
+     .doc = "Wrapper layers peeled to reach the disk, outermost first: raw, dc42, udif, bin+ndif, gz+dc42, ...",
+     .attr = {.type = V_STRING, .get = files_image_attr_format, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "reads",
      .flags = VAL_RO,

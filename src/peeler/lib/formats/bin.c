@@ -30,8 +30,7 @@
 // bin.md § 8.1 — Finder flag bits to clear on decode:
 // kIsOnDesktop (0), bFOwnAppl (1), kHasBeenInited (8),
 // kHasCustomIcon (9), kIsShared (10).
-#define FINDER_CLEAR_MASK \
-    ((1u << 0) | (1u << 1) | (1u << 8) | (1u << 9) | (1u << 10))
+#define FINDER_CLEAR_MASK ((1u << 0) | (1u << 1) | (1u << 8) | (1u << 9) | (1u << 10))
 
 // ============================================================================
 // Type Definitions (Private)
@@ -41,13 +40,13 @@
 // bin.md § 4.1 — field offsets and types.
 typedef struct {
     char name[MB_NAME_MAX + 1]; // Filename (null-terminated)
-    uint8_t name_len;           // Original filename length
-    uint32_t mac_type;          // File type (offset 65)
-    uint32_t mac_creator;       // Creator code (offset 69)
-    uint16_t finder_flags;      // Finder flags (offsets 73 + 101)
-    uint32_t data_len;          // Data fork length (offset 83)
-    uint32_t rsrc_len;          // Resource fork length (offset 87)
-    uint16_t sec_hdr_len;       // Secondary header length (offset 120)
+    uint8_t name_len; // Original filename length
+    uint32_t mac_type; // File type (offset 65)
+    uint32_t mac_creator; // Creator code (offset 69)
+    uint16_t finder_flags; // Finder flags (offsets 73 + 101)
+    uint32_t data_len; // Data fork length (offset 83)
+    uint32_t rsrc_len; // Resource fork length (offset 87)
+    uint16_t sec_hdr_len; // Secondary header length (offset 120)
 } bin_header_t;
 
 // ============================================================================
@@ -129,8 +128,7 @@ static bin_header_t bin_parse_header(const uint8_t *hdr) {
 // Decode a MacBinary file into a peel_file_t with both forks and metadata.
 // This is the shared implementation for both peel_bin and peel_bin_file.
 // bin.md § 14.1 — decoding steps for a MacBinary II file record.
-static peel_file_t bin_decode(const uint8_t *src, size_t len,
-                              decode_ctx_t *ctx) {
+static peel_file_t bin_decode(const uint8_t *src, size_t len, decode_ctx_t *ctx) {
     // bin.md § 14.1 step 1 — need at least 128 bytes for the header
     if (len < MB_BLOCK) {
         decode_abort(ctx, "MacBinary: input too short (%zu bytes)", len);
@@ -253,8 +251,7 @@ peel_buf_t peel_bin(const uint8_t *src, size_t len, peel_err_t **err) {
     // fork is a StuffIt archive is sit.c's own detector's call: this file
     // kept a second copy of its signature tables.
     peel_buf_t result;
-    bool data_is_sit = file.data_fork.data &&
-                       sit_detect(file.data_fork.data, file.data_fork.size);
+    bool data_is_sit = file.data_fork.data && sit_detect(file.data_fork.data, file.data_fork.size);
 
     if (data_is_sit || file.resource_fork.size == 0) {
         // Data fork is a StuffIt archive, or no resource fork — use data fork
