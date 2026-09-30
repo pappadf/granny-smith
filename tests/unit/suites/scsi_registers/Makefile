@@ -40,5 +40,6 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/object/api.c \
         ../../../../src/core/object/value_format.c \
                 ../../../../src/core/storage/drive_catalog.c
+EXTRA_SRCS += ../../../../src/core/storage/image_part.c
 USE_SOURCE_LAYER := 1
 include ../../common.mk

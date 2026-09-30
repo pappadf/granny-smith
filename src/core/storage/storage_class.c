@@ -10,6 +10,7 @@
 // delta-storage API without pulling in image / vfs / shell dependencies.
 
 #include "checkpoint.h"
+#include "format_registry.h"
 #include "gs_out.h"
 #include "io_leaf.h"
 #include "storage.h"
@@ -613,6 +614,15 @@ static value_t files_method_probe(struct object *self, const member_t *m, int ar
         gs_outf("format: HFS (bare, %zu bytes)\n", size);
     else
         gs_outf("format: unrecognised / raw (%zu bytes)\n", size);
+    // What the format registry peeled to reach the disk, and what it finds
+    // the disk to be.
+    if (img->format && strcmp(img->format, "raw") != 0)
+        gs_outf("encoding: %s\n", img->format);
+    gs_source_t *src = image_source(img);
+    const gs_format_t *contents = gs_format_contents(src, NULL);
+    gs_source_release(src);
+    if (contents)
+        gs_outf("contents: %s\n", contents->doc);
     image_close(img);
     return val_bool(true);
 }
@@ -1040,8 +1050,8 @@ static const member_t files_members[] = {
     {.kind = M_METHOD,
      .name = "list",
      .examples = (const char *const[]){"files.list", "files.list \"/opfs/images/hd/system.img/System Folder\"", NULL},
-     .doc = "List a directory, descending into disk images",
-     .method = {.result_doc = "a list of {name, kind, size} maps",
+     .doc = "List a directory, descending into disk images and archives",
+     .method = {.result_doc = "a list of {name, kind, size, expandable} maps",
                 .args = files_path_arg_optional,
                 .nargs = 1,
                 .result = V_LIST,

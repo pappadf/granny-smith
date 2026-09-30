@@ -267,10 +267,16 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork,
 
 ### HFS scope & limitations
 
-- Covers 400K/800K/1.4M floppies with no partition map, and HFS partitions
-  inside an APM image.
+- Covers 400K/800K/1.4M floppies with no partition map, HFS and HFS+
+  partitions inside an APM image, bare HFS+/HFSX volumes, and HFS+ embedded
+  in a classic HFS wrapper (`drEmbedSigWord`).
 - Data fork, resource fork, and the 32-byte Finder info are all readable.
-- HFS classic only — **HFS+ is not supported**.
+- HFS and HFS+ share one handle: `hfs_open` sniffs the signature at volume
+  offset 1024 (`BD`, `H+`, `HX`) and routes to the classic or the Plus parser
+  (8 inline extents, UTF-16 names).
+- The walker reads through a byte source (`hfs_open_source`), so a volume
+  may be a partition of a host image, a file inside another volume, or an
+  archive member ([../vfs/namespace.md](../vfs/namespace.md)).
 - The catalog and EO files are themselves loaded via their *own* three inline
   extents. If one of those special files is fragmented past 3 extents, only the
   captured portion is parsed (a pragmatic compromise; realistic volumes keep
@@ -479,7 +485,7 @@ The web frontend runs these through the **Terminal console**
 | Area | Supported | Not supported |
 |------|-----------|---------------|
 | Partition map | APM (512-byte blocks, big-endian); synthetic single-partition for bare/raw HFS | GPT; DDM-declared non-512 block sizes |
-| HFS | MDB + catalog B-tree; 3 inline extents **plus Extents Overflow file** (fragmented forks read fully); data/resource forks; Finder info; MacRoman→UTF-8; `/`↔`:` name addressing | HFS+; EO/catalog file fragmented past their *own* 3 inline extents |
+| HFS | MDB + catalog B-tree; 3 inline extents **plus Extents Overflow file** (fragmented forks read fully); data/resource forks; Finder info; MacRoman→UTF-8; `/`↔`:` name addressing | EO/catalog file fragmented past their *own* inline extents |
 | UFS | UFS-1 / 4.3BSD-Tahoe, big-endian; direct + single + double indirect; root traversal; symlink reporting | triple-indirect; files > 4 GiB; symlink following |
 | Mutability | read-only everywhere (`-EROFS`) | any write path into an image |
 | Concurrency | refuses descent into a file the guest has SCSI-attached (`-EBUSY`) | — |

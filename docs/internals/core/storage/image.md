@@ -60,9 +60,9 @@ static const char *pick_delta_dir(const char *path) {
 
 `fd insert`, `fd create`, and `hd attach` all funnel through this helper.
 
-**Compressed image formats** — NDIF and UDIF
+**Image formats** — the format registry
 
-Two Apple disk-image containers are decoded on open, before any of the above runs. Every format an image file can be in is an entry in `image.c`'s `g_image_formats[]` table, in probe order: the containers (UDIF, then NDIF) decode to a raw scratch file, the first to succeed winning; then the layouts (DiskCopy 4.2, then raw) say where the disk data sits in the resulting file. `resolve_image()` walks the table. A decoded image lands once in a raw scratch file under the storage-cache directory (`GS_STORAGE_CACHE`, else `/tmp/gs-image-ro/`); everything downstream then sees an ordinary raw base. The cache (`image_scratch.h`) keys it on the source path, size, and mtime, so repeated inserts reuse the decode and an edited source re-decodes, and it reuses a file only once it has been sealed as a complete decode of that same source. A new container or layout is a new table entry.
+Every opener names a path, and the path may run through an image or an archive (`outer.img/partition1/inner.img`, `disks.zip/System.dsk.gz`): `image_open_path()` opens the path's data fork and resource fork as byte sources through the installed path opener (the VFS — see [source.md](source.md) §3.3), and `image_open_source()` does the rest. The format registry's wrapper loop (`gs_format_unwrap()`, [source.md](source.md) §3.4) peels every encoding layer — UDIF, NDIF, DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting — and the innermost source is the storage engine's base. Nothing is decoded to a file: a DiskCopy 4.2 payload is a view past the 0x54-byte header, and an NDIF or UDIF image is a chunk-mapped source (`image_chunkmap.c`) whose compressed chunks decode on first touch into the chunk cache. `image->format` records the layers peeled (`"raw"`, `"dc42"`, `"bin+ndif"`, …); `image->filename` is the path the caller named, which is what a checkpoint persists and a restore opens again. A new wrapper format is a new registry row.
 
 | | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) |
 |---|---|---|
@@ -70,6 +70,7 @@ Two Apple disk-image containers are decoded on open, before any of the above run
 | Where it lives | the **resource fork** — needs an AppleDouble sidecar or a containing HFS volume | a **plist inside the file**, found via the 512-byte `'koly'` trailer at EOF |
 | Compressors | zero-fill, raw, ADC | zero-fill, ignored, raw, ADC, zlib |
 | Parser | `image_ndif.c` | `image_udif.c` |
+| Source | `ndif_source_open()` | `udif_source_open()` |
 
 UDIF specifics worth knowing before touching `image_udif.c`:
 
@@ -77,10 +78,10 @@ UDIF specifics worth knowing before touching `image_udif.c`:
 - **Chunk sectors are relative to their table's `base_sector`.** Absolute position is `table.base_sector + chunk.sector`; one block table per partition, each restarting at zero. This is the classic way to misread the format, and `tests/integration/image-udif/` exists to catch it.
 - **`SectorCount` lives at trailer offset 0x1EC**, not where a naive walk of the published struct puts it — the 128-byte checksum blobs shift several fields. Static assertions in `image_udif.c` keep every offset inside the 512-byte trailer.
 - **The u32 at `mish` offset 0x24 is the blkx resource ID, not a descriptor count.** The count is at 0xC8.
-- **Each block table carries a CRC-32 over its decoded bytes**, and chunks of type `UDIF_CHUNK_IGNORE` are excluded from it. `materialize_udif_host()` verifies this as it writes, so a bad decode fails at open with a logged mismatch instead of surfacing later as a subtly corrupt disk.
+- **Each block table carries a CRC-32 over its decoded bytes**, and chunks of type `UDIF_CHUNK_IGNORE` are excluded from it. The chunk-mapped source decodes chunk by chunk as the guest reads, so the per-table checksum is not verified; every run is validated against the map when the source opens (inside the image, inside the data fork, a supported codec, under 64 MiB compressed) instead.
 - Encrypted (`encrcdsa`), multi-segment (`.dmgpart`), bzip2, LZFSE and LZMA images are **rejected explicitly** rather than partially decoded.
 
-The zlib decompressor both this and the PNG reader use is first-party (`inflate.c`); the core links no third-party C libraries.
+The zlib decompressor both this and the PNG reader use is first-party: `inflate.c`'s entry points wrap peeler's resumable inflate, the one in the tree; the core links no third-party C libraries.
 
 **Where images live** — the image layer opens the path it is given. It does not copy volatile media into persistent storage; the web app does that before attaching (see `docs/guide/web.md`, "Filesystem").
 

@@ -59,6 +59,15 @@ class ImgRootOpfs extends MockOpfs {
   }
 }
 
+// The core's files.list of /opfs: the same entries, with the one file its
+// format registry recognises marked expandable (the tree routes on the flag,
+// not on the ".img" extension).
+const OPFS_ROOT_LISTING = [
+  { name: 'extracted', kind: 'directory', size: 0, expandable: false },
+  { name: 'disk.img', kind: 'file', size: 819200, expandable: true },
+  { name: 'notes.txt', kind: 'file', size: 12, expandable: false },
+];
+
 const createObjectURL = vi.fn(() => 'blob:mock');
 
 let backend: ImgRootOpfs;
@@ -79,6 +88,7 @@ beforeEach(() => {
     if (path === 'files.cp') return true;
     if (path !== 'files.list') return null;
     const dir = (args?.[0] as string) ?? '';
+    if (dir === '/opfs') return OPFS_ROOT_LISTING;
     if (dir === '/opfs/disk.img') {
       return [
         { name: 'partition1', kind: 'directory', size: 0 },
@@ -103,6 +113,7 @@ describe('FilesystemView — disk-image descent', () => {
     gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
       if (path !== 'files.list') return null;
       const dir = (args?.[0] as string) ?? '';
+      if (dir === '/opfs') return OPFS_ROOT_LISTING;
       if (dir === '/opfs/disk.img') return [{ name: 'partition1', kind: 'directory', size: 0 }];
       if (dir === '/opfs/disk.img/partition1')
         return [

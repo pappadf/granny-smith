@@ -325,3 +325,12 @@ bool gs_format_is_namespace(gs_source_t *data, gs_source_t *rsrc) {
     gs_probe_free(&p);
     return yes;
 }
+
+const gs_format_t *gs_format_contents(gs_source_t *data, gs_source_t *rsrc) {
+    gs_probe_t p;
+    if (!data || gs_probe_init(&p, data, rsrc) != 0)
+        return NULL;
+    const gs_format_t *f = gs_format_detect(&p, GS_FMT_NAMESPACE);
+    gs_probe_free(&p);
+    return f;
+}

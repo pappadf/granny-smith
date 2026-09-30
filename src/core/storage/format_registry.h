@@ -94,6 +94,10 @@ struct gs_namespace *gs_format_open_namespace(gs_source_t *data, gs_source_t *rs
 // (no namespace is opened): the VFS listing's "expandable" flag.
 bool gs_format_is_namespace(gs_source_t *data, gs_source_t *rsrc);
 
+// The namespace format the registry recognises (`data` already unwrapped),
+// or NULL: what files.probe and scsi.identify_cdrom report.
+const gs_format_t *gs_format_contents(gs_source_t *data, gs_source_t *rsrc);
+
 // Opener the registry uses to show a peeler wrapper as a one-file
 // namespace; installed by the VFS with its archive namespace.
 void gs_format_set_wrapper_namespace(struct gs_namespace *(*open)(gs_source_t *src, const char *format));
