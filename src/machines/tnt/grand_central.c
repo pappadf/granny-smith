@@ -45,7 +45,7 @@ LOG_USE_CATEGORY_NAME("gc");
 // Island offsets (relative to $F3000000)
 #define OFF_INTS      0x00020u // +$20 Events / +$24 Mask / +$28 Clear / +$2C Levels
 #define OFF_DBDMA     0x08000u // channels 0-10 at +$8000+n*$100 (dbdma.c)
-#define OFF_DBDMA_END (OFF_DBDMA + 0x100u * TNT_DBDMA_CHANNELS)
+#define OFF_DBDMA_END (OFF_DBDMA + 0x100u * DBDMA_CHANNELS_GRAND_CENTRAL)
 #define OFF_SCSI0     0x10000u // 53C94, external bus
 #define OFF_MACE      0x11000u // MACE Ethernet
 #define OFF_SCCLEG    0x12000u // SCC legacy aperture
@@ -233,7 +233,7 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
         // as a level until acknowledged here (tnt_dbdma_irq): the clear
         // deasserts it, which in mode 1 is itself the change the
         // NanoKernel needs to lower the posted IPL again.
-        for (int n = 0; n < TNT_DBDMA_CHANNELS; n++) {
+        for (int n = 0; n < DBDMA_CHANNELS_GRAND_CENTRAL; n++) {
             uint32_t bit = 1u << n;
             if ((value & bit) && (gc->int_levels & bit))
                 tnt_gc_set_source(cfg, n, false);
@@ -697,8 +697,8 @@ static void scc_dma_kick_rx(config_t *cfg) {
     if (!st->dbdma)
         return;
     for (unsigned ch = 0; ch < 2; ch++)
-        if (tnt_dbdma_active(st->dbdma, SCC_DMA_RX(ch)))
-            tnt_dbdma_kick(st->dbdma, SCC_DMA_RX(ch));
+        if (dbdma_active(st->dbdma, SCC_DMA_RX(ch)))
+            dbdma_kick(st->dbdma, SCC_DMA_RX(ch));
 }
 
 static int scc_port_out(void *ctx, const uint8_t *buf, int len) {
@@ -724,10 +724,10 @@ void tnt_scc_dma_init(config_t *cfg) {
     for (unsigned ch = 0; ch < 2; ch++) {
         st->scc_dma_ctx[ch].cfg = cfg;
         st->scc_dma_ctx[ch].ch = ch;
-        tnt_dbdma_port_t tx = {.out = scc_port_out, .in = NULL, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        tnt_dbdma_port_t rx = {.out = NULL, .in = scc_port_in, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
-        tnt_dbdma_set_port(st->dbdma, SCC_DMA_TX(ch), &tx);
-        tnt_dbdma_set_port(st->dbdma, SCC_DMA_RX(ch), &rx);
+        dbdma_port_t tx = {.out = scc_port_out, .in = NULL, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
+        dbdma_port_t rx = {.out = NULL, .in = scc_port_in, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
+        dbdma_set_port(st->dbdma, SCC_DMA_TX(ch), &tx);
+        dbdma_set_port(st->dbdma, SCC_DMA_RX(ch), &rx);
     }
 }
 
@@ -860,7 +860,7 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
     if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
         // DBDMA channel n at +$8000+n*$100; registers are LE longwords.
         int chan = (int)((offset - OFF_DBDMA) >> 8);
-        return TNT_LE32(tnt_dbdma_reg_read(tnt_st(cfg)->dbdma, chan, offset & 0xFFu));
+        return TNT_LE32(dbdma_reg_read(tnt_st(cfg)->dbdma, chan, offset & 0xFFu));
     }
     if ((offset & 0x1F000u) == OFF_AWACS)
         return TNT_LE32(tnt_awacs_read32(cfg, offset - OFF_AWACS));
@@ -891,7 +891,7 @@ void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     }
     if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
         int chan = (int)((offset - OFF_DBDMA) >> 8);
-        tnt_dbdma_reg_write(tnt_st(cfg)->dbdma, chan, offset & 0xFFu, TNT_LE32(value));
+        dbdma_reg_write(tnt_st(cfg)->dbdma, chan, offset & 0xFFu, TNT_LE32(value));
         return;
     }
     if ((offset & 0x1F000u) == OFF_AWACS) {

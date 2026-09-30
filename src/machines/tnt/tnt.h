@@ -50,7 +50,7 @@
 #include "swim3.h"
 
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
-struct tnt_dbdma; // the DBDMA engine (dbdma.h)
+struct dbdma; // the DBDMA engine (dbdma.h)
 struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 
 // === Endianness =============================================================
@@ -356,7 +356,7 @@ typedef struct tnt_state {
     struct pci_bus *gc_bus; // Bandit 1's bus: the island's direct mapping follows its lane mode
     pci_device_t gc_dev; // Grand Central's config presence (device 16)
     struct av_cuda *cuda;
-    struct tnt_dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
+    struct dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
     tnt_awacs_t awacs;
     struct object *snd_object; // machine.sound node (awacs.c)
     int16_t *snd_stage; // gain-applied staging frames for audio_out_push
@@ -475,7 +475,7 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // the DBDMA movers; register_events before scheduler_start.
 void tnt_swim3_init(config_t *cfg);
 
-void tnt_scc_dma_init(config_t *cfg); // attach the ESCC's four DBDMA ports (after tnt_dbdma_init)
+void tnt_scc_dma_init(config_t *cfg); // attach the ESCC's four DBDMA ports (after dbdma_init)
 void tnt_swim3_bind(config_t *cfg);
 void tnt_swim3_register_events(config_t *cfg);
 uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000

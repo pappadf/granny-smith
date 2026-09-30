@@ -349,7 +349,7 @@ static void pump_in(mesh_t *m) {
 // calls for 8.3 MB on that same run say so -- and MESH was simply the one port
 // that never returned short.  So the pacing goes where the other two families
 // put it -- a per-firing byte budget and a scheduler cadence on the SCSI side.
-// The budget is declared on the channel-10 port (tnt_dbdma_port_t.burst)
+// The budget is declared on the channel-10 port (dbdma_port_t.burst)
 // because only the engine can count bytes across the 512-byte chunks it
 // already splits a command into; the cadence is the pump below.
 #define MESH_DMA_PUMP_NS 10000.0 // 10 us cadence

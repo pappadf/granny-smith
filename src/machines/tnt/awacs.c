@@ -172,10 +172,10 @@ static void awacs_tick_event(void *source, uint64_t data) {
     uint32_t cap = AWACS_CREDIT_CAP(rate);
     if (w->credit > cap)
         w->credit = cap;
-    tnt_dbdma_kick(st->dbdma, 8);
+    dbdma_kick(st->dbdma, 8);
     // Keep ticking while the program runs; an idle channel forfeits its
     // remaining credit (playback restarts from a clean gate).
-    if (tnt_dbdma_active(st->dbdma, 8))
+    if (dbdma_active(st->dbdma, 8))
         awacs_arm(cfg);
     else
         w->credit = 0;
@@ -287,7 +287,7 @@ static bool tnt_snd_muted(void *ctx) {
 static bool tnt_snd_out_enabled(void *ctx) {
     config_t *cfg = (config_t *)ctx;
     tnt_state_t *st = cfg && cfg->machine_context ? tnt_st(cfg) : NULL;
-    return st && st->dbdma && tnt_dbdma_active(st->dbdma, 8);
+    return st && st->dbdma && dbdma_active(st->dbdma, 8);
 }
 
 static bool tnt_snd_in_enabled(void *ctx) {
@@ -354,8 +354,8 @@ void tnt_awacs_init(config_t *cfg) {
     audio_out_open(22050, 2);
 
     // The channel-8 device port (replaces nothing: attached at build).
-    tnt_dbdma_port_t port = {.out = awacs_port_out, .ctx = cfg};
-    tnt_dbdma_set_port(st->dbdma, 8, &port);
+    dbdma_port_t port = {.out = awacs_port_out, .ctx = cfg};
+    dbdma_set_port(st->dbdma, 8, &port);
 
     const sound_surface_t surface = {
         .sample_rate = tnt_snd_sample_rate,

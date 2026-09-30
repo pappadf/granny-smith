@@ -11,7 +11,7 @@
 // That cost was paid during the move itself.  A mechanical rewrite turned
 //
 //     if (dma)
-//         tnt_dbdma_kick(tnt_st(cfg)->dbdma, 10);
+//         dbdma_kick(tnt_st(cfg)->dbdma, 10);
 //     else
 //         pump_in(m);
 //

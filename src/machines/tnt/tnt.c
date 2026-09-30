@@ -408,7 +408,7 @@ static void tnt_mesh_irq(void *ctx, bool level) {
 
 static void tnt_mesh_dbdma_kick(void *ctx) {
     config_t *cfg = (config_t *)ctx;
-    tnt_dbdma_kick(tnt_st(cfg)->dbdma, 10);
+    dbdma_kick(tnt_st(cfg)->dbdma, 10);
 }
 
 static void tnt_scsi96_irq(void *context, bool active) {
@@ -439,13 +439,13 @@ static int tnt_scsi0_port_out(void *ctx, const uint8_t *buf, int len) {
 }
 
 static void tnt_scsi0_port_init(config_t *cfg) {
-    tnt_dbdma_port_t port = {
+    dbdma_port_t port = {
         .out = tnt_scsi0_port_out,
         .in = tnt_scsi0_port_in,
         .s_bits = NULL,
         .ctx = cfg,
     };
-    tnt_dbdma_set_port(tnt_st(cfg)->dbdma, 0, &port);
+    dbdma_set_port(tnt_st(cfg)->dbdma, 0, &port);
 }
 
 // Hand each fast/wide controller the bus it drives.  The two 53C825As are
@@ -617,7 +617,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // device ports are attached yet — each datapath phase (AWACS ch 8,
     // SCSI ch 0/10, ...) registers its port as it lands; until then a
     // channel's data commands stall honestly.
-    st->dbdma = tnt_dbdma_init(cp);
+    st->dbdma = dbdma_init(cp, DBDMA_CHANNELS_GRAND_CENTRAL);
     if (!st->dbdma)
         return -1;
     // The internal SuperDrive behind SWIM3: the shared floppy module owns
@@ -634,8 +634,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     };
     dma_mem_port_t port = dbdma_port;
     port.ctx = cfg;
-    tnt_dbdma_set_memory_port(st->dbdma, &port);
-    tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
+    dbdma_set_memory_port(st->dbdma, &port);
+    dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
 
     // The AWACS sound face on channel 8 (Open Firmware's beep is the
     // first exerciser, long before the 68k chime).
@@ -731,7 +731,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         mesh_attach_bus(st->mesh, cfg->scsi);
         mesh_set_irq_callback(st->mesh, tnt_mesh_irq, cfg);
         mesh_set_dbdma_kick(st->mesh, tnt_mesh_dbdma_kick, cfg);
-        tnt_dbdma_port_t mesh_port = {
+        dbdma_port_t mesh_port = {
             .out = mesh_port_out,
             .in = mesh_port_in,
             .s_bits = NULL,
@@ -742,7 +742,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             .burst = MESH_DMA_BURST,
             .ctx = st->mesh,
         };
-        tnt_dbdma_set_port(st->dbdma, 10, &mesh_port);
+        dbdma_set_port(st->dbdma, 10, &mesh_port);
     }
 
     if (cp) {
@@ -783,7 +783,7 @@ static void tnt_bus_reset(config_t *cfg) {
     // the ladder).
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
-    tnt_dbdma_reset(st->dbdma);
+    dbdma_reset(st->dbdma);
     // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
     // drive and its media) is reset by the shared chain; the SWIM3 was the
     // one controller in the tree that survived a reset.
@@ -866,7 +866,7 @@ static void tnt_teardown(config_t *cfg) {
     //
     // The single ordering change is that cfg->scsi is now freed after these
     // four instead of before the first of them.  Safe on both counts that
-    // matter: none of scsi_delete(scsi2), tnt_dbdma_delete, av_cuda_delete or
+    // matter: none of scsi_delete(scsi2), dbdma_delete, av_cuda_delete or
     // adb_delete reads cfg->scsi, and the controllers that DO hold the two
     // buses are already gone -- MESH/53C96 just above, and the 53C825As with
     // the PCI root, which system_destroy frees before this runs.  DBDMA still
@@ -877,7 +877,7 @@ static void tnt_teardown(config_t *cfg) {
         st->scsi2 = NULL;
     }
     if (st && st->dbdma) {
-        tnt_dbdma_delete(st->dbdma);
+        dbdma_delete(st->dbdma);
         st->dbdma = NULL;
     }
     if (st && st->cuda) {
@@ -905,7 +905,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
-    tnt_dbdma_checkpoint(st->dbdma, cp);
+    dbdma_checkpoint(st->dbdma, cp);
     // The floppy drive and media, where floppy_init reads them back on a
     // restore (right after the DBDMA engine, before the board state).
     floppy_checkpoint(cfg->floppy, cp);
