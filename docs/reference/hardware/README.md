@@ -44,6 +44,9 @@ family-specific hardware lives under
 | page | subject | status |
 |---|---|---|
 | [pci/expansion-rom.md](pci/expansion-rom.md) | PCI expansion ROMs (FCode, ndrv) | content |
-| [pci/pci.md](pci/pci.md) | the PCI bus in the Power Macintosh | stub |
-| [pci/cards/voodoo2.md](pci/cards/voodoo2.md) | 3dfx Voodoo2 | stub |
-| [pci/cards/cirrus-54m30.md](pci/cards/cirrus-54m30.md) | Cirrus Logic 54M30 | stub |
+| [pci/pci.md](pci/pci.md) | the PCI bus in the Power Macintosh | content |
+| [pci/cards/voodoo2.md](pci/cards/voodoo2.md) | 3dfx Voodoo2 | content |
+| [pci/cards/cirrus-54m30.md](pci/cards/cirrus-54m30.md) | Cirrus Logic 54M30 | content |
+| [pci/cards/mach64.md](pci/cards/mach64.md) | ATI mach64 GX and VT | content |
+| [pci/cards/rage-128.md](pci/cards/rage-128.md) | ATI Rage 128 VR and GL | content |
+| [pci/cards/voodoo1.md](pci/cards/voodoo1.md) | 3dfx Voodoo Graphics (SST-1) | content |
