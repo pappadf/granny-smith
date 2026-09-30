@@ -2337,7 +2337,7 @@ static breakpoint_t *bp_from(struct object *self) {
 // silently meant "logical", nothing could complete the values, and
 // object-model.md explicitly lists enum membership as something bodies must
 // not re-check.
-static const char *const debug_space_values[] = {"logical", "physical", NULL};
+const char *const debug_space_values[] = {"logical", "physical", NULL};
 #define DEBUG_SPACE_COUNT 2
 
 static value_t bp_attr_addr(struct object *self, const member_t *m) {
@@ -2438,39 +2438,35 @@ static value_t bp_method_remove(struct object *self, const member_t *m, int argc
 static const member_t bp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
-     .flags = VAL_RO,
      .doc = "Address this breakpoint watches, in the space named by `space`",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bp_attr_addr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "space",
-     .flags = VAL_RO,
      .doc = "\"logical\" or \"physical\" — which address `addr` is in (they coincide with the MMU off)",
-     .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}                              },
+     .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
     {.kind = M_ATTR,
      .name = "condition",
      .flags = 0,
      .doc = "Expression that must evaluate true for the breakpoint to stop; empty = always stop",
-     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}       },
+     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
     {.kind = M_ATTR,
      .name = "enabled",
      .flags = 0,
      .doc = "False keeps the breakpoint listed but stops it firing",
-     .attr = {.type = V_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}             },
+     .attr = {.type = V_BOOL, .get = bp_attr_enabled, .set = bp_attr_enabled_set}},
     {.kind = M_ATTR,
      .name = "hit_count",
-     .flags = VAL_RO,
      .doc = "Times this breakpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}                          },
+     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}},
     {.kind = M_ATTR,
      .name = "id",
-     .flags = VAL_RO,
      .doc = "Stable identifier; survives the removal of other breakpoints (indices do not)",
-     .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}                                  },
+     .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}},
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this breakpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}           },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
 };
 
 static const class_desc_t breakpoint_entry_class = {
@@ -2576,49 +2572,41 @@ static value_t lpe_method_remove(struct object *self, const member_t *m, int arg
 static const member_t lp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
-     .flags = VAL_RO,
      .doc = "First address of the watched range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}    },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "end_addr",
-     .flags = VAL_RO,
      .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "kind",
-     .flags = VAL_RO,
      .doc = "What triggers it: \"pc\" on execution, or \"read\"/\"write\"/\"rw\" on a data access",
-     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}                                   },
+     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
     {.kind = M_ATTR,
      .name = "level",
-     .flags = VAL_RO,
      .doc = "Log level each fire is emitted at",
-     .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}                                   },
+     .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
     {.kind = M_ATTR,
      .name = "category",
-     .flags = VAL_RO,
      .doc = "Log category each fire is emitted under",
-     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}                             },
+     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}},
     {.kind = M_ATTR,
      .name = "message",
-     .flags = VAL_RO,
      .doc = "Fire-time template; $value/$addr/$size bind per fire. Empty = the default one-line report",
-     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}                              },
+     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}},
     {.kind = M_ATTR,
      .name = "hit_count",
-     .flags = VAL_RO,
      .doc = "Times this logpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}                              },
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
     {.kind = M_ATTR,
      .name = "id",
-     .flags = VAL_RO,
      .doc = "Stable identifier; survives the removal of other logpoints (indices do not)",
-     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}                                      },
+     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this logpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}               },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
 };
 
 static const class_desc_t logpoint_entry_class = {
@@ -2669,44 +2657,38 @@ static value_t wpe_attr_enabled_set(struct object *self, const member_t *m, valu
 static const member_t wp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
-     .flags = VAL_RO,
      .doc = "First address of the watched range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}    },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "end_addr",
-     .flags = VAL_RO,
      .doc = "Last address of the watched range, inclusive; equals `addr` for a single address",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "mode",
-     .flags = VAL_RO,
      .doc = "The access that stops the machine: \"read\", \"write\" or \"rw\"",
-     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}                                   },
+     .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
     {.kind = M_ATTR,
      .name = "space",
-     .flags = VAL_RO,
      .doc = "\"logical\" or \"physical\" -- which address `addr` is in",
-     .attr = {.type = V_ENUM, .get = wpe_attr_space, .set = NULL}                                  },
+     .attr = {.type = V_ENUM, .get = wpe_attr_space, .set = NULL}},
     {.kind = M_ATTR,
      .name = "enabled",
      .flags = 0,
      .doc = "False keeps the watchpoint listed but stops it firing",
-     .attr = {.type = V_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}                },
+     .attr = {.type = V_BOOL, .get = wpe_attr_enabled, .set = wpe_attr_enabled_set}},
     {.kind = M_ATTR,
      .name = "hit_count",
-     .flags = VAL_RO,
      .doc = "Times this watchpoint has fired since it was added",
-     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}                              },
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
     {.kind = M_ATTR,
      .name = "id",
-     .flags = VAL_RO,
      .doc = "Stable identifier; survives the removal of other watchpoints (indices do not)",
-     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}                                      },
+     .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this watchpoint",
      .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}               },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
 };
 
 static const class_desc_t watchpoint_entry_class = {
@@ -2771,8 +2753,7 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     //
     // Read the enum index, not `.s`: on a V_ENUM the string pointer shares
     // storage with `enm`, so the old `argv[2].s && *argv[2].s` test
-    // dereferenced an index as a pointer.  It never fired only because the
-    // slot had no default and so was unreachable by name at all.
+    // dereferenced an index as a pointer.
     addr_space_t space = (argc >= 3 && argv[2].kind == V_ENUM && argv[2].enm.idx == 1) ? ADDR_PHYSICAL : ADDR_LOGICAL;
     // One breakpoint per (address, space): a second add returns the existing
     // entry (a new condition, if given, replaces its old one) instead of
@@ -2854,7 +2835,7 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
     }
 
     // The slot is V_UINT, so validate_slot has already coerced anything the
-    // caller passed; V_NONE means it passed nothing (obj_arg_unset).
+    // caller passed; V_NONE means it passed nothing.
     uint32_t end_addr = addr;
     if (argc > 3 && argv[3].kind == V_UINT)
         end_addr = (uint32_t)argv[3].u;
@@ -2924,7 +2905,6 @@ static const arg_decl_t bp_add_args[] = {
     {.name = "condition",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
      .doc = "Expression; the breakpoint fires only when it is true"},
     {.name = "space",
      .kind = V_ENUM,
@@ -2934,13 +2914,8 @@ static const arg_decl_t bp_add_args[] = {
      .doc = "Address space"},
 };
 
-// Interior optional slots need defaults so the named-argument binder's
-// V_NONE holes fill instead of erroring (see node_validate_args).
 static const value_t lp_def_mode = {.kind = V_STRING, .s = (char *)"pc"};
-static const value_t lp_def_width = {.kind = V_STRING, .s = (char *)""};
-static const value_t lp_def_message = {.kind = V_STRING, .s = (char *)""};
 static const value_t lp_def_level = {.kind = V_INT, .i = 0};
-static const value_t lp_def_category = {.kind = V_STRING, .s = (char *)""};
 
 static const arg_decl_t lp_add_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
@@ -2952,18 +2927,15 @@ static const arg_decl_t lp_add_args[] = {
     {.name = "width",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &lp_def_width,
      .doc = "access width for memory modes: b, w, or l"},
     {.name = "end",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .default_value = &obj_arg_unset,
      .doc = "range end address, inclusive"},
     {.name = "message",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
-     .default_value = &lp_def_message,
      .doc = "fire-time template; $value/$addr/$size bind per fire"},
     {.name = "level",
      .kind = V_INT,
@@ -2973,13 +2945,12 @@ static const arg_decl_t lp_add_args[] = {
     {.name = "category",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &lp_def_category,
-     .doc = "log category; omitted: logpoint (pc mode) or memory"},
+     .doc = "log category",
+     .default_doc = "logpoint (pc mode) or memory"},
     {.name = "value",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .default_value = &obj_arg_unset,
      .doc = "only fire when the accessed value matches (memory modes)"},
     {.name = "space",
      .kind = V_ENUM,
@@ -2992,8 +2963,7 @@ static const arg_decl_t lp_add_args[] = {
 static const member_t bp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .examples = (const char *const[]){"debug.breakpoints.add 0x408986",
-                                       "debug.breakpoints.add 0x408986 \"d0 == 0\" physical", NULL},
+     .examples = EXAMPLES("debug.breakpoints.add 0x408986", "debug.breakpoints.add 0x408986 \"d0 == 0\" physical"),
      .doc = "Add a breakpoint; adding an address that already has one returns that entry. space=physical stops on a "
             "physical address (through the 68030 PMMU)", .method = {.result_doc = "the breakpoint entry",
                 .args = bp_add_args,
@@ -3002,7 +2972,7 @@ static const member_t bp_collection_members[] = {
                 .fn = bp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
-     .examples = (const char *const[]){"debug.breakpoints.clear", NULL},
+     .examples = EXAMPLES("debug.breakpoints.clear"),
      .doc = "Remove every breakpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
     // `list` retired: read `entries` — the REPL renders
@@ -3026,9 +2996,8 @@ static const class_desc_t bp_collection_class = {
 static const member_t lp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .examples =
-         (const char *const[]){"debug.logpoints.add 0x40800000 message=\"reached\"",
-                               "debug.logpoints.add 0x16a mode=write width=l message=\"Ticks=${$value:08x}\"", NULL},
+     .examples = EXAMPLES("debug.logpoints.add 0x40800000 message=\"reached\"",
+     "debug.logpoints.add 0x16a mode=write width=l message=\"Ticks=${$value:08x}\""),
      .doc = "Install a logpoint: log a message when the PC reaches addr, or when memory in [addr, end] is accessed; "
             "message is a template filled in at each fire", .method = {.result_doc = "the logpoint entry",
                 .args = lp_add_args,
@@ -3037,7 +3006,7 @@ static const member_t lp_collection_members[] = {
                 .fn = lp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
-     .examples = (const char *const[]){"debug.logpoints.clear", NULL},
+     .examples = EXAMPLES("debug.logpoints.clear"),
      .doc = "Remove every logpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
     // `list` retired: read `entries`.
@@ -3140,7 +3109,6 @@ static value_t wp_method_clear(struct object *self, const member_t *m, int argc,
 }
 
 static const value_t wp_def_mode = {.kind = V_STRING, .s = (char *)"write"};
-static const value_t wp_def_width = {.kind = V_STRING, .s = (char *)""};
 
 static const arg_decl_t wp_add_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
@@ -3152,13 +3120,11 @@ static const arg_decl_t wp_add_args[] = {
     {.name = "width",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &wp_def_width,
      .doc = "b, w, or l: widen to every access overlapping addr"},
     {.name = "end",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .default_value = &obj_arg_unset,
      .doc = "range end, inclusive"},
     {.name = "space",
      .kind = V_ENUM,
@@ -3171,8 +3137,7 @@ static const arg_decl_t wp_add_args[] = {
 static const member_t wp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .examples =
-         (const char *const[]){"debug.watchpoints.add 0x16a", "debug.watchpoints.add 0x400 mode=rw end=0x4ff", NULL},
+     .examples = EXAMPLES("debug.watchpoints.add 0x16a", "debug.watchpoints.add 0x400 mode=rw end=0x4ff"),
      .doc = "Install a watchpoint: stop the machine after an instruction that accesses the address or range",
      .method = {.result_doc = "the watchpoint entry",
                 .args = wp_add_args,
@@ -3181,7 +3146,7 @@ static const member_t wp_collection_members[] = {
                 .fn = wp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
-     .examples = (const char *const[]){"debug.watchpoints.clear", NULL},
+     .examples = EXAMPLES("debug.watchpoints.clear"),
      .doc = "Remove every watchpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = wp_method_clear}},
     {.kind = M_CHILD,
@@ -3276,12 +3241,11 @@ static const arg_decl_t debug_disasm_args[] = {
     {.name = "addr_or_count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
      .doc = "Alone: the instruction count, from the PC (16 when omitted). Followed by count: the start address"},
     {.name = "count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Number of instructions, when the first argument is an address"},
+     .doc = "Number of instructions, when the first argument is an address"                                    },
 };
 
 // Choose where a disassembly window starts so that `before` rows precede
@@ -3331,6 +3295,10 @@ bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical) {
     *physical = false;
     if (argc <= idx || argv[idx].kind == V_NONE)
         return true; // omitted: logical
+    if (argv[idx].kind == V_ENUM) {
+        *physical = argv[idx].enm.idx == 1;
+        return true;
+    }
     if (argv[idx].kind != V_STRING || !argv[idx].s)
         return false;
     if (strcmp(argv[idx].s, "logical") == 0)
@@ -3461,15 +3429,15 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     return debug_frame_build(system_cpu_debug_if(), "debug.frame", argc, argv);
 }
 
-// The frame's default row count: a named `before` must be reachable past it.
+// The frame's default row count.
 static const value_t k_frame_count32 = {.kind = V_INT, .i = 32};
 
 const arg_decl_t debug_frame_args[DEBUG_FRAME_NARGS] = {
     {.name = "addr",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "Start address; omitted: the PC"                   },
+     .doc = "Start address",
+     .default_doc = "the PC"                                   },
     {.name = "count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -3522,12 +3490,12 @@ static const arg_decl_t debug_step_args[] = {
 static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "disasm",
-     .examples = (const char *const[]){"debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20", NULL},
+     .examples = EXAMPLES("debug.disasm", "debug.disasm 8", "debug.disasm 0x40800000 20"),
      .doc = "Disassemble forward from the PC, or from an address",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                               },
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}},
     {.kind = M_METHOD,
      .name = "frame",
-     .examples = (const char *const[]){"debug.frame", "debug.frame count=8 before=3", NULL},
+     .examples = EXAMPLES("debug.frame", "debug.frame count=8 before=3"),
      .doc = "The CPU's debug frame: registers, disassembly, per-row translation (= machine.cpu.frame)",
      .method =
          {.result_doc =
@@ -3535,17 +3503,17 @@ static const member_t debug_members[] = {
           .args = debug_frame_args,
           .nargs = DEBUG_FRAME_NARGS,
           .result = V_MAP,
-          .fn = debug_method_frame}                                                                                                                                                               },
+          .fn = debug_method_frame}},
     {.kind = M_METHOD,
      .name = "step",
-     .examples = (const char *const[]){"debug.step", "debug.step 100", NULL},
+     .examples = EXAMPLES("debug.step", "debug.step 100"),
      .doc = "Run count instructions and stop, through the frame loop exactly as scheduler.run does (VBL and timers "
-            "keep running)",                                                                            .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}},
+            "keep running)", .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}},
     {.kind = M_METHOD,
      .name = "exceptions",
-     .examples = (const char *const[]){"debug.exceptions", "debug.exceptions 1", NULL},
+     .examples = EXAMPLES("debug.exceptions", "debug.exceptions 1"),
      .doc = "Dump the always-on 256-entry exception trace ring",
-     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                       },
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}},
 };
 
 static const class_desc_t debug_class = {
@@ -3717,7 +3685,7 @@ static const arg_decl_t mac_globals_write_args[] = {
 static const member_t debug_mac_globals_members[] = {
     {.kind = M_METHOD,
      .name = "read",
-     .examples = (const char *const[]){"debug.mac.globals.read \"Ticks\"", "debug.mac.globals.read \"KeyMap\"", NULL},
+     .examples = EXAMPLES("debug.mac.globals.read \"Ticks\"", "debug.mac.globals.read \"KeyMap\""),
      .doc = "Read a Mac low-memory global by name",
      // V_ANY, not V_UINT: the result kind follows the entry's width — 49
      // of the 471 globals are wider than 4 bytes and read as V_BYTES.
@@ -3725,26 +3693,26 @@ static const member_t debug_mac_globals_members[] = {
                 .args = mac_globals_name_arg,
                 .nargs = 1,
                 .result = V_ANY,
-                .fn = method_mac_globals_read}                                                               },
+                .fn = method_mac_globals_read}},
     {.kind = M_METHOD,
      .name = "write",
-     .examples = (const char *const[]){"debug.mac.globals.write \"CrsrNew\" 1", NULL},
+     .examples = EXAMPLES("debug.mac.globals.write \"CrsrNew\" 1"),
      .doc = "Write a 1/2/4-byte Mac low-memory global by name",
      .method = {.args = mac_globals_write_args, .nargs = 2, .result = V_NONE, .fn = method_mac_globals_write}},
     {.kind = M_METHOD,
      .name = "address",
-     .examples = (const char *const[]){"debug.mac.globals.address \"Ticks\"", NULL},
+     .examples = EXAMPLES("debug.mac.globals.address \"Ticks\""),
      .doc = "Return the address of a named Mac low-memory global",
      .method = {.args = mac_globals_name_arg, .nargs = 1, .result = V_UINT, .fn = method_mac_globals_address}},
     {.kind = M_METHOD,
      .name = "list",
-     .examples = (const char *const[]){"debug.mac.globals.list", NULL},
+     .examples = EXAMPLES("debug.mac.globals.list"),
      .doc = "List all known Mac low-memory global names",
      .method = {.result_doc = "the global names, as strings",
                 .args = NULL,
                 .nargs = 0,
                 .result = V_LIST,
-                .fn = method_mac_globals_list}                                                               },
+                .fn = method_mac_globals_list}},
 };
 
 static const class_desc_t debug_mac_globals_class = {
@@ -3774,7 +3742,7 @@ static const arg_decl_t mac_atrap_args[] = {
 static const member_t debug_mac_members[] = {
     {.kind = M_METHOD,
      .name = "atrap",
-     .examples = (const char *const[]){"debug.mac.atrap 0xa9a0", NULL},
+     .examples = EXAMPLES("debug.mac.atrap 0xa9a0"),
      .doc = "Resolve an A-trap opcode to its symbolic name",
      .method = {.result_doc = "the trap name, e.g. \"_GetResource\"",
                 .args = mac_atrap_args,
@@ -4126,37 +4094,34 @@ static value_t screen_attr_format(struct object *self, const member_t *m) {
 static const member_t screen_members[] = {
     {.kind = M_ATTR,
      .name = "width",
-     .flags = VAL_RO,
      .doc = "Active display width in pixels",
      .attr = {.type = V_INT, .get = screen_attr_width, .set = NULL}},
     {.kind = M_ATTR,
      .name = "height",
-     .flags = VAL_RO,
      .doc = "Active display height in pixels",
      .attr = {.type = V_INT, .get = screen_attr_height, .set = NULL}},
     {.kind = M_ATTR,
      .name = "depth",
-     .flags = VAL_RO,
      .doc = "Bits per pixel of the active display (1/2/4/8/16/32; 0 if unknown)",
      .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
     {.kind = M_ATTR,
      .name = "stride",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Row stride in bytes (rowBytes) of the active display",
      .attr = {.type = V_UINT, .get = screen_attr_stride, .set = NULL}},
     {.kind = M_ATTR,
      .name = "format",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Pixel encoding of the active display",
      .attr = {.type = V_STRING, .get = screen_attr_format, .set = NULL}},
     {.kind = M_ATTR,
      .name = "par_w",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio numerator (display pixel width; 1 = square)",
      .attr = {.type = V_INT, .get = screen_attr_par_w, .set = NULL}},
     {.kind = M_ATTR,
      .name = "par_h",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Pixel aspect ratio denominator (display pixel height; 1 = square)",
      .attr = {.type = V_INT, .get = screen_attr_par_h, .set = NULL}},
     {.kind = M_METHOD,

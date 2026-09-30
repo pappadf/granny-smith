@@ -13,9 +13,8 @@
 //   2. an argument of kind V_ANY / V_NONE without OBJ_ARG_POLY
 //   3. a method whose result is V_ANY without a result_doc
 //   4. a writable V_ENUM attribute, or a V_ENUM argument, without enum_values
-//   5. an optional argument whose doc mentions a default but has none
-//   6. a node shown in the basic tier whose doc is empty
-//   7. an example that does not read as a valid statement against the live
+//   5. a node shown in the basic tier whose doc is empty
+//   6. an example that does not read as a valid statement against the live
 //      tree (checked by the caller's example_ok: a path in it that does not
 //      resolve)
 
@@ -25,7 +24,6 @@
 #include "object.h"
 #include "value.h"
 
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,21 +63,7 @@ static void join(char *out, size_t size, const char *path, const char *name) {
     snprintf(out, size, "%s%s%s", path, *path ? "." : "", name);
 }
 
-// Whether `text` mentions "default" in any letter case (strcasestr is a GNU
-// extension the wasm libc does not declare).
-static bool mentions_default(const char *text) {
-    static const char word[] = "default";
-    for (const char *p = text; *p; p++) {
-        size_t i = 0;
-        while (word[i] && p[i] && tolower((unsigned char)p[i]) == word[i])
-            i++;
-        if (!word[i])
-            return true;
-    }
-    return false;
-}
-
-// The argument rules (1, 2, 4, 5) for one method.
+// The argument rules (1, 2, 4) for one method.
 static void lint_args(lint_ctx_t *cx, const char *mpath, const member_t *m) {
     bool basic = (m->flags & M_CAT_MASK) == M_CAT_BASIC && !(m->method.ui_flags & MM_HIDDEN);
     for (int i = 0; i < m->method.nargs && m->method.args; i++) {
@@ -92,9 +76,6 @@ static void lint_args(lint_ctx_t *cx, const char *mpath, const member_t *m) {
             report(cx, p, "untyped argument (V_ANY/V_NONE) without OBJ_ARG_POLY");
         if (a->kind == V_ENUM && (!a->enum_values || !a->enum_values[0]))
             report(cx, p, "enum argument without enum_values");
-        bool has_default = a->default_value && a->default_value->kind != V_NONE;
-        if ((a->validation_flags & OBJ_ARG_OPTIONAL) && !has_default && a->doc && mentions_default(a->doc))
-            report(cx, p, "doc mentions a default but the argument declares none");
     }
 }
 
@@ -200,7 +181,7 @@ static void lint_attached(struct object *parent, struct object *child, void *ud)
 }
 
 // `shown_basic`: whether the node itself is reachable in the basic tier
-// (its basic attached children are then reported under rule 6).
+// (its basic attached children are then reported under rule 5).
 static void lint_object(lint_ctx_t *cx, struct object *o, const char *path, bool shown_basic) {
     if (seen(cx, o))
         return;

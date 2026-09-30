@@ -63,7 +63,7 @@ static value_t dev_get_id(struct object *self, const member_t *m) {
 }
 
 static const member_t dev_members[] = {
-    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .doc = "id", .attr = {.type = V_INT, .get = dev_get_id}},
+    {.kind = M_ATTR, .name = "id", .doc = "id", .attr = {.type = V_INT, .get = dev_get_id}},
 };
 static const class_desc_t dev_class = {.name = "device", .members = dev_members, .n_members = 1};
 

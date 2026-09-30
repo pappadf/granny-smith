@@ -897,7 +897,7 @@ CPU_CCR_BIT_RW(x, cpu_ccr_x)
 // A read-only counter, shown only under the Advanced toggle.
 #define ATTR_RO_ADV(name_, get_, doc_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .flags = VAL_RO | M_CAT_ADVANCED, .doc = doc_, .attr = {                        \
+        .kind = M_ATTR, .name = name_, .flags = M_CAT_ADVANCED, .doc = doc_, .attr = {                                 \
             .type = V_UINT,                                                                                            \
             .get = get_,                                                                                               \
             .set = NULL                                                                                                \
@@ -939,7 +939,7 @@ static const member_t cpu_members[] = {
     ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
     ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
     ATTR_RO_ADV("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
-    {.kind = M_METHOD, .name = "frame", .examples = (const char *const[]){"machine.cpu.frame", "machine.cpu.frame 0x40800000 16", NULL},
+    {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0x40800000 16"),
      .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
      .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},
 };
@@ -1007,7 +1007,7 @@ static value_t attr_fpu_fpN(struct object *self, const member_t *m) {
 
 #define FP_REG(idx)                                                                                                    \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = "fp" #idx, .flags = VAL_RO,                                                            \
+        .kind = M_ATTR, .name = "fp" #idx,                                                                             \
         .doc = "Floating-point data register FP" #idx " — 80-bit extended precision, as raw bytes", .attr = {          \
             .type = V_BYTES,                                                                                           \
             .get = attr_fpu_fpN,                                                                                       \
@@ -1027,17 +1027,17 @@ static const member_t fpu_members[] = {
     FP_REG(7),
     {.kind = M_ATTR,
          .name = "fpcr",
-         .flags = VAL_RO | M_CAT_ADVANCED,
+         .flags = M_CAT_ADVANCED,
          .doc = "Floating-point control register: rounding mode, rounding precision, and the exception enables",
          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpcr, .set = NULL}                                                                                                                   },
     {.kind = M_ATTR,
          .name = "fpsr",
-         .flags = VAL_RO | M_CAT_ADVANCED,
+         .flags = M_CAT_ADVANCED,
          .doc = "Floating-point status register: condition codes, quotient byte, and the accrued/current exception bytes",
          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpsr, .set = NULL}                                                                                                                   },
     {.kind = M_ATTR,
          .name = "fpiar",
-         .flags = VAL_RO | M_CAT_ADVANCED,
+         .flags = M_CAT_ADVANCED,
          .doc =
          "Address of the last floating-point instruction that could take an exception — where a trap handler resumes",   .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpiar, .set = NULL}},
 };
@@ -1213,7 +1213,7 @@ static value_t mmu68k_method_peek(struct object *self, const member_t *m, int ar
     return val_uint((uint8_t)size, v);
 }
 
-// peek's default size: a named `space` must be reachable past it.
+// peek's default size.
 static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
 
 static const arg_decl_t mmu68k_translate_args[] = {
@@ -1221,12 +1221,11 @@ static const arg_decl_t mmu68k_translate_args[] = {
     {.name = "supervisor",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "translate for supervisor (true) or user (false); omitted: the CPU's current state"},
+     .doc = "translate for supervisor (true) or user (false)",
+     .default_doc = "the CPU's current state"},
     {.name = "fetch",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
      .doc = "instruction fetch (the 040's ITT registers) rather than a data access"},
 };
 static const arg_decl_t mmu68k_peek_args[] = {
@@ -1237,10 +1236,11 @@ static const arg_decl_t mmu68k_peek_args[] = {
      .default_value = &k_peek_size4,
      .doc = "1, 2 or 4 bytes"},
     {.name = "space",
-     .kind = V_STRING,
+     .kind = V_ENUM,
+     .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "\"logical\" or \"physical\"; omitted: logical"},
+     .doc = "\"logical\" or \"physical\"",
+     .default_doc = "logical"},
 };
 
 // The two methods, appended to both 68K mmu member tables.
@@ -1248,15 +1248,13 @@ static const arg_decl_t mmu68k_peek_args[] = {
 #define MMU68K_METHODS                                                                                                 \
     {.kind = M_METHOD,                                                                                                 \
      .name = "translate",                                                                                              \
-     .examples = (const char *const[]){"machine.cpu.mmu.translate 0x40800000",                                         \
-                                       "machine.cpu.mmu.translate 0x2000 supervisor=false", NULL},                     \
+     .examples = EXAMPLES("machine.cpu.mmu.translate 0x40800000", "machine.cpu.mmu.translate 0x2000 supervisor=false"),                     \
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",                                   \
      .method = {.result_doc = "{phys, valid, via}",                                                                    \
                 .args = mmu68k_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu68k_method_translate}},           \
     {.kind = M_METHOD,                                                                                                 \
      .name = "peek",                                                                                                   \
-     .examples = (const char *const[]){"machine.cpu.mmu.peek 0x40800000", "machine.cpu.mmu.peek 0x400 2 physical",     \
-                                       NULL},                                                                          \
+     .examples = EXAMPLES("machine.cpu.mmu.peek 0x40800000", "machine.cpu.mmu.peek 0x400 2 physical"),                                                                          \
      .doc = "Read memory, logical (through the MMU) or physical; side-effect-free",                                    \
      .method = {.args = mmu68k_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu68k_method_peek}}
 // clang-format on
@@ -1264,49 +1262,48 @@ static const arg_decl_t mmu68k_peek_args[] = {
 static const member_t mmu_members[] = {
     {.kind = M_ATTR,
      .name = "tc",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Translation control: the enable bit, page size, and the initial-shift/table-index split",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tc, .set = NULL}    },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tc, .set = NULL}},
     {.kind = M_ATTR,
      .name = "crp_hi",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "CPU root pointer, high longword — descriptor type and limit for the user-space table",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_hi, .set = NULL}},
     {.kind = M_ATTR,
      .name = "crp_lo",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "CPU root pointer, low longword — physical address of the user-space root table",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_lo, .set = NULL}},
     {.kind = M_ATTR,
      .name = "srp_hi",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Supervisor root pointer, high longword; used only when TC selects a separate supervisor tree",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_hi, .set = NULL}},
     {.kind = M_ATTR,
      .name = "srp_lo",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Supervisor root pointer, low longword — physical address of the supervisor root table",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_lo, .set = NULL}},
     {.kind = M_ATTR,
      .name = "tt0",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Transparent translation register 0 — an address range that bypasses the page tables entirely",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt0, .set = NULL}   },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt0, .set = NULL}},
     {.kind = M_ATTR,
      .name = "tt1",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Transparent translation register 1 — the second such range",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt1, .set = NULL}   },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt1, .set = NULL}},
     {.kind = M_ATTR,
      .name = "mmusr",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Status of the last PTEST: bus error, resident, write-protected, and the level reached",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_mmusr, .set = NULL} },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_mmusr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "enabled",
-     .flags = VAL_RO,
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
-     .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}                              },
+     .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}},
     MMU68K_METHODS,
 };
 
@@ -1361,49 +1358,48 @@ static value_t attr_mmu040_enabled(struct object *self, const member_t *m) {
 static const member_t mmu040_members[] = {
     {.kind = M_ATTR,
      .name = "tc",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Translation control: enable bit and page size (4K or 8K); the 68040 has no configurable table split",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_tc, .set = NULL}   },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_tc, .set = NULL}},
     {.kind = M_ATTR,
      .name = "itt0",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Instruction transparent translation register 0 — an instruction-fetch range that bypasses the tables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt0, .set = NULL} },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt0, .set = NULL}},
     {.kind = M_ATTR,
      .name = "itt1",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Instruction transparent translation register 1",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt1, .set = NULL} },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt1, .set = NULL}},
     {.kind = M_ATTR,
      .name = "dtt0",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Data transparent translation register 0 — a data-access range that bypasses the tables",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt0, .set = NULL} },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt0, .set = NULL}},
     {.kind = M_ATTR,
      .name = "dtt1",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Data transparent translation register 1",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt1, .set = NULL} },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt1, .set = NULL}},
     {.kind = M_ATTR,
      .name = "urp",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "User root pointer — physical address of the root table used in user mode",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_urp, .set = NULL}  },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_urp, .set = NULL}},
     {.kind = M_ATTR,
      .name = "srp",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Supervisor root pointer — physical address of the root table used in supervisor mode",
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_srp, .set = NULL}  },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_srp, .set = NULL}},
     {.kind = M_ATTR,
      .name = "mmusr",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Status of the last PTEST: physical address plus the resident, write-protected and transparent bits",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_mmusr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "enabled",
-     .flags = VAL_RO,
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
-     .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}                             },
+     .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}},
     MMU68K_METHODS,
 };
 

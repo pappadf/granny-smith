@@ -158,9 +158,6 @@ static void validate_class_once(const class_desc_t *cls) {
 }
 #endif
 
-// The "no default, but not a hole" sentinel — see object_validate_class.
-const value_t obj_arg_unset = {.kind = V_NONE};
-
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
     if (!cls)
         return NULL;
@@ -554,6 +551,23 @@ const member_t *class_find_member(const class_desc_t *cls, const char *name) {
     return NULL;
 }
 
+bool arg_has_default(const arg_decl_t *a) {
+    const value_t *d = a ? a->default_value : NULL;
+    if (!d || d->kind == V_NONE)
+        return false;
+    return !(d->kind == V_STRING && (!d->s || !*d->s)); // "" means none given
+}
+
+void arg_doc_text(const arg_decl_t *a, char *buf, size_t size) {
+    if (!buf || !size)
+        return;
+    const char *doc = (a && a->doc) ? a->doc : "";
+    if (a && a->default_doc)
+        snprintf(buf, size, "%s%somitted: %s", doc, *doc ? "; " : "", a->default_doc);
+    else
+        snprintf(buf, size, "%s", doc);
+}
+
 // Look up a statically-attached child by name (one of the parent's
 // linked children). Used when the class declares a named child without
 // providing its own lookup callback.
@@ -664,9 +678,6 @@ bool object_validate_name(const char *name, char *err_buf, size_t err_size) {
     return true;
 }
 
-// Forward declaration: defined in the validator section below.
-static const char *kind_name(value_kind_t k);
-
 // A V_ENUM table must be NULL-terminated: validate_slot and the tab completer
 // both walk one looking for the sentinel, so a table without it reads past its
 // own end.  Checking only [0] -- which is all this used to do -- catches an
@@ -728,6 +739,14 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             }
         }
 
+        // member_t.flags holds the visibility category and nothing else.
+        if (m->flags & ~M_CAT_MASK) {
+            if (err_buf && err_size)
+                snprintf(err_buf, err_size, "%s.%s: flags 0x%x outside the category bits", cls->name, m->name,
+                         (unsigned)m->flags);
+            return false;
+        }
+
         // Every attribute and method carries doc text.  The object tree is the
         // documentation -- `help machine.via1` is what a reader has instead of
         // a manual -- so a member without a `.doc` is a member that silently
@@ -780,21 +799,17 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                                  m->name, p->name ? p->name : "?");
                     return false;
                 }
-                // A V_NONE default is the "no default, but not a hole"
-                // sentinel (obj_arg_unset).  node_validate_args only truncates
-                // argc at the tail, so an optional slot that a caller skipped
-                // has to be *filled* with something before the later optionals
-                // it precedes; V_NONE is that something, and the body reads it
-                // as "not supplied".  It is deliberately exempt from the
-                // kind-match rule below -- the alternative is what
-                // logpoints.add used to do, declare V_UINT and default to
-                // V_INT -1, which forced the body to re-discriminate the kind
-                // it had already declared.
-                if (p->default_value && p->default_value->kind != V_NONE && p->default_value->kind != p->kind) {
+                if (p->default_value && p->default_value->kind != p->kind) {
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: default for arg '%s' is %s, declared %s", cls->name,
-                                 m->name, p->name ? p->name : "?", kind_name(p->default_value->kind),
-                                 kind_name(p->kind));
+                                 m->name, p->name ? p->name : "?", value_kind_name(p->default_value->kind),
+                                 value_kind_name(p->kind));
+                    return false;
+                }
+                if (p->default_value && p->default_doc) {
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size, "%s.%s: arg '%s' has both a default and a default_doc", cls->name,
+                                 m->name, p->name ? p->name : "?");
                     return false;
                 }
                 if (p->kind == V_ENUM && !enum_table_ok(p->enum_values)) {
@@ -814,33 +829,6 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     if (err_buf && err_size)
                         snprintf(err_buf, err_size, "%s.%s: arg '%s' has unsupported width %u (allowed: 0,1,2,4,8,10)",
                                  cls->name, m->name, p->name ? p->name : "?", p->width);
-                    return false;
-                }
-            }
-            // An optional slot with no default is only reachable by *tail*
-            // truncation: node_validate_args fills skipped slots from their
-            // defaults and can shorten argc only at the end.  So an optional
-            // slot that is followed by another optional and has no default is
-            // a hole nobody can step over -- naming any later argument fails
-            // with "missing argument '<this one>'", which is how
-            // debug.breakpoints.add(addr, space="physical") became impossible
-            // to call.  Give such a slot a real default, or &obj_arg_unset --
-            // or, if it belongs to an all-or-nothing group the body checks by
-            // argument count, say so with OBJ_ARG_GROUPED.
-            for (int a = 0; a < nargs - 1; a++) {
-                if (!(args[a].validation_flags & OBJ_ARG_OPTIONAL) || args[a].default_value)
-                    continue;
-                if (args[a].validation_flags & OBJ_ARG_GROUPED)
-                    continue; // all-or-nothing group: skipping it alone is not a legal call
-                for (int b = a + 1; b < nargs; b++) {
-                    if (!(args[b].validation_flags & OBJ_ARG_OPTIONAL))
-                        continue;
-                    if (err_buf && err_size)
-                        snprintf(err_buf, err_size,
-                                 "%s.%s: optional arg '%s' has no default but '%s' follows it, so naming '%s' is "
-                                 "impossible",
-                                 cls->name, m->name, args[a].name ? args[a].name : "?",
-                                 args[b].name ? args[b].name : "?", args[b].name ? args[b].name : "?");
                     return false;
                 }
             }
@@ -1002,7 +990,6 @@ static const member_t k_synth_count = {
     .kind = M_ATTR,
     .name = "count",
     .doc = "Live entries in the collection",
-    .flags = VAL_RO,
     .attr = {.type = V_UINT, .width = 4, .get = synth_count_get}
 };
 
@@ -1311,44 +1298,6 @@ static void slot_from_attr(typed_slot_t *out, const member_t *m) {
     out->default_value = NULL;
 }
 
-// Human-readable kind name used in error messages.
-static const char *kind_name(value_kind_t k) {
-    // Slot-declaration sentinel; not one of the live value kinds below.
-    if (k == V_ANY)
-        return "ANY";
-    switch (k) {
-    case V_NONE:
-        return "NONE";
-    case V_BOOL:
-        return "BOOL";
-    case V_INT:
-        return "INT";
-    case V_UINT:
-        return "UINT";
-    case V_FLOAT:
-        return "FLOAT";
-    case V_STRING:
-        return "STRING";
-    case V_BYTES:
-        return "BYTES";
-    case V_ENUM:
-        return "ENUM";
-    case V_LIST:
-        return "LIST";
-    case V_MAP:
-        return "MAP";
-    case V_OBJECT:
-        return "OBJECT";
-    case V_ERROR:
-        return "ERROR";
-    case V_REF:
-        return "REF";
-    case V_RANGE:
-        return "RANGE";
-    }
-    return "?";
-}
-
 // True if the value's bit pattern fits in `width` bytes interpreted under
 // the value's own signedness. `width=0` and `width=10` (FPU extended) mean
 // "no explicit constraint" and we treat them as 8 bytes.
@@ -1474,7 +1423,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
 
     if (in->kind != s->kind) {
         if (strict) {
-            snprintf(err_buf, err_size, "must be %s, got %s", kind_name(s->kind), kind_name(in->kind));
+            snprintf(err_buf, err_size, "must be %s, got %s", value_kind_name(s->kind), value_kind_name(in->kind));
             return VALIDATE_ERR;
         }
         // V_INT ↔ V_UINT with width fit + sign reinterpret.
@@ -1548,7 +1497,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
             };
             rewrote = true;
         } else {
-            snprintf(err_buf, err_size, "must be %s, got %s", kind_name(s->kind), kind_name(in->kind));
+            snprintf(err_buf, err_size, "must be %s, got %s", value_kind_name(s->kind), value_kind_name(in->kind));
             return VALIDATE_ERR;
         }
     } else {
@@ -1661,11 +1610,11 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
     }
 
     bool any_rewrite = false;
-    int eff_n = fixed_n;
-    if (in_argc > eff_n)
-        eff_n = in_argc;
-    if (eff_n > OBJ_VALIDATE_MAX_ARGS)
-        eff_n = OBJ_VALIDATE_MAX_ARGS;
+    // Every fixed slot is materialised in scratch -- given, default-filled, or
+    // V_NONE for an optional the caller skipped -- so a body may read any
+    // declared slot.  argc counts through the last slot that was given or
+    // default-filled; an optional left out at the tail shortens it.
+    int eff_n = 0;
 
     // Fixed slots.
     for (int i = 0; i < fixed_n; i++) {
@@ -1673,20 +1622,18 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         slot_from_arg(&s, &args[i]);
 
         if (i >= in_argc || in_argv[i].kind == V_NONE) {
-            // Optional missing (or a V_NONE hole) — fill with default if
-            // provided.
+            // Optional missing (or a V_NONE hole) — fill with the default,
+            // else with none.
             if (args[i].default_value) {
                 scratch[i] = *args[i].default_value;
-                any_rewrite = true;
-            } else if (i < last_given) {
-                // A hole before a later given slot can't be expressed to the
-                // body (argc truncation only works at the tail).
+                eff_n = i + 1;
+            } else if ((args[i].validation_flags & OBJ_ARG_GROUPED) && i < last_given) {
+                // A grouped slot cannot be skipped alone.
                 return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
             } else {
-                // Optional without default — body sees argc < nargs.
-                eff_n = i;
-                break;
+                scratch[i] = val_none();
             }
+            any_rewrite = true;
             continue;
         }
 
@@ -1699,6 +1646,7 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         scratch[i] = (st == VALIDATE_REWRITE) ? out_v : in_argv[i];
         if (st == VALIDATE_REWRITE)
             any_rewrite = true;
+        eff_n = i + 1;
     }
 
     // Rest slot: validate each tail item against the rest slot's kind/width/etc.
@@ -1729,7 +1677,7 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         eff_n = fixed_n + eff_rest_n;
     }
 
-    *out_argv = (any_rewrite || in_argc < fixed_n) ? scratch : in_argv;
+    *out_argv = any_rewrite ? scratch : in_argv;
     *out_argc = eff_n;
     return val_none();
 }
@@ -1779,8 +1727,8 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
     if ((slot->flags & OBJ_ARG_NONE_OK) && out->kind == V_NONE)
         return;
     if (slot->kind != out->kind) {
-        fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, kind_name(slot->kind),
-                kind_name(out->kind));
+        fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, value_kind_name(slot->kind),
+                value_kind_name(out->kind));
         assert(out->kind == slot->kind && "return kind mismatch");
     }
     if ((slot->kind == V_INT || slot->kind == V_UINT) && slot->width) {
@@ -1811,7 +1759,7 @@ static value_t node_get_here(node_t n) {
         // Propagate display flags from the slot's presentation_flags
         // (VAL_HEX/VAL_DEC/VAL_BIN/VAL_VOLATILE/VAL_SENSITIVE) onto the
         // value so formatters see the intent without consulting the
-        // descriptor separately. Per-member VAL_RO stays on member.flags
+        // descriptor separately.
         // and does not propagate (it controls writability, not display).
         v.flags |= n.member->attr.presentation_flags;
 #ifndef NDEBUG
@@ -1890,13 +1838,9 @@ static value_t node_set_here(node_t n, value_t v) {
         value_free(&v);
         return val_err("'%s' is not a settable attribute", n.member ? n.member->name : "(object)");
     }
-    if (n.member->flags & VAL_RO) {
-        value_free(&v);
-        return val_err("'%s' is read-only", n.member->name);
-    }
     if (!n.member->attr.set) {
         value_free(&v);
-        return val_err("attribute '%s' has no setter", n.member->name);
+        return val_err("'%s' is read-only", n.member->name);
     }
     value_t err = node_validate_set(n.obj, n.member, &v);
     if (err.kind == V_ERROR) {

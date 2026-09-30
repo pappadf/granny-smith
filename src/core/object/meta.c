@@ -299,7 +299,7 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
     const char *kind_str = "?";
     switch (mb->kind) {
     case M_ATTR:
-        kind_str = (mb->flags & VAL_RO) ? "attribute (read-only)" : "attribute";
+        kind_str = !mb->attr.set ? "attribute (read-only)" : "attribute";
         break;
     case M_METHOD:
         kind_str = "method";
@@ -409,45 +409,6 @@ static value_t indices_of(struct object *insp, const member_t *mb) {
 // {kind, width, presentation, enum}: what a value of this slot is, for
 // editors, argument forms, usage text and completion.
 
-static const char *kind_text(value_kind_t k) {
-    if (k == V_ANY) // a declaration-only sentinel outside the enum
-        return "any";
-    switch (k) {
-    case V_NONE:
-        return "none";
-    case V_BOOL:
-        return "bool";
-    case V_INT:
-        return "int";
-    case V_UINT:
-        return "uint";
-    case V_FLOAT:
-        return "float";
-    case V_STRING:
-        return "string";
-    case V_BYTES:
-        return "bytes";
-    case V_ENUM:
-        return "enum";
-    case V_LIST:
-        return "list";
-    case V_MAP:
-        return "map";
-    case V_OBJECT:
-        return "object";
-    case V_REF:
-        return "ref";
-    case V_RANGE:
-        return "range";
-    default:
-        return "none";
-    }
-}
-
-const char *meta_kind_text(value_kind_t k) {
-    return kind_text(k);
-}
-
 const char *meta_presentation_text(uint16_t flags) {
     if (flags & VAL_SENSITIVE)
         return "sensitive";
@@ -464,7 +425,7 @@ const char *meta_presentation_text(uint16_t flags) {
 
 value_t meta_type_descriptor(value_kind_t kind, uint8_t width, uint16_t presentation, const char *const *enum_values) {
     value_map_builder_t *b = val_map_new();
-    val_map_put(b, "kind", val_str(kind_text(kind)));
+    val_map_put(b, "kind", val_str(value_kind_name(kind)));
     val_map_put(b, "width", val_uint(1, width));
     const char *pres = meta_presentation_text(presentation);
     val_map_put(b, "presentation", pres ? val_str(pres) : val_none());
@@ -553,7 +514,7 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
     val_map_put(b, "doc", val_str(doc));
     switch (mb->kind) {
     case M_ATTR:
-        val_map_put(b, "readonly", val_bool((mb->flags & VAL_RO) != 0 || !mb->attr.set));
+        val_map_put(b, "readonly", val_bool(!mb->attr.set));
         val_map_put(
             b, "type",
             meta_type_descriptor(mb->attr.type, mb->attr.width, mb->attr.presentation_flags, mb->attr.enum_values));
@@ -584,12 +545,13 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
             const arg_decl_t *a = &mb->method.args[i];
             value_map_builder_t *ab = val_map_new();
             val_map_put(ab, "name", val_str(a->name ? a->name : ""));
-            val_map_put(ab, "doc", val_str(a->doc ? a->doc : ""));
+            char doc[512];
+            arg_doc_text(a, doc, sizeof(doc));
+            val_map_put(ab, "doc", val_str(doc));
             val_map_put(ab, "type", meta_type_descriptor(a->kind, a->width, a->presentation_flags, a->enum_values));
             val_map_put(ab, "optional", val_bool((a->validation_flags & OBJ_ARG_OPTIONAL) != 0));
             val_map_put(ab, "rest", val_bool((a->validation_flags & OBJ_ARG_REST) != 0));
-            bool has_default = a->default_value && a->default_value->kind != V_NONE;
-            val_map_put(ab, "default", has_default ? value_dup(a->default_value) : val_none());
+            val_map_put(ab, "default", arg_has_default(a) ? value_dup(a->default_value) : val_none());
             val_list_push(&args, &len, &cap, val_map_finish(ab));
         }
         val_map_put(b, "args", val_list(args, len));
@@ -671,7 +633,8 @@ static const arg_decl_t meta_complete_args[] = {
     {.name = "cursor",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Cursor position in line; omitted: the end of the line"},
+     .doc = "Cursor position in line",
+     .default_doc = "the end of the line"},
 };
 
 static const arg_decl_t meta_member_args[] = {
@@ -696,71 +659,63 @@ static const member_t meta_members[] = {
     {.kind = M_ATTR,
      .name = "class",
      .doc = "Class name of the inspected node",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = meta_get_class, .set = NULL}},
+     .attr = {.type = V_STRING, .get = meta_get_class, .set = NULL}                                                                                                                         },
     {.kind = M_ATTR,
      .name = "doc",
      .doc = "One-sentence description of the inspected node (its own doc, else its class's)",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = meta_get_doc, .set = NULL}},
+     .attr = {.type = V_STRING, .get = meta_get_doc, .set = NULL}                                                                                                                           },
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Absolute dotted path of the inspected node",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = meta_get_path, .set = NULL}},
+     .attr = {.type = V_STRING, .get = meta_get_path, .set = NULL}                                                                                                                          },
     {.kind = M_ATTR,
      .name = "label",
      .doc = "Human-facing display label of the inspected node (falls back to name)",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = meta_get_label, .set = NULL}},
+     .attr = {.type = V_STRING, .get = meta_get_label, .set = NULL}                                                                                                                         },
     {.kind = M_ATTR,
      .name = "category",
      .doc = "Visibility tier of the inspected node: basic | advanced | internal",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = meta_get_category, .set = NULL}},
+     .attr = {.type = V_STRING, .get = meta_get_category, .set = NULL}                                                                                                                      },
     {.kind = M_ATTR,
      .name = "children",
      .doc = "Names of sub-objects on the inspected node",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = meta_get_children, .set = NULL}},
+     .attr = {.type = V_LIST, .get = meta_get_children, .set = NULL}                                                                                                                        },
     {.kind = M_ATTR,
      .name = "attributes",
      .doc = "Names of attribute members on the inspected class",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = meta_get_attributes, .set = NULL}},
+     .attr = {.type = V_LIST, .get = meta_get_attributes, .set = NULL}                                                                                                                      },
     {.kind = M_ATTR,
      .name = "methods",
      .doc = "Names of method members on the inspected class",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = meta_get_methods, .set = NULL}},
+     .attr = {.type = V_LIST, .get = meta_get_methods, .set = NULL}                                                                                                                         },
     {.kind = M_METHOD,
      .name = "complete",
      .doc = "Tab-completion candidates for a partial line",
-     .method = {.args = meta_complete_args, .nargs = 2, .result = V_LIST, .fn = meta_method_complete}},
+     .method = {.args = meta_complete_args, .nargs = 2, .result = V_LIST, .fn = meta_method_complete}                                                                                       },
     {.kind = M_METHOD,
      .name = "member",
      .doc = "Short description of one named member",
-     .method = {.args = meta_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member}},
+     .method = {.args = meta_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member}                                                                                         },
     {.kind = M_METHOD,
      .name = "member_category",
      .doc = "Visibility tier of a named member: basic | advanced | internal",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_category}},
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_category}                                                                          },
     {.kind = M_METHOD,
      .name = "member_label",
      .doc = "Display label of a named member (falls back to its name)",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_label}},
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_label}                                                                             },
     {.kind = M_METHOD,
      .name = "method_info",
      .doc = "JSON UI metadata for a method (verb, destructive, mutate, hidden, nargs)",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}},
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}                                                                                 },
     {.kind = M_METHOD,
      .name = "members",
      .doc = "Every member in one call: name, kind, category, label, doc, and per kind readonly/value, "
-            "indexed/indices or the method_info fields", .method = {.args = meta_members_args, .nargs = 1, .result = V_LIST, .fn = meta_method_members}},
+            "indexed/indices or the method_info fields",                                      .method = {.args = meta_members_args, .nargs = 1, .result = V_LIST, .fn = meta_method_members}},
     {.kind = M_METHOD,
      .name = "indices",
      .doc = "Live indices of an indexed-child member (errors if not indexed)",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_LIST, .fn = meta_method_indices}},
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_LIST, .fn = meta_method_indices}                                                                                    },
 };
 
 // Special class name — would normally trip the `meta`-is-reserved check

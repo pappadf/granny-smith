@@ -255,32 +255,33 @@ static value_t archive_method_extract(struct object *self, const member_t *m, in
 }
 
 static const arg_decl_t archive_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Archive file path"},
+    ARG_PATH("path", "Archive file path"),
 };
 
 static const arg_decl_t archive_extract_args[] = {
-    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Archive file path"},
+    ARG_PATH("path", "Archive file path"),
     {.name = "out_dir",
-     .kind = V_STRING,
-     .presentation_flags = VAL_PATH,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Output directory; omitted: the current directory"},
+                                   .kind = V_STRING,
+                                   .presentation_flags = VAL_PATH,
+                                   .validation_flags = OBJ_ARG_OPTIONAL,
+                                   .doc = "Output directory",
+                                   .default_doc = "the current directory"},
 };
 
 static const member_t archive_members[] = {
     {.kind = M_METHOD,
      .name = "identify",
-     .examples = (const char *const[]){"files.archive.identify \"/opfs/downloads/app.sit\"", NULL},
+     .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
      .doc = "Identify a Mac archive's format",
      .method = {.result_doc = "\"sit\", \"cpt\", \"hqx\", \"bin\" or \"sea\"; empty when not an archive",
                 .args = archive_path_arg,
                 .nargs = 1,
                 .result = V_STRING,
-                .fn = archive_method_identify}                                                                        },
+                .fn = archive_method_identify}},
     {.kind = M_METHOD,
      .name = "extract",
-     .examples = (const char *const[]){"files.archive.extract \"/opfs/downloads/app.sit\"",
-                                       "files.archive.extract \"/opfs/downloads/app.sit\" \"/opfs/unpacked\"", NULL},
+     .examples = EXAMPLES("files.archive.extract \"/opfs/downloads/app.sit\"",
+     "files.archive.extract \"/opfs/downloads/app.sit\" \"/opfs/unpacked\""),
      .doc = "Extract a Mac archive into out_dir",
      .method =
          {.ui_flags = MM_IO, .args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},

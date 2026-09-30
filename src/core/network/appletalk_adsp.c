@@ -1303,11 +1303,7 @@ static value_t adsp_conn_method_close(struct object *self, const member_t *m, in
 
 #define ADSP_CONN_ATTR(nm, w, getter, doc_text)                                                                        \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = nm, .doc = doc_text, .flags = VAL_RO, .attr = {                                        \
-            .type = V_UINT,                                                                                            \
-            .width = w,                                                                                                \
-            .get = getter                                                                                              \
-        }                                                                                                              \
+        .kind = M_ATTR, .name = nm, .doc = doc_text, .attr = {.type = V_UINT, .width = w, .get = getter }              \
     }
 
 static const member_t adsp_conn_members[] = {
@@ -1315,13 +1311,11 @@ static const member_t adsp_conn_members[] = {
     {.kind = M_ATTR,
                                                                             .name = "state",
                                                                             .doc = "Connection-end state (Inside AppleTalk 12-5)",
-                                                                            .flags = VAL_RO,
                                                                             .attr = {.type = V_ENUM, .enum_values = ADSP_STATE_NAMES, .get = adsp_conn_attr_state}},
     {.kind = M_ATTR,
                                                                             .name = "role",
                                                                             .doc = "initiator if we sent the first open request, else responder",
-                                                                            .flags = VAL_RO,
-                                                                            .attr = {.type = V_STRING, .get = adsp_conn_attr_role}},
+                                                                            .attr = {.type = V_STRING, .get = adsp_conn_attr_role}                                },
     ADSP_CONN_ATTR("local_socket", 1, adsp_conn_attr_local_socket, "Socket this end owns"),
     ADSP_CONN_ATTR("remote_node", 1, adsp_conn_attr_remote_node, "LLAP node of the remote end"),
     ADSP_CONN_ATTR("remote_socket", 1, adsp_conn_attr_remote_socket, "Socket of the remote end"),
@@ -1342,7 +1336,7 @@ static const member_t adsp_conn_members[] = {
                 .nargs = 0,
                 .result = V_NONE,
                 .fn = adsp_conn_method_close,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                                                                                           },
 };
 
 static const class_desc_t adsp_conn_class = {
@@ -1418,7 +1412,6 @@ static const member_t adsp_members[] = {
     {.kind = M_ATTR,
      .name = "max_data",
      .doc = "ADSP data bytes per packet (Inside AppleTalk 12-12)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 2, .get = adsp_attr_max_data}},
 };
 

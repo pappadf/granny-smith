@@ -118,7 +118,7 @@ static void value_text(vbuf_t *b, const value_t *v) {
 // Type text: the kind, plus ", hex" / ", bin" / ", path" for those
 // presentations; enums say "enum".
 static void type_text(vbuf_t *b, value_kind_t kind, uint16_t presentation) {
-    put(b, meta_kind_text(kind));
+    put(b, value_kind_name(kind));
     const char *pres = meta_presentation_text(presentation);
     if (pres && (strcmp(pres, "hex") == 0 || strcmp(pres, "bin") == 0 || strcmp(pres, "path") == 0)) {
         put(b, ", ");
@@ -216,11 +216,10 @@ static void method_text(vbuf_t *t, const char *sig, const member_t *m) {
         put(t, tt.p ? tt.p : "");
         pad(t, type_w + 2 - (tt.p ? strlen(tt.p) : 0));
         vbuf_free(&tt);
-        put(t, a->doc ? a->doc : "");
-        // An empty-string default is "none given", not a value to show.
-        bool shown_default = a->default_value && a->default_value->kind != V_NONE &&
-                             !(a->default_value->kind == V_STRING && (!a->default_value->s || !*a->default_value->s));
-        if (shown_default) {
+        char doc[512];
+        arg_doc_text(a, doc, sizeof(doc));
+        put(t, doc);
+        if (arg_has_default(a)) {
             put(t, " (default ");
             value_text(t, a->default_value);
             put(t, ")");
@@ -252,7 +251,7 @@ static void attr_text(vbuf_t *t, struct object *obj, const member_t *m) {
         put(t, "enum");
     else
         type_text(t, m->attr.type, m->attr.presentation_flags);
-    if ((m->flags & VAL_RO) || !m->attr.set)
+    if (!m->attr.set)
         put(t, " (read-only)");
     newline(t);
     if (!(m->attr.presentation_flags & VAL_SENSITIVE)) {

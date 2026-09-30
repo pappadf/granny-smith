@@ -121,12 +121,10 @@ static const member_t declrom_members[] = {
     {.kind = M_ATTR,
      .name = "size",
      .doc = "Declaration ROM size in bytes (bus-space, byte-lane expanded)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = declrom_attr_size}   },
     {.kind = M_ATTR,
      .name = "present",
      .doc = "True if a declaration ROM is loaded",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = declrom_attr_present}},
 };
 static const class_desc_t nubus_declrom_class = {
@@ -139,11 +137,7 @@ static value_t clut_attr_len(struct object *self, const member_t *m) {
     return val_int(d ? (int)d->clut_len : 0);
 }
 static const member_t clut_members[] = {
-    {.kind = M_ATTR,
-     .name = "len",
-     .doc = "Number of palette entries",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = clut_attr_len}},
+    {.kind = M_ATTR, .name = "len", .doc = "Number of palette entries", .attr = {.type = V_INT, .get = clut_attr_len}},
 };
 static const class_desc_t nubus_clut_class = {
     .name = "clut", .members = clut_members, .n_members = sizeof(clut_members) / sizeof(clut_members[0])};
@@ -176,22 +170,18 @@ static const member_t mode_members[] = {
     {.kind = M_ATTR,
      .name = "width",
      .doc = "Current monitor width in pixels",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = mode_attr_width}    },
     {.kind = M_ATTR,
      .name = "height",
      .doc = "Current monitor height in pixels",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = mode_attr_height}   },
     {.kind = M_ATTR,
      .name = "depth",
      .doc = "Current pixel depth (bpp)",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = mode_attr_depth}    },
     {.kind = M_ATTR,
      .name = "format",
      .doc = "Current pixel encoding",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = mode_attr_format}},
 };
 static const class_desc_t nubus_mode_class = {
@@ -209,16 +199,11 @@ static value_t card_attr_slot(struct object *self, const member_t *m) {
     return val_int(c ? c->slot : -1);
 }
 static const member_t card_members[] = {
-    {.kind = M_ATTR,
-     .name = "name",
-     .doc = "Card display name",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = card_attr_name}                            },
+    {.kind = M_ATTR, .name = "name", .doc = "Card display name", .attr = {.type = V_STRING, .get = card_attr_name}},
     {.kind = M_ATTR,
      .name = "slot",
      .doc = "NuBus slot number ($9..$E)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = card_attr_slot}},
+     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = card_attr_slot}                                },
 };
 static const class_desc_t nubus_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
@@ -318,13 +303,12 @@ static const member_t slot_members[] = {
     {.kind = M_ATTR,
      .name = "number",
      .doc = "NuBus slot number ($9..$E)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = slot_attr_number}             },
+     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = slot_attr_number}},
     {.kind = M_ATTR,
      .name = "card_id",
      .doc = "Staged card pick for this socket for the next machine.boot (\"\" = none)",
      .flags = 0,
-     .attr = {.type = V_STRING, .get = slot_attr_card_id_get, .set = slot_attr_card_id_set}      },
+     .attr = {.type = V_STRING, .get = slot_attr_card_id_get, .set = slot_attr_card_id_set}},
     {.kind = M_ATTR,
      .name = "video_mode",
      .doc = "Staged video-mode id for this socket for the next machine.boot (\"\" = none)",

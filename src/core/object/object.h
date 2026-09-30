@@ -45,11 +45,10 @@ struct class_desc;
 // OBJ_ARG_GROUPED — this optional argument is part of an all-or-nothing group
 // that the method body checks by argument count (screen.match's exclude
 // rectangles: one reference, or a reference plus all four edges, or plus all
-// eight).  Such a slot deliberately has no default: skipping it alone is not a
-// legal call, so the class validator's "an optional with no default that
-// precedes another optional is unreachable by name" rule does not apply.
-// Saying so in the declaration is the point — without it the grouping lives
-// only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
+// eight).  An optional argument with no default that a caller skips reaches
+// the body as V_NONE; a grouped one may not be skipped alone -- naming a later
+// argument past it is an error -- so the grouping lives in the declaration and
+// not only in an `argc != 1 && argc != 5 && argc != 9` buried in the body.
 #define OBJ_ARG_GROUPED 0x0040u
 // OBJ_ARG_NONE_OK — the slot also takes `none`, meaning "unset": an
 // attribute such as machine.scc.a.output is a path while it is set and
@@ -63,11 +62,11 @@ struct class_desc;
 
 // === Member visibility category ==============================================
 //
-// A three-tier visibility classification, stored in the high bits of
-// member_t.flags (the low bits hold VAL_RO/VAL_HEX/… from value.h, which
-// occupy 0x0001..0x0020). Every consumer (SYSTEM tab, command browser)
-// reads the category off the model so visibility cannot drift the way a
-// hand-maintained allowlist did:
+// A three-tier visibility classification, the only content of member_t.flags
+// (an attribute is read-only when it has no setter; display flags live in
+// the slot's presentation_flags). Every consumer (SYSTEM tab, command
+// browser) reads the category off the model so visibility cannot drift the
+// way a hand-maintained allowlist did:
 //   basic    — always shown in the tree; the default (0).
 //   advanced — shown only with the "Advanced" toggle on.
 //   internal — never shown in the tree, but fully scriptable.
@@ -103,7 +102,26 @@ typedef struct arg_decl {
     const char *const *enum_values; // NULL-terminated table for V_ENUM
     const value_t *default_value; // optional default for OBJ_ARG_OPTIONAL slots
     const char *doc;
+    // What an omitted optional argument means when that is computed rather
+    // than a value (`the current PC`, `the model's`).  Shown after the doc as
+    // `; omitted: <default_doc>`; an argument has this or default_value.
+    const char *default_doc;
 } arg_decl_t;
+
+// True if the argument declares a default worth showing: a value other than
+// none or the empty string.
+bool arg_has_default(const arg_decl_t *a);
+
+// An argument's doc as a reader sees it: its doc, then `; omitted: …` for a
+// computed default.  Writes into buf (NUL-terminated, truncated).
+void arg_doc_text(const arg_decl_t *a, char *buf, size_t size);
+
+// A NULL-terminated example list for member_t.examples.
+#define EXAMPLES(...) ((const char *const[]){__VA_ARGS__, NULL})
+
+// A required string argument naming a VFS path.
+#define ARG_PATH(arg_name, arg_doc)                                                                                    \
+    {.name = (arg_name), .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = (arg_doc)}
 
 // === Function pointer types ==================================================
 //
@@ -144,7 +162,7 @@ typedef struct member {
     member_kind_t kind;
     const char *name;
     const char *doc;
-    uint16_t flags; // VAL_RO + M_CAT_* visibility (per-member, not per-slot)
+    uint16_t flags; // M_CAT_* visibility
     // Optional display label. The path segment stays
     // `name`; the tree shows `label` when present, else `name`. NULL = use
     // the name.
@@ -364,7 +382,7 @@ value_t obj_u64_field_get(struct object *self, const member_t *m);
 
 #define OBJ_U64_FIELD_WITH(block_type, field, doc_text, getter)                                                        \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
+        .kind = M_ATTR, .name = #field, .doc = doc_text, .attr = {                                                     \
             .type = V_UINT,                                                                                            \
             .width = 8,                                                                                                \
             .get = getter,                                                                                             \
@@ -553,16 +571,6 @@ void object_fire_invalidators(struct object *o);
 // must be unique within the class. Returns true on success; on failure
 // writes a one-line message into err_buf (may be NULL).
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
-
-// Default value for an optional argument that has no real default.
-//
-// node_validate_args can only truncate argc at the tail, so an optional slot a
-// caller skipped must still be filled if any later optional was supplied. Give
-// such a slot `.default_value = &obj_arg_unset` and the body sees V_NONE,
-// meaning "not supplied". Declaring a real kind and defaulting to a sentinel of
-// some *other* kind (V_INT -1 for a V_UINT slot, say) is the thing this
-// replaces: it makes the body re-check a kind the declaration already fixed.
-extern const value_t obj_arg_unset;
 
 // === Meta-attribute slot ====================================================
 //

@@ -735,17 +735,14 @@ static const member_t psc_members[] = {
                                          .kind = M_ATTR,
                                          .name = "level_pending",
                                          .doc = "L3-L6 source registers, unmasked, index 0 = L3",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = psc_attr_level_pending, .set = NULL}        },
     {.kind = M_ATTR,
                                          .name = "level_ier",
                                          .doc = "L3-L6 enable registers, index 0 = L3",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_LIST, .get = psc_attr_level_ier, .set = NULL}                                                },
     {.kind = M_ATTR,
                                          .name = "sint_active",
                                          .doc = "SInt slot sources currently asserting (aggregated onto VIA2 CA1)",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = psc_attr_sint_active, .set = NULL}},
 };
 

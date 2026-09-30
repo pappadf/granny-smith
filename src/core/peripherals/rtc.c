@@ -644,8 +644,7 @@ static const member_t rtc_members[] = {
     {.kind = M_ATTR,
      .name = "read_only",
      .doc = "Write-protect bit",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}            },
+     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}},
 };
 
 static const class_desc_t rtc_class = {

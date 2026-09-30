@@ -286,9 +286,8 @@ static const arg_decl_t mouse_move_args[] = {
      .doc = "\"default\" (a Mac: absolute Toolbox cursor; a Lisa: deltas), \"relative\" (deltas, every machine), "
             "\"global\" (Toolbox MTemp), \"hw\" (= relative), or \"aux\" (A/UX MAE)"},
 };
-// `mouse.click()` with no arguments is a press, so the slot has a real default
-// rather than obj_arg_unset -- and having one is what makes `mouse.click(mode=
-// "hw")` callable at all (it used to fail with "missing argument 'down'").
+// `mouse.click()` with no arguments is a press, so the slot has a real
+// default rather than none.
 static const value_t mouse_click_def_down = {.kind = V_BOOL, .width = 1, .b = true};
 
 static const arg_decl_t mouse_click_args[] = {

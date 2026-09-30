@@ -46,15 +46,11 @@ static const arg_decl_t toy_step_args[] = {
 };
 
 static const member_t toy_members[] = {
-    {.kind = M_ATTR,
-     .name = "pc",
-     .doc = "Program counter",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = toy_get_pc, .set = NULL}},
+    {.kind = M_ATTR,   .name = "pc", .doc = "Program counter", .attr = {.type = V_UINT, .get = toy_get_pc, .set = NULL}},
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Advance by N",
-     .method = {.args = toy_step_args, .nargs = 1, .result = V_NONE, .fn = toy_step}},
+     .method = {.args = toy_step_args, .nargs = 1, .result = V_NONE, .fn = toy_step}                                   },
 };
 static const class_desc_t toy_class = {
     .name = "Toy",
@@ -194,7 +190,6 @@ TEST(test_class_with_meta_member_rejected) {
     static const member_t bad_members[] = {
         {.kind = M_ATTR,
          .name = "meta",
-         .flags = VAL_RO,
          .doc = "reserved name",
          .attr = {.type = V_UINT, .get = toy_get_pc, .set = NULL}},
     };

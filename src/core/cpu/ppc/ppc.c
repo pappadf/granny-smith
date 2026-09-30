@@ -1199,10 +1199,10 @@ static const member_t ppc_members[] = {
     PPC_DBAT(0), PPC_DBAT(1), PPC_DBAT(2), PPC_DBAT(3),
     PPC_ATTR("tbu", PA_RTCU, "Timebase upper half (604); the same storage as rtcu"),
     PPC_ATTR("tbl", PA_RTCL, "Timebase lower half (604); the same storage as rtcl"),
-    {.kind = M_ATTR, .name = "instr_count", .flags = VAL_RO,
+    {.kind = M_ATTR, .name = "instr_count", 
      .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
      .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
-    {.kind = M_METHOD, .name = "frame", .examples = (const char *const[]){"machine.cpu.frame", "machine.cpu.frame 0xfff00100 16", NULL},
+    {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0xfff00100 16"),
      .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
      .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
 };
@@ -1268,7 +1268,7 @@ static value_t mmu_method_peek(struct object *self, const member_t *m, int argc,
     return v;
 }
 
-// peek's default size: a named `space` must be reachable past it.
+// peek's default size.
 static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
 
 static const arg_decl_t mmu_translate_args[] = {
@@ -1276,12 +1276,11 @@ static const arg_decl_t mmu_translate_args[] = {
     {.name = "supervisor",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "translate for supervisor (true) or user (false); omitted: from MSR[PR]"},
+     .doc = "translate for supervisor (true) or user (false)",
+     .default_doc = "from MSR[PR]"},
     {.name = "fetch",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
      .doc = "instruction-side translation (IBATs, MSR[IT]) rather than data-side"},
 };
 static const arg_decl_t mmu_peek_args[] = {
@@ -1292,26 +1291,26 @@ static const arg_decl_t mmu_peek_args[] = {
      .default_value = &k_peek_size4,
      .doc = "1, 2 or 4 bytes"},
     {.name = "space",
-     .kind = V_STRING,
+     .kind = V_ENUM,
+     .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "\"logical\" or \"physical\"; omitted: logical"},
+     .doc = "\"logical\" or \"physical\"",
+     .default_doc = "logical"},
 };
 
 static const member_t ppc_mmu_members[] = {
     {.kind = M_METHOD,
      .name = "translate",
-     .examples = (const char *const[]){"machine.cpu.mmu.translate 0x5fff8000", NULL},
+     .examples = EXAMPLES("machine.cpu.mmu.translate 0x5fff8000"),
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",
      .method = {.result_doc = "{phys, valid, via}",
                 .args = mmu_translate_args,
                 .nargs = 3,
                 .result = V_MAP,
-                .fn = mmu_method_translate}                                                },
+                .fn = mmu_method_translate}},
     {.kind = M_METHOD,
      .name = "peek",
-     .examples =
-         (const char *const[]){"machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical", NULL},
+     .examples = EXAMPLES("machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical"),
      .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
      .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}},
 };

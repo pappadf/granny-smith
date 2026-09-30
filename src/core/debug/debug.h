@@ -86,8 +86,12 @@ value_t debug_frame_build(const cpu_debug_if_t *dif, const char *who, int argc, 
 // (a table walk), "segment" (PPC direct-store segment, or the Lisa's MMU).
 value_t debug_translation_result(uint32_t phys, bool valid, const char *via);
 
-// Read the optional `space` argument at argv[idx]: "logical" (the default,
-// also when omitted) or "physical".  Returns false for anything else.
+// The values of every `space` argument: "logical", "physical".
+extern const char *const debug_space_values[];
+
+// Read the optional `space` argument at argv[idx] (V_ENUM over
+// debug_space_values, or its string): "logical" (the default, also when
+// omitted) or "physical".  Returns false for anything else.
 bool debug_parse_space(int argc, const value_t *argv, int idx, bool *physical);
 
 // Resolve a 68k low-memory address through the mac-world translation
