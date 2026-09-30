@@ -265,9 +265,9 @@ describe('FilesystemView — disk-image descent', () => {
       const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       expect(cp![1]).toEqual([
-        '-r',
         '/opfs/disk.img/partition1/System Folder',
         '/opfs/extracted/System Folder',
+        true,
       ]);
     });
   });

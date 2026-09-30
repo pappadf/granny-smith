@@ -173,7 +173,7 @@ _raw
 > files.cat "/images/sys.img/System Folder/Finder/rsrc/vers/1.info"
 {"name":"","attrs":["purgeable"],"size":50}
 
-> files.cp -r "/images/sys.img/System Folder/Finder/rsrc/" "/tmp/finder-rsrc/"
+> files.cp "/images/sys.img/System Folder/Finder/rsrc/" "/tmp/finder-rsrc/" recursive=true
 ```
 
 Eligibility rules:

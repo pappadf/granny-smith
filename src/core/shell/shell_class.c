@@ -453,11 +453,9 @@ static const member_t shell_members[] = {
      .name = "interrupt",
      .doc = "Stop the running scheduler (Ctrl-C path)",
      .method = {.ui_flags = MM_HIDDEN, .args = NULL, .nargs = 0, .result = V_NONE, .fn = shell_method_interrupt}},
-    // The legacy `shell.alias.{add,remove,list}` sub-namespace stays
-    // attached at runtime via root_install (root.c) — the resolver
-    // finds it through find_attached_child without a class-level
-    // declaration here, so scripts that used the old surface keep
-    // working alongside the new `alias_set` / `alias_unset` methods.
+    // `shell.alias` and `shell.command` are attached at runtime by
+    // root_install (root.c); the resolver finds them through
+    // find_attached_child, without a declaration here.
 };
 
 const class_desc_t shell_class = {

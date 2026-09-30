@@ -19,13 +19,6 @@
 // overflow; bumping past ~250 risks that.
 #define CMD_MAX_COMPLETIONS 200
 
-// Completion result: a fixed-capacity list of borrowed candidate
-// strings (they point at static class-member names or a per-call
-// string pool inside the completer), plus the half-open [start, end)
-// span of line text each candidate replaces. `end` is the cursor;
-// `start` is the current word's first character — except for
-// filesystem-path candidates, which are bare entry names and replace
-// only the basename after the word's last '/'.
 // What a candidate is (shell.complete's detail `kind`).
 typedef enum {
     COMP_KIND_VALUE = 0, // an argument value: enum / bool / file path
@@ -40,6 +33,13 @@ typedef enum {
 // Text of a comp_kind_t ("value", "object", …).
 const char *comp_kind_name(comp_kind_t k);
 
+// Completion result: a fixed-capacity list of borrowed candidate
+// strings (they point at static class-member names or a per-call
+// string pool inside the completer), plus the half-open [start, end)
+// span of line text each candidate replaces. `end` is the cursor;
+// `start` is the current word's first character — except for
+// filesystem-path candidates, which are bare entry names and replace
+// only the basename after the word's last '/'.
 struct completion {
     const char *items[CMD_MAX_COMPLETIONS];
     // Detail per item (borrowed like items): kind and one-line doc.
@@ -58,19 +58,15 @@ struct completion {
     char ctx_method[256];
     int ctx_arg_index;
     const char *ctx_arg_name;
-    // Set when candidates were DROPPED -- the per-call string pool filled, or
-    // the item table did.  Without it a short list was indistinguishable from
-    // a complete one, so a class with many long member names silently lost
-    // completions past the pool's 2 KB with no indication anywhere.
+    // Set when candidates were dropped: the per-call string pool or the
+    // item table filled.
     bool truncated;
 };
 
-// LIFETIME, which was previously only true by luck: `items` may point into a
-// per-call pool inside the completer, so the pointers are invalidated by the
-// NEXT shell_complete() call.  A caller that needs them beyond that must copy
-// immediately -- shell_meta_complete_provider does, which is the only reason
-// the terminal and meta.complete can both work today, and nothing here said
-// so.
+// Lifetime: `items` and `docs` may point into a per-call pool inside the
+// completer, so the next shell_complete() call invalidates them.  A caller
+// that keeps them longer copies them first (shell_meta_complete_provider
+// does).
 
 // Run tab completion for the given line at cursor_pos.
 // Fills out->items with matching completions.

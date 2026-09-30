@@ -195,7 +195,7 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
 
 // === Top-level wrappers =====================================================
 // quit / echo. Subsystem-specific verbs live with
-// their owning class (cpu.*, memory.*, debug.*, archive.*, …); only the
+// their owning class (cpu.*, memory.*, debug.*, files.*, …); only the
 // process-wide ones stay here.
 
 // `quit()` — request emulator shutdown. Headless sets the script
@@ -384,11 +384,11 @@ void root_install(struct config *cfg) {
     }
     // files.images: the storage view of cfg->images, under the process
     // singleton `files`.
-    struct object *images_obj = attach_stub(files_object(), &storage_images_collection_class, cfg, "images");
+    struct object *images_obj = attach_stub(files_object(), &files_images_collection_class, cfg, "images");
     if (images_obj) {
         object_set_label(images_obj, "Images");
         object_set_order(images_obj, 10);
-        storage_object_classes_init(cfg, images_obj);
+        files_images_init(cfg, images_obj);
     }
 
     // shell.alias and shell.command child objects.
@@ -443,7 +443,7 @@ void root_uninstall(void) {
     // torn down by their owning *_delete functions during machine
     // teardown. Only the cfg-scoped files.images entry array is freed
     // here.
-    storage_object_classes_teardown();
+    files_images_teardown();
     // The root method table is NOT reverted here, deliberately.
     //
     // It used to be, and that was a process-scoped global being undone by a

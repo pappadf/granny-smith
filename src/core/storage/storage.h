@@ -136,14 +136,14 @@ int storage_tick(storage_t *storage);
 // root_uninstall.
 struct config;
 struct object;
-void storage_object_classes_init(struct config *cfg, struct object *images);
-void storage_object_classes_teardown(void);
+void files_images_init(struct config *cfg, struct object *images);
+void files_images_teardown(void);
 
 // The `files` process singleton (created by files_init at shell init) and
 // its images collection class, which root_install attaches per machine.
 void files_init(void);
 struct object *files_object(void);
-extern const struct class_desc storage_images_collection_class;
+extern const struct class_desc files_images_collection_class;
 
 #ifdef __cplusplus
 }

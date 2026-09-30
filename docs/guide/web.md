@@ -622,7 +622,7 @@ typed-dispatch and introspection surface.
 - **`files.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
   image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
   browse inside images; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
-- **`files.cp([-r], src, dst)`** — copy, including *out of* an image into
+- **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
   OPFS (backs copy-out and Download). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).

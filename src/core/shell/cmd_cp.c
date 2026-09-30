@@ -352,13 +352,13 @@ done:
 
 // Public entry point: copy `src` to `dst`. Returns 0 on success, negative
 // errno on failure. `*out_err` (if not NULL) is set to a static error
-// message describing the failure (e.g. "omitting directory 'X' (use -r)").
+// message describing the failure (e.g. "omitting directory 'X' (use recursive=true)").
 int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, size_t err_cap) {
     if (err_buf && err_cap)
         err_buf[0] = '\0';
     if (!src || !dst) {
         if (err_buf && err_cap)
-            snprintf(err_buf, err_cap, "usage: cp [-r] <src> <dst>");
+            snprintf(err_buf, err_cap, "usage: files.cp <src> <dst> [recursive]");
         return -EINVAL;
     }
 
@@ -371,7 +371,7 @@ int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, si
     }
     if ((src_st.mode & VFS_MODE_DIR) && !recursive) {
         if (err_buf && err_cap)
-            snprintf(err_buf, err_cap, "cp: omitting directory '%s' (use -r)", src);
+            snprintf(err_buf, err_cap, "cp: omitting directory '%s' (use recursive=true)", src);
         return -EISDIR;
     }
 

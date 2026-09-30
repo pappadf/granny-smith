@@ -97,7 +97,7 @@ export async function copyOutOfImage(
     // Info (e.g. an NDIF disk image, whose block map lives in the resource
     // fork) is written as an AppleDouble pair — the data fork under `dst` plus
     // a sibling "._<name>" header — so the copy is lossless and re-mountable.
-    const res = await gsEval('files.cp', sources[i].isDir ? ['-r', src, dst] : [src, dst]);
+    const res = await gsEval('files.cp', sources[i].isDir ? [src, dst, true] : [src, dst]);
     if (res !== true) {
       failures.push(name);
       if (!firstError) firstError = gsErrorText(res);
