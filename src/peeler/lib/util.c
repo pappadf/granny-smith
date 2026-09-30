@@ -242,3 +242,26 @@ int peel_huff_build(peel_hpool_t *p, const int8_t *lengths, int nsym, int min_le
     }
     return root;
 }
+
+// ============================================================================
+// CRC-32 (IEEE 802.3, reflected) — zip and gzip
+// ============================================================================
+
+uint32_t peel_crc32(uint32_t crc, const uint8_t *data, size_t len) {
+    static uint32_t table[256];
+    static bool ready = false;
+    if (!ready) {
+        // Built on first use: 256 entries of the reflected polynomial.
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++)
+                c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+        ready = true;
+    }
+    crc = ~crc;
+    for (size_t i = 0; i < len; i++)
+        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    return ~crc;
+}

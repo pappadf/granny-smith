@@ -19,15 +19,7 @@
 TEST_NAME     := peeler
 TEST_SRCS     := test.c
 TEST_HARNESS  := none
-EXTRA_SRCS    := ../../../../src/peeler/lib/peeler.c \
-                 ../../../../src/peeler/lib/appledouble.c \
-                 ../../../../src/peeler/lib/err.c \
-                 ../../../../src/peeler/lib/util.c \
-                 ../../../../src/peeler/lib/formats/bin.c \
-                 ../../../../src/peeler/lib/formats/cpt.c \
-                 ../../../../src/peeler/lib/formats/hqx.c \
-                 ../../../../src/peeler/lib/formats/sit.c \
-                 ../../../../src/peeler/lib/formats/sit3.c
+EXTRA_SRCS    := $(filter-out %/sit13.c %/sit15.c,$(sort $(wildcard ../../../../src/peeler/lib/*.c ../../../../src/peeler/lib/formats/*.c)))
 INCLUDE_FLAGS  = -I$(UNIT_ROOT)/support $(PEELER_INCLUDES)
 # Native builds run under ASan + UBSan, and UB aborts rather than printing and
 # carrying on.  Several peeler defects are small heap overruns (two bytes past

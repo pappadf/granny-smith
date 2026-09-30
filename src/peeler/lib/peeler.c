@@ -2,8 +2,9 @@
 // Copyright (c) pappadf
 
 // peeler.c
-// Core library entry points: peel(), peel_path(), format detection, and
-// buffer/file-list lifecycle helpers.
+// The buffer API: peel(), peel_path(), peel_detect() and the per-format
+// archive functions, all conveniences over the structure-first API in
+// archive.c, plus buffer/file-list lifecycle helpers.
 
 #include "appledouble.h"
 #include "internal.h"
@@ -19,31 +20,45 @@
 #define MAX_PEEL_DEPTH 32
 
 // ============================================================================
-// Format Handler Table — architecture.md § "Static Registration"
+// Wrapper Table — the buffer API's layer stripping
 // ============================================================================
 
-// Detection order matters: wrappers first so outer encodings are stripped
-// before probing for archive signatures buried inside.
-static const peel_format_t g_formats[] = {
-    {"hqx", PEEL_FMT_WRAPPER, hqx_detect, peel_hqx, NULL    },
-    {"bin", PEEL_FMT_WRAPPER, bin_detect, peel_bin, NULL    },
-    {"sit", PEEL_FMT_ARCHIVE, sit_detect, NULL,     peel_sit},
-    {"cpt", PEEL_FMT_ARCHIVE, cpt_detect, NULL,     peel_cpt},
-};
+// A wrapper format's buffer transform: one layer in, its payload out.
+typedef struct {
+    const char *name;
+    peel_buf_t (*peel_wrapper)(const uint8_t *src, size_t len, peel_err_t **err);
+} wrapper_fn_t;
 
-static const int g_num_formats = (int)(sizeof(g_formats) / sizeof(g_formats[0]));
+static const wrapper_fn_t g_wrappers[] = {
+    {"hqx", peel_hqx},
+    {"bin", peel_bin},
+    {"gz",  peel_gz },
+};
 
 // ============================================================================
 // Static Helpers
 // ============================================================================
 
-// Walk the handler table and return the first format whose detect() matches.
-static const peel_format_t *detect_format(const uint8_t *src, size_t len) {
-    for (int i = 0; i < g_num_formats; i++) {
-        if (g_formats[i].detect(src, len)) {
-            return &g_formats[i];
-        }
+// Detect the format of a buffer through the bounded probe, as peel_open does.
+static const peel_format_desc_t *detect_buffer(const uint8_t *src, size_t len) {
+    peel_source_t *s = peel_source_memory(src, len, false);
+    if (!s)
+        return NULL;
+    peel_probe_t p;
+    const peel_format_desc_t *d = NULL;
+    if (peel_probe_init(&p, s) == 0) {
+        d = peel_identify(&p);
+        peel_probe_free(&p);
     }
+    peel_source_release(s);
+    return d;
+}
+
+// The buffer transform of wrapper `name`.
+static const wrapper_fn_t *wrapper_for(const char *name) {
+    for (size_t i = 0; i < sizeof(g_wrappers) / sizeof(g_wrappers[0]); i++)
+        if (strcmp(g_wrappers[i].name, name) == 0)
+            return &g_wrappers[i];
     return NULL;
 }
 
@@ -73,14 +88,88 @@ static peel_file_list_t wrap_single_file(const uint8_t *src, size_t len, uint8_t
     return (peel_file_list_t){.files = files, .count = 1};
 }
 
+// Extract every file of an archive through the structure-first API: open,
+// then decode both forks of each entry that has a non-empty one.  Folders
+// and empty files are not files of the result, as they never were.
+static peel_file_list_t extract_archive(const char *format, const uint8_t *src, size_t len, peel_err_t **err) {
+    *err = NULL;
+    peel_source_t *s = peel_source_memory(src, len, false);
+    if (!s) {
+        *err = make_err("out of memory");
+        return (peel_file_list_t){0};
+    }
+    peel_archive_t *a = peel_open_as(format, s, NULL, NULL, err);
+    peel_source_release(s);
+    if (!a)
+        return (peel_file_list_t){0};
+
+    int n = 0;
+    for (int i = 0; i < peel_count(a); i++) {
+        const peel_entry_t *e = peel_entry(a, i);
+        if (!e->is_dir && (e->data_len > 0 || e->rsrc_len > 0))
+            n++;
+    }
+    peel_file_list_t list = {0};
+    if (n == 0) {
+        peel_close(a);
+        return list;
+    }
+    list.files = calloc((size_t)n, sizeof(peel_file_t));
+    if (!list.files) {
+        peel_close(a);
+        *err = make_err("%s: out of memory for file list (%d files)", format, n);
+        return (peel_file_list_t){0};
+    }
+    for (int i = 0; i < peel_count(a) && list.count < n; i++) {
+        const peel_entry_t *e = peel_entry(a, i);
+        if (e->is_dir || (e->data_len == 0 && e->rsrc_len == 0))
+            continue;
+        peel_file_t *f = &list.files[list.count++];
+        size_t nl = strlen(e->path); // truncated to the file name's capacity, as it always was
+        if (nl > sizeof(f->meta.name) - 1)
+            nl = sizeof(f->meta.name) - 1;
+        memcpy(f->meta.name, e->path, nl);
+        f->meta.name[nl] = '\0';
+        f->meta.mac_type = e->mac_type;
+        f->meta.mac_creator = e->mac_creator;
+        f->meta.finder_flags = e->finder_flags;
+        f->data_fork = peel_read_fork(a, i, PEEL_FORK_DATA, err);
+        if (!*err)
+            f->resource_fork = peel_read_fork(a, i, PEEL_FORK_RSRC, err);
+        if (*err) {
+            peel_file_list_free(&list);
+            peel_close(a);
+            return (peel_file_list_t){0};
+        }
+    }
+    peel_close(a);
+    return list;
+}
+
 // ============================================================================
 // Operations (Public API) — Format Detection
 // ============================================================================
 
 // Identify the outermost format without peeling.
 const char *peel_detect(const uint8_t *src, size_t len) {
-    const peel_format_t *fmt = detect_format(src, len);
-    return fmt ? fmt->name : NULL;
+    const peel_format_desc_t *d = detect_buffer(src, len);
+    return d ? d->name : NULL;
+}
+
+// ============================================================================
+// Operations (Public API) — Per-Format Archive Sugar
+// ============================================================================
+
+peel_file_list_t peel_sit(const uint8_t *src, size_t len, peel_err_t **err) {
+    return extract_archive("sit", src, len, err);
+}
+
+peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
+    return extract_archive("cpt", src, len, err);
+}
+
+peel_file_list_t peel_zip(const uint8_t *src, size_t len, peel_err_t **err) {
+    return extract_archive("zip", src, len, err);
 }
 
 // ============================================================================
@@ -117,10 +206,10 @@ static peel_file_list_t recursive_peel_files(peel_file_list_t list, int depth, p
         // archive format.  Only peel further through WRAPPER formats to
         // avoid false positives on large binary files (e.g. disk images)
         // that may incidentally contain archive signatures.
-        const peel_format_t *fmt = NULL;
+        const peel_format_desc_t *fmt = NULL;
         if (f->data_fork.data && f->data_fork.size > 0) {
-            fmt = detect_format(f->data_fork.data, f->data_fork.size);
-            if (fmt && fmt->kind != PEEL_FMT_WRAPPER) {
+            fmt = detect_buffer(f->data_fork.data, f->data_fork.size);
+            if (fmt && !fmt->is_wrapper) {
                 fmt = NULL; // Only recurse through wrappers
             }
         }
@@ -225,14 +314,15 @@ static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, pe
 
     // Repeatedly strip wrapper layers until an archive or unknown data is found.
     for (int wrap_depth = 0; wrap_depth < MAX_PEEL_DEPTH; wrap_depth++) {
-        const peel_format_t *fmt = detect_format(cur, cur_len);
+        const peel_format_desc_t *fmt = detect_buffer(cur, cur_len);
         if (!fmt) {
             break; // Nothing recognised — fall through to single-file wrap
         }
 
-        if (fmt->kind == PEEL_FMT_WRAPPER) {
+        if (fmt->is_wrapper) {
             // Peel one wrapper layer and replace the working buffer
-            peel_buf_t decoded = fmt->peel_wrapper(cur, cur_len, err);
+            const wrapper_fn_t *w = wrapper_for(fmt->name);
+            peel_buf_t decoded = w->peel_wrapper(cur, cur_len, err);
             if (*err) {
                 free(owned);
                 return (peel_file_list_t){0};
@@ -244,16 +334,14 @@ static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, pe
             continue;
         }
 
-        if (fmt->kind == PEEL_FMT_ARCHIVE) {
-            // Terminal format — extract files and return
-            peel_file_list_t result = fmt->peel_archive(cur, cur_len, err);
-            free(owned);
-            if (*err) {
-                return (peel_file_list_t){0};
-            }
-            // Recursively peel extracted files that contain nested archives
-            return recursive_peel_files(result, depth, err);
+        // Terminal format — extract files and return
+        peel_file_list_t result = extract_archive(fmt->name, cur, cur_len, err);
+        free(owned);
+        if (*err) {
+            return (peel_file_list_t){0};
         }
+        // Recursively peel extracted files that contain nested archives
+        return recursive_peel_files(result, depth, err);
     }
 
     // No archive found.  Wrap whatever we have as a single unnamed file.

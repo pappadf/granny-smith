@@ -483,3 +483,102 @@ peel_file_t peel_hqx_file(const uint8_t *src, size_t len, peel_err_t **err) {
     dctx_cleanup(&ctx);
     return file;
 }
+
+// ============================================================================
+// Structure-first access (peeler.h: peel_open)
+// ============================================================================
+//
+// Listing decodes only the header, from the probe's head.  A fork is not a
+// contiguous range of the file (it is 6-bit text, run-length coded), so a
+// fork opens as a decode-through source whose first read decodes the whole
+// file -- small files, not worth more.  Both forks come out of that one
+// decode; the second is kept until it is asked for.
+
+typedef struct {
+    peel_file_t file; // forks decoded but not yet handed out
+    bool have[2];
+} hqx_priv_t;
+
+static bool hqx_detect_probe(const peel_probe_t *p) {
+    return hqx_detect(p->head, p->head_len);
+}
+
+static int hqx_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
+    decode_ctx_t ctx;
+    dctx_init(&ctx);
+    if (setjmp(ctx.jmp) != 0) {
+        dctx_cleanup(&ctx);
+        *err = make_err("%s", ctx.errmsg);
+        return -1;
+    }
+    size_t after = hqx_find_preamble(p->head, p->head_len);
+    if (after == (size_t)-1)
+        decode_abort(&ctx, "BinHex: preamble not found");
+    size_t start = hqx_find_start_colon(p->head, p->head_len, after);
+    if (start == (size_t)-1)
+        decode_abort(&ctx, "BinHex: no starting colon found");
+    hqx_decoder_t dec;
+    hqx_decoder_init(&dec, p->head, p->head_len, start, &ctx);
+    hqx_header_t hdr = hqx_parse_header(&dec);
+    dctx_cleanup(&ctx);
+
+    hqx_priv_t *priv = calloc(1, sizeof(*priv));
+    peel_entry_t *e = priv ? peel_archive_add(a) : NULL;
+    if (!e) {
+        free(priv);
+        *err = make_err("BinHex: out of memory");
+        return -1;
+    }
+    a->priv = priv;
+    size_t np = 0;
+    peel_append_segment(e->path, sizeof(e->path), &np, (const uint8_t *)hdr.name, hdr.name_len);
+    e->mac_type = hdr.mac_type;
+    e->mac_creator = hdr.mac_creator;
+    e->finder_flags = hdr.finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
+    e->data_len = hdr.data_len;
+    e->rsrc_len = hdr.rsrc_len;
+    e->data_packed = e->rsrc_packed = UINT64_MAX; // interleaved in the text
+    e->data_tier = e->rsrc_tier = PEEL_TIER_WHOLE;
+    return 0;
+}
+
+static peel_buf_t hqx_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+    (void)i;
+    hqx_priv_t *priv = a->priv;
+    int k = fork == PEEL_FORK_RSRC ? 1 : 0;
+    if (!priv->have[k]) {
+        // Decode the whole file once; keep the other fork for later.
+        peel_buf_t text = peel_source_slurp(a->src, err);
+        if (*err)
+            return (peel_buf_t){0};
+        peel_file_t f = peel_hqx_file(text.data, text.size, err);
+        peel_free(&text);
+        if (*err)
+            return (peel_buf_t){0};
+        peel_free(&priv->file.data_fork);
+        peel_free(&priv->file.resource_fork);
+        priv->file = f;
+        priv->have[0] = priv->have[1] = true;
+    }
+    peel_buf_t *b = k ? &priv->file.resource_fork : &priv->file.data_fork;
+    peel_buf_t out = *b;
+    memset(b, 0, sizeof(*b));
+    priv->have[k] = false;
+    return out;
+}
+
+static void hqx_close(peel_archive_t *a) {
+    hqx_priv_t *priv = a->priv;
+    if (!priv)
+        return;
+    peel_free(&priv->file.data_fork);
+    peel_free(&priv->file.resource_fork);
+    free(priv);
+}
+
+const peel_fmt_t peel_fmt_hqx = {
+    .desc = {"hqx", true, hqx_detect_probe},
+    .open = hqx_open,
+    .decode = hqx_decode_fork,
+    .close = hqx_close,
+};

@@ -512,6 +512,7 @@ typedef struct {
     uint32_t data_uncomp;
     uint32_t rsrc_comp;
     uint32_t data_comp;
+    bool     is_dir;
 } cp_entry_t;
 
 // ============================================================================
@@ -596,6 +597,12 @@ static int cp_walk_entries(cp_archive_t *ar, const uint8_t *data, size_t size,
             if (*cursor + 2 > size) return -1;
             uint16_t child_cnt = rd16be(data + *cursor);
             *cursor += 2;
+            // The folder itself is an entry of the listing.
+            cp_entry_t de;
+            memset(&de, 0, sizeof(de));
+            snprintf(de.name, sizeof(de.name), "%s", full);
+            de.is_dir = true;
+            if (cp_push_entry(ar, &de) < 0) return -1;
             int rc = cp_walk_entries(ar, data, size, cursor, (int)child_cnt, full, depth + 1);
             if (rc < 0) return rc;
             remaining -= (int)child_cnt + 1;
@@ -728,136 +735,140 @@ bool cpt_detect(const uint8_t *src, size_t len) {
 }
 
 // ============================================================================
-// Operations (Public API) — Archive Extraction
+// Structure-first access (peeler.h: peel_open)
 // ============================================================================
+//
+// Two reads: the 8-byte header gives the directory's absolute offset, and
+// the directory (at the end of the archive) lists everything.  Every fork is
+// at least RLE-coded, so each decodes whole on first read.
 
-// Detect, parse, and extract all files from a Compact Pro archive.
-// Returns a flat list of extracted files with both forks decompressed.
-peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err) {
-    *err = NULL;
+typedef struct {
+    cp_archive_t ar; // one cp_entry_t per peel entry, same order
+} cpt_priv_t;
 
-    // Validate header
-    if (!src || len < 8) {
-        *err = make_err("CPT: input too short (%zu bytes)", len);
-        return (peel_file_list_t){0};
+static bool cpt_detect_probe(const peel_probe_t *p) {
+    return cpt_detect(p->head, p->head_len);
+}
+
+static int cpt_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
+    const uint8_t *src = p->head;
+    if (p->head_len < 8) {
+        *err = make_err("CPT: input too short (%llu bytes)", (unsigned long long)p->size);
+        return -1;
     }
     if (src[0] != CP_MAGIC || src[1] != CP_VOLUME_SINGLE) {
         *err = make_err("CPT: bad magic (0x%02X 0x%02X)", src[0], src[1]);
-        return (peel_file_list_t){0};
+        return -1;
     }
-
     // cpt.md § 3.1 "Initial Archive Header" — directory offset at bytes 4..7
     uint32_t dir_off = rd32be(src + 4);
-    if (dir_off < 8 || dir_off > 0x10000000 || (size_t)dir_off >= len) {
+    if (dir_off < 8 || dir_off > 0x10000000 || (uint64_t)dir_off >= p->size) {
         *err = make_err("CPT: directory offset out of range (%u)", dir_off);
-        return (peel_file_list_t){0};
+        return -1;
     }
-
-    // Parse directory into a flat entry list
-    cp_archive_t ar;
-    memset(&ar, 0, sizeof(ar));
-    if (cp_parse_directory(&ar, src, len, dir_off) < 0) {
-        free(ar.entries);
+    cpt_priv_t *priv = calloc(1, sizeof(*priv));
+    if (!priv) {
+        *err = make_err("CPT: out of memory");
+        return -1;
+    }
+    a->priv = priv;
+    // The directory runs to the end of the archive.
+    uint64_t dir_len = p->size - dir_off;
+    uint8_t *dir = peel_archive_read(a, dir_off, dir_len, "CPT directory", err);
+    if (!dir)
+        return -1;
+    int rc = cp_parse_directory(&priv->ar, dir, (size_t)dir_len, 0);
+    free(dir);
+    if (rc < 0) {
         *err = make_err("CPT: failed to parse directory");
-        return (peel_file_list_t){0};
+        return -1;
     }
-
-    if (ar.count == 0) {
-        free(ar.entries);
-        return (peel_file_list_t){.files = NULL, .count = 0};
-    }
-
-    // Count entries that have at least one non-empty fork
-    int file_count = 0;
-    for (size_t i = 0; i < ar.count; i++) {
-        const cp_entry_t *e = &ar.entries[i];
-        if (e->data_uncomp > 0 || e->rsrc_uncomp > 0) {
-            file_count++;
+    for (size_t i = 0; i < priv->ar.count; i++) {
+        const cp_entry_t *ce = &priv->ar.entries[i];
+        peel_entry_t *e = peel_archive_add(a);
+        if (!e) {
+            *err = make_err("CPT: out of memory");
+            return -1;
         }
+        snprintf(e->path, sizeof(e->path), "%s", ce->name);
+        e->is_dir = ce->is_dir;
+        if (ce->is_dir)
+            continue;
+        e->mac_type = ce->type;
+        e->mac_creator = ce->creator;
+        e->finder_flags = ce->finder_flags;
+        e->rsrc_len = ce->rsrc_uncomp;
+        e->data_len = ce->data_uncomp;
+        e->rsrc_packed = ce->rsrc_comp;
+        e->data_packed = ce->data_comp;
+        e->rsrc_off = ce->file_offset;
+        e->data_off = (uint64_t)ce->file_offset + ce->rsrc_comp;
+        e->rsrc_method = (ce->flags & CP_FLAG_RSRC_LZH) ? 1 : 0;
+        e->data_method = (ce->flags & CP_FLAG_DATA_LZH) ? 1 : 0;
+        e->rsrc_tier = e->data_tier = PEEL_TIER_WHOLE;
     }
+    return 0;
+}
 
-    // Allocate the output file array
-    peel_file_t *files = calloc((size_t)file_count, sizeof(peel_file_t));
-    if (!files) {
-        free(ar.entries);
-        *err = make_err("CPT: out of memory for %d files", file_count);
-        return (peel_file_list_t){0};
-    }
-
-    // Use setjmp/longjmp for deep-error abort in decompressors.  Every fork
-    // decoded so far -- and the one in flight, which used to leak -- is owned
-    // by ctx until the whole archive has decoded, so the handler frees them
-    // all with one call and must not free them again through `files`.
+// Decode one fork: the checks peel_cpt always made, in its words, then
+// RLE (and LZH) over the packed range.
+static peel_buf_t cpt_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+    cpt_priv_t *priv = a->priv;
+    const cp_entry_t *e = &priv->ar.entries[i];
+    uint64_t len = peel_source_size(a->src);
+    uint8_t *volatile packed = NULL; // assigned after setjmp, freed by the handler
     decode_ctx_t ctx;
     dctx_init(&ctx);
     if (setjmp(ctx.jmp) != 0) {
         dctx_cleanup(&ctx);
-        free(files);
-        free(ar.entries);
+        free(packed);
         *err = make_err("CPT: %s", ctx.errmsg);
-        return (peel_file_list_t){0};
+        return (peel_buf_t){0};
     }
-
-    // Decompress each file's forks
-    int fi = 0;
-    for (size_t i = 0; i < ar.count && fi < file_count; i++) {
-        const cp_entry_t *e = &ar.entries[i];
-
-        // Skip entries with no non-empty forks
-        if (e->data_uncomp == 0 && e->rsrc_uncomp == 0) continue;
-
-        // Check for encrypted files (cpt.md § 3.2.3 — flag bit 0)
-        if (e->flags & CP_FLAG_ENCRYPT) {
-            decode_abort(&ctx, "file '%s' is encrypted (unsupported)", e->name);
-        }
-
-        peel_file_t *f = &files[fi];
-
-        // Copy metadata
-        snprintf(f->meta.name, sizeof(f->meta.name), "%s", e->name);
-        f->meta.mac_type     = e->type;
-        f->meta.mac_creator  = e->creator;
-        f->meta.finder_flags = e->finder_flags;
-
-        // cpt.md § 3.4 "Fork Data Layout" — resource fork at file_offset,
-        // data fork at file_offset + rsrc_comp.  Checked with the wrap-safe
-        // extent test: `rsrc_offset + rsrc_comp > len` in size_t wraps on
-        // wasm32, where the shipping build accepted a malformed archive and
-        // returned a fork decoded from nothing.
-        size_t rsrc_offset = (size_t)e->file_offset;
-        if (!peel_extent_fits(rsrc_offset, e->rsrc_comp, len)) {
-            decode_abort(&ctx, "resource fork of '%s' extends past archive", e->name);
-        }
-        size_t data_offset = rsrc_offset + (size_t)e->rsrc_comp; // inside: no wrap
-        if (!peel_extent_fits(data_offset, e->data_comp, len)) {
-            decode_abort(&ctx, "data fork of '%s' extends past archive", e->name);
-        }
-
-        // Decompress resource fork
-        if (e->rsrc_uncomp > 0) {
-            bool lzh = (e->flags & CP_FLAG_RSRC_LZH) != 0;
-            f->resource_fork = cp_decompress_fork(
-                src, len, rsrc_offset, e->rsrc_comp,
-                e->rsrc_uncomp, lzh, &ctx);
-        }
-
-        // Decompress data fork
-        if (e->data_uncomp > 0) {
-            bool lzh = (e->flags & CP_FLAG_DATA_LZH) != 0;
-            f->data_fork = cp_decompress_fork(
-                src, len, data_offset, e->data_comp,
-                e->data_uncomp, lzh, &ctx);
-        }
-
-        fi++;
+    // Check for encrypted files (cpt.md § 3.2.3 — flag bit 0)
+    if (e->flags & CP_FLAG_ENCRYPT)
+        decode_abort(&ctx, "file '%s' is encrypted (unsupported)", e->name);
+    // cpt.md § 3.4 "Fork Data Layout" — resource fork at file_offset,
+    // data fork at file_offset + rsrc_comp, each checked wrap-safe.
+    uint64_t rsrc_offset = e->file_offset;
+    if (rsrc_offset > len || e->rsrc_comp > len - rsrc_offset)
+        decode_abort(&ctx, "resource fork of '%s' extends past archive", e->name);
+    uint64_t data_offset = rsrc_offset + e->rsrc_comp;
+    if (e->data_comp > len - data_offset)
+        decode_abort(&ctx, "data fork of '%s' extends past archive", e->name);
+    bool rsrc = fork == PEEL_FORK_RSRC;
+    uint64_t off = rsrc ? rsrc_offset : data_offset;
+    uint32_t comp = rsrc ? e->rsrc_comp : e->data_comp;
+    uint32_t uncomp = rsrc ? e->rsrc_uncomp : e->data_uncomp;
+    bool lzh = (e->flags & (rsrc ? CP_FLAG_RSRC_LZH : CP_FLAG_DATA_LZH)) != 0;
+    if (uncomp > PEEL_MAX_FORK)
+        decode_abort(&ctx, "fork declares %u bytes, over the %u MiB limit", uncomp, (unsigned)(PEEL_MAX_FORK >> 20));
+    peel_err_t *rerr = NULL;
+    packed = peel_archive_read(a, off, comp, "CPT fork data", &rerr);
+    if (!packed) {
+        char msg[200];
+        snprintf(msg, sizeof(msg), "%s", peel_err_msg(rerr));
+        peel_err_free(rerr);
+        decode_abort(&ctx, "%s", msg);
     }
-
-    // Every fork decoded: they are the caller's now.
-    for (int j = 0; j < file_count; j++) {
-        dctx_release(&ctx, files[j].data_fork.data);
-        dctx_release(&ctx, files[j].resource_fork.data);
-    }
+    peel_buf_t out = cp_decompress_fork(packed, comp, 0, comp, uncomp, lzh, &ctx);
+    dctx_release(&ctx, out.data);
     dctx_cleanup(&ctx);
-    free(ar.entries);
-    return (peel_file_list_t){.files = files, .count = file_count};
+    free(packed);
+    return out;
 }
+
+static void cpt_close(peel_archive_t *a) {
+    cpt_priv_t *priv = a->priv;
+    if (!priv)
+        return;
+    free(priv->ar.entries);
+    free(priv);
+}
+
+const peel_fmt_t peel_fmt_cpt = {
+    .desc = {"cpt", false, cpt_detect_probe},
+    .open = cpt_open,
+    .decode = cpt_decode_fork,
+    .close = cpt_close,
+};

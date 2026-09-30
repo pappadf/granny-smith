@@ -90,7 +90,8 @@ typedef struct {
     uint32_t       packed_len;  // Compressed length
     uint16_t       crc;         // CRC-16 from header
     uint8_t        method;      // Compression method ID (low nibble)
-    const uint8_t *data;        // Pointer to compressed bytes in archive
+    uint64_t       off;         // Offset of the compressed bytes in the source
+    const uint8_t *data;        // Those bytes, once read (decompress_fork)
 } sit_fork_info_t;
 
 // A single parsed file entry (metadata + fork info + path).
@@ -102,6 +103,7 @@ typedef struct {
     sit_fork_info_t  data_fork;    // Data fork info
     sit_fork_info_t  rsrc_fork;    // Resource fork info
     bool             has_rsrc;     // Resource fork present
+    bool             is_dir;       // A folder (no forks)
 } sit_entry_t;
 
 // Growable list of parsed file entries.
@@ -250,12 +252,12 @@ static void entry_list_free(sit_entry_list_t *list) {
 // length: a dropped .sit trapped the shipping build with "memory access out
 // of bounds".  The resource fork's own extent was never
 // checked at all; only its end, as the data fork's start.
-static bool sit_forks_fit(size_t off, uint32_t rsrc_len, uint32_t data_len,
-                          size_t total, size_t *data_off) {
-    if (!peel_extent_fits(off, rsrc_len, total))
+static bool sit_forks_fit(uint64_t off, uint32_t rsrc_len, uint32_t data_len,
+                          uint64_t total, uint64_t *data_off) {
+    if (off > total || rsrc_len > total - off)
         return false;
-    size_t d = off + rsrc_len; // inside the buffer, so no wrap
-    if (!peel_extent_fits(d, data_len, total))
+    uint64_t d = off + rsrc_len; // inside the source, so no wrap
+    if (data_len > total - d)
         return false;
     *data_off = d;
     return true;
@@ -601,22 +603,22 @@ static int64_t find_classic_magic(const uint8_t *src, size_t len) {
     return -1;
 }
 
-// Parse all file entries from a classic StuffIt archive.
+// Parse all file entries from a classic StuffIt archive, reading only the
+// headers through `rd`: each header states its forks' packed lengths, so
+// the next header's offset is computable without touching fork data.
 // sit.md § 4.7 "Classic Iteration Rules" and Appendix B
-static bool parse_classic(const uint8_t *blob, size_t blob_len,
-                          size_t archive_off, sit_entry_list_t *entries,
-                          peel_err_t **err) {
-    const uint8_t *base = blob + archive_off;
-    size_t avail = blob_len - archive_off;
-
-    if (avail < SIT_CLASSIC_HDR_SIZE) {
+static bool parse_classic(peel_reader_t *rd, uint64_t archive_off,
+                          sit_entry_list_t *entries, peel_err_t **err) {
+    uint64_t blob_len = rd->size;
+    const uint8_t *top = peel_reader_at(rd, archive_off, SIT_CLASSIC_HDR_SIZE);
+    if (!top) {
         *err = make_err("SIT classic: archive too small");
         return false;
     }
 
     // sit.md § 4.2 "Main Archive Header" — file_count at offset 4
-    uint16_t file_count = rd16be(base + 4);
-    uint32_t cursor = SIT_CLASSIC_HDR_SIZE;
+    uint16_t file_count = rd16be(top + 4);
+    uint64_t cursor = SIT_CLASSIC_HDR_SIZE;
     uint32_t done = 0;
 
     // sit.md § 4.7 — folder stack of up to 10 nesting levels
@@ -624,9 +626,9 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
     int  depth = 0;
 
     while (done < file_count) {
-        if ((size_t)cursor + SIT_ENTRY_HDR_SIZE > avail) break;
+        const uint8_t *hdr = peel_reader_at(rd, archive_off + cursor, SIT_ENTRY_HDR_SIZE);
+        if (!hdr) break;
 
-        const uint8_t *hdr = base + cursor;
         uint8_t rm = hdr[0];
         uint8_t dm = hdr[1];
 
@@ -644,6 +646,16 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
             if (depth < SIT_MAX_DEPTH) {
                 memcpy(dirs[depth], hdr + 3, nlen);
                 dirs[depth][nlen] = '\0';
+                // The folder itself is an entry of the listing.
+                char path[512] = "";
+                size_t p = 0;
+                for (int d = 0; d <= depth; d++)
+                    peel_append_segment(path, sizeof(path), &p, (const uint8_t *)dirs[d], strlen(dirs[d]));
+                sit_entry_t *dent = entry_list_push(entries, err);
+                if (!dent) return false;
+                memset(dent, 0, sizeof(*dent));
+                snprintf(dent->name, sizeof(dent->name), "%s", path);
+                dent->is_dir = true;
             }
             if (depth < SIT_MAX_DEPTH) depth++;
             cursor += SIT_ENTRY_HDR_SIZE;
@@ -694,14 +706,12 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         uint16_t dcrc  = rd16be(hdr + 102);
 
         // sit.md § 4.5 "Fork Data Layout" — rsrc first, then data
-        size_t rsrc_off = (size_t)(base - blob) + cursor + SIT_ENTRY_HDR_SIZE;
-        size_t data_off;
+        uint64_t rsrc_off = archive_off + cursor + SIT_ENTRY_HDR_SIZE;
+        uint64_t data_off;
         if (!sit_forks_fit(rsrc_off, rclen, dclen, blob_len, &data_off)) {
             *err = make_err("SIT classic: fork data extends past archive end");
             return false;
         }
-        const uint8_t *rsrc_ptr = blob + rsrc_off;
-        const uint8_t *data_ptr = blob + data_off;
 
         // Add entry to the list
         sit_entry_t *ent = entry_list_push(entries, err);
@@ -711,24 +721,25 @@ static bool parse_classic(const uint8_t *blob, size_t blob_len,
         ent->mac_type     = ftype;
         ent->mac_creator  = fcreator;
         ent->finder_flags = fflags;
+        ent->is_dir       = false;
         ent->data_fork = (sit_fork_info_t){
             .raw_len    = dulen,
             .packed_len = dclen,
             .crc        = dcrc,
             .method     = (uint8_t)(dm & 0x0F),
-            .data       = data_ptr
+            .off        = data_off
         };
         ent->rsrc_fork = (sit_fork_info_t){
             .raw_len    = rulen,
             .packed_len = rclen,
             .crc        = rcrc,
             .method     = (uint8_t)(rm & 0x0F),
-            .data       = rsrc_ptr
+            .off        = rsrc_off
         };
         ent->has_rsrc = (rulen > 0);
 
         // Advance past both fork data regions
-        cursor = (uint32_t)(data_off - (size_t)(base - blob) + dclen);
+        cursor = data_off - archive_off + dclen;
         if (depth == 0) done++;
     }
 
@@ -758,22 +769,23 @@ static int64_t find_sit5_magic(const uint8_t *src, size_t len) {
     return -1;
 }
 
-// Parse all file entries from a SIT5 archive.
+// Parse all file entries from a SIT5 archive through `rd`: a linked list of
+// headers with explicit offsets, each read on its own.
 // sit.md § 5.7 "Iteration Rules" and Appendix C
-static bool parse_sit5(const uint8_t *blob, size_t blob_len,
-                       size_t archive_off, sit_entry_list_t *entries,
-                       peel_err_t **err) {
-    const uint8_t *base = blob + archive_off;
-    size_t avail = blob_len - archive_off;
+static bool parse_sit5(peel_reader_t *rd, uint64_t archive_off,
+                       sit_entry_list_t *entries, peel_err_t **err) {
+    uint64_t blob_len = rd->size;
+    uint64_t avail = blob_len - archive_off;
 
-    if (avail < SIT5_MIN_SIZE) {
-        *err = make_err("SIT5: archive too small (%zu bytes)", avail);
+    const uint8_t *top = peel_reader_at(rd, archive_off, SIT5_MIN_SIZE);
+    if (!top) {
+        *err = make_err("SIT5: archive too small (%llu bytes)", (unsigned long long)avail);
         return false;
     }
 
     // sit.md § 5.2 "Top Header" — entry count at offset 92, cursor at 94
-    uint16_t entry_count = rd16be(base + 92);
-    uint32_t cursor      = rd32be(base + 94);
+    uint16_t entry_count = rd16be(top + 92);
+    uint32_t cursor      = rd32be(top + 94);
     uint32_t remaining   = entry_count;
 
     // Directory map for path resolution
@@ -781,8 +793,12 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
     int dmap_cnt = 0;
 
     while (remaining > 0 && cursor != 0 &&
-           (size_t)cursor + 48 <= avail) {
-        const uint8_t *h1 = base + cursor;
+           (uint64_t)cursor + 48 <= avail) {
+        const uint8_t *h1 = peel_reader_at(rd, archive_off + cursor, 48);
+        if (!h1) {
+            *err = make_err("SIT5: cannot read entry header at offset %u", cursor);
+            return false;
+        }
 
         // sit.md § 5.3 "Entry Header" — validate entry magic
         if (rd32be(h1) != SIT5_ENTRY_MAGIC) {
@@ -798,7 +814,7 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
 
         uint16_t h1_len  = rd16be(h1 + 6);
         uint16_t namelen = rd16be(h1 + 30);
-        if ((size_t)cursor + h1_len > avail) {
+        if ((uint64_t)cursor + h1_len > avail) {
             *err = make_err("SIT5: header1 extends past archive end");
             return false;
         }
@@ -812,6 +828,12 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         if ((size_t)h1_len < 48 + (size_t)namelen) {
             *err = make_err("SIT5: header1 length %u is shorter than its fixed fields and name",
                             (unsigned)h1_len);
+            return false;
+        }
+        // The whole of header 1 (name and comment included).
+        h1 = peel_reader_at(rd, archive_off + cursor, h1_len);
+        if (!h1) {
+            *err = make_err("SIT5: header1 extends past archive end");
             return false;
         }
 
@@ -841,7 +863,10 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         uint32_t d_raw_len    = rd32be(h1 + 34);
         uint32_t d_packed_len = rd32be(h1 + 38);
         uint16_t d_crc        = rd16be(h1 + 42);
-
+        uint16_t child_count  = rd16be(h1 + 46);
+        uint8_t  d_algo       = h1[46];
+        uint8_t  d_passlen    = h1[47];
+        uint8_t  h1_version   = h1[4];
 
         // Read entry name (starts at byte 48 of header 1)
         char namebuf[256];
@@ -864,34 +889,34 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
 
         // Parse header 2
         // sit.md § 5.4 "Secondary Header (Header 2)"
-        if ((size_t)h2_off + 32 > avail) {
+        const uint8_t *h2 = (uint64_t)h2_off + 32 <= avail ? peel_reader_at(rd, archive_off + h2_off, 32) : NULL;
+        if (!h2) {
             *err = make_err("SIT5: header2 extends past archive end");
             return false;
         }
-        const uint8_t *h2 = base + h2_off;
         uint16_t flags2   = rd16be(h2 + 0);
         uint32_t ftype    = rd32be(h2 + 4);
         uint32_t fcreator = rd32be(h2 + 8);
         uint16_t fflags   = rd16be(h2 + 12);
 
         // sit.md § 5.4 — version-dependent skip past header 2 prefix
-        uint32_t skip_extra = (h1[4] == 1) ? 22 : 18;
+        uint32_t skip_extra = (h1_version == 1) ? 22 : 18;
         bool     rsrc_present = (flags2 & 0x01) != 0;
-        // Offsets from `blob`, not pointers: everything past header 2 is
-        // located by lengths the archive supplies (see sit_forks_fit).
-        size_t after_off   = (size_t)(h2 - blob) + 14 + skip_extra;
-        size_t payload_off = after_off;
+        // Offsets into the source: everything past header 2 is located by
+        // lengths the archive supplies (see sit_forks_fit).
+        uint64_t after_off   = archive_off + h2_off + 14 + skip_extra;
+        uint64_t payload_off = after_off;
 
         // sit.md § 5.4 — resource fork fields (conditional)
         uint32_t r_raw_len = 0, r_packed_len = 0;
         uint16_t r_crc     = 0;
         uint8_t  r_algo    = 0;
         if (rsrc_present) {
-            if (after_off + 14 > blob_len) {
+            const uint8_t *ri = after_off + 14 <= blob_len ? peel_reader_at(rd, after_off, 14) : NULL;
+            if (!ri) {
                 *err = make_err("SIT5: resource info past archive end");
                 return false;
             }
-            const uint8_t *ri = blob + after_off;
             r_raw_len    = rd32be(ri + 0);
             r_packed_len = rd32be(ri + 4);
             r_crc        = rd16be(ri + 8);
@@ -899,50 +924,7 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
             payload_off  = after_off + 14 + ri[13]; // + the password blob
         }
 
-        // sit.md § 5.3 — folder entries (flags bit 6)
-        if (flags & 0x40) {
-            uint16_t child_count = rd16be(h1 + 46);
-
-            // Build parent path
-            char ppath[512] = "";
-            if (parent_off != 0) {
-                for (int i = 0; i < dmap_cnt; ++i) {
-                    if (dmap[i].offset == parent_off) {
-                        strncpy(ppath, dmap[i].path, sizeof(ppath) - 1);
-                        ppath[sizeof(ppath) - 1] = '\0';
-                        break;
-                    }
-                }
-            }
-
-            // Record folder in directory map
-            char folder_full[512];
-            build_path(folder_full, sizeof(folder_full), ppath, namebuf);
-            if (dmap_cnt < SIT5_MAX_DIRS) {
-                dmap[dmap_cnt].offset = cursor;
-                snprintf(dmap[dmap_cnt].path, sizeof(dmap[dmap_cnt].path),
-                         "%s", folder_full);
-                dmap_cnt++;
-            }
-
-            // sit.md § 5.7 — add child count, advance into children
-            remaining += child_count;
-            cursor = (uint32_t)(payload_off - (size_t)(base - blob));
-            continue;
-        }
-
-        // ---- Regular file entry ----
-        // sit.md § 5.3 — data method at byte 46, password at byte 47
-        uint8_t d_algo    = h1[46];
-        uint8_t d_passlen = h1[47];
-
-        // sit.md § 13.2 "Decompression Errors" — reject encrypted entries
-        if ((flags & 0x20) && d_raw_len && d_passlen) {
-            *err = make_err("SIT5: encrypted entries are not supported");
-            return false;
-        }
-
-        // Build full path from parent
+        // Build the parent path from the directory map
         char ppath[512] = "";
         if (parent_off != 0) {
             for (int i = 0; i < dmap_cnt; ++i) {
@@ -953,18 +935,50 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
                 }
             }
         }
+
+        // sit.md § 5.3 — folder entries (flags bit 6)
+        if (flags & 0x40) {
+            // Record folder in directory map
+            char folder_full[512];
+            build_path(folder_full, sizeof(folder_full), ppath, namebuf);
+            if (dmap_cnt < SIT5_MAX_DIRS) {
+                dmap[dmap_cnt].offset = cursor;
+                snprintf(dmap[dmap_cnt].path, sizeof(dmap[dmap_cnt].path),
+                         "%s", folder_full);
+                dmap_cnt++;
+            }
+            // The folder itself is an entry of the listing.
+            sit_entry_t *dent = entry_list_push(entries, err);
+            if (!dent) return false;
+            memset(dent, 0, sizeof(*dent));
+            snprintf(dent->name, sizeof(dent->name), "%s", folder_full);
+            dent->is_dir = true;
+
+            // sit.md § 5.7 — add child count, advance into children
+            remaining += child_count;
+            cursor = (uint32_t)(payload_off - archive_off);
+            continue;
+        }
+
+        // ---- Regular file entry ----
+        // sit.md § 5.3 — data method at byte 46, password at byte 47
+
+        // sit.md § 13.2 "Decompression Errors" — reject encrypted entries
+        if ((flags & 0x20) && d_raw_len && d_passlen) {
+            *err = make_err("SIT5: encrypted entries are not supported");
+            return false;
+        }
+
         char full_name[512];
         build_path(full_name, sizeof(full_name), ppath, namebuf);
 
         // sit.md § 5.5 "Fork Data Layout" — resource fork first, then data
-        size_t d_off;
+        uint64_t d_off;
         if (!sit_forks_fit(payload_off, rsrc_present ? r_packed_len : 0,
                            d_packed_len, blob_len, &d_off)) {
             *err = make_err("SIT5: fork data extends past archive end");
             return false;
         }
-        const uint8_t *r_base = blob + payload_off;
-        const uint8_t *d_base = blob + d_off;
 
         // Add entry to the list
         sit_entry_t *ent = entry_list_push(entries, err);
@@ -974,13 +988,14 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
         ent->mac_type     = ftype;
         ent->mac_creator  = fcreator;
         ent->finder_flags = fflags;
+        ent->is_dir       = false;
 
         ent->data_fork = (sit_fork_info_t){
             .raw_len    = d_raw_len,
             .packed_len = d_packed_len,
             .crc        = d_crc,
             .method     = (uint8_t)(d_algo & 0x0F),
-            .data       = d_base
+            .off        = d_off
         };
         ent->has_rsrc = rsrc_present && r_raw_len > 0;
         if (ent->has_rsrc) {
@@ -989,96 +1004,18 @@ static bool parse_sit5(const uint8_t *blob, size_t blob_len,
                 .packed_len = r_packed_len,
                 .crc        = r_crc,
                 .method     = (uint8_t)(r_algo & 0x0F),
-                .data       = r_base
+                .off        = payload_off
             };
+        } else {
+            memset(&ent->rsrc_fork, 0, sizeof(ent->rsrc_fork));
         }
 
         // Advance cursor past the fork data
-        cursor = (uint32_t)(d_off - (size_t)(base - blob) + d_packed_len);
+        cursor = (uint32_t)(d_off - archive_off + d_packed_len);
         remaining--;
     }
 
     return true;
-}
-
-// ============================================================================
-// Static Helpers — Build File List from Entries
-// ============================================================================
-
-// Decompress all forks and produce the final peel_file_list_t.
-static peel_file_list_t build_file_list(const sit_entry_list_t *entries,
-                                        peel_err_t **err) {
-    if (entries->count == 0) {
-        return (peel_file_list_t){.files = NULL, .count = 0};
-    }
-
-    // Count entries with at least one non-empty fork
-    int file_count = 0;
-    for (int i = 0; i < entries->count; ++i) {
-        const sit_entry_t *e = &entries->items[i];
-        if (e->data_fork.raw_len > 0 ||
-            (e->has_rsrc && e->rsrc_fork.raw_len > 0)) {
-            file_count++;
-        }
-    }
-
-    peel_file_t *files = calloc((size_t)file_count, sizeof(peel_file_t));
-    if (!files) {
-        *err = make_err("SIT: out of memory for file list (%d files)",
-                        file_count);
-        return (peel_file_list_t){0};
-    }
-
-    int fi = 0;
-    for (int i = 0; i < entries->count && fi < file_count; ++i) {
-        const sit_entry_t *ent = &entries->items[i];
-
-        // Skip entries with no non-empty forks
-        if (ent->data_fork.raw_len == 0 &&
-            !(ent->has_rsrc && ent->rsrc_fork.raw_len > 0))
-            continue;
-
-        peel_file_t *f = &files[fi];
-
-        // Copy metadata
-        strncpy(f->meta.name, ent->name, sizeof(f->meta.name) - 1);
-        f->meta.mac_type     = ent->mac_type;
-        f->meta.mac_creator  = ent->mac_creator;
-        f->meta.finder_flags = ent->finder_flags;
-
-        // Decompress data fork
-        if (ent->data_fork.raw_len > 0) {
-            f->data_fork = decompress_fork(&ent->data_fork, err);
-            if (*err) {
-                // Clean up previously allocated files
-                for (int j = 0; j < fi; ++j) {
-                    peel_free(&files[j].data_fork);
-                    peel_free(&files[j].resource_fork);
-                }
-                free(files);
-                return (peel_file_list_t){0};
-            }
-        }
-
-        // Decompress resource fork
-        if (ent->has_rsrc && ent->rsrc_fork.raw_len > 0) {
-            f->resource_fork = decompress_fork(&ent->rsrc_fork, err);
-            if (*err) {
-                // Clean up this file's data fork and all prior files
-                peel_free(&f->data_fork);
-                for (int j = 0; j < fi; ++j) {
-                    peel_free(&files[j].data_fork);
-                    peel_free(&files[j].resource_fork);
-                }
-                free(files);
-                return (peel_file_list_t){0};
-            }
-        }
-
-        fi++;
-    }
-
-    return (peel_file_list_t){.files = files, .count = file_count};
 }
 
 // ============================================================================
@@ -1093,40 +1030,117 @@ bool sit_detect(const uint8_t *src, size_t len) {
 }
 
 // ============================================================================
-// Operations (Public API) — Archive Extraction
+// Structure-first access (peeler.h: peel_open)
 // ============================================================================
+//
+// The archive is found in the probe's head (an embedded archive further in
+// than the detection budget is not found: partial access cannot scan a
+// whole file for it), then walked header by header.  Method-0 forks are
+// views of the source; everything else decodes whole on first read.
 
-// Detect, parse, and extract all files from a StuffIt archive.
-// Supports both classic (1.x–4.x) and SIT5 (5.x) formats.
-// sit.md § 2.3 "Detection Strategy" — prefer earliest match.
-peel_file_list_t peel_sit(const uint8_t *src, size_t len, peel_err_t **err) {
-    *err = NULL;
+typedef struct {
+    sit_entry_list_t entries; // one per peel entry, same order
+} sit_priv_t;
 
-    int64_t classic_off = find_classic_magic(src, len);
-    int64_t sit5_off    = find_sit5_magic(src, len);
+static bool sit_detect_probe(const peel_probe_t *p) {
+    return sit_detect(p->head, p->head_len);
+}
 
-    sit_entry_list_t entries;
-    entry_list_init(&entries);
+// The tier and the packed range a fork reports.
+static void sit_fill_fork(const sit_fork_info_t *fi, uint64_t *len, uint64_t *packed, uint64_t *off,
+                          uint8_t *method, peel_tier_t *tier) {
+    *len = fi->raw_len;
+    *packed = fi->packed_len;
+    *off = fi->off;
+    *method = fi->method;
+    // Method 0 is a copy: a view, as long as the packed range holds it.
+    *tier = (fi->method == 0 && fi->packed_len >= fi->raw_len) ? PEEL_TIER_RANDOM : PEEL_TIER_WHOLE;
+}
 
-    // Prefer the earliest match
+static int sit_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
+    // sit.md § 2.3 "Detection Strategy" — prefer the earliest match.
+    int64_t classic_off = find_classic_magic(p->head, p->head_len);
+    int64_t sit5_off    = find_sit5_magic(p->head, p->head_len);
+
+    sit_priv_t *priv = calloc(1, sizeof(*priv));
+    if (!priv) {
+        *err = make_err("SIT: out of memory");
+        return -1;
+    }
+    entry_list_init(&priv->entries);
+    a->priv = priv;
+
+    peel_reader_t rd;
+    if (peel_reader_init(&rd, a->src) != 0) {
+        *err = make_err("SIT: out of memory");
+        return -1;
+    }
+    bool ok;
     if (classic_off >= 0 && (sit5_off < 0 || classic_off <= sit5_off)) {
-        if (!parse_classic(src, len, (size_t)classic_off, &entries, err)) {
-            entry_list_free(&entries);
-            return (peel_file_list_t){0};
-        }
+        ok = parse_classic(&rd, (uint64_t)classic_off, &priv->entries, err);
     } else if (sit5_off >= 0) {
-        if (!parse_sit5(src, len, (size_t)sit5_off, &entries, err)) {
-            entry_list_free(&entries);
-            return (peel_file_list_t){0};
-        }
+        ok = parse_sit5(&rd, (uint64_t)sit5_off, &priv->entries, err);
     } else {
         *err = make_err("SIT: no valid StuffIt signature found");
-        entry_list_free(&entries);
-        return (peel_file_list_t){0};
+        ok = false;
     }
+    peel_reader_free(&rd);
+    if (!ok)
+        return -1;
 
-    // Decompress all forks and build the result
-    peel_file_list_t result = build_file_list(&entries, err);
-    entry_list_free(&entries);
-    return result;
+    for (int i = 0; i < priv->entries.count; i++) {
+        const sit_entry_t *se = &priv->entries.items[i];
+        peel_entry_t *e = peel_archive_add(a);
+        if (!e) {
+            *err = make_err("SIT: out of memory");
+            return -1;
+        }
+        snprintf(e->path, sizeof(e->path), "%s", se->name);
+        e->is_dir = se->is_dir;
+        if (se->is_dir)
+            continue;
+        e->mac_type = se->mac_type;
+        e->mac_creator = se->mac_creator;
+        e->finder_flags = se->finder_flags;
+        sit_fill_fork(&se->data_fork, &e->data_len, &e->data_packed, &e->data_off, &e->data_method, &e->data_tier);
+        if (se->has_rsrc)
+            sit_fill_fork(&se->rsrc_fork, &e->rsrc_len, &e->rsrc_packed, &e->rsrc_off, &e->rsrc_method,
+                          &e->rsrc_tier);
+    }
+    return 0;
 }
+
+// Read a fork's packed bytes and run its method over them.
+static peel_buf_t sit_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+    sit_priv_t *priv = a->priv;
+    const sit_entry_t *se = &priv->entries.items[i];
+    sit_fork_info_t fi = fork == PEEL_FORK_RSRC ? se->rsrc_fork : se->data_fork;
+    // Bound what the header declares before reading or allocating anything.
+    if (fi.raw_len > PEEL_MAX_FORK) {
+        *err = make_err("SIT: fork declares %u bytes, over the %u MiB limit",
+                        fi.raw_len, (unsigned)(PEEL_MAX_FORK >> 20));
+        return (peel_buf_t){0};
+    }
+    uint8_t *packed = peel_archive_read(a, fi.off, fi.packed_len, "SIT fork data", err);
+    if (!packed)
+        return (peel_buf_t){0};
+    fi.data = packed;
+    peel_buf_t out = decompress_fork(&fi, err);
+    free(packed);
+    return out;
+}
+
+static void sit_close(peel_archive_t *a) {
+    sit_priv_t *priv = a->priv;
+    if (!priv)
+        return;
+    entry_list_free(&priv->entries);
+    free(priv);
+}
+
+const peel_fmt_t peel_fmt_sit = {
+    .desc = {"sit", false, sit_detect_probe},
+    .open = sit_open,
+    .decode = sit_decode_fork,
+    .close = sit_close,
+};
